@@ -89,9 +89,8 @@ export async function connectToClaudeCode(server: McpServer): Promise<void> {
 
 	if (choice === prompt) {
 		await copyConnectPrompt(
-			connectPrompt(server.url, serverName, cli, vscode.l10n.t(
-				"Claude Code reads its mcp servers when it starts, so restart it afterwards and run /mcp to see that \"{0}\" is listed.",
-				serverName)),
+			connectPrompt(cli, vscode.l10n.t(
+				"Restart yourself afterwards — you read your mcp servers when you start.")),
 			'Claude Code');
 		return;
 	}
@@ -137,27 +136,23 @@ export async function connectToClaudeCode(server: McpServer): Promise<void> {
 }
 
 /**
- * A prompt for the assistant itself: where the server is, what is behind it, the one command
- * that adds it, and how to prove it worked. Handed over on the clipboard because neither
- * assistant can be given text from outside — see `openClaudeWithPrompt` in assistants.ts for
- * the one exception, which only applies to a conversation this extension opens itself.
+ * A prompt for the assistant itself: the one command that adds the server, and a request to
+ * check it. Handed over on the clipboard because neither assistant can be given text from
+ * outside — see `openClaudeWithPrompt` in assistants.ts for the one exception, which only
+ * applies to a conversation this extension opens itself.
  *
- * `pickUp` differs per client: both read their servers at startup, but they start at
- * different moments, and a prompt that skipped this would have the assistant report the tools
- * missing right after adding them correctly.
+ * Deliberately short: the assistant only needs the command and a reason to try it. `pickUp`
+ * differs per client, because both read their servers at startup but start at different
+ * moments, and a prompt that skipped this would have the assistant report the tools missing
+ * right after adding them correctly.
  */
-function connectPrompt(url: string, name: string, cli: string, pickUp: string): string {
+function connectPrompt(cli: string, pickUp: string): string {
 	return [
-		vscode.l10n.t("Connect to the \"{0}\" mcp server, then check that the connection works.", name),
-		'',
-		vscode.l10n.t("The server is at {0}. It is the browser panel open in my editor: my project's page is loaded in it, and the server's tools let you read and drive that page — the same page I am looking at. It listens on the loopback interface only, and the token in the command below is what authenticates you.", url),
-		'',
-		vscode.l10n.t("Add it by running this in the project folder:"),
+		vscode.l10n.t("To connect to my embedded browser run this in the project folder:"),
 		cli,
 		'',
 		pickUp,
-		'',
-		vscode.l10n.t("Then check the connection: call browser_state, which answers with the url the panel has open. If it does, say so and stop there. The other tools are browser_navigate, browser_snapshot, browser_inspect_element, browser_selected_element, browser_html, browser_text, browser_console, browser_click, browser_fill and browser_wait_for."),
+		vscode.l10n.t("Then call browser_state to test the connection and tell me how it went."),
 	].join('\n');
 }
 
@@ -223,8 +218,8 @@ export async function connectToCodex(server: McpServer): Promise<void> {
 
 	if (choice === prompt) {
 		await copyConnectPrompt(
-			connectPrompt(server.url ?? '', globalName, cli, vscode.l10n.t(
-				"You read your mcp servers when a conversation starts, so this conversation will not have them: once it is added, tell me to start a new one and check there.")),
+			connectPrompt(cli, vscode.l10n.t(
+				"Tell me to start a new conversation afterwards — you read your mcp servers when one starts, so check there.")),
 			'Codex');
 		return;
 	}

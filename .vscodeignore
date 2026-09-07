@@ -17,3 +17,4 @@ PUBLISHING.md
 package-lock.json
 *.vsix
 .github/**
+demo-video.gif

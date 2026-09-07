@@ -3,6 +3,8 @@
 **A browser tab inside your editor that your AI agent can see, read and drive — and that turns
 anything on the page into a prompt.**
 
+![Tab Browser Ultimate in action](demo-video.gif)
+
 Front-end work is a loop: look at the page, find the element, describe it to the assistant,
 check what changed. This extension closes that loop without leaving the editor.
 
