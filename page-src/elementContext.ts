@@ -167,7 +167,9 @@ function buildSnapshot(element: Element): StyleSnapshot {
 	let counted = false;
 	const sheets = Array.prototype.slice.call(document.styleSheets) as CSSStyleSheet[];
 
-	const visit = (visitor: (rule: CSSStyleRule, conditions: readonly string[]) => void) => {
+	const visit = (
+		visitor: (rule: CSSStyleRule, conditions: readonly string[], selector: string) => void,
+	) => {
 		for (const sheet of sheets) {
 			let rules: CSSRuleList | undefined;
 			try {
@@ -195,8 +197,8 @@ function buildSnapshot(element: Element): StyleSnapshot {
 		collectDeclared(inlineStyle, declared, declaredOrder);
 	}
 
-	visit((rule, conditions) => {
-		if (matched.length >= limits.matchedRules || !matchesElement(element, rule.selectorText)) {
+	visit((rule, conditions, selector) => {
+		if (matched.length >= limits.matchedRules || !matchesElement(element, selector)) {
 			return;
 		}
 		const declarations = declarationText(rule.style);
@@ -204,7 +206,7 @@ function buildSnapshot(element: Element): StyleSnapshot {
 			return;
 		}
 		matched.push({
-			selector: rule.selectorText,
+			selector,
 			declarations,
 			conditions: conditions.length ? conditions.slice() : undefined,
 		});
@@ -228,7 +230,7 @@ function buildSnapshot(element: Element): StyleSnapshot {
 		}
 	}
 
-	visit((rule, conditions) => {
+	visit((rule, conditions, selector) => {
 		if (inherited.length >= limits.inheritedRules) {
 			return;
 		}
@@ -239,9 +241,9 @@ function buildSnapshot(element: Element): StyleSnapshot {
 			return;
 		}
 		for (const ancestor of ancestors) {
-			if (matchesElement(ancestor, rule.selectorText)) {
+			if (matchesElement(ancestor, selector)) {
 				inherited.push({
-					selector: rule.selectorText,
+					selector,
 					declarations,
 					conditions: conditions.length ? conditions.slice() : undefined,
 					from: describeNode(ancestor),
@@ -266,16 +268,25 @@ function buildSnapshot(element: Element): StyleSnapshot {
 function walkRules(
 	rules: CSSRuleList,
 	conditions: readonly string[],
-	visit: (rule: CSSStyleRule, conditions: readonly string[]) => void,
+	visit: (rule: CSSStyleRule, conditions: readonly string[], selector: string) => void,
+	/** Selector the rules are nested in, already resolved; the `&` of this level. */
+	parentSelector?: string,
 ): void {
 	for (const rule of Array.prototype.slice.call(rules) as CSSRule[]) {
 		const styleRule = rule as CSSStyleRule;
+		const group = rule as CSSRule & { cssRules?: CSSRuleList };
+
 		if (typeof styleRule.selectorText === 'string' && styleRule.style) {
-			visit(styleRule, conditions);
+			const selector = resolveNestedSelector(styleRule.selectorText, parentSelector);
+			visit(styleRule, conditions, selector);
+			// Css nesting: a style rule can hold rules of its own, and they are the ones that
+			// actually apply to the children — `.card { & > button { … } }`.
+			if (group.cssRules?.length) {
+				walkRules(group.cssRules, conditions, visit, selector);
+			}
 			continue;
 		}
 
-		const group = rule as CSSRule & { cssRules?: CSSRuleList };
 		if (!group.cssRules) {
 			continue;
 		}
@@ -283,8 +294,27 @@ function walkRules(
 		if (condition === undefined) {
 			continue;
 		}
-		walkRules(group.cssRules, condition ? [...conditions, condition] : conditions, visit);
+		walkRules(
+			group.cssRules,
+			condition ? [...conditions, condition] : conditions,
+			visit,
+			parentSelector);
 	}
+}
+
+/**
+ * What a nested selector means on its own. `&` stands for the whole rule it is nested in, which
+ * may be a list, hence `:is()`; a nested selector that never says `&` is a descendant of it.
+ */
+function resolveNestedSelector(selector: string, parentSelector?: string): string {
+	if (!parentSelector) {
+		return selector;
+	}
+
+	const parent = `:is(${parentSelector})`;
+	return splitSelectorList(selector)
+		.map(part => (part.indexOf('&') === -1 ? `${parent} ${part}` : part.split('&').join(parent)))
+		.join(', ');
 }
 
 /** The `@rule` a group contributes to the path, or `undefined` when it does not apply here. */
@@ -328,7 +358,7 @@ function groupCondition(rule: CSSRule): string | undefined {
 function matchesElement(element: Element, selectorText: string): boolean {
 	for (const part of splitSelectorList(selectorText)) {
 		const testable = part.replace(statePseudo, '').trim();
-		// Nested rules are relative to their parent and cannot be tested on their own.
+		// Nesting is resolved before this; a `&` that is still here stands for no parent.
 		if (!testable || testable.indexOf('&') !== -1) {
 			continue;
 		}

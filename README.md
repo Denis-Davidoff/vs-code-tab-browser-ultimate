@@ -44,7 +44,7 @@ the editor: the page you are looking at is the page your agent reads and drives.
 It started as a standalone copy of the Simple Browser extension that ships with VS Code,
 repackaged so it can be built, installed and extended on its own.
 
-## Try another useful extension: Task & Script Explorer.
+## Try another useful extension: Task & Script Explorer
 Visual Studio Code Marketplace link: https://marketplace.visualstudio.com/items?itemName=DenysDavydov.task-runner-ultimate
 
 Open VSX Registry link: https://open-vsx.org/extension/DenysDavydov/task-runner-ultimate

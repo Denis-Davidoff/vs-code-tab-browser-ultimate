@@ -14,6 +14,8 @@ export interface BrowserState {
 	readonly url?: string;
 	/** False when the page is loaded directly, in which case it cannot be read or driven. */
 	readonly inspectable?: boolean;
+	/** Set by `navigate` when the page never arrived; absent means it did. */
+	readonly error?: string;
 }
 
 export class BrowserController {
@@ -35,10 +37,24 @@ export class BrowserController {
 		this._manager.show(url);
 
 		const view = this._manager.activeView;
+		if (!view) {
+			return this.state();
+		}
+
 		try {
-			await view?.whenReady();
+			await view.whenReady();
 		} catch {
-			// Loaded, but not through the proxy — `state` says as much.
+			// Nothing reported in. For a page served outside the proxy that is normal — no
+			// script was injected into it, and `inspectable: false` says so. For an
+			// instrumented one it means the page never arrived, and a caller told only that the
+			// panel is open would carry on clicking into whatever is still standing there.
+			if (view.inspectable) {
+				return {
+					...this.state(),
+					error: `${url} did not finish loading. The panel is showing whatever was `
+						+ 'there before; check that the server is running before acting on the page.',
+				};
+			}
 		}
 		return this.state();
 	}

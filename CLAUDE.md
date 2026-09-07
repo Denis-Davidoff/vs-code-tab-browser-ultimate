@@ -128,7 +128,11 @@ Picking an element produces a `PickedElement`:
 - selector/xpath — `page-src/selectors.ts`, built to survive a rebuild (framework-generated
   class names and ids are filtered out, `preferAttributes` win over structure).
 - descriptor, html path, outer html, box, css — `page-src/elementContext.ts`, read out of the
-  page's own CSSOM. Cross-origin stylesheets are unreadable by design and only counted.
+  page's own CSSOM. Cross-origin stylesheets are unreadable by design and only counted. Css
+  nesting is walked like any other group, except that a nested rule's `selectorText` (`& > a`)
+  is true of nothing on its own: `walkRules` carries the parent selector down and resolves it
+  (`&` → `:is(parent)`, and a selector that never says `&` is a descendant of it), or the rules
+  a page written this year actually uses would all read as unmatched.
 - `src/tabBrowserView.ts` formats it. The default `context` format is the report in the README;
   `css`, `xpath`, `both` and `json` remain, and "Copy element XPath" always writes an XPath
   regardless of the setting.
@@ -205,9 +209,13 @@ drive the panel. The token is never handed to the page.
 
 The panel's url and whether it can be inspected are known only in the webview — in-page
 navigation never reaches the host — so the webview reports `didChangeState` and the view keeps
-it. `browser_navigate` waits on `whenReady()` rather than answering into a loading page — and
-"ready" is `DOMContentLoaded` in the page, not the moment the agent runs: it is injected at the
-top of `<head>`, so reporting from there would answer a client into a document with no body.
+it. `browser_navigate` waits on `whenReady()` rather than answering into a loading page, and
+says so when that wait runs out on an instrumented page: "the panel is open" for a page that
+never arrived has the caller clicking into whatever was standing there before. A page served
+outside the proxy never reports in either, and that is not a failure — `inspectable: false`
+already says why. "Ready" itself is `DOMContentLoaded` in the page, not the moment the agent
+runs: it is injected at the top of `<head>`, so reporting from there would answer a client into
+a document with no body.
 
 Which makes `ready` and the frame's own `load` event a race — two signals from two processes,
 in no fixed order. The `load` handler is the only thing that can tell that the frame left the

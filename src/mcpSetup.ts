@@ -21,6 +21,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { execFile } from 'node:child_process';
+import * as crypto from 'node:crypto';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { codexEntries } from './codexToml';
@@ -196,9 +197,11 @@ export async function connectToCodex(server: McpServer): Promise<void> {
 
 	const folder = vscode.workspace.workspaceFolders?.[0];
 	// One name per project: a single shared one would have the second project overwrite the
-	// first, and with the token in the url that reconnection would even authenticate.
+	// first, and with the token in the url that reconnection would even authenticate. The name
+	// alone does not identify a project — every client has a `frontend` — so the location
+	// decides, and the readable part is only there to say which entry is which.
 	const globalName = folder
-		? `${serverName}-${slug(folder.name || path.basename(folder.uri.fsPath))}`
+		? `${serverName}-${slug(folder.name || path.basename(folder.uri.fsPath))}-${shortHash(folder)}`
 		: serverName;
 	const cli = `codex mcp add ${globalName} --url ${server.urlWithToken}`;
 
@@ -304,6 +307,12 @@ async function writeCodexProjectConfig(folder: vscode.Uri, url: string): Promise
 function slug(value: string): string {
 	return (value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32)
 		|| 'workspace';
+}
+
+/** Six hex characters of the folder's location: enough to tell two `frontend`s apart. */
+function shortHash(folder: vscode.WorkspaceFolder): string {
+	const location = folder.uri.toString?.() || folder.uri.fsPath || folder.name;
+	return crypto.createHash('sha1').update(location).digest('hex').slice(0, 6);
 }
 
 function runCodex(args: readonly string[]): Promise<void> {

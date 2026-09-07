@@ -126,6 +126,7 @@ const { defaultIconUrl, discoverPage, fetchIcon } = await import('./.bundles/fav
 const { registerTerminalLinks } = await import('./.bundles/terminal-links-bundle.mjs');
 const assistants = await import('./.bundles/assistants-bundle.mjs');
 const { McpServer } = await import('./.bundles/mcp-bundle.mjs');
+const { BrowserController } = await import('./.bundles/controller-bundle.mjs');
 const { connectToClaudeCode, connectToCodex } = await import('./.bundles/mcp-setup-bundle.mjs');
 const { claudeClientState, codexClientState } = await import('./.bundles/mcp-check-bundle.mjs');
 
@@ -153,6 +154,13 @@ const page_html = `<!DOCTYPE html>
 	.field-input:hover { border-color: #000000; }
 	@media (min-width: 1px) { .field-input { min-width: 0; } }
 	@media (min-width: 99999px) { .field-input { color: red; } }
+	/* Css nesting, which a page written this year uses instead of a preprocessor. */
+	.row {
+		gap: 4px;
+		& .field-input { outline-color: rgb(1, 2, 3); }
+		.outlined { outline-style: dashed; }
+		@media (min-width: 1px) { & .field-input { outline-width: 2px; } }
+	}
 </style></head>
 <body><div class="app"><div class="card"><form class="form"><div class="row">
 	<input id="email" class="field-input outlined" type="text" placeholder="mail" style="letter-spacing: 0.2px">
@@ -520,6 +528,22 @@ check('an applying media query is kept, with its condition',
 	mediaRule?.declarations.includes('min-width: 0') && mediaRule.conditions[0] === '@media (min-width: 1px)',
 	JSON.stringify(mediaRule));
 
+// Native nesting: the rule that applies to this element is written inside another one, and its
+// own `selectorText` is `& .field-input` — true of nothing on its own.
+const nested = styles.matched.find(rule => rule.declarations.includes('outline-color'));
+check('a nested rule is found, with its selector resolved against the rule it sits in',
+	nested?.selector === ':is(.row) .field-input', JSON.stringify(nested));
+
+check('a nested selector that does not say & is still a descendant of its parent',
+	styles.matched.some(rule => rule.selector === ':is(.row) .outlined'
+		&& rule.declarations.includes('outline-style')),
+	selectors.join(' | '));
+
+check('a nested rule inside a media query keeps both',
+	styles.matched.some(rule => rule.declarations.includes('outline-width')
+		&& rule.conditions?.[0] === '@media (min-width: 1px)'),
+	JSON.stringify(styles.matched.filter(rule => rule.declarations.includes('outline'))));
+
 check('a media query that does not apply is dropped',
 	!styles.matched.some(rule => rule.conditions?.some(condition => condition.includes('99999'))),
 	JSON.stringify(styles.matched.map(rule => rule.conditions)));
@@ -856,6 +880,28 @@ await assistants.handOver('codex', '# report', `after-${reportName}`);
 check('writing a report does not sweep again within the hour',
 	await fs.readFile(fresh, 'utf8') === 'new');
 
+// -- navigating on behalf of a client -----------------------------------------------------------
+
+// A tool call that answers "the panel is open" for a page that never arrived is worse than one
+// that fails: the caller clicks on into whatever was standing there before.
+const controllerFor = view => new BrowserController({ show() { }, activeView: view });
+const neverReady = { url: 'http://127.0.0.1:1/', whenReady: () => Promise.reject(new Error('timed out')) };
+
+check('a page that never reports in is reported as not loaded',
+	/did not finish loading/.test(
+		(await controllerFor({ ...neverReady, inspectable: true }).navigate('http://127.0.0.1:1/')).error ?? ''),
+	JSON.stringify(await controllerFor({ ...neverReady, inspectable: true }).navigate('http://127.0.0.1:1/')));
+
+// A page loaded outside the proxy never reports in either, and that is not a failure: there is
+// simply no script in it, which `inspectable` already says.
+check('a page loaded outside the proxy is not an error',
+	(await controllerFor({ ...neverReady, inspectable: false }).navigate('https://example.com/'))
+		.error === undefined);
+
+check('a page that does report in is answered plainly',
+	(await controllerFor({ url: 'http://localhost:3000/', inspectable: true, whenReady: async () => { } })
+		.navigate('http://localhost:3000/')).error === undefined);
+
 // -- the mcp server ------------------------------------------------------------------------------
 
 // A browser panel that answers from a script rather than from a webview.
@@ -1014,8 +1060,9 @@ clipboard = '';
 dialogAnswer = 'Copy CLI command';
 await connectToCodex(mcp);
 check('the Codex cli command names the server after the project, not just "tab-browser"',
-	clipboard === `codex mcp add tab-browser-${path.basename(workspaceFolders[0].uri.fsPath).toLowerCase()} `
-	+ `--url ${mcp.urlWithToken}`, clipboard);
+	new RegExp(`^codex mcp add tab-browser-${path.basename(workspaceFolders[0].uri.fsPath).toLowerCase()}`
+		+ `-[0-9a-f]{6} --url ${mcp.urlWithToken.replace(/[.?*+^$[\]\\(){}|/-]/g, '\\$&')}$`)
+		.test(clipboard), clipboard);
 
 // Two projects, one global config: a shared name would have the second overwrite the first, and
 // with the token in the url that reconnection would even authenticate.
@@ -1026,6 +1073,20 @@ clipboard = '';
 await connectToCodex(mcp);
 check('a second project gets its own entry rather than replacing the first',
 	clipboard !== firstCommand && clipboard.includes('tab-browser-other-project'), clipboard);
+
+// Every client has a project called `frontend`. Named after the folder alone, the second one
+// would take the first one's entry over — and the token being in the url, it would connect.
+const nameOnly = async fsPath => {
+	workspaceFolders = [{ uri: { scheme: 'file', fsPath, toString: () => `file://${fsPath}` }, name: 'frontend' }];
+	clipboard = '';
+	await connectToCodex(mcp);
+	return clipboard.split(' ')[3];
+};
+const [clientA, clientB] = [await nameOnly('/clients/a/frontend'), await nameOnly('/clients/b/frontend')];
+check('two projects with the same folder name still get an entry each',
+	clientA !== clientB && clientA.startsWith('tab-browser-frontend-'), `${clientA} vs ${clientB}`);
+check('the name of one project does not change between connections',
+	await nameOnly('/clients/a/frontend') === clientA, clientA);
 
 // The project file is ours to write, and it must leave the rest of the file alone.
 workspaceFolders = [{ ...otherFolder, name: 'other-project' }];
