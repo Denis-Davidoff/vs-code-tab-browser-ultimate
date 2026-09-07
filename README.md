@@ -13,11 +13,23 @@ The toolbar's split button runs the entry you used last; the chevron next to it 
 
 - **Copy element** — click an element in the page and get a full report of it (below).
 - **Copy element XPath** — the same pick, but only the XPath of the element.
+- **Add element to Claude Code** — the same report, handed straight to the Claude Code chat.
 - **Copy console.log** — everything the page logged since it was loaded, plus uncaught errors.
 
 Multi-line copies also land on the clipboard as a temporary file, so pasting them into a chat
 attaches a document instead of a wall of text; anything that only understands text still gets
 the text. Set `tabBrowser.copyAsFile` to `false` to always paste as text.
+
+### Add element to Claude Code
+
+Writes the report to `.claude/tab-browser/element-….md` in the workspace and puts an
+`@`-mention of it into Claude Code's prompt box, so the element is in the conversation without
+copying and pasting anything. The folder gets a `.gitignore` of its own — these are scratch
+files for one conversation — and reports older than a day are cleaned up on the way.
+
+It needs the Claude Code extension installed and a folder open, because a mention is a path
+relative to the workspace. Without either, the element lands on the clipboard instead and the
+notification says so.
 
 ### What "Copy element" writes
 

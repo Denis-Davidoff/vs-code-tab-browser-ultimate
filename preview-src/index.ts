@@ -302,7 +302,7 @@ function runCopyCommand(command: CopyCommand): void {
 	setMenuOpen(false);
 	setLastCopyCommand(command);
 
-	const isPick = command === 'element' || command === 'elementXPath';
+	const isPick = command === 'element' || command === 'elementXPath' || command === 'elementClaude';
 	if (isPick && pickerActive) {
 		// A second click on the running command turns picking back off.
 		if (command === pickCommand) {
@@ -326,6 +326,7 @@ function runCopyCommand(command: CopyCommand): void {
 	switch (command) {
 		case 'element':
 		case 'elementXPath':
+		case 'elementClaude':
 			pickCommand = command;
 			setPickerActive(true);
 			break;
@@ -376,7 +377,9 @@ function showHint(state: HintState, detail?: string): void {
 		case 'picking':
 			hintMessage.textContent = pickCommand === 'elementXPath'
 				? 'Click an element to copy its XPath. Esc to cancel.'
-				: 'Click an element to copy it. Esc to cancel.';
+				: pickCommand === 'elementClaude'
+					? 'Click an element to add it to Claude Code. Esc to cancel.'
+					: 'Click an element to copy it. Esc to cancel.';
 			hintDetail.textContent = detail ?? '';
 			break;
 		case 'waiting':
@@ -384,7 +387,9 @@ function showHint(state: HintState, detail?: string): void {
 			hintDetail.textContent = '';
 			break;
 		case 'copied':
-			hintMessage.textContent = 'Copied to clipboard:';
+			hintMessage.textContent = pickCommand === 'elementClaude'
+				? 'Added to Claude Code:'
+				: 'Copied to clipboard:';
 			hintDetail.textContent = detail ?? '';
 			hintResetTimer = setTimeout(() => (pickerActive ? showHint('picking') : hideHint()), 4000);
 			break;

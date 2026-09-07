@@ -42,8 +42,9 @@ instrumented yet.
 ## The copy menu
 
 A split button: its main half runs the entry used last (remembered in the webview state), the
-chevron opens the menu. Entries are `element`, `elementXPath` and `console` (`CopyCommand`),
-also exposed as commands: `tabBrowser.copyElement`, `.copyElementXPath`, `.copyConsole`.
+chevron opens the menu. Entries are `element`, `elementXPath`, `elementClaude` and `console`
+(`CopyCommand`), also exposed as commands: `tabBrowser.copyElement`, `.copyElementXPath`,
+`.addElementToClaude`, `.copyConsole`.
 
 Picking an element produces a `PickedElement`:
 
@@ -61,6 +62,19 @@ macOS goes through one `NSPasteboardItem` carrying both `public.file-url` and
 `public.utf8-plain-text` (JXA via `osascript`), Windows through `Set-Clipboard -Path`. Anywhere
 else — and in remote workspaces, where the clipboard belongs to another machine — it falls back
 to plain text.
+
+### Handing an element to Claude Code
+
+`src/claudeCode.ts`. The Claude Code extension exports no api, so this drives the one command
+that does the job — `claude-vscode.insertAtMention`, which takes no arguments and builds the
+mention from the **active editor**. Hence the dance: write the report into
+`<workspace>/.claude/tab-browser/`, open it, run the command, close the tab again (by uri, not
+`closeActiveEditor` — inserting reveals the chat, which may by then hold the active tab).
+
+That command id is an implementation detail of the extension, not a contract: `isAvailable()`
+checks both the extension and the command, and every failure falls back to the clipboard with a
+notification. Only `vscode://anthropic.claude-code/open?prompt=…` is documented, and it cannot
+carry a file.
 
 ## The tab icon
 

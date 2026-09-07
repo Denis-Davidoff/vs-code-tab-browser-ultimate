@@ -17,6 +17,7 @@ const openApiCommand = 'tabBrowser.api.open';
 const showCommand = 'tabBrowser.show';
 const copyElementCommand = 'tabBrowser.copyElement';
 const copyElementXPathCommand = 'tabBrowser.copyElementXPath';
+const addElementToClaudeCommand = 'tabBrowser.addElementToClaude';
 const copyConsoleCommand = 'tabBrowser.copyConsole';
 
 const enabledHosts = new Set<string>([
@@ -82,6 +83,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 	registerCopyCommand(copyElementCommand, 'element');
 	registerCopyCommand(copyElementXPathCommand, 'elementXPath');
+	registerCopyCommand(addElementToClaudeCommand, 'elementClaude');
 	registerCopyCommand(copyConsoleCommand, 'console');
 
 	// `registerExternalUriOpener` is a proposed API that is only granted to extensions

@@ -57,6 +57,11 @@
 				"category": "Tab Browser Ultimate"
 			},
 			{
+				"command": "tabBrowser.addElementToClaude",
+				"title": "Add Element to Claude Code",
+				"category": "Tab Browser Ultimate"
+			},
+			{
 				"command": "tabBrowser.copyConsole",
 				"title": "Copy Console Output",
 				"category": "Tab Browser Ultimate"

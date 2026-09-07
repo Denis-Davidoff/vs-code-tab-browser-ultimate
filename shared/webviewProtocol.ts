@@ -5,7 +5,7 @@
 import { ConsoleEntry, PickedElement } from './protocol';
 
 /** Entries of the toolbar's copy menu. */
-export type CopyCommand = 'element' | 'elementXPath' | 'console';
+export type CopyCommand = 'element' | 'elementXPath' | 'elementClaude' | 'console';
 
 export type WebviewToExtensionMessage =
 	| { readonly type: 'openExternal'; readonly url: string }

@@ -6,6 +6,7 @@
 import * as vscode from 'vscode';
 import { BrowserProxy, getConfiguration, isLocalUrl, parseHttpUrl } from './browserProxy';
 import { copyReport, slugify } from './clipboardFile';
+import * as claudeCode from './claudeCode';
 import { defaultIconUrl, discoverIconUrl, fetchIcon } from './favicon';
 import { Disposable } from './dispose';
 import { generateUuid } from './uuid';
@@ -247,6 +248,12 @@ export class TabBrowserView extends Disposable {
 
 	private async _copyElement(element: PickedElement, command: CopyCommand): Promise<void> {
 		const configuration = getConfiguration();
+		const keepPickerActive = configuration.get<boolean>('picker.keepActiveAfterPick', false);
+
+		if (command === 'elementClaude' && await this._sendToClaudeCode(element, keepPickerActive)) {
+			return;
+		}
+
 		// "Copy element XPath" is its own menu entry, so it ignores the configured format.
 		const format: ElementCopyFormat = command === 'elementXPath'
 			? 'xpath'
@@ -266,15 +273,44 @@ export class TabBrowserView extends Disposable {
 			? withFramePath(element, element.xpath)
 			: element.descriptor;
 
-		this._post({
-			type: 'didCopy',
-			text: summary,
-			keepPickerActive: configuration.get<boolean>('picker.keepActiveAfterPick', false),
-		});
+		this._post({ type: 'didCopy', text: summary, keepPickerActive });
 
 		this._announce(kind === 'file' && fileName
 			? vscode.l10n.t("Copied element as {0}: {1}", fileName, summary)
 			: vscode.l10n.t("Copied element: {0}", summary));
+	}
+
+	/**
+	 * Writes the report into the workspace and lets Claude Code mention it. Returns false when
+	 * that is not possible, so the pick can still end up on the clipboard.
+	 */
+	private async _sendToClaudeCode(element: PickedElement, keepPickerActive: boolean): Promise<boolean> {
+		if (!await claudeCode.isAvailable()) {
+			vscode.window.showWarningMessage(
+				vscode.l10n.t("Claude Code is not installed, so the element was copied to the clipboard instead."));
+			return false;
+		}
+
+		const fileName = `element-${slugify(element.descriptor)}-${stamp()}.md`;
+		let file: vscode.Uri | undefined;
+		try {
+			file = await claudeCode.mentionReport(formatElementContext(element), fileName);
+		} catch (error) {
+			vscode.window.showErrorMessage(vscode.l10n.t(
+				"Could not hand the element to Claude Code: {0}",
+				error instanceof Error ? error.message : String(error)));
+			return false;
+		}
+
+		if (!file) {
+			vscode.window.showWarningMessage(vscode.l10n.t(
+				"Claude Code mentions files by their path in the workspace, and no folder is open. The element was copied to the clipboard instead."));
+			return false;
+		}
+
+		this._post({ type: 'didCopy', text: element.descriptor, keepPickerActive });
+		this._announce(vscode.l10n.t("Added {0} to Claude Code: {1}", fileName, element.descriptor));
+		return true;
 	}
 
 	private async _copyConsole(
@@ -386,6 +422,12 @@ export class TabBrowserView extends Disposable {
 									data-command="elementXPath"
 									data-icon="codicon-list-tree"><i class="codicon codicon-list-tree"></i><span
 										class="copy-menu-label">${vscode.l10n.t("Copy element XPath")}</span><i
+										class="codicon codicon-check check"></i></button>
+								<button
+									role="menuitem"
+									data-command="elementClaude"
+									data-icon="codicon-sparkle"><i class="codicon codicon-sparkle"></i><span
+										class="copy-menu-label">${vscode.l10n.t("Add element to Claude Code")}</span><i
 										class="codicon codicon-check check"></i></button>
 								<button
 									role="menuitem"
