@@ -84,6 +84,12 @@ files that the assistant reads, so its cli alone is enough.
 VS Code's own chat needs none of this — the extension registers the server through the editor's
 own api (1.101 and later).
 
+## Marketplaces
+
+Visual Studio Code: https://marketplace.visualstudio.com/items?itemName=DenysDavydov.tab-browser-ultimate
+
+OVSX: https://open-vsx.org/extension/DenysDavydov/tab-browser-ultimate
+
 ## The copy menu
 
 The toolbar's split button runs the entry you used last; the chevron next to it opens the rest.
