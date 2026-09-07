@@ -123,6 +123,8 @@ const pngBytes = Buffer.from(
 	'base64');
 
 const agentScript = await fs.readFile(path.join(projectRoot, 'media/agent.js'), 'utf8');
+const webviewScript = await fs.readFile(
+	path.join(projectRoot, 'test/.bundles/webview-bundle.js'), 'utf8');
 
 const page_html = `<!DOCTYPE html>
 <html><head>
@@ -169,6 +171,52 @@ const server = http.createServer((req, res) => {
 			<title>Dashboard &amp;\n\t\tReports</title>
 			<link rel="apple-touch-icon" href="/apple.png">
 			<link rel="shortcut icon" href="icon.png?v=2"></head><body></body></html>`);
+		return;
+	}
+	// The webview's own script, in a page that stands in for the panel: the settings element it
+	// reads its token from, the controls it wires up, and a stub for the editor's api.
+	if (req.url === '/webview') {
+		res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+		res.end(`<!DOCTYPE html><html><head><title>panel</title></head><body>
+			<div id="tab-browser-settings" data-settings='${JSON.stringify({
+			token: 'panel-token', url: 'http://127.0.0.1:1/', focusLockEnabled: false, preferAttributes: [],
+		})}'></div>
+			<div class="header">
+				<input class="url-input">
+				<button class="back-button"></button><button class="forward-button"></button>
+				<button class="reload-button"></button><button class="open-external-button"></button>
+				<button class="copy-action-button"><i class="codicon"></i></button>
+				<button class="copy-menu-toggle"></button>
+				<div class="copy-menu"><button class="copy-menu-item" data-command="element"
+					data-icon="codicon-inspect"><span class="copy-menu-label">Copy element</span></button></div>
+			</div>
+			<div class="hint"><span class="hint-message"></span><span class="hint-detail"></span></div>
+			<iframe></iframe>
+			<script>
+				window.__posted = [];
+				window.acquireVsCodeApi = () => ({
+					getState: () => undefined,
+					setState() { },
+					postMessage(message) { window.__posted.push(message); },
+				});
+			</script>
+			<script src="/webview-bundle.js"></script>
+		</body></html>`);
+		return;
+	}
+	if (req.url === '/webview-bundle.js') {
+		res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' });
+		res.end(webviewScript);
+		return;
+	}
+	// A framed document that reports in only when told to, so the order of the frame's `load`
+	// event and the agent's first message can be chosen rather than raced.
+	if (req.url === '/silent-frame') {
+		res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+		res.end(`<!DOCTYPE html><html><head><title>framed</title></head><body>framed<script>
+			window.__reportReady = () => parent.postMessage(
+				{ __tabBrowserAgent: true, kind: 'ready', documentUrl: 'http://127.0.0.1:1/' }, '*');
+		</script></body></html>`);
 		return;
 	}
 	// The agent as the proxy serves it, so the timing of what it reports can be tested for real.
@@ -218,6 +266,7 @@ let iconHref;
 let overlay;
 let quotedId;
 let agentEvents;
+let panelState;
 let pageRequests;
 try {
 	const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
@@ -299,6 +348,32 @@ try {
 	await page.mouse.move(target.x + target.width / 2, target.y + target.height / 2);
 	await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 
+	// The frame's `load` event and the page's first message are two signals from two processes,
+	// and nothing orders them. Here the worst order is forced: the frame is already loaded and
+	// written off as uninstrumented before its agent reports in.
+	const panel = await browser.newPage();
+	await panel.goto(`${new URL(pageUrl).origin}/webview`);
+	panelState = await panel.evaluate(async origin => {
+		const frame = document.querySelector('iframe');
+		const loaded = new Promise(resolve => frame.addEventListener('load', resolve, { once: true }));
+
+		window.postMessage({
+			type: 'didResolveUrl', requestId: 1, token: 'panel-token',
+			loadUrl: `${origin}/silent-frame`, displayUrl: 'http://127.0.0.1:1/', instrumented: true,
+		}, '*');
+
+		await loaded;
+		// The load handler runs in a listener of its own; let it have its turn first.
+		await new Promise(resolve => setTimeout(resolve, 50));
+		const afterLoad = window.__posted.filter(message => message.type === 'didChangeState').at(-1);
+
+		frame.contentWindow.__reportReady();
+		await new Promise(resolve => setTimeout(resolve, 50));
+		const afterReady = window.__posted.filter(message => message.type === 'didChangeState').at(-1);
+		return { afterLoad, afterReady };
+	}, new URL(pageUrl).origin);
+	await panel.close();
+
 	// The whole agent, in a document whose body arrives long after its head.
 	const latePage = await browser.newPage();
 	await latePage.goto(`${new URL(pageUrl).origin}/late-body`);
@@ -325,6 +400,16 @@ try {
 } finally {
 	// The panel layout check below still needs it; closed at the end of the file.
 }
+
+// -- what the panel reported ------------------------------------------------------------------
+
+check('a frame that has not reported in is treated as a page we do not serve',
+	panelState.afterLoad?.instrumented === false, JSON.stringify(panelState.afterLoad));
+
+// Otherwise the panel holds a page it can read while telling every mcp client it cannot.
+check('a page that reports in after its own load event is instrumented all the same',
+	panelState.afterReady?.instrumented === true && panelState.afterReady.ready === true,
+	JSON.stringify(panelState.afterReady));
 
 // -- what the page reported ------------------------------------------------------------------
 
@@ -918,6 +1003,19 @@ check('our table is found even when its header carries a comment',
 check('the comment introducing the next table survives',
 	codexToml.includes('# the one we must not swallow')
 	&& codexToml.includes('[mcp_servers.something_else]'), codexToml);
+
+// `codex mcp add` writes arrays over several lines. A table read as ending at its first line
+// leaves the rest of the value — and a stray `]` — behind, which parses as nothing at all.
+await fs.writeFile(codexConfig,
+	'[mcp_servers.tab-browser]\nurl = "http://127.0.0.1:1/mcp/old"\n'
+	+ 'enabled_tools = [\n  "browser_state",\n  "browser_click",\n]\n\n'
+	+ '[mcp_servers.something_else]\ncommand = "node"\n');
+await connectToCodex(mcp);
+codexToml = await fs.readFile(codexConfig, 'utf8');
+check('a value written over several lines is replaced whole',
+	!codexToml.includes('browser_state') && !/^\s*\]/m.test(codexToml)
+	&& codexToml.includes(mcp.urlWithToken) && codexToml.includes('[mcp_servers.something_else]'),
+	codexToml);
 
 // Neither assistant can be handed text, so the prompt goes on the clipboard: short, but it has
 // to carry the command that adds the server and the check that proves it arrived.

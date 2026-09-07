@@ -68,6 +68,16 @@ await Promise.all([
 		outfile: 'test/.bundles/favicon-bundle.mjs',
 		alias: { vscode: './test/vscode-stub-entry.mjs' },
 	}),
+	// The webview's own script, driven by the host test in a fixture that stands in for the
+	// panel: what it reports to the extension host depends on the order two events arrive in.
+	esbuild.build({
+		...shared,
+		format: 'iife',
+		platform: 'browser',
+		target: 'es2020',
+		entryPoints: ['preview-src/index.ts'],
+		outfile: 'test/.bundles/webview-bundle.js',
+	}),
 	// Injected into a real page by the host test, which then picks an element through it.
 	esbuild.build({
 		...shared,

@@ -14,7 +14,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import * as vscode from 'vscode';
-import { getConfiguration, parseHttpUrl } from './browserProxy';
+import { getConfiguration, hostnameOf, parseHttpUrl } from './browserProxy';
 
 const maxIconBytes = 512 * 1024;
 const requestTimeout = 5000;
@@ -155,7 +155,7 @@ function download(
 	return new Promise(resolve => {
 		const request = transport.get({
 			protocol: url.protocol,
-			hostname: url.hostname,
+			hostname: hostnameOf(url),
 			port: url.port || (url.protocol === 'https:' ? 443 : 80),
 			path: url.pathname + url.search,
 			headers: { accept, host: url.host },

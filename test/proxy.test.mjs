@@ -152,6 +152,45 @@ check('a request target naming another host stays on the session\'s own server',
 	otherRequests.length === 0 && smuggled.status === 404,
 	`${smuggled.status} ${JSON.stringify(otherRequests)}`);
 
+// --- one server per origin, however the requests arrive -----------------------------------
+// Two navigations to one origin can land before either has a port: the panel's own and an mcp
+// client's, say. Two servers would leave the first url unrecognised and the spare listening
+// after dispose, so the origin has to be claimed before the first await.
+const fresh = http.createServer((_req, res) => { res.writeHead(204); res.end(); });
+await new Promise(r => fresh.listen(0, '127.0.0.1', r));
+const freshOrigin = `http://127.0.0.1:${fresh.address().port}`;
+const [firstUrl, secondUrl] = await Promise.all([
+	proxy.getProxiedUrl(`${freshOrigin}/one`),
+	proxy.getProxiedUrl(`${freshOrigin}/two`),
+]);
+check('parallel requests for one origin share a single proxy server',
+	new URL(firstUrl).port === new URL(secondUrl).port
+	&& proxy.isProxiedUrl(firstUrl) && proxy.isProxiedUrl(secondUrl),
+	`${firstUrl} ${secondUrl}`);
+fresh.close();
+
+// --- ipv6 ----------------------------------------------------------------------------------
+// `URL` keeps the brackets an ipv6 literal is written with, and `http.request` would resolve
+// `[::1]` as a name: a dev server listening on it answered ENOTFOUND through the proxy.
+let ipv6 = 'skipped: no ipv6 loopback';
+try {
+	const six = http.createServer((_req, res) => {
+		res.writeHead(200, { 'content-type': 'text/html' });
+		res.end('<html><head></head><body>v6</body></html>');
+	});
+	await new Promise((resolve, reject) => {
+		six.once('error', reject);
+		six.listen(0, '::1', resolve);
+	});
+	const sixUrl = await proxy.getProxiedUrl(`http://[::1]:${six.address().port}/`);
+	const sixBody = await (await fetch(sixUrl)).text();
+	ipv6 = sixBody.includes('v6') && sixBody.includes(scriptPath) ? 'ok' : sixBody.slice(0, 200);
+	six.close();
+	check('a server on the ipv6 loopback is reachable through the proxy', ipv6 === 'ok', ipv6);
+} catch {
+	console.log(`SKIP  ipv6 (${ipv6})`);
+}
+
 const script = await fetch(new URL(scriptPath, proxiedRoot));
 const scriptBody = await script.text();
 check('agent script is served by the proxy',

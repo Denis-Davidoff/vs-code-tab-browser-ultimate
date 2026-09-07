@@ -15,7 +15,7 @@ Forked from the Simple Browser extension that ships with VS Code and renamed thr
 | `page-src/` | the previewed page | injected agent: picker, console capture, element report |
 | `shared/` | all three | message contracts and the shapes they carry |
 | `media/` | webview | `main.css`, `codicon.css`, and **generated** `index.js` / `agent.js` |
-| `test/` | node | proxy tests, and a chromium-driven test of the element report |
+| `test/` | node | proxy tests, and chromium-driven tests of the page agent and the webview |
 
 `media/index.js` and `media/agent.js` are esbuild output — edit `preview-src/` and `page-src/`,
 never the bundles.
@@ -196,6 +196,12 @@ navigation never reaches the host — so the webview reports `didChangeState` an
 it. `browser_navigate` waits on `whenReady()` rather than answering into a loading page — and
 "ready" is `DOMContentLoaded` in the page, not the moment the agent runs: it is injected at the
 top of `<head>`, so reporting from there would answer a client into a document with no body.
+
+Which makes `ready` and the frame's own `load` event a race — two signals from two processes,
+in no fixed order. The `load` handler is the only thing that can tell that the frame left the
+proxy (nothing reports in from such a page), so it still writes the document off; a `ready`
+arriving afterwards says the page is instrumented and takes it back. Without that, the panel
+holds a page it can read while every mcp client is told it cannot.
 
 Both connect dialogs also offer the configuration as a *prompt* (`connectPrompt`): the one
 command that adds it, how it is picked up, and a check to run afterwards — short, because the

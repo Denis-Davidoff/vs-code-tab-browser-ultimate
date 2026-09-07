@@ -60,7 +60,15 @@ export class ProxyError extends Error { }
 export class BrowserProxy extends Disposable {
 
 	private readonly _sessions = new Map<string, ProxySession>();
+	/**
+	 * Sessions still starting, by origin. Two navigations to one origin can arrive before
+	 * either has a port — the panel's own load and an mcp client's, say — and each would then
+	 * start a server of its own, with only the last one reachable and the rest left listening
+	 * past `dispose`.
+	 */
+	private readonly _starting = new Map<string, Promise<ProxySession>>();
 	private _agentScript?: Promise<Buffer>;
+	private _disposed = false;
 
 	constructor(
 		private readonly _extensionUri: vscode.Uri,
@@ -69,6 +77,7 @@ export class BrowserProxy extends Disposable {
 	}
 
 	public override dispose(): void {
+		this._disposed = true;
 		for (const session of this._sessions.values()) {
 			this._closeSession(session);
 		}
@@ -119,12 +128,21 @@ export class BrowserProxy extends Disposable {
 		return undefined;
 	}
 
-	private async _getSession(origin: string): Promise<ProxySession> {
+	private _getSession(origin: string): Promise<ProxySession> {
 		const existing = this._sessions.get(origin);
 		if (existing) {
-			return existing;
+			return Promise.resolve(existing);
 		}
 
+		// Claimed before the first `await`, so a second caller waits for this server instead of
+		// starting another one.
+		const starting = this._starting.get(origin)
+			?? this._startSession(origin).finally(() => this._starting.delete(origin));
+		this._starting.set(origin, starting);
+		return starting;
+	}
+
+	private async _startSession(origin: string): Promise<ProxySession> {
 		const sockets = new Set<net.Socket>();
 		const server = http.createServer();
 		server.on('connection', socket => {
@@ -171,6 +189,12 @@ export class BrowserProxy extends Disposable {
 			this._handleUpgrade(session, req, socket as net.Socket, head);
 		});
 		server.on('error', () => { /* Reported per request instead. */ });
+
+		if (this._disposed) {
+			// Disposed while this was listening; nothing will ever close it otherwise.
+			this._closeSession(session);
+			throw new ProxyError(vscode.l10n.t("The browser panel was closed."));
+		}
 
 		this._sessions.set(origin, session);
 		return session;
@@ -247,7 +271,7 @@ export class BrowserProxy extends Disposable {
 		return new Promise((resolve, reject) => {
 			const proxyReq = transport.request({
 				protocol: target.protocol,
-				hostname: target.hostname,
+				hostname: hostnameOf(target),
 				port: target.port || (target.protocol === 'https:' ? 443 : 80),
 				path: target.pathname + target.search,
 				method: req.method,
@@ -388,7 +412,7 @@ export class BrowserProxy extends Disposable {
 
 		const proxyReq = transport.request({
 			protocol: target.protocol,
-			hostname: target.hostname,
+			hostname: hostnameOf(target),
 			port: target.port || (target.protocol === 'https:' ? 443 : 80),
 			path: target.pathname + target.search,
 			method: req.method,
@@ -471,6 +495,17 @@ export function isLocalUrl(url: URL): boolean {
 
 function originOf(url: URL): string {
 	return `${url.protocol}//${url.host}`;
+}
+
+/**
+ * The host to connect to. `URL` keeps an ipv6 literal in the brackets that separate it from the
+ * port — `[::1]` — and `http.request` would look that up as a name, so a dev server on `[::1]`
+ * answered `ENOTFOUND`. The `Host` header keeps the brackets, which is where they belong.
+ */
+export function hostnameOf(url: URL): string {
+	return url.hostname.startsWith('[') && url.hostname.endsWith(']')
+		? url.hostname.slice(1, -1)
+		: url.hostname;
 }
 
 /**

@@ -134,6 +134,10 @@ window.addEventListener('message', event => {
 function onAgentEvent(event: AgentEvent): void {
 	switch (event.kind) {
 		case 'ready': {
+			// Only the proxy puts this script in a document, so a document that reports in is
+			// instrumented by definition — including when the frame's `load` event won this
+			// race and has already written the document off as a page we do not serve.
+			isInstrumented = true;
 			pageReady = true;
 			readyCount++;
 			reportState();
@@ -542,6 +546,8 @@ onceDocumentLoaded(() => {
 		if (!reportedIn) {
 			// Navigated somewhere the proxy does not serve: there is no agent in this document,
 			// and a copy command has to reload through the proxy rather than wait for silence.
+			// An instrumented page that is merely slower than its own `load` event corrects
+			// this the moment it reports in.
 			isInstrumented = false;
 			pageReady = false;
 			reportState();
