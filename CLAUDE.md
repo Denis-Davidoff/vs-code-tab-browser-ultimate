@@ -222,7 +222,7 @@ is not granted to extensions outside the editor's own bundle. `tabBrowser.termin
 decides which urls are claimed, with the same `localhost` / `always` / `never` shape as
 `proxy.mode`.
 
-## The tab icon
+## The tab icon and title
 
 `WebviewPanel.iconPath` only takes a local file, so `src/favicon.ts` downloads the icon, sniffs
 its magic bytes (a dev server answers `/favicon.ico` with its index page often enough that the
@@ -231,8 +231,15 @@ Naming by content is what makes the editor repaint the tab when the icon changes
 
 Where the icon url comes from: an instrumented page reports it itself (`page-src/pageIcon.ts`,
 sent as the `icon` agent event and re-sent when the head changes), a page loaded directly has
-its html read once by `discoverIconUrl`. Every navigation bumps `_iconToken` in
+its html read once by `discoverPage`. Every navigation bumps `_iconToken` in
 `src/tabBrowserView.ts` so a slow download cannot land on the wrong page.
+
+The tab's *name* travels the same way and for the same reason — only the page knows it. The
+panel opens as "AI Browser", `_resetTab` names it after the host as soon as a url resolves, and
+the page's own `document.title` replaces that: reported as the `title` agent event (the head
+observer watches `characterData` too, since `document.title = '…'` only rewrites a text node),
+or read out of the html by `discoverPage` for a page no script reaches. A title is page content,
+so it is collapsed to one line and cut to 60 characters before it goes on a tab.
 
 ## Conventions
 

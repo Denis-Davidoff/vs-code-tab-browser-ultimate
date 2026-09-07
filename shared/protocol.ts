@@ -114,6 +114,8 @@ export type AgentEvent =
 	| { readonly kind: 'hover'; readonly selector: string; readonly framePath: readonly string[] }
 	/** The icon the top document declares, as a url on the real server. */
 	| { readonly kind: 'icon'; readonly href: string }
+	/** The top document's `title`, for the panel's tab. */
+	| { readonly kind: 'title'; readonly title: string }
 	| { readonly kind: 'pick'; readonly element: PickedElement }
 	| { readonly kind: 'cancel' }
 	| {

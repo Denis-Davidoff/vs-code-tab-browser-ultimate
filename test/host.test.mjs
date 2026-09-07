@@ -110,7 +110,7 @@ globalThis.__vscodeStub = {
 };
 
 const { formatPickedElement, formatConsoleReport } = await import('./.bundles/view-bundle.mjs');
-const { defaultIconUrl, discoverIconUrl, fetchIcon } = await import('./.bundles/favicon-bundle.mjs');
+const { defaultIconUrl, discoverPage, fetchIcon } = await import('./.bundles/favicon-bundle.mjs');
 const { registerTerminalLinks } = await import('./.bundles/terminal-links-bundle.mjs');
 const assistants = await import('./.bundles/assistants-bundle.mjs');
 const { McpServer } = await import('./.bundles/mcp-bundle.mjs');
@@ -164,6 +164,7 @@ const server = http.createServer((req, res) => {
 	if (req.url === '/declares-icon') {
 		res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
 		res.end(`<!DOCTYPE html><html><head>
+			<title>Dashboard &amp;\n\t\tReports</title>
 			<link rel="apple-touch-icon" href="/apple.png">
 			<link rel="shortcut icon" href="icon.png?v=2"></head><body></body></html>`);
 		return;
@@ -553,10 +554,14 @@ check('a page answering /favicon.ico with html gets no icon',
 check('an icon that is not there at all gets no icon',
 	await fetchIcon(`${new URL(pageUrl).origin}/missing.png`) === undefined);
 
+const declared = await discoverPage(`${new URL(pageUrl).origin}/declares-icon`);
 check('the icon a page declares is found in its html, relative urls included',
-	await discoverIconUrl(`${new URL(pageUrl).origin}/declares-icon`)
-	=== `${new URL(pageUrl).origin}/icon.png?v=2`,
-	await discoverIconUrl(`${new URL(pageUrl).origin}/declares-icon`));
+	declared?.iconHref === `${new URL(pageUrl).origin}/icon.png?v=2`, JSON.stringify(declared));
+
+// The same read answers for the tab's title, which is what a page that carries no injected
+// script has to be named after.
+check('the title comes out of the same html, entities and line breaks resolved',
+	declared?.title === 'Dashboard & Reports', JSON.stringify(declared));
 
 // -- terminal links --------------------------------------------------------------------------
 
@@ -835,17 +840,17 @@ check('connecting again replaces our table instead of adding a second one',
 	codexToml.split('[mcp_servers.tab-browser]').length === 2
 	&& codexToml.includes('[mcp_servers.something_else]'), codexToml);
 
-// Neither assistant can be handed text, so the prompt goes on the clipboard: it has to carry
-// the address, the command that adds the server, and the check that proves it arrived.
+// Neither assistant can be handed text, so the prompt goes on the clipboard: short, but it has
+// to carry the command that adds the server and the check that proves it arrived.
 dialogAnswer = 'Copy connection prompt';
 clipboard = '';
 await connectToCodex(mcp);
-check('the Codex prompt carries the address, the command and the check',
-	clipboard.includes(mcp.url) && clipboard.includes(`codex mcp add tab-browser-other-project`)
+check('the Codex prompt carries the command and the check',
+	clipboard.includes(`codex mcp add tab-browser-other-project`)
 	&& clipboard.includes(mcp.urlWithToken) && clipboard.includes('browser_state')
 	// Codex reads its servers when a conversation starts; a prompt that skipped this would
 	// have it report the tools missing right after adding them correctly.
-	&& /new one/.test(clipboard), clipboard);
+	&& /new conversation/.test(clipboard), clipboard);
 
 clipboard = '';
 await connectToClaudeCode(mcp);

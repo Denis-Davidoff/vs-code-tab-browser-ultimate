@@ -103,9 +103,10 @@ function install(): void {
 		return onRealServer(location.href);
 	}
 
-	// -- page icon ---------------------------------------------------------------------------
+	// -- page icon and title -------------------------------------------------------------------
 
 	let reportedIcon: string | undefined;
+	let reportedTitle: string | undefined;
 
 	function reportIcon(): void {
 		const href = findIconHref();
@@ -116,8 +117,17 @@ function install(): void {
 		send({ kind: 'icon', href: onRealServer(href) });
 	}
 
-	function watchIcon(): void {
-		// Single page apps swap the icon after the fact, and often more than once.
+	function reportTitle(): void {
+		const title = document.title;
+		if (title === reportedTitle) {
+			return;
+		}
+		reportedTitle = title;
+		send({ kind: 'title', title });
+	}
+
+	function watchHead(): void {
+		// Single page apps swap the icon and the title after the fact, often more than once.
 		let scheduled = 0;
 		const observer = new MutationObserver(() => {
 			if (scheduled) {
@@ -126,6 +136,7 @@ function install(): void {
 			scheduled = setTimeout(() => {
 				scheduled = 0;
 				reportIcon();
+				reportTitle();
 			}, 200) as unknown as number;
 		});
 		observer.observe(document.head ?? document.documentElement, {
@@ -133,6 +144,8 @@ function install(): void {
 			subtree: true,
 			attributes: true,
 			attributeFilter: ['href', 'rel', 'sizes', 'type'],
+			// `document.title = '...'` only rewrites the text node inside <title>.
+			characterData: true,
 		});
 	}
 
@@ -151,6 +164,7 @@ function install(): void {
 			reported = location.href;
 			send({ kind: 'navigated', documentUrl: documentUrlOnRealServer() });
 			reportIcon();
+			reportTitle();
 		};
 
 		for (const name of ['pushState', 'replaceState'] as const) {
@@ -256,8 +270,9 @@ function install(): void {
 				return;
 
 			case 'icon':
+			case 'title':
 			case 'navigated':
-				// A nested frame's icon and url have nothing to do with the panel.
+				// A nested frame's icon, title and url have nothing to do with the panel.
 				return;
 
 			case 'pageError':
@@ -317,10 +332,11 @@ function install(): void {
 	// -- startup -----------------------------------------------------------------------------
 
 	send({ kind: 'ready', documentUrl: documentUrlOnRealServer() });
-	// Every instrumented document reports its icon to its parent; only the top one reaches the
-	// webview, because a parent frame drops what its children send.
+	// Every instrumented document reports its icon and title to its parent; only the top one
+	// reaches the webview, because a parent frame drops what its children send.
 	reportIcon();
-	watchIcon();
+	reportTitle();
+	watchHead();
 	watchNavigation();
 	window.addEventListener('pagehide', () => picker.disable());
 }

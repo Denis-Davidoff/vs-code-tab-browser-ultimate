@@ -1,6 +1,7 @@
 /*---------------------------------------------------------------------------------------------
- *  Fetches the icon a page declares and puts it on disk, because a panel's `iconPath` can only
- *  be a local file.
+ *  What the panel's tab shows: the icon a page declares, put on disk because a panel's
+ *  `iconPath` can only be a local file, and — for pages no injected script reaches — the title,
+ *  read out of the same html.
  *
  *  Anything that is not actually an image is thrown away: a dev server answers `/favicon.ico`
  *  with its index page rather than a 404 often enough that the bytes have to be checked.
@@ -55,11 +56,18 @@ export async function fetchIcon(href: string): Promise<vscode.Uri | undefined> {
 	}
 }
 
+export interface DiscoveredPage {
+	/** The icon the page declares, absolute; absent when it declares none. */
+	readonly iconHref?: string;
+	readonly title?: string;
+}
+
 /**
- * Reads the icon a page declares straight out of its html. Only needed for pages that are not
- * served through the proxy, where no injected script can report it.
+ * Reads what the tab needs — the declared icon and the title — straight out of a page's html.
+ * Only needed for pages that are not served through the proxy, where no injected script can
+ * report either, and read in one request because both come from the same head.
  */
-export async function discoverIconUrl(pageUrl: string): Promise<string | undefined> {
+export async function discoverPage(pageUrl: string): Promise<DiscoveredPage | undefined> {
 	try {
 		const bytes = await download(pageUrl, maxRedirects, 'text/html,*/*;q=0.8');
 		const html = bytes?.subarray(0, 256 * 1024).toString('utf8');
@@ -67,6 +75,26 @@ export async function discoverIconUrl(pageUrl: string): Promise<string | undefin
 			return undefined;
 		}
 
+		return { iconHref: findIconHref(html, pageUrl), title: findTitle(html) };
+	} catch {
+		return undefined;
+	}
+}
+
+/** The page's `<title>`, with the handful of entities a title realistically carries decoded. */
+function findTitle(html: string): string | undefined {
+	const match = /<title\b[^>]*>([\s\S]*?)<\/title>/i.exec(html);
+	const title = match?.[1]
+		?.replace(/&(lt|gt|amp|quot|#39|apos|nbsp);/gi, entity => ({
+			lt: '<', gt: '>', amp: '&', quot: '"', '#39': "'", apos: "'", nbsp: ' ',
+		}[entity.slice(1, -1).toLowerCase()] ?? entity))
+		.replace(/\s+/g, ' ')
+		.trim();
+	return title || undefined;
+}
+
+function findIconHref(html: string, pageUrl: string): string | undefined {
+	try {
 		let fallback: string | undefined;
 		for (const tag of html.match(/<link\b[^>]*>/gi) ?? []) {
 			const rel = /\brel\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(tag);

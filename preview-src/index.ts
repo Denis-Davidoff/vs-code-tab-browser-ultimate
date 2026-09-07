@@ -186,6 +186,10 @@ function onAgentEvent(event: AgentEvent): void {
 			vscode.postMessage({ type: 'setIcon', href: event.href });
 			break;
 
+		case 'title':
+			vscode.postMessage({ type: 'setTitle', title: event.title });
+			break;
+
 		case 'cancel':
 			setPickerActive(false);
 			break;

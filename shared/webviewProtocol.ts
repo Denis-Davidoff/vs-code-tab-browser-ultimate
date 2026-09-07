@@ -50,6 +50,8 @@ export type WebviewToExtensionMessage =
 	}
 	/** Icon of the loaded page, for the panel's tab. */
 	| { readonly type: 'setIcon'; readonly href: string }
+	/** Title of the loaded page, for the panel's tab. */
+	| { readonly type: 'setTitle'; readonly title: string }
 	| {
 		/** Sent whenever any of it changes, so the host can answer for the panel. */
 		readonly type: 'didChangeState';

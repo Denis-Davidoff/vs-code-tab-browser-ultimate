@@ -7,7 +7,7 @@ import * as vscode from 'vscode';
 import { BrowserProxy, getConfiguration, isLocalUrl, parseHttpUrl } from './browserProxy';
 import { copyReport, slugify } from './clipboardFile';
 import * as assistants from './assistants';
-import { defaultIconUrl, discoverIconUrl, fetchIcon } from './favicon';
+import { defaultIconUrl, discoverPage, fetchIcon } from './favicon';
 import { Disposable } from './dispose';
 import { generateUuid } from './uuid';
 import {
@@ -32,7 +32,10 @@ export interface ShowOptions {
 export class TabBrowserView extends Disposable {
 
 	public static readonly viewType = 'tabBrowser.view';
-	private static readonly title = vscode.l10n.t("Tab Browser Ultimate");
+	/** Shown until the page says what it is called. */
+	private static readonly title = vscode.l10n.t("AI Browser");
+	/** A page picks its own title, so it does not get to fill the tab bar. */
+	private static readonly maxTitleLength = 60;
 
 	private static getWebviewOptions(extensionUri: vscode.Uri): vscode.WebviewOptions {
 		return {
@@ -63,7 +66,7 @@ export class TabBrowserView extends Disposable {
 	/** Fired when the panel navigates or the page reports in; the sidebar shows what it says. */
 	public readonly onDidChangeState = this._onDidChangeState.event;
 
-	/** Invalidates icon requests still in flight when the panel navigates away. */
+	/** Invalidates icon and title lookups still in flight when the panel navigates away. */
 	private _iconToken = 0;
 	/** Origin the current tab icon belongs to. */
 	private _iconOrigin: string | undefined;
@@ -155,6 +158,10 @@ export class TabBrowserView extends Disposable {
 
 				case 'setIcon':
 					this._showIcon(message.href);
+					break;
+
+				case 'setTitle':
+					this._showTitle(message.title);
 					break;
 
 				case 'showError':
@@ -285,7 +292,7 @@ export class TabBrowserView extends Disposable {
 				: undefined;
 			this._post({ type: 'didResolveUrl', requestId, loadUrl: displayUrl, displayUrl, instrumented: false, error });
 			if (!error) {
-				this._resetIcon(displayUrl, false);
+				this._resetTab(displayUrl, false);
 			}
 			return;
 		}
@@ -293,7 +300,7 @@ export class TabBrowserView extends Disposable {
 		try {
 			const loadUrl = await this._proxy.getProxiedUrl(displayUrl);
 			this._post({ type: 'didResolveUrl', requestId, loadUrl, displayUrl, instrumented: true });
-			this._resetIcon(displayUrl, true);
+			this._resetTab(displayUrl, true);
 		} catch (error) {
 			this._post({
 				type: 'didResolveUrl',
@@ -329,28 +336,55 @@ export class TabBrowserView extends Disposable {
 		}
 	}
 
-	/** Drops the icon of the page being left, then goes looking for the new one. */
-	private async _resetIcon(displayUrl: string, instrumented: boolean): Promise<void> {
-		if (!getConfiguration().get<boolean>('showPageIcon', true)) {
-			return;
+	/** Puts the page's own title on the panel's tab, and the default one back when it has none. */
+	private _showTitle(title: string | undefined): void {
+		const trimmed = title?.replace(/\s+/g, ' ').trim().slice(0, TabBrowserView.maxTitleLength);
+		try {
+			this._webviewPanel.title = trimmed || TabBrowserView.title;
+		} catch {
+			// The panel was closed while the page was reporting in.
 		}
+	}
 
+	/**
+	 * Drops what the page being left put on the tab, then goes looking for the new page's icon
+	 * and title. An instrumented page reports both by itself, so the html is only read here for
+	 * pages that carry no injected script.
+	 */
+	private async _resetTab(displayUrl: string, instrumented: boolean): Promise<void> {
+		const showIcon = getConfiguration().get<boolean>('showPageIcon', true);
 		const origin = parseHttpUrl(displayUrl)?.origin;
 		const token = ++this._iconToken;
 
-		if (origin !== this._iconOrigin) {
+		if (showIcon && origin !== this._iconOrigin) {
 			// Reloading the same site keeps its icon; going somewhere else must not.
 			this._webviewPanel.iconPath = undefined;
 			this._iconOrigin = origin;
 		}
 
-		// An instrumented page reports what it declares by itself, so only the well known
-		// location is worth a request here.
-		const href = instrumented
-			? defaultIconUrl(displayUrl)
-			: await discoverIconUrl(displayUrl) ?? defaultIconUrl(displayUrl);
+		// Until the page says what it is called, the tab says where it is.
+		this._showTitle(parseHttpUrl(displayUrl)?.host);
 
-		if (href && token === this._iconToken) {
+		if (instrumented) {
+			// Only the well known icon location is worth a request; the page reports the rest.
+			const href = showIcon ? defaultIconUrl(displayUrl) : undefined;
+			if (href && token === this._iconToken) {
+				this._showIcon(href);
+			}
+			return;
+		}
+
+		const page = await discoverPage(displayUrl);
+		if (token !== this._iconToken) {
+			return;
+		}
+
+		if (page?.title) {
+			this._showTitle(page.title);
+		}
+
+		const href = showIcon ? page?.iconHref ?? defaultIconUrl(displayUrl) : undefined;
+		if (href) {
 			this._showIcon(href);
 		}
 	}

@@ -6,38 +6,43 @@ anything on the page into a prompt.**
 ![Tab Browser Ultimate in action](demo-video.gif)
 
 Front-end work is a loop: look at the page, find the element, describe it to the assistant,
-check what changed. This extension closes that loop without leaving the editor.
+check what changed. Screenshots lose the markup, hand-copied class names go stale, and a
+headless browser opens a session you are not logged into. This extension closes the loop inside
+the editor: the page you are looking at is the page your agent reads and drives.
 
-- 🌐 **A real browser in a tab.** Your dev server renders in an editor tab next to the code, with
-  an address bar, history and the page's own favicon — not a screenshot, not a headless copy.
-- 🎯 **Point at an element, get everything about it.** Click anything in the page and get a full
-  report: what it is, where it sits in the html, its outer markup, its box, and the css rules
-  that actually apply to it, read out of the page's own CSSOM.
-- 📍 **Or just the address of the element.** A CSS selector or an XPath, built to survive a
-  rebuild — framework-generated class names and ids are filtered out, and `data-testid` and
-  friends win over structure.
+- 🌐 **A real browser, docked next to the code.** Your dev server renders in an editor tab —
+  address bar, history, the page's own favicon and title, hot reload intact. A live DOM with
+  your cookies in it, not a screenshot and not a headless copy.
+- 🎯 **Click an element, get the whole story.** One click returns a report: what the element is,
+  where it sits in the html, its outer markup, its box, and the css rules that actually apply to
+  it — read out of the page's own CSSOM with the cascade already resolved, not guessed from a
+  stylesheet.
+- 📍 **Or just its address.** A CSS selector or an XPath built to survive the next rebuild:
+  framework-generated class names and hashed ids are filtered out, and `data-testid` and friends
+  beat structure. Paste it into a test and it still resolves next week.
 - ✨ **One click turns it into a prompt.** Send the element, its selector or its path straight
-  into Claude Code or Codex, as an attachment their agent reads — so "make this button match
-  the one above" is a sentence, not a paragraph of description.
-- 🐛 **Everything the page logged.** The console since load, uncaught errors included, to the
-  clipboard or to the assistant — the fastest way to hand over a bug you can see.
-- 🔌 **An MCP server comes up on its own.** No install, no separate process: the extension starts
-  a local server and the connect commands configure Claude Code, Codex or VS Code's own chat
-  for you.
-- 🤖 **Then the agent works the page itself.** It can list what is on screen and what is
-  clickable, read the html or the text, inspect one element, click, fill fields, wait for
-  something to render, navigate — and read the console afterwards to see what it did.
-- 👀 **On the page you are already looking at.** Same session, same cookies, same dev server, same
-  logged-in state. The agent is not opening a fresh browser somewhere else; it sees exactly
-  your screen, and you watch it work.
-- 🔄 **Both directions, all the time.** Pick things by hand when you know what you want, or ask
-  the agent to go find it. Nothing has to be re-described from one to the other.
-- 🔒 **Local by construction.** The server listens on the loopback interface only, with a token
-  per workspace, and the page is never told it. Dev servers on different ports no longer share
-  each other's cookies.
+  into Claude Code or Codex as an attachment their agent reads — so "make this button match the
+  one above" is a sentence, not a paragraph of description.
+- 🐛 **Hand over the bug you can see.** The whole console since load, uncaught errors and stack
+  traces included, to the clipboard or into the chat — no retyping a stack trace, no screenshot
+  of a red line.
+- 🔌 **An MCP server, with nothing to install.** No package, no separate process to babysit: the
+  extension starts a local server on activation, and one command configures Claude Code, Codex
+  or VS Code's own chat to use it.
+- 🤖 **Then the agent drives the page itself.** Eleven tools: snapshot what is on screen and what
+  is clickable, read the html or the text, inspect an element, click, fill fields, wait for a
+  render, navigate — then read the console to see what its own change actually did.
+- 👀 **In your session, not a fresh one.** Same cookies, same dev server, same logged-in state,
+  already past the auth wall you passed this morning. You watch every step happen in the tab and
+  can take the mouse back at any point.
+- 🔄 **Both directions, all day.** Point at things by hand when you know what you want, or have
+  the agent go find them. Neither side has to re-describe what the other just did.
+- 🔒 **Local by construction.** Loopback only, a bearer token per workspace that the page is
+  never told, and cookies namespaced per port — so the app on `:3000` stops overwriting the
+  session of the one on `:5173`.
 
 It started as a standalone copy of the Simple Browser extension that ships with VS Code,
-repackaged so it can be built and installed on its own.
+repackaged so it can be built, installed and extended on its own.
 
 ## The sidebar
 
