@@ -9,14 +9,19 @@
  *  - **Claude Code** reads `.mcp.json` in the project (and `claude mcp add` writes elsewhere),
  *    so the command below writes that file — and offers the cli line for anyone who would
  *    rather not have it in the repository.
- *  - **Codex** keeps its servers in `~/.codex/config.toml`, where a bearer token can only be
- *    named, not written: the config holds the *name of an environment variable* to read it
- *    from, and this extension has no say over the environment Codex runs in. So it gets the
- *    url with the token in the path, and `codex mcp add` edits the file — that config is full
- *    of other servers, and editing toml by hand around them is asking for trouble.
+ *  - **Codex** reads servers from `~/.codex/config.toml` and, in a trusted repository, from
+ *    `.codex/config.toml` in the project. A bearer token can only be *named* there — the config
+ *    holds the name of an environment variable to read it from, and this extension has no say
+ *    over the environment Codex runs in — so it gets the url with the token in its path.
+ *
+ *    The project file is written here, because it belongs to one project and so does the panel
+ *    it points at. The global file is left to `codex mcp add`, which owns it and knows how to
+ *    edit around the other servers in it; there the server carries the project's name, since
+ *    one entry per project is the point.
  *--------------------------------------------------------------------------------------------*/
 
 import { execFile } from 'node:child_process';
+import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { McpServer } from './mcpServer';
 
@@ -143,27 +148,34 @@ async function readConfig(file: vscode.Uri): Promise<Record<string, unknown> | u
 	}
 }
 
-/** Adds the server to `~/.codex/config.toml`, through the cli that owns that file. */
+/** Points Codex at this window's panel: per project where it can be, globally otherwise. */
 export async function connectToCodex(server: McpServer): Promise<void> {
 	if (!server.urlWithToken) {
 		vscode.window.showWarningMessage(vscode.l10n.t("The mcp server is not running."));
 		return;
 	}
 
-	const args = ['mcp', 'add', serverName, '--url', server.urlWithToken];
-	const cli = `codex ${args.join(' ')}`;
+	const folder = vscode.workspace.workspaceFolders?.[0];
+	// One name per project: a single shared one would have the second project overwrite the
+	// first, and with the token in the url that reconnection would even authenticate.
+	const globalName = folder
+		? `${serverName}-${slug(folder.name || path.basename(folder.uri.fsPath))}`
+		: serverName;
+	const cli = `codex mcp add ${globalName} --url ${server.urlWithToken}`;
 
-	const run = vscode.l10n.t("Add it now");
+	const project = vscode.l10n.t("Write .codex/config.toml");
+	const global = vscode.l10n.t("Add to Codex globally");
 	const copy = vscode.l10n.t("Copy CLI command");
+
 	const choice = await vscode.window.showInformationMessage(
 		vscode.l10n.t("Connect Codex to the browser panel?"),
 		{
 			modal: true,
 			detail: vscode.l10n.t(
-				"This adds \"{0}\" to ~/.codex/config.toml, pointing at {1}. The token is in the url because Codex can only read one from an environment variable.",
-				serverName, server.url ?? ''),
+				"The server is at {0}; the token is in the url because Codex can only read one from an environment variable.\n\n\".codex/config.toml\" keeps the entry with this project, and Codex reads it once the repository is trusted. Adding it globally puts \"{1}\" in ~/.codex/config.toml instead, where it applies everywhere.",
+				server.url ?? '', globalName),
 		},
-		run, copy);
+		...(folder ? [project, global, copy] : [global, copy]));
 
 	if (choice === copy) {
 		await vscode.env.clipboard.writeText(cli);
@@ -172,15 +184,20 @@ export async function connectToCodex(server: McpServer): Promise<void> {
 		return;
 	}
 
-	if (choice !== run) {
+	if (choice === project && folder) {
+		await writeCodexProjectConfig(folder.uri, server.urlWithToken);
+		return;
+	}
+
+	if (choice !== global) {
 		return;
 	}
 
 	try {
-		await runCodex(args);
+		await runCodex(['mcp', 'add', globalName, '--url', server.urlWithToken]);
 		vscode.window.showInformationMessage(vscode.l10n.t(
 			"Added \"{0}\" to Codex. Start a new conversation there — it reads its servers when it starts.",
-			serverName));
+			globalName));
 	} catch (error) {
 		// Most likely the cli is not on the PATH; the command still works from a terminal.
 		await vscode.env.clipboard.writeText(cli);
@@ -190,9 +207,59 @@ export async function connectToCodex(server: McpServer): Promise<void> {
 	}
 }
 
+/**
+ * Writes just our own table into the project's config, leaving everything else in the file
+ * exactly as it was: appending a `[table]` header is valid after anything, and the only way to
+ * break the file would be to define the same table twice, which is why an existing one is
+ * replaced rather than added to.
+ */
+async function writeCodexProjectConfig(folder: vscode.Uri, url: string): Promise<void> {
+	const file = vscode.Uri.joinPath(folder, '.codex', 'config.toml');
+	const header = `[mcp_servers.${serverName}]`;
+	const table = `${header}\nurl = "${url}"\n`;
+
+	let existing = '';
+	try {
+		existing = Buffer.from(await vscode.workspace.fs.readFile(file)).toString('utf8');
+	} catch {
+		// No file yet.
+	}
+
+	let updated: string;
+	const at = existing.split('\n').findIndex(line => line.trim() === header);
+	if (at === -1) {
+		updated = existing.trim() ? `${existing.replace(/\s*$/, '')}\n\n${table}` : table;
+	} else {
+		const lines = existing.split('\n');
+		let end = at + 1;
+		while (end < lines.length && !lines[end].trimStart().startsWith('[')) {
+			end++;
+		}
+		updated = [...lines.slice(0, at), table.replace(/\n$/, ''), ...lines.slice(end)].join('\n');
+	}
+
+	await vscode.workspace.fs.writeFile(file, Buffer.from(updated, 'utf8'));
+
+	const open = vscode.l10n.t("Open config.toml");
+	const picked = await vscode.window.showInformationMessage(
+		vscode.l10n.t("Wrote \".codex/config.toml\". Codex reads it once this repository is trusted; start a new conversation there."),
+		open);
+	if (picked === open) {
+		await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(file));
+	}
+}
+
+/** `My App` -> `my-app`, so the name is readable in `codex mcp list`. */
+function slug(value: string): string {
+	return (value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32)
+		|| 'workspace';
+}
+
 function runCodex(args: readonly string[]): Promise<void> {
 	return new Promise((resolve, reject) => {
-		execFile('codex', args as string[], { timeout: 20000 }, (error, _stdout, stderr) => {
+		// On Windows the cli is `codex.cmd`, which `CreateProcess` will not find on its own.
+		const options = { timeout: 20000, shell: process.platform === 'win32' };
+		execFile('codex', args as string[], options, (error, _stdout, stderr) => {
 			if (error) {
 				reject(new Error(stderr?.trim() || error.message));
 			} else {

@@ -144,11 +144,15 @@ Three clients, configured in three different places (`src/mcpSetup.ts`):
   cast so `engines.vscode` can stay at 1.85; the definition constructor is positional).
 - **Claude Code** through `.mcp.json` or `claude mcp add` — written or copied by its command,
   and a config that cannot be parsed is left alone rather than overwritten.
-- **Codex** through `codex mcp add`, run for the user. Its `~/.codex/config.toml` usually holds
-  other servers and editing toml around them by hand is asking for trouble, so the cli that owns
-  the file does it. That config can only name an *environment variable* to read a bearer token
-  from, and this extension has no say over Codex's environment — hence `urlWithToken`, the same
-  endpoint with the token as the last path segment, accepted alongside the header.
+- **Codex** in one of two places. The project's `.codex/config.toml` is written here (it belongs
+  to one project, as does the panel it points at; Codex reads it in a trusted repository, and
+  only our own table is touched). The global `~/.codex/config.toml` is left to `codex mcp add`,
+  which owns it and edits around the servers already there — and the entry is named after the
+  project, because one shared name would have a second project overwrite the first and, with the
+  token in the url, that reconnection would even authenticate. That config can only name an
+  *environment variable* to read a bearer token from, and this extension has no say over Codex's
+  environment — hence `urlWithToken`, the same endpoint with the token as its last path segment,
+  accepted alongside the header.
 
 Known edges: selectors, not snapshot-scoped element refs, so a selector can go stale between
 calls; clicks are synthetic dom events, which some things (file pickers, drag) will not accept;

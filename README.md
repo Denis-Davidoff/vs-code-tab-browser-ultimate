@@ -134,11 +134,20 @@ command palette. It offers to write `.mcp.json` in the project, or to copy the e
 `claude mcp add --transport http …` line if you would rather keep the token out of the
 repository. Check it afterwards with `/mcp` in Claude Code.
 
-**Codex**: run **Tab Browser Ultimate: Connect Codex to This Browser (MCP)**, which adds the
-server to `~/.codex/config.toml` through `codex mcp add` — that file holds other servers, and
-letting the cli edit it is safer than writing toml around them. Codex reads its servers when a
-conversation starts, so start a new one afterwards. Its config can only *name* an environment
-variable to read a bearer token from, so this url carries the token in its path instead.
+**Codex**: run **Tab Browser Ultimate: Connect Codex to This Browser (MCP)**, which offers two
+places to put the server:
+
+- `.codex/config.toml` in the project — the entry stays with the project it belongs to, and
+  Codex reads it once the repository is trusted. Only this extension's own table is written; the
+  rest of the file is left alone.
+- `~/.codex/config.toml`, through `codex mcp add`, which owns that file and knows how to edit
+  around the servers already in it. There the entry is named after the project
+  (`tab-browser-<project>`), so connecting from a second project adds its own rather than
+  replacing the first.
+
+Codex reads its servers when a conversation starts, so start a new one afterwards. Its config can
+only *name* an environment variable to read a bearer token from, so this url carries the token in
+its path instead.
 
 **VS Code's own chat** needs no configuration: the extension registers the server through the
 editor's MCP api (VS Code 1.101 and later; older editors just do without).

@@ -782,9 +782,44 @@ check('the Claude Code cli command carries the url and the token',
 	&& clipboard.includes(`Bearer ${mcpToken}`), clipboard);
 
 clipboard = '';
+dialogAnswer = 'Copy CLI command';
 await connectToCodex(mcp);
-check('the Codex cli command points at the url that carries the token',
-	clipboard === `codex mcp add tab-browser --url ${mcp.urlWithToken}`, clipboard);
+check('the Codex cli command names the server after the project, not just "tab-browser"',
+	clipboard === `codex mcp add tab-browser-${path.basename(workspaceFolders[0].uri.fsPath).toLowerCase()} `
+	+ `--url ${mcp.urlWithToken}`, clipboard);
+
+// Two projects, one global config: a shared name would have the second overwrite the first, and
+// with the token in the url that reconnection would even authenticate.
+const otherFolder = { uri: { scheme: 'file', fsPath: await fs.mkdtemp('/tmp/other-project-') } };
+const firstCommand = clipboard;
+workspaceFolders = [{ ...otherFolder, name: 'other-project' }];
+clipboard = '';
+await connectToCodex(mcp);
+check('a second project gets its own entry rather than replacing the first',
+	clipboard !== firstCommand && clipboard.includes('tab-browser-other-project'), clipboard);
+
+// The project file is ours to write, and it must leave the rest of the file alone.
+workspaceFolders = [{ ...otherFolder, name: 'other-project' }];
+const codexConfig = path.join(otherFolder.uri.fsPath, '.codex', 'config.toml');
+await fs.mkdir(path.dirname(codexConfig), { recursive: true });
+await fs.writeFile(codexConfig, '[mcp_servers.something_else]\ncommand = "node"\n');
+
+dialogAnswer = 'Write .codex/config.toml';
+await connectToCodex(mcp);
+let codexToml = await fs.readFile(codexConfig, 'utf8');
+check('writing the project config keeps the servers already in it',
+	codexToml.includes('[mcp_servers.something_else]') && codexToml.includes('command = "node"')
+	&& codexToml.includes(`[mcp_servers.tab-browser]`) && codexToml.includes(mcp.urlWithToken),
+	codexToml);
+
+// Connecting twice must not define the same table twice, which would not parse at all.
+await connectToCodex(mcp);
+codexToml = await fs.readFile(codexConfig, 'utf8');
+check('connecting again replaces our table instead of adding a second one',
+	codexToml.split('[mcp_servers.tab-browser]').length === 2
+	&& codexToml.includes('[mcp_servers.something_else]'), codexToml);
+
+workspaceFolders = [{ uri: { scheme: 'file', fsPath: path.dirname(configFile) } }];
 
 mcp.dispose();
 check('the port is released on dispose',
