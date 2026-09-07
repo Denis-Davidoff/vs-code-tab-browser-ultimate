@@ -161,9 +161,16 @@ const page_html = `<!DOCTYPE html>
 		.outlined { outline-style: dashed; }
 		@media (min-width: 1px) { & .field-input { outline-width: 2px; } }
 	}
+	.outlined {
+		& .never-matches-anything { color: red; }
+		/* Written after a nested rule, so the engine keeps it in a rule of its own. */
+		text-decoration-thickness: 2px;
+	}
+	/* An ampersand inside a string nests nothing: the attribute value is what it says. */
+	.row { & [data-tag="a&b"] { outline-offset: 3px; } }
 </style></head>
 <body><div class="app"><div class="card"><form class="form"><div class="row">
-	<input id="email" class="field-input outlined" type="text" placeholder="mail" style="letter-spacing: 0.2px">
+	<input id="email" class="field-input outlined" type="text" placeholder="mail" data-tag="a&amp;b" style="letter-spacing: 0.2px">
 </div></form></div></div>
 <p id="say&quot;hi&quot;" class="quoted-id">quoted</p>
 <input id="secret" type="password" value="hunter2">
@@ -543,6 +550,22 @@ check('a nested rule inside a media query keeps both',
 	styles.matched.some(rule => rule.declarations.includes('outline-width')
 		&& rule.conditions?.[0] === '@media (min-width: 1px)'),
 	JSON.stringify(styles.matched.filter(rule => rule.declarations.includes('outline'))));
+
+// Everything after a nested rule lands in a `CSSNestedDeclarations` rule: no selector of its
+// own, and it applies to the rule it sits in. Skipped, the declaration is missing from the
+// report — and, absent from what the page declares, reads as the browser's own default.
+check('declarations written after a nested rule stay with the rule they sit in',
+	styles.matched.some(rule => rule.selector === '.outlined'
+		&& rule.declarations.includes('text-decoration-thickness: 2px')),
+	JSON.stringify(styles.matched.filter(rule => rule.selector === '.outlined')));
+
+check('a nested rule is dropped only when the element really does not match it',
+	!selectors.includes(':is(.row) .never-matches-anything'), selectors.join(' | '));
+
+// The nesting selector is a `&` that stands on its own; one inside a string is part of a value,
+// and rewriting it would turn a rule that matches into one that matches nothing.
+check('an ampersand inside a string is left alone',
+	selectors.includes(':is(.row) [data-tag="a&b"]'), selectors.join(' | '));
 
 check('a media query that does not apply is dropped',
 	!styles.matched.some(rule => rule.conditions?.some(condition => condition.includes('99999'))),

@@ -14,6 +14,7 @@ import * as net from 'net';
 import * as stream from 'stream';
 import * as zlib from 'zlib';
 import * as vscode from 'vscode';
+import { rewriteSetCookie } from '../shared/cookies';
 import { Disposable } from './dispose';
 
 /** Path on the proxy that serves the injected page agent script. */
@@ -582,33 +583,6 @@ async function readAll(source: stream.Readable): Promise<Buffer> {
 		chunks.push(Buffer.from(chunk));
 	}
 	return Buffer.concat(chunks);
-}
-
-/** `Set-Cookie` from an https origin must still work over the proxy's plain http. */
-function rewriteSetCookie(cookie: string, prefix: string): string {
-	return prefixCookie(cookie, prefix)
-		.split(';')
-		.filter(part => {
-			const name = part.trim().toLowerCase();
-			return !name.startsWith('domain=')
-				&& name !== 'secure'
-				&& name !== 'partitioned';
-		})
-		.map(part => (/^\s*samesite\s*=\s*none\s*$/i.test(part) ? ' SameSite=Lax' : part))
-		.join(';');
-}
-
-/** `sid=1; Path=/` -> `__tb54321_sid=1; Path=/`. Shared with the page, which hides it again. */
-export function prefixCookie(cookie: string, prefix: string): string {
-	const separator = cookie.indexOf('=');
-	if (separator === -1) {
-		return cookie;
-	}
-	const name = cookie.slice(0, separator).trim();
-	if (!name || name.startsWith(prefix)) {
-		return cookie;
-	}
-	return `${prefix}${name}=${cookie.slice(separator + 1)}`;
 }
 
 /** The cookies of this session, under the names the upstream server gave them. */

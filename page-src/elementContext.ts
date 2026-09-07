@@ -287,6 +287,15 @@ function walkRules(
 			continue;
 		}
 
+		// Anything a page writes *after* a nested rule is parsed into a rule of its own
+		// (`CSSNestedDeclarations`): no selector, no children, and it applies to the rule it
+		// sits in. Skipped, those declarations vanish from the report — and being absent from
+		// what the page declares, the resolved value reads as the browser's own.
+		if (!styleRule.selectorText && styleRule.style && !group.cssRules && parentSelector) {
+			visit(styleRule, conditions, parentSelector);
+			continue;
+		}
+
 		if (!group.cssRules) {
 			continue;
 		}
@@ -313,8 +322,39 @@ function resolveNestedSelector(selector: string, parentSelector?: string): strin
 
 	const parent = `:is(${parentSelector})`;
 	return splitSelectorList(selector)
-		.map(part => (part.indexOf('&') === -1 ? `${parent} ${part}` : part.split('&').join(parent)))
+		.map(part => (hasNestingSelector(part) ? replaceNestingSelector(part, parent) : `${parent} ${part}`))
 		.join(', ');
+}
+
+/** A `&` inside a string is text — `[title="A&B"]` nests nothing. */
+function hasNestingSelector(selector: string): boolean {
+	return replaceNestingSelector(selector, '&&') !== selector;
+}
+
+function replaceNestingSelector(selector: string, parent: string): string {
+	let result = '';
+	let quote: string | undefined;
+
+	for (let at = 0; at < selector.length; at++) {
+		const char = selector[at];
+		if (quote) {
+			if (char === '\\') {
+				result += char + (selector[++at] ?? '');
+				continue;
+			}
+			if (char === quote) {
+				quote = undefined;
+			}
+		} else if (char === '"' || char === '\'') {
+			quote = char;
+		} else if (char === '&') {
+			result += parent;
+			continue;
+		}
+		result += char;
+	}
+
+	return result;
 }
 
 /** The `@rule` a group contributes to the path, or `undefined` when it does not apply here. */
@@ -358,8 +398,9 @@ function groupCondition(rule: CSSRule): string | undefined {
 function matchesElement(element: Element, selectorText: string): boolean {
 	for (const part of splitSelectorList(selectorText)) {
 		const testable = part.replace(statePseudo, '').trim();
-		// Nesting is resolved before this; a `&` that is still here stands for no parent.
-		if (!testable || testable.indexOf('&') !== -1) {
+		// Nesting is resolved before this; a nesting `&` still here stands for no parent. One
+		// inside a string is part of a value — `[data-tag="a&b"]` is an ordinary selector.
+		if (!testable || hasNestingSelector(testable)) {
 			continue;
 		}
 		try {
