@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+	<defs>
+		<linearGradient id="backdrop" x1="0" y1="0" x2="0.4" y2="1">
+			<stop offset="0" stop-color="#1d2b3f"/>
+			<stop offset="1" stop-color="#0d1420"/>
+		</linearGradient>
+		<linearGradient id="ocean" x1="0.1" y1="0" x2="0.9" y2="1">
+			<stop offset="0" stop-color="#63d7ff"/>
+			<stop offset="0.5" stop-color="#3d9bff"/>
+			<stop offset="1" stop-color="#7b6bff"/>
+		</linearGradient>
+		<linearGradient id="letters" x1="0" y1="0" x2="0" y2="1">
+			<stop offset="0" stop-color="#ffffff"/>
+			<stop offset="1" stop-color="#cfe4ff"/>
+		</linearGradient>
+		<clipPath id="globe">
+			<circle cx="106" cy="104" r="70"/>
+		</clipPath>
+		<filter id="halo" x="-60%" y="-60%" width="220%" height="220%">
+			<feGaussianBlur stdDeviation="12"/>
+		</filter>
+	</defs>
+
+	<rect width="256" height="256" rx="58" fill="url(#backdrop)"/>
+
+	<!-- the globe, with a halo so it lifts off the backdrop -->
+	<circle cx="106" cy="104" r="70" fill="#4da3ff" opacity="0.35" filter="url(#halo)"/>
+	<circle cx="106" cy="104" r="70" fill="url(#ocean)"/>
+
+	<!-- its grid: meridians as narrowing ellipses, parallels as straight arcs -->
+	<g clip-path="url(#globe)" fill="none" stroke="#0d2138" stroke-opacity="0.42" stroke-width="4">
+		<ellipse cx="106" cy="104" rx="46" ry="70"/>
+		<ellipse cx="106" cy="104" rx="18" ry="70"/>
+		<path d="M36 104 h140"/>
+		<path d="M46 62 h120"/>
+		<path d="M46 146 h120"/>
+	</g>
+	<circle cx="106" cy="104" r="70" fill="none" stroke="#eaf4ff" stroke-opacity="0.55" stroke-width="4"/>
+
+	<!-- and the two letters that say what it is for -->
+	<text x="222" y="216" text-anchor="end"
+		font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif"
+		font-size="92" font-weight="800" letter-spacing="-2"
+		fill="url(#letters)" stroke="#101b29" stroke-width="12" stroke-linejoin="round"
+		paint-order="stroke fill">AI</text>
+</svg>

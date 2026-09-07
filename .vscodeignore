@@ -4,6 +4,10 @@ page-src/**
 shared/**
 tsconfig*.json
 esbuild.mjs
+esbuild.tests.mjs
+render-icon.mjs
+media/icon.svg
+test/**
 **/*.tsbuildinfo
 **/*.map
 .gitignore

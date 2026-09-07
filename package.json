@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate",
 	"displayName": "%displayName%",
 	"description": "%description%",
-	"version": "0.2.0",
+	"version": "0.2.1",
 	"icon": "media/icon.png",
 	"publisher": "local",
 	"license": "MIT",
@@ -265,6 +265,7 @@
 	},
 	"scripts": {
 		"build": "node esbuild.mjs",
+		"icon": "node render-icon.mjs",
 		"watch": "node esbuild.mjs --watch",
 		"typecheck": "tsc --noEmit",
 		"pretest": "npm run build && node esbuild.tests.mjs",
