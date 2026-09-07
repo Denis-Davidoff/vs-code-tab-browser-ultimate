@@ -97,6 +97,8 @@ export type AgentCommand =
 /** Injected page script -> parent frame -> webview. */
 export type AgentEvent =
 	| { readonly kind: 'ready'; readonly documentUrl: string }
+	/** The same document, under a new url: `history.pushState` and friends. */
+	| { readonly kind: 'navigated'; readonly documentUrl: string }
 	| { readonly kind: 'hover'; readonly selector: string; readonly framePath: readonly string[] }
 	/** The icon the top document declares, as a url on the real server. */
 	| { readonly kind: 'icon'; readonly href: string }

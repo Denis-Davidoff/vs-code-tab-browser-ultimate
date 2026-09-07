@@ -37,6 +37,13 @@ const strippedResponseHeaders = [
 interface ProxySession {
 	/** Origin of the real server, e.g. `http://localhost:5173`. */
 	readonly origin: string;
+	/**
+	 * Prefix every cookie of this session carries while it is in the browser. Cookie jars are
+	 * not separated by port, so two proxied sites on the same loopback host would otherwise
+	 * read and overwrite each other's cookies — `HttpOnly` ones included, which a page cannot
+	 * even see, but the browser would still send to the wrong server.
+	 */
+	readonly cookiePrefix: string;
 	readonly server: http.Server;
 	readonly localPort: number;
 	/**
@@ -139,6 +146,7 @@ export class BrowserProxy extends Disposable {
 
 		const session: ProxySession = {
 			origin,
+			cookiePrefix: `__tb${localPort}_`,
 			server,
 			localPort,
 			publicOrigin: `http://127.0.0.1:${localPort}`,
@@ -197,15 +205,20 @@ export class BrowserProxy extends Disposable {
 		}
 
 		if (typeof headers.location === 'string') {
-			headers.location = await this._rewriteLocation(session, headers.location);
+			headers.location = await this._rewriteLocation(session, headers.location, target);
 		}
 		if (headers['set-cookie']) {
-			headers['set-cookie'] = asArray(headers['set-cookie']).map(rewriteSetCookie);
+			headers['set-cookie'] = asArray(headers['set-cookie'])
+				.map(cookie => rewriteSetCookie(cookie, session.cookiePrefix));
 		}
 
 		const status = proxyRes.statusCode ?? 502;
 		if (!isHtmlResponse(proxyRes)) {
 			res.writeHead(status, proxyRes.statusMessage, headers);
+			// The headers are out, so there is no error page left to send: just tear the
+			// exchange down. Without this an upstream reset is an unhandled `error` event.
+			proxyRes.on('error', () => res.destroy());
+			res.on('close', () => proxyRes.destroy());
 			proxyRes.pipe(res);
 			return;
 		}
@@ -265,6 +278,16 @@ export class BrowserProxy extends Disposable {
 		delete headers['if-none-match'];
 		delete headers['if-modified-since'];
 
+		// Only this session's cookies may reach this session's server.
+		const cookies = typeof original.cookie === 'string'
+			? ownCookies(original.cookie, session.cookiePrefix)
+			: undefined;
+		if (cookies) {
+			headers.cookie = cookies;
+		} else {
+			delete headers.cookie;
+		}
+
 		// Make the upstream server see same-origin requests.
 		const referer = original.referer;
 		if (typeof referer === 'string') {
@@ -301,10 +324,12 @@ export class BrowserProxy extends Disposable {
 			.replace(`http://127.0.0.1:${session.localPort}`, session.origin);
 	}
 
-	private async _rewriteLocation(session: ProxySession, location: string): Promise<string> {
+	private async _rewriteLocation(session: ProxySession, location: string, base: URL): Promise<string> {
 		let resolved: URL;
 		try {
-			resolved = new URL(location, session.origin);
+			// Relative against the request, not the origin: `Location: login` answered for
+			// `/account/start` means `/account/login`.
+			resolved = new URL(location, base);
 		} catch {
 			return location;
 		}
@@ -333,7 +358,10 @@ export class BrowserProxy extends Disposable {
 			/<meta\b[^>]*http-equiv\s*=\s*["']?content-security-policy(-report-only)?["']?[^>]*>/gi,
 			'');
 
-		const config = JSON.stringify({ realOrigin: session.origin });
+		const config = JSON.stringify({
+			realOrigin: session.origin,
+			cookiePrefix: session.cookiePrefix,
+		});
 		const bootstrap = `<script data-tab-browser="bootstrap">window.__tabBrowserConfig=${escapeScriptContent(config)};</script>`
 			+ `<script data-tab-browser="script" src="${agentScriptPath}"></script>`;
 
@@ -480,8 +508,8 @@ async function decodeBody(res: http.IncomingMessage): Promise<Buffer> {
 }
 
 /** `Set-Cookie` from an https origin must still work over the proxy's plain http. */
-function rewriteSetCookie(cookie: string): string {
-	return cookie
+function rewriteSetCookie(cookie: string, prefix: string): string {
+	return prefixCookie(cookie, prefix)
 		.split(';')
 		.filter(part => {
 			const name = part.trim().toLowerCase();
@@ -491,6 +519,31 @@ function rewriteSetCookie(cookie: string): string {
 		})
 		.map(part => (/^\s*samesite\s*=\s*none\s*$/i.test(part) ? ' SameSite=Lax' : part))
 		.join(';');
+}
+
+/** `sid=1; Path=/` -> `__tb54321_sid=1; Path=/`. Shared with the page, which hides it again. */
+export function prefixCookie(cookie: string, prefix: string): string {
+	const separator = cookie.indexOf('=');
+	if (separator === -1) {
+		return cookie;
+	}
+	const name = cookie.slice(0, separator).trim();
+	if (!name || name.startsWith(prefix)) {
+		return cookie;
+	}
+	return `${prefix}${name}=${cookie.slice(separator + 1)}`;
+}
+
+/** The cookies of this session, under the names the upstream server gave them. */
+export function ownCookies(header: string, prefix: string): string | undefined {
+	const mine: string[] = [];
+	for (const part of header.split(';')) {
+		const cookie = part.trim();
+		if (cookie.startsWith(prefix)) {
+			mine.push(cookie.slice(prefix.length));
+		}
+	}
+	return mine.length ? mine.join('; ') : undefined;
 }
 
 /** Keeps an inline `<script>` from being terminated early by its own contents. */

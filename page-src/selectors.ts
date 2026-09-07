@@ -123,7 +123,10 @@ export function xPath(element: Element): string {
 	while (node) {
 		const tag = node.tagName.toLowerCase();
 		const id = node.getAttribute('id');
-		if (id && !looksGenerated(id) && isUnique(document, `[id="${escapeAttributeValue(id)}"]`)) {
+		// An xpath string literal cannot carry the quote that delimits it, and there is nothing
+		// to escape it with; such an id falls back to the positional path below.
+		if (id && !id.includes('"')
+			&& !looksGenerated(id) && isUnique(document, `[id="${escapeAttributeValue(id)}"]`)) {
 			parts.unshift(`*[@id="${id}"]`);
 			return `//${parts.join('/')}`;
 		}

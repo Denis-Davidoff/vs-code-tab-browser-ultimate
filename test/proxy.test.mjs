@@ -34,6 +34,12 @@ const app = http.createServer((req, res) => {
 		res.end(zlib.gzipSync('<html><head></head><body>gz</body></html>'));
 		return;
 	}
+	if (url.pathname === '/account/start') { res.writeHead(302, { location: 'login' }); res.end(); return; }
+	if (url.pathname === '/cookies') {
+		res.writeHead(200, { 'content-type': 'application/json' });
+		res.end(JSON.stringify({ cookie: req.headers.cookie ?? null }));
+		return;
+	}
 	if (url.pathname === '/redir-local') { res.writeHead(302, { location: `http://127.0.0.1:${app.address().port}/` }); res.end(); return; }
 	if (url.pathname === '/redir-remote') { res.writeHead(302, { location: `http://127.0.0.1:${other.address().port}/` }); res.end(); return; }
 	if (url.pathname === '/asset.js') { res.writeHead(200, { 'content-type': 'text/javascript' }); res.end('console.log(1)'); return; }
@@ -107,6 +113,29 @@ check('cross-origin redirect points at a second proxy',
 	remoteLocation);
 check('following the cross-origin redirect reaches the other server',
 	(await (await fetch(remoteLocation)).text()).includes('other'));
+
+const relativeRedir = await fetch(new URL('/account/start', proxiedRoot), { redirect: 'manual' });
+check('a relative redirect resolves against the request, not the origin',
+	relativeRedir.headers.get('location') === '/account/login', relativeRedir.headers.get('location'));
+
+// --- cookies belong to one session only ------------------------------------------------------
+check('set-cookie is renamed with the session prefix', /^__tb\d+_sid=1/.test(cookie), cookie);
+
+const sessionPrefix = cookie.slice(0, cookie.indexOf('sid='));
+const cookieEcho = async header => (await (await fetch(new URL('/cookies', proxiedRoot), {
+	headers: { cookie: header },
+})).json()).cookie;
+
+check('the session gets its own cookies back under their real names',
+	await cookieEcho(`${sessionPrefix}sid=1`) === 'sid=1', await cookieEcho(`${sessionPrefix}sid=1`));
+
+check('a cookie belonging to another proxied site is not forwarded',
+	await cookieEcho('__tb1_other=2; plain=3') === null,
+	await cookieEcho('__tb1_other=2; plain=3'));
+
+check('only the foreign cookies are dropped',
+	await cookieEcho(`__tb1_other=2; ${sessionPrefix}sid=1`) === 'sid=1',
+	await cookieEcho(`__tb1_other=2; ${sessionPrefix}sid=1`));
 
 const script = await fetch(new URL(scriptPath, proxiedRoot));
 const scriptBody = await script.text();

@@ -43,6 +43,7 @@ export type WebviewToExtensionMessage =
 	| { readonly type: 'showError'; readonly message: string }
 	| { readonly type: 'openDevTools' };
 
+/** Every message below reaches the webview wrapped with the panel's token. */
 export type ExtensionToWebviewMessage =
 	| { readonly type: 'focus' }
 	| { readonly type: 'didChangeFocusLockIndicatorEnabled'; readonly focusLockEnabled: boolean }
@@ -63,6 +64,12 @@ export type ExtensionToWebviewMessage =
 	};
 
 export interface TabBrowserSettings {
+	/**
+	 * Secret of this panel, handed to the webview in its own dom. Every message from the
+	 * extension host carries it, and the webview drops the ones that do not: the framed page
+	 * can post into the webview too, and must not be able to pass for the host.
+	 */
+	readonly token: string;
 	readonly url: string;
 	readonly focusLockEnabled: boolean;
 	readonly preferAttributes: readonly string[];

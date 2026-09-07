@@ -198,6 +198,40 @@
     return `${node.nodeName}(${((_b = node.nodeValue) != null ? _b : "").slice(0, 80)})`;
   }
 
+  // page-src/cookies.ts
+  function installCookiePrefix(prefix) {
+    if (!prefix) {
+      return;
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(Document.prototype, "cookie");
+    const read = descriptor == null ? void 0 : descriptor.get;
+    const write = descriptor == null ? void 0 : descriptor.set;
+    if (!read || !write) {
+      return;
+    }
+    Object.defineProperty(document, "cookie", {
+      configurable: true,
+      enumerable: true,
+      get() {
+        return String(read.call(document)).split(";").map((part) => part.trim()).filter((part) => part.startsWith(prefix)).map((part) => part.slice(prefix.length)).join("; ");
+      },
+      set(value) {
+        write.call(document, addPrefix(String(value), prefix));
+      }
+    });
+  }
+  function addPrefix(cookie, prefix) {
+    const separator = cookie.indexOf("=");
+    if (separator === -1) {
+      return cookie;
+    }
+    const name = cookie.slice(0, separator).trim();
+    if (!name || name.startsWith(prefix)) {
+      return cookie;
+    }
+    return `${prefix}${name}=${cookie.slice(separator + 1)}`;
+  }
+
   // page-src/pageIcon.ts
   var wantedSize = 32;
   var iconRelations = /(^|\s)(shortcut\s+icon|icon|apple-touch-icon(-precomposed)?|mask-icon)(\s|$)/i;
@@ -978,7 +1012,7 @@
     while (node) {
       const tag = node.tagName.toLowerCase();
       const id = node.getAttribute("id");
-      if (id && !looksGenerated(id) && isUnique(document, `[id="${escapeAttributeValue(id)}"]`)) {
+      if (id && !id.includes('"') && !looksGenerated(id) && isUnique(document, `[id="${escapeAttributeValue(id)}"]`)) {
         parts.unshift(`*[@id="${id}"]`);
         return `//${parts.join("/")}`;
       }
@@ -1242,9 +1276,10 @@
     install();
   }
   function install() {
-    var _a, _b;
+    var _a, _b, _c, _d;
     installConsoleCapture();
-    const realOrigin = (_b = (_a = window.__tabBrowserConfig) == null ? void 0 : _a.realOrigin) != null ? _b : location.origin;
+    installCookiePrefix((_b = (_a = window.__tabBrowserConfig) == null ? void 0 : _a.cookiePrefix) != null ? _b : "");
+    const realOrigin = (_d = (_c = window.__tabBrowserConfig) == null ? void 0 : _c.realOrigin) != null ? _d : location.origin;
     function send(event) {
       var _a2;
       try {
@@ -1322,6 +1357,27 @@
         attributeFilter: ["href", "rel", "sizes", "type"]
       });
     }
+    function watchNavigation() {
+      let reported = location.href;
+      const report = () => {
+        if (location.href === reported) {
+          return;
+        }
+        reported = location.href;
+        send({ kind: "navigated", documentUrl: documentUrlOnRealServer() });
+        reportIcon();
+      };
+      for (const name of ["pushState", "replaceState"]) {
+        const original = history[name];
+        history[name] = function(...args) {
+          const result = original.apply(this, args);
+          setTimeout(report, 0);
+          return result;
+        };
+      }
+      window.addEventListener("popstate", () => setTimeout(report, 0));
+      window.addEventListener("hashchange", report);
+    }
     const picker = new ElementPicker({
       onHover: (selector) => send({ kind: "hover", selector, framePath: [] }),
       onPick: (element) => send({ kind: "pick", element }),
@@ -1376,6 +1432,7 @@
           }
           return;
         case "icon":
+        case "navigated":
           return;
         case "pageError":
         case "console":
@@ -1421,6 +1478,7 @@
     send({ kind: "ready", documentUrl: documentUrlOnRealServer() });
     reportIcon();
     watchIcon();
+    watchNavigation();
     window.addEventListener("pagehide", () => picker.disable());
   }
 })();

@@ -39,6 +39,24 @@ three bundles.
 `never`. A copy command forces a reload through the proxy when the current page is not
 instrumented yet.
 
+Two things about that arrangement are easy to get wrong again:
+
+- **Cookies are not separated by port.** Every session publishes on `127.0.0.1`, so without help
+  the site on :3000 would read, overwrite and receive the cookies of the site on :5173 — the
+  `HttpOnly` ones too, which a page cannot see but the browser still sends. So each session
+  prefixes the names of the cookies it hands the browser (`__tb<port>_`), drops the ones that
+  are not its own from every request it forwards, and restores the real names upstream.
+  `page-src/cookies.ts` hides the prefix from `document.cookie`, so page scripts never see it.
+- **The webview is not alone in its window.** The framed page can `postMessage` into it, so
+  every message from the extension host carries the panel's token (`TabBrowserSettings.token`,
+  read from the webview's own dom, which a cross origin page cannot reach) and the webview drops
+  anything without it. Without that, a page could start a pick and have its own report written
+  into the workspace and mentioned to Claude Code.
+
+Reports built from page content — markup, css, console output — are fenced with a fence longer
+than the longest run of backticks inside them (`fenced()` in `src/tabBrowserView.ts`), or the
+page could end the block and have the rest read as markdown.
+
 ## The copy menu
 
 A split button: its main half runs the entry used last (remembered in the webview state), the

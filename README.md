@@ -121,6 +121,10 @@ webview over `postMessage`, and the webview talks to the extension host.
 By default only `localhost` urls are proxied (`tabBrowser.proxy.mode`); any other page is
 loaded directly until a copy command needs the script.
 
+Each proxied site keeps its own cookies: they all end up on `127.0.0.1`, where the browser does
+not separate them by port, so the proxy gives every session its own cookie namespace and
+forwards nothing that belongs to another one. Pages see their cookies under the usual names.
+
 ## Differences from upstream
 
 - **Identifiers renamed** so this can be installed next to the built-in Simple Browser:

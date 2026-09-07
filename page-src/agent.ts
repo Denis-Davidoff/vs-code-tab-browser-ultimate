@@ -12,12 +12,15 @@ import {
 	packAgentMessage,
 } from '../shared/protocol';
 import { consoleSnapshot, installConsoleCapture } from './consoleCapture';
+import { installCookiePrefix } from './cookies';
 import { findIconHref } from './pageIcon';
 import { ElementPicker } from './picker';
 import { cssPath } from './selectors';
 
 interface AgentBootstrapConfig {
 	readonly realOrigin: string;
+	/** Prefix the proxy puts on this session's cookie names; the page must not see it. */
+	readonly cookiePrefix?: string;
 }
 
 declare global {
@@ -35,6 +38,7 @@ if (!window.__tabBrowserInstalled) {
 function install(): void {
 	// Before anything else: page scripts start logging as soon as they run.
 	installConsoleCapture();
+	installCookiePrefix(window.__tabBrowserConfig?.cookiePrefix ?? '');
 
 	const realOrigin = window.__tabBrowserConfig?.realOrigin ?? location.origin;
 
@@ -131,6 +135,35 @@ function install(): void {
 		});
 	}
 
+	// -- in page navigation --------------------------------------------------------------------
+
+	/**
+	 * A single page app changes the url without loading a document, so nothing else would tell
+	 * the panel that its address bar is out of date.
+	 */
+	function watchNavigation(): void {
+		let reported = location.href;
+		const report = () => {
+			if (location.href === reported) {
+				return;
+			}
+			reported = location.href;
+			send({ kind: 'navigated', documentUrl: documentUrlOnRealServer() });
+			reportIcon();
+		};
+
+		for (const name of ['pushState', 'replaceState'] as const) {
+			const original = history[name];
+			history[name] = function (this: History, ...args: Parameters<History['pushState']>) {
+				const result = original.apply(this, args);
+				setTimeout(report, 0);
+				return result;
+			};
+		}
+		window.addEventListener('popstate', () => setTimeout(report, 0));
+		window.addEventListener('hashchange', report);
+	}
+
 	// -- picker ------------------------------------------------------------------------------
 
 	const picker = new ElementPicker({
@@ -201,7 +234,8 @@ function install(): void {
 				return;
 
 			case 'icon':
-				// A nested frame's icon has nothing to do with the tab.
+			case 'navigated':
+				// A nested frame's icon and url have nothing to do with the panel.
 				return;
 
 			case 'pageError':
@@ -264,5 +298,6 @@ function install(): void {
 	// webview, because a parent frame drops what its children send.
 	reportIcon();
 	watchIcon();
+	watchNavigation();
 	window.addEventListener('pagehide', () => picker.disable());
 }

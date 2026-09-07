@@ -70,8 +70,12 @@ let nextRequestId = 1;
 const readyCheckTimeout = 15000;
 let pendingNavigation: { readonly requestId: number; readonly bust: boolean } | undefined;
 let pendingConsoleRequest: number | undefined;
+let consoleRequestTimer: ReturnType<typeof setTimeout> | undefined;
 /** The menu entry the pending console request came from. */
 let consoleCommand: CopyCommand = 'console';
+/** Counts the documents that reported in, so a load with no report can be recognised. */
+let readyCount = 0;
+let readyCountAtLastLoad = 0;
 
 // -- messages --------------------------------------------------------------------------------
 
@@ -85,7 +89,10 @@ window.addEventListener('message', event => {
 		return;
 	}
 
-	if (typeof message !== 'object' || message === null || !('type' in message)) {
+	// The framed page can post here as well. Only the extension host knows the token, which
+	// lives in this document's dom and is therefore out of a cross origin page's reach.
+	if (typeof message !== 'object' || message === null || !('type' in message)
+		|| (message as { token?: unknown }).token !== settings.token) {
 		return;
 	}
 
@@ -120,6 +127,9 @@ function onAgentEvent(event: AgentEvent): void {
 	switch (event.kind) {
 		case 'ready': {
 			pageReady = true;
+			readyCount++;
+			// A navigation inside the frame lands here, and the address bar has to follow it.
+			setDisplayUrl(event.documentUrl);
 			if (readyCheckTimer) {
 				clearTimeout(readyCheckTimer);
 				readyCheckTimer = undefined;
@@ -151,6 +161,10 @@ function onAgentEvent(event: AgentEvent): void {
 			}
 			break;
 
+		case 'navigated':
+			setDisplayUrl(event.documentUrl);
+			break;
+
 		case 'icon':
 			vscode.postMessage({ type: 'setIcon', href: event.href });
 			break;
@@ -163,7 +177,7 @@ function onAgentEvent(event: AgentEvent): void {
 			if (event.requestId !== pendingConsoleRequest) {
 				return;
 			}
-			pendingConsoleRequest = undefined;
+			endConsoleRequest();
 			if (!event.entries.length) {
 				showHint('error', 'The page has not logged anything yet.');
 				return;
@@ -182,6 +196,26 @@ function onAgentEvent(event: AgentEvent): void {
 			console.error('[tab browser] page error:', event.message);
 			showHint('error', event.message);
 			break;
+	}
+}
+
+/** Points the address bar, the saved state and "Open in browser" at the page actually shown. */
+function setDisplayUrl(url: string): void {
+	if (!url || url === displayUrl) {
+		return;
+	}
+	displayUrl = url;
+	if (document.activeElement !== input) {
+		input.value = displayUrl;
+	}
+	saveState();
+}
+
+function endConsoleRequest(): void {
+	pendingConsoleRequest = undefined;
+	if (consoleRequestTimer) {
+		clearTimeout(consoleRequestTimer);
+		consoleRequestTimer = undefined;
 	}
 }
 
@@ -213,7 +247,7 @@ function onDidResolveUrl(message: Extract<ExtensionToWebviewMessage, { type: 'di
 	loadedUrl = message.loadUrl;
 	isInstrumented = message.instrumented;
 	pageReady = false;
-	pendingConsoleRequest = undefined;
+	endConsoleRequest();
 
 	if (document.activeElement !== input) {
 		input.value = displayUrl;
@@ -344,6 +378,16 @@ function runCopyCommand(command: CopyCommand): void {
 	consoleCommand = command;
 	showHint('waiting', 'Collecting console output…');
 	sendToPage({ kind: 'collectConsole', requestId });
+
+	// The page may have navigated somewhere the injected script never reached.
+	consoleRequestTimer = setTimeout(() => {
+		if (pendingConsoleRequest !== requestId) {
+			return;
+		}
+		endConsoleRequest();
+		pageReady = false;
+		showHint('error', 'The page did not answer. Reload it and try again.');
+	}, 5000);
 }
 
 function setPickerActive(active: boolean): void {
@@ -432,6 +476,17 @@ onceDocumentLoaded(() => {
 		const iframeFocused = document.activeElement?.tagName === 'IFRAME';
 		document.body.classList.toggle('iframe-focused', iframeFocused);
 	}, 50);
+
+	iframe.addEventListener('load', () => {
+		const reportedIn = readyCount > readyCountAtLastLoad;
+		readyCountAtLastLoad = readyCount;
+		if (!reportedIn) {
+			// Navigated somewhere the proxy does not serve: there is no agent in this document,
+			// and a copy command has to reload through the proxy rather than wait for silence.
+			isInstrumented = false;
+			pageReady = false;
+		}
+	});
 
 	input.addEventListener('change', event => {
 		navigateTo((event.target as HTMLInputElement).value);

@@ -41,6 +41,9 @@ export class TabBrowserView extends Disposable {
 	private readonly _onDidDispose = this._register(new vscode.EventEmitter<void>());
 	public readonly onDispose = this._onDidDispose.event;
 
+	/** Proves to the webview that a message came from here and not from the page it frames. */
+	private readonly _token = generateUuid();
+
 	/** Invalidates icon requests still in flight when the panel navigates away. */
 	private _iconToken = 0;
 	/** Origin the current tab icon belongs to. */
@@ -84,13 +87,14 @@ export class TabBrowserView extends Disposable {
 
 		this._register(this._webviewPanel.webview.onDidReceiveMessage((message: WebviewToExtensionMessage) => {
 			switch (message.type) {
-				case 'openExternal':
-					try {
-						vscode.env.openExternal(vscode.Uri.parse(message.url));
-					} catch {
-						// Noop
+				case 'openExternal': {
+					// Never hand the os a scheme the page could have chosen, such as `file:`.
+					const external = parseHttpUrl(message.url);
+					if (external) {
+						vscode.env.openExternal(vscode.Uri.parse(external.toString()));
 					}
 					break;
+				}
 
 				case 'resolveUrl':
 					this._resolveUrl(message.requestId, message.url, message.instrument);
@@ -149,7 +153,7 @@ export class TabBrowserView extends Disposable {
 	}
 
 	private _post(message: ExtensionToWebviewMessage): void {
-		this._webviewPanel.webview.postMessage(message);
+		this._webviewPanel.webview.postMessage({ ...message, token: this._token });
 	}
 
 	/**
@@ -386,6 +390,7 @@ export class TabBrowserView extends Disposable {
 		const codiconsUri = this._extensionResourceUrl('media', 'codicon.css');
 
 		const settings: TabBrowserSettings = {
+			token: this._token,
 			url,
 			focusLockEnabled: configuration.get<boolean>('focusLockIndicator.enabled', true),
 			preferAttributes: configuration.get<readonly string[]>(
@@ -561,7 +566,21 @@ function elementSummary(element: PickedElement, format: ElementCopyFormat): stri
 
 /** The console log as a document, for the file a mention points at. */
 export function formatConsoleReport(log: string, documentUrl: string): string {
-	return [`# Console output of ${documentUrl}`, '', '```', log, '```', ''].join('\n');
+	return [`# Console output of ${documentUrl}`, '', ...fenced(log), ''].join('\n');
+}
+
+/**
+ * Everything fenced here comes from the page: its markup, its stylesheets, its log. A run of
+ * backticks in any of it would end the block early and turn the rest into markdown, so the
+ * fence is always longer than the longest run inside it.
+ */
+function fenced(content: string, language = ''): string[] {
+	let longest = 0;
+	for (const run of content.match(/`+/g) ?? []) {
+		longest = Math.max(longest, run.length);
+	}
+	const fence = '`'.repeat(Math.max(3, longest + 1));
+	return [`${fence}${language}`, content, fence];
 }
 
 /** Wraps a bare path in enough context to be worth reading on its own. */
@@ -576,9 +595,7 @@ export function formatPathReport(
 		'',
 		`${what} of an element on ${element.documentUrl}`,
 		'',
-		'```',
-		path,
-		'```',
+		...fenced(path),
 		'',
 	].join('\n');
 }
@@ -631,9 +648,7 @@ export function formatElementContext(element: PickedElement): string {
 		`HTML Path: ${element.htmlPath.join(' > ')}`,
 		'',
 		'Outer HTML:',
-		'```html',
-		element.outerHtml,
-		'```',
+		...fenced(element.outerHtml, 'html'),
 		'',
 		'Dimensions:',
 		`- top: ${element.rect.top}px`,
@@ -647,39 +662,39 @@ export function formatElementContext(element: PickedElement): string {
 		return lines.join('\n');
 	}
 
-	lines.push('', 'CSS:', '```css');
+	const css: string[] = [];
 
 	for (const rule of styles.matched) {
-		lines.push(formatCssRule(rule));
+		css.push(formatCssRule(rule));
 	}
 
 	if (styles.inherited.length) {
-		lines.push('', '/* Inherited */');
+		css.push('', '/* Inherited */');
 		for (const rule of styles.inherited) {
-			lines.push(formatCssRule(rule));
+			css.push(formatCssRule(rule));
 		}
 	}
 
 	if (styles.resolved.length) {
-		lines.push('', '/* Resolved values */');
+		css.push('', '/* Resolved values */');
 		for (const declaration of styles.resolved) {
-			lines.push(`${declaration.property}: ${declaration.value}${declaration.fromUserAgent ? ' /*UA*/' : ''};`);
+			css.push(`${declaration.property}: ${declaration.value}${declaration.fromUserAgent ? ' /*UA*/' : ''};`);
 		}
 	}
 
 	if (styles.variables.length) {
-		lines.push('', '/* CSS variables */');
+		css.push('', '/* CSS variables */');
 		for (const variable of styles.variables) {
-			lines.push(`${variable.property}: ${variable.value};`);
+			css.push(`${variable.property}: ${variable.value};`);
 		}
 	}
 
 	if (styles.unreadableStyleSheets) {
 		const count = styles.unreadableStyleSheets;
-		lines.push('', `/* ${count} stylesheet${count === 1 ? '' : 's'} from another origin could not be read */`);
+		css.push('', `/* ${count} stylesheet${count === 1 ? '' : 's'} from another origin could not be read */`);
 	}
 
-	lines.push('```');
+	lines.push('', 'CSS:', ...fenced(css.join('\n'), 'css'));
 	return lines.join('\n');
 }
 

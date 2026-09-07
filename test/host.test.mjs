@@ -46,7 +46,7 @@ globalThis.__vscodeStub = {
 	UIKind: {},
 };
 
-const { formatPickedElement } = await import('./.bundles/view-bundle.mjs');
+const { formatPickedElement, formatConsoleReport } = await import('./.bundles/view-bundle.mjs');
 const { defaultIconUrl, discoverIconUrl, fetchIcon } = await import('./.bundles/favicon-bundle.mjs');
 const { registerTerminalLinks } = await import('./.bundles/terminal-links-bundle.mjs');
 
@@ -74,6 +74,7 @@ const page_html = `<!DOCTYPE html>
 <body><div class="app"><div class="card"><form class="form"><div class="row">
 	<input id="email" class="field-input outlined" type="text" placeholder="mail" style="letter-spacing: 0.2px">
 </div></form></div></div>
+<p id="say&quot;hi&quot;" class="quoted-id">quoted</p>
 <div style="position: absolute; right: 0; top: 200px">
 	<button class="first-of-the-two-buttons">a</button
 	><button class="edge-target-primary-action with-another-long-class-name">b</button>
@@ -115,6 +116,7 @@ const browser = await chromium.launch({ executablePath });
 let element;
 let iconHref;
 let overlay;
+let quotedId;
 try {
 	const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
 	await page.goto(pageUrl);
@@ -128,6 +130,8 @@ try {
 		return tabBrowserPage.describeElement(target, [], url);
 	}, pageUrl);
 	iconHref = await page.evaluate(() => tabBrowserPageIcon.findIconHref());
+	quotedId = await page.evaluate(url =>
+		tabBrowserPage.describeElement(document.querySelector('.quoted-id'), [], url), pageUrl);
 
 	// Hovering the element that sits against the right edge, with the picker running.
 	await page.evaluate(() => {
@@ -254,6 +258,29 @@ check('xpath format still writes a single line',
 	!formatPickedElement(element, 'xpath').includes('\n')
 	&& formatPickedElement(element, 'xpath').includes('@id="email"'),
 	formatPickedElement(element, 'xpath'));
+
+// -- paths and reports that carry page controlled text ----------------------------------------
+
+check('an id that cannot be quoted in an xpath falls back to the positional path',
+	!quotedId.xpath.includes('say"hi"') && /\/p(\[\d+\])?$/.test(quotedId.xpath), quotedId.xpath);
+
+check('the css selector of that element is still usable',
+	quotedId.selector.length > 0 && !quotedId.selector.includes('say"hi"'), quotedId.selector);
+
+const fencedLog = formatConsoleReport('a log line with ``` in it\nand ```` too', 'http://x/');
+check('a log containing a fence cannot end the code block early',
+	fencedLog.split('\n').filter(line => /^`{3,}/.test(line)).every(line => line.length >= 5)
+	&& fencedLog.includes('with ``` in it'), JSON.stringify(fencedLog));
+
+const fencedElement = formatPickedElement({
+	...element,
+	outerHtml: '<div>```</div>',
+	styles: { ...element.styles, variables: [{ property: '--x', value: '`````' }] },
+}, 'context');
+check('page markup and css cannot end their code blocks early',
+	fencedElement.split('\n').filter(line => /^`{3,}html$/.test(line)).every(line => line.length >= 8)
+	&& fencedElement.split('\n').filter(line => /^`{3,}css$/.test(line)).every(line => line.length >= 9),
+	fencedElement.split('\n').filter(line => /^`{3,}/.test(line)).join(' | '));
 
 // -- the picker's overlay ---------------------------------------------------------------------
 
