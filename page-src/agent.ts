@@ -119,7 +119,8 @@ function install(): void {
 
 	function reportTitle(): void {
 		const title = document.title;
-		if (title === reportedTitle) {
+		// An empty title is not a title: the panel names such a tab after the host instead.
+		if (!title || title === reportedTitle) {
 			return;
 		}
 		reportedTitle = title;
@@ -331,11 +332,26 @@ function install(): void {
 
 	// -- startup -----------------------------------------------------------------------------
 
-	send({ kind: 'ready', documentUrl: documentUrlOnRealServer() });
-	// Every instrumented document reports its icon and title to its parent; only the top one
-	// reaches the webview, because a parent frame drops what its children send.
-	reportIcon();
-	reportTitle();
+	/**
+	 * `ready` is what the panel waits on before it picks, reads or drives anything, so it must
+	 * not be sent from where this script runs — the top of `<head>`, where there is no body to
+	 * act on and no `<title>` parsed yet. The rest is in place from the first line either way:
+	 * the console is captured and errors are reported from the moment the script is evaluated.
+	 */
+	function reportReady(): void {
+		send({ kind: 'ready', documentUrl: documentUrlOnRealServer() });
+		// Every instrumented document reports its icon and title to its parent; only the top one
+		// reaches the webview, because a parent frame drops what its children send.
+		reportIcon();
+		reportTitle();
+	}
+
+	if (document.readyState === 'loading') {
+		document.addEventListener('DOMContentLoaded', reportReady, { once: true });
+	} else {
+		reportReady();
+	}
+
 	watchHead();
 	watchNavigation();
 	window.addEventListener('pagehide', () => picker.disable());

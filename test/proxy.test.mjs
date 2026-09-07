@@ -51,7 +51,10 @@ const app = http.createServer((req, res) => {
 	res.writeHead(404); res.end('nope');
 });
 
-const other = http.createServer((_req, res) => {
+/** Another server on the same interface, i.e. what this session's cookies must never reach. */
+const otherRequests = [];
+const other = http.createServer((req, res) => {
+	otherRequests.push({ url: req.url, cookie: req.headers.cookie ?? null });
 	res.writeHead(200, { 'content-type': 'text/html' });
 	res.end('<html><head></head><body>other</body></html>');
 });
@@ -136,6 +139,18 @@ check('a cookie belonging to another proxied site is not forwarded',
 check('only the foreign cookies are dropped',
 	await cookieEcho(`__tb1_other=2; ${sessionPrefix}sid=1`) === 'sid=1',
 	await cookieEcho(`__tb1_other=2; ${sessionPrefix}sid=1`));
+
+// --- a path is a path, never another server ---------------------------------------------------
+// `//host/path` is a valid request target, but resolved against the origin it names a host: a
+// page could ask this session to forward its cookies — the HttpOnly ones included, which it
+// cannot read itself — to any server it likes.
+otherRequests.length = 0;
+const smuggled = await fetch(
+	`${new URL(proxiedRoot).origin}//127.0.0.1:${other.address().port}/steal`,
+	{ headers: { cookie: `${sessionPrefix}sid=1` } });
+check('a request target naming another host stays on the session\'s own server',
+	otherRequests.length === 0 && smuggled.status === 404,
+	`${smuggled.status} ${JSON.stringify(otherRequests)}`);
 
 const script = await fetch(new URL(scriptPath, proxiedRoot));
 const scriptBody = await script.text();

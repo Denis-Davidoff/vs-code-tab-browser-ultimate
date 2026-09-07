@@ -80,7 +80,16 @@ export class McpServer extends Disposable {
 			return;
 		}
 
-		const server = http.createServer((req, res) => this._handle(req, res));
+		const server = http.createServer((req, res) => {
+			// A client that gets no answer waits for one forever, so nothing may escape here.
+			this._handle(req, res).catch(error => {
+				if (!res.headersSent) {
+					respond(res, 500, jsonRpcError(null, -32603, String(error)));
+				} else {
+					res.destroy();
+				}
+			});
+		});
 		// `listen` removes its own one-shot handler on success; without this a later socket
 		// error would be an uncaught exception in the extension host.
 		server.on('error', () => { });
@@ -140,13 +149,21 @@ export class McpServer extends Disposable {
 			return;
 		}
 
-		let message: JsonRpcRequest;
+		let parsed: unknown;
 		try {
-			message = JSON.parse(await readBody(req)) as JsonRpcRequest;
+			parsed = JSON.parse(await readBody(req));
 		} catch (error) {
 			respond(res, 400, jsonRpcError(null, -32700, String(error)));
 			return;
 		}
+
+		// `null` and `[]` parse but are not requests, and a batch is not supported here.
+		if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+			respond(res, 400, jsonRpcError(null, -32600, 'Expected a single JSON-RPC request object.'));
+			return;
+		}
+
+		const message = parsed as JsonRpcRequest;
 
 		// Notifications carry no id and want no answer.
 		if (message.id === undefined || message.id === null) {

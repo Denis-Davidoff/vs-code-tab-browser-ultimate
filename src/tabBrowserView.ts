@@ -336,9 +336,15 @@ export class TabBrowserView extends Disposable {
 		}
 	}
 
-	/** Puts the page's own title on the panel's tab, and the default one back when it has none. */
-	private _showTitle(title: string | undefined): void {
-		const trimmed = title?.replace(/\s+/g, ' ').trim().slice(0, TabBrowserView.maxTitleLength);
+	/**
+	 * Puts the page's own title on the panel's tab, and the default one back when it has none.
+	 * The title arrives from the framed page, which is not this extension's code: it is content,
+	 * of any type and any length, and is treated as such.
+	 */
+	private _showTitle(title: unknown): void {
+		const trimmed = typeof title === 'string'
+			? title.replace(/\s+/g, ' ').trim().slice(0, TabBrowserView.maxTitleLength)
+			: '';
 		try {
 			this._webviewPanel.title = trimmed || TabBrowserView.title;
 		} catch {

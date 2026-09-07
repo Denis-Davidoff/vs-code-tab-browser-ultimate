@@ -122,6 +122,8 @@ const pngBytes = Buffer.from(
 	'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
 	'base64');
 
+const agentScript = await fs.readFile(path.join(projectRoot, 'media/agent.js'), 'utf8');
+
 const page_html = `<!DOCTYPE html>
 <html><head>
 <link rel="apple-touch-icon" sizes="180x180" href="/apple.png">
@@ -169,6 +171,33 @@ const server = http.createServer((req, res) => {
 			<link rel="shortcut icon" href="icon.png?v=2"></head><body></body></html>`);
 		return;
 	}
+	// The agent as the proxy serves it, so the timing of what it reports can be tested for real.
+	if (req.url === '/agent.js') {
+		res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' });
+		res.end(agentScript);
+		return;
+	}
+	// A document whose head is parsed long before its body arrives — the case that decides
+	// whether "ready" means "there is a page to work on".
+	if (req.url === '/late-body') {
+		res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+		res.write(`<!DOCTYPE html><html><head><script>
+			window.__agentEvents = [];
+			window.addEventListener('message', event => {
+				if (event.data && event.data.__tabBrowserAgent) {
+					window.__agentEvents.push({
+						kind: event.data.kind,
+						title: event.data.title,
+						hasBody: !!document.body,
+						hasLateElement: !!document.getElementById('late'),
+					});
+				}
+			});
+		</script><script src="/agent.js"></script>`);
+		setTimeout(() => res.end(
+			'<title>Late Page</title></head><body><div id="late">here</div></body></html>'), 300);
+		return;
+	}
 	res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
 	res.end(page_html);
 });
@@ -188,6 +217,7 @@ let element;
 let iconHref;
 let overlay;
 let quotedId;
+let agentEvents;
 let pageRequests;
 try {
 	const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
@@ -269,6 +299,15 @@ try {
 	await page.mouse.move(target.x + target.width / 2, target.y + target.height / 2);
 	await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 
+	// The whole agent, in a document whose body arrives long after its head.
+	const latePage = await browser.newPage();
+	await latePage.goto(`${new URL(pageUrl).origin}/late-body`);
+	await latePage.waitForFunction(
+		() => window.__agentEvents?.some(event => event.kind === 'ready'), null, { timeout: 5000 })
+		.catch(() => { });
+	agentEvents = await latePage.evaluate(() => window.__agentEvents);
+	await latePage.close();
+
 	overlay = await page.evaluate(() => {
 		const root = document.querySelector('[data-tab-browser="picker"]');
 		const label = root.shadowRoot.lastElementChild;
@@ -288,6 +327,17 @@ try {
 }
 
 // -- what the page reported ------------------------------------------------------------------
+
+// "ready" is what the panel waits on before it reads or drives anything, and the agent runs at
+// the top of <head>: reporting from there would hand an mcp client an empty document.
+const ready = agentEvents.find(event => event.kind === 'ready');
+check('the page reports in only once there is a document to work on',
+	ready?.hasBody === true && ready.hasLateElement === true, JSON.stringify(agentEvents));
+
+check('the title is reported once it has been parsed, never as an empty string',
+	agentEvents.some(event => event.kind === 'title' && event.title === 'Late Page')
+	&& !agentEvents.some(event => event.kind === 'title' && !event.title),
+	JSON.stringify(agentEvents));
 
 check('descriptor names the element with every class',
 	element.descriptor === 'input#email.field-input.outlined', element.descriptor);
@@ -739,6 +789,21 @@ check('an unknown tool is a protocol error', unknown.body?.error?.code === -3260
 const notification = await rpc({ jsonrpc: '2.0', method: 'notifications/initialized' });
 check('a notification is accepted without an answer', notification.status === 202);
 
+// `null` and `[]` are valid json and not requests. Answering them is not politeness: an
+// authorized client that gets nothing back waits for it until it gives up.
+const nullAnswer = await fetch(mcp.url, {
+	method: 'POST',
+	headers: { 'content-type': 'application/json', authorization: `Bearer ${mcpToken}` },
+	body: 'null',
+});
+const nullBody = { status: nullAnswer.status, body: JSON.parse(await nullAnswer.text() || 'null') };
+check('a json body that is not a request is answered rather than dropped',
+	nullBody.status === 400 && nullBody.body?.error?.code === -32600, JSON.stringify(nullBody));
+check('a batch is refused the same way',
+	(await rpc([{ jsonrpc: '2.0', id: 9, method: 'ping' }])).status === 400);
+check('the server still answers afterwards',
+	(await rpc({ jsonrpc: '2.0', id: 10, method: 'ping' })).body?.result !== undefined);
+
 check('a request without the token is refused',
 	(await rpc({ jsonrpc: '2.0', id: 5, method: 'ping' }, { token: null })).status === 401);
 check('a request with the wrong token is refused',
@@ -838,6 +903,20 @@ await connectToCodex(mcp);
 codexToml = await fs.readFile(codexConfig, 'utf8');
 check('connecting again replaces our table instead of adding a second one',
 	codexToml.split('[mcp_servers.tab-browser]').length === 2
+	&& codexToml.includes('[mcp_servers.something_else]'), codexToml);
+
+// A header is a header wherever TOML allows one to be written. Recognising ours only as a bare
+// line used to add a second table with the same name, which no longer parses at all.
+await fs.writeFile(codexConfig,
+	'[mcp_servers.tab-browser]   # ours, from an older window\nurl = "http://127.0.0.1:1/mcp/old"\n\n'
+	+ '# the one we must not swallow\n[mcp_servers.something_else]\ncommand = "node"\n');
+await connectToCodex(mcp);
+codexToml = await fs.readFile(codexConfig, 'utf8');
+check('our table is found even when its header carries a comment',
+	codexToml.split(/\[mcp_servers\.tab-browser\]/).length === 2
+	&& codexToml.includes(mcp.urlWithToken) && !codexToml.includes('mcp/old'), codexToml);
+check('the comment introducing the next table survives',
+	codexToml.includes('# the one we must not swallow')
 	&& codexToml.includes('[mcp_servers.something_else]'), codexToml);
 
 // Neither assistant can be handed text, so the prompt goes on the clipboard: short, but it has

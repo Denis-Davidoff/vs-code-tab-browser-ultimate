@@ -22,6 +22,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { BrowserController } from './browserController';
+import { CodexEntry, codexEntries } from './codexToml';
 import { McpServer } from './mcpServer';
 import { serverName } from './mcpSetup';
 
@@ -323,72 +324,6 @@ function codexEntryState(entry: CodexEntry, url: string, urlWithToken: string): 
 		return 'thisServer';
 	}
 	return sameEndpoint(configured, url) ? 'staleToken' : 'otherServer';
-}
-
-interface CodexEntry {
-	readonly name: string;
-	readonly values: ReadonlyMap<string, string>;
-}
-
-/**
- * The `[mcp_servers.*]` tables of a Codex config, comments taken off.
- *
- * Not a TOML parser: it reads table headers and the plain `key = value` lines inside them,
- * which is what `codex mcp add` and this extension write. Anything more exotic reads as
- * unconfigured, which costs a reconnect — searching the text for the url instead used to
- * accept a url in a comment, and an entry standing right there with `enabled = false`.
- */
-function codexEntries(text: string): CodexEntry[] {
-	const entries: CodexEntry[] = [];
-	let values: Map<string, string> | undefined;
-
-	for (const raw of text.split(/\r?\n/)) {
-		const line = withoutComment(raw).trim();
-		if (!line) {
-			continue;
-		}
-
-		// Any header ends the previous table, so keys never land in the wrong one.
-		if (line.startsWith('[')) {
-			const name = /^\[\s*mcp_servers\s*\.\s*([^\]]+?)\s*\]$/.exec(line)?.[1];
-			values = name === undefined ? undefined : new Map();
-			if (values && name !== undefined) {
-				entries.push({ name: unquote(name), values });
-			}
-			continue;
-		}
-
-		const pair = /^([^=]+?)\s*=\s*(.+)$/.exec(line);
-		if (values && pair) {
-			values.set(unquote(pair[1].trim()).toLowerCase(), unquote(pair[2].trim()));
-		}
-	}
-
-	return entries;
-}
-
-/** A `#` opens a comment unless it stands inside a string — and a url can carry one. */
-function withoutComment(line: string): string {
-	let quote: string | undefined;
-
-	for (let at = 0; at < line.length; at++) {
-		const char = line[at];
-		if (quote) {
-			if (char === quote) {
-				quote = undefined;
-			}
-		} else if (char === '"' || char === '\'') {
-			quote = char;
-		} else if (char === '#') {
-			return line.slice(0, at);
-		}
-	}
-
-	return line;
-}
-
-function unquote(value: string): string {
-	return /^(["'])(.*)\1$/.exec(value)?.[2] ?? value;
 }
 
 /** The same server, whether or not the token is carried as the last segment of the url. */

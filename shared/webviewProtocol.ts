@@ -19,6 +19,15 @@ export type CopyCommand =
 	| 'consoleClaude'
 	| 'consoleCodex';
 
+/**
+ * The entries that ask the page for its console output; every other one picks an element. Said
+ * once, because a new entry that is missing from a list like this reads as its opposite — a
+ * console entry left out of it starts the picker instead of collecting anything.
+ */
+export function isConsoleCommand(command: CopyCommand): boolean {
+	return command.startsWith('console');
+}
+
 export type WebviewToExtensionMessage =
 	| { readonly type: 'openExternal'; readonly url: string }
 	| {

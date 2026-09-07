@@ -7,6 +7,7 @@ import { AgentCommand, AgentEvent, isAgentMessage, packAgentMessage } from '../s
 import {
 	CopyCommand,
 	ExtensionToWebviewMessage,
+	isConsoleCommand,
 	TabBrowserSettings,
 	TabBrowserState,
 	WebviewToExtensionMessage,
@@ -403,7 +404,7 @@ function runCopyCommand(command: CopyCommand): void {
 	setMenuOpen(false);
 	setLastCopyCommand(command);
 
-	const isPick = command !== 'console' && command !== 'consoleClaude';
+	const isPick = !isConsoleCommand(command);
 	if (isPick && pickerActive) {
 		// A second click on the running command turns picking back off.
 		if (command === pickCommand) {

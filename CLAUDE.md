@@ -47,6 +47,9 @@ Two things about that arrangement are easy to get wrong again:
   prefixes the names of the cookies it hands the browser (`__tb<port>_`), drops the ones that
   are not its own from every request it forwards, and restores the real names upstream.
   `page-src/cookies.ts` hides the prefix from `document.cookie`, so page scripts never see it.
+  Which is also why a session forwards to its own server and nowhere else (`targetOf`): a
+  request target is a path, and one beginning with `//` resolves to a *host*, so
+  `//example.com/x` would have handed those cookies to example.com.
 - **The webview is not alone in its window.** The framed page can `postMessage` into it, so
   every message from the extension host carries the panel's token (`TabBrowserSettings.token`,
   read from the webview's own dom, which a cross origin page cannot reach) and the webview drops
@@ -93,7 +96,10 @@ comment and an `enabled = false` entry both used to read as a working configurat
 name appears in both files the project's wins, being the more specific.
 
 `claudeClientState` and `codexClientState` are pure for that reason — they take the file's text,
-so `test/host.test.mjs` covers the cases that only happen to someone else's config.
+so `test/host.test.mjs` covers the cases that only happen to someone else's config. The Codex
+half of it lives in `src/codexToml.ts`, because the check and the setup have to agree on what a
+table is: a header the setup fails to recognise (`[mcp_servers.tab-browser] # ours`) is one it
+writes a second time, and a file with the same table twice does not parse at all.
 
 Recent pages live in `workspaceState`: a dev url belongs to the project, not to the user.
 
@@ -102,10 +108,14 @@ Recent pages live in `workspaceState`: a dev url belongs to the project, not to 
 A split button: its main half runs the entry used last (remembered in the webview state), the
 chevron opens the menu. `CopyCommand` names the entries: six element ones — the report, the
 XPath and the selector, each either to the clipboard or to Claude Code — and `console` /
-`consoleClaude`. What the element entries do is a table (`elementActions` in
+`consoleClaude` / `consoleCodex`. What the element entries do is a table (`elementActions` in
 `src/tabBrowserView.ts`), not a switch; every entry is also a command, `tabBrowser.copyElement`
 and friends. A console request carries the entry it came from, because the answer arrives
 asynchronously from the page and has to know where to go.
+
+Which of the two kinds an entry is, is `isConsoleCommand` in `shared/webviewProtocol.ts` and
+nowhere else: a console entry left out of such a list does not merely stop working, it reads as
+an element entry and opens the picker instead.
 
 Picking an element produces a `PickedElement`:
 
@@ -183,12 +193,15 @@ drive the panel. The token is never handed to the page.
 
 The panel's url and whether it can be inspected are known only in the webview — in-page
 navigation never reaches the host — so the webview reports `didChangeState` and the view keeps
-it. `browser_navigate` waits on `whenReady()` rather than answering into a loading page.
+it. `browser_navigate` waits on `whenReady()` rather than answering into a loading page — and
+"ready" is `DOMContentLoaded` in the page, not the moment the agent runs: it is injected at the
+top of `<head>`, so reporting from there would answer a client into a document with no body.
 
-Both connect dialogs also offer the configuration as a *prompt* (`connectPrompt`): the address,
-what is behind it, the one command that adds it, and a check to run afterwards. It goes on the
-clipboard, since neither assistant can be handed text from outside. The paragraph about picking
-the server up differs per client and is not decoration — both read their servers at startup but
+Both connect dialogs also offer the configuration as a *prompt* (`connectPrompt`): the one
+command that adds it, how it is picked up, and a check to run afterwards — short, because the
+assistant only needs the command and a reason to try it. It goes on the clipboard, since neither
+assistant can be handed text from outside. The line about picking the server up differs per
+client and is not decoration — both read their servers at startup but
 start at different moments, so a prompt without it has the assistant report the tools missing
 right after adding them correctly.
 

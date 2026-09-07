@@ -23,6 +23,7 @@
 import { execFile } from 'node:child_process';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { codexEntries } from './codexToml';
 import { McpServer } from './mcpServer';
 
 /** How the server is named in every client configuration. */
@@ -272,17 +273,20 @@ async function writeCodexProjectConfig(folder: vscode.Uri, url: string): Promise
 		// No file yet.
 	}
 
+	// Read rather than searched for the header line: `[mcp_servers.tab-browser] # ours` is the
+	// same table, and missing it would define it a second time, which is not valid TOML at all.
+	const ours = codexEntries(existing).find(entry => entry.name === serverName);
+
 	let updated: string;
-	const at = existing.split('\n').findIndex(line => line.trim() === header);
-	if (at === -1) {
+	if (!ours) {
 		updated = existing.trim() ? `${existing.replace(/\s*$/, '')}\n\n${table}` : table;
 	} else {
 		const lines = existing.split('\n');
-		let end = at + 1;
-		while (end < lines.length && !lines[end].trimStart().startsWith('[')) {
-			end++;
-		}
-		updated = [...lines.slice(0, at), table.replace(/\n$/, ''), ...lines.slice(end)].join('\n');
+		updated = [
+			...lines.slice(0, ours.firstLine),
+			table.replace(/\n$/, ''),
+			...lines.slice(ours.endLine),
+		].join('\n');
 	}
 
 	await vscode.workspace.fs.writeFile(file, Buffer.from(updated, 'utf8'));

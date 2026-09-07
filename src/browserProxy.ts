@@ -196,7 +196,7 @@ export class BrowserProxy extends Disposable {
 			return;
 		}
 
-		const target = new URL(req.url ?? '/', session.origin);
+		const target = targetOf(session, req.url);
 		const proxyRes = await this._forward(session, req, target);
 
 		const headers = { ...proxyRes.headers };
@@ -381,7 +381,7 @@ export class BrowserProxy extends Disposable {
 	}
 
 	private _handleUpgrade(session: ProxySession, req: http.IncomingMessage, socket: net.Socket, head: Buffer): void {
-		const target = new URL(req.url ?? '/', session.origin);
+		const target = targetOf(session, req.url);
 		const headers = this._rewriteRequestHeaders(session, req.headers, target);
 		delete headers['accept-encoding'];
 		const transport = target.protocol === 'https:' ? https : http;
@@ -471,6 +471,37 @@ export function isLocalUrl(url: URL): boolean {
 
 function originOf(url: URL): string {
 	return `${url.protocol}//${url.host}`;
+}
+
+/**
+ * Where a request received by a session goes: its own server, always.
+ *
+ * `req.url` is a request target, and one starting with `//` is a path like any other — but
+ * resolved against the origin it reads as a host, so `//example.com/x` would be forwarded to
+ * example.com, carrying this session's cookies (`HttpOnly` ones included) and its `Host`. The
+ * path is therefore put on the session's origin rather than resolved against it.
+ */
+function targetOf(session: ProxySession, rawUrl: string | undefined): URL {
+	const raw = rawUrl ?? '/';
+	const target = new URL(session.origin);
+	// A proxy may also be addressed in absolute form; only the path of it is ours to serve.
+	const path = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw)
+		? pathAndQueryOf(raw, session.origin)
+		: raw.startsWith('/') ? raw : `/${raw}`;
+
+	const query = path.indexOf('?');
+	target.pathname = query === -1 ? path : path.slice(0, query);
+	target.search = query === -1 ? '' : path.slice(query);
+	return target;
+}
+
+function pathAndQueryOf(raw: string, base: string): string {
+	try {
+		const url = new URL(raw, base);
+		return url.pathname + url.search;
+	} catch {
+		return '/';
+	}
 }
 
 function joinOrigin(origin: string, pathAndQuery: string): string {
