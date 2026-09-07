@@ -1,17 +1,31 @@
 {
 	"name": "tab-browser-ultimate",
-	"displayName": "Tab AI Browser🏆",
+	"displayName": "AI Browser Tab🏆",
 	"description": "Integrated browser tab with AI capabilities, Claude and Codex integration",
 	"version": "0.2.1",
 	"icon": "media/icon.png",
 	"publisher": "DenysDavydov",
   	"private": true,
 	"license": "MIT",
+	"pricing": "Free",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate.git"
+	},
+	"bugs": {
+		"url": "https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/issues"
+	},
+	"homepage": "https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate#readme",
+	"galleryBanner": {
+		"color": "#1f1f1f",
+		"theme": "dark"
+	},
 	"engines": {
 		"vscode": "^1.85.0"
 	},
 	"main": "./out/extension.js",
 	"categories": [
+		"AI",
 		"Other"
 	],
 	"keywords": [
@@ -277,7 +291,10 @@
 		"pretest": "npm run build && node esbuild.tests.mjs",
 		"test": "node test/proxy.test.mjs && node test/host.test.mjs",
 		"vscode:prepublish": "npm run typecheck && node esbuild.mjs --production",
-		"package": "vsce package --no-dependencies"
+		"package": "vsce package --no-dependencies -o tab-browser-ultimate.vsix",
+		"publish": "vsce publish --packagePath tab-browser-ultimate.vsix",
+		"publish:ovsx": "ovsx publish tab-browser-ultimate.vsix",
+		"publish:all": "npm run package && npm run publish && npm run publish:ovsx"
 	},
 	"devDependencies": {
 		"@types/node": "^20.14.0",
@@ -286,6 +303,7 @@
 		"@vscode/codicons": "^0.0.36",
 		"@vscode/vsce": "^3.2.1",
 		"esbuild": "^0.24.0",
+		"ovsx": "^0.10.5",
 		"playwright-core": "^1.63.0",
 		"typescript": "^5.6.0"
 	}

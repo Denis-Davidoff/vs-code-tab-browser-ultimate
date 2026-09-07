@@ -12,3 +12,8 @@ test/**
 **/*.map
 .gitignore
 .vscode/**
+CLAUDE.md
+PUBLISHING.md
+package-lock.json
+*.vsix
+.github/**
