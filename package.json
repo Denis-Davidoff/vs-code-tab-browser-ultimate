@@ -1,8 +1,8 @@
 {
 	"name": "tab-browser-ultimate",
-	"displayName": "AI Browser Tab🏆",
+	"displayName": "AI Browser🏆 Claude + Codex",
 	"description": "Integrated browser tab with AI capabilities, Claude and Codex integration",
-	"version": "0.2.1",
+	"version": "0.3.0",
 	"icon": "media/icon.png",
 	"publisher": "DenysDavydov",
   	"private": true,
@@ -79,7 +79,8 @@
 			{
 				"command": "tabBrowser.show",
 				"title": "Show",
-				"category": "Tab Browser Ultimate"
+				"category": "Tab Browser Ultimate",
+				"icon": "$(globe)"
 			},
 			{
 				"command": "tabBrowser.connectMcpToClaudeCode",
@@ -150,8 +151,74 @@
 				"command": "tabBrowser.addConsoleToCodex",
 				"title": "Add Console Output to Codex",
 				"category": "Tab Browser Ultimate"
+			},
+			{
+				"command": "tabBrowser.checkMcp",
+				"title": "Check MCP Connection",
+				"category": "Tab Browser Ultimate",
+				"icon": "$(pulse)"
+			},
+			{
+				"command": "tabBrowser.copyMcpUrl",
+				"title": "Copy MCP Server URL",
+				"category": "Tab Browser Ultimate",
+				"icon": "$(link)"
+			},
+			{
+				"command": "tabBrowser.openSettings",
+				"title": "Open Settings",
+				"category": "Tab Browser Ultimate",
+				"icon": "$(gear)"
+			},
+			{
+				"command": "tabBrowser.refreshView",
+				"title": "Refresh",
+				"category": "Tab Browser Ultimate",
+				"icon": "$(refresh)"
 			}
 		],
+		"viewsContainers": {
+			"activitybar": [
+				{
+					"id": "tabBrowser",
+					"title": "AI Browser Tab",
+					"icon": "media/sidebar.svg"
+				}
+			]
+		},
+		"views": {
+			"tabBrowser": [
+				{
+					"id": "tabBrowser.actions",
+					"name": "Browser"
+				}
+			]
+		},
+		"menus": {
+			"view/title": [
+				{
+					"command": "tabBrowser.show",
+					"when": "view == tabBrowser.actions",
+					"group": "navigation@1"
+				},
+				{
+					"command": "tabBrowser.refreshView",
+					"when": "view == tabBrowser.actions",
+					"group": "navigation@2"
+				},
+				{
+					"command": "tabBrowser.openSettings",
+					"when": "view == tabBrowser.actions",
+					"group": "navigation@3"
+				}
+			],
+			"commandPalette": [
+				{
+					"command": "tabBrowser.refreshView",
+					"when": "false"
+				}
+			]
+		},
 		"mcpServerDefinitionProviders": [
 			{
 				"id": "tabBrowserMcp",

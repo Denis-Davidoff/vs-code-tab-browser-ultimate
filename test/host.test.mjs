@@ -35,6 +35,9 @@ let workspaceFolders;
 let clipboard = '';
 /** The terminal link provider, captured when the module under test registers it. */
 let terminalLinkProvider;
+/** The sidebar's tree provider and the view id it was registered for. */
+let treeProvider;
+let treeViewId;
 
 // The extension host side of the copy menu, with `vscode` stubbed out.
 globalThis.__vscodeStub = {
@@ -67,7 +70,14 @@ globalThis.__vscodeStub = {
 			return { dispose() { } };
 		},
 	},
-	extensions: { getExtension: id => (installedExtensions.has(id) ? { id } : undefined) },
+	extensions: {
+		getExtension: id => (installedExtensions.has(id) ? { id } : undefined),
+		onDidChange: () => ({ dispose() { } }),
+	},
+	ThemeIcon: class { constructor(id, color) { this.id = id; this.color = color; } },
+	ThemeColor: class { constructor(id) { this.id = id; } },
+	TreeItem: class { constructor(label, collapsibleState) { Object.assign(this, { label, collapsibleState }); } },
+	TreeItemCollapsibleState: { None: 0, Collapsed: 1, Expanded: 2 },
 	window: {
 		// The connect command asks what to do; the test answers with `dialogAnswer`.
 		showInformationMessage: (message, ...rest) => {
@@ -80,6 +90,11 @@ globalThis.__vscodeStub = {
 			return { dispose() { } };
 		},
 		registerWebviewPanelSerializer: () => ({ dispose() { } }),
+		registerTreeDataProvider: (id, provider) => {
+			treeViewId = id;
+			treeProvider = provider;
+			return { dispose() { } };
+		},
 		// The proposed api is on the object but throws for an extension without the proposal.
 		registerExternalUriOpener: () => {
 			throw new Error("CANNOT use API proposal: externalUriOpener");
@@ -835,7 +850,9 @@ const { activate } = await import('./.bundles/extension-bundle.mjs');
 const context = {
 	subscriptions: [],
 	extensionUri: { fsPath: projectRoot, scheme: 'file' },
+	extension: { id: 'test.tab-browser-ultimate', packageJSON: { version: '0.0.0-test' } },
 	globalState: { get: () => undefined, update: async () => { } },
+	workspaceState: { get: (_key, fallback) => fallback, update: async () => { } },
 };
 
 let activationError;
@@ -850,9 +867,40 @@ check('activation survives a proposed api that is present but refuses to be call
 
 check('every contributed command is registered, mcp disabled or not',
 	['tabBrowser.show', 'tabBrowser.copyElement', 'tabBrowser.addElementToClaude',
-		'tabBrowser.addElementToCodex', 'tabBrowser.copyConsole', 'tabBrowser.connectMcpToClaudeCode']
+		'tabBrowser.addElementToCodex', 'tabBrowser.copyConsole', 'tabBrowser.connectMcpToClaudeCode',
+		'tabBrowser.checkMcp', 'tabBrowser.copyMcpUrl', 'tabBrowser.openSettings',
+		'tabBrowser.refreshView']
 		.every(id => registeredCommands.has(id)),
 	[...registeredCommands.keys()].join(', '));
+
+// The sidebar is the one place where a command id is written twice; the second copy is only
+// exercised when someone clicks the row, so it is checked here instead.
+const manifest = JSON.parse(await fs.readFile(path.join(projectRoot, 'package.json'), 'utf8'));
+check('the sidebar is registered for the view the manifest declares',
+	treeViewId === manifest.contributes.views.tabBrowser[0].id,
+	`${treeViewId} vs ${manifest.contributes.views.tabBrowser[0].id}`);
+
+const sidebarRows = [];
+const collectRows = async parent => {
+	for (const row of await treeProvider.getChildren(parent)) {
+		sidebarRows.push(row);
+		await collectRows(row);
+	}
+};
+await collectRows(undefined);
+
+check('every sidebar row runs a command that exists',
+	sidebarRows.length > 4
+	&& sidebarRows.filter(row => row.command).every(row => registeredCommands.has(row.command)),
+	sidebarRows.map(row => `${row.label}${row.command ? ` -> ${row.command}` : ''}`).join(', '));
+
+check('every sidebar row renders',
+	sidebarRows.every(row => treeProvider.getTreeItem(row).label === row.label));
+
+check('the manifest puts every title bar button on this view',
+	manifest.contributes.menus['view/title'].every(entry =>
+		entry.when === `view == ${treeViewId}` && registeredCommands.has(entry.command)),
+	JSON.stringify(manifest.contributes.menus['view/title']));
 
 check('the connect command explains itself instead of throwing when mcp is off',
 	await registeredCommands.get('tabBrowser.connectMcpToClaudeCode')().then(() => true, () => false)

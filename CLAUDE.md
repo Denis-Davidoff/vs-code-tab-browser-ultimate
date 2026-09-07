@@ -10,7 +10,7 @@ Forked from the Simple Browser extension that ships with VS Code and renamed thr
 
 | Path | Runs in | What it is |
 | --- | --- | --- |
-| `src/` | extension host (node) | activation, the webview panel, the local proxy, clipboard, tab icon, mcp |
+| `src/` | extension host (node) | activation, the webview panel, the local proxy, clipboard, tab icon, mcp, the sidebar |
 | `preview-src/` | webview | toolbar, address bar, copy menu, hint bar; relays messages |
 | `page-src/` | the previewed page | injected agent: picker, console capture, element report |
 | `shared/` | all three | message contracts and the shapes they carry |
@@ -56,6 +56,33 @@ Two things about that arrangement are easy to get wrong again:
 Reports built from page content — markup, css, console output — are fenced with a fence longer
 than the longest run of backticks inside them (`fenced()` in `src/tabBrowserView.ts`), or the
 page could end the block and have the rest read as markdown.
+
+## The sidebar
+
+`src/sidebar.ts` is the view in the activity bar (`tabBrowser.actions`, in its own view
+container). A tree and not a webview, and every row carries the id of a command the extension
+already registers — the view is a second way to reach them, never a second implementation, so
+the only thing written twice is the command id. `test/host.test.mjs` walks the rows after
+activation and fails on one naming a command that does not exist, since clicking is the only
+other way to find that out.
+
+The tree is rebuilt whole on every change: it is a couple of dozen rows, and the things it
+reports on — the panel (`TabBrowserManager.onDidChange`, which now also forwards the panel's
+own `didChangeState`), the configuration, the installed assistants — change rarely. What it
+cannot watch are the client configuration files, hence the refresh button.
+
+The mcp server starts asynchronously and may not start at all, so `activate` keeps an `McpState`
+(`starting` / `running` / `disabled` / `failed`, in `src/mcpCheck.ts`) and hands the view a
+getter plus a `refresh()` — the same state the connect commands use to explain themselves.
+
+**Check connection** (`checkMcp`) exists because a running server proves nothing about the
+clients: each of the three is configured elsewhere, and any of them can name another window's
+port. So it does both halves — one real `tools/list` over the loopback interface with the token,
+and a read of `.mcp.json`, `.codex/config.toml` and `~/.codex/config.toml` to see which name
+*this* endpoint (matched by url, and for Codex by the url with the token in it) — and reports
+them in one dialog, with the connect command for whichever client is not pointing here.
+
+Recent pages live in `workspaceState`: a dev url belongs to the project, not to the user.
 
 ## The copy menu
 

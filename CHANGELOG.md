@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0
+
+- A view in the activity bar: the page the panel has open, the copy menu's entries, the mcp
+  server's state with the two connect commands, and the pages this project has visited.
+- **Check MCP Connection**: one real request to the server, plus a read of the three client
+  configurations, to see which of them point at this window rather than another one.
+- **Copy MCP Server URL**, for clients this extension cannot configure itself.
+
 ## 0.2.1 — 2026-09-07
 
 First release on the Visual Studio Marketplace and Open VSX.

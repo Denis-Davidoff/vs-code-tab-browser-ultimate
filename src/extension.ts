@@ -12,6 +12,8 @@ import { BrowserController } from './browserController';
 import { generateUuid } from './uuid';
 import { McpServer } from './mcpServer';
 import { connectToClaudeCode, connectToCodex, registerWithVsCode } from './mcpSetup';
+import { checkMcp, McpState } from './mcpCheck';
+import { registerSidebar } from './sidebar';
 import { CopyCommand } from '../shared/webviewProtocol';
 
 declare class URL {
@@ -35,6 +37,10 @@ const addConsoleToClaudeCommand = 'tabBrowser.addConsoleToClaude';
 const addConsoleToCodexCommand = 'tabBrowser.addConsoleToCodex';
 const connectMcpCommand = 'tabBrowser.connectMcpToClaudeCode';
 const connectMcpCodexCommand = 'tabBrowser.connectMcpToCodex';
+const checkMcpCommand = 'tabBrowser.checkMcp';
+const copyMcpUrlCommand = 'tabBrowser.copyMcpUrl';
+const openSettingsCommand = 'tabBrowser.openSettings';
+const refreshViewCommand = 'tabBrowser.refreshView';
 const mcpTokenKey = 'mcp.token';
 
 const enabledHosts = new Set<string>([
@@ -63,22 +69,42 @@ export function activate(context: vscode.ExtensionContext) {
 
 	context.subscriptions.push(registerTerminalLinks(url => manager.show(url)));
 
+	const browser = new BrowserController(manager);
+
+	// The server starts asynchronously, so the sidebar is handed a getter and told to redraw
+	// once the state settles — which is also the one place that knows *why* it is not running.
+	let mcpState: McpState = { kind: 'starting' };
+	const sidebar = registerSidebar(context, manager, () => mcpState);
+	context.subscriptions.push(sidebar);
+
+	const mcp = startMcpServer(context, browser).then(state => {
+		mcpState = state;
+		sidebar.refresh();
+		return state;
+	});
+
 	// Registered whatever the server does: a palette entry that throws "command not found"
 	// is worse than one that explains why there is nothing to connect to.
-	const mcp = startMcpServer(context, manager);
 	const withServer = (connect: (server: McpServer) => Promise<void>) => async () => {
-		const server = await mcp;
-		if (!server) {
-			vscode.window.showWarningMessage(vscode.l10n.t(
-				"The browser's mcp server is not running. Check `tabBrowser.mcp.enabled`."));
+		const state = await mcp;
+		if (state.kind !== 'running') {
+			vscode.window.showWarningMessage(state.kind === 'failed'
+				? vscode.l10n.t("The browser's mcp server could not start: {0}", state.error)
+				: vscode.l10n.t("The browser's mcp server is not running. Check `tabBrowser.mcp.enabled`."));
 			return;
 		}
-		await connect(server);
+		await connect(state.server);
 	};
 
 	context.subscriptions.push(
 		vscode.commands.registerCommand(connectMcpCommand, withServer(connectToClaudeCode)),
-		vscode.commands.registerCommand(connectMcpCodexCommand, withServer(connectToCodex)));
+		vscode.commands.registerCommand(connectMcpCodexCommand, withServer(connectToCodex)),
+		vscode.commands.registerCommand(checkMcpCommand, async () => checkMcp(await mcp, browser)),
+		vscode.commands.registerCommand(copyMcpUrlCommand, async () => copyMcpUrl(await mcp)),
+		vscode.commands.registerCommand(openSettingsCommand, () => vscode.commands.executeCommand(
+			'workbench.action.openSettings', `@ext:${context.extension.id}`)),
+		// The client configurations the view reports on are files nothing here watches.
+		vscode.commands.registerCommand(refreshViewCommand, () => sidebar.refresh()));
 
 	// The reports handed to an assistant outlive their conversation by a few hours at most.
 	cleanUpReports();
@@ -172,28 +198,68 @@ export function activate(context: vscode.ExtensionContext) {
  */
 async function startMcpServer(
 	context: vscode.ExtensionContext,
-	manager: TabBrowserManager,
-): Promise<McpServer | undefined> {
+	browser: BrowserController,
+): Promise<McpState> {
 	if (!vscode.workspace.getConfiguration('tabBrowser').get<boolean>('mcp.enabled', true)) {
-		return undefined;
+		return { kind: 'disabled' };
 	}
 
 	const folder = vscode.workspace.workspaceFolders?.[0]?.uri.toString() ?? 'no-folder';
-	const server = new McpServer(new BrowserController(manager), await workspaceToken(context, folder), folder);
+	const server = new McpServer(
+		browser,
+		await workspaceToken(context, folder),
+		folder,
+		context.extension.packageJSON?.version);
 	context.subscriptions.push(server);
 
 	try {
 		await server.start(
 			vscode.workspace.getConfiguration('tabBrowser').get<number>('mcp.port', 43110));
 	} catch (error) {
-		vscode.window.showWarningMessage(vscode.l10n.t(
-			"The browser's mcp server could not start: {0}",
-			error instanceof Error ? error.message : String(error)));
-		return undefined;
+		const message = error instanceof Error ? error.message : String(error);
+		vscode.window.showWarningMessage(
+			vscode.l10n.t("The browser's mcp server could not start: {0}", message));
+		return { kind: 'failed', error: message };
 	}
 
 	context.subscriptions.push(registerWithVsCode(server));
-	return server;
+	return { kind: 'running', server };
+}
+
+/**
+ * For a client this extension cannot configure itself. Two forms, because a client that cannot
+ * send a header needs the token in the path — and one that can should not have it there, where
+ * it ends up in logs and in shell history.
+ */
+async function copyMcpUrl(state: McpState): Promise<void> {
+	if (state.kind !== 'running' || !state.server.url || !state.server.urlWithToken) {
+		vscode.window.showWarningMessage(vscode.l10n.t("The mcp server is not running."));
+		return;
+	}
+
+	const withHeader = {
+		label: vscode.l10n.t("Url, with the token in a header"),
+		detail: `${state.server.url} — Authorization: Bearer …`,
+		text: state.server.url,
+	};
+	const withToken = {
+		label: vscode.l10n.t("Url with the token in it"),
+		detail: vscode.l10n.t("For clients that cannot send a header, such as Codex"),
+		text: state.server.urlWithToken,
+	};
+
+	const picked = await vscode.window.showQuickPick([withHeader, withToken], {
+		title: vscode.l10n.t("Copy the mcp server url"),
+	});
+	if (!picked) {
+		return;
+	}
+
+	const text = picked === withHeader
+		? `${state.server.url}\nAuthorization: Bearer ${state.server.token}`
+		: picked.text;
+	await vscode.env.clipboard.writeText(text);
+	vscode.window.showInformationMessage(vscode.l10n.t("Copied. It is only reachable from this machine, and only with this window's token."));
 }
 
 /**

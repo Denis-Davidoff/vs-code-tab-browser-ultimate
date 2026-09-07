@@ -7,6 +7,23 @@ markup, box and css, or everything the page has logged.
 It started as a standalone copy of the Simple Browser extension that ships with VS Code,
 repackaged so it can be built and installed on its own.
 
+## The sidebar
+
+The icon in the activity bar opens a view with everything the extension can do, so none of it
+has to be remembered as a command:
+
+- **Browser** — the page the panel has open and whether it can be read, a field to open another
+  one, and a reload.
+- **This page** — pick an element or take the console output, to the clipboard or straight to
+  whichever assistant is installed. The same entries as the panel's own copy menu.
+- **MCP server** — whether it is running and on which port, the two connect commands, and
+  **Check connection** (below).
+- **Recent** — the pages this project's panel has been on, so one is a click away after the
+  panel is closed.
+
+Its title bar has the same three buttons as the view: open a page, refresh, and this
+extension's settings.
+
 ## The copy menu
 
 The toolbar's split button runs the entry you used last; the chevron next to it opens the rest.
@@ -151,6 +168,12 @@ its path instead.
 
 **VS Code's own chat** needs no configuration: the extension registers the server through the
 editor's MCP api (VS Code 1.101 and later; older editors just do without).
+
+**Check connection** in the sidebar answers the question the three configurations above cannot:
+it sends one real request through the loopback interface with the token, and reads all three
+configurations to see which of them name *this* server. A client configured for another window's
+port is the usual surprise — ports are handed out in the order windows open — and it shows up
+here as "configured, but for another endpoint".
 
 The server listens on `127.0.0.1` only, requires the token — as an `Authorization` header or as
 the last segment of the url, one per workspace, so a configuration written for one project

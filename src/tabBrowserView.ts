@@ -60,6 +60,8 @@ export class TabBrowserView extends Disposable {
 	/** What the webview says it is showing; the host cannot work any of it out on its own. */
 	private _state: { url: string; instrumented: boolean; ready: boolean };
 	private readonly _onDidChangeState = this._register(new vscode.EventEmitter<void>());
+	/** Fired when the panel navigates or the page reports in; the sidebar shows what it says. */
+	public readonly onDidChangeState = this._onDidChangeState.event;
 
 	/** Invalidates icon requests still in flight when the panel navigates away. */
 	private _iconToken = 0;

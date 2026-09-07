@@ -10,6 +10,10 @@ export class TabBrowserManager {
 
 	private _activeView?: TabBrowserView;
 
+	private readonly _onDidChange = new vscode.EventEmitter<void>();
+	/** Fired when the panel opens, closes, or reports another page. */
+	public readonly onDidChange = this._onDidChange.event;
+
 	constructor(
 		private readonly _extensionUri: vscode.Uri,
 		private readonly _proxy: BrowserProxy,
@@ -18,6 +22,7 @@ export class TabBrowserManager {
 	public dispose(): void {
 		this._activeView?.dispose();
 		this._activeView = undefined;
+		this._onDidChange.dispose();
 	}
 
 	public get activeView(): TabBrowserView | undefined {
@@ -33,6 +38,7 @@ export class TabBrowserManager {
 			this._registerWebviewListeners(view);
 			this._activeView = view;
 		}
+		this._onDidChange.fire();
 	}
 
 	public restore(panel: vscode.WebviewPanel, state: any): void {
@@ -40,6 +46,7 @@ export class TabBrowserManager {
 		const view = TabBrowserView.restore(this._extensionUri, this._proxy, url, panel);
 		this._registerWebviewListeners(view);
 		this._activeView ??= view;
+		this._onDidChange.fire();
 	}
 
 	private _registerWebviewListeners(view: TabBrowserView): void {
@@ -47,6 +54,8 @@ export class TabBrowserManager {
 			if (this._activeView === view) {
 				this._activeView = undefined;
 			}
+			this._onDidChange.fire();
 		});
+		view.onDidChangeState(() => this._onDidChange.fire());
 	}
 }

@@ -50,6 +50,8 @@ export class McpServer extends Disposable {
 		private readonly _token: string,
 		/** The workspace this server belongs to, so a client can tell the windows apart. */
 		private readonly _workspace = '',
+		/** Reported in `initialize`; the manifest's version, passed in rather than looked up. */
+		private readonly _version = '0.0.0',
 	) {
 		super();
 		this._tools = buildTools(browser);
@@ -164,7 +166,7 @@ export class McpServer extends Disposable {
 				return jsonRpcResult(id, {
 					protocolVersion: typeof asked === 'string' ? asked : protocolVersion,
 					capabilities: { tools: { listChanged: false } },
-					serverInfo: { name: 'tab-browser-ultimate', version: extensionVersion() },
+					serverInfo: { name: 'tab-browser-ultimate', version: this._version },
 					instructions: 'Tools for the browser panel open inside the user\'s editor'
 						+ (this._workspace ? ` (workspace: ${this._workspace})` : '') + '. '
 						+ 'The user can see this page: describe what you do with it.',
@@ -393,8 +395,4 @@ function stringOrUndefined(value: unknown): string | undefined {
 
 function numberOrUndefined(value: unknown): number | undefined {
 	return typeof value === 'number' && isFinite(value) ? value : undefined;
-}
-
-function extensionVersion(): string {
-	return vscode.extensions.getExtension('local.tab-browser-ultimate')?.packageJSON?.version ?? '0.0.0';
 }

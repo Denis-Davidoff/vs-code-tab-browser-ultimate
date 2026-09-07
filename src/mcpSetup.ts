@@ -25,7 +25,8 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { McpServer } from './mcpServer';
 
-const serverName = 'tab-browser';
+/** How the server is named in every client configuration. */
+export const serverName = 'tab-browser';
 
 /** The slice of the 1.101 api this needs, so the extension still builds against older types. */
 interface McpApi {
