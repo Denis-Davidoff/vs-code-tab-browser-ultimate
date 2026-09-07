@@ -1,0 +1,10 @@
+src/**
+preview-src/**
+page-src/**
+shared/**
+tsconfig*.json
+esbuild.mjs
+**/*.tsbuildinfo
+**/*.map
+.gitignore
+.vscode/**

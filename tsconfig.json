@@ -1,0 +1,24 @@
+{
+	"compilerOptions": {
+		"module": "commonjs",
+		"target": "ES2022",
+		"lib": [
+			"ES2022",
+			"DOM",
+			"DOM.Iterable"
+		],
+		"strict": true,
+		"noImplicitOverride": true,
+		"noUnusedLocals": true,
+		"sourceMap": true,
+		"rootDir": ".",
+		"outDir": "./out",
+		"skipLibCheck": true
+	},
+	"include": [
+		"src/**/*",
+		"preview-src/**/*",
+		"page-src/**/*",
+		"shared/**/*"
+	]
+}

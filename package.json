@@ -1,0 +1,171 @@
+{
+	"name": "tab-browser-ultimate",
+	"displayName": "%displayName%",
+	"description": "%description%",
+	"version": "10.0.0",
+	"icon": "media/icon.png",
+	"publisher": "local",
+	"license": "MIT",
+	"engines": {
+		"vscode": "^1.85.0"
+	},
+	"main": "./out/extension.js",
+	"categories": [
+		"Other"
+	],
+	"keywords": [
+		"browser",
+		"preview",
+		"webview",
+		"ai",
+		"assistant",
+		"devtools",
+		"localhost",
+		"inspect element"
+	],
+	"extensionKind": [
+		"workspace",
+		"ui"
+	],
+	"activationEvents": [
+		"onCommand:tabBrowser.api.open",
+		"onOpenExternalUri:http",
+		"onOpenExternalUri:https",
+		"onWebviewPanel:tabBrowser.view"
+	],
+	"capabilities": {
+		"virtualWorkspaces": true,
+		"untrustedWorkspaces": {
+			"supported": true
+		}
+	},
+	"contributes": {
+		"commands": [
+			{
+				"command": "tabBrowser.show",
+				"title": "Show",
+				"category": "Tab Browser Ultimate"
+			},
+			{
+				"command": "tabBrowser.copyElement",
+				"title": "Copy Element",
+				"category": "Tab Browser Ultimate"
+			},
+			{
+				"command": "tabBrowser.copyElementXPath",
+				"title": "Copy Element XPath",
+				"category": "Tab Browser Ultimate"
+			},
+			{
+				"command": "tabBrowser.copyConsole",
+				"title": "Copy Console Output",
+				"category": "Tab Browser Ultimate"
+			}
+		],
+		"configuration": [
+			{
+				"title": "Tab Browser Ultimate",
+				"properties": {
+					"tabBrowser.focusLockIndicator.enabled": {
+						"type": "boolean",
+						"default": true,
+						"title": "Focus Lock Indicator Enabled",
+						"description": "%configuration.focusLockIndicator.enabled.description%"
+					},
+					"tabBrowser.showPageIcon": {
+						"type": "boolean",
+						"default": true,
+						"description": "Show the icon of the loaded page on the panel's tab. The icon is downloaded from the page's own server; turn this off to keep the browser panel from making that request."
+					},
+					"tabBrowser.copyAsFile": {
+						"type": "boolean",
+						"default": true,
+						"markdownDescription": "Put multi-line copies (the element report and console output) on the clipboard as a temporary file next to their text, so pasting them into a chat attaches a document. Falls back to plain text on platforms without clipboard file support, in remote workspaces, and for one-line copies such as \"Copy element XPath\"."
+					},
+					"tabBrowser.notifyOnCopy": {
+						"type": "boolean",
+						"default": true,
+						"description": "Show a notification after the copy menu has written to the clipboard. When disabled only a status bar message is shown."
+					},
+					"tabBrowser.picker.copyFormat": {
+						"type": "string",
+						"enum": [
+							"context",
+							"css",
+							"xpath",
+							"both",
+							"json"
+						],
+						"enumDescriptions": [
+							"Full element context: descriptor, url, html path, outer html, dimensions and the css that applies",
+							"CSS selector, e.g. #root > main > ul > li:nth-of-type(3)",
+							"XPath, e.g. /html/body/div/main/ul/li[3]",
+							"CSS selector and XPath on two lines",
+							"Full JSON payload with selector, xpath, tag, attributes, dimensions and styles"
+						],
+						"default": "context",
+						"description": "What \"Copy element\" writes to the clipboard. \"Copy element XPath\" always writes an XPath."
+					},
+					"tabBrowser.picker.keepActiveAfterPick": {
+						"type": "boolean",
+						"default": false,
+						"description": "Keep element picking enabled after an element has been picked."
+					},
+					"tabBrowser.picker.preferAttributes": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						},
+						"default": [
+							"data-testid",
+							"data-test-id",
+							"data-test",
+							"data-cy",
+							"data-qa"
+						],
+						"description": "Attributes that are preferred over structural selectors when building an element path."
+					},
+					"tabBrowser.proxy.mode": {
+						"type": "string",
+						"enum": [
+							"localhost",
+							"always",
+							"never"
+						],
+						"enumDescriptions": [
+							"Route localhost urls through the local instrumenting proxy; other urls are only proxied once the copy menu needs them",
+							"Always route http/https urls through the local instrumenting proxy",
+							"Never use the proxy. The copy menu will not be available"
+						],
+						"default": "localhost",
+						"markdownDescription": "The copy menu requires the page to be served through a local proxy that injects a small script, because a cross-origin `iframe` can be neither inspected nor read from the webview."
+					},
+					"tabBrowser.proxy.ignoreCertificateErrors": {
+						"type": "boolean",
+						"default": true,
+						"description": "Ignore TLS certificate errors when the proxy talks to an https target (useful for local dev servers with self-signed certificates)."
+					}
+				}
+			}
+		]
+	},
+	"scripts": {
+		"build": "node esbuild.mjs",
+		"watch": "node esbuild.mjs --watch",
+		"typecheck": "tsc --noEmit",
+		"pretest": "npm run build && node esbuild.tests.mjs",
+		"test": "node test/proxy.test.mjs && node test/host.test.mjs",
+		"vscode:prepublish": "npm run typecheck && node esbuild.mjs --production",
+		"package": "vsce package --no-dependencies"
+	},
+	"devDependencies": {
+		"@types/node": "^20.14.0",
+		"@types/vscode": "^1.85.0",
+		"@types/vscode-webview": "^1.57.5",
+		"@vscode/codicons": "^0.0.36",
+		"@vscode/vsce": "^3.2.1",
+		"esbuild": "^0.24.0",
+		"playwright-core": "^1.63.0",
+		"typescript": "^5.6.0"
+	}
+}

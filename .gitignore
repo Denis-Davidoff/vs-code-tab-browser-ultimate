@@ -1,0 +1,9 @@
+node_modules/
+out/
+*.vsix
+
+# Built webview assets
+media/index.js
+media/index.js.map
+media/codicon.css
+test/.bundles/

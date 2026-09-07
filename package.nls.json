@@ -1,0 +1,5 @@
+{
+	"displayName": "Tab Browser Ultimate",
+	"description": "A browser tab in the editor that hands the page to your assistant: pick an element and copy it with its markup, box and css, or copy everything the page logged.",
+	"configuration.focusLockIndicator.enabled.description": "Enable/disable the floating indicator that shows when focused in the browser tab."
+}
