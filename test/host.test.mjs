@@ -25,6 +25,8 @@ const installedExtensions = new Set();
 const contributedCommands = new Set();
 /** Commands the code under test executed, newest last. */
 const executed = [];
+/** Commands the extension registered during activation. */
+const registeredCommands = new Map();
 /** Messages the code under test showed, and the button the test picks in them. */
 const dialogs = [];
 let dialogAnswer = 'Write .mcp.json';
@@ -51,6 +53,7 @@ globalThis.__vscodeStub = {
 		getConfiguration: () => ({ get: (key, fallback) => (key in settings ? settings[key] : fallback) }),
 		get workspaceFolders() { return workspaceFolders; },
 		openTextDocument: async uri => ({ uri }),
+		onDidChangeConfiguration: () => ({ dispose() { } }),
 		fs: {
 			readFile: async uri => new Uint8Array(await fs.readFile(uri.fsPath)),
 			writeFile: async (uri, bytes) => fs.writeFile(uri.fsPath, Buffer.from(bytes)),
@@ -59,6 +62,10 @@ globalThis.__vscodeStub = {
 	commands: {
 		executeCommand: (...args) => { executed.push(args); },
 		getCommands: async () => [...contributedCommands],
+		registerCommand: (id, handler) => {
+			registeredCommands.set(id, handler);
+			return { dispose() { } };
+		},
 	},
 	extensions: { getExtension: id => (installedExtensions.has(id) ? { id } : undefined) },
 	window: {
@@ -72,6 +79,12 @@ globalThis.__vscodeStub = {
 			terminalLinkProvider = provider;
 			return { dispose() { } };
 		},
+		registerWebviewPanelSerializer: () => ({ dispose() { } }),
+		// The proposed api is on the object but throws for an extension without the proposal.
+		registerExternalUriOpener: () => {
+			throw new Error("CANNOT use API proposal: externalUriOpener");
+		},
+		createWebviewPanel: () => { throw new Error('not used by this test'); },
 		showTextDocument: async () => { },
 		showWarningMessage: (...args) => { dialogs.push(['warning', args[0]]); },
 		showErrorMessage: (...args) => { dialogs.push(['error', args[0]]); },
@@ -751,6 +764,42 @@ check('the cli command carries the url and the token',
 mcp.dispose();
 check('the port is released on dispose',
 	await fetch(mcp.url ?? 'http://127.0.0.1:43310/mcp').then(() => false, () => true));
+
+// -- activation ------------------------------------------------------------------------------
+
+// Everything below hangs off activation: when it throws, the panel, the copy menu and the mcp
+// server all go with it. It has taken the extension down three times now — once per optional
+// integration — so it is checked here rather than only in the editor.
+settings['mcp.enabled'] = false;
+const { activate } = await import('./.bundles/extension-bundle.mjs');
+const context = {
+	subscriptions: [],
+	extensionUri: { fsPath: projectRoot, scheme: 'file' },
+	globalState: { get: () => undefined, update: async () => { } },
+};
+
+let activationError;
+try {
+	await activate(context);
+} catch (error) {
+	activationError = error;
+}
+
+check('activation survives a proposed api that is present but refuses to be called',
+	!activationError, String(activationError));
+
+check('every contributed command is registered, mcp disabled or not',
+	['tabBrowser.show', 'tabBrowser.copyElement', 'tabBrowser.addElementToClaude',
+		'tabBrowser.addElementToCodex', 'tabBrowser.copyConsole', 'tabBrowser.connectMcpToClaudeCode']
+		.every(id => registeredCommands.has(id)),
+	[...registeredCommands.keys()].join(', '));
+
+check('the connect command explains itself instead of throwing when mcp is off',
+	await registeredCommands.get('tabBrowser.connectMcpToClaudeCode')().then(() => true, () => false)
+	&& dialogs.some(([kind, message]) => kind === 'warning' && /mcp server is not running/.test(message)),
+	JSON.stringify(dialogs.slice(-2)));
+
+delete settings['mcp.enabled'];
 
 await browser.close();
 server.close();

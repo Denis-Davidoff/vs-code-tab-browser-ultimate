@@ -128,30 +128,36 @@ export function activate(context: vscode.ExtensionContext) {
 	registerCopyCommand(addConsoleToClaudeCommand, 'consoleClaude');
 	registerCopyCommand(addConsoleToCodexCommand, 'consoleCodex');
 
-	// `registerExternalUriOpener` is a proposed API that is only granted to extensions
-	// shipped with the editor. Guard the call so activation still succeeds without it.
-	if (typeof vscode.window.registerExternalUriOpener === 'function') {
-		context.subscriptions.push(vscode.window.registerExternalUriOpener(openerId, {
-			canOpenExternalUri(uri: vscode.Uri) {
-				// We have to replace the IPv6 hosts with IPv4 because URL can't handle IPv6.
-				const originalUri = new URL(uri.toString(true));
-				if (enabledHosts.has(originalUri.hostname)) {
-					return isWeb()
-						? vscode.ExternalUriOpenerPriority.Default
-						: vscode.ExternalUriOpenerPriority.Option;
-				}
+	// `registerExternalUriOpener` is a proposed api, granted only to extensions shipped with the
+	// editor. It is on the api object either way and *throws* when called without the proposal,
+	// so the call itself has to be guarded and not merely looked up: an error here would take
+	// the whole activation down with it, and with it the panel, the mcp server and the rest.
+	try {
+		if (typeof vscode.window.registerExternalUriOpener === 'function') {
+			context.subscriptions.push(vscode.window.registerExternalUriOpener(openerId, {
+				canOpenExternalUri(uri: vscode.Uri) {
+					// We have to replace the IPv6 hosts with IPv4 because URL can't handle IPv6.
+					const originalUri = new URL(uri.toString(true));
+					if (enabledHosts.has(originalUri.hostname)) {
+						return isWeb()
+							? vscode.ExternalUriOpenerPriority.Default
+							: vscode.ExternalUriOpenerPriority.Option;
+					}
 
-				return vscode.ExternalUriOpenerPriority.None;
-			},
-			async openExternalUri(resolveUri: vscode.Uri) {
-				return manager.show(resolveUri, {
-					viewColumn: vscode.window.activeTextEditor ? vscode.ViewColumn.Beside : vscode.ViewColumn.Active
-				});
-			}
-		}, {
-			schemes: ['http', 'https'],
-			label: vscode.l10n.t("Open in Tab Browser Ultimate"),
-		}));
+					return vscode.ExternalUriOpenerPriority.None;
+				},
+				async openExternalUri(resolveUri: vscode.Uri) {
+					return manager.show(resolveUri, {
+						viewColumn: vscode.window.activeTextEditor ? vscode.ViewColumn.Beside : vscode.ViewColumn.Active
+					});
+				}
+			}, {
+				schemes: ['http', 'https'],
+				label: vscode.l10n.t("Open in Tab Browser Ultimate"),
+			}));
+		}
+	} catch {
+		// Then a forwarded localhost link does not offer this browser, and nothing else changes.
 	}
 }
 
