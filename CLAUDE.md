@@ -185,6 +185,13 @@ The panel's url and whether it can be inspected are known only in the webview �
 navigation never reaches the host — so the webview reports `didChangeState` and the view keeps
 it. `browser_navigate` waits on `whenReady()` rather than answering into a loading page.
 
+Both connect dialogs also offer the configuration as a *prompt* (`connectPrompt`): the address,
+what is behind it, the one command that adds it, and a check to run afterwards. It goes on the
+clipboard, since neither assistant can be handed text from outside. The paragraph about picking
+the server up differs per client and is not decoration — both read their servers at startup but
+start at different moments, so a prompt without it has the assistant report the tools missing
+right after adding them correctly.
+
 Three clients, configured in three different places (`src/mcpSetup.ts`):
 
 - **VS Code's chat** through `lm.registerMcpServerDefinitionProvider` (1.101+, reached through a

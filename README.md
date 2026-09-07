@@ -1,8 +1,38 @@
 # Tab Browser Ultimate
 
-A browser tab inside the editor: the page renders in an iframe in a webview, and a copy menu
-in its toolbar hands what is on screen to an assistant — the element you point at, with its
-markup, box and css, or everything the page has logged.
+**A browser tab inside your editor that your AI agent can see, read and drive — and that turns
+anything on the page into a prompt.**
+
+Front-end work is a loop: look at the page, find the element, describe it to the assistant,
+check what changed. This extension closes that loop without leaving the editor.
+
+- 🌐 **A real browser in a tab.** Your dev server renders in an editor tab next to the code, with
+  an address bar, history and the page's own favicon — not a screenshot, not a headless copy.
+- 🎯 **Point at an element, get everything about it.** Click anything in the page and get a full
+  report: what it is, where it sits in the html, its outer markup, its box, and the css rules
+  that actually apply to it, read out of the page's own CSSOM.
+- 📍 **Or just the address of the element.** A CSS selector or an XPath, built to survive a
+  rebuild — framework-generated class names and ids are filtered out, and `data-testid` and
+  friends win over structure.
+- ✨ **One click turns it into a prompt.** Send the element, its selector or its path straight
+  into Claude Code or Codex, as an attachment their agent reads — so "make this button match
+  the one above" is a sentence, not a paragraph of description.
+- 🐛 **Everything the page logged.** The console since load, uncaught errors included, to the
+  clipboard or to the assistant — the fastest way to hand over a bug you can see.
+- 🔌 **An MCP server comes up on its own.** No install, no separate process: the extension starts
+  a local server and the connect commands configure Claude Code, Codex or VS Code's own chat
+  for you.
+- 🤖 **Then the agent works the page itself.** It can list what is on screen and what is
+  clickable, read the html or the text, inspect one element, click, fill fields, wait for
+  something to render, navigate — and read the console afterwards to see what it did.
+- 👀 **On the page you are already looking at.** Same session, same cookies, same dev server, same
+  logged-in state. The agent is not opening a fresh browser somewhere else; it sees exactly
+  your screen, and you watch it work.
+- 🔄 **Both directions, all the time.** Pick things by hand when you know what you want, or ask
+  the agent to go find it. Nothing has to be re-described from one to the other.
+- 🔒 **Local by construction.** The server listens on the loopback interface only, with a token
+  per workspace, and the page is never told it. Dev servers on different ports no longer share
+  each other's cookies.
 
 It started as a standalone copy of the Simple Browser extension that ships with VS Code,
 repackaged so it can be built and installed on its own.
@@ -21,8 +51,38 @@ has to be remembered as a command:
 - **Recent** — the pages this project's panel has been on, so one is a click away after the
   panel is closed.
 
-Its title bar has the same three buttons as the view: open a page, refresh, and this
+Its title bar carries three buttons of its own: open a page, refresh the view, and this
 extension's settings.
+
+## Connecting an assistant
+
+You need the official extension for the assistant you use — **Claude Code**
+(`Anthropic.claude-code`) or **OpenAI Codex** (`openai.chatgpt`). Without it the copy menu
+shows no entries for that assistant. The mcp server below is the exception: it is configuration
+files that the assistant reads, so its cli alone is enough.
+
+1. **Open a page** in the panel — **Tab Browser Ultimate: Show**, or `Cmd`/`Ctrl` + click a
+   localhost url a dev server printed in the terminal.
+2. **Run the connect command** — from the browser icon in the activity bar, or from the command
+   palette: **Connect Claude Code to This Browser (MCP)** / **Connect Codex to This Browser
+   (MCP)**.
+3. **Pick how the server gets configured.** Any one of these does the job:
+   - **Copy connection prompt** — paste it into the assistant and let it add the server and
+     check it for you. It carries this window's token, so it goes to that assistant and nowhere
+     else.
+   - **Write .mcp.json** (Claude Code) / **Write .codex/config.toml** (Codex) — the entry stays
+     with the project. The token is written into the file, so ignore it in git if the project
+     is shared.
+   - **Add to Codex globally** — `codex mcp add` writes `~/.codex/config.toml`, under a name
+     ending in the project's, so a second project does not overwrite the first.
+   - **Copy CLI command** — run it yourself, and the token stays out of the repository.
+4. **Let the assistant pick it up.** Both read their mcp servers when they start, at different
+   moments: restart Claude Code and run `/mcp`, or start a new Codex conversation.
+5. **Confirm it** with **Check connection** in the sidebar. It says which client actually points
+   at *this* window, which is the part that goes wrong.
+
+VS Code's own chat needs none of this — the extension registers the server through the editor's
+own api (1.101 and later).
 
 ## The copy menu
 
@@ -147,9 +207,10 @@ read and drive the page in the panel instead of being handed reports about it. T
 Everything happens in the page you are looking at — same session, same cookies, same dev server.
 
 **Claude Code**: run **Tab Browser Ultimate: Connect Claude Code to This Browser (MCP)** from the
-command palette. It offers to write `.mcp.json` in the project, or to copy the equivalent
+command palette. It offers to write `.mcp.json` in the project, to copy the equivalent
 `claude mcp add --transport http …` line if you would rather keep the token out of the
-repository. Check it afterwards with `/mcp` in Claude Code.
+repository, or to copy a prompt that hands the whole thing to Claude Code — the same command
+written for it to run, with the check that proves it worked. Check it afterwards with `/mcp`.
 
 **Codex**: run **Tab Browser Ultimate: Connect Codex to This Browser (MCP)**, which offers two
 places to put the server:
@@ -161,6 +222,9 @@ places to put the server:
   around the servers already in it. There the entry is named after the project
   (`tab-browser-<project>`), so connecting from a second project adds its own rather than
   replacing the first.
+
+A fourth option copies a prompt instead: the same `codex mcp add` line written for Codex to run
+itself, with the check that proves it worked.
 
 Codex reads its servers when a conversation starts, so start a new one afterwards. Its config can
 only *name* an environment variable to read a bearer token from, so this url carries the token in

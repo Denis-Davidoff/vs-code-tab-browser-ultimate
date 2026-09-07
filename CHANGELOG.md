@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.4
+
+- Both connect dialogs can copy a **connection prompt**: the server's address, the command that
+  adds it and a check to run afterwards, written for the assistant to act on.
+- README: a short "Connecting an assistant" section with the routes side by side.
+
 ## 0.3.0
 
 - A view in the activity bar: the page the panel has open, the copy menu's entries, the mcp

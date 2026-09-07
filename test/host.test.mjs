@@ -835,6 +835,25 @@ check('connecting again replaces our table instead of adding a second one',
 	codexToml.split('[mcp_servers.tab-browser]').length === 2
 	&& codexToml.includes('[mcp_servers.something_else]'), codexToml);
 
+// Neither assistant can be handed text, so the prompt goes on the clipboard: it has to carry
+// the address, the command that adds the server, and the check that proves it arrived.
+dialogAnswer = 'Copy connection prompt';
+clipboard = '';
+await connectToCodex(mcp);
+check('the Codex prompt carries the address, the command and the check',
+	clipboard.includes(mcp.url) && clipboard.includes(`codex mcp add tab-browser-other-project`)
+	&& clipboard.includes(mcp.urlWithToken) && clipboard.includes('browser_state')
+	// Codex reads its servers when a conversation starts; a prompt that skipped this would
+	// have it report the tools missing right after adding them correctly.
+	&& /new one/.test(clipboard), clipboard);
+
+clipboard = '';
+await connectToClaudeCode(mcp);
+check('the Claude Code prompt carries its own command and how it picks the server up',
+	clipboard.includes(mcp.url) && clipboard.includes(`Bearer ${mcpToken}`)
+	&& clipboard.includes('claude mcp add') && clipboard.includes('/mcp')
+	&& clipboard.includes('browser_state'), clipboard);
+
 workspaceFolders = [{ uri: { scheme: 'file', fsPath: path.dirname(configFile) } }];
 
 mcp.dispose();

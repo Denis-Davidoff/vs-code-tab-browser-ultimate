@@ -75,16 +75,26 @@ export async function connectToClaudeCode(server: McpServer): Promise<void> {
 	const folder = vscode.workspace.workspaceFolders?.[0];
 	const write = vscode.l10n.t("Write .mcp.json");
 	const copy = vscode.l10n.t("Copy CLI command");
+	const prompt = vscode.l10n.t("Copy connection prompt");
 
 	const choice = await vscode.window.showInformationMessage(
 		vscode.l10n.t("Connect Claude Code to the browser panel?"),
 		{
 			modal: true,
 			detail: vscode.l10n.t(
-				"The server is at {0}. \".mcp.json\" is read by everyone who opens this project, so the token would be committed with it unless the file is ignored; the cli command keeps it in your own Claude Code settings.",
+				"The server is at {0}. \".mcp.json\" is read by everyone who opens this project, so the token would be committed with it unless the file is ignored; the cli command keeps it in your own Claude Code settings. The prompt is the same command written for Claude Code to run itself, with a check that it worked.",
 				server.url),
 		},
-		...(folder ? [write, copy] : [copy]));
+		...(folder ? [write, copy, prompt] : [copy, prompt]));
+
+	if (choice === prompt) {
+		await copyConnectPrompt(
+			connectPrompt(server.url, serverName, cli, vscode.l10n.t(
+				"Claude Code reads its mcp servers when it starts, so restart it afterwards and run /mcp to see that \"{0}\" is listed.",
+				serverName)),
+			'Claude Code');
+		return;
+	}
 
 	if (choice === copy) {
 		await vscode.env.clipboard.writeText(cli);
@@ -124,6 +134,38 @@ export async function connectToClaudeCode(server: McpServer): Promise<void> {
 	if (picked === open) {
 		await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(file));
 	}
+}
+
+/**
+ * A prompt for the assistant itself: where the server is, what is behind it, the one command
+ * that adds it, and how to prove it worked. Handed over on the clipboard because neither
+ * assistant can be given text from outside — see `openClaudeWithPrompt` in assistants.ts for
+ * the one exception, which only applies to a conversation this extension opens itself.
+ *
+ * `pickUp` differs per client: both read their servers at startup, but they start at
+ * different moments, and a prompt that skipped this would have the assistant report the tools
+ * missing right after adding them correctly.
+ */
+function connectPrompt(url: string, name: string, cli: string, pickUp: string): string {
+	return [
+		vscode.l10n.t("Connect to the \"{0}\" mcp server, then check that the connection works.", name),
+		'',
+		vscode.l10n.t("The server is at {0}. It is the browser panel open in my editor: my project's page is loaded in it, and the server's tools let you read and drive that page — the same page I am looking at. It listens on the loopback interface only, and the token in the command below is what authenticates you.", url),
+		'',
+		vscode.l10n.t("Add it by running this in the project folder:"),
+		cli,
+		'',
+		pickUp,
+		'',
+		vscode.l10n.t("Then check the connection: call browser_state, which answers with the url the panel has open. If it does, say so and stop there. The other tools are browser_navigate, browser_snapshot, browser_inspect_element, browser_selected_element, browser_html, browser_text, browser_console, browser_click, browser_fill and browser_wait_for."),
+	].join('\n');
+}
+
+async function copyConnectPrompt(prompt: string, assistant: string): Promise<void> {
+	await vscode.env.clipboard.writeText(prompt);
+	vscode.window.showInformationMessage(vscode.l10n.t(
+		"Copied. Paste it into {0} — it carries this window's token, so send it to {0} and to nothing else.",
+		assistant));
 }
 
 /**
@@ -167,16 +209,25 @@ export async function connectToCodex(server: McpServer): Promise<void> {
 	const project = vscode.l10n.t("Write .codex/config.toml");
 	const global = vscode.l10n.t("Add to Codex globally");
 	const copy = vscode.l10n.t("Copy CLI command");
+	const prompt = vscode.l10n.t("Copy connection prompt");
 
 	const choice = await vscode.window.showInformationMessage(
 		vscode.l10n.t("Connect Codex to the browser panel?"),
 		{
 			modal: true,
 			detail: vscode.l10n.t(
-				"The server is at {0}; the token is in the url because Codex can only read one from an environment variable.\n\n\".codex/config.toml\" keeps the entry with this project, and Codex reads it once the repository is trusted. Adding it globally puts \"{1}\" in ~/.codex/config.toml instead, where it applies everywhere.",
+				"The server is at {0}; the token is in the url because Codex can only read one from an environment variable.\n\n\".codex/config.toml\" keeps the entry with this project, and Codex reads it once the repository is trusted. Adding it globally puts \"{1}\" in ~/.codex/config.toml instead, where it applies everywhere. The prompt is the same command written for Codex to run itself, with a check that it worked.",
 				server.url ?? '', globalName),
 		},
-		...(folder ? [project, global, copy] : [global, copy]));
+		...(folder ? [project, global, copy, prompt] : [global, copy, prompt]));
+
+	if (choice === prompt) {
+		await copyConnectPrompt(
+			connectPrompt(server.url ?? '', globalName, cli, vscode.l10n.t(
+				"You read your mcp servers when a conversation starts, so this conversation will not have them: once it is added, tell me to start a new one and check there.")),
+			'Codex');
+		return;
+	}
 
 	if (choice === copy) {
 		await vscode.env.clipboard.writeText(cli);
