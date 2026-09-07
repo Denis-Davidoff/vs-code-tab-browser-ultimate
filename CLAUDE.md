@@ -10,7 +10,7 @@ Forked from the Simple Browser extension that ships with VS Code and renamed thr
 
 | Path | Runs in | What it is |
 | --- | --- | --- |
-| `src/` | extension host (node) | activation, the webview panel, the local proxy, clipboard, tab icon |
+| `src/` | extension host (node) | activation, the webview panel, the local proxy, clipboard, tab icon, mcp |
 | `preview-src/` | webview | toolbar, address bar, copy menu, hint bar; relays messages |
 | `page-src/` | the previewed page | injected agent: picker, console capture, element report |
 | `shared/` | all three | message contracts and the shapes they carry |
@@ -113,6 +113,34 @@ Both command ids are implementation details of those extensions, not contracts: 
 checks the extension *and* the command, and every failure falls back to the clipboard with a
 notification. The copy menu is built per panel from `isInstalled()`, so entries for an assistant
 that is not there never appear — and the webview drops a remembered entry that no longer exists.
+
+## The mcp server
+
+`src/mcpServer.ts` speaks Streamable HTTP directly — the protocol needed is a handful of
+JSON-RPC methods over one POST endpoint, and an sdk with its own http stack would be more bundle
+than this file. Stateless: no session id, no server push, `GET` answers 405.
+
+It talks to `src/browserController.ts`, never to the panel, so the transport stays free of
+webview details and "no panel open" / "page not instrumented" are answered in one place. A tool
+call becomes a `PageRequest` (`shared/protocol.ts`) that travels host → webview → page and comes
+back by `requestId` (`runPageRequest` in `src/tabBrowserView.ts`, which times out rather than
+hanging and rejects everything pending when the panel closes). `page-src/pageRequests.ts` runs
+it in the page's own world, so a snapshot sees the dom the framework actually rendered.
+
+Security, all three of which matter together: loopback only, a bearer token kept in
+`globalState` (never handed to the page, which is why the token can also survive restarts), and
+a refusal of any request carrying an `Origin` header — a page cannot read a cross-origin answer,
+but the side effect of the request alone would drive the panel.
+
+Two clients, configured in different places: VS Code's chat through
+`lm.registerMcpServerDefinitionProvider` (1.101+, reached through a cast in `src/mcpSetup.ts` so
+`engines.vscode` can stay at 1.85), and Claude Code through `.mcp.json` or `claude mcp add`,
+which the **Connect Claude Code to This Browser** command writes or copies.
+
+Known edges: selectors, not snapshot-scoped element refs, so a selector can go stale between
+calls; clicks are synthetic dom events, which some things (file pickers, drag) will not accept;
+one window wins the preferred port, and a `.mcp.json` written from another window points
+elsewhere.
 
 ## Terminal links
 

@@ -10,7 +10,13 @@ import * as assistants from './assistants';
 import { defaultIconUrl, discoverIconUrl, fetchIcon } from './favicon';
 import { Disposable } from './dispose';
 import { generateUuid } from './uuid';
-import { ConsoleEntry, CssRule, defaultPreferredAttributes, PickedElement } from '../shared/protocol';
+import {
+	ConsoleEntry,
+	CssRule,
+	defaultPreferredAttributes,
+	PageRequest,
+	PickedElement,
+} from '../shared/protocol';
 import {
 	CopyCommand,
 	ExtensionToWebviewMessage,
@@ -43,6 +49,15 @@ export class TabBrowserView extends Disposable {
 
 	/** Proves to the webview that a message came from here and not from the page it frames. */
 	private readonly _token = generateUuid();
+
+	private _nextPageRequestId = 1;
+	private readonly _pageRequests = new Map<number, {
+		readonly resolve: (value: unknown) => void;
+		readonly reject: (error: Error) => void;
+		readonly timer: ReturnType<typeof setTimeout>;
+	}>();
+	private _lastPick: PickedElement | undefined;
+	private _displayUrl: string;
 
 	/** Invalidates icon requests still in flight when the panel navigates away. */
 	private _iconToken = 0;
@@ -82,6 +97,7 @@ export class TabBrowserView extends Disposable {
 	) {
 		super();
 
+		this._displayUrl = url;
 		this._webviewPanel = this._register(webviewPanel);
 		this._webviewPanel.webview.options = TabBrowserView.getWebviewOptions(_extensionUri);
 
@@ -101,8 +117,24 @@ export class TabBrowserView extends Disposable {
 					break;
 
 				case 'copyElement':
+					this._lastPick = message.element;
 					this._copyElement(message.element, message.command);
 					break;
+
+				case 'didRunPageRequest': {
+					const pending = this._pageRequests.get(message.requestId);
+					if (!pending) {
+						break;
+					}
+					this._pageRequests.delete(message.requestId);
+					clearTimeout(pending.timer);
+					if (message.error) {
+						pending.reject(new Error(message.error));
+					} else {
+						pending.resolve(message.value);
+					}
+					break;
+				}
 
 				case 'copyConsole':
 					this._copyConsole(message.entries, message.documentUrl, message.dropped, message.command);
@@ -137,13 +169,46 @@ export class TabBrowserView extends Disposable {
 	}
 
 	public override dispose(): void {
+		for (const pending of this._pageRequests.values()) {
+			clearTimeout(pending.timer);
+			pending.reject(new Error('The browser panel was closed.'));
+		}
+		this._pageRequests.clear();
 		this._onDidDispose.fire();
 		super.dispose();
 	}
 
 	public show(url: string, options?: ShowOptions): void {
+		this._displayUrl = url;
 		this._webviewPanel.webview.html = this._getHtml(url);
 		this._webviewPanel.reveal(options?.viewColumn, options?.preserveFocus);
+	}
+
+	/**
+	 * Asks the page something on behalf of an mcp client. Rejects rather than hanging when the
+	 * page cannot answer — it may not be instrumented, or may have navigated away mid-request.
+	 */
+	public runPageRequest(request: PageRequest, timeout = 20000): Promise<unknown> {
+		const requestId = this._nextPageRequestId++;
+		this._post({ type: 'runPageRequest', requestId, request });
+
+		return new Promise((resolve, reject) => {
+			const timer = setTimeout(() => {
+				this._pageRequests.delete(requestId);
+				reject(new Error('The page did not answer in time.'));
+			}, timeout);
+
+			this._pageRequests.set(requestId, { resolve, reject, timer });
+		});
+	}
+
+	/** The element the user picked last, so an assistant can be pointed at "this one". */
+	public get lastPick(): PickedElement | undefined {
+		return this._lastPick;
+	}
+
+	public get url(): string {
+		return this._displayUrl;
 	}
 
 	/** Runs one of the copy menu's commands from outside the webview. */
@@ -179,6 +244,7 @@ export class TabBrowserView extends Disposable {
 					: vscode.l10n.t("Only http and https pages can be inspected.")
 				: undefined;
 			this._post({ type: 'didResolveUrl', requestId, loadUrl: displayUrl, displayUrl, instrumented: false, error });
+			this._displayUrl = displayUrl;
 			if (!error) {
 				this._resetIcon(displayUrl, false);
 			}
@@ -188,6 +254,7 @@ export class TabBrowserView extends Disposable {
 		try {
 			const loadUrl = await this._proxy.getProxiedUrl(displayUrl);
 			this._post({ type: 'didResolveUrl', requestId, loadUrl, displayUrl, instrumented: true });
+			this._displayUrl = displayUrl;
 			this._resetIcon(displayUrl, true);
 		} catch (error) {
 			this._post({

@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate",
 	"displayName": "%displayName%",
 	"description": "%description%",
-	"version": "0.1.5",
+	"version": "0.2.0",
 	"icon": "media/icon.png",
 	"publisher": "local",
 	"license": "MIT",
@@ -54,6 +54,11 @@
 			{
 				"command": "tabBrowser.show",
 				"title": "Show",
+				"category": "Tab Browser Ultimate"
+			},
+			{
+				"command": "tabBrowser.connectMcpToClaudeCode",
+				"title": "Connect Claude Code to This Browser (MCP)",
 				"category": "Tab Browser Ultimate"
 			},
 			{
@@ -117,6 +122,12 @@
 				"category": "Tab Browser Ultimate"
 			}
 		],
+		"mcpServerDefinitionProviders": [
+			{
+				"id": "tabBrowserMcp",
+				"label": "Tab Browser Ultimate"
+			}
+		],
 		"configuration": [
 			{
 				"title": "Tab Browser Ultimate",
@@ -154,6 +165,16 @@
 						],
 						"default": "localhost",
 						"markdownDescription": "Which urls in the terminal `Cmd`/`Ctrl` + click opens in this browser panel instead of an external browser."
+					},
+					"tabBrowser.mcp.enabled": {
+						"type": "boolean",
+						"default": true,
+						"markdownDescription": "Run a local mcp server that lets an assistant read and drive the browser panel. It listens on the loopback interface only and requires a token, which the **Connect Claude Code to This Browser** command hands over. VS Code's own chat is told about it automatically."
+					},
+					"tabBrowser.mcp.port": {
+						"type": "number",
+						"default": 43110,
+						"markdownDescription": "Port for the mcp server. A fixed port keeps a Claude Code configuration valid across restarts; when it is taken — by another window, for instance — the next free one is used."
 					},
 					"tabBrowser.showPageIcon": {
 						"type": "boolean",

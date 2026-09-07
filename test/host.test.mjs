@@ -66,6 +66,7 @@ const { formatPickedElement, formatConsoleReport } = await import('./.bundles/vi
 const { defaultIconUrl, discoverIconUrl, fetchIcon } = await import('./.bundles/favicon-bundle.mjs');
 const { registerTerminalLinks } = await import('./.bundles/terminal-links-bundle.mjs');
 const assistants = await import('./.bundles/assistants-bundle.mjs');
+const { McpServer } = await import('./.bundles/mcp-bundle.mjs');
 
 /** A 1x1 png, the smallest thing that has to be recognised as an image. */
 const pngBytes = Buffer.from(
@@ -135,10 +136,12 @@ let element;
 let iconHref;
 let overlay;
 let quotedId;
+let pageRequests;
 try {
 	const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
 	await page.goto(pageUrl);
-	for (const bundle of ['page-bundle.js', 'page-icon-bundle.js', 'picker-bundle.js']) {
+	for (const bundle of ['page-bundle.js', 'page-icon-bundle.js', 'picker-bundle.js',
+		'page-requests-bundle.js']) {
 		await page.addScriptTag({
 			content: await fs.readFile(path.join(projectRoot, 'test/.bundles', bundle), 'utf8'),
 		});
@@ -148,6 +151,48 @@ try {
 		return tabBrowserPage.describeElement(target, [], url);
 	}, pageUrl);
 	iconHref = await page.evaluate(() => tabBrowserPageIcon.findIconHref());
+
+	// What an mcp client asks the page for, run in the page.
+	pageRequests = await page.evaluate(async url => {
+		const run = request => tabBrowserRequests.handlePageRequest(request, url);
+		const results = {};
+
+		results.snapshot = await run({ type: 'snapshot' });
+
+		// A field a framework would watch: filling it must raise the events typing would.
+		const events = [];
+		const field = document.getElementById('email');
+		for (const type of ['input', 'change']) {
+			field.addEventListener(type, () => events.push(type));
+		}
+		results.fill = await run({ type: 'fill', selector: '#email', value: 'a@b.c' });
+		results.fillValue = field.value;
+		results.fillEvents = events;
+
+		const button = document.querySelector('.edge-target-primary-action');
+		let clicks = 0;
+		button.addEventListener('click', () => clicks++);
+		results.click = await run({ type: 'click', selector: '.edge-target-primary-action' });
+		results.clicks = clicks;
+
+		results.text = await run({ type: 'text', selector: '.quoted-id' });
+		results.html = await run({ type: 'html', selector: '#email' });
+		results.inspect = await run({ type: 'inspect', selector: '#email' });
+
+		setTimeout(() => {
+			const late = document.createElement('div');
+			late.className = 'rendered-late';
+			document.body.appendChild(late);
+		}, 250);
+		results.waitFor = await run({ type: 'waitFor', selector: '.rendered-late', timeout: 3000 });
+
+		// Most requests fail by throwing, `waitFor` by rejecting; the agent handles both.
+		results.missing = await Promise.resolve()
+			.then(() => run({ type: 'click', selector: '#nope' }))
+			.then(() => 'resolved', error => error.message);
+
+		return results;
+	}, pageUrl);
 	quotedId = await page.evaluate(url =>
 		tabBrowserPage.describeElement(document.querySelector('.quoted-id'), [], url), pageUrl);
 
@@ -299,6 +344,35 @@ check('page markup and css cannot end their code blocks early',
 	fencedElement.split('\n').filter(line => /^`{3,}html$/.test(line)).every(line => line.length >= 8)
 	&& fencedElement.split('\n').filter(line => /^`{3,}css$/.test(line)).every(line => line.length >= 9),
 	fencedElement.split('\n').filter(line => /^`{3,}/.test(line)).join(' | '));
+
+// -- what an mcp client can ask the page ---------------------------------------------------------
+
+const emailNode = pageRequests.snapshot.nodes.find(node => node.selector.includes('email'));
+check('the snapshot names the interactive elements and how to reach them',
+	emailNode?.role === 'input:text' && emailNode.name === 'mail'
+	&& pageRequests.snapshot.title !== undefined
+	&& pageRequests.snapshot.nodes.some(node => node.role === 'button'),
+	JSON.stringify(pageRequests.snapshot.nodes.slice(0, 4)));
+
+check('filling a field raises the events a framework listens for',
+	pageRequests.fillValue === 'a@b.c'
+	&& pageRequests.fillEvents.join() === 'input,change', JSON.stringify(pageRequests.fillEvents));
+
+check('clicking reaches the page', pageRequests.clicks === 1, String(pageRequests.clicks));
+
+check('text and html come back for one element',
+	pageRequests.text === 'quoted' && pageRequests.html.startsWith('<input id="email"'),
+	JSON.stringify([pageRequests.text, pageRequests.html]));
+
+check('inspect returns the same report the copy menu builds',
+	pageRequests.inspect.descriptor === 'input#email.field-input.outlined'
+	&& !!pageRequests.inspect.styles, pageRequests.inspect.descriptor);
+
+check('waiting for an element that renders late succeeds',
+	pageRequests.waitFor?.selector?.includes('rendered-late'), JSON.stringify(pageRequests.waitFor));
+
+check('asking for something that is not there says so',
+	pageRequests.missing.includes('#nope'), pageRequests.missing);
 
 // -- the markup of the panel --------------------------------------------------------------------
 
@@ -508,6 +582,99 @@ await fs.utimes(fresh, sixHoursAgo, sixHoursAgo);
 await assistants.handOver('codex', '# report', `after-${reportName}`);
 check('writing a report does not sweep again within the hour',
 	await fs.readFile(fresh, 'utf8') === 'new');
+
+// -- the mcp server ------------------------------------------------------------------------------
+
+// A browser panel that answers from a script rather than from a webview.
+const pageAnswers = { snapshot: { url: 'http://localhost:3000/', nodes: [] } };
+const asked = [];
+const fakeBrowser = {
+	state: () => ({ open: true, url: 'http://localhost:3000/', inspectable: true }),
+	navigate: async url => ({ open: true, url }),
+	ask: async request => {
+		asked.push(request);
+		if (request.type === 'click' && request.selector === '#missing') {
+			throw new Error('Nothing matches #missing on this page');
+		}
+		return pageAnswers[request.type] ?? { ok: request.type };
+	},
+	console: async () => ({ entries: [{ level: 'error', text: 'boom' }] }),
+	lastPick: () => ({ descriptor: 'input#email' }),
+};
+
+const mcpToken = 'test-token';
+const mcp = new McpServer(fakeBrowser, mcpToken);
+await mcp.start(43310);
+
+const rpc = async (body, { token = mcpToken, origin, method = 'POST' } = {}) => {
+	const headers = { 'content-type': 'application/json' };
+	if (token) { headers.authorization = `Bearer ${token}`; }
+	if (origin) { headers.origin = origin; }
+	const answer = await fetch(mcp.url, { method, headers, body: body && JSON.stringify(body) });
+	const text = await answer.text();
+	return { status: answer.status, body: text ? JSON.parse(text) : undefined };
+};
+
+check('the server listens where it says it does', /^http:\/\/127\.0\.0\.1:\d+\/mcp$/.test(mcp.url), mcp.url);
+
+const initialize = await rpc({
+	jsonrpc: '2.0', id: 1, method: 'initialize',
+	params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '1' } },
+});
+check('initialize answers with the protocol version the client asked for',
+	initialize.body?.result?.protocolVersion === '2025-06-18'
+	&& initialize.body.result.capabilities?.tools
+	&& initialize.body.result.serverInfo?.name === 'tab-browser-ultimate',
+	JSON.stringify(initialize.body));
+
+const listed = await rpc({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
+const toolNames = (listed.body?.result?.tools ?? []).map(tool => tool.name);
+check('every browser tool is listed, with a schema',
+	['browser_state', 'browser_navigate', 'browser_snapshot', 'browser_inspect_element',
+		'browser_selected_element', 'browser_html', 'browser_text', 'browser_console',
+		'browser_click', 'browser_fill', 'browser_wait_for'].every(name => toolNames.includes(name))
+	&& listed.body.result.tools.every(tool => tool.inputSchema?.type === 'object'),
+	toolNames.join(', '));
+
+const call = async (name, args) => (await rpc({
+	jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name, arguments: args },
+})).body?.result;
+
+const snapshot = await call('browser_snapshot', {});
+check('a tool call reaches the page and comes back as text',
+	!snapshot.isError && JSON.parse(snapshot.content[0].text).url === 'http://localhost:3000/',
+	JSON.stringify(snapshot));
+
+check('arguments are passed through to the page',
+	(await call('browser_fill', { selector: '#email', value: 'a@b.c' }))
+	&& asked.at(-1).type === 'fill' && asked.at(-1).value === 'a@b.c', JSON.stringify(asked.at(-1)));
+
+const failed = await call('browser_click', { selector: '#missing' });
+check('a failing tool answers with isError, not a protocol error',
+	failed.isError === true && failed.content[0].text.includes('#missing'), JSON.stringify(failed));
+
+const unknown = await rpc({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'nope' } });
+check('an unknown tool is a protocol error', unknown.body?.error?.code === -32602, JSON.stringify(unknown.body));
+
+const notification = await rpc({ jsonrpc: '2.0', method: 'notifications/initialized' });
+check('a notification is accepted without an answer', notification.status === 202);
+
+check('a request without the token is refused',
+	(await rpc({ jsonrpc: '2.0', id: 5, method: 'ping' }, { token: null })).status === 401);
+check('a request with the wrong token is refused',
+	(await rpc({ jsonrpc: '2.0', id: 5, method: 'ping' }, { token: 'guess' })).status === 401);
+
+// A page cannot read the answer, but the side effect alone would be enough to drive the panel.
+check('a request from a browser origin is refused before anything happens',
+	(await rpc({ jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'browser_navigate', arguments: { url: 'http://evil/' } } },
+		{ origin: 'http://evil.example' })).status === 403
+	&& !asked.some(request => request.type === 'navigate'));
+
+check('there is no stream to open', (await rpc(undefined, { method: 'GET' })).status === 405);
+
+mcp.dispose();
+check('the port is released on dispose',
+	await fetch(mcp.url ?? 'http://127.0.0.1:43310/mcp').then(() => false, () => true));
 
 await browser.close();
 server.close();

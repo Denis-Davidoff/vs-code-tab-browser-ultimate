@@ -232,70 +232,6 @@
     return `${prefix}${name}=${cookie.slice(separator + 1)}`;
   }
 
-  // page-src/pageIcon.ts
-  var wantedSize = 32;
-  var iconRelations = /(^|\s)(shortcut\s+icon|icon|apple-touch-icon(-precomposed)?|mask-icon)(\s|$)/i;
-  function findIconHref() {
-    var _a;
-    const links = Array.prototype.slice.call(
-      document.querySelectorAll("link[rel][href]")
-    );
-    let best;
-    for (const link of links) {
-      if (!iconRelations.test((_a = link.getAttribute("rel")) != null ? _a : "")) {
-        continue;
-      }
-      const href = link.href;
-      if (!href) {
-        continue;
-      }
-      const score = scoreIcon(link, href);
-      if (!best || score > best.score) {
-        best = { href, score };
-      }
-    }
-    return best == null ? void 0 : best.href;
-  }
-  function scoreIcon(link, href) {
-    var _a, _b;
-    const type = ((_a = link.getAttribute("type")) != null ? _a : "").toLowerCase();
-    const extension = extensionOf(href);
-    if (type.includes("svg") || extension === "svg") {
-      return 100;
-    }
-    let score = extension === "ico" || type.includes("icon") ? 40 : 60;
-    if (/apple-touch-icon/i.test((_b = link.getAttribute("rel")) != null ? _b : "")) {
-      score -= 30;
-    }
-    const size = largestSize(link.getAttribute("sizes"));
-    if (size) {
-      score += Math.max(0, 20 - Math.abs(size - wantedSize) / 8);
-    }
-    return score;
-  }
-  function largestSize(sizes) {
-    if (!sizes || /any/i.test(sizes)) {
-      return void 0;
-    }
-    let largest;
-    for (const part of sizes.split(/\s+/)) {
-      const width = parseInt(part.split(/x/i)[0], 10);
-      if (!isNaN(width) && (largest === void 0 || width > largest)) {
-        largest = width;
-      }
-    }
-    return largest;
-  }
-  function extensionOf(href) {
-    var _a;
-    try {
-      const pathname = new URL(href, location.href).pathname;
-      return ((_a = pathname.split(".").pop()) != null ? _a : "").toLowerCase();
-    } catch {
-      return "";
-    }
-  }
-
   // page-src/elementContext.ts
   var limits = {
     outerHtml: 4e3,
@@ -1062,6 +998,254 @@
     };
   }
 
+  // page-src/pageRequests.ts
+  var defaultMaxLength = 2e4;
+  function handlePageRequest(request, documentUrl) {
+    var _a, _b, _c, _d, _e, _f;
+    switch (request.type) {
+      case "snapshot":
+        return snapshot((_a = request.maxNodes) != null ? _a : 200);
+      case "waitFor":
+        return waitFor(request.selector, (_b = request.timeout) != null ? _b : 1e4);
+      case "console": {
+        const snapshot2 = consoleSnapshot();
+        const entries2 = request.level ? snapshot2.entries.filter((entry) => entry.level === request.level) : snapshot2.entries;
+        const limit = Math.max(1, Math.min((_c = request.limit) != null ? _c : 100, 1e3));
+        return {
+          entries: entries2.slice(-limit),
+          dropped: snapshot2.dropped,
+          documentUrl
+        };
+      }
+      case "inspect":
+        return describeElement(find(request.selector), [], documentUrl);
+      case "html": {
+        const target = request.selector ? find(request.selector) : document.documentElement;
+        return clamp((_d = target.outerHTML) != null ? _d : "", request.maxLength);
+      }
+      case "text": {
+        const target = request.selector ? find(request.selector) : document.body;
+        const text = (_f = (_e = target.innerText) != null ? _e : target.textContent) != null ? _f : "";
+        return clamp(text.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim(), request.maxLength);
+      }
+      case "click": {
+        const target = find(request.selector);
+        target.scrollIntoView({ block: "center", inline: "center" });
+        target.click();
+        return { clicked: describe(target) };
+      }
+      case "fill": {
+        const target = find(request.selector);
+        if (!("value" in target)) {
+          throw new Error(`${describe(target)} has no value to fill`);
+        }
+        target.focus();
+        setValue(target, request.value);
+        return { filled: describe(target), value: target.value };
+      }
+    }
+  }
+  var interactiveSelector = 'a[href], button, input, select, textarea, summary, [role], h1, h2, h3, [contenteditable="true"], [onclick], [tabindex]:not([tabindex="-1"])';
+  function snapshot(maxNodes) {
+    const nodes = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const element of Array.prototype.slice.call(
+      document.querySelectorAll(interactiveSelector)
+    )) {
+      if (nodes.length >= maxNodes) {
+        break;
+      }
+      if (seen.has(element) || !isVisible(element)) {
+        continue;
+      }
+      seen.add(element);
+      const node = {
+        role: roleOf(element),
+        name: accessibleName(element),
+        selector: cssPath(element, [])
+      };
+      const value = element.value;
+      if (typeof value === "string" && value && node.role !== "button") {
+        node.value = value.slice(0, 80);
+      }
+      if (element.disabled) {
+        node.disabled = "true";
+      }
+      nodes.push(node);
+    }
+    return {
+      url: location.href,
+      title: document.title,
+      nodes,
+      truncated: nodes.length >= maxNodes
+    };
+  }
+  function isVisible(element) {
+    const rect = element.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) {
+      return false;
+    }
+    const style = getComputedStyle(element);
+    return style.visibility !== "hidden" && style.display !== "none" && style.opacity !== "0";
+  }
+  function roleOf(element) {
+    const explicit = element.getAttribute("role");
+    if (explicit) {
+      return explicit;
+    }
+    const tag = element.tagName.toLowerCase();
+    if (tag === "a") {
+      return "link";
+    }
+    if (tag === "input") {
+      return `input:${element.type || "text"}`;
+    }
+    return tag;
+  }
+  function accessibleName(element) {
+    var _a, _b, _c;
+    const labelled = element.getAttribute("aria-labelledby");
+    const byId = labelled ? document.getElementById(labelled.split(/\s+/)[0]) : void 0;
+    const candidates = [
+      element.getAttribute("aria-label"),
+      byId == null ? void 0 : byId.textContent,
+      (_b = (_a = element.labels) == null ? void 0 : _a[0]) == null ? void 0 : _b.textContent,
+      element.getAttribute("placeholder"),
+      element.getAttribute("title"),
+      element.getAttribute("alt"),
+      (_c = element.innerText) != null ? _c : element.textContent,
+      element.getAttribute("name")
+    ];
+    for (const candidate of candidates) {
+      const name = candidate == null ? void 0 : candidate.replace(/\s+/g, " ").trim();
+      if (name) {
+        return name.slice(0, 120);
+      }
+    }
+    return "";
+  }
+  function waitFor(selector, timeout) {
+    const deadline = Date.now() + Math.max(0, Math.min(timeout, 3e4));
+    return new Promise((resolve, reject) => {
+      const attempt = () => {
+        let match = null;
+        try {
+          match = document.querySelector(selector);
+        } catch {
+          reject(new Error(`Not a valid css selector: ${selector}`));
+          return;
+        }
+        if (match) {
+          resolve({ found: describe(match), selector: cssPath(match, []) });
+          return;
+        }
+        if (Date.now() >= deadline) {
+          reject(new Error(`Nothing matched ${selector} within ${timeout}ms`));
+          return;
+        }
+        setTimeout(attempt, 100);
+      };
+      attempt();
+    });
+  }
+  function find(selector) {
+    let element;
+    try {
+      element = document.querySelector(selector);
+    } catch {
+      throw new Error(`Not a valid css selector: ${selector}`);
+    }
+    if (!element) {
+      throw new Error(`Nothing matches ${selector} on this page`);
+    }
+    return element;
+  }
+  function describe(element) {
+    const id = element.id ? `#${element.id}` : "";
+    return `${element.tagName.toLowerCase()}${id}`;
+  }
+  function setValue(target, value) {
+    var _a;
+    const prototype = target instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = (_a = Object.getOwnPropertyDescriptor(prototype, "value")) == null ? void 0 : _a.set;
+    if (setter) {
+      setter.call(target, value);
+    } else {
+      target.value = value;
+    }
+    target.dispatchEvent(new Event("input", { bubbles: true }));
+    target.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  function clamp(value, maxLength = defaultMaxLength) {
+    const limit = Math.max(1, Math.min(maxLength, 2e5));
+    return value.length > limit ? `${value.slice(0, limit)}
+\u2026 ${value.length - limit} more characters` : value;
+  }
+
+  // page-src/pageIcon.ts
+  var wantedSize = 32;
+  var iconRelations = /(^|\s)(shortcut\s+icon|icon|apple-touch-icon(-precomposed)?|mask-icon)(\s|$)/i;
+  function findIconHref() {
+    var _a;
+    const links = Array.prototype.slice.call(
+      document.querySelectorAll("link[rel][href]")
+    );
+    let best;
+    for (const link of links) {
+      if (!iconRelations.test((_a = link.getAttribute("rel")) != null ? _a : "")) {
+        continue;
+      }
+      const href = link.href;
+      if (!href) {
+        continue;
+      }
+      const score = scoreIcon(link, href);
+      if (!best || score > best.score) {
+        best = { href, score };
+      }
+    }
+    return best == null ? void 0 : best.href;
+  }
+  function scoreIcon(link, href) {
+    var _a, _b;
+    const type = ((_a = link.getAttribute("type")) != null ? _a : "").toLowerCase();
+    const extension = extensionOf(href);
+    if (type.includes("svg") || extension === "svg") {
+      return 100;
+    }
+    let score = extension === "ico" || type.includes("icon") ? 40 : 60;
+    if (/apple-touch-icon/i.test((_b = link.getAttribute("rel")) != null ? _b : "")) {
+      score -= 30;
+    }
+    const size = largestSize(link.getAttribute("sizes"));
+    if (size) {
+      score += Math.max(0, 20 - Math.abs(size - wantedSize) / 8);
+    }
+    return score;
+  }
+  function largestSize(sizes) {
+    if (!sizes || /any/i.test(sizes)) {
+      return void 0;
+    }
+    let largest;
+    for (const part of sizes.split(/\s+/)) {
+      const width = parseInt(part.split(/x/i)[0], 10);
+      if (!isNaN(width) && (largest === void 0 || width > largest)) {
+        largest = width;
+      }
+    }
+    return largest;
+  }
+  function extensionOf(href) {
+    var _a;
+    try {
+      const pathname = new URL(href, location.href).pathname;
+      return ((_a = pathname.split(".").pop()) != null ? _a : "").toLowerCase();
+    } catch {
+      return "";
+    }
+  }
+
   // page-src/picker.ts
   var overlayAttribute = "data-tab-browser";
   var labelMaxWidth = 360;
@@ -1406,16 +1590,33 @@
           broadcast(message);
           return;
         }
+        case "request": {
+          if (event.source && event.source !== window && event.source !== window.parent) {
+            return;
+          }
+          const requestId = message.requestId;
+          const fail = (error) => send({
+            kind: "result",
+            requestId,
+            error: error instanceof Error ? error.message : String(error)
+          });
+          try {
+            Promise.resolve(handlePageRequest(message.request, documentUrlOnRealServer())).then((value) => send({ kind: "result", requestId, value }), fail);
+          } catch (error) {
+            fail(error);
+          }
+          return;
+        }
         case "collectConsole": {
           if (event.source && event.source !== window && event.source !== window.parent) {
             return;
           }
-          const snapshot = consoleSnapshot();
+          const snapshot2 = consoleSnapshot();
           send({
             kind: "console",
             requestId: message.requestId,
-            entries: snapshot.entries,
-            dropped: snapshot.dropped,
+            entries: snapshot2.entries,
+            dropped: snapshot2.dropped,
             documentUrl: documentUrlOnRealServer()
           });
           return;
@@ -1436,6 +1637,7 @@
           return;
         case "pageError":
         case "console":
+        case "result":
           send(message);
           return;
         case "cancel":

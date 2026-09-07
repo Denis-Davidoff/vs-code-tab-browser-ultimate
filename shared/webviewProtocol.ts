@@ -2,7 +2,7 @@
  *  Messages exchanged between the extension host and the Tab Browser Ultimate webview.
  *--------------------------------------------------------------------------------------------*/
 
-import { ConsoleEntry, PickedElement } from './protocol';
+import { ConsoleEntry, PageRequest, PickedElement } from './protocol';
 
 /** Entries of the toolbar's copy menu. */
 export type CopyCommand =
@@ -42,6 +42,12 @@ export type WebviewToExtensionMessage =
 		/** The menu entry that asked for it; it decides where the log ends up. */
 		readonly command: CopyCommand;
 	}
+	| {
+		readonly type: 'didRunPageRequest';
+		readonly requestId: number;
+		readonly value?: unknown;
+		readonly error?: string;
+	}
 	/** Icon of the loaded page, for the panel's tab. */
 	| { readonly type: 'setIcon'; readonly href: string }
 	| { readonly type: 'showError'; readonly message: string }
@@ -60,6 +66,12 @@ export type ExtensionToWebviewMessage =
 		readonly error?: string;
 	}
 	| { readonly type: 'runCopyCommand'; readonly command: CopyCommand }
+	| {
+		/** Asked for by an mcp client; the page answers with `didRunPageRequest`. */
+		readonly type: 'runPageRequest';
+		readonly requestId: number;
+		readonly request: PageRequest;
+	}
 	| {
 		readonly type: 'didCopy';
 		/** Short text for the hint bar, not necessarily what landed on the clipboard. */

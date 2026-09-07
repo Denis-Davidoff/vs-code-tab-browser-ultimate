@@ -11,6 +11,7 @@ import {
 	TabBrowserState,
 	WebviewToExtensionMessage,
 } from '../shared/webviewProtocol';
+import { PageRequest } from '../shared/protocol';
 import { onceDocumentLoaded } from './events';
 
 interface VsCodeApi<State, Message> {
@@ -114,6 +115,10 @@ window.addEventListener('message', event => {
 			runCopyCommand(hostMessage.command);
 			break;
 
+		case 'runPageRequest':
+			runPageRequest(hostMessage.requestId, hostMessage.request);
+			break;
+
 		case 'didCopy':
 			showHint('copied', hostMessage.text);
 			if (!hostMessage.keepPickerActive) {
@@ -165,6 +170,15 @@ function onAgentEvent(event: AgentEvent): void {
 			setDisplayUrl(event.documentUrl);
 			break;
 
+		case 'result':
+			vscode.postMessage({
+				type: 'didRunPageRequest',
+				requestId: event.requestId,
+				value: event.value,
+				error: event.error,
+			});
+			break;
+
 		case 'icon':
 			vscode.postMessage({ type: 'setIcon', href: event.href });
 			break;
@@ -197,6 +211,24 @@ function onAgentEvent(event: AgentEvent): void {
 			showHint('error', event.message);
 			break;
 	}
+}
+
+/**
+ * An mcp client is asking the page something. The page has to be instrumented for that, and
+ * saying so is more useful than a request that quietly never answers.
+ */
+function runPageRequest(requestId: number, request: PageRequest): void {
+	if (!isInstrumented || !pageReady) {
+		vscode.postMessage({
+			type: 'didRunPageRequest',
+			requestId,
+			error: isInstrumented
+				? 'The page has not finished loading.'
+				: 'This page is not served through the local proxy, so it cannot be inspected.',
+		});
+		return;
+	}
+	sendToPage({ kind: 'request', requestId, request });
 }
 
 /** Points the address bar, the saved state and "Open in browser" at the page actually shown. */

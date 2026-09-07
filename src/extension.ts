@@ -8,6 +8,9 @@ import { TabBrowserManager } from './tabBrowserManager';
 import { TabBrowserView } from './tabBrowserView';
 import { registerTerminalLinks } from './terminalLinks';
 import { cleanUpReports } from './assistants';
+import { BrowserController } from './browserController';
+import { McpServer } from './mcpServer';
+import { connectToClaudeCode, registerWithVsCode } from './mcpSetup';
 import { CopyCommand } from '../shared/webviewProtocol';
 
 declare class URL {
@@ -29,6 +32,8 @@ const addElementPathToCodexCommand = 'tabBrowser.addElementPathToCodex';
 const copyConsoleCommand = 'tabBrowser.copyConsole';
 const addConsoleToClaudeCommand = 'tabBrowser.addConsoleToClaude';
 const addConsoleToCodexCommand = 'tabBrowser.addConsoleToCodex';
+const connectMcpCommand = 'tabBrowser.connectMcpToClaudeCode';
+const mcpTokenKey = 'mcp.token';
 
 const enabledHosts = new Set<string>([
 	'localhost',
@@ -55,6 +60,8 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(manager);
 
 	context.subscriptions.push(registerTerminalLinks(url => manager.show(url)));
+
+	startMcpServer(context, manager);
 
 	// The reports handed to an assistant outlive their conversation by a few hours at most.
 	cleanUpReports();
@@ -134,6 +141,44 @@ export function activate(context: vscode.ExtensionContext) {
 			label: vscode.l10n.t("Open in Tab Browser Ultimate"),
 		}));
 	}
+}
+
+/**
+ * Gives an assistant the panel to work with. The server is what Claude Code connects to; VS
+ * Code's own chat is told about it through the api, so it needs no configuration at all.
+ */
+async function startMcpServer(context: vscode.ExtensionContext, manager: TabBrowserManager): Promise<void> {
+	if (!vscode.workspace.getConfiguration('tabBrowser').get<boolean>('mcp.enabled', true)) {
+		return;
+	}
+
+	// The token outlives the window, so a Claude Code config written once keeps working.
+	let token = context.globalState.get<string>(mcpTokenKey);
+	if (!token) {
+		token = generateToken();
+		await context.globalState.update(mcpTokenKey, token);
+	}
+
+	const server = new McpServer(new BrowserController(manager), token);
+	context.subscriptions.push(server);
+
+	try {
+		await server.start(
+			vscode.workspace.getConfiguration('tabBrowser').get<number>('mcp.port', 43110));
+	} catch (error) {
+		vscode.window.showWarningMessage(vscode.l10n.t(
+			"The browser's mcp server could not start: {0}",
+			error instanceof Error ? error.message : String(error)));
+		return;
+	}
+
+	context.subscriptions.push(registerWithVsCode(server));
+	context.subscriptions.push(vscode.commands.registerCommand(
+		connectMcpCommand, () => connectToClaudeCode(server)));
+}
+
+function generateToken(): string {
+	return Array.from({ length: 4 }, () => Math.random().toString(36).slice(2, 12)).join('');
 }
 
 export function deactivate(): void {

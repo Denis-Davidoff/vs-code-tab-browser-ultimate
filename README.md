@@ -110,6 +110,43 @@ bytes are checked before the icon is used, because a dev server answering `/favi
 its index page is common enough to matter. `tabBrowser.showPageIcon` turns the whole thing
 off, request included.
 
+## Giving an assistant the browser (MCP)
+
+The extension runs a small [MCP](https://modelcontextprotocol.io) server, so an assistant can
+read and drive the page in the panel instead of being handed reports about it. The tools:
+
+| Tool | What it does |
+| --- | --- |
+| `browser_state` | What the panel currently shows |
+| `browser_navigate` | Open a url in the panel |
+| `browser_snapshot` | The role, name and selector of every visible interactive element |
+| `browser_inspect_element` | Markup, box and css of one element |
+| `browser_selected_element` | The element the user picked with the copy menu |
+| `browser_html` / `browser_text` | The rendered html or visible text |
+| `browser_console` | What the page logged, uncaught errors included |
+| `browser_click` / `browser_fill` | Act on the page |
+| `browser_wait_for` | Wait for something that renders late |
+
+Everything happens in the page you are looking at — same session, same cookies, same dev server.
+
+**Claude Code**: run **Tab Browser Ultimate: Connect Claude Code to This Browser (MCP)** from the
+command palette. It offers to write `.mcp.json` in the project, or to copy the equivalent
+`claude mcp add --transport http …` line if you would rather keep the token out of the
+repository. Check it afterwards with `/mcp` in Claude Code.
+
+**VS Code's own chat** needs no configuration: the extension registers the server through the
+editor's MCP api (VS Code 1.101 and later; older editors just do without).
+
+The server listens on `127.0.0.1` only, requires a bearer token that is stored per user and
+never given to the page, and refuses any request carrying an `Origin` header — a page in a
+browser cannot read a cross-origin answer, but posting to a local port would otherwise be enough
+to drive the panel blind. `tabBrowser.mcp.enabled` turns it off; `tabBrowser.mcp.port` (43110 by
+default) keeps a Claude Code configuration valid across restarts, and the next free port is used
+when it is taken, for instance by a second window.
+
+Reading and driving a page needs the injected script, so the page has to be served through the
+proxy — `tabBrowser.proxy.mode` decides that, and the tools say so plainly when it is not.
+
 ## Terminal links
 
 `Cmd`/`Ctrl` + click on a url a dev server prints opens it in this panel instead of an external

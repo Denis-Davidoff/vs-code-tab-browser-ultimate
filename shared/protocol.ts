@@ -88,11 +88,23 @@ export interface ConsoleEntry {
 	readonly stack?: string;
 }
 
+export type PageRequest =
+	| { readonly type: 'snapshot'; readonly maxNodes?: number }
+	| { readonly type: 'inspect'; readonly selector: string }
+	| { readonly type: 'waitFor'; readonly selector: string; readonly timeout?: number }
+	| { readonly type: 'console'; readonly level?: ConsoleLevel; readonly limit?: number }
+	| { readonly type: 'html'; readonly selector?: string; readonly maxLength?: number }
+	| { readonly type: 'text'; readonly selector?: string; readonly maxLength?: number }
+	| { readonly type: 'click'; readonly selector: string }
+	| { readonly type: 'fill'; readonly selector: string; readonly value: string };
+
+/** What the extension host can ask the page for, on behalf of an mcp client. */
 /** Webview (or a parent frame) -> injected page script. */
 export type AgentCommand =
 	| { readonly kind: 'enablePicker'; readonly preferAttributes?: readonly string[] }
 	| { readonly kind: 'disablePicker' }
-	| { readonly kind: 'collectConsole'; readonly requestId: number };
+	| { readonly kind: 'collectConsole'; readonly requestId: number }
+	| { readonly kind: 'request'; readonly requestId: number; readonly request: PageRequest };
 
 /** Injected page script -> parent frame -> webview. */
 export type AgentEvent =
@@ -104,6 +116,13 @@ export type AgentEvent =
 	| { readonly kind: 'icon'; readonly href: string }
 	| { readonly kind: 'pick'; readonly element: PickedElement }
 	| { readonly kind: 'cancel' }
+	| {
+		readonly kind: 'result';
+		readonly requestId: number;
+		readonly value?: unknown;
+		/** Set when the request could not be carried out; `value` is then absent. */
+		readonly error?: string;
+	}
 	| { readonly kind: 'pageError'; readonly message: string }
 	| {
 		readonly kind: 'console';

@@ -13,6 +13,7 @@ import {
 } from '../shared/protocol';
 import { consoleSnapshot, installConsoleCapture } from './consoleCapture';
 import { installCookiePrefix } from './cookies';
+import { handlePageRequest } from './pageRequests';
 import { findIconHref } from './pageIcon';
 import { ElementPicker } from './picker';
 import { cssPath } from './selectors';
@@ -201,6 +202,27 @@ function install(): void {
 				return;
 			}
 
+			case 'request': {
+				if (event.source && event.source !== window && event.source !== window.parent) {
+					return;
+				}
+				const requestId = message.requestId;
+				const fail = (error: unknown) => send({
+					kind: 'result',
+					requestId,
+					error: error instanceof Error ? error.message : String(error),
+				});
+
+				try {
+					// `waitFor` answers later; everything else is done by the time it returns.
+					Promise.resolve(handlePageRequest(message.request, documentUrlOnRealServer()))
+						.then(value => send({ kind: 'result', requestId, value }), fail);
+				} catch (error) {
+					fail(error);
+				}
+				return;
+			}
+
 			case 'collectConsole': {
 				if (event.source && event.source !== window && event.source !== window.parent) {
 					return;
@@ -240,6 +262,7 @@ function install(): void {
 
 			case 'pageError':
 			case 'console':
+			case 'result':
 				send(message);
 				return;
 

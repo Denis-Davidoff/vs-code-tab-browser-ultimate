@@ -34,6 +34,12 @@ await Promise.all([
 	}),
 	esbuild.build({
 		...shared,
+		entryPoints: ['src/mcpServer.ts'],
+		outfile: 'test/.bundles/mcp-bundle.mjs',
+		alias: { vscode: './test/vscode-stub-entry.mjs' },
+	}),
+	esbuild.build({
+		...shared,
 		entryPoints: ['src/assistants.ts'],
 		outfile: 'test/.bundles/assistants-bundle.mjs',
 		alias: { vscode: './test/vscode-stub-entry.mjs' },
@@ -68,6 +74,15 @@ await Promise.all([
 		globalName: 'tabBrowserPageIcon',
 		entryPoints: ['page-src/pageIcon.ts'],
 		outfile: 'test/.bundles/page-icon-bundle.js',
+	}),
+	esbuild.build({
+		...shared,
+		format: 'iife',
+		platform: 'browser',
+		target: 'es2020',
+		globalName: 'tabBrowserRequests',
+		entryPoints: ['page-src/pageRequests.ts'],
+		outfile: 'test/.bundles/page-requests-bundle.js',
 	}),
 	esbuild.build({
 		...shared,
