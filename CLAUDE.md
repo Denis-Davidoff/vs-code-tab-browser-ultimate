@@ -56,6 +56,12 @@ Two things about that arrangement are easy to get wrong again:
   anything without it. Without that, a page could start a pick and have its own report written
   into the workspace and mentioned to Claude Code.
 
+The injected script sits in front of the page's own code — `console` is patched before any of
+it runs — so nothing it does may change how that page behaves. Formatting a logged value is the
+sharp edge: `%d` with a symbol, a getter that throws, a revoked proxy. `page-src/consoleCapture.ts`
+therefore records inside a `try` and forwards to the real console either way; a page that logs
+something unreadable gets `[could not be read]` in the copy, never an exception of ours.
+
 Reports built from page content — markup, css, console output — are fenced with a fence longer
 than the longest run of backticks inside them (`fenced()` in `src/tabBrowserView.ts`), or the
 page could end the block and have the rest read as markdown.
@@ -183,6 +189,12 @@ call becomes a `PageRequest` (`shared/protocol.ts`) that travels host → webvie
 back by `requestId` (`runPageRequest` in `src/tabBrowserView.ts`, which times out rather than
 hanging and rejects everything pending when the panel closes). `page-src/pageRequests.ts` runs
 it in the page's own world, so a snapshot sees the dom the framework actually rendered.
+
+`tabBrowser.mcp.enabled` and `mcp.port` are watched rather than read once: the sidebar reports
+the setting immediately, so a server still answering after it was switched off is one an
+assistant can drive while the editor says it cannot. What the running server owns is kept in a
+list of its own (`mcpParts` in `activate`), because switching it off has to take back the port
+and the chat's server definition without disposing the rest of the extension.
 
 Security, all of which matter together: loopback only, a crypto-random bearer token kept in
 `globalState` **per workspace** — ports are handed out in the order windows open, so a token

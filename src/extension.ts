@@ -4,6 +4,7 @@
 
 import * as vscode from 'vscode';
 import { BrowserProxy } from './browserProxy';
+import { disposeAll } from './dispose';
 import { TabBrowserManager } from './tabBrowserManager';
 import { TabBrowserView } from './tabBrowserView';
 import { registerTerminalLinks } from './terminalLinks';
@@ -77,11 +78,37 @@ export function activate(context: vscode.ExtensionContext) {
 	const sidebar = registerSidebar(context, manager, () => mcpState);
 	context.subscriptions.push(sidebar);
 
-	const mcp = startMcpServer(context, browser).then(state => {
-		mcpState = state;
+	// What the running server owns: the port, and the definition VS Code's own chat reads. Kept
+	// apart from `context.subscriptions` because the setting can turn the server off again, and
+	// then these have to go without taking the rest of the extension with them.
+	let mcpParts: vscode.Disposable[] = [];
+
+	const applyMcpSetting = (): Promise<McpState> => {
+		disposeAll(mcpParts);
+		mcpParts = [];
+		mcpState = { kind: 'starting' };
 		sidebar.refresh();
-		return state;
-	});
+
+		return startMcpServer(context, browser, mcpParts).then(state => {
+			mcpState = state;
+			sidebar.refresh();
+			return state;
+		});
+	};
+
+	let mcp = applyMcpSetting();
+	context.subscriptions.push({ dispose: () => disposeAll(mcpParts) });
+
+	// The setting is not a startup flag: a server left answering after it was switched off is
+	// one the sidebar reports as disabled while an assistant still drives the panel through it.
+	context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(event => {
+		if (!event.affectsConfiguration('tabBrowser.mcp.enabled')
+			&& !event.affectsConfiguration('tabBrowser.mcp.port')) {
+			return;
+		}
+		// Chained, so two changes in a row cannot have two servers starting on one port.
+		mcp = mcp.catch(() => undefined).then(() => applyMcpSetting());
+	}));
 
 	// Registered whatever the server does: a palette entry that throws "command not found"
 	// is worse than one that explains why there is nothing to connect to.
@@ -199,6 +226,8 @@ export function activate(context: vscode.ExtensionContext) {
 async function startMcpServer(
 	context: vscode.ExtensionContext,
 	browser: BrowserController,
+	/** Everything the running server owns, so switching the setting off can take it back. */
+	parts: vscode.Disposable[],
 ): Promise<McpState> {
 	if (!vscode.workspace.getConfiguration('tabBrowser').get<boolean>('mcp.enabled', true)) {
 		return { kind: 'disabled' };
@@ -210,7 +239,7 @@ async function startMcpServer(
 		await workspaceToken(context, folder),
 		folder,
 		context.extension.packageJSON?.version);
-	context.subscriptions.push(server);
+	parts.push(server);
 
 	try {
 		await server.start(
@@ -222,7 +251,7 @@ async function startMcpServer(
 		return { kind: 'failed', error: message };
 	}
 
-	context.subscriptions.push(registerWithVsCode(server));
+	parts.push(registerWithVsCode(server));
 	return { kind: 'running', server };
 }
 

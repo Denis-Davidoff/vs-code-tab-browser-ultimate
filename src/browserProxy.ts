@@ -565,7 +565,18 @@ async function decodeBody(res: http.IncomingMessage): Promise<Buffer> {
 				? zlib.createBrotliDecompress()
 				: undefined;
 
-	const source: stream.Readable = decoder ? res.pipe(decoder) : res;
+	if (!decoder) {
+		return readAll(res);
+	}
+
+	// `pipe` does not pass an aborted response on to the decoder, which would then never end
+	// and leave the read below waiting for a body that is not coming. `pipeline` destroys the
+	// decoder with the error instead, so the request fails as one.
+	stream.pipeline(res, decoder, () => { /* Reported to whoever is reading `decoder`. */ });
+	return readAll(decoder);
+}
+
+async function readAll(source: stream.Readable): Promise<Buffer> {
 	const chunks: Buffer[] = [];
 	for await (const chunk of source) {
 		chunks.push(Buffer.from(chunk));

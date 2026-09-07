@@ -20,6 +20,15 @@ function check(name, ok, detail = '') {
 
 /** Settings the stubbed `workspace.getConfiguration` hands out; empty means "use the default". */
 const settings = {};
+/** Listeners on `workspace.onDidChangeConfiguration`, so a test can change a setting for real. */
+const configListeners = [];
+const changeSetting = async (key, value) => {
+	settings[key] = value;
+	const event = { affectsConfiguration: section => `tabBrowser.${key}`.startsWith(section) };
+	for (const listener of [...configListeners]) {
+		await listener(event);
+	}
+};
 /** Extensions the stub reports as installed, and the commands they contribute. */
 const installedExtensions = new Set();
 const contributedCommands = new Set();
@@ -56,7 +65,10 @@ globalThis.__vscodeStub = {
 		getConfiguration: () => ({ get: (key, fallback) => (key in settings ? settings[key] : fallback) }),
 		get workspaceFolders() { return workspaceFolders; },
 		openTextDocument: async uri => ({ uri }),
-		onDidChangeConfiguration: () => ({ dispose() { } }),
+		onDidChangeConfiguration: listener => {
+			configListeners.push(listener);
+			return { dispose() { configListeners.splice(configListeners.indexOf(listener), 1); } };
+		},
 		fs: {
 			readFile: async uri => new Uint8Array(await fs.readFile(uri.fsPath)),
 			writeFile: async (uri, bytes) => fs.writeFile(uri.fsPath, Buffer.from(bytes)),
@@ -267,6 +279,7 @@ let overlay;
 let quotedId;
 let agentEvents;
 let panelState;
+let consoleFormatting;
 let pageRequests;
 try {
 	const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
@@ -380,6 +393,39 @@ try {
 	await latePage.waitForFunction(
 		() => window.__agentEvents?.some(event => event.kind === 'ready'), null, { timeout: 5000 })
 		.catch(() => { });
+	// The console patch runs in front of every page script. Whatever a page logs, and however
+	// badly it formats it, the call must behave as it would without the agent.
+	consoleFormatting = await latePage.evaluate(async () => {
+		const outcome = (log) => {
+			try {
+				log();
+				return 'ok';
+			} catch (error) {
+				return String(error);
+			}
+		};
+		const results = {
+			symbolAsNumber: outcome(() => console.log('%d', Symbol('review'))),
+			throwingGetter: outcome(() => console.log({ get boom() { throw new Error('nope'); } })),
+			revokedProxy: outcome(() => {
+				const { proxy, revoke } = Proxy.revocable({}, {});
+				revoke();
+				return console.log(proxy);
+			}),
+		};
+
+		const collected = new Promise(resolve => {
+			window.addEventListener('message', event => {
+				if (event.data?.__tabBrowserAgent && event.data.kind === 'console') {
+					resolve(event.data.entries.map(entry => entry.text));
+				}
+			});
+		});
+		window.postMessage({ __tabBrowserAgent: true, kind: 'collectConsole', requestId: 1 }, '*');
+		results.entries = await collected;
+		return results;
+	});
+
 	agentEvents = await latePage.evaluate(() => window.__agentEvents);
 	await latePage.close();
 
@@ -410,6 +456,18 @@ check('a frame that has not reported in is treated as a page we do not serve',
 check('a page that reports in after its own load event is instrumented all the same',
 	panelState.afterReady?.instrumented === true && panelState.afterReady.ready === true,
 	JSON.stringify(panelState.afterReady));
+
+// -- the console patch ------------------------------------------------------------------------
+
+// `console.log('%d', Symbol())` prints NaN in devtools. Throwing instead would be this
+// extension breaking a page it is only supposed to watch.
+check('a value the formatter cannot read does not turn a console call into a throw',
+	consoleFormatting.symbolAsNumber === 'ok' && consoleFormatting.throwingGetter === 'ok'
+	&& consoleFormatting.revokedProxy === 'ok', JSON.stringify(consoleFormatting));
+
+check('the entry is still recorded, readable or not',
+	consoleFormatting.entries?.length === 3
+	&& consoleFormatting.entries[0].includes('NaN'), JSON.stringify(consoleFormatting.entries));
 
 // -- what the page reported ------------------------------------------------------------------
 
@@ -1190,6 +1248,31 @@ check('the manifest puts every title bar button on this view',
 	manifest.contributes.menus['view/title'].every(entry =>
 		entry.when === `view == ${treeViewId}` && registeredCommands.has(entry.command)),
 	JSON.stringify(manifest.contributes.menus['view/title']));
+
+// The mcp setting is not a startup flag. A server left answering after it was switched off is
+// one the sidebar reports as disabled while an assistant still drives the panel through it.
+const settingPort = 43955;
+const mcpAnswers = () => fetch(`http://127.0.0.1:${settingPort}/mcp`, { method: 'POST', body: '{}' })
+	.then(answer => answer.status, () => 'no server');
+const until = async expected => {
+	for (let attempt = 0; attempt < 50; attempt++) {
+		if (await mcpAnswers() === expected) {
+			return expected;
+		}
+		await new Promise(resolve => setTimeout(resolve, 20));
+	}
+	return mcpAnswers();
+};
+
+await changeSetting('mcp.port', settingPort);
+await changeSetting('mcp.enabled', true);
+// 401 and not 200: the point is that something is listening, and the token is the server's own.
+check('switching the setting on starts the server without a reload', await until(401) === 401);
+
+await changeSetting('mcp.enabled', false);
+check('switching it off again stops it answering', await until('no server') === 'no server');
+
+delete settings['mcp.port'];
 
 check('the connect command explains itself instead of throwing when mcp is off',
 	await registeredCommands.get('tabBrowser.connectMcpToClaudeCode')().then(() => true, () => false)

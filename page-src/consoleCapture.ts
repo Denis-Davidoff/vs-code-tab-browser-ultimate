@@ -34,7 +34,14 @@ export function installConsoleCapture(): void {
 		}
 		const forward = original as (...args: unknown[]) => void;
 		(console as unknown as Record<string, unknown>)[level] = function (this: unknown, ...args: unknown[]) {
-			record(level, formatArguments(args));
+			// Nothing here may change how the page runs. Formatting touches the page's own
+			// values — a getter that throws, a proxy, a symbol where a number is expected —
+			// and a `console.log` that throws would be this extension breaking the page.
+			try {
+				record(level, formatArguments(args));
+			} catch {
+				record(level, '[could not be read]');
+			}
 			return forward.apply(this, args);
 		};
 	}
@@ -119,9 +126,9 @@ function formatArguments(args: readonly unknown[]): string {
 					return typeof value === 'string' ? value : formatValue(value, 1);
 				case 'd':
 				case 'i':
-					return String(typeof value === 'bigint' ? value : Math.trunc(Number(value)));
+					return String(typeof value === 'bigint' ? value : Math.trunc(asNumber(value)));
 				case 'f':
-					return String(Number(value));
+					return String(asNumber(value));
 				default:
 					return formatValue(value, 1);
 			}
@@ -137,6 +144,15 @@ function formatArguments(args: readonly unknown[]): string {
 	}
 
 	return parts.join(' ');
+}
+
+/** `Number()` throws on a symbol, where devtools simply print NaN. */
+function asNumber(value: unknown): number {
+	try {
+		return Number(value);
+	} catch {
+		return NaN;
+	}
 }
 
 function formatValue(value: unknown, depth: number, seen: Set<object> = new Set()): string {

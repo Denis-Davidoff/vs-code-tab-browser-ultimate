@@ -34,6 +34,13 @@ const app = http.createServer((req, res) => {
 		res.end(zlib.gzipSync('<html><head></head><body>gz</body></html>'));
 		return;
 	}
+	// A compressed response the server never finishes: the socket dies mid-body.
+	if (url.pathname === '/gz-cut') {
+		res.writeHead(200, { 'content-type': 'text/html', 'content-encoding': 'gzip' });
+		res.write(zlib.gzipSync('<html><head></head><body>gz</body></html>').subarray(0, 12));
+		setTimeout(() => res.socket.destroy(), 30);
+		return;
+	}
 	if (url.pathname === '/account/start') { res.writeHead(302, { location: 'login' }); res.end(); return; }
 	if (url.pathname === '/cookies') {
 		res.writeHead(200, { 'content-type': 'application/json' });
@@ -102,6 +109,15 @@ const gz = await fetch(new URL('/gz', proxiedRoot));
 const gzBody = await gz.text();
 check('gzip html decoded and injected', gzBody.includes('agent.js') && gzBody.includes('gz'), gzBody.slice(0, 200));
 check('content-encoding dropped for rewritten html', !gz.headers.has('content-encoding'));
+
+// A dead upstream has to become an answer. `pipe` does not pass the abort on to the decoder,
+// which then waits for an end that is not coming — and so does whoever opened the tab.
+const cut = await Promise.race([
+	fetch(new URL('/gz-cut', proxiedRoot)).then(answer => answer.status, () => 'network error'),
+	new Promise(resolve => setTimeout(() => resolve('never answered'), 5000)),
+]);
+check('a compressed response that is cut off is answered, not left hanging',
+	cut !== 'never answered', String(cut));
 
 const asset = await fetch(new URL('/asset.js', proxiedRoot));
 check('non-html passes through untouched', (await asset.text()) === 'console.log(1)');
