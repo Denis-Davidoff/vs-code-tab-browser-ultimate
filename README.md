@@ -28,7 +28,12 @@ Writes the report to `.claude/tab-browser/element-….md` in the workspace and p
 `@`-mention of it into Claude Code's prompt box, so the element is in the conversation without
 copying and pasting anything. The XPath and selector entries do the same with a one page file
 that carries just that path and the url it came from — a mention points at a file, so even a
-single line travels as one. The folder gets a `.gitignore` of its own — these are scratch
+single line travels as one.
+
+Claude Code accepts nothing but that mention into a conversation that is already open; plain
+text can only be pre-filled when a new conversation is created. Set
+`tabBrowser.claude.pathDelivery` to `newConversation` to have the two path entries open a new
+conversation with the path in its prompt box instead of writing a file. The folder gets a `.gitignore` of its own — these are scratch
 files for one conversation — and reports older than a day are cleaned up on the way.
 
 It needs the Claude Code extension installed and a folder open, because a mention is a path

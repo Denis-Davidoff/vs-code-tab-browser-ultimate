@@ -5,6 +5,9 @@
  *  which takes no arguments: it reads the active editor and puts `@<relative path>` into the
  *  prompt box, opening the chat first if none is showing. So the report is written into the
  *  workspace, opened, mentioned, and its editor closed again.
+ *
+ *  Plain text can only reach a *new* conversation, through the `prompt` argument the extension
+ *  takes when it creates a panel. An open one accepts nothing but the mention above.
  *--------------------------------------------------------------------------------------------*/
 
 import * as fs from 'node:fs/promises';
@@ -13,6 +16,7 @@ import * as vscode from 'vscode';
 
 const extensionId = 'Anthropic.claude-code';
 const insertAtMentionCommand = 'claude-vscode.insertAtMention';
+const openEditorCommand = 'claude-vscode.editor.open';
 
 /** Where the reports go, relative to the workspace folder. */
 const reportDirectory = ['.claude', 'tab-browser'];
@@ -26,6 +30,19 @@ export async function isAvailable(): Promise<boolean> {
 	}
 	// The extension may be installed but too old for the command.
 	return (await vscode.commands.getCommands(true)).includes(insertAtMentionCommand);
+}
+
+/**
+ * Opens a new Claude Code conversation with `prompt` already in its input, unsent. There is no
+ * way to put text into a conversation that is already open: passing a prompt for a session that
+ * has a panel is refused by the extension with "enter it manually".
+ */
+export async function openWithPrompt(prompt: string): Promise<boolean> {
+	if (!(await vscode.commands.getCommands(true)).includes(openEditorCommand)) {
+		return false;
+	}
+	await vscode.commands.executeCommand(openEditorCommand, undefined, prompt);
+	return true;
 }
 
 /**

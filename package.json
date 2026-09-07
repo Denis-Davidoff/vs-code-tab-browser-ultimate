@@ -92,6 +92,19 @@
 						"title": "Focus Lock Indicator Enabled",
 						"description": "%configuration.focusLockIndicator.enabled.description%"
 					},
+					"tabBrowser.claude.pathDelivery": {
+						"type": "string",
+						"enum": [
+							"mention",
+							"newConversation"
+						],
+						"enumDescriptions": [
+							"Write the path to a file and @-mention it, which lands in the conversation you already have open",
+							"Open a new conversation with the path already in its prompt box, unsent"
+						],
+						"default": "mention",
+						"markdownDescription": "How \"Add element XPath / path to Claude Code\" delivers the path. Claude Code only accepts an `@`-mention of a file into an open conversation; plain text can only be pre-filled when a new conversation is created. The full element report always goes as a file."
+					},
 					"tabBrowser.terminalLinks.mode": {
 						"type": "string",
 						"enum": [

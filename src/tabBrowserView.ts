@@ -294,6 +294,15 @@ export class TabBrowserView extends Disposable {
 			return false;
 		}
 
+		// A bare path can go into a new conversation as text, if that is what is wanted.
+		if (format !== 'context'
+			&& getConfiguration().get<string>('claude.pathDelivery', 'mention') === 'newConversation'
+			&& await claudeCode.openWithPrompt(summary)) {
+			this._post({ type: 'didCopy', text: summary, keepPickerActive });
+			this._announce(vscode.l10n.t("Added to a new Claude Code conversation: {0}", summary));
+			return true;
+		}
+
 		const kind = format === 'xpath' ? 'xpath' : format === 'css' ? 'path' : 'context';
 		const fileName = `element-${kind}-${slugify(element.descriptor)}-${stamp()}.md`;
 		// A mention points at a file, so even a one line path travels as one.

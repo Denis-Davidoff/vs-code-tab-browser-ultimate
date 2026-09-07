@@ -72,6 +72,12 @@ mention from the **active editor**. Hence the dance: write the report into
 `<workspace>/.claude/tab-browser/`, open it, run the command, close the tab again (by uri, not
 `closeActiveEditor` — inserting reveals the chat, which may by then hold the active tab).
 
+Text is a different matter: an open conversation takes only that mention, and a prompt handed
+to `claude-vscode.editor.open(sessionId, prompt)` is applied only while the panel is being
+created — for a session that already has one the extension answers "Session is already open.
+Your prompt was not applied". So `openWithPrompt` always starts a new conversation, and
+`tabBrowser.claude.pathDelivery` lets the path entries choose between the two.
+
 That command id is an implementation detail of the extension, not a contract: `isAvailable()`
 checks both the extension and the command, and every failure falls back to the clipboard with a
 notification. Only `vscode://anthropic.claude-code/open?prompt=…` is documented, and it cannot
