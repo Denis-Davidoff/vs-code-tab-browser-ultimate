@@ -7,11 +7,19 @@
  *
  *  The check therefore does both halves and reports them together: one real request through
  *  the loopback interface, carrying the token, so the answer proves the whole path; and a read
- *  of the three configurations to see which of them name *this* endpoint.
+ *  of the three configurations to see which of them would reach *this* endpoint.
+ *
+ *  "Would reach" and not "names": the url is the least of it. The token is per workspace, so a
+ *  config carrying another window's token names the right endpoint and still answers 401, and
+ *  an entry that is commented out or turned off names it while doing nothing at all. Reading
+ *  these files loosely is worse than not reading them — it reports a broken client as working
+ *  and hides the one button that would fix it — so each entry is read for its url, its
+ *  credentials and whether it is switched on.
  *--------------------------------------------------------------------------------------------*/
 
 import * as http from 'node:http';
 import * as os from 'node:os';
+import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { BrowserController } from './browserController';
 import { McpServer } from './mcpServer';
@@ -24,8 +32,25 @@ export type McpState =
 	| { readonly kind: 'disabled' }
 	| { readonly kind: 'failed'; readonly error: string };
 
-/** Whether a configuration names this server, another one, or no tab browser at all. */
-type ClientState = 'thisServer' | 'otherServer' | 'none';
+/**
+ * What a client's configuration amounts to. Naming this endpoint is not enough on its own:
+ * the credentials have to be this window's, and the entry has to be switched on — both have
+ * been seen to look right in the file and answer 401, or nothing at all.
+ */
+type ClientState =
+	/** Names this endpoint, with credentials this server will accept. */
+	| 'thisServer'
+	/** Names this endpoint with a token that is not this window's: a 401 for the client. */
+	| 'staleToken'
+	/** Names something else — usually another window, which won the preferred port. */
+	| 'otherServer'
+	/** Names this endpoint, but the entry is turned off. */
+	| 'disabled'
+	| 'none';
+
+/** Worst last: a config with several entries is reported by its most working one. */
+const clientStateOrder: readonly ClientState[] =
+	['thisServer', 'staleToken', 'otherServer', 'disabled', 'none'];
 
 const connectClaudeCommand = 'tabBrowser.connectMcpToClaudeCode';
 const connectCodexCommand = 'tabBrowser.connectMcpToCodex';
@@ -65,8 +90,8 @@ export async function checkMcp(state: McpState, browser: BrowserController): Pro
 
 	const answer = await callServer(server.url, server.token);
 	const [claude, codex] = await Promise.all([
-		claudeState(server.url),
-		codexState(server.urlWithToken),
+		claudeState(server.url, server.token),
+		codexState(server.url, server.urlWithToken),
 	]);
 
 	const detail = [
@@ -79,6 +104,10 @@ export async function checkMcp(state: McpState, browser: BrowserController): Pro
 		vscode.l10n.t("VS Code chat: {0}", vsCodeLine()),
 		vscode.l10n.t("Claude Code (.mcp.json): {0}", clientLine(claude)),
 		vscode.l10n.t("Codex (config.toml): {0}", clientLine(codex)),
+		// `claude mcp add` writes to Claude Code's own settings, which are not ours to read.
+		...(claude === 'none'
+			? [vscode.l10n.t("A connection added with \"claude mcp add\" lives in Claude Code's own settings and cannot be seen from here; /mcp shows it.")]
+			: []),
 	].join('\n');
 
 	// The command that would fix whichever client is not pointing here yet.
@@ -118,11 +147,17 @@ function clientLine(state: ClientState): string {
 	switch (state) {
 		case 'thisServer':
 			return vscode.l10n.t("points at this server");
+		case 'staleToken':
+			// The token is per workspace and kept across restarts, so this is a config written
+			// against another project's window — the endpoint is right, the token is not.
+			return vscode.l10n.t("this endpoint, but with a token this window will refuse — reconnect to fix it");
 		case 'otherServer':
-			// Another window won the preferred port, or the config was written before a restart.
+			// Another window won the preferred port, or the config predates a restart.
 			return vscode.l10n.t("configured, but for another endpoint — reconnect to fix it");
+		case 'disabled':
+			return vscode.l10n.t("configured for this server, but the entry is turned off");
 		case 'none':
-			return vscode.l10n.t("nothing here yet (a global cli configuration is not visible from here)");
+			return vscode.l10n.t("nothing here points at this server");
 	}
 }
 
@@ -180,53 +215,194 @@ async function callServer(
 }
 
 /** Claude Code's project configuration: json, with our entry under `mcpServers`. */
-async function claudeState(url: string): Promise<ClientState> {
+async function claudeState(url: string, token: string): Promise<ClientState> {
 	const folder = vscode.workspace.workspaceFolders?.[0];
 	if (!folder) {
 		return 'none';
 	}
 
-	const text = await readFile(vscode.Uri.joinPath(folder.uri, '.mcp.json'));
+	return claudeClientState(
+		await readFile(vscode.Uri.joinPath(folder.uri, '.mcp.json')), url, token);
+}
+
+/**
+ * The endpoint *and* the credentials, because the token is per workspace: a `.mcp.json` copied
+ * from another project, or written before this window's token was minted, names the right url
+ * and still answers 401. Reading the url alone reported such a config as working.
+ */
+export function claudeClientState(
+	text: string | undefined,
+	url: string,
+	token: string,
+): ClientState {
 	if (!text) {
 		return 'none';
 	}
 
+	let entry: Record<string, unknown> | undefined;
 	try {
-		const entry = JSON.parse(text)?.mcpServers?.[serverName];
-		return entry ? (entry.url === url ? 'thisServer' : 'otherServer') : 'none';
+		entry = JSON.parse(text)?.mcpServers?.[serverName];
 	} catch {
 		// A config that cannot be parsed is one Claude Code will not read either.
 		return 'none';
 	}
+
+	const configured = typeof entry?.url === 'string' ? entry.url : '';
+	if (!configured) {
+		return 'none';
+	}
+	if (!sameEndpoint(configured, url)) {
+		return 'otherServer';
+	}
+
+	// Headers are sent as written, and http header names are case insensitive.
+	const authorization = header(entry?.headers, 'authorization');
+	return authorization === `Bearer ${token}` || configured === `${url}/${token}`
+		? 'thisServer'
+		: 'staleToken';
 }
 
 /**
- * Codex reads the project's `.codex/config.toml` in a trusted repository and always reads
- * `~/.codex/config.toml`, where the entry is named after the project. Both are searched for
- * the url rather than for a name, since the url is what actually decides which window is
- * driven — and it carries the token, so a match is a match.
+ * Codex reads `~/.codex/config.toml` always and the project's `.codex/config.toml` once the
+ * repository is trusted. Both are read here, and every `[mcp_servers.tab-browser*]` entry in
+ * them is judged on its own: the entries carry different names per project, so one config can
+ * hold several and the best of them is what Codex ends up using.
  */
-async function codexState(urlWithToken: string): Promise<ClientState> {
+async function codexState(url: string, urlWithToken: string): Promise<ClientState> {
 	const folder = vscode.workspace.workspaceFolders?.[0];
 	const files = [
 		...(folder ? [vscode.Uri.joinPath(folder.uri, '.codex', 'config.toml')] : []),
-		vscode.Uri.file(`${os.homedir()}/.codex/config.toml`),
+		vscode.Uri.file(path.join(os.homedir(), '.codex', 'config.toml')),
 	];
 
-	let seen: ClientState = 'none';
-	for (const file of files) {
-		const text = await readFile(file);
-		if (!text) {
-			continue;
-		}
-		if (text.includes(urlWithToken)) {
-			return 'thisServer';
-		}
-		if (new RegExp(`\\[mcp_servers\\.${serverName}`).test(text)) {
-			seen = 'otherServer';
+	return codexClientState(await Promise.all(files.map(readFile)), url, urlWithToken);
+}
+
+/** `texts` in order of precedence: the project's config first, the global one after it. */
+export function codexClientState(
+	texts: readonly (string | undefined)[],
+	url: string,
+	urlWithToken: string,
+): ClientState {
+	let state: ClientState = 'none';
+	const seen = new Set<string>();
+
+	for (const text of texts) {
+		for (const entry of text ? codexEntries(text) : []) {
+			// A name defined twice is read from the more specific file, as Codex reads it.
+			if (!entry.name.startsWith(serverName) || seen.has(entry.name)) {
+				continue;
+			}
+			seen.add(entry.name);
+
+			const candidate = codexEntryState(entry, url, urlWithToken);
+			if (clientStateOrder.indexOf(candidate) < clientStateOrder.indexOf(state)) {
+				state = candidate;
+			}
 		}
 	}
-	return seen;
+
+	return state;
+}
+
+function codexEntryState(entry: CodexEntry, url: string, urlWithToken: string): ClientState {
+	const configured = entry.values.get('url') ?? '';
+	if (!configured) {
+		// Not an http server at all, so not one of ours whatever it is named.
+		return 'none';
+	}
+
+	const ours = configured === urlWithToken
+		// The token can also be read from the environment, which cannot be judged from here.
+		|| (sameEndpoint(configured, url) && entry.values.has('bearer_token_env_var'));
+
+	if (entry.values.get('enabled') === 'false') {
+		return ours || sameEndpoint(configured, url) ? 'disabled' : 'none';
+	}
+	if (ours) {
+		return 'thisServer';
+	}
+	return sameEndpoint(configured, url) ? 'staleToken' : 'otherServer';
+}
+
+interface CodexEntry {
+	readonly name: string;
+	readonly values: ReadonlyMap<string, string>;
+}
+
+/**
+ * The `[mcp_servers.*]` tables of a Codex config, comments taken off.
+ *
+ * Not a TOML parser: it reads table headers and the plain `key = value` lines inside them,
+ * which is what `codex mcp add` and this extension write. Anything more exotic reads as
+ * unconfigured, which costs a reconnect — searching the text for the url instead used to
+ * accept a url in a comment, and an entry standing right there with `enabled = false`.
+ */
+function codexEntries(text: string): CodexEntry[] {
+	const entries: CodexEntry[] = [];
+	let values: Map<string, string> | undefined;
+
+	for (const raw of text.split(/\r?\n/)) {
+		const line = withoutComment(raw).trim();
+		if (!line) {
+			continue;
+		}
+
+		// Any header ends the previous table, so keys never land in the wrong one.
+		if (line.startsWith('[')) {
+			const name = /^\[\s*mcp_servers\s*\.\s*([^\]]+?)\s*\]$/.exec(line)?.[1];
+			values = name === undefined ? undefined : new Map();
+			if (values && name !== undefined) {
+				entries.push({ name: unquote(name), values });
+			}
+			continue;
+		}
+
+		const pair = /^([^=]+?)\s*=\s*(.+)$/.exec(line);
+		if (values && pair) {
+			values.set(unquote(pair[1].trim()).toLowerCase(), unquote(pair[2].trim()));
+		}
+	}
+
+	return entries;
+}
+
+/** A `#` opens a comment unless it stands inside a string — and a url can carry one. */
+function withoutComment(line: string): string {
+	let quote: string | undefined;
+
+	for (let at = 0; at < line.length; at++) {
+		const char = line[at];
+		if (quote) {
+			if (char === quote) {
+				quote = undefined;
+			}
+		} else if (char === '"' || char === '\'') {
+			quote = char;
+		} else if (char === '#') {
+			return line.slice(0, at);
+		}
+	}
+
+	return line;
+}
+
+function unquote(value: string): string {
+	return /^(["'])(.*)\1$/.exec(value)?.[2] ?? value;
+}
+
+/** The same server, whether or not the token is carried as the last segment of the url. */
+function sameEndpoint(configured: string, url: string): boolean {
+	return configured === url || configured.startsWith(`${url}/`);
+}
+
+function header(headers: unknown, name: string): string | undefined {
+	if (typeof headers !== 'object' || headers === null) {
+		return undefined;
+	}
+	const found = Object.entries(headers)
+		.find(([key]) => key.toLowerCase() === name);
+	return typeof found?.[1] === 'string' ? found[1].trim() : undefined;
 }
 
 async function readFile(file: vscode.Uri): Promise<string | undefined> {

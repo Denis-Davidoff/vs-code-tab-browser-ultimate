@@ -171,9 +171,12 @@ editor's MCP api (VS Code 1.101 and later; older editors just do without).
 
 **Check connection** in the sidebar answers the question the three configurations above cannot:
 it sends one real request through the loopback interface with the token, and reads all three
-configurations to see which of them name *this* server. A client configured for another window's
-port is the usual surprise — ports are handed out in the order windows open — and it shows up
-here as "configured, but for another endpoint".
+configurations to see which of them would actually reach *this* window. The url is the least of
+it — the token is per workspace, so a config copied from another project names the right
+endpoint and still gets a 401, and an entry that is commented out or has `enabled = false`
+names it while doing nothing — so each is reported for what it is, with the connect command for
+whichever client is not pointing here. A client configured for another window's port is the
+usual surprise, ports being handed out in the order windows open.
 
 The server listens on `127.0.0.1` only, requires the token — as an `Authorization` header or as
 the last segment of the url, one per workspace, so a configuration written for one project

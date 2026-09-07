@@ -78,9 +78,19 @@ getter plus a `refresh()` — the same state the connect commands use to explain
 **Check connection** (`checkMcp`) exists because a running server proves nothing about the
 clients: each of the three is configured elsewhere, and any of them can name another window's
 port. So it does both halves — one real `tools/list` over the loopback interface with the token,
-and a read of `.mcp.json`, `.codex/config.toml` and `~/.codex/config.toml` to see which name
-*this* endpoint (matched by url, and for Codex by the url with the token in it) — and reports
-them in one dialog, with the connect command for whichever client is not pointing here.
+and a read of `.mcp.json`, `.codex/config.toml` and `~/.codex/config.toml` — and reports them in
+one dialog, with the connect command for whichever client is not pointing here.
+
+Reading those files loosely is worse than not reading them at all: it reports a broken client as
+working and hides the button that would fix it. So an entry counts only if it would actually
+reach this window — the url *and* the credentials (the token is per workspace, so another
+window's `.mcp.json` names the right endpoint and answers 401) *and* being switched on. For
+Codex that means the `[mcp_servers.*]` tables are parsed rather than searched: a url in a
+comment and an `enabled = false` entry both used to read as a working configuration. Where a
+name appears in both files the project's wins, being the more specific.
+
+`claudeClientState` and `codexClientState` are pure for that reason — they take the file's text,
+so `test/host.test.mjs` covers the cases that only happen to someone else's config.
 
 Recent pages live in `workspaceState`: a dev url belongs to the project, not to the user.
 

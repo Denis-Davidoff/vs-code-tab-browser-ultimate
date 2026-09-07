@@ -5,7 +5,9 @@
 - A view in the activity bar: the page the panel has open, the copy menu's entries, the mcp
   server's state with the two connect commands, and the pages this project has visited.
 - **Check MCP Connection**: one real request to the server, plus a read of the three client
-  configurations, to see which of them point at this window rather than another one.
+  configurations, to see which of them would actually reach this window — the endpoint, the
+  token (it is per workspace, so another project's config answers 401) and whether the entry is
+  switched on at all.
 - **Copy MCP Server URL**, for clients this extension cannot configure itself.
 
 ## 0.2.1 — 2026-09-07

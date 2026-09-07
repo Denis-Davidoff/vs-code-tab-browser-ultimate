@@ -115,6 +115,7 @@ const { registerTerminalLinks } = await import('./.bundles/terminal-links-bundle
 const assistants = await import('./.bundles/assistants-bundle.mjs');
 const { McpServer } = await import('./.bundles/mcp-bundle.mjs');
 const { connectToClaudeCode, connectToCodex } = await import('./.bundles/mcp-setup-bundle.mjs');
+const { claudeClientState, codexClientState } = await import('./.bundles/mcp-check-bundle.mjs');
 
 /** A 1x1 png, the smallest thing that has to be recognised as an image. */
 const pngBytes = Buffer.from(
@@ -839,6 +840,93 @@ workspaceFolders = [{ uri: { scheme: 'file', fsPath: path.dirname(configFile) } 
 mcp.dispose();
 check('the port is released on dispose',
 	await fetch(mcp.url ?? 'http://127.0.0.1:43310/mcp').then(() => false, () => true));
+
+// -- reading a client's configuration back ------------------------------------------------------
+
+// The point of the check is to say which client would actually reach *this* window. A config
+// that names the right url and cannot use it — an old token, a commented out line, an entry
+// turned off — is the case worth catching: reported as working, it hides the one button that
+// would fix it.
+const checkUrl = 'http://127.0.0.1:43110/mcp';
+const checkToken = 'a'.repeat(64);
+const checkUrlWithToken = `${checkUrl}/${checkToken}`;
+const claudeConfig = entry => JSON.stringify({ mcpServers: { 'tab-browser': entry } });
+const claudeState = entry => claudeClientState(claudeConfig(entry), checkUrl, checkToken);
+const codexState = (...texts) => codexClientState(texts, checkUrl, checkUrlWithToken);
+
+check('a Claude Code config with this window\'s token is the one working case',
+	claudeState({ type: 'http', url: checkUrl, headers: { Authorization: `Bearer ${checkToken}` } })
+	=== 'thisServer');
+
+check('an http header name is read whatever its case',
+	claudeState({ url: checkUrl, headers: { authorization: `Bearer ${checkToken}` } }) === 'thisServer');
+
+check('a Claude Code config carrying another window\'s token is not "points at this server"',
+	claudeState({ url: checkUrl, headers: { Authorization: `Bearer ${'b'.repeat(64)}` } })
+	=== 'staleToken');
+
+check('nor is one carrying no token at all',
+	claudeState({ url: checkUrl }) === 'staleToken');
+
+check('a token in the url is accepted there too, as the server accepts it',
+	claudeState({ url: checkUrlWithToken }) === 'thisServer');
+
+check('another port is another window',
+	claudeState({ url: 'http://127.0.0.1:43111/mcp', headers: { Authorization: `Bearer ${checkToken}` } })
+	=== 'otherServer');
+
+check('no entry and no file are both "nothing points here"',
+	claudeClientState(JSON.stringify({ mcpServers: {} }), checkUrl, checkToken) === 'none'
+	&& claudeClientState(undefined, checkUrl, checkToken) === 'none'
+	&& claudeClientState('{ not json', checkUrl, checkToken) === 'none');
+
+check('a Codex entry with this url is the one working case',
+	codexState(`[mcp_servers.tab-browser]\nurl = "${checkUrlWithToken}"\n`) === 'thisServer');
+
+check('a Codex entry named after another project counts as well',
+	codexState(`[mcp_servers.tab-browser-my-app]\nurl = "${checkUrlWithToken}"\n`) === 'thisServer');
+
+check('a Codex entry that is turned off is not a working configuration',
+	codexState(`[mcp_servers.tab-browser]\nurl = "${checkUrlWithToken}"\nenabled = false\n`)
+	=== 'disabled');
+
+check('this url in a comment is not a configuration either',
+	codexState(`[mcp_servers.tab-browser]\n# url = "${checkUrlWithToken}"\nurl = "http://127.0.0.1:43999/mcp"\n`)
+	=== 'otherServer');
+
+check('a whole entry left in comments is nothing at all',
+	codexState(`# [mcp_servers.tab-browser]\n# url = "${checkUrlWithToken}"\n`) === 'none');
+
+check('a token read from the environment cannot be judged, so the endpoint decides',
+	codexState(`[mcp_servers.tab-browser]\nurl = "${checkUrl}"\nbearer_token_env_var = "TB_TOKEN"\n`)
+	=== 'thisServer');
+
+check('this endpoint with no way to authenticate is a 401 waiting to happen',
+	codexState(`[mcp_servers.tab-browser]\nurl = "${checkUrl}"\n`) === 'staleToken');
+
+// A parser that ignored the second header would read its url as ours and call it working.
+check('keys after another table do not fall into ours',
+	codexState(`[mcp_servers.tab-browser]\nurl = "http://127.0.0.1:43999/mcp"\n\n[something_else]\nurl = "${checkUrlWithToken}"\n`)
+	=== 'otherServer');
+
+check('several entries are reported by the one that works',
+	codexState(
+		`[mcp_servers.tab-browser]\nurl = "${checkUrlWithToken}"\nenabled = false\n`,
+		`[mcp_servers.tab-browser-other]\nurl = "${checkUrlWithToken}"\n`)
+	=== 'thisServer');
+
+check('and by the closest to working when none does',
+	codexState(`[mcp_servers.tab-browser]\nurl = "http://127.0.0.1:43999/mcp"\n[mcp_servers.tab-browser-b]\nurl = "${checkUrl}"\n`)
+	=== 'staleToken');
+
+check('a name defined in both files is read from the project, which is the more specific one',
+	codexState(
+		`[mcp_servers.tab-browser]\nurl = "http://127.0.0.1:43999/mcp"\n`,
+		`[mcp_servers.tab-browser]\nurl = "${checkUrlWithToken}"\n`)
+	=== 'otherServer');
+
+check('a Codex config with no tab browser in it says so',
+	codexState('[mcp_servers.other]\nurl = "http://127.0.0.1:1/mcp"\n', undefined) === 'none');
 
 // -- activation ------------------------------------------------------------------------------
 
