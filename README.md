@@ -14,32 +14,39 @@ The toolbar's split button runs the entry you used last; the chevron next to it 
 - **Copy element** — click an element in the page and get a full report of it (below).
 - **Copy element XPath** — the same pick, but only the XPath of the element.
 - **Copy path to element** — the same pick, but only the CSS selector.
-- **Add element to Claude Code**, **Add element XPath to Claude Code**, **Add path to element
-  to Claude Code** — the same three, handed straight to the Claude Code chat.
+- **Add element / element XPath / path to element to Claude Code** — the same three, handed
+  straight to the Claude Code chat.
+- **Add element / element XPath / path to element to Codex** — the same, for Codex.
 - **Copy console.log** — everything the page logged since it was loaded, plus uncaught errors.
-- **Add console.log to Claude Code** — the same log, handed to the chat as a file.
+- **Add console.log to Claude Code** / **to Codex** — the same log, handed over as a file.
 
 Multi-line copies also land on the clipboard as a temporary file, so pasting them into a chat
 attaches a document instead of a wall of text; anything that only understands text still gets
 the text. Set `tabBrowser.copyAsFile` to `false` to always paste as text.
 
-### Add element to Claude Code
+### Handing an element to an assistant
 
-Writes the report to `.claude/tab-browser/element-….md` in the workspace and puts an
-`@`-mention of it into Claude Code's prompt box, so the element is in the conversation without
-copying and pasting anything. The XPath and selector entries do the same with a one page file
-that carries just that path and the url it came from — a mention points at a file, so even a
-single line travels as one.
+The report is written to a file and then given to the assistant. The XPath and selector entries
+do the same with a one page file carrying just that path and the url it came from: neither
+assistant can be handed content any other way — Codex only accepts a real file on disk, and a
+Claude Code mention is a path — so even a single line travels as one.
 
-Claude Code accepts nothing but that mention into a conversation that is already open; plain
-text can only be pre-filled when a new conversation is created. Set
-`tabBrowser.claude.pathDelivery` to `newConversation` to have the two path entries open a new
-conversation with the path in its prompt box instead of writing a file. The folder gets a `.gitignore` of its own — these are scratch
-files for one conversation — and reports older than a day are cleaned up on the way.
+Reports are swept five hours after they were written: when the window opens, and at most once
+an hour while it is running.
 
-It needs the Claude Code extension installed and a folder open, because a mention is a path
-relative to the workspace. Without either, the element lands on the clipboard instead and the
-notification says so.
+- **Claude Code** gets an `@`-mention of the file in its prompt box, which lands in the
+  conversation you already have open. Its reports go to `.tab-browser/` in the workspace, which
+  gets a `.gitignore` of its own; a folder has to be open, because a mention is a path relative
+  to it. It accepts nothing but that mention into an open conversation:
+  plain text can only be pre-filled when a new conversation is created, so
+  `tabBrowser.claude.pathDelivery: newConversation` makes the two path entries open a new
+  conversation with the path in its prompt box instead.
+- **Codex** gets the file attached to the current thread outright. It stores an absolute path,
+  so its reports go to a temporary directory and never touch the project — and no folder has to
+  be open at all.
+
+The menu only shows entries for assistants that are actually installed. When a hand-over is not
+possible the report lands on the clipboard instead, and the notification says why.
 
 ### What "Copy element" writes
 

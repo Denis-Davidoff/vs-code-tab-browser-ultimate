@@ -34,6 +34,12 @@ await Promise.all([
 	}),
 	esbuild.build({
 		...shared,
+		entryPoints: ['src/assistants.ts'],
+		outfile: 'test/.bundles/assistants-bundle.mjs',
+		alias: { vscode: './test/vscode-stub-entry.mjs' },
+	}),
+	esbuild.build({
+		...shared,
 		entryPoints: ['src/terminalLinks.ts'],
 		outfile: 'test/.bundles/terminal-links-bundle.mjs',
 		alias: { vscode: './test/vscode-stub-entry.mjs' },

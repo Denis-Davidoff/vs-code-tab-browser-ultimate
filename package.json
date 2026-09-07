@@ -87,6 +87,21 @@
 				"category": "Tab Browser Ultimate"
 			},
 			{
+				"command": "tabBrowser.addElementToCodex",
+				"title": "Add Element to Codex",
+				"category": "Tab Browser Ultimate"
+			},
+			{
+				"command": "tabBrowser.addElementXPathToCodex",
+				"title": "Add Element XPath to Codex",
+				"category": "Tab Browser Ultimate"
+			},
+			{
+				"command": "tabBrowser.addElementPathToCodex",
+				"title": "Add Path to Element to Codex",
+				"category": "Tab Browser Ultimate"
+			},
+			{
 				"command": "tabBrowser.copyConsole",
 				"title": "Copy Console Output",
 				"category": "Tab Browser Ultimate"
@@ -94,6 +109,11 @@
 			{
 				"command": "tabBrowser.addConsoleToClaude",
 				"title": "Add Console Output to Claude Code",
+				"category": "Tab Browser Ultimate"
+			},
+			{
+				"command": "tabBrowser.addConsoleToCodex",
+				"title": "Add Console Output to Codex",
 				"category": "Tab Browser Ultimate"
 			}
 		],

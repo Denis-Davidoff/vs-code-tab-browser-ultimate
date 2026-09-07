@@ -12,8 +12,12 @@ export type CopyCommand =
 	| 'elementClaude'
 	| 'elementXPathClaude'
 	| 'elementPathClaude'
+	| 'elementCodex'
+	| 'elementXPathCodex'
+	| 'elementPathCodex'
 	| 'console'
-	| 'consoleClaude';
+	| 'consoleClaude'
+	| 'consoleCodex';
 
 export type WebviewToExtensionMessage =
 	| { readonly type: 'openExternal'; readonly url: string }

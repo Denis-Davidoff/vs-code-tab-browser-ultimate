@@ -21,6 +21,17 @@ body {
 	/* Explicit rows: the hint bar is `display: none` while idle, and an auto-placed
 	   `.content` would then land in the auto row and collapse to its intrinsic height. */
 	grid-template-rows: auto auto 1fr;
+	/* An implicit `auto` column is at least as wide as its widest item's min-content, and the
+	   hint bar holds an unbreakable css selector. Without this the panel — the iframe with it —
+	   grows to the width of the longest path hovered, and the page reflows to match. */
+	grid-template-columns: minmax(0, 1fr);
+}
+
+.header,
+.hint,
+.content {
+	/* Same reason: a grid item's automatic minimum size is its min-content width. */
+	min-width: 0;
 }
 
 .header {

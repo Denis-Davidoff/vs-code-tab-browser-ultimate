@@ -84,24 +84,35 @@ macOS goes through one `NSPasteboardItem` carrying both `public.file-url` and
 else — and in remote workspaces, where the clipboard belongs to another machine — it falls back
 to plain text.
 
-### Handing an element to Claude Code
+### Handing a report to an assistant
 
-`src/claudeCode.ts`. The Claude Code extension exports no api, so this drives the one command
-that does the job — `claude-vscode.insertAtMention`, which takes no arguments and builds the
-mention from the **active editor**. Hence the dance: write the report into
-`<workspace>/.claude/tab-browser/`, open it, run the command, close the tab again (by uri, not
-`closeActiveEditor` — inserting reveals the chat, which may by then hold the active tab).
+`src/assistants.ts` covers both, and they are not alike:
 
-Text is a different matter: an open conversation takes only that mention, and a prompt handed
-to `claude-vscode.editor.open(sessionId, prompt)` is applied only while the panel is being
-created — for a session that already has one the extension answers "Session is already open.
-Your prompt was not applied". So `openWithPrompt` always starts a new conversation, and
-`tabBrowser.claude.pathDelivery` lets the path entries choose between the two.
+- **Claude Code** (`Anthropic.claude-code`) exports no api. The one command that does the job,
+  `claude-vscode.insertAtMention`, takes no arguments and builds the mention from the **active
+  editor**, so the report is written into the workspace, opened, mentioned, and its tab closed
+  again — by uri, not `closeActiveEditor`, because inserting reveals the chat, which may by then
+  hold the active tab. The path is relative to the workspace, hence `needsWorkspace`.
+- **Codex** (`openai.chatgpt`) has `chatgpt.addFileToThread(uri)`, which attaches the file to
+  the current thread and opens the sidebar itself. It stores an absolute path, so its reports go
+  to the temp directory and never land in the project, and no folder has to be open.
 
-That command id is an implementation detail of the extension, not a contract: `isAvailable()`
-checks both the extension and the command, and every failure falls back to the clipboard with a
-notification. Only `vscode://anthropic.claude-code/open?prompt=…` is documented, and it cannot
-carry a file.
+There is no way around the file for either of them: `addFileToThread` drops anything whose
+scheme is not `file` and the agent reads the path from disk later, so a virtual document buys
+nothing — Codex writes its own attachments to disk the same way. Reports are swept five hours
+after they were written, at activation and at most hourly from the write path (`prune()`).
+
+Text is a different matter. An open Claude Code conversation takes only that mention, and a
+prompt handed to `claude-vscode.editor.open(sessionId, prompt)` is applied only while the panel
+is being created — for a session that already has one the extension answers "Session is already
+open. Your prompt was not applied". So `openClaudeWithPrompt` always starts a new conversation,
+and `tabBrowser.claude.pathDelivery` lets the path entries choose between the two. Codex has no
+equivalent.
+
+Both command ids are implementation details of those extensions, not contracts: `isAvailable()`
+checks the extension *and* the command, and every failure falls back to the clipboard with a
+notification. The copy menu is built per panel from `isInstalled()`, so entries for an assistant
+that is not there never appear — and the webview drops a remembered entry that no longer exists.
 
 ## Terminal links
 

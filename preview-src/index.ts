@@ -318,6 +318,11 @@ function setLastCopyCommand(command: CopyCommand): void {
 	lastCopyCommand = command;
 	saveState();
 
+	if (!menuItems().some(item => item.dataset.command === command)) {
+		// The entry was remembered while an assistant was installed that is no longer there.
+		command = lastCopyCommand = 'element';
+	}
+
 	for (const item of menuItems()) {
 		const isCurrent = item.dataset.command === command;
 		item.classList.toggle('current', isCurrent);
@@ -413,8 +418,9 @@ function setPickerActive(active: boolean): void {
 
 type HintState = 'picking' | 'copied' | 'error' | 'waiting';
 
-function goesToClaude(command: CopyCommand): boolean {
-	return command.endsWith('Claude');
+/** The assistant a menu entry sends to, if any. */
+function assistantOf(command: CopyCommand): string | undefined {
+	return command.endsWith('Claude') ? 'Claude Code' : command.endsWith('Codex') ? 'Codex' : undefined;
 }
 
 /** What the running pick will do with the element, for the hint bar. */
@@ -422,7 +428,8 @@ function pickDescription(): string {
 	const what = pickCommand.startsWith('elementXPath')
 		? 'its XPath'
 		: pickCommand.startsWith('elementPath') ? 'its path' : 'it';
-	return goesToClaude(pickCommand) ? `add ${what} to Claude Code` : `copy ${what}`;
+	const assistant = assistantOf(pickCommand);
+	return assistant ? `add ${what} to ${assistant}` : `copy ${what}`;
 }
 
 function showHint(state: HintState, detail?: string): void {
@@ -444,9 +451,8 @@ function showHint(state: HintState, detail?: string): void {
 			hintDetail.textContent = '';
 			break;
 		case 'copied':
-			hintMessage.textContent = goesToClaude(lastCopyCommand)
-				? 'Added to Claude Code:'
-				: 'Copied to clipboard:';
+			const assistant = assistantOf(lastCopyCommand);
+			hintMessage.textContent = assistant ? `Added to ${assistant}:` : 'Copied to clipboard:';
 			hintDetail.textContent = detail ?? '';
 			hintResetTimer = setTimeout(() => (pickerActive ? showHint('picking') : hideHint()), 4000);
 			break;

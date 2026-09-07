@@ -7,6 +7,7 @@ import { BrowserProxy } from './browserProxy';
 import { TabBrowserManager } from './tabBrowserManager';
 import { TabBrowserView } from './tabBrowserView';
 import { registerTerminalLinks } from './terminalLinks';
+import { cleanUpReports } from './assistants';
 import { CopyCommand } from '../shared/webviewProtocol';
 
 declare class URL {
@@ -22,8 +23,12 @@ const copyElementPathCommand = 'tabBrowser.copyElementPath';
 const addElementToClaudeCommand = 'tabBrowser.addElementToClaude';
 const addElementXPathToClaudeCommand = 'tabBrowser.addElementXPathToClaude';
 const addElementPathToClaudeCommand = 'tabBrowser.addElementPathToClaude';
+const addElementToCodexCommand = 'tabBrowser.addElementToCodex';
+const addElementXPathToCodexCommand = 'tabBrowser.addElementXPathToCodex';
+const addElementPathToCodexCommand = 'tabBrowser.addElementPathToCodex';
 const copyConsoleCommand = 'tabBrowser.copyConsole';
 const addConsoleToClaudeCommand = 'tabBrowser.addConsoleToClaude';
+const addConsoleToCodexCommand = 'tabBrowser.addConsoleToCodex';
 
 const enabledHosts = new Set<string>([
 	'localhost',
@@ -50,6 +55,9 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(manager);
 
 	context.subscriptions.push(registerTerminalLinks(url => manager.show(url)));
+
+	// The reports handed to an assistant outlive their conversation by a few hours at most.
+	cleanUpReports();
 
 	context.subscriptions.push(vscode.window.registerWebviewPanelSerializer(TabBrowserView.viewType, {
 		deserializeWebviewPanel: async (panel, state) => {
@@ -94,8 +102,12 @@ export function activate(context: vscode.ExtensionContext) {
 	registerCopyCommand(addElementToClaudeCommand, 'elementClaude');
 	registerCopyCommand(addElementXPathToClaudeCommand, 'elementXPathClaude');
 	registerCopyCommand(addElementPathToClaudeCommand, 'elementPathClaude');
+	registerCopyCommand(addElementToCodexCommand, 'elementCodex');
+	registerCopyCommand(addElementXPathToCodexCommand, 'elementXPathCodex');
+	registerCopyCommand(addElementPathToCodexCommand, 'elementPathCodex');
 	registerCopyCommand(copyConsoleCommand, 'console');
 	registerCopyCommand(addConsoleToClaudeCommand, 'consoleClaude');
+	registerCopyCommand(addConsoleToCodexCommand, 'consoleCodex');
 
 	// `registerExternalUriOpener` is a proposed API that is only granted to extensions
 	// shipped with the editor. Guard the call so activation still succeeds without it.

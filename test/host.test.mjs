@@ -20,6 +20,13 @@ function check(name, ok, detail = '') {
 
 /** Settings the stubbed `workspace.getConfiguration` hands out; empty means "use the default". */
 const settings = {};
+/** Extensions the stub reports as installed, and the commands they contribute. */
+const installedExtensions = new Set();
+const contributedCommands = new Set();
+/** Commands the code under test executed, newest last. */
+const executed = [];
+/** Workspace folders the stub reports; `undefined` stands for "no folder open". */
+let workspaceFolders;
 /** The terminal link provider, captured when the module under test registers it. */
 let terminalLinkProvider;
 
@@ -33,14 +40,23 @@ globalThis.__vscodeStub = {
 	env: { clipboard: { writeText: async () => { } } },
 	workspace: {
 		getConfiguration: () => ({ get: (key, fallback) => (key in settings ? settings[key] : fallback) }),
+		get workspaceFolders() { return workspaceFolders; },
+		openTextDocument: async uri => ({ uri }),
 	},
-	commands: { executeCommand: () => { } },
+	commands: {
+		executeCommand: (...args) => { executed.push(args); },
+		getCommands: async () => [...contributedCommands],
+	},
+	extensions: { getExtension: id => (installedExtensions.has(id) ? { id } : undefined) },
 	window: {
 		showInformationMessage: () => { }, showErrorMessage: () => { },
 		registerTerminalLinkProvider: provider => {
 			terminalLinkProvider = provider;
 			return { dispose() { } };
 		},
+		showTextDocument: async () => { },
+		showWarningMessage: () => { },
+		tabGroups: { all: [], close: async () => { } },
 	},
 	ExternalUriOpenerPriority: {},
 	UIKind: {},
@@ -49,6 +65,7 @@ globalThis.__vscodeStub = {
 const { formatPickedElement, formatConsoleReport } = await import('./.bundles/view-bundle.mjs');
 const { defaultIconUrl, discoverIconUrl, fetchIcon } = await import('./.bundles/favicon-bundle.mjs');
 const { registerTerminalLinks } = await import('./.bundles/terminal-links-bundle.mjs');
+const assistants = await import('./.bundles/assistants-bundle.mjs');
 
 /** A 1x1 png, the smallest thing that has to be recognised as an image. */
 const pngBytes = Buffer.from(
@@ -113,6 +130,7 @@ if (!executablePath) {
 }
 
 const browser = await chromium.launch({ executablePath });
+const panelBrowser = browser;
 let element;
 let iconHref;
 let overlay;
@@ -159,7 +177,7 @@ try {
 		};
 	});
 } finally {
-	await browser.close();
+	// The panel layout check below still needs it; closed at the end of the file.
 }
 
 // -- what the page reported ------------------------------------------------------------------
@@ -282,6 +300,71 @@ check('page markup and css cannot end their code blocks early',
 	&& fencedElement.split('\n').filter(line => /^`{3,}css$/.test(line)).every(line => line.length >= 9),
 	fencedElement.split('\n').filter(line => /^`{3,}/.test(line)).join(' | '));
 
+// -- the markup of the panel --------------------------------------------------------------------
+
+// The toolbar is a template literal in the source, and an edit to it that leaves a tag stranded
+// puts loose menu buttons straight into the toolbar. Checking the source is crude, but it is
+// what catches the mistake.
+const viewSource = await fs.readFile(path.join(projectRoot, 'src/tabBrowserView.ts'), 'utf8');
+const template = viewSource.slice(
+	viewSource.indexOf('<!DOCTYPE html>'), viewSource.indexOf('</html>') + '</html>'.length);
+
+const voidElements = new Set(['meta', 'link', 'input', 'br', 'hr', 'img', 'source']);
+const stack = [];
+let unbalanced;
+
+// Placeholders can hold anything, including whole elements: they are not markup here.
+const tags = template.replace(/\$\{[^}]*\}/g, '').matchAll(/<(\/?)([a-zA-Z][\w-]*)\b[^>]*?(\/?)>/g);
+for (const match of tags) {
+	const [, closing, name, selfClosing] = match;
+	if (voidElements.has(name.toLowerCase()) || selfClosing || name.toLowerCase() === '!doctype') {
+		continue;
+	}
+	if (!closing) {
+		stack.push(name);
+		continue;
+	}
+	if (stack.pop() !== name) {
+		unbalanced ??= `</${name}> at ${match.index}`;
+	}
+}
+
+check('the panel markup closes every tag it opens',
+	!unbalanced && stack.length === 0, unbalanced ?? `left open: ${stack.join(', ')}`);
+
+check('every menu entry lives inside the copy menu',
+	!/role="menuitem"/.test(template), 'a menu button is written into the toolbar itself');
+
+// -- the panel's own layout --------------------------------------------------------------------
+
+// The hint bar holds an unbreakable css selector, and a grid track is at least as wide as its
+// widest item's min-content: without a `minmax(0, 1fr)` column the whole panel, iframe
+// included, grows to the length of the longest path hovered and the page reflows to match.
+const longSelector = 'div.a-very-long-generated-class-name > div.another-one-just-as-long'
+	+ ' > section.and-a-third > ul.list > li:nth-of-type(7) > span.leaf-node-name';
+
+const panel = await (async () => {
+	const css = await fs.readFile(path.join(projectRoot, 'media/main.css'), 'utf8');
+	const tab = await panelBrowser.newPage({ viewport: { width: 800, height: 600 } });
+	await tab.setContent(`<!DOCTYPE html><html><head><style>${css}</style></head><body>
+		<header class="header"><input class="url-input" value="http://localhost:5173/"></header>
+		<div class="hint"><span class="hint-message">Click an element to copy it.</span
+			><span class="hint-detail">${longSelector}</span></div>
+		<div class="content"><iframe></iframe></div></body></html>`);
+	const measured = await tab.evaluate(() => ({
+		viewport: window.innerWidth,
+		content: Math.round(document.querySelector('.content').getBoundingClientRect().width),
+		iframe: Math.round(document.querySelector('iframe').getBoundingClientRect().width),
+		scrollWidth: document.documentElement.scrollWidth,
+	}));
+	await tab.close();
+	return measured;
+})();
+
+check('a long path in the hint bar does not widen the panel',
+	panel.content === panel.viewport && panel.iframe === panel.viewport
+	&& panel.scrollWidth === panel.viewport, JSON.stringify(panel));
+
 // -- the picker's overlay ---------------------------------------------------------------------
 
 check('the label of an element at the right edge stays inside the viewport',
@@ -361,6 +444,72 @@ check('mode "never" hands every url back to the editor',
 	linksOn(viteLine).length === 0);
 delete settings['terminalLinks.mode'];
 
+// -- handing a report to an assistant ----------------------------------------------------------
+
+const reportName = `report-${Date.now()}.md`;
+
+check('nothing is delivered when the extension is not installed',
+	await assistants.handOver('codex', 'x', reportName) === 'unavailable');
+
+installedExtensions.add('openai.chatgpt');
+check('an installed extension without the command still counts as unavailable',
+	await assistants.handOver('codex', 'x', reportName) === 'unavailable');
+
+contributedCommands.add('chatgpt.addFileToThread');
+check('Codex takes the file by uri, and needs no folder open',
+	await assistants.handOver('codex', '# report', reportName) === 'delivered'
+	&& executed.at(-1)?.[0] === 'chatgpt.addFileToThread'
+	&& String(executed.at(-1)?.[1]?.fsPath ?? '').endsWith(reportName),
+	JSON.stringify(executed.at(-1)));
+
+check('the report really is on disk, with its content',
+	await fs.readFile(executed.at(-1)[1].fsPath, 'utf8') === '# report');
+
+installedExtensions.add('Anthropic.claude-code');
+contributedCommands.add('claude-vscode.insertAtMention');
+check('Claude Code says so when there is no folder to name the file in',
+	await assistants.handOver('claude', 'x', reportName) === 'noWorkspace');
+
+workspaceFolders = [{ uri: { scheme: 'file', fsPath: await fs.mkdtemp('/tmp/tab-browser-test-') } }];
+check('with a folder open Claude Code gets the file mentioned',
+	await assistants.handOver('claude', '# report', reportName) === 'delivered'
+	&& executed.at(-1)?.[0] === 'claude-vscode.insertAtMention', JSON.stringify(executed.at(-1)));
+
+check('a Codex report stays out of the project even with a folder open',
+	await assistants.handOver('codex', '# report', `codex-${reportName}`) === 'delivered'
+	&& !String(executed.at(-1)[1].fsPath).startsWith(workspaceFolders[0].uri.fsPath),
+	executed.at(-1)?.[1]?.fsPath);
+
+check('the report lands in the workspace, in a folder git is told to ignore',
+	await fs.readFile(path.join(workspaceFolders[0].uri.fsPath, '.tab-browser', reportName), 'utf8')
+	=== '# report'
+	&& (await fs.readFile(path.join(workspaceFolders[0].uri.fsPath, '.tab-browser', '.gitignore'), 'utf8'))
+		.trim() === '*');
+
+// -- reports do not pile up ---------------------------------------------------------------------
+
+const reportsIn = path.join(workspaceFolders[0].uri.fsPath, '.tab-browser');
+const stale = path.join(reportsIn, 'stale.md');
+const fresh = path.join(reportsIn, 'fresh.md');
+await fs.writeFile(stale, 'old');
+await fs.writeFile(fresh, 'new');
+const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000);
+await fs.utimes(stale, sixHoursAgo, sixHoursAgo);
+
+await assistants.cleanUpReports();
+check('a report older than five hours is swept at startup',
+	!(await fs.access(stale).then(() => true, () => false)));
+check('a recent report and the .gitignore survive the sweep',
+	await fs.readFile(fresh, 'utf8') === 'new'
+	&& await fs.readFile(path.join(reportsIn, '.gitignore'), 'utf8') === '*\n');
+
+// The sweep runs at most once an hour, so writing right after it leaves the file it just made.
+await fs.utimes(fresh, sixHoursAgo, sixHoursAgo);
+await assistants.handOver('codex', '# report', `after-${reportName}`);
+check('writing a report does not sweep again within the hour',
+	await fs.readFile(fresh, 'utf8') === 'new');
+
+await browser.close();
 server.close();
 
 console.log(failures ? `\n${failures} check(s) failed` : '\nall checks passed');

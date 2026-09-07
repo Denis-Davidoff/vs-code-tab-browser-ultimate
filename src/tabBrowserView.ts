@@ -6,7 +6,7 @@
 import * as vscode from 'vscode';
 import { BrowserProxy, getConfiguration, isLocalUrl, parseHttpUrl } from './browserProxy';
 import { copyReport, slugify } from './clipboardFile';
-import * as claudeCode from './claudeCode';
+import * as assistants from './assistants';
 import { defaultIconUrl, discoverIconUrl, fetchIcon } from './favicon';
 import { Disposable } from './dispose';
 import { generateUuid } from './uuid';
@@ -254,16 +254,16 @@ export class TabBrowserView extends Disposable {
 		const configuration = getConfiguration();
 		const keepPickerActive = configuration.get<boolean>('picker.keepActiveAfterPick', false);
 
-		// `console` never reaches here; a pick always comes from one of the element entries.
-		const action = elementActions[command as Exclude<CopyCommand, 'console' | 'consoleClaude'>]
-			?? elementActions.element;
+		// A console entry never reaches here; a pick always comes from an element one.
+		const action = elementActions[command as ElementCommand] ?? elementActions.element;
 		// The menu entries for a path say which one they mean; only "Copy element" is configurable.
 		const format: ElementCopyFormat = action.format
 			?? configuration.get<ElementCopyFormat>('picker.copyFormat', 'context');
 		const text = formatPickedElement(element, format);
 		const summary = elementSummary(element, format);
 
-		if (action.toClaude && await this._sendToClaudeCode(element, format, summary, keepPickerActive)) {
+		if (action.assistant
+			&& await this._sendToAssistant(action.assistant, element, format, summary, keepPickerActive)) {
 			return;
 		}
 
@@ -287,22 +287,17 @@ export class TabBrowserView extends Disposable {
 	 * Writes the report into the workspace and lets Claude Code mention it. Returns false when
 	 * that is not possible, so the pick can still end up on the clipboard.
 	 */
-	private async _sendToClaudeCode(
+	private async _sendToAssistant(
+		assistant: assistants.Assistant,
 		element: PickedElement,
 		format: ElementCopyFormat,
 		summary: string,
 		keepPickerActive: boolean,
 	): Promise<boolean> {
-		if (!await claudeCode.isAvailable()) {
-			vscode.window.showWarningMessage(
-				vscode.l10n.t("Claude Code is not installed, so the element was copied to the clipboard instead."));
-			return false;
-		}
-
-		// A bare path can go into a new conversation as text, if that is what is wanted.
-		if (format !== 'context'
+		// A bare path can go into a new Claude Code conversation as text, if that is wanted.
+		if (assistant === 'claude' && format !== 'context'
 			&& getConfiguration().get<string>('claude.pathDelivery', 'mention') === 'newConversation'
-			&& await claudeCode.openWithPrompt(summary)) {
+			&& await assistants.openClaudeWithPrompt(summary)) {
 			this._post({ type: 'didCopy', text: summary, keepPickerActive });
 			this._announce(vscode.l10n.t("Added to a new Claude Code conversation: {0}", summary));
 			return true;
@@ -310,29 +305,52 @@ export class TabBrowserView extends Disposable {
 
 		const kind = format === 'xpath' ? 'xpath' : format === 'css' ? 'path' : 'context';
 		const fileName = `element-${kind}-${slugify(element.descriptor)}-${stamp()}.md`;
-		// A mention points at a file, so even a one line path travels as one.
+		// Both assistants take a file, so even a one line path travels as one.
 		const report = format === 'context'
 			? formatElementContext(element)
 			: formatPathReport(element, format, summary);
 
-		let file: vscode.Uri | undefined;
+		if (!await this._handOver(assistant, report, fileName, summary, keepPickerActive)) {
+			return false;
+		}
+		return true;
+	}
+
+	/** Shared by the element and the console entries; false means "fall back to the clipboard". */
+	private async _handOver(
+		assistant: assistants.Assistant,
+		report: string,
+		fileName: string,
+		summary: string,
+		keepPickerActive: boolean,
+	): Promise<boolean> {
+		const name = assistants.name(assistant);
+		let result: assistants.HandOverResult;
 		try {
-			file = await claudeCode.mentionReport(report, fileName);
+			result = await assistants.handOver(assistant, report, fileName);
 		} catch (error) {
 			vscode.window.showErrorMessage(vscode.l10n.t(
-				"Could not hand the element to Claude Code: {0}",
+				"Could not hand this to {0}: {1}",
+				name,
 				error instanceof Error ? error.message : String(error)));
 			return false;
 		}
 
-		if (!file) {
-			vscode.window.showWarningMessage(vscode.l10n.t(
-				"Claude Code mentions files by their path in the workspace, and no folder is open. The element was copied to the clipboard instead."));
-			return false;
+		switch (result) {
+			case 'unavailable':
+				vscode.window.showWarningMessage(vscode.l10n.t(
+					"{0} is not installed, so this was copied to the clipboard instead.", name));
+				return false;
+
+			case 'noWorkspace':
+				vscode.window.showWarningMessage(vscode.l10n.t(
+					"{0} names files by their path in the workspace, and no folder is open. This was copied to the clipboard instead.",
+					name));
+				return false;
 		}
 
 		this._post({ type: 'didCopy', text: summary, keepPickerActive });
-		this._announce(vscode.l10n.t("Added {0} to Claude Code: {1}", fileName, summary));
+		this._announce(vscode.l10n.t("Added {0} to {1}: {2}", fileName, name, summary));
 		return true;
 	}
 
@@ -346,25 +364,12 @@ export class TabBrowserView extends Disposable {
 		const summary = vscode.l10n.t("{0} console entries", entries.length);
 		const fileName = `console-${slugify(hostOf(documentUrl))}-${stamp()}`;
 
-		if (command === 'consoleClaude' && await claudeCode.isAvailable()) {
-			try {
-				const file = await claudeCode.mentionReport(
-					formatConsoleReport(text, documentUrl), `${fileName}.md`);
-				if (file) {
-					this._post({ type: 'didCopy', text: summary, keepPickerActive: false });
-					this._announce(vscode.l10n.t("Added {0} to Claude Code: {1}", `${fileName}.md`, summary));
-					return;
-				}
-				vscode.window.showWarningMessage(vscode.l10n.t(
-					"Claude Code mentions files by their path in the workspace, and no folder is open. The console output was copied to the clipboard instead."));
-			} catch (error) {
-				vscode.window.showErrorMessage(vscode.l10n.t(
-					"Could not hand the console output to Claude Code: {0}",
-					error instanceof Error ? error.message : String(error)));
-			}
-		} else if (command === 'consoleClaude') {
-			vscode.window.showWarningMessage(vscode.l10n.t(
-				"Claude Code is not installed, so the console output was copied to the clipboard instead."));
+		const assistant = command === 'consoleClaude' ? 'claude'
+			: command === 'consoleCodex' ? 'codex' : undefined;
+
+		if (assistant && await this._handOver(
+			assistant, formatConsoleReport(text, documentUrl), `${fileName}.md`, summary, false)) {
+			return;
 		}
 
 		await copyReport(text, `${fileName}.txt`);
@@ -454,58 +459,7 @@ export class TabBrowserView extends Disposable {
 								title="${vscode.l10n.t("More copy actions")}"><i
 									class="codicon codicon-chevron-down"></i></button>
 
-							<div class="copy-menu" role="menu" hidden>
-								<button
-									role="menuitem"
-									data-command="element"
-									data-icon="codicon-inspect"><i class="codicon codicon-inspect"></i><span
-										class="copy-menu-label">${vscode.l10n.t("Copy element")}</span><i
-										class="codicon codicon-check check"></i></button>
-								<button
-									role="menuitem"
-									data-command="elementXPath"
-									data-icon="codicon-list-tree"><i class="codicon codicon-list-tree"></i><span
-										class="copy-menu-label">${vscode.l10n.t("Copy element XPath")}</span><i
-										class="codicon codicon-check check"></i></button>
-								<button
-									role="menuitem"
-									data-command="elementPath"
-									data-icon="codicon-code"><i class="codicon codicon-code"></i><span
-										class="copy-menu-label">${vscode.l10n.t("Copy path to element")}</span><i
-										class="codicon codicon-check check"></i></button>
-								<div class="copy-menu-separator" role="separator"></div>
-								<button
-									role="menuitem"
-									data-command="elementClaude"
-									data-icon="codicon-sparkle"><i class="codicon codicon-sparkle"></i><span
-										class="copy-menu-label">${vscode.l10n.t("Add element to Claude Code")}</span><i
-										class="codicon codicon-check check"></i></button>
-								<button
-									role="menuitem"
-									data-command="elementXPathClaude"
-									data-icon="codicon-sparkle"><i class="codicon codicon-sparkle"></i><span
-										class="copy-menu-label">${vscode.l10n.t("Add element XPath to Claude Code")}</span><i
-										class="codicon codicon-check check"></i></button>
-								<button
-									role="menuitem"
-									data-command="elementPathClaude"
-									data-icon="codicon-sparkle"><i class="codicon codicon-sparkle"></i><span
-										class="copy-menu-label">${vscode.l10n.t("Add path to element to Claude Code")}</span><i
-										class="codicon codicon-check check"></i></button>
-								<div class="copy-menu-separator" role="separator"></div>
-								<button
-									role="menuitem"
-									data-command="console"
-									data-icon="codicon-terminal"><i class="codicon codicon-terminal"></i><span
-										class="copy-menu-label">${vscode.l10n.t("Copy console.log")}</span><i
-										class="codicon codicon-check check"></i></button>
-								<button
-									role="menuitem"
-									data-command="consoleClaude"
-									data-icon="codicon-sparkle"><i class="codicon codicon-sparkle"></i><span
-										class="copy-menu-label">${vscode.l10n.t("Add console.log to Claude Code")}</span><i
-										class="codicon codicon-check check"></i></button>
-							</div>
+							${this._copyMenuHtml()}
 						</div>
 
 						<button
@@ -527,9 +481,62 @@ export class TabBrowserView extends Disposable {
 			</html>`;
 	}
 
+	/**
+	 * Only the assistants that are actually installed get menu entries; with both of them the
+	 * menu would otherwise carry eight ways to send an element somewhere it cannot go.
+	 */
+	private _copyMenuHtml(): string {
+		const groups: string[][] = [[
+			menuItem('element', 'codicon-inspect', vscode.l10n.t("Copy element")),
+			menuItem('elementXPath', 'codicon-list-tree', vscode.l10n.t("Copy element XPath")),
+			menuItem('elementPath', 'codicon-code', vscode.l10n.t("Copy path to element")),
+		]];
+
+		if (assistants.isInstalled('claude')) {
+			groups.push([
+				menuItem('elementClaude', 'codicon-sparkle', vscode.l10n.t("Add element to Claude Code")),
+				menuItem('elementXPathClaude', 'codicon-sparkle', vscode.l10n.t("Add element XPath to Claude Code")),
+				menuItem('elementPathClaude', 'codicon-sparkle', vscode.l10n.t("Add path to element to Claude Code")),
+			]);
+		}
+
+		if (assistants.isInstalled('codex')) {
+			groups.push([
+				menuItem('elementCodex', 'codicon-rocket', vscode.l10n.t("Add element to Codex")),
+				menuItem('elementXPathCodex', 'codicon-rocket', vscode.l10n.t("Add element XPath to Codex")),
+				menuItem('elementPathCodex', 'codicon-rocket', vscode.l10n.t("Add path to element to Codex")),
+			]);
+		}
+
+		const console: string[] = [menuItem('console', 'codicon-terminal', vscode.l10n.t("Copy console.log"))];
+		if (assistants.isInstalled('claude')) {
+			console.push(menuItem('consoleClaude', 'codicon-sparkle', vscode.l10n.t("Add console.log to Claude Code")));
+		}
+		if (assistants.isInstalled('codex')) {
+			console.push(menuItem('consoleCodex', 'codicon-rocket', vscode.l10n.t("Add console.log to Codex")));
+		}
+		groups.push(console);
+
+		const separator = '<div class="copy-menu-separator" role="separator"></div>';
+		return `<div class="copy-menu" role="menu" hidden>`
+			+ groups.map(group => group.join('')).join(separator)
+			+ `</div>`;
+	}
+
 	private _extensionResourceUrl(...parts: string[]): vscode.Uri {
 		return this._webviewPanel.webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, ...parts));
 	}
+}
+
+function menuItem(command: CopyCommand, icon: string, label: string): string {
+	return `<button role="menuitem" data-command="${command}" data-icon="${icon}">`
+		+ `<i class="codicon ${icon}"></i>`
+		+ `<span class="copy-menu-label">${escapeHtml(label)}</span>`
+		+ `<i class="codicon codicon-check check"></i></button>`;
+}
+
+function escapeHtml(value: string): string {
+	return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 function withFramePath(element: PickedElement, selector: string): string {
@@ -538,17 +545,22 @@ function withFramePath(element: PickedElement, selector: string): string {
 
 export type ElementCopyFormat = 'context' | 'css' | 'xpath' | 'both' | 'json';
 
+type ElementCommand = Exclude<CopyCommand, 'console' | 'consoleClaude' | 'consoleCodex'>;
+
 /** What each menu entry copies, and where it sends it. `format: undefined` means configurable. */
-const elementActions: Record<Exclude<CopyCommand, 'console' | 'consoleClaude'>, {
+const elementActions: Record<ElementCommand, {
 	readonly format?: ElementCopyFormat;
-	readonly toClaude: boolean;
+	readonly assistant?: assistants.Assistant;
 }> = {
-	element: { toClaude: false },
-	elementXPath: { format: 'xpath', toClaude: false },
-	elementPath: { format: 'css', toClaude: false },
-	elementClaude: { format: 'context', toClaude: true },
-	elementXPathClaude: { format: 'xpath', toClaude: true },
-	elementPathClaude: { format: 'css', toClaude: true },
+	element: {},
+	elementXPath: { format: 'xpath' },
+	elementPath: { format: 'css' },
+	elementClaude: { format: 'context', assistant: 'claude' },
+	elementXPathClaude: { format: 'xpath', assistant: 'claude' },
+	elementPathClaude: { format: 'css', assistant: 'claude' },
+	elementCodex: { format: 'context', assistant: 'codex' },
+	elementXPathCodex: { format: 'xpath', assistant: 'codex' },
+	elementPathCodex: { format: 'css', assistant: 'codex' },
 };
 
 /** The one line shown in the panel's hint bar and in the notification. */
