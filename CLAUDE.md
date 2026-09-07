@@ -138,10 +138,17 @@ The panel's url and whether it can be inspected are known only in the webview �
 navigation never reaches the host — so the webview reports `didChangeState` and the view keeps
 it. `browser_navigate` waits on `whenReady()` rather than answering into a loading page.
 
-Two clients, configured in different places: VS Code's chat through
-`lm.registerMcpServerDefinitionProvider` (1.101+, reached through a cast in `src/mcpSetup.ts` so
-`engines.vscode` can stay at 1.85), and Claude Code through `.mcp.json` or `claude mcp add`,
-which the **Connect Claude Code to This Browser** command writes or copies.
+Three clients, configured in three different places (`src/mcpSetup.ts`):
+
+- **VS Code's chat** through `lm.registerMcpServerDefinitionProvider` (1.101+, reached through a
+  cast so `engines.vscode` can stay at 1.85; the definition constructor is positional).
+- **Claude Code** through `.mcp.json` or `claude mcp add` — written or copied by its command,
+  and a config that cannot be parsed is left alone rather than overwritten.
+- **Codex** through `codex mcp add`, run for the user. Its `~/.codex/config.toml` usually holds
+  other servers and editing toml around them by hand is asking for trouble, so the cli that owns
+  the file does it. That config can only name an *environment variable* to read a bearer token
+  from, and this extension has no say over Codex's environment — hence `urlWithToken`, the same
+  endpoint with the token as the last path segment, accepted alongside the header.
 
 Known edges: selectors, not snapshot-scoped element refs, so a selector can go stale between
 calls; clicks are synthetic dom events, which some things (file pickers, drag) will not accept;

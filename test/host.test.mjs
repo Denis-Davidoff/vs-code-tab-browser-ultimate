@@ -99,7 +99,7 @@ const { defaultIconUrl, discoverIconUrl, fetchIcon } = await import('./.bundles/
 const { registerTerminalLinks } = await import('./.bundles/terminal-links-bundle.mjs');
 const assistants = await import('./.bundles/assistants-bundle.mjs');
 const { McpServer } = await import('./.bundles/mcp-bundle.mjs');
-const { connectToClaudeCode } = await import('./.bundles/mcp-setup-bundle.mjs');
+const { connectToClaudeCode, connectToCodex } = await import('./.bundles/mcp-setup-bundle.mjs');
 
 /** A 1x1 png, the smallest thing that has to be recognised as an image. */
 const pngBytes = Buffer.from(
@@ -731,6 +731,26 @@ check('a request from a browser origin is refused before anything happens',
 
 check('there is no stream to open', (await rpc(undefined, { method: 'GET' })).status === 405);
 
+// Codex can only name an environment variable to read a bearer token from, so the token has to
+// be able to travel in the url instead.
+const withToken = async (url, body) => {
+	const answer = await fetch(url, {
+		method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+	});
+	return { status: answer.status, body: await answer.json().catch(() => undefined) };
+};
+
+check('the url carries the token for clients that cannot send a header',
+	mcp.urlWithToken === `${mcp.url}/${mcpToken}`, mcp.urlWithToken);
+
+check('a request authorised by the path is served',
+	(await withToken(mcp.urlWithToken, { jsonrpc: '2.0', id: 7, method: 'ping' })).body?.result
+	!== undefined);
+
+check('a wrong token in the path is refused',
+	(await withToken(`${mcp.url}/not-the-token`, { jsonrpc: '2.0', id: 8, method: 'ping' })).status
+	=== 401);
+
 // -- writing the Claude Code configuration --------------------------------------------------------
 
 const configFile = path.join(workspaceFolders[0].uri.fsPath, '.mcp.json');
@@ -757,9 +777,14 @@ check('a config that cannot be parsed is left alone, with an explanation',
 
 dialogAnswer = 'Copy CLI command';
 await connectToClaudeCode(mcp);
-check('the cli command carries the url and the token',
+check('the Claude Code cli command carries the url and the token',
 	clipboard.includes(`--transport http`) && clipboard.includes(mcp.url)
 	&& clipboard.includes(`Bearer ${mcpToken}`), clipboard);
+
+clipboard = '';
+await connectToCodex(mcp);
+check('the Codex cli command points at the url that carries the token',
+	clipboard === `codex mcp add tab-browser --url ${mcp.urlWithToken}`, clipboard);
 
 mcp.dispose();
 check('the port is released on dispose',

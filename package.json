@@ -72,6 +72,11 @@
 				"category": "Tab Browser Ultimate"
 			},
 			{
+				"command": "tabBrowser.connectMcpToCodex",
+				"title": "Connect Codex to This Browser (MCP)",
+				"category": "Tab Browser Ultimate"
+			},
+			{
 				"command": "tabBrowser.copyElement",
 				"title": "Copy Element",
 				"category": "Tab Browser Ultimate"

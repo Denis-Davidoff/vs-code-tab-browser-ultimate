@@ -11,7 +11,7 @@ import { cleanUpReports } from './assistants';
 import { BrowserController } from './browserController';
 import { generateUuid } from './uuid';
 import { McpServer } from './mcpServer';
-import { connectToClaudeCode, registerWithVsCode } from './mcpSetup';
+import { connectToClaudeCode, connectToCodex, registerWithVsCode } from './mcpSetup';
 import { CopyCommand } from '../shared/webviewProtocol';
 
 declare class URL {
@@ -34,6 +34,7 @@ const copyConsoleCommand = 'tabBrowser.copyConsole';
 const addConsoleToClaudeCommand = 'tabBrowser.addConsoleToClaude';
 const addConsoleToCodexCommand = 'tabBrowser.addConsoleToCodex';
 const connectMcpCommand = 'tabBrowser.connectMcpToClaudeCode';
+const connectMcpCodexCommand = 'tabBrowser.connectMcpToCodex';
 const mcpTokenKey = 'mcp.token';
 
 const enabledHosts = new Set<string>([
@@ -65,15 +66,19 @@ export function activate(context: vscode.ExtensionContext) {
 	// Registered whatever the server does: a palette entry that throws "command not found"
 	// is worse than one that explains why there is nothing to connect to.
 	const mcp = startMcpServer(context, manager);
-	context.subscriptions.push(vscode.commands.registerCommand(connectMcpCommand, async () => {
+	const withServer = (connect: (server: McpServer) => Promise<void>) => async () => {
 		const server = await mcp;
 		if (!server) {
 			vscode.window.showWarningMessage(vscode.l10n.t(
 				"The browser's mcp server is not running. Check `tabBrowser.mcp.enabled`."));
 			return;
 		}
-		await connectToClaudeCode(server);
-	}));
+		await connect(server);
+	};
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand(connectMcpCommand, withServer(connectToClaudeCode)),
+		vscode.commands.registerCommand(connectMcpCodexCommand, withServer(connectToCodex)));
 
 	// The reports handed to an assistant outlive their conversation by a few hours at most.
 	cleanUpReports();

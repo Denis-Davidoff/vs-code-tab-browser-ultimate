@@ -9,8 +9,14 @@
  *  - **Claude Code** reads `.mcp.json` in the project (and `claude mcp add` writes elsewhere),
  *    so the command below writes that file — and offers the cli line for anyone who would
  *    rather not have it in the repository.
+ *  - **Codex** keeps its servers in `~/.codex/config.toml`, where a bearer token can only be
+ *    named, not written: the config holds the *name of an environment variable* to read it
+ *    from, and this extension has no say over the environment Codex runs in. So it gets the
+ *    url with the token in the path, and `codex mcp add` edits the file — that config is full
+ *    of other servers, and editing toml by hand around them is asking for trouble.
  *--------------------------------------------------------------------------------------------*/
 
+import { execFile } from 'node:child_process';
 import * as vscode from 'vscode';
 import { McpServer } from './mcpServer';
 
@@ -135,4 +141,63 @@ async function readConfig(file: vscode.Uri): Promise<Record<string, unknown> | u
 	} catch {
 		return undefined;
 	}
+}
+
+/** Adds the server to `~/.codex/config.toml`, through the cli that owns that file. */
+export async function connectToCodex(server: McpServer): Promise<void> {
+	if (!server.urlWithToken) {
+		vscode.window.showWarningMessage(vscode.l10n.t("The mcp server is not running."));
+		return;
+	}
+
+	const args = ['mcp', 'add', serverName, '--url', server.urlWithToken];
+	const cli = `codex ${args.join(' ')}`;
+
+	const run = vscode.l10n.t("Add it now");
+	const copy = vscode.l10n.t("Copy CLI command");
+	const choice = await vscode.window.showInformationMessage(
+		vscode.l10n.t("Connect Codex to the browser panel?"),
+		{
+			modal: true,
+			detail: vscode.l10n.t(
+				"This adds \"{0}\" to ~/.codex/config.toml, pointing at {1}. The token is in the url because Codex can only read one from an environment variable.",
+				serverName, server.url ?? ''),
+		},
+		run, copy);
+
+	if (choice === copy) {
+		await vscode.env.clipboard.writeText(cli);
+		vscode.window.showInformationMessage(
+			vscode.l10n.t("Copied. Run it, then start a new Codex conversation."));
+		return;
+	}
+
+	if (choice !== run) {
+		return;
+	}
+
+	try {
+		await runCodex(args);
+		vscode.window.showInformationMessage(vscode.l10n.t(
+			"Added \"{0}\" to Codex. Start a new conversation there — it reads its servers when it starts.",
+			serverName));
+	} catch (error) {
+		// Most likely the cli is not on the PATH; the command still works from a terminal.
+		await vscode.env.clipboard.writeText(cli);
+		vscode.window.showWarningMessage(vscode.l10n.t(
+			"Could not run the Codex cli ({0}). The command is on the clipboard; run it in a terminal.",
+			error instanceof Error ? error.message : String(error)));
+	}
+}
+
+function runCodex(args: readonly string[]): Promise<void> {
+	return new Promise((resolve, reject) => {
+		execFile('codex', args as string[], { timeout: 20000 }, (error, _stdout, stderr) => {
+			if (error) {
+				reject(new Error(stderr?.trim() || error.message));
+			} else {
+				resolve();
+			}
+		});
+	});
 }

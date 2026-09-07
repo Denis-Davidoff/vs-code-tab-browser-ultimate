@@ -5,7 +5,8 @@
  *  over one POST endpoint, and a dependency that ships its own http stack would be more code in
  *  the bundle than this file. Requests are answered as plain json; no session, no server push.
  *
- *  It listens on the loopback interface only, requires a bearer token, and refuses anything that
+ *  It listens on the loopback interface only, requires the token — as a bearer header, or as the
+ *  last path segment for clients that cannot carry a literal one — and refuses anything that
  *  carries an `Origin` header — a page in a browser can post to a local port without being able
  *  to read the answer, and that is enough to drive a panel blind. The token never leaves the
  *  extension host: the page is never told it.
@@ -56,6 +57,15 @@ export class McpServer extends Disposable {
 
 	public get url(): string | undefined {
 		return this._port ? `http://127.0.0.1:${this._port}/mcp` : undefined;
+	}
+
+	/**
+	 * The same endpoint with the token in the path, for clients that cannot put a literal one
+	 * in a header. Codex, for one, only takes the *name of an environment variable* to read a
+	 * bearer token from, and this extension has no say over the environment its agent runs in.
+	 */
+	public get urlWithToken(): string | undefined {
+		return this._port ? `${this.url}/${this._token}` : undefined;
 	}
 
 	public get token(): string {
@@ -114,9 +124,11 @@ export class McpServer extends Disposable {
 			return;
 		}
 
-		const authorization = req.headers.authorization;
-		if (authorization !== `Bearer ${this._token}`) {
-			respond(res, 401, { error: 'A bearer token is required.' });
+		const path = (req.url ?? '').split('?')[0].replace(/\/+$/, '');
+		const authorized = req.headers.authorization === `Bearer ${this._token}`
+			|| path === `/mcp/${this._token}`;
+		if (!authorized) {
+			respond(res, 401, { error: 'The token is missing or wrong.' });
 			return;
 		}
 
