@@ -130,6 +130,7 @@ class SidebarProvider implements vscode.TreeDataProvider<Row> {
 		return [
 			{
 				label: vscode.l10n.t("Browser"),
+				icon: new vscode.ThemeIcon('globe'),
 				children: [
 					view
 						? {
@@ -149,7 +150,7 @@ class SidebarProvider implements vscode.TreeDataProvider<Row> {
 						},
 					{
 						label: vscode.l10n.t("Open a page…"),
-						icon: new vscode.ThemeIcon('globe'),
+						icon: new vscode.ThemeIcon('add'),
 						command: 'tabBrowser.show',
 					},
 					...(view ? [{
@@ -162,19 +163,22 @@ class SidebarProvider implements vscode.TreeDataProvider<Row> {
 			},
 			...(view ? [{
 				label: vscode.l10n.t("This page"),
+				icon: new vscode.ThemeIcon('browser'),
 				children: this._pageRows(),
 			}] : []),
 			{
 				label: vscode.l10n.t("MCP server"),
+				icon: new vscode.ThemeIcon('server'),
 				children: this._mcpRows(),
 			},
 			...(recent.length ? [{
 				label: vscode.l10n.t("Recent"),
+				icon: new vscode.ThemeIcon('history'),
 				collapsed: true,
 				children: recent.map(url => ({
 					label: shorten(url),
 					tooltip: url,
-					icon: new vscode.ThemeIcon('history'),
+					icon: new vscode.ThemeIcon('globe'),
 					command: 'tabBrowser.show',
 					args: [url],
 				})),
