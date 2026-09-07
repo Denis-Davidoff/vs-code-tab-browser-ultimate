@@ -1,4 +1,4 @@
-# Tab Browser Ultimate
+# Embedded Browser with Claude Code and Codex plugins integration
 
 **A browser tab inside your editor that your AI agent can see, read and drive — and that turns
 anything on the page into a prompt.**
