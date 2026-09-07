@@ -1,10 +1,11 @@
 {
 	"name": "tab-browser-ultimate",
-	"displayName": "%displayName%",
-	"description": "%description%",
+	"displayName": "Tab AI Browser🏆",
+	"description": "Integrated browser tab with AI capabilities, Claude and Codex integration",
 	"version": "0.2.1",
 	"icon": "media/icon.png",
-	"publisher": "local",
+	"publisher": "DenysDavydov",
+  	"private": true,
 	"license": "MIT",
 	"engines": {
 		"vscode": "^1.85.0"
