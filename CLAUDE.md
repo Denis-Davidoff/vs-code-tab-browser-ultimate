@@ -46,7 +46,11 @@ Two things about that arrangement are easy to get wrong again:
   `HttpOnly` ones too, which a page cannot see but the browser still sends. So each session
   prefixes the names of the cookies it hands the browser (`__tb<port>_`), drops the ones that
   are not its own from every request it forwards, and restores the real names upstream.
-  `page-src/cookies.ts` hides the prefix from `document.cookie`, so page scripts never see it.
+  `page-src/cookies.ts` hides the prefix from `document.cookie`, so page scripts never see it —
+  and puts a write through the same attribute rewriting as a `Set-Cookie` header
+  (`shared/cookies.ts`, used by both), since a page setting `Domain=localhost` or `Secure` is
+  describing the server it thinks it is talking to, not the origin the browser has it from, and
+  a browser told that stores nothing at all.
   Which is also why a session forwards to its own server and nowhere else (`targetOf`): a
   request target is a path, and one beginning with `//` resolves to a *host*, so
   `//example.com/x` would have handed those cookies to example.com.
@@ -132,7 +136,12 @@ Picking an element produces a `PickedElement`:
   nesting is walked like any other group, except that a nested rule's `selectorText` (`& > a`)
   is true of nothing on its own: `walkRules` carries the parent selector down and resolves it
   (`&` → `:is(parent)`, and a selector that never says `&` is a descendant of it), or the rules
-  a page written this year actually uses would all read as unmatched.
+  a page written this year actually uses would all read as unmatched. Two details of nesting
+  that are easy to miss: a `&` inside a string is part of a value and not a nesting selector,
+  and everything written *after* a nested rule becomes a rule of its own
+  (`CSSNestedDeclarations`, no selector, no children) that belongs to the rule it sits in —
+  dropped, those declarations are missing from the report and the value they set reads as the
+  browser's own.
 - `src/tabBrowserView.ts` formats it. The default `context` format is the report in the README;
   `css`, `xpath`, `both` and `json` remain, and "Copy element XPath" always writes an XPath
   regardless of the setting.
@@ -210,18 +219,23 @@ drive the panel. The token is never handed to the page.
 The panel's url and whether it can be inspected are known only in the webview — in-page
 navigation never reaches the host — so the webview reports `didChangeState` and the view keeps
 it. `browser_navigate` waits on `whenReady()` rather than answering into a loading page, and
-says so when that wait runs out on an instrumented page: "the panel is open" for a page that
-never arrived has the caller clicking into whatever was standing there before. A page served
-outside the proxy never reports in either, and that is not a failure — `inspectable: false`
-already says why. "Ready" itself is `DOMContentLoaded` in the page, not the moment the agent
+says so when that wait runs out on a page it served through the proxy: "the panel is open" for
+a page that never arrived has the caller clicking into whatever was standing there before. What
+decides is `expectsAgent`, the panel's *intent* — `inspectable` cannot answer it, because a dev
+server that is down leaves the panel showing the proxy's own error page, which carries no agent
+either. A page deliberately opened outside the proxy never reports in and that is not a failure;
+`inspectable: false` already says why. "Ready" itself is `DOMContentLoaded` in the page, not the moment the agent
 runs: it is injected at the top of `<head>`, so reporting from there would answer a client into
 a document with no body.
 
 Which makes `ready` and the frame's own `load` event a race — two signals from two processes,
-in no fixed order. The `load` handler is the only thing that can tell that the frame left the
-proxy (nothing reports in from such a page), so it still writes the document off; a `ready`
-arriving afterwards says the page is instrumented and takes it back. Without that, the panel
-holds a page it can read while every mcp client is told it cannot.
+in no fixed order. They are therefore *paired by count*: the n-th report belongs to the n-th
+document, both counts start over at every navigation the host resolves, and neither event is
+read on its own. A load with no report yet writes the document off (only the proxy injects the
+script, so nothing else can report in); a report arriving late takes that back; and a report
+whose number is behind the loads belongs to a document the frame has already left, so it is
+ignored. Read as bare flags, either order lies: the panel holds a page it can read while mcp
+clients are told it cannot, or drives a page that has no agent in it at all.
 
 Both connect dialogs also offer the configuration as a *prompt* (`connectPrompt`): the one
 command that adds it, how it is picked up, and a check to run afterwards — short, because the

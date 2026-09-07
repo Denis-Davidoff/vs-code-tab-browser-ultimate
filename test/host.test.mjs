@@ -127,7 +127,8 @@ const { registerTerminalLinks } = await import('./.bundles/terminal-links-bundle
 const assistants = await import('./.bundles/assistants-bundle.mjs');
 const { McpServer } = await import('./.bundles/mcp-bundle.mjs');
 const { BrowserController } = await import('./.bundles/controller-bundle.mjs');
-const { connectToClaudeCode, connectToCodex } = await import('./.bundles/mcp-setup-bundle.mjs');
+const { connectToClaudeCode, connectToCodex, supersededCodexEntry } =
+	await import('./.bundles/mcp-setup-bundle.mjs');
 const { claudeClientState, codexClientState } = await import('./.bundles/mcp-check-bundle.mjs');
 
 /** A 1x1 png, the smallest thing that has to be recognised as an image. */
@@ -246,6 +247,14 @@ const server = http.createServer((req, res) => {
 		</script></body></html>`);
 		return;
 	}
+	// A page carrying the agent with a cookie prefix set, i.e. what the proxy serves.
+	if (req.url === '/cookie-page') {
+		res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+		res.end(`<!DOCTYPE html><html><head><title>cookies</title>
+			<script>window.__tabBrowserConfig = { realOrigin: 'http://localhost:5173', cookiePrefix: '__tbtest_' };</script>
+			<script src="/agent.js"></script></head><body>cookies</body></html>`);
+		return;
+	}
 	// The agent as the proxy serves it, so the timing of what it reports can be tested for real.
 	if (req.url === '/agent.js') {
 		res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' });
@@ -295,6 +304,7 @@ let quotedId;
 let agentEvents;
 let panelState;
 let consoleFormatting;
+let cookieWrites;
 let pageRequests;
 try {
 	const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
@@ -398,9 +408,36 @@ try {
 		frame.contentWindow.__reportReady();
 		await new Promise(resolve => setTimeout(resolve, 50));
 		const afterReady = window.__posted.filter(message => message.type === 'didChangeState').at(-1);
-		return { afterLoad, afterReady };
+
+		// The frame now leaves for a document with no agent in it — a link to a page the proxy
+		// does not serve. The report the previous document sent late must not be counted twice.
+		const leftAgain = new Promise(resolve => frame.addEventListener('load', resolve, { once: true }));
+		frame.src = `${origin}/silent-frame?second`;
+		await leftAgain;
+		await new Promise(resolve => setTimeout(resolve, 50));
+		const afterSecondLoad = window.__posted.filter(message => message.type === 'didChangeState').at(-1);
+
+		return { afterLoad, afterReady, afterSecondLoad };
 	}, new URL(pageUrl).origin);
 	await panel.close();
+
+	// A page sets cookies for the server it thinks it is talking to. Through the proxy that
+	// server's name and scheme are not the ones the browser has the page from, and a cookie
+	// whose attributes describe something else is not stored at all.
+	const cookiePage = await browser.newPage();
+	await cookiePage.goto(`${new URL(pageUrl).origin}/cookie-page`);
+	cookieWrites = await cookiePage.evaluate(() => {
+		const write = value => {
+			document.cookie = value;
+			return document.cookie;
+		};
+		return {
+			plain: write('plain=1; Path=/'),
+			domain: write('named=ok; Domain=localhost; Path=/'),
+			secure: write('flagged=yes; Secure; SameSite=None; Path=/'),
+		};
+	});
+	await cookiePage.close();
 
 	// The whole agent, in a document whose body arrives long after its head.
 	const latePage = await browser.newPage();
@@ -471,6 +508,28 @@ check('a frame that has not reported in is treated as a page we do not serve',
 check('a page that reports in after its own load event is instrumented all the same',
 	panelState.afterReady?.instrumented === true && panelState.afterReady.ready === true,
 	JSON.stringify(panelState.afterReady));
+
+// The other way round: a report that arrived late belongs to the document that sent it, and
+// counting it for the next one leaves the panel driving a page that has no agent in it.
+check('the next document does not inherit the last one\'s report',
+	panelState.afterSecondLoad?.instrumented === false
+	&& panelState.afterSecondLoad.ready === false, JSON.stringify(panelState.afterSecondLoad));
+
+// -- cookies a page sets itself -----------------------------------------------------------------
+
+check('a cookie a page sets is kept, prefix hidden from the page',
+	cookieWrites.plain.includes('plain=1') && !cookieWrites.plain.includes('__tbtest_'),
+	JSON.stringify(cookieWrites));
+
+// `Domain=localhost` on the `127.0.0.1` the browser actually has the page from is a cookie for
+// somewhere else, and the browser stores nothing: the session simply never starts.
+check('a Domain the proxy origin does not own does not lose the cookie',
+	cookieWrites.domain.includes('named=ok'), JSON.stringify(cookieWrites));
+
+// `Secure` and `SameSite=None` are dropped by the same rewrite the proxy uses on `Set-Cookie`
+// (see the proxy test); on `127.0.0.1`, which the browser trusts, both forms survive anyway.
+check('the rest of the attributes are rewritten the same way, and the cookie stands',
+	cookieWrites.secure.includes('flagged=yes'), JSON.stringify(cookieWrites));
 
 // -- the console patch ------------------------------------------------------------------------
 
@@ -910,19 +969,22 @@ check('writing a report does not sweep again within the hour',
 const controllerFor = view => new BrowserController({ show() { }, activeView: view });
 const neverReady = { url: 'http://127.0.0.1:1/', whenReady: () => Promise.reject(new Error('timed out')) };
 
+// A dev server that is down is the case worth getting right: the proxy serves its own error
+// page, which carries no agent, so `inspectable` is false here too — what tells the two apart
+// is that the panel *asked* for an instrumented page.
+const neverArrived = await controllerFor({ ...neverReady, expectsAgent: true, inspectable: false })
+	.navigate('http://127.0.0.1:1/');
 check('a page that never reports in is reported as not loaded',
-	/did not finish loading/.test(
-		(await controllerFor({ ...neverReady, inspectable: true }).navigate('http://127.0.0.1:1/')).error ?? ''),
-	JSON.stringify(await controllerFor({ ...neverReady, inspectable: true }).navigate('http://127.0.0.1:1/')));
+	/did not finish loading/.test(neverArrived.error ?? ''), JSON.stringify(neverArrived));
 
-// A page loaded outside the proxy never reports in either, and that is not a failure: there is
+// A page opened outside the proxy never reports in either, and that is not a failure: there is
 // simply no script in it, which `inspectable` already says.
-check('a page loaded outside the proxy is not an error',
-	(await controllerFor({ ...neverReady, inspectable: false }).navigate('https://example.com/'))
-		.error === undefined);
+check('a page opened outside the proxy is not an error',
+	(await controllerFor({ ...neverReady, expectsAgent: false, inspectable: false })
+		.navigate('https://example.com/')).error === undefined);
 
 check('a page that does report in is answered plainly',
-	(await controllerFor({ url: 'http://localhost:3000/', inspectable: true, whenReady: async () => { } })
+	(await controllerFor({ url: 'http://localhost:3000/', expectsAgent: true, inspectable: true, whenReady: async () => { } })
 		.navigate('http://localhost:3000/')).error === undefined);
 
 // -- the mcp server ------------------------------------------------------------------------------
@@ -1110,6 +1172,22 @@ check('two projects with the same folder name still get an entry each',
 	clientA !== clientB && clientA.startsWith('tab-browser-frontend-'), `${clientA} vs ${clientB}`);
 check('the name of one project does not change between connections',
 	await nameOnly('/clients/a/frontend') === clientA, clientA);
+
+// Renaming the entry leaves the one an older version wrote behind, and Codex starts that too:
+// a second server offering the same tools. It is ours to take back only when it names this
+// window — the url carries this workspace's token, so nothing else can have written it.
+const legacyToml = url => `[mcp_servers.tab-browser-frontend]\nurl = "${url}"\n`;
+check('the entry an older version wrote for this project is superseded',
+	supersededCodexEntry(legacyToml(mcp.urlWithToken), 'tab-browser-frontend-a1b2c3', mcp.urlWithToken)
+	=== 'tab-browser-frontend');
+
+check('one written by another project is left alone',
+	supersededCodexEntry(legacyToml('http://127.0.0.1:43310/mcp/another-token'),
+		'tab-browser-frontend-a1b2c3', mcp.urlWithToken) === undefined);
+
+check('and nothing is removed when there is no entry under the old name',
+	supersededCodexEntry('[mcp_servers.other]\nurl = "http://127.0.0.1:1/mcp"\n',
+		'tab-browser-frontend-a1b2c3', mcp.urlWithToken) === undefined);
 
 // The project file is ours to write, and it must leave the rest of the file alone.
 workspaceFolders = [{ ...otherFolder, name: 'other-project' }];

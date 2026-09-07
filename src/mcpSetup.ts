@@ -22,6 +22,7 @@
 
 import { execFile } from 'node:child_process';
 import * as crypto from 'node:crypto';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { codexEntries } from './codexToml';
@@ -246,6 +247,7 @@ export async function connectToCodex(server: McpServer): Promise<void> {
 
 	try {
 		await runCodex(['mcp', 'add', globalName, '--url', server.urlWithToken]);
+		await removeSupersededEntry(globalName, server.urlWithToken);
 		vscode.window.showInformationMessage(vscode.l10n.t(
 			"Added \"{0}\" to Codex. Start a new conversation there — it reads its servers when it starts.",
 			globalName));
@@ -307,6 +309,54 @@ async function writeCodexProjectConfig(folder: vscode.Uri, url: string): Promise
 function slug(value: string): string {
 	return (value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32)
 		|| 'workspace';
+}
+
+/**
+ * Takes back the entry an earlier version of this extension wrote under the name without the
+ * location in it. Left there it is a second server offering the same tools, which Codex starts
+ * as well — and only ours if this project happens to be the one that wrote it.
+ *
+ * Which is why the url decides and not the name: it carries this workspace's token, so an entry
+ * naming it was written from here. Anything else belongs to another project and is left alone.
+ */
+async function removeSupersededEntry(currentName: string, urlWithToken: string): Promise<void> {
+	let text: string;
+	try {
+		text = Buffer.from(await vscode.workspace.fs.readFile(globalCodexConfig())).toString('utf8');
+	} catch {
+		return;
+	}
+
+	const legacy = supersededCodexEntry(text, currentName, urlWithToken);
+	if (!legacy) {
+		return;
+	}
+
+	try {
+		await runCodex(['mcp', 'remove', legacy]);
+	} catch {
+		// An older cli without the subcommand, or none on the PATH: the entry stays, which is
+		// untidy but harmless — it names this very server.
+	}
+}
+
+/** Pure half of the above, so the cases that only happen to someone else's config are testable. */
+export function supersededCodexEntry(
+	text: string,
+	currentName: string,
+	urlWithToken: string,
+): string | undefined {
+	const legacy = currentName.replace(/-[0-9a-f]{6}$/, '');
+	if (legacy === currentName) {
+		return undefined;
+	}
+
+	const entry = codexEntries(text).find(candidate => candidate.name === legacy);
+	return entry?.values.get('url') === urlWithToken ? legacy : undefined;
+}
+
+function globalCodexConfig(): vscode.Uri {
+	return vscode.Uri.file(path.join(os.homedir(), '.codex', 'config.toml'));
 }
 
 /** Six hex characters of the folder's location: enough to tell two `frontend`s apart. */

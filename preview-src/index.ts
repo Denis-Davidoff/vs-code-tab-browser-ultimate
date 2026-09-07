@@ -77,9 +77,14 @@ let pendingConsoleRequest: number | undefined;
 let consoleRequestTimer: ReturnType<typeof setTimeout> | undefined;
 /** The menu entry the pending console request came from. */
 let consoleCommand: CopyCommand = 'console';
-/** Counts the documents that reported in, so a load with no report can be recognised. */
+/**
+ * Documents that have reported in, and documents whose `load` event has fired. The two events
+ * come from two processes with no ordering between them, so they are paired by count instead:
+ * the n-th report belongs to the n-th document. Both are reset by a navigation the host
+ * resolves, which is the one moment where the frame is known to be starting over.
+ */
 let readyCount = 0;
-let readyCountAtLastLoad = 0;
+let loadCount = 0;
 
 // -- messages --------------------------------------------------------------------------------
 
@@ -134,12 +139,17 @@ window.addEventListener('message', event => {
 function onAgentEvent(event: AgentEvent): void {
 	switch (event.kind) {
 		case 'ready': {
+			readyCount++;
+			// A report from a document the frame has already left says nothing about the one on
+			// screen: a page that never reported in has loaded since.
+			if (readyCount < loadCount) {
+				break;
+			}
 			// Only the proxy puts this script in a document, so a document that reports in is
 			// instrumented by definition — including when the frame's `load` event won this
 			// race and has already written the document off as a page we do not serve.
 			isInstrumented = true;
 			pageReady = true;
-			readyCount++;
 			reportState();
 			// A navigation inside the frame lands here, and the address bar has to follow it.
 			setDisplayUrl(event.documentUrl);
@@ -295,6 +305,10 @@ function onDidResolveUrl(message: Extract<ExtensionToWebviewMessage, { type: 'di
 	isInstrumented = message.instrumented;
 	pageReady = false;
 	resolvedOnce = true;
+	// The frame is starting over, so the two counts start over with it: a document that never
+	// reported in must not leave the pairing shifted for everything that follows.
+	readyCount = 0;
+	loadCount = 0;
 	endConsoleRequest();
 	reportState();
 
@@ -541,9 +555,10 @@ onceDocumentLoaded(() => {
 	}, 50);
 
 	iframe.addEventListener('load', () => {
-		const reportedIn = readyCount > readyCountAtLastLoad;
-		readyCountAtLastLoad = readyCount;
-		if (!reportedIn) {
+		loadCount++;
+		// The report of the document that just loaded, if it has one, is the n-th; anything
+		// less means it has not reported in — yet, or ever.
+		if (readyCount < loadCount) {
 			// Navigated somewhere the proxy does not serve: there is no agent in this document,
 			// and a copy command has to reload through the proxy rather than wait for silence.
 			// An instrumented page that is merely slower than its own `load` event corrects

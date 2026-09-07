@@ -44,11 +44,13 @@ export class BrowserController {
 		try {
 			await view.whenReady();
 		} catch {
-			// Nothing reported in. For a page served outside the proxy that is normal — no
-			// script was injected into it, and `inspectable: false` says so. For an
-			// instrumented one it means the page never arrived, and a caller told only that the
-			// panel is open would carry on clicking into whatever is still standing there.
-			if (view.inspectable) {
+			// Nothing reported in. For a page opened outside the proxy that is normal — no
+			// script was injected into it, and `inspectable: false` says so. For one served
+			// through the proxy it means the page never arrived, and a caller told only that
+			// the panel is open would carry on clicking into whatever is still standing there.
+			// `inspectable` cannot answer this: a dev server that is down leaves the panel
+			// showing the proxy's own error page, which carries no agent either.
+			if (view.expectsAgent) {
 				return {
 					...this.state(),
 					error: `${url} did not finish loading. The panel is showing whatever was `

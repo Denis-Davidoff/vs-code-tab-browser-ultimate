@@ -66,6 +66,8 @@ export class TabBrowserView extends Disposable {
 	/** Fired when the panel navigates or the page reports in; the sidebar shows what it says. */
 	public readonly onDidChangeState = this._onDidChangeState.event;
 
+	/** Whether the last url the panel resolved was handed to the proxy, i.e. instrumented. */
+	private _proxied = false;
 	/** Invalidates icon and title lookups still in flight when the panel navigates away. */
 	private _iconToken = 0;
 	/** Origin the current tab icon belongs to. */
@@ -236,6 +238,15 @@ export class TabBrowserView extends Disposable {
 		return this._state.instrumented;
 	}
 
+	/**
+	 * Whether the panel asked for an instrumented page. Not the same as `inspectable`, which
+	 * says what it ended up with: a page served through the proxy that never reports in did not
+	 * load, while one deliberately opened outside the proxy was never going to report in.
+	 */
+	public get expectsAgent(): boolean {
+		return this._proxied;
+	}
+
 	/** Resolves once the page has reported in, so a caller can act right after navigating. */
 	public whenReady(timeout = 15000): Promise<void> {
 		if (this._state.ready) {
@@ -290,6 +301,7 @@ export class TabBrowserView extends Disposable {
 					? vscode.l10n.t("Copying from the page needs the local proxy, but `tabBrowser.proxy.mode` is set to `never`.")
 					: vscode.l10n.t("Only http and https pages can be inspected.")
 				: undefined;
+			this._proxied = false;
 			this._post({ type: 'didResolveUrl', requestId, loadUrl: displayUrl, displayUrl, instrumented: false, error });
 			if (!error) {
 				this._resetTab(displayUrl, false);
@@ -299,9 +311,11 @@ export class TabBrowserView extends Disposable {
 
 		try {
 			const loadUrl = await this._proxy.getProxiedUrl(displayUrl);
+			this._proxied = true;
 			this._post({ type: 'didResolveUrl', requestId, loadUrl, displayUrl, instrumented: true });
 			this._resetTab(displayUrl, true);
 		} catch (error) {
+			this._proxied = false;
 			this._post({
 				type: 'didResolveUrl',
 				requestId,
