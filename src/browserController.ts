@@ -22,12 +22,24 @@ export class BrowserController {
 
 	public state(): BrowserState {
 		const view = this._manager.activeView;
-		return view ? { open: true, url: view.url, inspectable: true } : { open: false };
+		return view
+			? { open: true, url: view.url, inspectable: view.inspectable }
+			: { open: false };
 	}
 
-	/** Opens the url in the panel, reusing the one that is already open. */
+	/**
+	 * Opens the url in the panel, reusing the one that is already open, and answers once the
+	 * page is there — a caller's next tool call would otherwise land mid-load.
+	 */
 	public async navigate(url: string): Promise<BrowserState> {
 		this._manager.show(url);
+
+		const view = this._manager.activeView;
+		try {
+			await view?.whenReady();
+		} catch {
+			// Loaded, but not through the proxy — `state` says as much.
+		}
 		return this.state();
 	}
 

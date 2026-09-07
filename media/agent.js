@@ -1046,13 +1046,17 @@
     }
   }
   var interactiveSelector = 'a[href], button, input, select, textarea, summary, [role], h1, h2, h3, [contenteditable="true"], [onclick], [tabindex]:not([tabindex="-1"])';
-  function snapshot(maxNodes) {
+  function snapshot(requestedMaxNodes) {
+    var _a, _b;
+    const maxNodes = Math.max(1, Math.min(requestedMaxNodes, 1e3));
     const nodes = [];
     const seen = /* @__PURE__ */ new Set();
+    let truncated = false;
     for (const element of Array.prototype.slice.call(
       document.querySelectorAll(interactiveSelector)
     )) {
       if (nodes.length >= maxNodes) {
+        truncated = true;
         break;
       }
       if (seen.has(element) || !isVisible(element)) {
@@ -1065,20 +1069,16 @@
         selector: cssPath(element, [])
       };
       const value = element.value;
+      const secret = /password/i.test(node.role) || /password|hidden/i.test((_a = element.type) != null ? _a : "") || /new-password|current-password|one-time-code/i.test((_b = element.getAttribute("autocomplete")) != null ? _b : "");
       if (typeof value === "string" && value && node.role !== "button") {
-        node.value = value.slice(0, 80);
+        node.value = secret ? `<${value.length} characters hidden>` : value.slice(0, 80);
       }
       if (element.disabled) {
         node.disabled = "true";
       }
       nodes.push(node);
     }
-    return {
-      url: location.href,
-      title: document.title,
-      nodes,
-      truncated: nodes.length >= maxNodes
-    };
+    return { url: location.href, title: document.title, nodes, truncated };
   }
   function isVisible(element) {
     const rect = element.getBoundingClientRect();
@@ -1166,8 +1166,7 @@
   }
   function setValue(target, value) {
     var _a;
-    const prototype = target instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-    const setter = (_a = Object.getOwnPropertyDescriptor(prototype, "value")) == null ? void 0 : _a.set;
+    const setter = (_a = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(target), "value")) == null ? void 0 : _a.set;
     if (setter) {
       setter.call(target, value);
     } else {

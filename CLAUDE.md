@@ -127,10 +127,16 @@ back by `requestId` (`runPageRequest` in `src/tabBrowserView.ts`, which times ou
 hanging and rejects everything pending when the panel closes). `page-src/pageRequests.ts` runs
 it in the page's own world, so a snapshot sees the dom the framework actually rendered.
 
-Security, all three of which matter together: loopback only, a bearer token kept in
-`globalState` (never handed to the page, which is why the token can also survive restarts), and
-a refusal of any request carrying an `Origin` header — a page cannot read a cross-origin answer,
-but the side effect of the request alone would drive the panel.
+Security, all of which matter together: loopback only, a crypto-random bearer token kept in
+`globalState` **per workspace** — ports are handed out in the order windows open, so a token
+shared between them would let a configuration written for project A drive project B; bound to
+the workspace, that misconnection is a 401 — and a refusal of any request carrying an `Origin`
+header, since a page cannot read a cross-origin answer but the request's side effect alone would
+drive the panel. The token is never handed to the page.
+
+The panel's url and whether it can be inspected are known only in the webview — in-page
+navigation never reaches the host — so the webview reports `didChangeState` and the view keeps
+it. `browser_navigate` waits on `whenReady()` rather than answering into a loading page.
 
 Two clients, configured in different places: VS Code's chat through
 `lm.registerMcpServerDefinitionProvider` (1.101+, reached through a cast in `src/mcpSetup.ts` so
@@ -139,8 +145,8 @@ which the **Connect Claude Code to This Browser** command writes or copies.
 
 Known edges: selectors, not snapshot-scoped element refs, so a selector can go stale between
 calls; clicks are synthetic dom events, which some things (file pickers, drag) will not accept;
-one window wins the preferred port, and a `.mcp.json` written from another window points
-elsewhere.
+one window wins the preferred port, so a `.mcp.json` written from another window points
+elsewhere — the per-workspace token turns that into a 401 rather than a wrong-project session.
 
 ## Terminal links
 

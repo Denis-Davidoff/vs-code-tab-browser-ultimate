@@ -34,6 +34,12 @@ await Promise.all([
 	}),
 	esbuild.build({
 		...shared,
+		entryPoints: ['src/mcpSetup.ts'],
+		outfile: 'test/.bundles/mcp-setup-bundle.mjs',
+		alias: { vscode: './test/vscode-stub-entry.mjs' },
+	}),
+	esbuild.build({
+		...shared,
 		entryPoints: ['src/mcpServer.ts'],
 		outfile: 'test/.bundles/mcp-bundle.mjs',
 		alias: { vscode: './test/vscode-stub-entry.mjs' },

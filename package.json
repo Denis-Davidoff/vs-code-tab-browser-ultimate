@@ -15,10 +15,19 @@
 	],
 	"keywords": [
 		"browser",
+		"simple browser",
 		"tab browser",
 		"ai browser",
 		"chatgpt browser",
 		"claude browser",
+		"claude mcp",
+		"codex mcp",
+		"codex",
+		"claude",
+		"chatgpt",
+		"chat gpt",
+		"chat gpt mcp",
+		"codex browser",
 		"ai chat browser",
 		"ai tab browser",
 		"frontend browser",
@@ -38,6 +47,7 @@
 		"ui"
 	],
 	"activationEvents": [
+		"onStartupFinished",
 		"onCommand:tabBrowser.api.open",
 		"onOpenExternalUri:http",
 		"onOpenExternalUri:https",

@@ -57,7 +57,9 @@ export class TabBrowserView extends Disposable {
 		readonly timer: ReturnType<typeof setTimeout>;
 	}>();
 	private _lastPick: PickedElement | undefined;
-	private _displayUrl: string;
+	/** What the webview says it is showing; the host cannot work any of it out on its own. */
+	private _state: { url: string; instrumented: boolean; ready: boolean };
+	private readonly _onDidChangeState = this._register(new vscode.EventEmitter<void>());
 
 	/** Invalidates icon requests still in flight when the panel navigates away. */
 	private _iconToken = 0;
@@ -97,7 +99,7 @@ export class TabBrowserView extends Disposable {
 	) {
 		super();
 
-		this._displayUrl = url;
+		this._state = { url, instrumented: false, ready: false };
 		this._webviewPanel = this._register(webviewPanel);
 		this._webviewPanel.webview.options = TabBrowserView.getWebviewOptions(_extensionUri);
 
@@ -140,6 +142,15 @@ export class TabBrowserView extends Disposable {
 					this._copyConsole(message.entries, message.documentUrl, message.dropped, message.command);
 					break;
 
+				case 'didChangeState':
+					this._state = {
+						url: message.url || this._state.url,
+						instrumented: message.instrumented,
+						ready: message.ready,
+					};
+					this._onDidChangeState.fire();
+					break;
+
 				case 'setIcon':
 					this._showIcon(message.href);
 					break;
@@ -179,7 +190,7 @@ export class TabBrowserView extends Disposable {
 	}
 
 	public show(url: string, options?: ShowOptions): void {
-		this._displayUrl = url;
+		this._state = { url, instrumented: false, ready: false };
 		this._webviewPanel.webview.html = this._getHtml(url);
 		this._webviewPanel.reveal(options?.viewColumn, options?.preserveFocus);
 	}
@@ -208,7 +219,34 @@ export class TabBrowserView extends Disposable {
 	}
 
 	public get url(): string {
-		return this._displayUrl;
+		return this._state.url;
+	}
+
+	/** Whether the page carries the injected script, i.e. whether it can be read or driven. */
+	public get inspectable(): boolean {
+		return this._state.instrumented;
+	}
+
+	/** Resolves once the page has reported in, so a caller can act right after navigating. */
+	public whenReady(timeout = 15000): Promise<void> {
+		if (this._state.ready) {
+			return Promise.resolve();
+		}
+
+		return new Promise((resolve, reject) => {
+			const listener = this._onDidChangeState.event(() => {
+				if (!this._state.ready) {
+					return;
+				}
+				listener.dispose();
+				clearTimeout(timer);
+				resolve();
+			});
+			const timer = setTimeout(() => {
+				listener.dispose();
+				reject(new Error('The page did not finish loading in time.'));
+			}, timeout);
+		});
 	}
 
 	/** Runs one of the copy menu's commands from outside the webview. */
@@ -244,7 +282,6 @@ export class TabBrowserView extends Disposable {
 					: vscode.l10n.t("Only http and https pages can be inspected.")
 				: undefined;
 			this._post({ type: 'didResolveUrl', requestId, loadUrl: displayUrl, displayUrl, instrumented: false, error });
-			this._displayUrl = displayUrl;
 			if (!error) {
 				this._resetIcon(displayUrl, false);
 			}
@@ -254,7 +291,6 @@ export class TabBrowserView extends Disposable {
 		try {
 			const loadUrl = await this._proxy.getProxiedUrl(displayUrl);
 			this._post({ type: 'didResolveUrl', requestId, loadUrl, displayUrl, instrumented: true });
-			this._displayUrl = displayUrl;
 			this._resetIcon(displayUrl, true);
 		} catch (error) {
 			this._post({

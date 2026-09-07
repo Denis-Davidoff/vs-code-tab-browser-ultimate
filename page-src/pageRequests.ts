@@ -78,13 +78,17 @@ const interactiveSelector = 'a[href], button, input, select, textarea, summary, 
  * before it can act: it cannot see the screen, and the full html is both too long and mostly
  * markup that says nothing about what the page offers.
  */
-function snapshot(maxNodes: number): unknown {
+function snapshot(requestedMaxNodes: number): unknown {
+	const maxNodes = Math.max(1, Math.min(requestedMaxNodes, 1000));
 	const nodes: Record<string, string>[] = [];
 	const seen = new Set<Element>();
+	let truncated = false;
 
 	for (const element of Array.prototype.slice.call(
 		document.querySelectorAll(interactiveSelector)) as Element[]) {
 		if (nodes.length >= maxNodes) {
+			// There was at least one more; the list is short of the page, not merely full.
+			truncated = true;
 			break;
 		}
 		if (seen.has(element) || !isVisible(element)) {
@@ -98,8 +102,12 @@ function snapshot(maxNodes: number): unknown {
 			selector: cssPath(element, []),
 		};
 		const value = (element as HTMLInputElement).value;
+		// A password is the one thing on a page that must not travel into a model's context.
+		const secret = /password/i.test(node.role)
+			|| /password|hidden/i.test((element as HTMLInputElement).type ?? '')
+			|| /new-password|current-password|one-time-code/i.test(element.getAttribute('autocomplete') ?? '');
 		if (typeof value === 'string' && value && node.role !== 'button') {
-			node.value = value.slice(0, 80);
+			node.value = secret ? `<${value.length} characters hidden>` : value.slice(0, 80);
 		}
 		if ((element as HTMLInputElement).disabled) {
 			node.disabled = 'true';
@@ -107,12 +115,7 @@ function snapshot(maxNodes: number): unknown {
 		nodes.push(node);
 	}
 
-	return {
-		url: location.href,
-		title: document.title,
-		nodes,
-		truncated: nodes.length >= maxNodes,
-	};
+	return { url: location.href, title: document.title, nodes, truncated };
 }
 
 function isVisible(element: Element): boolean {
@@ -214,10 +217,9 @@ function describe(element: Element): string {
  * tracks the last value it wrote, so setting `value` alone leaves its state untouched.
  */
 function setValue(target: HTMLInputElement, value: string): void {
-	const prototype = target instanceof HTMLTextAreaElement
-		? HTMLTextAreaElement.prototype
-		: HTMLInputElement.prototype;
-	const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+	// The element's own prototype: a `<select>` reached through `HTMLInputElement.prototype`
+	// throws "Illegal invocation".
+	const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(target), 'value')?.set;
 
 	if (setter) {
 		setter.call(target, value);

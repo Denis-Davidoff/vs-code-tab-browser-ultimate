@@ -9,6 +9,7 @@ import { TabBrowserView } from './tabBrowserView';
 import { registerTerminalLinks } from './terminalLinks';
 import { cleanUpReports } from './assistants';
 import { BrowserController } from './browserController';
+import { generateUuid } from './uuid';
 import { McpServer } from './mcpServer';
 import { connectToClaudeCode, registerWithVsCode } from './mcpSetup';
 import { CopyCommand } from '../shared/webviewProtocol';
@@ -61,7 +62,18 @@ export function activate(context: vscode.ExtensionContext) {
 
 	context.subscriptions.push(registerTerminalLinks(url => manager.show(url)));
 
-	startMcpServer(context, manager);
+	// Registered whatever the server does: a palette entry that throws "command not found"
+	// is worse than one that explains why there is nothing to connect to.
+	const mcp = startMcpServer(context, manager);
+	context.subscriptions.push(vscode.commands.registerCommand(connectMcpCommand, async () => {
+		const server = await mcp;
+		if (!server) {
+			vscode.window.showWarningMessage(vscode.l10n.t(
+				"The browser's mcp server is not running. Check `tabBrowser.mcp.enabled`."));
+			return;
+		}
+		await connectToClaudeCode(server);
+	}));
 
 	// The reports handed to an assistant outlive their conversation by a few hours at most.
 	cleanUpReports();
@@ -147,19 +159,16 @@ export function activate(context: vscode.ExtensionContext) {
  * Gives an assistant the panel to work with. The server is what Claude Code connects to; VS
  * Code's own chat is told about it through the api, so it needs no configuration at all.
  */
-async function startMcpServer(context: vscode.ExtensionContext, manager: TabBrowserManager): Promise<void> {
+async function startMcpServer(
+	context: vscode.ExtensionContext,
+	manager: TabBrowserManager,
+): Promise<McpServer | undefined> {
 	if (!vscode.workspace.getConfiguration('tabBrowser').get<boolean>('mcp.enabled', true)) {
-		return;
+		return undefined;
 	}
 
-	// The token outlives the window, so a Claude Code config written once keeps working.
-	let token = context.globalState.get<string>(mcpTokenKey);
-	if (!token) {
-		token = generateToken();
-		await context.globalState.update(mcpTokenKey, token);
-	}
-
-	const server = new McpServer(new BrowserController(manager), token);
+	const folder = vscode.workspace.workspaceFolders?.[0]?.uri.toString() ?? 'no-folder';
+	const server = new McpServer(new BrowserController(manager), await workspaceToken(context, folder), folder);
 	context.subscriptions.push(server);
 
 	try {
@@ -169,16 +178,29 @@ async function startMcpServer(context: vscode.ExtensionContext, manager: TabBrow
 		vscode.window.showWarningMessage(vscode.l10n.t(
 			"The browser's mcp server could not start: {0}",
 			error instanceof Error ? error.message : String(error)));
-		return;
+		return undefined;
 	}
 
 	context.subscriptions.push(registerWithVsCode(server));
-	context.subscriptions.push(vscode.commands.registerCommand(
-		connectMcpCommand, () => connectToClaudeCode(server)));
+	return server;
 }
 
-function generateToken(): string {
-	return Array.from({ length: 4 }, () => Math.random().toString(36).slice(2, 12)).join('');
+/**
+ * One token per workspace, kept across restarts so a configuration written once keeps working.
+ *
+ * Per workspace and not per user, because ports are handed out in the order windows open: a
+ * configuration written for project A can end up pointing at the window of project B. With the
+ * token bound to the workspace that misconnection is a plain 401 instead of an assistant
+ * quietly driving the wrong project.
+ */
+async function workspaceToken(context: vscode.ExtensionContext, folder: string): Promise<string> {
+	const key = `${mcpTokenKey}:${folder}`;
+	let token = context.globalState.get<string>(key);
+	if (!token) {
+		token = `${generateUuid()}${generateUuid()}`.replace(/-/g, '');
+		await context.globalState.update(key, token);
+	}
+	return token;
 }
 
 export function deactivate(): void {

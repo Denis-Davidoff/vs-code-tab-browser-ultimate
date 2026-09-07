@@ -137,8 +137,9 @@ repository. Check it afterwards with `/mcp` in Claude Code.
 **VS Code's own chat** needs no configuration: the extension registers the server through the
 editor's MCP api (VS Code 1.101 and later; older editors just do without).
 
-The server listens on `127.0.0.1` only, requires a bearer token that is stored per user and
-never given to the page, and refuses any request carrying an `Origin` header — a page in a
+The server listens on `127.0.0.1` only, requires a bearer token — one per workspace, so a
+configuration written for one project cannot drive another window that happened to take its
+port — and refuses any request carrying an `Origin` header — a page in a
 browser cannot read a cross-origin answer, but posting to a local port would otherwise be enough
 to drive the panel blind. `tabBrowser.mcp.enabled` turns it off; `tabBrowser.mcp.port` (43110 by
 default) keeps a Claude Code configuration valid across restarts, and the next free port is used

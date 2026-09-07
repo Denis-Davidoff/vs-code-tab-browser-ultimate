@@ -57,6 +57,8 @@ let loadedUrl = settings.url;
 let isInstrumented = false;
 /** True once the injected script in the current page has announced itself. */
 let pageReady = false;
+/** False until the host has answered the first navigation, i.e. nothing is loaded yet. */
+let resolvedOnce = false;
 let pickerActive = false;
 /** Copy command waiting for the page to be reloaded through the proxy. */
 let queuedCommand: CopyCommand | undefined;
@@ -133,6 +135,7 @@ function onAgentEvent(event: AgentEvent): void {
 		case 'ready': {
 			pageReady = true;
 			readyCount++;
+			reportState();
 			// A navigation inside the frame lands here, and the address bar has to follow it.
 			setDisplayUrl(event.documentUrl);
 			if (readyCheckTimer) {
@@ -222,7 +225,9 @@ function runPageRequest(requestId: number, request: PageRequest): void {
 		vscode.postMessage({
 			type: 'didRunPageRequest',
 			requestId,
-			error: isInstrumented
+			// Before the first navigation resolves nothing is loaded at all, which is a wait,
+			// not a verdict on the page.
+			error: !resolvedOnce || isInstrumented
 				? 'The page has not finished loading.'
 				: 'This page is not served through the local proxy, so it cannot be inspected.',
 		});
@@ -241,6 +246,7 @@ function setDisplayUrl(url: string): void {
 		input.value = displayUrl;
 	}
 	saveState();
+	reportState();
 }
 
 function endConsoleRequest(): void {
@@ -279,7 +285,9 @@ function onDidResolveUrl(message: Extract<ExtensionToWebviewMessage, { type: 'di
 	loadedUrl = message.loadUrl;
 	isInstrumented = message.instrumented;
 	pageReady = false;
+	resolvedOnce = true;
 	endConsoleRequest();
+	reportState();
 
 	if (document.activeElement !== input) {
 		input.value = displayUrl;
@@ -323,6 +331,14 @@ function withCacheBust(rawUrl: string): string {
 
 function saveState(): void {
 	vscode.setState({ url: displayUrl, lastCopyCommand });
+}
+
+/**
+ * The host cannot see any of this: the url changes with in-page navigation, and whether the
+ * page can be inspected is only known here.
+ */
+function reportState(): void {
+	vscode.postMessage({ type: 'didChangeState', url: displayUrl, instrumented: isInstrumented, ready: pageReady });
 }
 
 // -- copy menu -------------------------------------------------------------------------------
@@ -523,6 +539,7 @@ onceDocumentLoaded(() => {
 			// and a copy command has to reload through the proxy rather than wait for silence.
 			isInstrumented = false;
 			pageReady = false;
+			reportState();
 		}
 	});
 

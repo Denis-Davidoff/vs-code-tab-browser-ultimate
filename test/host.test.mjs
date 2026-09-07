@@ -25,23 +25,36 @@ const installedExtensions = new Set();
 const contributedCommands = new Set();
 /** Commands the code under test executed, newest last. */
 const executed = [];
+/** Messages the code under test showed, and the button the test picks in them. */
+const dialogs = [];
+let dialogAnswer = 'Write .mcp.json';
 /** Workspace folders the stub reports; `undefined` stands for "no folder open". */
 let workspaceFolders;
+let clipboard = '';
 /** The terminal link provider, captured when the module under test registers it. */
 let terminalLinkProvider;
 
 // The extension host side of the copy menu, with `vscode` stubbed out.
 globalThis.__vscodeStub = {
 	l10n: { t: (message, ...args) => message.replace(/\{(\d+)\}/g, (_, i) => args[i]) },
-	Uri: { joinPath: () => ({}), parse: value => ({ value }), file: value => ({ fsPath: value, scheme: 'file' }) },
+	Uri: {
+		joinPath: (base, ...parts) => ({ fsPath: path.join(base.fsPath, ...parts), scheme: 'file' }),
+		parse: value => ({ value, toString: () => value }),
+		file: value => ({ fsPath: value, scheme: 'file' }),
+	},
+	Disposable: class { constructor(fn) { this.dispose = fn ?? (() => { }); } },
 	ViewColumn: { Active: 1 },
 	EventEmitter: class { constructor() { this.event = () => ({ dispose() { } }); } fire() { } dispose() { } },
 	Disposable: class { dispose() { } },
-	env: { clipboard: { writeText: async () => { } } },
+	env: { clipboard: { writeText: async text => { clipboard = text; } } },
 	workspace: {
 		getConfiguration: () => ({ get: (key, fallback) => (key in settings ? settings[key] : fallback) }),
 		get workspaceFolders() { return workspaceFolders; },
 		openTextDocument: async uri => ({ uri }),
+		fs: {
+			readFile: async uri => new Uint8Array(await fs.readFile(uri.fsPath)),
+			writeFile: async (uri, bytes) => fs.writeFile(uri.fsPath, Buffer.from(bytes)),
+		},
 	},
 	commands: {
 		executeCommand: (...args) => { executed.push(args); },
@@ -49,13 +62,19 @@ globalThis.__vscodeStub = {
 	},
 	extensions: { getExtension: id => (installedExtensions.has(id) ? { id } : undefined) },
 	window: {
-		showInformationMessage: () => { }, showErrorMessage: () => { },
+		// The connect command asks what to do; the test answers with `dialogAnswer`.
+		showInformationMessage: (message, ...rest) => {
+			dialogs.push(['info', message]);
+			const actions = rest.filter(item => typeof item === 'string');
+			return Promise.resolve(actions.find(action => action === dialogAnswer));
+		},
 		registerTerminalLinkProvider: provider => {
 			terminalLinkProvider = provider;
 			return { dispose() { } };
 		},
 		showTextDocument: async () => { },
-		showWarningMessage: () => { },
+		showWarningMessage: (...args) => { dialogs.push(['warning', args[0]]); },
+		showErrorMessage: (...args) => { dialogs.push(['error', args[0]]); },
 		tabGroups: { all: [], close: async () => { } },
 	},
 	ExternalUriOpenerPriority: {},
@@ -67,6 +86,7 @@ const { defaultIconUrl, discoverIconUrl, fetchIcon } = await import('./.bundles/
 const { registerTerminalLinks } = await import('./.bundles/terminal-links-bundle.mjs');
 const assistants = await import('./.bundles/assistants-bundle.mjs');
 const { McpServer } = await import('./.bundles/mcp-bundle.mjs');
+const { connectToClaudeCode } = await import('./.bundles/mcp-setup-bundle.mjs');
 
 /** A 1x1 png, the smallest thing that has to be recognised as an image. */
 const pngBytes = Buffer.from(
@@ -93,6 +113,8 @@ const page_html = `<!DOCTYPE html>
 	<input id="email" class="field-input outlined" type="text" placeholder="mail" style="letter-spacing: 0.2px">
 </div></form></div></div>
 <p id="say&quot;hi&quot;" class="quoted-id">quoted</p>
+<input id="secret" type="password" value="hunter2">
+<select id="pick"><option value="a">A</option><option value="b">B</option></select>
 <div style="position: absolute; right: 0; top: 200px">
 	<button class="first-of-the-two-buttons">a</button
 	><button class="edge-target-primary-action with-another-long-class-name">b</button>
@@ -174,6 +196,16 @@ try {
 		button.addEventListener('click', () => clicks++);
 		results.click = await run({ type: 'click', selector: '.edge-target-primary-action' });
 		results.clicks = clicks;
+
+		const select = document.getElementById('pick');
+		const selectEvents = [];
+		select.addEventListener('change', () => selectEvents.push('change'));
+		results.select = await run({ type: 'fill', selector: '#pick', value: 'b' });
+		results.selectValue = select.value;
+		results.selectEvents = selectEvents;
+
+		results.small = await run({ type: 'snapshot', maxNodes: 2 });
+		results.exact = await run({ type: 'snapshot', maxNodes: 1000 });
 
 		results.text = await run({ type: 'text', selector: '.quoted-id' });
 		results.html = await run({ type: 'html', selector: '#email' });
@@ -353,6 +385,20 @@ check('the snapshot names the interactive elements and how to reach them',
 	&& pageRequests.snapshot.title !== undefined
 	&& pageRequests.snapshot.nodes.some(node => node.role === 'button'),
 	JSON.stringify(pageRequests.snapshot.nodes.slice(0, 4)));
+
+const password = pageRequests.snapshot.nodes.find(node => node.selector.includes('secret'));
+check('a password never leaves the page',
+	!!password && !JSON.stringify(pageRequests.snapshot).includes('hunter2')
+	&& password.value?.includes('hidden'), JSON.stringify(password));
+
+check('filling works on a select, which has its own value setter',
+	pageRequests.selectValue === 'b' && pageRequests.selectEvents.join() === 'change',
+	JSON.stringify([pageRequests.selectValue, pageRequests.selectEvents]));
+
+check('a snapshot says when it is short of the page, and only then',
+	pageRequests.small.truncated === true && pageRequests.small.nodes.length === 2
+	&& pageRequests.exact.truncated === false,
+	JSON.stringify([pageRequests.small.truncated, pageRequests.exact.truncated]));
 
 check('filling a field raises the events a framework listens for',
 	pageRequests.fillValue === 'a@b.c'
@@ -671,6 +717,36 @@ check('a request from a browser origin is refused before anything happens',
 	&& !asked.some(request => request.type === 'navigate'));
 
 check('there is no stream to open', (await rpc(undefined, { method: 'GET' })).status === 405);
+
+// -- writing the Claude Code configuration --------------------------------------------------------
+
+const configFile = path.join(workspaceFolders[0].uri.fsPath, '.mcp.json');
+await fs.writeFile(configFile, JSON.stringify({
+	mcpServers: { existing: { type: 'http', url: 'http://example/mcp' } },
+}, null, 2));
+
+await connectToClaudeCode(mcp);
+const written = JSON.parse(await fs.readFile(configFile, 'utf8'));
+check('connecting adds this server without dropping the ones already configured',
+	written.mcpServers.existing?.url === 'http://example/mcp'
+	&& written.mcpServers['tab-browser']?.url === mcp.url
+	&& written.mcpServers['tab-browser'].headers.Authorization === `Bearer ${mcpToken}`,
+	JSON.stringify(written));
+
+// A config with a trailing comma is a config, not an empty one.
+const brokenConfig = '{ "mcpServers": { "existing": { "type": "http", "url": "http://example/mcp" }, } }';
+await fs.writeFile(configFile, brokenConfig);
+dialogs.length = 0;
+await connectToClaudeCode(mcp);
+check('a config that cannot be parsed is left alone, with an explanation',
+	await fs.readFile(configFile, 'utf8') === brokenConfig
+	&& dialogs.some(([kind]) => kind === 'error'), JSON.stringify(dialogs));
+
+dialogAnswer = 'Copy CLI command';
+await connectToClaudeCode(mcp);
+check('the cli command carries the url and the token',
+	clipboard.includes(`--transport http`) && clipboard.includes(mcp.url)
+	&& clipboard.includes(`Bearer ${mcpToken}`), clipboard);
 
 mcp.dispose();
 check('the port is released on dispose',

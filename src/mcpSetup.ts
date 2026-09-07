@@ -23,12 +23,13 @@ interface McpApi {
 			provideMcpServerDefinitions(): unknown[];
 		}): vscode.Disposable;
 	};
-	McpHttpServerDefinition?: new (definition: {
-		label: string;
-		uri: vscode.Uri;
-		headers?: Record<string, string>;
-		version?: string;
-	}) => unknown;
+	/** `constructor(label, uri, headers?, version?)` — positional, per the 1.101 api. */
+	McpHttpServerDefinition?: new (
+		label: string,
+		uri: vscode.Uri,
+		headers?: Record<string, string>,
+		version?: string,
+	) => unknown;
 }
 
 export function registerWithVsCode(server: McpServer): vscode.Disposable {
@@ -41,11 +42,11 @@ export function registerWithVsCode(server: McpServer): vscode.Disposable {
 	}
 
 	return register.call(api.lm, 'tabBrowserMcp', {
-		provideMcpServerDefinitions: () => [new Definition({
-			label: 'Tab Browser Ultimate',
-			uri: vscode.Uri.parse(server.url!),
-			headers: { Authorization: `Bearer ${server.token}` },
-		})],
+		provideMcpServerDefinitions: () => [new Definition(
+			'Tab Browser Ultimate',
+			vscode.Uri.parse(server.url!),
+			{ Authorization: `Bearer ${server.token}` },
+		)],
 	});
 }
 
@@ -86,6 +87,12 @@ export async function connectToClaudeCode(server: McpServer): Promise<void> {
 
 	const file = vscode.Uri.joinPath(folder.uri, '.mcp.json');
 	const config = await readConfig(file);
+	if (!config) {
+		vscode.window.showErrorMessage(vscode.l10n.t(
+			"\".mcp.json\" could not be read as json. Fix or remove it, or use the cli command instead — overwriting it would drop the servers it already defines."));
+		return;
+	}
+
 	const servers = (config.mcpServers ?? {}) as Record<string, unknown>;
 
 	servers[serverName] = {
@@ -107,13 +114,25 @@ export async function connectToClaudeCode(server: McpServer): Promise<void> {
 	}
 }
 
-async function readConfig(file: vscode.Uri): Promise<Record<string, unknown>> {
+/**
+ * The existing config, `{}` when there is no file yet, and `undefined` when there is one that
+ * cannot be parsed — that is not an empty config, and writing over it would drop every other
+ * server the project defines.
+ */
+async function readConfig(file: vscode.Uri): Promise<Record<string, unknown> | undefined> {
+	let bytes: Uint8Array;
 	try {
-		const bytes = await vscode.workspace.fs.readFile(file);
-		const parsed = JSON.parse(Buffer.from(bytes).toString('utf8'));
-		return typeof parsed === 'object' && parsed !== null ? parsed as Record<string, unknown> : {};
+		bytes = await vscode.workspace.fs.readFile(file);
 	} catch {
-		// No file yet, or one this cannot read; either way it is about to be written.
 		return {};
+	}
+
+	try {
+		const parsed = JSON.parse(Buffer.from(bytes).toString('utf8'));
+		return typeof parsed === 'object' && parsed !== null
+			? parsed as Record<string, unknown>
+			: undefined;
+	} catch {
+		return undefined;
 	}
 }

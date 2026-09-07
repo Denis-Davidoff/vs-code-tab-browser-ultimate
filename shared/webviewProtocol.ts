@@ -50,6 +50,15 @@ export type WebviewToExtensionMessage =
 	}
 	/** Icon of the loaded page, for the panel's tab. */
 	| { readonly type: 'setIcon'; readonly href: string }
+	| {
+		/** Sent whenever any of it changes, so the host can answer for the panel. */
+		readonly type: 'didChangeState';
+		readonly url: string;
+		/** The page is served through the proxy, i.e. it carries the injected script. */
+		readonly instrumented: boolean;
+		/** The injected script has reported in and can answer requests. */
+		readonly ready: boolean;
+	}
 	| { readonly type: 'showError'; readonly message: string }
 	| { readonly type: 'openDevTools' };
 

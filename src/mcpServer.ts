@@ -44,7 +44,12 @@ export class McpServer extends Disposable {
 	private readonly _sockets = new Set<net.Socket>();
 	private readonly _tools: readonly Tool[];
 
-	constructor(browser: BrowserController, private readonly _token: string) {
+	constructor(
+		browser: BrowserController,
+		private readonly _token: string,
+		/** The workspace this server belongs to, so a client can tell the windows apart. */
+		private readonly _workspace = '',
+	) {
 		super();
 		this._tools = buildTools(browser);
 	}
@@ -64,6 +69,9 @@ export class McpServer extends Disposable {
 		}
 
 		const server = http.createServer((req, res) => this._handle(req, res));
+		// `listen` removes its own one-shot handler on success; without this a later socket
+		// error would be an uncaught exception in the extension host.
+		server.on('error', () => { });
 		server.on('connection', socket => {
 			this._sockets.add(socket);
 			socket.on('close', () => this._sockets.delete(socket));
@@ -145,7 +153,8 @@ export class McpServer extends Disposable {
 					protocolVersion: typeof asked === 'string' ? asked : protocolVersion,
 					capabilities: { tools: { listChanged: false } },
 					serverInfo: { name: 'tab-browser-ultimate', version: extensionVersion() },
-					instructions: 'Tools for the browser panel open inside the user\'s editor. '
+					instructions: 'Tools for the browser panel open inside the user\'s editor'
+						+ (this._workspace ? ` (workspace: ${this._workspace})` : '') + '. '
 						+ 'The user can see this page: describe what you do with it.',
 				});
 			}
