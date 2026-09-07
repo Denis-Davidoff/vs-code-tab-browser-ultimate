@@ -1030,6 +1030,8 @@
 
   // page-src/picker.ts
   var overlayAttribute = "data-tab-browser";
+  var labelMaxWidth = 360;
+  var labelMaxLines = 3;
   var blockedEvents = [
     "mousedown",
     "mouseup",
@@ -1194,11 +1196,11 @@
       }
       this._overlayRoot = document.createElement("div");
       this._overlayRoot.setAttribute(overlayAttribute, "picker");
-      this._overlayRoot.style.cssText = "all: initial; position: fixed; inset: 0; pointer-events: none; z-index: 2147483647;";
+      this._overlayRoot.style.cssText = "all: initial; position: fixed; inset: 0; overflow: hidden;pointer-events: none; z-index: 2147483647;";
       this._outline = document.createElement("div");
-      this._outline.style.cssText = "position: fixed; pointer-events: none; box-sizing: border-box;border: 2px solid #4daafc; background: rgba(77, 170, 252, 0.14); border-radius: 2px;";
+      this._outline.style.cssText = "position: absolute; pointer-events: none; box-sizing: border-box;border: 2px solid #4daafc; background: rgba(77, 170, 252, 0.14); border-radius: 2px;";
       this._label = document.createElement("div");
-      this._label.style.cssText = "position: fixed; pointer-events: none; max-width: 90vw; box-sizing: border-box;padding: 3px 6px; border-radius: 3px; background: #1f1f1f; color: #ffffff;font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;white-space: nowrap; overflow: hidden; text-overflow: ellipsis;box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);";
+      this._label.style.cssText = `position: absolute; pointer-events: none; box-sizing: border-box;max-width: min(${labelMaxWidth}px, 90vw);padding: 3px 6px; border-radius: 3px; background: #1f1f1f; color: #ffffff;font: 8.8px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;white-space: normal; overflow-wrap: anywhere;display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: ${labelMaxLines};overflow: hidden; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);`;
       this._overlayRoot.appendChild(this._outline);
       this._overlayRoot.appendChild(this._label);
       document.documentElement.appendChild(this._overlayRoot);
@@ -1220,10 +1222,11 @@
       this._outline.style.width = `${rect.width}px`;
       this._outline.style.height = `${rect.height}px`;
       this._label.textContent = `${selector}  \xB7  ${Math.round(rect.width)}\xD7${Math.round(rect.height)}`;
-      const labelHeight = 20;
+      const labelWidth = this._label.offsetWidth;
+      const labelHeight = this._label.offsetHeight;
       const above = rect.top - labelHeight - 4;
-      this._label.style.left = `${Math.max(2, Math.min(rect.left, window.innerWidth - 24))}px`;
-      this._label.style.top = `${above >= 0 ? above : Math.min(rect.bottom + 4, window.innerHeight - labelHeight - 2)}px`;
+      this._label.style.left = `${Math.max(2, Math.min(rect.left, window.innerWidth - labelWidth - 4))}px`;
+      this._label.style.top = `${above >= 2 ? above : Math.max(2, Math.min(rect.bottom + 4, window.innerHeight - labelHeight - 2))}px`;
     }
   };
 

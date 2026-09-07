@@ -59,7 +59,11 @@ const page_html = `<!DOCTYPE html>
 </style></head>
 <body><div class="app"><div class="card"><form class="form"><div class="row">
 	<input id="email" class="field-input outlined" type="text" placeholder="mail" style="letter-spacing: 0.2px">
-</div></form></div></div></body></html>`;
+</div></form></div></div>
+<div style="position: absolute; right: 0; top: 200px">
+	<button class="first-of-the-two-buttons">a</button
+	><button class="edge-target-primary-action with-another-long-class-name">b</button>
+</div></body></html>`;
 
 const server = http.createServer((req, res) => {
 	if (req.url === '/icon.png') {
@@ -96,10 +100,11 @@ if (!executablePath) {
 const browser = await chromium.launch({ executablePath });
 let element;
 let iconHref;
+let overlay;
 try {
 	const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
 	await page.goto(pageUrl);
-	for (const bundle of ['page-bundle.js', 'page-icon-bundle.js']) {
+	for (const bundle of ['page-bundle.js', 'page-icon-bundle.js', 'picker-bundle.js']) {
 		await page.addScriptTag({
 			content: await fs.readFile(path.join(projectRoot, 'test/.bundles', bundle), 'utf8'),
 		});
@@ -109,6 +114,29 @@ try {
 		return tabBrowserPage.describeElement(target, [], url);
 	}, pageUrl);
 	iconHref = await page.evaluate(() => tabBrowserPageIcon.findIconHref());
+
+	// Hovering the element that sits against the right edge, with the picker running.
+	await page.evaluate(() => {
+		window.__picker = new tabBrowserPicker.ElementPicker({
+			onHover: () => { }, onPick: () => { }, onCancel: () => { }, documentUrl: () => location.href,
+		});
+		window.__picker.enable([]);
+	});
+	const target = await page.locator('.edge-target-primary-action').boundingBox();
+	await page.mouse.move(target.x + target.width / 2, target.y + target.height / 2);
+	await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+
+	overlay = await page.evaluate(() => {
+		const label = document.querySelector('[data-tab-browser="picker"]').lastElementChild;
+		const box = label.getBoundingClientRect();
+		return {
+			text: label.textContent,
+			right: box.right, height: box.height, width: box.width,
+			fontSize: getComputedStyle(label).fontSize,
+			viewportWidth: window.innerWidth,
+			scrollWidth: document.documentElement.scrollWidth,
+		};
+	});
 } finally {
 	await browser.close();
 }
@@ -209,6 +237,23 @@ check('xpath format still writes a single line',
 	!formatPickedElement(element, 'xpath').includes('\n')
 	&& formatPickedElement(element, 'xpath').includes('@id="email"'),
 	formatPickedElement(element, 'xpath'));
+
+// -- the picker's overlay ---------------------------------------------------------------------
+
+check('the label of an element at the right edge stays inside the viewport',
+	overlay.right <= overlay.viewportWidth, JSON.stringify(overlay));
+
+check('the overlay never widens the page',
+	overlay.scrollWidth <= overlay.viewportWidth, JSON.stringify(overlay));
+
+check('a long path wraps instead of running off',
+	overlay.height > 16 && overlay.width <= 360, JSON.stringify(overlay));
+
+// Clipping alone would keep the label inside by squeezing it into a sliver at the edge.
+check('the label is moved left rather than squeezed against the edge',
+	overlay.width >= 120, JSON.stringify(overlay));
+
+check('the label text is 8.8px', overlay.fontSize === '8.8px', overlay.fontSize);
 
 // -- the page's icon -------------------------------------------------------------------------
 

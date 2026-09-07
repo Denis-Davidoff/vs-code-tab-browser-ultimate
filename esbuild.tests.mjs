@@ -57,4 +57,13 @@ await Promise.all([
 		entryPoints: ['page-src/pageIcon.ts'],
 		outfile: 'test/.bundles/page-icon-bundle.js',
 	}),
+	esbuild.build({
+		...shared,
+		format: 'iife',
+		platform: 'browser',
+		target: 'es2020',
+		globalName: 'tabBrowserPicker',
+		entryPoints: ['page-src/picker.ts'],
+		outfile: 'test/.bundles/picker-bundle.js',
+	}),
 ]);
