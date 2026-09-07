@@ -42,9 +42,10 @@ instrumented yet.
 ## The copy menu
 
 A split button: its main half runs the entry used last (remembered in the webview state), the
-chevron opens the menu. Entries are `element`, `elementXPath`, `elementClaude` and `console`
-(`CopyCommand`), also exposed as commands: `tabBrowser.copyElement`, `.copyElementXPath`,
-`.addElementToClaude`, `.copyConsole`.
+chevron opens the menu. `CopyCommand` names the entries: six element ones — the report, the
+XPath and the selector, each either to the clipboard or to Claude Code — plus `console`. What
+each does is a table (`elementActions` in `src/tabBrowserView.ts`), not a switch; every one of
+them is also a command, `tabBrowser.copyElement` and friends.
 
 Picking an element produces a `PickedElement`:
 
@@ -75,6 +76,15 @@ That command id is an implementation detail of the extension, not a contract: `i
 checks both the extension and the command, and every failure falls back to the clipboard with a
 notification. Only `vscode://anthropic.claude-code/open?prompt=…` is documented, and it cannot
 carry a file.
+
+## Terminal links
+
+`src/terminalLinks.ts` registers a `TerminalLinkProvider`, which is the stable way to take over
+`Cmd`/`Ctrl` + click on a url: extension providers are asked before the terminal's own url
+detection. The proposed `registerExternalUriOpener` — what the built-in Simple Browser uses —
+is not granted to extensions outside the editor's own bundle. `tabBrowser.terminalLinks.mode`
+decides which urls are claimed, with the same `localhost` / `always` / `never` shape as
+`proxy.mode`.
 
 ## The tab icon
 

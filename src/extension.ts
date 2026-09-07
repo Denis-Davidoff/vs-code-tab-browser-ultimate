@@ -6,6 +6,7 @@ import * as vscode from 'vscode';
 import { BrowserProxy } from './browserProxy';
 import { TabBrowserManager } from './tabBrowserManager';
 import { TabBrowserView } from './tabBrowserView';
+import { registerTerminalLinks } from './terminalLinks';
 import { CopyCommand } from '../shared/webviewProtocol';
 
 declare class URL {
@@ -17,7 +18,10 @@ const openApiCommand = 'tabBrowser.api.open';
 const showCommand = 'tabBrowser.show';
 const copyElementCommand = 'tabBrowser.copyElement';
 const copyElementXPathCommand = 'tabBrowser.copyElementXPath';
+const copyElementPathCommand = 'tabBrowser.copyElementPath';
 const addElementToClaudeCommand = 'tabBrowser.addElementToClaude';
+const addElementXPathToClaudeCommand = 'tabBrowser.addElementXPathToClaude';
+const addElementPathToClaudeCommand = 'tabBrowser.addElementPathToClaude';
 const copyConsoleCommand = 'tabBrowser.copyConsole';
 
 const enabledHosts = new Set<string>([
@@ -43,6 +47,8 @@ export function activate(context: vscode.ExtensionContext) {
 
 	const manager = new TabBrowserManager(context.extensionUri, proxy);
 	context.subscriptions.push(manager);
+
+	context.subscriptions.push(registerTerminalLinks(url => manager.show(url)));
 
 	context.subscriptions.push(vscode.window.registerWebviewPanelSerializer(TabBrowserView.viewType, {
 		deserializeWebviewPanel: async (panel, state) => {
@@ -83,7 +89,10 @@ export function activate(context: vscode.ExtensionContext) {
 
 	registerCopyCommand(copyElementCommand, 'element');
 	registerCopyCommand(copyElementXPathCommand, 'elementXPath');
+	registerCopyCommand(copyElementPathCommand, 'elementPath');
 	registerCopyCommand(addElementToClaudeCommand, 'elementClaude');
+	registerCopyCommand(addElementXPathToClaudeCommand, 'elementXPathClaude');
+	registerCopyCommand(addElementPathToClaudeCommand, 'elementPathClaude');
 	registerCopyCommand(copyConsoleCommand, 'console');
 
 	// `registerExternalUriOpener` is a proposed API that is only granted to extensions

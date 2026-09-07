@@ -1190,20 +1190,26 @@
       return !!this._overlayRoot && target instanceof Node && this._overlayRoot.contains(target);
     }
     _ensureOverlay() {
-      var _a;
+      var _a, _b, _c;
       if ((_a = this._overlayRoot) == null ? void 0 : _a.isConnected) {
         return;
       }
       this._overlayRoot = document.createElement("div");
       this._overlayRoot.setAttribute(overlayAttribute, "picker");
-      this._overlayRoot.style.cssText = "all: initial; position: fixed; inset: 0; overflow: hidden;pointer-events: none; z-index: 2147483647;";
+      this._overlayRoot.style.cssText = "all: initial; position: fixed; inset: 0; overflow: hidden;contain: strict; pointer-events: none; z-index: 2147483647;margin: 0; border: 0; padding: 0; width: auto; height: auto; background: transparent;";
+      const shadow = this._overlayRoot.attachShadow({ mode: "open" });
       this._outline = document.createElement("div");
       this._outline.style.cssText = "position: absolute; pointer-events: none; box-sizing: border-box;border: 2px solid #4daafc; background: rgba(77, 170, 252, 0.14); border-radius: 2px;";
       this._label = document.createElement("div");
       this._label.style.cssText = `position: absolute; pointer-events: none; box-sizing: border-box;max-width: min(${labelMaxWidth}px, 90vw);padding: 3px 6px; border-radius: 3px; background: #1f1f1f; color: #ffffff;font: 8.8px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;white-space: normal; overflow-wrap: anywhere;display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: ${labelMaxLines};overflow: hidden; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);`;
-      this._overlayRoot.appendChild(this._outline);
-      this._overlayRoot.appendChild(this._label);
+      shadow.appendChild(this._outline);
+      shadow.appendChild(this._label);
       document.documentElement.appendChild(this._overlayRoot);
+      try {
+        this._overlayRoot.setAttribute("popover", "manual");
+        (_c = (_b = this._overlayRoot).showPopover) == null ? void 0 : _c.call(_b);
+      } catch {
+      }
     }
     _hideOverlay() {
       if (this._overlayRoot) {

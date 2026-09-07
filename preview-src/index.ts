@@ -66,6 +66,8 @@ let pickCommand: CopyCommand = 'element';
 let hintResetTimer: ReturnType<typeof setTimeout> | undefined;
 let readyCheckTimer: ReturnType<typeof setTimeout> | undefined;
 let nextRequestId = 1;
+/** How long a page served through the proxy may take to report in before it is called dead. */
+const readyCheckTimeout = 15000;
 let pendingNavigation: { readonly requestId: number; readonly bust: boolean } | undefined;
 let pendingConsoleRequest: number | undefined;
 
@@ -119,6 +121,11 @@ function onAgentEvent(event: AgentEvent): void {
 			if (readyCheckTimer) {
 				clearTimeout(readyCheckTimer);
 				readyCheckTimer = undefined;
+			}
+			// Only the top document reports in here, so anything the panel is still complaining
+			// about — a slow server, an error from the document being left — is now stale.
+			if (hint.dataset.state === 'error') {
+				hideHint();
 			}
 			const queued = queuedCommand;
 			queuedCommand = undefined;
@@ -230,7 +237,7 @@ function onDidResolveUrl(message: Extract<ExtensionToWebviewMessage, { type: 'di
 				queuedCommand = undefined;
 				showHint('error', `No response from ${displayUrl}. Is the server running on that port?`);
 			}
-		}, 8000);
+		}, readyCheckTimeout);
 	}
 }
 
@@ -302,7 +309,7 @@ function runCopyCommand(command: CopyCommand): void {
 	setMenuOpen(false);
 	setLastCopyCommand(command);
 
-	const isPick = command === 'element' || command === 'elementXPath' || command === 'elementClaude';
+	const isPick = command !== 'console';
 	if (isPick && pickerActive) {
 		// A second click on the running command turns picking back off.
 		if (command === pickCommand) {
@@ -323,22 +330,16 @@ function runCopyCommand(command: CopyCommand): void {
 		return;
 	}
 
-	switch (command) {
-		case 'element':
-		case 'elementXPath':
-		case 'elementClaude':
-			pickCommand = command;
-			setPickerActive(true);
-			break;
-
-		case 'console': {
-			const requestId = nextRequestId++;
-			pendingConsoleRequest = requestId;
-			showHint('waiting', 'Collecting console output…');
-			sendToPage({ kind: 'collectConsole', requestId });
-			break;
-		}
+	if (command !== 'console') {
+		pickCommand = command;
+		setPickerActive(true);
+		return;
 	}
+
+	const requestId = nextRequestId++;
+	pendingConsoleRequest = requestId;
+	showHint('waiting', 'Collecting console output…');
+	sendToPage({ kind: 'collectConsole', requestId });
 }
 
 function setPickerActive(active: boolean): void {
@@ -364,6 +365,18 @@ function setPickerActive(active: boolean): void {
 
 type HintState = 'picking' | 'copied' | 'error' | 'waiting';
 
+function goesToClaude(): boolean {
+	return pickCommand.endsWith('Claude');
+}
+
+/** What the running pick will do with the element, for the hint bar. */
+function pickDescription(): string {
+	const what = pickCommand.startsWith('elementXPath')
+		? 'its XPath'
+		: pickCommand.startsWith('elementPath') ? 'its path' : 'it';
+	return goesToClaude() ? `add ${what} to Claude Code` : `copy ${what}`;
+}
+
 function showHint(state: HintState, detail?: string): void {
 	if (hintResetTimer) {
 		clearTimeout(hintResetTimer);
@@ -375,11 +388,7 @@ function showHint(state: HintState, detail?: string): void {
 
 	switch (state) {
 		case 'picking':
-			hintMessage.textContent = pickCommand === 'elementXPath'
-				? 'Click an element to copy its XPath. Esc to cancel.'
-				: pickCommand === 'elementClaude'
-					? 'Click an element to add it to Claude Code. Esc to cancel.'
-					: 'Click an element to copy it. Esc to cancel.';
+			hintMessage.textContent = `Click an element to ${pickDescription()}. Esc to cancel.`;
 			hintDetail.textContent = detail ?? '';
 			break;
 		case 'waiting':
@@ -387,9 +396,7 @@ function showHint(state: HintState, detail?: string): void {
 			hintDetail.textContent = '';
 			break;
 		case 'copied':
-			hintMessage.textContent = pickCommand === 'elementClaude'
-				? 'Added to Claude Code:'
-				: 'Copied to clipboard:';
+			hintMessage.textContent = goesToClaude() ? 'Added to Claude Code:' : 'Copied to clipboard:';
 			hintDetail.textContent = detail ?? '';
 			hintResetTimer = setTimeout(() => (pickerActive ? showHint('picking') : hideHint()), 4000);
 			break;

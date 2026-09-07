@@ -250,28 +250,26 @@ export class TabBrowserView extends Disposable {
 		const configuration = getConfiguration();
 		const keepPickerActive = configuration.get<boolean>('picker.keepActiveAfterPick', false);
 
-		if (command === 'elementClaude' && await this._sendToClaudeCode(element, keepPickerActive)) {
+		// `console` never reaches here; a pick always comes from one of the element entries.
+		const action = elementActions[command as Exclude<CopyCommand, 'console'>] ?? elementActions.element;
+		// The menu entries for a path say which one they mean; only "Copy element" is configurable.
+		const format: ElementCopyFormat = action.format
+			?? configuration.get<ElementCopyFormat>('picker.copyFormat', 'context');
+		const text = formatPickedElement(element, format);
+		const summary = elementSummary(element, format);
+
+		if (action.toClaude && await this._sendToClaudeCode(element, format, summary, keepPickerActive)) {
 			return;
 		}
 
-		// "Copy element XPath" is its own menu entry, so it ignores the configured format.
-		const format: ElementCopyFormat = command === 'elementXPath'
-			? 'xpath'
-			: configuration.get<ElementCopyFormat>('picker.copyFormat', 'context');
-		const text = formatPickedElement(element, format);
-
 		// A path is a line of text; the reports are documents and worth pasting as one.
-		const fileName = format === 'context'
-			? `element-${slugify(element.descriptor)}-${stamp()}.md`
-			: format === 'json' ? `element-${slugify(element.descriptor)}-${stamp()}.json` : undefined;
+		const fileName = format === 'context' || format === 'json'
+			? `element-${slugify(element.descriptor)}-${stamp()}.${format === 'json' ? 'json' : 'md'}`
+			: undefined;
 
 		const kind = fileName
 			? await copyReport(text, fileName)
 			: (await vscode.env.clipboard.writeText(text), 'text' as const);
-
-		const summary = format === 'xpath'
-			? withFramePath(element, element.xpath)
-			: element.descriptor;
 
 		this._post({ type: 'didCopy', text: summary, keepPickerActive });
 
@@ -284,17 +282,28 @@ export class TabBrowserView extends Disposable {
 	 * Writes the report into the workspace and lets Claude Code mention it. Returns false when
 	 * that is not possible, so the pick can still end up on the clipboard.
 	 */
-	private async _sendToClaudeCode(element: PickedElement, keepPickerActive: boolean): Promise<boolean> {
+	private async _sendToClaudeCode(
+		element: PickedElement,
+		format: ElementCopyFormat,
+		summary: string,
+		keepPickerActive: boolean,
+	): Promise<boolean> {
 		if (!await claudeCode.isAvailable()) {
 			vscode.window.showWarningMessage(
 				vscode.l10n.t("Claude Code is not installed, so the element was copied to the clipboard instead."));
 			return false;
 		}
 
-		const fileName = `element-${slugify(element.descriptor)}-${stamp()}.md`;
+		const kind = format === 'xpath' ? 'xpath' : format === 'css' ? 'path' : 'context';
+		const fileName = `element-${kind}-${slugify(element.descriptor)}-${stamp()}.md`;
+		// A mention points at a file, so even a one line path travels as one.
+		const report = format === 'context'
+			? formatElementContext(element)
+			: formatPathReport(element, format, summary);
+
 		let file: vscode.Uri | undefined;
 		try {
-			file = await claudeCode.mentionReport(formatElementContext(element), fileName);
+			file = await claudeCode.mentionReport(report, fileName);
 		} catch (error) {
 			vscode.window.showErrorMessage(vscode.l10n.t(
 				"Could not hand the element to Claude Code: {0}",
@@ -308,8 +317,8 @@ export class TabBrowserView extends Disposable {
 			return false;
 		}
 
-		this._post({ type: 'didCopy', text: element.descriptor, keepPickerActive });
-		this._announce(vscode.l10n.t("Added {0} to Claude Code: {1}", fileName, element.descriptor));
+		this._post({ type: 'didCopy', text: summary, keepPickerActive });
+		this._announce(vscode.l10n.t("Added {0} to Claude Code: {1}", fileName, summary));
 		return true;
 	}
 
@@ -425,10 +434,30 @@ export class TabBrowserView extends Disposable {
 										class="codicon codicon-check check"></i></button>
 								<button
 									role="menuitem"
+									data-command="elementPath"
+									data-icon="codicon-code"><i class="codicon codicon-code"></i><span
+										class="copy-menu-label">${vscode.l10n.t("Copy path to element")}</span><i
+										class="codicon codicon-check check"></i></button>
+								<div class="copy-menu-separator" role="separator"></div>
+								<button
+									role="menuitem"
 									data-command="elementClaude"
 									data-icon="codicon-sparkle"><i class="codicon codicon-sparkle"></i><span
 										class="copy-menu-label">${vscode.l10n.t("Add element to Claude Code")}</span><i
 										class="codicon codicon-check check"></i></button>
+								<button
+									role="menuitem"
+									data-command="elementXPathClaude"
+									data-icon="codicon-sparkle"><i class="codicon codicon-sparkle"></i><span
+										class="copy-menu-label">${vscode.l10n.t("Add element XPath to Claude Code")}</span><i
+										class="codicon codicon-check check"></i></button>
+								<button
+									role="menuitem"
+									data-command="elementPathClaude"
+									data-icon="codicon-sparkle"><i class="codicon codicon-sparkle"></i><span
+										class="copy-menu-label">${vscode.l10n.t("Add path to element to Claude Code")}</span><i
+										class="codicon codicon-check check"></i></button>
+								<div class="copy-menu-separator" role="separator"></div>
 								<button
 									role="menuitem"
 									data-command="console"
@@ -467,6 +496,51 @@ function withFramePath(element: PickedElement, selector: string): string {
 }
 
 export type ElementCopyFormat = 'context' | 'css' | 'xpath' | 'both' | 'json';
+
+/** What each menu entry copies, and where it sends it. `format: undefined` means configurable. */
+const elementActions: Record<Exclude<CopyCommand, 'console'>, {
+	readonly format?: ElementCopyFormat;
+	readonly toClaude: boolean;
+}> = {
+	element: { toClaude: false },
+	elementXPath: { format: 'xpath', toClaude: false },
+	elementPath: { format: 'css', toClaude: false },
+	elementClaude: { format: 'context', toClaude: true },
+	elementXPathClaude: { format: 'xpath', toClaude: true },
+	elementPathClaude: { format: 'css', toClaude: true },
+};
+
+/** The one line shown in the panel's hint bar and in the notification. */
+function elementSummary(element: PickedElement, format: ElementCopyFormat): string {
+	switch (format) {
+		case 'xpath':
+			return withFramePath(element, element.xpath);
+		case 'css':
+		case 'both':
+			return withFramePath(element, element.selector);
+		default:
+			return element.descriptor;
+	}
+}
+
+/** Wraps a bare path in enough context to be worth reading on its own. */
+export function formatPathReport(
+	element: PickedElement,
+	format: ElementCopyFormat,
+	path: string,
+): string {
+	const what = format === 'xpath' ? 'XPath' : 'CSS selector';
+	return [
+		`# ${element.descriptor}`,
+		'',
+		`${what} of an element on ${element.documentUrl}`,
+		'',
+		'```',
+		path,
+		'```',
+		'',
+	].join('\n');
+}
 
 export function formatPickedElement(element: PickedElement, format: ElementCopyFormat): string {
 	switch (format) {

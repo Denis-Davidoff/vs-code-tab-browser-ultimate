@@ -13,7 +13,9 @@ The toolbar's split button runs the entry you used last; the chevron next to it 
 
 - **Copy element** — click an element in the page and get a full report of it (below).
 - **Copy element XPath** — the same pick, but only the XPath of the element.
-- **Add element to Claude Code** — the same report, handed straight to the Claude Code chat.
+- **Copy path to element** — the same pick, but only the CSS selector.
+- **Add element to Claude Code**, **Add element XPath to Claude Code**, **Add path to element
+  to Claude Code** — the same three, handed straight to the Claude Code chat.
 - **Copy console.log** — everything the page logged since it was loaded, plus uncaught errors.
 
 Multi-line copies also land on the clipboard as a temporary file, so pasting them into a chat
@@ -24,7 +26,9 @@ the text. Set `tabBrowser.copyAsFile` to `false` to always paste as text.
 
 Writes the report to `.claude/tab-browser/element-….md` in the workspace and puts an
 `@`-mention of it into Claude Code's prompt box, so the element is in the conversation without
-copying and pasting anything. The folder gets a `.gitignore` of its own — these are scratch
+copying and pasting anything. The XPath and selector entries do the same with a one page file
+that carries just that path and the url it came from — a mention points at a file, so even a
+single line travels as one. The folder gets a `.gitignore` of its own — these are scratch
 files for one conversation — and reports older than a day are cleaned up on the way.
 
 It needs the Claude Code extension installed and a folder open, because a mention is a path
@@ -92,6 +96,13 @@ once and read for the same `<link rel="icon">`, with `/favicon.ico` as the last 
 bytes are checked before the icon is used, because a dev server answering `/favicon.ico` with
 its index page is common enough to matter. `tabBrowser.showPageIcon` turns the whole thing
 off, request included.
+
+## Terminal links
+
+`Cmd`/`Ctrl` + click on a url a dev server prints opens it in this panel instead of an external
+browser. By default only localhost and the loopback addresses are taken over, so links to
+documentation still open where you expect them; `tabBrowser.terminalLinks.mode` switches this
+to `always` or `never`.
 
 ## How the page is inspected
 

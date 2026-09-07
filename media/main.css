@@ -272,6 +272,12 @@ body.picking .controls .copy-action-button {
 	opacity: 0.9;
 }
 
+.controls .copy-menu-separator {
+	height: 1px;
+	margin: 4px 0;
+	background: var(--vscode-menu-separatorBackground, var(--vscode-widget-border, transparent));
+}
+
 .controls .copy-menu button .copy-menu-label {
 	margin-right: 16px;
 }

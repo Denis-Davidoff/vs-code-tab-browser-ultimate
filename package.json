@@ -57,8 +57,23 @@
 				"category": "Tab Browser Ultimate"
 			},
 			{
+				"command": "tabBrowser.copyElementPath",
+				"title": "Copy Path to Element",
+				"category": "Tab Browser Ultimate"
+			},
+			{
 				"command": "tabBrowser.addElementToClaude",
 				"title": "Add Element to Claude Code",
+				"category": "Tab Browser Ultimate"
+			},
+			{
+				"command": "tabBrowser.addElementXPathToClaude",
+				"title": "Add Element XPath to Claude Code",
+				"category": "Tab Browser Ultimate"
+			},
+			{
+				"command": "tabBrowser.addElementPathToClaude",
+				"title": "Add Path to Element to Claude Code",
 				"category": "Tab Browser Ultimate"
 			},
 			{
@@ -76,6 +91,21 @@
 						"default": true,
 						"title": "Focus Lock Indicator Enabled",
 						"description": "%configuration.focusLockIndicator.enabled.description%"
+					},
+					"tabBrowser.terminalLinks.mode": {
+						"type": "string",
+						"enum": [
+							"localhost",
+							"always",
+							"never"
+						],
+						"enumDescriptions": [
+							"Only urls a dev server prints, i.e. localhost and the loopback addresses",
+							"Every http and https url printed in a terminal",
+							"Leave terminal links to the editor, which opens them in an external browser"
+						],
+						"default": "localhost",
+						"markdownDescription": "Which urls in the terminal `Cmd`/`Ctrl` + click opens in this browser panel instead of an external browser."
 					},
 					"tabBrowser.showPageIcon": {
 						"type": "boolean",

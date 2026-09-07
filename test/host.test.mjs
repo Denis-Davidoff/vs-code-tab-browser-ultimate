@@ -18,6 +18,11 @@ function check(name, ok, detail = '') {
 	if (!ok) { failures++; }
 }
 
+/** Settings the stubbed `workspace.getConfiguration` hands out; empty means "use the default". */
+const settings = {};
+/** The terminal link provider, captured when the module under test registers it. */
+let terminalLinkProvider;
+
 // The extension host side of the copy menu, with `vscode` stubbed out.
 globalThis.__vscodeStub = {
 	l10n: { t: (message, ...args) => message.replace(/\{(\d+)\}/g, (_, i) => args[i]) },
@@ -26,15 +31,24 @@ globalThis.__vscodeStub = {
 	EventEmitter: class { constructor() { this.event = () => ({ dispose() { } }); } fire() { } dispose() { } },
 	Disposable: class { dispose() { } },
 	env: { clipboard: { writeText: async () => { } } },
-	workspace: { getConfiguration: () => ({ get: (_key, fallback) => fallback }) },
+	workspace: {
+		getConfiguration: () => ({ get: (key, fallback) => (key in settings ? settings[key] : fallback) }),
+	},
 	commands: { executeCommand: () => { } },
-	window: { showInformationMessage: () => { }, showErrorMessage: () => { } },
+	window: {
+		showInformationMessage: () => { }, showErrorMessage: () => { },
+		registerTerminalLinkProvider: provider => {
+			terminalLinkProvider = provider;
+			return { dispose() { } };
+		},
+	},
 	ExternalUriOpenerPriority: {},
 	UIKind: {},
 };
 
 const { formatPickedElement } = await import('./.bundles/view-bundle.mjs');
 const { defaultIconUrl, discoverIconUrl, fetchIcon } = await import('./.bundles/favicon-bundle.mjs');
+const { registerTerminalLinks } = await import('./.bundles/terminal-links-bundle.mjs');
 
 /** A 1x1 png, the smallest thing that has to be recognised as an image. */
 const pngBytes = Buffer.from(
@@ -127,7 +141,8 @@ try {
 	await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 
 	overlay = await page.evaluate(() => {
-		const label = document.querySelector('[data-tab-browser="picker"]').lastElementChild;
+		const root = document.querySelector('[data-tab-browser="picker"]');
+		const label = root.shadowRoot.lastElementChild;
 		const box = label.getBoundingClientRect();
 		return {
 			text: label.textContent,
@@ -135,6 +150,8 @@ try {
 			fontSize: getComputedStyle(label).fontSize,
 			viewportWidth: window.innerWidth,
 			scrollWidth: document.documentElement.scrollWidth,
+			inTopLayer: root.matches(':popover-open'),
+			bodyWidth: document.body.getBoundingClientRect().width,
 		};
 	});
 } finally {
@@ -255,6 +272,9 @@ check('the label is moved left rather than squeezed against the edge',
 
 check('the label text is 8.8px', overlay.fontSize === '8.8px', overlay.fontSize);
 
+check('the overlay sits in the top layer, above anything the page can stack',
+	overlay.inTopLayer === true, JSON.stringify(overlay));
+
 // -- the page's icon -------------------------------------------------------------------------
 
 check('a scalable icon wins over the bitmaps a page also offers',
@@ -278,6 +298,41 @@ check('the icon a page declares is found in its html, relative urls included',
 	await discoverIconUrl(`${new URL(pageUrl).origin}/declares-icon`)
 	=== `${new URL(pageUrl).origin}/icon.png?v=2`,
 	await discoverIconUrl(`${new URL(pageUrl).origin}/declares-icon`));
+
+// -- terminal links --------------------------------------------------------------------------
+
+const opened = [];
+registerTerminalLinks(url => opened.push(url));
+const linksOn = line => terminalLinkProvider.provideTerminalLinks({ line }, undefined);
+
+const viteLine = '  \u279c  Local:   http://localhost:5173/';
+const [viteLink] = linksOn(viteLine);
+check('the url a dev server prints becomes a link, and only the url',
+	viteLink && viteLine.slice(viteLink.startIndex, viteLink.startIndex + viteLink.length)
+	=== 'http://localhost:5173/',
+	JSON.stringify(viteLink));
+
+check('activating the link opens it in the browser panel',
+	(terminalLinkProvider.handleTerminalLink(viteLink),
+		opened[0] === 'http://localhost:5173/'), JSON.stringify(opened));
+
+check('punctuation around a url is left out of it',
+	linksOn('serving (http://127.0.0.1:3000/app), press q to quit.')[0]?.length
+	=== 'http://127.0.0.1:3000/app'.length,
+	JSON.stringify(linksOn('serving (http://127.0.0.1:3000/app), press q to quit.')));
+
+check('a link to somewhere else is left to the editor by default',
+	linksOn('read https://example.com/docs for more').length === 0);
+
+settings['terminalLinks.mode'] = 'always';
+check('mode "always" takes those too',
+	linksOn('read https://example.com/docs for more')[0]?.length === 'https://example.com/docs'.length,
+	JSON.stringify(linksOn('read https://example.com/docs for more')));
+
+settings['terminalLinks.mode'] = 'never';
+check('mode "never" hands every url back to the editor',
+	linksOn(viteLine).length === 0);
+delete settings['terminalLinks.mode'];
 
 server.close();
 

@@ -198,12 +198,16 @@ export class ElementPicker {
 			return;
 		}
 
+		// The overlay must not touch the page in any way: `contain: strict` keeps it out of the
+		// page's layout, `overflow: hidden` keeps it inside the viewport, and its own shadow
+		// root keeps the page's stylesheets away from it (and ours away from the page).
 		this._overlayRoot = document.createElement('div');
 		this._overlayRoot.setAttribute(overlayAttribute, 'picker');
-		// The children are positioned inside this box rather than against the viewport, so that
-		// `overflow: hidden` can clip them: an overlay must never give the page a scrollbar.
 		this._overlayRoot.style.cssText = 'all: initial; position: fixed; inset: 0; overflow: hidden;'
-			+ 'pointer-events: none; z-index: 2147483647;';
+			+ 'contain: strict; pointer-events: none; z-index: 2147483647;'
+			// A popover in the top layer comes with a UA border, padding and auto sizing.
+			+ 'margin: 0; border: 0; padding: 0; width: auto; height: auto; background: transparent;';
+		const shadow = this._overlayRoot.attachShadow({ mode: 'open' });
 
 		this._outline = document.createElement('div');
 		this._outline.style.cssText = 'position: absolute; pointer-events: none; box-sizing: border-box;'
@@ -219,9 +223,18 @@ export class ElementPicker {
 			+ `display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: ${labelMaxLines};`
 			+ 'overflow: hidden; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);';
 
-		this._overlayRoot.appendChild(this._outline);
-		this._overlayRoot.appendChild(this._label);
+		shadow.appendChild(this._outline);
+		shadow.appendChild(this._label);
 		document.documentElement.appendChild(this._overlayRoot);
+
+		// The top layer paints above everything the page can build, `<dialog>` and popovers
+		// included, which no z-index can do. Ignored where it is not supported.
+		try {
+			this._overlayRoot.setAttribute('popover', 'manual');
+			(this._overlayRoot as HTMLDivElement & { showPopover?: () => void }).showPopover?.();
+		} catch {
+			// Not a popover then; the z-index still puts it above ordinary page content.
+		}
 	}
 
 	private _hideOverlay(): void {
