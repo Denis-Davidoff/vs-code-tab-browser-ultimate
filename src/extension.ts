@@ -23,6 +23,7 @@ const addElementToClaudeCommand = 'tabBrowser.addElementToClaude';
 const addElementXPathToClaudeCommand = 'tabBrowser.addElementXPathToClaude';
 const addElementPathToClaudeCommand = 'tabBrowser.addElementPathToClaude';
 const copyConsoleCommand = 'tabBrowser.copyConsole';
+const addConsoleToClaudeCommand = 'tabBrowser.addConsoleToClaude';
 
 const enabledHosts = new Set<string>([
 	'localhost',
@@ -94,6 +95,7 @@ export function activate(context: vscode.ExtensionContext) {
 	registerCopyCommand(addElementXPathToClaudeCommand, 'elementXPathClaude');
 	registerCopyCommand(addElementPathToClaudeCommand, 'elementPathClaude');
 	registerCopyCommand(copyConsoleCommand, 'console');
+	registerCopyCommand(addConsoleToClaudeCommand, 'consoleClaude');
 
 	// `registerExternalUriOpener` is a proposed API that is only granted to extensions
 	// shipped with the editor. Guard the call so activation still succeeds without it.

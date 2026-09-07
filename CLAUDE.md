@@ -43,9 +43,11 @@ instrumented yet.
 
 A split button: its main half runs the entry used last (remembered in the webview state), the
 chevron opens the menu. `CopyCommand` names the entries: six element ones — the report, the
-XPath and the selector, each either to the clipboard or to Claude Code — plus `console`. What
-each does is a table (`elementActions` in `src/tabBrowserView.ts`), not a switch; every one of
-them is also a command, `tabBrowser.copyElement` and friends.
+XPath and the selector, each either to the clipboard or to Claude Code — and `console` /
+`consoleClaude`. What the element entries do is a table (`elementActions` in
+`src/tabBrowserView.ts`), not a switch; every entry is also a command, `tabBrowser.copyElement`
+and friends. A console request carries the entry it came from, because the answer arrives
+asynchronously from the page and has to know where to go.
 
 Picking an element produces a `PickedElement`:
 

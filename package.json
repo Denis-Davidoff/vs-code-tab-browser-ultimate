@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate",
 	"displayName": "%displayName%",
 	"description": "%description%",
-	"version": "10.0.0",
+	"version": "0.1.3",
 	"icon": "media/icon.png",
 	"publisher": "local",
 	"license": "MIT",
@@ -79,6 +79,11 @@
 			{
 				"command": "tabBrowser.copyConsole",
 				"title": "Copy Console Output",
+				"category": "Tab Browser Ultimate"
+			},
+			{
+				"command": "tabBrowser.addConsoleToClaude",
+				"title": "Add Console Output to Claude Code",
 				"category": "Tab Browser Ultimate"
 			}
 		],

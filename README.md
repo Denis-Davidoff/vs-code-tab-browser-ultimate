@@ -17,6 +17,7 @@ The toolbar's split button runs the entry you used last; the chevron next to it 
 - **Add element to Claude Code**, **Add element XPath to Claude Code**, **Add path to element
   to Claude Code** — the same three, handed straight to the Claude Code chat.
 - **Copy console.log** — everything the page logged since it was loaded, plus uncaught errors.
+- **Add console.log to Claude Code** — the same log, handed to the chat as a file.
 
 Multi-line copies also land on the clipboard as a temporary file, so pasting them into a chat
 attaches a document instead of a wall of text; anything that only understands text still gets
@@ -163,5 +164,5 @@ skipped when no chromium build is installed.
 
 ```sh
 npm run package
-code --install-extension tab-browser-ultimate-10.0.0.vsix
+code --install-extension tab-browser-ultimate-*.vsix
 ```

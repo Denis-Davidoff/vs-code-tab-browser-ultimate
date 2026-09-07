@@ -12,7 +12,8 @@ export type CopyCommand =
 	| 'elementClaude'
 	| 'elementXPathClaude'
 	| 'elementPathClaude'
-	| 'console';
+	| 'console'
+	| 'consoleClaude';
 
 export type WebviewToExtensionMessage =
 	| { readonly type: 'openExternal'; readonly url: string }
@@ -34,6 +35,8 @@ export type WebviewToExtensionMessage =
 		readonly entries: readonly ConsoleEntry[];
 		readonly documentUrl: string;
 		readonly dropped: number;
+		/** The menu entry that asked for it; it decides where the log ends up. */
+		readonly command: CopyCommand;
 	}
 	/** Icon of the loaded page, for the panel's tab. */
 	| { readonly type: 'setIcon'; readonly href: string }

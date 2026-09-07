@@ -70,6 +70,8 @@ let nextRequestId = 1;
 const readyCheckTimeout = 15000;
 let pendingNavigation: { readonly requestId: number; readonly bust: boolean } | undefined;
 let pendingConsoleRequest: number | undefined;
+/** The menu entry the pending console request came from. */
+let consoleCommand: CopyCommand = 'console';
 
 // -- messages --------------------------------------------------------------------------------
 
@@ -171,6 +173,7 @@ function onAgentEvent(event: AgentEvent): void {
 				entries: event.entries,
 				documentUrl: event.documentUrl,
 				dropped: event.dropped,
+				command: consoleCommand,
 			});
 			break;
 
@@ -309,7 +312,7 @@ function runCopyCommand(command: CopyCommand): void {
 	setMenuOpen(false);
 	setLastCopyCommand(command);
 
-	const isPick = command !== 'console';
+	const isPick = command !== 'console' && command !== 'consoleClaude';
 	if (isPick && pickerActive) {
 		// A second click on the running command turns picking back off.
 		if (command === pickCommand) {
@@ -330,7 +333,7 @@ function runCopyCommand(command: CopyCommand): void {
 		return;
 	}
 
-	if (command !== 'console') {
+	if (isPick) {
 		pickCommand = command;
 		setPickerActive(true);
 		return;
@@ -338,6 +341,7 @@ function runCopyCommand(command: CopyCommand): void {
 
 	const requestId = nextRequestId++;
 	pendingConsoleRequest = requestId;
+	consoleCommand = command;
 	showHint('waiting', 'Collecting console output…');
 	sendToPage({ kind: 'collectConsole', requestId });
 }
@@ -365,8 +369,8 @@ function setPickerActive(active: boolean): void {
 
 type HintState = 'picking' | 'copied' | 'error' | 'waiting';
 
-function goesToClaude(): boolean {
-	return pickCommand.endsWith('Claude');
+function goesToClaude(command: CopyCommand): boolean {
+	return command.endsWith('Claude');
 }
 
 /** What the running pick will do with the element, for the hint bar. */
@@ -374,7 +378,7 @@ function pickDescription(): string {
 	const what = pickCommand.startsWith('elementXPath')
 		? 'its XPath'
 		: pickCommand.startsWith('elementPath') ? 'its path' : 'it';
-	return goesToClaude() ? `add ${what} to Claude Code` : `copy ${what}`;
+	return goesToClaude(pickCommand) ? `add ${what} to Claude Code` : `copy ${what}`;
 }
 
 function showHint(state: HintState, detail?: string): void {
@@ -396,7 +400,9 @@ function showHint(state: HintState, detail?: string): void {
 			hintDetail.textContent = '';
 			break;
 		case 'copied':
-			hintMessage.textContent = goesToClaude() ? 'Added to Claude Code:' : 'Copied to clipboard:';
+			hintMessage.textContent = goesToClaude(lastCopyCommand)
+				? 'Added to Claude Code:'
+				: 'Copied to clipboard:';
 			hintDetail.textContent = detail ?? '';
 			hintResetTimer = setTimeout(() => (pickerActive ? showHint('picking') : hideHint()), 4000);
 			break;

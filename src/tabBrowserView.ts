@@ -101,7 +101,7 @@ export class TabBrowserView extends Disposable {
 					break;
 
 				case 'copyConsole':
-					this._copyConsole(message.entries, message.documentUrl, message.dropped);
+					this._copyConsole(message.entries, message.documentUrl, message.dropped, message.command);
 					break;
 
 				case 'setIcon':
@@ -251,7 +251,8 @@ export class TabBrowserView extends Disposable {
 		const keepPickerActive = configuration.get<boolean>('picker.keepActiveAfterPick', false);
 
 		// `console` never reaches here; a pick always comes from one of the element entries.
-		const action = elementActions[command as Exclude<CopyCommand, 'console'>] ?? elementActions.element;
+		const action = elementActions[command as Exclude<CopyCommand, 'console' | 'consoleClaude'>]
+			?? elementActions.element;
 		// The menu entries for a path say which one they mean; only "Copy element" is configurable.
 		const format: ElementCopyFormat = action.format
 			?? configuration.get<ElementCopyFormat>('picker.copyFormat', 'context');
@@ -335,16 +336,36 @@ export class TabBrowserView extends Disposable {
 		entries: readonly ConsoleEntry[],
 		documentUrl: string,
 		dropped: number,
+		command: CopyCommand,
 	): Promise<void> {
 		const text = formatConsoleEntries(entries, documentUrl, dropped);
-		await copyReport(text, `console-${slugify(hostOf(documentUrl))}-${stamp()}.txt`);
+		const summary = vscode.l10n.t("{0} console entries", entries.length);
+		const fileName = `console-${slugify(hostOf(documentUrl))}-${stamp()}`;
 
-		this._post({
-			type: 'didCopy',
-			text: vscode.l10n.t("{0} console entries", entries.length),
-			keepPickerActive: false,
-		});
+		if (command === 'consoleClaude' && await claudeCode.isAvailable()) {
+			try {
+				const file = await claudeCode.mentionReport(
+					formatConsoleReport(text, documentUrl), `${fileName}.md`);
+				if (file) {
+					this._post({ type: 'didCopy', text: summary, keepPickerActive: false });
+					this._announce(vscode.l10n.t("Added {0} to Claude Code: {1}", `${fileName}.md`, summary));
+					return;
+				}
+				vscode.window.showWarningMessage(vscode.l10n.t(
+					"Claude Code mentions files by their path in the workspace, and no folder is open. The console output was copied to the clipboard instead."));
+			} catch (error) {
+				vscode.window.showErrorMessage(vscode.l10n.t(
+					"Could not hand the console output to Claude Code: {0}",
+					error instanceof Error ? error.message : String(error)));
+			}
+		} else if (command === 'consoleClaude') {
+			vscode.window.showWarningMessage(vscode.l10n.t(
+				"Claude Code is not installed, so the console output was copied to the clipboard instead."));
+		}
 
+		await copyReport(text, `${fileName}.txt`);
+
+		this._post({ type: 'didCopy', text: summary, keepPickerActive: false });
 		this._announce(vscode.l10n.t("Copied {0} console entries from {1}", entries.length, documentUrl));
 	}
 
@@ -473,6 +494,12 @@ export class TabBrowserView extends Disposable {
 									data-icon="codicon-terminal"><i class="codicon codicon-terminal"></i><span
 										class="copy-menu-label">${vscode.l10n.t("Copy console.log")}</span><i
 										class="codicon codicon-check check"></i></button>
+								<button
+									role="menuitem"
+									data-command="consoleClaude"
+									data-icon="codicon-sparkle"><i class="codicon codicon-sparkle"></i><span
+										class="copy-menu-label">${vscode.l10n.t("Add console.log to Claude Code")}</span><i
+										class="codicon codicon-check check"></i></button>
 							</div>
 						</div>
 
@@ -507,7 +534,7 @@ function withFramePath(element: PickedElement, selector: string): string {
 export type ElementCopyFormat = 'context' | 'css' | 'xpath' | 'both' | 'json';
 
 /** What each menu entry copies, and where it sends it. `format: undefined` means configurable. */
-const elementActions: Record<Exclude<CopyCommand, 'console'>, {
+const elementActions: Record<Exclude<CopyCommand, 'console' | 'consoleClaude'>, {
 	readonly format?: ElementCopyFormat;
 	readonly toClaude: boolean;
 }> = {
@@ -530,6 +557,11 @@ function elementSummary(element: PickedElement, format: ElementCopyFormat): stri
 		default:
 			return element.descriptor;
 	}
+}
+
+/** The console log as a document, for the file a mention points at. */
+export function formatConsoleReport(log: string, documentUrl: string): string {
+	return [`# Console output of ${documentUrl}`, '', '```', log, '```', ''].join('\n');
 }
 
 /** Wraps a bare path in enough context to be worth reading on its own. */
