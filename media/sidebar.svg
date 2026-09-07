@@ -1,13 +1,29 @@
-<!-- The activity bar icon. Rendered as a mask, so only the shape matters, not the colour. -->
+<!-- The activity bar icon: the app icon in one colour — the globe up and to the left, the two
+     letters across the lower right, as in `media/icon.svg`.
+
+     VS Code paints this through a mask, so only the alpha matters and the letters cannot simply
+     sit on top of the globe: they would merge with the lines behind them. The mask knocks a gap
+     for them out of the globe, which is the job the dark outline does in the full colour icon. -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-	<g fill="none" stroke="#ffffff" stroke-width="1.6" stroke-linejoin="round">
-		<rect x="2.2" y="3.8" width="19.6" height="16.4" rx="2.2"/>
-		<path d="M2.2 8.4h19.6"/>
+	<mask id="letter-gap">
+		<rect width="24" height="24" fill="#ffffff"/>
+		<g fill="none" stroke="#000000" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round">
+			<path d="M10.7 21.3 13.8 13.3 16.9 21.3"/>
+			<path d="M12 18.7h3.6"/>
+			<path d="M20.1 13.3v8"/>
+		</g>
+	</mask>
+
+	<g mask="url(#letter-gap)" fill="none" stroke="#ffffff">
+		<circle cx="9.2" cy="9.2" r="6.6" stroke-width="1.4"/>
+		<!-- One meridian and the equator: at 24px a second parallel is only fuzz. -->
+		<ellipse cx="9.2" cy="9.2" rx="2.8" ry="6.6" stroke-width="1.15"/>
+		<path d="M2.6 9.2h13.2" stroke-width="1.15"/>
 	</g>
-	<g fill="#ffffff">
-		<circle cx="5.4" cy="6.1" r="0.95"/>
-		<circle cx="8.3" cy="6.1" r="0.95"/>
-		<circle cx="11.2" cy="6.1" r="0.95"/>
-		<path d="M12 10.2 13.3 13.3 16.4 14.6 13.3 15.9 12 19 10.7 15.9 7.6 14.6 10.7 13.3Z"/>
+
+	<g fill="none" stroke="#ffffff" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
+		<path d="M10.7 21.3 13.8 13.3 16.9 21.3"/>
+		<path d="M12 18.7h3.6"/>
+		<path d="M20.1 13.3v8"/>
 	</g>
 </svg>

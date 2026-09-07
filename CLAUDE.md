@@ -60,7 +60,10 @@ page could end the block and have the rest read as markdown.
 ## The sidebar
 
 `src/sidebar.ts` is the view in the activity bar (`tabBrowser.actions`, in its own view
-container). A tree and not a webview, and every row carries the id of a command the extension
+container, under `media/sidebar.svg` — the app icon's globe and letters in one colour, since
+the editor paints a container icon through a *mask* and only its alpha is kept; that is also
+why the letters have a gap knocked out of the globe behind them instead of merely sitting on
+top of it). A tree and not a webview, and every row carries the id of a command the extension
 already registers — the view is a second way to reach them, never a second implementation, so
 the only thing written twice is the command id. `test/host.test.mjs` walks the rows after
 activation and fails on one naming a command that does not exist, since clicking is the only
@@ -143,8 +146,16 @@ Text is a different matter. An open Claude Code conversation takes only that men
 prompt handed to `claude-vscode.editor.open(sessionId, prompt)` is applied only while the panel
 is being created — for a session that already has one the extension answers "Session is already
 open. Your prompt was not applied". So `openClaudeWithPrompt` always starts a new conversation,
-and `tabBrowser.claude.pathDelivery` lets the path entries choose between the two. Codex has no
-equivalent.
+and `tabBrowser.claude.pathDelivery` lets the path entries choose between the two.
+
+Codex has no equivalent, and that was looked for properly: `chatgpt.newCodexPanel` takes nothing
+but a telemetry source, its uri handler only navigates its webview to a route and no route reads
+a prompt, the composer's prefill is a shared object written from inside that webview, and
+`chatgpt.addFileToThread` posts to whichever view Codex considers focused — it focuses its own
+sidebar on the way, so a file meant for a freshly opened tab lands in the sidebar's conversation
+instead, and an attachment leaves the composer empty anyway. `openCodexWithPrompt` therefore
+opens the tab and leaves the text on the clipboard, and every message that uses it says so
+rather than leaving the new tab looking broken.
 
 Both command ids are implementation details of those extensions, not contracts: `isAvailable()`
 checks the extension *and* the command, and every failure falls back to the clipboard with a
@@ -174,6 +185,11 @@ drive the panel. The token is never handed to the page.
 The panel's url and whether it can be inspected are known only in the webview — in-page
 navigation never reaches the host — so the webview reports `didChangeState` and the view keeps
 it. `browser_navigate` waits on `whenReady()` rather than answering into a loading page.
+
+Codex is also offered the job itself: **Ask Codex to connect** opens a new agent (through
+`openCodexWithPrompt`) with the `codex mcp add` line and the one fact that decides whether it
+works — servers are read when a conversation starts, so the tools appear in the *next*
+conversation, not the one doing the adding.
 
 Three clients, configured in three different places (`src/mcpSetup.ts`):
 

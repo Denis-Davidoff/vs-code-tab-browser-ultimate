@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1
+
+- **Connect Codex** can hand the job to Codex itself: a new agent opens with the instructions
+  for adding the server, including the part that is easy to miss — mcp servers are read when a
+  conversation starts, so the browser tools are there in the next conversation, not that one.
+
 ## 0.3.0
 
 - A view in the activity bar: the page the panel has open, the copy menu's entries, the mcp

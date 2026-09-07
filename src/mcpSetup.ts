@@ -23,6 +23,7 @@
 import { execFile } from 'node:child_process';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { isInstalled, openCodexWithPrompt } from './assistants';
 import { McpServer } from './mcpServer';
 
 /** How the server is named in every client configuration. */
@@ -164,6 +165,7 @@ export async function connectToCodex(server: McpServer): Promise<void> {
 		: serverName;
 	const cli = `codex mcp add ${globalName} --url ${server.urlWithToken}`;
 
+	const ask = vscode.l10n.t("Ask Codex to connect");
 	const project = vscode.l10n.t("Write .codex/config.toml");
 	const global = vscode.l10n.t("Add to Codex globally");
 	const copy = vscode.l10n.t("Copy CLI command");
@@ -173,10 +175,17 @@ export async function connectToCodex(server: McpServer): Promise<void> {
 		{
 			modal: true,
 			detail: vscode.l10n.t(
-				"The server is at {0}; the token is in the url because Codex can only read one from an environment variable.\n\n\".codex/config.toml\" keeps the entry with this project, and Codex reads it once the repository is trusted. Adding it globally puts \"{1}\" in ~/.codex/config.toml instead, where it applies everywhere.",
+				"The server is at {0}; the token is in the url because Codex can only read one from an environment variable.\n\nCodex can add it itself — the first option opens a new agent with the instructions. Or write it here: \".codex/config.toml\" keeps the entry with this project, and Codex reads it once the repository is trusted, while adding it globally puts \"{1}\" in ~/.codex/config.toml, where it applies everywhere.",
 				server.url ?? '', globalName),
 		},
+		// Asking Codex needs Codex in this window; the other three also serve its cli alone.
+		...(isInstalled('codex') ? [ask] : []),
 		...(folder ? [project, global, copy] : [global, copy]));
+
+	if (choice === ask) {
+		await askCodexToConnect(server, globalName, cli);
+		return;
+	}
 
 	if (choice === copy) {
 		await vscode.env.clipboard.writeText(cli);
@@ -206,6 +215,38 @@ export async function connectToCodex(server: McpServer): Promise<void> {
 			"Could not run the Codex cli ({0}). The command is on the clipboard; run it in a terminal.",
 			error instanceof Error ? error.message : String(error)));
 	}
+}
+
+/**
+ * Hands the job to Codex itself: a new agent in a tab, and the instructions for connecting in
+ * terms it can act on. It cannot be given the text outright — see `openCodexWithPrompt` — so
+ * the clipboard carries it and the notification says so rather than leaving the tab a mystery.
+ */
+async function askCodexToConnect(
+	server: McpServer,
+	name: string,
+	cli: string,
+): Promise<void> {
+	const prompt = [
+		vscode.l10n.t("Connect yourself to the \"{0}\" mcp server: it is the browser panel open in my editor, and its tools let you read and drive the page I am looking at.", name),
+		'',
+		vscode.l10n.t("Add it by running this in the project folder:"),
+		cli,
+		'',
+		vscode.l10n.t("It listens on the loopback interface only, and the token in the url is what authenticates you, so there is nothing else to configure."),
+		vscode.l10n.t("You read your mcp servers when a conversation starts, so this conversation will not have them: once it is added, tell me to start a new one. There you will have browser_snapshot, browser_navigate, browser_console, browser_click, browser_fill and the rest."),
+	].join('\n');
+
+	if (!await openCodexWithPrompt(prompt)) {
+		await vscode.env.clipboard.writeText(prompt);
+		vscode.window.showWarningMessage(vscode.l10n.t(
+			"A new Codex agent could not be opened. The instructions are on the clipboard; paste them into a Codex conversation."));
+		return;
+	}
+
+	vscode.window.showInformationMessage(vscode.l10n.t(
+		"Opened a new Codex agent. Paste with {0} — the instructions are on the clipboard, because Codex has no way to be handed text.",
+		process.platform === 'darwin' ? '\u2318V' : 'Ctrl+V'));
 }
 
 /**

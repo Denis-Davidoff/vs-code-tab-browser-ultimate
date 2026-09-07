@@ -25,6 +25,8 @@ const installedExtensions = new Set();
 const contributedCommands = new Set();
 /** Commands the code under test executed, newest last. */
 const executed = [];
+/** What was on the clipboard when a command ran, by command id. */
+const clipboardWhenExecuted = new Map();
 /** Commands the extension registered during activation. */
 const registeredCommands = new Map();
 /** Messages the code under test showed, and the button the test picks in them. */
@@ -63,7 +65,10 @@ globalThis.__vscodeStub = {
 		},
 	},
 	commands: {
-		executeCommand: (...args) => { executed.push(args); },
+		executeCommand: (...args) => {
+			executed.push(args);
+			clipboardWhenExecuted.set(args[0], clipboard);
+		},
 		getCommands: async () => [...contributedCommands],
 		registerCommand: (id, handler) => {
 			registeredCommands.set(id, handler);
@@ -834,6 +839,42 @@ codexToml = await fs.readFile(codexConfig, 'utf8');
 check('connecting again replaces our table instead of adding a second one',
 	codexToml.split('[mcp_servers.tab-browser]').length === 2
 	&& codexToml.includes('[mcp_servers.something_else]'), codexToml);
+
+// Codex cannot be handed text, so the option that hands the job to Codex itself opens a new
+// agent and leaves the prompt on the clipboard — which has to be there before the tab takes
+// focus, or the paste it asks for comes up empty.
+dialogAnswer = 'Ask Codex to connect';
+clipboard = '';
+executed.length = 0;
+
+// The option belongs to the extension in this window; the other three also serve its cli alone.
+installedExtensions.delete('openai.chatgpt');
+await connectToCodex(mcp);
+check('the option is not even offered when Codex is not installed in this window',
+	!executed.some(([id]) => id === 'chatgpt.newCodexPanel') && clipboard === '',
+	JSON.stringify(executed));
+
+// Installed, but too old to have the command that opens a tab.
+installedExtensions.add('openai.chatgpt');
+dialogs.length = 0;
+await connectToCodex(mcp);
+check('with no way to open a tab the prompt still reaches the clipboard, and says so',
+	!executed.some(([id]) => id === 'chatgpt.newCodexPanel')
+	&& clipboard.includes(mcp.urlWithToken)
+	&& dialogs.some(([kind]) => kind === 'warning'), JSON.stringify(dialogs));
+
+contributedCommands.add('chatgpt.newCodexPanel');
+await connectToCodex(mcp);
+check('asking Codex to connect opens a new agent',
+	executed.some(([id]) => id === 'chatgpt.newCodexPanel'), JSON.stringify(executed));
+
+check('the prompt tells Codex how to add the server, and that it takes a new conversation',
+	clipboard.includes(`codex mcp add tab-browser-other-project --url ${mcp.urlWithToken}`)
+	&& /new one/.test(clipboard), clipboard);
+
+check('the prompt is on the clipboard before the tab opens',
+	clipboardWhenExecuted.get('chatgpt.newCodexPanel') === clipboard,
+	clipboardWhenExecuted.get('chatgpt.newCodexPanel'));
 
 workspaceFolders = [{ uri: { scheme: 'file', fsPath: path.dirname(configFile) } }];
 

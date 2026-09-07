@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate",
 	"displayName": "AI Browser🏆 Claude + Codex",
 	"description": "Integrated browser tab with AI capabilities, Claude and Codex integration",
-	"version": "0.3.0",
+	"version": "0.3.1",
 	"icon": "media/icon.png",
 	"publisher": "DenysDavydov",
   	"private": true,

@@ -52,6 +52,7 @@ const assistants: Record<Assistant, AssistantSetup> = {
 };
 
 const openClaudeEditorCommand = 'claude-vscode.editor.open';
+const newCodexPanelCommand = 'chatgpt.newCodexPanel';
 
 /** Where reports go inside the workspace. Shared by both assistants. */
 const reportDirectory = '.tab-browser';
@@ -126,6 +127,31 @@ export async function openClaudeWithPrompt(prompt: string): Promise<boolean> {
 		return false;
 	}
 	await vscode.commands.executeCommand(openClaudeEditorCommand, undefined, prompt);
+	return true;
+}
+
+/**
+ * Opens a new Codex agent in an editor tab, with `prompt` on the clipboard for the single
+ * paste that puts it in front of it.
+ *
+ * Codex cannot be handed text, and not for want of looking: `chatgpt.newCodexPanel` takes
+ * nothing but a telemetry source, its deep link (`vscode://openai.chatgpt/…`) only navigates
+ * its webview to a route and no route reads a prompt, the composer's prefill is written from
+ * inside that webview and from nowhere else, and `chatgpt.addFileToThread` attaches a file to
+ * whichever view Codex considers focused — it focuses its own sidebar on the way there, so a
+ * file meant for a fresh tab lands in the sidebar's conversation instead. An attachment is not
+ * a prompt either: it leaves the composer empty, and the agent does nothing until something is
+ * sent. Hence the clipboard, which is the one channel that always arrives.
+ */
+export async function openCodexWithPrompt(prompt: string): Promise<boolean> {
+	if (!isInstalled('codex')
+		|| !(await vscode.commands.getCommands(true)).includes(newCodexPanelCommand)) {
+		return false;
+	}
+
+	// The clipboard first: the tab takes focus, and the paste has to be ready when it does.
+	await vscode.env.clipboard.writeText(prompt);
+	await vscode.commands.executeCommand(newCodexPanelCommand);
 	return true;
 }
 
