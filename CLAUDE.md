@@ -153,9 +153,8 @@ but a telemetry source, its uri handler only navigates its webview to a route an
 a prompt, the composer's prefill is a shared object written from inside that webview, and
 `chatgpt.addFileToThread` posts to whichever view Codex considers focused — it focuses its own
 sidebar on the way, so a file meant for a freshly opened tab lands in the sidebar's conversation
-instead, and an attachment leaves the composer empty anyway. `openCodexWithPrompt` therefore
-opens the tab and leaves the text on the clipboard, and every message that uses it says so
-rather than leaving the new tab looking broken.
+instead, and an attachment leaves the composer empty anyway. The one channel that always
+arrives is the clipboard, which is not a hand-over at all — so nothing here pretends to one.
 
 Both command ids are implementation details of those extensions, not contracts: `isAvailable()`
 checks the extension *and* the command, and every failure falls back to the clipboard with a
@@ -185,11 +184,6 @@ drive the panel. The token is never handed to the page.
 The panel's url and whether it can be inspected are known only in the webview — in-page
 navigation never reaches the host — so the webview reports `didChangeState` and the view keeps
 it. `browser_navigate` waits on `whenReady()` rather than answering into a loading page.
-
-Codex is also offered the job itself: **Ask Codex to connect** opens a new agent (through
-`openCodexWithPrompt`) with the `codex mcp add` line and the one fact that decides whether it
-works — servers are read when a conversation starts, so the tools appear in the *next*
-conversation, not the one doing the adding.
 
 Three clients, configured in three different places (`src/mcpSetup.ts`):
 

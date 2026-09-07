@@ -151,11 +151,8 @@ command palette. It offers to write `.mcp.json` in the project, or to copy the e
 `claude mcp add --transport http …` line if you would rather keep the token out of the
 repository. Check it afterwards with `/mcp` in Claude Code.
 
-**Codex**: run **Tab Browser Ultimate: Connect Codex to This Browser (MCP)**. The first option,
-**Ask Codex to connect**, hands the job to Codex: it opens a new agent with the `codex mcp add`
-line and the note that the tools arrive in the conversation *after* the one that adds them. The
-instructions travel on the clipboard for one paste — Codex has no way to be handed text, and the
-notification says as much. The other two options put the server in a config here:
+**Codex**: run **Tab Browser Ultimate: Connect Codex to This Browser (MCP)**, which offers two
+places to put the server:
 
 - `.codex/config.toml` in the project — the entry stays with the project it belongs to, and
   Codex reads it once the repository is trusted. Only this extension's own table is written; the
