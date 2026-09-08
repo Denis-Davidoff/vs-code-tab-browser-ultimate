@@ -690,17 +690,17 @@ function closeContextMenu(): void {
  * on to it in the meantime.
  */
 function runContextCommand(command: ContextMenuCommand): void {
-	// Asked for before the menu closes: closing tells the page to forget that element, and only
-	// an element pick has anything to do with it.
 	const targetId = contextTargetId;
-	closeContextMenu();
 
+	// Nothing but an element pick has anything to do with the element the menu was opened on.
 	if (command === 'inspect') {
+		closeContextMenu();
 		vscode.postMessage({ type: 'openDevTools' });
 		return;
 	}
 
 	if (isConsoleCommand(command)) {
+		closeContextMenu();
 		runCopyCommand(command);
 		return;
 	}
@@ -709,7 +709,11 @@ function runContextCommand(command: ContextMenuCommand): void {
 	pickCommand = command;
 	awaitingContextPick = true;
 	showHint('waiting', 'Reading the element…');
+	// Asked for *before* the menu is closed, and never the other way round: closing is what
+	// tells the page to forget that element, the two messages arrive in the order they are
+	// sent, and a page that has forgotten it answers nothing at all.
 	sendToPage({ kind: 'pickContextTarget', targetId });
+	closeContextMenu();
 
 	// The element can be gone by now — a menu is open for as long as the user wants — and a
 	// page with nothing to report says nothing at all.

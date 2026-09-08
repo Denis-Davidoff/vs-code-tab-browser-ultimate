@@ -36,7 +36,17 @@ export interface ServedFolder {
 }
 
 export type ServedPath =
-	| { readonly path: string }
+	| {
+		readonly path: string;
+		/**
+		 * The request carried no segment of the session's and was vouched for by its `Referer`
+		 * instead. Such a request is redirected onto one that does carry the segment rather
+		 * than answered as it is: what the file in turn references is resolved against *its*
+		 * url, and an url with no segment of ours in it produces requests nothing can vouch
+		 * for — `import './dep.js'` from a module served under a bare `/assets/main.js`.
+		 */
+		readonly fromReferer?: true;
+	}
 	/** Nothing under the folder answers this request, and the status says as much as is safe. */
 	| { readonly status: 403 | 404 };
 
@@ -84,7 +94,8 @@ export function servedPathOf(
 		segments.push(segment);
 	}
 
-	const relative = segments[0] === folder.secret
+	const carriesSecret = segments[0] === folder.secret;
+	const relative = carriesSecret
 		? segments.slice(1)
 		: fromOwnPage ? segments : undefined;
 	if (!relative) {
@@ -93,7 +104,10 @@ export function servedPathOf(
 
 	const resolved = path.resolve(folder.root, ...relative);
 	// Belt and braces: the segments above cannot climb out, and this says so of the result.
-	return isUnder(folder.root, resolved) ? { path: resolved } : { status: 403 };
+	if (!isUnder(folder.root, resolved)) {
+		return { status: 403 };
+	}
+	return carriesSecret ? { path: resolved } : { path: resolved, fromReferer: true };
 }
 
 /** The url the webview loads for a file this session serves. */
@@ -143,8 +157,8 @@ export function isHtmlPath(filePath: string): boolean {
  */
 export class ServedFiles {
 
-	/** Every file served, against the pages it was served *for*. */
-	private readonly _documents = new Map<string, Set<string>>();
+	/** Every file served, against the pages it is part of. */
+	private readonly _pages = new Map<string, Set<string>>();
 	private readonly _watchers = new Map<string, vscode.Disposable>();
 	private readonly _onDidChange = new vscode.EventEmitter<string>();
 	/**
@@ -161,30 +175,42 @@ export class ServedFiles {
 			watcher.dispose();
 		}
 		this._watchers.clear();
-		this._documents.clear();
+		this._pages.clear();
 		this._onDidChange.dispose();
 	}
 
 	/**
-	 * `document` is the page this file was served for, read off the request's `Referer`; a file
-	 * that was asked for by nobody is a page in its own right — the navigation the panel just
-	 * made. An html file is *always* a page of its own as well, since a page that links to
-	 * another one is the referrer of that navigation and not what it renders.
+	 * `referrer` is the file that asked for this one, read off the request's `Referer`.
+	 *
+	 * What is recorded is the *pages* the file is part of, and those are the pages its referrer
+	 * is part of: a stylesheet that `@import`s another one is not a page, so a change to the
+	 * imported file has to name the page that pulls the chain in — the panel reloads pages, and
+	 * knows nothing of what they are made of. A file nobody asked for is a page in its own
+	 * right (the navigation the panel just made), and an html file always is one as well, since
+	 * a page that links to another is the referrer of that navigation, not what it renders.
 	 */
-	public remember(filePath: string, document?: string): void {
+	public remember(filePath: string, referrer?: string): void {
 		if (this._disposed) {
 			return;
 		}
 
-		let documents = this._documents.get(filePath);
-		if (!documents) {
-			documents = new Set<string>();
-			this._documents.set(filePath, documents);
+		const pages = new Set<string>(referrer
+			// A referrer nothing is recorded for stands for itself — a file that was never
+			// served, which is a request no page of ours made.
+			? this._pages.get(referrer) ?? [referrer]
+			: [filePath]);
+		if (isHtmlPath(filePath)) {
+			pages.add(filePath);
+		}
+
+		let known = this._pages.get(filePath);
+		if (!known) {
+			known = new Set<string>();
+			this._pages.set(filePath, known);
 			this._watch(path.dirname(filePath));
 		}
-		documents.add(document ?? filePath);
-		if (isHtmlPath(filePath)) {
-			documents.add(filePath);
+		for (const page of pages) {
+			known.add(page);
 		}
 	}
 
@@ -198,8 +224,8 @@ export class ServedFiles {
 			const watcher = vscode.workspace.createFileSystemWatcher(
 				new vscode.RelativePattern(vscode.Uri.file(folder), '*'));
 			const changed = (uri: vscode.Uri) => {
-				for (const document of this._documents.get(uri.fsPath) ?? []) {
-					this._onDidChange.fire(document);
+				for (const page of this._pages.get(uri.fsPath) ?? []) {
+					this._onDidChange.fire(page);
 				}
 			};
 			watcher.onDidChange(changed);

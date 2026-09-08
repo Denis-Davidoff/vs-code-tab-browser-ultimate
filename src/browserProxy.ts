@@ -410,13 +410,28 @@ export class BrowserProxy extends Disposable {
 		const fromPage = referer && this._isOwnOrigin(session, originOf(referer))
 			? servedPathOf(file.folder, referer.pathname)
 			: undefined;
-		const document = fromPage && 'path' in fromPage ? fromPage.path : undefined;
+		const referrer = fromPage && 'path' in fromPage ? fromPage.path : undefined;
 
-		const served = servedPathOf(file.folder, req.url, !!document);
+		const served = servedPathOf(file.folder, req.url, !!referrer);
 		if ('status' in served) {
 			writeFileStatus(res, served.status, served.status === 403
 				? vscode.l10n.t("That path is outside {0}.", file.folder.root)
 				: vscode.l10n.t("Not found."));
+			return;
+		}
+
+		// Vouched for by the page that asked, and now put on a url that says so itself. Serving
+		// it under the bare path instead would answer this one request and break every request
+		// that file makes in turn: `import './dep.js'` is resolved against the module's own
+		// url, and a url with no segment of ours in it is one nothing can vouch for — the
+		// referrer of *that* request would be the bare path again.
+		if (served.fromReferer) {
+			const raw = req.url?.startsWith('/') ? req.url : `/${req.url ?? ''}`;
+			res.writeHead(301, {
+				location: `/${file.folder.secret}${raw}`,
+				'cache-control': 'no-store',
+			});
+			res.end();
 			return;
 		}
 
@@ -460,7 +475,7 @@ export class BrowserProxy extends Disposable {
 
 		// Watched from here rather than from the navigation: a page's stylesheets and scripts
 		// are exactly the files it asked for, and nothing else in the project is.
-		file.files.remember(target, document);
+		file.files.remember(target, referrer);
 
 		if (isHtmlPath(target)) {
 			const html = this._injectAgentScript(session, decodeHtml(await fsp.readFile(target), ''));

@@ -771,6 +771,9 @@ try {
 		await settle();
 		const asked = frame.contentWindow.__commands.slice();
 		const pickedUnder = asked.find(command => command.kind === 'pickContextTarget')?.targetId;
+		// The order of the two, which is the whole of whether a pick can be answered at all.
+		const askedBeforeClosing = asked.findIndex(command => command.kind === 'pickContextTarget')
+			< asked.findIndex(command => command.kind === 'contextMenuOpen' && command.open === false);
 		frame.contentWindow.__answerPick();
 		await settle();
 		const copied = window.__posted.filter(message => message.type === 'copyElement').at(-1);
@@ -791,7 +794,7 @@ try {
 		const devTools = window.__posted.some(message => message.type === 'openDevTools');
 
 		return { placed, atTheEdge, asked: asked.map(command => command.kind), pickedUnder,
-			expectedTarget,
+			askedBeforeClosing, expectedTarget,
 			copied, reopened, dismissed, devTools, closedAfterChoice: menu.hidden };
 	}, new URL(pageUrl).origin);
 	await menuPanel.close();
@@ -838,7 +841,10 @@ try {
 	await settlePage();
 	pageMenus.wrongId = await menuEvents();
 
+	// In the order the panel sends them: closing is what tells the page to forget the element,
+	// so a request that follows it is a request nothing can be answered for.
 	await toPage({ kind: 'pickContextTarget', targetId: openTarget });
+	await toPage({ kind: 'contextMenuOpen', open: false, targetId: openTarget });
 	await settlePage();
 	pageMenus.picked = await menuEvents();
 
@@ -1509,6 +1515,11 @@ check('choosing an entry asks the page for the element and closes the menu',
 
 // Under the name the page gave it, so a menu that has since been replaced answers for its own
 // element and not for the one the panel happens to be showing a menu for now.
+// Closing the menu is what tells the page to forget that element. Asking afterwards is asking
+// for something nobody is holding any more: no pick, and a copy that ends in a timeout.
+check('and asks for it before telling the page the menu has closed',
+	contextMenuPanel?.askedBeforeClosing === true, JSON.stringify(contextMenuPanel?.asked));
+
 check('and asks for it by the name the page gave the element that menu is about',
 	!!contextMenuPanel?.pickedUnder && contextMenuPanel.pickedUnder === contextMenuPanel.expectedTarget,
 	`${contextMenuPanel?.pickedUnder} vs ${contextMenuPanel?.expectedTarget}`);

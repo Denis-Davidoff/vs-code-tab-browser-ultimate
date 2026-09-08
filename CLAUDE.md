@@ -70,9 +70,15 @@ folder when it belongs to no project.
   be on this origin, and a page elsewhere cannot claim to be one, so a request from one of our
   own pages is resolved against the folder like that static server would (`fromOwnPage`). It
   buys nothing past the segment — the same traversal rules run on it — and a page that strips
-  its referrer simply goes back to 404. A folder addressed without its trailing slash is
-  redirected to one first, or the page's own relative references resolve against the folder
-  above it.
+  its referrer simply goes back to 404.
+
+  Such a request is *redirected* onto a url that carries the segment rather than answered as it
+  is, and that is the point of it: what a file references is resolved against **its own** url,
+  so a module served under a bare `/assets/main.js` makes its `import './dep.js'` arrive with a
+  referrer that carries no segment either — one nothing can vouch for. With the redirect every
+  url the page ever sees carries the segment, which is the invariant the rest of this design
+  assumes. A folder addressed without its trailing slash is redirected too, or the page's own
+  relative references resolve against the folder above it.
 - **A file url cannot be rebuilt like a proxied one.** The panel shows the file, not the url it
   is served under, so `toRealUrl` maps the path back — and the injected script is told the same
   two things (`realOrigin`, `basePath`): a `URL` cannot be moved between `file:` and a scheme
@@ -85,9 +91,11 @@ session actually served are watched (one non-recursive watcher per folder, not a
 over a project the page uses three files of), and a change to one of them has the panel navigate
 again (`onDidChangeServedFile` → `reloadPage`). What it reports is the **page** and not the
 folder — one session serves every page of one folder, and a stylesheet of the page opened an hour
-ago is not part of the one on screen — so every file is remembered against the page it was served
-*for*, read off the same `Referer`. An html file counts as a page of its own as well, since a
-page that links to another one is the referrer of that navigation and not what it renders. One
+ago is not part of the one on screen — so every file is remembered against the pages it is part
+of, read off the same `Referer`. Part *of*, and not "asked for by": a stylesheet that `@import`s
+another one is not a page, so what a file inherits is its referrer's pages rather than the
+referrer itself, however long the chain. An html file counts as a page of its own as well, since
+a page that links to another one is the referrer of that navigation and not what it renders. One
 save is often two events, so two reloads inside 150ms are one.
 `tabBrowser.files.reloadOnChange` turns it off.
 Which is also why nothing a file session serves is cacheable, and why the parameter the webview
@@ -283,6 +291,9 @@ Three things about it are easy to get wrong:
   The picker's own flag cannot let this one through — nothing is picking — so the webview keeps
   `awaitingContextPick`, and takes it back on a timeout: the element can be gone by the time an
   entry is chosen, and a page with nothing to report says nothing at all.
+- **The element is asked for before the menu is closed**, never the other way round: closing is
+  what tells the page to forget it, the page answers messages in the order they arrive, and a
+  page that has forgotten the element answers nothing at all — a copy that ends in a timeout.
 - **The element is named, and every message about it carries that name** (`targetId`). Two
   things need it. A click in the page can land in a frame that is not the one holding the
   element, and only the panel knows there is a menu to close — so `contextMenuOpen` goes to

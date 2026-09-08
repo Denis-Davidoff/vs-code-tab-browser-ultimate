@@ -386,6 +386,14 @@ for (const [name, target] of [
 		|| !(await refused.text()).includes('not yours'), `${refused.status}`);
 }
 
+// A module chain: what an asset references is resolved against the asset's own url, so the url
+// it is served under has to be one that can be vouched for in turn.
+await fs.writeFile(path.join(folder, 'assets', 'main.js'), 'import "./dep.js";');
+await fs.writeFile(path.join(folder, 'assets', 'dep.js'), 'console.log("dep")');
+// And a stylesheet that imports another one, which is not a page either.
+await fs.writeFile(path.join(folder, 'main.css'), '@import "nested.css";');
+await fs.writeFile(path.join(folder, 'nested.css'), 'p { color: blue }');
+
 // A page's own root-absolute reference carries no segment of the session's — there is nothing
 // in `/assets/app.js` to say which session it belongs to. Only the `Referer` can say, and a page
 // on another origin cannot claim to be one of ours.
@@ -394,6 +402,25 @@ const builtAsset = await fetch(`${origin}/assets/app.js`, {
 });
 check('a root-absolute reference from one of our own pages is served from the folder',
 	builtAsset.status === 200 && (await builtAsset.text()).includes('built'), String(builtAsset.status));
+
+// Answered with a *redirect* and not with the file: served under the bare path, whatever that
+// module imports would arrive with a referrer that carries no segment of ours, and nothing
+// could vouch for it — which is how `import "./dep.js"` used to 404 behind a module that loaded.
+const vouchedFor = await fetch(`${origin}/assets/main.js?v=2`, {
+	headers: { referer: `${origin}/${secret}/docs/index.html` },
+	redirect: 'manual',
+});
+check('a request vouched for by the page is put on a url that says so itself',
+	vouchedFor.status === 301
+	&& vouchedFor.headers.get('location') === `/${secret}/assets/main.js?v=2`,
+	`${vouchedFor.status} ${vouchedFor.headers.get('location')}`);
+
+const nestedImport = await fetch(`${origin}/${secret}/assets/dep.js`, {
+	headers: { referer: `${origin}/${secret}/assets/main.js` },
+});
+check('so what that module imports in turn is served as well',
+	nestedImport.status === 200 && (await nestedImport.text()).includes('dep'),
+	String(nestedImport.status));
 
 const withoutReferer = await fetch(`${origin}/assets/app.js`);
 check('and the same request from nowhere is not', withoutReferer.status === 404,
@@ -446,6 +473,16 @@ await new Promise(resolve => setTimeout(resolve, 200));
 await fs.writeFile(path.join(folder, 'assets', 'app.css'), 'p { color: teal }');
 await settle();
 check('saving a file the page pulled in names the page to load again',
+	reloads.includes(path.join(folder, 'page.html')), JSON.stringify(reloads));
+
+// A stylesheet that imports another one is not a page: the panel reloads pages, so a change to
+// the imported file has to name the page that pulls the whole chain in.
+reloads.length = 0;
+await fetch(`${origin}/${secret}/main.css`, { headers: { referer: filePage } });
+await fetch(`${origin}/${secret}/nested.css`, { headers: { referer: `${origin}/${secret}/main.css` } });
+await fs.writeFile(path.join(folder, 'nested.css'), 'p { color: navy }');
+await settle();
+check('a file two steps down the chain still names the page it belongs to',
 	reloads.includes(path.join(folder, 'page.html')), JSON.stringify(reloads));
 
 reloads.length = 0;
