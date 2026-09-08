@@ -2,14 +2,14 @@
  *  Messages exchanged between the extension host and the Tab Browser Ultimate webview.
  *--------------------------------------------------------------------------------------------*/
 
-import { ConsoleEntry, PageRequest, PickedElement, ShortcutAction } from './protocol';
+import { ConsoleEntry, EditAction, PageRequest, PickedElement, ShortcutAction } from './protocol';
 
 /**
- * Entries of the toolbar's own menu, which is about the panel rather than about the page. Every
- * one of them is a keyboard shortcut as well, and the menu says which — so the two lists are
- * the same list, and an entry added to one without the other would be a label that lies.
+ * Entries of the toolbar's own menu, which is about the panel rather than about the page: the
+ * shortcuts a browser keeps for itself, and the editing commands, which are in the menu because
+ * that is the only place this extension can put them — see `edit` below.
  */
-export type BrowserMenuCommand = ShortcutAction;
+export type BrowserMenuCommand = ShortcutAction | EditAction;
 
 /** Entries of the toolbar's copy menu. */
 export type CopyCommand =
@@ -87,7 +87,15 @@ export type WebviewToExtensionMessage =
 	| { readonly type: 'showError'; readonly message: string }
 	| { readonly type: 'openDevTools' }
 	/** A second panel, which only the extension host can open. */
-	| { readonly type: 'newTab' };
+	| { readonly type: 'newTab' }
+	/** What a copy in the page selected, when the page was not allowed to write it itself. */
+	| { readonly type: 'writeClipboard'; readonly text: string }
+	/**
+	 * Run an editing command for the panel — chosen from its menu. It comes back as `edit`
+	 * below, with the clipboard's content when there is pasting to do, since only the extension
+	 * host may read the clipboard.
+	 */
+	| { readonly type: 'runEdit'; readonly action: EditAction };
 
 /** Every message below reaches the webview wrapped with the panel's token. */
 export type ExtensionToWebviewMessage =
@@ -120,6 +128,11 @@ export type ExtensionToWebviewMessage =
 	| { readonly type: 'didChangeRecentUrls'; readonly urls: readonly string[] }
 	/** One of the zoom commands, which are keybindings as well as menu entries. */
 	| { readonly type: 'zoom'; readonly direction: 'in' | 'out' | 'reset' }
+	/**
+	 * A standard editing command the editor's keybinding for it cannot carry into the page.
+	 * `text` is what to paste, read from the clipboard by the extension host.
+	 */
+	| { readonly type: 'edit'; readonly action: EditAction; readonly text?: string }
 	| { readonly type: 'runCopyCommand'; readonly command: CopyCommand }
 	| {
 		/** Asked for by an mcp client; the page answers with `didRunPageRequest`. */

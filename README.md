@@ -62,13 +62,11 @@ Open VSX Registry link: https://open-vsx.org/extension/DenysDavydov/task-runner-
 The icon in the activity bar opens a view with everything the extension can do, so none of it
 has to be remembered as a command:
 
-- **Browser** — the page the panel has open and whether it can be read, **New tab**, a field to
-  open another page, **Open a file…** for an html file from disk, and a reload.
-- **This page** — pick an element or take the console output, to the clipboard or straight to
+- **Navigation** — the page the panel has open and whether it can be read, **New tab**, a field
+  to open another page, **Open a file…** for an html file from disk, and a reload.
+- **Tools** — pick an element or take the console output, to the clipboard or straight to
   whichever assistant is installed. The same entries as the panel's own copy menu.
-- **Project files** — the folders of this project, browsed rather than searched: a folder is
-  read when you open it, and its html files open in the panel with one click.
-- **MCP server** — whether it is running and on which port, the two connect commands, and
+- **MCP** — whether the server is running and on which port, the two connect commands, and
   **Check connection** (below).
 - **Recent** — the pages this project's panel has been on, so one is a click away after the
   panel is closed.
@@ -227,11 +225,24 @@ it says:
 | Zoom in | `Cmd`/`Ctrl` + `+` |
 | Zoom out | `Cmd`/`Ctrl` + `-` |
 | Reset zoom | `Cmd`/`Ctrl` + `0` |
+| Undo, Redo, Cut, Copy, Paste, Select all | the editor's own |
+
+Those four keys work while the page has the keyboard, because the injected script is the only
+thing that hears them there. The extension contributes no keybindings of its own: claiming
+`Cmd`+`C` — even scoped to a focused browser panel — took copy and paste out of the rest of the
+editor, so the editing entries are in the menu and the editor's own keys are left alone.
 
 **Zoom** also answers a pinch on the trackpad and `Cmd`/`Ctrl` + scroll, and the level is
 remembered per panel across restarts (the menu shows it next to "Reset zoom"). It is the page
 that is zoomed, not a picture of it: the page reflows into a smaller viewport exactly as it does
 under a browser's own zoom, and every element report still reads the page's own css.
+
+**Undo, redo, cut, copy, paste and select all** are in that menu as well, and they act on
+whatever has the keyboard — the page, or the address bar. They are there rather than on
+`Cmd`+`Z`/`X`/`C`/`V`/`A` because the editor answers those keys on the panel's own document
+rather than on the page one frame deeper, and taking the keys away from the editor to fix that
+breaks copy and paste everywhere else. The clipboard is read by the extension, never by the page: a page that could
+ask for the clipboard could read it whenever it liked.
 
 **New tab** opens a second browser panel, blank, with the address bar focused. With more than
 one open, the copy menu, the sidebar and every mcp tool act on the panel you were last looking
@@ -248,8 +259,8 @@ An html file opens in the panel like any url does:
 
 - **Explorer** — right-click the file, "Open in AI Browser". The same entry is on the editor
   tab of an open html file.
-- **Sidebar** — "Open a file…" for the file dialog and the list of this project's pages, or
-  **Project files** to browse the folders of the project itself.
+- **Sidebar** — **Open a file…** under **Navigation**: the html files of this project to pick
+  from, and a file dialog behind them for anything else.
 - **Address bar** — a path pastes as readily as a url: `/Users/me/site/index.html`,
   `C:\sites\index.html`, or a `file:` url.
 - **Command palette** — "Tab Browser Ultimate: Open in AI Browser".
@@ -385,9 +396,29 @@ unguessable segment of its own — a port on the loopback interface is reachable
 the machine, and by any page in any browser that guesses it — and nothing outside that folder is
 reachable through it at all.
 
-Each proxied site keeps its own cookies: they all end up on `127.0.0.1`, where the browser does
-not separate them by port, so the proxy gives every session its own cookie namespace and
-forwards nothing that belongs to another one. Pages see their cookies under the usual names.
+**A page that asks for its own api by absolute url still works.** A build compiles `AUTH_URL` or
+`NEXT_PUBLIC_API_URL` into the bundle, and the page then asks for `http://localhost:3000/api/…`
+while it is being served from the proxy — a request that is cross-origin (blocked by cors),
+cross-site (so the `SameSite` cookie holding the csrf token is not sent) and invisible to the
+proxy (so its cookie names are not translated back). Logins broke on exactly that. The injected
+script now puts such a request back on the origin the page was served from; a request to any
+*other* origin is left as the page made it, since that one is cross-origin in a browser too.
+
+If something still does not reach your server, `tabBrowser.proxy.log` writes one line per
+request — method, path, status and the cookie names forwarded upstream — to an "AI Browser
+proxy" output channel. A request that is missing from that log is one that bypassed the proxy.
+
+**Cookies work, and they need help to.** The panel's page is a frame in the editor's webview, so
+the browser has it as a third party in somebody else's site — and there a cookie without
+`SameSite=None; Secure` is not merely withheld from the next request, it is never stored at all.
+A login cannot be completed in that state: the csrf cookie is gone before the request that would
+use it. So the proxy gives every cookie it forwards the attributes a framed page needs.
+
+Each proxied site also keeps its cookies to itself: they all end up on `127.0.0.1`, where the
+browser does not separate them by port, so every session has its own namespace and forwards
+nothing that belongs to another one. Pages see their cookies under the usual names, and the
+namespace is derived from the site rather than from the port — so a session survives a restart,
+which hands the proxy a different port.
 
 ## Settings
 
@@ -398,6 +429,7 @@ All of them are under `tabBrowser.` and in the editor's settings ui under this e
 | --- | --- | --- |
 | `proxy.mode` | `localhost` | Which urls are served through the local proxy that makes a page readable: `localhost`, `always` or `never`. |
 | `proxy.ignoreCertificateErrors` | `true` | Talk to an https target with a self-signed certificate anyway. |
+| `proxy.log` | `false` | Log every request the proxy answers to an output channel: method, path, status, cookie names. |
 | `files.reloadOnChange` | `true` | Reload a page opened from disk when one of its files is saved. |
 | `contextMenu.enabled` | `true` | Answer a right-click in the page with this panel's own menu. |
 | `picker.copyFormat` | `context` | What "Copy element" writes: `context`, `css`, `xpath`, `both` or `json`. |

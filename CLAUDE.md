@@ -35,6 +35,39 @@ path. Contracts live in `shared/protocol.ts` (page ↔ webview) and `shared/webv
 (webview ↔ host); both sides are typed off the same file, so a change there is a change to all
 three bundles.
 
+## A page that names its own server
+
+The proxy serves the page from its own origin, and the page's own idea of where it lives does
+not change with it: a build compiles `AUTH_URL`, `NEXTAUTH_URL` or `NEXT_PUBLIC_API_URL` into an
+absolute url, and the client then asks for `http://localhost:3000/api/…` from a document served
+on `http://127.0.0.1:59147`. Three things go wrong at once:
+
+- it is **cross-origin**, so cors blocks it — a dev server has no reason to allow another origin;
+- it is **cross-site**, since `127.0.0.1` and `localhost` are different sites and a port is no
+  part of a site at all, so a `SameSite` cookie is not sent with it — and a csrf token is one;
+- and the proxy never sees it, so this session's cookie names are not translated back: the
+  server would be handed `__tb59147_authjs.csrf-token` even if the cookie did travel.
+
+The proxy rewrites those urls where it can see them, which is in the html it passes through — a
+bundle is not html. So they are rewritten in the page instead (`page-src/requests.ts`,
+installed before the page's own code runs): `fetch`, `XMLHttpRequest.open` and `sendBeacon` put
+a url aimed at **this session's own real origin** back on the origin the page was served from.
+Only that one origin: a page asking for somewhere else is asking for somewhere else, and in a
+browser that request is cross-origin too.
+
+This is *not* what stops a login — the cookie above is — and it was taken for the cause for a
+while on exactly that evidence: the login request in the traffic was cross-site. Both are real,
+and each has to be fixed on its own.
+
+Known edges of it: a `WebSocket`, an `EventSource` and a `<form action>` naming the real server
+by absolute url still leave the proxy. The first two do not need cookies to work; a form post
+does, and there is no way to rewrite one without editing the page's dom.
+
+`tabBrowser.proxy.log` answers the one question the panel cannot otherwise be asked: whether a
+request the page made went through the proxy at all. One line per request — method, path,
+status, and the cookie **names** forwarded upstream, never the values. A request that is missing
+from that log is a request that left.
+
 `tabBrowser.proxy.mode` decides when the proxy is used: `localhost` (default), `always`,
 `never`. A copy command forces a reload through the proxy when the current page is not
 instrumented yet.
@@ -111,16 +144,29 @@ path as readily as a url) — and once a file is open, all the tools read it lik
 
 Two things about that arrangement are easy to get wrong again:
 
+- **A cookie in the panel is a third-party cookie.** The top-level document is the editor's
+  webview, so as far as the browser is concerned the page is a frame in somebody else's site —
+  and a cookie without `SameSite=None; Secure` is not merely withheld from the next request, it
+  is **never stored**. That is a login that cannot be completed however good the proxy is: the
+  csrf cookie does not exist by the time the second fetch of the same page load goes out. So
+  `shared/cookies.ts` forces `SameSite=None` and adds `Secure` — which costs nothing over
+  `http://127.0.0.1`, a trustworthy origin — rather than dropping them as describing an origin
+  the browser does not have the page from, which was this file's reasoning for a while and was
+  exactly backwards. `test/host.test.mjs` frames a proxied page in a document on another site
+  and follows a cookie into the second request of one page load; with `SameSite=Lax` the jar
+  comes back empty.
 - **Cookies are not separated by port.** Every session publishes on `127.0.0.1`, so without help
   the site on :3000 would read, overwrite and receive the cookies of the site on :5173 — the
   `HttpOnly` ones too, which a page cannot see but the browser still sends. So each session
-  prefixes the names of the cookies it hands the browser (`__tb<port>_`), drops the ones that
-  are not its own from every request it forwards, and restores the real names upstream.
-  `page-src/cookies.ts` hides the prefix from `document.cookie`, so page scripts never see it —
-  and puts a write through the same attribute rewriting as a `Set-Cookie` header
-  (`shared/cookies.ts`, used by both), since a page setting `Domain=localhost` or `Secure` is
-  describing the server it thinks it is talking to, not the origin the browser has it from, and
-  a browser told that stores nothing at all.
+  prefixes the names of the cookies it hands the browser, drops the ones that are not its own
+  from every request it forwards, and restores the real names upstream. The prefix comes from
+  the **origin** and not from the port (`cookiePrefixFor`): a port is handed out again on every
+  restart, and a name that changes with it is a session the user logs into again every morning.
+  It is also what contains `SameSite=None` above — another proxied site can have the browser
+  attach these cookies to a request at this port, and the session forwards only its own names.
+  `page-src/cookies.ts` hides the prefix from `document.cookie`, so page scripts never see it,
+  and puts a write through the same rewriting as a `Set-Cookie` header (both use
+  `shared/cookies.ts`, or a cookie a script sets would not survive what the server sets).
   Which is also why a session forwards to its own server and nowhere else (`targetOf`): a
   request target is a path, and one beginning with `//` resolves to a *host*, so
   `//example.com/x` would have handed those cookies to example.com.
@@ -142,11 +188,29 @@ Two things about that arrangement are easy to get wrong again:
   a per-document nonce injected by the proxy is not the answer: the document it is injected into
   can read it.
 
+Every patch the injected script makes is to an api of the page's own — `console`,
+`document.cookie`, `fetch`, `XMLHttpRequest.open`, `sendBeacon` — and a page is free to have
+frozen any of them, which some libraries do. Each is installed on its own (`tryInstall`,
+`patch`), because they run *before* everything else: one assignment that throws in a page like
+that took the picker, the console, the shortcuts, the element reports and every mcp tool with
+it, and the panel simply reported the page as not instrumented. `test/host.test.mjs` walks a
+page that freezes all of them.
+
 The injected script sits in front of the page's own code — `console` is patched before any of
 it runs — so nothing it does may change how that page behaves. Formatting a logged value is the
 sharp edge: `%d` with a symbol, a getter that throws, a revoked proxy. `page-src/consoleCapture.ts`
 therefore records inside a `try` and forwards to the real console either way; a page that logs
 something unreadable gets `[could not be read]` in the copy, never an exception of ours.
+
+A subresource that fails to load is *not* reported to the panel: a dev server rebuilding answers
+404 for the chunk the page is still asking for, and a banner over the page for something that
+resolves itself a second later is noise. `consoleCapture` records it either way — where a
+browser records it too — so the copy menu and the mcp tools still see it. What does reach the
+panel is an uncaught exception, which is what explains a blank page.
+
+The panel's dead ends are a page of the proxy's own (`errorPage`): a server that is not running,
+a path outside the folder a local page is served from. It carries its own styling and answers
+`prefers-color-scheme`, since there are no editor theme variables inside the frame.
 
 Reports built from page content — markup, css, console output — are fenced with a fence longer
 than the longest run of backticks inside them (`fenced()` in `src/tabBrowserView.ts`), or the
@@ -199,15 +263,12 @@ all. Which cuts both ways, and the counting version of this got it wrong in both
 triple quote inside a literal string (`note = 'use """ for prose'`) opens nothing, and read as
 if it did, the table this extension wrote goes unseen and connecting writes it a second time.
 
-The **Project files** section is the one part of the tree that is not rebuilt whole: nobody knows
-how many folders a project has, and nothing here needs to until one is opened, so those rows
-carry a `folder` and are read off the disk by `getChildren`. They are also the only rows with an
-`id`: the tree remembers what is open by the id of the item, and every row here is a new object
-on every refresh — of which there are several per page load, so without one the folders someone
-opened fold up while the page is still loading. Only html files are offered, since
-a page is what the panel opens; `Open a file…` is there for everything the browser would not
-find, and it is `findFiles` plus a dialog rather than a walk of the folders — the editor's index
-already knows about the excludes the user has set.
+The three sections are **Navigation**, **Tools** (only with a panel open, since it is about the
+page in it) and **MCP**. `Open a file…` is `findFiles` plus a dialog rather than a walk of the
+folders — the editor's index already knows about the excludes the user has set, and it runs only
+when the row is clicked. A tree of the project's folders lived here for a while and was taken
+back out: the panel opens one page at a time, and a second file explorer beside the editor's own
+is a row nobody was going to use.
 
 Recent pages live in `workspaceState`: a dev url belongs to the project, not to the user. A file
 is remembered there too, and shown relative to the project it belongs to.
@@ -225,24 +286,23 @@ while the page has the keyboard, so the script forwards it, and what the script 
 something a page can send on its own. Every panel holds a live webview. A blank tab loads nothing at all: assigning an empty `src` would load the webview's own
 document into the frame.
 
-**Zoom belongs to the frame**, not to the page: `iframe.style.zoom` is what a browser's own zoom
-does — the page's layout viewport becomes the panel divided by the factor, so the page reflows
-rather than being stretched — while a `zoom` the *page* carried would show up in every computed
-style an element report reads. And nothing else: a percentage under `zoom` resolves in the
-zoomed element's own units, so the frame's `width: 100%` keeps filling the panel by itself.
-Dividing the size as well — which looks like the obvious thing to do, and was done here first —
-leaves a third of the panel blank at 150% and overflows it at 50%, with the page reflowing twice
-as far as it was asked to; `test/host.test.mjs` therefore measures the geometry and the page's
-own `innerWidth` rather than the style it was set from. Two things follow from the page and the
+**Zoom belongs to the frame**, not to the page: a CSS transform scales the iframe while its
+width and height are divided by the factor, giving the page a smaller layout viewport.
+The frame cannot flex-shrink, and its container clips the unscaled layout overflow. CSS `zoom`
+must not be used here: Chromium can resize a cross-site frame's viewport without visually
+scaling its contents. `test/host.test.mjs` checks geometry and `innerWidth`, plus a click beyond
+the original width of an enlarged button in a separate-site renderer. Two things follow from the page and the
 panel counting in different pixels: the level is kept in the webview's own state (per panel,
 across restarts), and the point a right-click reports has to be multiplied by it before the menu
 is placed — the page reports its own viewport, the frame's box is the scaled one.
 
-**The keys a browser keeps for itself** (`Cmd`/`Ctrl` + `T`, `+`, `-`, `0`) reach the panel two
-ways, because neither covers the other: `contributes.keybindings` scoped to
-`activeWebviewPanelId` works while the panel's own chrome has the keyboard, and the injected
-script forwards them (`shortcut`) while the *page* has it — a key pressed inside a frame reaches
-no listener above it and no keybinding of the editor's either. A pinch on a trackpad and
+**The keys a browser keeps for itself** (`Cmd`/`Ctrl` + `T`, `+`, `-`, `0`) reach the panel
+through the injected script (`shortcut`), which is the only thing that hears them while the page
+has the keyboard — a key pressed inside a frame reaches no listener above it and no keybinding
+of the editor's either. Not through `contributes.keybindings`: see the clipboard section for
+what claiming a key of the editor's costs. What the page forwards is checked against the four
+of them by name (`isShortcutAction`), since the shapes it sends are in the script the proxy
+injected into it: a page that could send `paste` could have the clipboard read for it. A pinch on a trackpad and
 `Cmd` + wheel are the same event everywhere (`wheel` carrying `ctrlKey`), so one non-passive
 listener answers both and reports the delta upwards (`zoomGesture`); the panel adds those up and
 steps when they amount to one, since a gesture is many small deltas and the zoom is a dozen
@@ -263,6 +323,53 @@ order. What a person types into an address bar is the start of a host or of a pa
 first (`matchRank`), a mere substring after them, and recency only decides between equals. The
 list is the webview's own dom, drawn under the field rather than in the page — a `<datalist>`
 cannot be styled, ordered or navigated the way this needs to be.
+
+## Undo, cut, copy, paste and select all
+
+They do not work by themselves in the page, and the reason is worth writing down because
+nothing about it is visible from here.
+
+The editor takes those keys for itself. On macOS `Cut`/`Copy`/`Paste` are native menu roles, so
+the accelerator is handled by the OS and lands on the focused frame; everything else — `Undo`,
+`Redo` and `Select All` — is re-dispatched into the renderer as a keystroke
+(`vscode:runKeybinding`) and resolved by the keybinding service, which lands on `undo` and
+`editor.action.selectAll`. The editor's own webview support
+answers those by running `execCommand` **on the frame it created** (`getActiveFrame()` in the
+webview's host script), which is this panel's document — and the page is one frame deeper than
+that. So the command runs against a document with no selection in it, the page never hears the
+key, and nothing happens anywhere.
+
+Hence six commands of ours (`tabBrowser.clipboardCopy` and friends), reached from the panel's
+own menu and carried the rest of the way: the webview looks at what has the focus — its own
+address bar, or the page — and the page passes the command down to whichever frame holds the
+focus, since a command run in every frame would copy from three documents at once.
+
+**They are not bound to those keys, and that is the whole point of this section.** They were,
+once, with `when: activeWebviewPanelId == 'tabBrowser.view'` — and copy and paste stopped
+working *everywhere in the editor*, not only here. Whatever the exact path (the resolver, or the
+accelerator the native Edit menu registers for the editor's own clipboard commands), a `when`
+clause is not enough to make claiming `Cmd`+`C` safe, and an extension that takes copy out of
+the rest of the editor is worse than one whose panel has no shortcut for it. So the extension
+contributes **no keybindings at all**: the keys a browser keeps for itself are forwarded by the
+injected script, which is the only thing that hears them while the page has the focus anyway,
+and everything else is in the menu. `test/host.test.mjs` fails if a keybinding is contributed
+again, and says why.
+
+- **The clipboard is read in the extension host** (`vscode.env.clipboard`) and the text travels
+  down with the paste. The page is never given a way to *ask* for the clipboard: a page that
+  could ask could read it whenever it liked, and the clipboard is where passwords are.
+- **A copy is written by the page where it can be** (`execCommand('copy')`, which keeps the html
+  flavour of a rich selection) and handed to the host where it cannot: a document with no user
+  activation of its own may be refused the clipboard, and this command arrives as a message
+  rather than as a keystroke. One of the two always happens, which is what the test pins down.
+- **Only a paste leaves the webview.** Undo, redo, copy, cut and select all are `execCommand`
+  in the document that has the keyboard and need nothing from the extension host, so the menu
+  runs them where they happen; a paste is the one that has to go out and come back.
+- **A paste is `execCommand('insertText')`** and not an assignment to `value`, so `beforeinput`
+  and `input` fire, a framework notices, and undo still works.
+- The framed page is also given the clipboard permissions the editor gave this document
+  (`allow="clipboard-read; clipboard-write"`): a permissions policy is not inherited across a
+  cross-origin frame, so without it a page's *own* copy button silently fails.
 
 ## The copy menu
 
@@ -570,7 +677,9 @@ decides which urls are claimed, with the same `localhost` / `always` / `never` s
 
 `WebviewPanel.iconPath` only takes a local file, so `src/favicon.ts` downloads the icon, sniffs
 its magic bytes (a dev server answers `/favicon.ico` with its index page often enough that the
-content type cannot be trusted) and writes it to `tmpdir/tab-browser-ultimate/icons/<sha1>.<ext>`.
+content type cannot be trusted) and writes it to `context.globalStorageUri/icons/<sha1>.<ext>`.
+This storage root is passed through the manager and view: VS Code refuses `.ico` resources in
+the system temporary directory, although PNG and SVG there are allowed.
 Naming by content is what makes the editor repaint the tab when the icon changes.
 
 Where the icon url comes from: an instrumented page reports it itself (`page-src/pageIcon.ts`,

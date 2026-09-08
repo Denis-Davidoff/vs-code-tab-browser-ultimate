@@ -2,6 +2,55 @@
 
 ## Unreleased
 
+- **Fixed: cookies were not stored at all in the panel**, so a login could never be completed.
+  The panel's page is a frame in the editor's webview, which makes it a third party in another
+  site as far as the browser is concerned — and there a cookie without `SameSite=None; Secure`
+  is not withheld from the next request, it is never stored. Every cookie the proxy forwards now
+  carries what a framed page needs; `Secure` costs nothing over `http://127.0.0.1`.
+- **A session now survives a restart.** The namespace the proxy gives a site's cookies came from
+  the port it happened to get, and the port is different next time; it is derived from the site
+  itself now.
+
+- **Fixed: a page that freezes its own globals no longer loses the whole agent.** The injected
+  script patches `console`, `document.cookie`, `fetch`, `XMLHttpRequest.open` and `sendBeacon`,
+  and those run before everything else — so on a page that had frozen one of them the
+  assignment threw and took the shortcuts, the picker, the console and every mcp tool with it.
+  Each patch is now installed on its own; one that will not take costs only itself.
+
+- **Fixed: a login could not go through** for a page that asks for its own api by absolute url —
+  what a build makes of `AUTH_URL` or `NEXT_PUBLIC_API_URL`. Such a request left the proxy: cors
+  blocked it, the `SameSite` cookie carrying the csrf token was not sent with it (`127.0.0.1`
+  and `localhost` are different sites), and the proxy never saw it, so the session's cookie
+  names were not translated back. The injected script now keeps those requests on the origin the
+  page was served from; a request to any other origin is left alone.
+- New `tabBrowser.proxy.log`: one line per proxied request — method, path, status and the cookie
+  names forwarded upstream — for the one question the panel cannot otherwise answer, which is
+  whether a request went through the proxy at all.
+
+- Fixed missing ICO favicons on browser tabs: cached icons now live in extension global
+  storage, where VS Code permits loading this format, including icons of local documents.
+
+- Fixed page zoom inside cross-site frames: menu commands, keyboard shortcuts and pinch or
+  modified scrolling now scale the visible contents along with the page's layout viewport.
+
+- A subresource that fails to load no longer raises a banner over the page — a dev server
+  rebuilding answers 404 for a chunk for a second or two. It is still recorded in the console,
+  where a browser records it too, so nothing is lost from the copy menu or the mcp tools.
+- The panel's dead ends — a server that is not running, a path outside the folder a local page
+  is served from — are shown as a card in the middle of the panel instead of bare text.
+- The sidebar's sections are now **Navigation**, **Tools** and **MCP**, and the folder browser
+  is gone: **Open a file…** already lists the project's pages.
+
+- **Undo, redo, cut, copy, paste and select all reach the page**, from the toolbar's menu: the editor
+  answers those keys on the panel's own document, one frame above the page, so in the page
+  nothing happened at all. The clipboard is read by the extension, never by the page. The framed
+  page is also handed the clipboard permissions the editor gives the panel, so a page's own copy
+  button works.
+- **Fixed: the extension no longer binds any keys of the editor's own.** A keybinding for
+  `Cmd`/`Ctrl` + `C`, `V`, `X`, `A` scoped to a focused browser panel took copy and paste out of
+  the rest of the editor; the zoom and new-tab keys were bound the same way and are now
+  forwarded by the injected script instead, which is what hears them in the page anyway.
+
 - **A toolbar menu, zoom and a completing address bar.** The button at the right of the toolbar
   opens **New tab** (`Cmd`/`Ctrl` + `T`) and **Zoom in / out / reset** (`Cmd`/`Ctrl` + `+`, `-`,
   `0`); zoom also answers a pinch on the trackpad and `Cmd`/`Ctrl` + scroll, and is remembered

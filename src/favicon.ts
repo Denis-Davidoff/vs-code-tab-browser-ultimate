@@ -10,7 +10,6 @@
 import * as fs from 'node:fs/promises';
 import * as http from 'node:http';
 import * as https from 'node:https';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import * as vscode from 'vscode';
@@ -37,7 +36,7 @@ const imageTypes: readonly ImageType[] = [
 ];
 
 /** Downloads `href` and returns a file the editor can use as a tab icon. */
-export async function fetchIcon(href: string): Promise<vscode.Uri | undefined> {
+export async function fetchIcon(href: string, directory: vscode.Uri): Promise<vscode.Uri | undefined> {
 	try {
 		const bytes = href.startsWith('data:')
 			? decodeDataUrl(href)
@@ -51,7 +50,7 @@ export async function fetchIcon(href: string): Promise<vscode.Uri | undefined> {
 			return undefined;
 		}
 
-		return await store(bytes, type.extension);
+		return await store(bytes, type.extension, directory.fsPath);
 	} catch {
 		// A page without a reachable icon simply keeps the default one.
 		return undefined;
@@ -223,8 +222,9 @@ function download(
 	});
 }
 
-async function store(bytes: Buffer, extension: string): Promise<vscode.Uri> {
-	const directory = path.join(os.tmpdir(), 'tab-browser-ultimate', 'icons');
+async function store(bytes: Buffer, extension: string, directory: string): Promise<vscode.Uri> {
+	// Use the extension's global storage, an allowed workbench resource root. In the system
+	// temp directory VS Code blocks .ico files even though it accepts PNG and SVG there.
 	await fs.mkdir(directory, { recursive: true });
 	await pruneOldIcons(directory);
 

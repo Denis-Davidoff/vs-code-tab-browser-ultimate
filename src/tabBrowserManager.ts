@@ -27,6 +27,7 @@ export class TabBrowserManager {
 		private readonly _extensionUri: vscode.Uri,
 		private readonly _proxy: BrowserProxy,
 		private readonly _recent: RecentPages,
+		private readonly _iconDirectory: vscode.Uri,
 	) { }
 
 	public dispose(): void {
@@ -65,7 +66,7 @@ export class TabBrowserManager {
 			return undefined;
 		}
 
-		const view = TabBrowserView.create(this._extensionUri, this._proxy, this._recent, url, options);
+		const view = TabBrowserView.create(this._extensionUri, this._proxy, this._recent, this._iconDirectory, url, options);
 		this._add(view);
 		this._onDidChange.fire();
 		return view;
@@ -73,7 +74,7 @@ export class TabBrowserManager {
 
 	public restore(panel: vscode.WebviewPanel, state: any): void {
 		const url = state?.url ?? '';
-		this._add(TabBrowserView.restore(this._extensionUri, this._proxy, this._recent, url, panel));
+		this._add(TabBrowserView.restore(this._extensionUri, this._proxy, this._recent, this._iconDirectory, url, panel));
 		this._onDidChange.fire();
 	}
 

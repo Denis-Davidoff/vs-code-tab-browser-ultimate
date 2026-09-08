@@ -10,6 +10,7 @@ import {
 	AgentMessage,
 	cacheBustParameter,
 	isAgentMessage,
+	EditAction,
 	packAgentMessage,
 	ShortcutAction,
 } from '../shared/protocol';
@@ -17,6 +18,7 @@ import { consoleSnapshot, installConsoleCapture } from './consoleCapture';
 import { PageContextMenu } from './contextMenu';
 import { installCookiePrefix } from './cookies';
 import { handlePageRequest } from './pageRequests';
+import { installRequestRewriting } from './requests';
 import { findIconHref } from './pageIcon';
 import { ElementPicker } from './picker';
 import { cssPath, describeElement } from './selectors';
@@ -48,12 +50,28 @@ if (!window.__tabBrowserInstalled) {
 	install();
 }
 
+/** One patch of the page's own globals that will not take must not stop the rest. */
+function tryInstall(install: () => void): void {
+	try {
+		install();
+	} catch {
+		// The page has that api locked down; everything else still works.
+	}
+}
+
 function install(): void {
-	// Before anything else: page scripts start logging as soon as they run.
-	installConsoleCapture();
-	installCookiePrefix(window.__tabBrowserConfig?.cookiePrefix ?? '');
+	// Before anything else: page scripts start logging as soon as they run. Each of these
+	// patches an api of the page's own, and a page is free to have frozen it — so one that
+	// cannot be installed must not take the rest of the agent down with it: the picker, the
+	// element reports, the shortcuts and every mcp tool come after.
+	tryInstall(installConsoleCapture);
+	tryInstall(() => installCookiePrefix(window.__tabBrowserConfig?.cookiePrefix ?? ''));
 
 	const realOrigin = window.__tabBrowserConfig?.realOrigin ?? location.origin;
+
+	// And before the page asks for anything, since the first thing a framework does on the
+	// client is fetch its own api.
+	tryInstall(() => installRequestRewriting(realOrigin));
 	const basePath = window.__tabBrowserConfig?.basePath ?? '';
 
 	// -- messaging ---------------------------------------------------------------------------
@@ -353,6 +371,14 @@ function install(): void {
 				return;
 			}
 
+			case 'edit': {
+				if (event.source && event.source !== window && event.source !== window.parent) {
+					return;
+				}
+				runEditCommand(message.action, message.text);
+				return;
+			}
+
 			case 'collectConsole': {
 				if (event.source && event.source !== window && event.source !== window.parent) {
 					return;
@@ -408,6 +434,7 @@ function install(): void {
 			case 'result':
 			case 'shortcut':
 			case 'zoomGesture':
+			case 'copyToClipboard':
 				send(message);
 				return;
 
@@ -457,6 +484,73 @@ function install(): void {
 				return;
 		}
 	});
+
+	// -- the standard editing commands ---------------------------------------------------------
+
+	/** What a copy would take: the selection, or the part of a field that is selected. */
+	function selectedText(): string {
+		const active = document.activeElement as HTMLInputElement | null;
+		if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')
+			&& typeof active.selectionStart === 'number') {
+			return String(active.value ?? '')
+				.slice(active.selectionStart ?? 0, active.selectionEnd ?? undefined);
+		}
+		return String(window.getSelection() ?? '');
+	}
+
+	/**
+	 * Cut, copy, paste and select all, in the document that actually has the keyboard.
+	 *
+	 * The command arrives at the top document and is passed to whichever frame holds the focus,
+	 * because that is the one the user is editing in — a command run everywhere would copy from
+	 * three documents at once.
+	 */
+	function runEditCommand(action: EditAction, text?: string): void {
+		const focused = document.activeElement;
+		if (focused instanceof HTMLIFrameElement || focused instanceof HTMLFrameElement) {
+			post(focused.contentWindow, { kind: 'edit', action, text });
+			return;
+		}
+
+		switch (action) {
+			case 'undo':
+			case 'redo':
+			case 'selectAll':
+				// What a browser does with these keys, in the document that has the keyboard.
+				document.execCommand(action);
+				return;
+
+			case 'paste':
+				// Through the editing pipeline rather than by assigning `value`: this fires
+				// `beforeinput` and `input`, so a framework sees the change and undo still
+				// works. Nothing about it needs the clipboard, which the page cannot read.
+				if (text) {
+					document.execCommand('insertText', false, text);
+				}
+				return;
+
+			case 'copy':
+			case 'cut': {
+				// A document with no user activation of its own may be refused the clipboard,
+				// and this command arrived as a message rather than as a keystroke — so what
+				// it selected goes to the extension host, which is allowed to write it.
+				const taken = selectedText();
+				let written = false;
+				try {
+					written = document.execCommand(action);
+				} catch {
+					// Refused; the host writes it instead.
+				}
+				if (!written && taken) {
+					send({ kind: 'copyToClipboard', text: taken });
+					if (action === 'cut') {
+						document.execCommand('delete');
+					}
+				}
+				return;
+			}
+		}
+	}
 
 	// -- the panel's own keyboard shortcuts ----------------------------------------------------
 
@@ -513,14 +607,20 @@ function install(): void {
 	let reportedErrors = 0;
 
 	window.addEventListener('error', event => {
+		// A subresource that did not load is the page's business and not the panel's: a dev
+		// server rebuilding answers 404 for the chunk the page is still asking for, and a
+		// banner over the page for something that resolves itself in a second is noise. It is
+		// recorded either way — `consoleCapture` puts it in the console, where a browser puts
+		// it too, so the copy menu and the mcp tools still see it.
+		if (event.target && event.target !== window && (event.target as Element).tagName) {
+			return;
+		}
+
 		// Enough to explain a blank page, without flooding the panel.
 		if (reportedErrors >= 10) {
 			return;
 		}
-		const target = event.target as (Element & { src?: string; href?: string }) | null;
-		const message = target && target !== (window as unknown as Element) && target.tagName
-			? `Failed to load ${target.tagName.toLowerCase()}${target.src || target.href ? `: ${target.src || target.href}` : ''}`
-			: event.message || String(event.error ?? 'Script error');
+		const message = event.message || String(event.error ?? 'Script error');
 		if (!message) {
 			return;
 		}

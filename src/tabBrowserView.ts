@@ -15,6 +15,7 @@ import { generateUuid } from './uuid';
 import {
 	ConsoleEntry,
 	CssRule,
+	EditAction,
 	defaultPreferredAttributes,
 	PageRequest,
 	PickedElement,
@@ -92,6 +93,7 @@ export class TabBrowserView extends Disposable {
 		extensionUri: vscode.Uri,
 		proxy: BrowserProxy,
 		recent: RecentPages,
+		iconDirectory: vscode.Uri,
 		url: string,
 		showOptions?: ShowOptions,
 	): TabBrowserView {
@@ -102,23 +104,25 @@ export class TabBrowserView extends Disposable {
 			retainContextWhenHidden: true,
 			...TabBrowserView.getWebviewOptions(extensionUri),
 		});
-		return new TabBrowserView(extensionUri, proxy, recent, url, webview);
+		return new TabBrowserView(extensionUri, proxy, recent, iconDirectory, url, webview);
 	}
 
 	public static restore(
 		extensionUri: vscode.Uri,
 		proxy: BrowserProxy,
 		recent: RecentPages,
+		iconDirectory: vscode.Uri,
 		url: string,
 		webviewPanel: vscode.WebviewPanel,
 	): TabBrowserView {
-		return new TabBrowserView(extensionUri, proxy, recent, url, webviewPanel);
+		return new TabBrowserView(extensionUri, proxy, recent, iconDirectory, url, webviewPanel);
 	}
 
 	private constructor(
 		private readonly _extensionUri: vscode.Uri,
 		private readonly _proxy: BrowserProxy,
 		private readonly _recent: RecentPages,
+		private readonly _iconDirectory: vscode.Uri,
 		url: string,
 		webviewPanel: vscode.WebviewPanel,
 	) {
@@ -186,6 +190,15 @@ export class TabBrowserView extends Disposable {
 
 				case 'showError':
 					vscode.window.showErrorMessage(message.message);
+					break;
+
+				case 'runEdit':
+					this.edit(message.action);
+					break;
+
+				case 'writeClipboard':
+					// What a copy in the page selected, which the page itself was refused.
+					vscode.env.clipboard.writeText(message.text);
 					break;
 
 				case 'newTab':
@@ -289,6 +302,16 @@ export class TabBrowserView extends Disposable {
 
 			this._pageRequests.set(requestId, { resolve, reject, timer });
 		});
+	}
+
+	/**
+	 * Runs one of the standard editing commands on whatever has the focus — the page, or the
+	 * panel's own address bar. For a paste the clipboard is read here: the page is never given
+	 * a way to ask for it, since a page that could ask could read the clipboard at any time.
+	 */
+	public async edit(action: EditAction): Promise<void> {
+		const text = action === 'paste' ? await vscode.env.clipboard.readText() : undefined;
+		this._post({ type: 'edit', action, text });
 	}
 
 	/** Zooms the page, the way a browser's own zoom does; the webview owns the level. */
@@ -437,7 +460,7 @@ export class TabBrowserView extends Disposable {
 		}
 
 		const token = this._iconToken;
-		const icon = await fetchIcon(href);
+		const icon = await fetchIcon(href, this._iconDirectory);
 		// Navigated on while this was downloading, or the icon is not an image after all.
 		if (!icon || token !== this._iconToken) {
 			return;
@@ -759,7 +782,9 @@ export class TabBrowserView extends Disposable {
 				</div>
 				<div class="content">
 					<div class="iframe-focused-alert">${vscode.l10n.t("Focus Lock")}</div>
-					<iframe sandbox="allow-scripts allow-forms allow-same-origin allow-downloads"></iframe>
+					<iframe
+						sandbox="allow-scripts allow-forms allow-same-origin allow-downloads"
+						allow="clipboard-read; clipboard-write"></iframe>
 				</div>
 
 				<script src="${mainJs}" nonce="${nonce}"></script>
@@ -834,6 +859,19 @@ export class TabBrowserView extends Disposable {
 				menuItem('zoomOut', 'codicon-zoom-out', vscode.l10n.t("Zoom out"), { keys: keys('-') }),
 				menuItem('resetZoom', 'codicon-screen-normal', vscode.l10n.t("Reset zoom"),
 					{ keys: keys('0'), detail: true }),
+			],
+			// No shortcuts named here, and none contributed: the editor's own bindings for these
+			// keys are the ones that must keep working everywhere, and a keybinding of ours for
+			// `Cmd`+`C` took copy and paste out of the rest of the editor.
+			[
+				menuItem('undo', 'codicon-discard', vscode.l10n.t("Undo")),
+				menuItem('redo', 'codicon-redo', vscode.l10n.t("Redo")),
+			],
+			[
+				menuItem('cut', 'codicon-clippy', vscode.l10n.t("Cut")),
+				menuItem('copy', 'codicon-copy', vscode.l10n.t("Copy")),
+				menuItem('paste', 'codicon-clone', vscode.l10n.t("Paste")),
+				menuItem('selectAll', 'codicon-list-selection', vscode.l10n.t("Select all")),
 			],
 		];
 

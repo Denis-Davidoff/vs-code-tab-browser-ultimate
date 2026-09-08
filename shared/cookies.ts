@@ -6,14 +6,28 @@
  *  `Set-Cookie` headers it forwards, and `page-src/cookies.ts` the writes a page makes through
  *  `document.cookie`.
  *
- *  Two things are rewritten. The name carries the session's prefix, because cookie jars are
- *  keyed by host and not by port, so every site served through the proxy shares one jar. And
- *  the attributes that name a *different* origin than the one the browser sees are dropped:
- *  the proxy is plain http on `127.0.0.1`, so `Domain=localhost`, `Secure` and
- *  `SameSite=None` do not describe it, and a browser that is told them stores nothing at all.
+ *  Two things are rewritten.
+ *
+ *  **The name carries the session's prefix**, because cookie jars are keyed by host and not by
+ *  port, so every site served through the proxy shares one jar.
+ *
+ *  **And the attributes are the ones a cookie needs in a frame**, which is where the panel's
+ *  page lives: the top-level document is the editor's webview, so as far as the browser is
+ *  concerned the page is a third party in somebody else's site. A cookie without
+ *  `SameSite=None; Secure` is then not merely withheld from the next request — it is not
+ *  stored at all, and a login cannot be completed inside the panel because the csrf cookie
+ *  never exists. So `SameSite` is forced to `None` and `Secure` is added, rather than the
+ *  other way round: `Secure` costs nothing over `http://127.0.0.1`, which the browser counts
+ *  as a trustworthy origin.
+ *
+ *  What `SameSite=None` gives up is contained by the prefix above: another proxied site's page
+ *  can have the browser attach these cookies to a request at this session's port, but the
+ *  session forwards only the names carrying *its* prefix and drops the rest.
+ *
+ *  `Domain` is still dropped, since it names a host the browser does not have the page from.
  *--------------------------------------------------------------------------------------------*/
 
-/** `sid=1; Path=/` -> `__tb54321_sid=1; Path=/`. The page hides the prefix again. */
+/** `sid=1; Path=/` -> `__tb1f3a9c2b_sid=1; Path=/`. The page hides the prefix again. */
 export function prefixCookie(cookie: string, prefix: string): string {
 	const separator = cookie.indexOf('=');
 	if (separator === -1) {
@@ -28,19 +42,38 @@ export function prefixCookie(cookie: string, prefix: string): string {
 
 /** The same cookie, described in terms of the origin the browser actually has it from. */
 export function rewriteCookieAttributes(cookie: string): string {
-	return cookie
+	const parts = cookie
 		.split(';')
 		.filter(part => {
 			const name = part.trim().toLowerCase();
 			return !name.startsWith('domain=')
+				&& !name.startsWith('samesite=')
 				&& name !== 'secure'
+				// Partitioned would key the cookie to the top-level site, which is a webview
+				// whose identity is not the panel's to keep.
 				&& name !== 'partitioned';
-		})
-		.map(part => (/^\s*samesite\s*=\s*none\s*$/i.test(part) ? ' SameSite=Lax' : part))
-		.join(';');
+		});
+
+	return [...parts, ' SameSite=None', ' Secure'].join(';');
 }
 
 /** A cookie the proxy hands to the browser: prefixed, and about the origin it is served from. */
 export function rewriteSetCookie(cookie: string, prefix: string): string {
 	return rewriteCookieAttributes(prefixCookie(cookie, prefix));
+}
+
+/**
+ * The prefix a session's cookies carry, from the origin it serves and *not* from its port: a
+ * port is handed out again on every restart, and a cookie name that changes with it is a
+ * session the user has to log into again every morning. Cookies ignore ports, so the name is
+ * the only thing keeping two proxied sites apart — and it has to be the same name tomorrow.
+ */
+export function cookiePrefixFor(key: string): string {
+	// FNV-1a, because what is needed is a short stable name and nothing else.
+	let hash = 0x811c9dc5;
+	for (let at = 0; at < key.length; at++) {
+		hash ^= key.charCodeAt(at);
+		hash = Math.imul(hash, 0x01000193) >>> 0;
+	}
+	return `__tb${hash.toString(16).padStart(8, '0')}_`;
 }

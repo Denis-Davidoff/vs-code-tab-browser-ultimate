@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate",
 	"displayName": "AI Browser🏆 Claude + Codex",
 	"description": "Embedded browser tab with AI capabilities, Claude and Codex integration",
-	"version": "0.3.17",
+	"version": "0.3.18",
 	"icon": "media/icon.png",
 	"publisher": "DenysDavydov",
   	"private": true,
@@ -103,6 +103,36 @@
 			{
 				"command": "tabBrowser.resetZoom",
 				"title": "Reset Zoom",
+				"category": "Tab Browser Ultimate"
+			},
+			{
+				"command": "tabBrowser.clipboardCopy",
+				"title": "Copy",
+				"category": "Tab Browser Ultimate"
+			},
+			{
+				"command": "tabBrowser.clipboardCut",
+				"title": "Cut",
+				"category": "Tab Browser Ultimate"
+			},
+			{
+				"command": "tabBrowser.clipboardPaste",
+				"title": "Paste",
+				"category": "Tab Browser Ultimate"
+			},
+			{
+				"command": "tabBrowser.selectAll",
+				"title": "Select All",
+				"category": "Tab Browser Ultimate"
+			},
+			{
+				"command": "tabBrowser.undo",
+				"title": "Undo",
+				"category": "Tab Browser Ultimate"
+			},
+			{
+				"command": "tabBrowser.redo",
+				"title": "Redo",
 				"category": "Tab Browser Ultimate"
 			},
 			{
@@ -223,38 +253,6 @@
 				}
 			]
 		},
-		"keybindings": [
-			{
-				"command": "tabBrowser.newTab",
-				"key": "ctrl+t",
-				"mac": "cmd+t",
-				"when": "activeWebviewPanelId == 'tabBrowser.view'"
-			},
-			{
-				"command": "tabBrowser.zoomIn",
-				"key": "ctrl+=",
-				"mac": "cmd+=",
-				"when": "activeWebviewPanelId == 'tabBrowser.view'"
-			},
-			{
-				"command": "tabBrowser.zoomIn",
-				"key": "ctrl+shift+=",
-				"mac": "cmd+shift+=",
-				"when": "activeWebviewPanelId == 'tabBrowser.view'"
-			},
-			{
-				"command": "tabBrowser.zoomOut",
-				"key": "ctrl+-",
-				"mac": "cmd+-",
-				"when": "activeWebviewPanelId == 'tabBrowser.view'"
-			},
-			{
-				"command": "tabBrowser.resetZoom",
-				"key": "ctrl+0",
-				"mac": "cmd+0",
-				"when": "activeWebviewPanelId == 'tabBrowser.view'"
-			}
-		],
 		"menus": {
 			"explorer/context": [
 				{
@@ -290,6 +288,30 @@
 			"commandPalette": [
 				{
 					"command": "tabBrowser.refreshView",
+					"when": "false"
+				},
+				{
+					"command": "tabBrowser.clipboardCopy",
+					"when": "false"
+				},
+				{
+					"command": "tabBrowser.clipboardCut",
+					"when": "false"
+				},
+				{
+					"command": "tabBrowser.clipboardPaste",
+					"when": "false"
+				},
+				{
+					"command": "tabBrowser.selectAll",
+					"when": "false"
+				},
+				{
+					"command": "tabBrowser.undo",
+					"when": "false"
+				},
+				{
+					"command": "tabBrowser.redo",
 					"when": "false"
 				}
 			]
@@ -425,6 +447,11 @@
 						],
 						"default": "localhost",
 						"markdownDescription": "The copy menu requires the page to be served through a local proxy that injects a small script, because a cross-origin `iframe` can be neither inspected nor read from the webview."
+					},
+					"tabBrowser.proxy.log": {
+						"type": "boolean",
+						"default": false,
+						"markdownDescription": "Log every request the local proxy answers to an output channel (\"AI Browser proxy\"): the method, the path, the status, and the *names* of the cookies forwarded upstream. Useful for the one question the panel cannot otherwise answer — whether a request the page made went through the proxy at all. A request that is missing from the log left it, which is what breaks a login when a page asks for its own api by absolute url."
 					},
 					"tabBrowser.proxy.ignoreCertificateErrors": {
 						"type": "boolean",

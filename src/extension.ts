@@ -19,6 +19,7 @@ import { checkMcp, McpState } from './mcpCheck';
 import { refreshClientConfigs } from './mcpRefresh';
 import { RecentPages } from './recentPages';
 import { registerSidebar } from './sidebar';
+import { EditAction } from '../shared/protocol';
 import { CopyCommand } from '../shared/webviewProtocol';
 
 declare class URL {
@@ -33,6 +34,12 @@ const zoomInCommand = 'tabBrowser.zoomIn';
 const zoomOutCommand = 'tabBrowser.zoomOut';
 const resetZoomCommand = 'tabBrowser.resetZoom';
 const openFileCommand = 'tabBrowser.openFile';
+const copyCommand = 'tabBrowser.clipboardCopy';
+const cutCommand = 'tabBrowser.clipboardCut';
+const pasteCommand = 'tabBrowser.clipboardPaste';
+const selectAllCommand = 'tabBrowser.selectAll';
+const undoCommand = 'tabBrowser.undo';
+const redoCommand = 'tabBrowser.redo';
 const copyElementCommand = 'tabBrowser.copyElement';
 const copyElementXPathCommand = 'tabBrowser.copyElementXPath';
 const copyElementPathCommand = 'tabBrowser.copyElementPath';
@@ -77,7 +84,8 @@ export function activate(context: vscode.ExtensionContext) {
 	const recent = new RecentPages(context.workspaceState);
 	context.subscriptions.push(recent);
 
-	const manager = new TabBrowserManager(context.extensionUri, proxy, recent);
+	const manager = new TabBrowserManager(context.extensionUri, proxy, recent,
+		vscode.Uri.joinPath(context.globalStorageUri, 'icons'));
 	context.subscriptions.push(manager);
 
 	context.subscriptions.push(registerTerminalLinks(url => manager.show(url)));
@@ -180,6 +188,19 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.commands.registerCommand(zoomInCommand, zoom('in')),
 		vscode.commands.registerCommand(zoomOutCommand, zoom('out')),
 		vscode.commands.registerCommand(resetZoomCommand, zoom('reset')));
+
+	// The standard editing commands. The editor binds these keys to its own actions, and its
+	// webview support answers them by running `execCommand` on the frame it created — the panel
+	// document, one frame above the page — so in the page nothing happens at all. Bound here to
+	// a focused browser panel, where they are ours to carry the rest of the way.
+	const edit = (action: EditAction) => () => manager.activeView?.edit(action);
+	context.subscriptions.push(
+		vscode.commands.registerCommand(copyCommand, edit('copy')),
+		vscode.commands.registerCommand(cutCommand, edit('cut')),
+		vscode.commands.registerCommand(pasteCommand, edit('paste')),
+		vscode.commands.registerCommand(selectAllCommand, edit('selectAll')),
+		vscode.commands.registerCommand(undoCommand, edit('undo')),
+		vscode.commands.registerCommand(redoCommand, edit('redo')));
 
 	// The explorer's context menu hands over the file that was clicked; from the palette and
 	// from the sidebar's own row there is nothing to hand over, so one is asked for.

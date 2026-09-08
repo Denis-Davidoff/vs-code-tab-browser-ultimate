@@ -7,8 +7,10 @@ import {
 	AgentCommand,
 	AgentEvent,
 	cacheBustParameter,
+	EditAction,
 	isAgentMessage,
 	packAgentMessage,
+	ShortcutAction,
 } from '../shared/protocol';
 import {
 	BrowserMenuCommand,
@@ -268,6 +270,10 @@ window.addEventListener('message', event => {
 			stepZoom(hostMessage.direction);
 			break;
 
+		case 'edit':
+			runEditCommand(hostMessage.action, hostMessage.text);
+			break;
+
 		case 'runCopyCommand':
 			runCopyCommand(hostMessage.command);
 			break;
@@ -415,10 +421,17 @@ function onAgentEvent(event: AgentEvent): void {
 			});
 			break;
 
+		case 'copyToClipboard':
+			// The page was refused the clipboard; the extension host is not.
+			vscode.postMessage({ type: 'writeClipboard', text: event.text });
+			break;
+
 		case 'shortcut':
 			// A browser keeps these keys for itself, so the page never sees them — and while
 			// the page has the focus, the page is the only one that hears them at all.
-			runBrowserCommand(event.action);
+			if (isShortcutAction(event.action)) {
+				runBrowserCommand(event.action);
+			}
 			break;
 
 		case 'zoomGesture':
@@ -700,21 +713,74 @@ function setPickerActive(active: boolean): void {
 	sendToPage({ kind: 'enablePicker', preferAttributes: settings.preferAttributes });
 }
 
+// -- the standard editing commands -----------------------------------------------------------
+
+/**
+ * Cut, copy, paste and select all. They arrive here as commands and not as keys, because the
+ * editor takes those keys for itself and answers them by running `execCommand` on this
+ * document — which is the frame it created, one above the page — so the page never performs
+ * anything. The address bar *is* in this document, so what has the focus decides where the
+ * command goes.
+ */
+function runEditCommand(action: EditAction, text?: string): void {
+	if (document.activeElement !== input) {
+		sendToPage({ kind: 'edit', action, text });
+		return;
+	}
+
+	switch (action) {
+		case 'selectAll':
+			input.select();
+			break;
+
+		case 'undo':
+		case 'redo':
+			// The field's own history, which the browser keeps for it.
+			document.execCommand(action);
+			break;
+
+		case 'paste':
+			if (text) {
+				// Spliced into what is there rather than replacing it, and reported as typing
+				// so the completion below follows along.
+				input.setRangeText(text, input.selectionStart ?? 0, input.selectionEnd ?? 0, 'end');
+				input.dispatchEvent(new Event('input'));
+			}
+			break;
+
+		case 'copy':
+		case 'cut': {
+			const taken = input.value.slice(input.selectionStart ?? 0, input.selectionEnd ?? undefined);
+			let written = false;
+			try {
+				written = document.execCommand(action);
+			} catch {
+				// Refused, as it is in the page: the host writes it instead.
+			}
+			if (!written && taken) {
+				vscode.postMessage({ type: 'writeClipboard', text: taken });
+				if (action === 'cut') {
+					input.setRangeText('', input.selectionStart ?? 0, input.selectionEnd ?? 0, 'end');
+					input.dispatchEvent(new Event('input'));
+				}
+			}
+			break;
+		}
+	}
+}
+
 // -- zoom ------------------------------------------------------------------------------------
 
 /**
- * Zoom belongs to the frame, not to the page: `zoom` on the element is what a browser's own
- * zoom does — the page's layout viewport becomes the panel divided by the factor, so the page
- * reflows rather than being stretched — while the page's own dom stays exactly as its author
- * wrote it, which is what every element report is read out of.
+ * Scale the frame and give it an inversely sized layout viewport so the page reflows.
+ * CSS zoom on a cross-site iframe can resize its viewport without scaling its contents in
+ * Chromium. A transform also scales the separately composited frame used by VS Code.
  */
 function applyZoom(): void {
-	// And nothing else: a percentage under `zoom` is resolved in the zoomed element's own
-	// units, so the `width: 100%` the stylesheet gives the frame keeps filling the panel while
-	// the page inside it lays out in a viewport that much smaller. Dividing it as well — which
-	// looks like the obvious thing to do — leaves a third of the panel blank at 150% and
-	// overflows it at 50%, with the page reflowing twice as far as it was asked to.
-	iframe.style.zoom = String(zoomLevel);
+	iframe.style.transform = `scale(${zoomLevel})`;
+	iframe.style.transformOrigin = 'top left';
+	iframe.style.width = `${100 / zoomLevel}%`;
+	iframe.style.height = `${100 / zoomLevel}%`;
 
 	const percent = `${Math.round(zoomLevel * 100)}%`;
 	const detail = browserMenu.querySelector<HTMLSpanElement>('.menu-detail');
@@ -804,7 +870,25 @@ function runBrowserCommand(command: BrowserMenuCommand): void {
 		case 'resetZoom':
 			stepZoom('reset');
 			break;
+		case 'paste':
+			// The one editing command that has to go out to the extension host and come back:
+			// only the host may read the clipboard.
+			vscode.postMessage({ type: 'runEdit', action: 'paste' });
+			break;
+
+		default:
+			runEditCommand(command);
+			break;
 	}
+}
+
+/**
+ * The keys the page forwards, and *only* those. What the page sends is a shape from the script
+ * the proxy injected into it, so a page can send it too — and the editing commands must not be
+ * reachable that way: a page that could ask for a paste could read the clipboard.
+ */
+function isShortcutAction(value: unknown): value is ShortcutAction {
+	return value === 'newTab' || value === 'zoomIn' || value === 'zoomOut' || value === 'resetZoom';
 }
 
 // -- what the address bar completes ----------------------------------------------------------

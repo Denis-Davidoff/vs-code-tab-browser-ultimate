@@ -10,7 +10,6 @@
 
 import * as vscode from 'vscode';
 import { isInstalled, name as assistantName } from './assistants';
-import { isHtmlPath } from './fileSession';
 import { McpState } from './mcpCheck';
 import { RecentPages } from './recentPages';
 import { TabBrowserManager } from './tabBrowserManager';
@@ -19,35 +18,15 @@ export const viewId = 'tabBrowser.actions';
 
 /** As many of the remembered pages as a tree section has room for. */
 const maxRecentRows = 8;
-/** A folder can hold thousands of entries, and a tree row is not how anyone reads those. */
-const maxFolderRows = 200;
-/**
- * The one folder the file browser does not open, alongside the dotted ones. A build folder is
- * *not* on this list: `dist/index.html` is exactly the kind of page someone opens in a browser.
- */
-const skippedFolders = new Set(['node_modules']);
 
 interface Row {
 	readonly label: string;
-	/**
-	 * Set on the rows whose state is worth keeping: the tree remembers what is expanded by the
-	 * id of the item, and every row here is a new object on every refresh — of which there is
-	 * one per panel state change, so without this the file browser folds up while the page it
-	 * was opened from is still loading.
-	 */
-	readonly id?: string;
 	readonly description?: string;
 	readonly tooltip?: string;
 	readonly icon?: vscode.ThemeIcon;
 	readonly command?: string;
 	readonly args?: readonly unknown[];
 	readonly children?: readonly Row[];
-	/**
-	 * A row whose children are read off the disk when it is opened. The rest of the tree is
-	 * rebuilt whole on every change, which a project's folders cannot be: nobody knows how
-	 * many there are, and nothing here needs to until one is opened.
-	 */
-	readonly folder?: vscode.Uri;
 	readonly collapsed?: boolean;
 }
 
@@ -106,14 +85,12 @@ class SidebarProvider implements vscode.TreeDataProvider<Row> {
 	}
 
 	public getTreeItem(row: Row): vscode.TreeItem {
-		const expandable = !!row.children || !!row.folder;
-		const item = new vscode.TreeItem(row.label, expandable
-			? (row.collapsed || row.folder
+		const item = new vscode.TreeItem(row.label, row.children
+			? (row.collapsed
 				? vscode.TreeItemCollapsibleState.Collapsed
 				: vscode.TreeItemCollapsibleState.Expanded)
 			: vscode.TreeItemCollapsibleState.None);
 
-		item.id = row.id;
 		item.description = row.description;
 		item.tooltip = row.tooltip;
 		item.iconPath = row.icon;
@@ -123,74 +100,8 @@ class SidebarProvider implements vscode.TreeDataProvider<Row> {
 		return item;
 	}
 
-	public getChildren(row?: Row): Row[] | Thenable<Row[]> {
-		if (row?.folder) {
-			return this._folderRows(row.folder, row.id ?? 'files');
-		}
+	public getChildren(row?: Row): Row[] {
 		return [...(row ? row.children ?? [] : this._roots())];
-	}
-
-	/**
-	 * One folder of the project, listed when it is opened: the folders under it, and the pages
-	 * it holds. Only html files, because opening anything else in a browser is not a thing this
-	 * panel does — `Open a file…` is there for the file nobody would find by browsing.
-	 */
-	private async _folderRows(folder: vscode.Uri, id: string): Promise<Row[]> {
-		let entries: [string, vscode.FileType][];
-		try {
-			entries = await vscode.workspace.fs.readDirectory(folder);
-		} catch (error) {
-			return [{
-				label: vscode.l10n.t("Could not read this folder"),
-				description: error instanceof Error ? error.message : undefined,
-				icon: new vscode.ThemeIcon('warning'),
-			}];
-		}
-
-		const folders: Row[] = [];
-		const pages: Row[] = [];
-		for (const [name, type] of [...entries].sort(([a], [b]) => a.localeCompare(b))) {
-			const child = vscode.Uri.joinPath(folder, name);
-			// A symlink is reported alongside what it points at, hence the mask.
-			if (type & vscode.FileType.Directory) {
-				if (name.startsWith('.') || skippedFolders.has(name)) {
-					continue;
-				}
-				folders.push({
-					label: name,
-					// Built from the row above rather than from the path: with two workspace
-					// folders, one of which is inside the other, the same folder is two rows.
-					id: `${id}/${name}`,
-					icon: new vscode.ThemeIcon('folder'),
-					folder: child,
-				});
-			} else if (isHtmlPath(name)) {
-				pages.push({
-					label: name,
-					tooltip: child.fsPath,
-					icon: new vscode.ThemeIcon('file-code'),
-					command: 'tabBrowser.openFile',
-					args: [child],
-				});
-			}
-		}
-
-		const rows = [...folders, ...pages];
-		if (!rows.length) {
-			return [{
-				label: vscode.l10n.t("No pages in this folder"),
-				icon: new vscode.ThemeIcon('circle-outline', new vscode.ThemeColor('disabledForeground')),
-			}];
-		}
-		return rows.length > maxFolderRows
-			? [
-				...rows.slice(0, maxFolderRows),
-				{
-					label: vscode.l10n.t("{0} more not shown", rows.length - maxFolderRows),
-					icon: new vscode.ThemeIcon('ellipsis'),
-				},
-			]
-			: rows;
 	}
 
 	private _roots(): Row[] {
@@ -199,7 +110,7 @@ class SidebarProvider implements vscode.TreeDataProvider<Row> {
 
 		return [
 			{
-				label: vscode.l10n.t("Browser"),
+				label: vscode.l10n.t("Navigation"),
 				icon: new vscode.ThemeIcon('globe'),
 				children: [
 					view
@@ -245,13 +156,12 @@ class SidebarProvider implements vscode.TreeDataProvider<Row> {
 				],
 			},
 			...(view ? [{
-				label: vscode.l10n.t("This page"),
+				label: vscode.l10n.t("Tools"),
 				icon: new vscode.ThemeIcon('browser'),
 				children: this._pageRows(),
 			}] : []),
-			...(this._filesSection() ?? []),
 			{
-				label: vscode.l10n.t("MCP server"),
+				label: vscode.l10n.t("MCP"),
 				icon: new vscode.ThemeIcon('server'),
 				children: this._mcpRows(),
 			},
@@ -268,43 +178,6 @@ class SidebarProvider implements vscode.TreeDataProvider<Row> {
 				})),
 			}] : []),
 		];
-	}
-
-	/**
-	 * The project's own pages, browsed rather than listed: a folder is read when it is opened,
-	 * so a project with ten thousand files costs nothing until someone looks. Absent when there
-	 * is no folder open, or none on this machine — a virtual file system has no file to serve.
-	 */
-	private _filesSection(): Row[] | undefined {
-		const folders = (vscode.workspace.workspaceFolders ?? [])
-			.filter(folder => folder.uri.scheme === 'file');
-		if (!folders.length) {
-			return undefined;
-		}
-
-		const label = vscode.l10n.t("Project files");
-		const icon = new vscode.ThemeIcon('folder-opened');
-		return [folders.length === 1
-			? {
-				label,
-				id: 'files',
-				description: folders[0].name,
-				icon,
-				collapsed: true,
-				folder: folders[0].uri,
-			}
-			: {
-				label,
-				id: 'files',
-				icon,
-				collapsed: true,
-				children: folders.map((folder, index) => ({
-					label: folder.name,
-					id: `files/${index}`,
-					icon: new vscode.ThemeIcon('folder'),
-					folder: folder.uri,
-				})),
-			}];
 	}
 
 	/**

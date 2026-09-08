@@ -98,6 +98,17 @@ export interface PickedElement {
  */
 export type ShortcutAction = 'newTab' | 'zoomIn' | 'zoomOut' | 'resetZoom';
 
+/**
+ * The standard editing commands, which have to be carried into the page by hand.
+ *
+ * The editor takes those keys for itself — on macOS `Cut`/`Copy`/`Paste` are native menu roles
+ * and everything else, `Undo` and `Select All` included, goes through the keybinding service —
+ * and its own webview support answers them by running `execCommand` on the frame *it* created.
+ * The page is one frame deeper than that, so it never hears the key and never performs the
+ * command; hence a command of ours, which the panel forwards to whichever frame has the focus.
+ */
+export type EditAction = 'undo' | 'redo' | 'copy' | 'cut' | 'paste' | 'selectAll';
+
 export type ConsoleLevel = 'log' | 'info' | 'warn' | 'error' | 'debug' | 'trace';
 
 export interface ConsoleEntry {
@@ -161,6 +172,12 @@ export type AgentCommand =
 	 * every other one, so that no two frames hold an outlined element.
 	 */
 	| { readonly kind: 'clearContextTarget' }
+	/**
+	 * Perform an editing command on whatever has the focus. `text` is the clipboard's content
+	 * for a paste, read by the extension host: the page cannot read the clipboard itself, and
+	 * a channel that let it ask would let any page read the clipboard whenever it liked.
+	 */
+	| { readonly kind: 'edit'; readonly action: EditAction; readonly text?: string }
 	| { readonly kind: 'request'; readonly requestId: number; readonly request: PageRequest };
 
 /** Injected page script -> parent frame -> webview. */
@@ -198,6 +215,12 @@ export type AgentEvent =
 		readonly error?: string;
 	}
 	| { readonly kind: 'pageError'; readonly message: string }
+	/**
+	 * What a copy or a cut selected, for the extension host to put on the clipboard. Only sent
+	 * when the page's own `execCommand` was refused — a document with no user activation and no
+	 * clipboard permission of its own is not allowed to write there.
+	 */
+	| { readonly kind: 'copyToClipboard'; readonly text: string }
 	/** One of the panel's own shortcuts, pressed while the page had the keyboard. */
 	| { readonly kind: 'shortcut'; readonly action: ShortcutAction }
 	/**

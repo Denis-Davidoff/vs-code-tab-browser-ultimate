@@ -17,7 +17,7 @@ import * as net from 'net';
 import * as stream from 'stream';
 import * as zlib from 'zlib';
 import * as vscode from 'vscode';
-import { rewriteSetCookie } from '../shared/cookies';
+import { cookiePrefixFor, rewriteSetCookie } from '../shared/cookies';
 import {
 	contentTypeOf,
 	isHtmlPath,
@@ -70,7 +70,8 @@ interface ProxySession {
 	 * Prefix every cookie of this session carries while it is in the browser. Cookie jars are
 	 * not separated by port, so two proxied sites on the same loopback host would otherwise
 	 * read and overwrite each other's cookies — `HttpOnly` ones included, which a page cannot
-	 * even see, but the browser would still send to the wrong server.
+	 * even see, but the browser would still send to the wrong server. Derived from the origin,
+	 * so it is the same prefix after a restart on another port (`cookiePrefixFor`).
 	 */
 	readonly cookiePrefix: string;
 	readonly server: http.Server;
@@ -103,6 +104,9 @@ export class BrowserProxy extends Disposable {
 	/** A session has appeared, so the set of origins that can hold our agent has grown. */
 	public readonly onDidChangeOrigins = this._onDidChangeOrigins.event;
 
+	/** Opened on the first line written, since most sessions never log anything. */
+	private _log?: vscode.OutputChannel;
+
 	private readonly _onDidChangeServedFile = this._register(new vscode.EventEmitter<string>());
 	/**
 	 * A file one of the file sessions has served was changed on disk; the value is the folder
@@ -115,6 +119,24 @@ export class BrowserProxy extends Disposable {
 		private readonly _extensionUri: vscode.Uri,
 	) {
 		super();
+	}
+
+	/**
+	 * One line per request, when `tabBrowser.proxy.log` is on. It answers the one question the
+	 * panel cannot otherwise be asked: whether a request the page made went *through* here at
+	 * all. A request that is missing from this log left the proxy — an absolute url to the real
+	 * server — and then its cookies, its cors and its instrumentation are all somebody else's.
+	 *
+	 * Cookie *names* and never values: a session cookie in a log file is a session cookie in a
+	 * log file.
+	 */
+	private _write(line: string): void {
+		if (!getConfiguration().get<boolean>('proxy.log', false)) {
+			return;
+		}
+		this._log ??= this._register(vscode.window.createOutputChannel('AI Browser proxy'));
+		const now = new Date();
+		this._log.appendLine(`${now.toISOString().slice(11, 23)}  ${line}`);
 	}
 
 	public override dispose(): void {
@@ -274,7 +296,9 @@ export class BrowserProxy extends Disposable {
 		const session: ProxySession = {
 			origin,
 			file,
-			cookiePrefix: `__tb${localPort}_`,
+			// From the origin and not from the port: the port is different tomorrow, and a
+			// cookie name that changes with it is a session that has to be logged into again.
+			cookiePrefix: cookiePrefixFor(origin),
 			server,
 			localPort,
 			publicOrigin: `http://127.0.0.1:${localPort}`,
@@ -308,6 +332,9 @@ export class BrowserProxy extends Disposable {
 		}
 
 		this._sessions.set(origin, session);
+		this._write(file
+			? `serving ${file.folder.root} at ${session.publicOrigin}/${file.folder.secret}`
+			: `serving ${origin} at ${session.publicOrigin}`);
 		this._onDidChangeOrigins.fire();
 		return session;
 	}
@@ -355,6 +382,10 @@ export class BrowserProxy extends Disposable {
 		}
 
 		const status = proxyRes.statusCode ?? 502;
+		this._write(`${req.method} ${req.url} → ${status}`
+			+ cookieNames(req.headers.cookie, session.cookiePrefix)
+			+ (headers['set-cookie'] ? `  set-cookie: ${
+				asArray(headers['set-cookie']).map(cookie => cookie.split('=')[0]).join(', ')}` : ''));
 		if (req.method === 'HEAD' || status === 204 || status === 205 || status === 304
 			|| !isHtmlResponse(proxyRes)) {
 			res.writeHead(status, proxyRes.statusMessage, headers);
@@ -396,7 +427,8 @@ export class BrowserProxy extends Disposable {
 	): Promise<void> {
 		const file = session.file!;
 		if (req.method !== 'GET' && req.method !== 'HEAD') {
-			writeFileStatus(res, 405, vscode.l10n.t("A file can only be read."));
+			writeFileStatus(res, 405, vscode.l10n.t("A file can only be read"),
+				`${req.method} ${req.url ?? ''}`);
 			return;
 		}
 
@@ -420,9 +452,14 @@ export class BrowserProxy extends Disposable {
 
 		const served = servedPathOf(file.folder, req.url, !!referrer);
 		if ('status' in served) {
-			writeFileStatus(res, served.status, served.status === 403
-				? vscode.l10n.t("That path is outside {0}.", file.folder.root)
-				: vscode.l10n.t("Not found."));
+			writeFileStatus(res, served.status,
+				served.status === 403
+					? vscode.l10n.t("That is outside the folder this page is served from")
+					: vscode.l10n.t("Nothing here"),
+				file.folder.root,
+				served.status === 403
+					? undefined
+					: vscode.l10n.t("Only what belongs to this folder can be reached from the page."));
 			return;
 		}
 
@@ -462,7 +499,7 @@ export class BrowserProxy extends Disposable {
 			stat = await fsp.stat(target).catch(() => undefined);
 		}
 		if (!stat?.isFile()) {
-			writeFileStatus(res, 404, vscode.l10n.t("{0} is not a file.", target));
+			writeFileStatus(res, 404, vscode.l10n.t("There is no such file"), target);
 			return;
 		}
 
@@ -471,8 +508,10 @@ export class BrowserProxy extends Disposable {
 		// points at, which is the one way a path that never leaves the folder still can.
 		const real = await fsp.realpath(target).catch(() => undefined);
 		if (!real || !isUnder(file.folder.realRoot, real)) {
-			writeFileStatus(res, 403, vscode.l10n.t(
-				"{0} leads outside {1}.", target, file.folder.root));
+			writeFileStatus(res, 403,
+				vscode.l10n.t("That leads outside the folder this page is served from"),
+				target,
+				vscode.l10n.t("A link that points out of {0} is not followed.", file.folder.root));
 			return;
 		}
 		// Read, watched and reported under the path it was asked for, not under the resolved
@@ -484,6 +523,7 @@ export class BrowserProxy extends Disposable {
 		file.files.remember(target, referrer);
 
 		if (isHtmlPath(target)) {
+			this._write(`${req.method} ${req.url} → 200  ${target}`);
 			const html = this._injectAgentScript(session, decodeHtml(await fsp.readFile(target), ''));
 			const buffer = Buffer.from(html, 'utf8');
 			res.writeHead(200, {
@@ -505,6 +545,8 @@ export class BrowserProxy extends Disposable {
 			return;
 		}
 
+		this._write(`${req.method} ${req.url} → 200  ${target}`);
+
 		const stream = fs.createReadStream(target);
 		stream.on('error', () => res.destroy());
 		res.on('close', () => stream.destroy());
@@ -512,7 +554,7 @@ export class BrowserProxy extends Disposable {
 	}
 
 	private _forward(session: ProxySession, req: http.IncomingMessage, target: URL): Promise<http.IncomingMessage> {
-		const headers = this._rewriteRequestHeaders(session, req.headers, target);
+		const headers = this._rewriteRequestHeaders(session, req.headers, target, req.method);
 		const transport = target.protocol === 'https:' ? https : http;
 
 		return new Promise((resolve, reject) => {
@@ -537,6 +579,7 @@ export class BrowserProxy extends Disposable {
 		session: ProxySession,
 		original: http.IncomingHttpHeaders,
 		target: URL,
+		method: string | undefined,
 	): http.OutgoingHttpHeaders {
 		const headers: http.OutgoingHttpHeaders = { ...original };
 
@@ -567,13 +610,10 @@ export class BrowserProxy extends Disposable {
 
 		const origin = original.origin;
 		if (typeof origin === 'string') {
-			if (this._isOwnOrigin(session, origin)) {
-				// The page and this subresource live on the same origin as far as the upstream
-				// server is concerned, and a browser talking to it directly would send no
-				// `Origin` at all. Forwarding a rewritten one makes the request look
-				// cross-origin: VS Code's Live Preview, for one, answers 401 to anything that
-				// carries an `Origin` header. Chromium does send it for same-origin module
-				// scripts, so this would break every `<script type="module">` on such a server.
+			if (this._isOwnOrigin(session, origin) && (method === 'GET' || method === 'HEAD')) {
+				// Live Preview rejects Origin even on module reads. Keep that compatibility
+				// for GET/HEAD, but preserve the real Origin on writes: login endpoints may
+				// require it for CSRF validation, including the upstream IP and port.
 				delete headers.origin;
 			} else {
 				headers.origin = this._toRealOrigin(session, origin);
@@ -671,7 +711,7 @@ export class BrowserProxy extends Disposable {
 			return;
 		}
 		const target = targetOf(session, req.url);
-		const headers = this._rewriteRequestHeaders(session, req.headers, target);
+		const headers = this._rewriteRequestHeaders(session, req.headers, target, req.method);
 		delete headers['accept-encoding'];
 		const transport = target.protocol === 'https:' ? https : http;
 
@@ -881,6 +921,14 @@ async function readAll(source: stream.Readable): Promise<Buffer> {
 	return Buffer.concat(chunks);
 }
 
+/** The names the upstream server will see, for the log; never the values. */
+function cookieNames(header: string | undefined, prefix: string): string {
+	const own = typeof header === 'string' ? ownCookies(header, prefix) : undefined;
+	return own
+		? `  cookies: ${own.split(';').map(cookie => cookie.split('=')[0].trim()).join(', ')}`
+		: '';
+}
+
 /** The cookies of this session, under the names the upstream server gave them. */
 export function ownCookies(header: string, prefix: string): string | undefined {
 	const mine: string[] = [];
@@ -905,26 +953,126 @@ function writeErrorResponse(res: http.ServerResponse, session: ProxySession, err
 		return;
 	}
 	res.writeHead(502, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-	res.end(/* html */ `<!DOCTYPE html>
-		<html><body style="font-family: sans-serif; padding: 2rem; color: #333">
-			<h2>${escapeHtml(session.file
-		? vscode.l10n.t("Could not read {0}", session.file.folder.root)
-		: vscode.l10n.t("Could not reach {0}", session.origin))}</h2>
-			<pre style="white-space: pre-wrap">${escapeHtml(message)}</pre>
-		</body></html>`);
+	res.end(errorPage({
+		title: session.file
+			? vscode.l10n.t("Could not read this folder")
+			: vscode.l10n.t("Could not reach this server"),
+		subject: session.file ? session.file.folder.root : session.origin,
+		detail: message,
+		hint: session.file
+			? undefined
+			: vscode.l10n.t("Is it running on that port?"),
+	}));
 }
 
-/** A refusal from a file session, in a page rather than a bare status. */
-function writeFileStatus(res: http.ServerResponse, status: number, message: string): void {
+/** A refusal from a file session: the same page, since it is the same kind of dead end. */
+function writeFileStatus(
+	res: http.ServerResponse,
+	status: number,
+	title: string,
+	subject?: string,
+	hint?: string,
+): void {
 	if (res.headersSent) {
 		res.end();
 		return;
 	}
 	res.writeHead(status, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-	res.end(/* html */ `<!DOCTYPE html>
-		<html><body style="font-family: sans-serif; padding: 2rem; color: #333">
-			<pre style="white-space: pre-wrap">${escapeHtml(message)}</pre>
-		</body></html>`);
+	res.end(errorPage({ title, subject, hint }));
+}
+
+interface ErrorPage {
+	readonly title: string;
+	/** The url, path or folder the message is about; shown as the code it is. */
+	readonly subject?: string;
+	readonly detail?: string;
+	readonly hint?: string;
+}
+
+/**
+ * What the panel shows when there is nothing to show. It is a page of the proxy's own and is
+ * framed like any other, so it carries its own styling — there are no editor theme variables
+ * inside the frame — and answers `prefers-color-scheme`, which the editor sets on the webview
+ * and the frame inherits.
+ */
+function errorPage(page: ErrorPage): string {
+	return /* html */ `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(page.title)}</title>
+<style>
+	:root {
+		color-scheme: light dark;
+		--page: #f3f4f6;
+		--card: #ffffff;
+		--border: rgba(0, 0, 0, 0.06);
+		--text: #1f2328;
+		--muted: #656d76;
+		--code: #f6f8fa;
+	}
+	@media (prefers-color-scheme: dark) {
+		:root {
+			--page: #1b1d21;
+			--card: #24262b;
+			--border: rgba(255, 255, 255, 0.08);
+			--text: #e6e6e6;
+			--muted: #9aa0a6;
+			--code: #2d3035;
+		}
+	}
+	html, body { height: 100%; }
+	body {
+		margin: 0;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 24px;
+		box-sizing: border-box;
+		background: var(--page);
+		color: var(--text);
+		font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+	}
+	.card {
+		box-sizing: border-box;
+		width: 100%;
+		max-width: 30rem;
+		padding: 28px 32px 30px;
+		border: 1px solid var(--border);
+		border-radius: 12px;
+		background: var(--card);
+		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 12px 28px rgba(0, 0, 0, 0.08);
+		text-align: center;
+	}
+	h1 {
+		margin: 0;
+		font-size: 16px;
+		font-weight: 600;
+	}
+	.subject, .detail {
+		margin: 14px 0 0;
+		padding: 8px 12px;
+		border-radius: 8px;
+		background: var(--code);
+		font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+		font-size: 12px;
+		/* A url or a path has nowhere to break, and must not widen the card. */
+		overflow-wrap: anywhere;
+		text-align: left;
+	}
+	.detail { color: var(--muted); }
+	.hint {
+		margin: 16px 0 0;
+		color: var(--muted);
+		font-size: 13px;
+	}
+</style></head>
+<body>
+	<div class="card">
+		<h1>${escapeHtml(page.title)}</h1>
+		${page.subject ? `<p class="subject">${escapeHtml(page.subject)}</p>` : ''}
+		${page.detail ? `<p class="detail">${escapeHtml(page.detail)}</p>` : ''}
+		${page.hint ? `<p class="hint">${escapeHtml(page.hint)}</p>` : ''}
+	</div>
+</body></html>`;
 }
 
 function escapeHtml(value: string): string {

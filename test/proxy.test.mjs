@@ -64,6 +64,18 @@ const app = http.createServer((req, res) => {
 	if (url.pathname === '/redir-local') { res.writeHead(302, { location: `http://127.0.0.1:${app.address().port}/` }); res.end(); return; }
 	if (url.pathname === '/redir-remote') { res.writeHead(302, { location: `http://127.0.0.1:${other.address().port}/` }); res.end(); return; }
 	if (url.pathname === '/asset.js') { res.writeHead(200, { 'content-type': 'text/javascript' }); res.end('console.log(1)'); return; }
+	if (url.pathname === '/login' && req.method === 'POST') {
+		let body = '';
+		req.on('data', chunk => { body += chunk; });
+		req.on('end', () => {
+			const valid = req.headers.origin === `http://${req.headers.host}`
+				&& req.headers.cookie === 'csrf=test-token'
+				&& new URLSearchParams(body).get('csrf') === 'test-token';
+			res.writeHead(valid ? 200 : 403);
+			res.end(valid ? 'Logged in' : 'Invalid CSRF');
+		});
+		return;
+	}
 	if (url.pathname === '/echo') {
 		res.writeHead(200, { 'content-type': 'application/json' });
 		res.end(JSON.stringify({ method: req.method, headers: req.headers }));
@@ -112,8 +124,15 @@ check('absolute links rewritten to the proxy', rootBody.includes(`${new URL(prox
 check('upstream sees its own Host header', rootBody.includes(`window.__host = "127.0.0.1:${app.address().port}"`), rootBody.match(/__host = "[^"]*"/)?.[0]);
 const cookie = rootRes.headers.getSetCookie()[0];
 check('set-cookie: Domain removed', !/domain=/i.test(cookie), cookie);
-check('set-cookie: Secure removed', !/(^|;)\s*secure\s*(;|$)/i.test(cookie), cookie);
-check('set-cookie: SameSite=None downgraded', /samesite=lax/i.test(cookie), cookie);
+
+// The panel's page is a frame in the editor's webview, so the browser has it as a third party
+// in somebody else's site. Without these two a cookie is not withheld — it is never stored,
+// and then a login inside the panel cannot be completed at all. `Secure` costs nothing over
+// `http://127.0.0.1`, which the browser counts as a trustworthy origin.
+check('set-cookie: Secure added, since the page is framed',
+	/(^|;)\s*secure\s*(;|$)/i.test(cookie), cookie);
+check('set-cookie: SameSite forced to None, for the same reason',
+	/samesite=none/i.test(cookie) && !/samesite=lax/i.test(cookie), cookie);
 check('html not cached', rootRes.headers.get('cache-control') === 'no-store');
 check('etag dropped so we always get a body to inject', !rootRes.headers.has('etag'));
 check('content-length matches rewritten body',
@@ -162,7 +181,8 @@ check('a relative redirect resolves against the request, not the origin',
 	relativeRedir.headers.get('location') === '/account/login', relativeRedir.headers.get('location'));
 
 // --- cookies belong to one session only ------------------------------------------------------
-check('set-cookie is renamed with the session prefix', /^__tb\d+_sid=1/.test(cookie), cookie);
+check('set-cookie is renamed with the session prefix',
+	/^__tb[0-9a-f]{8}_sid=1/.test(cookie), cookie);
 
 const sessionPrefix = cookie.slice(0, cookie.indexOf('sid='));
 const cookieEcho = async header => (await (await fetch(new URL('/cookies', proxiedRoot), {
@@ -245,10 +265,27 @@ const echo = await fetch(new URL('/echo', proxiedRoot), {
 });
 const echoed = await echo.json();
 check('POST body and method forwarded', echoed.method === 'POST');
-check('same-origin requests reach upstream without an Origin header',
-	!('origin' in echoed.headers), echoed.headers.origin);
+check('POST Origin is restored with the upstream IP and port',
+	echoed.headers.origin === appOrigin, echoed.headers.origin);
 check('Referer rewritten to the real origin', echoed.headers.referer === `${appOrigin}/page`, echoed.headers.referer);
 check('conditional request headers dropped', !('if-none-match' in echoed.headers));
+
+for (const method of ['PUT', 'PATCH', 'DELETE', 'OPTIONS']) {
+	const result = await (await fetch(new URL('/echo', proxiedRoot), {
+		method, headers: { origin: new URL(proxiedRoot).origin },
+	})).json();
+	check(`${method} retains the real Origin`, result.headers.origin === appOrigin, result.headers.origin);
+}
+
+for (const origin of [new URL(proxiedRoot).origin, 'http://example.com', 'null', undefined]) {
+	const headers = { cookie: `${sessionPrefix}csrf=test-token`, 'content-type': 'application/x-www-form-urlencoded' };
+	if (origin !== undefined) { headers.origin = origin; }
+	const login = await fetch(new URL('/login', proxiedRoot), {
+		method: 'POST', headers, body: 'csrf=test-token',
+	});
+	check(`CSRF login ${origin === new URL(proxiedRoot).origin ? 'accepts the proxied origin' : `rejects ${origin}`}`,
+		login.status === (origin === new URL(proxiedRoot).origin ? 200 : 403), await login.text());
+}
 
 // An Origin from somewhere else is still rewritten rather than dropped.
 const foreignEcho = await (await fetch(new URL('/echo', proxiedRoot), {
@@ -301,7 +338,11 @@ check('non-http urls rejected', !!rejected, rejected);
 
 const unreachable = await proxy.getProxiedUrl('http://127.0.0.1:1/');
 const bad = await fetch(unreachable);
-check('unreachable upstream yields a 502 page', bad.status === 502 && (await bad.text()).includes('Could not reach'));
+const badBody = await bad.text();
+check('unreachable upstream yields a 502 page naming the server and the reason',
+	bad.status === 502 && badBody.includes('Could not reach this server')
+	&& badBody.includes('127.0.0.1:1') && /ECONNREFUSED|ECONNRESET|socket hang up/.test(badBody),
+	`${bad.status} ${badBody.slice(0, 200)}`);
 
 // --- a page off the disk --------------------------------------------------------------------
 
@@ -549,6 +590,22 @@ let refusedScheme;
 try { await proxy.getServedFileUrl(Uri.parse('vscode-vfs://github/o/r/index.html')); }
 catch (error) { refusedScheme = error.message; }
 check('a file that is not on this machine cannot be served', !!refusedScheme, refusedScheme);
+
+// The prefix is the only thing keeping two proxied sites' cookies apart, since cookie jars
+// ignore ports — so it has to be the same name tomorrow, on whatever port this session gets.
+const secondProxy = new BrowserProxy(Uri.file(projectRoot));
+const again = await secondProxy.getProxiedUrl(`${appOrigin}/`);
+const sameSite = (await (await fetch(again, { redirect: 'manual' })).headers.getSetCookie())[0];
+check('the cookie name survives a restart on another port',
+	new URL(again).port !== new URL(proxiedRoot).port
+	&& sameSite.split('=')[0] === cookie.split('=')[0],
+	`${sameSite.split('=')[0]} vs ${cookie.split('=')[0]}`);
+
+const otherProxied = await secondProxy.getProxiedUrl(`http://127.0.0.1:${other.address().port}/`);
+const otherCookie = (await fetch(otherProxied)).headers.getSetCookie()[0];
+check('and two sites do not share it',
+	!otherCookie || otherCookie.split('=')[0] !== cookie.split('=')[0], String(otherCookie));
+secondProxy.dispose();
 
 proxy.dispose();
 app.close(); other.close();

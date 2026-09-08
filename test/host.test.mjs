@@ -128,6 +128,7 @@ globalThis.__vscodeStub = {
 			throw new Error("CANNOT use API proposal: externalUriOpener");
 		},
 		createWebviewPanel: () => { throw new Error('not used by this test'); },
+		createOutputChannel: () => ({ appendLine() { }, dispose() { } }),
 		showTextDocument: async () => { },
 		showWarningMessage: (...args) => { dialogs.push(['warning', args[0]]); },
 		showErrorMessage: (...args) => { dialogs.push(['error', args[0]]); },
@@ -139,7 +140,7 @@ globalThis.__vscodeStub = {
 
 const { formatPickedElement, formatConsoleReport, escapeAttribute, normalizeUrl, parseFileUrl } =
 	await import('./.bundles/view-bundle.mjs');
-const { defaultIconUrl, discoverPage, fetchIcon } = await import('./.bundles/favicon-bundle.mjs');
+const { defaultIconUrl, discoverPage, fetchIcon: fetchIconToDirectory } = await import('./.bundles/favicon-bundle.mjs');
 const { registerTerminalLinks } = await import('./.bundles/terminal-links-bundle.mjs');
 const assistants = await import('./.bundles/assistants-bundle.mjs');
 const { McpServer } = await import('./.bundles/mcp-bundle.mjs');
@@ -149,6 +150,7 @@ const { connectToClaudeCode, connectToCodex, codexEntryName } =
 const { claudeClientState, codexClientState, codexOurEntries } =
 	await import('./.bundles/mcp-check-bundle.mjs');
 const { codexEntries } = await import('./.bundles/codex-toml-bundle.mjs');
+const { BrowserProxy } = await import('./.bundles/proxy-bundle.mjs');
 const { servedPathOf, servedUrlOf, realUrlOf, isUnder, isHtmlPath } =
 	await import('./.bundles/file-session-bundle.mjs');
 const { refreshedClaudeConfig, refreshedCodexConfig, refreshClientConfigs } =
@@ -229,6 +231,12 @@ const server = http.createServer((req, res) => {
 	}
 	// The webview's own script, in a page that stands in for the panel: the settings element it
 	// reads its token from, the controls it wires up, and a stub for the editor's api.
+	if (req.url === '/zoom-target') {
+		res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+		res.end(`<style>body{margin:0}button{display:block;width:100px;height:100px;padding:0;border:0}</style>
+			<button onclick="window.zoomHit=true">Zoom target</button>`);
+		return;
+	}
 	if (req.url === '/webview') {
 		res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
 		res.end(`<!DOCTYPE html><html><head><title>panel</title>
@@ -280,6 +288,15 @@ const server = http.createServer((req, res) => {
 					<button role="menuitem" data-command="resetZoom" data-icon="codicon-screen-normal"
 						><span class="menu-label">Reset zoom</span><span class="menu-detail"></span
 						><span class="menu-keys">⌘0</span></button>
+					<div class="menu-separator" role="separator"></div>
+					<button role="menuitem" data-command="copy" data-icon="codicon-copy"
+						><span class="menu-label">Copy</span></button>
+					<button role="menuitem" data-command="paste" data-icon="codicon-clone"
+						><span class="menu-label">Paste</span></button>
+					<button role="menuitem" data-command="selectAll" data-icon="codicon-list-selection"
+						><span class="menu-label">Select all</span></button>
+					<button role="menuitem" data-command="undo" data-icon="codicon-discard"
+						><span class="menu-label">Undo</span></button>
 				</div>
 			</div>
 			<div class="menu context-menu" role="menu" hidden>
@@ -329,7 +346,7 @@ const server = http.createServer((req, res) => {
 			window.addEventListener('message', event => {
 				if (event.data && event.data.__tabBrowserAgent) {
 					window.__commands.push({ kind: event.data.kind, open: event.data.open,
-						targetId: event.data.targetId });
+						targetId: event.data.targetId, action: event.data.action });
 				}
 			});
 			window.__nextTarget = 0;
@@ -433,6 +450,7 @@ const server = http.createServer((req, res) => {
 			<div id="plain" class="row" data-testid="plain-row" style="position: absolute; left: 20px; top: 20px; width: 120px; height: 40px">plain</div>
 			<div id="own-menu" style="position: absolute; left: 20px; top: 100px; width: 120px; height: 40px">own</div>
 			<div id="own-zoom" style="position: absolute; left: 160px; top: 100px; width: 120px; height: 40px">zoom</div>
+			<textarea id="field" style="position: absolute; left: 20px; top: 250px">before</textarea>
 			<iframe src="/context-frame" style="position: absolute; left: 20px; top: 160px; width: 200px; height: 80px; border: 0"></iframe>
 			<script>
 				window.__events = [];
@@ -470,6 +488,100 @@ const server = http.createServer((req, res) => {
 				document.getElementById('own-zoom')
 					.addEventListener('wheel', event => event.preventDefault(), { passive: false });
 			</script></body></html>`);
+		return;
+	}
+	// What a request the page makes arrives as, for the page that asks for its own api by
+	// absolute url: this server answers on two origins, so `localhost` stands for the real
+	// server and `127.0.0.1` for the one the proxy serves the page from.
+	if (req.url.startsWith('/echo-host')) {
+		absoluteRequests.push({ host: req.headers.host, url: req.url });
+		res.writeHead(200, { 'content-type': 'text/plain', 'access-control-allow-origin': '*' });
+		res.end(String(req.headers.host));
+		return;
+	}
+	if (req.url === '/absolute-page') {
+		res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+		res.end(`<!DOCTYPE html><html><head>
+			<script>window.__tabBrowserConfig = { realOrigin: 'http://localhost:${server.address().port}' };</script>
+			<script src="/agent.js"></script></head><body>
+			<script>
+				// Exactly what a bundle built with an absolute url for its own api does.
+				const own = 'http://localhost:${server.address().port}';
+				window.__requests = {};
+				const done = fetch(own + '/echo-host?by=fetch')
+					.then(async response => {
+						window.__requests.fetch = { host: await response.text(), url: response.url };
+					}, error => { window.__requests.fetch = { failed: error.message }; });
+
+				const request = new XMLHttpRequest();
+				request.open('GET', own + '/echo-host?by=xhr');
+				request.onload = () => { window.__requests.xhr = request.responseText; };
+				request.onerror = () => { window.__requests.xhr = 'failed'; };
+				request.send();
+
+				// A different origin is none of our business: it is cross-origin in a browser
+				// too, and rewriting it would send the page somewhere it never asked for.
+				fetch('http://localhost:1/nope').then(
+					response => { window.__requests.foreign = 'answered ' + response.status; },
+					error => { window.__requests.foreign = 'failed'; });
+			</script></body></html>`);
+		return;
+	}
+	// A page that has frozen its own globals before the agent runs, which some libraries do.
+	// Every patch the agent makes is to an api of the page's own, and one that cannot be
+	// installed must not take the rest of it down: the shortcuts, the picker and the reports
+	// are all installed after those patches.
+	if (req.url === '/locked-down') {
+		res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+		res.end(`<!DOCTYPE html><html><head><script>
+			window.__events = [];
+			window.addEventListener('message', event => {
+				if (event.data && event.data.__tabBrowserAgent) {
+					window.__events.push({ kind: event.data.kind, action: event.data.action });
+				}
+			});
+			Object.freeze(XMLHttpRequest.prototype);
+			Object.freeze(console);
+			Object.freeze(navigator);
+			Object.defineProperty(window, 'fetch', { value: window.fetch, writable: false });
+			Object.defineProperty(document, 'cookie',
+				{ value: 'frozen=1', writable: false, configurable: false });
+			window.__tabBrowserConfig = { realOrigin: 'http://localhost:${server.address().port}' };
+		</script><script src="/agent.js"></script></head><body><p>locked down</p></body></html>`);
+		return;
+	}
+	// An app that sets a cookie the way an app does — `SameSite=Lax`, which is the default — and
+	// then reads it back from a second request inside the same page load. That second request is
+	// where a login lives: `GET /csrf` and `POST /callback` are two fetches of one page.
+	if (req.url.startsWith('/sets-cookie')) {
+		res.writeHead(200, {
+			'content-type': 'text/html; charset=utf-8',
+			'set-cookie': ['sid=abc123; Path=/; SameSite=Lax', 'guard=xyz; Path=/; HttpOnly'],
+		});
+		res.end(`<!DOCTYPE html><html><head><title>cookies</title></head><body>
+			<script>
+				window.__sawOnSecondRequest = 'pending';
+				fetch('/sees-cookie').then(async response => {
+					window.__sawOnSecondRequest = await response.text();
+				}, error => { window.__sawOnSecondRequest = 'failed: ' + error.message; });
+				window.__readable = document.cookie;
+			</script></body></html>`);
+		return;
+	}
+	if (req.url.startsWith('/sees-cookie')) {
+		res.writeHead(200, { 'content-type': 'text/plain' });
+		res.end(req.headers.cookie ?? 'NONE');
+		return;
+	}
+	// A top-level document on another *site* — `localhost` is not `127.0.0.1` — which is what
+	// the editor's webview is to the page the panel frames, sandbox and all.
+	if (req.url.startsWith('/frames')) {
+		const target = new URL(req.url, 'http://x').searchParams.get('target') ?? '';
+		res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+		res.end(`<!DOCTYPE html><html><body style="margin:0"><iframe src="${target}"
+			sandbox="allow-scripts allow-forms allow-same-origin allow-downloads"
+			allow="clipboard-read; clipboard-write"
+			style="width:600px;height:300px;border:0"></iframe></body></html>`);
 		return;
 	}
 	// A framed document with the real agent in it, for the click that closes a menu the frame
@@ -531,7 +643,7 @@ if (!executablePath) {
 	process.exit(0);
 }
 
-const browser = await chromium.launch({ executablePath });
+const browser = await chromium.launch({ executablePath, args: ['--site-per-process'] });
 const panelBrowser = browser;
 let element;
 let iconHref;
@@ -557,6 +669,11 @@ let contextMenuPanel;
 let pageMenus;
 let toolbar;
 let pageShortcuts;
+let pageEditing;
+let absoluteRequests = [];
+let lockedDown;
+let framedCookies;
+let ownRequests;
 let fileAgent;
 try {
 	const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
@@ -857,7 +974,7 @@ try {
 		await settle();
 		const zoomedMenu = menu.getBoundingClientRect();
 		const whenZoomed = {
-			zoom: frame.style.zoom,
+			zoom: String(Number(new DOMMatrix(frame.style.transform).a.toFixed(3))),
 			left: Math.round(zoomedMenu.left - zoomedBox.left),
 			top: Math.round(zoomedMenu.top - zoomedBox.top),
 		};
@@ -942,8 +1059,7 @@ try {
 
 		// Zoom. Measured and not read off the style: what matters is that the frame still fills
 		// the panel while the page inside it lays out in a viewport that much smaller, which is
-		// what a browser's own zoom does — and dividing the frame's size as well, which looks
-		// like the obvious thing to do, leaves a third of the panel blank at 150%.
+		// what a browser's own zoom does. The transform and inverse dimensions must agree.
 		const zoomStep = direction => {
 			window.postMessage({ type: 'zoom', direction, token: 'panel-token' }, '*');
 			return new Promise(resolve => setTimeout(resolve, 30));
@@ -953,11 +1069,11 @@ try {
 			const box = frame.getBoundingClientRect();
 			const root = document.documentElement;
 			return {
-				zoom: frame.style.zoom,
+				zoom: String(Number(new DOMMatrix(frame.style.transform).a.toFixed(3))),
 				fills: Math.abs(box.width - panel.width) < 2 && Math.abs(box.height - panel.height) < 2,
 				// What the page believes it has, which is the whole point of zooming it.
 				viewport: Math.round(frame.contentWindow.innerWidth),
-				expected: Math.round(panel.width / (Number(frame.style.zoom) || 1)),
+				expected: Math.round(panel.width / (Number(String(Number(new DOMMatrix(frame.style.transform).a.toFixed(3)))) || 1)),
 				overflows: root.scrollWidth > root.clientWidth + 1
 					|| root.scrollHeight > root.clientHeight + 1,
 			};
@@ -969,7 +1085,7 @@ try {
 		const twoSteps = geometry();
 		const level = browserMenu.querySelector('.menu-detail').textContent;
 		await zoomStep('reset');
-		const reset = frame.style.zoom;
+		const reset = String(Number(new DOMMatrix(frame.style.transform).a.toFixed(3)));
 		// And out, which used to push the frame past the panel it sits in.
 		await zoomStep('out');
 		const zoomedOut = geometry();
@@ -979,11 +1095,11 @@ try {
 		frame.contentWindow.__zoomGesture(-8);
 		frame.contentWindow.__zoomGesture(-8);
 		await settle();
-		const halfAGesture = frame.style.zoom;
+		const halfAGesture = String(Number(new DOMMatrix(frame.style.transform).a.toFixed(3)));
 		frame.contentWindow.__zoomGesture(-8);
 		frame.contentWindow.__zoomGesture(-8);
 		await settle();
-		const wholeGesture = frame.style.zoom;
+		const wholeGesture = String(Number(new DOMMatrix(frame.style.transform).a.toFixed(3)));
 		await zoomStep('reset');
 
 		// What the page forwards while it has the keyboard, since nothing else hears it.
@@ -1019,7 +1135,34 @@ try {
 		await settle();
 		const afterRedirect = { value: input.value, focused: document.activeElement === input };
 
-		// And the menu, which runs the same four things.
+		// The same commands with the address bar focused: it is in *this* document, so this is
+		// where they have to act — the page has no idea the field exists.
+		input.focus();
+		input.value = 'localhost:3000';
+		input.setSelectionRange(input.value.length, input.value.length);
+		window.__posted.length = 0;
+		window.postMessage({ type: 'edit', action: 'paste', text: '/login', token: 'panel-token' }, '*');
+		await settle();
+		const pastedInField = input.value;
+		window.postMessage({ type: 'edit', action: 'selectAll', token: 'panel-token' }, '*');
+		await settle();
+		const selectedInField = input.selectionEnd - input.selectionStart === input.value.length;
+		// A copy is either written by this document or handed to the host, never dropped.
+		input.setSelectionRange(0, 5);
+		const canCopy = document.execCommand('copy');
+		window.__posted.length = 0;
+		window.postMessage({ type: 'edit', action: 'copy', token: 'panel-token' }, '*');
+		await settle();
+		const copiedFromField = {
+			canCopy,
+			asked: window.__posted.filter(message => message.type === 'writeClipboard')
+				.map(message => message.text),
+			// Nothing of this went to the page, which is not where the focus is.
+			askedThePage: frame.contentWindow.__commands.some(command => command.kind === 'edit'),
+		};
+
+		// And the menu, which is the only route to the editing commands: no keybinding of ours
+		// may claim those keys, since one did and took them from the rest of the editor.
 		document.querySelector('.browser-menu-toggle').click();
 		const menuOpen = !browserMenu.hidden;
 		window.__posted.length = 0;
@@ -1030,11 +1173,67 @@ try {
 			closed: browserMenu.hidden,
 		};
 
+		document.querySelector('.browser-menu-toggle').click();
+		window.__posted.length = 0;
+		frame.contentWindow.__commands.length = 0;
+		browserMenu.querySelector('[data-command="selectAll"]').click();
+		await settle();
+		// Straight to the page: the extension host has nothing to add to a select all.
+		const editFromMenu = {
+			toHost: window.__posted.find(message => message.type === 'runEdit')?.action,
+			toPage: frame.contentWindow.__commands.filter(command => command.kind === 'edit')
+				.map(command => command.action),
+		};
+
+		// A paste is the one that has to go out and come back, since only the host may read the
+		// clipboard.
+		document.querySelector('.browser-menu-toggle').click();
+		window.__posted.length = 0;
+		browserMenu.querySelector('[data-command="paste"]').click();
+		await settle();
+		const pasteFromMenu = window.__posted.find(message => message.type === 'runEdit')?.action;
+
+		// And a page cannot reach them by claiming the panel's own shortcut: what it sends is a
+		// shape from the script that was injected into it.
+		window.__posted.length = 0;
+		frame.contentWindow.__shortcut('paste');
+		await settle();
+		const forgedEdit = window.__posted.some(message => message.type === 'runEdit');
+
 		return { byHost, byPath, file, noMatch, empty, firstFilled, secondFilled, backToTyped,
 			entered, oneStep, twoSteps, zoomedOut, level, reset, halfAGesture, wholeGesture,
-			forwardedNewTab, menuOpen, fromMenu, watchedForClicks, closedByPage, afterRedirect };
+			forwardedNewTab, menuOpen, fromMenu, watchedForClicks, closedByPage, afterRedirect,
+			pastedInField, selectedInField, copiedFromField, editFromMenu, pasteFromMenu,
+			forgedEdit };
 	}, new URL(pageUrl).origin);
 	await toolbarPanel.close();
+
+	// A different site gets a separate renderer, just like the page inside a VS Code webview.
+	// CSS zoom used to shrink its viewport but leave the button visually 100px wide. Clicking
+	// beyond that original width verifies actual rendered scaling, not just iframe geometry.
+	const crossZoomPanel = await browser.newPage({ viewport: { width: 900, height: 400 } });
+	await crossZoomPanel.goto(`${new URL(pageUrl).origin}/webview`);
+	const crossUrl = `http://localhost:${server.address().port}/zoom-target`;
+	await crossZoomPanel.locator('iframe').evaluate((frame, url) => { frame.src = url; }, crossUrl);
+	await crossZoomPanel.frameLocator('iframe').locator('button').waitFor();
+	await crossZoomPanel.evaluate(() => {
+		for (let i = 0; i < 5; i++) {
+			window.postMessage({ type: 'zoom', direction: 'in', token: 'panel-token' }, '*');
+		}
+	});
+	await crossZoomPanel.waitForFunction(() =>
+		document.querySelector('.menu-detail').textContent === '200%');
+	// Wait for the out-of-process frame to present its updated compositor surface.
+	await crossZoomPanel.screenshot();
+	const crossBox = await crossZoomPanel.locator('iframe').boundingBox();
+	await crossZoomPanel.mouse.click(crossBox.x + 150, crossBox.y + 50);
+	const crossFrame = crossZoomPanel.frames().find(frame => frame.url() === crossUrl);
+	check('cross-site zoom visibly doubles the content and keeps hit testing aligned',
+		await crossFrame.evaluate(() => window.zoomHit === true));
+	const crossWidth = await crossFrame.evaluate(() => innerWidth);
+	check('cross-site zoom reflows into half the panel width', Math.abs(crossWidth * 2 - crossBox.width) < 2,
+		JSON.stringify({ crossWidth, width: crossBox.width }));
+	await crossZoomPanel.close();
 
 	// The page's own half: the right-click it keeps, the one it hands over, and the element it
 	// holds on to in between.
@@ -1131,6 +1330,82 @@ try {
 	pageShortcuts.plainWheel = await menuPage.evaluate(
 		() => window.__events.filter(event => event.kind === 'zoomGesture').length);
 
+	// The standard editing commands, which the editor's own keybindings for them cannot carry
+	// this far: they are answered on the frame the editor created, one above this document.
+	const editing = {};
+	await toPage({ kind: 'edit', action: 'selectAll' });
+	await settlePage();
+	editing.selectedAll = await menuPage.evaluate(() => window.getSelection().toString().length > 0);
+
+	// Into the field that has the focus, through the editing pipeline, so a framework sees it.
+	await menuPage.focus('#field');
+	await menuPage.evaluate(() => {
+		const field = document.getElementById('field');
+		field.setSelectionRange(field.value.length, field.value.length);
+		window.__typed = [];
+		field.addEventListener('input', () => window.__typed.push(field.value));
+	});
+	await toPage({ kind: 'edit', action: 'paste', text: ' and after' });
+	await settlePage();
+	editing.pasted = await menuPage.evaluate(() => ({
+		value: document.getElementById('field').value,
+		reportedAsInput: window.__typed.length > 0,
+	}));
+
+	// Cut takes the selection out of the field whether the clipboard allows the copy or not.
+	await menuPage.evaluate(() => document.getElementById('field').select());
+	await toPage({ kind: 'edit', action: 'cut' });
+	await settlePage();
+	editing.cut = await menuPage.evaluate(() => document.getElementById('field').value);
+
+	// Whether this browser lets a document with no activation of its own write the clipboard
+	// decides which of the two paths a copy takes, and a copy has to take one of them.
+	await menuPage.evaluate(() => {
+		const field = document.getElementById('field');
+		field.value = 'copy me';
+		field.focus();
+		field.select();
+		window.__canCopy = document.execCommand('copy');
+		window.__events.length = 0;
+	});
+	await toPage({ kind: 'edit', action: 'copy' });
+	await settlePage();
+	editing.copied = await menuPage.evaluate(() => ({
+		canCopy: window.__canCopy,
+		asked: window.__events.filter(event => event.kind === 'copyToClipboard').map(event => event.text),
+	}));
+
+	// Undo and redo, which are the same story as select all: the editor's menu takes the key and
+	// answers it on its own frame, so the page's own history is never touched.
+	await menuPage.evaluate(() => {
+		const field = document.getElementById('field');
+		field.value = '';
+		field.focus();
+	});
+	await menuPage.keyboard.type('typed by hand');
+	await toPage({ kind: 'edit', action: 'undo' });
+	await settlePage();
+	const afterUndo = await menuPage.evaluate(() => document.getElementById('field').value);
+	await toPage({ kind: 'edit', action: 'redo' });
+	await settlePage();
+	editing.history = {
+		afterUndo,
+		afterRedo: await menuPage.evaluate(() => document.getElementById('field').value),
+	};
+
+	// And the frame that has the focus is the one that acts: run everywhere, a copy would take
+	// from three documents at once.
+	const framedBox = await menuPage.locator('iframe').boundingBox();
+	await menuPage.mouse.click(framedBox.x + 20, framedBox.y + 20);
+	await menuPage.evaluate(() => { window.getSelection().removeAllRanges(); });
+	await toPage({ kind: 'edit', action: 'selectAll' });
+	await settlePage();
+	editing.inFocusedFrame = await menuPage.evaluate(() => ({
+		top: window.getSelection().toString(),
+		framed: document.querySelector('iframe').contentDocument?.getSelection().toString(),
+	}));
+	pageEditing = editing;
+
 	// And a click in the page, which is what closes a menu drawn in the panel above it. The
 	// page watches for that while the panel says it has one open, and for no other reason.
 	await rightClick('#plain');
@@ -1170,6 +1445,49 @@ try {
 		.catch(() => { });
 	fileAgent = await diskPage.evaluate(() => window.__agentEvents);
 	await diskPage.close();
+
+	// A page that asks for its own api by absolute url. Left alone, that request leaves the
+	// proxy: cross-origin, so cors blocks it, and cross-site — ports are no part of a site —
+	// so a `SameSite` cookie is not sent with it, which is how a login stops working.
+	const absolutePage = await browser.newPage();
+	await absolutePage.goto(`${new URL(pageUrl).origin}/absolute-page`);
+	await absolutePage.waitForFunction(
+		() => window.__requests?.fetch && window.__requests.xhr && window.__requests.foreign,
+		null, { timeout: 5000 }).catch(() => { });
+	ownRequests = await absolutePage.evaluate(() => window.__requests);
+	await absolutePage.close();
+
+	const lockedPage = await browser.newPage();
+	await lockedPage.goto(`${new URL(pageUrl).origin}/locked-down`);
+	await lockedPage.waitForFunction(
+		() => window.__events?.some(event => event.kind === 'ready'), null, { timeout: 5000 })
+		.catch(() => { });
+	await lockedPage.keyboard.press('ControlOrMeta+t');
+	await lockedPage.evaluate(() => new Promise(resolve => setTimeout(resolve, 60)));
+	lockedDown = await lockedPage.evaluate(() => window.__events.map(event =>
+		event.kind + (event.action ? `:${event.action}` : '')));
+	await lockedPage.close();
+
+	// The panel's page is a frame in the editor's webview, so the browser has it as a third
+	// party in somebody else's site — and a cookie without `SameSite=None; Secure` is then not
+	// stored at all, which is a login that cannot be completed however good the proxy is.
+	const cookieProxy = new BrowserProxy(Uri.file(projectRoot));
+	const proxiedCookiePage = await cookieProxy.getProxiedUrl(`${new URL(pageUrl).origin}/sets-cookie`);
+	const framedPage = await browser.newPage();
+	await framedPage.goto(
+		`http://localhost:${server.address().port}/frames?target=${encodeURIComponent(proxiedCookiePage)}`);
+	await framedPage.waitForTimeout(600);
+	const cookieFrame = framedPage.frames()[1];
+	framedCookies = {
+		// What the second request of the same page load carried, under the names the server
+		// gave them: the proxy prefixes them for the browser and strips them again here.
+		second: await cookieFrame?.evaluate(() => window.__sawOnSecondRequest).catch(() => 'no frame'),
+		// And what the page can read of them, which is everything but the HttpOnly one.
+		readable: await cookieFrame?.evaluate(() => window.__readable).catch(() => ''),
+		stored: (await framedPage.context().cookies()).map(cookie => cookie.name),
+	};
+	await framedPage.close();
+	cookieProxy.dispose();
 
 	// A page sets cookies for the server it thinks it is talking to. Through the proxy that
 	// server's name and scheme are not the ones the browser has the page from, and a cookie
@@ -1540,6 +1858,84 @@ check('a right-click in a zoomed page opens the menu under the cursor',
 	&& contextMenuPanel.whenZoomed.left === 50 && contextMenuPanel.whenZoomed.top === 50,
 	JSON.stringify(contextMenuPanel?.whenZoomed));
 
+// -- a cookie in a framed page -----------------------------------------------------------------
+
+// The one that matters: two fetches of a single page load, the second of which is the request a
+// login is completed by. With the attributes a cookie needs in a third-party frame it carries
+// what the first response set; without them the browser never stored anything.
+check('a cookie set through the proxy reaches the next request of the same page load',
+	framedCookies?.second?.includes('sid=abc123') && framedCookies.second.includes('guard=xyz'),
+	JSON.stringify(framedCookies?.second));
+
+check('and the page can read the ones that are not HttpOnly, under their own names',
+	framedCookies?.readable?.includes('sid=abc123') && !framedCookies.readable.includes('guard'),
+	JSON.stringify(framedCookies?.readable));
+
+// Stored under the session's prefix, which is what keeps two proxied sites apart in a jar that
+// ignores ports — and which is derived from the origin, so it is the same name tomorrow.
+check('the browser stored them under this session\'s own names',
+	framedCookies?.stored?.some(name => /^__tb[0-9a-f]{8}_sid$/.test(name)),
+	JSON.stringify(framedCookies?.stored));
+
+// -- a page that names its own server by absolute url ------------------------------------------
+
+const ownOrigin = new URL(pageUrl).host;
+
+// The proxy rewrites such urls where it can see them, which is in the html; a bundle is not
+// html, so the injected script rewrites what the page asks for instead.
+check('a fetch aimed at the real server comes back to the origin the page was served from',
+	ownRequests?.fetch?.host === ownOrigin
+	&& ownRequests?.fetch?.url?.startsWith(new URL(pageUrl).origin),
+	JSON.stringify(ownRequests?.fetch));
+
+check('and so does an XMLHttpRequest',
+	ownRequests?.xhr === ownOrigin, JSON.stringify(ownRequests?.xhr));
+
+// Only that one origin: a page asking for somewhere else is asking for somewhere else, and in a
+// browser that request is cross-origin too.
+check('a request to any other origin is left exactly as the page made it',
+	ownRequests?.foreign === 'failed', JSON.stringify(ownRequests?.foreign));
+
+check('the server saw both of them on its own host and nothing on the other',
+	absoluteRequests.length === 2 && absoluteRequests.every(entry => entry.host === ownOrigin),
+	JSON.stringify(absoluteRequests));
+
+// A page is free to freeze its own globals, and the agent patches four of them. One that will
+// not take is one api the panel does without; the rest of the agent is not optional.
+check('a page that has frozen its globals still gets the whole agent',
+	lockedDown?.includes('ready') && lockedDown?.includes('shortcut:newTab'),
+	JSON.stringify(lockedDown));
+
+// -- the standard editing commands -------------------------------------------------------------
+
+check('select all reaches the page, which the editor\'s own command does not',
+	pageEditing?.selectedAll === true, JSON.stringify(pageEditing?.selectedAll));
+
+check('a paste goes into the field that has the focus, and is reported as typing',
+	pageEditing?.pasted?.value === 'before and after'
+	&& pageEditing.pasted.reportedAsInput === true, JSON.stringify(pageEditing?.pasted));
+
+check('a cut takes the selection out of the field',
+	pageEditing?.cut === '', JSON.stringify(pageEditing?.cut));
+
+// One of the two paths, always: the page writes the clipboard itself where it is allowed to,
+// and hands the text to the extension host where it is not.
+check('a copy is either written by the page or handed to the host',
+	pageEditing?.copied?.canCopy === true
+		? pageEditing.copied.asked.length === 0
+		: pageEditing?.copied?.asked?.join() === 'copy me',
+	JSON.stringify(pageEditing?.copied));
+
+check('undo and redo reach the page, which is where the typing happened',
+	pageEditing?.history?.afterUndo !== 'typed by hand'
+	&& pageEditing?.history?.afterRedo === 'typed by hand',
+	JSON.stringify(pageEditing?.history));
+
+check('and it is the frame with the focus that acts, not every frame',
+	pageEditing?.inFocusedFrame?.top === ''
+	&& (pageEditing?.inFocusedFrame?.framed?.length ?? 0) > 0,
+	JSON.stringify(pageEditing?.inFocusedFrame));
+
 // -- the address bar, the panel's menu and the zoom --------------------------------------------
 
 // What a person types into an address bar is the start of a host or of a path.
@@ -1614,6 +2010,28 @@ check('a menu the toolbar opens has the page watch, and closes when the page cli
 check('the field shows where the panel went, not what was typed to get there',
 	toolbar?.afterRedirect?.value === 'http://localhost:5173/redirected'
 	&& toolbar.afterRedirect.focused === true, JSON.stringify(toolbar?.afterRedirect));
+
+check('an editing command lands in the address bar when that is what has the focus',
+	toolbar?.pastedInField === 'localhost:3000/login' && toolbar?.selectedInField === true
+	&& toolbar?.copiedFromField?.askedThePage === false,
+	JSON.stringify([toolbar?.pastedInField, toolbar?.selectedInField, toolbar?.copiedFromField]));
+
+check('and a copy from the field takes one of the two paths as well',
+	toolbar?.copiedFromField?.canCopy === true
+		? toolbar.copiedFromField.asked.length === 0
+		: toolbar?.copiedFromField?.asked?.join() === 'local',
+	JSON.stringify(toolbar?.copiedFromField));
+
+check('the menu is where the editing commands are, since no key of ours may claim them',
+	toolbar?.editFromMenu?.toPage?.join() === 'selectAll'
+	&& toolbar?.editFromMenu?.toHost === undefined
+	&& toolbar?.pasteFromMenu === 'paste',
+	JSON.stringify([toolbar?.editFromMenu, toolbar?.pasteFromMenu]));
+
+// The page can send what the injected script sends. A paste it could ask for would be a page
+// reading the clipboard, so only the four keys a browser keeps for itself are accepted.
+check('and a page cannot ask for one by forging the panel\'s own shortcut',
+	toolbar?.forgedEdit === false, JSON.stringify(toolbar?.forgedEdit));
 
 check('a shortcut the page forwards runs the same thing the menu does',
 	toolbar?.forwardedNewTab === true && toolbar?.menuOpen === true
@@ -1929,6 +2347,10 @@ check('inspecting a web component does not run the component again',
 
 // -- the page's icon -------------------------------------------------------------------------
 
+const iconStorageRoot = await fs.mkdtemp('/tmp/tb-icon-storage-');
+const iconDirectory = Uri.file(path.join(iconStorageRoot, 'globalStorage', 'test.tab-browser', 'icons'));
+const fetchIcon = href => fetchIconToDirectory(href, iconDirectory);
+
 check('a scalable icon wins over the bitmaps a page also offers',
 	iconHref === `${new URL(pageUrl).origin}/icon.svg`, iconHref);
 
@@ -1939,6 +2361,29 @@ check('a real image is stored as a file the editor can show',
 
 check('the same icon keeps the same file',
 	(await fetchIcon(`${new URL(pageUrl).origin}/icon.png`))?.fsPath === icon?.fsPath);
+
+// ICO is not on VS Code's extension allowlist outside its resource roots. Unlike PNG, this
+// common favicon format must be stored under the extension's global storage to be displayed.
+const icoHeader = Buffer.alloc(22);
+icoHeader.writeUInt16LE(1, 2);
+icoHeader.writeUInt16LE(1, 4);
+icoHeader[6] = 1;
+icoHeader[7] = 1;
+icoHeader.writeUInt16LE(1, 10);
+icoHeader.writeUInt16LE(32, 12);
+icoHeader.writeUInt32LE(pngBytes.length, 14);
+icoHeader.writeUInt32LE(22, 18);
+const icoBytes = Buffer.concat([icoHeader, pngBytes]);
+const icoData = `data:image/x-icon;base64,${icoBytes.toString('base64')}`;
+const storedIco = await fetchIcon(icoData);
+check('ICO favicons are stored in the supplied extension storage root',
+	storedIco?.fsPath.endsWith('.ico') && path.dirname(storedIco.fsPath) === iconDirectory.fsPath
+	&& (await fs.readFile(storedIco.fsPath)).equals(icoBytes), storedIco?.fsPath);
+
+const localIcoPath = path.join(iconStorageRoot, 'document.ico');
+await fs.writeFile(localIcoPath, icoBytes);
+check('a local document icon is copied into the same allowed cache',
+	(await fetchIcon(Uri.file(localIcoPath).toString()))?.fsPath === storedIco?.fsPath);
 
 check('a page answering /favicon.ico with html gets no icon',
 	await fetchIcon(defaultIconUrl(pageUrl)) === undefined);
@@ -2762,6 +3207,7 @@ const { activate } = await import('./.bundles/extension-bundle.mjs');
 const context = {
 	subscriptions: [],
 	extensionUri: { fsPath: projectRoot, scheme: 'file' },
+	globalStorageUri: Uri.file(path.join(sandboxHome, 'globalStorage', 'test.tab-browser')),
 	extension: { id: 'test.tab-browser-ultimate', packageJSON: { version: '0.0.0-test' } },
 	globalState: { get: () => undefined, update: async () => { } },
 	workspaceState: { get: (_key, fallback) => fallback, update: async () => { } },
@@ -2809,16 +3255,22 @@ check('every sidebar row runs a command that exists',
 check('every sidebar row renders',
 	sidebarRows.every(row => treeProvider.getTreeItem(row).label === row.label));
 
-// The tree is rebuilt whole on every change — and there is one per panel state change, several
-// per page load — so the folders someone opened have to be remembered by something. The tree
-// does that by the id of the item, which a row of a new object every time otherwise has none of.
-const filesSection = sidebarRows.find(row => row.label === 'Project files');
-const folderRows = sidebarRows.filter(row => row.folder);
-check('the file browser rows are identified, so opening a folder survives a refresh',
-	!!filesSection && treeProvider.getTreeItem(filesSection).id === 'files'
-	&& folderRows.length > 0 && folderRows.every(row => !!treeProvider.getTreeItem(row).id)
-	&& new Set(folderRows.map(row => row.id)).size === folderRows.length,
-	JSON.stringify(folderRows.map(row => row.id)));
+// The sections are what someone looks for, so a rename that only half lands is a view nobody
+// recognises. "Tools" is not among them here: it is about the page in the panel, and this walk
+// runs with no panel open.
+const sidebarSections = sidebarRows.filter(row => row.children).map(row => row.label);
+check('the sections are the ones the readme names',
+	sidebarSections.includes('Navigation') && sidebarSections.includes('MCP')
+	&& !sidebarSections.some(label =>
+		['Browser', 'This page', 'MCP server', 'Project files'].includes(label)),
+	sidebarSections.join(', '));
+
+// This extension contributes no keybindings at all, and that is a decision rather than an
+// omission: a binding for `Cmd`+`C` scoped to `activeWebviewPanelId` took copy and paste out of
+// the rest of the editor. The keys a browser keeps for itself are forwarded by the injected
+// script instead — which only the page can hear anyway — and everything else is in the menu.
+check('the extension binds none of the editor\'s keys',
+	!manifest.contributes.keybindings, JSON.stringify(manifest.contributes.keybindings));
 
 check('the manifest puts every title bar button on this view',
 	manifest.contributes.menus['view/title'].every(entry =>
@@ -2865,6 +3317,7 @@ for (const [name, value] of Object.entries(realHome)) {
 	if (value === undefined) { delete process.env[name]; } else { process.env[name] = value; }
 }
 
+await fs.rm(iconStorageRoot, { recursive: true, force: true });
 await browser.close();
 server.close();
 

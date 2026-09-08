@@ -82,6 +82,11 @@ export class RelativePattern {
 
 export const env = { asExternalUri: async uri => uri };
 
+/** Whatever the proxy logs when the setting is on; the mock's configuration keeps it off. */
+export const window = {
+	createOutputChannel: () => ({ appendLine() { }, dispose() { } }),
+};
+
 /** The proxy publishes one event, for the origins it has started serving. */
 export class EventEmitter {
 	constructor() {

@@ -133,10 +133,14 @@ body {
 	width: 100%;
 	height: 100%;
 	display: flex;
-	justify-content: center;
+	justify-content: flex-start;
+	/* The unscaled frame can be larger than this viewport when zoomed out. */
+	overflow: hidden;
+	min-height: 0;
 }
 
 iframe {
+	flex-shrink: 0;
 	width: 100%;
 	height: 100%;
 	border: none;
