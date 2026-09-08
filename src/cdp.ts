@@ -82,6 +82,17 @@ export class CDPClient implements vscode.Disposable {
 		});
 	}
 
+	/** Subscribes to every event matching `method` until disposed. */
+	public on(method: string, handler: (params: any) => void): vscode.Disposable {
+		const listener = (event: CDPEvent) => {
+			if (event.method === method) {
+				handler(event.params);
+			}
+		};
+		this._listeners.add(listener);
+		return new vscode.Disposable(() => this._listeners.delete(listener));
+	}
+
 	/** Resolves with the first event matching `method`, or rejects on cancellation. */
 	public once(method: string, token: vscode.CancellationToken): Promise<any> {
 		return new Promise<any>((resolve, reject) => {

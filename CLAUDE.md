@@ -90,7 +90,11 @@ Compiled with `tsc`, **no bundling**. `main: ./out/extension`.
 - [src/dispose.ts](src/dispose.ts) — base `Disposable` with `_register`
 - [src/uuid.ts](src/uuid.ts) — nonce generator, copied from `vs/base/common/uuid`
 - [src/cdp.ts](src/cdp.ts) — CDP client for the built-in browser (not used by the panel)
-- [src/elementPicker.ts](src/elementPicker.ts) — `aiBrowser.copyElementXPath`
+- [src/elementPicker.ts](src/elementPicker.ts) — the three element commands
+- [src/elementContext.ts](src/elementContext.ts) — pulls element data out of the page over CDP
+- [src/elementMarkdown.ts](src/elementMarkdown.ts) — renders that data as Markdown
+- [src/cssHelpers.ts](src/cssHelpers.ts) — copied verbatim from vscode, builds the CSS section
+- [src/toolsView.ts](src/toolsView.ts) — the activity bar panel
 
 **There is only ever one panel.** `AIBrowserManager._activeView` is a single slot: a repeat
 `show()` reuses the existing panel rather than creating a second one. If multiple tabs are ever
@@ -275,6 +279,60 @@ distribution story, which was already VSIX-only, but proposed APIs break without
 the extension stops activating after a VS Code update, run `npm run download-api` and check
 both `.d.ts` files.
 
+### The activity bar panel
+
+`contributes.viewsContainers.activitybar` adds an **AI Browser** container holding one view,
+`aiBrowser.tools`, backed by [src/toolsView.ts](src/toolsView.ts). It is a `TreeDataProvider`
+with three static rows, each carrying a `command` — not a webview. Three fixed rows need no
+custom rendering, and a tree brings theming, keyboard navigation and accessibility for free
+with no CSP or bundling involved. `media/activity-icon.svg` must stay a single flat
+`currentColor` shape, because VS Code recolours activity bar icons.
+
+`onView:aiBrowser.tools` is in `activationEvents`: without it the view renders empty until the
+extension is activated by something else.
+
+### The dropdown on the browser tab
+
+One toolbar button on the browser tab opens a dropdown with all three element commands. It is
+a `contributes.submenus` entry (`aiBrowser.elementMenu`) placed into `editor/title`;
+`editor/title` allows submenus because `menusExtensionPoint.ts` leaves `supportsSubmenus` at
+its default of `true`. **The `icon` on the submenu declaration is what makes it a toolbar
+button** — without one it collapses into the tab's overflow menu.
+
+**The `when` clause is the easy thing to get wrong.** It must be
+`activeEditor == 'workbench.editor.browser'`. The `activeEditor` context key holds the *editor
+(pane)* id — `BrowserEditorInput.EDITOR_ID`, i.e. `BrowserViewEditorId` from
+`browserView.ts` — and **not** `workbench.editorinputs.browser`, which is
+`BrowserEditorInput.ID`, the *input type* id. They sit two lines apart in
+`browserEditorInput.ts`, and picking the wrong one produces a button that simply never appears,
+with no error anywhere.
+
+### The three element commands
+
+All in [src/elementPicker.ts](src/elementPicker.ts), all sharing `withPickedElement`:
+
+| Command | Output |
+|---|---|
+| `aiBrowser.copyElement` | the full Markdown context, matching the built-in browser's "Add Element to Chat" |
+| `aiBrowser.copyElementXPath` | `//*[@id="main"]/span` or `/html/body/ul/li[2]` |
+| `aiBrowser.copyElementCssPath` | `#main > div > li:nth-of-type(2)` |
+
+The CSS path deliberately leaves classes out. Utility-class frameworks produce long, unstable
+class lists, and a selector built from them reads worse and breaks sooner than a positional
+one; the full class list is in "Copy Element" for anyone who wants it.
+
+**The Markdown format is a port, not an invention.** `renderElementMarkdown` follows
+`createElementContextValue` / `formatElementPath` from `browserEditorChatFeatures.ts`, and
+`extractElementData` follows `extractNodeData` from `browserViewFrameInspector.ts`. The CSS
+section — matched rules, `/* Inherited */`, `/* Resolved values */`, `/* CSS variables */`, the
+`/*UA*/` marker — is produced by [src/cssHelpers.ts](src/cssHelpers.ts), which is upstream code
+copied **verbatim** (616 lines, zero imports). That is what keeps our output identical to the
+built-in browser's. Its upstream test suite came along as `src/cssHelpers.test.ts` and is its
+specification; re-sync the two together rather than editing either in place.
+
+The element itself is the **last** entry of `ancestors`, which is why `Element:` and the tail of
+`HTML Path:` are always the same string.
+
 ### Element picker
 
 `aiBrowser.copyElementXPath` ([src/elementPicker.ts](src/elementPicker.ts)) turns on
@@ -293,8 +351,9 @@ element.
 1. Add the command to `contributes.commands` **and a matching `onCommand:` to
    `activationEvents`** — see the entry in
    [Things that break silently](#things-that-break-silently).
-2. For a button on the browser tab, add it to `contributes.menus` under `editor/title` with
-   `"when": "activeEditor == 'workbench.editorinputs.browser'"`.
+2. For a button on the browser tab, put it in the `aiBrowser.elementMenu` submenu (see
+   [The dropdown on the browser tab](#the-dropdown-on-the-browser-tab)) rather than adding
+   another `editor/title` entry — one dropdown beats a row of icons.
 3. Guard twice, with different messages: `'browserTabs' in vscode.window` (proposal missing,
    or launched without the flag) and `vscode.window.activeBrowserTab` (nothing open). The
    fixes are unrelated, so one message would send people the wrong way.
@@ -305,8 +364,17 @@ element.
 6. Long interactions get `withProgress({ cancellable: true })`, with the token passed to
    `client.once(...)` so cancelling actually unblocks it.
 
-Pure logic — the XPath builder is the example — is worth testing outside VS Code: it is plain
-JavaScript against a fake DOM, and `npm test` needs no VS Code instance.
+Pure logic is worth testing outside VS Code — `npm test` needs no VS Code instance — but that
+imposes a real constraint, learned the hard way:
+
+**A module that `npm test` loads directly must have no relative *value* imports.** Node's type
+stripping resolves neither an extensionless specifier nor a `.js` one to a `.ts` file, and the
+`.ts` specifier that Node *does* accept is rejected by an emitting tsconfig. So test files use
+explicit `.ts` imports and live in their own no-emit project
+([tsconfig.test.json](tsconfig.test.json)); `tsconfig.json` excludes `**/*.test.ts` so they
+never reach `out/` and never ship in the VSIX. This is why `elementMarkdown.ts` was split out
+of `elementContext.ts` — the renderer is testable precisely because it imports nothing.
+`import type` is fine anywhere; it is erased.
 
 ## Things that break silently
 

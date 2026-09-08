@@ -10,6 +10,9 @@
 			"./node_modules/@types"
 		]
 	},
+	"exclude": [
+		"**/*.test.ts"
+	],
 	"include": [
 		"src/**/*",
 		"node_modules/@types/vscode/index.d.ts",

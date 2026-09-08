@@ -6,7 +6,8 @@
 import * as vscode from 'vscode';
 import { AIBrowserManager } from './aiBrowserManager';
 import { AIBrowserView } from './aiBrowserView';
-import { copyElementXPath } from './elementPicker';
+import { copyElement, copyElementCssPath, copyElementXPath } from './elementPicker';
+import { ToolsViewProvider } from './toolsView';
 
 declare class URL {
 	constructor(input: string, base?: string | URL);
@@ -32,6 +33,8 @@ const enabledHosts = new Set<string>([
 ]);
 
 const copyXPathCommand = 'aiBrowser.copyElementXPath';
+const copyElementCommand = 'aiBrowser.copyElement';
+const copyCssPathCommand = 'aiBrowser.copyElementCssPath';
 
 const openerId = 'aiBrowser.open';
 
@@ -91,7 +94,12 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	}));
 
+	context.subscriptions.push(vscode.window.registerTreeDataProvider(
+		ToolsViewProvider.viewId, new ToolsViewProvider()));
+
+	context.subscriptions.push(vscode.commands.registerCommand(copyElementCommand, () => copyElement()));
 	context.subscriptions.push(vscode.commands.registerCommand(copyXPathCommand, () => copyElementXPath()));
+	context.subscriptions.push(vscode.commands.registerCommand(copyCssPathCommand, () => copyElementCssPath()));
 
 	context.subscriptions.push(vscode.commands.registerCommand(openApiCommand, async (url: vscode.Uri, showOptions?: {
 		preserveFocus?: boolean;

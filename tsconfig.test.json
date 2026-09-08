@@ -1,0 +1,19 @@
+{
+	// Type-checks the test files only. They are excluded from tsconfig.json so
+	// they never reach out/, and they import with an explicit `.ts` extension
+	// because that is the only specifier Node's type stripping resolves.
+	"extends": "./tsconfig.base.json",
+	"compilerOptions": {
+		"noEmit": true,
+		"allowImportingTsExtensions": true,
+		"types": [
+			"node"
+		],
+		"typeRoots": [
+			"./node_modules/@types"
+		]
+	},
+	"include": [
+		"src/**/*.test.ts"
+	]
+}

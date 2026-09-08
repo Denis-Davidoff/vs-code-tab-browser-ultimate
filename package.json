@@ -27,7 +27,10 @@
 		"onCommand:aiBrowser.copyElementXPath",
 		"onOpenExternalUri:http",
 		"onOpenExternalUri:https",
-		"onWebviewPanel:aiBrowser.view"
+		"onWebviewPanel:aiBrowser.view",
+		"onCommand:aiBrowser.copyElement",
+		"onCommand:aiBrowser.copyElementCssPath",
+		"onView:aiBrowser.tools"
 	],
 	"capabilities": {
 		"virtualWorkspaces": true,
@@ -47,6 +50,18 @@
 				"title": "%command.copyElementXPath.title%",
 				"category": "%displayName%",
 				"icon": "$(inspect)"
+			},
+			{
+				"command": "aiBrowser.copyElement",
+				"title": "%command.copyElement.title%",
+				"category": "%displayName%",
+				"icon": "$(inspect)"
+			},
+			{
+				"command": "aiBrowser.copyElementCssPath",
+				"title": "%command.copyElementCssPath.title%",
+				"category": "%displayName%",
+				"icon": "$(symbol-color)"
 			}
 		],
 		"configuration": [
@@ -84,12 +99,50 @@
 		"menus": {
 			"editor/title": [
 				{
+					"submenu": "aiBrowser.elementMenu",
+					"group": "navigation@1",
+					"when": "activeEditor == 'workbench.editor.browser'"
+				}
+			],
+			"aiBrowser.elementMenu": [
+				{
+					"command": "aiBrowser.copyElement",
+					"group": "1_copy@1"
+				},
+				{
 					"command": "aiBrowser.copyElementXPath",
-					"when": "activeEditor == 'workbench.editorinputs.browser'",
-					"group": "navigation@1"
+					"group": "1_copy@2"
+				},
+				{
+					"command": "aiBrowser.copyElementCssPath",
+					"group": "1_copy@3"
 				}
 			]
-		}
+		},
+		"viewsContainers": {
+			"activitybar": [
+				{
+					"id": "aiBrowser",
+					"title": "%displayName%",
+					"icon": "media/activity-icon.svg"
+				}
+			]
+		},
+		"views": {
+			"aiBrowser": [
+				{
+					"id": "aiBrowser.tools",
+					"name": "%view.tools.name%"
+				}
+			]
+		},
+		"submenus": [
+			{
+				"id": "aiBrowser.elementMenu",
+				"label": "%submenu.elementMenu.label%",
+				"icon": "$(inspect)"
+			}
+		]
 	},
 	"scripts": {
 		"compile": "npm run build-ext && npm run build-webview",
@@ -99,10 +152,11 @@
 		"watch-ext": "tsc --project ./tsconfig.json --watch",
 		"watch-webview": "node ./esbuild.webview.mts --watch",
 		"watch-typecheck-webview": "tsc --project ./preview-src/tsconfig.json --noEmit --watch",
-		"typecheck": "run-p -l typecheck-ext typecheck-webview",
+		"typecheck": "run-p -l typecheck-ext typecheck-webview typecheck-tests",
 		"typecheck-ext": "tsc --project ./tsconfig.json --noEmit",
 		"typecheck-webview": "tsc --project ./preview-src/tsconfig.json --noEmit",
-		"test": "node --test preview-src/*.test.ts",
+		"typecheck-tests": "tsc --project ./tsconfig.test.json",
+		"test": "node --test preview-src/*.test.ts src/*.test.ts",
 		"download-api": "dts dev",
 		"vscode:prepublish": "npm run compile"
 	},
