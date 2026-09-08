@@ -313,17 +313,12 @@ first would put it beyond repair and never reach that check at all.
 That file is also the one the *other windows* are in: each repairs a different entry in it, so
 two starting at once would both write the text they read and the later one would undo the
 earlier one's repair, leaving a correctly configured client on somebody else's port. So its
-read-and-write is held under a lock file (`wx`, the one exclusive create every platform agrees
-about), with a takeover after ten seconds for the window that was killed while holding it.
-
-That takeover is a race no arrangement of file operations settles — two windows can both find
-the same lock stale, and the second's removal then takes the first's *fresh* lock away. So
-holding the lock is not what a write is trusted on: each acquisition writes an id of its own,
-the write checks that the lock still carries it, and a write made under a lock that changed
-hands is *redone* from a fresh read rather than left standing over somebody else's. The shape of an entry is left as
-found for the same reason it is read that way in `mcpCheck`: a token in the url belongs to a
-client that cannot send a header, and one written as `${...}` or named by `bearer_token_env_var`
-is read from an environment this extension has no say over.
+read-and-write uses a bakery queue in `config.toml.tab-browser-locks`. Each contender creates a
+unique directory and atomically publishes its numbered ticket; ties are ordered by claim name.
+A live process's claim is never taken over based on age. Only claims belonging to exited
+processes are removed, by their unique names, so cleanup cannot delete a successor's lock.
+Unreadable queues skip repair instead of writing without exclusion. Waiting is bounded to two
+seconds, and the empty queue directory stays on disk to avoid deletion/recreation races.
 
 Known edges: selectors, not snapshot-scoped element refs, so a selector can go stale between
 calls; clicks are synthetic dom events, which some things (file pickers, drag) will not accept;

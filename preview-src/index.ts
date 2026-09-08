@@ -208,7 +208,8 @@ function onAgentEvent(event: AgentEvent): void {
 			answeredProbe = probeId;
 			clearSilenceTimer();
 			// Late, and the document has already been written off: take that back.
-			if (!isInstrumented) {
+			if (!isInstrumented || pageReady !== event.ready) {
+				pageReady = event.ready;
 				isInstrumented = true;
 				reportState();
 			}

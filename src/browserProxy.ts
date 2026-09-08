@@ -238,7 +238,8 @@ export class BrowserProxy extends Disposable {
 		}
 
 		const status = proxyRes.statusCode ?? 502;
-		if (!isHtmlResponse(proxyRes)) {
+		if (req.method === 'HEAD' || status === 204 || status === 205 || status === 304
+			|| !isHtmlResponse(proxyRes)) {
 			res.writeHead(status, proxyRes.statusMessage, headers);
 			// The headers are out, so there is no error page left to send: just tear the
 			// exchange down. Without this an upstream reset is an unhandled `error` event.
@@ -249,7 +250,8 @@ export class BrowserProxy extends Disposable {
 		}
 
 		const body = await decodeBody(proxyRes);
-		const html = this._injectAgentScript(session, body.toString('utf8'));
+		const html = this._injectAgentScript(session, decodeHtml(body, String(headers['content-type'] ?? '')));
+		headers['content-type'] = 'text/html; charset=utf-8';
 		const buffer = Buffer.from(html, 'utf8');
 
 		delete headers['content-encoding'];
@@ -554,6 +556,32 @@ function asArray<T>(value: T | T[]): T[] {
 
 function isHtmlResponse(res: http.IncomingMessage): boolean {
 	return /\btext\/html\b/i.test(String(res.headers['content-type'] ?? ''));
+}
+
+/** Decode before rewriting; the response is then explicitly served as UTF-8. */
+function decodeHtml(body: Buffer, contentType: string): string {
+	const declared = /charset\s*=\s*["']?([^\s;"']+)/i.exec(contentType)?.[1];
+	const head = body.subarray(0, 1024).toString('latin1');
+	let meta: string | undefined;
+	for (const tag of head.replace(/<!--[\s\S]*?(?:-->|$)/g, '').match(/<meta\b[^>]*>/gi) ?? []) {
+		const attributes = new Map<string, string>();
+		for (const match of tag.matchAll(/([\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g)) {
+			attributes.set(match[1].toLowerCase(), match[2] ?? match[3] ?? match[4]);
+		}
+		meta = attributes.get('charset');
+		if (!meta && attributes.get('http-equiv')?.toLowerCase() === 'content-type') {
+			meta = /charset\s*=\s*([^\s;]+)/i.exec(attributes.get('content') ?? '')?.[1];
+		}
+		if (meta) { break; }
+	}
+	const bom = body[0] === 0xff && body[1] === 0xfe ? 'utf-16le'
+		: body[0] === 0xfe && body[1] === 0xff ? 'utf-16be'
+		: body.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf])) ? 'utf-8' : undefined;
+	try {
+		return new TextDecoder(bom ?? declared ?? meta ?? 'utf-8').decode(body);
+	} catch {
+		return body.toString('utf8');
+	}
 }
 
 async function decodeBody(res: http.IncomingMessage): Promise<Buffer> {

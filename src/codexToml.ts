@@ -51,19 +51,17 @@ export function codexEntries(text: string): CodexEntry[] {
 	let multiline: string | undefined;
 
 	lines.forEach((raw, at) => {
-		// Inside a multi-line string nothing is markup: not a table header, not a comment, not
-		// a bracket. The whole of it belongs to the key that opened it.
-		if (multiline) {
-			if (raw.includes(multiline)) {
-				multiline = undefined;
-			}
+		const continuing = !!multiline;
+		const scan = scanLine(raw, multiline);
+		if (continuing) {
+			multiline = scan.multiline;
+			open = Math.max(0, open + scan.depth);
 			if (current) {
 				current.endLine = at + 1;
 			}
 			return;
 		}
 
-		const scan = scanLine(raw);
 		const line = scan.code.trim();
 		if (!line) {
 			return;
@@ -138,10 +136,10 @@ interface LineScan {
  * string and the rest of the file as its content: the table this extension wrote goes unseen,
  * and connecting writes it a second time, which is a file Codex cannot parse at all.
  */
-function scanLine(line: string): LineScan {
+function scanLine(line: string, initialQuote?: string): LineScan {
 	let depth = 0;
 	// What would close the string being read: one quote, or three of them.
-	let quote: string | undefined;
+	let quote: string | undefined = initialQuote;
 
 	for (let at = 0; at < line.length;) {
 		const rest = line.slice(at);
@@ -149,6 +147,10 @@ function scanLine(line: string): LineScan {
 		if (quote) {
 			if (rest.startsWith(quote)) {
 				at += quote.length;
+				// Four or five closing quotes include one or two literal quotes in the value.
+				if (quote.length === 3) {
+					for (let extra = 0; extra < 2 && line[at] === quote[0]; extra++) { at++; }
+				}
 				quote = undefined;
 				continue;
 			}

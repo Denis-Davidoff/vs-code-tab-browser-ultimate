@@ -28,6 +28,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as fs from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
@@ -48,11 +49,6 @@ const perWorkspaceName = /-[0-9a-f]{6}$/;
 /** How long a window waits for another one to finish with the shared config, and gives up. */
 const lockWaitMs = 2000;
 const lockPollMs = 25;
-/** Older than this, a lock belongs to a window that is no longer running. */
-const staleLockMs = 10000;
-/** How many times a read-and-write is redone after losing the lock to a stale-lock takeover. */
-const lockAttempts = 3;
-
 /** Fixes the entries pointing at an older port, in every file this extension writes itself. */
 export async function refreshClientConfigs(
 	server: McpServer,
@@ -82,9 +78,9 @@ export async function refreshClientConfigs(
 		// the write have to be one step: two of them starting together would otherwise both
 		// write what they read, and the later one would put the earlier one's entry back on a
 		// port that is not its own — a 401 for a client that was configured correctly.
-		withLock(sharedCodexConfig, stillOurs =>
+		withLock(sharedCodexConfig, () =>
 			rewrite(sharedCodexConfig, text => refreshedCodexConfig(text, url, server.token,
-				{ names, shared: true }), stillOurs)),
+				{ names, shared: true }))),
 	]);
 }
 
@@ -192,132 +188,96 @@ export function refreshedCodexConfig(
 }
 
 /**
- * Runs `work` while no other window is in it, through a file only one process can create
- * (`wx`), which is the one lock every platform this runs on agrees about.
- *
- * A lock nobody released is a window that was killed inside its two milliseconds of work, so
- * one left behind for `staleLockMs` is removed and the loop tries again. That removal is a race
- * of its own and no arrangement of file operations settles it: two windows can both find the
- * same lock stale, and the second's `rm` then takes the first's *fresh* lock away, leaving both
- * of them in here. So holding the lock is not what `work` is trusted on — what is written in it
- * is. Every acquisition writes an id of its own, `work` is handed a way to ask whether the lock
- * still carries that id, and a `work` that says it lost the lock is *run again* from a fresh
- * read: a write made under a lock that changed hands may have gone over somebody else's.
- *
- * Every path through the loop either waits or gives up at the deadline. A lock this process
- * cannot remove — a directory of that name, a file another user owns — is no reason to spin,
- * which in here would be a spin with the extension's activation waiting on it; and failing to
- * create one at all (a read-only home directory) is no reason to skip the repair, so the work
- * then runs unlocked, which is what it did before there was a lock.
+ * A bakery queue: each contender owns a unique directory and publishes its ticket atomically.
+ * Nobody removes a live process's claim, even after sleep or a slow disk operation. Dead owners
+ * can be removed by their unique name without ever deleting a successor's claim (the race in
+ * a shared, reusable lock filename). The parent directory stays to avoid the same race there.
  */
-async function withLock(
-	file: vscode.Uri,
-	/** Answers `false` when the lock changed hands and the work has to be redone. */
-	work: (stillOurs: () => Promise<boolean>) => Promise<boolean>,
-): Promise<void> {
-	const lock = `${file.fsPath}.lock`;
+async function withLock(file: vscode.Uri, work: () => Promise<void>): Promise<void> {
+	const directory = `${file.fsPath}.tab-browser-locks`;
+	const name = `${process.pid}.${randomUUID()}`;
+	const claim = path.join(directory, name);
+	const deadline = Date.now() + lockWaitMs;
+	try {
+		await fs.mkdir(directory, { recursive: true });
+		await fs.mkdir(claim);
+	} catch {
+		// Without exclusion, a write could undo another window's configuration.
+		return;
+	}
 
-	for (let attempt = 0; attempt < lockAttempts; attempt++) {
-		const id = await acquireLock(lock);
-		if (id === undefined) {
-			// Another window is holding it for far longer than this work takes. Writing anyway
-			// is what the lock is there to prevent, so this entry waits for the next start of
-			// the server, or for the connect command.
-			return;
+	try {
+		const contenders = async () => (await fs.readdir(directory))
+			.filter(entry => /^\d+\.[0-9a-f-]{36}$/.test(entry));
+		const ticketOf = async (entry: string): Promise<number> => {
+			try {
+				return Number(await fs.readFile(path.join(directory, entry, 'ticket'), 'utf8')) || 0;
+			} catch {
+				// A published directory with no ticket is still choosing its place.
+				return 0;
+			}
+		};
+		let ticket = 1;
+		for (const entry of await contenders()) {
+			ticket = Math.max(ticket, await ticketOf(entry) + 1);
 		}
+		await fs.writeFile(path.join(claim, 'pending'), String(ticket));
+		await fs.rename(path.join(claim, 'pending'), path.join(claim, 'ticket'));
 
-		try {
-			if (await work(() => (id ? lockCarries(lock, id) : Promise.resolve(true)))) {
+		while (Date.now() < deadline) {
+			let waiting = false;
+			for (const entry of await contenders()) {
+				if (entry === name) { continue; }
+				if (!processExists(Number(entry.split('.')[0]))) {
+					await fs.rm(path.join(directory, entry), { recursive: true, force: true });
+					continue;
+				}
+				const other = await ticketOf(entry);
+				if (!other || other < ticket || (other === ticket && entry < name)) {
+					waiting = true;
+					break;
+				}
+			}
+			if (!waiting) {
+				await work();
 				return;
 			}
-		} finally {
-			// Only if it is still this window's: a lock that was taken over belongs to whoever
-			// took it, and removing that one would put two windows in here at once.
-			if (id && await lockCarries(lock, id)) {
-				await fs.rm(lock, { force: true }).catch(() => { });
-			}
+			await new Promise(resolve => setTimeout(resolve, lockPollMs));
 		}
+	} catch {
+		// An unreadable queue cannot establish exclusion; leave the config for the next start.
+	} finally {
+		await fs.rm(claim, { recursive: true, force: true }).catch(() => { });
 	}
 }
 
-/**
- * The id written into the lock, `''` when no lock could be created at all — the work runs
- * unlocked then — and `undefined` when another window is holding it.
- */
-async function acquireLock(lock: string): Promise<string | undefined> {
-	const id = `${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}`;
-	const until = Date.now() + lockWaitMs;
-
-	for (;;) {
-		try {
-			const handle = await fs.open(lock, 'wx');
-			try {
-				await handle.writeFile(id, 'utf8');
-			} finally {
-				await handle.close();
-			}
-			return id;
-		} catch (error) {
-			if ((error as { code?: string }).code !== 'EEXIST') {
-				return '';
-			}
-		}
-
-		const held = await fs.stat(lock).then(stat => Date.now() - stat.mtimeMs, () => 0);
-		if (held > staleLockMs) {
-			// `recursive`, since what was left behind under that name may be a directory.
-			await fs.rm(lock, { force: true, recursive: true }).catch(() => { });
-			continue;
-		}
-
-		if (Date.now() > until) {
-			return undefined;
-		}
-		await new Promise(resolve => setTimeout(resolve, lockPollMs));
+function processExists(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code !== 'ESRCH';
 	}
 }
 
-function lockCarries(lock: string, id: string): Promise<boolean> {
-	return fs.readFile(lock, 'utf8').then(text => text === id, () => false);
-}
-
-/**
- * Reads the file, and writes it back only when there was something to change. Answers `false`
- * when the write was abandoned, or made, under a lock that is no longer this window's — its
- * caller reads again and redoes it rather than leaving somebody else's repair overwritten.
- */
+/** Reads the file, and writes it back only when there was something to change. */
 async function rewrite(
 	file: vscode.Uri,
 	refreshed: (text: string) => string | undefined,
-	stillOurs: () => Promise<boolean> = () => Promise.resolve(true),
-): Promise<boolean> {
+): Promise<void> {
 	let text: string;
 	try {
 		text = Buffer.from(await vscode.workspace.fs.readFile(file)).toString('utf8');
 	} catch {
-		// No file, no entry of ours in it.
-		return true;
+		return;
 	}
-
 	const updated = refreshed(text);
-	if (updated === undefined || updated === text) {
-		return true;
-	}
-
-	if (!await stillOurs()) {
-		return false;
-	}
-
+	if (updated === undefined || updated === text) { return; }
 	try {
 		await vscode.workspace.fs.writeFile(file, Buffer.from(updated, 'utf8'));
 	} catch {
-		// A read-only checkout or a file someone else holds: the connect command still works.
-		return true;
+		// Read-only configurations are left for the explicit connect command.
 	}
-
-	// The lock can change hands between the check above and the write itself, and then this
-	// write may have gone over one made under it. Asking again is the cheap way to find out.
-	return stillOurs();
 }
 
 /** The key a header is written under, http header names being case insensitive. */

@@ -29,6 +29,17 @@ const app = http.createServer((req, res) => {
 		res.end(html);
 		return;
 	}
+	if (url.pathname.startsWith('/legacy')) {
+		res.writeHead(200, { 'content-type': url.pathname === '/legacy'
+			? 'text/html; charset=windows-1251' : 'text/html' });
+		res.end(Buffer.concat([
+			Buffer.from(url.pathname === '/legacy-equiv'
+				? '<html><head><meta http-equiv="content-type" content="text/html; charset=windows-1251"></head><body>'
+				: '<html><head><meta charset="windows-1251"></head><body>'),
+			Buffer.from('cff0e8e2e5f2', 'hex'), Buffer.from('</body></html>'),
+		]));
+		return;
+	}
 	if (url.pathname === '/gz') {
 		res.writeHead(200, { 'content-type': 'text/html', 'content-encoding': 'gzip' });
 		res.end(zlib.gzipSync('<html><head></head><body>gz</body></html>'));
@@ -104,6 +115,16 @@ check('html not cached', rootRes.headers.get('cache-control') === 'no-store');
 check('etag dropped so we always get a body to inject', !rootRes.headers.has('etag'));
 check('content-length matches rewritten body',
 	Number(rootRes.headers.get('content-length')) === Buffer.byteLength(rootBody), rootRes.headers.get('content-length'));
+
+for (const route of ['/legacy', '/legacy-meta', '/legacy-equiv']) {
+	const response = await fetch(new URL(route, proxiedRoot));
+	check(`legacy HTML is transcoded to UTF-8 (${route})`,
+		response.headers.get('content-type') === 'text/html; charset=utf-8'
+		&& (await response.text()).includes('Привет'));
+}
+const head = await fetch(new URL('/gz', proxiedRoot), { method: 'HEAD' });
+check('HEAD of compressed HTML preserves status and headers without decoding a body',
+	head.status === 200 && head.headers.get('content-encoding') === 'gzip' && await head.text() === '');
 
 const gz = await fetch(new URL('/gz', proxiedRoot));
 const gzBody = await gz.text();

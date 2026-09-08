@@ -133,7 +133,7 @@ export type AgentEvent =
 	}
 	| { readonly kind: 'pageError'; readonly message: string }
 	/** The answer to `alive`, from the document that was holding the frame when it was asked. */
-	| { readonly kind: 'alive'; readonly probeId: number }
+	| { readonly kind: 'alive'; readonly probeId: number; readonly ready: boolean }
 	| {
 		readonly kind: 'console';
 		readonly requestId: number;

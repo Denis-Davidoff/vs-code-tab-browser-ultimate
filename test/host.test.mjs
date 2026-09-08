@@ -275,6 +275,11 @@ const server = http.createServer((req, res) => {
 		res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
 		res.end('<!DOCTYPE html><html><head>'
 			+ `<script>window.__tabBrowserConfig = { realOrigin: 'http://127.0.0.1:1' };</script>`
+			+ (req.url.includes('delayed') ? `<script>
+				const post = parent.postMessage.bind(parent);
+				parent.postMessage = (message, target) => message.kind === 'alive'
+					? setTimeout(() => post(message, target), 350) : post(message, target);
+			</script>` : '')
 			+ '<script src="/agent.js"></script>'
 			+ '<title>reported</title></head><body>reports at once'
 			// An image nobody is in a hurry to send, so that `ready` — which goes out at
@@ -534,7 +539,19 @@ try {
 		await settle();
 		const afterQuickTurn = lastState();
 
-		return { afterReady, afterSecondLoad, afterThirdLoad, afterQuickTurn };
+		const lateLoaded = new Promise(resolve => frame.addEventListener('load', resolve, { once: true }));
+		frame.src = `${origin}/reporting-frame?delayed`;
+		await lateLoaded;
+		await new Promise(resolve => setTimeout(resolve, 220));
+		const beforeLateAlive = lastState();
+		await settle();
+		const afterLateAlive = lastState();
+		window.postMessage({ type: 'runPageRequest', token: 'panel-token', requestId: 999,
+			request: { type: 'text' } }, '*');
+		await settle();
+		const lateTool = window.__posted.find(message => message.type === 'didRunPageRequest' && message.requestId === 999);
+		return { afterReady, afterSecondLoad, afterThirdLoad, afterQuickTurn,
+			beforeLateAlive, afterLateAlive, lateTool };
 	}, new URL(pageUrl).origin);
 	await panel.close();
 
@@ -1515,6 +1532,28 @@ check('the url line of our own table is the one rewritten',
 // table below it goes unseen, and connecting then writes it a second time.
 const proseQuote = `[mcp_servers.other]\nnote = 'Use ${'\u0022'.repeat(3)} to delimit strings.'\n\n`
 	+ `[mcp_servers.tab-browser]\nurl = "${otherPort}/${mcpToken}"\n`;
+for (const delimiter of ['"""', "'".repeat(3)]) {
+	const arrayConfig = `[mcp_servers.other]\ncommand = "python"\nargs = [${delimiter}\nprint('ok')${delimiter}]\n`
+		+ `[mcp_servers.tab-browser]\nurl = "${otherPort}/${mcpToken}"\n`;
+	check('a multiline string can close on the same line as its containing array',
+		codexEntries(arrayConfig).map(entry => entry.name).join() === 'other,tab-browser'
+		&& refreshedProject(arrayConfig)?.includes(mcp.urlWithToken));
+	await fs.writeFile(codexConfig, arrayConfig);
+	const savedAnswer = dialogAnswer;
+	dialogAnswer = '1. Write .codex/config.toml';
+	await connectToCodex(mcp);
+	dialogAnswer = savedAnswer;
+	const written = await fs.readFile(codexConfig, 'utf8');
+	check('connecting replaces the existing table after a multiline array',
+		written.split('[mcp_servers.tab-browser]').length === 2
+		&& written.includes(`print('ok')${delimiter}]`) && written.includes(mcp.urlWithToken));
+}
+
+check('a late alive response restores page readiness and MCP requests',
+	panelState.beforeLateAlive?.ready === false && panelState.afterLateAlive?.ready === true
+	&& panelState.lateTool?.error === undefined && typeof panelState.lateTool?.value === 'string',
+	JSON.stringify(panelState));
+
 check('a triple quote inside a literal string opens no multi-line value',
 	codexEntries(proseQuote).map(entry => entry.name).join() === 'other,tab-browser'
 	&& refreshedProject(proseQuote)?.includes(mcp.urlWithToken) === true,
@@ -1598,57 +1637,8 @@ shared = await fs.readFile(sharedConfig, 'utf8');
 check('one holding another project\'s token is still not ours to move',
 	shared.includes(elsewhere) && !shared.includes(mcpToken), shared);
 
-check('and the lock is not left behind for the next window to wait on',
-	!await fs.access(`${sharedConfig}.lock`).then(() => true, () => false));
-
-// Two windows can both find the same lock stale — a machine that was asleep, a window that took
-// a moment — and then the second's takeover removes the first's *fresh* lock and both are inside
-// it. No arrangement of file operations settles that, so what the lock *carries* decides: the
-// window that lost it reads again and redoes its repair instead of writing over the other's.
-//
-// Which is a race between two processes, so it is staged here: one window is held up between
-// reading the shared config and writing it back — the window the race lives in — and its lock
-// is made to look abandoned while it waits.
-const abandoned = new Date(Date.now() - 60_000);
-await fs.writeFile(sharedConfig, `${codexTable(codexEntryName(folderA), `${otherPort}/${mcpToken}`)}\n`
-	+ codexTable(codexEntryName(folderB), `${otherPort}/${mcpToken}`));
-
-const realReadFile = globalThis.__vscodeStub.workspace.fs.readFile;
-let heldUp = false;
-globalThis.__vscodeStub.workspace.fs.readFile = async uri => {
-	const bytes = await realReadFile(uri);
-	if (uri.fsPath === sharedConfig && !heldUp) {
-		heldUp = true;
-		await fs.utimes(`${sharedConfig}.lock`, abandoned, abandoned);
-		await new Promise(resolve => setTimeout(resolve, 400));
-	}
-	return bytes;
-};
-
-workspaceFolders = [folderA];
-const heldWindow = refreshClientConfigs(mcp, sharedUri);
-// Long enough for it to have taken the lock and to be sitting in that read.
-await new Promise(resolve => setTimeout(resolve, 100));
-workspaceFolders = [folderB];
-const takingOver = refreshClientConfigs(mcp, sharedUri);
-await Promise.all([heldWindow, takingOver]);
-globalThis.__vscodeStub.workspace.fs.readFile = realReadFile;
-
-shared = await fs.readFile(sharedConfig, 'utf8');
-check('a repair is redone rather than lost when the lock changes hands',
-	shared.split(mcp.urlWithToken).length === 3 && !shared.includes('43999'), shared);
-
-// A lock nobody released is taken over — including one this process cannot simply delete, which
-// is what `.lock` being a *directory* is. Waiting on that one for good would be an activation
-// that never finishes: everything waits on the state of the mcp server.
-await fs.writeFile(sharedConfig, codexTable('tab-browser', `${otherPort}/${mcpToken}`));
-await fs.mkdir(`${sharedConfig}.lock`);
-const longAgo = new Date(Date.now() - 60_000);
-await fs.utimes(`${sharedConfig}.lock`, longAgo, longAgo);
-await refreshClientConfigs(mcp, sharedUri);
-check('a stale lock is taken over rather than waited on for good',
-	(await fs.readFile(sharedConfig, 'utf8')).includes(mcp.urlWithToken)
-	&& !await fs.access(`${sharedConfig}.lock`).then(() => true, () => false));
+check('completed windows leave no claims in the shared config queue',
+	(await fs.readdir(`${sharedConfig}.tab-browser-locks`)).length === 0);
 
 // A project that was never connected is one nothing was added to, and a window with no folder
 // open has no project files at all — neither may end up creating one.

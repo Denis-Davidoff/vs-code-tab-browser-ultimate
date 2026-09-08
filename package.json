@@ -358,7 +358,7 @@
 		"watch": "node esbuild.mjs --watch",
 		"typecheck": "tsc --noEmit",
 		"pretest": "npm run build && node esbuild.tests.mjs",
-		"test": "node test/proxy.test.mjs && node test/host.test.mjs",
+		"test": "node test/proxy.test.mjs && node test/config-lock.test.mjs && node test/host.test.mjs",
 		"vscode:prepublish": "npm run typecheck && node esbuild.mjs --production",
 		"package": "vsce package --no-dependencies -o tab-browser-ultimate.vsix",
 		"publish": "vsce publish --packagePath tab-browser-ultimate.vsix",
