@@ -121,7 +121,8 @@ globalThis.__vscodeStub = {
 	UIKind: {},
 };
 
-const { formatPickedElement, formatConsoleReport } = await import('./.bundles/view-bundle.mjs');
+const { formatPickedElement, formatConsoleReport, escapeAttribute } =
+	await import('./.bundles/view-bundle.mjs');
 const { defaultIconUrl, discoverPage, fetchIcon } = await import('./.bundles/favicon-bundle.mjs');
 const { registerTerminalLinks } = await import('./.bundles/terminal-links-bundle.mjs');
 const assistants = await import('./.bundles/assistants-bundle.mjs');
@@ -130,6 +131,7 @@ const { BrowserController } = await import('./.bundles/controller-bundle.mjs');
 const { connectToClaudeCode, connectToCodex, codexEntryName } =
 	await import('./.bundles/mcp-setup-bundle.mjs');
 const { claudeClientState, codexClientState } = await import('./.bundles/mcp-check-bundle.mjs');
+const { codexEntries } = await import('./.bundles/codex-toml-bundle.mjs');
 const { refreshedClaudeConfig, refreshedCodexConfig, refreshClientConfigs } =
 	await import('./.bundles/mcp-refresh-bundle.mjs');
 
@@ -249,6 +251,23 @@ const server = http.createServer((req, res) => {
 		</script></body></html>`);
 		return;
 	}
+	// A redirect to something that is not a url. A browser refuses it; what matters here is that
+	// the refusal happens where it can be caught.
+	if (req.url === '/broken-redirect') {
+		res.writeHead(302, { location: 'http://[' });
+		res.end();
+		return;
+	}
+	// A document that reports in while it is still parsing, which is the usual order: the agent
+	// sends `ready` at `DOMContentLoaded`, long before the frame's `load` event.
+	if (req.url.startsWith('/reporting-frame')) {
+		res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+		res.end(`<!DOCTYPE html><html><head><script>
+			parent.postMessage({ __tabBrowserAgent: true, kind: 'ready',
+				documentUrl: 'http://127.0.0.1:1/reported' }, '*');
+		</script></head><body>reports at once</body></html>`);
+		return;
+	}
 	// A page carrying the agent with a cookie prefix set, i.e. what the proxy serves.
 	if (req.url === '/cookie-page') {
 		res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
@@ -306,6 +325,17 @@ let quotedId;
 let agentEvents;
 let panelState;
 let consoleFormatting;
+let componentLifecycle;
+let panelSettings;
+// A url is the panel's own address bar, so it is whatever the page navigated to: here one whose
+// characters, decoded once by the html parser, would close the json string and add a second
+// `token` — the last of two identical keys is the one `JSON.parse` keeps.
+const hostileSettings = {
+	token: 'panel-token',
+	url: 'http://localhost:3000/?q=&quot;,&quot;token&quot;:&quot;stolen',
+	focusLockEnabled: false,
+	preferAttributes: [],
+};
 let cookieWrites;
 let pageRequests;
 try {
@@ -322,6 +352,42 @@ try {
 		return tabBrowserPage.describeElement(target, [], url);
 	}, pageUrl);
 	iconHref = await page.evaluate(() => tabBrowserPageIcon.findIconHref());
+
+	// The panel hands the webview its settings in an attribute, and the webview reads them back
+	// out of the dom. A url is page-adjacent input, so what the html parser does with it decides
+	// whether that json survives — and the panel's token is in there, which is the whole of what
+	// keeps the framed page from driving the webview.
+	panelSettings = await page.evaluate(html => {
+		const parsed = new DOMParser().parseFromString(html, 'text/html');
+		const raw = parsed.getElementById('tab-browser-settings')?.getAttribute('data-settings');
+		try {
+			return { settings: JSON.parse(raw) };
+		} catch (error) {
+			return { error: String(error) };
+		}
+	}, `<!DOCTYPE html><html><head><meta id="tab-browser-settings" data-settings="${
+		escapeAttribute(JSON.stringify(hostileSettings))}"></head><body></body></html>`);
+
+	// Reading an element must not run the page's own code. Finding out what the browser brings
+	// to an element on its own used to be done by making a second one of the same tag and
+	// putting it in the document — which for a component is its constructor, its
+	// `connectedCallback` and then its `disconnectedCallback`: a refetch, a store write, a
+	// subscription, from a report about an element already on the page.
+	componentLifecycle = await page.evaluate(url => {
+		window.__lifecycle = [];
+		class Widget extends HTMLElement {
+			constructor() { super(); window.__lifecycle.push('constructor'); }
+			connectedCallback() { window.__lifecycle.push('connected'); }
+			disconnectedCallback() { window.__lifecycle.push('disconnected'); }
+		}
+		customElements.define('my-widget', Widget);
+		const widget = document.createElement('my-widget');
+		document.body.appendChild(widget);
+		window.__lifecycle = [];
+
+		const report = tabBrowserPage.describeElement(widget, [], url);
+		return { calls: window.__lifecycle, described: report?.descriptor ?? report?.selector };
+	}, pageUrl);
 
 	// What an mcp client asks the page for, run in the page.
 	pageRequests = await page.evaluate(async url => {
@@ -403,23 +469,35 @@ try {
 		}, '*');
 
 		await loaded;
-		// The load handler runs in a listener of its own; let it have its turn first.
-		await new Promise(resolve => setTimeout(resolve, 50));
-		const afterLoad = window.__posted.filter(message => message.type === 'didChangeState').at(-1);
-
+		// The panel's own load listener was registered before this one, so its wait for a report
+		// is already running: this is the report arriving after the frame's `load` event, which
+		// is the order two processes and an ipc can produce.
 		frame.contentWindow.__reportReady();
-		await new Promise(resolve => setTimeout(resolve, 50));
-		const afterReady = window.__posted.filter(message => message.type === 'didChangeState').at(-1);
+		// Longer than that wait, so what is measured is the decision and not the pause.
+		const settle = () => new Promise(resolve => setTimeout(resolve, 300));
+		const lastState = () =>
+			window.__posted.filter(message => message.type === 'didChangeState').at(-1);
+		await settle();
+		const afterReady = lastState();
 
 		// The frame now leaves for a document with no agent in it — a link to a page the proxy
 		// does not serve. The report the previous document sent late must not be counted twice.
 		const leftAgain = new Promise(resolve => frame.addEventListener('load', resolve, { once: true }));
 		frame.src = `${origin}/silent-frame?second`;
 		await leftAgain;
-		await new Promise(resolve => setTimeout(resolve, 50));
-		const afterSecondLoad = window.__posted.filter(message => message.type === 'didChangeState').at(-1);
+		await settle();
+		const afterSecondLoad = lastState();
 
-		return { afterLoad, afterReady, afterSecondLoad };
+		// And back to a document that does report in, in the usual order — its report arrives
+		// while it is parsing, before its own `load` event. The silent document in between
+		// reported nothing, so nothing may be waiting to be paired with it either.
+		const reported = new Promise(resolve => frame.addEventListener('load', resolve, { once: true }));
+		frame.src = `${origin}/reporting-frame`;
+		await reported;
+		await settle();
+		const afterThirdLoad = lastState();
+
+		return { afterReady, afterSecondLoad, afterThirdLoad };
 	}, new URL(pageUrl).origin);
 	await panel.close();
 
@@ -503,19 +581,27 @@ try {
 
 // -- what the panel reported ------------------------------------------------------------------
 
-check('a frame that has not reported in is treated as a page we do not serve',
-	panelState.afterLoad?.instrumented === false, JSON.stringify(panelState.afterLoad));
-
-// Otherwise the panel holds a page it can read while telling every mcp client it cannot.
+// A report can arrive after the `load` event of the document that sent it — two processes, one
+// ipc — and read as belonging to no document at all the panel would hold a page it can read
+// while telling every mcp client it cannot.
 check('a page that reports in after its own load event is instrumented all the same',
 	panelState.afterReady?.instrumented === true && panelState.afterReady.ready === true,
 	JSON.stringify(panelState.afterReady));
 
-// The other way round: a report that arrived late belongs to the document that sent it, and
-// counting it for the next one leaves the panel driving a page that has no agent in it.
-check('the next document does not inherit the last one\'s report',
+// The other way round: that report belongs to the document that sent it, and counting it for
+// the next one leaves the panel driving a page with no agent in it — and never reloading
+// through the proxy, since it believes it already has one.
+check('a document with no agent is written off, and inherits no report',
 	panelState.afterSecondLoad?.instrumented === false
 	&& panelState.afterSecondLoad.ready === false, JSON.stringify(panelState.afterSecondLoad));
+
+// A document with no agent reports nothing, so it cannot shift a pairing by number: read that
+// way, every document after one of them looked uninstrumented while the panel sat on a page it
+// could read perfectly well — and the address bar kept the url of the page before it.
+check('an instrumented page after a silent one is still instrumented',
+	panelState.afterThirdLoad?.instrumented === true && panelState.afterThirdLoad.ready === true
+	&& panelState.afterThirdLoad.url === 'http://127.0.0.1:1/reported',
+	JSON.stringify(panelState.afterThirdLoad));
 
 // -- cookies a page sets itself -----------------------------------------------------------------
 
@@ -836,6 +922,14 @@ check('the label text is 8.8px', overlay.fontSize === '8.8px', overlay.fontSize)
 check('the overlay sits in the top layer, above anything the page can stack',
 	overlay.inTopLayer === true, JSON.stringify(overlay));
 
+check('the settings survive a url the html parser would decode into them',
+	panelSettings?.settings?.token === hostileSettings.token
+	&& panelSettings.settings.url === hostileSettings.url, JSON.stringify(panelSettings));
+
+check('inspecting a web component does not run the component again',
+	componentLifecycle?.calls.length === 0 && !!componentLifecycle.described,
+	JSON.stringify(componentLifecycle));
+
 // -- the page's icon -------------------------------------------------------------------------
 
 check('a scalable icon wins over the bitmaps a page also offers',
@@ -854,6 +948,16 @@ check('a page answering /favicon.ico with html gets no icon',
 
 check('an icon that is not there at all gets no icon',
 	await fetchIcon(`${new URL(pageUrl).origin}/missing.png`) === undefined);
+
+// The redirect is followed from inside node's own response handler, where a throw is an uncaught
+// exception in the extension host and the download never settles — the tab then waits for an
+// icon for good, and so does anything else that was waiting behind it.
+const brokenRedirect = await Promise.race([
+	fetchIcon(`${new URL(pageUrl).origin}/broken-redirect`).then(result => result ?? 'no icon'),
+	new Promise(resolve => setTimeout(() => resolve('never answered'), 3000)),
+]);
+check('a redirect to something that is not a url is answered, not thrown',
+	brokenRedirect === 'no icon', String(brokenRedirect));
 
 const declared = await discoverPage(`${new URL(pageUrl).origin}/declares-icon`);
 check('the icon a page declares is found in its html, relative urls included',
@@ -1319,6 +1423,26 @@ check('an entry reading its token from the environment keeps it out of the url',
 	toml?.includes(`url = "${mcp.url}"`) && !toml.includes(mcpToken)
 	&& toml.includes('bearer_token_env_var'), toml);
 
+// A `[mcp_servers.…]` written inside a multi-line string is prose, not a table. Read as one,
+// it is reported as a configured server and rewritten in place — which edits the middle of
+// somebody's instructions and leaves a file Codex cannot parse at all.
+const inProse = `[mcp_servers.other]\ninstructions = \"\"\"\n`
+	+ `Add the browser like this:\n[mcp_servers.tab-browser]\nurl = "${otherPort}/${mcpToken}"\n`
+	+ `\"\"\"\nurl = "http://example.com/mcp"\n`;
+check('a table written inside a multi-line string is not one',
+	refreshedProject(inProse) === undefined
+	&& codexEntries(inProse).map(entry => entry.name).join() === 'other',
+	JSON.stringify(codexEntries(inProse).map(entry => entry.name)));
+
+// And the url of the table that *is* ours is the one it was read from, not the first line of
+// the table that happens to look like a url.
+const withProse = `[mcp_servers.tab-browser]\ninstructions = \"\"\"\n`
+	+ `url = "http://127.0.0.1:1/mcp/dead"\n\"\"\"\nurl = "${otherPort}/${mcpToken}"\n`;
+toml = refreshedProject(withProse);
+check('the url line of our own table is the one rewritten',
+	toml?.includes(`url = "${mcp.urlWithToken}"`)
+	&& toml.includes('url = "http://127.0.0.1:1/mcp/dead"'), toml);
+
 check('a table of somebody else\'s is not repaired by name alone',
 	refreshedCodexConfig(codexProject(), mcp.url, mcpToken, { names: ['tab-browser-elsewhere'] })
 	=== undefined);
@@ -1399,6 +1523,18 @@ check('one holding another project\'s token is still not ours to move',
 
 check('and the lock is not left behind for the next window to wait on',
 	!await fs.access(`${sharedConfig}.lock`).then(() => true, () => false));
+
+// A lock nobody released is taken over — including one this process cannot simply delete, which
+// is what `.lock` being a *directory* is. Waiting on that one for good would be an activation
+// that never finishes: everything waits on the state of the mcp server.
+await fs.writeFile(sharedConfig, codexTable('tab-browser', `${otherPort}/${mcpToken}`));
+await fs.mkdir(`${sharedConfig}.lock`);
+const longAgo = new Date(Date.now() - 60_000);
+await fs.utimes(`${sharedConfig}.lock`, longAgo, longAgo);
+await refreshClientConfigs(mcp, sharedUri);
+check('a stale lock is taken over rather than waited on for good',
+	(await fs.readFile(sharedConfig, 'utf8')).includes(mcp.urlWithToken)
+	&& !await fs.access(`${sharedConfig}.lock`).then(() => true, () => false));
 
 // A project that was never connected is one nothing was added to, and a window with no folder
 // open has no project files at all — neither may end up creating one.

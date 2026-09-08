@@ -109,10 +109,10 @@ The toolbar's split button runs the entry you used last; the chevron next to it 
 
 - **Copy element** — click an element in the page and get a full report of it (below).
 - **Copy element XPath** — the same pick, but only the XPath of the element.
-- **Copy path to element** — the same pick, but only the CSS selector.
-- **Add element / element XPath / path to element to Claude Code** — the same three, handed
+- **Copy CSS path** — the same pick, but only the CSS selector.
+- **Add element / element XPath / CSS path to Claude Code** — the same three, handed
   straight to the Claude Code chat.
-- **Add element / element XPath / path to element to Codex** — the same, for Codex.
+- **Add element / element XPath / CSS path to Codex** — the same, for Codex.
 - **Copy console.log** — everything the page logged since it was loaded, plus uncaught errors.
 - **Add console.log to Claude Code** / **to Codex** — the same log, handed over as a file.
 
@@ -226,24 +226,21 @@ read and drive the page in the panel instead of being handed reports about it. T
 Everything happens in the page you are looking at — same session, same cookies, same dev server.
 
 **Claude Code**: run **Tab Browser Ultimate: Connect Claude Code to This Browser (MCP)** from the
-command palette. It offers to write `.mcp.json` in the project, to copy the equivalent
-`claude mcp add --transport http …` line if you would rather keep the token out of the
-repository, or to copy a prompt that hands the whole thing to Claude Code — the same command
-written for it to run, with the check that proves it worked. Check it afterwards with `/mcp`.
+command palette. Its first two buttons are the short way: **1. Write .mcp.json** puts the entry
+in the project, **2. Copy connection prompt** gives you the line to paste into the chat. Or take
+**Copy CLI command** for the equivalent `claude mcp add --transport http …`, which keeps the
+token out of the repository. Check it afterwards with `/mcp`.
 
-**Codex**: run **Tab Browser Ultimate: Connect Codex to This Browser (MCP)**, which offers two
-places to put the server:
+**Codex**: run **Tab Browser Ultimate: Connect Codex to This Browser (MCP)**, whose two numbered
+buttons work the same way. **1. Write .codex/config.toml** writes the entry into the project —
+where it belongs, as does the panel it points at — and only this extension's own table; the rest
+of the file is left alone. Codex reads it once the repository is trusted.
 
-- `.codex/config.toml` in the project — the entry stays with the project it belongs to, and
-  Codex reads it once the repository is trusted. Only this extension's own table is written; the
-  rest of the file is left alone.
-- `~/.codex/config.toml`, through `codex mcp add`, which owns that file and knows how to edit
-  around the servers already in it. There the entry is named after the project
-  (`tab-browser-<project>`), so connecting from a second project adds its own rather than
-  replacing the first.
-
-A fourth option copies a prompt instead: the same `codex mcp add` line written for Codex to run
-itself, with the check that proves it worked.
+**Copy CLI command** is the way to the config Codex shares between projects: `codex mcp add`
+owns `~/.codex/config.toml` and knows how to edit around the servers already in it, so it is
+offered as a line to run rather than written from here. The entry it adds is named after the
+project (`tab-browser-<project>-<hash>`), so a second project adds its own rather than replacing
+the first.
 
 Codex reads its servers when a conversation starts, so start a new one afterwards. Its config can
 only *name* an environment variable to read a bearer token from, so this url carries the token in

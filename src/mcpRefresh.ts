@@ -31,7 +31,7 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { codexEntries, withoutComment } from './codexToml';
+import { codexEntries } from './codexToml';
 import { McpServer } from './mcpServer';
 import { codexEntryName, serverName } from './mcpSetup';
 
@@ -174,10 +174,11 @@ export function refreshedCodexConfig(
 			continue;
 		}
 
-		const at = lines.findIndex((line, index) =>
-			index >= entry.firstLine && index < entry.endLine
-			&& /^\s*url\s*=/.test(withoutComment(line)));
-		if (at < 0) {
+		// The line the value was read from, not the first line of the table that looks like a
+		// url: a `url = …` inside a multi-line string is prose, and rewriting that would edit
+		// the middle of somebody's `instructions` and leave a file Codex cannot parse.
+		const at = entry.valueLines.get('url');
+		if (at === undefined) {
 			continue;
 		}
 
@@ -193,10 +194,16 @@ export function refreshedCodexConfig(
  * (`wx`), which is the one lock every platform this runs on agrees about.
  *
  * A lock nobody released is a window that was killed inside its two milliseconds of work, so
- * one left behind for `staleLockMs` is taken over rather than waited on for good. Anything else
- * going wrong with the lock file — a read-only home directory, a lock this process cannot
- * remove — is no reason to skip the repair: the work runs unlocked, which is what it did before
- * there was a lock at all.
+ * one left behind for `staleLockMs` is taken over — by *renaming* it, because `rm` and then
+ * `wx` is two steps and two windows can come through both, the second one deleting the first
+ * one's fresh lock and landing them together in the very read-and-write this exists to keep
+ * apart. A rename can only be won once.
+ *
+ * Every path through the loop either waits or gives up at the deadline: a lock this process
+ * cannot remove — a directory of that name, a file another user owns — is no reason to spin,
+ * which in here would be a spin with the extension's activation waiting on it. Failing to
+ * create the lock for any other reason (a read-only home directory) is no reason to skip the
+ * repair either: the work runs unlocked, which is what it did before there was a lock at all.
  */
 async function withLock(file: vscode.Uri, work: () => Promise<void>): Promise<void> {
 	const lock = `${file.fsPath}.lock`;
@@ -213,10 +220,15 @@ async function withLock(file: vscode.Uri, work: () => Promise<void>): Promise<vo
 			}
 
 			const held = await fs.stat(lock).then(stat => Date.now() - stat.mtimeMs, () => 0);
-			if (held > staleLockMs) {
-				await fs.rm(lock, { force: true }).catch(() => { });
+			if (held > staleLockMs
+				&& await fs.rename(lock, `${lock}.${process.pid}`).then(() => true, () => false)) {
+				// Ours to clear, and only ours: whoever lost the rename sees a lock that is
+				// either gone or somebody else's, and waits for it like any other.
+				// `recursive`, since what was left behind under that name may be a directory.
+				await fs.rm(`${lock}.${process.pid}`, { force: true, recursive: true }).catch(() => { });
 				continue;
 			}
+
 			if (Date.now() > until) {
 				// Another window is holding it for far longer than this work takes. Writing
 				// anyway is what the lock is there to prevent, so this entry waits for the

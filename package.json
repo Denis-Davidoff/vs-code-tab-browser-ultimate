@@ -106,7 +106,7 @@
 			},
 			{
 				"command": "tabBrowser.copyElementPath",
-				"title": "Copy Path to Element",
+				"title": "Copy CSS Path",
 				"category": "Tab Browser Ultimate"
 			},
 			{
@@ -121,7 +121,7 @@
 			},
 			{
 				"command": "tabBrowser.addElementPathToClaude",
-				"title": "Add Path to Element to Claude Code",
+				"title": "Add CSS Path to Claude Code",
 				"category": "Tab Browser Ultimate"
 			},
 			{
@@ -136,7 +136,7 @@
 			},
 			{
 				"command": "tabBrowser.addElementPathToCodex",
-				"title": "Add Path to Element to Codex",
+				"title": "Add CSS Path to Codex",
 				"category": "Tab Browser Ultimate"
 			},
 			{

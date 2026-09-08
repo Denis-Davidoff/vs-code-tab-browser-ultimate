@@ -10,11 +10,22 @@
  *  table defined twice, and a range that stops short leaves half a value behind. Neither file
  *  parses afterwards. Hence bracket counting for values written over several lines
  *  (`enabled_tools = [`), which `codex mcp add` does write.
+ *
+ *  And hence multi-line strings, which nothing here writes but an `instructions` value in
+ *  somebody's config is full of: read as ordinary lines, a `[mcp_servers.…]` written inside one
+ *  is a table that does not exist — reported as a configured server, and rewritten in place,
+ *  which edits the middle of somebody's prose and leaves a file Codex cannot parse at all.
+ *  Every line of such a string belongs to the value that opened it and to nothing else.
  *--------------------------------------------------------------------------------------------*/
 
 export interface CodexEntry {
 	readonly name: string;
 	readonly values: ReadonlyMap<string, string>;
+	/**
+	 * The line each of those values was read from, so a rewrite can replace the one it means.
+	 * Searching the table's lines for the key instead finds it inside a multi-line string too.
+	 */
+	readonly valueLines: ReadonlyMap<string, number>;
 	/** Line the `[mcp_servers.<name>]` header stands on. */
 	readonly firstLine: number;
 	/**
@@ -28,12 +39,30 @@ export interface CodexEntry {
 export function codexEntries(text: string): CodexEntry[] {
 	const entries: CodexEntry[] = [];
 	const lines = text.split(/\r?\n/);
-	let current: (CodexEntry & { values: Map<string, string>; endLine: number }) | undefined;
+	let current: (CodexEntry & {
+		values: Map<string, string>;
+		valueLines: Map<string, number>;
+		endLine: number;
+	}) | undefined;
 
 	/** Brackets a value has left open, i.e. how deep into a multi-line array we are. */
 	let open = 0;
+	/** The delimiter of a multi-line string a value opened and has not closed yet. */
+	let multiline: string | undefined;
 
 	lines.forEach((raw, at) => {
+		// Inside a multi-line string nothing is markup: not a table header, not a comment, not
+		// a bracket. The whole of it belongs to the key that opened it.
+		if (multiline) {
+			if (raw.includes(multiline)) {
+				multiline = undefined;
+			}
+			if (current) {
+				current.endLine = at + 1;
+			}
+			return;
+		}
+
 		const line = withoutComment(raw).trim();
 		if (!line) {
 			return;
@@ -54,7 +83,13 @@ export function codexEntries(text: string): CodexEntry[] {
 			current = undefined;
 			const name = mcpServerTableName(line);
 			if (name !== undefined) {
-				current = { name, values: new Map(), firstLine: at, endLine: at + 1 };
+				current = {
+					name,
+					values: new Map(),
+					valueLines: new Map(),
+					firstLine: at,
+					endLine: at + 1,
+				};
 				entries.push(current);
 			}
 			return;
@@ -65,14 +100,22 @@ export function codexEntries(text: string): CodexEntry[] {
 			return;
 		}
 
-		open = Math.max(0, bracketDepth(pair[2]));
+		multiline = openedMultiline(pair[2]);
+		open = multiline ? 0 : Math.max(0, bracketDepth(pair[2]));
 		if (current) {
-			current.values.set(unquote(pair[1].trim()).toLowerCase(), unquote(pair[2].trim()));
+			const key = unquote(pair[1].trim()).toLowerCase();
+			current.values.set(key, unquote(pair[2].trim()));
+			current.valueLines.set(key, at);
 			current.endLine = at + 1;
 		}
 	});
 
 	return entries;
+}
+
+/** The delimiter of a multi-line string this value opens and does not close, if any. */
+function openedMultiline(value: string): string | undefined {
+	return ['"""', "'''"].find(delimiter => (value.split(delimiter).length - 1) % 2 === 1);
 }
 
 /** The name in `[mcp_servers.<name>]`, or `undefined` for any other table header. */
@@ -104,7 +147,7 @@ function bracketDepth(line: string): number {
 }
 
 /** A `#` opens a comment unless it stands inside a string — and a url can carry one. */
-export function withoutComment(line: string): string {
+function withoutComment(line: string): string {
 	let quote: string | undefined;
 
 	for (let at = 0; at < line.length; at++) {

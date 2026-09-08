@@ -109,7 +109,10 @@ name appears in both files the project's wins, being the more specific.
 so `test/host.test.mjs` covers the cases that only happen to someone else's config. The Codex
 half of it lives in `src/codexToml.ts`, because the check and the setup have to agree on what a
 table is: a header the setup fails to recognise (`[mcp_servers.tab-browser] # ours`) is one it
-writes a second time, and a file with the same table twice does not parse at all.
+writes a second time, and a file with the same table twice does not parse at all. For the same
+reason it tracks multi-line strings and records the line each value was read from: a
+`[mcp_servers.…]` inside somebody's `instructions = """…"""` is prose, and a writer that takes it
+for a table edits the middle of that prose — a config Codex then cannot parse at all.
 
 Recent pages live in `workspaceState`: a dev url belongs to the project, not to the user.
 
@@ -229,13 +232,23 @@ runs: it is injected at the top of `<head>`, so reporting from there would answe
 a document with no body.
 
 Which makes `ready` and the frame's own `load` event a race — two signals from two processes,
-in no fixed order. They are therefore *paired by count*: the n-th report belongs to the n-th
-document, both counts start over at every navigation the host resolves, and neither event is
-read on its own. A load with no report yet writes the document off (only the proxy injects the
-script, so nothing else can report in); a report arriving late takes that back; and a report
-whose number is behind the loads belongs to a document the frame has already left, so it is
-ignored. Read as bare flags, either order lies: the panel holds a page it can read while mcp
-clients are told it cannot, or drives a page that has no agent in it at all.
+in no fixed order, and read as bare flags either order lies: the panel holds a page it can read
+while mcp clients are told it cannot, or drives a page that has no agent in it at all.
+
+So the webview counts reports and how many of them a loaded document has been *credited* with.
+A report nobody has been credited with is this document's own — the one before it had already
+loaded when it arrived — and a `load` with nothing uncredited behind it is a document the proxy
+does not serve, since only the proxy puts that script in a document. But not immediately:
+that document is given `reportGrace` (150ms) to be heard from first, because a report crossing
+an ipc can arrive after the `load` of the document that sent it, and one arriving inside that
+window is credited to it rather than to the next document. A report arriving *later* than the
+window takes a write-off back but counts for the newest document, which is the one ambiguity
+left — deliberately resolved that way, since that is the order these arrive in when nothing
+goes wrong, and reporting a readable page as unreadable is the worse mistake.
+
+Pairing them *by number* instead — the n-th report to the n-th document — is what silent
+documents make impossible: they report nothing to shift the pairing with, so an instrumented
+page loaded after one of them read as uninstrumented for as long as the panel stayed on it.
 
 Both connect dialogs also offer the configuration as a *prompt* (`connectPrompt`): the one
 command that adds it, how it is picked up, and a check to run afterwards — short, because the

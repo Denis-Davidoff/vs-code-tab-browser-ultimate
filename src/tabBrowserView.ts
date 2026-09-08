@@ -648,14 +648,14 @@ export class TabBrowserView extends Disposable {
 		const groups: string[][] = [[
 			menuItem('element', 'codicon-inspect', vscode.l10n.t("Copy element")),
 			menuItem('elementXPath', 'codicon-list-tree', vscode.l10n.t("Copy element XPath")),
-			menuItem('elementPath', 'codicon-code', vscode.l10n.t("Copy path to element")),
+			menuItem('elementPath', 'codicon-code', vscode.l10n.t("Copy CSS path")),
 		]];
 
 		if (assistants.isInstalled('claude')) {
 			groups.push([
 				menuItem('elementClaude', 'codicon-sparkle', vscode.l10n.t("Add element to Claude Code")),
 				menuItem('elementXPathClaude', 'codicon-sparkle', vscode.l10n.t("Add element XPath to Claude Code")),
-				menuItem('elementPathClaude', 'codicon-sparkle', vscode.l10n.t("Add path to element to Claude Code")),
+				menuItem('elementPathClaude', 'codicon-sparkle', vscode.l10n.t("Add CSS path to Claude Code")),
 			]);
 		}
 
@@ -663,7 +663,7 @@ export class TabBrowserView extends Disposable {
 			groups.push([
 				menuItem('elementCodex', 'codicon-rocket', vscode.l10n.t("Add element to Codex")),
 				menuItem('elementXPathCodex', 'codicon-rocket', vscode.l10n.t("Add element XPath to Codex")),
-				menuItem('elementPathCodex', 'codicon-rocket', vscode.l10n.t("Add path to element to Codex")),
+				menuItem('elementPathCodex', 'codicon-rocket', vscode.l10n.t("Add CSS path to Codex")),
 			]);
 		}
 
@@ -985,6 +985,20 @@ function normalizeUrl(rawUrl: string): string {
 	return parseHttpUrl(withScheme)?.toString() ?? withScheme;
 }
 
-function escapeAttribute(value: string): string {
-	return value.replace(/"/g, '&quot;');
+/**
+ * For a value read back out of the dom, `settings` above being one whole json document of it.
+ * Exported for the test that parses the result with a real html parser, which is the only thing
+ * that can say whether this is enough.
+ *
+ * `&` first and always: escaping only the quotes leaves the browser to decode whatever
+ * references the value already contains, so a url carrying `&quot;` comes back out with a `"`
+ * in it — json that no longer parses, or, with a second `"settings"` key spliced in behind it,
+ * one that parses into settings the page wrote. The panel's token lives in there.
+ */
+export function escapeAttribute(value: string): string {
+	return value
+		.replace(/&/g, '&amp;')
+		.replace(/"/g, '&quot;')
+		.replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;');
 }

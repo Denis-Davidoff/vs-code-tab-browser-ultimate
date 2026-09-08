@@ -617,9 +617,18 @@ function isRelevant(property: string, element: Element, computed: CSSStyleDeclar
 	return true;
 }
 
+/** A tag no page defines a component for, which is what an unknown element is made of. */
+const probeTagName = 'tab-browser-probe';
+
 /**
  * What a bare element of the same tag resolves those properties to. A value the page never
  * declares and that survives on such an element comes from the browser, not from the page.
+ *
+ * Never the page's own tag when that tag is a *registered* component: creating one of those
+ * runs its constructor, and putting it in the document runs `connectedCallback` and then
+ * `disconnectedCallback` — a fetch, a subscription, a store write, all from the act of reading
+ * an element. It buys nothing either: what the browser brings to a custom element is what it
+ * brings to any tag it has never heard of, so an unregistered stand-in answers the same.
  */
 function untouchedValues(element: Element, properties: readonly string[]): Map<string, string> {
 	const values = new Map<string, string>();
@@ -632,9 +641,26 @@ function untouchedValues(element: Element, properties: readonly string[]): Map<s
 	host.style.cssText = 'all: initial; position: absolute; left: -99999px; top: 0;'
 		+ 'width: 0; height: 0; overflow: hidden; contain: strict;';
 
+	const tagName = element.tagName.toLowerCase();
+	const defined = (tag: string): boolean => {
+		try {
+			return !!customElements?.get(tag);
+		} catch {
+			return true;
+		}
+	};
+
+	// A page can define a component for the stand-in's name too; then there is nothing safe to
+	// probe with and the report goes without the markers, as it does for a tag that cannot be
+	// created at all.
+	const probeTag = defined(tagName) ? probeTagName : tagName;
+	if (probeTag === probeTagName && defined(probeTagName)) {
+		return values;
+	}
+
 	let probe: Element | undefined;
 	try {
-		probe = document.createElement(element.tagName.toLowerCase());
+		probe = document.createElement(probeTag);
 		host.appendChild(probe);
 		document.body.appendChild(host);
 

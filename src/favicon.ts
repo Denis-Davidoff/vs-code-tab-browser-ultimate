@@ -168,7 +168,17 @@ function download(
 
 			if (status >= 300 && status < 400 && location && redirectsLeft > 0) {
 				response.resume();
-				resolve(download(new URL(location, url).toString(), redirectsLeft - 1, accept));
+				// A `Location` a browser would refuse too. Parsing it here rather than in the
+				// next call is the point: this runs in node's own response handler, where a
+				// throw is an uncaught exception in the extension host and leaves this promise
+				// unsettled — the caller of an icon download waiting for good.
+				let next: string | undefined;
+				try {
+					next = new URL(location, url).toString();
+				} catch {
+					next = undefined;
+				}
+				resolve(next ? download(next, redirectsLeft - 1, accept) : undefined);
 				return;
 			}
 

@@ -78,13 +78,35 @@ let consoleRequestTimer: ReturnType<typeof setTimeout> | undefined;
 /** The menu entry the pending console request came from. */
 let consoleCommand: CopyCommand = 'console';
 /**
- * Documents that have reported in, and documents whose `load` event has fired. The two events
- * come from two processes with no ordering between them, so they are paired by count instead:
- * the n-th report belongs to the n-th document. Both are reset by a navigation the host
- * resolves, which is the one moment where the frame is known to be starting over.
+ * Reports that have arrived, and how many of them a loaded document has already been credited
+ * with. A document reports once, at its own `DOMContentLoaded`, and only the proxy puts that
+ * script in a document — so an uncredited report is the newest thing known about the frame,
+ * and a `load` with nothing uncredited behind it is a document that carries no agent.
+ *
+ * The two events come from two processes with nothing ordering them, which is why the second
+ * half of that is not read off the counts as they stand: a report still in flight would make
+ * an instrumented page look like one the proxy does not serve. So a document is given
+ * `reportGrace` to be heard from before it is written off, and a report arriving later than
+ * that takes the write-off back. Pairing them by number instead — the n-th report to the n-th
+ * document — is what silent documents make impossible: they report nothing to shift the
+ * pairing with, so everything after one of them read as uninstrumented.
+ *
+ * Which leaves one case the two events cannot be told apart in: a report arriving *later* than
+ * `reportGrace` after a load, with nothing else having happened. It could be that document,
+ * heard from very late, or the first word of one that is loading right now — and it is read as
+ * the latter, because that is the order these arrive in when nothing goes wrong, and because
+ * being wrong the other way is the worse of the two: a page the panel can read perfectly well
+ * reported as one it cannot. Where they *can* be told apart is inside the grace window, which
+ * is the only place a late report has ever been seen: an ipc, not a third of a second.
+ *
+ * Both counts are reset by a navigation the host resolves, the one moment where the frame is
+ * known to be starting over.
  */
 let readyCount = 0;
-let loadCount = 0;
+let creditedReports = 0;
+let silenceTimer: ReturnType<typeof setTimeout> | undefined;
+/** How long after `load` a document may still report in before it is called uninstrumented. */
+const reportGrace = 150;
 
 // -- messages --------------------------------------------------------------------------------
 
@@ -140,10 +162,14 @@ function onAgentEvent(event: AgentEvent): void {
 	switch (event.kind) {
 		case 'ready': {
 			readyCount++;
-			// A report from a document the frame has already left says nothing about the one on
-			// screen: a page that never reported in has loaded since.
-			if (readyCount < loadCount) {
-				break;
+			if (silenceTimer) {
+				// The document that just loaded, heard from a moment after its own `load`
+				// event: two processes, and this report has an ipc to cross. It belongs to
+				// that document and not to the next one, so it is credited to it here — and
+				// there is nothing left to write off.
+				clearTimeout(silenceTimer);
+				silenceTimer = undefined;
+				creditedReports = readyCount;
 			}
 			// Only the proxy puts this script in a document, so a document that reports in is
 			// instrumented by definition — including when the frame's `load` event won this
@@ -305,10 +331,12 @@ function onDidResolveUrl(message: Extract<ExtensionToWebviewMessage, { type: 'di
 	isInstrumented = message.instrumented;
 	pageReady = false;
 	resolvedOnce = true;
-	// The frame is starting over, so the two counts start over with it: a document that never
-	// reported in must not leave the pairing shifted for everything that follows.
+	// The frame is starting over, so what is known about the document it was showing goes with
+	// it — including a write-off that has not been decided yet.
 	readyCount = 0;
-	loadCount = 0;
+	creditedReports = 0;
+	clearTimeout(silenceTimer);
+	silenceTimer = undefined;
 	endConsoleRequest();
 	reportState();
 
@@ -555,18 +583,29 @@ onceDocumentLoaded(() => {
 	}, 50);
 
 	iframe.addEventListener('load', () => {
-		loadCount++;
-		// The report of the document that just loaded, if it has one, is the n-th; anything
-		// less means it has not reported in — yet, or ever.
-		if (readyCount < loadCount) {
-			// Navigated somewhere the proxy does not serve: there is no agent in this document,
-			// and a copy command has to reload through the proxy rather than wait for silence.
-			// An instrumented page that is merely slower than its own `load` event corrects
-			// this the moment it reports in.
+		// A report that no loaded document has been credited with yet is this document's own:
+		// the one before it had already loaded when that report arrived.
+		if (readyCount > creditedReports) {
+			creditedReports = readyCount;
+			return;
+		}
+
+		// Nothing has reported since the document before this one, so either the frame has
+		// navigated somewhere the proxy does not serve — no agent in it, and a copy command
+		// has to reload through the proxy rather than wait for silence — or the report of this
+		// one is still on its way from another process. Hence the wait before writing it off;
+		// a report that arrives after it still takes the write-off back.
+		clearTimeout(silenceTimer);
+		silenceTimer = setTimeout(() => {
+			silenceTimer = undefined;
+			if (readyCount > creditedReports) {
+				creditedReports = readyCount;
+				return;
+			}
 			isInstrumented = false;
 			pageReady = false;
 			reportState();
-		}
+		}, reportGrace);
 	});
 
 	input.addEventListener('change', event => {
