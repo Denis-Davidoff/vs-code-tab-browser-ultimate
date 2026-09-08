@@ -1,0 +1,9 @@
+# Built webview assets
+media/index.js
+media/index.js.map
+media/codicon.css
+media/codicon.css.map
+
+# Build output
+out/
+node_modules/

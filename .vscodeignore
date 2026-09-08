@@ -1,0 +1,9 @@
+src/**
+preview-src/**
+tsconfig*.json
+**/*.tsbuildinfo
+esbuild*.mts
+vscode.proposed.*.d.ts
+.gitignore
+package-lock.json
+.vscode/**
