@@ -485,6 +485,22 @@ await settle();
 check('a file two steps down the chain still names the page it belongs to',
 	reloads.includes(path.join(folder, 'page.html')), JSON.stringify(reloads));
 
+// A page addressed as a folder was served the index inside it, and its assets have to belong
+// to that page: read as the folder, a save on one of them names something the panel is not
+// showing and goes unnoticed.
+reloads.length = 0;
+await fs.mkdir(path.join(folder, 'section'));
+await fs.writeFile(path.join(folder, 'section', 'index.html'),
+	'<html><head><link rel="stylesheet" href="local.css"></head><body>section</body></html>');
+await fs.writeFile(path.join(folder, 'section', 'local.css'), 'p { color: red }');
+await fetch(`${origin}/${secret}/section/`);
+await fetch(`${origin}/${secret}/section/local.css`,
+	{ headers: { referer: `${origin}/${secret}/section/` } });
+await fs.writeFile(path.join(folder, 'section', 'local.css'), 'p { color: green }');
+await settle();
+check('an asset of a page addressed as a folder names the index inside it',
+	reloads.includes(path.join(folder, 'section', 'index.html')), JSON.stringify(reloads));
+
 reloads.length = 0;
 await fs.writeFile(path.join(folder, 'untouched.html'), '<html></html>');
 await settle();

@@ -667,7 +667,6 @@ export class TabBrowserView extends Disposable {
 			contextMenuEnabled: configuration.get<boolean>('contextMenu.enabled', true),
 			preferAttributes: configuration.get<readonly string[]>(
 				'picker.preferAttributes', defaultPreferredAttributes),
-			isMac: process.platform === 'darwin',
 		};
 
 		const cspSource = this._webviewPanel.webview.cspSource;

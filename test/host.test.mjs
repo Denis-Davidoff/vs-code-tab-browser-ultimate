@@ -267,7 +267,7 @@ const server = http.createServer((req, res) => {
 				<button class="reload-button"></button><button class="open-external-button"></button>
 				<button class="copy-action-button"><i class="codicon"></i></button>
 				<button class="copy-menu-toggle"></button>
-				<div class="menu copy-menu"><button role="menuitem" data-command="element"
+				<div class="menu copy-menu" role="menu" hidden><button role="menuitem" data-command="element"
 					data-icon="codicon-inspect"><span class="menu-label">Copy element</span></button></div>
 				<button class="browser-menu-toggle" title="Menu"></button>
 				<div class="menu browser-menu" role="menu" hidden>
@@ -344,8 +344,8 @@ const server = http.createServer((req, res) => {
 			window.__answerPick = () => parent.postMessage({ __tabBrowserAgent: true, kind: 'pick',
 				element: { descriptor: 'button#save.primary', selector: '#save',
 					xpath: '/html/body/button', framePath: [] } }, '*');
-			window.__dismissContextMenu = () => parent.postMessage(
-				{ __tabBrowserAgent: true, kind: 'dismissContextMenu' }, '*');
+			window.__dismissMenu = () => parent.postMessage(
+				{ __tabBrowserAgent: true, kind: 'dismissMenu' }, '*');
 			// Asked for by origin, this one does the reporting itself: a page the proxy does not
 			// serve, posting what the agent posts. It cannot be driven from the panel document
 			// either — that is a cross-origin frame, which is the situation being tested.
@@ -432,6 +432,7 @@ const server = http.createServer((req, res) => {
 			<body style="margin: 0">
 			<div id="plain" class="row" data-testid="plain-row" style="position: absolute; left: 20px; top: 20px; width: 120px; height: 40px">plain</div>
 			<div id="own-menu" style="position: absolute; left: 20px; top: 100px; width: 120px; height: 40px">own</div>
+			<div id="own-zoom" style="position: absolute; left: 160px; top: 100px; width: 120px; height: 40px">zoom</div>
 			<iframe src="/context-frame" style="position: absolute; left: 20px; top: 160px; width: 200px; height: 80px; border: 0"></iframe>
 			<script>
 				window.__events = [];
@@ -465,6 +466,9 @@ const server = http.createServer((req, res) => {
 				}, { passive: true });
 				document.getElementById('own-menu')
 					.addEventListener('contextmenu', event => event.preventDefault());
+				// A map or a canvas app that zooms on ctrl + wheel says so by taking it.
+				document.getElementById('own-zoom')
+					.addEventListener('wheel', event => event.preventDefault(), { passive: false });
 			</script></body></html>`);
 		return;
 	}
@@ -792,7 +796,7 @@ try {
 			asked: frame.contentWindow.__commands.map(command => command.kind),
 			// Every frame is told to watch for the click that closes this again.
 			watching: frame.contentWindow.__commands
-				.filter(command => command.kind === 'contextMenuOpen').map(command => command.open),
+				.filter(command => command.kind === 'menuOpen').map(command => command.open),
 		};
 
 		// A click in the far corner of the page. The menu is the panel's own dom, so it cannot
@@ -821,7 +825,7 @@ try {
 		const pickedUnder = asked.find(command => command.kind === 'pickContextTarget')?.targetId;
 		// The order of the two, which is the whole of whether a pick can be answered at all.
 		const askedBeforeClosing = asked.findIndex(command => command.kind === 'pickContextTarget')
-			< asked.findIndex(command => command.kind === 'contextMenuOpen' && command.open === false);
+			< asked.findIndex(command => command.kind === 'menuOpen' && command.open === false);
 		// Read here and not at the end: the menu is opened again further down.
 		const closedAfterChoice = menu.hidden;
 		frame.contentWindow.__answerPick();
@@ -833,7 +837,7 @@ try {
 		frame.contentWindow.__openContextMenu(10, 10);
 		await settle();
 		const reopened = !menu.hidden;
-		frame.contentWindow.__dismissContextMenu();
+		frame.contentWindow.__dismissMenu();
 		await settle();
 		const dismissed = menu.hidden;
 
@@ -857,7 +861,7 @@ try {
 			left: Math.round(zoomedMenu.left - zoomedBox.left),
 			top: Math.round(zoomedMenu.top - zoomedBox.top),
 		};
-		frame.contentWindow.__dismissContextMenu();
+		frame.contentWindow.__dismissMenu();
 		await settle();
 
 		return { whenZoomed, placed, atTheEdge, asked: asked.map(command => command.kind), pickedUnder,
@@ -936,19 +940,40 @@ try {
 			closed: suggestions.hidden,
 		};
 
-		// Zoom. The frame carries it, so the page reflows into a viewport that much smaller
-		// rather than being stretched — which is what a browser's own zoom does.
+		// Zoom. Measured and not read off the style: what matters is that the frame still fills
+		// the panel while the page inside it lays out in a viewport that much smaller, which is
+		// what a browser's own zoom does — and dividing the frame's size as well, which looks
+		// like the obvious thing to do, leaves a third of the panel blank at 150%.
 		const zoomStep = direction => {
 			window.postMessage({ type: 'zoom', direction, token: 'panel-token' }, '*');
-			return new Promise(resolve => setTimeout(resolve, 20));
+			return new Promise(resolve => setTimeout(resolve, 30));
 		};
+		const geometry = () => {
+			const panel = document.querySelector('.content').getBoundingClientRect();
+			const box = frame.getBoundingClientRect();
+			const root = document.documentElement;
+			return {
+				zoom: frame.style.zoom,
+				fills: Math.abs(box.width - panel.width) < 2 && Math.abs(box.height - panel.height) < 2,
+				// What the page believes it has, which is the whole point of zooming it.
+				viewport: Math.round(frame.contentWindow.innerWidth),
+				expected: Math.round(panel.width / (Number(frame.style.zoom) || 1)),
+				overflows: root.scrollWidth > root.clientWidth + 1
+					|| root.scrollHeight > root.clientHeight + 1,
+			};
+		};
+
 		await zoomStep('in');
-		const oneStep = { zoom: frame.style.zoom, width: frame.style.width };
+		const oneStep = geometry();
 		await zoomStep('in');
-		const twoSteps = frame.style.zoom;
+		const twoSteps = geometry();
 		const level = browserMenu.querySelector('.menu-detail').textContent;
 		await zoomStep('reset');
 		const reset = frame.style.zoom;
+		// And out, which used to push the frame past the panel it sits in.
+		await zoomStep('out');
+		const zoomedOut = geometry();
+		await zoomStep('reset');
 
 		// A pinch on the trackpad, which is many small deltas and not one step.
 		frame.contentWindow.__zoomGesture(-8);
@@ -967,6 +992,33 @@ try {
 		await settle();
 		const forwardedNewTab = window.__posted.some(message => message.type === 'newTab');
 
+		// A click inside the page closes a menu the toolbar has standing over it — which this
+		// document hears nothing of, so the page is asked to watch for it while one is up.
+		frame.contentWindow.__commands.length = 0;
+		document.querySelector('.browser-menu-toggle').click();
+		await settle();
+		const watchedForClicks = frame.contentWindow.__commands
+			.filter(command => command.kind === 'menuOpen').map(command => command.open);
+		frame.contentWindow.__dismissMenu();
+		await settle();
+		const closedByPage = browserMenu.hidden;
+
+		// The page it went to is the page the field has to show, redirect and all: a field
+		// still holding the three words that were typed is a field lying about where this is.
+		input.focus();
+		input.value = 'localhost:5173';
+		input.dispatchEvent(new Event('input'));
+		window.__posted.length = 0;
+		input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+		await settle();
+		// Answered for the navigation the panel actually asked for, as the host answers it.
+		const asked = window.__posted.filter(message => message.type === 'resolveUrl').at(-1);
+		window.postMessage({ type: 'didResolveUrl', requestId: asked?.requestId, token: 'panel-token',
+			loadUrl: `${origin}/silent-frame?redirected`,
+			displayUrl: 'http://localhost:5173/redirected', instrumented: true }, '*');
+		await settle();
+		const afterRedirect = { value: input.value, focused: document.activeElement === input };
+
 		// And the menu, which runs the same four things.
 		document.querySelector('.browser-menu-toggle').click();
 		const menuOpen = !browserMenu.hidden;
@@ -979,8 +1031,8 @@ try {
 		};
 
 		return { byHost, byPath, file, noMatch, empty, firstFilled, secondFilled, backToTyped,
-			entered, oneStep, twoSteps, level, reset, halfAGesture, wholeGesture,
-			forwardedNewTab, menuOpen, fromMenu };
+			entered, oneStep, twoSteps, zoomedOut, level, reset, halfAGesture, wholeGesture,
+			forwardedNewTab, menuOpen, fromMenu, watchedForClicks, closedByPage, afterRedirect };
 	}, new URL(pageUrl).origin);
 	await toolbarPanel.close();
 
@@ -998,7 +1050,7 @@ try {
 	};
 	const menuEvents = () => menuPage.evaluate(() => ({
 		events: window.__events.filter(event => event.kind === 'contextMenu'
-			|| event.kind === 'dismissContextMenu' || event.kind === 'pick'),
+			|| event.kind === 'dismissMenu' || event.kind === 'pick'),
 		prevented: window.__lastEvent?.defaultPrevented,
 		outlined: !!document.querySelector('[data-tab-browser="picker"]'),
 	}));
@@ -1028,7 +1080,7 @@ try {
 	// In the order the panel sends them: closing is what tells the page to forget the element,
 	// so a request that follows it is a request nothing can be answered for.
 	await toPage({ kind: 'pickContextTarget', targetId: openTarget });
-	await toPage({ kind: 'contextMenuOpen', open: false, targetId: openTarget });
+	await toPage({ kind: 'menuOpen', open: false, targetId: openTarget });
 	await settlePage();
 	pageMenus.picked = await menuEvents();
 
@@ -1060,6 +1112,18 @@ try {
 		scrolled: window.scrollY,
 	}));
 
+	// A page that zooms on `ctrl` + wheel itself keeps the gesture, exactly as it keeps a
+	// right-click: taken twice, every pinch would scale the page and the panel at once.
+	await menuPage.evaluate(() => { window.__events.length = 0; });
+	const ownZoom = await menuPage.locator('#own-zoom').boundingBox();
+	await menuPage.keyboard.down('Control');
+	await menuPage.mouse.move(ownZoom.x + 10, ownZoom.y + 10);
+	await menuPage.mouse.wheel(0, -30);
+	await menuPage.keyboard.up('Control');
+	await settlePage();
+	pageShortcuts.pageOwnZoom = await menuPage.evaluate(
+		() => window.__events.filter(event => event.kind === 'zoomGesture').length);
+
 	// A plain wheel is the page's own business, and is not reported at all.
 	await menuPage.evaluate(() => { window.__events.length = 0; });
 	await menuPage.mouse.wheel(0, 40);
@@ -1067,8 +1131,13 @@ try {
 	pageShortcuts.plainWheel = await menuPage.evaluate(
 		() => window.__events.filter(event => event.kind === 'zoomGesture').length);
 
-	// And a click in the page, which is what closes a menu drawn in the panel above it.
+	// And a click in the page, which is what closes a menu drawn in the panel above it. The
+	// page watches for that while the panel says it has one open, and for no other reason.
 	await rightClick('#plain');
+	const openTargetAgain = (await menuEvents()).events
+		.filter(event => event.kind === 'contextMenu').at(-1)?.targetId;
+	await toPage({ kind: 'menuOpen', open: true, targetId: openTargetAgain });
+	await settlePage();
 	await menuPage.mouse.click(300, 20);
 	await settlePage();
 	pageMenus.dismissed = await menuEvents();
@@ -1077,7 +1146,7 @@ try {
 	// panel knows a menu is up, so it is the panel that has every frame watch for this.
 	await rightClick('#plain');
 	const reopened = (await menuEvents()).events.filter(event => event.kind === 'contextMenu').at(-1);
-	await toPage({ kind: 'contextMenuOpen', open: true, targetId: reopened?.targetId });
+	await toPage({ kind: 'menuOpen', open: true, targetId: reopened?.targetId });
 	await settlePage();
 	const framed = await menuPage.locator('iframe').boundingBox();
 	await menuPage.mouse.click(framed.x + framed.width / 2, framed.y + framed.height / 2);
@@ -1085,7 +1154,7 @@ try {
 	pageMenus.dismissedFromFrame = await menuEvents();
 
 	// And closing it takes the outline down in the frame that *was* holding the element.
-	await toPage({ kind: 'contextMenuOpen', open: false, targetId: reopened?.targetId });
+	await toPage({ kind: 'menuOpen', open: false, targetId: reopened?.targetId });
 	await settlePage();
 	pageMenus.closed = await menuEvents();
 	await menuPage.close();
@@ -1514,13 +1583,20 @@ check('Enter goes to the suggestion the field is holding, once',
 
 // Zoom is the frame's: the page reflows into a smaller viewport, and its own dom — which every
 // element report is read out of — is left exactly as its author wrote it.
-check('zooming in steps the frame and shrinks what it asks of the panel',
-	toolbar?.oneStep?.zoom === '1.1' && toolbar.oneStep.width.startsWith('90.9'),
-	JSON.stringify(toolbar?.oneStep));
+check('zooming in fills the panel with a page that lays out in less of it',
+	toolbar?.oneStep?.zoom === '1.1' && toolbar.oneStep.fills === true
+	&& toolbar.oneStep.viewport === toolbar.oneStep.expected
+	&& toolbar.oneStep.overflows === false, JSON.stringify(toolbar?.oneStep));
 
 check('a second step walks the same scale',
-	toolbar?.twoSteps === '1.25' && toolbar?.level === '125%',
-	JSON.stringify([toolbar?.twoSteps, toolbar?.level]));
+	toolbar?.twoSteps?.zoom === '1.25' && toolbar?.level === '125%'
+	&& toolbar.twoSteps.fills === true, JSON.stringify([toolbar?.twoSteps, toolbar?.level]));
+
+// The other way round is where the panel used to be overflowed rather than left blank.
+check('and zooming out gives the page more of the same panel, not the panel more room',
+	toolbar?.zoomedOut?.zoom === '0.9' && toolbar.zoomedOut.fills === true
+	&& toolbar.zoomedOut.viewport === toolbar.zoomedOut.expected
+	&& toolbar.zoomedOut.overflows === false, JSON.stringify(toolbar?.zoomedOut));
 
 check('and reset goes back to 100%', toolbar?.reset === '1', toolbar?.reset);
 
@@ -1530,6 +1606,14 @@ check('a pinch too small to be a step changes nothing',
 
 check('and one that adds up to a step takes it',
 	toolbar?.wholeGesture === '1.1', toolbar?.wholeGesture);
+
+check('a menu the toolbar opens has the page watch, and closes when the page clicks',
+	toolbar?.watchedForClicks?.[0] === true && toolbar?.closedByPage === true,
+	JSON.stringify([toolbar?.watchedForClicks, toolbar?.closedByPage]));
+
+check('the field shows where the panel went, not what was typed to get there',
+	toolbar?.afterRedirect?.value === 'http://localhost:5173/redirected'
+	&& toolbar.afterRedirect.focused === true, JSON.stringify(toolbar?.afterRedirect));
 
 check('a shortcut the page forwards runs the same thing the menu does',
 	toolbar?.forwardedNewTab === true && toolbar?.menuOpen === true
@@ -1544,6 +1628,9 @@ check('a pinch is reported in pixels and does not scroll the page',
 	pageShortcuts?.gesture?.deltas?.length === 1 && pageShortcuts.gesture.deltas[0] < 0
 	&& pageShortcuts.gesture.prevented === true && pageShortcuts.gesture.scrolled === 0,
 	JSON.stringify(pageShortcuts?.gesture));
+
+check('a page that zooms on the same gesture keeps it',
+	pageShortcuts?.pageOwnZoom === 0, String(pageShortcuts?.pageOwnZoom));
 
 check('a wheel without a modifier is the page\'s own business',
 	pageShortcuts?.plainWheel === 0, String(pageShortcuts?.plainWheel));
@@ -1775,15 +1862,15 @@ check('a page with a context menu of its own keeps it',
 	JSON.stringify(pageMenus?.ownMenu));
 
 check('a click in the page closes the menu standing above it',
-	contextEvents(pageMenus?.dismissed, 'dismissContextMenu').length === 1
+	contextEvents(pageMenus?.dismissed, 'dismissMenu').length === 1
 	&& pageMenus?.dismissed?.outlined === false,
 	JSON.stringify(pageMenus?.dismissed));
 
 // The click that closes a menu is not necessarily in the frame the menu was opened from, and
 // only the panel knows there is a menu to close — so it is the panel that has every frame watch.
 check('a click in another frame closes it too',
-	contextEvents(pageMenus?.dismissedFromFrame, 'dismissContextMenu').some(event => event.fromFrame)
-	&& !contextEvents(pageMenus?.dismissed, 'dismissContextMenu').some(event => event.fromFrame),
+	contextEvents(pageMenus?.dismissedFromFrame, 'dismissMenu').some(event => event.fromFrame)
+	&& !contextEvents(pageMenus?.dismissed, 'dismissMenu').some(event => event.fromFrame),
 	JSON.stringify(pageMenus?.dismissedFromFrame?.events));
 
 check('and the frame that was holding the element drops its outline when the menu goes',

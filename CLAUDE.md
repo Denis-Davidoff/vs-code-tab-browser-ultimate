@@ -89,7 +89,8 @@ folder when it belongs to no project.
 Hot reload is the whole of what a page with no dev server in front of it can have: the files the
 session actually served are watched (one non-recursive watcher per folder, not a recursive one
 over a project the page uses three files of), and a change to one of them has the panel navigate
-again (`onDidChangeServedFile` → `reloadPage`). What it reports is the **page** and not the
+again (`onDidChangeServedFile` → `reloadPage`). A page addressed as a folder is the index inside
+it, its referrer included, or its assets would be recorded against a page the panel never shows. What it reports is the **page** and not the
 folder — one session serves every page of one folder, and a stylesheet of the page opened an hour
 ago is not part of the one on screen — so every file is remembered against the pages it is part
 of, read off the same `Referer`. Part *of*, and not "asked for by": a stylesheet that `@import`s
@@ -219,17 +220,23 @@ Three things the toolbar grew that are about the *panel* rather than about the p
 `activeView` — what every command, the sidebar and every mcp tool act on — is the panel that
 was last looked at (`onDidBecomeActive`, off the editor's `onDidChangeViewState`). `show` still
 reuses that one; `newTab` is the only thing that opens another, blank and with the address bar
-focused. A blank tab loads nothing at all: assigning an empty `src` would load the webview's own
+focused — and it caps them, because a tab can be asked for by the page: `Cmd`+`T` has to work
+while the page has the keyboard, so the script forwards it, and what the script sends is
+something a page can send on its own. Every panel holds a live webview. A blank tab loads nothing at all: assigning an empty `src` would load the webview's own
 document into the frame.
 
 **Zoom belongs to the frame**, not to the page: `iframe.style.zoom` is what a browser's own zoom
 does — the page's layout viewport becomes the panel divided by the factor, so the page reflows
 rather than being stretched — while a `zoom` the *page* carried would show up in every computed
-style an element report reads. The frame therefore asks for `100 / zoom` percent of the panel,
-or a zoomed page would be that much wider than the panel it sits in. Two things follow from the
-page and the panel counting in different pixels: the level is kept in the webview's own state
-(per panel, across restarts), and the point a right-click reports has to be multiplied by it
-before the menu is placed — the page reports its own viewport, the frame's box is the scaled one.
+style an element report reads. And nothing else: a percentage under `zoom` resolves in the
+zoomed element's own units, so the frame's `width: 100%` keeps filling the panel by itself.
+Dividing the size as well — which looks like the obvious thing to do, and was done here first —
+leaves a third of the panel blank at 150% and overflows it at 50%, with the page reflowing twice
+as far as it was asked to; `test/host.test.mjs` therefore measures the geometry and the page's
+own `innerWidth` rather than the style it was set from. Two things follow from the page and the
+panel counting in different pixels: the level is kept in the webview's own state (per panel,
+across restarts), and the point a right-click reports has to be multiplied by it before the menu
+is placed — the page reports its own viewport, the frame's box is the scaled one.
 
 **The keys a browser keeps for itself** (`Cmd`/`Ctrl` + `T`, `+`, `-`, `0`) reach the panel two
 ways, because neither covers the other: `contributes.keybindings` scoped to
@@ -239,10 +246,18 @@ no listener above it and no keybinding of the editor's either. A pinch on a trac
 `Cmd` + wheel are the same event everywhere (`wheel` carrying `ctrlKey`), so one non-passive
 listener answers both and reports the delta upwards (`zoomGesture`); the panel adds those up and
 steps when they amount to one, since a gesture is many small deltas and the zoom is a dozen
-steps.
+steps. That listener reads `defaultPrevented` and sits in the bubble phase, unlike the keyboard
+one: a browser hands a page `ctrl` + wheel — which is how a map zooms — and a page that takes it
+must not have the panel zoom underneath it as well. The keys are the other way round, since a
+browser never hands those to a page at all.
 
-**The address bar completes the pages the panel has been on.** The history is one list
-(`src/recentPages.ts`, in `workspaceState`) with two readers — the sidebar's "Recent" section and
+**The address bar completes the pages the panel has been on.** Remembered from what a panel
+*reports* (`onDidChangeState`) and not from the manager's own change event, which fires for the
+focus moving between panels too: coming back to a panel opened an hour ago would otherwise stamp
+its page as the newest thing visited. The field is left alone only while it holds something
+being typed, since the url a navigation ends on — the one the server redirected to — arrives
+later, and a field still holding what was typed is a field lying about where the panel is.
+The history is one list (`src/recentPages.ts`, in `workspaceState`) with two readers — the sidebar's "Recent" section and
 this — so it holds more than either shows: the address bar *filters* it rather than reading it in
 order. What a person types into an address bar is the start of a host or of a path, so those rank
 first (`matchRank`), a mere substring after them, and recency only decides between equals. The
@@ -323,8 +338,11 @@ Three things about it are easy to get wrong:
   asked at the time.
 - **A menu drawn above the frame does not see what happens inside it.** A click, a scroll or an
   Escape in the page reaches no listener in the webview, so the page reports those itself
-  (`dismissContextMenu`) for as long as a menu is open. Without it the menu stays up over a page
-  that has scrolled out from under it.
+  (`dismissMenu`) for as long as the panel says it has a menu up (`menuOpen`) — which is as true
+  of the toolbar's own menus as of this one, so all three are closed by it and all three ask for
+  the watch. Nothing else asks: watching starts when the panel says a menu is open and stops
+  when it says otherwise, because the panel may decide not to open one at all (it is picking,
+  say) and a frame left watching reports clicks nothing is listening for.
 - **A pick that arrives with nothing pending is a page reporting elements nobody asked about.**
   The picker's own flag cannot let this one through — nothing is picking — so the webview keeps
   `awaitingContextPick`, and takes it back on a timeout: the element can be gone by the time an

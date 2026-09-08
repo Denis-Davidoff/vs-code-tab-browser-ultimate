@@ -12,6 +12,9 @@ import { BrowserProxy } from './browserProxy';
 import { RecentPages } from './recentPages';
 import { ShowOptions, TabBrowserView } from './tabBrowserView';
 
+/** How many browser panels can be open at once; see `newTab`. */
+const maxPanels = 16;
+
 export class TabBrowserManager {
 
 	private readonly _views: TabBrowserView[] = [];
@@ -50,7 +53,18 @@ export class TabBrowserManager {
 	}
 
 	/** Another panel, as a browser opens another tab; it takes the focus and the commands. */
-	public newTab(url = '', options?: ShowOptions): TabBrowserView {
+	public newTab(url = '', options?: ShowOptions): TabBrowserView | undefined {
+		// A tab can be asked for by the page: `Cmd`+`T` has to work while the page has the
+		// keyboard, so the injected script forwards it — and the shapes it sends are in the
+		// script itself, which makes them something a page can send on its own. Every panel
+		// holds a live webview (`retainContextWhenHidden`), so the count is capped rather than
+		// trusted. Nobody opens sixteen browser tabs in an editor by hand.
+		if (this._views.length >= maxPanels) {
+			vscode.window.showWarningMessage(vscode.l10n.t(
+				"There are already {0} browser panels open.", maxPanels));
+			return undefined;
+		}
+
 		const view = TabBrowserView.create(this._extensionUri, this._proxy, this._recent, url, options);
 		this._add(view);
 		this._onDidChange.fire();
@@ -75,7 +89,13 @@ export class TabBrowserManager {
 			}
 			this._onDidChange.fire();
 		});
-		view.onDidChangeState(() => this._onDidChange.fire());
+		view.onDidChangeState(() => {
+			// Remembered from the page a panel *reports*, not from `onDidChange`: that fires
+			// for the focus moving between panels as well, and coming back to a panel opened
+			// an hour ago would stamp its page as the newest thing visited.
+			this._recent.remember(view.url);
+			this._onDidChange.fire();
+		});
 		view.onDidBecomeActive(() => {
 			const at = this._views.indexOf(view);
 			if (at > 0) {

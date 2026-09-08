@@ -167,7 +167,8 @@ iframe {
 
 /* -- the copy menu and the page's context menu ----------------------------------------------- */
 
-.controls .copy-menu-container {
+.controls .copy-menu-container,
+.controls .browser-menu-container {
 	position: relative;
 	display: flex;
 	align-items: center;

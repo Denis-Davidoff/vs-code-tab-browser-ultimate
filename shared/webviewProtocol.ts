@@ -157,8 +157,6 @@ export interface TabBrowserSettings {
 	readonly agentOrigins: readonly string[];
 	/** Pages this project's panel has been on, newest first; the address bar completes them. */
 	readonly recentUrls: readonly string[];
-	/** `⌘` where the labels in the toolbar's menu should say so, `Ctrl` everywhere else. */
-	readonly isMac: boolean;
 }
 
 export interface TabBrowserState {

@@ -123,6 +123,13 @@ let typedUrl = '';
  * second time for the same text.
  */
 let lastCommitted = '';
+/**
+ * The field holds something the user is typing. Only then is it left alone: after Enter the
+ * page's real url — which is the one the server redirected to, and arrives later — is what the
+ * address bar is for, and a field that keeps the three words that were typed instead is a
+ * field lying about where the panel is.
+ */
+let editingUrl = false;
 let hintResetTimer: ReturnType<typeof setTimeout> | undefined;
 let readyCheckTimer: ReturnType<typeof setTimeout> | undefined;
 let nextRequestId = 1;
@@ -340,12 +347,14 @@ function onAgentEvent(event: AgentEvent): void {
 			}
 			break;
 
-		case 'dismissContextMenu':
+		case 'dismissMenu':
 			// A click, a scroll or an Escape somewhere in the page — which is the only way this
 			// document hears of one at all, and it may come from a frame that is not the one
-			// holding the element. Closing says which element it was about, so the frame that
-			// *is* holding it forgets that one and no other.
+			// holding the element. Whatever the panel has standing over the page goes with it,
+			// the toolbar's own menus included: a click in the page is not a click on them.
 			closeContextMenu();
+			setMenuOpen(false);
+			setBrowserMenuOpen(false);
 			break;
 
 		case 'navigated':
@@ -570,12 +579,18 @@ function setMenuOpen(open: boolean): void {
 		// nothing about.
 		closeContextMenu();
 	}
+	const changed = copyMenu.hidden === open;
 	copyMenu.hidden = !open;
 	copyMenuToggle.setAttribute('aria-expanded', String(open));
 	copyMenuToggle.classList.toggle('active', open);
 	if (open) {
 		const current = menuItems().find(item => item.dataset.command === lastCopyCommand);
 		(current ?? menuItems()[0])?.focus();
+	}
+	// The page reports the click that has to close this: it happens where this document hears
+	// nothing at all. Sent only on a change, since closing is called from several places.
+	if (changed) {
+		sendToPage({ kind: 'menuOpen', open });
 	}
 }
 
@@ -694,11 +709,12 @@ function setPickerActive(active: boolean): void {
  * wrote it, which is what every element report is read out of.
  */
 function applyZoom(): void {
+	// And nothing else: a percentage under `zoom` is resolved in the zoomed element's own
+	// units, so the `width: 100%` the stylesheet gives the frame keeps filling the panel while
+	// the page inside it lays out in a viewport that much smaller. Dividing it as well — which
+	// looks like the obvious thing to do — leaves a third of the panel blank at 150% and
+	// overflows it at 50%, with the page reflowing twice as far as it was asked to.
 	iframe.style.zoom = String(zoomLevel);
-	// The frame is measured before the zoom scales it, so it has to ask for less of the panel
-	// than all of it, or a zoomed page would be that much wider than the panel.
-	iframe.style.width = `${100 / zoomLevel}%`;
-	iframe.style.height = `${100 / zoomLevel}%`;
 
 	const percent = `${Math.round(zoomLevel * 100)}%`;
 	const detail = browserMenu.querySelector<HTMLSpanElement>('.menu-detail');
@@ -759,11 +775,15 @@ function setBrowserMenuOpen(open: boolean): void {
 		closeContextMenu();
 		hideSuggestions();
 	}
+	const changed = browserMenu.hidden === open;
 	browserMenu.hidden = !open;
 	browserMenuToggle.setAttribute('aria-expanded', String(open));
 	browserMenuToggle.classList.toggle('active', open);
 	if (open) {
 		browserMenuItems()[0]?.focus();
+	}
+	if (changed) {
+		sendToPage({ kind: 'menuOpen', open });
 	}
 }
 
@@ -917,6 +937,7 @@ function moveSuggestion(delta: number): void {
 
 /** Goes to what the field holds — or to the suggestion the arrow keys stopped on. */
 function commitUrl(url: string): void {
+	editingUrl = false;
 	lastCommitted = url;
 	input.value = url;
 	hideSuggestions();
@@ -925,7 +946,7 @@ function commitUrl(url: string): void {
 
 /** Puts the page's own url in the field, which is never a value to navigate back to. */
 function showUrlInInput(): void {
-	if (document.activeElement === input) {
+	if (editingUrl) {
 		return;
 	}
 	input.value = displayUrl;
@@ -970,7 +991,7 @@ function openContextMenu(at: PagePoint, descriptor: string, targetId: string): v
 
 	// Every frame watches for the click that closes this again: the panel cannot see one, and
 	// the next click is not necessarily in the frame the menu was opened from.
-	sendToPage({ kind: 'contextMenuOpen', open: true, targetId });
+	sendToPage({ kind: 'menuOpen', open: true, targetId });
 }
 
 function closeContextMenu(): void {
@@ -982,7 +1003,7 @@ function closeContextMenu(): void {
 	// Named, so a frame that has since taken a *new* right-click keeps the element that one is
 	// about — this message can arrive after it. A frame that has already handed its element
 	// over has nothing left to forget, which is why the pick below closes the same way.
-	sendToPage({ kind: 'contextMenuOpen', open: false, targetId: contextTargetId });
+	sendToPage({ kind: 'menuOpen', open: false, targetId: contextTargetId });
 }
 
 /**
@@ -1122,7 +1143,7 @@ onceDocumentLoaded(() => {
 
 	// A pinch over the toolbar or the hint bar, where there is no page to report it.
 	document.addEventListener('wheel', event => {
-		if (!event.ctrlKey && !event.metaKey) {
+		if ((!event.ctrlKey && !event.metaKey) || event.defaultPrevented) {
 			return;
 		}
 		event.preventDefault();
@@ -1130,7 +1151,10 @@ onceDocumentLoaded(() => {
 			: event.deltaMode === 2 ? event.deltaY * 100 : event.deltaY);
 	}, { passive: false });
 
-	input.addEventListener('input', () => showSuggestions(input.value));
+	input.addEventListener('input', () => {
+		editingUrl = true;
+		showSuggestions(input.value);
+	});
 
 	// Focusing an empty field is a new tab asking where to go; a field that already holds a
 	// page is not, and a list dropping over the page for a click is not what was asked for.
@@ -1140,7 +1164,16 @@ onceDocumentLoaded(() => {
 		}
 	});
 
-	input.addEventListener('blur', () => hideSuggestions());
+	input.addEventListener('blur', () => {
+		hideSuggestions();
+		// Whatever was typed and not sent anywhere: `change` has had its say by now, so from
+		// here on the field belongs to the page again — unless it is holding what was just
+		// sent somewhere, in which case the answer to that is on its way and fills it in.
+		editingUrl = false;
+		if (input.value !== lastCommitted) {
+			showUrlInInput();
+		}
+	});
 
 	input.addEventListener('keydown', event => {
 		switch (event.key) {

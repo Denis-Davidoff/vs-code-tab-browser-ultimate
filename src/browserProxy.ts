@@ -407,8 +407,14 @@ export class BrowserProxy extends Disposable {
 		const referer = typeof req.headers.referer === 'string'
 			? parseHttpUrl(req.headers.referer)
 			: undefined;
+		// A page addressed as a folder was served the index inside it, and that is the page its
+		// assets belong to: read as the folder, the reload would name something the panel is
+		// not showing and a save would go unnoticed.
+		const refererPath = referer?.pathname.endsWith('/')
+			? `${referer.pathname}index.html`
+			: referer?.pathname;
 		const fromPage = referer && this._isOwnOrigin(session, originOf(referer))
-			? servedPathOf(file.folder, referer.pathname)
+			? servedPathOf(file.folder, refererPath)
 			: undefined;
 		const referrer = fromPage && 'path' in fromPage ? fromPage.path : undefined;
 

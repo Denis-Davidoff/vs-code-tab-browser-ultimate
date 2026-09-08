@@ -143,15 +143,17 @@ export type AgentCommand =
 		readonly preferAttributes?: readonly string[];
 	}
 	/**
-	 * A menu for the element `targetId` names is up, or gone. Sent to every frame and not only
-	 * to the one that was clicked: the panel cannot see a click inside the page, so whichever
-	 * frame the next one lands in has to be the one that says the menu must close.
+	 * The panel has a menu standing open above the page, or no longer has. Sent to every frame
+	 * and not only to the one that was clicked: the panel cannot see a click inside the page at
+	 * all, so whichever frame the next one lands in has to be the one that reports it — and
+	 * that is as true of the toolbar's own menus as of the one a right-click opens.
 	 *
-	 * `open: false` also has the frame forget that element — by id, because the message can
-	 * arrive *after* the right-click that follows it, and clearing "whatever you have" would
-	 * then take the target of the menu that is standing open.
+	 * `targetId` names the element the menu is about, when it is about one; `open: false` then
+	 * also has the frame forget that element. By id, because this message can arrive *after*
+	 * the right-click that replaced the menu, and "forget whatever you have" would take the
+	 * element of the menu that is standing open.
 	 */
-	| { readonly kind: 'contextMenuOpen'; readonly targetId: string; readonly open: boolean }
+	| { readonly kind: 'menuOpen'; readonly open: boolean; readonly targetId?: string }
 	/** Report the element the context menu was opened on, as a `pick` of its own. */
 	| { readonly kind: 'pickContextTarget'; readonly targetId: string }
 	/**
@@ -182,11 +184,11 @@ export type AgentEvent =
 		readonly at: PagePoint;
 		/** `tag#id.class` of the element under the cursor, for the menu's header. */
 		readonly descriptor: string;
-		/** Names the element for as long as the menu is up; see `contextMenuOpen`. */
+		/** Names the element for as long as the menu is up; see `menuOpen`. */
 		readonly targetId: string;
 	}
 	/** Something the page saw that a menu has to close for: a click, a scroll, Escape. */
-	| { readonly kind: 'dismissContextMenu' }
+	| { readonly kind: 'dismissMenu' }
 	| { readonly kind: 'cancel' }
 	| {
 		readonly kind: 'result';

@@ -80,10 +80,6 @@ export function activate(context: vscode.ExtensionContext) {
 	const manager = new TabBrowserManager(context.extensionUri, proxy, recent);
 	context.subscriptions.push(manager);
 
-	// The history is the extension's, not the sidebar's: the address bar completes against it
-	// too, and a panel reports the page it ends up on rather than the url it was asked for.
-	context.subscriptions.push(manager.onDidChange(() => recent.remember(manager.activeView?.url)));
-
 	context.subscriptions.push(registerTerminalLinks(url => manager.show(url)));
 
 	const browser = new BrowserController(manager);

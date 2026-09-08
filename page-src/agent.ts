@@ -234,7 +234,7 @@ function install(): void {
 			broadcast({ kind: 'clearContextTarget' });
 			send({ kind: 'contextMenu', at, descriptor, targetId });
 		},
-		onDismiss: () => send({ kind: 'dismissContextMenu' }),
+		onDismiss: () => send({ kind: 'dismissMenu' }),
 	});
 
 	/** Where this frame's content box starts, so a nested click lands where the cursor is. */
@@ -282,7 +282,7 @@ function install(): void {
 				return;
 			}
 
-			case 'contextMenuOpen': {
+			case 'menuOpen': {
 				if (event.source && event.source !== window && event.source !== window.parent) {
 					return;
 				}
@@ -434,7 +434,7 @@ function install(): void {
 				return;
 			}
 
-			case 'dismissContextMenu':
+			case 'dismissMenu':
 				send(message);
 				return;
 
@@ -494,7 +494,11 @@ function install(): void {
 	 * scroll under a gesture that was never about scrolling.
 	 */
 	window.addEventListener('wheel', event => {
-		if (!event.ctrlKey && !event.metaKey) {
+		// Whether the page wanted it is not ours to decide, exactly as with a right-click: a
+		// map or a canvas app that zooms on `ctrl` + wheel says so by taking the event, and
+		// this listener sits last of all of them to hear that. A browser gives the page the
+		// same chance, which is how those apps zoom at all.
+		if ((!event.ctrlKey && !event.metaKey) || event.defaultPrevented) {
 			return;
 		}
 		event.preventDefault();
@@ -502,7 +506,7 @@ function install(): void {
 		const delta = event.deltaMode === 1 ? event.deltaY * 16
 			: event.deltaMode === 2 ? event.deltaY * 100 : event.deltaY;
 		send({ kind: 'zoomGesture', delta });
-	}, { capture: true, passive: false });
+	}, { passive: false });
 
 	// -- diagnostics -------------------------------------------------------------------------
 

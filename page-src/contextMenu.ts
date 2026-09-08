@@ -50,9 +50,9 @@ export class PageContextMenu {
 		const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 		this._target = { id, element: event.target };
 		this._host.highlight(event.target);
-		// The panel has every frame watch while a menu is up; this frame starts now, since the
-		// click that closes the menu again is most often in the frame it was opened from.
-		this._watch(true);
+		// Watching starts when the panel says a menu is up, and for no other reason: the panel
+		// may decide not to open one at all — it is picking, say — and a frame left watching
+		// for a menu that never opened reports clicks nothing is listening for.
 		this._host.onOpen({ x: event.clientX, y: event.clientY }, describeNode(event.target), id);
 	};
 
@@ -80,9 +80,9 @@ export class PageContextMenu {
 		} else {
 			window.removeEventListener('contextmenu', this._onContextMenu);
 			this.clear();
-			// A frame can be watching for a menu opened in another one; with right-clicks
-			// switched off there is no menu of ours left for it to close.
-			this._watch(false);
+			// The watch is not touched: it belongs to whatever the panel has standing open,
+			// and the toolbar's own menus are open whatever this setting says about
+			// right-clicks.
 		}
 	}
 
@@ -96,24 +96,24 @@ export class PageContextMenu {
 	}
 
 	/**
-	 * A menu is up somewhere, or is gone. Whichever frame the closing click lands in is the one
-	 * that has to notice it, so every frame watches — and only the frame that is holding the
-	 * element that menu was about forgets anything.
+	 * The panel has a menu up, or no longer has — the one a right-click opened, or one of the
+	 * toolbar's own, which the page cannot see either. Whichever frame the closing click lands
+	 * in is the one that has to notice it, so every frame watches; and only the frame holding
+	 * the element that menu was about forgets anything, which is what `targetId` is for.
 	 */
-	public setOpen(open: boolean, targetId: string): void {
-		this._watch(open && this._enabled);
+	public setOpen(open: boolean, targetId?: string): void {
+		this._watch(open);
 		if (!open && this._target?.id === targetId) {
 			this.clear();
 		}
 	}
 
-	/** The menu is gone: nothing is remembered and nothing is outlined for it any more. */
+	/** This frame is not the one holding an element for a menu any more. */
 	public clear(): void {
 		if (!this._target) {
 			return;
 		}
 		this._target = undefined;
-		this._watch(false);
 		this._host.clearHighlight();
 	}
 
