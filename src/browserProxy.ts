@@ -21,6 +21,7 @@ import { rewriteSetCookie } from '../shared/cookies';
 import {
 	contentTypeOf,
 	isHtmlPath,
+	isUnder,
 	newServedFolder,
 	realUrlOf,
 	ServedFiles,
@@ -158,7 +159,13 @@ export class BrowserProxy extends Disposable {
 
 		const root = this._rootFor(fileUri);
 		const session = await this._getSession(vscode.Uri.file(root).toString(), root);
-		return servedUrlOf(session.file!.folder, session.publicOrigin, filePath);
+		const served = servedUrlOf(session.file!.folder, session.publicOrigin, filePath);
+
+		// The query and the fragment are the page's: a local page reads its own `?lang=ru`, and
+		// `#section` is where it is meant to open.
+		return served
+			+ (fileUri.query ? `?${fileUri.query}` : '')
+			+ (fileUri.fragment ? `#${fileUri.fragment}` : '');
 	}
 
 	/** The folder a file is served from: its project, or the folder it sits in. */
@@ -202,7 +209,7 @@ export class BrowserProxy extends Disposable {
 		if (session.file) {
 			// The path carries a segment that belongs to the session and not to the page, so
 			// the file itself is the only honest answer here.
-			return realUrlOf(session.file.folder, url.pathname) ?? rawUrl;
+			return realUrlOf(session.file.folder, url.pathname + url.search + url.hash) ?? rawUrl;
 		}
 		return joinOrigin(session.origin, url.pathname + url.search + url.hash);
 	}
@@ -255,8 +262,14 @@ export class BrowserProxy extends Disposable {
 			});
 		});
 
+		// The folder with its own symlinks resolved, since that is what a served file's real
+		// path has to sit under: `/tmp` is a link to `/private/tmp` on macOS, and comparing a
+		// resolved path against an unresolved root refuses every file in it.
+		const realRoot = fileRoot
+			? await fsp.realpath(fileRoot).catch(() => fileRoot)
+			: undefined;
 		const file = fileRoot
-			? { folder: newServedFolder(fileRoot), files: new ServedFiles() }
+			? { folder: newServedFolder(fileRoot, realRoot), files: new ServedFiles() }
 			: undefined;
 		const session: ProxySession = {
 			origin,
@@ -267,7 +280,7 @@ export class BrowserProxy extends Disposable {
 			publicOrigin: `http://127.0.0.1:${localPort}`,
 			sockets,
 		};
-		file?.files.onDidChange(() => this._onDidChangeServedFile.fire(file.folder.root));
+		file?.files.onDidChange(page => this._onDidChangeServedFile.fire(page));
 
 		// On remote workspaces the webview cannot reach the extension host's loopback
 		// interface directly, so ask vscode to forward the port for us.
@@ -387,7 +400,19 @@ export class BrowserProxy extends Disposable {
 			return;
 		}
 
-		const served = servedPathOf(file.folder, req.url);
+		// Which page asked for this. Only a document this session served can be on this origin,
+		// and a page on another origin cannot claim to be — so a request that carries such a
+		// `Referer` is one of our own pages asking, which is what makes the root-absolute
+		// references a build writes (`/assets/app.js`) resolvable at all.
+		const referer = typeof req.headers.referer === 'string'
+			? parseHttpUrl(req.headers.referer)
+			: undefined;
+		const fromPage = referer && this._isOwnOrigin(session, originOf(referer))
+			? servedPathOf(file.folder, referer.pathname)
+			: undefined;
+		const document = fromPage && 'path' in fromPage ? fromPage.path : undefined;
+
+		const served = servedPathOf(file.folder, req.url, !!document);
 		if ('status' in served) {
 			writeFileStatus(res, served.status, served.status === 403
 				? vscode.l10n.t("That path is outside {0}.", file.folder.root)
@@ -398,6 +423,19 @@ export class BrowserProxy extends Disposable {
 		let target = served.path;
 		let stat = await fsp.stat(target).catch(() => undefined);
 		if (stat?.isDirectory()) {
+			const requested = (req.url ?? '/').split('#')[0];
+			const [withoutQuery, query] = splitQuery(requested);
+			// A static server redirects first, and the redirect is the point: without the
+			// trailing slash the page's own `href="style.css"` resolves against the folder
+			// *above* this one, and every relative reference on it 404s.
+			if (!withoutQuery.endsWith('/')) {
+				res.writeHead(301, {
+					location: `${withoutQuery}/${query}`,
+					'cache-control': 'no-store',
+				});
+				res.end();
+				return;
+			}
 			// What a static server does with a folder, and what a `file:` url cannot do at all.
 			target = path.join(target, 'index.html');
 			stat = await fsp.stat(target).catch(() => undefined);
@@ -407,9 +445,22 @@ export class BrowserProxy extends Disposable {
 			return;
 		}
 
+		// The check above is about the request; this one is about the file it names. A link
+		// inside the folder that points out of it would otherwise be a read of whatever it
+		// points at, which is the one way a path that never leaves the folder still can.
+		const real = await fsp.realpath(target).catch(() => undefined);
+		if (!real || !isUnder(file.folder.realRoot, real)) {
+			writeFileStatus(res, 403, vscode.l10n.t(
+				"{0} leads outside {1}.", target, file.folder.root));
+			return;
+		}
+		// Read, watched and reported under the path it was asked for, not under the resolved
+		// one: the panel's address bar, the reports and the reload all speak in the former, and
+		// a folder reached through a link — `/tmp` on macOS — resolves to a different name.
+
 		// Watched from here rather than from the navigation: a page's stylesheets and scripts
 		// are exactly the files it asked for, and nothing else in the project is.
-		file.files.remember(target);
+		file.files.remember(target, document);
 
 		if (isHtmlPath(target)) {
 			const html = this._injectAgentScript(session, decodeHtml(await fsp.readFile(target), ''));
@@ -721,6 +772,12 @@ function targetOf(session: ProxySession, rawUrl: string | undefined): URL {
 	target.pathname = query === -1 ? path : path.slice(0, query);
 	target.search = query === -1 ? '' : path.slice(query);
 	return target;
+}
+
+/** `/docs?x=1` -> `['/docs', '?x=1']`, so a redirect can keep the query it was given. */
+function splitQuery(requestTarget: string): [string, string] {
+	const at = requestTarget.indexOf('?');
+	return at === -1 ? [requestTarget, ''] : [requestTarget.slice(0, at), requestTarget.slice(at)];
 }
 
 function pathAndQueryOf(raw: string, base: string): string {

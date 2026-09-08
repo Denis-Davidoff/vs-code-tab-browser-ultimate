@@ -59,7 +59,20 @@ folder when it belongs to no project.
   `%5c` must not become separators, and the resolved path is checked against the folder rather
   than trusted for having no `..` in it. `test/host.test.mjs` covers the hostile spellings —
   going through a browser cannot, since `fetch` normalises half of them away before they are
-  sent.
+  sent. That rule is about the *request*; the file it names is checked separately, against the
+  folder's own resolved path (`realRoot`), or a link inside the project pointing out of it would
+  be a read of whatever it points at. The paths everything else speaks in stay the ones that
+  were asked for, since a folder reached through a link — `/tmp` on macOS — resolves to another
+  name than the panel is showing.
+- **A page built for a static server references its assets from the root** (`/assets/app.js`),
+  and such a path carries no segment of the session's — there is nothing in it to say which
+  session it belongs to. The `Referer` says it instead: only a document this session served can
+  be on this origin, and a page elsewhere cannot claim to be one, so a request from one of our
+  own pages is resolved against the folder like that static server would (`fromOwnPage`). It
+  buys nothing past the segment — the same traversal rules run on it — and a page that strips
+  its referrer simply goes back to 404. A folder addressed without its trailing slash is
+  redirected to one first, or the page's own relative references resolve against the folder
+  above it.
 - **A file url cannot be rebuilt like a proxied one.** The panel shows the file, not the url it
   is served under, so `toRealUrl` maps the path back — and the injected script is told the same
   two things (`realOrigin`, `basePath`): a `URL` cannot be moved between `file:` and a scheme
@@ -70,7 +83,13 @@ folder when it belongs to no project.
 Hot reload is the whole of what a page with no dev server in front of it can have: the files the
 session actually served are watched (one non-recursive watcher per folder, not a recursive one
 over a project the page uses three files of), and a change to one of them has the panel navigate
-again (`onDidChangeServedFile` → `reloadPage`). `tabBrowser.files.reloadOnChange` turns it off.
+again (`onDidChangeServedFile` → `reloadPage`). What it reports is the **page** and not the
+folder — one session serves every page of one folder, and a stylesheet of the page opened an hour
+ago is not part of the one on screen — so every file is remembered against the page it was served
+*for*, read off the same `Referer`. An html file counts as a page of its own as well, since a
+page that links to another one is the referrer of that navigation and not what it renders. One
+save is often two events, so two reloads inside 150ms are one.
+`tabBrowser.files.reloadOnChange` turns it off.
 Which is also why nothing a file session serves is cacheable, and why the parameter the webview
 varies to make the frame load a page twice (`cacheBustParameter`) is taken back off every url the
 page reports: a page reloaded on every save would otherwise grow a `?vscodeBrowserReqId` onto its
@@ -173,7 +192,10 @@ if it did, the table this extension wrote goes unseen and connecting writes it a
 
 The **Project files** section is the one part of the tree that is not rebuilt whole: nobody knows
 how many folders a project has, and nothing here needs to until one is opened, so those rows
-carry a `folder` and are read off the disk by `getChildren`. Only html files are offered, since
+carry a `folder` and are read off the disk by `getChildren`. They are also the only rows with an
+`id`: the tree remembers what is open by the id of the item, and every row here is a new object
+on every refresh — of which there are several per page load, so without one the folders someone
+opened fold up while the page is still loading. Only html files are offered, since
 a page is what the panel opens; `Open a file…` is there for everything the browser would not
 find, and it is `findFiles` plus a dialog rather than a walk of the folders — the editor's index
 already knows about the excludes the user has set.
@@ -261,6 +283,13 @@ Three things about it are easy to get wrong:
   The picker's own flag cannot let this one through — nothing is picking — so the webview keeps
   `awaitingContextPick`, and takes it back on a timeout: the element can be gone by the time an
   entry is chosen, and a page with nothing to report says nothing at all.
+- **The element is named, and every message about it carries that name** (`targetId`). Two
+  things need it. A click in the page can land in a frame that is not the one holding the
+  element, and only the panel knows there is a menu to close — so `contextMenuOpen` goes to
+  *every* frame while one is up, and the frame that answers is whichever one the click reaches.
+  And the panel's word that a menu has closed can arrive *after* the right-click that replaced
+  it: a frame told to forget "whatever you have" would drop the element of the menu standing
+  open, and answer the pick that follows with nothing.
 
 ### Handing a report to an assistant
 
@@ -442,7 +471,8 @@ machine with no Codex on it must not be given a `~/.codex` with a queue director
 nothing will ever remove.
 
 Known edges: a file session answers no `Range` requests, so seeking in a `<video>` a local page
-plays does not work; selectors, not snapshot-scoped element refs, so a selector can go stale between
+plays does not work, and an asset reached through a symlink that leaves the served folder is
+refused rather than followed (a pnpm store outside the workspace, say); selectors, not snapshot-scoped element refs, so a selector can go stale between
 calls; clicks are synthetic dom events, which some things (file pickers, drag) will not accept;
 one window wins the preferred port, so an entry written from another window points elsewhere
 until that window's own server starts and repairs it — the per-workspace token turns the window

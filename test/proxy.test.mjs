@@ -318,6 +318,19 @@ await fs.writeFile(path.join(folder, 'assets', 'app.css'), 'p { color: rebeccapu
 await fs.writeFile(path.join(folder, 'index.html'), '<html><head></head><body>the index</body></html>');
 await fs.writeFile(path.join(path.dirname(folder), 'outside.txt'), 'not yours');
 
+// What a build writes: the page references its assets from the root of the server it expects.
+await fs.mkdir(path.join(folder, 'docs'));
+await fs.writeFile(path.join(folder, 'docs', 'index.html'),
+	'<!DOCTYPE html><html><head><link rel="stylesheet" href="local.css">'
+	+ '<script src="/assets/app.js"></script></head><body>docs</body></html>');
+await fs.writeFile(path.join(folder, 'docs', 'local.css'), 'p { color: red }');
+await fs.mkdir(path.join(folder, 'assets'), { recursive: true }).catch(() => { });
+await fs.writeFile(path.join(folder, 'assets', 'app.js'), 'console.log("built")');
+
+// A link inside the folder that points out of it: the path never leaves, the file does.
+await fs.symlink(path.join(path.dirname(folder), 'outside.txt'), path.join(folder, 'linked.txt'))
+	.catch(() => { });
+
 const filePage = await proxy.getServedFileUrl(Uri.file(path.join(folder, 'page.html')));
 const filePageRes = await fetch(filePage);
 const filePageBody = await filePageRes.text();
@@ -344,7 +357,7 @@ check('an absolute file url in the markup is rewritten onto the session',
 check('the panel maps it back to the file, not to the url it is served under',
 	proxy.toRealUrl(filePage) === `file://${folder}/page.html`, proxy.toRealUrl(filePage));
 
-const css = await fetch(new URL('./assets/app.css', filePage));
+const css = await fetch(new URL('./assets/app.css', filePage), { headers: { referer: filePage } });
 check('a stylesheet the page pulls in is served with its own content type',
 	css.status === 200 && css.headers.get('content-type') === 'text/css; charset=utf-8'
 	&& (await css.text()).includes('rebeccapurple'), String(css.status));
@@ -373,6 +386,44 @@ for (const [name, target] of [
 		|| !(await refused.text()).includes('not yours'), `${refused.status}`);
 }
 
+// A page's own root-absolute reference carries no segment of the session's — there is nothing
+// in `/assets/app.js` to say which session it belongs to. Only the `Referer` can say, and a page
+// on another origin cannot claim to be one of ours.
+const builtAsset = await fetch(`${origin}/assets/app.js`, {
+	headers: { referer: `${origin}/${secret}/docs/index.html` },
+});
+check('a root-absolute reference from one of our own pages is served from the folder',
+	builtAsset.status === 200 && (await builtAsset.text()).includes('built'), String(builtAsset.status));
+
+const withoutReferer = await fetch(`${origin}/assets/app.js`);
+check('and the same request from nowhere is not', withoutReferer.status === 404,
+	String(withoutReferer.status));
+
+const foreignReferer = await fetch(`${origin}/assets/app.js`, {
+	headers: { referer: 'http://example.com/page' },
+});
+check('nor one that claims to come from another origin', foreignReferer.status === 404,
+	String(foreignReferer.status));
+
+// A referer of ours does not make traversal legal either.
+const refererTraversal = await fetch(`${origin}/..%2foutside.txt`, {
+	headers: { referer: `${origin}/${secret}/docs/index.html` },
+});
+check('a referer of ours does not open the way out of the folder',
+	refererTraversal.status === 403 || refererTraversal.status === 404
+	|| !(await refererTraversal.text()).includes('not yours'), String(refererTraversal.status));
+
+// A path resolved against the folder above it is what every relative reference on the page
+// resolves against, so the trailing slash is not cosmetic.
+const noSlash = await fetch(`${origin}/${secret}/docs?x=1`, { redirect: 'manual' });
+check('a folder addressed without a trailing slash redirects to one',
+	noSlash.status === 301 && noSlash.headers.get('location') === `/${secret}/docs/?x=1`,
+	`${noSlash.status} ${noSlash.headers.get('location')}`);
+
+const linked = await fetch(`${origin}/${secret}/linked.txt`);
+check('a link inside the folder pointing out of it is refused',
+	linked.status === 403 || !(await linked.text()).includes('not yours'), String(linked.status));
+
 const folderRequest = await fetch(`${origin}/${secret}/`);
 check('a folder is answered with its index.html, as a static server would',
 	folderRequest.status === 200 && (await folderRequest.text()).includes('the index'),
@@ -388,22 +439,58 @@ check('a file session only reads', written.status === 405, String(written.status
 // something it pulled in — is the only signal there is. Only the files the page actually asked
 // for are watched; a project is full of files it has nothing to do with.
 const reloads = [];
-proxy.onDidChangeServedFile(root => reloads.push(root));
+proxy.onDidChangeServedFile(page => reloads.push(page));
+const settle = () => new Promise(resolve => setTimeout(resolve, 400));
 await new Promise(resolve => setTimeout(resolve, 200));
+
 await fs.writeFile(path.join(folder, 'assets', 'app.css'), 'p { color: teal }');
-await new Promise(resolve => setTimeout(resolve, 400));
-check('saving a file the page pulled in reports the folder it was served from',
-	reloads.includes(folder), JSON.stringify(reloads));
+await settle();
+check('saving a file the page pulled in names the page to load again',
+	reloads.includes(path.join(folder, 'page.html')), JSON.stringify(reloads));
 
 reloads.length = 0;
 await fs.writeFile(path.join(folder, 'untouched.html'), '<html></html>');
-await new Promise(resolve => setTimeout(resolve, 400));
+await settle();
 check('a file this page never asked for reports nothing', reloads.length === 0, JSON.stringify(reloads));
+
+// One session serves every page of one folder, so what a file belongs to has to be the page it
+// was served for: a stylesheet of the page opened an hour ago is not part of the one on screen.
+reloads.length = 0;
+// Fetched the way the page pulls it in, so it belongs to that page and to no other.
+await fetch(`${origin}/${secret}/docs/local.css`,
+	{ headers: { referer: `${origin}/${secret}/docs/index.html` } });
+await fs.writeFile(path.join(folder, 'docs', 'local.css'), 'p { color: green }');
+await settle();
+check('and a stylesheet of another page in the same folder names that page alone',
+	reloads.length === 1 && reloads[0] === path.join(folder, 'docs', 'index.html'),
+	JSON.stringify(reloads));
+
+reloads.length = 0;
+await fs.writeFile(path.join(folder, 'page.html'), await fs.readFile(path.join(folder, 'page.html')));
+await settle();
+check('saving the page itself names itself', reloads.includes(path.join(folder, 'page.html')),
+	JSON.stringify(reloads));
 
 const secondPage = await proxy.getServedFileUrl(Uri.file(path.join(folder, 'index.html')));
 check('a second file in the same folder is served by the same session',
 	new URL(secondPage).origin === origin && new URL(secondPage).pathname.split('/')[1] === secret,
 	secondPage);
+
+// A local page reads its own `?lang=ru`, and `#section` is where it is meant to open.
+const withQuery = await proxy.getServedFileUrl(
+	Uri.parse(`file://${folder}/page.html?lang=ru#section`));
+check('the query and the fragment of a file url are kept',
+	withQuery.endsWith('/page.html?lang=ru#section'), withQuery);
+
+check('and the panel still shows the file itself, with them',
+	proxy.toRealUrl(withQuery.split('#')[0]) === `file://${folder}/page.html?lang=ru`,
+	proxy.toRealUrl(withQuery.split('#')[0]));
+
+// The panel varies that one parameter to make the frame load a page again; it is not the page's.
+check('the parameter the panel reloads with is not part of the file it names',
+	proxy.toRealUrl(`${origin}/${secret}/page.html?vscodeBrowserReqId=7`)
+	=== `file://${folder}/page.html`,
+	proxy.toRealUrl(`${origin}/${secret}/page.html?vscodeBrowserReqId=7`));
 
 let refusedScheme;
 try { await proxy.getServedFileUrl(Uri.parse('vscode-vfs://github/o/r/index.html')); }

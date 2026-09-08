@@ -215,13 +215,14 @@ An html file opens in the panel like any url does:
 - **Command palette** — "Tab Browser Ultimate: Open File in Browser".
 
 The page is served from the folder it belongs to — the workspace folder that holds it, or its own
-folder when it belongs to no project — so its stylesheets, scripts and images load, and nothing
-outside that folder is reachable. Everything else works as on any other page: the picker, the
-console, the element reports and every mcp tool.
+folder when it belongs to no project — so its stylesheets, scripts and images load, root-absolute
+ones (`/assets/app.js`, which a build writes) included, and nothing outside that folder is
+reachable. Everything else works as on any other page: the picker, the console, the element
+reports and every mcp tool.
 
 **Saving reloads it.** A file has no dev server in front of it to do anything cleverer, so the
 panel navigates again when the page — or a file that page pulled in — changes on disk. Only the
-files the page actually asked for are watched. `tabBrowser.files.reloadOnChange: false` turns it
+files that page asked for are watched, so saving something another page uses leaves it alone. `tabBrowser.files.reloadOnChange: false` turns it
 off.
 
 An assistant cannot open a file itself: `browser_navigate` takes http urls only, because every

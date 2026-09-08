@@ -10,6 +10,7 @@
 
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { cacheBustParameter } from '../shared/protocol';
 import { generateUuid } from './uuid';
 
 /** Extensions served as html, i.e. instrumented and offered by the file browser. */
@@ -18,6 +19,12 @@ export const htmlExtensions: readonly string[] = ['.html', '.htm', '.xhtml'];
 export interface ServedFolder {
 	/** Absolute path of the only folder this session serves. */
 	readonly root: string;
+	/**
+	 * The same folder with every symlink on the way to it resolved, which is what a file's own
+	 * resolved path has to sit under. The two differ more often than it looks — `/tmp` is a
+	 * link to `/private/tmp` on macOS — so the check cannot use `root`.
+	 */
+	readonly realRoot: string;
 	/**
 	 * First segment of every url this session answers. A port on the loopback interface is
 	 * reachable by anything running on this machine — and by any page in any browser that
@@ -33,12 +40,28 @@ export type ServedPath =
 	/** Nothing under the folder answers this request, and the status says as much as is safe. */
 	| { readonly status: 403 | 404 };
 
-export function newServedFolder(root: string): ServedFolder {
-	return { root: path.resolve(root), secret: generateUuid().replace(/-/g, '') };
+export function newServedFolder(root: string, realRoot = root): ServedFolder {
+	return {
+		root: path.resolve(root),
+		realRoot: path.resolve(realRoot),
+		secret: generateUuid().replace(/-/g, ''),
+	};
 }
 
-/** Where a request lands on disk, or a refusal. Pure, because it is the whole of the rule. */
-export function servedPathOf(folder: ServedFolder, requestTarget: string | undefined): ServedPath {
+/**
+ * Where a request lands on disk, or a refusal. Pure, because it is the whole of the rule.
+ *
+ * `fromOwnPage` is for a request that carries no segment of the session's: a page built for a
+ * static server references `/assets/app.js`, and there is nothing in such a path to say which
+ * session it belongs to. Only the caller can answer that — from the `Referer`, which a page on
+ * another origin cannot forge — and then the path is resolved against the folder, exactly as
+ * the server that page was built for would.
+ */
+export function servedPathOf(
+	folder: ServedFolder,
+	requestTarget: string | undefined,
+	fromOwnPage = false,
+): ServedPath {
 	const target = (requestTarget ?? '/').split('#')[0].split('?')[0];
 
 	// Split before decoding: an escaped separator (`%2f`, `%5c`) must not become one, or a
@@ -61,11 +84,14 @@ export function servedPathOf(folder: ServedFolder, requestTarget: string | undef
 		segments.push(segment);
 	}
 
-	if (segments[0] !== folder.secret) {
+	const relative = segments[0] === folder.secret
+		? segments.slice(1)
+		: fromOwnPage ? segments : undefined;
+	if (!relative) {
 		return { status: 404 };
 	}
 
-	const resolved = path.resolve(folder.root, ...segments.slice(1));
+	const resolved = path.resolve(folder.root, ...relative);
 	// Belt and braces: the segments above cannot climb out, and this says so of the result.
 	return isUnder(folder.root, resolved) ? { path: resolved } : { status: 403 };
 }
@@ -82,7 +108,21 @@ export function servedUrlOf(folder: ServedFolder, publicOrigin: string, filePath
 /** The `file:` url of a path the session served, for the address bar and every report. */
 export function realUrlOf(folder: ServedFolder, requestTarget: string | undefined): string | undefined {
 	const served = servedPathOf(folder, requestTarget);
-	return 'path' in served ? vscode.Uri.file(served.path).toString(true) : undefined;
+	if (!('path' in served)) {
+		return undefined;
+	}
+
+	// The query and the fragment belong to the page; the parameter the panel varies to make the
+	// frame load it again does not.
+	let tail = '';
+	try {
+		const parsed = new URL(requestTarget ?? '', 'http://tab-browser.invalid');
+		parsed.searchParams.delete(cacheBustParameter);
+		tail = parsed.search + parsed.hash;
+	} catch {
+		// Then the path is all there is, which is what a file url needs anyway.
+	}
+	return vscode.Uri.file(served.path).toString(true) + tail;
 }
 
 export function isUnder(root: string, candidate: string): boolean {
@@ -103,10 +143,15 @@ export function isHtmlPath(filePath: string): boolean {
  */
 export class ServedFiles {
 
-	private readonly _served = new Set<string>();
+	/** Every file served, against the pages it was served *for*. */
+	private readonly _documents = new Map<string, Set<string>>();
 	private readonly _watchers = new Map<string, vscode.Disposable>();
 	private readonly _onDidChange = new vscode.EventEmitter<string>();
-	/** A file this session served has changed on disk. */
+	/**
+	 * A page that has to be loaded again: one of the files it is made of changed on disk. The
+	 * page and not the folder, because a session serves every page of one folder — and a
+	 * stylesheet of the page opened an hour ago is not part of the one on screen now.
+	 */
 	public readonly onDidChange = this._onDidChange.event;
 	private _disposed = false;
 
@@ -116,16 +161,31 @@ export class ServedFiles {
 			watcher.dispose();
 		}
 		this._watchers.clear();
-		this._served.clear();
+		this._documents.clear();
 		this._onDidChange.dispose();
 	}
 
-	public remember(filePath: string): void {
-		if (this._disposed || this._served.has(filePath)) {
+	/**
+	 * `document` is the page this file was served for, read off the request's `Referer`; a file
+	 * that was asked for by nobody is a page in its own right — the navigation the panel just
+	 * made. An html file is *always* a page of its own as well, since a page that links to
+	 * another one is the referrer of that navigation and not what it renders.
+	 */
+	public remember(filePath: string, document?: string): void {
+		if (this._disposed) {
 			return;
 		}
-		this._served.add(filePath);
-		this._watch(path.dirname(filePath));
+
+		let documents = this._documents.get(filePath);
+		if (!documents) {
+			documents = new Set<string>();
+			this._documents.set(filePath, documents);
+			this._watch(path.dirname(filePath));
+		}
+		documents.add(document ?? filePath);
+		if (isHtmlPath(filePath)) {
+			documents.add(filePath);
+		}
 	}
 
 	private _watch(folder: string): void {
@@ -138,8 +198,8 @@ export class ServedFiles {
 			const watcher = vscode.workspace.createFileSystemWatcher(
 				new vscode.RelativePattern(vscode.Uri.file(folder), '*'));
 			const changed = (uri: vscode.Uri) => {
-				if (this._served.has(uri.fsPath)) {
-					this._onDidChange.fire(uri.fsPath);
+				for (const document of this._documents.get(uri.fsPath) ?? []) {
+					this._onDidChange.fire(document);
 				}
 			};
 			watcher.onDidChange(changed);

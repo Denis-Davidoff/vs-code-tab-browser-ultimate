@@ -73,6 +73,8 @@ let pickerActive = false;
 /** Whether a right-click in the page is answered with the panel's own menu. */
 let contextMenuEnabled = settings.contextMenuEnabled;
 let contextMenuOpen = false;
+/** The element the open menu is about, under the name the page knows it by. */
+let contextTargetId = '';
 /**
  * A command was chosen in the context menu and the page is describing the element it was
  * opened on. The pick that comes back is not the picker's, so it is not `pickerActive` that
@@ -288,16 +290,16 @@ function onAgentEvent(event: AgentEvent): void {
 		case 'contextMenu':
 			// While picking, a right-click is the picker's own business and never reaches here.
 			if (!pickerActive && contextMenuEnabled) {
-				openContextMenu(event.at, event.descriptor);
+				openContextMenu(event.at, event.descriptor, event.targetId);
 			}
 			break;
 
 		case 'dismissContextMenu':
-			// The page has already dropped the element and its outline — that is what it is
-			// reporting — and asking it to do so again is a message that can arrive *after*
-			// the right-click that follows the click being reported, taking a target the panel
-			// is by then showing a menu for.
-			closeContextMenu({ keepTarget: true });
+			// A click, a scroll or an Escape somewhere in the page — which is the only way this
+			// document hears of one at all, and it may come from a frame that is not the one
+			// holding the element. Closing says which element it was about, so the frame that
+			// *is* holding it forgets that one and no other.
+			closeContextMenu();
 			break;
 
 		case 'navigated':
@@ -436,7 +438,7 @@ function onDidResolveUrl(message: Extract<ExtensionToWebviewMessage, { type: 'di
 	const bust = pendingNavigation.bust;
 	pendingNavigation = undefined;
 
-	closeContextMenu({ keepTarget: true });
+	closeContextMenu();
 	displayUrl = message.displayUrl;
 	loadedUrl = message.loadUrl;
 	expectsAgent = message.instrumented;
@@ -642,8 +644,9 @@ function contextMenuItems(): HTMLButtonElement[] {
  * every frame it went through contributes, so the only thing left is where the frame itself
  * sits in this document.
  */
-function openContextMenu(at: PagePoint, descriptor: string): void {
+function openContextMenu(at: PagePoint, descriptor: string, targetId: string): void {
 	setMenuOpen(false);
+	contextTargetId = targetId;
 	contextMenuHeader.textContent = descriptor;
 	// Unhidden before it is measured: a `[hidden]` element has no size to place it by. Nothing
 	// is painted in between, since both happen in this one turn.
@@ -663,18 +666,22 @@ function openContextMenu(at: PagePoint, descriptor: string): void {
 
 	// The menu takes the keyboard, so Escape and the arrow keys reach it rather than the page.
 	contextMenuItems()[0]?.focus();
+
+	// Every frame watches for the click that closes this again: the panel cannot see one, and
+	// the next click is not necessarily in the frame the menu was opened from.
+	sendToPage({ kind: 'contextMenuOpen', open: true, targetId });
 }
 
-function closeContextMenu(options?: { readonly keepTarget?: boolean }): void {
+function closeContextMenu(): void {
 	if (!contextMenuOpen) {
 		return;
 	}
 	contextMenuOpen = false;
 	contextMenu.hidden = true;
-	if (!options?.keepTarget) {
-		// The page is still outlining the element this menu was about.
-		sendToPage({ kind: 'clearContextTarget' });
-	}
+	// Named, so a frame that has since taken a *new* right-click keeps the element that one is
+	// about — this message can arrive after it. A frame that has already handed its element
+	// over has nothing left to forget, which is why the pick below closes the same way.
+	sendToPage({ kind: 'contextMenuOpen', open: false, targetId: contextTargetId });
 }
 
 /**
@@ -683,13 +690,15 @@ function closeContextMenu(options?: { readonly keepTarget?: boolean }): void {
  * on to it in the meantime.
  */
 function runContextCommand(command: ContextMenuCommand): void {
+	// Asked for before the menu closes: closing tells the page to forget that element, and only
+	// an element pick has anything to do with it.
+	const targetId = contextTargetId;
+	closeContextMenu();
+
 	if (command === 'inspect') {
-		closeContextMenu();
 		vscode.postMessage({ type: 'openDevTools' });
 		return;
 	}
-
-	closeContextMenu({ keepTarget: true });
 
 	if (isConsoleCommand(command)) {
 		runCopyCommand(command);
@@ -700,7 +709,7 @@ function runContextCommand(command: ContextMenuCommand): void {
 	pickCommand = command;
 	awaitingContextPick = true;
 	showHint('waiting', 'Reading the element…');
-	sendToPage({ kind: 'pickContextTarget' });
+	sendToPage({ kind: 'pickContextTarget', targetId });
 
 	// The element can be gone by now — a menu is open for as long as the user wants — and a
 	// page with nothing to report says nothing at all.
@@ -785,7 +794,7 @@ onceDocumentLoaded(() => {
 
 	iframe.addEventListener('load', () => {
 		// The document the menu was opened on is gone, and with it the element it named.
-		closeContextMenu({ keepTarget: true });
+		closeContextMenu();
 		// Ask the document that just loaded whether the agent is in it, rather than reading
 		// that off the order two processes happened to report things in. Only an answer to
 		// *this* question counts, so a document that has since been left cannot answer for the

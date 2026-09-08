@@ -296,11 +296,14 @@ const server = http.createServer((req, res) => {
 			window.__commands = [];
 			window.addEventListener('message', event => {
 				if (event.data && event.data.__tabBrowserAgent) {
-					window.__commands.push(event.data.kind);
+					window.__commands.push({ kind: event.data.kind, open: event.data.open,
+						targetId: event.data.targetId });
 				}
 			});
+			window.__nextTarget = 0;
 			window.__openContextMenu = (x, y) => parent.postMessage({ __tabBrowserAgent: true,
-				kind: 'contextMenu', at: { x, y }, descriptor: 'button#save.primary' }, '*');
+				kind: 'contextMenu', at: { x, y }, descriptor: 'button#save.primary',
+				targetId: 'target-' + (++window.__nextTarget) }, '*');
 			window.__answerPick = () => parent.postMessage({ __tabBrowserAgent: true, kind: 'pick',
 				element: { descriptor: 'button#save.primary', selector: '#save',
 					xpath: '/html/body/button', framePath: [] } }, '*');
@@ -392,14 +395,19 @@ const server = http.createServer((req, res) => {
 			<body style="margin: 0">
 			<div id="plain" class="row" data-testid="plain-row" style="position: absolute; left: 20px; top: 20px; width: 120px; height: 40px">plain</div>
 			<div id="own-menu" style="position: absolute; left: 20px; top: 100px; width: 120px; height: 40px">own</div>
+			<iframe src="/context-frame" style="position: absolute; left: 20px; top: 160px; width: 200px; height: 80px; border: 0"></iframe>
 			<script>
 				window.__events = [];
 				window.addEventListener('message', event => {
 					if (event.data && event.data.__tabBrowserAgent) {
 						window.__events.push({
 							kind: event.data.kind,
+							// This document relays what its frames report, so every one of
+							// those arrives twice: once from the frame, once from the relay.
+							fromFrame: event.source !== window,
 							at: event.data.at,
 							descriptor: event.data.descriptor,
+							targetId: event.data.targetId,
 							picked: event.data.element && event.data.element.descriptor,
 							selector: event.data.element && event.data.element.selector,
 						});
@@ -412,6 +420,17 @@ const server = http.createServer((req, res) => {
 				document.getElementById('own-menu')
 					.addEventListener('contextmenu', event => event.preventDefault());
 			</script></body></html>`);
+		return;
+	}
+	// A framed document with the real agent in it, for the click that closes a menu the frame
+	// above it opened: the panel cannot see one, so whichever frame it lands in has to report it.
+	if (req.url === '/context-frame') {
+		res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+		res.end(`<!DOCTYPE html><html><head>
+			<script>window.__tabBrowserConfig = { realOrigin: 'http://127.0.0.1:1' };</script>
+			<script src="/agent.js"></script></head>
+			<body style="margin: 0"><div id="inside" style="width: 200px; height: 80px">framed</div>
+			</body></html>`);
 		return;
 	}
 	// A page carrying the agent with a cookie prefix set, i.e. what the proxy serves.
@@ -722,7 +741,10 @@ try {
 			top: Math.round(opened.top - box.top),
 			header: menu.querySelector('.menu-header').textContent,
 			// Nothing about the element has travelled up here; the page is holding on to it.
-			asked: frame.contentWindow.__commands.slice(),
+			asked: frame.contentWindow.__commands.map(command => command.kind),
+			// Every frame is told to watch for the click that closes this again.
+			watching: frame.contentWindow.__commands
+				.filter(command => command.kind === 'contextMenuOpen').map(command => command.open),
 		};
 
 		// A click in the far corner of the page. The menu is the panel's own dom, so it cannot
@@ -742,9 +764,13 @@ try {
 
 		// Choosing an entry is what asks the page for the element the menu was opened on.
 		frame.contentWindow.__commands.length = 0;
+		// The menu has been opened a few times by now; the element it hands over has to be the
+		// one the menu that is standing open was opened on.
+		const expectedTarget = `target-${frame.contentWindow.__nextTarget}`;
 		menu.querySelector('[data-command="element"]').click();
 		await settle();
 		const asked = frame.contentWindow.__commands.slice();
+		const pickedUnder = asked.find(command => command.kind === 'pickContextTarget')?.targetId;
 		frame.contentWindow.__answerPick();
 		await settle();
 		const copied = window.__posted.filter(message => message.type === 'copyElement').at(-1);
@@ -764,8 +790,9 @@ try {
 		await settle();
 		const devTools = window.__posted.some(message => message.type === 'openDevTools');
 
-		return { placed, atTheEdge, asked, copied, reopened, dismissed, devTools,
-			closedAfterChoice: menu.hidden };
+		return { placed, atTheEdge, asked: asked.map(command => command.kind), pickedUnder,
+			expectedTarget,
+			copied, reopened, dismissed, devTools, closedAfterChoice: menu.hidden };
 	}, new URL(pageUrl).origin);
 	await menuPanel.close();
 
@@ -788,6 +815,10 @@ try {
 		prevented: window.__lastEvent?.defaultPrevented,
 		outlined: !!document.querySelector('[data-tab-browser="picker"]'),
 	}));
+	// What the panel does with what the page reports, which is what the page is answering to.
+	const toPage = message => menuPage.evaluate(sent => window.postMessage(
+		{ __tabBrowserAgent: true, ...sent }, '*'), message);
+	const settlePage = () => menuPage.evaluate(() => new Promise(resolve => setTimeout(resolve, 60)));
 
 	// Nothing is switched on yet: a right-click is the editor's, as it is in any panel.
 	await rightClick('#plain');
@@ -800,10 +831,15 @@ try {
 	await rightClick('#plain');
 	pageMenus.enabled = await menuEvents();
 
-	// The panel comes back for the element by nothing but "the one you told me about".
-	await menuPage.evaluate(() => window.postMessage(
-		{ __tabBrowserAgent: true, kind: 'pickContextTarget' }, '*'));
-	await menuPage.evaluate(() => new Promise(resolve => setTimeout(resolve, 50)));
+	// The panel comes back for the element by the name it was told, and by no other: the menu
+	// it asks for may have been replaced by the time the message arrives.
+	const openTarget = (await menuEvents()).events.find(event => event.kind === 'contextMenu')?.targetId;
+	await toPage({ kind: 'pickContextTarget', targetId: 'not-the-one-it-was-told' });
+	await settlePage();
+	pageMenus.wrongId = await menuEvents();
+
+	await toPage({ kind: 'pickContextTarget', targetId: openTarget });
+	await settlePage();
 	pageMenus.picked = await menuEvents();
 
 	// A site with a menu of its own says so by taking the event; replacing that menu with ours
@@ -812,12 +848,26 @@ try {
 	pageMenus.ownMenu = await menuEvents();
 
 	// And a click in the page, which is what closes a menu drawn in the panel above it.
-	await menuPage.evaluate(() => window.postMessage(
-		{ __tabBrowserAgent: true, kind: 'setContextMenu', enabled: true }, '*'));
 	await rightClick('#plain');
-	await menuPage.mouse.click(200, 200);
-	await menuPage.evaluate(() => new Promise(resolve => setTimeout(resolve, 50)));
+	await menuPage.mouse.click(300, 20);
+	await settlePage();
 	pageMenus.dismissed = await menuEvents();
+
+	// The same click, landing in a frame that is not the one holding the element. Only the
+	// panel knows a menu is up, so it is the panel that has every frame watch for this.
+	await rightClick('#plain');
+	const reopened = (await menuEvents()).events.filter(event => event.kind === 'contextMenu').at(-1);
+	await toPage({ kind: 'contextMenuOpen', open: true, targetId: reopened?.targetId });
+	await settlePage();
+	const framed = await menuPage.locator('iframe').boundingBox();
+	await menuPage.mouse.click(framed.x + framed.width / 2, framed.y + framed.height / 2);
+	await settlePage();
+	pageMenus.dismissedFromFrame = await menuEvents();
+
+	// And closing it takes the outline down in the frame that *was* holding the element.
+	await toPage({ kind: 'contextMenuOpen', open: false, targetId: reopened?.targetId });
+	await settlePage();
+	pageMenus.closed = await menuEvents();
 	await menuPage.close();
 
 	// The one thing the page has to do differently for a file: a url cannot be moved between
@@ -1401,6 +1451,12 @@ check('the editor\'s own menu is suppressed for the one the panel draws',
 	pageMenus?.enabled?.prevented === true && pageMenus.enabled.outlined === true,
 	JSON.stringify(pageMenus?.enabled));
 
+// The message can arrive after the right-click that replaced the menu it was about, so the
+// element is handed over by the name the panel was told and by no other.
+check('a pick asked for under another name is not answered',
+	contextEvents(pageMenus?.wrongId, 'pick').length === 0
+	&& pageMenus?.wrongId?.outlined === true, JSON.stringify(pageMenus?.wrongId));
+
 const contextPick = contextEvents(pageMenus?.picked, 'pick')[0];
 check('the element is described only once an entry has been chosen',
 	contextPick?.picked === 'div#plain.row' && pageMenus?.picked?.outlined === false,
@@ -1419,6 +1475,17 @@ check('a click in the page closes the menu standing above it',
 	&& pageMenus?.dismissed?.outlined === false,
 	JSON.stringify(pageMenus?.dismissed));
 
+// The click that closes a menu is not necessarily in the frame the menu was opened from, and
+// only the panel knows there is a menu to close — so it is the panel that has every frame watch.
+check('a click in another frame closes it too',
+	contextEvents(pageMenus?.dismissedFromFrame, 'dismissContextMenu').some(event => event.fromFrame)
+	&& !contextEvents(pageMenus?.dismissed, 'dismissContextMenu').some(event => event.fromFrame),
+	JSON.stringify(pageMenus?.dismissedFromFrame?.events));
+
+check('and the frame that was holding the element drops its outline when the menu goes',
+	pageMenus?.dismissedFromFrame?.outlined === true && pageMenus?.closed?.outlined === false,
+	JSON.stringify([pageMenus?.dismissedFromFrame?.outlined, pageMenus?.closed?.outlined]));
+
 check('the menu opens where the cursor is, in a frame the panel measures itself',
 	contextMenuPanel?.placed?.hidden === false && contextMenuPanel.placed.left === 30
 	&& contextMenuPanel.placed.top === 40
@@ -1429,12 +1496,22 @@ check('a right-click alone asks the page for nothing',
 	contextMenuPanel?.placed?.asked?.includes('pickContextTarget') === false,
 	JSON.stringify(contextMenuPanel?.placed?.asked));
 
+check('every frame is told to watch for the click that closes the menu',
+	contextMenuPanel?.placed?.watching?.[0] === true,
+	JSON.stringify(contextMenuPanel?.placed?.watching));
+
 check('a menu opened in the corner of the page stays inside the panel',
 	contextMenuPanel?.atTheEdge?.inside === true, JSON.stringify(contextMenuPanel?.atTheEdge));
 
 check('choosing an entry asks the page for the element and closes the menu',
 	contextMenuPanel?.asked?.includes('pickContextTarget') === true
 	&& contextMenuPanel.closedAfterChoice === true, JSON.stringify(contextMenuPanel?.asked));
+
+// Under the name the page gave it, so a menu that has since been replaced answers for its own
+// element and not for the one the panel happens to be showing a menu for now.
+check('and asks for it by the name the page gave the element that menu is about',
+	!!contextMenuPanel?.pickedUnder && contextMenuPanel.pickedUnder === contextMenuPanel.expectedTarget,
+	`${contextMenuPanel?.pickedUnder} vs ${contextMenuPanel?.expectedTarget}`);
 
 // The pick that answers is not the picker's: nothing is picking, and a `pick` let through on
 // that alone would be a page reporting elements nobody asked about.
@@ -2255,6 +2332,18 @@ check('one entry is not a duplicate, and neither is none',
 	codexOurEntries([undefined, `[mcp_servers.tab-browser]\nurl = "${checkUrlWithToken}"\n`]).length === 1
 	&& codexOurEntries([undefined, undefined]).length === 0);
 
+// The project's config is the definition Codex reads, so a name it switches off is a name the
+// global config no longer defines — and counting the global one there reports a duplicate of
+// something Codex never starts, with the `codex mcp remove` that would break the working entry.
+const disabledInProject = [
+	`[mcp_servers.tab-browser]\nurl = "${checkUrlWithToken}"\nenabled = false\n`,
+	`[mcp_servers.tab-browser]\nurl = "${checkUrlWithToken}"\n\n`
+	+ `[mcp_servers.tab-browser-app-a1b2c3]\nurl = "${checkUrlWithToken}"\n`,
+];
+check('an entry the project switches off does not let the global one of that name count',
+	codexOurEntries(disabledInProject).join() === 'tab-browser-app-a1b2c3',
+	JSON.stringify(codexOurEntries(disabledInProject)));
+
 check('a Codex config with no tab browser in it says so',
 	codexState('[mcp_servers.other]\nurl = "http://127.0.0.1:1/mcp"\n', undefined) === 'none');
 
@@ -2323,6 +2412,17 @@ check('every sidebar row runs a command that exists',
 
 check('every sidebar row renders',
 	sidebarRows.every(row => treeProvider.getTreeItem(row).label === row.label));
+
+// The tree is rebuilt whole on every change — and there is one per panel state change, several
+// per page load — so the folders someone opened have to be remembered by something. The tree
+// does that by the id of the item, which a row of a new object every time otherwise has none of.
+const filesSection = sidebarRows.find(row => row.label === 'Project files');
+const folderRows = sidebarRows.filter(row => row.folder);
+check('the file browser rows are identified, so opening a folder survives a refresh',
+	!!filesSection && treeProvider.getTreeItem(filesSection).id === 'files'
+	&& folderRows.length > 0 && folderRows.every(row => !!treeProvider.getTreeItem(row).id)
+	&& new Set(folderRows.map(row => row.id)).size === folderRows.length,
+	JSON.stringify(folderRows.map(row => row.id)));
 
 check('the manifest puts every title bar button on this view',
 	manifest.contributes.menus['view/title'].every(entry =>

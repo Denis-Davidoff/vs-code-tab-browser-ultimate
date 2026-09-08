@@ -229,9 +229,9 @@ function install(): void {
 	const contextMenu = new PageContextMenu({
 		highlight: element => picker.highlight(element),
 		clearHighlight: () => picker.clearHighlight(),
-		onOpen: (at, descriptor) => {
+		onOpen: (at, descriptor, targetId) => {
 			broadcast({ kind: 'clearContextTarget' });
-			send({ kind: 'contextMenu', at, descriptor });
+			send({ kind: 'contextMenu', at, descriptor, targetId });
 		},
 		onDismiss: () => send({ kind: 'dismissContextMenu' }),
 	});
@@ -281,11 +281,20 @@ function install(): void {
 				return;
 			}
 
+			case 'contextMenuOpen': {
+				if (event.source && event.source !== window && event.source !== window.parent) {
+					return;
+				}
+				contextMenu.setOpen(message.open, message.targetId);
+				broadcast(message);
+				return;
+			}
+
 			case 'pickContextTarget': {
 				if (event.source && event.source !== window && event.source !== window.parent) {
 					return;
 				}
-				const target = contextMenu.take();
+				const target = contextMenu.take(message.targetId);
 				if (target) {
 					send({
 						kind: 'pick',
@@ -417,6 +426,7 @@ function install(): void {
 					kind: 'contextMenu',
 					at: { x: message.at.x + offset.x, y: message.at.y + offset.y },
 					descriptor: message.descriptor,
+					targetId: message.targetId,
 				});
 				return;
 			}

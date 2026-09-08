@@ -6,7 +6,6 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { BrowserProxy, getConfiguration, isLocalUrl, parseHttpUrl } from './browserProxy';
-import { isUnder } from './fileSession';
 import { copyReport, slugify } from './clipboardFile';
 import * as assistants from './assistants';
 import { defaultIconUrl, discoverPage, fetchIcon } from './favicon';
@@ -39,6 +38,8 @@ export class TabBrowserView extends Disposable {
 	private static readonly title = vscode.l10n.t("AI Browser");
 	/** A page picks its own title, so it does not get to fill the tab bar. */
 	private static readonly maxTitleLength = 60;
+	/** Shortest gap between two hot reloads; one save on disk is often more than one event. */
+	private static readonly reloadInterval = 150;
 
 	private static getWebviewOptions(extensionUri: vscode.Uri): vscode.WebviewOptions {
 		return {
@@ -75,6 +76,7 @@ export class TabBrowserView extends Disposable {
 	private _iconToken = 0;
 	/** Origin the current tab icon belongs to. */
 	private _iconOrigin: string | undefined;
+	private _lastReloadAt = 0;
 
 	public static create(
 		extensionUri: vscode.Uri,
@@ -189,13 +191,22 @@ export class TabBrowserView extends Disposable {
 		}));
 
 		// A page off the disk has no dev server in front of it, so this is the whole of its hot
-		// reload: the file the panel is showing, or one it pulled in, was saved.
-		this._register(this._proxy.onDidChangeServedFile(root => {
-			const shown = filePathOfUrl(this._state.url);
-			if (shown && isUnder(root, shown)
-				&& getConfiguration().get<boolean>('files.reloadOnChange', true)) {
-				this._post({ type: 'reloadPage' });
+		// reload: the page the panel is showing is made of a file that was saved. The proxy
+		// answers with the page and not with the folder, so a stylesheet of the page opened an
+		// hour ago does not reload the one on screen.
+		this._register(this._proxy.onDidChangeServedFile(page => {
+			if (filePathOfUrl(this._state.url) !== page
+				|| !getConfiguration().get<boolean>('files.reloadOnChange', true)) {
+				return;
 			}
+			// One save is often two events — a create and a change, or a write and a rename —
+			// and a page loaded twice for one save is a page that flickers.
+			const now = Date.now();
+			if (now - this._lastReloadAt < TabBrowserView.reloadInterval) {
+				return;
+			}
+			this._lastReloadAt = now;
+			this._post({ type: 'reloadPage' });
 		}));
 
 		this._register(vscode.workspace.onDidChangeConfiguration(e => {
@@ -429,18 +440,20 @@ export class TabBrowserView extends Disposable {
 	 */
 	private async _resetTab(displayUrl: string, instrumented: boolean): Promise<void> {
 		const showIcon = getConfiguration().get<boolean>('showPageIcon', true);
-		const origin = parseHttpUrl(displayUrl)?.origin;
+		const file = filePathOfUrl(displayUrl);
+		// What the icon on the tab belongs to. A file has no origin, and every `file:` url
+		// having the same one — none — left the icon of the page before it on the tab.
+		const origin = file ?? parseHttpUrl(displayUrl)?.origin;
 		const token = ++this._iconToken;
 
 		if (showIcon && origin !== this._iconOrigin) {
-			// Reloading the same site keeps its icon; going somewhere else must not.
+			// Reloading the same page keeps its icon; going somewhere else must not.
 			this._webviewPanel.iconPath = undefined;
 			this._iconOrigin = origin;
 		}
 
 		// Until the page says what it is called, the tab says where it is — which for a file is
 		// its name, there being no host to put there.
-		const file = filePathOfUrl(displayUrl);
 		this._showTitle(file ? path.basename(file) : parseHttpUrl(displayUrl)?.host);
 
 		if (instrumented) {

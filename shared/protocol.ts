@@ -135,9 +135,22 @@ export type AgentCommand =
 		/** The panel's setting, since a pick the menu asks for builds selectors too. */
 		readonly preferAttributes?: readonly string[];
 	}
+	/**
+	 * A menu for the element `targetId` names is up, or gone. Sent to every frame and not only
+	 * to the one that was clicked: the panel cannot see a click inside the page, so whichever
+	 * frame the next one lands in has to be the one that says the menu must close.
+	 *
+	 * `open: false` also has the frame forget that element — by id, because the message can
+	 * arrive *after* the right-click that follows it, and clearing "whatever you have" would
+	 * then take the target of the menu that is standing open.
+	 */
+	| { readonly kind: 'contextMenuOpen'; readonly targetId: string; readonly open: boolean }
 	/** Report the element the context menu was opened on, as a `pick` of its own. */
-	| { readonly kind: 'pickContextTarget' }
-	/** The menu closed without a choice: forget that element and drop its outline. */
+	| { readonly kind: 'pickContextTarget'; readonly targetId: string }
+	/**
+	 * "You are not the frame that was clicked": sent by the frame that takes a right-click to
+	 * every other one, so that no two frames hold an outlined element.
+	 */
 	| { readonly kind: 'clearContextTarget' }
 	| { readonly kind: 'request'; readonly requestId: number; readonly request: PageRequest };
 
@@ -162,6 +175,8 @@ export type AgentEvent =
 		readonly at: PagePoint;
 		/** `tag#id.class` of the element under the cursor, for the menu's header. */
 		readonly descriptor: string;
+		/** Names the element for as long as the menu is up; see `contextMenuOpen`. */
+		readonly targetId: string;
 	}
 	/** Something the page saw that a menu has to close for: a click, a scroll, Escape. */
 	| { readonly kind: 'dismissContextMenu' }

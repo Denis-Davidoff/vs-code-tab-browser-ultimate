@@ -18,7 +18,7 @@ export interface ContextMenuHost {
 	highlight(element: Element): void;
 	clearHighlight(): void;
 	/** A right-click the page left alone, at a point in this document's viewport. */
-	onOpen(at: PagePoint, descriptor: string): void;
+	onOpen(at: PagePoint, descriptor: string, targetId: string): void;
 	/** The page moved out from under the menu: it has to close. */
 	onDismiss(): void;
 }
@@ -26,8 +26,8 @@ export interface ContextMenuHost {
 export class PageContextMenu {
 
 	private _enabled = false;
-	/** The element the open menu belongs to; the panel comes back for it by no other name. */
-	private _target: Element | undefined;
+	/** The element the open menu belongs to, under the name the panel knows it by. */
+	private _target: { readonly id: string; readonly element: Element } | undefined;
 	private _watching = false;
 
 	private readonly _onContextMenu = (event: MouseEvent) => {
@@ -45,10 +45,15 @@ export class PageContextMenu {
 
 		// Ours to answer, so the editor's own menu must not open on top of it.
 		event.preventDefault();
-		this._target = event.target;
+		// Named, because the panel is the one that knows whether the menu for it is still up,
+		// and its word about that can arrive after the next right-click has replaced it.
+		const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+		this._target = { id, element: event.target };
 		this._host.highlight(event.target);
+		// The panel has every frame watch while a menu is up; this frame starts now, since the
+		// click that closes the menu again is most often in the frame it was opened from.
 		this._watch(true);
-		this._host.onOpen({ x: event.clientX, y: event.clientY }, describeNode(event.target));
+		this._host.onOpen({ x: event.clientX, y: event.clientY }, describeNode(event.target), id);
 	};
 
 	private readonly _onDismiss = (event: Event) => {
@@ -75,14 +80,31 @@ export class PageContextMenu {
 		} else {
 			window.removeEventListener('contextmenu', this._onContextMenu);
 			this.clear();
+			// A frame can be watching for a menu opened in another one; with right-clicks
+			// switched off there is no menu of ours left for it to close.
+			this._watch(false);
 		}
 	}
 
-	/** Hands over the element the menu was opened on; there is no second answer to give. */
-	public take(): Element | undefined {
-		const target = this._target;
-		this.clear();
+	/** Hands over the element that menu was opened on; there is no second answer to give. */
+	public take(targetId: string): Element | undefined {
+		const target = this._target?.id === targetId ? this._target.element : undefined;
+		if (target) {
+			this.clear();
+		}
 		return target;
+	}
+
+	/**
+	 * A menu is up somewhere, or is gone. Whichever frame the closing click lands in is the one
+	 * that has to notice it, so every frame watches — and only the frame that is holding the
+	 * element that menu was about forgets anything.
+	 */
+	public setOpen(open: boolean, targetId: string): void {
+		this._watch(open && this._enabled);
+		if (!open && this._target?.id === targetId) {
+			this.clear();
+		}
 	}
 
 	/** The menu is gone: nothing is remembered and nothing is outlined for it any more. */

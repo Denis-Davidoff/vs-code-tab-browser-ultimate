@@ -46,6 +46,17 @@ class Uri {
 			: (this._raw ?? `${this.scheme}:${this.path}`);
 	}
 
+	/** The two halves that belong to the page rather than to the file. */
+	get query() {
+		const match = /\?([^#]*)/.exec(this._rest ?? '');
+		return match ? decodeSafely(match[1]) : '';
+	}
+
+	get fragment() {
+		const match = /#(.*)$/.exec(this._rest ?? '');
+		return match ? decodeSafely(match[1]) : '';
+	}
+
 	get fsPath() {
 		// Posix, which is what the tests run on; a windows drive letter keeps its slashes here.
 		return this.path;

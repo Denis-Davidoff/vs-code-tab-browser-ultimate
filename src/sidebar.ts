@@ -29,6 +29,13 @@ const skippedFolders = new Set(['node_modules']);
 
 interface Row {
 	readonly label: string;
+	/**
+	 * Set on the rows whose state is worth keeping: the tree remembers what is expanded by the
+	 * id of the item, and every row here is a new object on every refresh — of which there is
+	 * one per panel state change, so without this the file browser folds up while the page it
+	 * was opened from is still loading.
+	 */
+	readonly id?: string;
 	readonly description?: string;
 	readonly tooltip?: string;
 	readonly icon?: vscode.ThemeIcon;
@@ -126,6 +133,7 @@ class SidebarProvider implements vscode.TreeDataProvider<Row> {
 				: vscode.TreeItemCollapsibleState.Expanded)
 			: vscode.TreeItemCollapsibleState.None);
 
+		item.id = row.id;
 		item.description = row.description;
 		item.tooltip = row.tooltip;
 		item.iconPath = row.icon;
@@ -137,7 +145,7 @@ class SidebarProvider implements vscode.TreeDataProvider<Row> {
 
 	public getChildren(row?: Row): Row[] | Thenable<Row[]> {
 		if (row?.folder) {
-			return this._folderRows(row.folder);
+			return this._folderRows(row.folder, row.id ?? 'files');
 		}
 		return [...(row ? row.children ?? [] : this._roots())];
 	}
@@ -147,7 +155,7 @@ class SidebarProvider implements vscode.TreeDataProvider<Row> {
 	 * it holds. Only html files, because opening anything else in a browser is not a thing this
 	 * panel does — `Open a file…` is there for the file nobody would find by browsing.
 	 */
-	private async _folderRows(folder: vscode.Uri): Promise<Row[]> {
+	private async _folderRows(folder: vscode.Uri, id: string): Promise<Row[]> {
 		let entries: [string, vscode.FileType][];
 		try {
 			entries = await vscode.workspace.fs.readDirectory(folder);
@@ -170,6 +178,9 @@ class SidebarProvider implements vscode.TreeDataProvider<Row> {
 				}
 				folders.push({
 					label: name,
+					// Built from the row above rather than from the path: with two workspace
+					// folders, one of which is inside the other, the same folder is two rows.
+					id: `${id}/${name}`,
 					icon: new vscode.ThemeIcon('folder'),
 					folder: child,
 				});
@@ -287,13 +298,22 @@ class SidebarProvider implements vscode.TreeDataProvider<Row> {
 		const label = vscode.l10n.t("Project files");
 		const icon = new vscode.ThemeIcon('folder-opened');
 		return [folders.length === 1
-			? { label, description: folders[0].name, icon, collapsed: true, folder: folders[0].uri }
-			: {
+			? {
 				label,
+				id: 'files',
+				description: folders[0].name,
 				icon,
 				collapsed: true,
-				children: folders.map(folder => ({
+				folder: folders[0].uri,
+			}
+			: {
+				label,
+				id: 'files',
+				icon,
+				collapsed: true,
+				children: folders.map((folder, index) => ({
 					label: folder.name,
+					id: `files/${index}`,
 					icon: new vscode.ThemeIcon('folder'),
 					folder: folder.uri,
 				})),

@@ -330,11 +330,21 @@ export function codexClientState(
  */
 export function codexOurEntries(texts: readonly (string | undefined)[]): string[] {
 	const names: string[] = [];
+	// Every name of ours that has been *defined*, whatever it says, and not only the ones that
+	// count: a name the project's config gives is the definition Codex reads, so the same name
+	// in the global one is shadowed. Read off the result instead, an entry the project switches
+	// off would let the global entry of the same name back in — and be reported as a duplicate
+	// of something Codex never starts.
+	const defined = new Set<string>();
 
 	for (const text of texts) {
 		for (const entry of text ? codexEntries(text) : []) {
-			if (!entry.name.startsWith(serverName) || names.includes(entry.name)
-				|| entry.values.get('enabled') === 'false' || !entry.values.get('url')) {
+			if (!entry.name.startsWith(serverName) || defined.has(entry.name)) {
+				continue;
+			}
+			defined.add(entry.name);
+
+			if (entry.values.get('enabled') === 'false' || !entry.values.get('url')) {
 				continue;
 			}
 			names.push(entry.name);
