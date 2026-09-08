@@ -138,8 +138,8 @@ globalThis.__vscodeStub = {
 	UIKind: {},
 };
 
-const { formatPickedElement, formatConsoleReport, escapeAttribute, normalizeUrl, parseFileUrl } =
-	await import('./.bundles/view-bundle.mjs');
+const { formatPickedElement, formatConsoleReport, escapeAttribute, normalizeUrl, parseFileUrl,
+	showsPageOnDisk } = await import('./.bundles/view-bundle.mjs');
 const { defaultIconUrl, discoverPage, fetchIcon: fetchIconToDirectory } = await import('./.bundles/favicon-bundle.mjs');
 const { registerTerminalLinks } = await import('./.bundles/terminal-links-bundle.mjs');
 const assistants = await import('./.bundles/assistants-bundle.mjs');
@@ -355,6 +355,11 @@ const server = http.createServer((req, res) => {
 				{ __tabBrowserAgent: true, kind: 'shortcut', action }, '*');
 			window.__zoomGesture = delta => parent.postMessage(
 				{ __tabBrowserAgent: true, kind: 'zoomGesture', delta }, '*');
+			// What a page can say on its own, the shapes being in the script injected into it.
+			window.__copyToClipboard = text => parent.postMessage(
+				{ __tabBrowserAgent: true, kind: 'copyToClipboard', text }, '*');
+			window.__reportNavigated = documentUrl => parent.postMessage(
+				{ __tabBrowserAgent: true, kind: 'navigated', documentUrl }, '*');
 			window.__openContextMenu = (x, y) => parent.postMessage({ __tabBrowserAgent: true,
 				kind: 'contextMenu', at: { x, y }, descriptor: 'button#save.primary',
 				targetId: 'target-' + (++window.__nextTarget) }, '*');
@@ -1161,6 +1166,39 @@ try {
 			askedThePage: frame.contentWindow.__commands.some(command => command.kind === 'edit'),
 		};
 
+		// A page is free to say "put this on the clipboard", so it is only listened to as the
+		// answer to a copy that was asked for. Unasked, it is a page overwriting the clipboard.
+		window.__posted.length = 0;
+		frame.contentWindow.__copyToClipboard('taken without asking');
+		await settle();
+		const unaskedWrite = window.__posted.some(message => message.type === 'writeClipboard');
+
+		// The address bar is not rearranged under someone who has selected the url in it: an
+		// assignment drops the caret, so the same text is never assigned twice.
+		input.blur();
+		input.focus();
+		input.value = 'http://127.0.0.1:1/';
+		input.setSelectionRange(0, input.value.length);
+		frame.contentWindow.__reportNavigated('http://127.0.0.1:1/');
+		await settle();
+		const keptSelection = input.selectionEnd - input.selectionStart === input.value.length;
+		// But a page that went somewhere else is a field that has to say so.
+		frame.contentWindow.__reportNavigated('http://127.0.0.1:1/elsewhere');
+		await settle();
+		const followedNavigation = input.value;
+
+		// One flag for every menu: reported per menu, the second one's closing stopped the
+		// watch the first one was still open behind.
+		frame.contentWindow.__commands.length = 0;
+		document.querySelector('.browser-menu-toggle').click();
+		document.querySelector('.copy-menu-toggle').click();
+		document.querySelector('.browser-menu-toggle').click();
+		await settle();
+		const watchWhileOneStaysOpen = frame.contentWindow.__commands
+			.filter(command => command.kind === 'menuOpen').map(command => command.open);
+		document.body.click();
+		await settle();
+
 		// And the menu, which is the only route to the editing commands: no keybinding of ours
 		// may claim those keys, since one did and took them from the rest of the editor.
 		document.querySelector('.browser-menu-toggle').click();
@@ -1204,7 +1242,8 @@ try {
 			entered, oneStep, twoSteps, zoomedOut, level, reset, halfAGesture, wholeGesture,
 			forwardedNewTab, menuOpen, fromMenu, watchedForClicks, closedByPage, afterRedirect,
 			pastedInField, selectedInField, copiedFromField, editFromMenu, pasteFromMenu,
-			forgedEdit };
+			forgedEdit, unaskedWrite, keptSelection, followedNavigation,
+			watchWhileOneStaysOpen };
 	}, new URL(pageUrl).origin);
 	await toolbarPanel.close();
 
@@ -1279,7 +1318,8 @@ try {
 	// In the order the panel sends them: closing is what tells the page to forget the element,
 	// so a request that follows it is a request nothing can be answered for.
 	await toPage({ kind: 'pickContextTarget', targetId: openTarget });
-	await toPage({ kind: 'menuOpen', open: false, targetId: openTarget });
+	await toPage({ kind: 'clearContextTarget', targetId: openTarget });
+	await toPage({ kind: 'menuOpen', open: false });
 	await settlePage();
 	pageMenus.picked = await menuEvents();
 
@@ -1411,7 +1451,7 @@ try {
 	await rightClick('#plain');
 	const openTargetAgain = (await menuEvents()).events
 		.filter(event => event.kind === 'contextMenu').at(-1)?.targetId;
-	await toPage({ kind: 'menuOpen', open: true, targetId: openTargetAgain });
+	await toPage({ kind: 'menuOpen', open: true });
 	await settlePage();
 	await menuPage.mouse.click(300, 20);
 	await settlePage();
@@ -1421,17 +1461,21 @@ try {
 	// panel knows a menu is up, so it is the panel that has every frame watch for this.
 	await rightClick('#plain');
 	const reopened = (await menuEvents()).events.filter(event => event.kind === 'contextMenu').at(-1);
-	await toPage({ kind: 'menuOpen', open: true, targetId: reopened?.targetId });
+	await toPage({ kind: 'menuOpen', open: true });
 	await settlePage();
 	const framed = await menuPage.locator('iframe').boundingBox();
 	await menuPage.mouse.click(framed.x + framed.width / 2, framed.y + framed.height / 2);
 	await settlePage();
 	pageMenus.dismissedFromFrame = await menuEvents();
 
-	// And closing it takes the outline down in the frame that *was* holding the element.
-	await toPage({ kind: 'menuOpen', open: false, targetId: reopened?.targetId });
+	// And closing it is what has the frame forget the element that menu was about.
+	await toPage({ kind: 'clearContextTarget', targetId: reopened?.targetId });
+	await toPage({ kind: 'menuOpen', open: false });
 	await settlePage();
-	pageMenus.closed = await menuEvents();
+	await menuPage.evaluate(() => { window.__events.length = 0; });
+	await toPage({ kind: 'pickContextTarget', targetId: reopened?.targetId });
+	await settlePage();
+	pageMenus.afterClosing = await menuEvents();
 	await menuPage.close();
 
 	// The one thing the page has to do differently for a file: a url cannot be moved between
@@ -1858,6 +1902,14 @@ check('a right-click in a zoomed page opens the menu under the cursor',
 	&& contextMenuPanel.whenZoomed.left === 50 && contextMenuPanel.whenZoomed.top === 50,
 	JSON.stringify(contextMenuPanel?.whenZoomed));
 
+// A page addressed as a folder was served the index inside it while the panel shows the folder,
+// so a save on that page has to reload it.
+check('a page opened as a folder is the index inside it',
+	showsPageOnDisk('file:///srv/site/', '/srv/site/index.html')
+	&& showsPageOnDisk('file:///srv/site/page.html', '/srv/site/page.html')
+	&& !showsPageOnDisk('file:///srv/site/', '/srv/site/other.html')
+	&& !showsPageOnDisk('http://localhost:3000/', '/srv/site/index.html'));
+
 // -- a cookie in a framed page -----------------------------------------------------------------
 
 // The one that matters: two fetches of a single page load, the second of which is the request a
@@ -2032,6 +2084,19 @@ check('the menu is where the editing commands are, since no key of ours may clai
 // reading the clipboard, so only the four keys a browser keeps for itself are accepted.
 check('and a page cannot ask for one by forging the panel\'s own shortcut',
 	toolbar?.forgedEdit === false, JSON.stringify(toolbar?.forgedEdit));
+
+check('a page cannot put something on the clipboard unasked',
+	toolbar?.unaskedWrite === false, JSON.stringify(toolbar?.unaskedWrite));
+
+check('the address bar keeps a selection the page had nothing to do with',
+	toolbar?.keptSelection === true && toolbar?.followedNavigation === 'http://127.0.0.1:1/elsewhere',
+	JSON.stringify([toolbar?.keptSelection, toolbar?.followedNavigation]));
+
+// The page watches for the click that closes whatever is over it, and one menu closing while
+// another is still open is not that.
+check('the page is told once that something is open, however many menus come and go',
+	toolbar?.watchWhileOneStaysOpen?.join() === 'true',
+	JSON.stringify(toolbar?.watchWhileOneStaysOpen));
 
 check('a shortcut the page forwards runs the same thing the menu does',
 	toolbar?.forwardedNewTab === true && toolbar?.menuOpen === true
@@ -2257,14 +2322,18 @@ check('a right-click the page leaves alone is reported, with what it landed on',
 // The panel draws the menu, so the editor's own must not open behind it — and only the page
 // can stop that, in the handler, before there is anyone left to ask.
 check('the editor\'s own menu is suppressed for the one the panel draws',
-	pageMenus?.enabled?.prevented === true && pageMenus.enabled.outlined === true,
-	JSON.stringify(pageMenus?.enabled));
+	pageMenus?.enabled?.prevented === true, JSON.stringify(pageMenus?.enabled));
+
+// And nothing of ours is drawn in the page or focused there. The menu offers copy, cut and
+// paste: they act on the selection and the field the page has, and an outline of ours — or an
+// entry of ours taking the keyboard — is one more thing that can take those away.
+check('and nothing is drawn over the element that was clicked',
+	pageMenus?.enabled?.outlined === false, JSON.stringify(pageMenus?.enabled?.outlined));
 
 // The message can arrive after the right-click that replaced the menu it was about, so the
 // element is handed over by the name the panel was told and by no other.
 check('a pick asked for under another name is not answered',
-	contextEvents(pageMenus?.wrongId, 'pick').length === 0
-	&& pageMenus?.wrongId?.outlined === true, JSON.stringify(pageMenus?.wrongId));
+	contextEvents(pageMenus?.wrongId, 'pick').length === 0, JSON.stringify(pageMenus?.wrongId));
 
 const contextPick = contextEvents(pageMenus?.picked, 'pick')[0];
 check('the element is described only once an entry has been chosen',
@@ -2291,9 +2360,11 @@ check('a click in another frame closes it too',
 	&& !contextEvents(pageMenus?.dismissed, 'dismissMenu').some(event => event.fromFrame),
 	JSON.stringify(pageMenus?.dismissedFromFrame?.events));
 
-check('and the frame that was holding the element drops its outline when the menu goes',
-	pageMenus?.dismissedFromFrame?.outlined === true && pageMenus?.closed?.outlined === false,
-	JSON.stringify([pageMenus?.dismissedFromFrame?.outlined, pageMenus?.closed?.outlined]));
+// Closing is what tells the frame to forget the element, so a pick asked for afterwards is
+// asked for something nobody is holding — which used to be visible as the outline going away.
+check('and closing the menu makes the frame forget the element it was about',
+	contextEvents(pageMenus?.afterClosing, 'pick').length === 0,
+	JSON.stringify(pageMenus?.afterClosing?.events));
 
 check('the menu opens where the cursor is, in a frame the panel measures itself',
 	contextMenuPanel?.placed?.hidden === false && contextMenuPanel.placed.left === 30
@@ -3265,12 +3336,22 @@ check('the sections are the ones the readme names',
 		['Browser', 'This page', 'MCP server', 'Project files'].includes(label)),
 	sidebarSections.join(', '));
 
-// This extension contributes no keybindings at all, and that is a decision rather than an
-// omission: a binding for `Cmd`+`C` scoped to `activeWebviewPanelId` took copy and paste out of
-// the rest of the editor. The keys a browser keeps for itself are forwarded by the injected
-// script instead — which only the page can hear anyway — and everything else is in the menu.
-check('the extension binds none of the editor\'s keys',
-	!manifest.contributes.keybindings, JSON.stringify(manifest.contributes.keybindings));
+// What may be bound, and what may never be again. A binding for `Cmd`+`C` scoped to
+// `activeWebviewPanelId` took copy and paste out of the rest of the editor, so: the editing keys
+// are not claimed at all (they are in the panel's two menus instead), and what *is* claimed is
+// scoped to a context key this extension sets itself from its panels' own view state.
+const bindings = manifest.contributes.keybindings ?? [];
+const editingKeys = ['c', 'x', 'v', 'a', 'z', 'y'];
+check('every keybinding is scoped to the extension\'s own context key',
+	bindings.length > 0
+	&& bindings.every(entry => entry.when === 'tabBrowser.panelFocused'
+		&& registeredCommands.has(entry.command)),
+	JSON.stringify(bindings.filter(entry => entry.when !== 'tabBrowser.panelFocused')));
+
+check('and none of them claims a key the editor edits with',
+	bindings.every(entry => !editingKeys.some(key =>
+		[entry.key, entry.mac].some(chord => chord?.endsWith(`+${key}`)))),
+	JSON.stringify(bindings.map(entry => entry.mac ?? entry.key)));
 
 check('the manifest puts every title bar button on this view',
 	manifest.contributes.menus['view/title'].every(entry =>

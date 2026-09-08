@@ -20,9 +20,13 @@
  *  other way round: `Secure` costs nothing over `http://127.0.0.1`, which the browser counts
  *  as a trustworthy origin.
  *
- *  What `SameSite=None` gives up is contained by the prefix above: another proxied site's page
- *  can have the browser attach these cookies to a request at this session's port, but the
- *  session forwards only the names carrying *its* prefix and drops the rest.
+ *  What `SameSite=None` gives up is taken back on the way *upstream*, and not by the prefix
+ *  above — the prefixed names are exactly the ones the proxy restores. A cookie that is sent
+ *  with every cross-site request is an invitation for any page the panel has visited to post
+ *  to this port with the session behind it, so `BrowserProxy._fromOwnPage` forwards cookies
+ *  only for a request one of this session's own documents made. That is the check `SameSite`
+ *  would have made in the browser, made here instead because the browser cannot make it for a
+ *  page it has as a third party.
  *
  *  `Domain` is still dropped, since it names a host the browser does not have the page from.
  *--------------------------------------------------------------------------------------------*/

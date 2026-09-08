@@ -14,9 +14,6 @@ import { describeNode } from './elementContext';
 const dismissEvents = ['mousedown', 'wheel', 'scroll', 'keydown'] as const;
 
 export interface ContextMenuHost {
-	/** Outlines the element the menu was opened on; the picker owns that overlay. */
-	highlight(element: Element): void;
-	clearHighlight(): void;
 	/** A right-click the page left alone, at a point in this document's viewport. */
 	onOpen(at: PagePoint, descriptor: string, targetId: string): void;
 	/** The page moved out from under the menu: it has to close. */
@@ -49,7 +46,9 @@ export class PageContextMenu {
 		// and its word about that can arrive after the next right-click has replaced it.
 		const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 		this._target = { id, element: event.target };
-		this._host.highlight(event.target);
+		// Nothing is drawn over the element and nothing in the page is touched: the menu now
+		// offers copy, cut and paste, and those act on the selection and the field the user
+		// had — an outline of ours in the page is one more thing that can disturb them.
 		// Watching starts when the panel says a menu is up, and for no other reason: the panel
 		// may decide not to open one at all — it is picking, say — and a frame left watching
 		// for a menu that never opened reports clicks nothing is listening for.
@@ -96,25 +95,24 @@ export class PageContextMenu {
 	}
 
 	/**
-	 * The panel has a menu up, or no longer has — the one a right-click opened, or one of the
-	 * toolbar's own, which the page cannot see either. Whichever frame the closing click lands
-	 * in is the one that has to notice it, so every frame watches; and only the frame holding
-	 * the element that menu was about forgets anything, which is what `targetId` is for.
+	 * The panel has something standing open above the page, or no longer has — the menu a
+	 * right-click opened, or one of the toolbar's own, which the page cannot see either.
+	 * Whichever frame the closing click lands in is the one that has to notice it, so every
+	 * frame watches for as long as anything is up.
 	 */
-	public setOpen(open: boolean, targetId?: string): void {
+	public setOpen(open: boolean): void {
 		this._watch(open);
-		if (!open && this._target?.id === targetId) {
-			this.clear();
-		}
 	}
 
-	/** This frame is not the one holding an element for a menu any more. */
-	public clear(): void {
-		if (!this._target) {
-			return;
+	/**
+	 * Forget the element a menu was about: the one named, or whatever this frame is holding
+	 * when nothing is named. Named, because this can arrive after the right-click that
+	 * replaced that menu — and then the element being asked about is the new one.
+	 */
+	public clear(targetId?: string): void {
+		if (!targetId || this._target?.id === targetId) {
+			this._target = undefined;
 		}
-		this._target = undefined;
-		this._host.clearHighlight();
 	}
 
 	private _watch(watching: boolean): void {

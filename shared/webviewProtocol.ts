@@ -31,7 +31,12 @@ export type CopyCommand =
  * developer tools. Every one of them is also a copy menu entry, bar `inspect`, which is the one
  * thing the panel cannot do to an element itself.
  */
-export type ContextMenuCommand = CopyCommand | 'inspect';
+/**
+ * What the menu a right-click opens can run: the copy menu's element entries, the editing
+ * commands — which are here because the keys for them belong to the editor and a browser puts
+ * them under a right-click anyway — and the editor's developer tools.
+ */
+export type ContextMenuCommand = CopyCommand | EditAction | 'inspect';
 
 /**
  * The entries that ask the page for its console output; every other one picks an element. Said

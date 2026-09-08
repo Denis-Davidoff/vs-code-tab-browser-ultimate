@@ -57,9 +57,13 @@ export class TabBrowserView extends Disposable {
 	private readonly _onDidDispose = this._register(new vscode.EventEmitter<void>());
 	public readonly onDispose = this._onDidDispose.event;
 
-	private readonly _onDidBecomeActive = this._register(new vscode.EventEmitter<void>());
-	/** This panel took the focus. With several open, it is the one every command acts on. */
-	public readonly onDidBecomeActive = this._onDidBecomeActive.event;
+	private readonly _onDidChangeFocus = this._register(new vscode.EventEmitter<void>());
+	/**
+	 * This panel took the focus, or lost it. With several open, the one that has it is what
+	 * every command acts on — and whether *any* of them has it is what the keybindings for the
+	 * keys a browser keeps for itself are scoped to.
+	 */
+	public readonly onDidChangeFocus = this._onDidChangeFocus.event;
 
 	private readonly _onDidRequestNewTab = this._register(new vscode.EventEmitter<void>());
 	/** The menu's "New tab": a second panel is the manager's to open, not the panel's. */
@@ -213,11 +217,8 @@ export class TabBrowserView extends Disposable {
 
 		this._register(this._webviewPanel.onDidDispose(() => this.dispose()));
 
-		this._register(this._webviewPanel.onDidChangeViewState(() => {
-			if (this._webviewPanel.active) {
-				this._onDidBecomeActive.fire();
-			}
-		}));
+		this._register(this._webviewPanel.onDidChangeViewState(
+			() => this._onDidChangeFocus.fire()));
 
 		// The address bar completes what the panel has been on, and the list outlives the page.
 		this._register(this._recent.onDidChange(() => {
@@ -236,7 +237,7 @@ export class TabBrowserView extends Disposable {
 		// answers with the page and not with the folder, so a stylesheet of the page opened an
 		// hour ago does not reload the one on screen.
 		this._register(this._proxy.onDidChangeServedFile(page => {
-			if (filePathOfUrl(this._state.url) !== page
+			if (!showsPageOnDisk(this._state.url, page)
 				|| !getConfiguration().get<boolean>('files.reloadOnChange', true)) {
 				return;
 			}
@@ -326,6 +327,16 @@ export class TabBrowserView extends Disposable {
 
 	public get url(): string {
 		return this._state.url;
+	}
+
+	/** Whether the user is looking at this panel; `false` for every panel behind another tab. */
+	public get isActive(): boolean {
+		try {
+			return this._webviewPanel.active;
+		} catch {
+			// Disposed while something was asking.
+			return false;
+		}
 	}
 
 	/** Whether the page carries the injected script, i.e. whether it can be read or driven. */
@@ -890,6 +901,16 @@ export class TabBrowserView extends Disposable {
 	 */
 	private _contextMenuHtml(): string {
 		const groups = this._elementMenuGroups();
+		// The editing commands are here for the same reason a browser has them under a
+		// right-click: this is where the selection is. And they are only *here* and in the
+		// toolbar's menu, since the keys for them belong to the editor — see `EditAction`.
+		groups.push([
+			menuItem('copy', 'codicon-copy', vscode.l10n.t("Copy")),
+			menuItem('cut', 'codicon-clippy', vscode.l10n.t("Cut")),
+			menuItem('paste', 'codicon-clone', vscode.l10n.t("Paste")),
+			menuItem('selectAll', 'codicon-list-selection', vscode.l10n.t("Select all")),
+			menuItem('undo', 'codicon-discard', vscode.l10n.t("Undo")),
+		]);
 		groups.push([menuItem('inspect', 'codicon-tools', vscode.l10n.t("Inspect element"),
 			{ title: vscode.l10n.t("Open the editor's developer tools for this panel") })]);
 
@@ -1259,6 +1280,16 @@ export function parseFileUrl(rawUrl: string): vscode.Uri | undefined {
 
 export function filePathOfUrl(rawUrl: string): string | undefined {
 	return parseFileUrl(rawUrl)?.fsPath;
+}
+
+/**
+ * Whether the page the panel is showing is the file that changed. A page addressed as a folder
+ * was served the index inside it while the panel is showing the folder, so `~/site` and
+ * `~/site/index.html` are the same page — read as two, a save on such a page reloads nothing.
+ */
+export function showsPageOnDisk(shownUrl: string, changed: string): boolean {
+	const shown = filePathOfUrl(shownUrl);
+	return !!shown && (shown === changed || path.join(shown, 'index.html') === changed);
 }
 
 /**

@@ -253,6 +253,38 @@
 				}
 			]
 		},
+		"keybindings": [
+			{
+				"command": "tabBrowser.newTab",
+				"key": "ctrl+t",
+				"mac": "cmd+t",
+				"when": "tabBrowser.panelFocused"
+			},
+			{
+				"command": "tabBrowser.zoomIn",
+				"key": "ctrl+=",
+				"mac": "cmd+=",
+				"when": "tabBrowser.panelFocused"
+			},
+			{
+				"command": "tabBrowser.zoomIn",
+				"key": "ctrl+shift+=",
+				"mac": "cmd+shift+=",
+				"when": "tabBrowser.panelFocused"
+			},
+			{
+				"command": "tabBrowser.zoomOut",
+				"key": "ctrl+-",
+				"mac": "cmd+-",
+				"when": "tabBrowser.panelFocused"
+			},
+			{
+				"command": "tabBrowser.resetZoom",
+				"key": "ctrl+0",
+				"mac": "cmd+0",
+				"when": "tabBrowser.panelFocused"
+			}
+		],
 		"menus": {
 			"explorer/context": [
 				{

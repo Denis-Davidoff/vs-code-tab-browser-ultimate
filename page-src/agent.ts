@@ -246,8 +246,6 @@ function install(): void {
 	 * answer for the click that happened somewhere else.
 	 */
 	const contextMenu = new PageContextMenu({
-		highlight: element => picker.highlight(element),
-		clearHighlight: () => picker.clearHighlight(),
 		onOpen: (at, descriptor, targetId) => {
 			broadcast({ kind: 'clearContextTarget' });
 			send({ kind: 'contextMenu', at, descriptor, targetId });
@@ -304,7 +302,7 @@ function install(): void {
 				if (event.source && event.source !== window && event.source !== window.parent) {
 					return;
 				}
-				contextMenu.setOpen(message.open, message.targetId);
+				contextMenu.setOpen(message.open);
 				broadcast(message);
 				return;
 			}
@@ -330,7 +328,7 @@ function install(): void {
 				if (event.source && event.source !== window && event.source !== window.parent) {
 					return;
 				}
-				contextMenu.clear();
+				contextMenu.clear(message.targetId);
 				broadcast(message);
 				return;
 			}

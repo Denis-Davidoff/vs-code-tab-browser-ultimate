@@ -81,6 +81,12 @@ let contextMenuEnabled = settings.contextMenuEnabled;
 let contextMenuOpen = false;
 /** The element the open menu is about, under the name the page knows it by. */
 let contextTargetId = '';
+/** Whether the page has been told there is something over it; see `reportMenusOpen`. */
+let menusOpen = false;
+let menusReportScheduled = false;
+/** Whether a copy is outstanding, i.e. whether the page has anything to say about one. */
+let awaitingClipboardWrite = false;
+let clipboardWriteTimer: ReturnType<typeof setTimeout> | undefined;
 /**
  * A command was chosen in the context menu and the page is describing the element it was
  * opened on. The pick that comes back is not the picker's, so it is not `pickerActive` that
@@ -422,8 +428,13 @@ function onAgentEvent(event: AgentEvent): void {
 			break;
 
 		case 'copyToClipboard':
-			// The page was refused the clipboard; the extension host is not.
-			vscode.postMessage({ type: 'writeClipboard', text: event.text });
+			// Only as the answer to a copy that was just asked for. The page can send what the
+			// script injected into it sends, and a page free to say "put this on the
+			// clipboard" is a page that can overwrite it on a timer.
+			if (awaitingClipboardWrite) {
+				awaitingClipboardWrite = false;
+				vscode.postMessage({ type: 'writeClipboard', text: event.text });
+			}
 			break;
 
 		case 'shortcut':
@@ -592,7 +603,6 @@ function setMenuOpen(open: boolean): void {
 		// nothing about.
 		closeContextMenu();
 	}
-	const changed = copyMenu.hidden === open;
 	copyMenu.hidden = !open;
 	copyMenuToggle.setAttribute('aria-expanded', String(open));
 	copyMenuToggle.classList.toggle('active', open);
@@ -600,11 +610,30 @@ function setMenuOpen(open: boolean): void {
 		const current = menuItems().find(item => item.dataset.command === lastCopyCommand);
 		(current ?? menuItems()[0])?.focus();
 	}
-	// The page reports the click that has to close this: it happens where this document hears
-	// nothing at all. Sent only on a change, since closing is called from several places.
-	if (changed) {
-		sendToPage({ kind: 'menuOpen', open });
+	reportMenusOpen();
+}
+
+/**
+ * Tells the page whether the panel has anything standing over it, which is what the page
+ * watches for a dismissing click for. One flag for all three menus: reported per menu, the
+ * second one's closing stopped the watch the first one was still open behind.
+ */
+function reportMenusOpen(): void {
+	// After this turn, not during it: opening one menu closes another, and the page has no use
+	// for the moment in between — it would unwatch and watch again for nothing.
+	if (menusReportScheduled) {
+		return;
 	}
+	menusReportScheduled = true;
+	Promise.resolve().then(() => {
+		menusReportScheduled = false;
+		const open = !copyMenu.hidden || !browserMenu.hidden || contextMenuOpen;
+		if (open === menusOpen) {
+			return;
+		}
+		menusOpen = open;
+		sendToPage({ kind: 'menuOpen', open });
+	});
 }
 
 function isMenuOpen(): boolean {
@@ -724,6 +753,19 @@ function setPickerActive(active: boolean): void {
  */
 function runEditCommand(action: EditAction, text?: string): void {
 	if (document.activeElement !== input) {
+		// A copy the page is refused comes back as `copyToClipboard`, and is listened for only
+		// until it does or until this runs out — a page free to say "put this on the
+		// clipboard" is a page that can overwrite it on a timer.
+		if (action === 'copy' || action === 'cut') {
+			awaitingClipboardWrite = true;
+			clearTimeout(clipboardWriteTimer);
+			clipboardWriteTimer = setTimeout(() => (awaitingClipboardWrite = false), 1000);
+		}
+
+		// The click that chose the entry took the focus out of the frame, and an editing
+		// command applies to a document that has it. The frame's own active element — the
+		// field the user was typing in — comes back with it.
+		iframe.focus();
 		sendToPage({ kind: 'edit', action, text });
 		return;
 	}
@@ -841,16 +883,13 @@ function setBrowserMenuOpen(open: boolean): void {
 		closeContextMenu();
 		hideSuggestions();
 	}
-	const changed = browserMenu.hidden === open;
 	browserMenu.hidden = !open;
 	browserMenuToggle.setAttribute('aria-expanded', String(open));
 	browserMenuToggle.classList.toggle('active', open);
 	if (open) {
 		browserMenuItems()[0]?.focus();
 	}
-	if (changed) {
-		sendToPage({ kind: 'menuOpen', open });
-	}
+	reportMenusOpen();
 }
 
 function runBrowserCommand(command: BrowserMenuCommand): void {
@@ -887,6 +926,12 @@ function runBrowserCommand(command: BrowserMenuCommand): void {
  * the proxy injected into it, so a page can send it too — and the editing commands must not be
  * reachable that way: a page that could ask for a paste could read the clipboard.
  */
+/** The editing commands, which both of the panel's menus offer. */
+function isEditAction(command: ContextMenuCommand): command is EditAction {
+	return command === 'undo' || command === 'redo' || command === 'copy'
+		|| command === 'cut' || command === 'paste' || command === 'selectAll';
+}
+
 function isShortcutAction(value: unknown): value is ShortcutAction {
 	return value === 'newTab' || value === 'zoomIn' || value === 'zoomOut' || value === 'resetZoom';
 }
@@ -1033,7 +1078,11 @@ function showUrlInInput(): void {
 	if (editingUrl) {
 		return;
 	}
-	input.value = displayUrl;
+	// Never assigned when it would not change the text: assigning drops the caret and the
+	// selection, and a field somebody has selected the url in is not ours to rearrange.
+	if (input.value !== displayUrl) {
+		input.value = displayUrl;
+	}
 	lastCommitted = displayUrl;
 }
 
@@ -1070,12 +1119,14 @@ function openContextMenu(at: PagePoint, descriptor: string, targetId: string): v
 		? wanted.y
 		: Math.max(2, wanted.y - height)}px`;
 
-	// The menu takes the keyboard, so Escape and the arrow keys reach it rather than the page.
-	contextMenuItems()[0]?.focus();
+	// And the keyboard is deliberately *not* taken: this menu offers copy, cut and paste, which
+	// act on the selection and the field the page has — and focusing an entry of ours takes the
+	// focus out of the page. Escape still closes it, reported by the page like any other
+	// dismissal, since the page is watching while a menu is up.
 
 	// Every frame watches for the click that closes this again: the panel cannot see one, and
 	// the next click is not necessarily in the frame the menu was opened from.
-	sendToPage({ kind: 'menuOpen', open: true, targetId });
+	reportMenusOpen();
 }
 
 function closeContextMenu(): void {
@@ -1087,7 +1138,8 @@ function closeContextMenu(): void {
 	// Named, so a frame that has since taken a *new* right-click keeps the element that one is
 	// about — this message can arrive after it. A frame that has already handed its element
 	// over has nothing left to forget, which is why the pick below closes the same way.
-	sendToPage({ kind: 'menuOpen', open: false, targetId: contextTargetId });
+	sendToPage({ kind: 'clearContextTarget', targetId: contextTargetId });
+	reportMenusOpen();
 }
 
 /**
@@ -1102,6 +1154,12 @@ function runContextCommand(command: ContextMenuCommand): void {
 	if (command === 'inspect') {
 		closeContextMenu();
 		vscode.postMessage({ type: 'openDevTools' });
+		return;
+	}
+
+	if (isEditAction(command)) {
+		closeContextMenu();
+		runBrowserCommand(command);
 		return;
 	}
 

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- A right-click no longer outlines the element or takes the keyboard out of the page: the menu
+  now offers copy, cut and paste, and those act on the selection and the field the page had.
+- **Fixed: a cross-site request could act with the session behind it.** A cookie in the panel
+  only exists as `SameSite=None` (the page is a frame in the editor's webview), so the check the
+  browser can no longer make is made in the proxy instead: cookies are forwarded only for a
+  request one of the session's own documents made.
+- Fixed: a page could put text on the clipboard unasked; a page opened as a folder never
+  reloaded on save; the address bar could rearrange a url somebody had selected in it; and one
+  menu closing while another stayed open stopped the page watching for the click that closes it.
+
 - **Fixed: cookies were not stored at all in the panel**, so a login could never be completed.
   The panel's page is a frame in the editor's webview, which makes it a third party in another
   site as far as the browser is concerned — and there a cookie without `SameSite=None; Secure`
@@ -46,7 +56,12 @@
   nothing happened at all. The clipboard is read by the extension, never by the page. The framed
   page is also handed the clipboard permissions the editor gives the panel, so a page's own copy
   button works.
-- **Fixed: the extension no longer binds any keys of the editor's own.** A keybinding for
+- The editing commands are now on the right-click menu in the page as well, which is where a
+  browser keeps them — and the only place the extension can, since those keys are the editor's.
+- `Cmd`/`Ctrl` + `T` and the zoom keys are bound again, but scoped to a context key the
+  extension sets itself when one of its panels has the focus, instead of to the editor's
+  `activeWebviewPanelId`, which did not hold.
+- **Fixed: the extension no longer binds any keys the editor edits with.** A keybinding for
   `Cmd`/`Ctrl` + `C`, `V`, `X`, `A` scoped to a focused browser panel took copy and paste out of
   the rest of the editor; the zoom and new-tab keys were bound the same way and are now
   forwarded by the injected script instead, which is what hears them in the page anyway.

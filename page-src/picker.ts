@@ -168,21 +168,6 @@ export class ElementPicker {
 	 * open on it. The same overlay as the picker's, since it is the same statement about the
 	 * same page — and while the picker is running there is nothing to say twice.
 	 */
-	public highlight(element: Element): void {
-		if (this._active) {
-			return;
-		}
-		this._showOverlay(element, cssPath(element, this._preferredAttributes));
-	}
-
-	public clearHighlight(): void {
-		if (this._active) {
-			return;
-		}
-		this._overlayRoot?.remove();
-		this._overlayRoot = this._outline = this._label = undefined;
-	}
-
 	private _scheduleUpdate(): void {
 		if (this._pendingFrame) {
 			return;

@@ -15,9 +15,17 @@ import { ShowOptions, TabBrowserView } from './tabBrowserView';
 /** How many browser panels can be open at once; see `newTab`. */
 const maxPanels = 16;
 
+/** How often the panel cap may explain itself, however often it is reached. */
+const capWarningInterval = 60_000;
+
+/** What the contributed keybindings are scoped to; see `_updateFocusContext`. */
+const panelFocusedContextKey = 'tabBrowser.panelFocused';
+
 export class TabBrowserManager {
 
 	private readonly _views: TabBrowserView[] = [];
+	private _focused = false;
+	private _lastCapWarning = 0;
 
 	private readonly _onDidChange = new vscode.EventEmitter<void>();
 	/** Fired when a panel opens, closes, takes the focus, or reports another page. */
@@ -35,6 +43,7 @@ export class TabBrowserManager {
 			view.dispose();
 		}
 		this._views.length = 0;
+		this._updateFocusContext();
 		this._onDidChange.dispose();
 	}
 
@@ -61,8 +70,14 @@ export class TabBrowserManager {
 		// holds a live webview (`retainContextWhenHidden`), so the count is capped rather than
 		// trusted. Nobody opens sixteen browser tabs in an editor by hand.
 		if (this._views.length >= maxPanels) {
-			vscode.window.showWarningMessage(vscode.l10n.t(
-				"There are already {0} browser panels open.", maxPanels));
+			// At most one notification a minute: the request can come from the page, and a
+			// refusal repeated as fast as it is asked for is the same flood by another name.
+			const now = Date.now();
+			if (now - this._lastCapWarning > capWarningInterval) {
+				this._lastCapWarning = now;
+				vscode.window.showWarningMessage(vscode.l10n.t(
+					"There are already {0} browser panels open.", maxPanels));
+			}
 			return undefined;
 		}
 
@@ -78,6 +93,22 @@ export class TabBrowserManager {
 		this._onDidChange.fire();
 	}
 
+	/**
+	 * Says whether the user is looking at a browser panel, for the keybindings the extension
+	 * contributes. Its own key and not `activeWebviewPanelId`: keys scoped to that one took
+	 * copy and paste out of the rest of the editor, and this one is set from the panels' own
+	 * view state — every panel behind another tab reports `false`, so the moment the focus
+	 * leaves, so does the claim on those keys.
+	 */
+	private _updateFocusContext(): void {
+		const focused = this._views.some(view => view.isActive);
+		if (focused === this._focused) {
+			return;
+		}
+		this._focused = focused;
+		vscode.commands.executeCommand('setContext', panelFocusedContextKey, focused);
+	}
+
 	private _add(view: TabBrowserView): void {
 		// In front: a panel that has just been created or restored is the one being looked at,
 		// and the editor only reports a view state change once something else takes over.
@@ -88,8 +119,11 @@ export class TabBrowserManager {
 			if (at !== -1) {
 				this._views.splice(at, 1);
 			}
+			this._updateFocusContext();
 			this._onDidChange.fire();
 		});
+		this._updateFocusContext();
+
 		view.onDidChangeState(() => {
 			// Remembered from the page a panel *reports*, not from `onDidChange`: that fires
 			// for the focus moving between panels as well, and coming back to a panel opened
@@ -97,12 +131,13 @@ export class TabBrowserManager {
 			this._recent.remember(view.url);
 			this._onDidChange.fire();
 		});
-		view.onDidBecomeActive(() => {
+		view.onDidChangeFocus(() => {
 			const at = this._views.indexOf(view);
-			if (at > 0) {
+			if (view.isActive && at > 0) {
 				this._views.splice(at, 1);
 				this._views.unshift(view);
 			}
+			this._updateFocusContext();
 			this._onDidChange.fire();
 		});
 		// Beside the panel that asked, which is where a new tab belongs.

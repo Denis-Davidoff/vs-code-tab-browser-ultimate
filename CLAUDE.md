@@ -296,11 +296,12 @@ panel counting in different pixels: the level is kept in the webview's own state
 across restarts), and the point a right-click reports has to be multiplied by it before the menu
 is placed — the page reports its own viewport, the frame's box is the scaled one.
 
-**The keys a browser keeps for itself** (`Cmd`/`Ctrl` + `T`, `+`, `-`, `0`) reach the panel
-through the injected script (`shortcut`), which is the only thing that hears them while the page
-has the keyboard — a key pressed inside a frame reaches no listener above it and no keybinding
-of the editor's either. Not through `contributes.keybindings`: see the clipboard section for
-what claiming a key of the editor's costs. What the page forwards is checked against the four
+**The keys a browser keeps for itself** (`Cmd`/`Ctrl` + `T`, `+`, `-`, `0`) reach the panel two
+ways, because neither covers the other: `contributes.keybindings` scoped to
+`tabBrowser.panelFocused` — a context key of the extension's own, for the reason the editing
+section gives — works while the editor is the one hearing the key, and the injected script
+forwards them (`shortcut`) while the *page* has the keyboard, where a key reaches no listener
+above the frame and no keybinding of the editor's either. What the page forwards is checked against the four
 of them by name (`isShortcutAction`), since the shapes it sends are in the script the proxy
 injected into it: a page that could send `paste` could have the clipboard read for it. A pinch on a trackpad and
 `Cmd` + wheel are the same event everywhere (`wheel` carrying `ctrlKey`), so one non-passive
@@ -348,12 +349,19 @@ focus, since a command run in every frame would copy from three documents at onc
 once, with `when: activeWebviewPanelId == 'tabBrowser.view'` — and copy and paste stopped
 working *everywhere in the editor*, not only here. Whatever the exact path (the resolver, or the
 accelerator the native Edit menu registers for the editor's own clipboard commands), a `when`
-clause is not enough to make claiming `Cmd`+`C` safe, and an extension that takes copy out of
-the rest of the editor is worse than one whose panel has no shortcut for it. So the extension
-contributes **no keybindings at all**: the keys a browser keeps for itself are forwarded by the
-injected script, which is the only thing that hears them while the page has the focus anyway,
-and everything else is in the menu. `test/host.test.mjs` fails if a keybinding is contributed
-again, and says why.
+clause of that kind is not enough to make claiming `Cmd`+`C` safe, and an extension that takes
+copy out of the rest of the editor is worse than one whose panel has no shortcut for it.
+
+So the editing keys are claimed nowhere, and the commands are reached from the panel's **two
+menus** instead: the toolbar's own, and the one a right-click opens — which is where a browser
+puts them too, since that is where the selection is. `test/host.test.mjs` fails if a keybinding
+ever claims one of those keys again.
+
+The keys a browser keeps for itself (`Cmd`+`T` and the zoom) *are* bound, and the difference is
+the `when`: `tabBrowser.panelFocused`, a context key this extension sets itself from its panels'
+own view state (`TabBrowserManager._updateFocusContext`). Every panel behind another tab reports
+`false`, so the moment the focus leaves a browser panel the claim on those keys goes with it —
+which is exactly what could not be relied on before.
 
 - **The clipboard is read in the extension host** (`vscode.env.clipboard`) and the text travels
   down with the paste. The page is never given a way to *ask* for the clipboard: a page that
@@ -409,6 +417,11 @@ Picking an element produces a `PickedElement`:
   `css`, `xpath`, `both` and `json` remain, and "Copy element XPath" always writes an XPath
   regardless of the setting.
 
+What the page may say about the clipboard is bounded the same way: `copyToClipboard` — a copy
+the page was refused, handed over for the extension host to write — is listened for only until
+the copy that asked for it is answered. The shapes are in the script the page was given, so a
+page free to say "put this on the clipboard" is a page that can overwrite it on a timer.
+
 Multi-line reports go on the clipboard as a file *and* as text (`src/clipboardFile.ts`), so a
 chat attaches a document while a text field still pastes text. There is no editor API for this:
 macOS goes through one `NSPasteboardItem` carrying both `public.file-url` and
@@ -443,6 +456,12 @@ Three things about it are easy to get wrong:
   so the page has to know whether the panel wants right-clicks *before* one happens. Hence
   `setContextMenu`, sent at every `ready` and when the setting changes, rather than a question
   asked at the time.
+- **Nothing of the panel's is drawn in the page and nothing there is focused.** The menu offers
+  copy, cut and paste, which act on the selection and the field the page has — so an outline of
+  ours over the element (there was one) and an entry of ours taking the keyboard (it did) are
+  two ways of taking away what those commands are for. The element is still named and still
+  described on demand; it is simply not marked. And an editing command hands the focus back to
+  the frame first (`iframe.focus()`), since choosing an entry took it away.
 - **A menu drawn above the frame does not see what happens inside it.** A click, a scroll or an
   Escape in the page reaches no listener in the webview, so the page reports those itself
   (`dismissMenu`) for as long as the panel says it has a menu up (`menuOpen`) — which is as true
@@ -450,6 +469,11 @@ Three things about it are easy to get wrong:
   the watch. Nothing else asks: watching starts when the panel says a menu is open and stops
   when it says otherwise, because the panel may decide not to open one at all (it is picking,
   say) and a frame left watching reports clicks nothing is listening for.
+
+  One flag for all three and settled at the end of the turn (`reportMenusOpen`), not one message
+  per menu: opening one closes another, and reported per menu the second one's closing stopped
+  the watch the first one was still open behind. Forgetting the *element* is a message of its
+  own (`clearContextTarget`), since that is about one menu and not about whether any is up.
 - **A pick that arrives with nothing pending is a page reporting elements nobody asked about.**
   The picker's own flag cannot let this one through — nothing is picking — so the webview keeps
   `awaitingContextPick`, and takes it back on a timeout: the element can be gone by the time an

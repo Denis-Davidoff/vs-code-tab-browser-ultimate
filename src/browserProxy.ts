@@ -592,8 +592,16 @@ export class BrowserProxy extends Disposable {
 		delete headers['if-none-match'];
 		delete headers['if-modified-since'];
 
-		// Only this session's cookies may reach this session's server.
-		const cookies = typeof original.cookie === 'string'
+		// Only this session's cookies, and only for a request one of its own pages made.
+		//
+		// The second half is what `SameSite` would have done and cannot: the panel's page is a
+		// frame in the editor's webview, so a cookie only exists at all as `SameSite=None`
+		// (see `shared/cookies.ts`) — and that is an invitation for any other page the panel
+		// has ever visited to have the browser attach these cookies to a request at this port.
+		// The prefix does not help there: the prefixed names are exactly the ones restored
+		// here. So a request that says it came from somewhere else is forwarded without them,
+		// which leaves the side effect a cross-site post is after with no session behind it.
+		const cookies = typeof original.cookie === 'string' && this._fromOwnPage(session, original)
 			? ownCookies(original.cookie, session.cookiePrefix)
 			: undefined;
 		if (cookies) {
@@ -621,6 +629,23 @@ export class BrowserProxy extends Disposable {
 		}
 
 		return headers;
+	}
+
+	/**
+	 * Whether a request was made by a document this session serves. `Origin` is the browser's
+	 * own word for it and is sent with every request that is not a plain navigation; `Referer`
+	 * answers for the rest. A request with neither is a navigation — the panel pointing the
+	 * frame at a page, or the page following a link — and those are the panel's own.
+	 */
+	private _fromOwnPage(session: ProxySession, headers: http.IncomingHttpHeaders): boolean {
+		const origin = typeof headers.origin === 'string' ? headers.origin : undefined;
+		if (origin) {
+			// `null` is what a browser sends for an opaque origin, which is not one of ours.
+			return origin !== 'null' && this._isOwnOrigin(session, origin);
+		}
+
+		const referer = typeof headers.referer === 'string' ? parseHttpUrl(headers.referer) : undefined;
+		return referer ? this._isOwnOrigin(session, originOf(referer)) : true;
 	}
 
 	/** True if `value`'s origin is this proxy, i.e. the request came from a page we serve. */

@@ -227,18 +227,21 @@ it says:
 | Reset zoom | `Cmd`/`Ctrl` + `0` |
 | Undo, Redo, Cut, Copy, Paste, Select all | the editor's own |
 
-Those four keys work while the page has the keyboard, because the injected script is the only
-thing that hears them there. The extension contributes no keybindings of its own: claiming
-`Cmd`+`C` — even scoped to a focused browser panel — took copy and paste out of the rest of the
-editor, so the editing entries are in the menu and the editor's own keys are left alone.
+Those four keys are bound only while a browser panel has the focus — the extension sets that
+context key itself from the panels' own state — and while the *page* has the keyboard the
+injected script forwards them, since nothing above the frame hears a key pressed inside it.
+
+The editing keys are deliberately not claimed: `Cmd`+`C` bound for the panel took copy and paste
+out of the rest of the editor once, so those commands live in the menus instead — the toolbar's,
+and the one a right-click in the page opens, which is where a browser keeps them anyway.
 
 **Zoom** also answers a pinch on the trackpad and `Cmd`/`Ctrl` + scroll, and the level is
 remembered per panel across restarts (the menu shows it next to "Reset zoom"). It is the page
 that is zoomed, not a picture of it: the page reflows into a smaller viewport exactly as it does
 under a browser's own zoom, and every element report still reads the page's own css.
 
-**Undo, redo, cut, copy, paste and select all** are in that menu as well, and they act on
-whatever has the keyboard — the page, or the address bar. They are there rather than on
+**Undo, redo, cut, copy, paste and select all** are in that menu and in the one a right-click in
+the page opens, and they act on whatever has the keyboard — the page, or the address bar. They are there rather than on
 `Cmd`+`Z`/`X`/`C`/`V`/`A` because the editor answers those keys on the panel's own document
 rather than on the page one frame deeper, and taking the keys away from the editor to fix that
 breaks copy and paste everywhere else. The clipboard is read by the extension, never by the page: a page that could

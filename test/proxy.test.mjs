@@ -287,6 +287,34 @@ for (const origin of [new URL(proxiedRoot).origin, 'http://example.com', 'null',
 		login.status === (origin === new URL(proxiedRoot).origin ? 200 : 403), await login.text());
 }
 
+// The cookie above only exists as `SameSite=None`, because the panel's page is a frame in the
+// editor's webview — so the check the browser cannot make is made here: a request that says it
+// came from another origin is forwarded without the session's cookies, and the side effect a
+// cross-site post is after has no session behind it.
+const foreignPost = await (await fetch(new URL('/cookies', proxiedRoot), {
+	method: 'POST',
+	headers: { cookie: `__tb${'0'.repeat(8)}_sid=1; ${cookie.split('=')[0]}=1`,
+		origin: 'https://evil.example' },
+	body: 'x=1',
+})).json();
+check('a request from another origin is forwarded without this session\'s cookies',
+	foreignPost.cookie === null, JSON.stringify(foreignPost));
+
+const ownPost = await (await fetch(new URL('/cookies', proxiedRoot), {
+	method: 'POST',
+	headers: { cookie: `${cookie.split('=')[0]}=1`, origin: new URL(proxiedRoot).origin },
+	body: 'x=1',
+})).json();
+check('and one from this session\'s own page keeps them',
+	ownPost.cookie === 'sid=1', JSON.stringify(ownPost));
+
+// A navigation carries neither, and it is the panel's own: the frame being pointed at a page.
+const navigation = await (await fetch(new URL('/cookies', proxiedRoot), {
+	headers: { cookie: `${cookie.split('=')[0]}=1` },
+})).json();
+check('a navigation, which carries neither, keeps them too',
+	navigation.cookie === 'sid=1', JSON.stringify(navigation));
+
 // An Origin from somewhere else is still rewritten rather than dropped.
 const foreignEcho = await (await fetch(new URL('/echo', proxiedRoot), {
 	method: 'POST',
