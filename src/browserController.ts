@@ -42,7 +42,7 @@ export class BrowserController {
 			return {
 				...this.state(),
 				error: 'Only http and https urls can be opened from here. A local file has to be '
-					+ 'opened by the user, with "Tab Browser Ultimate: Open File in Browser".',
+					+ 'opened by the user, with "Tab Browser Ultimate: Open in AI Browser".',
 			};
 		}
 

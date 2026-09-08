@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate",
 	"displayName": "AI Browser🏆 Claude + Codex",
 	"description": "Embedded browser tab with AI capabilities, Claude and Codex integration",
-	"version": "0.3.15",
+	"version": "0.3.16",
 	"icon": "media/icon.png",
 	"publisher": "DenysDavydov",
   	"private": true,
@@ -86,7 +86,7 @@
 			},
 			{
 				"command": "tabBrowser.openFile",
-				"title": "Open File in Browser",
+				"title": "Open in AI Browser",
 				"category": "Tab Browser Ultimate",
 				"icon": "$(file-code)"
 			},

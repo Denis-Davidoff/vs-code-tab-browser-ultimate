@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **Local html files.** "Open File in Browser" from the explorer's context menu, the editor tab
+- **Local html files.** "Open in AI Browser" from the explorer's context menu, the editor tab
   and the command palette; a file browser over the project's own pages in the sidebar, next to
   "Open a file…"; and a path typed or pasted into the address bar. The file is served from the
   folder it belongs to — nothing outside it is reachable — so the picker, the console, the

@@ -280,7 +280,7 @@ async function pickLocalPage(): Promise<vscode.Uri | undefined> {
 async function openPageDialog(): Promise<vscode.Uri | undefined> {
 	const picked = await vscode.window.showOpenDialog({
 		canSelectMany: false,
-		openLabel: vscode.l10n.t("Open in Browser"),
+		openLabel: vscode.l10n.t("Open in AI Browser"),
 		filters: { [vscode.l10n.t("Web pages")]: htmlExtensions.map(extension => extension.replace('.', '')) },
 	});
 	return picked?.[0];

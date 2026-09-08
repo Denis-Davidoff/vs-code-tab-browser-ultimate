@@ -61,9 +61,11 @@ The icon in the activity bar opens a view with everything the extension can do, 
 has to be remembered as a command:
 
 - **Browser** — the page the panel has open and whether it can be read, a field to open another
-  one, and a reload.
+  one, **Open a file…** for an html file from disk, and a reload.
 - **This page** — pick an element or take the console output, to the clipboard or straight to
   whichever assistant is installed. The same entries as the panel's own copy menu.
+- **Project files** — the folders of this project, browsed rather than searched: a folder is
+  read when you open it, and its html files open in the panel with one click.
 - **MCP server** — whether it is running and on which port, the two connect commands, and
   **Check connection** (below).
 - **Recent** — the pages this project's panel has been on, so one is a click away after the
@@ -125,6 +127,10 @@ The toolbar's split button runs the entry you used last; the chevron next to it 
 Multi-line copies also land on the clipboard as a temporary file, so pasting them into a chat
 attaches a document instead of a wall of text; anything that only understands text still gets
 the text. Set `tabBrowser.copyAsFile` to `false` to always paste as text.
+
+The element entries are also on the page's own context menu, where they act on the element you
+right-clicked instead of starting a pick — see
+[Right-clicking in the page](#right-clicking-in-the-page).
 
 ### Handing an element to an assistant
 
@@ -206,13 +212,13 @@ document and are reported as a count.
 
 An html file opens in the panel like any url does:
 
-- **Explorer** — right-click the file, "Open File in Browser". The same entry is on the editor
+- **Explorer** — right-click the file, "Open in AI Browser". The same entry is on the editor
   tab of an open html file.
 - **Sidebar** — "Open a file…" for the file dialog and the list of this project's pages, or
   **Project files** to browse the folders of the project itself.
 - **Address bar** — a path pastes as readily as a url: `/Users/me/site/index.html`,
   `C:\sites\index.html`, or a `file:` url.
-- **Command palette** — "Tab Browser Ultimate: Open File in Browser".
+- **Command palette** — "Tab Browser Ultimate: Open in AI Browser".
 
 The page is served from the folder it belongs to — the workspace folder that holds it, or its own
 folder when it belongs to no project — so its stylesheets, scripts and images load, root-absolute
@@ -221,9 +227,9 @@ reachable. Everything else works as on any other page: the picker, the console, 
 reports and every mcp tool.
 
 **Saving reloads it.** A file has no dev server in front of it to do anything cleverer, so the
-panel navigates again when the page — or a file that page pulled in — changes on disk. Only the
-files that page asked for are watched, so saving something another page uses leaves it alone. `tabBrowser.files.reloadOnChange: false` turns it
-off.
+panel navigates again when the page — or anything that page pulled in, however deep the chain of
+imports — changes on disk. Only the files that page asked for are watched, so saving something
+another page uses leaves it alone. `tabBrowser.files.reloadOnChange: false` turns it off.
 
 An assistant cannot open a file itself: `browser_navigate` takes http urls only, because every
 other tool then reads whatever it opened. Which file the panel shows stays your decision — and
@@ -339,9 +345,38 @@ webview over `postMessage`, and the webview talks to the extension host.
 By default only `localhost` urls are proxied (`tabBrowser.proxy.mode`); any other page is
 loaded directly until a copy command needs the script.
 
+A local file is served by the same proxy, out of the folder the file belongs to, so it carries
+the same script and answers the same tools. Such a session answers only urls that begin with an
+unguessable segment of its own — a port on the loopback interface is reachable by anything on
+the machine, and by any page in any browser that guesses it — and nothing outside that folder is
+reachable through it at all.
+
 Each proxied site keeps its own cookies: they all end up on `127.0.0.1`, where the browser does
 not separate them by port, so the proxy gives every session its own cookie namespace and
 forwards nothing that belongs to another one. Pages see their cookies under the usual names.
+
+## Settings
+
+All of them are under `tabBrowser.` and in the editor's settings ui under this extension
+(the gear button in the view's title bar opens it).
+
+| Setting | Default | What it decides |
+| --- | --- | --- |
+| `proxy.mode` | `localhost` | Which urls are served through the local proxy that makes a page readable: `localhost`, `always` or `never`. |
+| `proxy.ignoreCertificateErrors` | `true` | Talk to an https target with a self-signed certificate anyway. |
+| `files.reloadOnChange` | `true` | Reload a page opened from disk when one of its files is saved. |
+| `contextMenu.enabled` | `true` | Answer a right-click in the page with this panel's own menu. |
+| `picker.copyFormat` | `context` | What "Copy element" writes: `context`, `css`, `xpath`, `both` or `json`. |
+| `picker.preferAttributes` | `data-testid`, … | Attributes a selector prefers over structure. |
+| `picker.keepActiveAfterPick` | `false` | Keep picking after an element has been picked. |
+| `copyAsFile` | `true` | Put multi-line copies on the clipboard as a file as well as text. |
+| `notifyOnCopy` | `true` | Show a notification after a copy, rather than a status bar message. |
+| `claude.pathDelivery` | `mention` | How a bare path reaches Claude Code: `mention`, or `newConversation`. |
+| `mcp.enabled` | `true` | Run the local mcp server that lets an assistant read and drive the panel. |
+| `mcp.port` | `43110` | Port for that server; the next free one is used when it is taken. |
+| `terminalLinks.mode` | `localhost` | Which terminal urls `Cmd`/`Ctrl` + click opens here: `localhost`, `always`, `never`. |
+| `showPageIcon` | `true` | Show the page's own icon on the panel's tab (one request to its server). |
+| `focusLockIndicator.enabled` | `true` | Show the "Focus Lock" hint while the page has the keyboard. |
 
 ## Differences from upstream
 
@@ -358,6 +393,9 @@ forwards nothing that belongs to another one. Pages see their cookies under the 
 - **Removed:** `aiKey`, the unused `@vscode/extension-telemetry` dependency, the
   `browser` (web worker) entry point, and the `isWeb`-only command palette menu gate.
 - **Toolbar restyled** and extended with the copy menu and its hint bar.
+- **Added on top of it:** the instrumenting proxy and the injected page script, the copy menu
+  and its element reports, the mcp server, the sidebar, local html files with reload on save,
+  and the page's own context menu.
 
 ## Build
 
