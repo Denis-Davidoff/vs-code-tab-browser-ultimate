@@ -11,6 +11,7 @@ import {
 	packAgentMessage,
 } from '../shared/protocol';
 import {
+	BrowserMenuCommand,
 	ContextMenuCommand,
 	CopyCommand,
 	ExtensionToWebviewMessage,
@@ -55,6 +56,9 @@ const copyMenuToggle = header.querySelector<HTMLButtonElement>('.copy-menu-toggl
 const copyMenu = header.querySelector<HTMLDivElement>('.copy-menu')!;
 const contextMenu = document.querySelector<HTMLDivElement>('.context-menu')!;
 const contextMenuHeader = contextMenu.querySelector<HTMLDivElement>('.menu-header')!;
+const browserMenuToggle = header.querySelector<HTMLButtonElement>('.browser-menu-toggle')!;
+const browserMenu = header.querySelector<HTMLDivElement>('.browser-menu')!;
+const suggestions = header.querySelector<HTMLDivElement>('.url-suggestions')!;
 const hint = document.querySelector<HTMLDivElement>('.hint')!;
 const hintMessage = hint.querySelector<HTMLSpanElement>('.hint-message')!;
 const hintDetail = hint.querySelector<HTMLSpanElement>('.hint-detail')!;
@@ -89,6 +93,36 @@ let queuedCommand: CopyCommand | undefined;
 let lastCopyCommand: CopyCommand = vscode.getState()?.lastCopyCommand ?? 'element';
 /** The command the running pick was started from; it decides what gets copied. */
 let pickCommand: CopyCommand = 'element';
+/**
+ * How far the page is zoomed. Applied to the frame and not to the page: the injected script
+ * must not change how the page behaves, and a `zoom` the page carries itself would show up in
+ * every computed style an element report reads.
+ */
+let zoomLevel = vscode.getState()?.zoom ?? 1;
+/** What `Cmd`/`Ctrl` + `+` walks through, as a browser's own zoom does. */
+const zoomSteps = [0.5, 0.67, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3];
+/** Pixels of pinching or scrolling that amount to one zoom step. */
+const gestureStep = 24;
+/** After this long, whatever is left over belongs to a gesture that is over. */
+const gestureIdle = 300;
+let gestureDelta = 0;
+let lastGestureAt = 0;
+/** Title of the menu button as the host wrote it, before the zoom level is appended to it. */
+const browserMenuTitle = browserMenuToggle.title;
+/** Pages the panel has been on, newest first: what the address bar completes against. */
+let recentUrls: readonly string[] = settings.recentUrls;
+/** As many suggestions as a list under the address bar is worth reading. */
+const maxSuggestions = 10;
+/** Entry of the open suggestion list the arrow keys have moved to; -1 is what was typed. */
+let suggestionIndex = -1;
+/** What was typed before the arrow keys started filling the field with suggestions. */
+let typedUrl = '';
+/**
+ * The last value navigation was started for. A commit — Enter, or a click on a suggestion —
+ * leaves the field holding it, and the `change` event that follows on blur must not navigate a
+ * second time for the same text.
+ */
+let lastCommitted = '';
 let hintResetTimer: ReturnType<typeof setTimeout> | undefined;
 let readyCheckTimer: ReturnType<typeof setTimeout> | undefined;
 let nextRequestId = 1;
@@ -213,6 +247,18 @@ window.addEventListener('message', event => {
 			// Through the host like any other navigation: the file may have to be served by a
 			// session that is not the one the current page came from.
 			navigateTo(displayUrl, { bust: true, instrument: isInstrumented });
+			break;
+
+		case 'didChangeRecentUrls':
+			recentUrls = hostMessage.urls;
+			// Only what is on screen goes stale; the next keystroke reads the new list.
+			if (!suggestions.hidden) {
+				showSuggestions(typedUrl);
+			}
+			break;
+
+		case 'zoom':
+			stepZoom(hostMessage.direction);
 			break;
 
 		case 'runCopyCommand':
@@ -360,6 +406,16 @@ function onAgentEvent(event: AgentEvent): void {
 			});
 			break;
 
+		case 'shortcut':
+			// A browser keeps these keys for itself, so the page never sees them — and while
+			// the page has the focus, the page is the only one that hears them at all.
+			runBrowserCommand(event.action);
+			break;
+
+		case 'zoomGesture':
+			onZoomGesture(event.delta);
+			break;
+
 		case 'pageError':
 			// Surfaced in the panel so a blank page is not a dead end.
 			console.error('[tab browser] page error:', event.message);
@@ -394,9 +450,7 @@ function setDisplayUrl(url: string): void {
 		return;
 	}
 	displayUrl = url;
-	if (document.activeElement !== input) {
-		input.value = displayUrl;
-	}
+	showUrlInInput();
 	saveState();
 	reportState();
 }
@@ -454,9 +508,7 @@ function onDidResolveUrl(message: Extract<ExtensionToWebviewMessage, { type: 'di
 	endConsoleRequest();
 	reportState();
 
-	if (document.activeElement !== input) {
-		input.value = displayUrl;
-	}
+	showUrlInInput();
 	saveState();
 
 	if (message.error) {
@@ -495,7 +547,7 @@ function withCacheBust(rawUrl: string): string {
 }
 
 function saveState(): void {
-	vscode.setState({ url: displayUrl, lastCopyCommand });
+	vscode.setState({ url: displayUrl, lastCopyCommand, zoom: zoomLevel });
 }
 
 /**
@@ -633,6 +685,253 @@ function setPickerActive(active: boolean): void {
 	sendToPage({ kind: 'enablePicker', preferAttributes: settings.preferAttributes });
 }
 
+// -- zoom ------------------------------------------------------------------------------------
+
+/**
+ * Zoom belongs to the frame, not to the page: `zoom` on the element is what a browser's own
+ * zoom does — the page's layout viewport becomes the panel divided by the factor, so the page
+ * reflows rather than being stretched — while the page's own dom stays exactly as its author
+ * wrote it, which is what every element report is read out of.
+ */
+function applyZoom(): void {
+	iframe.style.zoom = String(zoomLevel);
+	// The frame is measured before the zoom scales it, so it has to ask for less of the panel
+	// than all of it, or a zoomed page would be that much wider than the panel.
+	iframe.style.width = `${100 / zoomLevel}%`;
+	iframe.style.height = `${100 / zoomLevel}%`;
+
+	const percent = `${Math.round(zoomLevel * 100)}%`;
+	const detail = browserMenu.querySelector<HTMLSpanElement>('.menu-detail');
+	if (detail) {
+		detail.textContent = percent;
+	}
+	// The only place a zoom that is not 100% is otherwise visible is the page itself.
+	browserMenuToggle.title = zoomLevel === 1 ? browserMenuTitle : `${browserMenuTitle} · ${percent}`;
+}
+
+/**
+ * A pinch, or `Cmd`/`Ctrl` + wheel: one gesture is many small deltas, and the zoom it drives is
+ * a handful of steps. So the deltas are added up and a step is taken when they amount to one —
+ * a mouse wheel notch being about one step, and a trackpad pinch a smooth walk through them.
+ */
+function onZoomGesture(delta: number): void {
+	const now = Date.now();
+	// A new gesture, or one that has turned around: what came before it is not part of it.
+	if (now - lastGestureAt > gestureIdle || Math.sign(delta) !== Math.sign(gestureDelta)) {
+		gestureDelta = 0;
+	}
+	lastGestureAt = now;
+	gestureDelta += delta;
+
+	if (Math.abs(gestureDelta) < gestureStep) {
+		return;
+	}
+	// Pinching out and scrolling up are both a negative delta, and both mean closer.
+	const direction = gestureDelta < 0 ? 'in' : 'out';
+	gestureDelta = 0;
+	stepZoom(direction);
+}
+
+function stepZoom(direction: 'in' | 'out' | 'reset'): void {
+	const next = direction === 'reset'
+		? 1
+		: direction === 'in'
+			? zoomSteps.find(step => step > zoomLevel + 0.001) ?? zoomSteps[zoomSteps.length - 1]
+			: [...zoomSteps].reverse().find(step => step < zoomLevel - 0.001) ?? zoomSteps[0];
+
+	if (next === zoomLevel) {
+		return;
+	}
+	zoomLevel = next;
+	applyZoom();
+	saveState();
+}
+
+// -- the panel's own menu --------------------------------------------------------------------
+
+function browserMenuItems(): HTMLButtonElement[] {
+	return Array.from(browserMenu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'));
+}
+
+function setBrowserMenuOpen(open: boolean): void {
+	if (open) {
+		setMenuOpen(false);
+		closeContextMenu();
+		hideSuggestions();
+	}
+	browserMenu.hidden = !open;
+	browserMenuToggle.setAttribute('aria-expanded', String(open));
+	browserMenuToggle.classList.toggle('active', open);
+	if (open) {
+		browserMenuItems()[0]?.focus();
+	}
+}
+
+function runBrowserCommand(command: BrowserMenuCommand): void {
+	setBrowserMenuOpen(false);
+
+	switch (command) {
+		case 'newTab':
+			// A panel is the extension host's to open; this one keeps the page it has.
+			vscode.postMessage({ type: 'newTab' });
+			break;
+		case 'zoomIn':
+			stepZoom('in');
+			break;
+		case 'zoomOut':
+			stepZoom('out');
+			break;
+		case 'resetZoom':
+			stepZoom('reset');
+			break;
+	}
+}
+
+// -- what the address bar completes ----------------------------------------------------------
+
+/** `http://localhost:3000/a` -> `localhost:3000/a`, and a file url -> the file's own path. */
+function displayForm(url: string): string {
+	return /^file:/i.test(url)
+		? url.replace(/^file:\/\//i, '')
+		: url.replace(/^https?:\/\//i, '').replace(/\/$/, '') || url;
+}
+
+/**
+ * How well a remembered page answers what has been typed, lower being better; `undefined` is
+ * no answer at all. What a person types into an address bar is the start of a host or of a
+ * path, so those come first, and everything else is ordered by how recently it was open.
+ */
+function matchRank(url: string, typed: string): number | undefined {
+	if (!typed) {
+		return 0;
+	}
+	const bare = displayForm(url).toLowerCase();
+	if (bare.startsWith(typed)) {
+		return 0;
+	}
+	if (bare.split(/[/?#]/).some(part => part.startsWith(typed))) {
+		return 1;
+	}
+	if (bare.includes(typed)) {
+		return 2;
+	}
+	// Matched in the scheme alone, which is the least someone can have meant.
+	return url.toLowerCase().includes(typed) ? 3 : undefined;
+}
+
+function suggestionsFor(query: string): string[] {
+	const typed = query.trim().toLowerCase();
+	const matches: { readonly url: string; readonly rank: number; readonly age: number }[] = [];
+
+	recentUrls.forEach((url, age) => {
+		// The page the panel is already on is not somewhere to go.
+		if (url === displayUrl) {
+			return;
+		}
+		const rank = matchRank(url, typed);
+		if (rank !== undefined) {
+			matches.push({ url, rank, age });
+		}
+	});
+
+	matches.sort((a, b) => a.rank - b.rank || a.age - b.age);
+	return matches.slice(0, maxSuggestions).map(match => match.url);
+}
+
+/** The label, with the part the typed text matched marked in it. */
+function suggestionLabel(url: string, typed: string): HTMLSpanElement {
+	const label = document.createElement('span');
+	label.className = 'menu-label';
+	const text = displayForm(url);
+	const at = typed ? text.toLowerCase().indexOf(typed.trim().toLowerCase()) : -1;
+
+	if (at === -1) {
+		label.textContent = text;
+		return label;
+	}
+
+	const match = document.createElement('span');
+	match.className = 'match';
+	match.textContent = text.slice(at, at + typed.trim().length);
+	label.append(text.slice(0, at), match, text.slice(at + typed.trim().length));
+	return label;
+}
+
+function showSuggestions(query: string): void {
+	const urls = suggestionsFor(query);
+	typedUrl = query;
+	suggestionIndex = -1;
+	suggestions.textContent = '';
+
+	for (const url of urls) {
+		const item = document.createElement('button');
+		item.type = 'button';
+		item.setAttribute('role', 'option');
+		item.dataset.url = url;
+		const icon = document.createElement('i');
+		icon.className = `codicon ${/^file:/i.test(url) ? 'codicon-file-code' : 'codicon-globe'}`;
+		item.append(icon, suggestionLabel(url, query));
+		// The field keeps the focus, so the click that follows lands on a live suggestion
+		// rather than on one the blur has already taken away.
+		item.addEventListener('mousedown', event => event.preventDefault());
+		item.addEventListener('click', () => commitUrl(url));
+		suggestions.appendChild(item);
+	}
+
+	suggestions.hidden = !urls.length;
+	input.setAttribute('aria-expanded', String(!!urls.length));
+}
+
+function hideSuggestions(): void {
+	suggestions.hidden = true;
+	suggestionIndex = -1;
+	input.setAttribute('aria-expanded', 'false');
+}
+
+function suggestionButtons(): HTMLButtonElement[] {
+	return Array.from(suggestions.querySelectorAll<HTMLButtonElement>('[role="option"]'));
+}
+
+/** Arrow keys walk the list and fill the field, so Enter goes where the field says. */
+function moveSuggestion(delta: number): void {
+	const items = suggestionButtons();
+	if (!items.length) {
+		return;
+	}
+
+	// One past each end is "what I typed", the way an address bar behaves.
+	const next = suggestionIndex + delta;
+	suggestionIndex = next < -1 ? items.length - 1 : next >= items.length ? -1 : next;
+
+	items.forEach((item, index) => {
+		const selected = index === suggestionIndex;
+		item.classList.toggle('selected', selected);
+		item.setAttribute('aria-selected', String(selected));
+		if (selected) {
+			item.scrollIntoView({ block: 'nearest' });
+		}
+	});
+
+	input.value = suggestionIndex === -1 ? typedUrl : items[suggestionIndex].dataset.url ?? '';
+}
+
+/** Goes to what the field holds — or to the suggestion the arrow keys stopped on. */
+function commitUrl(url: string): void {
+	lastCommitted = url;
+	input.value = url;
+	hideSuggestions();
+	navigateTo(url);
+}
+
+/** Puts the page's own url in the field, which is never a value to navigate back to. */
+function showUrlInInput(): void {
+	if (document.activeElement === input) {
+		return;
+	}
+	input.value = displayUrl;
+	lastCommitted = displayUrl;
+}
+
 // -- context menu ----------------------------------------------------------------------------
 
 function contextMenuItems(): HTMLButtonElement[] {
@@ -656,7 +955,9 @@ function openContextMenu(at: PagePoint, descriptor: string, targetId: string): v
 	const frame = iframe.getBoundingClientRect();
 	const width = contextMenu.offsetWidth;
 	const height = contextMenu.offsetHeight;
-	const wanted = { x: frame.left + at.x, y: frame.top + at.y };
+	// The page reports a point in its own viewport, and the frame's box is the zoomed one: at
+	// 150% a point 100px into the page is 150px into the panel.
+	const wanted = { x: frame.left + at.x * zoomLevel, y: frame.top + at.y * zoomLevel };
 	// Flipped above the cursor rather than pushed up when there is no room below it: pushing it
 	// up puts an entry the click never aimed at under the pointer.
 	contextMenu.style.left = `${Math.max(2, Math.min(wanted.x, window.innerWidth - width - 2))}px`;
@@ -819,8 +1120,68 @@ onceDocumentLoaded(() => {
 		}, sawReady ? busyProbeTimeout : probeTimeout);
 	});
 
-	input.addEventListener('change', event => {
-		navigateTo((event.target as HTMLInputElement).value);
+	// A pinch over the toolbar or the hint bar, where there is no page to report it.
+	document.addEventListener('wheel', event => {
+		if (!event.ctrlKey && !event.metaKey) {
+			return;
+		}
+		event.preventDefault();
+		onZoomGesture(event.deltaMode === 1 ? event.deltaY * 16
+			: event.deltaMode === 2 ? event.deltaY * 100 : event.deltaY);
+	}, { passive: false });
+
+	input.addEventListener('input', () => showSuggestions(input.value));
+
+	// Focusing an empty field is a new tab asking where to go; a field that already holds a
+	// page is not, and a list dropping over the page for a click is not what was asked for.
+	input.addEventListener('focus', () => {
+		if (!input.value) {
+			showSuggestions('');
+		}
+	});
+
+	input.addEventListener('blur', () => hideSuggestions());
+
+	input.addEventListener('keydown', event => {
+		switch (event.key) {
+			case 'ArrowDown':
+			case 'ArrowUp': {
+				event.preventDefault();
+				if (suggestions.hidden) {
+					showSuggestions(input.value);
+				}
+				moveSuggestion(event.key === 'ArrowDown' ? 1 : -1);
+				return;
+			}
+
+			case 'Enter':
+				// Whatever the field holds, which the arrow keys have already filled in.
+				event.preventDefault();
+				commitUrl(input.value);
+				return;
+
+			case 'Escape':
+				if (!suggestions.hidden) {
+					// The list closes and the typed text stands; the second Escape is the
+					// picker's, which the handler on the document takes.
+					event.stopPropagation();
+					input.value = typedUrl;
+					hideSuggestions();
+				}
+				return;
+
+			case 'Tab':
+				hideSuggestions();
+				return;
+		}
+	});
+
+	// Enter and a click on a suggestion have both navigated by now; the `change` that follows
+	// on blur is the same value a second time.
+	input.addEventListener('change', () => {
+		if (input.value !== lastCommitted) {
+			commitUrl(input.value);
+		}
 	});
 
 	forwardButton.addEventListener('click', () => history.forward());
@@ -832,6 +1193,13 @@ onceDocumentLoaded(() => {
 
 	copyActionButton.addEventListener('click', () => runCopyCommand(lastCopyCommand));
 	copyMenuToggle.addEventListener('click', () => setMenuOpen(!isMenuOpen()));
+	browserMenuToggle.addEventListener('click', () => setBrowserMenuOpen(browserMenu.hidden));
+
+	for (const item of browserMenuItems()) {
+		item.addEventListener('click', () => {
+			runBrowserCommand(item.dataset.command as BrowserMenuCommand);
+		});
+	}
 
 	for (const item of menuItems()) {
 		item.addEventListener('click', () => {
@@ -846,7 +1214,8 @@ onceDocumentLoaded(() => {
 	}
 
 	// Arrow keys inside a menu, the way a menu is expected to behave.
-	for (const [menu, items] of [[copyMenu, menuItems], [contextMenu, contextMenuItems]] as const) {
+	for (const [menu, items] of [[copyMenu, menuItems], [contextMenu, contextMenuItems],
+		[browserMenu, browserMenuItems]] as const) {
 		menu.addEventListener('keydown', event => {
 			if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') {
 				return;
@@ -864,6 +1233,10 @@ onceDocumentLoaded(() => {
 		if (isMenuOpen() && !copyMenu.contains(target) && !copyMenuToggle.contains(target)) {
 			setMenuOpen(false);
 		}
+		if (!browserMenu.hidden && !browserMenu.contains(target)
+			&& !browserMenuToggle.contains(target)) {
+			setBrowserMenuOpen(false);
+		}
 		// A click inside the page closes it too, but that one is the page's to report: this
 		// document hears nothing of what happens inside the frame.
 		if (contextMenuOpen && !contextMenu.contains(target)) {
@@ -878,6 +1251,9 @@ onceDocumentLoaded(() => {
 		if (isMenuOpen()) {
 			setMenuOpen(false);
 			copyMenuToggle.focus();
+		} else if (!browserMenu.hidden) {
+			setBrowserMenuOpen(false);
+			browserMenuToggle.focus();
 		} else if (contextMenuOpen) {
 			// The menu has the keyboard, so this is where Escape arrives; the page hands back
 			// the one that happens while the focus is still inside it.
@@ -890,9 +1266,18 @@ onceDocumentLoaded(() => {
 	});
 
 	setLastCopyCommand(lastCopyCommand);
+	applyZoom();
 
 	input.value = settings.url;
-	navigateTo(settings.url);
+	lastCommitted = settings.url;
+	if (settings.url) {
+		navigateTo(settings.url);
+	} else {
+		// A new tab: nothing to load, and the one useful thing to do with it is to say where
+		// to go. Assigning an empty `src` would load this very document into the frame.
+		input.focus();
+		showSuggestions('');
+	}
 
 	toggleFocusLockIndicatorEnabled(settings.focusLockEnabled);
 });

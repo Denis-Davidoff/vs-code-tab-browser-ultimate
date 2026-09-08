@@ -12,13 +12,13 @@ import * as vscode from 'vscode';
 import { isInstalled, name as assistantName } from './assistants';
 import { isHtmlPath } from './fileSession';
 import { McpState } from './mcpCheck';
+import { RecentPages } from './recentPages';
 import { TabBrowserManager } from './tabBrowserManager';
 
 export const viewId = 'tabBrowser.actions';
 
-/** Recent pages are a property of the project, not of the user; hence `workspaceState`. */
-const recentUrlsKey = 'recentUrls';
-const maxRecentUrls = 8;
+/** As many of the remembered pages as a tree section has room for. */
+const maxRecentRows = 8;
 /** A folder can hold thousands of entries, and a tree row is not how anyone reads those. */
 const maxFolderRows = 200;
 /**
@@ -58,16 +58,15 @@ export interface Sidebar extends vscode.Disposable {
 export function registerSidebar(
 	context: vscode.ExtensionContext,
 	manager: TabBrowserManager,
+	recent: RecentPages,
 	mcpState: () => McpState,
 ): Sidebar {
-	const provider = new SidebarProvider(context, manager, mcpState);
+	const provider = new SidebarProvider(manager, recent, mcpState);
 	const disposables = [
 		provider,
 		vscode.window.registerTreeDataProvider(viewId, provider),
-		manager.onDidChange(() => {
-			provider.rememberCurrentPage();
-			provider.refresh();
-		}),
+		manager.onDidChange(() => provider.refresh()),
+		recent.onDidChange(() => provider.refresh()),
 		// The mcp rows and the assistant rows both depend on things outside the panel.
 		vscode.workspace.onDidChangeConfiguration(event => {
 			if (event.affectsConfiguration('tabBrowser')) {
@@ -93,8 +92,8 @@ class SidebarProvider implements vscode.TreeDataProvider<Row> {
 	public readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
 	constructor(
-		private readonly _context: vscode.ExtensionContext,
 		private readonly _manager: TabBrowserManager,
+		private readonly _recent: RecentPages,
 		private readonly _mcpState: () => McpState,
 	) { }
 
@@ -104,25 +103,6 @@ class SidebarProvider implements vscode.TreeDataProvider<Row> {
 
 	public refresh(): void {
 		this._onDidChangeTreeData.fire();
-	}
-
-	/** Keeps the page the panel is on, so it can be reopened after the panel is closed. */
-	public rememberCurrentPage(): void {
-		const url = this._manager.activeView?.url;
-		// A file the panel was pointed at is a page of this project as much as a url is.
-		if (!url || !/^(https?|file):/i.test(url)) {
-			return;
-		}
-
-		// The panel reports its state several times per page — loaded, instrumented, ready.
-		const recent = this._recentUrls();
-		if (recent[0] === url) {
-			return;
-		}
-
-		this._context.workspaceState.update(
-			recentUrlsKey,
-			[url, ...recent.filter(seen => seen !== url)].slice(0, maxRecentUrls));
 	}
 
 	public getTreeItem(row: Row): vscode.TreeItem {
@@ -224,7 +204,8 @@ class SidebarProvider implements vscode.TreeDataProvider<Row> {
 				children: [
 					view
 						? {
-							label: shorten(view.url),
+							// A new tab has no page yet, and an empty row says nothing at all.
+							label: view.url ? shorten(view.url) : vscode.l10n.t("New tab"),
 							description: view.inspectable
 								? vscode.l10n.t("ready")
 								: vscode.l10n.t("not instrumented"),
@@ -238,6 +219,12 @@ class SidebarProvider implements vscode.TreeDataProvider<Row> {
 							label: vscode.l10n.t("No page open"),
 							icon: new vscode.ThemeIcon('circle-outline', new vscode.ThemeColor('disabledForeground')),
 						},
+					{
+						label: vscode.l10n.t("New tab"),
+						description: vscode.l10n.t("a second panel"),
+						icon: new vscode.ThemeIcon('add'),
+						command: 'tabBrowser.newTab',
+					},
 					{
 						label: vscode.l10n.t("Open a page…"),
 						icon: new vscode.ThemeIcon('add'),
@@ -442,8 +429,7 @@ class SidebarProvider implements vscode.TreeDataProvider<Row> {
 	}
 
 	private _recentUrls(): string[] {
-		return this._context.workspaceState.get<string[]>(recentUrlsKey, [])
-			.filter(url => typeof url === 'string');
+		return this._recent.all().slice(0, maxRecentRows);
 	}
 }
 

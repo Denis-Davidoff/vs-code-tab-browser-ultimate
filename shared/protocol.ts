@@ -91,6 +91,13 @@ export interface PickedElement {
 	readonly styles?: StyleSnapshot;
 }
 
+/**
+ * What a keyboard shortcut of the panel's does. A browser keeps these keys for itself, so a
+ * page never sees them — and while the page has the focus it is the only thing that hears them
+ * at all, which is why the injected script forwards them rather than the webview listening.
+ */
+export type ShortcutAction = 'newTab' | 'zoomIn' | 'zoomOut' | 'resetZoom';
+
 export type ConsoleLevel = 'log' | 'info' | 'warn' | 'error' | 'debug' | 'trace';
 
 export interface ConsoleEntry {
@@ -189,6 +196,15 @@ export type AgentEvent =
 		readonly error?: string;
 	}
 	| { readonly kind: 'pageError'; readonly message: string }
+	/** One of the panel's own shortcuts, pressed while the page had the keyboard. */
+	| { readonly kind: 'shortcut'; readonly action: ShortcutAction }
+	/**
+	 * A pinch on the trackpad or `Cmd`/`Ctrl` + wheel over the page — one gesture reported as
+	 * many small deltas, in pixels, negative for "closer". The page reports and the panel
+	 * decides: how much of a gesture is worth a step is the panel's business, and the page
+	 * would otherwise have to know the zoom steps to answer for them.
+	 */
+	| { readonly kind: 'zoomGesture'; readonly delta: number }
 	/**
 	 * The answer to `alive`, from the document that was holding the frame when it was asked.
 	 * A kind of its own, because every other kind here belongs to one direction only: shared

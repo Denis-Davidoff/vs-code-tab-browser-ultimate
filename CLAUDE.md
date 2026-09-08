@@ -11,7 +11,7 @@ Forked from the Simple Browser extension that ships with VS Code and renamed thr
 | Path | Runs in | What it is |
 | --- | --- | --- |
 | `src/` | extension host (node) | activation, the webview panel, the local proxy, files from disk, clipboard, tab icon, mcp, the sidebar |
-| `preview-src/` | webview | toolbar, address bar, copy menu, hint bar; relays messages |
+| `preview-src/` | webview | toolbar, address bar and its completion, the menus, zoom, hint bar; relays messages |
 | `page-src/` | the previewed page | injected agent: picker, context menu, console capture, element report |
 | `shared/` | all three | message contracts and the shapes they carry |
 | `media/` | webview | `main.css`, `codicon.css`, and **generated** `index.js` / `agent.js` |
@@ -210,6 +210,44 @@ already knows about the excludes the user has set.
 
 Recent pages live in `workspaceState`: a dev url belongs to the project, not to the user. A file
 is remembered there too, and shown relative to the project it belongs to.
+
+## The panel's own menu, the zoom and the address bar
+
+Three things the toolbar grew that are about the *panel* rather than about the page.
+
+**More than one panel.** `TabBrowserManager` keeps a list, most recently active first, and
+`activeView` — what every command, the sidebar and every mcp tool act on — is the panel that
+was last looked at (`onDidBecomeActive`, off the editor's `onDidChangeViewState`). `show` still
+reuses that one; `newTab` is the only thing that opens another, blank and with the address bar
+focused. A blank tab loads nothing at all: assigning an empty `src` would load the webview's own
+document into the frame.
+
+**Zoom belongs to the frame**, not to the page: `iframe.style.zoom` is what a browser's own zoom
+does — the page's layout viewport becomes the panel divided by the factor, so the page reflows
+rather than being stretched — while a `zoom` the *page* carried would show up in every computed
+style an element report reads. The frame therefore asks for `100 / zoom` percent of the panel,
+or a zoomed page would be that much wider than the panel it sits in. Two things follow from the
+page and the panel counting in different pixels: the level is kept in the webview's own state
+(per panel, across restarts), and the point a right-click reports has to be multiplied by it
+before the menu is placed — the page reports its own viewport, the frame's box is the scaled one.
+
+**The keys a browser keeps for itself** (`Cmd`/`Ctrl` + `T`, `+`, `-`, `0`) reach the panel two
+ways, because neither covers the other: `contributes.keybindings` scoped to
+`activeWebviewPanelId` works while the panel's own chrome has the keyboard, and the injected
+script forwards them (`shortcut`) while the *page* has it — a key pressed inside a frame reaches
+no listener above it and no keybinding of the editor's either. A pinch on a trackpad and
+`Cmd` + wheel are the same event everywhere (`wheel` carrying `ctrlKey`), so one non-passive
+listener answers both and reports the delta upwards (`zoomGesture`); the panel adds those up and
+steps when they amount to one, since a gesture is many small deltas and the zoom is a dozen
+steps.
+
+**The address bar completes the pages the panel has been on.** The history is one list
+(`src/recentPages.ts`, in `workspaceState`) with two readers — the sidebar's "Recent" section and
+this — so it holds more than either shows: the address bar *filters* it rather than reading it in
+order. What a person types into an address bar is the start of a host or of a path, so those rank
+first (`matchRank`), a mere substring after them, and recency only decides between equals. The
+list is the webview's own dom, drawn under the field rather than in the page — a `<datalist>`
+cannot be styled, ordered or navigated the way this needs to be.
 
 ## The copy menu
 

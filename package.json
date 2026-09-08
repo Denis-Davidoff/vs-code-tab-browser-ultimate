@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate",
 	"displayName": "AI Browser🏆 Claude + Codex",
 	"description": "Embedded browser tab with AI capabilities, Claude and Codex integration",
-	"version": "0.3.16",
+	"version": "0.3.17",
 	"icon": "media/icon.png",
 	"publisher": "DenysDavydov",
   	"private": true,
@@ -83,6 +83,27 @@
 				"title": "Show",
 				"category": "Tab Browser Ultimate",
 				"icon": "$(globe)"
+			},
+			{
+				"command": "tabBrowser.newTab",
+				"title": "New Tab",
+				"category": "Tab Browser Ultimate",
+				"icon": "$(add)"
+			},
+			{
+				"command": "tabBrowser.zoomIn",
+				"title": "Zoom In",
+				"category": "Tab Browser Ultimate"
+			},
+			{
+				"command": "tabBrowser.zoomOut",
+				"title": "Zoom Out",
+				"category": "Tab Browser Ultimate"
+			},
+			{
+				"command": "tabBrowser.resetZoom",
+				"title": "Reset Zoom",
+				"category": "Tab Browser Ultimate"
 			},
 			{
 				"command": "tabBrowser.openFile",
@@ -202,6 +223,38 @@
 				}
 			]
 		},
+		"keybindings": [
+			{
+				"command": "tabBrowser.newTab",
+				"key": "ctrl+t",
+				"mac": "cmd+t",
+				"when": "activeWebviewPanelId == 'tabBrowser.view'"
+			},
+			{
+				"command": "tabBrowser.zoomIn",
+				"key": "ctrl+=",
+				"mac": "cmd+=",
+				"when": "activeWebviewPanelId == 'tabBrowser.view'"
+			},
+			{
+				"command": "tabBrowser.zoomIn",
+				"key": "ctrl+shift+=",
+				"mac": "cmd+shift+=",
+				"when": "activeWebviewPanelId == 'tabBrowser.view'"
+			},
+			{
+				"command": "tabBrowser.zoomOut",
+				"key": "ctrl+-",
+				"mac": "cmd+-",
+				"when": "activeWebviewPanelId == 'tabBrowser.view'"
+			},
+			{
+				"command": "tabBrowser.resetZoom",
+				"key": "ctrl+0",
+				"mac": "cmd+0",
+				"when": "activeWebviewPanelId == 'tabBrowser.view'"
+			}
+		],
 		"menus": {
 			"explorer/context": [
 				{

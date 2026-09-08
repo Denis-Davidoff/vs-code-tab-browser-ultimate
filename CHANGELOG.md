@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **A toolbar menu, zoom and a completing address bar.** The button at the right of the toolbar
+  opens **New tab** (`Cmd`/`Ctrl` + `T`) and **Zoom in / out / reset** (`Cmd`/`Ctrl` + `+`, `-`,
+  `0`); zoom also answers a pinch on the trackpad and `Cmd`/`Ctrl` + scroll, and is remembered
+  per panel. The address bar completes the pages this project's panel has been on — ordered by
+  how well they answer what was typed, then by how recently they were open — with `↓`/`↑` and
+  `Enter`. "New tab" opens a second browser panel; commands, the sidebar and the mcp tools act
+  on the one last looked at.
+
 - **Local html files.** "Open in AI Browser" from the explorer's context menu, the editor tab
   and the command palette; a file browser over the project's own pages in the sidebar, next to
   "Open a file…"; and a path typed or pasted into the address bar. The file is served from the

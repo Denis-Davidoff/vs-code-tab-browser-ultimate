@@ -17,6 +17,7 @@ import { McpServer } from './mcpServer';
 import { connectToClaudeCode, connectToCodex, registerWithVsCode } from './mcpSetup';
 import { checkMcp, McpState } from './mcpCheck';
 import { refreshClientConfigs } from './mcpRefresh';
+import { RecentPages } from './recentPages';
 import { registerSidebar } from './sidebar';
 import { CopyCommand } from '../shared/webviewProtocol';
 
@@ -27,6 +28,10 @@ declare class URL {
 
 const openApiCommand = 'tabBrowser.api.open';
 const showCommand = 'tabBrowser.show';
+const newTabCommand = 'tabBrowser.newTab';
+const zoomInCommand = 'tabBrowser.zoomIn';
+const zoomOutCommand = 'tabBrowser.zoomOut';
+const resetZoomCommand = 'tabBrowser.resetZoom';
 const openFileCommand = 'tabBrowser.openFile';
 const copyElementCommand = 'tabBrowser.copyElement';
 const copyElementXPathCommand = 'tabBrowser.copyElementXPath';
@@ -69,8 +74,15 @@ export function activate(context: vscode.ExtensionContext) {
 	const proxy = new BrowserProxy(context.extensionUri);
 	context.subscriptions.push(proxy);
 
-	const manager = new TabBrowserManager(context.extensionUri, proxy);
+	const recent = new RecentPages(context.workspaceState);
+	context.subscriptions.push(recent);
+
+	const manager = new TabBrowserManager(context.extensionUri, proxy, recent);
 	context.subscriptions.push(manager);
+
+	// The history is the extension's, not the sidebar's: the address bar completes against it
+	// too, and a panel reports the page it ends up on rather than the url it was asked for.
+	context.subscriptions.push(manager.onDidChange(() => recent.remember(manager.activeView?.url)));
 
 	context.subscriptions.push(registerTerminalLinks(url => manager.show(url)));
 
@@ -79,7 +91,7 @@ export function activate(context: vscode.ExtensionContext) {
 	// The server starts asynchronously, so the sidebar is handed a getter and told to redraw
 	// once the state settles — which is also the one place that knows *why* it is not running.
 	let mcpState: McpState = { kind: 'starting' };
-	const sidebar = registerSidebar(context, manager, () => mcpState);
+	const sidebar = registerSidebar(context, manager, recent, () => mcpState);
 	context.subscriptions.push(sidebar);
 
 	// What the running server owns: the port, and the definition VS Code's own chat reads. Kept
@@ -158,6 +170,20 @@ export function activate(context: vscode.ExtensionContext) {
 			manager.show(url);
 		}
 	}));
+
+	// A panel of its own, as a browser opens another tab: blank, with the address bar focused.
+	context.subscriptions.push(vscode.commands.registerCommand(newTabCommand, () => {
+		manager.newTab();
+	}));
+
+	const zoom = (direction: 'in' | 'out' | 'reset') => () => {
+		// Zoom is the panel's, and only the panel that is being looked at is zoomed.
+		manager.activeView?.zoom(direction);
+	};
+	context.subscriptions.push(
+		vscode.commands.registerCommand(zoomInCommand, zoom('in')),
+		vscode.commands.registerCommand(zoomOutCommand, zoom('out')),
+		vscode.commands.registerCommand(resetZoomCommand, zoom('reset')));
 
 	// The explorer's context menu hands over the file that was clicked; from the palette and
 	// from the sidebar's own row there is nothing to hand over, so one is asked for.

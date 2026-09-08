@@ -11,6 +11,7 @@ import {
 	cacheBustParameter,
 	isAgentMessage,
 	packAgentMessage,
+	ShortcutAction,
 } from '../shared/protocol';
 import { consoleSnapshot, installConsoleCapture } from './consoleCapture';
 import { PageContextMenu } from './contextMenu';
@@ -405,6 +406,8 @@ function install(): void {
 			case 'pageError':
 			case 'console':
 			case 'result':
+			case 'shortcut':
+			case 'zoomGesture':
 				send(message);
 				return;
 
@@ -454,6 +457,52 @@ function install(): void {
 				return;
 		}
 	});
+
+	// -- the panel's own keyboard shortcuts ----------------------------------------------------
+
+	/**
+	 * A browser keeps `Cmd`/`Ctrl` + `T`, `+`, `-` and `0` for itself, so a page never sees
+	 * them — and here the panel is the browser. While the page has the focus nothing else
+	 * hears them at all: a key pressed inside a frame reaches no listener above it, and the
+	 * editor's own keybindings never see it either. Hence the capture phase: a page that
+	 * swallows keys is not being asked.
+	 */
+	window.addEventListener('keydown', event => {
+		if (!(event.metaKey || event.ctrlKey) || event.altKey) {
+			return;
+		}
+
+		const action: ShortcutAction | undefined =
+			event.key === '=' || event.key === '+' ? 'zoomIn'
+				: event.key === '-' || event.key === '_' ? 'zoomOut'
+					: event.key === '0' ? 'resetZoom'
+						// `+` needs shift on most layouts, so shift is only in the way here.
+						: (event.key === 't' || event.key === 'T') && !event.shiftKey ? 'newTab'
+							: undefined;
+		if (!action) {
+			return;
+		}
+
+		event.preventDefault();
+		send({ kind: 'shortcut', action });
+	}, true);
+
+	/**
+	 * Zooming by gesture. A pinch on a trackpad arrives as a `wheel` event carrying `ctrlKey`
+	 * — the convention every browser uses for it — which is also exactly what `Cmd`/`Ctrl` +
+	 * wheel produces, so one listener answers both. Not passive, because the page must not
+	 * scroll under a gesture that was never about scrolling.
+	 */
+	window.addEventListener('wheel', event => {
+		if (!event.ctrlKey && !event.metaKey) {
+			return;
+		}
+		event.preventDefault();
+		// A line or a page of scrolling, in the pixels the panel counts in.
+		const delta = event.deltaMode === 1 ? event.deltaY * 16
+			: event.deltaMode === 2 ? event.deltaY * 100 : event.deltaY;
+		send({ kind: 'zoomGesture', delta });
+	}, { capture: true, passive: false });
 
 	// -- diagnostics -------------------------------------------------------------------------
 

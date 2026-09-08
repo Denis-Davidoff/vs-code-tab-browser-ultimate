@@ -1,61 +1,90 @@
 /*---------------------------------------------------------------------------------------------
- *  Keeps the single browser view: `show` reuses the open panel instead of stacking new ones.
+ *  Keeps the browser panels: `show` reuses the one in front instead of stacking new ones, and
+ *  "New tab" is the one thing that opens another.
+ *
+ *  Panels are kept most-recently-active first, so `activeView` — which is what every command,
+ *  the sidebar and every mcp tool act on — is "the browser panel" in the only sense a person
+ *  with two of them open would mean: the one they were last looking at.
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
 import { BrowserProxy } from './browserProxy';
+import { RecentPages } from './recentPages';
 import { ShowOptions, TabBrowserView } from './tabBrowserView';
 
 export class TabBrowserManager {
 
-	private _activeView?: TabBrowserView;
+	private readonly _views: TabBrowserView[] = [];
 
 	private readonly _onDidChange = new vscode.EventEmitter<void>();
-	/** Fired when the panel opens, closes, or reports another page. */
+	/** Fired when a panel opens, closes, takes the focus, or reports another page. */
 	public readonly onDidChange = this._onDidChange.event;
 
 	constructor(
 		private readonly _extensionUri: vscode.Uri,
 		private readonly _proxy: BrowserProxy,
+		private readonly _recent: RecentPages,
 	) { }
 
 	public dispose(): void {
-		this._activeView?.dispose();
-		this._activeView = undefined;
+		for (const view of [...this._views]) {
+			view.dispose();
+		}
+		this._views.length = 0;
 		this._onDidChange.dispose();
 	}
 
 	public get activeView(): TabBrowserView | undefined {
-		return this._activeView;
+		return this._views[0];
 	}
 
 	public show(inputUri: string | vscode.Uri, options?: ShowOptions): void {
 		const url = typeof inputUri === 'string' ? inputUri : inputUri.toString(true);
-		if (this._activeView) {
-			this._activeView.show(url, options);
+		const view = this.activeView;
+		if (view) {
+			view.show(url, options);
+			this._onDidChange.fire();
 		} else {
-			const view = TabBrowserView.create(this._extensionUri, this._proxy, url, options);
-			this._registerWebviewListeners(view);
-			this._activeView = view;
+			this.newTab(url, options);
 		}
+	}
+
+	/** Another panel, as a browser opens another tab; it takes the focus and the commands. */
+	public newTab(url = '', options?: ShowOptions): TabBrowserView {
+		const view = TabBrowserView.create(this._extensionUri, this._proxy, this._recent, url, options);
+		this._add(view);
 		this._onDidChange.fire();
+		return view;
 	}
 
 	public restore(panel: vscode.WebviewPanel, state: any): void {
 		const url = state?.url ?? '';
-		const view = TabBrowserView.restore(this._extensionUri, this._proxy, url, panel);
-		this._registerWebviewListeners(view);
-		this._activeView ??= view;
+		this._add(TabBrowserView.restore(this._extensionUri, this._proxy, this._recent, url, panel));
 		this._onDidChange.fire();
 	}
 
-	private _registerWebviewListeners(view: TabBrowserView): void {
+	private _add(view: TabBrowserView): void {
+		// In front: a panel that has just been created or restored is the one being looked at,
+		// and the editor only reports a view state change once something else takes over.
+		this._views.unshift(view);
+
 		view.onDispose(() => {
-			if (this._activeView === view) {
-				this._activeView = undefined;
+			const at = this._views.indexOf(view);
+			if (at !== -1) {
+				this._views.splice(at, 1);
 			}
 			this._onDidChange.fire();
 		});
 		view.onDidChangeState(() => this._onDidChange.fire());
+		view.onDidBecomeActive(() => {
+			const at = this._views.indexOf(view);
+			if (at > 0) {
+				this._views.splice(at, 1);
+				this._views.unshift(view);
+			}
+			this._onDidChange.fire();
+		});
+		// Beside the panel that asked, which is where a new tab belongs.
+		view.onDidRequestNewTab(() => this.newTab());
 	}
 }

@@ -240,15 +240,47 @@ const server = http.createServer((req, res) => {
 			// and it answers on two origins — `127.0.0.1` and `localhost` — so the second one is
 			// a page the proxy does not serve, whatever it posts.
 			agentOrigins: [`http://${req.headers.host}`],
+			// The pages this project's panel has been on, newest first, which is what the
+			// address bar completes against.
+			recentUrls: [
+				'http://localhost:9000/catalog',
+				'http://localhost:5173/settings',
+				'http://localhost:3000/login',
+				'file:///srv/project/docs/index.html',
+				'http://127.0.0.1:8080/',
+				'http://localhost:5173/',
+				'http://example.com/one',
+				'http://example.com/two',
+				'http://example.com/three',
+				'http://example.com/four',
+				'http://example.com/five',
+				'http://example.com/six',
+			],
+			isMac: true,
 		})}'></div>
 			<div class="header">
-				<input class="url-input">
+				<div class="url-field">
+					<input class="url-input" role="combobox" aria-expanded="false">
+					<div class="menu url-suggestions" role="listbox" hidden></div>
+				</div>
 				<button class="back-button"></button><button class="forward-button"></button>
 				<button class="reload-button"></button><button class="open-external-button"></button>
 				<button class="copy-action-button"><i class="codicon"></i></button>
 				<button class="copy-menu-toggle"></button>
 				<div class="menu copy-menu"><button role="menuitem" data-command="element"
 					data-icon="codicon-inspect"><span class="menu-label">Copy element</span></button></div>
+				<button class="browser-menu-toggle" title="Menu"></button>
+				<div class="menu browser-menu" role="menu" hidden>
+					<button role="menuitem" data-command="newTab" data-icon="codicon-add"
+						><span class="menu-label">New tab</span><span class="menu-keys">⌘T</span></button>
+					<button role="menuitem" data-command="zoomIn" data-icon="codicon-zoom-in"
+						><span class="menu-label">Zoom in</span><span class="menu-keys">⌘+</span></button>
+					<button role="menuitem" data-command="zoomOut" data-icon="codicon-zoom-out"
+						><span class="menu-label">Zoom out</span><span class="menu-keys">⌘-</span></button>
+					<button role="menuitem" data-command="resetZoom" data-icon="codicon-screen-normal"
+						><span class="menu-label">Reset zoom</span><span class="menu-detail"></span
+						><span class="menu-keys">⌘0</span></button>
+				</div>
 			</div>
 			<div class="menu context-menu" role="menu" hidden>
 				<div class="menu-header" role="presentation"></div>
@@ -301,6 +333,11 @@ const server = http.createServer((req, res) => {
 				}
 			});
 			window.__nextTarget = 0;
+			// What the injected script sends up while the page has the keyboard or is pinched.
+			window.__shortcut = action => parent.postMessage(
+				{ __tabBrowserAgent: true, kind: 'shortcut', action }, '*');
+			window.__zoomGesture = delta => parent.postMessage(
+				{ __tabBrowserAgent: true, kind: 'zoomGesture', delta }, '*');
 			window.__openContextMenu = (x, y) => parent.postMessage({ __tabBrowserAgent: true,
 				kind: 'contextMenu', at: { x, y }, descriptor: 'button#save.primary',
 				targetId: 'target-' + (++window.__nextTarget) }, '*');
@@ -405,6 +442,8 @@ const server = http.createServer((req, res) => {
 							// This document relays what its frames report, so every one of
 							// those arrives twice: once from the frame, once from the relay.
 							fromFrame: event.source !== window,
+							action: event.data.action,
+							delta: event.data.delta,
 							at: event.data.at,
 							descriptor: event.data.descriptor,
 							targetId: event.data.targetId,
@@ -417,6 +456,13 @@ const server = http.createServer((req, res) => {
 				// before the agent's is — the panel switches that on later — so the flag is only
 				// what it ends up as once every handler has run.
 				window.addEventListener('contextmenu', event => { window.__lastEvent = event; });
+				// The shortcuts and the pinch: read after every handler has run, the same way.
+				window.addEventListener('keydown', event => {
+					window.__lastKey = { key: event.key, prevented: event.defaultPrevented };
+				});
+				window.addEventListener('wheel', event => {
+					window.__lastWheel = { prevented: event.defaultPrevented };
+				}, { passive: true });
 				document.getElementById('own-menu')
 					.addEventListener('contextmenu', event => event.preventDefault());
 			</script></body></html>`);
@@ -505,6 +551,8 @@ let cookieWrites;
 let pageRequests;
 let contextMenuPanel;
 let pageMenus;
+let toolbar;
+let pageShortcuts;
 let fileAgent;
 try {
 	const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
@@ -774,6 +822,8 @@ try {
 		// The order of the two, which is the whole of whether a pick can be answered at all.
 		const askedBeforeClosing = asked.findIndex(command => command.kind === 'pickContextTarget')
 			< asked.findIndex(command => command.kind === 'contextMenuOpen' && command.open === false);
+		// Read here and not at the end: the menu is opened again further down.
+		const closedAfterChoice = menu.hidden;
 		frame.contentWindow.__answerPick();
 		await settle();
 		const copied = window.__posted.filter(message => message.type === 'copyElement').at(-1);
@@ -793,12 +843,146 @@ try {
 		await settle();
 		const devTools = window.__posted.some(message => message.type === 'openDevTools');
 
-		return { placed, atTheEdge, asked: asked.map(command => command.kind), pickedUnder,
+		// Zoomed, the page reports a point in its own viewport while the frame's box is the
+		// scaled one: at 125% a point 40px into the page is 50px into the panel.
+		window.postMessage({ type: 'zoom', direction: 'in', token: 'panel-token' }, '*');
+		window.postMessage({ type: 'zoom', direction: 'in', token: 'panel-token' }, '*');
+		await settle();
+		const zoomedBox = frame.getBoundingClientRect();
+		frame.contentWindow.__openContextMenu(40, 40);
+		await settle();
+		const zoomedMenu = menu.getBoundingClientRect();
+		const whenZoomed = {
+			zoom: frame.style.zoom,
+			left: Math.round(zoomedMenu.left - zoomedBox.left),
+			top: Math.round(zoomedMenu.top - zoomedBox.top),
+		};
+		frame.contentWindow.__dismissContextMenu();
+		await settle();
+
+		return { whenZoomed, placed, atTheEdge, asked: asked.map(command => command.kind), pickedUnder,
 			askedBeforeClosing, expectedTarget,
-			copied, reopened, dismissed, devTools, closedAfterChoice: menu.hidden };
+			copied, reopened, dismissed, devTools, closedAfterChoice };
 	}, new URL(pageUrl).origin);
 	await menuPanel.close();
 
+
+	// The toolbar: what the address bar completes, the panel's own menu, and the zoom — which
+	// belongs to the frame, since a page carrying one would report it in every element report.
+	const toolbarPanel = await browser.newPage({ viewport: { width: 900, height: 400 } });
+	await toolbarPanel.goto(`${new URL(pageUrl).origin}/webview`);
+	toolbar = await toolbarPanel.evaluate(async origin => {
+		const input = document.querySelector('.url-input');
+		const suggestions = document.querySelector('.url-suggestions');
+		const browserMenu = document.querySelector('.browser-menu');
+		const frame = document.querySelector('iframe');
+		const settle = () => new Promise(resolve => setTimeout(resolve, 50));
+		const shown = () => Array.from(suggestions.querySelectorAll('[role="option"]'))
+			.map(item => ({ url: item.dataset.url, label: item.textContent,
+				match: item.querySelector('.match')?.textContent }));
+		const type = async value => {
+			input.focus();
+			input.value = value;
+			input.dispatchEvent(new Event('input'));
+			await settle();
+		};
+		const key = name => input.dispatchEvent(
+			new KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true }));
+
+		const loaded = new Promise(resolve => frame.addEventListener('load', resolve, { once: true }));
+		window.postMessage({ type: 'didResolveUrl', requestId: 1, token: 'panel-token',
+			loadUrl: `${origin}/silent-frame?toolbar`, displayUrl: 'http://127.0.0.1:1/',
+			instrumented: true }, '*');
+		await loaded;
+		frame.contentWindow.__reportReady();
+		await settle();
+
+		// A host that was typed: both pages under it, the one open most recently first.
+		await type('localhost:5173');
+		const byHost = shown();
+
+		// And a path that was typed: the page whose path *starts* with it comes before the one
+		// that merely contains it, however recently that one was open.
+		await type('log');
+		const byPath = shown();
+
+		// A file is a page of this project like any url, and reads as its own path.
+		await type('docs');
+		const file = shown();
+
+		await type('zzz');
+		const noMatch = { hidden: suggestions.hidden, items: shown().length };
+
+		// An empty field is a new tab asking where to go, and the list it offers has an end.
+		await type('');
+		const empty = shown();
+
+		// The arrow keys walk the list and fill the field, one past each end being what was
+		// typed; Enter goes where the field says.
+		await type('localhost');
+		key('ArrowDown');
+		const firstFilled = input.value;
+		key('ArrowDown');
+		const secondFilled = input.value;
+		key('ArrowUp');
+		key('ArrowUp');
+		const backToTyped = input.value;
+		key('ArrowDown');
+		window.__posted.length = 0;
+		key('Enter');
+		await settle();
+		const entered = {
+			asked: window.__posted.filter(message => message.type === 'resolveUrl').map(message => message.url),
+			closed: suggestions.hidden,
+		};
+
+		// Zoom. The frame carries it, so the page reflows into a viewport that much smaller
+		// rather than being stretched — which is what a browser's own zoom does.
+		const zoomStep = direction => {
+			window.postMessage({ type: 'zoom', direction, token: 'panel-token' }, '*');
+			return new Promise(resolve => setTimeout(resolve, 20));
+		};
+		await zoomStep('in');
+		const oneStep = { zoom: frame.style.zoom, width: frame.style.width };
+		await zoomStep('in');
+		const twoSteps = frame.style.zoom;
+		const level = browserMenu.querySelector('.menu-detail').textContent;
+		await zoomStep('reset');
+		const reset = frame.style.zoom;
+
+		// A pinch on the trackpad, which is many small deltas and not one step.
+		frame.contentWindow.__zoomGesture(-8);
+		frame.contentWindow.__zoomGesture(-8);
+		await settle();
+		const halfAGesture = frame.style.zoom;
+		frame.contentWindow.__zoomGesture(-8);
+		frame.contentWindow.__zoomGesture(-8);
+		await settle();
+		const wholeGesture = frame.style.zoom;
+		await zoomStep('reset');
+
+		// What the page forwards while it has the keyboard, since nothing else hears it.
+		window.__posted.length = 0;
+		frame.contentWindow.__shortcut('newTab');
+		await settle();
+		const forwardedNewTab = window.__posted.some(message => message.type === 'newTab');
+
+		// And the menu, which runs the same four things.
+		document.querySelector('.browser-menu-toggle').click();
+		const menuOpen = !browserMenu.hidden;
+		window.__posted.length = 0;
+		browserMenu.querySelector('[data-command="newTab"]').click();
+		await settle();
+		const fromMenu = {
+			newTab: window.__posted.some(message => message.type === 'newTab'),
+			closed: browserMenu.hidden,
+		};
+
+		return { byHost, byPath, file, noMatch, empty, firstFilled, secondFilled, backToTyped,
+			entered, oneStep, twoSteps, level, reset, halfAGesture, wholeGesture,
+			forwardedNewTab, menuOpen, fromMenu };
+	}, new URL(pageUrl).origin);
+	await toolbarPanel.close();
 
 	// The page's own half: the right-click it keeps, the one it hands over, and the element it
 	// holds on to in between.
@@ -852,6 +1036,36 @@ try {
 	// is not something a browser panel gets to do.
 	await rightClick('#own-menu');
 	pageMenus.ownMenu = await menuEvents();
+
+	// The keys a browser keeps for itself, pressed while the page has the keyboard: nothing
+	// else hears them at all, so the injected script is what forwards them.
+	await menuPage.keyboard.press('Meta+t');
+	await settlePage();
+	pageShortcuts = {
+		newTab: (await menuPage.evaluate(() => window.__events.filter(e => e.kind === 'shortcut')))
+			.map(event => event.action),
+		prevented: await menuPage.evaluate(() => window.__lastKey?.prevented),
+	};
+
+	// A pinch on the trackpad and `Cmd` + wheel are the same event, and neither scrolls the page.
+	await menuPage.evaluate(() => { window.__events.length = 0; window.scrollTo(0, 0); });
+	await menuPage.keyboard.down('Control');
+	await menuPage.mouse.move(100, 100);
+	await menuPage.mouse.wheel(0, -30);
+	await menuPage.keyboard.up('Control');
+	await settlePage();
+	pageShortcuts.gesture = await menuPage.evaluate(() => ({
+		deltas: window.__events.filter(event => event.kind === 'zoomGesture').map(event => event.delta),
+		prevented: window.__lastWheel?.prevented,
+		scrolled: window.scrollY,
+	}));
+
+	// A plain wheel is the page's own business, and is not reported at all.
+	await menuPage.evaluate(() => { window.__events.length = 0; });
+	await menuPage.mouse.wheel(0, 40);
+	await settlePage();
+	pageShortcuts.plainWheel = await menuPage.evaluate(
+		() => window.__events.filter(event => event.kind === 'zoomGesture').length);
 
 	// And a click in the page, which is what closes a menu drawn in the panel above it.
 	await rightClick('#plain');
@@ -1249,6 +1463,90 @@ check('waiting for an element that renders late succeeds',
 
 check('asking for something that is not there says so',
 	pageRequests.missing.includes('#nope'), pageRequests.missing);
+
+// A menu placed where the *page* says, drawn where the panel measures: the two are the same
+// coordinates only at 100%.
+check('a right-click in a zoomed page opens the menu under the cursor',
+	contextMenuPanel?.whenZoomed?.zoom === '1.25'
+	&& contextMenuPanel.whenZoomed.left === 50 && contextMenuPanel.whenZoomed.top === 50,
+	JSON.stringify(contextMenuPanel?.whenZoomed));
+
+// -- the address bar, the panel's menu and the zoom --------------------------------------------
+
+// What a person types into an address bar is the start of a host or of a path.
+check('a typed host offers the pages under it, most recently open first',
+	toolbar?.byHost?.map(item => item.url).join(' ')
+	=== 'http://localhost:5173/settings http://localhost:5173/', JSON.stringify(toolbar?.byHost));
+
+check('and the part that matched is marked in what is offered',
+	toolbar?.byHost?.[0]?.match === 'localhost:5173'
+	&& toolbar.byHost[0].label.startsWith('localhost:5173/settings'), JSON.stringify(toolbar?.byHost?.[0]));
+
+// Which is also the whole of the ordering: a path that begins with what was typed beats one
+// that merely contains it, however recently the latter was open.
+check('a page whose path starts with it comes before one that only contains it',
+	toolbar?.byPath?.map(item => item.url).join(' ')
+	=== 'http://localhost:3000/login http://localhost:9000/catalog', JSON.stringify(toolbar?.byPath));
+
+check('a local file is offered like any page, as the path it is',
+	toolbar?.file?.[0]?.url === 'file:///srv/project/docs/index.html'
+	&& toolbar.file[0].label === '/srv/project/docs/index.html', JSON.stringify(toolbar?.file));
+
+check('nothing that matches is no list at all',
+	toolbar?.noMatch?.hidden === true && toolbar.noMatch.items === 0, JSON.stringify(toolbar?.noMatch));
+
+check('an empty field offers the recent pages, and no more than ten of them',
+	toolbar?.empty?.length === 10, String(toolbar?.empty?.length));
+
+check('the arrow keys walk the list and fill the field',
+	toolbar?.firstFilled === 'http://localhost:9000/catalog'
+	&& toolbar?.secondFilled === 'http://localhost:5173/settings',
+	JSON.stringify([toolbar?.firstFilled, toolbar?.secondFilled]));
+
+// One past the top is what was typed, the way an address bar behaves.
+check('and walking off the top hands back what was typed',
+	toolbar?.backToTyped === 'localhost', toolbar?.backToTyped);
+
+check('Enter goes to the suggestion the field is holding, once',
+	toolbar?.entered?.asked?.length === 1
+	&& toolbar.entered.asked[0] === 'http://localhost:9000/catalog'
+	&& toolbar.entered.closed === true, JSON.stringify(toolbar?.entered));
+
+// Zoom is the frame's: the page reflows into a smaller viewport, and its own dom — which every
+// element report is read out of — is left exactly as its author wrote it.
+check('zooming in steps the frame and shrinks what it asks of the panel',
+	toolbar?.oneStep?.zoom === '1.1' && toolbar.oneStep.width.startsWith('90.9'),
+	JSON.stringify(toolbar?.oneStep));
+
+check('a second step walks the same scale',
+	toolbar?.twoSteps === '1.25' && toolbar?.level === '125%',
+	JSON.stringify([toolbar?.twoSteps, toolbar?.level]));
+
+check('and reset goes back to 100%', toolbar?.reset === '1', toolbar?.reset);
+
+// A pinch is many small deltas, and a step is only taken once they amount to one.
+check('a pinch too small to be a step changes nothing',
+	toolbar?.halfAGesture === '1', toolbar?.halfAGesture);
+
+check('and one that adds up to a step takes it',
+	toolbar?.wholeGesture === '1.1', toolbar?.wholeGesture);
+
+check('a shortcut the page forwards runs the same thing the menu does',
+	toolbar?.forwardedNewTab === true && toolbar?.menuOpen === true
+	&& toolbar?.fromMenu?.newTab === true && toolbar?.fromMenu?.closed === true,
+	JSON.stringify([toolbar?.forwardedNewTab, toolbar?.menuOpen, toolbar?.fromMenu]));
+
+check('the keys a browser keeps for itself are taken from the page and forwarded',
+	pageShortcuts?.newTab?.join() === 'newTab' && pageShortcuts?.prevented === true,
+	JSON.stringify(pageShortcuts));
+
+check('a pinch is reported in pixels and does not scroll the page',
+	pageShortcuts?.gesture?.deltas?.length === 1 && pageShortcuts.gesture.deltas[0] < 0
+	&& pageShortcuts.gesture.prevented === true && pageShortcuts.gesture.scrolled === 0,
+	JSON.stringify(pageShortcuts?.gesture));
+
+check('a wheel without a modifier is the page\'s own business',
+	pageShortcuts?.plainWheel === 0, String(pageShortcuts?.plainWheel));
 
 // -- a page served off the disk ----------------------------------------------------------------
 

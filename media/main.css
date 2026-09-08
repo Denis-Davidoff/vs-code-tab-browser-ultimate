@@ -56,7 +56,9 @@ body {
 	flex: 0 0 auto;
 }
 
-.controls button {
+/* Toolbar buttons only: a button inside one of the menus is styled with the menus below, and
+   these rules would otherwise win on specificity for half of what those set. */
+.controls button:not(.menu *) {
 	display: flex;
 	align-items: center;
 	justify-content: center;
@@ -73,32 +75,33 @@ body {
 	outline-offset: -1px;
 }
 
-.controls button .codicon {
+.controls button:not(.menu *) .codicon {
 	font-size: var(--icon-size);
 	line-height: var(--icon-size);
 }
 
-.controls button:hover:not(:disabled) {
+.controls button:not(.menu *):hover:not(:disabled) {
 	cursor: pointer;
 	color: var(--vscode-toolbar-hoverForeground, var(--vscode-icon-foreground));
 	background: var(--vscode-toolbar-hoverBackground);
 }
 
-.controls button:active:not(:disabled) {
+.controls button:not(.menu *):active:not(:disabled) {
 	background: var(--vscode-toolbar-activeBackground, var(--vscode-toolbar-hoverBackground));
 }
 
-.controls button:disabled {
+.controls button:not(.menu *):disabled {
 	opacity: 0.4;
 }
 
-.controls button:focus-visible {
+.controls button:not(.menu *):focus-visible {
 	outline-color: var(--vscode-focusBorder);
 }
 
 .url-input {
 	flex: 1 1 auto;
 	min-width: 0;
+	width: 100%;
 	box-sizing: border-box;
 	height: var(--url-input-height);
 	padding: 0 10px;
@@ -239,12 +242,10 @@ body.picking .controls .copy-action-button {
 	background: var(--vscode-inputOption-activeBackground, var(--vscode-toolbar-hoverBackground));
 }
 
-/* The look of both menus. The context menu is placed at the cursor and therefore lives outside
-   the toolbar, so its rules are spelled out next to the copy menu's rather than shared through
-   one selector: inside `.controls`, `.controls button` is the more specific selector for half of
-   the properties below, and outside it there is nothing to be more specific than. */
-.controls .copy-menu,
-.context-menu {
+/* The look of all three of them — the copy menu, the panel's own menu, and the one a right-click
+   in the page opens — plus the address bar's suggestions, which are a list and not a menu but
+   have no business looking different. Only where each one is placed is its own. */
+.menu {
 	min-width: 200px;
 	padding: 4px 0;
 	border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border, transparent));
@@ -253,44 +254,11 @@ body.picking .controls .copy-action-button {
 	box-shadow: 0 4px 12px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
 }
 
-.controls .copy-menu {
-	position: absolute;
-	top: calc(100% + 4px);
-	right: 0;
-	z-index: 10;
-}
-
-/* Positioned by the script, at the point in the page that was right-clicked. */
-.context-menu {
-	position: fixed;
-	left: 0;
-	top: 0;
-	z-index: 20;
-	max-width: 360px;
-}
-
-.controls .copy-menu[hidden],
-.context-menu[hidden] {
+.menu[hidden] {
 	display: none;
 }
 
-/* What the actions are about, since the menu is not next to the element it acts on. */
-.context-menu .menu-header {
-	max-width: 100%;
-	box-sizing: border-box;
-	padding: 2px 12px 5px;
-	margin-bottom: 4px;
-	border-bottom: 1px solid var(--vscode-menu-separatorBackground, var(--vscode-widget-border, transparent));
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-	font-family: var(--vscode-editor-font-family, monospace);
-	font-size: 0.9em;
-	color: var(--vscode-descriptionForeground, var(--vscode-menu-foreground, var(--vscode-foreground)));
-}
-
-.controls .copy-menu button,
-.context-menu button {
+.menu button {
 	display: flex;
 	align-items: center;
 	justify-content: flex-start;
@@ -311,43 +279,118 @@ body.picking .controls .copy-action-button {
 	outline-offset: -1px;
 }
 
-.controls .copy-menu button .codicon,
-.context-menu button .codicon {
+.menu button .codicon {
+	flex: 0 0 auto;
 	font-size: var(--icon-size);
 	line-height: var(--icon-size);
 	opacity: 0.9;
 }
 
-.controls .copy-menu .menu-separator,
-.context-menu .menu-separator {
+.menu .menu-separator {
 	height: 1px;
 	margin: 4px 0;
 	background: var(--vscode-menu-separatorBackground, var(--vscode-widget-border, transparent));
 }
 
-.controls .copy-menu button .menu-label,
-.context-menu button .menu-label {
+/* Takes the free width, so whatever an entry carries on its right sits on its right. */
+.menu button .menu-label {
+	flex: 1 1 auto;
 	margin-right: 16px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* The part of a suggestion that the typed text matched. */
+.menu button .menu-label .match {
+	font-weight: 600;
+	color: var(--vscode-list-highlightForeground, var(--vscode-menu-foreground, var(--vscode-foreground)));
+}
+
+/* The keybinding that runs the same entry, and — on "Reset zoom" — the level it would reset. */
+.menu button .menu-keys,
+.menu button .menu-detail {
+	flex: 0 0 auto;
+	font-size: 0.9em;
+	opacity: 0.7;
 }
 
 /* Marks the entry the main half of the split button currently runs. */
-.controls .copy-menu button .check {
-	margin-left: auto;
+.menu button .check {
 	visibility: hidden;
 }
 
-.controls .copy-menu button.current .check {
+.menu button.current .check {
 	visibility: visible;
 }
 
-.controls .copy-menu button:hover,
-.controls .copy-menu button:focus-visible,
-.context-menu button:hover,
-.context-menu button:focus-visible {
+.menu button:hover,
+.menu button:focus-visible,
+.menu button.selected {
 	cursor: pointer;
 	color: var(--vscode-menu-selectionForeground, var(--vscode-foreground));
 	background: var(--vscode-menu-selectionBackground, var(--vscode-toolbar-hoverBackground));
 	outline-color: var(--vscode-menu-selectionBorder, transparent);
+}
+
+/* Under the button that opens it, for the two menus that hang off the toolbar. */
+.controls .copy-menu,
+.controls .browser-menu {
+	position: absolute;
+	top: calc(100% + 4px);
+	right: 0;
+	z-index: 10;
+}
+
+/* Positioned by the script, at the point in the page that was right-clicked. */
+.context-menu {
+	position: fixed;
+	left: 0;
+	top: 0;
+	z-index: 20;
+	max-width: 360px;
+}
+
+/* What the actions are about, since the menu is not next to the element it acts on. */
+.context-menu .menu-header {
+	max-width: 100%;
+	box-sizing: border-box;
+	padding: 2px 12px 5px;
+	margin-bottom: 4px;
+	border-bottom: 1px solid var(--vscode-menu-separatorBackground, var(--vscode-widget-border, transparent));
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: 0.9em;
+	color: var(--vscode-descriptionForeground, var(--vscode-menu-foreground, var(--vscode-foreground)));
+}
+
+/* -- the address bar and what it completes ---------------------------------------------------- */
+
+/* The input and its suggestions are one field: the list hangs under the input and is as wide. */
+.url-field {
+	position: relative;
+	display: flex;
+	align-items: center;
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.url-suggestions {
+	position: absolute;
+	top: calc(100% + 4px);
+	left: 0;
+	right: 0;
+	z-index: 12;
+	/* Narrower than a menu is allowed to be: it is as wide as the field, however narrow that is. */
+	min-width: 0;
+	max-height: 60vh;
+	overflow-y: auto;
+}
+
+.url-suggestions .menu-label {
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: 0.95em;
 }
 
 /* -- hint bar -------------------------------------------------------------------------------- */

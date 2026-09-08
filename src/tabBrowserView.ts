@@ -10,6 +10,7 @@ import { copyReport, slugify } from './clipboardFile';
 import * as assistants from './assistants';
 import { defaultIconUrl, discoverPage, fetchIcon } from './favicon';
 import { Disposable } from './dispose';
+import { RecentPages } from './recentPages';
 import { generateUuid } from './uuid';
 import {
 	ConsoleEntry,
@@ -19,6 +20,7 @@ import {
 	PickedElement,
 } from '../shared/protocol';
 import {
+	BrowserMenuCommand,
 	ContextMenuCommand,
 	CopyCommand,
 	ExtensionToWebviewMessage,
@@ -54,6 +56,14 @@ export class TabBrowserView extends Disposable {
 	private readonly _onDidDispose = this._register(new vscode.EventEmitter<void>());
 	public readonly onDispose = this._onDidDispose.event;
 
+	private readonly _onDidBecomeActive = this._register(new vscode.EventEmitter<void>());
+	/** This panel took the focus. With several open, it is the one every command acts on. */
+	public readonly onDidBecomeActive = this._onDidBecomeActive.event;
+
+	private readonly _onDidRequestNewTab = this._register(new vscode.EventEmitter<void>());
+	/** The menu's "New tab": a second panel is the manager's to open, not the panel's. */
+	public readonly onDidRequestNewTab = this._onDidRequestNewTab.event;
+
 	/** Proves to the webview that a message came from here and not from the page it frames. */
 	private readonly _token = generateUuid();
 
@@ -81,6 +91,7 @@ export class TabBrowserView extends Disposable {
 	public static create(
 		extensionUri: vscode.Uri,
 		proxy: BrowserProxy,
+		recent: RecentPages,
 		url: string,
 		showOptions?: ShowOptions,
 	): TabBrowserView {
@@ -91,21 +102,23 @@ export class TabBrowserView extends Disposable {
 			retainContextWhenHidden: true,
 			...TabBrowserView.getWebviewOptions(extensionUri),
 		});
-		return new TabBrowserView(extensionUri, proxy, url, webview);
+		return new TabBrowserView(extensionUri, proxy, recent, url, webview);
 	}
 
 	public static restore(
 		extensionUri: vscode.Uri,
 		proxy: BrowserProxy,
+		recent: RecentPages,
 		url: string,
 		webviewPanel: vscode.WebviewPanel,
 	): TabBrowserView {
-		return new TabBrowserView(extensionUri, proxy, url, webviewPanel);
+		return new TabBrowserView(extensionUri, proxy, recent, url, webviewPanel);
 	}
 
 	private constructor(
 		private readonly _extensionUri: vscode.Uri,
 		private readonly _proxy: BrowserProxy,
+		private readonly _recent: RecentPages,
 		url: string,
 		webviewPanel: vscode.WebviewPanel,
 	) {
@@ -175,6 +188,10 @@ export class TabBrowserView extends Disposable {
 					vscode.window.showErrorMessage(message.message);
 					break;
 
+				case 'newTab':
+					this._onDidRequestNewTab.fire();
+					break;
+
 				case 'openDevTools':
 					vscode.commands.executeCommand('workbench.action.webview.openDeveloperTools');
 					break;
@@ -182,6 +199,17 @@ export class TabBrowserView extends Disposable {
 		}));
 
 		this._register(this._webviewPanel.onDidDispose(() => this.dispose()));
+
+		this._register(this._webviewPanel.onDidChangeViewState(() => {
+			if (this._webviewPanel.active) {
+				this._onDidBecomeActive.fire();
+			}
+		}));
+
+		// The address bar completes what the panel has been on, and the list outlives the page.
+		this._register(this._recent.onDidChange(() => {
+			this._post({ type: 'didChangeRecentUrls', urls: this._recent.all() });
+		}));
 
 		// A session can appear after the html was built — a redirect to another host is served
 		// by one of its own — and until the webview knows its origin, an agent speaking from it
@@ -261,6 +289,11 @@ export class TabBrowserView extends Disposable {
 
 			this._pageRequests.set(requestId, { resolve, reject, timer });
 		});
+	}
+
+	/** Zooms the page, the way a browser's own zoom does; the webview owns the level. */
+	public zoom(direction: 'in' | 'out' | 'reset'): void {
+		this._post({ type: 'zoom', direction });
 	}
 
 	/** The element the user picked last, so an assistant can be pointed at "this one". */
@@ -629,10 +662,12 @@ export class TabBrowserView extends Disposable {
 			token: this._token,
 			url,
 			agentOrigins: this._proxy.origins(),
+			recentUrls: this._recent.all(),
 			focusLockEnabled: configuration.get<boolean>('focusLockIndicator.enabled', true),
 			contextMenuEnabled: configuration.get<boolean>('contextMenu.enabled', true),
 			preferAttributes: configuration.get<readonly string[]>(
 				'picker.preferAttributes', defaultPreferredAttributes),
+			isMac: process.platform === 'darwin',
 		};
 
 		const cspSource = this._webviewPanel.webview.cspSource;
@@ -671,13 +706,21 @@ export class TabBrowserView extends Disposable {
 							class="reload-button icon"><i class="codicon codicon-refresh"></i></button>
 					</nav>
 
-					<input
-						class="url-input"
-						type="text"
-						spellcheck="false"
-						autocomplete="off"
-						aria-label="${vscode.l10n.t("Address")}"
-						placeholder="${vscode.l10n.t("https://example.com")}">
+					<div class="url-field">
+						<input
+							class="url-input"
+							type="text"
+							spellcheck="false"
+							autocomplete="off"
+							role="combobox"
+							aria-expanded="false"
+							aria-autocomplete="list"
+							aria-label="${vscode.l10n.t("Address")}"
+							placeholder="${vscode.l10n.t("https://example.com")}">
+
+						<div class="menu url-suggestions" role="listbox"
+							aria-label="${vscode.l10n.t("Recent pages")}" hidden></div>
+					</div>
 
 					<nav class="controls">
 						<div class="copy-menu-container">
@@ -698,6 +741,16 @@ export class TabBrowserView extends Disposable {
 						<button
 							title="${vscode.l10n.t("Open in browser")}"
 							class="open-external-button icon"><i class="codicon codicon-link-external"></i></button>
+
+						<div class="browser-menu-container">
+							<button
+								class="browser-menu-toggle icon"
+								aria-haspopup="menu"
+								aria-expanded="false"
+								title="${vscode.l10n.t("Menu")}"><i class="codicon codicon-menu"></i></button>
+
+							${this._browserMenuHtml()}
+						</div>
 					</nav>
 				</header>
 				${this._contextMenuHtml()}
@@ -765,6 +818,32 @@ export class TabBrowserView extends Disposable {
 	}
 
 	/**
+	 * The panel's own menu: what a browser puts behind its hamburger, and nothing about the
+	 * page — the copy menu next to it is about that. The shortcuts are shown rather than
+	 * described, since they are real keybindings and the labels have to match them.
+	 */
+	private _browserMenuHtml(): string {
+		const mac = process.platform === 'darwin';
+		const keys = (combination: string) => mac
+			? `⌘${combination}`
+			: `Ctrl+${combination}`;
+
+		const groups = [
+			[menuItem('newTab', 'codicon-add', vscode.l10n.t("New tab"), { keys: keys('T') })],
+			[
+				menuItem('zoomIn', 'codicon-zoom-in', vscode.l10n.t("Zoom in"), { keys: keys('+') }),
+				menuItem('zoomOut', 'codicon-zoom-out', vscode.l10n.t("Zoom out"), { keys: keys('-') }),
+				menuItem('resetZoom', 'codicon-screen-normal', vscode.l10n.t("Reset zoom"),
+					{ keys: keys('0'), detail: true }),
+			],
+		];
+
+		return `<div class="menu browser-menu" role="menu" hidden>`
+			+ groups.map(group => group.join('')).join(menuSeparator)
+			+ `</div>`;
+	}
+
+	/**
 	 * The menu a right-click in the page opens. It acts on the element that was clicked rather
 	 * than on one the picker is about to be started for, so it carries no check mark: there is
 	 * no "the entry this button runs" about it.
@@ -794,10 +873,14 @@ interface MenuItemOptions {
 	/** Marks the entry the split button's main half runs; a context menu runs no entry. */
 	readonly check?: boolean;
 	readonly title?: string;
+	/** The keybinding that runs the same thing, spelled for this platform. */
+	readonly keys?: string;
+	/** An empty slot the webview fills in — the zoom level, on the entry that resets it. */
+	readonly detail?: boolean;
 }
 
 function menuItem(
-	command: ContextMenuCommand,
+	command: ContextMenuCommand | BrowserMenuCommand,
 	icon: string,
 	label: string,
 	options?: MenuItemOptions,
@@ -806,6 +889,8 @@ function menuItem(
 		+ `${options?.title ? ` title="${escapeAttribute(options.title)}"` : ''}>`
 		+ `<i class="codicon ${icon}"></i>`
 		+ `<span class="menu-label">${escapeHtml(label)}</span>`
+		+ (options?.detail ? `<span class="menu-detail"></span>` : '')
+		+ (options?.keys ? `<span class="menu-keys">${escapeHtml(options.keys)}</span>` : '')
 		+ (options?.check ? `<i class="codicon codicon-check check"></i>` : '')
 		+ `</button>`;
 }

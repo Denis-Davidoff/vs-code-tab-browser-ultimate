@@ -23,6 +23,8 @@ the editor: the page you are looking at is the page your agent reads and drives.
 - ✨ **One click turns it into a prompt.** Send the element, its selector or its path straight
   into Claude Code or Codex as an attachment their agent reads — so "make this button match the
   one above" is a sentence, not a paragraph of description.
+- 🧭 **A browser's own toolbar.** An address bar that completes the pages you have been on,
+  a menu with new tab and zoom, and zoom by pinch, `Cmd`/`Ctrl` + scroll or keyboard.
 - 📄 **Local html files, not only dev servers.** Open a file from the explorer's context menu,
   from the sidebar's file browser or by pasting its path — served from its own folder, with the
   same picker, console and tools, and reloaded when you save it.
@@ -60,8 +62,8 @@ Open VSX Registry link: https://open-vsx.org/extension/DenysDavydov/task-runner-
 The icon in the activity bar opens a view with everything the extension can do, so none of it
 has to be remembered as a command:
 
-- **Browser** — the page the panel has open and whether it can be read, a field to open another
-  one, **Open a file…** for an html file from disk, and a reload.
+- **Browser** — the page the panel has open and whether it can be read, **New tab**, a field to
+  open another page, **Open a file…** for an html file from disk, and a reload.
 - **This page** — pick an element or take the console output, to the clipboard or straight to
   whichever assistant is installed. The same entries as the panel's own copy menu.
 - **Project files** — the folders of this project, browsed rather than searched: a folder is
@@ -207,6 +209,38 @@ one nothing on the page sets. Stylesheets served from another origin cannot be r
 document and are reported as a count.
 
 `tabBrowser.picker.copyFormat` switches the report for `css`, `xpath`, `both` or `json`.
+
+## The toolbar
+
+**The address bar completes what you have opened before.** Typing filters the pages this
+project's panel has been on: what starts with the host or path segment you typed comes first, a
+page that merely contains it after that, and the most recently open wins between equals — ten at
+most. `↓`/`↑` walk the list and fill the field, `Enter` goes there, `Esc` hands back what you
+typed. A path pastes as readily as a url, and a local file is offered like any page.
+
+**The menu on the right** carries what a browser puts behind its hamburger, with the shortcuts
+it says:
+
+| Entry | Shortcut |
+| --- | --- |
+| New tab | `Cmd`/`Ctrl` + `T` |
+| Zoom in | `Cmd`/`Ctrl` + `+` |
+| Zoom out | `Cmd`/`Ctrl` + `-` |
+| Reset zoom | `Cmd`/`Ctrl` + `0` |
+
+**Zoom** also answers a pinch on the trackpad and `Cmd`/`Ctrl` + scroll, and the level is
+remembered per panel across restarts (the menu shows it next to "Reset zoom"). It is the page
+that is zoomed, not a picture of it: the page reflows into a smaller viewport exactly as it does
+under a browser's own zoom, and every element report still reads the page's own css.
+
+**New tab** opens a second browser panel, blank, with the address bar focused. With more than
+one open, the copy menu, the sidebar and every mcp tool act on the panel you were last looking
+at.
+
+The shortcuts are real keybindings, scoped to a focused browser panel, so they do not take those
+keys from the rest of the editor. While the page itself has the keyboard the injected script
+forwards them — a key pressed inside a frame reaches nothing above it, which is why a page in
+any browser never sees `Cmd` + `T` either.
 
 ## Opening a file from disk
 

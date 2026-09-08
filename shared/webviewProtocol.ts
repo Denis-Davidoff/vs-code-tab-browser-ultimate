@@ -2,7 +2,14 @@
  *  Messages exchanged between the extension host and the Tab Browser Ultimate webview.
  *--------------------------------------------------------------------------------------------*/
 
-import { ConsoleEntry, PageRequest, PickedElement } from './protocol';
+import { ConsoleEntry, PageRequest, PickedElement, ShortcutAction } from './protocol';
+
+/**
+ * Entries of the toolbar's own menu, which is about the panel rather than about the page. Every
+ * one of them is a keyboard shortcut as well, and the menu says which — so the two lists are
+ * the same list, and an entry added to one without the other would be a label that lies.
+ */
+export type BrowserMenuCommand = ShortcutAction;
 
 /** Entries of the toolbar's copy menu. */
 export type CopyCommand =
@@ -78,7 +85,9 @@ export type WebviewToExtensionMessage =
 		readonly ready: boolean;
 	}
 	| { readonly type: 'showError'; readonly message: string }
-	| { readonly type: 'openDevTools' };
+	| { readonly type: 'openDevTools' }
+	/** A second panel, which only the extension host can open. */
+	| { readonly type: 'newTab' };
 
 /** Every message below reaches the webview wrapped with the panel's token. */
 export type ExtensionToWebviewMessage =
@@ -107,6 +116,10 @@ export type ExtensionToWebviewMessage =
 	 * into the page, since a page off the disk has no dev server to do anything cleverer.
 	 */
 	| { readonly type: 'reloadPage' }
+	/** The pages the panel has been on, for the address bar to complete against. */
+	| { readonly type: 'didChangeRecentUrls'; readonly urls: readonly string[] }
+	/** One of the zoom commands, which are keybindings as well as menu entries. */
+	| { readonly type: 'zoom'; readonly direction: 'in' | 'out' | 'reset' }
 	| { readonly type: 'runCopyCommand'; readonly command: CopyCommand }
 	| {
 		/** Asked for by an mcp client; the page answers with `didRunPageRequest`. */
@@ -142,10 +155,19 @@ export interface TabBrowserSettings {
 	 * own idea of the picked element written into the workspace and handed to an assistant.
 	 */
 	readonly agentOrigins: readonly string[];
+	/** Pages this project's panel has been on, newest first; the address bar completes them. */
+	readonly recentUrls: readonly string[];
+	/** `⌘` where the labels in the toolbar's menu should say so, `Ctrl` everywhere else. */
+	readonly isMac: boolean;
 }
 
 export interface TabBrowserState {
 	readonly url: string;
 	/** Copy menu entry the split button runs when its main half is clicked. */
 	readonly lastCopyCommand?: CopyCommand;
+	/**
+	 * How far the page is zoomed, as a factor. Kept per panel and across restarts, the way a
+	 * browser keeps it per site: a page read at 150% is read at 150% again tomorrow.
+	 */
+	readonly zoom?: number;
 }
