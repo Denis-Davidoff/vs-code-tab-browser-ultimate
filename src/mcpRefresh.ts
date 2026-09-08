@@ -19,8 +19,15 @@
  *  workspace's name (which the connect command puts a hash of the folder into) or its token.
  *  Without that, a window with no folder open would take over the entry of a project that
  *  happens to be configured under the bare name.
+ *
+ *  That shared file is also the one place where the *other windows* are part of the problem:
+ *  each of them repairs a different entry in it, so two starting at once would both write the
+ *  text they read and the later one would undo the earlier one's repair — leaving a client that
+ *  was configured correctly on somebody else's port. Hence the lock around it, and why nothing
+ *  between reading that file and writing it back may be skipped.
  *--------------------------------------------------------------------------------------------*/
 
+import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
@@ -38,15 +45,29 @@ const ourUrl = /^http:\/\/127\.0\.0\.1:\d+\/mcp(\/[A-Za-z0-9._~-]+)?$/;
 /** An entry named after this workspace, which the bare `tab-browser` is not. */
 const perWorkspaceName = /-[0-9a-f]{6}$/;
 
+/** How long a window waits for another one to finish with the shared config, and gives up. */
+const lockWaitMs = 2000;
+const lockPollMs = 25;
+/** Older than this, a lock belongs to a window that is no longer running. */
+const staleLockMs = 10000;
+
 /** Fixes the entries pointing at an older port, in every file this extension writes itself. */
-export async function refreshClientConfigs(server: McpServer): Promise<void> {
+export async function refreshClientConfigs(
+	server: McpServer,
+	/** Taken as an argument so a test can point it away from the real home directory. */
+	sharedCodexConfig = vscode.Uri.file(path.join(os.homedir(), '.codex', 'config.toml')),
+): Promise<void> {
 	const url = server.url;
 	if (!url) {
 		return;
 	}
 
 	const folder = vscode.workspace.workspaceFolders?.[0];
-	const global = vscode.Uri.file(path.join(os.homedir(), '.codex', 'config.toml'));
+	// Both names, because the entry can be under either: the connect command writes the one
+	// carrying this folder's hash, and an older version of it wrote the bare one. Naming only
+	// the first would put the bare one beyond repair — and beyond the token check below, which
+	// is the whole of what makes it safe to touch.
+	const names = [...new Set([codexEntryName(folder), serverName])];
 
 	await Promise.all([
 		...(folder ? [
@@ -55,8 +76,13 @@ export async function refreshClientConfigs(server: McpServer): Promise<void> {
 			rewrite(vscode.Uri.joinPath(folder.uri, '.codex', 'config.toml'),
 				text => refreshedCodexConfig(text, url, server.token, { names: [serverName] })),
 		] : []),
-		rewrite(global, text => refreshedCodexConfig(text, url, server.token,
-			{ names: [codexEntryName(folder)], shared: true })),
+		// Every window on this machine repairs its own entry in this one file, so the read and
+		// the write have to be one step: two of them starting together would otherwise both
+		// write what they read, and the later one would put the earlier one's entry back on a
+		// port that is not its own — a 401 for a client that was configured correctly.
+		withLock(sharedCodexConfig, () =>
+			rewrite(sharedCodexConfig, text => refreshedCodexConfig(text, url, server.token,
+				{ names, shared: true }))),
 	]);
 }
 
@@ -160,6 +186,55 @@ export function refreshedCodexConfig(
 	}
 
 	return changed ? lines.join('\n') : undefined;
+}
+
+/**
+ * Runs `work` while no other window is in it, through a file only one process can create
+ * (`wx`), which is the one lock every platform this runs on agrees about.
+ *
+ * A lock nobody released is a window that was killed inside its two milliseconds of work, so
+ * one left behind for `staleLockMs` is taken over rather than waited on for good. Anything else
+ * going wrong with the lock file — a read-only home directory, a lock this process cannot
+ * remove — is no reason to skip the repair: the work runs unlocked, which is what it did before
+ * there was a lock at all.
+ */
+async function withLock(file: vscode.Uri, work: () => Promise<void>): Promise<void> {
+	const lock = `${file.fsPath}.lock`;
+	const until = Date.now() + lockWaitMs;
+
+	for (;;) {
+		let handle: fs.FileHandle;
+		try {
+			handle = await fs.open(lock, 'wx');
+		} catch (error) {
+			if ((error as { code?: string }).code !== 'EEXIST') {
+				await work();
+				return;
+			}
+
+			const held = await fs.stat(lock).then(stat => Date.now() - stat.mtimeMs, () => 0);
+			if (held > staleLockMs) {
+				await fs.rm(lock, { force: true }).catch(() => { });
+				continue;
+			}
+			if (Date.now() > until) {
+				// Another window is holding it for far longer than this work takes. Writing
+				// anyway is what the lock is there to prevent, so this entry waits for the
+				// next start of the server, or for the connect command.
+				return;
+			}
+			await new Promise(resolve => setTimeout(resolve, lockPollMs));
+			continue;
+		}
+
+		try {
+			await work();
+		} finally {
+			await handle.close().catch(() => { });
+			await fs.rm(lock, { force: true }).catch(() => { });
+		}
+		return;
+	}
 }
 
 /** Reads the file, and writes it back only when there was something to change. */

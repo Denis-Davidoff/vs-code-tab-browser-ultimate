@@ -127,7 +127,7 @@ const { registerTerminalLinks } = await import('./.bundles/terminal-links-bundle
 const assistants = await import('./.bundles/assistants-bundle.mjs');
 const { McpServer } = await import('./.bundles/mcp-bundle.mjs');
 const { BrowserController } = await import('./.bundles/controller-bundle.mjs');
-const { connectToClaudeCode, connectToCodex } =
+const { connectToClaudeCode, connectToCodex, codexEntryName } =
 	await import('./.bundles/mcp-setup-bundle.mjs');
 const { claudeClientState, codexClientState } = await import('./.bundles/mcp-check-bundle.mjs');
 const { refreshedClaudeConfig, refreshedCodexConfig, refreshClientConfigs } =
@@ -1353,6 +1353,52 @@ await refreshClientConfigs(mcp);
 check('both of the project\'s files are repaired on startup',
 	JSON.parse(await fs.readFile(refreshMcpJson, 'utf8')).mcpServers['tab-browser'].url === mcp.url
 	&& (await fs.readFile(refreshToml, 'utf8')).includes(mcp.urlWithToken));
+
+// The global config is the one file the other windows are also in. Each of them repairs its own
+// entry, so two starting together would both write the text they read and the later one would
+// undo the earlier one's repair — putting a client that was configured correctly on another
+// window's port.
+const sharedConfig = path.join(await fs.mkdtemp('/tmp/shared-codex-'), 'config.toml');
+const sharedUri = { scheme: 'file', fsPath: sharedConfig };
+const codexTable = (name, url) => `[mcp_servers.${name}]\nurl = "${url}"\n`;
+
+// The location is what the entry is named after, and `toString` is what reads it — a plain
+// object has one of those already, so leaving it out gives both windows the same name.
+const otherWindow = fsPath =>
+	({ uri: { scheme: 'file', fsPath, toString: () => `file://${fsPath}` }, name: 'frontend' });
+const folderA = otherWindow('/clients/a/frontend');
+const folderB = otherWindow('/clients/b/frontend');
+await fs.writeFile(sharedConfig, `${codexTable(codexEntryName(folderA), `${otherPort}/${mcpToken}`)}\n`
+	+ codexTable(codexEntryName(folderB), `${otherPort}/${mcpToken}`));
+
+// Read at the top of the call, so this is two windows starting at the same moment.
+workspaceFolders = [folderA];
+const windowA = refreshClientConfigs(mcp, sharedUri);
+workspaceFolders = [folderB];
+const windowB = refreshClientConfigs(mcp, sharedUri);
+await Promise.all([windowA, windowB]);
+
+let shared = await fs.readFile(sharedConfig, 'utf8');
+check('two windows starting together do not undo each other\'s repair',
+	shared.split(mcp.urlWithToken).length === 3 && !shared.includes('43999'), shared);
+
+// The bare name is the one an older version of the connect command wrote, and the token is what
+// says it was written from here. Left out of the names, it would be beyond repair.
+workspaceFolders = [{ ...refreshFolder, name: 'refresh' }];
+await fs.writeFile(sharedConfig, codexTable('tab-browser', `${otherPort}/${mcpToken}`));
+await refreshClientConfigs(mcp, sharedUri);
+check('a global entry under the bare name carrying this workspace\'s token is repaired',
+	(await fs.readFile(sharedConfig, 'utf8')).includes(mcp.urlWithToken));
+
+const elsewhere = 'b'.repeat(64);
+await fs.writeFile(sharedConfig, codexTable('tab-browser', `${otherPort}/${elsewhere}`));
+await refreshClientConfigs(mcp, sharedUri);
+shared = await fs.readFile(sharedConfig, 'utf8');
+check('one holding another project\'s token is still not ours to move',
+	shared.includes(elsewhere) && !shared.includes(mcpToken), shared);
+
+check('and the lock is not left behind for the next window to wait on',
+	!await fs.access(`${sharedConfig}.lock`).then(() => true, () => false));
 
 // A project that was never connected is one nothing was added to, and a window with no folder
 // open has no project files at all — neither may end up creating one.

@@ -284,7 +284,15 @@ another. In the workspace's own `.mcp.json` and `.codex/config.toml` the locatio
 The global `~/.codex/config.toml` is shared by every project on the machine, so an entry there
 has to say it is ours — the per-project name (which carries a hash of the folder) or this
 workspace's token in the url — or a window with no folder open would take over the entry of
-whichever project happens to be configured under the bare name. The shape of an entry is left as
+whichever project happens to be configured under the bare name. Both names are looked for, since
+an entry under the bare one is exactly the case the token is there to judge; naming only the
+first would put it beyond repair and never reach that check at all.
+
+That file is also the one the *other windows* are in: each repairs a different entry in it, so
+two starting at once would both write the text they read and the later one would undo the
+earlier one's repair, leaving a correctly configured client on somebody else's port. So its
+read-and-write is held under a lock file (`wx`, the one exclusive create every platform agrees
+about), with a takeover after ten seconds for the window that was killed while holding it. The shape of an entry is left as
 found for the same reason it is read that way in `mcpCheck`: a token in the url belongs to a
 client that cannot send a header, and one written as `${...}` or named by `bearer_token_env_var`
 is read from an environment this extension has no say over.
