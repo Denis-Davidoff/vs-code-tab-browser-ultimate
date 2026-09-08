@@ -251,20 +251,49 @@ Three clients, configured in three different places (`src/mcpSetup.ts`):
   cast so `engines.vscode` can stay at 1.85; the definition constructor is positional).
 - **Claude Code** through `.mcp.json` or `claude mcp add` — written or copied by its command,
   and a config that cannot be parsed is left alone rather than overwritten.
-- **Codex** in one of two places. The project's `.codex/config.toml` is written here (it belongs
-  to one project, as does the panel it points at; Codex reads it in a trusted repository, and
-  only our own table is touched). The global `~/.codex/config.toml` is left to `codex mcp add`,
-  which owns it and edits around the servers already there — and the entry is named after the
-  project, because one shared name would have a second project overwrite the first and, with the
-  token in the url, that reconnection would even authenticate. That config can only name an
-  *environment variable* to read a bearer token from, and this extension has no say over Codex's
-  environment — hence `urlWithToken`, the same endpoint with the token as its last path segment,
-  accepted alongside the header.
+- **Codex** through the project's `.codex/config.toml`, which is written here (it belongs to one
+  project, as does the panel it points at; Codex reads it in a trusted repository, and only our
+  own table is touched). The global `~/.codex/config.toml` is *not* written from here — it is
+  `codex mcp add`'s, which owns it and edits around the servers already there — so it is only
+  offered as a command to copy, under a name ending in the project's, because one shared name
+  would have a second project overwrite the first and, with the token in the url, that
+  reconnection would even authenticate. That config can only name an *environment variable* to
+  read a bearer token from, and this extension has no say over Codex's environment — hence
+  `urlWithToken`, the same endpoint with the token as its last path segment, accepted alongside
+  the header.
+
+Both connect commands lead with two numbered buttons — write the entry, then copy the prompt —
+because they are one way of connecting in an order that matters: the prompt has the assistant
+read an entry that the first button is what writes.
+
+### Keeping a configuration that was written once
+
+`src/mcpRefresh.ts` runs at every start of the server, because what goes stale in a client's
+config is not the token — that belongs to the workspace and outlives the window — but the
+**port**: ports are handed out in the order windows open, so the entry written for this project
+last week names whichever window opened first today. Without repair, connecting is something the
+user does again every morning.
+
+So the entries this extension writes are pointed back here: same file, same name, and a url that
+is still one of ours (loopback, our path, at most a token segment — which is also what leaves a
+`${...}` a client expands itself alone). An entry that is *not* there is never created: adding a
+server to a project is a decision, and the connect command is where it is made.
+
+What counts as ours differs per file, and getting that wrong hands one project's panel to
+another. In the workspace's own `.mcp.json` and `.codex/config.toml` the location is the proof.
+The global `~/.codex/config.toml` is shared by every project on the machine, so an entry there
+has to say it is ours — the per-project name (which carries a hash of the folder) or this
+workspace's token in the url — or a window with no folder open would take over the entry of
+whichever project happens to be configured under the bare name. The shape of an entry is left as
+found for the same reason it is read that way in `mcpCheck`: a token in the url belongs to a
+client that cannot send a header, and one written as `${...}` or named by `bearer_token_env_var`
+is read from an environment this extension has no say over.
 
 Known edges: selectors, not snapshot-scoped element refs, so a selector can go stale between
 calls; clicks are synthetic dom events, which some things (file pickers, drag) will not accept;
-one window wins the preferred port, so a `.mcp.json` written from another window points
-elsewhere — the per-workspace token turns that into a 401 rather than a wrong-project session.
+one window wins the preferred port, so an entry written from another window points elsewhere
+until that window's own server starts and repairs it — the per-workspace token turns the window
+in between into a 401 rather than a wrong-project session.
 
 ## Terminal links
 

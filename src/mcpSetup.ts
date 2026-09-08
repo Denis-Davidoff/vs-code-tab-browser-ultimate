@@ -16,13 +16,15 @@
  *
  *    The project file is written here, because it belongs to one project and so does the panel
  *    it points at. The global file is left to `codex mcp add`, which owns it and knows how to
- *    edit around the other servers in it; there the server carries the project's name, since
- *    one entry per project is the point.
+ *    edit around the other servers in it — so it is offered as a command to run and not written
+ *    from here; there the server carries the project's name, since one entry per project is the
+ *    point, and `mcpRefresh.ts` keeps an entry added that way pointing at this window.
+ *
+ *  Either command's two first buttons are one way of connecting, which is why they are numbered:
+ *  the prompt has the assistant read an entry, and writing that entry is what comes first.
  *--------------------------------------------------------------------------------------------*/
 
-import { execFile } from 'node:child_process';
 import * as crypto from 'node:crypto';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { codexEntries } from './codexToml';
@@ -76,24 +78,26 @@ export async function connectToClaudeCode(server: McpServer): Promise<void> {
 		+ ` --header "Authorization: Bearer ${server.token}"`;
 
 	const folder = vscode.workspace.workspaceFolders?.[0];
-	const write = vscode.l10n.t("Write .mcp.json");
+	// Numbered, because the two of them are one way of connecting and the order matters: the
+	// prompt tells Claude Code to read an entry that the first button is what writes.
+	const write = vscode.l10n.t("1. Write .mcp.json");
+	const prompt = vscode.l10n.t("2. Copy connection prompt");
 	const copy = vscode.l10n.t("Copy CLI command");
-	const prompt = vscode.l10n.t("Copy connection prompt");
 
 	const choice = await vscode.window.showInformationMessage(
 		vscode.l10n.t("Connect Claude Code to the browser panel?"),
 		{
 			modal: true,
 			detail: vscode.l10n.t(
-				"The server is at {0}. \".mcp.json\" is read by everyone who opens this project, so the token would be committed with it unless the file is ignored; the cli command keeps it in your own Claude Code settings. The prompt is the same command written for Claude Code to run itself, with a check that it worked.",
+				"The simplest way is both buttons in order: \"1. Write .mcp.json\", then \"2. Copy connection prompt\" — and paste that into the Claude Code chat.\n\nThe server is at {0}. \".mcp.json\" is read by everyone who opens this project, so the token would be committed with it unless the file is ignored; the cli command keeps it in your own Claude Code settings instead.",
 				server.url),
 		},
-		...(folder ? [write, copy, prompt] : [copy, prompt]));
+		// Both of the first two name `.mcp.json`, of which there is none without a folder open.
+		...(folder ? [write, prompt, copy] : [copy]));
 
 	if (choice === prompt) {
 		await copyConnectPrompt(
-			connectPrompt(cli, vscode.l10n.t(
-				"Restart yourself afterwards — you read your mcp servers when you start.")),
+			connectPrompt(vscode.l10n.t("Use MCP `{0}` from `.mcp.json`", serverName), cli),
 			'Claude Code');
 		return;
 	}
@@ -139,26 +143,18 @@ export async function connectToClaudeCode(server: McpServer): Promise<void> {
 }
 
 /**
- * A prompt for the assistant itself: the one command that adds the server, and a request to
- * check it. Handed over on the clipboard because neither assistant can be given text from
- * outside — see `openClaudeWithPrompt` in assistants.ts for the one exception, which only
- * applies to a conversation this extension opens itself.
- *
- * Deliberately short: the assistant only needs the command and a reason to try it. `pickUp`
- * differs per client, because both read their servers at startup but start at different
- * moments, and a prompt that skipped this would have the assistant report the tools missing
- * right after adding them correctly.
+ * The prompt for the assistant itself: pick the entry this extension writes up, and the command
+ * that adds it for the case where the file was never written.
  */
-function connectPrompt(cli: string, pickUp: string): string {
-	return [
-		vscode.l10n.t("To connect to my embedded browser run this in the project folder:"),
-		cli,
-		'',
-		pickUp,
-		vscode.l10n.t("Then call browser_state to test the connection and tell me how it went."),
-	].join('\n');
+function connectPrompt(use: string, cli: string): string {
+	return `${use}\n${vscode.l10n.t("If MCP doesn't exists in file run `{0}`", cli)}`;
 }
 
+/**
+ * Handed over on the clipboard because neither assistant can be given text from outside — see
+ * `openClaudeWithPrompt` in assistants.ts for the one exception, which only applies to a
+ * conversation this extension opens itself.
+ */
 async function copyConnectPrompt(prompt: string, assistant: string): Promise<void> {
 	await vscode.env.clipboard.writeText(prompt);
 	vscode.window.showInformationMessage(vscode.l10n.t(
@@ -189,7 +185,7 @@ async function readConfig(file: vscode.Uri): Promise<Record<string, unknown> | u
 	}
 }
 
-/** Points Codex at this window's panel: per project where it can be, globally otherwise. */
+/** Points Codex at this window's panel through the config of whichever project is open. */
 export async function connectToCodex(server: McpServer): Promise<void> {
 	if (!server.urlWithToken) {
 		vscode.window.showWarningMessage(vscode.l10n.t("The mcp server is not running."));
@@ -197,34 +193,27 @@ export async function connectToCodex(server: McpServer): Promise<void> {
 	}
 
 	const folder = vscode.workspace.workspaceFolders?.[0];
-	// One name per project: a single shared one would have the second project overwrite the
-	// first, and with the token in the url that reconnection would even authenticate. The name
-	// alone does not identify a project — every client has a `frontend` — so the location
-	// decides, and the readable part is only there to say which entry is which.
-	const globalName = folder
-		? `${serverName}-${slug(folder.name || path.basename(folder.uri.fsPath))}-${shortHash(folder)}`
-		: serverName;
+	const globalName = codexEntryName(folder);
 	const cli = `codex mcp add ${globalName} --url ${server.urlWithToken}`;
 
-	const project = vscode.l10n.t("Write .codex/config.toml");
-	const global = vscode.l10n.t("Add to Codex globally");
+	const project = vscode.l10n.t("1. Write .codex/config.toml");
+	const prompt = vscode.l10n.t("2. Copy connection prompt");
 	const copy = vscode.l10n.t("Copy CLI command");
-	const prompt = vscode.l10n.t("Copy connection prompt");
 
 	const choice = await vscode.window.showInformationMessage(
 		vscode.l10n.t("Connect Codex to the browser panel?"),
 		{
 			modal: true,
 			detail: vscode.l10n.t(
-				"The server is at {0}; the token is in the url because Codex can only read one from an environment variable.\n\n\".codex/config.toml\" keeps the entry with this project, and Codex reads it once the repository is trusted. Adding it globally puts \"{1}\" in ~/.codex/config.toml instead, where it applies everywhere. The prompt is the same command written for Codex to run itself, with a check that it worked.",
+				"The simplest way is both buttons in order: \"1. Write .codex/config.toml\", then \"2. Copy connection prompt\" — and paste that into the Codex chat.\n\nThe server is at {0}; the token is in the url because Codex can only read one from an environment variable. Codex reads the project's config once the repository is trusted; the cli command adds \"{1}\" to ~/.codex/config.toml instead, where it applies to every project.",
 				server.url ?? '', globalName),
 		},
-		...(folder ? [project, global, copy, prompt] : [global, copy, prompt]));
+		// Both of the first two name the project's config, which needs a folder open.
+		...(folder ? [project, prompt, copy] : [copy]));
 
 	if (choice === prompt) {
 		await copyConnectPrompt(
-			connectPrompt(cli, vscode.l10n.t(
-				"Tell me to start a new conversation afterwards — you read your mcp servers when one starts, so check there.")),
+			connectPrompt(vscode.l10n.t("Use MCP `{0}` from `.codex/config.toml`", serverName), cli),
 			'Codex');
 		return;
 	}
@@ -238,25 +227,6 @@ export async function connectToCodex(server: McpServer): Promise<void> {
 
 	if (choice === project && folder) {
 		await writeCodexProjectConfig(folder.uri, server.urlWithToken);
-		return;
-	}
-
-	if (choice !== global) {
-		return;
-	}
-
-	try {
-		await runCodex(['mcp', 'add', globalName, '--url', server.urlWithToken]);
-		await removeSupersededEntry(globalName, server.urlWithToken);
-		vscode.window.showInformationMessage(vscode.l10n.t(
-			"Added \"{0}\" to Codex. Start a new conversation there — it reads its servers when it starts.",
-			globalName));
-	} catch (error) {
-		// Most likely the cli is not on the PATH; the command still works from a terminal.
-		await vscode.env.clipboard.writeText(cli);
-		vscode.window.showWarningMessage(vscode.l10n.t(
-			"Could not run the Codex cli ({0}). The command is on the clipboard; run it in a terminal.",
-			error instanceof Error ? error.message : String(error)));
 	}
 }
 
@@ -305,76 +275,27 @@ async function writeCodexProjectConfig(folder: vscode.Uri, url: string): Promise
 	}
 }
 
+/**
+ * What this workspace's server is called in the config Codex shares between projects. One name
+ * per project: a single shared one would have the second project overwrite the first, and with
+ * the token in the url that reconnection would even authenticate. The name alone does not
+ * identify a project — every client has a `frontend` — so the location decides, and the
+ * readable part is only there to say which entry is which.
+ */
+export function codexEntryName(folder: vscode.WorkspaceFolder | undefined): string {
+	return folder
+		? `${serverName}-${slug(folder.name || path.basename(folder.uri.fsPath))}-${shortHash(folder)}`
+		: serverName;
+}
+
 /** `My App` -> `my-app`, so the name is readable in `codex mcp list`. */
 function slug(value: string): string {
 	return (value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32)
 		|| 'workspace';
 }
 
-/**
- * Takes back the entry an earlier version of this extension wrote under the name without the
- * location in it. Left there it is a second server offering the same tools, which Codex starts
- * as well — and only ours if this project happens to be the one that wrote it.
- *
- * Which is why the url decides and not the name: it carries this workspace's token, so an entry
- * naming it was written from here. Anything else belongs to another project and is left alone.
- */
-async function removeSupersededEntry(currentName: string, urlWithToken: string): Promise<void> {
-	let text: string;
-	try {
-		text = Buffer.from(await vscode.workspace.fs.readFile(globalCodexConfig())).toString('utf8');
-	} catch {
-		return;
-	}
-
-	const legacy = supersededCodexEntry(text, currentName, urlWithToken);
-	if (!legacy) {
-		return;
-	}
-
-	try {
-		await runCodex(['mcp', 'remove', legacy]);
-	} catch {
-		// An older cli without the subcommand, or none on the PATH: the entry stays, which is
-		// untidy but harmless — it names this very server.
-	}
-}
-
-/** Pure half of the above, so the cases that only happen to someone else's config are testable. */
-export function supersededCodexEntry(
-	text: string,
-	currentName: string,
-	urlWithToken: string,
-): string | undefined {
-	const legacy = currentName.replace(/-[0-9a-f]{6}$/, '');
-	if (legacy === currentName) {
-		return undefined;
-	}
-
-	const entry = codexEntries(text).find(candidate => candidate.name === legacy);
-	return entry?.values.get('url') === urlWithToken ? legacy : undefined;
-}
-
-function globalCodexConfig(): vscode.Uri {
-	return vscode.Uri.file(path.join(os.homedir(), '.codex', 'config.toml'));
-}
-
 /** Six hex characters of the folder's location: enough to tell two `frontend`s apart. */
 function shortHash(folder: vscode.WorkspaceFolder): string {
 	const location = folder.uri.toString?.() || folder.uri.fsPath || folder.name;
 	return crypto.createHash('sha1').update(location).digest('hex').slice(0, 6);
-}
-
-function runCodex(args: readonly string[]): Promise<void> {
-	return new Promise((resolve, reject) => {
-		// On Windows the cli is `codex.cmd`, which `CreateProcess` will not find on its own.
-		const options = { timeout: 20000, shell: process.platform === 'win32' };
-		execFile('codex', args as string[], options, (error, _stdout, stderr) => {
-			if (error) {
-				reject(new Error(stderr?.trim() || error.message));
-			} else {
-				resolve();
-			}
-		});
-	});
 }

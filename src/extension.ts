@@ -14,6 +14,7 @@ import { generateUuid } from './uuid';
 import { McpServer } from './mcpServer';
 import { connectToClaudeCode, connectToCodex, registerWithVsCode } from './mcpSetup';
 import { checkMcp, McpState } from './mcpCheck';
+import { refreshClientConfigs } from './mcpRefresh';
 import { registerSidebar } from './sidebar';
 import { CopyCommand } from '../shared/webviewProtocol';
 
@@ -252,6 +253,11 @@ async function startMcpServer(
 	}
 
 	parts.push(registerWithVsCode(server));
+
+	// A configuration written once names whichever port this window got last time. Repairing it
+	// here is what makes connecting a one-off; nothing is added that was not there already.
+	await refreshClientConfigs(server);
+
 	return { kind: 'running', server };
 }
 

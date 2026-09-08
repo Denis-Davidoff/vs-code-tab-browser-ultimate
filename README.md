@@ -78,20 +78,21 @@ files that the assistant reads, so its cli alone is enough.
 2. **Run the connect command** — from the browser icon in the activity bar, or from the command
    palette: **Connect Claude Code to This Browser (MCP)** / **Connect Codex to This Browser
    (MCP)**.
-3. **Pick how the server gets configured.** Any one of these does the job:
-   - **Copy connection prompt** — paste it into the assistant and let it add the server and
-     check it for you. It carries this window's token, so it goes to that assistant and nowhere
-     else.
-   - **Write .mcp.json** (Claude Code) / **Write .codex/config.toml** (Codex) — the entry stays
-     with the project. The token is written into the file, so ignore it in git if the project
-     is shared.
-   - **Add to Codex globally** — `codex mcp add` writes `~/.codex/config.toml`, under a name
-     ending in the project's, so a second project does not overwrite the first.
-   - **Copy CLI command** — run it yourself, and the token stays out of the repository.
+3. **Press the two numbered buttons in order** — **1. Write .mcp.json** (Claude Code) /
+   **1. Write .codex/config.toml** (Codex) writes the entry, then **2. Copy connection prompt**
+   puts one line on the clipboard; paste that into the assistant's chat. The entry carries this
+   window's token, so ignore the file in git if the project is shared — or take
+   **Copy CLI command** instead, which keeps the token out of the repository
+   (`~/.codex/config.toml` for Codex, under a name ending in the project's, so a second project
+   does not overwrite the first).
 4. **Let the assistant pick it up.** Both read their mcp servers when they start, at different
    moments: restart Claude Code and run `/mcp`, or start a new Codex conversation.
 5. **Confirm it** with **Check connection** in the sidebar. It says which client actually points
    at *this* window, which is the part that goes wrong.
+
+Connecting is a one-off: the token belongs to the workspace, and the port — which is handed out
+in the order windows open — is repaired in the entries written here every time the server
+starts, so an entry made once keeps pointing at this window.
 
 VS Code's own chat needs none of this — the extension registers the server through the editor's
 own api (1.101 and later).

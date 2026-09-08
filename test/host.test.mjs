@@ -38,7 +38,7 @@ const executed = [];
 const registeredCommands = new Map();
 /** Messages the code under test showed, and the button the test picks in them. */
 const dialogs = [];
-let dialogAnswer = 'Write .mcp.json';
+let dialogAnswer = '1. Write .mcp.json';
 /** Workspace folders the stub reports; `undefined` stands for "no folder open". */
 let workspaceFolders;
 let clipboard = '';
@@ -127,9 +127,11 @@ const { registerTerminalLinks } = await import('./.bundles/terminal-links-bundle
 const assistants = await import('./.bundles/assistants-bundle.mjs');
 const { McpServer } = await import('./.bundles/mcp-bundle.mjs');
 const { BrowserController } = await import('./.bundles/controller-bundle.mjs');
-const { connectToClaudeCode, connectToCodex, supersededCodexEntry } =
+const { connectToClaudeCode, connectToCodex } =
 	await import('./.bundles/mcp-setup-bundle.mjs');
 const { claudeClientState, codexClientState } = await import('./.bundles/mcp-check-bundle.mjs');
+const { refreshedClaudeConfig, refreshedCodexConfig, refreshClientConfigs } =
+	await import('./.bundles/mcp-refresh-bundle.mjs');
 
 /** A 1x1 png, the smallest thing that has to be recognised as an image. */
 const pngBytes = Buffer.from(
@@ -1173,29 +1175,13 @@ check('two projects with the same folder name still get an entry each',
 check('the name of one project does not change between connections',
 	await nameOnly('/clients/a/frontend') === clientA, clientA);
 
-// Renaming the entry leaves the one an older version wrote behind, and Codex starts that too:
-// a second server offering the same tools. It is ours to take back only when it names this
-// window — the url carries this workspace's token, so nothing else can have written it.
-const legacyToml = url => `[mcp_servers.tab-browser-frontend]\nurl = "${url}"\n`;
-check('the entry an older version wrote for this project is superseded',
-	supersededCodexEntry(legacyToml(mcp.urlWithToken), 'tab-browser-frontend-a1b2c3', mcp.urlWithToken)
-	=== 'tab-browser-frontend');
-
-check('one written by another project is left alone',
-	supersededCodexEntry(legacyToml('http://127.0.0.1:43310/mcp/another-token'),
-		'tab-browser-frontend-a1b2c3', mcp.urlWithToken) === undefined);
-
-check('and nothing is removed when there is no entry under the old name',
-	supersededCodexEntry('[mcp_servers.other]\nurl = "http://127.0.0.1:1/mcp"\n',
-		'tab-browser-frontend-a1b2c3', mcp.urlWithToken) === undefined);
-
 // The project file is ours to write, and it must leave the rest of the file alone.
 workspaceFolders = [{ ...otherFolder, name: 'other-project' }];
 const codexConfig = path.join(otherFolder.uri.fsPath, '.codex', 'config.toml');
 await fs.mkdir(path.dirname(codexConfig), { recursive: true });
 await fs.writeFile(codexConfig, '[mcp_servers.something_else]\ncommand = "node"\n');
 
-dialogAnswer = 'Write .codex/config.toml';
+dialogAnswer = '1. Write .codex/config.toml';
 await connectToCodex(mcp);
 let codexToml = await fs.readFile(codexConfig, 'utf8');
 check('writing the project config keeps the servers already in it',
@@ -1237,24 +1223,148 @@ check('a value written over several lines is replaced whole',
 	&& codexToml.includes(mcp.urlWithToken) && codexToml.includes('[mcp_servers.something_else]'),
 	codexToml);
 
-// Neither assistant can be handed text, so the prompt goes on the clipboard: short, but it has
-// to carry the command that adds the server and the check that proves it arrived.
-dialogAnswer = 'Copy connection prompt';
+// Neither assistant can be handed text, so the prompt goes on the clipboard: the entry this
+// extension writes, and the command that adds it for a file that was never written.
+dialogAnswer = '2. Copy connection prompt';
 clipboard = '';
 await connectToCodex(mcp);
-check('the Codex prompt carries the command and the check',
-	clipboard.includes(`codex mcp add tab-browser-other-project`)
-	&& clipboard.includes(mcp.urlWithToken) && clipboard.includes('browser_state')
-	// Codex reads its servers when a conversation starts; a prompt that skipped this would
-	// have it report the tools missing right after adding them correctly.
-	&& /new conversation/.test(clipboard), clipboard);
+check('the Codex prompt names its config file and the command behind it',
+	clipboard.includes('.codex/config.toml') && clipboard.includes('tab-browser')
+	&& clipboard.includes(`codex mcp add tab-browser-other-project`)
+	&& clipboard.includes(mcp.urlWithToken), clipboard);
 
 clipboard = '';
 await connectToClaudeCode(mcp);
-check('the Claude Code prompt carries its own command and how it picks the server up',
-	clipboard.includes(mcp.url) && clipboard.includes(`Bearer ${mcpToken}`)
-	&& clipboard.includes('claude mcp add') && clipboard.includes('/mcp')
-	&& clipboard.includes('browser_state'), clipboard);
+check('the Claude Code prompt names its own file and command',
+	clipboard.includes('.mcp.json') && clipboard.includes('claude mcp add')
+	&& clipboard.includes(mcp.url) && clipboard.includes(`Bearer ${mcpToken}`), clipboard);
+
+// -- keeping a configuration that was written once ----------------------------------------------
+
+// What goes stale is the port, not the token: ports are handed out in the order windows open, so
+// the entry written for this project last week names whichever window opened first today. Every
+// start of the server repairs it, or connecting would have to be done again every time.
+const otherPort = 'http://127.0.0.1:43999/mcp';
+const claudeEntry = entry => JSON.stringify({
+	mcpServers: { existing: { url: 'http://example/mcp' }, 'tab-browser': entry },
+}, null, 2);
+const refreshedClaude = entry => JSON.parse(
+	refreshedClaudeConfig(claudeEntry(entry), mcp.url, mcpToken) ?? 'null');
+
+let repaired = refreshedClaude({
+	type: 'http', url: otherPort, headers: { Authorization: `Bearer ${mcpToken}` },
+});
+check('an entry naming another window\'s port is pointed back here',
+	repaired?.mcpServers['tab-browser'].url === mcp.url
+	// And nothing else in the file, nor anything else in the entry, is touched by it.
+	&& repaired.mcpServers.existing.url === 'http://example/mcp'
+	&& repaired.mcpServers['tab-browser'].type === 'http', JSON.stringify(repaired));
+
+check('an entry that already points here is not rewritten at all',
+	refreshedClaudeConfig(claudeEntry({ url: mcp.url, headers: { Authorization: `Bearer ${mcpToken}` } }),
+		mcp.url, mcpToken) === undefined);
+
+check('a token from another machine is replaced along with the port',
+	refreshedClaude({ url: otherPort, headers: { authorization: 'Bearer someone-elses' } })
+		?.mcpServers['tab-browser'].headers.authorization === `Bearer ${mcpToken}`);
+
+// The shape of the entry says what the client can do, so it is kept: a token in the url is a
+// client that cannot send a header, and a `${...}` is one reading it from the environment.
+check('a token carried in the url stays in the url',
+	refreshedClaude({ url: `${otherPort}/${mcpToken}` })?.mcpServers['tab-browser'].url
+	=== mcp.urlWithToken);
+
+repaired = refreshedClaude({
+	url: otherPort, headers: { Authorization: 'Bearer ${TAB_BROWSER_TOKEN}' },
+});
+check('a token read from the environment is left as it is',
+	repaired?.mcpServers['tab-browser'].url === mcp.url
+	&& repaired.mcpServers['tab-browser'].headers.Authorization === 'Bearer ${TAB_BROWSER_TOKEN}',
+	JSON.stringify(repaired));
+
+check('an entry naming something that is not this extension\'s server is not ours to move',
+	refreshedClaudeConfig(claudeEntry({ url: 'https://example.com/mcp' }), mcp.url, mcpToken)
+	=== undefined);
+
+check('a config that cannot be parsed is left alone here too',
+	refreshedClaudeConfig('{ "mcpServers": { }, }', mcp.url, mcpToken) === undefined);
+
+check('a file with no entry of ours gets none added',
+	refreshedClaudeConfig(JSON.stringify({ mcpServers: { existing: { url: 'http://example/mcp' } } }),
+		mcp.url, mcpToken) === undefined);
+
+// Codex's config is TOML, held by `codex mcp add` where it is the global one, so only the `url`
+// line of our own table is rewritten and everything around it survives.
+const codexProject = (values = `url = "${otherPort}/${mcpToken}"`) =>
+	`[mcp_servers.tab-browser]\n${values}\n\n[mcp_servers.something_else]\ncommand = "node"\n`;
+const refreshedProject = (text = codexProject()) =>
+	refreshedCodexConfig(text, mcp.url, mcpToken, { names: ['tab-browser'] });
+
+let toml = refreshedProject();
+check('the project entry is pointed back here without disturbing the file',
+	toml?.includes(`url = "${mcp.urlWithToken}"`) && !toml.includes('43999')
+	&& toml.includes('[mcp_servers.something_else]') && toml.includes('command = "node"'), toml);
+
+check('a project entry that already points here is not rewritten',
+	refreshedProject(codexProject(`url = "${mcp.urlWithToken}"`)) === undefined);
+
+// Everything else in the table is somebody's decision, `enabled = false` included.
+toml = refreshedProject(codexProject(`url = "${otherPort}/${mcpToken}"\nenabled = false`));
+check('the rest of the table is left as written',
+	toml?.includes(`url = "${mcp.urlWithToken}"`) && toml.includes('enabled = false'), toml);
+
+toml = refreshedProject(codexProject(
+	`url = "${otherPort}"\nbearer_token_env_var = "TAB_BROWSER_TOKEN"`));
+check('an entry reading its token from the environment keeps it out of the url',
+	toml?.includes(`url = "${mcp.url}"`) && !toml.includes(mcpToken)
+	&& toml.includes('bearer_token_env_var'), toml);
+
+check('a table of somebody else\'s is not repaired by name alone',
+	refreshedCodexConfig(codexProject(), mcp.url, mcpToken, { names: ['tab-browser-elsewhere'] })
+	=== undefined);
+
+// The global config is shared by every project on the machine, so an entry there has to say it
+// is ours: the name carries a hash of the folder, or the url carries this workspace's token.
+const globalEntry = (name, url) => `[mcp_servers.${name}]\nurl = "${url}"\n`;
+const refreshedGlobal = (name, url, allowed = name) => refreshedCodexConfig(
+	globalEntry(name, url), mcp.url, mcpToken, { names: [allowed], shared: true });
+
+check('an entry named after this workspace is repaired',
+	refreshedGlobal('tab-browser-frontend-a1b2c3', `${otherPort}/${mcpToken}`)
+		?.includes(mcp.urlWithToken));
+
+check('so is one under the bare name that carries this workspace\'s token',
+	refreshedGlobal('tab-browser', `${otherPort}/${mcpToken}`)?.includes(mcp.urlWithToken));
+
+check('but not one under the bare name holding another project\'s token',
+	refreshedGlobal('tab-browser', `${otherPort}/${'b'.repeat(64)}`) === undefined);
+
+// And the whole of it against real files, since that is where a path or a missing file bites.
+const refreshFolder = { uri: { scheme: 'file', fsPath: await fs.mkdtemp('/tmp/refresh-') } };
+workspaceFolders = [{ ...refreshFolder, name: 'refresh' }];
+const refreshMcpJson = path.join(refreshFolder.uri.fsPath, '.mcp.json');
+const refreshToml = path.join(refreshFolder.uri.fsPath, '.codex', 'config.toml');
+await fs.mkdir(path.dirname(refreshToml), { recursive: true });
+await fs.writeFile(refreshMcpJson,
+	claudeEntry({ url: otherPort, headers: { Authorization: `Bearer ${mcpToken}` } }));
+await fs.writeFile(refreshToml, codexProject());
+
+await refreshClientConfigs(mcp);
+check('both of the project\'s files are repaired on startup',
+	JSON.parse(await fs.readFile(refreshMcpJson, 'utf8')).mcpServers['tab-browser'].url === mcp.url
+	&& (await fs.readFile(refreshToml, 'utf8')).includes(mcp.urlWithToken));
+
+// A project that was never connected is one nothing was added to, and a window with no folder
+// open has no project files at all — neither may end up creating one.
+await fs.rm(refreshMcpJson);
+await fs.rm(refreshToml);
+workspaceFolders = undefined;
+await refreshClientConfigs(mcp);
+workspaceFolders = [{ ...refreshFolder, name: 'refresh' }];
+await refreshClientConfigs(mcp);
+check('a file that is not there is not created',
+	!await fs.access(refreshMcpJson).then(() => true, () => false)
+	&& !await fs.access(refreshToml).then(() => true, () => false));
 
 workspaceFolders = [{ uri: { scheme: 'file', fsPath: path.dirname(configFile) } }];
 
