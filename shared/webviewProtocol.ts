@@ -85,6 +85,14 @@ export type ExtensionToWebviewMessage =
 		readonly instrumented: boolean;
 		readonly error?: string;
 	}
+	| {
+		/**
+		 * The proxy has started serving another origin — a redirect that left the site the
+		 * panel was opened on, say — so the webview may now hear an agent from it.
+		 */
+		readonly type: 'didChangeAgentOrigins';
+		readonly origins: readonly string[];
+	}
 	| { readonly type: 'runCopyCommand'; readonly command: CopyCommand }
 	| {
 		/** Asked for by an mcp client; the page answers with `didRunPageRequest`. */
@@ -109,6 +117,15 @@ export interface TabBrowserSettings {
 	readonly url: string;
 	readonly focusLockEnabled: boolean;
 	readonly preferAttributes: readonly string[];
+	/**
+	 * Origins the local proxy serves, and so the only ones a document carrying the injected
+	 * agent can speak from. The framed page can post anything into the webview — the shapes are
+	 * in the script the proxy injects into it, so nothing about them is secret — but it cannot
+	 * lie about the `origin` the browser stamps on the message. Without this, a page the proxy
+	 * does not serve can answer the panel's questions, be taken for instrumented, and have its
+	 * own idea of the picked element written into the workspace and handed to an assistant.
+	 */
+	readonly agentOrigins: readonly string[];
 }
 
 export interface TabBrowserState {

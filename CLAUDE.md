@@ -60,6 +60,18 @@ Two things about that arrangement are easy to get wrong again:
   anything without it. Without that, a page could start a pick and have its own report written
   into the workspace and mentioned to Claude Code.
 
+  The traffic in the *other* direction — what the agent reports — is trusted just as completely
+  and cannot be protected the same way: the shapes are in the script the proxy injects into the
+  page, so nothing about them is secret, and there is nowhere to put a secret the page could not
+  read. What a page cannot do is lie about the `origin` the browser stamps on a `postMessage`,
+  so that is the check (`TabBrowserSettings.agentOrigins`, kept current by
+  `didChangeAgentOrigins` from `BrowserProxy.origins()`, plus the host's word that *this*
+  navigation went through the proxy at all). Without it a page the proxy does not serve — one the
+  framed page linked to — can report itself ready, be taken for instrumented, and hand its own
+  idea of the picked element, the console and every mcp answer to an assistant. Which is also why
+  a per-document nonce injected by the proxy is not the answer: the document it is injected into
+  can read it.
+
 The injected script sits in front of the page's own code — `console` is patched before any of
 it runs — so nothing it does may change how that page behaves. Formatting a logged value is the
 sharp edge: `%d` with a symbol, a getter that throws, a revoked proxy. `page-src/consoleCapture.ts`
@@ -259,13 +271,21 @@ to that load — credits a new page's report to the page before it, and then wri
 off with its agent running. Both are in `test/host.test.mjs`, which walks a real frame through
 silent and instrumented documents in both orders.
 
-Both connect dialogs also offer the configuration as a *prompt* (`connectPrompt`): the one
-command that adds it, how it is picked up, and a check to run afterwards — short, because the
-assistant only needs the command and a reason to try it. It goes on the clipboard, since neither
-assistant can be handed text from outside. The line about picking the server up differs per
-client and is not decoration — both read their servers at startup but
-start at different moments, so a prompt without it has the assistant report the tools missing
-right after adding them correctly.
+Both connect dialogs also offer the configuration as a *prompt* (`connectPrompt`), on the
+clipboard since neither assistant can be handed text from outside. It is two lines and no more,
+by request: which server to use and which file it is in, then the command that adds it for a file
+that was never written. What it deliberately leaves out is the line about *picking the server up*
+— both assistants read their servers when they start and neither rereads them, so an assistant
+that adds the server mid-conversation will report the tools missing until it is restarted (Claude
+Code) or a new conversation is started (Codex). The dialogs say that where the buttons are; the
+prompt does not, and the two numbered buttons are the route that avoids the situation entirely,
+since the entry is already in the file before the prompt is pasted.
+
+The fallback command is not always the same server, either: Claude Code's `claude mcp add` writes
+`tab-browser`, the name the first line asks for, while Codex's writes the per-project name,
+because the file it writes is the one shared between projects. So the Codex prompt names that
+entry too — a prompt that did not would have the assistant run the command correctly and then
+look for a server that is not there.
 
 Three clients, configured in three different places (`src/mcpSetup.ts`):
 
@@ -315,16 +335,37 @@ two starting at once would both write the text they read and the later one would
 earlier one's repair, leaving a correctly configured client on somebody else's port. So its
 read-and-write uses a bakery queue in `config.toml.tab-browser-locks`. Each contender creates a
 unique directory and atomically publishes its numbered ticket; ties are ordered by claim name.
-A live process's claim is never taken over based on age. Only claims belonging to exited
-processes are removed, by their unique names, so cleanup cannot delete a successor's lock.
+A live process's claim is never taken over based on age — a claim can be arbitrarily old and
+still belong to a window that was suspended mid-write, which is what `test/config-lock.test.mjs`
+holds the line on. Only a claim its owner cannot still be holding is removed, by its unique name,
+so cleanup can never delete a successor's lock.
+
+Which leaves what "cannot still be holding" means, and a pid alone does not say it: a claim left
+behind by a kill survives a reboot, and the kernel hands that pid out again — to a daemon, or to
+another user's process, which `kill(pid, 0)` reports as alive all the same (`EPERM`). Read as a
+live contender for ever, that one claim has every window from then on wait out the deadline and
+skip the repair, with nothing left that could ever reclaim it. So a claim also records the
+machine's boot time as its own window derived it (`Date.now() - os.uptime()`, compared with a few
+seconds' tolerance, since two windows derive it milliseconds apart), and one from before this
+boot is dead whatever its pid says.
+
 Unreadable queues skip repair instead of writing without exclusion. Waiting is bounded to two
-seconds, and the empty queue directory stays on disk to avoid deletion/recreation races.
+seconds, and the empty queue directory stays on disk to avoid deletion/recreation races — which
+is also why there is a `stat` before the first `mkdir`: the repair never creates a config, so a
+machine with no Codex on it must not be given a `~/.codex` with a queue directory in it that
+nothing will ever remove.
 
 Known edges: selectors, not snapshot-scoped element refs, so a selector can go stale between
 calls; clicks are synthetic dom events, which some things (file pickers, drag) will not accept;
 one window wins the preferred port, so an entry written from another window points elsewhere
 until that window's own server starts and repairs it — the per-workspace token turns the window
-in between into a 401 rather than a wrong-project session.
+in between into a 401 rather than a wrong-project session. And a project that was connected
+globally by a version that had the "Add to Codex globally" button, then connected again since,
+has two entries in `~/.codex/config.toml` — the bare name and the per-project one — both of which
+this repairs, so Codex lists every browser tool twice. Removing one is not this extension's to do
+(`codex mcp add` owns that file, and the command that took entries back went with the button), and
+leaving the duplicate to go stale would only turn working duplicates into failing ones: whoever
+has it can drop it with `codex mcp remove tab-browser`.
 
 ## Terminal links
 

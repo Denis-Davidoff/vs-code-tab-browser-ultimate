@@ -245,7 +245,11 @@ function install(): void {
 				// Answered by whichever document is holding the frame when the question
 				// arrives, which is the whole point of asking: the webview cannot tell a
 				// document with no agent from one whose report has not arrived yet.
-				send({ kind: 'alive', probeId: message.probeId, ready: document.readyState !== 'loading' });
+				send({
+					kind: 'aliveAnswer',
+					probeId: message.probeId,
+					ready: document.readyState !== 'loading',
+				});
 				return;
 			}
 
@@ -285,6 +289,11 @@ function install(): void {
 			case 'title':
 			case 'navigated':
 				// A nested frame's icon, title and url have nothing to do with the panel.
+				return;
+
+			case 'aliveAnswer':
+				// Nothing asks a nested frame, and its answer would say nothing about the
+				// document the panel is holding — only the top one can answer for that.
 				return;
 
 			case 'pageError':

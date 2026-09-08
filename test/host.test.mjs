@@ -214,6 +214,10 @@ const server = http.createServer((req, res) => {
 		res.end(`<!DOCTYPE html><html><head><title>panel</title></head><body>
 			<div id="tab-browser-settings" data-settings='${JSON.stringify({
 			token: 'panel-token', url: 'http://127.0.0.1:1/', focusLockEnabled: false, preferAttributes: [],
+			// What the host tells the webview the proxy is serving. This server stands in for it,
+			// and it answers on two origins — `127.0.0.1` and `localhost` — so the second one is
+			// a page the proxy does not serve, whatever it posts.
+			agentOrigins: [`http://${req.headers.host}`],
 		})}'></div>
 			<div class="header">
 				<input class="url-input">
@@ -245,11 +249,24 @@ const server = http.createServer((req, res) => {
 	}
 	// A framed document that reports in only when told to, so the order of the frame's `load`
 	// event and the agent's first message can be chosen rather than raced.
-	if (req.url === '/silent-frame') {
+	if (req.url.startsWith('/silent-frame')) {
 		res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
 		res.end(`<!DOCTYPE html><html><head><title>framed</title></head><body>framed<script>
 			window.__reportReady = () => parent.postMessage(
 				{ __tabBrowserAgent: true, kind: 'ready', documentUrl: 'http://127.0.0.1:1/' }, '*');
+			// Asked for by origin, this one does the reporting itself: a page the proxy does not
+			// serve, posting what the agent posts. It cannot be driven from the panel document
+			// either — that is a cross-origin frame, which is the situation being tested.
+			if (location.search.includes('foreign')) {
+				window.__reportReady();
+				window.addEventListener('message', event => {
+					const asked = event.data;
+					if (asked && asked.__tabBrowserAgent && asked.kind === 'alive') {
+						parent.postMessage({ __tabBrowserAgent: true, kind: 'aliveAnswer',
+							probeId: asked.probeId, ready: true }, '*');
+					}
+				});
+			}
 		</script></body></html>`);
 		return;
 	}
@@ -513,7 +530,10 @@ try {
 		const leftAgain = new Promise(resolve => frame.addEventListener('load', resolve, { once: true }));
 		frame.src = `${origin}/silent-frame?second`;
 		await leftAgain;
-		await settle();
+		// A frame that has held a document with the agent is given a second and a half to be
+		// heard from, so this waits past that: the frame keeps saying "inspectable" until then,
+		// which is the price of never writing off a page that is merely busy hydrating.
+		await new Promise(resolve => setTimeout(resolve, 1800));
 		const afterSecondLoad = lastState();
 
 		// And back to a document that does report in, in the usual order — its report arrives
@@ -539,19 +559,32 @@ try {
 		await settle();
 		const afterQuickTurn = lastState();
 
+		// A page the proxy does not serve, posting exactly what the agent posts — the shapes are
+		// in the script the proxy injects, so they are not a secret. It cannot forge the origin
+		// the browser stamps on the message, which is the whole of what tells the two apart.
+		const foreign = new Promise(resolve => frame.addEventListener('load', resolve, { once: true }));
+		frame.src = `http://localhost:${new URL(origin).port}/silent-frame?foreign`;
+		await foreign;
+		// Past the wait a frame that has held an instrumented document gets: what it forged must
+		// neither keep the panel instrumented nor answer the question it is asked.
+		await new Promise(resolve => setTimeout(resolve, 1800));
+		const afterForeignReport = lastState();
+
 		const lateLoaded = new Promise(resolve => frame.addEventListener('load', resolve, { once: true }));
 		frame.src = `${origin}/reporting-frame?delayed`;
 		await lateLoaded;
+		// Its report is in, its answer is not — the window a busy page spends holding its own
+		// main thread. An mcp client asking for the page here used to be told the page is not
+		// served through the proxy, for a page the proxy was serving.
 		await new Promise(resolve => setTimeout(resolve, 220));
-		const beforeLateAlive = lastState();
-		await settle();
-		const afterLateAlive = lastState();
+		const duringLateAlive = lastState();
 		window.postMessage({ type: 'runPageRequest', token: 'panel-token', requestId: 999,
 			request: { type: 'text' } }, '*');
 		await settle();
+		const afterLateAlive = lastState();
 		const lateTool = window.__posted.find(message => message.type === 'didRunPageRequest' && message.requestId === 999);
 		return { afterReady, afterSecondLoad, afterThirdLoad, afterQuickTurn,
-			beforeLateAlive, afterLateAlive, lateTool };
+			afterForeignReport, duringLateAlive, afterLateAlive, lateTool };
 	}, new URL(pageUrl).origin);
 	await panel.close();
 
@@ -652,6 +685,15 @@ check('a document with no agent is written off, and inherits no report',
 check('a page reporting in right after a silent one is not written off with it',
 	panelState.afterQuickTurn?.instrumented === true && panelState.afterQuickTurn.ready === true,
 	JSON.stringify(panelState.afterQuickTurn));
+
+// Everything the agent says is taken on trust and ends up in the workspace, in an assistant's
+// context or in an answer to an mcp client — and the framed page can post the same shapes, since
+// they are in the script the proxy injects into it. The origin the browser stamps on the message
+// is what it cannot forge.
+check('a page the proxy does not serve cannot report itself instrumented',
+	panelState.afterForeignReport?.instrumented === false
+	&& panelState.afterForeignReport.ready === false,
+	JSON.stringify(panelState.afterForeignReport));
 
 // A document with no agent reports nothing, so it cannot shift a pairing by number: read that
 // way, every document after one of them looked uninstrumented while the panel sat on a page it
@@ -1421,6 +1463,14 @@ check('the Codex prompt names its config file and the command behind it',
 	&& clipboard.includes(`codex mcp add tab-browser-other-project`)
 	&& clipboard.includes(mcp.urlWithToken), clipboard);
 
+// The two halves of that prompt do not name the same server: button 1 writes `tab-browser` into
+// the project's config, while the fallback command adds the per-project name to the config Codex
+// shares between projects. A prompt that named only the first has the assistant run the command
+// correctly and then look for a server that is not there.
+check('and the server the fallback command actually adds',
+	/codex mcp add (tab-browser-other-project-[0-9a-f]{6})\b[^\n]*`\s*—[^\n]*`\1`/.test(clipboard)
+	&& clipboard.split('\n').length === 2, clipboard);
+
 clipboard = '';
 await connectToClaudeCode(mcp);
 check('the Claude Code prompt names its own file and command',
@@ -1535,7 +1585,7 @@ const proseQuote = `[mcp_servers.other]\nnote = 'Use ${'\u0022'.repeat(3)} to de
 for (const delimiter of ['"""', "'".repeat(3)]) {
 	const arrayConfig = `[mcp_servers.other]\ncommand = "python"\nargs = [${delimiter}\nprint('ok')${delimiter}]\n`
 		+ `[mcp_servers.tab-browser]\nurl = "${otherPort}/${mcpToken}"\n`;
-	check('a multiline string can close on the same line as its containing array',
+	check(`a multiline ${delimiter} string can close on the same line as its containing array`,
 		codexEntries(arrayConfig).map(entry => entry.name).join() === 'other,tab-browser'
 		&& refreshedProject(arrayConfig)?.includes(mcp.urlWithToken));
 	await fs.writeFile(codexConfig, arrayConfig);
@@ -1544,13 +1594,18 @@ for (const delimiter of ['"""', "'".repeat(3)]) {
 	await connectToCodex(mcp);
 	dialogAnswer = savedAnswer;
 	const written = await fs.readFile(codexConfig, 'utf8');
-	check('connecting replaces the existing table after a multiline array',
+	check(`connecting replaces the existing table after a multiline ${delimiter} array`,
 		written.split('[mcp_servers.tab-browser]').length === 2
 		&& written.includes(`print('ok')${delimiter}]`) && written.includes(mcp.urlWithToken));
 }
 
-check('a late alive response restores page readiness and MCP requests',
-	panelState.beforeLateAlive?.ready === false && panelState.afterLateAlive?.ready === true
+// The answer to the panel's question is a task in the page's own event loop, and a page holding
+// that loop through its `load` handler — hydration, an analytics burst — answers late. Read as
+// silence, that page is written off with its agent running: the panel tells every mcp client it
+// cannot be inspected, and the tool call it is running gets that back instead of the page.
+check('a page whose answer is late keeps its readiness, and its tool call',
+	panelState.duringLateAlive?.ready === true && panelState.duringLateAlive.instrumented === true
+	&& panelState.afterLateAlive?.ready === true
 	&& panelState.lateTool?.error === undefined && typeof panelState.lateTool?.value === 'string',
 	JSON.stringify(panelState));
 
@@ -1580,6 +1635,13 @@ check('but not one under the bare name holding another project\'s token',
 	refreshedGlobal('tab-browser', `${otherPort}/${'b'.repeat(64)}`) === undefined);
 
 // And the whole of it against real files, since that is where a path or a missing file bites.
+// Every call below is pointed at this file rather than at the real `~/.codex/config.toml`: the
+// suite must neither read the developer's own configuration nor leave a lock queue in their home
+// directory — and on a machine whose global config happens to hold a matching entry, the default
+// would have the suite rewrite a live Codex configuration.
+const sharedConfig = path.join(await fs.mkdtemp('/tmp/shared-codex-'), 'config.toml');
+const sharedUri = { scheme: 'file', fsPath: sharedConfig };
+
 const refreshFolder = { uri: { scheme: 'file', fsPath: await fs.mkdtemp('/tmp/refresh-') } };
 workspaceFolders = [{ ...refreshFolder, name: 'refresh' }];
 const refreshMcpJson = path.join(refreshFolder.uri.fsPath, '.mcp.json');
@@ -1589,7 +1651,7 @@ await fs.writeFile(refreshMcpJson,
 	claudeEntry({ url: otherPort, headers: { Authorization: `Bearer ${mcpToken}` } }));
 await fs.writeFile(refreshToml, codexProject());
 
-await refreshClientConfigs(mcp);
+await refreshClientConfigs(mcp, sharedUri);
 check('both of the project\'s files are repaired on startup',
 	JSON.parse(await fs.readFile(refreshMcpJson, 'utf8')).mcpServers['tab-browser'].url === mcp.url
 	&& (await fs.readFile(refreshToml, 'utf8')).includes(mcp.urlWithToken));
@@ -1598,8 +1660,6 @@ check('both of the project\'s files are repaired on startup',
 // entry, so two starting together would both write the text they read and the later one would
 // undo the earlier one's repair — putting a client that was configured correctly on another
 // window's port.
-const sharedConfig = path.join(await fs.mkdtemp('/tmp/shared-codex-'), 'config.toml');
-const sharedUri = { scheme: 'file', fsPath: sharedConfig };
 const codexTable = (name, url) => `[mcp_servers.${name}]\nurl = "${url}"\n`;
 
 // The location is what the entry is named after, and `toString` is what reads it — a plain
@@ -1645,9 +1705,9 @@ check('completed windows leave no claims in the shared config queue',
 await fs.rm(refreshMcpJson);
 await fs.rm(refreshToml);
 workspaceFolders = undefined;
-await refreshClientConfigs(mcp);
+await refreshClientConfigs(mcp, sharedUri);
 workspaceFolders = [{ ...refreshFolder, name: 'refresh' }];
-await refreshClientConfigs(mcp);
+await refreshClientConfigs(mcp, sharedUri);
 check('a file that is not there is not created',
 	!await fs.access(refreshMcpJson).then(() => true, () => false)
 	&& !await fs.access(refreshToml).then(() => true, () => false));
@@ -1751,6 +1811,13 @@ check('a Codex config with no tab browser in it says so',
 // server all go with it. It has taken the extension down three times now — once per optional
 // integration — so it is checked here rather than only in the editor.
 settings['mcp.enabled'] = false;
+// Activation is the product's own code path, and the shared Codex config it repairs is the one in
+// the *home* directory — which for a test run must not be the developer's own. `os.homedir()`
+// honours `$HOME` on posix, so this points every home-derived path at a sandbox for the rest of
+// the file. It happens here and not at the top because `findChromium()` reads `$HOME` to locate
+// the playwright cache, and the browser is already open by now.
+const realHome = process.env.HOME;
+process.env.HOME = await fs.mkdtemp('/tmp/tb-home-');
 const { activate } = await import('./.bundles/extension-bundle.mjs');
 const context = {
 	subscriptions: [],
@@ -1838,6 +1905,12 @@ check('the connect command explains itself instead of throwing when mcp is off',
 	JSON.stringify(dialogs.slice(-2)));
 
 delete settings['mcp.enabled'];
+
+check('activation leaves nothing of its own in the home directory it was given',
+	!await fs.access(path.join(process.env.HOME, '.codex')).then(() => true, () => false),
+	JSON.stringify(await fs.readdir(process.env.HOME)));
+await fs.rm(process.env.HOME, { recursive: true, force: true });
+if (realHome === undefined) { delete process.env.HOME; } else { process.env.HOME = realHome; }
 
 await browser.close();
 server.close();

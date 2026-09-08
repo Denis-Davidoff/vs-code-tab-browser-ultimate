@@ -178,6 +178,13 @@ export class TabBrowserView extends Disposable {
 
 		this._register(this._webviewPanel.onDidDispose(() => this.dispose()));
 
+		// A session can appear after the html was built — a redirect to another host is served
+		// by one of its own — and until the webview knows its origin, an agent speaking from it
+		// is indistinguishable from the page making things up.
+		this._register(this._proxy.onDidChangeOrigins(() => {
+			this._post({ type: 'didChangeAgentOrigins', origins: this._proxy.origins() });
+		}));
+
 		this._register(vscode.workspace.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration('tabBrowser.focusLockIndicator.enabled')) {
 				this._post({
@@ -556,6 +563,7 @@ export class TabBrowserView extends Disposable {
 		const settings: TabBrowserSettings = {
 			token: this._token,
 			url,
+			agentOrigins: this._proxy.origins(),
 			focusLockEnabled: configuration.get<boolean>('focusLockIndicator.enabled', true),
 			preferAttributes: configuration.get<readonly string[]>(
 				'picker.preferAttributes', defaultPreferredAttributes),
@@ -862,7 +870,9 @@ export function formatElementContext(element: PickedElement): string {
 
 	if (styles.unreadableStyleSheets) {
 		const count = styles.unreadableStyleSheets;
-		css.push('', `/* ${count} stylesheet${count === 1 ? '' : 's'} from another origin could not be read */`);
+		// Not necessarily another origin: an `@import` still in flight, or one the browser
+		// refused, has no rules to read either and cannot be told apart from here.
+		css.push('', `/* ${count} stylesheet${count === 1 ? '' : 's'} could not be read (another origin, or not loaded) */`);
 	}
 
 	lines.push('', 'CSS:', ...fenced(css.join('\n'), 'css'));

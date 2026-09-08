@@ -71,6 +71,10 @@ export class BrowserProxy extends Disposable {
 	private _agentScript?: Promise<Buffer>;
 	private _disposed = false;
 
+	private readonly _onDidChangeOrigins = this._register(new vscode.EventEmitter<void>());
+	/** A session has appeared, so the set of origins that can hold our agent has grown. */
+	public readonly onDidChangeOrigins = this._onDidChangeOrigins.event;
+
 	constructor(
 		private readonly _extensionUri: vscode.Uri,
 	) {
@@ -98,6 +102,26 @@ export class BrowserProxy extends Disposable {
 
 		const session = await this._getSession(originOf(target));
 		return joinOrigin(session.publicOrigin, target.pathname + target.search + target.hash);
+	}
+
+	/**
+	 * The origins a page carrying the injected agent can be served from — every session's, since
+	 * only a session serves that script. The webview needs them to tell an agent's message from
+	 * a message the framed page wrote itself: a page cannot forge the `origin` of a
+	 * `postMessage`, and anything a session injects into a page that page can read.
+	 *
+	 * Read out of `publicOrigin` rather than kept beside it, because on a remote workspace that
+	 * is whatever `asExternalUri` handed back, which may carry a path.
+	 */
+	public origins(): string[] {
+		const origins = new Set<string>();
+		for (const session of this._sessions.values()) {
+			const url = parseHttpUrl(session.publicOrigin);
+			if (url) {
+				origins.add(originOf(url));
+			}
+		}
+		return [...origins];
 	}
 
 	/** True if `rawUrl` is already served by one of our proxies. */
@@ -198,6 +222,7 @@ export class BrowserProxy extends Disposable {
 		}
 
 		this._sessions.set(origin, session);
+		this._onDidChangeOrigins.fire();
 		return session;
 	}
 

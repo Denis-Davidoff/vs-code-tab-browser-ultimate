@@ -14,6 +14,19 @@ export { Uri };
 
 export const env = { asExternalUri: async uri => uri };
 
+/** The proxy publishes one event, for the origins it has started serving. */
+export class EventEmitter {
+	constructor() {
+		this._listeners = new Set();
+		this.event = listener => {
+			this._listeners.add(listener);
+			return { dispose: () => this._listeners.delete(listener) };
+		};
+	}
+	fire(value) { for (const listener of [...this._listeners]) { listener(value); } }
+	dispose() { this._listeners.clear(); }
+}
+
 export const workspace = {
 	fs: { readFile: async uri => new Uint8Array(await fs.readFile(uri.fsPath)) },
 	getConfiguration: () => ({ get: (key, fallback) => fallback }),

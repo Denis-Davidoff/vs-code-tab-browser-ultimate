@@ -48,7 +48,7 @@ export interface StyleSnapshot {
 	readonly resolved: readonly ResolvedDeclaration[];
 	/** Custom properties the rules above reference, resolved on the element. */
 	readonly variables: readonly ResolvedDeclaration[];
-	/** Stylesheets that could not be read, i.e. loaded from another origin. */
+	/** Stylesheets whose rules could not be read: another origin, or never loaded. */
 	readonly unreadableStyleSheets: number;
 }
 
@@ -132,8 +132,13 @@ export type AgentEvent =
 		readonly error?: string;
 	}
 	| { readonly kind: 'pageError'; readonly message: string }
-	/** The answer to `alive`, from the document that was holding the frame when it was asked. */
-	| { readonly kind: 'alive'; readonly probeId: number; readonly ready: boolean }
+	/**
+	 * The answer to `alive`, from the document that was holding the frame when it was asked.
+	 * A kind of its own, because every other kind here belongs to one direction only: shared
+	 * with the command, a nested frame's answer reads as a question to answer again, and the
+	 * relay switch that would have to forward it never sees it.
+	 */
+	| { readonly kind: 'aliveAnswer'; readonly probeId: number; readonly ready: boolean }
 	| {
 		readonly kind: 'console';
 		readonly requestId: number;

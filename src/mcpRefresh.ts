@@ -46,6 +46,21 @@ const ourUrl = /^http:\/\/127\.0\.0\.1:\d+\/mcp(\/[A-Za-z0-9._~-]+)?$/;
 /** An entry named after this workspace, which the bare `tab-browser` is not. */
 const perWorkspaceName = /-[0-9a-f]{6}$/;
 
+interface Claim {
+	readonly ticket: number;
+	/** When the machine the claim was published on had last booted, as that window saw it. */
+	readonly boot: number;
+}
+
+/**
+ * This boot, derived the same way in every window so two of them agree to within the jitter of
+ * `os.uptime()` — which is why claims are compared with `bootTolerance` and not for equality.
+ * A reboot moves this by at least the previous uptime, so no live contender can be mistaken for
+ * one from before it.
+ */
+const bootTime = Math.round(Date.now() - os.uptime() * 1000);
+const bootTolerance = 5000;
+
 /** How long a window waits for another one to finish with the shared config, and gives up. */
 const lockWaitMs = 2000;
 const lockPollMs = 25;
@@ -156,8 +171,9 @@ export function refreshedCodexConfig(
 	let changed = false;
 
 	for (const entry of codexEntries(text)) {
-		const configured = entry.values.get('url');
-		if (!options.names.includes(entry.name) || !configured || !ourUrl.test(configured)) {
+		const configured = entry.values.get('url') ?? '';
+		const match = ourUrl.exec(configured);
+		if (!options.names.includes(entry.name) || !match) {
 			continue;
 		}
 		if (options.shared
@@ -166,8 +182,14 @@ export function refreshedCodexConfig(
 			continue;
 		}
 
-		// A token named rather than written is read from the environment, so the url carries none.
-		const wanted = entry.values.has('bearer_token_env_var') ? url : `${url}/${token}`;
+		// The shape the entry already has is the one it keeps, exactly as in the Claude half
+		// above: a token in the url authenticates on its own, and taking it out would leave the
+		// entry on an environment variable this extension has no say over — a 401 for a
+		// configuration that worked. Only an entry with no token in its url at all is left to
+		// the variable it names.
+		const wanted = match[1] || !entry.values.has('bearer_token_env_var')
+			? `${url}/${token}`
+			: url;
 		if (configured === wanted) {
 			continue;
 		}
@@ -180,7 +202,12 @@ export function refreshedCodexConfig(
 			continue;
 		}
 
-		lines[at] = `url = "${wanted}"`;
+		// Only the value: the indentation, a trailing comment and the `\r` of a CRLF file are
+		// the line as somebody else wrote it, and this rewrites their url, not their line.
+		// Anchored on the first `=` and not on the first quoted string, so a quoted *key*
+		// (`"url" = …`) keeps its quotes — the same place `codexEntries` ends the key.
+		lines[at] = lines[at].replace(
+			/(=\s*)(?:"[^"]*"|'[^']*'|\S+)/, (_, prefix: string) => `${prefix}"${wanted}"`);
 		changed = true;
 	}
 
@@ -194,6 +221,17 @@ export function refreshedCodexConfig(
  * a shared, reusable lock filename). The parent directory stays to avoid the same race there.
  */
 async function withLock(file: vscode.Uri, work: () => Promise<void>): Promise<void> {
+	// Nothing to repair, nothing to lock. The repair never creates a config — `rewrite` gives up
+	// as soon as the read fails — so a machine with no Codex on it must not be given a `~/.codex`
+	// with a queue directory in it, and the queue directory is one nothing ever removes. The
+	// authoritative read still happens inside the lock, so this racing with a first write is only
+	// a repair that waits for the next start of the server.
+	try {
+		await fs.stat(file.fsPath);
+	} catch {
+		return;
+	}
+
 	const directory = `${file.fsPath}.tab-browser-locks`;
 	const name = `${process.pid}.${randomUUID()}`;
 	const claim = path.join(directory, name);
@@ -209,31 +247,40 @@ async function withLock(file: vscode.Uri, work: () => Promise<void>): Promise<vo
 	try {
 		const contenders = async () => (await fs.readdir(directory))
 			.filter(entry => /^\d+\.[0-9a-f-]{36}$/.test(entry));
-		const ticketOf = async (entry: string): Promise<number> => {
+		const claimOf = async (entry: string): Promise<Claim | undefined> => {
 			try {
-				return Number(await fs.readFile(path.join(directory, entry, 'ticket'), 'utf8')) || 0;
+				const [ticket, boot] = (await fs.readFile(
+					path.join(directory, entry, 'ticket'), 'utf8')).split(' ');
+				// A claim written before this field existed is one from a running window.
+				return { ticket: Number(ticket) || 0, boot: Number(boot) || bootTime };
 			} catch {
 				// A published directory with no ticket is still choosing its place.
-				return 0;
+				return undefined;
 			}
 		};
 		let ticket = 1;
 		for (const entry of await contenders()) {
-			ticket = Math.max(ticket, await ticketOf(entry) + 1);
+			ticket = Math.max(ticket, ((await claimOf(entry))?.ticket ?? 0) + 1);
 		}
-		await fs.writeFile(path.join(claim, 'pending'), String(ticket));
+		await fs.writeFile(path.join(claim, 'pending'), `${ticket} ${bootTime}`);
 		await fs.rename(path.join(claim, 'pending'), path.join(claim, 'ticket'));
 
 		while (Date.now() < deadline) {
 			let waiting = false;
 			for (const entry of await contenders()) {
 				if (entry === name) { continue; }
-				if (!processExists(Number(entry.split('.')[0]))) {
+				const other = await claimOf(entry);
+				// Gone, or from before this machine last booted — a pid the kernel has handed
+				// out again since, which `processExists` cannot tell from its first owner and
+				// which an *age* rule must not be used for either: a claim can be arbitrarily
+				// old and still belong to a live window that was suspended mid-write.
+				if (!processExists(Number(entry.split('.')[0]))
+					|| (other && Math.abs(other.boot - bootTime) > bootTolerance)) {
 					await fs.rm(path.join(directory, entry), { recursive: true, force: true });
 					continue;
 				}
-				const other = await ticketOf(entry);
-				if (!other || other < ticket || (other === ticket && entry < name)) {
+				if (!other?.ticket || other.ticket < ticket
+					|| (other.ticket === ticket && entry < name)) {
 					waiting = true;
 					break;
 				}

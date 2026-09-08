@@ -145,9 +145,20 @@ export async function connectToClaudeCode(server: McpServer): Promise<void> {
 /**
  * The prompt for the assistant itself: pick the entry this extension writes up, and the command
  * that adds it for the case where the file was never written.
+ *
+ * That command does not always add the *same* name. Claude Code's writes `tab-browser`, the name
+ * the first line asks for; Codex's writes the one carrying this project's hash, because the file
+ * it writes is shared between projects — so for Codex the fallback has to say which server the
+ * command actually leaves behind, or the assistant runs it correctly and then looks for a server
+ * that is not there.
  */
-function connectPrompt(use: string, cli: string): string {
-	return `${use}\n${vscode.l10n.t("If MCP doesn't exists in file run `{0}`", cli)}`;
+function connectPrompt(use: string, cli: string, addedName?: string): string {
+	const fallback = addedName
+		? vscode.l10n.t(
+			"If it is not in the file, run `{0}` — that adds `{1}` to `~/.codex/config.toml`; use that one instead.",
+			cli, addedName)
+		: vscode.l10n.t("If it is not in the file, run `{0}`.", cli);
+	return `${use}\n${fallback}`;
 }
 
 /**
@@ -213,7 +224,8 @@ export async function connectToCodex(server: McpServer): Promise<void> {
 
 	if (choice === prompt) {
 		await copyConnectPrompt(
-			connectPrompt(vscode.l10n.t("Use MCP `{0}` from `.codex/config.toml`", serverName), cli),
+			connectPrompt(
+				vscode.l10n.t("Use MCP `{0}` from `.codex/config.toml`", serverName), cli, globalName),
 			'Codex');
 		return;
 	}

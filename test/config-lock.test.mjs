@@ -94,6 +94,22 @@ if (worker) {
 		await fs.rm(deadClaim, { recursive: true });
 		console.log('PASS  a denied cleanup exits without spinning or writing unlocked');
 
+		// A claim left behind by a crash survives a reboot, and the kernel hands its pid out
+		// again — to a daemon, or to another user's process, which `kill(pid, 0)` reports as
+		// alive (EPERM) just the same. Read as a live contender for ever, that claim would have
+		// every window from then on wait out the deadline and skip the repair, with nothing left
+		// that could ever reclaim it. Its own record of when the machine booted is what gives it
+		// away; an *age* rule cannot be used here, as the suspended writer above shows.
+		const beforeReboot = path.join(queue, `${process.pid}.${randomUUID()}`);
+		await fs.mkdir(beforeReboot);
+		await fs.writeFile(path.join(beforeReboot, 'ticket'), `1 ${Date.now() - 90 * 24 * 3600_000}`);
+		await fs.writeFile(config, original);
+		await refresh();
+		assert.equal(await fs.readFile(config, 'utf8'), entry('a', 43111) + entry('b', 43999));
+		assert.deepEqual(await fs.readdir(queue), []);
+		console.log('PASS  a claim from before the last boot is reclaimed, live pid or not');
+		await fs.writeFile(config, original);
+
 		const choosing = path.join(queue, `${process.pid}.${randomUUID()}`);
 		await fs.mkdir(choosing);
 		const began = Date.now();
@@ -101,6 +117,13 @@ if (worker) {
 		assert.ok(Date.now() - began >= 1900 && Date.now() - began < 3000);
 		assert.equal(await fs.readFile(config, 'utf8'), original);
 		console.log('PASS  waiting for a live process is bounded');
+
+		// A machine with no Codex on it has no config to repair, and must not be given a
+		// `~/.codex` with a queue directory in it that nothing ever removes.
+		const absent = path.join(directory, 'not-installed', 'config.toml');
+		await refreshClientConfigs(server, { fsPath: absent });
+		assert.equal(await fs.access(path.dirname(absent)).then(() => true, () => false), false);
+		console.log('PASS  a config that is not there is neither created nor locked');
 	} finally {
 		for (const child of children) if (child.exitCode === null) child.kill();
 		await fs.rm(directory, { recursive: true, force: true });

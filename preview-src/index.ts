@@ -91,13 +91,44 @@ let consoleCommand: CopyCommand = 'console';
  * counts: whichever document is holding the frame answers, an answer for a question that has
  * been superseded is ignored, and no answer at all is a document with no agent in it. A `ready`
  * is an answer of its own kind — it can only come from a document that has the agent — and a
- * late answer takes a write-off back.
+ * late answer takes a write-off back. How long "no answer at all" takes to establish is the one
+ * thing left that is not read off an answer; `sawReady` below says what decides it.
  */
+/**
+ * Origins the local proxy is serving, from the host: the only places a document carrying the
+ * agent can speak from, and the only messages `onAgentEvent` is given. `expectsAgent` is the
+ * other half — the host says whether *this* navigation was served through the proxy at all, so
+ * a page the panel was pointed at directly is never taken for an instrumented one.
+ */
+let agentOrigins = new Set<string>(settings.agentOrigins);
+let expectsAgent = false;
+
 let probeId = 0;
-let answeredProbe = 0;
+/**
+ * Whether anything has reported in since the host resolved this navigation. It decides how long
+ * an answer is waited for and nothing else — which document a report came from is not something
+ * this can say, and does not need to.
+ *
+ * A frame that has held a document with the agent will hold another one: what is being waited
+ * for is that answer getting out of a main thread the page's own `load` handler may keep for a
+ * second — hydration, an analytics burst — and writing the page off for that has an assistant
+ * told a page it can read perfectly well is not served through the proxy, which is the one
+ * error message that sends it away for good. A frame that has reported nothing at all since the
+ * navigation is the other case and gets the short wait: a page opened outside the proxy, or the
+ * proxy's own error page, and a copy command has to reload it rather than sit there.
+ *
+ * The cost of the long wait is the in-frame link that leaves an instrumented page for one the
+ * proxy does not serve: the panel keeps saying "inspectable" for a second and a half. A copy
+ * command in that window reaches a page with no agent and does nothing until it is run again —
+ * which is the lesser of the two, and the only alternative is telling assistants that a page
+ * they can read cannot be read every time one takes a while to hydrate.
+ */
+let sawReady = false;
 let silenceTimer: ReturnType<typeof setTimeout> | undefined;
-/** How long the frame has to answer before the document in it is called uninstrumented. */
+/** How long a document that has said nothing has to answer before it is called uninstrumented. */
 const probeTimeout = 150;
+/** How long one that has reported in has, its answer being a task behind its own page's work. */
+const busyProbeTimeout = 1500;
 
 // -- messages --------------------------------------------------------------------------------
 
@@ -105,7 +136,15 @@ window.addEventListener('message', event => {
 	const message: unknown = event.data;
 
 	if (isAgentMessage(message)) {
-		if (event.source === iframe.contentWindow) {
+		// Everything the agent says is taken on trust — that a document has the agent in it,
+		// what the picked element is, what the page logged — and all of it ends up in the
+		// workspace, in an assistant's context, or in an answer to an mcp client. The page
+		// itself can post the same shapes: they are in the script the proxy injects into it.
+		// What it cannot do is lie about where the message came from, so that is what is
+		// checked — the frame, and an origin the proxy is serving. A page the panel was pointed
+		// at directly is not one of those, and neither is one the framed page navigated to.
+		if (event.source === iframe.contentWindow && expectsAgent
+			&& agentOrigins.has(event.origin)) {
 			onAgentEvent(message as AgentEvent);
 		}
 		return;
@@ -126,6 +165,10 @@ window.addEventListener('message', event => {
 
 		case 'didChangeFocusLockIndicatorEnabled':
 			toggleFocusLockIndicatorEnabled(hostMessage.focusLockEnabled);
+			break;
+
+		case 'didChangeAgentOrigins':
+			agentOrigins = new Set(hostMessage.origins);
 			break;
 
 		case 'didResolveUrl':
@@ -154,7 +197,7 @@ function onAgentEvent(event: AgentEvent): void {
 		case 'ready': {
 			// A report can only come from a document that has the agent in it, so whatever the
 			// frame was about to be written off for, it is not that.
-			answeredProbe = probeId;
+			sawReady = true;
 			clearSilenceTimer();
 			// Only the proxy puts this script in a document, so a document that reports in is
 			// instrumented by definition — including when the frame's `load` event won this
@@ -199,13 +242,12 @@ function onAgentEvent(event: AgentEvent): void {
 			setDisplayUrl(event.documentUrl);
 			break;
 
-		case 'alive':
+		case 'aliveAnswer':
 			// The answer to a question that has since been superseded is about a document the
 			// frame has already left, and says nothing about the one in it now.
 			if (event.probeId !== probeId) {
 				break;
 			}
-			answeredProbe = probeId;
 			clearSilenceTimer();
 			// Late, and the document has already been written off: take that back.
 			if (!isInstrumented || pageReady !== event.ready) {
@@ -334,6 +376,7 @@ function onDidResolveUrl(message: Extract<ExtensionToWebviewMessage, { type: 'di
 
 	displayUrl = message.displayUrl;
 	loadedUrl = message.loadUrl;
+	expectsAgent = message.instrumented;
 	isInstrumented = message.instrumented;
 	pageReady = false;
 	resolvedOnce = true;
@@ -341,7 +384,7 @@ function onDidResolveUrl(message: Extract<ExtensionToWebviewMessage, { type: 'di
 	// it — including a write-off that has not been decided yet, and an answer still in flight
 	// for the document being left.
 	probeId++;
-	answeredProbe = 0;
+	sawReady = false;
 	clearSilenceTimer();
 	endConsoleRequest();
 	reportState();
@@ -599,9 +642,6 @@ onceDocumentLoaded(() => {
 		clearSilenceTimer();
 		silenceTimer = setTimeout(() => {
 			silenceTimer = undefined;
-			if (answeredProbe === probeId) {
-				return;
-			}
 			// Nobody answered: the frame has navigated somewhere the proxy does not serve, so
 			// there is no agent in this document and a copy command has to reload through the
 			// proxy rather than wait for silence. An answer that arrives after this takes it
@@ -609,7 +649,7 @@ onceDocumentLoaded(() => {
 			isInstrumented = false;
 			pageReady = false;
 			reportState();
-		}, probeTimeout);
+		}, sawReady ? busyProbeTimeout : probeTimeout);
 	});
 
 	input.addEventListener('change', event => {
