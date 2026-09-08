@@ -6,6 +6,7 @@
 import * as vscode from 'vscode';
 import { AIBrowserManager } from './aiBrowserManager';
 import { AIBrowserView } from './aiBrowserView';
+import { copyElementXPath } from './elementPicker';
 
 declare class URL {
 	constructor(input: string, base?: string | URL);
@@ -30,6 +31,8 @@ const enabledHosts = new Set<string>([
 	'[::]'
 ]);
 
+const copyXPathCommand = 'aiBrowser.copyElementXPath';
+
 const openerId = 'aiBrowser.open';
 
 /**
@@ -44,7 +47,7 @@ const openerId = 'aiBrowser.open';
 async function shouldUseIntegratedBrowser(): Promise<boolean> {
 	const preferIntegrated = vscode.workspace
 		.getConfiguration('aiBrowser')
-		.get<boolean>('useIntegratedBrowser', false);
+		.get<boolean>('useIntegratedBrowser', true);
 	if (!preferIntegrated) {
 		return false;
 	}
@@ -87,6 +90,8 @@ export function activate(context: vscode.ExtensionContext) {
 			manager.show(url);
 		}
 	}));
+
+	context.subscriptions.push(vscode.commands.registerCommand(copyXPathCommand, () => copyElementXPath()));
 
 	context.subscriptions.push(vscode.commands.registerCommand(openApiCommand, async (url: vscode.Uri, showOptions?: {
 		preserveFocus?: boolean;

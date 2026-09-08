@@ -12,6 +12,33 @@ a standalone project and renamed. Every tie to the monorepo (gulp, shared esbuil
 
 Published as `DenysDavydov.ai-browser`.
 
+## How we build features — the main approach
+
+**New browser functionality is built against VS Code's built-in browser, through the `browser`
+API proposal and CDP. This is the default and it is settled** — the recipe is in
+[The `browser` proposed API](#the-browser-proposed-api--the-main-way-to-add-features). It is
+proven, not theoretical: the element picker ([src/elementPicker.ts](src/elementPicker.ts))
+works this way end to end.
+
+**Do not add features to the webview panel.** It remains available
+(`aiBrowser.useIntegratedBrowser: false`) and bug fixes there are fine, but new work does not
+go there. The panel is a webview hosting a cross-origin iframe, and that costs it — by
+construction, with no workaround — clipboard and undo shortcuts inside the page, every
+keyboard shortcut while the page has focus, find in page, site permissions, storage control,
+real per-page DevTools, page zoom, and any history beyond what was typed in the address bar.
+Each of those is a CDP call away in the built-in browser.
+
+This was worked out the long way. **Do not re-derive these dead ends:**
+
+- Extensions cannot contribute to the built-in browser's toolbar or its "..." overflow menu.
+  The `contributes.menus` allowlist has 96 keys and not one maps to a `Browser*` `MenuId`, and
+  no API proposal covers it. `editor/title` does work — that is where the element picker's
+  button lives.
+- Nothing can forward keyboard input out of a cross-origin iframe. VS Code's own answer is a
+  preload script plus main-process IPC; extensions have neither.
+- A page can hand its keys back by including a snippet we provide, and that does work, but it
+  only ever applies to pages you control, so it is not a general answer.
+
 ## Conventions
 
 **All documentation, code comments, README, and commit messages are written in English.**
@@ -44,7 +71,7 @@ The external URI opener does not fire for arbitrary URLs — only for the hosts 
 `enabledHosts` (`localhost`, `127.0.0.1`, `0.0.0.0` and the IPv6 equivalents). For anything
 else it returns `ExternalUriOpenerPriority.None`, so VS Code opens the system browser.
 
-Settings: `aiBrowser.focusLockIndicator.enabled`, `aiBrowser.useIntegratedBrowser`
+Settings: `aiBrowser.useIntegratedBrowser` (**default `true`**), `aiBrowser.focusLockIndicator.enabled`
 (delegate to VS Code's built-in browser instead of our panel — **off by default**, see
 [Special cases](#special-cases-and-non-obvious-decisions)) and `aiBrowser.searchEngine`.
 
@@ -62,6 +89,8 @@ Compiled with `tsc`, **no bundling**. `main: ./out/extension`.
 - [src/aiBrowserView.ts](src/aiBrowserView.ts) — the panel: HTML generation, message bridge
 - [src/dispose.ts](src/dispose.ts) — base `Disposable` with `_register`
 - [src/uuid.ts](src/uuid.ts) — nonce generator, copied from `vs/base/common/uuid`
+- [src/cdp.ts](src/cdp.ts) — CDP client for the built-in browser (not used by the panel)
+- [src/elementPicker.ts](src/elementPicker.ts) — `aiBrowser.copyElementXPath`
 
 **There is only ever one panel.** `AIBrowserManager._activeView` is a single slot: a repeat
 `show()` reuses the existing panel rather than creating a second one. If multiple tabs are ever
@@ -192,11 +221,14 @@ non-obvious:
 
 ### Proposed API
 
-The manifest declares `enabledApiProposals: ["externalUriOpener"]`, required by
-`vscode.window.registerExternalUriOpener`. Consequences:
+The manifest declares `enabledApiProposals: ["externalUriOpener", "browser"]` — the first for
+`vscode.window.registerExternalUriOpener`, the second for the built-in browser and CDP (see
+[the main approach](#how-we-build-features--the-main-approach)). Consequences:
 
-- [vscode.proposed.externalUriOpener.d.ts](vscode.proposed.externalUriOpener.d.ts) is
-  **checked into the repo** so the build works offline. Refresh it with `npm run download-api`.
+- Both [vscode.proposed.externalUriOpener.d.ts](vscode.proposed.externalUriOpener.d.ts) and
+  [vscode.proposed.browser.d.ts](vscode.proposed.browser.d.ts) are **checked into the repo** so
+  the build works offline, and both are listed in `tsconfig.json`'s `include`. Refresh them
+  with `npm run download-api`.
 - Launching requires the `--enable-proposed-api=DenysDavydov.ai-browser` flag, which is set in
   [.vscode/launch.json](.vscode/launch.json). Without it, activation fails on
   `registerExternalUriOpener`.
@@ -214,6 +246,68 @@ finish".
 The working setup: `npm run watch` in a terminal for incremental rebuilds, plus F5 to
 launch/relaunch the Extension Development Host.
 
+## The `browser` proposed API — the main way to add features
+
+`aiBrowser.useIntegratedBrowser` defaults to **true**: URLs open in VS Code's built-in browser,
+and the webview panel is the opt-in path. The built-in browser is reachable from an extension
+through the `browser` API proposal
+([vscode.proposed.browser.d.ts](vscode.proposed.browser.d.ts), microsoft/vscode#300319):
+
+- `window.browserTabs`, `window.activeBrowserTab`, `window.openBrowserTab(url)`, plus open /
+  close / active-change / state-change events;
+- `BrowserTab.startCDPSession()` — a full Chrome DevTools Protocol channel.
+
+CDP is the important half. Reading the DOM, finding text, screenshots, evaluating script in
+the page, element inspection — all of it is a CDP call, because that is exactly how the
+built-in browser implements its own features.
+
+Two things to know before writing against it, both handled by
+[src/cdp.ts](src/cdp.ts):
+
+- **The channel is browser-level**, the same shape as attaching to Chrome's browser websocket.
+  Commands aimed at the page do nothing until you `Target.attachToTarget` (`flatten: true`)
+  and pass the resulting `sessionId` on every message — `CDPClient.attachToPage()`.
+- **`sendMessage` is fire-and-forget**, and every reply for every in-flight command arrives on
+  one `onDidReceiveMessage`, so correlating by `id` is on us.
+
+We declare two proposals now (`externalUriOpener`, `browser`). That does not change the
+distribution story, which was already VSIX-only, but proposed APIs break without notice: if
+the extension stops activating after a VS Code update, run `npm run download-api` and check
+both `.d.ts` files.
+
+### Element picker
+
+`aiBrowser.copyElementXPath` ([src/elementPicker.ts](src/elementPicker.ts)) turns on
+`Overlay.setInspectMode` — the same mechanism behind the built-in "Add Element to Chat", so
+hover highlighting comes free — waits for `Overlay.inspectNodeRequested`, resolves the backend
+node, and runs an XPath builder through `Runtime.callFunctionOn`. Inspect mode is switched off
+before anything that can throw, or the page is left stuck in picking state.
+
+The XPath builder prefers a **unique** `id` as its anchor and walks up only that far, and adds
+a positional predicate only when a tag actually repeats among its siblings. Duplicate ids are
+detected and rejected as anchors — anchoring on one would produce a path pointing at the wrong
+element.
+
+### Recipe for the next feature
+
+1. Add the command to `contributes.commands` **and a matching `onCommand:` to
+   `activationEvents`** — see the entry in
+   [Things that break silently](#things-that-break-silently).
+2. For a button on the browser tab, add it to `contributes.menus` under `editor/title` with
+   `"when": "activeEditor == 'workbench.editorinputs.browser'"`.
+3. Guard twice, with different messages: `'browserTabs' in vscode.window` (proposal missing,
+   or launched without the flag) and `vscode.window.activeBrowserTab` (nothing open). The
+   fixes are unrelated, so one message would send people the wrong way.
+4. `new CDPClient(await tab.startCDPSession())` → `attachToPage()` → `client.send(method,
+   params, sessionId)`. Enable the domains you use (`DOM.enable`, `Overlay.enable`, …) first.
+5. Undo anything that changes page state before any step that can throw, and
+   `client.dispose()` in a `finally`.
+6. Long interactions get `withProgress({ cancellable: true })`, with the token passed to
+   `client.once(...)` so cancelling actually unblocks it.
+
+Pure logic — the XPath builder is the example — is worth testing outside VS Code: it is plain
+JavaScript against a fake DOM, and `npm test` needs no VS Code instance.
+
 ## Things that break silently
 
 No compile error for any of these — they only surface at runtime.
@@ -229,7 +323,12 @@ No compile error for any of these — they only surface at runtime.
    because the monorepo bundled into `dist/`. Fixed — do not reintroduce.
 6. **A resource outside `media/`** → will not load; `localResourceRoots` only permits that
    directory.
-7. **Forgetting `npm run compile` after a clone** → `media/index.js` is not in git, panel is
+7. **A command with no `onCommand:` activation event.** A `contributes.menus` button renders
+   before the extension activates, so clicking it silently does nothing until the extension
+   happens to be activated by something else — which makes it look like it works while you are
+   developing. Implicit activation from `contributes.commands` needs `engines.vscode` at
+   1.74 or later; every command here also gets an explicit `onCommand:` entry.
+8. **Forgetting `npm run compile` after a clone** → `media/index.js` is not in git, panel is
    blank.
 
 ## Special cases and non-obvious decisions
@@ -274,12 +373,13 @@ interaction under [TypeScript configuration](#typescript-configuration).
   TypeScript syntax is allowed in that file: no `enum`, no `namespace`, and type-only imports
   must be written as `import type`.
 
-- **Delegation to the built-in browser is opt-in, not automatic.** All three entry points call
+- **`shouldUseIntegratedBrowser` defaults to the built-in browser.** All three entry points call
   `shouldUseIntegratedBrowser`, which originally returned `true` whenever the command
   `workbench.action.browser.open` existed. That command exists in every recent VS Code, so our
   own panel never opened at all and every change to it was invisible. It is now gated on
-  `aiBrowser.useIntegratedBrowser` (default `false`). Do not "restore" the plain command probe
-  — it silently disables this extension's entire UI.
+  `aiBrowser.useIntegratedBrowser`, which now defaults to **`true`** — the built-in browser is
+  where features get built (see [the main approach](#how-we-build-features--the-main-approach)),
+  and it is what the element picker attaches to. Setting it to `false` brings the panel back.
 
 - **`preview-src/browserSearch.ts` is copied from microsoft/vscode** (MIT), from
   `src/vs/workbench/contrib/browserView/common/browserSearch.ts` at `1.134.0-1325-gaa7291eba7d`.
@@ -340,14 +440,8 @@ The `Simple Browser` → `AI Browser` rename follows these cases:
 
 ## Known issues, not yet fixed
 
-- **`engines.vscode: ^1.70.0` vs `vscode.l10n`.** The code calls `vscode.l10n.t()`, an API
-  finalized in **1.73**. On 1.70–1.72 the extension installs and then fails on activation.
-  Raising `engines` to `^1.74.0` makes sense (at which point the explicit
-  `onCommand:aiBrowser.show` also becomes optional — implicit activation events arrived in
-  1.74).
-- **`media/preview-dark.svg` and `media/preview-light.svg`** — 16×16 icons referenced by
-  nothing: not the code, not the manifest, not the README. Monorepo leftovers.
-- **No tests and no linter.** Both were covered by shared infrastructure in the monorepo.
+- **No linter.** It was covered by shared infrastructure in the monorepo. There are tests:
+  `npm test` runs Node's own runner over `preview-src/*.test.ts`, no VS Code needed.
 - **Zero production dependencies, and it is worth keeping it that way.** `build-ext` is `tsc`
   without bundling, so `out/` contains no dependencies. `vsce` will pack `dependencies` into
   the VSIX automatically, but once heavy runtime dependencies appear, the right move is to

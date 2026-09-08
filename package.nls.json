@@ -2,6 +2,7 @@
 	"displayName": "AI Browser",
 	"description": "Displays web content in an editor panel using an embedded iframe.",
 	"configuration.focusLockIndicator.enabled.description": "Enable/disable the floating indicator that shows when focused in the AI browser.",
-	"configuration.useIntegratedBrowser.description": "Open URLs in VS Code's built-in browser instead of the AI Browser panel. The built-in browser adds agent sharing, DevTools and device emulation, but none of the AI Browser panel's own controls.",
-	"configuration.searchEngine.description": "Search engine used when the address bar input is a search term rather than a URL. Set to 'none' to disable address bar search."
+	"configuration.useIntegratedBrowser.description": "Open URLs in VS Code's built-in browser rather than the AI Browser webview panel. The built-in browser is what the element-picker commands attach to, and it supports clipboard shortcuts, find in page and DevTools that the panel cannot. Turn it off only if you specifically want the panel.",
+	"configuration.searchEngine.description": "Search engine used when the address bar input is a search term rather than a URL. Set to 'none' to disable address bar search.",
+	"command.copyElementXPath.title": "Copy Element XPath"
 }

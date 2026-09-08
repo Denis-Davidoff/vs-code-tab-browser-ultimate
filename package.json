@@ -3,14 +3,15 @@
 	"displayName": "%displayName%",
 	"description": "%description%",
 	"enabledApiProposals": [
-		"externalUriOpener"
+		"externalUriOpener",
+		"browser"
 	],
 	"version": "0.0.1",
 	"icon": "media/icon.png",
 	"publisher": "DenysDavydov",
 	"license": "MIT",
 	"engines": {
-		"vscode": "^1.70.0"
+		"vscode": "^1.74.0"
 	},
 	"main": "./out/extension",
 	"categories": [
@@ -23,6 +24,7 @@
 	"activationEvents": [
 		"onCommand:aiBrowser.show",
 		"onCommand:aiBrowser.api.open",
+		"onCommand:aiBrowser.copyElementXPath",
 		"onOpenExternalUri:http",
 		"onOpenExternalUri:https",
 		"onWebviewPanel:aiBrowser.view"
@@ -39,6 +41,12 @@
 				"command": "aiBrowser.show",
 				"title": "Show",
 				"category": "AI Browser"
+			},
+			{
+				"command": "aiBrowser.copyElementXPath",
+				"title": "%command.copyElementXPath.title%",
+				"category": "%displayName%",
+				"icon": "$(inspect)"
 			}
 		],
 		"configuration": [
@@ -47,7 +55,7 @@
 				"properties": {
 					"aiBrowser.useIntegratedBrowser": {
 						"type": "boolean",
-						"default": false,
+						"default": true,
 						"title": "Use Integrated Browser",
 						"description": "%configuration.useIntegratedBrowser.description%"
 					},
@@ -72,7 +80,16 @@
 					}
 				}
 			}
-		]
+		],
+		"menus": {
+			"editor/title": [
+				{
+					"command": "aiBrowser.copyElementXPath",
+					"when": "activeEditor == 'workbench.editorinputs.browser'",
+					"group": "navigation@1"
+				}
+			]
+		}
 	},
 	"scripts": {
 		"compile": "npm run build-ext && npm run build-webview",

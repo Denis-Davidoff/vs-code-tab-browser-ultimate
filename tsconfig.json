@@ -13,6 +13,7 @@
 	"include": [
 		"src/**/*",
 		"node_modules/@types/vscode/index.d.ts",
-		"vscode.proposed.externalUriOpener.d.ts"
+		"vscode.proposed.externalUriOpener.d.ts",
+		"vscode.proposed.browser.d.ts"
 	]
 }
