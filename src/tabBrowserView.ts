@@ -3,8 +3,10 @@
  *  and the reports the copy menu writes to the clipboard.
  *--------------------------------------------------------------------------------------------*/
 
+import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { BrowserProxy, getConfiguration, isLocalUrl, parseHttpUrl } from './browserProxy';
+import { isUnder } from './fileSession';
 import { copyReport, slugify } from './clipboardFile';
 import * as assistants from './assistants';
 import { defaultIconUrl, discoverPage, fetchIcon } from './favicon';
@@ -186,6 +188,16 @@ export class TabBrowserView extends Disposable {
 			this._post({ type: 'didChangeAgentOrigins', origins: this._proxy.origins() });
 		}));
 
+		// A page off the disk has no dev server in front of it, so this is the whole of its hot
+		// reload: the file the panel is showing, or one it pulled in, was saved.
+		this._register(this._proxy.onDidChangeServedFile(root => {
+			const shown = filePathOfUrl(this._state.url);
+			if (shown && isUnder(root, shown)
+				&& getConfiguration().get<boolean>('files.reloadOnChange', true)) {
+				this._post({ type: 'reloadPage' });
+			}
+		}));
+
 		this._register(vscode.workspace.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration('tabBrowser.focusLockIndicator.enabled')) {
 				this._post({
@@ -308,6 +320,34 @@ export class TabBrowserView extends Disposable {
 		const target = parseHttpUrl(displayUrl);
 		const mode = getConfiguration().get<'localhost' | 'always' | 'never'>('proxy.mode', 'localhost');
 
+		// A file cannot be framed at all — an `<iframe>` does not load `file:` — so there is no
+		// "without the proxy" version of this page to fall back to.
+		const file = parseFileUrl(displayUrl);
+		if (file) {
+			if (mode === 'never') {
+				this._proxied = false;
+				this._post({
+					type: 'didResolveUrl', requestId, loadUrl: displayUrl, displayUrl, instrumented: false,
+					error: vscode.l10n.t("A local file is served through the local proxy, which `tabBrowser.proxy.mode` is set to never use."),
+				});
+				return;
+			}
+
+			try {
+				const loadUrl = await this._proxy.getServedFileUrl(file);
+				this._proxied = true;
+				this._post({ type: 'didResolveUrl', requestId, loadUrl, displayUrl, instrumented: true });
+				this._resetTab(displayUrl, true);
+			} catch (error) {
+				this._proxied = false;
+				this._post({
+					type: 'didResolveUrl', requestId, loadUrl: displayUrl, displayUrl, instrumented: false,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+			return;
+		}
+
 		const wantsProxy = !!target && mode !== 'never'
 			&& (instrument || mode === 'always' || (mode === 'localhost' && isLocalUrl(target)));
 
@@ -398,12 +438,15 @@ export class TabBrowserView extends Disposable {
 			this._iconOrigin = origin;
 		}
 
-		// Until the page says what it is called, the tab says where it is.
-		this._showTitle(parseHttpUrl(displayUrl)?.host);
+		// Until the page says what it is called, the tab says where it is — which for a file is
+		// its name, there being no host to put there.
+		const file = filePathOfUrl(displayUrl);
+		this._showTitle(file ? path.basename(file) : parseHttpUrl(displayUrl)?.host);
 
 		if (instrumented) {
-			// Only the well known icon location is worth a request; the page reports the rest.
-			const href = showIcon ? defaultIconUrl(displayUrl) : undefined;
+			// A file has no well known icon location: nothing answers `/favicon.ico` on disk,
+			// and the page reports whatever it declares itself.
+			const href = showIcon && !file ? defaultIconUrl(displayUrl) : undefined;
 			if (href && token === this._iconToken) {
 				this._showIcon(href);
 			}
@@ -1033,10 +1076,18 @@ function formatTime(time: number): string {
 }
 
 /** Accepts input like `localhost:3000` or `example.com/path` from the address bar. */
-function normalizeUrl(rawUrl: string): string {
+export function normalizeUrl(rawUrl: string): string {
 	const trimmed = rawUrl.trim();
 	if (!trimmed) {
 		return trimmed;
+	}
+
+	// A path is what a file dialog and a paste from a terminal both hand over, and it is not a
+	// host: `/Users/me/page.html` under `http://` is a request to a machine called `Users`.
+	// A windows drive letter looks like a scheme, so it is read before one is looked for.
+	const home = trimmed.startsWith('~/') ? homeDirectory() : undefined;
+	if (home || /^[a-z]:[\\/]/i.test(trimmed) || /^[\\/](?![\\/])/.test(trimmed)) {
+		return vscode.Uri.file(home ? path.join(home, trimmed.slice(2)) : trimmed).toString(true);
 	}
 
 	// A colon followed by digits is a port, not a scheme: `localhost:3000` is a host.
@@ -1044,7 +1095,35 @@ function normalizeUrl(rawUrl: string): string {
 		|| /^[a-z][a-z0-9+.-]*:(?!\d)/i.test(trimmed);
 	const withScheme = hasScheme ? trimmed : `http://${trimmed}`;
 
+	const file = parseFileUrl(withScheme);
+	if (file) {
+		// Whatever spelling it arrived in, one url per file: the address bar, the recent list
+		// and the session's own mapping have to agree on it.
+		return file.toString(true);
+	}
+
 	return parseHttpUrl(withScheme)?.toString() ?? withScheme;
+}
+
+function homeDirectory(): string | undefined {
+	return typeof process === 'object' ? process.env.HOME ?? process.env.USERPROFILE : undefined;
+}
+
+/** The file a `file:` url names, or nothing at all for every other url. */
+export function parseFileUrl(rawUrl: string): vscode.Uri | undefined {
+	if (!/^file:/i.test(rawUrl.trim())) {
+		return undefined;
+	}
+	try {
+		const uri = vscode.Uri.parse(rawUrl.trim());
+		return uri.scheme === 'file' && !!uri.fsPath ? uri : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+export function filePathOfUrl(rawUrl: string): string | undefined {
+	return parseFileUrl(rawUrl)?.fsPath;
 }
 
 /**

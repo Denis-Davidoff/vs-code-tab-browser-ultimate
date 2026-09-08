@@ -9,6 +9,7 @@ import * as http from 'node:http';
 import * as path from 'node:path';
 import { chromium } from 'playwright-core';
 import { findChromium } from './chromium.mjs';
+import { Uri } from './vscode-mock.mjs';
 
 const projectRoot = path.resolve(import.meta.dirname, '..');
 
@@ -51,11 +52,9 @@ let treeViewId;
 // The extension host side of the copy menu, with `vscode` stubbed out.
 globalThis.__vscodeStub = {
 	l10n: { t: (message, ...args) => message.replace(/\{(\d+)\}/g, (_, i) => args[i]) },
-	Uri: {
-		joinPath: (base, ...parts) => ({ fsPath: path.join(base.fsPath, ...parts), scheme: 'file' }),
-		parse: value => ({ value, toString: () => value }),
-		file: value => ({ fsPath: value, scheme: 'file' }),
-	},
+	// The real class, near enough: several of the things under test hand a file to the editor
+	// as a url and read it back as a path, and a faker that cannot do both says nothing.
+	Uri,
 	Disposable: class { constructor(fn) { this.dispose = fn ?? (() => { }); } },
 	ViewColumn: { Active: 1 },
 	EventEmitter: class { constructor() { this.event = () => ({ dispose() { } }); } fire() { } dispose() { } },
@@ -72,7 +71,22 @@ globalThis.__vscodeStub = {
 		fs: {
 			readFile: async uri => new Uint8Array(await fs.readFile(uri.fsPath)),
 			writeFile: async (uri, bytes) => fs.writeFile(uri.fsPath, Buffer.from(bytes)),
+			// What the sidebar's file browser reads a folder with.
+			readDirectory: async uri => (await fs.readdir(uri.fsPath, { withFileTypes: true }))
+				.map(entry => [entry.name, entry.isDirectory() ? 2 : 1]),
 		},
+		asRelativePath: (uri, includeFolder) => {
+			const root = workspaceFolders?.[0]?.uri.fsPath;
+			const target = typeof uri === 'string' ? uri : uri.fsPath;
+			return root && target.startsWith(`${root}/`) ? target.slice(root.length + 1) : target;
+		},
+		findFiles: async () => [],
+		createFileSystemWatcher: () => ({
+			onDidChange: () => ({ dispose() { } }),
+			onDidCreate: () => ({ dispose() { } }),
+			onDidDelete: () => ({ dispose() { } }),
+			dispose() { },
+		}),
 	},
 	commands: {
 		executeCommand: (...args) => { executed.push(args); },
@@ -87,6 +101,8 @@ globalThis.__vscodeStub = {
 		onDidChange: () => ({ dispose() { } }),
 	},
 	ThemeIcon: class { constructor(id, color) { this.id = id; this.color = color; } },
+	FileType: { Unknown: 0, File: 1, Directory: 2, SymbolicLink: 64 },
+	RelativePattern: class { constructor(base, pattern) { this.base = base; this.pattern = pattern; } },
 	ThemeColor: class { constructor(id) { this.id = id; } },
 	TreeItem: class { constructor(label, collapsibleState) { Object.assign(this, { label, collapsibleState }); } },
 	TreeItemCollapsibleState: { None: 0, Collapsed: 1, Expanded: 2 },
@@ -121,7 +137,7 @@ globalThis.__vscodeStub = {
 	UIKind: {},
 };
 
-const { formatPickedElement, formatConsoleReport, escapeAttribute } =
+const { formatPickedElement, formatConsoleReport, escapeAttribute, normalizeUrl, parseFileUrl } =
 	await import('./.bundles/view-bundle.mjs');
 const { defaultIconUrl, discoverPage, fetchIcon } = await import('./.bundles/favicon-bundle.mjs');
 const { registerTerminalLinks } = await import('./.bundles/terminal-links-bundle.mjs');
@@ -133,6 +149,8 @@ const { connectToClaudeCode, connectToCodex, codexEntryName } =
 const { claudeClientState, codexClientState, codexOurEntries } =
 	await import('./.bundles/mcp-check-bundle.mjs');
 const { codexEntries } = await import('./.bundles/codex-toml-bundle.mjs');
+const { servedPathOf, servedUrlOf, realUrlOf, isUnder, isHtmlPath } =
+	await import('./.bundles/file-session-bundle.mjs');
 const { refreshedClaudeConfig, refreshedCodexConfig, refreshClientConfigs } =
 	await import('./.bundles/mcp-refresh-bundle.mjs');
 
@@ -347,6 +365,23 @@ const server = http.createServer((req, res) => {
 		}, 200);
 		return;
 	}
+	// A document served the way a file session serves one: on the proxy's origin, under a path
+	// segment that belongs to the session, and told that its real home is a folder on disk.
+	if (req.url.startsWith('/deadbeef/file-page')) {
+		res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+		res.end(`<!DOCTYPE html><html><head><script>
+			window.__agentEvents = [];
+			window.addEventListener('message', event => {
+				if (event.data && event.data.__tabBrowserAgent) {
+					window.__agentEvents.push({ kind: event.data.kind, documentUrl: event.data.documentUrl,
+						href: event.data.href });
+				}
+			});
+			window.__tabBrowserConfig = { realOrigin: 'file:///srv/project', basePath: '/deadbeef' };
+		</script><script src="/agent.js"></script>
+		<link rel="icon" href="icon.png"><title>from disk</title></head><body>on disk</body></html>`);
+		return;
+	}
 	// A page carrying the real agent, for the one decision the page has to make on the spot:
 	// whether a right-click was the site's own.
 	if (req.url === '/context-page') {
@@ -451,6 +486,7 @@ let cookieWrites;
 let pageRequests;
 let contextMenuPanel;
 let pageMenus;
+let fileAgent;
 try {
 	const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
 	await page.goto(pageUrl);
@@ -783,6 +819,18 @@ try {
 	await menuPage.evaluate(() => new Promise(resolve => setTimeout(resolve, 50)));
 	pageMenus.dismissed = await menuEvents();
 	await menuPage.close();
+
+	// The one thing the page has to do differently for a file: a url cannot be moved between
+	// `file:` and a scheme with a host, and the path it is served under carries a segment that
+	// is the session's and not the page's. Both show up in every report and every mcp answer.
+	const diskPage = await browser.newPage();
+	// With the panel's own reload parameter on it, which is not part of any page's url.
+	await diskPage.goto(`${new URL(pageUrl).origin}/deadbeef/file-page?v=1&vscodeBrowserReqId=99`);
+	await diskPage.waitForFunction(
+		() => window.__agentEvents?.some(event => event.kind === 'ready'), null, { timeout: 5000 })
+		.catch(() => { });
+	fileAgent = await diskPage.evaluate(() => window.__agentEvents);
+	await diskPage.close();
 
 	// A page sets cookies for the server it thinks it is talking to. Through the proxy that
 	// server's name and scheme are not the ones the browser has the page from, and a cookie
@@ -1146,6 +1194,102 @@ check('waiting for an element that renders late succeeds',
 check('asking for something that is not there says so',
 	pageRequests.missing.includes('#nope'), pageRequests.missing);
 
+// -- a page served off the disk ----------------------------------------------------------------
+
+const diskReady = (fileAgent ?? []).find(event => event.kind === 'ready');
+check('a page served off the disk reports itself by the file it is, its own query and all',
+	diskReady?.documentUrl === 'file:///srv/project/file-page?v=1', JSON.stringify(diskReady));
+
+// A page reloaded on every save would otherwise grow that parameter into every report it is in.
+check('the panel\'s own reload parameter is not part of what the page reports',
+	!JSON.stringify(fileAgent ?? []).includes('vscodeBrowserReqId'), JSON.stringify(fileAgent));
+
+const diskIcon = (fileAgent ?? []).find(event => event.kind === 'icon');
+check('and its icon as the file next to it',
+	diskIcon?.href === 'file:///srv/project/icon.png', JSON.stringify(diskIcon));
+
+// -- what a file session is allowed to serve ----------------------------------------------------
+
+// The rule is one pure function, because the port it guards answers to anything on this machine
+// — and to any page in any browser that guesses it — so what it refuses is worth stating in
+// terms of the request rather than of what a browser happened to send.
+const folder = { root: '/srv/project', secret: 'a'.repeat(32) };
+const servedBy = target => servedPathOf(folder, target);
+
+check('a path under the folder is served',
+	servedBy(`/${folder.secret}/pages/index.html`).path === '/srv/project/pages/index.html',
+	JSON.stringify(servedBy(`/${folder.secret}/pages/index.html`)));
+
+check('the folder itself is served, for the index inside it',
+	servedBy(`/${folder.secret}/`).path === '/srv/project', JSON.stringify(servedBy(`/${folder.secret}/`)));
+
+check('percent escapes are what the file is actually called',
+	servedBy(`/${folder.secret}/my%20page.html`).path === '/srv/project/my page.html',
+	JSON.stringify(servedBy(`/${folder.secret}/my%20page.html`)));
+
+check('a query and a fragment are not part of the path',
+	servedBy(`/${folder.secret}/page.html?v=2#top`).path === '/srv/project/page.html');
+
+for (const [name, target] of [
+	['no segment of the session at all', '/page.html'],
+	['a segment that guesses it wrong', `/${'b'.repeat(32)}/page.html`],
+	['an empty request', undefined],
+	['a malformed escape', `/${folder.secret}/%zz.html`],
+]) {
+	check(`${name} is not served`, servedBy(target).status === 404, JSON.stringify(servedBy(target)));
+}
+
+for (const [name, target] of [
+	['a path climbing out', `/${folder.secret}/../etc/passwd`],
+	// Split before decoding, or one segment carries a path of its own past every check.
+	['an escaped separator', `/${folder.secret}/..%2f..%2fetc%2fpasswd`],
+	['an escaped backslash', `/${folder.secret}/..%5c..%5cwindows`],
+	['a single escaped dot-dot', `/${folder.secret}/%2e%2e/etc`],
+	['a null byte', `/${folder.secret}/page.html%00.png`],
+]) {
+	const served = servedBy(target);
+	check(`${name} is refused`, served.status === 403 || served.status === 404,
+		JSON.stringify(served));
+}
+
+check('the url of a file carries the session segment and encodes the rest',
+	servedUrlOf(folder, 'http://127.0.0.1:9/', '/srv/project/a b/page.html')
+	=== `http://127.0.0.1:9/${folder.secret}/a%20b/page.html`,
+	servedUrlOf(folder, 'http://127.0.0.1:9/', '/srv/project/a b/page.html'));
+
+check('and maps back to the file itself, segment and escapes gone',
+	realUrlOf(folder, `/${folder.secret}/a%20b/page.html`) === 'file:///srv/project/a b/page.html',
+	realUrlOf(folder, `/${folder.secret}/a%20b/page.html`));
+
+// A prefix of the path string is not the same as a folder above it.
+check('a sibling folder whose name starts the same is not inside it',
+	!isUnder('/srv/project', '/srv/project-two/page.html')
+	&& isUnder('/srv/project', '/srv/project/page.html')
+	&& isUnder('/srv/project', '/srv/project'));
+
+check('only html is offered as a page', isHtmlPath('a.html') && isHtmlPath('A.HTM')
+	&& isHtmlPath('a.xhtml') && !isHtmlPath('a.css') && !isHtmlPath('htmlfile'));
+
+// What the address bar is handed is a url, a host, or — from a paste or a file dialog — a path,
+// which it then shows as the file it is rather than as an encoded url.
+check('a filesystem path typed into the address bar becomes a file url',
+	normalizeUrl('/Users/me/my page.html') === 'file:///Users/me/my page.html'
+	&& parseFileUrl(normalizeUrl('/Users/me/my page.html'))?.fsPath === '/Users/me/my page.html',
+	normalizeUrl('/Users/me/my page.html'));
+
+check('a windows drive letter is a path and not a scheme',
+	normalizeUrl('C:\\sites\\index.html') === 'file:///c:/sites/index.html',
+	normalizeUrl('C:\\sites\\index.html'));
+
+check('a host is still a host', normalizeUrl('localhost:3000') === 'http://localhost:3000/',
+	normalizeUrl('localhost:3000'));
+
+check('a file url survives being normalised',
+	!!parseFileUrl(normalizeUrl('file:///Users/me/page.html')), normalizeUrl('file:///Users/me/page.html'));
+
+check('and nothing else reads as one',
+	!parseFileUrl('http://localhost/page.html') && !parseFileUrl('filet://x') && !parseFileUrl(''));
+
 // -- the markup of the panel --------------------------------------------------------------------
 
 // The toolbar is a template literal in the source, and an edit to it that leaves a tag stranded
@@ -1465,6 +1609,17 @@ check('a page that never reports in is reported as not loaded',
 
 // A page opened outside the proxy never reports in either, and that is not a failure: there is
 // simply no script in it, which `inspectable` already says.
+// The panel can serve a local file, and then every tool here reads it. Which file that is
+// stays the user's decision: a tool that could name one would be a read of the disk.
+const fileNavigation = await controllerFor({ ...neverReady, expectsAgent: false, inspectable: false })
+	.navigate('file:///etc/passwd');
+check('a tool cannot point the panel at a local file',
+	/has to be opened by the user/.test(fileNavigation.error ?? ''), JSON.stringify(fileNavigation));
+
+check('nor at one named as a bare path',
+	/has to be opened by the user/.test((await controllerFor({ ...neverReady, expectsAgent: false })
+		.navigate('/etc/passwd')).error ?? ''));
+
 check('a page opened outside the proxy is not an error',
 	(await controllerFor({ ...neverReady, expectsAgent: false, inspectable: false })
 		.navigate('https://example.com/')).error === undefined);

@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate",
 	"displayName": "AI Browser🏆 Claude + Codex",
 	"description": "Embedded browser tab with AI capabilities, Claude and Codex integration",
-	"version": "0.3.14",
+	"version": "0.3.15",
 	"icon": "media/icon.png",
 	"publisher": "DenysDavydov",
   	"private": true,
@@ -83,6 +83,12 @@
 				"title": "Show",
 				"category": "Tab Browser Ultimate",
 				"icon": "$(globe)"
+			},
+			{
+				"command": "tabBrowser.openFile",
+				"title": "Open File in Browser",
+				"category": "Tab Browser Ultimate",
+				"icon": "$(file-code)"
 			},
 			{
 				"command": "tabBrowser.connectMcpToClaudeCode",
@@ -197,6 +203,20 @@
 			]
 		},
 		"menus": {
+			"explorer/context": [
+				{
+					"command": "tabBrowser.openFile",
+					"when": "resourceLangId == html && !explorerResourceIsFolder",
+					"group": "navigation@30"
+				}
+			],
+			"editor/title/context": [
+				{
+					"command": "tabBrowser.openFile",
+					"when": "resourceLangId == html",
+					"group": "1_run@30"
+				}
+			],
 			"view/title": [
 				{
 					"command": "tabBrowser.show",
@@ -236,6 +256,11 @@
 						"default": true,
 						"title": "Focus Lock Indicator Enabled",
 						"description": "%configuration.focusLockIndicator.enabled.description%"
+					},
+					"tabBrowser.files.reloadOnChange": {
+						"type": "boolean",
+						"default": true,
+						"markdownDescription": "Reload the panel when a local file it is showing — or one that page pulled in — is saved. Only files the page actually asked for are watched, and only pages opened from disk: a page served by a dev server has that server's own reload."
 					},
 					"tabBrowser.contextMenu.enabled": {
 						"type": "boolean",

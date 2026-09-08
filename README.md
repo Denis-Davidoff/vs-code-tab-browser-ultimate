@@ -23,6 +23,9 @@ the editor: the page you are looking at is the page your agent reads and drives.
 - ✨ **One click turns it into a prompt.** Send the element, its selector or its path straight
   into Claude Code or Codex as an attachment their agent reads — so "make this button match the
   one above" is a sentence, not a paragraph of description.
+- 📄 **Local html files, not only dev servers.** Open a file from the explorer's context menu,
+  from the sidebar's file browser or by pasting its path — served from its own folder, with the
+  same picker, console and tools, and reloaded when you save it.
 - 🖱️ **Right-click straight on the thing.** The same actions on the element under the cursor,
   without arming the picker first — plus the editor's developer tools. A site with a context
   menu of its own keeps it.
@@ -198,6 +201,32 @@ one nothing on the page sets. Stylesheets served from another origin cannot be r
 document and are reported as a count.
 
 `tabBrowser.picker.copyFormat` switches the report for `css`, `xpath`, `both` or `json`.
+
+## Opening a file from disk
+
+An html file opens in the panel like any url does:
+
+- **Explorer** — right-click the file, "Open File in Browser". The same entry is on the editor
+  tab of an open html file.
+- **Sidebar** — "Open a file…" for the file dialog and the list of this project's pages, or
+  **Project files** to browse the folders of the project itself.
+- **Address bar** — a path pastes as readily as a url: `/Users/me/site/index.html`,
+  `C:\sites\index.html`, or a `file:` url.
+- **Command palette** — "Tab Browser Ultimate: Open File in Browser".
+
+The page is served from the folder it belongs to — the workspace folder that holds it, or its own
+folder when it belongs to no project — so its stylesheets, scripts and images load, and nothing
+outside that folder is reachable. Everything else works as on any other page: the picker, the
+console, the element reports and every mcp tool.
+
+**Saving reloads it.** A file has no dev server in front of it to do anything cleverer, so the
+panel navigates again when the page — or a file that page pulled in — changes on disk. Only the
+files the page actually asked for are watched. `tabBrowser.files.reloadOnChange: false` turns it
+off.
+
+An assistant cannot open a file itself: `browser_navigate` takes http urls only, because every
+other tool then reads whatever it opened. Which file the panel shows stays your decision — and
+once it is open, the assistant reads and drives it like any other page.
 
 ## Right-clicking in the page
 

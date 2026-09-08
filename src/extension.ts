@@ -2,8 +2,10 @@
  *  Activation: the commands the extension contributes, and the proxy and view they drive.
  *--------------------------------------------------------------------------------------------*/
 
+import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { BrowserProxy } from './browserProxy';
+import { htmlExtensions } from './fileSession';
 import { disposeAll } from './dispose';
 import { TabBrowserManager } from './tabBrowserManager';
 import { TabBrowserView } from './tabBrowserView';
@@ -25,6 +27,7 @@ declare class URL {
 
 const openApiCommand = 'tabBrowser.api.open';
 const showCommand = 'tabBrowser.show';
+const openFileCommand = 'tabBrowser.openFile';
 const copyElementCommand = 'tabBrowser.copyElement';
 const copyElementXPathCommand = 'tabBrowser.copyElementXPath';
 const copyElementPathCommand = 'tabBrowser.copyElementPath';
@@ -156,6 +159,21 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	}));
 
+	// The explorer's context menu hands over the file that was clicked; from the palette and
+	// from the sidebar's own row there is nothing to hand over, so one is asked for.
+	context.subscriptions.push(vscode.commands.registerCommand(openFileCommand, async (target?: vscode.Uri) => {
+		const file = target?.scheme ? target : await pickLocalPage();
+		if (!file) {
+			return;
+		}
+		if (file.scheme !== 'file') {
+			vscode.window.showWarningMessage(vscode.l10n.t(
+				"Only files on this machine can be opened in the browser; {0} is not one.", file.scheme));
+			return;
+		}
+		manager.show(file);
+	}));
+
 	context.subscriptions.push(vscode.commands.registerCommand(openApiCommand, async (url: vscode.Uri, showOptions?: {
 		preserveFocus?: boolean;
 		viewColumn: vscode.ViewColumn;
@@ -218,6 +236,54 @@ export function activate(context: vscode.ExtensionContext) {
 	} catch {
 		// Then a forwarded localhost link does not offer this browser, and nothing else changes.
 	}
+}
+
+/**
+ * The project's html files, and a file dialog behind them for everything else. `findFiles`
+ * rather than a walk of the folders: it is the editor's own index, and it already knows about
+ * the excludes the user has set.
+ */
+async function pickLocalPage(): Promise<vscode.Uri | undefined> {
+	const extensions = htmlExtensions.map(extension => extension.replace('.', '')).join(',');
+	const found = vscode.workspace.workspaceFolders?.length
+		? await vscode.workspace.findFiles(`**/*.{${extensions}}`, '**/{node_modules,.git}/**', 500)
+		: [];
+
+	if (!found.length) {
+		return openPageDialog();
+	}
+
+	const browse = {
+		label: vscode.l10n.t("$(folder-opened) Open a file…"),
+		detail: vscode.l10n.t("Anywhere on this machine, not only in this project"),
+		uri: undefined as vscode.Uri | undefined,
+	};
+	const items = found
+		.map(uri => ({
+			label: `$(file-code) ${path.basename(uri.fsPath)}`,
+			description: vscode.workspace.asRelativePath(uri, false),
+			uri: uri as vscode.Uri | undefined,
+		}))
+		.sort((a, b) => (a.description ?? '').localeCompare(b.description ?? ''));
+
+	const picked = await vscode.window.showQuickPick([...items, browse], {
+		title: vscode.l10n.t("Open a file in the browser"),
+		placeHolder: vscode.l10n.t("An html file of this project"),
+		matchOnDescription: true,
+	});
+	if (!picked) {
+		return undefined;
+	}
+	return picked.uri ?? openPageDialog();
+}
+
+async function openPageDialog(): Promise<vscode.Uri | undefined> {
+	const picked = await vscode.window.showOpenDialog({
+		canSelectMany: false,
+		openLabel: vscode.l10n.t("Open in Browser"),
+		filters: { [vscode.l10n.t("Web pages")]: htmlExtensions.map(extension => extension.replace('.', '')) },
+	});
+	return picked?.[0];
 }
 
 /**

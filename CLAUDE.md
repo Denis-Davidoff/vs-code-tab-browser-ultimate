@@ -10,7 +10,7 @@ Forked from the Simple Browser extension that ships with VS Code and renamed thr
 
 | Path | Runs in | What it is |
 | --- | --- | --- |
-| `src/` | extension host (node) | activation, the webview panel, the local proxy, clipboard, tab icon, mcp, the sidebar |
+| `src/` | extension host (node) | activation, the webview panel, the local proxy, files from disk, clipboard, tab icon, mcp, the sidebar |
 | `preview-src/` | webview | toolbar, address bar, copy menu, hint bar; relays messages |
 | `page-src/` | the previewed page | injected agent: picker, context menu, console capture, element report |
 | `shared/` | all three | message contracts and the shapes they carry |
@@ -38,6 +38,48 @@ three bundles.
 `tabBrowser.proxy.mode` decides when the proxy is used: `localhost` (default), `always`,
 `never`. A copy command forces a reload through the proxy when the current page is not
 instrumented yet.
+
+## A page off the disk
+
+An html file is opened by the same route and for the same reason: an `<iframe>` will not load a
+`file:` url at all, and nothing could be injected into it if it would. So a file is served by a
+session of the proxy's that answers out of a folder instead of forwarding to a server
+(`session.file`, `src/fileSession.ts`) — one early branch in `_handleRequest`, so the whole
+http half is untouched by it. Which folder: the workspace folder the file belongs to, or its own
+folder when it belongs to no project.
+
+- **A port on the loopback interface answers to everything on this machine**, and to any page in
+  any browser that guesses it. A file session therefore answers only urls whose first segment is
+  an unguessable one of its own (`ServedFolder.secret`); without it the port would be a read of
+  the project to whoever asked first. It is not a secret from the page — a page can read its own
+  location — and a page that links to a third party leaks it in a `Referer`, which is why the
+  folder is a boundary as well and not only the segment.
+- **The rule about what a request may reach is one pure function** (`servedPathOf`), because
+  what matters is what it *refuses*: segments are split before they are decoded, since `%2f` and
+  `%5c` must not become separators, and the resolved path is checked against the folder rather
+  than trusted for having no `..` in it. `test/host.test.mjs` covers the hostile spellings —
+  going through a browser cannot, since `fetch` normalises half of them away before they are
+  sent.
+- **A file url cannot be rebuilt like a proxied one.** The panel shows the file, not the url it
+  is served under, so `toRealUrl` maps the path back — and the injected script is told the same
+  two things (`realOrigin`, `basePath`): a `URL` cannot be moved between `file:` and a scheme
+  with a host, and the segment the session serves under belongs to the session and not to the
+  page. Without both, every element report, every icon and every mcp answer names a loopback url
+  that will not exist tomorrow.
+
+Hot reload is the whole of what a page with no dev server in front of it can have: the files the
+session actually served are watched (one non-recursive watcher per folder, not a recursive one
+over a project the page uses three files of), and a change to one of them has the panel navigate
+again (`onDidChangeServedFile` → `reloadPage`). `tabBrowser.files.reloadOnChange` turns it off.
+Which is also why nothing a file session serves is cacheable, and why the parameter the webview
+varies to make the frame load a page twice (`cacheBustParameter`) is taken back off every url the
+page reports: a page reloaded on every save would otherwise grow a `?vscodeBrowserReqId` onto its
+own path in every report it appears in.
+
+An assistant cannot point the panel at a file: `browser_navigate` refuses anything that
+normalises to a `file:` url, since every other tool then reads whatever it named. Opening one is
+the user's decision — the explorer's context menu, the sidebar, the address bar (which takes a
+path as readily as a url) — and once a file is open, all the tools read it like any other page.
 
 Two things about that arrangement are easy to get wrong again:
 
@@ -129,7 +171,15 @@ all. Which cuts both ways, and the counting version of this got it wrong in both
 triple quote inside a literal string (`note = 'use """ for prose'`) opens nothing, and read as
 if it did, the table this extension wrote goes unseen and connecting writes it a second time.
 
-Recent pages live in `workspaceState`: a dev url belongs to the project, not to the user.
+The **Project files** section is the one part of the tree that is not rebuilt whole: nobody knows
+how many folders a project has, and nothing here needs to until one is opened, so those rows
+carry a `folder` and are read off the disk by `getChildren`. Only html files are offered, since
+a page is what the panel opens; `Open a file…` is there for everything the browser would not
+find, and it is `findFiles` plus a dialog rather than a walk of the folders — the editor's index
+already knows about the excludes the user has set.
+
+Recent pages live in `workspaceState`: a dev url belongs to the project, not to the user. A file
+is remembered there too, and shown relative to the project it belongs to.
 
 ## The copy menu
 
@@ -391,7 +441,8 @@ is also why there is a `stat` before the first `mkdir`: the repair never creates
 machine with no Codex on it must not be given a `~/.codex` with a queue directory in it that
 nothing will ever remove.
 
-Known edges: selectors, not snapshot-scoped element refs, so a selector can go stale between
+Known edges: a file session answers no `Range` requests, so seeking in a `<video>` a local page
+plays does not work; selectors, not snapshot-scoped element refs, so a selector can go stale between
 calls; clicks are synthetic dom events, which some things (file pickers, drag) will not accept;
 one window wins the preferred port, so an entry written from another window points elsewhere
 until that window's own server starts and repairs it — the per-workspace token turns the window

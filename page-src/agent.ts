@@ -8,6 +8,7 @@
 import {
 	AgentEvent,
 	AgentMessage,
+	cacheBustParameter,
 	isAgentMessage,
 	packAgentMessage,
 } from '../shared/protocol';
@@ -20,9 +21,18 @@ import { ElementPicker } from './picker';
 import { cssPath, describeElement } from './selectors';
 
 interface AgentBootstrapConfig {
+	/**
+	 * Where the page's own urls belong: the origin of the real server, or — for a page served
+	 * off the disk — the `file:` url of the folder it was served from.
+	 */
 	readonly realOrigin: string;
 	/** Prefix the proxy puts on this session's cookie names; the page must not see it. */
 	readonly cookiePrefix?: string;
+	/**
+	 * Path prefix this session answers under, which is the session's and not the page's. Only
+	 * a session serving the disk has one, and every url reported from here has it taken off.
+	 */
+	readonly basePath?: string;
 }
 
 declare global {
@@ -43,6 +53,7 @@ function install(): void {
 	installCookiePrefix(window.__tabBrowserConfig?.cookiePrefix ?? '');
 
 	const realOrigin = window.__tabBrowserConfig?.realOrigin ?? location.origin;
+	const basePath = window.__tabBrowserConfig?.basePath ?? '';
 
 	// -- messaging ---------------------------------------------------------------------------
 
@@ -92,6 +103,18 @@ function install(): void {
 			// Only what we serve ourselves is on the proxy; a cdn url is already where it belongs.
 			if (current.origin !== location.origin) {
 				return current.toString();
+			}
+			// The panel's own way of making the frame load a page twice is not part of the url
+			// of anything, and a page reloaded on every save would carry it into every report.
+			current.searchParams.delete(cacheBustParameter);
+			// A page served off the disk. Rebuilt rather than re-hosted, because a `URL` cannot
+			// be moved between `file:` and a scheme with a host — and because the path it is
+			// served under starts with a segment that is the session's, not the page's.
+			if (realOrigin.indexOf('file:') === 0) {
+				const rest = basePath && current.pathname.indexOf(basePath) === 0
+					? current.pathname.slice(basePath.length)
+					: current.pathname;
+				return realOrigin + rest + current.search + current.hash;
 			}
 			const real = new URL(realOrigin);
 			current.protocol = real.protocol;

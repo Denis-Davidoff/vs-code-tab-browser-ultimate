@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Local html files.** "Open File in Browser" from the explorer's context menu, the editor tab
+  and the command palette; a file browser over the project's own pages in the sidebar, next to
+  "Open a file…"; and a path typed or pasted into the address bar. The file is served from the
+  folder it belongs to — nothing outside it is reachable — so the picker, the console, the
+  reports and the mcp tools work on it like on any other page. Saving the file, or anything it
+  pulled in, reloads the panel (`tabBrowser.files.reloadOnChange`).
+
 - **A context menu in the page.** A right-click opens the copy menu's element entries for the
   element under the cursor — report, XPath or CSS path, to the clipboard or to an assistant —
   plus **Inspect element**, which opens the editor's developer tools. The element is outlined

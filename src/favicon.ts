@@ -39,7 +39,9 @@ const imageTypes: readonly ImageType[] = [
 /** Downloads `href` and returns a file the editor can use as a tab icon. */
 export async function fetchIcon(href: string): Promise<vscode.Uri | undefined> {
 	try {
-		const bytes = href.startsWith('data:') ? decodeDataUrl(href) : await download(href);
+		const bytes = href.startsWith('data:')
+			? decodeDataUrl(href)
+			: /^file:/i.test(href) ? await readLocalIcon(href) : await download(href);
 		if (!bytes?.length) {
 			return undefined;
 		}
@@ -54,6 +56,19 @@ export async function fetchIcon(href: string): Promise<vscode.Uri | undefined> {
 		// A page without a reachable icon simply keeps the default one.
 		return undefined;
 	}
+}
+
+/** A page served off the disk declares its icon as a file; there is nothing to download. */
+async function readLocalIcon(href: string): Promise<Buffer | undefined> {
+	const file = vscode.Uri.parse(href);
+	if (file.scheme !== 'file') {
+		return undefined;
+	}
+	const stat = await fs.stat(file.fsPath);
+	// A tab icon, so the same cap as a download: whatever else that file is, it is not one.
+	return stat.isFile() && stat.size <= maxIconBytes
+		? Buffer.from(await fs.readFile(file.fsPath))
+		: undefined;
 }
 
 export interface DiscoveredPage {

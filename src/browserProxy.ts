@@ -8,6 +8,9 @@
  *  webview with `postMessage`, which *is* allowed cross-origin.
  *--------------------------------------------------------------------------------------------*/
 
+import * as fs from 'node:fs';
+import * as fsp from 'node:fs/promises';
+import * as path from 'node:path';
 import * as http from 'http';
 import * as https from 'https';
 import * as net from 'net';
@@ -15,6 +18,16 @@ import * as stream from 'stream';
 import * as zlib from 'zlib';
 import * as vscode from 'vscode';
 import { rewriteSetCookie } from '../shared/cookies';
+import {
+	contentTypeOf,
+	isHtmlPath,
+	newServedFolder,
+	realUrlOf,
+	ServedFiles,
+	ServedFolder,
+	servedPathOf,
+	servedUrlOf,
+} from './fileSession';
 import { Disposable } from './dispose';
 
 /** Path on the proxy that serves the injected page agent script. */
@@ -36,8 +49,22 @@ const strippedResponseHeaders = [
 ];
 
 interface ProxySession {
-	/** Origin of the real server, e.g. `http://localhost:5173`. */
+	/**
+	 * Origin of the real server, e.g. `http://localhost:5173` — and for a session serving the
+	 * disk, the `file:` url of the folder it serves. It is what the session is keyed by, so one
+	 * folder gets one session however many of its pages are opened.
+	 */
 	readonly origin: string;
+	/**
+	 * Set on a session that answers out of a folder instead of forwarding to a server. Such a
+	 * session shares the injection, the port and the error page with the others, and none of
+	 * the forwarding: there is nothing upstream of it.
+	 */
+	readonly file?: {
+		readonly folder: ServedFolder;
+		/** What it has served, so that saving one of those files reloads the panel. */
+		readonly files: ServedFiles;
+	};
 	/**
 	 * Prefix every cookie of this session carries while it is in the browser. Cookie jars are
 	 * not separated by port, so two proxied sites on the same loopback host would otherwise
@@ -75,6 +102,14 @@ export class BrowserProxy extends Disposable {
 	/** A session has appeared, so the set of origins that can hold our agent has grown. */
 	public readonly onDidChangeOrigins = this._onDidChangeOrigins.event;
 
+	private readonly _onDidChangeServedFile = this._register(new vscode.EventEmitter<string>());
+	/**
+	 * A file one of the file sessions has served was changed on disk; the value is the folder
+	 * that session serves. The panel reloads for it, which is all the hot reload a page off the
+	 * disk can have — there is no dev server in front of it to do anything cleverer.
+	 */
+	public readonly onDidChangeServedFile = this._onDidChangeServedFile.event;
+
 	constructor(
 		private readonly _extensionUri: vscode.Uri,
 	) {
@@ -102,6 +137,34 @@ export class BrowserProxy extends Disposable {
 
 		const session = await this._getSession(originOf(target));
 		return joinOrigin(session.publicOrigin, target.pathname + target.search + target.hash);
+	}
+
+	/**
+	 * Returns the url the webview should load in order to see `fileUri`, which is served from
+	 * the folder it belongs to: the workspace folder that holds it, or its own folder when it
+	 * belongs to no project. Nothing outside that folder is reachable, so a page can pull in
+	 * the project's stylesheets and scripts and nothing else.
+	 */
+	public async getServedFileUrl(fileUri: vscode.Uri): Promise<string> {
+		if (fileUri.scheme !== 'file') {
+			throw new ProxyError(vscode.l10n.t("Only local files can be opened from disk."));
+		}
+
+		const filePath = fileUri.fsPath;
+		// `file:///` names no file, and a session for it would be rooted at the whole disk.
+		if (!path.basename(filePath)) {
+			throw new ProxyError(vscode.l10n.t("{0} names no file to open.", filePath));
+		}
+
+		const root = this._rootFor(fileUri);
+		const session = await this._getSession(vscode.Uri.file(root).toString(), root);
+		return servedUrlOf(session.file!.folder, session.publicOrigin, filePath);
+	}
+
+	/** The folder a file is served from: its project, or the folder it sits in. */
+	private _rootFor(fileUri: vscode.Uri): string {
+		const folder = vscode.workspace.getWorkspaceFolder?.(fileUri);
+		return folder?.uri.scheme === 'file' ? folder.uri.fsPath : path.dirname(fileUri.fsPath);
 	}
 
 	/**
@@ -136,6 +199,11 @@ export class BrowserProxy extends Disposable {
 			return rawUrl;
 		}
 		const url = parseHttpUrl(rawUrl)!;
+		if (session.file) {
+			// The path carries a segment that belongs to the session and not to the page, so
+			// the file itself is the only honest answer here.
+			return realUrlOf(session.file.folder, url.pathname) ?? rawUrl;
+		}
 		return joinOrigin(session.origin, url.pathname + url.search + url.hash);
 	}
 
@@ -153,7 +221,7 @@ export class BrowserProxy extends Disposable {
 		return undefined;
 	}
 
-	private _getSession(origin: string): Promise<ProxySession> {
+	private _getSession(origin: string, fileRoot?: string): Promise<ProxySession> {
 		const existing = this._sessions.get(origin);
 		if (existing) {
 			return Promise.resolve(existing);
@@ -162,12 +230,12 @@ export class BrowserProxy extends Disposable {
 		// Claimed before the first `await`, so a second caller waits for this server instead of
 		// starting another one.
 		const starting = this._starting.get(origin)
-			?? this._startSession(origin).finally(() => this._starting.delete(origin));
+			?? this._startSession(origin, fileRoot).finally(() => this._starting.delete(origin));
 		this._starting.set(origin, starting);
 		return starting;
 	}
 
-	private async _startSession(origin: string): Promise<ProxySession> {
+	private async _startSession(origin: string, fileRoot?: string): Promise<ProxySession> {
 		const sockets = new Set<net.Socket>();
 		const server = http.createServer();
 		server.on('connection', socket => {
@@ -187,14 +255,19 @@ export class BrowserProxy extends Disposable {
 			});
 		});
 
+		const file = fileRoot
+			? { folder: newServedFolder(fileRoot), files: new ServedFiles() }
+			: undefined;
 		const session: ProxySession = {
 			origin,
+			file,
 			cookiePrefix: `__tb${localPort}_`,
 			server,
 			localPort,
 			publicOrigin: `http://127.0.0.1:${localPort}`,
 			sockets,
 		};
+		file?.files.onDidChange(() => this._onDidChangeServedFile.fire(file.folder.root));
 
 		// On remote workspaces the webview cannot reach the extension host's loopback
 		// interface directly, so ask vscode to forward the port for us.
@@ -227,6 +300,7 @@ export class BrowserProxy extends Disposable {
 	}
 
 	private _closeSession(session: ProxySession): void {
+		session.file?.files.dispose();
 		for (const socket of session.sockets) {
 			socket.destroy();
 		}
@@ -243,6 +317,11 @@ export class BrowserProxy extends Disposable {
 				'content-length': script.byteLength,
 			});
 			res.end(script);
+			return;
+		}
+
+		if (session.file) {
+			await this._serveFile(session, req, res);
 			return;
 		}
 
@@ -290,6 +369,74 @@ export class BrowserProxy extends Disposable {
 
 		res.writeHead(status, proxyRes.statusMessage, headers);
 		res.end(buffer);
+	}
+
+	/**
+	 * Answers out of the session's folder. Html is instrumented exactly as a server's would be;
+	 * everything else is streamed. Nothing is cached, since the point of serving a file rather
+	 * than framing it is that saving it shows up.
+	 */
+	private async _serveFile(
+		session: ProxySession,
+		req: http.IncomingMessage,
+		res: http.ServerResponse,
+	): Promise<void> {
+		const file = session.file!;
+		if (req.method !== 'GET' && req.method !== 'HEAD') {
+			writeFileStatus(res, 405, vscode.l10n.t("A file can only be read."));
+			return;
+		}
+
+		const served = servedPathOf(file.folder, req.url);
+		if ('status' in served) {
+			writeFileStatus(res, served.status, served.status === 403
+				? vscode.l10n.t("That path is outside {0}.", file.folder.root)
+				: vscode.l10n.t("Not found."));
+			return;
+		}
+
+		let target = served.path;
+		let stat = await fsp.stat(target).catch(() => undefined);
+		if (stat?.isDirectory()) {
+			// What a static server does with a folder, and what a `file:` url cannot do at all.
+			target = path.join(target, 'index.html');
+			stat = await fsp.stat(target).catch(() => undefined);
+		}
+		if (!stat?.isFile()) {
+			writeFileStatus(res, 404, vscode.l10n.t("{0} is not a file.", target));
+			return;
+		}
+
+		// Watched from here rather than from the navigation: a page's stylesheets and scripts
+		// are exactly the files it asked for, and nothing else in the project is.
+		file.files.remember(target);
+
+		if (isHtmlPath(target)) {
+			const html = this._injectAgentScript(session, decodeHtml(await fsp.readFile(target), ''));
+			const buffer = Buffer.from(html, 'utf8');
+			res.writeHead(200, {
+				'content-type': 'text/html; charset=utf-8',
+				'cache-control': 'no-store',
+				'content-length': buffer.byteLength,
+			});
+			res.end(req.method === 'HEAD' ? undefined : buffer);
+			return;
+		}
+
+		res.writeHead(200, {
+			'content-type': contentTypeOf(target),
+			'cache-control': 'no-store',
+			'content-length': stat.size,
+		});
+		if (req.method === 'HEAD') {
+			res.end();
+			return;
+		}
+
+		const stream = fs.createReadStream(target);
+		stream.on('error', () => res.destroy());
+		res.on('close', () => stream.destroy());
+		stream.pipe(res);
 	}
 
 	private _forward(session: ProxySession, req: http.IncomingMessage, target: URL): Promise<http.IncomingMessage> {
@@ -402,8 +549,18 @@ export class BrowserProxy extends Disposable {
 	}
 
 	private _injectAgentScript(session: ProxySession, html: string): string {
+		// What the page's own urls are relative to, and what this session answers them under.
+		// For a file session the two differ by more than the origin: everything it serves sits
+		// under a path segment that belongs to the session and not to the page.
+		const realBase = session.file
+			? trimTrailingSlash(vscode.Uri.file(session.file.folder.root).toString(true))
+			: session.origin;
+		const publicBase = session.file
+			? `${session.publicOrigin}/${session.file.folder.secret}`
+			: session.publicOrigin;
+
 		// Absolute references to the real origin would escape the proxy.
-		let result = html.split(session.origin).join(session.publicOrigin);
+		let result = html.split(realBase).join(publicBase);
 
 		// Meta CSP would block the injected script just like the header would.
 		result = result.replace(
@@ -411,8 +568,11 @@ export class BrowserProxy extends Disposable {
 			'');
 
 		const config = JSON.stringify({
-			realOrigin: session.origin,
+			realOrigin: realBase,
 			cookiePrefix: session.cookiePrefix,
+			// Told to the page rather than worked out by it: only this session knows which
+			// part of the path is its own.
+			basePath: session.file ? `/${session.file.folder.secret}` : undefined,
 		});
 		const bootstrap = `<script data-tab-browser="bootstrap">window.__tabBrowserConfig=${escapeScriptContent(config)};</script>`
 			+ `<script data-tab-browser="script" src="${agentScriptPath}"></script>`;
@@ -433,6 +593,11 @@ export class BrowserProxy extends Disposable {
 	}
 
 	private _handleUpgrade(session: ProxySession, req: http.IncomingMessage, socket: net.Socket, head: Buffer): void {
+		if (session.file) {
+			// There is nothing upstream of a folder to upgrade to.
+			socket.destroy();
+			return;
+		}
 		const target = targetOf(session, req.url);
 		const headers = this._rewriteRequestHeaders(session, req.headers, target);
 		delete headers['accept-encoding'];
@@ -664,7 +829,22 @@ function writeErrorResponse(res: http.ServerResponse, session: ProxySession, err
 	res.writeHead(502, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
 	res.end(/* html */ `<!DOCTYPE html>
 		<html><body style="font-family: sans-serif; padding: 2rem; color: #333">
-			<h2>${escapeHtml(vscode.l10n.t("Could not reach {0}", session.origin))}</h2>
+			<h2>${escapeHtml(session.file
+		? vscode.l10n.t("Could not read {0}", session.file.folder.root)
+		: vscode.l10n.t("Could not reach {0}", session.origin))}</h2>
+			<pre style="white-space: pre-wrap">${escapeHtml(message)}</pre>
+		</body></html>`);
+}
+
+/** A refusal from a file session, in a page rather than a bare status. */
+function writeFileStatus(res: http.ServerResponse, status: number, message: string): void {
+	if (res.headersSent) {
+		res.end();
+		return;
+	}
+	res.writeHead(status, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+	res.end(/* html */ `<!DOCTYPE html>
+		<html><body style="font-family: sans-serif; padding: 2rem; color: #333">
 			<pre style="white-space: pre-wrap">${escapeHtml(message)}</pre>
 		</body></html>`);
 }

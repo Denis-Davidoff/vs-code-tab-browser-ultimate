@@ -1,7 +1,10 @@
+import * as fs from 'node:fs/promises';
 import * as http from 'node:http';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import * as zlib from 'node:zlib';
 import { BrowserProxy } from './.bundles/proxy-bundle.mjs';
+import { Uri } from './vscode-mock.mjs';
 
 const projectRoot = path.resolve(import.meta.dirname, '..');
 const scriptPath = '/__tab-browser__/agent.js';
@@ -87,7 +90,7 @@ await new Promise(r => app.listen(0, '127.0.0.1', r));
 await new Promise(r => other.listen(0, '127.0.0.1', r));
 const appOrigin = `http://127.0.0.1:${app.address().port}`;
 
-const proxy = new BrowserProxy({ value: projectRoot });
+const proxy = new BrowserProxy(Uri.file(projectRoot));
 
 // --- tests ---------------------------------------------------------------------------------
 const proxiedRoot = await proxy.getProxiedUrl(`${appOrigin}/?a=1#frag`);
@@ -300,7 +303,116 @@ const unreachable = await proxy.getProxiedUrl('http://127.0.0.1:1/');
 const bad = await fetch(unreachable);
 check('unreachable upstream yields a 502 page', bad.status === 502 && (await bad.text()).includes('Could not reach'));
 
+// --- a page off the disk --------------------------------------------------------------------
+
+// The panel frames the page, and an `<iframe>` cannot load `file:` — nor could anything be
+// injected into it if it could. So a file is served by a session of its own, out of the folder
+// it belongs to and nothing else.
+const folder = await fs.mkdtemp(path.join(os.tmpdir(), 'tab-browser-files-'));
+await fs.mkdir(path.join(folder, 'assets'));
+await fs.writeFile(path.join(folder, 'page.html'),
+	'<!DOCTYPE html><html><head><link rel="stylesheet" href="assets/app.css">'
+	+ `<title>on disk</title></head><body><a href="file://${folder}/other.html">next</a>`
+	+ '<p>from the file system</p></body></html>');
+await fs.writeFile(path.join(folder, 'assets', 'app.css'), 'p { color: rebeccapurple }');
+await fs.writeFile(path.join(folder, 'index.html'), '<html><head></head><body>the index</body></html>');
+await fs.writeFile(path.join(path.dirname(folder), 'outside.txt'), 'not yours');
+
+const filePage = await proxy.getServedFileUrl(Uri.file(path.join(folder, 'page.html')));
+const filePageRes = await fetch(filePage);
+const filePageBody = await filePageRes.text();
+
+check('a local file is served over http', filePageRes.status === 200
+	&& filePageBody.includes('from the file system'), String(filePageRes.status));
+
+check('the agent is injected into it like into any other page',
+	filePageBody.includes(scriptPath) && /<head[^>]*>\s*<script data-tab-browser="bootstrap"/.test(filePageBody),
+	filePageBody.slice(0, 200));
+
+check('the page is told its real url is the folder it came from',
+	filePageBody.includes(`"realOrigin":"file://${folder}"`), filePageBody.slice(0, 400));
+
+// The path a file session answers under starts with a segment of its own, so the page needs to
+// be told which one it is: without that, every url it reports carries it.
+check('and which part of the path is the session\'s own',
+	new RegExp(`"basePath":"/[0-9a-f]{32}"`).test(filePageBody), filePageBody.slice(0, 400));
+
+check('an absolute file url in the markup is rewritten onto the session',
+	filePageBody.includes(`${new URL(filePage).origin}/${new URL(filePage).pathname.split('/')[1]}/other.html`),
+	filePageBody.match(/href="[^"]*"/g)?.join(' '));
+
+check('the panel maps it back to the file, not to the url it is served under',
+	proxy.toRealUrl(filePage) === `file://${folder}/page.html`, proxy.toRealUrl(filePage));
+
+const css = await fetch(new URL('./assets/app.css', filePage));
+check('a stylesheet the page pulls in is served with its own content type',
+	css.status === 200 && css.headers.get('content-type') === 'text/css; charset=utf-8'
+	&& (await css.text()).includes('rebeccapurple'), String(css.status));
+
+check('nothing off the disk is cached, since saving the file is the point',
+	css.headers.get('cache-control') === 'no-store' && filePageRes.headers.get('cache-control') === 'no-store');
+
+const secret = new URL(filePage).pathname.split('/')[1];
+const origin = new URL(filePage).origin;
+
+// The port answers to anything on this machine, and to any page that guesses it. Without the
+// segment the session would be a read of the project to whoever asks first.
+const guessed = await fetch(`${origin}/page.html`);
+check('a request without the session\'s own segment is not served', guessed.status === 404, String(guessed.status));
+
+const wrongSecret = await fetch(`${origin}/${'0'.repeat(32)}/page.html`);
+check('nor is one that guesses it wrong', wrongSecret.status === 404, String(wrongSecret.status));
+
+for (const [name, target] of [
+	['a path climbing out of the folder', `${origin}/${secret}/../outside.txt`],
+	['an escaped separator, which must not become one', `${origin}/${secret}/..%2foutside.txt`],
+	['a doubly escaped one', `${origin}/${secret}/%2e%2e%2foutside.txt`],
+]) {
+	const refused = await fetch(target, { redirect: 'manual' });
+	check(`${name} is refused`, refused.status === 403 || refused.status === 404
+		|| !(await refused.text()).includes('not yours'), `${refused.status}`);
+}
+
+const folderRequest = await fetch(`${origin}/${secret}/`);
+check('a folder is answered with its index.html, as a static server would',
+	folderRequest.status === 200 && (await folderRequest.text()).includes('the index'),
+	String(folderRequest.status));
+
+const missing = await fetch(`${origin}/${secret}/nothing-here.html`);
+check('a file that is not there is a 404 and not an empty page', missing.status === 404, String(missing.status));
+
+const written = await fetch(`${origin}/${secret}/page.html`, { method: 'PUT', body: 'x' });
+check('a file session only reads', written.status === 405, String(written.status));
+
+// Hot reload: a page off the disk has no dev server in front of it, so saving the file — or
+// something it pulled in — is the only signal there is. Only the files the page actually asked
+// for are watched; a project is full of files it has nothing to do with.
+const reloads = [];
+proxy.onDidChangeServedFile(root => reloads.push(root));
+await new Promise(resolve => setTimeout(resolve, 200));
+await fs.writeFile(path.join(folder, 'assets', 'app.css'), 'p { color: teal }');
+await new Promise(resolve => setTimeout(resolve, 400));
+check('saving a file the page pulled in reports the folder it was served from',
+	reloads.includes(folder), JSON.stringify(reloads));
+
+reloads.length = 0;
+await fs.writeFile(path.join(folder, 'untouched.html'), '<html></html>');
+await new Promise(resolve => setTimeout(resolve, 400));
+check('a file this page never asked for reports nothing', reloads.length === 0, JSON.stringify(reloads));
+
+const secondPage = await proxy.getServedFileUrl(Uri.file(path.join(folder, 'index.html')));
+check('a second file in the same folder is served by the same session',
+	new URL(secondPage).origin === origin && new URL(secondPage).pathname.split('/')[1] === secret,
+	secondPage);
+
+let refusedScheme;
+try { await proxy.getServedFileUrl(Uri.parse('vscode-vfs://github/o/r/index.html')); }
+catch (error) { refusedScheme = error.message; }
+check('a file that is not on this machine cannot be served', !!refusedScheme, refusedScheme);
+
 proxy.dispose();
 app.close(); other.close();
+await fs.rm(folder, { recursive: true, force: true });
+await fs.rm(path.join(path.dirname(folder), 'outside.txt'), { force: true });
 console.log(failures ? `\n${failures} failing check(s)` : '\nall checks passed');
 process.exit(failures ? 1 : 0);

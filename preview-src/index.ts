@@ -3,7 +3,13 @@
  *  between the previewed page and the extension host.
  *--------------------------------------------------------------------------------------------*/
 
-import { AgentCommand, AgentEvent, isAgentMessage, packAgentMessage } from '../shared/protocol';
+import {
+	AgentCommand,
+	AgentEvent,
+	cacheBustParameter,
+	isAgentMessage,
+	packAgentMessage,
+} from '../shared/protocol';
 import {
 	ContextMenuCommand,
 	CopyCommand,
@@ -199,6 +205,12 @@ window.addEventListener('message', event => {
 
 		case 'didResolveUrl':
 			onDidResolveUrl(hostMessage);
+			break;
+
+		case 'reloadPage':
+			// Through the host like any other navigation: the file may have to be served by a
+			// session that is not the one the current page came from.
+			navigateTo(displayUrl, { bust: true, instrument: isInstrumented });
 			break;
 
 		case 'runCopyCommand':
@@ -473,7 +485,7 @@ function withCacheBust(rawUrl: string): string {
 	// Assigning the same `src` does not reload the frame, so vary the url instead.
 	try {
 		const url = new URL(rawUrl);
-		url.searchParams.set('vscodeBrowserReqId', String(Date.now()));
+		url.searchParams.set(cacheBustParameter, String(Date.now()));
 		return url.toString();
 	} catch {
 		return rawUrl;

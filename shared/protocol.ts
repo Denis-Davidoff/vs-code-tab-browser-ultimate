@@ -12,6 +12,14 @@ export const defaultPreferredAttributes: readonly string[] =
 /** Marker property carried by every message exchanged with the injected page script. */
 export const agentChannel = '__tabBrowserAgent' as const;
 
+/**
+ * Query parameter the webview varies to make the frame load a page again — assigning the same
+ * `src` does nothing at all. It is the panel's and not the page's, so the injected script takes
+ * it back off every url it reports: it would otherwise end up in the address bar, in every
+ * element report and in every answer to an mcp client, growing a `?` onto a file's own path.
+ */
+export const cacheBustParameter = 'vscodeBrowserReqId';
+
 /** A position in the viewport of the top document, after every frame added its own offset. */
 export interface PagePoint {
 	readonly x: number;

@@ -40,6 +40,12 @@ await Promise.all([
 	}),
 	esbuild.build({
 		...shared,
+		entryPoints: ['src/fileSession.ts'],
+		outfile: 'test/.bundles/file-session-bundle.mjs',
+		alias: { vscode: './test/vscode-stub-entry.mjs' },
+	}),
+	esbuild.build({
+		...shared,
 		entryPoints: ['src/codexToml.ts'],
 		outfile: 'test/.bundles/codex-toml-bundle.mjs',
 		alias: { vscode: './test/vscode-stub-entry.mjs' },

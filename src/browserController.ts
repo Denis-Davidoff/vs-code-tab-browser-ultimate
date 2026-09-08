@@ -8,6 +8,7 @@
 
 import { PageRequest } from '../shared/protocol';
 import { TabBrowserManager } from './tabBrowserManager';
+import { normalizeUrl, parseFileUrl } from './tabBrowserView';
 
 export interface BrowserState {
 	readonly open: boolean;
@@ -34,6 +35,17 @@ export class BrowserController {
 	 * page is there — a caller's next tool call would otherwise land mid-load.
 	 */
 	public async navigate(url: string): Promise<BrowserState> {
+		// A tool opens pages, not the file system. The panel can serve a local file — and then
+		// every tool here reads it — but which file that is stays the user's decision: through
+		// the explorer, the sidebar or the address bar, none of which is reachable from here.
+		if (parseFileUrl(normalizeUrl(url))) {
+			return {
+				...this.state(),
+				error: 'Only http and https urls can be opened from here. A local file has to be '
+					+ 'opened by the user, with "Tab Browser Ultimate: Open File in Browser".',
+			};
+		}
+
 		this._manager.show(url);
 
 		const view = this._manager.activeView;

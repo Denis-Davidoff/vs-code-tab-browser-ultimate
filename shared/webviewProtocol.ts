@@ -102,6 +102,11 @@ export type ExtensionToWebviewMessage =
 		readonly type: 'didChangeAgentOrigins';
 		readonly origins: readonly string[];
 	}
+	/**
+	 * A file the page was served from changed on disk. The panel reloads rather than reaching
+	 * into the page, since a page off the disk has no dev server to do anything cleverer.
+	 */
+	| { readonly type: 'reloadPage' }
 	| { readonly type: 'runCopyCommand'; readonly command: CopyCommand }
 	| {
 		/** Asked for by an mcp client; the page answers with `didRunPageRequest`. */
