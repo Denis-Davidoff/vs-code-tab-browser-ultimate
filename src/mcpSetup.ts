@@ -250,8 +250,6 @@ export async function connectToCodex(server: McpServer): Promise<void> {
  */
 async function writeCodexProjectConfig(folder: vscode.Uri, url: string): Promise<void> {
 	const file = vscode.Uri.joinPath(folder, '.codex', 'config.toml');
-	const header = `[mcp_servers.${serverName}]`;
-	const table = `${header}\nurl = "${url}"\n`;
 
 	let existing = '';
 	try {
@@ -260,17 +258,30 @@ async function writeCodexProjectConfig(folder: vscode.Uri, url: string): Promise
 		// No file yet.
 	}
 
+	// Whatever the file already uses: a table written with bare newlines into a file with CRLF
+	// endings leaves it half one and half the other, and the diff of somebody else's config is
+	// then the whole file.
+	const newline = /\r\n/.test(existing) ? '\r\n' : '\n';
+	const header = `[mcp_servers.${serverName}]`;
+	const table = `${header}${newline}url = "${url}"${newline}`;
+
 	// Read rather than searched for the header line: `[mcp_servers.tab-browser] # ours` is the
 	// same table, and missing it would define it a second time, which is not valid TOML at all.
 	const ours = codexEntries(existing).find(entry => entry.name === serverName);
 
 	let updated: string;
 	if (!ours) {
-		updated = existing.trim() ? `${existing.replace(/\s*$/, '')}\n\n${table}` : table;
+		updated = existing.trim()
+			? `${existing.replace(/\s*$/, '')}${newline}${newline}${table}`
+			: table;
 	} else {
+		// Split on the newline alone, so a `\r` stays at the end of the line it belongs to and
+		// the lines this leaves alone keep the endings they had.
 		const lines = existing.split('\n');
 		updated = [
 			...lines.slice(0, ours.firstLine),
+			// Only the newline: the `\r` before it belongs to the line, and the join below
+			// supplies the `\n` that completes it.
 			table.replace(/\n$/, ''),
 			...lines.slice(ours.endLine),
 		].join('\n');

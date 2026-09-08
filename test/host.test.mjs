@@ -1413,6 +1413,18 @@ check('connecting again replaces our table instead of adding a second one',
 	codexToml.split('[mcp_servers.tab-browser]').length === 2
 	&& codexToml.includes('[mcp_servers.something_else]'), codexToml);
 
+// A config written on Windows. Our table joined with bare newlines into it leaves the file half
+// one ending and half the other, and the diff of somebody else's config is then the whole file.
+await fs.writeFile(codexConfig,
+	'[mcp_servers.tab-browser]\r\nurl = "http://127.0.0.1:1/mcp/old"\r\n\r\n'
+	+ '[mcp_servers.something_else]\r\ncommand = "node"\r\n');
+dialogAnswer = '1. Write .codex/config.toml';
+await connectToCodex(mcp);
+codexToml = await fs.readFile(codexConfig, 'utf8');
+check('a config with CRLF endings keeps them',
+	codexToml.includes(mcp.urlWithToken) && !/[^\r]\n/.test(codexToml)
+	&& codexToml.includes('[mcp_servers.something_else]'), JSON.stringify(codexToml));
+
 // The same table, in a file whose prose contains a triple quote. Missing it here is the case
 // that ends in a file with two `[mcp_servers.tab-browser]` tables, which does not parse.
 await fs.writeFile(codexConfig,
@@ -1816,8 +1828,10 @@ settings['mcp.enabled'] = false;
 // honours `$HOME` on posix, so this points every home-derived path at a sandbox for the rest of
 // the file. It happens here and not at the top because `findChromium()` reads `$HOME` to locate
 // the playwright cache, and the browser is already open by now.
-const realHome = process.env.HOME;
-process.env.HOME = await fs.mkdtemp('/tmp/tb-home-');
+const realHome = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+const sandboxHome = await fs.mkdtemp('/tmp/tb-home-');
+process.env.HOME = sandboxHome;
+process.env.USERPROFILE = sandboxHome;
 const { activate } = await import('./.bundles/extension-bundle.mjs');
 const context = {
 	subscriptions: [],
@@ -1907,10 +1921,12 @@ check('the connect command explains itself instead of throwing when mcp is off',
 delete settings['mcp.enabled'];
 
 check('activation leaves nothing of its own in the home directory it was given',
-	!await fs.access(path.join(process.env.HOME, '.codex')).then(() => true, () => false),
-	JSON.stringify(await fs.readdir(process.env.HOME)));
-await fs.rm(process.env.HOME, { recursive: true, force: true });
-if (realHome === undefined) { delete process.env.HOME; } else { process.env.HOME = realHome; }
+	!await fs.access(path.join(sandboxHome, '.codex')).then(() => true, () => false),
+	JSON.stringify(await fs.readdir(sandboxHome)));
+await fs.rm(sandboxHome, { recursive: true, force: true });
+for (const [name, value] of Object.entries(realHome)) {
+	if (value === undefined) { delete process.env[name]; } else { process.env[name] = value; }
+}
 
 await browser.close();
 server.close();
