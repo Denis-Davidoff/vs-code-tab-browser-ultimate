@@ -44,7 +44,9 @@ The external URI opener does not fire for arbitrary URLs — only for the hosts 
 `enabledHosts` (`localhost`, `127.0.0.1`, `0.0.0.0` and the IPv6 equivalents). For anything
 else it returns `ExternalUriOpenerPriority.None`, so VS Code opens the system browser.
 
-There is exactly one setting: `aiBrowser.focusLockIndicator.enabled`.
+Settings: `aiBrowser.focusLockIndicator.enabled`, `aiBrowser.useIntegratedBrowser`
+(delegate to VS Code's built-in browser instead of our panel — **off by default**, see
+[Special cases](#special-cases-and-non-obvious-decisions)) and `aiBrowser.searchEngine`.
 
 ## Architecture: two independent halves
 
@@ -151,6 +153,7 @@ watch-typecheck-webview  tsc --project ./preview-src/tsconfig.json --noEmit --wa
 typecheck                run-p -l typecheck-ext typecheck-webview
 typecheck-ext            tsc --project ./tsconfig.json --noEmit
 typecheck-webview        tsc --project ./preview-src/tsconfig.json --noEmit
+test                     node --test preview-src/*.test.ts   ← Node's runner, no deps
 download-api             dts dev                               ← refresh the proposed-API d.ts
 vscode:prepublish        npm run compile
 ```
@@ -270,6 +273,44 @@ interaction under [TypeScript configuration](#typescript-configuration).
   step and no build tooling for the build tooling. The consequence is that only erasable
   TypeScript syntax is allowed in that file: no `enum`, no `namespace`, and type-only imports
   must be written as `import type`.
+
+- **Delegation to the built-in browser is opt-in, not automatic.** All three entry points call
+  `shouldUseIntegratedBrowser`, which originally returned `true` whenever the command
+  `workbench.action.browser.open` existed. That command exists in every recent VS Code, so our
+  own panel never opened at all and every change to it was invisible. It is now gated on
+  `aiBrowser.useIntegratedBrowser` (default `false`). Do not "restore" the plain command probe
+  — it silently disables this extension's entire UI.
+
+- **`preview-src/browserSearch.ts` is copied from microsoft/vscode** (MIT), from
+  `src/vs/workbench/contrib/browserView/common/browserSearch.ts` at `1.134.0-1325-gaa7291eba7d`.
+  It classifies address bar input as `url`/`query`/`unknown`/`empty` and builds search URLs.
+  Three deliberate deviations from upstream, all recorded in the file header: `localize()` calls
+  inlined as plain strings (no `vscode.l10n` inside the webview), `enum BrowserSearchEngineId`
+  turned into a const object plus type alias, and an added exported `hasKnownScheme`.
+  `preview-src/browserSearch.test.ts` is the upstream suite and, per upstream's own instruction
+  in the header, *is the specification* — do not "fix" the parser to match Chromium more
+  closely without updating it.
+
+- **The copied enum had to go, because Node runs the tests.** `npm test` is
+  `node --test preview-src/*.test.ts`, relying on Node 24's native type stripping — the same
+  mechanism as `esbuild.webview.mts`. It only accepts erasable TypeScript, so an `enum` fails at
+  runtime with `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`. Anything reachable from a `*.test.ts` is
+  under the same restriction as the build script: no `enum`, no `namespace`, `import type` for
+  type-only imports.
+
+- **The test spells out `./browserSearch.ts` in its import.** Node's type stripping resolves
+  neither a `.js` specifier nor an extensionless one to a `.ts` file. Hence
+  `allowImportingTsExtensions` in `preview-src/tsconfig.json`: without it `tsc --noEmit` rejects
+  the exact import Node requires. Same reason the test uses
+  `import * as assert from 'node:assert'` — a default import would need `esModuleInterop`,
+  which the base config does not enable.
+
+- **A scheme-less address gets `http` for localhost and `https` for everything else.**
+  `addDefaultScheme` in `preview-src/index.ts` mirrors browser behaviour: a dev server on
+  `localhost:3000` does not speak https, and localhost is what this extension mostly opens.
+  Related trap — deciding "does this already have a scheme?" with a `^[a-z][a-z0-9+.-]*:`
+  regex is wrong, because it also matches the host in `localhost:3000`. Use `hasKnownScheme`,
+  which checks the prefix against the schemes the parser actually recognizes.
 
 ## Removed on purpose — do not reintroduce
 

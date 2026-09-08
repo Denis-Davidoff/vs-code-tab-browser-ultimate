@@ -134,7 +134,8 @@ export class AIBrowserView extends Disposable {
 
 				<meta id="ai-browser-settings" data-settings="${escapeAttribute(JSON.stringify({
 			url: url,
-			focusLockEnabled: configuration.get<boolean>('focusLockIndicator.enabled', true)
+			focusLockEnabled: configuration.get<boolean>('focusLockIndicator.enabled', true),
+			searchEngine: configuration.get<string>('searchEngine', 'google')
 		}))}">
 
 				<link rel="stylesheet" type="text/css" href="${mainCss}">

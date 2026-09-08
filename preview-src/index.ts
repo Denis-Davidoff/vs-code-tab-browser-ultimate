@@ -4,10 +4,19 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { onceDocumentLoaded } from './events';
+import {
+	BROWSER_SEARCH_ENGINES,
+	BROWSER_SEARCH_NONE,
+	BrowserSearchEngineValue,
+	buildSearchUrl,
+	hasKnownScheme,
+	resolveAddressBarInputType,
+} from './browserSearch';
 
 interface AIBrowserSettings {
 	readonly url: string;
 	readonly focusLockEnabled: boolean;
+	readonly searchEngine: BrowserSearchEngineValue;
 }
 
 interface AIBrowserState {
@@ -38,7 +47,29 @@ function isAIBrowserSettings(value: unknown): value is AIBrowserSettings {
 		&& 'url' in value
 		&& typeof value.url === 'string'
 		&& 'focusLockEnabled' in value
-		&& typeof value.focusLockEnabled === 'boolean';
+		&& typeof value.focusLockEnabled === 'boolean'
+		&& 'searchEngine' in value
+		&& isBrowserSearchEngineValue(value.searchEngine);
+}
+
+/**
+ * Hosts that get `http` rather than `https` when the user types an address
+ * without a scheme. Mirrors `enabledHosts` in `src/extension.ts`; the IPv6
+ * forms are bracketed because that is what `URL.hostname` returns.
+ */
+const localhostHosts = new Set<string>([
+	'localhost',
+	'127.0.0.1',
+	'[0:0:0:0:0:0:0:1]',
+	'[::1]',
+	'0.0.0.0',
+	'[0:0:0:0:0:0:0:0]',
+	'[::]'
+]);
+
+function isBrowserSearchEngineValue(value: unknown): value is BrowserSearchEngineValue {
+	return value === BROWSER_SEARCH_NONE
+		|| BROWSER_SEARCH_ENGINES.some(e => e.id === value);
 }
 
 function isExtensionToWebviewMessage(value: unknown): value is ExtensionToWebviewMessage {
@@ -107,8 +138,10 @@ onceDocumentLoaded(() => {
 	});
 
 	input.addEventListener('change', e => {
-		const url = (e.target as HTMLInputElement).value;
-		navigateTo(url);
+		const target = resolveAddressBarInput((e.target as HTMLInputElement).value);
+		if (target !== undefined) {
+			navigateTo(target);
+		}
 	});
 
 	forwardButton.addEventListener('click', () => {
@@ -140,6 +173,59 @@ onceDocumentLoaded(() => {
 	input.value = settings.url;
 
 	toggleFocusLockIndicatorEnabled(settings.focusLockEnabled);
+
+	/**
+	 * Turns whatever was typed in the address bar into something navigable:
+	 * a URL is used as-is (with a scheme filled in when it is missing), and
+	 * anything that reads as a search term goes to the configured engine.
+	 * Returns `undefined` when there is nothing to navigate to — an empty
+	 * input, or a search term while search is disabled.
+	 */
+	function resolveAddressBarInput(rawInput: string): string | undefined {
+		const trimmed = rawInput.trim();
+		switch (resolveAddressBarInputType(trimmed)) {
+			case 'empty':
+				return undefined;
+			case 'url':
+				// Scheme-less input such as `example.com` would otherwise be
+				// resolved against the webview's own origin. Note this cannot
+				// be a plain `scheme:` regex check: in `localhost:3000` the
+				// part before the colon is a host, not a scheme.
+				return hasKnownScheme(trimmed) ? trimmed : addDefaultScheme(trimmed);
+			// 'unknown' is ambiguous (intranet host or a new TLD); Chromium's
+			// omnibox defaults it to search, and so do we.
+			case 'query':
+			case 'unknown':
+				return searchFor(trimmed);
+		}
+	}
+
+	/**
+	 * Prefixes scheme-less input with a scheme, picking `http` for
+	 * localhost-like hosts the way browsers do — a dev server on
+	 * `localhost:3000` almost never speaks https, and this extension exists
+	 * largely to open exactly those.
+	 */
+	function addDefaultScheme(hostAndRest: string): string {
+		const asHttps = `https://${hostAndRest}`;
+		try {
+			return localhostHosts.has(new URL(asHttps).hostname)
+				? `http://${hostAndRest}`
+				: asHttps;
+		} catch {
+			return asHttps;
+		}
+	}
+
+	function searchFor(query: string): string | undefined {
+		if (settings.searchEngine === BROWSER_SEARCH_NONE) {
+			return undefined;
+		}
+
+		const engine = BROWSER_SEARCH_ENGINES.find(e => e.id === settings.searchEngine)
+			?? BROWSER_SEARCH_ENGINES[0];
+		return buildSearchUrl(query, engine.id);
+	}
 
 	function navigateTo(rawUrl: string): void {
 		try {

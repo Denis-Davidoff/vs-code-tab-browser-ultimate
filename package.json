@@ -1,84 +1,104 @@
 {
-  "name": "ai-browser",
-  "displayName": "%displayName%",
-  "description": "%description%",
-  "enabledApiProposals": [
-    "externalUriOpener"
-  ],
-  "version": "0.0.1",
-  "icon": "media/icon.png",
-  "publisher": "DenysDavydov",
-  "license": "MIT",
-  "engines": {
-    "vscode": "^1.70.0"
-  },
-  "main": "./out/extension",
-  "categories": [
-    "Other"
-  ],
-  "extensionKind": [
-    "ui",
-    "workspace"
-  ],
-  "activationEvents": [
-    "onCommand:aiBrowser.show",
-    "onCommand:aiBrowser.api.open",
-    "onOpenExternalUri:http",
-    "onOpenExternalUri:https",
-    "onWebviewPanel:aiBrowser.view"
-  ],
-  "capabilities": {
-    "virtualWorkspaces": true,
-    "untrustedWorkspaces": {
-      "supported": true
-    }
-  },
-  "contributes": {
-    "commands": [
-      {
-        "command": "aiBrowser.show",
-        "title": "Show",
-        "category": "AI Browser"
-      }
-    ],
-    "configuration": [
-      {
-        "title": "AI Browser",
-        "properties": {
-          "aiBrowser.focusLockIndicator.enabled": {
-            "type": "boolean",
-            "default": true,
-            "title": "Focus Lock Indicator Enabled",
-            "description": "%configuration.focusLockIndicator.enabled.description%"
-          }
-        }
-      }
-    ]
-  },
-  "scripts": {
-    "compile": "npm run build-ext && npm run build-webview",
-    "watch": "run-p -l watch-ext watch-webview watch-typecheck-webview",
-    "build-ext": "tsc --project ./tsconfig.json",
-    "build-webview": "node ./esbuild.webview.mts",
-    "watch-ext": "tsc --project ./tsconfig.json --watch",
-    "watch-webview": "node ./esbuild.webview.mts --watch",
-    "watch-typecheck-webview": "tsc --project ./preview-src/tsconfig.json --noEmit --watch",
-    "typecheck": "run-p -l typecheck-ext typecheck-webview",
-    "typecheck-ext": "tsc --project ./tsconfig.json --noEmit",
-    "typecheck-webview": "tsc --project ./preview-src/tsconfig.json --noEmit",
-    "download-api": "dts dev",
-    "vscode:prepublish": "npm run compile"
-  },
-  "devDependencies": {
-    "@types/node": "24.x",
-    "@types/vscode": "^1.136.0",
-    "@vscode/codicons": "^0.0.36",
-    "@vscode/dts": "^0.4.1",
-    "esbuild": "^0.28.2",
-    "npm-run-all2": "^9.0.3",
-    "typescript": "^5.9.3"
-  },
-  "allowScripts": {
-    "esbuild@0.28.2": true
-  }
+	"name": "ai-browser",
+	"displayName": "%displayName%",
+	"description": "%description%",
+	"enabledApiProposals": [
+		"externalUriOpener"
+	],
+	"version": "0.0.1",
+	"icon": "media/icon.png",
+	"publisher": "DenysDavydov",
+	"license": "MIT",
+	"engines": {
+		"vscode": "^1.70.0"
+	},
+	"main": "./out/extension",
+	"categories": [
+		"Other"
+	],
+	"extensionKind": [
+		"ui",
+		"workspace"
+	],
+	"activationEvents": [
+		"onCommand:aiBrowser.show",
+		"onCommand:aiBrowser.api.open",
+		"onOpenExternalUri:http",
+		"onOpenExternalUri:https",
+		"onWebviewPanel:aiBrowser.view"
+	],
+	"capabilities": {
+		"virtualWorkspaces": true,
+		"untrustedWorkspaces": {
+			"supported": true
+		}
+	},
+	"contributes": {
+		"commands": [
+			{
+				"command": "aiBrowser.show",
+				"title": "Show",
+				"category": "AI Browser"
+			}
+		],
+		"configuration": [
+			{
+				"title": "AI Browser",
+				"properties": {
+					"aiBrowser.useIntegratedBrowser": {
+						"type": "boolean",
+						"default": false,
+						"title": "Use Integrated Browser",
+						"description": "%configuration.useIntegratedBrowser.description%"
+					},
+					"aiBrowser.focusLockIndicator.enabled": {
+						"type": "boolean",
+						"default": true,
+						"title": "Focus Lock Indicator Enabled",
+						"description": "%configuration.focusLockIndicator.enabled.description%"
+					},
+					"aiBrowser.searchEngine": {
+						"type": "string",
+						"enum": [
+							"none",
+							"bing",
+							"google",
+							"yahoo",
+							"duckduckgo"
+						],
+						"default": "google",
+						"title": "Search Engine",
+						"description": "%configuration.searchEngine.description%"
+					}
+				}
+			}
+		]
+	},
+	"scripts": {
+		"compile": "npm run build-ext && npm run build-webview",
+		"watch": "run-p -l watch-ext watch-webview watch-typecheck-webview",
+		"build-ext": "tsc --project ./tsconfig.json",
+		"build-webview": "node ./esbuild.webview.mts",
+		"watch-ext": "tsc --project ./tsconfig.json --watch",
+		"watch-webview": "node ./esbuild.webview.mts --watch",
+		"watch-typecheck-webview": "tsc --project ./preview-src/tsconfig.json --noEmit --watch",
+		"typecheck": "run-p -l typecheck-ext typecheck-webview",
+		"typecheck-ext": "tsc --project ./tsconfig.json --noEmit",
+		"typecheck-webview": "tsc --project ./preview-src/tsconfig.json --noEmit",
+		"test": "node --test preview-src/*.test.ts",
+		"download-api": "dts dev",
+		"vscode:prepublish": "npm run compile"
+	},
+	"devDependencies": {
+		"@types/node": "24.x",
+		"@types/vscode": "^1.136.0",
+		"@vscode/codicons": "^0.0.36",
+		"@vscode/dts": "^0.4.1",
+		"esbuild": "^0.28.2",
+		"npm-run-all2": "^9.0.3",
+		"typescript": "^5.9.3"
+	},
+	"allowScripts": {
+		"esbuild@0.28.2": true
+	}
 }

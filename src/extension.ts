@@ -33,9 +33,22 @@ const enabledHosts = new Set<string>([
 const openerId = 'aiBrowser.open';
 
 /**
- * Checks if the integrated browser should be used instead of the AI browser
+ * Checks if the integrated browser should be used instead of the AI browser.
+ *
+ * Delegation is opt-in: our own panel is the point of this extension, and
+ * `workbench.action.browser.open` exists in every recent VS Code, so
+ * delegating whenever the command is available meant our panel never opened
+ * at all. Users who prefer VS Code's built-in browser (agent sharing, CDP,
+ * device emulation) can still switch back via the setting.
  */
 async function shouldUseIntegratedBrowser(): Promise<boolean> {
+	const preferIntegrated = vscode.workspace
+		.getConfiguration('aiBrowser')
+		.get<boolean>('useIntegratedBrowser', false);
+	if (!preferIntegrated) {
+		return false;
+	}
+
 	const commands = await vscode.commands.getCommands(true);
 	return commands.includes(integratedBrowserCommand);
 }
