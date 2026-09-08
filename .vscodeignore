@@ -7,3 +7,4 @@ vscode.proposed.*.d.ts
 .gitignore
 package-lock.json
 .vscode/**
+CLAUDE.md
