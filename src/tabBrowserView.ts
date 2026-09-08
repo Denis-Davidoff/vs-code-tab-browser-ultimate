@@ -18,6 +18,7 @@ import {
 	PickedElement,
 } from '../shared/protocol';
 import {
+	ContextMenuCommand,
 	CopyCommand,
 	ExtensionToWebviewMessage,
 	TabBrowserSettings,
@@ -190,6 +191,14 @@ export class TabBrowserView extends Disposable {
 				this._post({
 					type: 'didChangeFocusLockIndicatorEnabled',
 					focusLockEnabled: getConfiguration().get<boolean>('focusLockIndicator.enabled', true),
+				});
+			}
+			// The page decides whether to keep a right-click before it can ask anyone, so it is
+			// told rather than asked — and told now, not at the next navigation.
+			if (e.affectsConfiguration('tabBrowser.contextMenu.enabled')) {
+				this._post({
+					type: 'didChangeContextMenuEnabled',
+					contextMenuEnabled: getConfiguration().get<boolean>('contextMenu.enabled', true),
 				});
 			}
 		}));
@@ -565,6 +574,7 @@ export class TabBrowserView extends Disposable {
 			url,
 			agentOrigins: this._proxy.origins(),
 			focusLockEnabled: configuration.get<boolean>('focusLockIndicator.enabled', true),
+			contextMenuEnabled: configuration.get<boolean>('contextMenu.enabled', true),
 			preferAttributes: configuration.get<readonly string[]>(
 				'picker.preferAttributes', defaultPreferredAttributes),
 		};
@@ -634,6 +644,7 @@ export class TabBrowserView extends Disposable {
 							class="open-external-button icon"><i class="codicon codicon-link-external"></i></button>
 					</nav>
 				</header>
+				${this._contextMenuHtml()}
 				<div class="hint" hidden>
 					<span class="hint-message"></span>
 					<span class="hint-detail"></span>
@@ -649,44 +660,70 @@ export class TabBrowserView extends Disposable {
 	}
 
 	/**
-	 * Only the assistants that are actually installed get menu entries; with both of them the
-	 * menu would otherwise carry eight ways to send an element somewhere it cannot go.
+	 * The element entries, which both menus offer — written once, because the two menus running
+	 * different sets of actions is the one difference between them nobody would expect.
+	 * Only the assistants that are actually installed get entries; with both of them the menu
+	 * would otherwise carry eight ways to send an element somewhere it cannot go.
 	 */
-	private _copyMenuHtml(): string {
+	private _elementMenuGroups(options?: MenuItemOptions): string[][] {
 		const groups: string[][] = [[
-			menuItem('element', 'codicon-inspect', vscode.l10n.t("Copy element")),
-			menuItem('elementXPath', 'codicon-list-tree', vscode.l10n.t("Copy element XPath")),
-			menuItem('elementPath', 'codicon-code', vscode.l10n.t("Copy CSS path")),
+			menuItem('element', 'codicon-inspect', vscode.l10n.t("Copy element"), options),
+			menuItem('elementXPath', 'codicon-list-tree', vscode.l10n.t("Copy element XPath"), options),
+			menuItem('elementPath', 'codicon-code', vscode.l10n.t("Copy CSS path"), options),
 		]];
 
 		if (assistants.isInstalled('claude')) {
 			groups.push([
-				menuItem('elementClaude', 'codicon-sparkle', vscode.l10n.t("Add element to Claude Code")),
-				menuItem('elementXPathClaude', 'codicon-sparkle', vscode.l10n.t("Add element XPath to Claude Code")),
-				menuItem('elementPathClaude', 'codicon-sparkle', vscode.l10n.t("Add CSS path to Claude Code")),
+				menuItem('elementClaude', 'codicon-sparkle', vscode.l10n.t("Add element to Claude Code"), options),
+				menuItem('elementXPathClaude', 'codicon-sparkle', vscode.l10n.t("Add element XPath to Claude Code"), options),
+				menuItem('elementPathClaude', 'codicon-sparkle', vscode.l10n.t("Add CSS path to Claude Code"), options),
 			]);
 		}
 
 		if (assistants.isInstalled('codex')) {
 			groups.push([
-				menuItem('elementCodex', 'codicon-rocket', vscode.l10n.t("Add element to Codex")),
-				menuItem('elementXPathCodex', 'codicon-rocket', vscode.l10n.t("Add element XPath to Codex")),
-				menuItem('elementPathCodex', 'codicon-rocket', vscode.l10n.t("Add CSS path to Codex")),
+				menuItem('elementCodex', 'codicon-rocket', vscode.l10n.t("Add element to Codex"), options),
+				menuItem('elementXPathCodex', 'codicon-rocket', vscode.l10n.t("Add element XPath to Codex"), options),
+				menuItem('elementPathCodex', 'codicon-rocket', vscode.l10n.t("Add CSS path to Codex"), options),
 			]);
 		}
 
-		const console: string[] = [menuItem('console', 'codicon-terminal', vscode.l10n.t("Copy console.log"))];
+		return groups;
+	}
+
+	private _copyMenuHtml(): string {
+		const groups = this._elementMenuGroups({ check: true });
+
+		const console: string[] = [menuItem('console', 'codicon-terminal', vscode.l10n.t("Copy console.log"), { check: true })];
 		if (assistants.isInstalled('claude')) {
-			console.push(menuItem('consoleClaude', 'codicon-sparkle', vscode.l10n.t("Add console.log to Claude Code")));
+			console.push(menuItem('consoleClaude', 'codicon-sparkle', vscode.l10n.t("Add console.log to Claude Code"), { check: true }));
 		}
 		if (assistants.isInstalled('codex')) {
-			console.push(menuItem('consoleCodex', 'codicon-rocket', vscode.l10n.t("Add console.log to Codex")));
+			console.push(menuItem('consoleCodex', 'codicon-rocket', vscode.l10n.t("Add console.log to Codex"), { check: true }));
 		}
 		groups.push(console);
 
-		const separator = '<div class="copy-menu-separator" role="separator"></div>';
-		return `<div class="copy-menu" role="menu" hidden>`
-			+ groups.map(group => group.join('')).join(separator)
+		return `<div class="menu copy-menu" role="menu" hidden>`
+			+ groups.map(group => group.join('')).join(menuSeparator)
+			+ `</div>`;
+	}
+
+	/**
+	 * The menu a right-click in the page opens. It acts on the element that was clicked rather
+	 * than on one the picker is about to be started for, so it carries no check mark: there is
+	 * no "the entry this button runs" about it.
+	 *
+	 * "Inspect element" is the editor's own developer tools, which is the only inspector there
+	 * is for a page in a webview — and the reason a right-click looks for one at all.
+	 */
+	private _contextMenuHtml(): string {
+		const groups = this._elementMenuGroups();
+		groups.push([menuItem('inspect', 'codicon-tools', vscode.l10n.t("Inspect element"),
+			{ title: vscode.l10n.t("Open the editor's developer tools for this panel") })]);
+
+		return `<div class="menu context-menu" role="menu" hidden>`
+			+ `<div class="menu-header" role="presentation"></div>`
+			+ groups.map(group => group.join('')).join(menuSeparator)
 			+ `</div>`;
 	}
 
@@ -695,11 +732,26 @@ export class TabBrowserView extends Disposable {
 	}
 }
 
-function menuItem(command: CopyCommand, icon: string, label: string): string {
-	return `<button role="menuitem" data-command="${command}" data-icon="${icon}">`
+const menuSeparator = '<div class="menu-separator" role="separator"></div>';
+
+interface MenuItemOptions {
+	/** Marks the entry the split button's main half runs; a context menu runs no entry. */
+	readonly check?: boolean;
+	readonly title?: string;
+}
+
+function menuItem(
+	command: ContextMenuCommand,
+	icon: string,
+	label: string,
+	options?: MenuItemOptions,
+): string {
+	return `<button role="menuitem" data-command="${command}" data-icon="${icon}"`
+		+ `${options?.title ? ` title="${escapeAttribute(options.title)}"` : ''}>`
 		+ `<i class="codicon ${icon}"></i>`
-		+ `<span class="copy-menu-label">${escapeHtml(label)}</span>`
-		+ `<i class="codicon codicon-check check"></i></button>`;
+		+ `<span class="menu-label">${escapeHtml(label)}</span>`
+		+ (options?.check ? `<i class="codicon codicon-check check"></i>` : '')
+		+ `</button>`;
 }
 
 function escapeHtml(value: string): string {

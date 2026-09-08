@@ -144,6 +144,7 @@ const pngBytes = Buffer.from(
 const agentScript = await fs.readFile(path.join(projectRoot, 'media/agent.js'), 'utf8');
 const webviewScript = await fs.readFile(
 	path.join(projectRoot, 'test/.bundles/webview-bundle.js'), 'utf8');
+const panelCss = await fs.readFile(path.join(projectRoot, 'media/main.css'), 'utf8');
 
 const page_html = `<!DOCTYPE html>
 <html><head>
@@ -212,9 +213,11 @@ const server = http.createServer((req, res) => {
 	// reads its token from, the controls it wires up, and a stub for the editor's api.
 	if (req.url === '/webview') {
 		res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-		res.end(`<!DOCTYPE html><html><head><title>panel</title></head><body>
+		res.end(`<!DOCTYPE html><html><head><title>panel</title>
+			<link rel="stylesheet" href="/main.css"></head><body>
 			<div id="tab-browser-settings" data-settings='${JSON.stringify({
-			token: 'panel-token', url: 'http://127.0.0.1:1/', focusLockEnabled: false, preferAttributes: [],
+			token: 'panel-token', url: 'http://127.0.0.1:1/', focusLockEnabled: false,
+			contextMenuEnabled: true, preferAttributes: [],
 			// What the host tells the webview the proxy is serving. This server stands in for it,
 			// and it answers on two origins — `127.0.0.1` and `localhost` — so the second one is
 			// a page the proxy does not serve, whatever it posts.
@@ -226,11 +229,21 @@ const server = http.createServer((req, res) => {
 				<button class="reload-button"></button><button class="open-external-button"></button>
 				<button class="copy-action-button"><i class="codicon"></i></button>
 				<button class="copy-menu-toggle"></button>
-				<div class="copy-menu"><button class="copy-menu-item" data-command="element"
-					data-icon="codicon-inspect"><span class="copy-menu-label">Copy element</span></button></div>
+				<div class="menu copy-menu"><button role="menuitem" data-command="element"
+					data-icon="codicon-inspect"><span class="menu-label">Copy element</span></button></div>
+			</div>
+			<div class="menu context-menu" role="menu" hidden>
+				<div class="menu-header" role="presentation"></div>
+				<button role="menuitem" data-command="element" data-icon="codicon-inspect"
+					><span class="menu-label">Copy element</span></button>
+				<button role="menuitem" data-command="elementXPath" data-icon="codicon-list-tree"
+					><span class="menu-label">Copy element XPath</span></button>
+				<div class="menu-separator" role="separator"></div>
+				<button role="menuitem" data-command="inspect" data-icon="codicon-tools"
+					><span class="menu-label">Inspect element</span></button>
 			</div>
 			<div class="hint"><span class="hint-message"></span><span class="hint-detail"></span></div>
-			<iframe></iframe>
+			<div class="content"><iframe></iframe></div>
 			<script>
 				window.__posted = [];
 				window.acquireVsCodeApi = () => ({
@@ -241,6 +254,11 @@ const server = http.createServer((req, res) => {
 			</script>
 			<script src="/webview-bundle.js"></script>
 		</body></html>`);
+		return;
+	}
+	if (req.url === '/main.css') {
+		res.writeHead(200, { 'content-type': 'text/css; charset=utf-8' });
+		res.end(panelCss);
 		return;
 	}
 	if (req.url === '/webview-bundle.js') {
@@ -255,6 +273,21 @@ const server = http.createServer((req, res) => {
 		res.end(`<!DOCTYPE html><html><head><title>framed</title></head><body>framed<script>
 			window.__reportReady = () => parent.postMessage(
 				{ __tabBrowserAgent: true, kind: 'ready', documentUrl: 'http://127.0.0.1:1/' }, '*');
+			// The page's half of the context menu, which the real agent does over a right-click:
+			// report where it happened, hand over the element when the panel comes back for it.
+			window.__commands = [];
+			window.addEventListener('message', event => {
+				if (event.data && event.data.__tabBrowserAgent) {
+					window.__commands.push(event.data.kind);
+				}
+			});
+			window.__openContextMenu = (x, y) => parent.postMessage({ __tabBrowserAgent: true,
+				kind: 'contextMenu', at: { x, y }, descriptor: 'button#save.primary' }, '*');
+			window.__answerPick = () => parent.postMessage({ __tabBrowserAgent: true, kind: 'pick',
+				element: { descriptor: 'button#save.primary', selector: '#save',
+					xpath: '/html/body/button', framePath: [] } }, '*');
+			window.__dismissContextMenu = () => parent.postMessage(
+				{ __tabBrowserAgent: true, kind: 'dismissContextMenu' }, '*');
 			// Asked for by origin, this one does the reporting itself: a page the proxy does not
 			// serve, posting what the agent posts. It cannot be driven from the panel document
 			// either — that is a cross-origin frame, which is the situation being tested.
@@ -312,6 +345,38 @@ const server = http.createServer((req, res) => {
 			res.writeHead(200, { 'content-type': 'image/png' });
 			res.end(pngBytes);
 		}, 200);
+		return;
+	}
+	// A page carrying the real agent, for the one decision the page has to make on the spot:
+	// whether a right-click was the site's own.
+	if (req.url === '/context-page') {
+		res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+		res.end(`<!DOCTYPE html><html><head><title>menus</title>
+			<script>window.__tabBrowserConfig = { realOrigin: 'http://127.0.0.1:1' };</script>
+			<script src="/agent.js"></script></head>
+			<body style="margin: 0">
+			<div id="plain" class="row" data-testid="plain-row" style="position: absolute; left: 20px; top: 20px; width: 120px; height: 40px">plain</div>
+			<div id="own-menu" style="position: absolute; left: 20px; top: 100px; width: 120px; height: 40px">own</div>
+			<script>
+				window.__events = [];
+				window.addEventListener('message', event => {
+					if (event.data && event.data.__tabBrowserAgent) {
+						window.__events.push({
+							kind: event.data.kind,
+							at: event.data.at,
+							descriptor: event.data.descriptor,
+							picked: event.data.element && event.data.element.descriptor,
+							selector: event.data.element && event.data.element.selector,
+						});
+					}
+				});
+				// Read after the fact rather than in the handler: this listener is registered
+				// before the agent's is — the panel switches that on later — so the flag is only
+				// what it ends up as once every handler has run.
+				window.addEventListener('contextmenu', event => { window.__lastEvent = event; });
+				document.getElementById('own-menu')
+					.addEventListener('contextmenu', event => event.preventDefault());
+			</script></body></html>`);
 		return;
 	}
 	// A page carrying the agent with a cookie prefix set, i.e. what the proxy serves.
@@ -384,6 +449,8 @@ const hostileSettings = {
 };
 let cookieWrites;
 let pageRequests;
+let contextMenuPanel;
+let pageMenus;
 try {
 	const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
 	await page.goto(pageUrl);
@@ -587,7 +654,135 @@ try {
 		return { afterReady, afterSecondLoad, afterThirdLoad, afterQuickTurn,
 			afterForeignReport, duringLateAlive, afterLateAlive, lateTool };
 	}, new URL(pageUrl).origin);
+
 	await panel.close();
+
+	// The menu a right-click opens is drawn in the panel, out of the page's reach: what the page
+	// sends up is a point and a name, and what comes back down is the element itself. In a panel
+	// of its own, since the one above has had its `postMessage` patched by the fixture that
+	// delays an answer — after which a message from the frame no longer looks like one.
+	const menuPanel = await browser.newPage();
+	await menuPanel.goto(`${new URL(pageUrl).origin}/webview`);
+	contextMenuPanel = await menuPanel.evaluate(async origin => {
+		const frame = document.querySelector('iframe');
+		const menu = document.querySelector('.context-menu');
+		const settle = () => new Promise(resolve => setTimeout(resolve, 50));
+
+		const loaded = new Promise(resolve => frame.addEventListener('load', resolve, { once: true }));
+		window.postMessage({ type: 'didResolveUrl', requestId: 1, token: 'panel-token',
+			loadUrl: `${origin}/silent-frame?menu`, displayUrl: 'http://127.0.0.1:1/',
+			instrumented: true }, '*');
+		await loaded;
+		frame.contentWindow.__reportReady();
+		await settle();
+
+		const box = frame.getBoundingClientRect();
+		frame.contentWindow.__openContextMenu(30, 40);
+		await settle();
+		const opened = menu.getBoundingClientRect();
+		const placed = {
+			hidden: menu.hidden,
+			left: Math.round(opened.left - box.left),
+			top: Math.round(opened.top - box.top),
+			header: menu.querySelector('.menu-header').textContent,
+			// Nothing about the element has travelled up here; the page is holding on to it.
+			asked: frame.contentWindow.__commands.slice(),
+		};
+
+		// A click in the far corner of the page. The menu is the panel's own dom, so it cannot
+		// hang off the panel the way a browser's menu hangs off the window: what does not fit
+		// below and right of the cursor has to open the other way.
+		frame.contentWindow.__openContextMenu(
+			window.innerWidth - box.left - 4, window.innerHeight - box.top - 4);
+		await settle();
+		const corner = menu.getBoundingClientRect();
+		const atTheEdge = {
+			right: Math.round(corner.right),
+			bottom: Math.round(corner.bottom),
+			viewport: { width: window.innerWidth, height: window.innerHeight },
+			inside: corner.right <= window.innerWidth && corner.bottom <= window.innerHeight
+				&& corner.left >= 0 && corner.top >= 0,
+		};
+
+		// Choosing an entry is what asks the page for the element the menu was opened on.
+		frame.contentWindow.__commands.length = 0;
+		menu.querySelector('[data-command="element"]').click();
+		await settle();
+		const asked = frame.contentWindow.__commands.slice();
+		frame.contentWindow.__answerPick();
+		await settle();
+		const copied = window.__posted.filter(message => message.type === 'copyElement').at(-1);
+
+		// And the page saying the menu has to go, which is the only way this document hears of a
+		// click inside the frame at all.
+		frame.contentWindow.__openContextMenu(10, 10);
+		await settle();
+		const reopened = !menu.hidden;
+		frame.contentWindow.__dismissContextMenu();
+		await settle();
+		const dismissed = menu.hidden;
+
+		frame.contentWindow.__openContextMenu(10, 10);
+		await settle();
+		menu.querySelector('[data-command="inspect"]').click();
+		await settle();
+		const devTools = window.__posted.some(message => message.type === 'openDevTools');
+
+		return { placed, atTheEdge, asked, copied, reopened, dismissed, devTools,
+			closedAfterChoice: menu.hidden };
+	}, new URL(pageUrl).origin);
+	await menuPanel.close();
+
+
+	// The page's own half: the right-click it keeps, the one it hands over, and the element it
+	// holds on to in between.
+	const menuPage = await browser.newPage({ viewport: { width: 400, height: 300 } });
+	await menuPage.goto(`${new URL(pageUrl).origin}/context-page`);
+	await menuPage.waitForFunction(
+		() => window.__events?.some(event => event.kind === 'ready'), null, { timeout: 5000 })
+		.catch(() => { });
+	const rightClick = async selector => {
+		const target = await menuPage.locator(selector).boundingBox();
+		await menuPage.mouse.click(target.x + 4, target.y + 4, { button: 'right' });
+		await menuPage.evaluate(() => new Promise(resolve => setTimeout(resolve, 50)));
+	};
+	const menuEvents = () => menuPage.evaluate(() => ({
+		events: window.__events.filter(event => event.kind === 'contextMenu'
+			|| event.kind === 'dismissContextMenu' || event.kind === 'pick'),
+		prevented: window.__lastEvent?.defaultPrevented,
+		outlined: !!document.querySelector('[data-tab-browser="picker"]'),
+	}));
+
+	// Nothing is switched on yet: a right-click is the editor's, as it is in any panel.
+	await rightClick('#plain');
+	pageMenus = { beforeEnabling: await menuEvents() };
+
+	// Switched on with the panel's own `picker.preferAttributes`: a pick this menu asks for is a
+	// pick, and builds the same selector the picker would.
+	await menuPage.evaluate(() => window.postMessage({ __tabBrowserAgent: true,
+		kind: 'setContextMenu', enabled: true, preferAttributes: ['data-testid'] }, '*'));
+	await rightClick('#plain');
+	pageMenus.enabled = await menuEvents();
+
+	// The panel comes back for the element by nothing but "the one you told me about".
+	await menuPage.evaluate(() => window.postMessage(
+		{ __tabBrowserAgent: true, kind: 'pickContextTarget' }, '*'));
+	await menuPage.evaluate(() => new Promise(resolve => setTimeout(resolve, 50)));
+	pageMenus.picked = await menuEvents();
+
+	// A site with a menu of its own says so by taking the event; replacing that menu with ours
+	// is not something a browser panel gets to do.
+	await rightClick('#own-menu');
+	pageMenus.ownMenu = await menuEvents();
+
+	// And a click in the page, which is what closes a menu drawn in the panel above it.
+	await menuPage.evaluate(() => window.postMessage(
+		{ __tabBrowserAgent: true, kind: 'setContextMenu', enabled: true }, '*'));
+	await rightClick('#plain');
+	await menuPage.mouse.click(200, 200);
+	await menuPage.evaluate(() => new Promise(resolve => setTimeout(resolve, 50)));
+	pageMenus.dismissed = await menuEvents();
+	await menuPage.close();
 
 	// A page sets cookies for the server it thinks it is talking to. Through the proxy that
 	// server's name and scheme are not the ones the browser has the page from, and a cookie
@@ -1039,6 +1234,77 @@ check('the overlay sits in the top layer, above anything the page can stack',
 check('the settings survive a url the html parser would decode into them',
 	panelSettings?.settings?.token === hostileSettings.token
 	&& panelSettings.settings.url === hostileSettings.url, JSON.stringify(panelSettings));
+
+// -- the page's context menu ------------------------------------------------------------------
+
+const contextEvents = (state, kind) =>
+	(state?.events ?? []).filter(event => event.kind === kind);
+
+check('a right-click is the editor\'s own until the panel asks for it',
+	contextEvents(pageMenus?.beforeEnabling, 'contextMenu').length === 0
+	&& pageMenus?.beforeEnabling?.prevented === false,
+	JSON.stringify(pageMenus?.beforeEnabling));
+
+const rightClicked = contextEvents(pageMenus?.enabled, 'contextMenu')[0];
+check('a right-click the page leaves alone is reported, with what it landed on',
+	rightClicked?.descriptor === 'div#plain.row'
+	&& Math.abs(rightClicked.at.x - 24) <= 2 && Math.abs(rightClicked.at.y - 24) <= 2,
+	JSON.stringify(rightClicked));
+
+// The panel draws the menu, so the editor's own must not open behind it — and only the page
+// can stop that, in the handler, before there is anyone left to ask.
+check('the editor\'s own menu is suppressed for the one the panel draws',
+	pageMenus?.enabled?.prevented === true && pageMenus.enabled.outlined === true,
+	JSON.stringify(pageMenus?.enabled));
+
+const contextPick = contextEvents(pageMenus?.picked, 'pick')[0];
+check('the element is described only once an entry has been chosen',
+	contextPick?.picked === 'div#plain.row' && pageMenus?.picked?.outlined === false,
+	JSON.stringify(pageMenus?.picked));
+
+check('and described with the attributes the panel prefers, as any other pick is',
+	contextPick?.selector === '[data-testid="plain-row"]', contextPick?.selector);
+
+check('a page with a context menu of its own keeps it',
+	contextEvents(pageMenus?.ownMenu, 'contextMenu').length === 1
+	&& pageMenus?.ownMenu?.prevented === true,
+	JSON.stringify(pageMenus?.ownMenu));
+
+check('a click in the page closes the menu standing above it',
+	contextEvents(pageMenus?.dismissed, 'dismissContextMenu').length === 1
+	&& pageMenus?.dismissed?.outlined === false,
+	JSON.stringify(pageMenus?.dismissed));
+
+check('the menu opens where the cursor is, in a frame the panel measures itself',
+	contextMenuPanel?.placed?.hidden === false && contextMenuPanel.placed.left === 30
+	&& contextMenuPanel.placed.top === 40
+	&& contextMenuPanel.placed.header === 'button#save.primary',
+	JSON.stringify(contextMenuPanel?.placed));
+
+check('a right-click alone asks the page for nothing',
+	contextMenuPanel?.placed?.asked?.includes('pickContextTarget') === false,
+	JSON.stringify(contextMenuPanel?.placed?.asked));
+
+check('a menu opened in the corner of the page stays inside the panel',
+	contextMenuPanel?.atTheEdge?.inside === true, JSON.stringify(contextMenuPanel?.atTheEdge));
+
+check('choosing an entry asks the page for the element and closes the menu',
+	contextMenuPanel?.asked?.includes('pickContextTarget') === true
+	&& contextMenuPanel.closedAfterChoice === true, JSON.stringify(contextMenuPanel?.asked));
+
+// The pick that answers is not the picker's: nothing is picking, and a `pick` let through on
+// that alone would be a page reporting elements nobody asked about.
+check('the element it answers with is copied under the entry that was chosen',
+	contextMenuPanel?.copied?.command === 'element'
+	&& contextMenuPanel.copied.element.descriptor === 'button#save.primary',
+	JSON.stringify(contextMenuPanel?.copied));
+
+check('the page can close the menu it had opened',
+	contextMenuPanel?.reopened === true && contextMenuPanel.dismissed === true,
+	JSON.stringify(contextMenuPanel));
+
+check('"Inspect element" opens the editor\'s developer tools',
+	contextMenuPanel?.devTools === true, JSON.stringify(contextMenuPanel?.devTools));
 
 check('inspecting a web component does not run the component again',
 	componentLifecycle?.calls.length === 0 && !!componentLifecycle.described,

@@ -20,6 +20,13 @@ export type CopyCommand =
 	| 'consoleCodex';
 
 /**
+ * Entries of the menu a right-click in the page opens: the element ones, plus the editor's
+ * developer tools. Every one of them is also a copy menu entry, bar `inspect`, which is the one
+ * thing the panel cannot do to an element itself.
+ */
+export type ContextMenuCommand = CopyCommand | 'inspect';
+
+/**
  * The entries that ask the page for its console output; every other one picks an element. Said
  * once, because a new entry that is missing from a list like this reads as its opposite — a
  * console entry left out of it starts the picker instead of collecting anything.
@@ -77,6 +84,8 @@ export type WebviewToExtensionMessage =
 export type ExtensionToWebviewMessage =
 	| { readonly type: 'focus' }
 	| { readonly type: 'didChangeFocusLockIndicatorEnabled'; readonly focusLockEnabled: boolean }
+	/** Watched rather than read once, since the page has to be told before it is right-clicked. */
+	| { readonly type: 'didChangeContextMenuEnabled'; readonly contextMenuEnabled: boolean }
 	| {
 		readonly type: 'didResolveUrl';
 		readonly requestId: number;
@@ -116,6 +125,8 @@ export interface TabBrowserSettings {
 	readonly token: string;
 	readonly url: string;
 	readonly focusLockEnabled: boolean;
+	/** Whether a right-click in the page opens the panel's own menu. */
+	readonly contextMenuEnabled: boolean;
 	readonly preferAttributes: readonly string[];
 	/**
 	 * Origins the local proxy serves, and so the only ones a document carrying the injected

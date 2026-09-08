@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate",
 	"displayName": "AI Browser🏆 Claude + Codex",
 	"description": "Embedded browser tab with AI capabilities, Claude and Codex integration",
-	"version": "0.3.13",
+	"version": "0.3.14",
 	"icon": "media/icon.png",
 	"publisher": "DenysDavydov",
   	"private": true,
@@ -236,6 +236,11 @@
 						"default": true,
 						"title": "Focus Lock Indicator Enabled",
 						"description": "%configuration.focusLockIndicator.enabled.description%"
+					},
+					"tabBrowser.contextMenu.enabled": {
+						"type": "boolean",
+						"default": true,
+						"markdownDescription": "Answer a right-click in the page with this panel's own menu: copy the element that was clicked, hand it to an assistant, or open the editor's developer tools. A page that defines a context menu of its own keeps it, and turning this off leaves every right-click to the editor."
 					},
 					"tabBrowser.claude.pathDelivery": {
 						"type": "string",

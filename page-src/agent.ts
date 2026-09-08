@@ -12,11 +12,12 @@ import {
 	packAgentMessage,
 } from '../shared/protocol';
 import { consoleSnapshot, installConsoleCapture } from './consoleCapture';
+import { PageContextMenu } from './contextMenu';
 import { installCookiePrefix } from './cookies';
 import { handlePageRequest } from './pageRequests';
 import { findIconHref } from './pageIcon';
 import { ElementPicker } from './picker';
-import { cssPath } from './selectors';
+import { cssPath, describeElement } from './selectors';
 
 interface AgentBootstrapConfig {
 	readonly realOrigin: string;
@@ -65,9 +66,11 @@ function install(): void {
 		}
 	}
 
-	function broadcast(message: AgentMessage): void {
+	function broadcast(message: AgentMessage, except?: MessageEventSource | null): void {
 		for (const frame of childFrames()) {
-			post(frame.contentWindow, message);
+			if (!except || frame.contentWindow !== except) {
+				post(frame.contentWindow, message);
+			}
 		}
 	}
 
@@ -193,6 +196,33 @@ function install(): void {
 		documentUrl: documentUrlOnRealServer,
 	});
 
+	// -- context menu ------------------------------------------------------------------------
+
+	/**
+	 * Only one document in the chain may be holding a target: the panel asks for it by nothing
+	 * but "the one you told me about", so a stale target in a frame nobody clicked in would
+	 * answer for the click that happened somewhere else.
+	 */
+	const contextMenu = new PageContextMenu({
+		highlight: element => picker.highlight(element),
+		clearHighlight: () => picker.clearHighlight(),
+		onOpen: (at, descriptor) => {
+			broadcast({ kind: 'clearContextTarget' });
+			send({ kind: 'contextMenu', at, descriptor });
+		},
+		onDismiss: () => send({ kind: 'dismissContextMenu' }),
+	});
+
+	/** Where this frame's content box starts, so a nested click lands where the cursor is. */
+	function frameOffset(frame: HTMLIFrameElement): { x: number; y: number } {
+		const rect = frame.getBoundingClientRect();
+		const style = getComputedStyle(frame);
+		return {
+			x: rect.left + frame.clientLeft + (parseFloat(style.paddingLeft) || 0),
+			y: rect.top + frame.clientTop + (parseFloat(style.paddingTop) || 0),
+		};
+	}
+
 	// -- command handling --------------------------------------------------------------------
 
 	window.addEventListener('message', event => {
@@ -213,6 +243,43 @@ function install(): void {
 				} else {
 					picker.disable();
 				}
+				broadcast(message);
+				return;
+			}
+
+			case 'setContextMenu': {
+				// Like the picker's, these only ever travel downwards.
+				if (event.source && event.source !== window && event.source !== window.parent) {
+					return;
+				}
+				picker.setPreferredAttributes(message.preferAttributes);
+				contextMenu.setEnabled(message.enabled);
+				broadcast(message);
+				return;
+			}
+
+			case 'pickContextTarget': {
+				if (event.source && event.source !== window && event.source !== window.parent) {
+					return;
+				}
+				const target = contextMenu.take();
+				if (target) {
+					send({
+						kind: 'pick',
+						element: describeElement(
+							target, picker.preferredAttributes, documentUrlOnRealServer()),
+					});
+				}
+				// The click may have happened in a frame further down; only that one answers.
+				broadcast(message);
+				return;
+			}
+
+			case 'clearContextTarget': {
+				if (event.source && event.source !== window && event.source !== window.parent) {
+					return;
+				}
+				contextMenu.clear();
 				broadcast(message);
 				return;
 			}
@@ -283,6 +350,13 @@ function install(): void {
 				if (picker.active) {
 					post(frame.contentWindow, { kind: 'enablePicker', preferAttributes: picker.preferredAttributes });
 				}
+				if (contextMenu.enabled) {
+					post(frame.contentWindow, {
+						kind: 'setContextMenu',
+						enabled: true,
+						preferAttributes: picker.preferredAttributes,
+					});
+				}
 				return;
 
 			case 'icon':
@@ -307,6 +381,24 @@ function install(): void {
 				// to send the command back down.
 				picker.disable();
 				broadcast({ kind: 'disablePicker' });
+				send(message);
+				return;
+
+			case 'contextMenu': {
+				// The click was in a descendant, so nothing in this document is under it, and
+				// no other frame of ours can be either.
+				contextMenu.clear();
+				broadcast({ kind: 'clearContextTarget' }, event.source);
+				const offset = frameOffset(frame);
+				send({
+					kind: 'contextMenu',
+					at: { x: message.at.x + offset.x, y: message.at.y + offset.y },
+					descriptor: message.descriptor,
+				});
+				return;
+			}
+
+			case 'dismissContextMenu':
 				send(message);
 				return;
 
@@ -374,5 +466,8 @@ function install(): void {
 
 	watchHead();
 	watchNavigation();
-	window.addEventListener('pagehide', () => picker.disable());
+	window.addEventListener('pagehide', () => {
+		picker.disable();
+		contextMenu.clear();
+	});
 }

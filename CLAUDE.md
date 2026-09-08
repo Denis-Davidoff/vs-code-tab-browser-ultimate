@@ -12,7 +12,7 @@ Forked from the Simple Browser extension that ships with VS Code and renamed thr
 | --- | --- | --- |
 | `src/` | extension host (node) | activation, the webview panel, the local proxy, clipboard, tab icon, mcp, the sidebar |
 | `preview-src/` | webview | toolbar, address bar, copy menu, hint bar; relays messages |
-| `page-src/` | the previewed page | injected agent: picker, console capture, element report |
+| `page-src/` | the previewed page | injected agent: picker, context menu, console capture, element report |
 | `shared/` | all three | message contracts and the shapes they carry |
 | `media/` | webview | `main.css`, `codicon.css`, and **generated** `index.js` / `agent.js` |
 | `test/` | node | proxy tests, and chromium-driven tests of the page agent and the webview |
@@ -175,6 +175,42 @@ macOS goes through one `NSPasteboardItem` carrying both `public.file-url` and
 `public.utf8-plain-text` (JXA via `osascript`), Windows through `Set-Clipboard -Path`. Anywhere
 else — and in remote workspaces, where the clipboard belongs to another machine — it falls back
 to plain text.
+
+### The menu a right-click opens
+
+`tabBrowser.contextMenu.enabled` (default on) has a right-click in the page answered with the
+copy menu's element entries for the element under the cursor, plus **Inspect element** — the
+editor's developer tools, which is the only inspector a page in a webview has. Both menus are
+built from `_elementMenuGroups`, since two menus offering different sets of the same actions is
+the one difference between them nobody would look for. The context menu carries no check mark:
+it acts on the element that was clicked, not on the entry a button is about to run.
+
+It is drawn in the **webview**, not in the page: the editor's own colours, out of reach of the
+page's css, and a click on it is a click on the panel's own dom. What the page sends up is a
+point and a name (`contextMenu`), and the element itself only when an entry is chosen
+(`pickContextTarget` → an ordinary `pick`) — describing one is the expensive half of a pick, and
+most right-clicks end in no command at all. Which is also why the page holds the element rather
+than the webview holding a reference to it: only one document in the frame chain may be holding
+one, so a frame relaying a child's right-click drops its own target and tells its other children
+to drop theirs.
+
+Three things about it are easy to get wrong:
+
+- **Whether the page wanted the click is not ours to decide.** A site with a menu of its own
+  (a canvas app, an editor, a file tree) says so by taking the event, so the agent's listener
+  sits on `window` — last of all of them — and reads `defaultPrevented` off it. What it cannot
+  do is ask first: suppressing the editor's own menu is a `preventDefault` inside the handler,
+  so the page has to know whether the panel wants right-clicks *before* one happens. Hence
+  `setContextMenu`, sent at every `ready` and when the setting changes, rather than a question
+  asked at the time.
+- **A menu drawn above the frame does not see what happens inside it.** A click, a scroll or an
+  Escape in the page reaches no listener in the webview, so the page reports those itself
+  (`dismissContextMenu`) for as long as a menu is open. Without it the menu stays up over a page
+  that has scrolled out from under it.
+- **A pick that arrives with nothing pending is a page reporting elements nobody asked about.**
+  The picker's own flag cannot let this one through — nothing is picking — so the webview keeps
+  `awaitingContextPick`, and takes it back on a timeout: the element can be gone by the time an
+  entry is chosen, and a page with nothing to report says nothing at all.
 
 ### Handing a report to an assistant
 

@@ -12,6 +12,12 @@ export const defaultPreferredAttributes: readonly string[] =
 /** Marker property carried by every message exchanged with the injected page script. */
 export const agentChannel = '__tabBrowserAgent' as const;
 
+/** A position in the viewport of the top document, after every frame added its own offset. */
+export interface PagePoint {
+	readonly x: number;
+	readonly y: number;
+}
+
 export interface ElementRect {
 	readonly top: number;
 	readonly left: number;
@@ -110,6 +116,21 @@ export type AgentCommand =
 	 * not something a *time* can be read off, so the answer carries the number of the question.
 	 */
 	| { readonly kind: 'alive'; readonly probeId: number }
+	/**
+	 * Whether a right-click the page leaves alone should be answered with the panel's menu.
+	 * The page has to know before the event happens: suppressing the editor's own menu is a
+	 * `preventDefault` inside the handler, and there is no asking anyone by then.
+	 */
+	| {
+		readonly kind: 'setContextMenu';
+		readonly enabled: boolean;
+		/** The panel's setting, since a pick the menu asks for builds selectors too. */
+		readonly preferAttributes?: readonly string[];
+	}
+	/** Report the element the context menu was opened on, as a `pick` of its own. */
+	| { readonly kind: 'pickContextTarget' }
+	/** The menu closed without a choice: forget that element and drop its outline. */
+	| { readonly kind: 'clearContextTarget' }
 	| { readonly kind: 'request'; readonly requestId: number; readonly request: PageRequest };
 
 /** Injected page script -> parent frame -> webview. */
@@ -123,6 +144,19 @@ export type AgentEvent =
 	/** The top document's `title`, for the panel's tab. */
 	| { readonly kind: 'title'; readonly title: string }
 	| { readonly kind: 'pick'; readonly element: PickedElement }
+	/**
+	 * A right-click the page did not take for itself. `at` is in the top document's viewport —
+	 * every frame relaying it adds where its own `<iframe>` sits — so the webview can put its
+	 * menu where the cursor is without knowing anything about the page's frames.
+	 */
+	| {
+		readonly kind: 'contextMenu';
+		readonly at: PagePoint;
+		/** `tag#id.class` of the element under the cursor, for the menu's header. */
+		readonly descriptor: string;
+	}
+	/** Something the page saw that a menu has to close for: a click, a scroll, Escape. */
+	| { readonly kind: 'dismissContextMenu' }
 	| { readonly kind: 'cancel' }
 	| {
 		readonly kind: 'result';

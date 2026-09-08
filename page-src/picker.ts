@@ -98,10 +98,19 @@ export class ElementPicker {
 		return this._preferredAttributes;
 	}
 
-	public enable(attributes?: readonly string[]): void {
+	/**
+	 * The attributes selectors prefer. A setting of the panel's rather than a mode of the
+	 * picker's, so it also applies to the picks the context menu asks for — which is why this
+	 * is not only set by `enable`.
+	 */
+	public setPreferredAttributes(attributes: readonly string[] | undefined): void {
 		if (attributes?.length) {
 			this._preferredAttributes = attributes;
 		}
+	}
+
+	public enable(attributes?: readonly string[]): void {
+		this.setPreferredAttributes(attributes);
 		if (this._active) {
 			return;
 		}
@@ -150,6 +159,26 @@ export class ElementPicker {
 
 		this._cursorStyle?.remove();
 		this._cursorStyle = undefined;
+		this._overlayRoot?.remove();
+		this._overlayRoot = this._outline = this._label = undefined;
+	}
+
+	/**
+	 * Outlines an element without picking anything, for as long as the panel's context menu is
+	 * open on it. The same overlay as the picker's, since it is the same statement about the
+	 * same page — and while the picker is running there is nothing to say twice.
+	 */
+	public highlight(element: Element): void {
+		if (this._active) {
+			return;
+		}
+		this._showOverlay(element, cssPath(element, this._preferredAttributes));
+	}
+
+	public clearHighlight(): void {
+		if (this._active) {
+			return;
+		}
 		this._overlayRoot?.remove();
 		this._overlayRoot = this._outline = this._label = undefined;
 	}

@@ -23,6 +23,9 @@ the editor: the page you are looking at is the page your agent reads and drives.
 - ✨ **One click turns it into a prompt.** Send the element, its selector or its path straight
   into Claude Code or Codex as an attachment their agent reads — so "make this button match the
   one above" is a sentence, not a paragraph of description.
+- 🖱️ **Right-click straight on the thing.** The same actions on the element under the cursor,
+  without arming the picker first — plus the editor's developer tools. A site with a context
+  menu of its own keeps it.
 - 🐛 **Hand over the bug you can see.** The whole console since load, uncaught errors and stack
   traces included, to the clipboard or into the chat — no retyping a stack trace, no screenshot
   of a red line.
@@ -195,6 +198,24 @@ one nothing on the page sets. Stylesheets served from another origin cannot be r
 document and are reported as a count.
 
 `tabBrowser.picker.copyFormat` switches the report for `css`, `xpath`, `both` or `json`.
+
+## Right-clicking in the page
+
+A right-click anywhere in the page opens the same actions for the element under the cursor —
+copy it, copy its XPath or CSS path, hand any of the three to Claude Code or Codex — with
+**Inspect element** at the bottom, which opens the editor's developer tools for the panel. The
+element is outlined while the menu is open, so what the actions are about is never in doubt, and
+the menu names it in its header.
+
+Nothing is read off the page until an entry is chosen: describing an element is the expensive
+half of a pick, and most right-clicks end in no command at all.
+
+A page that has a context menu of its own — a canvas app, an editor, a file tree — keeps it: the
+menu only opens for a right-click the page left alone. `tabBrowser.contextMenu.enabled: false`
+hands every right-click back to the editor.
+
+The page has to be served through the local proxy for this, like everything else the panel reads
+(see [How the page is inspected](#how-the-page-is-inspected)).
 
 ## The tab icon
 

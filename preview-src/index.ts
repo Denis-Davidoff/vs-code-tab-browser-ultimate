@@ -5,6 +5,7 @@
 
 import { AgentCommand, AgentEvent, isAgentMessage, packAgentMessage } from '../shared/protocol';
 import {
+	ContextMenuCommand,
 	CopyCommand,
 	ExtensionToWebviewMessage,
 	isConsoleCommand,
@@ -12,7 +13,7 @@ import {
 	TabBrowserState,
 	WebviewToExtensionMessage,
 } from '../shared/webviewProtocol';
-import { PageRequest } from '../shared/protocol';
+import { PagePoint, PageRequest } from '../shared/protocol';
 import { onceDocumentLoaded } from './events';
 
 interface VsCodeApi<State, Message> {
@@ -46,6 +47,8 @@ const openExternalButton = header.querySelector<HTMLButtonElement>('.open-extern
 const copyActionButton = header.querySelector<HTMLButtonElement>('.copy-action-button')!;
 const copyMenuToggle = header.querySelector<HTMLButtonElement>('.copy-menu-toggle')!;
 const copyMenu = header.querySelector<HTMLDivElement>('.copy-menu')!;
+const contextMenu = document.querySelector<HTMLDivElement>('.context-menu')!;
+const contextMenuHeader = contextMenu.querySelector<HTMLDivElement>('.menu-header')!;
 const hint = document.querySelector<HTMLDivElement>('.hint')!;
 const hintMessage = hint.querySelector<HTMLSpanElement>('.hint-message')!;
 const hintDetail = hint.querySelector<HTMLSpanElement>('.hint-detail')!;
@@ -61,6 +64,17 @@ let pageReady = false;
 /** False until the host has answered the first navigation, i.e. nothing is loaded yet. */
 let resolvedOnce = false;
 let pickerActive = false;
+/** Whether a right-click in the page is answered with the panel's own menu. */
+let contextMenuEnabled = settings.contextMenuEnabled;
+let contextMenuOpen = false;
+/**
+ * A command was chosen in the context menu and the page is describing the element it was
+ * opened on. The pick that comes back is not the picker's, so it is not `pickerActive` that
+ * lets it through — and one that arrives with neither pending is a page reporting a pick
+ * nobody asked for.
+ */
+let awaitingContextPick = false;
+let contextPickTimer: ReturnType<typeof setTimeout> | undefined;
 /** Copy command waiting for the page to be reloaded through the proxy. */
 let queuedCommand: CopyCommand | undefined;
 /** Menu entry the main half of the split button runs, remembered from the last pick. */
@@ -167,6 +181,18 @@ window.addEventListener('message', event => {
 			toggleFocusLockIndicatorEnabled(hostMessage.focusLockEnabled);
 			break;
 
+		case 'didChangeContextMenuEnabled':
+			contextMenuEnabled = hostMessage.contextMenuEnabled;
+			if (!contextMenuEnabled) {
+				closeContextMenu();
+			}
+			sendToPage({
+				kind: 'setContextMenu',
+				enabled: contextMenuEnabled,
+				preferAttributes: settings.preferAttributes,
+			});
+			break;
+
 		case 'didChangeAgentOrigins':
 			agentOrigins = new Set(hostMessage.origins);
 			break;
@@ -216,6 +242,13 @@ function onAgentEvent(event: AgentEvent): void {
 			if (hint.dataset.state === 'error') {
 				hideHint();
 			}
+			if (contextMenuEnabled) {
+				sendToPage({
+					kind: 'setContextMenu',
+					enabled: true,
+					preferAttributes: settings.preferAttributes,
+				});
+			}
 			const queued = queuedCommand;
 			queuedCommand = undefined;
 			if (queued) {
@@ -233,9 +266,26 @@ function onAgentEvent(event: AgentEvent): void {
 			break;
 
 		case 'pick':
-			if (pickerActive) {
+			if (pickerActive || awaitingContextPick) {
+				awaitingContextPick = false;
+				clearTimeout(contextPickTimer);
 				vscode.postMessage({ type: 'copyElement', element: event.element, command: pickCommand });
 			}
+			break;
+
+		case 'contextMenu':
+			// While picking, a right-click is the picker's own business and never reaches here.
+			if (!pickerActive && contextMenuEnabled) {
+				openContextMenu(event.at, event.descriptor);
+			}
+			break;
+
+		case 'dismissContextMenu':
+			// The page has already dropped the element and its outline — that is what it is
+			// reporting — and asking it to do so again is a message that can arrive *after*
+			// the right-click that follows the click being reported, taking a target the panel
+			// is by then showing a menu for.
+			closeContextMenu({ keepTarget: true });
 			break;
 
 		case 'navigated':
@@ -374,6 +424,7 @@ function onDidResolveUrl(message: Extract<ExtensionToWebviewMessage, { type: 'di
 	const bust = pendingNavigation.bust;
 	pendingNavigation = undefined;
 
+	closeContextMenu({ keepTarget: true });
 	displayUrl = message.displayUrl;
 	loadedUrl = message.loadUrl;
 	expectsAgent = message.instrumented;
@@ -448,6 +499,11 @@ function menuItems(): HTMLButtonElement[] {
 }
 
 function setMenuOpen(open: boolean): void {
+	if (open) {
+		// Two menus standing open at once, one of them about an element the other knows
+		// nothing about.
+		closeContextMenu();
+	}
 	copyMenu.hidden = !open;
 	copyMenuToggle.setAttribute('aria-expanded', String(open));
 	copyMenuToggle.classList.toggle('active', open);
@@ -483,7 +539,7 @@ function setLastCopyCommand(command: CopyCommand): void {
 		if (icon && item.dataset.icon) {
 			icon.className = `codicon ${item.dataset.icon}`;
 		}
-		const label = item.querySelector<HTMLSpanElement>('.copy-menu-label')?.textContent;
+		const label = item.querySelector<HTMLSpanElement>('.menu-label')?.textContent;
 		if (label) {
 			copyActionButton.title = label;
 			copyActionButton.setAttribute('aria-label', label);
@@ -497,6 +553,7 @@ function setLastCopyCommand(command: CopyCommand): void {
  */
 function runCopyCommand(command: CopyCommand): void {
 	setMenuOpen(false);
+	closeContextMenu();
 	setLastCopyCommand(command);
 
 	const isPick = !isConsoleCommand(command);
@@ -560,6 +617,89 @@ function setPickerActive(active: boolean): void {
 
 	showHint('picking');
 	sendToPage({ kind: 'enablePicker', preferAttributes: settings.preferAttributes });
+}
+
+// -- context menu ----------------------------------------------------------------------------
+
+function contextMenuItems(): HTMLButtonElement[] {
+	return Array.from(contextMenu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'));
+}
+
+/**
+ * `at` is where the click was, in the top document's viewport: the page has already added what
+ * every frame it went through contributes, so the only thing left is where the frame itself
+ * sits in this document.
+ */
+function openContextMenu(at: PagePoint, descriptor: string): void {
+	setMenuOpen(false);
+	contextMenuHeader.textContent = descriptor;
+	// Unhidden before it is measured: a `[hidden]` element has no size to place it by. Nothing
+	// is painted in between, since both happen in this one turn.
+	contextMenu.hidden = false;
+	contextMenuOpen = true;
+
+	const frame = iframe.getBoundingClientRect();
+	const width = contextMenu.offsetWidth;
+	const height = contextMenu.offsetHeight;
+	const wanted = { x: frame.left + at.x, y: frame.top + at.y };
+	// Flipped above the cursor rather than pushed up when there is no room below it: pushing it
+	// up puts an entry the click never aimed at under the pointer.
+	contextMenu.style.left = `${Math.max(2, Math.min(wanted.x, window.innerWidth - width - 2))}px`;
+	contextMenu.style.top = `${wanted.y + height + 2 <= window.innerHeight
+		? wanted.y
+		: Math.max(2, wanted.y - height)}px`;
+
+	// The menu takes the keyboard, so Escape and the arrow keys reach it rather than the page.
+	contextMenuItems()[0]?.focus();
+}
+
+function closeContextMenu(options?: { readonly keepTarget?: boolean }): void {
+	if (!contextMenuOpen) {
+		return;
+	}
+	contextMenuOpen = false;
+	contextMenu.hidden = true;
+	if (!options?.keepTarget) {
+		// The page is still outlining the element this menu was about.
+		sendToPage({ kind: 'clearContextTarget' });
+	}
+}
+
+/**
+ * The element is never sent up with the click — describing one is the expensive half of a pick,
+ * and most right-clicks end in no command at all — so the page is asked for it here, and holds
+ * on to it in the meantime.
+ */
+function runContextCommand(command: ContextMenuCommand): void {
+	if (command === 'inspect') {
+		closeContextMenu();
+		vscode.postMessage({ type: 'openDevTools' });
+		return;
+	}
+
+	closeContextMenu({ keepTarget: true });
+
+	if (isConsoleCommand(command)) {
+		runCopyCommand(command);
+		return;
+	}
+
+	setLastCopyCommand(command);
+	pickCommand = command;
+	awaitingContextPick = true;
+	showHint('waiting', 'Reading the element…');
+	sendToPage({ kind: 'pickContextTarget' });
+
+	// The element can be gone by now — a menu is open for as long as the user wants — and a
+	// page with nothing to report says nothing at all.
+	clearTimeout(contextPickTimer);
+	contextPickTimer = setTimeout(() => {
+		if (!awaitingContextPick) {
+			return;
+		}
+		awaitingContextPick = false;
+		showHint('error', 'That element is no longer on the page.');
+	}, 5000);
 }
 
 // -- hint bar --------------------------------------------------------------------------------
@@ -632,6 +772,8 @@ onceDocumentLoaded(() => {
 	}, 50);
 
 	iframe.addEventListener('load', () => {
+		// The document the menu was opened on is gone, and with it the element it named.
+		closeContextMenu({ keepTarget: true });
 		// Ask the document that just loaded whether the agent is in it, rather than reading
 		// that off the order two processes happened to report things in. Only an answer to
 		// *this* question counts, so a document that has since been left cannot answer for the
@@ -672,22 +814,35 @@ onceDocumentLoaded(() => {
 		});
 	}
 
-	// Arrow keys inside the menu, the way a menu is expected to behave.
-	copyMenu.addEventListener('keydown', event => {
-		if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') {
-			return;
-		}
-		event.preventDefault();
-		const items = menuItems();
-		const index = items.indexOf(document.activeElement as HTMLButtonElement);
-		const next = event.key === 'ArrowDown' ? index + 1 : index - 1;
-		items[(next + items.length) % items.length]?.focus();
-	});
+	for (const item of contextMenuItems()) {
+		item.addEventListener('click', () => {
+			runContextCommand(item.dataset.command as ContextMenuCommand);
+		});
+	}
+
+	// Arrow keys inside a menu, the way a menu is expected to behave.
+	for (const [menu, items] of [[copyMenu, menuItems], [contextMenu, contextMenuItems]] as const) {
+		menu.addEventListener('keydown', event => {
+			if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') {
+				return;
+			}
+			event.preventDefault();
+			const entries = items();
+			const index = entries.indexOf(document.activeElement as HTMLButtonElement);
+			const next = event.key === 'ArrowDown' ? index + 1 : index - 1;
+			entries[(next + entries.length) % entries.length]?.focus();
+		});
+	}
 
 	document.addEventListener('click', event => {
 		const target = event.target as Node;
 		if (isMenuOpen() && !copyMenu.contains(target) && !copyMenuToggle.contains(target)) {
 			setMenuOpen(false);
+		}
+		// A click inside the page closes it too, but that one is the page's to report: this
+		// document hears nothing of what happens inside the frame.
+		if (contextMenuOpen && !contextMenu.contains(target)) {
+			closeContextMenu();
 		}
 	});
 
@@ -698,6 +853,11 @@ onceDocumentLoaded(() => {
 		if (isMenuOpen()) {
 			setMenuOpen(false);
 			copyMenuToggle.focus();
+		} else if (contextMenuOpen) {
+			// The menu has the keyboard, so this is where Escape arrives; the page hands back
+			// the one that happens while the focus is still inside it.
+			closeContextMenu();
+			iframe.focus();
 		} else if (pickerActive) {
 			// The iframe swallows Escape while it has focus, so also listen here.
 			setPickerActive(false);

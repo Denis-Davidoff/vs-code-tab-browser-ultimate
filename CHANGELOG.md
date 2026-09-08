@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **A context menu in the page.** A right-click opens the copy menu's element entries for the
+  element under the cursor — report, XPath or CSS path, to the clipboard or to an assistant —
+  plus **Inspect element**, which opens the editor's developer tools. The element is outlined
+  while the menu is open. A page with a context menu of its own keeps it, and
+  `tabBrowser.contextMenu.enabled` turns the whole thing off.
+
 ## 0.3.4
 
 - Both connect dialogs can copy a **connection prompt**: the server's address, the command that

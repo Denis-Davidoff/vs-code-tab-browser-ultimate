@@ -1,5 +1,5 @@
 /*---------------------------------------------------------------------------------------------
- *  The webview chrome: toolbar, address bar, copy menu and hint bar.
+ *  The webview chrome: toolbar, address bar, the two menus and the hint bar.
  *--------------------------------------------------------------------------------------------*/
 
 :root {
@@ -162,7 +162,7 @@ iframe {
 	display: block;
 }
 
-/* -- copy menu ------------------------------------------------------------------------------ */
+/* -- the copy menu and the page's context menu ----------------------------------------------- */
 
 .controls .copy-menu-container {
 	position: relative;
@@ -239,11 +239,12 @@ body.picking .controls .copy-action-button {
 	background: var(--vscode-inputOption-activeBackground, var(--vscode-toolbar-hoverBackground));
 }
 
-.controls .copy-menu {
-	position: absolute;
-	top: calc(100% + 4px);
-	right: 0;
-	z-index: 10;
+/* The look of both menus. The context menu is placed at the cursor and therefore lives outside
+   the toolbar, so its rules are spelled out next to the copy menu's rather than shared through
+   one selector: inside `.controls`, `.controls button` is the more specific selector for half of
+   the properties below, and outside it there is nothing to be more specific than. */
+.controls .copy-menu,
+.context-menu {
 	min-width: 200px;
 	padding: 4px 0;
 	border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border, transparent));
@@ -252,11 +253,44 @@ body.picking .controls .copy-action-button {
 	box-shadow: 0 4px 12px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
 }
 
-.controls .copy-menu[hidden] {
+.controls .copy-menu {
+	position: absolute;
+	top: calc(100% + 4px);
+	right: 0;
+	z-index: 10;
+}
+
+/* Positioned by the script, at the point in the page that was right-clicked. */
+.context-menu {
+	position: fixed;
+	left: 0;
+	top: 0;
+	z-index: 20;
+	max-width: 360px;
+}
+
+.controls .copy-menu[hidden],
+.context-menu[hidden] {
 	display: none;
 }
 
-.controls .copy-menu button {
+/* What the actions are about, since the menu is not next to the element it acts on. */
+.context-menu .menu-header {
+	max-width: 100%;
+	box-sizing: border-box;
+	padding: 2px 12px 5px;
+	margin-bottom: 4px;
+	border-bottom: 1px solid var(--vscode-menu-separatorBackground, var(--vscode-widget-border, transparent));
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: 0.9em;
+	color: var(--vscode-descriptionForeground, var(--vscode-menu-foreground, var(--vscode-foreground)));
+}
+
+.controls .copy-menu button,
+.context-menu button {
 	display: flex;
 	align-items: center;
 	justify-content: flex-start;
@@ -277,19 +311,22 @@ body.picking .controls .copy-action-button {
 	outline-offset: -1px;
 }
 
-.controls .copy-menu button .codicon {
+.controls .copy-menu button .codicon,
+.context-menu button .codicon {
 	font-size: var(--icon-size);
 	line-height: var(--icon-size);
 	opacity: 0.9;
 }
 
-.controls .copy-menu-separator {
+.controls .copy-menu .menu-separator,
+.context-menu .menu-separator {
 	height: 1px;
 	margin: 4px 0;
 	background: var(--vscode-menu-separatorBackground, var(--vscode-widget-border, transparent));
 }
 
-.controls .copy-menu button .copy-menu-label {
+.controls .copy-menu button .menu-label,
+.context-menu button .menu-label {
 	margin-right: 16px;
 }
 
@@ -304,7 +341,9 @@ body.picking .controls .copy-action-button {
 }
 
 .controls .copy-menu button:hover,
-.controls .copy-menu button:focus-visible {
+.controls .copy-menu button:focus-visible,
+.context-menu button:hover,
+.context-menu button:focus-visible {
 	cursor: pointer;
 	color: var(--vscode-menu-selectionForeground, var(--vscode-foreground));
 	background: var(--vscode-menu-selectionBackground, var(--vscode-toolbar-hoverBackground));
