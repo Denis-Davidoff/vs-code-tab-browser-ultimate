@@ -104,7 +104,13 @@ export async function checkMcp(state: McpState, browser: BrowserController): Pro
 		'',
 		vscode.l10n.t("VS Code chat: {0}", vsCodeLine()),
 		vscode.l10n.t("Claude Code (.mcp.json): {0}", clientLine(claude)),
-		vscode.l10n.t("Codex (config.toml): {0}", clientLine(codex)),
+		vscode.l10n.t("Codex (config.toml): {0}", clientLine(codex.state)),
+		// Two entries of ours is one server offered twice, which Codex starts twice.
+		...(codex.ours.length > 1
+			? [vscode.l10n.t(
+				"Codex has {0} entries for this extension ({1}), so it lists every browser tool once per entry. Removing the ones you do not want takes `codex mcp remove <name>`.",
+				codex.ours.length, codex.ours.join(', '))]
+			: []),
 		// `claude mcp add` writes to Claude Code's own settings, which are not ours to read.
 		...(claude === 'none'
 			? [vscode.l10n.t("A connection added with \"claude mcp add\" lives in Claude Code's own settings and cannot be seen from here; /mcp shows it.")]
@@ -116,7 +122,7 @@ export async function checkMcp(state: McpState, browser: BrowserController): Pro
 	const fixCodex = vscode.l10n.t("Connect Codex");
 	const actions = [
 		...(claude === 'thisServer' ? [] : [fixClaude]),
-		...(codex === 'thisServer' ? [] : [fixCodex]),
+		...(codex.state === 'thisServer' ? [] : [fixCodex]),
 	];
 
 	const show = answer.ok ? vscode.window.showInformationMessage : vscode.window.showWarningMessage;
@@ -269,14 +275,18 @@ export function claudeClientState(
  * them is judged on its own: the entries carry different names per project, so one config can
  * hold several and the best of them is what Codex ends up using.
  */
-async function codexState(url: string, urlWithToken: string): Promise<ClientState> {
+async function codexState(
+	url: string,
+	urlWithToken: string,
+): Promise<{ readonly state: ClientState; readonly ours: readonly string[] }> {
 	const folder = vscode.workspace.workspaceFolders?.[0];
 	const files = [
 		...(folder ? [vscode.Uri.joinPath(folder.uri, '.codex', 'config.toml')] : []),
 		vscode.Uri.file(path.join(os.homedir(), '.codex', 'config.toml')),
 	];
 
-	return codexClientState(await Promise.all(files.map(readFile)), url, urlWithToken);
+	const texts = await Promise.all(files.map(readFile));
+	return { state: codexClientState(texts, url, urlWithToken), ours: codexOurEntries(texts) };
 }
 
 /** `texts` in order of precedence: the project's config first, the global one after it. */
@@ -304,6 +314,34 @@ export function codexClientState(
 	}
 
 	return state;
+}
+
+/**
+ * The entries of ours Codex would *start*, whichever endpoint they name. More than one is the
+ * mark of a project that was connected globally by a version that had the "Add to Codex
+ * globally" button and has been connected again since: the entry that button wrote carries the
+ * bare name, the command that replaced it carries the project's, and Codex runs both — every
+ * browser tool listed twice, and an assistant free to call either.
+ *
+ * Reported rather than repaired, and rather than left to rot. `~/.codex/config.toml` belongs to
+ * `codex mcp add`; writing an `enabled = false` into somebody's global config decides for them,
+ * and leaving the duplicate on an old port would only turn tools that work into tools that
+ * answer 401. What the user can do about it takes one command, so that is what they are told.
+ */
+export function codexOurEntries(texts: readonly (string | undefined)[]): string[] {
+	const names: string[] = [];
+
+	for (const text of texts) {
+		for (const entry of text ? codexEntries(text) : []) {
+			if (!entry.name.startsWith(serverName) || names.includes(entry.name)
+				|| entry.values.get('enabled') === 'false' || !entry.values.get('url')) {
+				continue;
+			}
+			names.push(entry.name);
+		}
+	}
+
+	return names;
 }
 
 function codexEntryState(entry: CodexEntry, url: string, urlWithToken: string): ClientState {

@@ -130,7 +130,8 @@ const { McpServer } = await import('./.bundles/mcp-bundle.mjs');
 const { BrowserController } = await import('./.bundles/controller-bundle.mjs');
 const { connectToClaudeCode, connectToCodex, codexEntryName } =
 	await import('./.bundles/mcp-setup-bundle.mjs');
-const { claudeClientState, codexClientState } = await import('./.bundles/mcp-check-bundle.mjs');
+const { claudeClientState, codexClientState, codexOurEntries } =
+	await import('./.bundles/mcp-check-bundle.mjs');
 const { codexEntries } = await import('./.bundles/codex-toml-bundle.mjs');
 const { refreshedClaudeConfig, refreshedCodexConfig, refreshClientConfigs } =
 	await import('./.bundles/mcp-refresh-bundle.mjs');
@@ -1813,6 +1814,25 @@ check('a name defined in both files is read from the project, which is the more 
 		`[mcp_servers.tab-browser]\nurl = "http://127.0.0.1:43999/mcp"\n`,
 		`[mcp_servers.tab-browser]\nurl = "${checkUrlWithToken}"\n`)
 	=== 'otherServer');
+
+// Two entries of ours is one server offered twice, and Codex starts both: every browser tool
+// listed once per entry, and an assistant free to call either. It cannot be repaired away —
+// `~/.codex/config.toml` is `codex mcp add`'s, and leaving the duplicate on an old port would
+// turn tools that work into tools that answer 401 — so the check says it out loud instead.
+const twoOfOurs = [
+	undefined,
+	`[mcp_servers.tab-browser]\nurl = "${checkUrlWithToken}"\n\n`
+	+ `[mcp_servers.tab-browser-app-a1b2c3]\nurl = "${checkUrlWithToken}"\n\n`
+	+ `[mcp_servers.tab-browser-old]\nurl = "${checkUrl}/stale"\nenabled = false\n\n`
+	+ `[mcp_servers.something_else]\ncommand = "node"\n`,
+];
+check('every entry of ours that Codex would start is counted, and only those',
+	codexOurEntries(twoOfOurs).join() === 'tab-browser,tab-browser-app-a1b2c3',
+	JSON.stringify(codexOurEntries(twoOfOurs)));
+
+check('one entry is not a duplicate, and neither is none',
+	codexOurEntries([undefined, `[mcp_servers.tab-browser]\nurl = "${checkUrlWithToken}"\n`]).length === 1
+	&& codexOurEntries([undefined, undefined]).length === 0);
 
 check('a Codex config with no tab browser in it says so',
 	codexState('[mcp_servers.other]\nurl = "http://127.0.0.1:1/mcp"\n', undefined) === 'none');

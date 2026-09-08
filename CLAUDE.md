@@ -362,10 +362,16 @@ until that window's own server starts and repairs it — the per-workspace token
 in between into a 401 rather than a wrong-project session. And a project that was connected
 globally by a version that had the "Add to Codex globally" button, then connected again since,
 has two entries in `~/.codex/config.toml` — the bare name and the per-project one — both of which
-this repairs, so Codex lists every browser tool twice. Removing one is not this extension's to do
-(`codex mcp add` owns that file, and the command that took entries back went with the button), and
-leaving the duplicate to go stale would only turn working duplicates into failing ones: whoever
-has it can drop it with `codex mcp remove tab-browser`.
+this repairs, so Codex lists every browser tool twice.
+
+That one is *reported* rather than fixed, which is the only honest option available:
+`~/.codex/config.toml` belongs to `codex mcp add` (and the code that took entries back went with
+the button), so writing an `enabled = false` into it decides for the user; and not repairing the
+duplicate would leave it enabled on an old port, turning tools that work into tools that answer
+401. So `codexOurEntries` counts the entries Codex would actually start and **Check connection**
+names them with the `codex mcp remove` that drops one — which also catches the entry under the
+naming an even earlier version used (`tab-browser-<slug>`, no hash), which nothing repairs and
+which is therefore already a dead duplicate.
 
 ## Terminal links
 
