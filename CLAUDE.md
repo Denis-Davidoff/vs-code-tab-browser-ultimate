@@ -110,9 +110,12 @@ so `test/host.test.mjs` covers the cases that only happen to someone else's conf
 half of it lives in `src/codexToml.ts`, because the check and the setup have to agree on what a
 table is: a header the setup fails to recognise (`[mcp_servers.tab-browser] # ours`) is one it
 writes a second time, and a file with the same table twice does not parse at all. For the same
-reason it tracks multi-line strings and records the line each value was read from: a
-`[mcp_servers.…]` inside somebody's `instructions = """…"""` is prose, and a writer that takes it
-for a table edits the middle of that prose — a config Codex then cannot parse at all.
+reason it reads a line in one quote-aware pass (`scanLine`) and records the line each value was
+read from: a `[mcp_servers.…]` inside somebody's `instructions = """…"""` is prose, and a writer
+that takes it for a table edits the middle of that prose — a config Codex then cannot parse at
+all. Which cuts both ways, and the counting version of this got it wrong in both directions: a
+triple quote inside a literal string (`note = 'use """ for prose'`) opens nothing, and read as
+if it did, the table this extension wrote goes unseen and connecting writes it a second time.
 
 Recent pages live in `workspaceState`: a dev url belongs to the project, not to the user.
 
@@ -144,7 +147,12 @@ Picking an element produces a `PickedElement`:
   and everything written *after* a nested rule becomes a rule of its own
   (`CSSNestedDeclarations`, no selector, no children) that belongs to the rule it sits in —
   dropped, those declarations are missing from the report and the value they set reads as the
-  browser's own.
+  browser's own. `@import` is the same trap one level up: the rules it brings in hang off the
+  rule's own `styleSheet` and not off `cssRules`, so a walk that only recurses into groups leaves
+  out everything a page imports — with nothing in `unreadableStyleSheets` to say the report is
+  short of it. Walked with the import's own conditions (`media`, `supports()`), since rules
+  brought in under a query that matches nothing apply to nothing, and with the sheets already
+  seen remembered, since imports can form a cycle.
 - `src/tabBrowserView.ts` formats it. The default `context` format is the report in the README;
   `css`, `xpath`, `both` and `json` remain, and "Copy element XPath" always writes an XPath
   regardless of the setting.
@@ -235,20 +243,21 @@ Which makes `ready` and the frame's own `load` event a race — two signals from
 in no fixed order, and read as bare flags either order lies: the panel holds a page it can read
 while mcp clients are told it cannot, or drives a page that has no agent in it at all.
 
-So the webview counts reports and how many of them a loaded document has been *credited* with.
-A report nobody has been credited with is this document's own — the one before it had already
-loaded when it arrived — and a `load` with nothing uncredited behind it is a document the proxy
-does not serve, since only the proxy puts that script in a document. But not immediately:
-that document is given `reportGrace` (150ms) to be heard from first, because a report crossing
-an ipc can arrive after the `load` of the document that sent it, and one arriving inside that
-window is credited to it rather than to the next document. A report arriving *later* than the
-window takes a write-off back but counts for the newest document, which is the one ambiguity
-left — deliberately resolved that way, since that is the order these arrive in when nothing
-goes wrong, and reporting a readable page as unreadable is the worse mistake.
+So the webview does not infer it from their order at all: it *asks*. Every `load` sends an
+`alive` command carrying a number, whichever document is holding the frame answers with that
+number, and only the current question's answer counts (`probeId` / `answeredProbe` in
+`preview-src/index.ts`). No answer within `probeTimeout` (150ms) is a document with no agent —
+silence is the only sign of one, since only the proxy puts that script in a document — and an
+answer arriving later than that takes the write-off back. A `ready` is an answer of its own
+kind, because only a document that has the agent can send one.
 
-Pairing them *by number* instead — the n-th report to the n-th document — is what silent
-documents make impossible: they report nothing to shift the pairing with, so an instrumented
-page loaded after one of them read as uninstrumented for as long as the panel stayed on it.
+Two ways of reading it off the timing were tried first and both were wrong. *By number* — the
+n-th report to the n-th document — breaks on any document that never reports: it shifts nothing
+to pair with, so an instrumented page loaded after a silent one read as uninstrumented for as
+long as the panel stayed on it. *By a window in time* — a report within 150ms of a load belongs
+to that load — credits a new page's report to the page before it, and then writes the new page
+off with its agent running. Both are in `test/host.test.mjs`, which walks a real frame through
+silent and instrumented documents in both orders.
 
 Both connect dialogs also offer the configuration as a *prompt* (`connectPrompt`): the one
 command that adds it, how it is picked up, and a check to run afterwards — short, because the
@@ -305,7 +314,13 @@ That file is also the one the *other windows* are in: each repairs a different e
 two starting at once would both write the text they read and the later one would undo the
 earlier one's repair, leaving a correctly configured client on somebody else's port. So its
 read-and-write is held under a lock file (`wx`, the one exclusive create every platform agrees
-about), with a takeover after ten seconds for the window that was killed while holding it. The shape of an entry is left as
+about), with a takeover after ten seconds for the window that was killed while holding it.
+
+That takeover is a race no arrangement of file operations settles — two windows can both find
+the same lock stale, and the second's removal then takes the first's *fresh* lock away. So
+holding the lock is not what a write is trusted on: each acquisition writes an id of its own,
+the write checks that the lock still carries it, and a write made under a lock that changed
+hands is *redone* from a fresh read rather than left standing over somebody else's. The shape of an entry is left as
 found for the same reason it is read that way in `mcpCheck`: a token in the url belongs to a
 client that cannot send a header, and one written as `${...}` or named by `bearer_token_env_var`
 is read from an environment this extension has no say over.

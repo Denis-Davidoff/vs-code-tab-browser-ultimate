@@ -63,7 +63,8 @@ export function codexEntries(text: string): CodexEntry[] {
 			return;
 		}
 
-		const line = withoutComment(raw).trim();
+		const scan = scanLine(raw);
+		const line = scan.code.trim();
 		if (!line) {
 			return;
 		}
@@ -71,7 +72,8 @@ export function codexEntries(text: string): CodexEntry[] {
 		// The rest of a value written over several lines. It belongs to the table its key was
 		// written in — and a `[` in it is an array, never a header.
 		if (open > 0) {
-			open += bracketDepth(line);
+			open += scan.depth;
+			multiline = scan.multiline;
 			if (current) {
 				current.endLine = at + 1;
 			}
@@ -100,8 +102,8 @@ export function codexEntries(text: string): CodexEntry[] {
 			return;
 		}
 
-		multiline = openedMultiline(pair[2]);
-		open = multiline ? 0 : Math.max(0, bracketDepth(pair[2]));
+		multiline = scan.multiline;
+		open = Math.max(0, scan.depth);
 		if (current) {
 			const key = unquote(pair[1].trim()).toLowerCase();
 			current.values.set(key, unquote(pair[2].trim()));
@@ -113,58 +115,76 @@ export function codexEntries(text: string): CodexEntry[] {
 	return entries;
 }
 
-/** The delimiter of a multi-line string this value opens and does not close, if any. */
-function openedMultiline(value: string): string | undefined {
-	return ['"""', "'''"].find(delimiter => (value.split(delimiter).length - 1) % 2 === 1);
-}
-
 /** The name in `[mcp_servers.<name>]`, or `undefined` for any other table header. */
 function mcpServerTableName(line: string): string | undefined {
 	const name = /^\[\s*mcp_servers\s*\.\s*([^\]]+?)\s*\]$/.exec(line)?.[1];
 	return name === undefined ? undefined : unquote(name);
 }
 
-/** What a line leaves open: `[` and `{` inside strings are text, not brackets. */
-function bracketDepth(line: string): number {
-	let quote: string | undefined;
-	let depth = 0;
+interface LineScan {
+	/** The line up to a `#` that opens a comment — a url can carry one inside a string. */
+	readonly code: string;
+	/** What the line leaves open in brackets: `[` and `{` inside a string are text. */
+	readonly depth: number;
+	/** The delimiter of a multi-line string the line opens and does not close. */
+	readonly multiline: string | undefined;
+}
 
-	for (const char of line) {
+/**
+ * One pass over a line, quotes and all, because everything else here depends on knowing which
+ * characters stand inside a string: a `#` in a url opens no comment, a `[` in a value starts no
+ * array, and a triple quote inside a literal string — `note = 'use """ for prose'` — opens
+ * nothing at all. Counted as delimiters instead, that line reads as the start of a multi-line
+ * string and the rest of the file as its content: the table this extension wrote goes unseen,
+ * and connecting writes it a second time, which is a file Codex cannot parse at all.
+ */
+function scanLine(line: string): LineScan {
+	let depth = 0;
+	// What would close the string being read: one quote, or three of them.
+	let quote: string | undefined;
+
+	for (let at = 0; at < line.length;) {
+		const rest = line.slice(at);
+
 		if (quote) {
-			if (char === quote) {
+			if (rest.startsWith(quote)) {
+				at += quote.length;
 				quote = undefined;
+				continue;
 			}
-		} else if (char === '"' || char === '\'') {
-			quote = char;
-		} else if (char === '[' || char === '{') {
+			// A basic string takes escapes; a literal one (`'…'`) has none, a backslash included.
+			at += line[at] === '\\' && quote[0] === '"' ? 2 : 1;
+			continue;
+		}
+
+		if (rest.startsWith(tripleQuote) || rest.startsWith(tripleApostrophe)) {
+			quote = rest.slice(0, 3);
+			at += 3;
+			continue;
+		}
+		if (line[at] === '"' || line[at] === '\'') {
+			quote = line[at];
+			at++;
+			continue;
+		}
+		if (line[at] === '#') {
+			return { code: line.slice(0, at), depth, multiline: undefined };
+		}
+		if (line[at] === '[' || line[at] === '{') {
 			depth++;
-		} else if (char === ']' || char === '}') {
+		} else if (line[at] === ']' || line[at] === '}') {
 			depth--;
 		}
+		at++;
 	}
 
-	return depth;
+	// A single-quoted string left open is a line TOML would reject anyway; only the multi-line
+	// delimiters carry over to the lines that follow.
+	return { code: line, depth, multiline: quote?.length === 3 ? quote : undefined };
 }
 
-/** A `#` opens a comment unless it stands inside a string — and a url can carry one. */
-function withoutComment(line: string): string {
-	let quote: string | undefined;
-
-	for (let at = 0; at < line.length; at++) {
-		const char = line[at];
-		if (quote) {
-			if (char === quote) {
-				quote = undefined;
-			}
-		} else if (char === '"' || char === '\'') {
-			quote = char;
-		} else if (char === '#') {
-			return line.slice(0, at);
-		}
-	}
-
-	return line;
-}
+const tripleQuote = '"'.repeat(3);
+const tripleApostrophe = '\''.repeat(3);
 
 export function unquote(value: string): string {
 	return /^(["'])(.*)\1$/.exec(value)?.[2] ?? value;

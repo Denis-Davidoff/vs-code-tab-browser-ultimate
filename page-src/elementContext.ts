@@ -170,17 +170,28 @@ function buildSnapshot(element: Element): StyleSnapshot {
 	const visit = (
 		visitor: (rule: CSSStyleRule, conditions: readonly string[], selector: string) => void,
 	) => {
+		const context: WalkContext = {
+			visit: visitor,
+			// The same sheets are walked twice, once for what matches the element and once for
+			// what its ancestors pass down, so only the first pass counts.
+			onUnreadable: () => {
+				if (!counted) {
+					unreadableStyleSheets++;
+				}
+			},
+			walked: new Set<CSSStyleSheet>(),
+		};
+
 		for (const sheet of sheets) {
 			let rules: CSSRuleList | undefined;
 			try {
 				rules = sheet.cssRules;
 			} catch {
-				if (!counted) {
-					unreadableStyleSheets++;
-				}
+				context.onUnreadable();
 				continue;
 			}
-			walkRules(rules, [], visitor);
+			context.walked.add(sheet);
+			walkRules(rules, [], context);
 		}
 		counted = true;
 	};
@@ -265,10 +276,18 @@ function buildSnapshot(element: Element): StyleSnapshot {
 
 // -- rule walking --------------------------------------------------------------------------------
 
+interface WalkContext {
+	readonly visit: (rule: CSSStyleRule, conditions: readonly string[], selector: string) => void;
+	/** A sheet whose rules cannot be read at all, which the report has to say it is short of. */
+	readonly onUnreadable: () => void;
+	/** Sheets already walked, so a cycle of `@import`s cannot walk for ever. */
+	readonly walked: Set<CSSStyleSheet>;
+}
+
 function walkRules(
 	rules: CSSRuleList,
 	conditions: readonly string[],
-	visit: (rule: CSSStyleRule, conditions: readonly string[], selector: string) => void,
+	context: WalkContext,
 	/** Selector the rules are nested in, already resolved; the `&` of this level. */
 	parentSelector?: string,
 ): void {
@@ -278,11 +297,11 @@ function walkRules(
 
 		if (typeof styleRule.selectorText === 'string' && styleRule.style) {
 			const selector = resolveNestedSelector(styleRule.selectorText, parentSelector);
-			visit(styleRule, conditions, selector);
+			context.visit(styleRule, conditions, selector);
 			// Css nesting: a style rule can hold rules of its own, and they are the ones that
 			// actually apply to the children — `.card { & > button { … } }`.
 			if (group.cssRules?.length) {
-				walkRules(group.cssRules, conditions, visit, selector);
+				walkRules(group.cssRules, conditions, context, selector);
 			}
 			continue;
 		}
@@ -292,7 +311,16 @@ function walkRules(
 		// sits in. Skipped, those declarations vanish from the report — and being absent from
 		// what the page declares, the resolved value reads as the browser's own.
 		if (!styleRule.selectorText && styleRule.style && !group.cssRules && parentSelector) {
-			visit(styleRule, conditions, parentSelector);
+			context.visit(styleRule, conditions, parentSelector);
+			continue;
+		}
+
+		// `@import` is a whole stylesheet, and its rules hang off the rule's own `styleSheet`
+		// rather than off the rule: walked from `cssRules` alone, everything a page imports is
+		// missing from the report, and the values those rules set read as the browser's own —
+		// with nothing in `unreadableStyleSheets` to say the report is short of anything.
+		if ('styleSheet' in rule) {
+			walkImport(rule as CSSImportRule, conditions, context, parentSelector);
 			continue;
 		}
 
@@ -306,9 +334,71 @@ function walkRules(
 		walkRules(
 			group.cssRules,
 			condition ? [...conditions, condition] : conditions,
-			visit,
+			context,
 			parentSelector);
 	}
+}
+
+/**
+ * The sheet an `@import` brought in, under the conditions the import itself carries: a media
+ * query that does not match, or a `supports()` this browser does not have, is a sheet whose
+ * rules apply to nothing — reporting them as matched would be worse than leaving them out.
+ *
+ * A cross-origin import is unreadable by design, exactly like a cross-origin `<link>`, so it is
+ * counted rather than passed over in silence.
+ */
+function walkImport(
+	rule: CSSImportRule,
+	conditions: readonly string[],
+	context: WalkContext,
+	parentSelector?: string,
+): void {
+	const supports = rule.supportsText;
+	if (supports) {
+		try {
+			if (!CSS.supports(supports)) {
+				return;
+			}
+		} catch {
+			// Unreadable as a condition; the rules stay, marked with it.
+		}
+	}
+
+	const media = rule.media?.mediaText;
+	if (media && media !== 'all') {
+		try {
+			if (!matchMedia(media).matches) {
+				return;
+			}
+		} catch {
+			// Cannot be evaluated here, so it is kept and said out loud.
+		}
+	}
+
+	const imported = rule.styleSheet;
+	if (!imported || context.walked.has(imported)) {
+		// No sheet at all is one that has not arrived, or one the browser refused.
+		if (!imported) {
+			context.onUnreadable();
+		}
+		return;
+	}
+	context.walked.add(imported);
+
+	let rules: CSSRuleList;
+	try {
+		rules = imported.cssRules;
+	} catch {
+		context.onUnreadable();
+		return;
+	}
+
+	const carried = [
+		...conditions,
+		...(supports ? [`@supports ${supports}`] : []),
+		...(media && media !== 'all' ? [`@media ${media}`] : []),
+	];
+	walkRules(rules, carried, context, parentSelector);
 }
 
 /**

@@ -238,6 +238,17 @@ function install(): void {
 				return;
 			}
 
+			case 'alive': {
+				if (event.source && event.source !== window && event.source !== window.parent) {
+					return;
+				}
+				// Answered by whichever document is holding the frame when the question
+				// arrives, which is the whole point of asking: the webview cannot tell a
+				// document with no agent from one whose report has not arrived yet.
+				send({ kind: 'alive', probeId: message.probeId });
+				return;
+			}
+
 			case 'collectConsole': {
 				if (event.source && event.source !== window && event.source !== window.parent) {
 					return;

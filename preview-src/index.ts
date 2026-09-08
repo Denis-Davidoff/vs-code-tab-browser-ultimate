@@ -78,35 +78,26 @@ let consoleRequestTimer: ReturnType<typeof setTimeout> | undefined;
 /** The menu entry the pending console request came from. */
 let consoleCommand: CopyCommand = 'console';
 /**
- * Reports that have arrived, and how many of them a loaded document has already been credited
- * with. A document reports once, at its own `DOMContentLoaded`, and only the proxy puts that
- * script in a document — so an uncredited report is the newest thing known about the frame,
- * and a `load` with nothing uncredited behind it is a document that carries no agent.
+ * Whether the document in the frame carries the injected agent cannot be read off the order two
+ * processes report things in. A document reports in at its own `DOMContentLoaded`, but only a
+ * document the proxy serves reports at all — so the panel would have to read *silence* as "no
+ * agent", and silence has no moment it can be measured from: the frame's `load` event can
+ * arrive before the report of the very same document, and a report can arrive just before the
+ * `load` of the *next* one. Pairing the two by number — the n-th report to the n-th document —
+ * breaks on any document that never reports, and reading a time window instead credits a new
+ * page's report to the page before it. Both of those have been seen.
  *
- * The two events come from two processes with nothing ordering them, which is why the second
- * half of that is not read off the counts as they stand: a report still in flight would make
- * an instrumented page look like one the proxy does not serve. So a document is given
- * `reportGrace` to be heard from before it is written off, and a report arriving later than
- * that takes the write-off back. Pairing them by number instead — the n-th report to the n-th
- * document — is what silent documents make impossible: they report nothing to shift the
- * pairing with, so everything after one of them read as uninstrumented.
- *
- * Which leaves one case the two events cannot be told apart in: a report arriving *later* than
- * `reportGrace` after a load, with nothing else having happened. It could be that document,
- * heard from very late, or the first word of one that is loading right now — and it is read as
- * the latter, because that is the order these arrive in when nothing goes wrong, and because
- * being wrong the other way is the worse of the two: a page the panel can read perfectly well
- * reported as one it cannot. Where they *can* be told apart is inside the grace window, which
- * is the only place a late report has ever been seen: an ipc, not a third of a second.
- *
- * Both counts are reset by a navigation the host resolves, the one moment where the frame is
- * known to be starting over.
+ * So the frame is *asked*, once per `load`, and only an answer carrying that question's number
+ * counts: whichever document is holding the frame answers, an answer for a question that has
+ * been superseded is ignored, and no answer at all is a document with no agent in it. A `ready`
+ * is an answer of its own kind — it can only come from a document that has the agent — and a
+ * late answer takes a write-off back.
  */
-let readyCount = 0;
-let creditedReports = 0;
+let probeId = 0;
+let answeredProbe = 0;
 let silenceTimer: ReturnType<typeof setTimeout> | undefined;
-/** How long after `load` a document may still report in before it is called uninstrumented. */
-const reportGrace = 150;
+/** How long the frame has to answer before the document in it is called uninstrumented. */
+const probeTimeout = 150;
 
 // -- messages --------------------------------------------------------------------------------
 
@@ -161,16 +152,10 @@ window.addEventListener('message', event => {
 function onAgentEvent(event: AgentEvent): void {
 	switch (event.kind) {
 		case 'ready': {
-			readyCount++;
-			if (silenceTimer) {
-				// The document that just loaded, heard from a moment after its own `load`
-				// event: two processes, and this report has an ipc to cross. It belongs to
-				// that document and not to the next one, so it is credited to it here — and
-				// there is nothing left to write off.
-				clearTimeout(silenceTimer);
-				silenceTimer = undefined;
-				creditedReports = readyCount;
-			}
+			// A report can only come from a document that has the agent in it, so whatever the
+			// frame was about to be written off for, it is not that.
+			answeredProbe = probeId;
+			clearSilenceTimer();
 			// Only the proxy puts this script in a document, so a document that reports in is
 			// instrumented by definition — including when the frame's `load` event won this
 			// race and has already written the document off as a page we do not serve.
@@ -212,6 +197,21 @@ function onAgentEvent(event: AgentEvent): void {
 
 		case 'navigated':
 			setDisplayUrl(event.documentUrl);
+			break;
+
+		case 'alive':
+			// The answer to a question that has since been superseded is about a document the
+			// frame has already left, and says nothing about the one in it now.
+			if (event.probeId !== probeId) {
+				break;
+			}
+			answeredProbe = probeId;
+			clearSilenceTimer();
+			// Late, and the document has already been written off: take that back.
+			if (!isInstrumented) {
+				isInstrumented = true;
+				reportState();
+			}
 			break;
 
 		case 'result':
@@ -302,6 +302,11 @@ function endConsoleRequest(): void {
 	}
 }
 
+function clearSilenceTimer(): void {
+	clearTimeout(silenceTimer);
+	silenceTimer = undefined;
+}
+
 function sendToPage(command: AgentCommand): void {
 	iframe.contentWindow?.postMessage(packAgentMessage(command), '*');
 }
@@ -332,11 +337,11 @@ function onDidResolveUrl(message: Extract<ExtensionToWebviewMessage, { type: 'di
 	pageReady = false;
 	resolvedOnce = true;
 	// The frame is starting over, so what is known about the document it was showing goes with
-	// it — including a write-off that has not been decided yet.
-	readyCount = 0;
-	creditedReports = 0;
-	clearTimeout(silenceTimer);
-	silenceTimer = undefined;
+	// it — including a write-off that has not been decided yet, and an answer still in flight
+	// for the document being left.
+	probeId++;
+	answeredProbe = 0;
+	clearSilenceTimer();
 	endConsoleRequest();
 	reportState();
 
@@ -583,29 +588,27 @@ onceDocumentLoaded(() => {
 	}, 50);
 
 	iframe.addEventListener('load', () => {
-		// A report that no loaded document has been credited with yet is this document's own:
-		// the one before it had already loaded when that report arrived.
-		if (readyCount > creditedReports) {
-			creditedReports = readyCount;
-			return;
-		}
+		// Ask the document that just loaded whether the agent is in it, rather than reading
+		// that off the order two processes happened to report things in. Only an answer to
+		// *this* question counts, so a document that has since been left cannot answer for the
+		// one on screen.
+		probeId++;
+		sendToPage({ kind: 'alive', probeId });
 
-		// Nothing has reported since the document before this one, so either the frame has
-		// navigated somewhere the proxy does not serve — no agent in it, and a copy command
-		// has to reload through the proxy rather than wait for silence — or the report of this
-		// one is still on its way from another process. Hence the wait before writing it off;
-		// a report that arrives after it still takes the write-off back.
-		clearTimeout(silenceTimer);
+		clearSilenceTimer();
 		silenceTimer = setTimeout(() => {
 			silenceTimer = undefined;
-			if (readyCount > creditedReports) {
-				creditedReports = readyCount;
+			if (answeredProbe === probeId) {
 				return;
 			}
+			// Nobody answered: the frame has navigated somewhere the proxy does not serve, so
+			// there is no agent in this document and a copy command has to reload through the
+			// proxy rather than wait for silence. An answer that arrives after this takes it
+			// back — a page held up long enough to miss the question is still a page we serve.
 			isInstrumented = false;
 			pageReady = false;
 			reportState();
-		}, reportGrace);
+		}, probeTimeout);
 	});
 
 	input.addEventListener('change', event => {

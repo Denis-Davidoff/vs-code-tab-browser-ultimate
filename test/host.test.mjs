@@ -150,6 +150,8 @@ const page_html = `<!DOCTYPE html>
 <link rel="icon" sizes="16x16" href="/small.png">
 <link rel="icon" type="image/svg+xml" href="/icon.svg">
 <style>
+	@import url("/imported.css");
+	@import url("/imported.css") (min-width: 99999px);
 	*, ::before, ::after { box-sizing: border-box; border: 0 solid; margin: 0; padding: 0; }
 	button, input, select, textarea { font: inherit; color: inherit; }
 	.app { font-family: Inter, sans-serif; font-size: 14px; color: rgb(17, 17, 17); --brand: #415aa3; }
@@ -253,19 +255,40 @@ const server = http.createServer((req, res) => {
 	}
 	// A redirect to something that is not a url. A browser refuses it; what matters here is that
 	// the refusal happens where it can be caught.
+	// A stylesheet a page brings in with `@import`, whose rules hang off the import rule rather
+	// than off the sheet that names it.
+	if (req.url === '/imported.css') {
+		res.writeHead(200, { 'content-type': 'text/css; charset=utf-8' });
+		res.end('input#email { letter-spacing: 0.35px; }\n'
+			+ '@media (min-width: 1px) { input#email { text-indent: 2px; } }\n');
+		return;
+	}
 	if (req.url === '/broken-redirect') {
 		res.writeHead(302, { location: 'http://[' });
 		res.end();
 		return;
 	}
-	// A document that reports in while it is still parsing, which is the usual order: the agent
-	// sends `ready` at `DOMContentLoaded`, long before the frame's `load` event.
+	// A document carrying the real agent, which reports in while it is still parsing — the usual
+	// order, `ready` at `DOMContentLoaded` and long before the frame's own `load` event. The real
+	// one, so that what answers the panel's question is the code that has to answer it.
 	if (req.url.startsWith('/reporting-frame')) {
 		res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-		res.end(`<!DOCTYPE html><html><head><script>
-			parent.postMessage({ __tabBrowserAgent: true, kind: 'ready',
-				documentUrl: 'http://127.0.0.1:1/reported' }, '*');
-		</script></head><body>reports at once</body></html>`);
+		res.end('<!DOCTYPE html><html><head>'
+			+ `<script>window.__tabBrowserConfig = { realOrigin: 'http://127.0.0.1:1' };</script>`
+			+ '<script src="/agent.js"></script>'
+			+ '<title>reported</title></head><body>reports at once'
+			// An image nobody is in a hurry to send, so that `ready` — which goes out at
+			// `DOMContentLoaded` — is well ahead of the frame's `load` event. Which order those
+			// two arrive in is otherwise a matter of microseconds, and the case worth testing is
+			// the one where the report comes first.
+			+ '<img src="/slow-image" alt=""></body></html>');
+		return;
+	}
+	if (req.url === '/slow-image') {
+		setTimeout(() => {
+			res.writeHead(200, { 'content-type': 'image/png' });
+			res.end(pngBytes);
+		}, 200);
 		return;
 	}
 	// A page carrying the agent with a cookie prefix set, i.e. what the proxy serves.
@@ -497,7 +520,21 @@ try {
 		await settle();
 		const afterThirdLoad = lastState();
 
-		return { afterReady, afterSecondLoad, afterThirdLoad };
+		// And the same turn taken fast: the frame leaves a document with no agent while the
+		// panel is still waiting to hear from it, and the page it arrives at reports in inside
+		// that wait. Read as a window in time rather than as an answer to a question, that
+		// report belongs to the document that has already been left — and the page that sent it
+		// is written off a moment later, with its agent running.
+		const silentAgain = new Promise(resolve => frame.addEventListener('load', resolve, { once: true }));
+		frame.src = `${origin}/silent-frame?third`;
+		await silentAgain;
+		const quickTurn = new Promise(resolve => frame.addEventListener('load', resolve, { once: true }));
+		frame.src = `${origin}/reporting-frame?quick`;
+		await quickTurn;
+		await settle();
+		const afterQuickTurn = lastState();
+
+		return { afterReady, afterSecondLoad, afterThirdLoad, afterQuickTurn };
 	}, new URL(pageUrl).origin);
 	await panel.close();
 
@@ -595,12 +632,16 @@ check('a document with no agent is written off, and inherits no report',
 	panelState.afterSecondLoad?.instrumented === false
 	&& panelState.afterSecondLoad.ready === false, JSON.stringify(panelState.afterSecondLoad));
 
+check('a page reporting in right after a silent one is not written off with it',
+	panelState.afterQuickTurn?.instrumented === true && panelState.afterQuickTurn.ready === true,
+	JSON.stringify(panelState.afterQuickTurn));
+
 // A document with no agent reports nothing, so it cannot shift a pairing by number: read that
 // way, every document after one of them looked uninstrumented while the panel sat on a page it
 // could read perfectly well — and the address bar kept the url of the page before it.
 check('an instrumented page after a silent one is still instrumented',
 	panelState.afterThirdLoad?.instrumented === true && panelState.afterThirdLoad.ready === true
-	&& panelState.afterThirdLoad.url === 'http://127.0.0.1:1/reported',
+	&& panelState.afterThirdLoad.url.startsWith('http://127.0.0.1:1/reporting-frame'),
 	JSON.stringify(panelState.afterThirdLoad));
 
 // -- cookies a page sets itself -----------------------------------------------------------------
@@ -677,7 +718,7 @@ check('rules matching the element are collected in cascade order',
 check('a rule behind a pseudo class the element is not in still shows',
 	selectors.includes('.field-input:hover'), selectors.join(' | '));
 
-const mediaRule = styles.matched.find(rule => rule.conditions?.length);
+const mediaRule = styles.matched.find(rule => rule.declarations.includes('min-width: 0'));
 check('an applying media query is kept, with its condition',
 	mediaRule?.declarations.includes('min-width: 0') && mediaRule.conditions[0] === '@media (min-width: 1px)',
 	JSON.stringify(mediaRule));
@@ -717,6 +758,19 @@ check('an ampersand inside a string is left alone',
 check('a media query that does not apply is dropped',
 	!styles.matched.some(rule => rule.conditions?.some(condition => condition.includes('99999'))),
 	JSON.stringify(styles.matched.map(rule => rule.conditions)));
+
+// The rules an `@import` brings in belong to the report as much as any other: left out, the
+// values they set read as the browser's own, and nothing says the report is short of them. The
+// fixture imports the same sheet twice, the second time under a media query matching nothing —
+// so the check above, that nothing carries a `99999` condition, covers that half.
+check('rules a page imports are in the report',
+	styles.matched.some(rule => rule.declarations.includes('letter-spacing: 0.35px')),
+	JSON.stringify(styles.matched.map(rule => rule.declarations)));
+
+check('and the conditions an imported rule sits under travel with it',
+	styles.matched.some(rule => rule.declarations.includes('text-indent')
+		&& rule.conditions?.some(condition => condition.includes('min-width: 1px'))),
+	JSON.stringify(styles.matched.filter(rule => rule.declarations.includes('text-indent'))));
 
 check('shorthands survive as the page wrote them',
 	styles.matched.some(rule => /(^|; )padding: 4px 11px/.test(rule.declarations)),
@@ -1300,6 +1354,19 @@ check('connecting again replaces our table instead of adding a second one',
 	codexToml.split('[mcp_servers.tab-browser]').length === 2
 	&& codexToml.includes('[mcp_servers.something_else]'), codexToml);
 
+// The same table, in a file whose prose contains a triple quote. Missing it here is the case
+// that ends in a file with two `[mcp_servers.tab-browser]` tables, which does not parse.
+await fs.writeFile(codexConfig,
+	`note = 'Use ${'\u0022'.repeat(3)} to delimit strings.'\n\n`
+	+ '[mcp_servers.tab-browser]\nurl = "http://127.0.0.1:1/mcp/old"\n\n'
+	+ '[mcp_servers.something_else]\ncommand = "node"\n');
+await connectToCodex(mcp);
+codexToml = await fs.readFile(codexConfig, 'utf8');
+check('our table is found in a file whose prose carries a triple quote',
+	codexToml.split('[mcp_servers.tab-browser]').length === 2
+	&& codexToml.includes(mcp.urlWithToken) && !codexToml.includes('mcp/old')
+	&& codexToml.includes('[mcp_servers.something_else]'), codexToml);
+
 // A header is a header wherever TOML allows one to be written. Recognising ours only as a bare
 // line used to add a second table with the same name, which no longer parses at all.
 await fs.writeFile(codexConfig,
@@ -1443,6 +1510,16 @@ check('the url line of our own table is the one rewritten',
 	toml?.includes(`url = "${mcp.urlWithToken}"`)
 	&& toml.includes('url = "http://127.0.0.1:1/mcp/dead"'), toml);
 
+// The other way round: a triple quote inside a *literal* string (`'…'`) opens nothing, since
+// TOML reads those verbatim. Counted as a delimiter, it swallows the rest of the file — the
+// table below it goes unseen, and connecting then writes it a second time.
+const proseQuote = `[mcp_servers.other]\nnote = 'Use ${'\u0022'.repeat(3)} to delimit strings.'\n\n`
+	+ `[mcp_servers.tab-browser]\nurl = "${otherPort}/${mcpToken}"\n`;
+check('a triple quote inside a literal string opens no multi-line value',
+	codexEntries(proseQuote).map(entry => entry.name).join() === 'other,tab-browser'
+	&& refreshedProject(proseQuote)?.includes(mcp.urlWithToken) === true,
+	JSON.stringify(codexEntries(proseQuote).map(entry => entry.name)));
+
 check('a table of somebody else\'s is not repaired by name alone',
 	refreshedCodexConfig(codexProject(), mcp.url, mcpToken, { names: ['tab-browser-elsewhere'] })
 	=== undefined);
@@ -1523,6 +1600,43 @@ check('one holding another project\'s token is still not ours to move',
 
 check('and the lock is not left behind for the next window to wait on',
 	!await fs.access(`${sharedConfig}.lock`).then(() => true, () => false));
+
+// Two windows can both find the same lock stale — a machine that was asleep, a window that took
+// a moment — and then the second's takeover removes the first's *fresh* lock and both are inside
+// it. No arrangement of file operations settles that, so what the lock *carries* decides: the
+// window that lost it reads again and redoes its repair instead of writing over the other's.
+//
+// Which is a race between two processes, so it is staged here: one window is held up between
+// reading the shared config and writing it back — the window the race lives in — and its lock
+// is made to look abandoned while it waits.
+const abandoned = new Date(Date.now() - 60_000);
+await fs.writeFile(sharedConfig, `${codexTable(codexEntryName(folderA), `${otherPort}/${mcpToken}`)}\n`
+	+ codexTable(codexEntryName(folderB), `${otherPort}/${mcpToken}`));
+
+const realReadFile = globalThis.__vscodeStub.workspace.fs.readFile;
+let heldUp = false;
+globalThis.__vscodeStub.workspace.fs.readFile = async uri => {
+	const bytes = await realReadFile(uri);
+	if (uri.fsPath === sharedConfig && !heldUp) {
+		heldUp = true;
+		await fs.utimes(`${sharedConfig}.lock`, abandoned, abandoned);
+		await new Promise(resolve => setTimeout(resolve, 400));
+	}
+	return bytes;
+};
+
+workspaceFolders = [folderA];
+const heldWindow = refreshClientConfigs(mcp, sharedUri);
+// Long enough for it to have taken the lock and to be sitting in that read.
+await new Promise(resolve => setTimeout(resolve, 100));
+workspaceFolders = [folderB];
+const takingOver = refreshClientConfigs(mcp, sharedUri);
+await Promise.all([heldWindow, takingOver]);
+globalThis.__vscodeStub.workspace.fs.readFile = realReadFile;
+
+shared = await fs.readFile(sharedConfig, 'utf8');
+check('a repair is redone rather than lost when the lock changes hands',
+	shared.split(mcp.urlWithToken).length === 3 && !shared.includes('43999'), shared);
 
 // A lock nobody released is taken over — including one this process cannot simply delete, which
 // is what `.lock` being a *directory* is. Waiting on that one for good would be an activation

@@ -104,6 +104,12 @@ export type AgentCommand =
 	| { readonly kind: 'enablePicker'; readonly preferAttributes?: readonly string[] }
 	| { readonly kind: 'disablePicker' }
 	| { readonly kind: 'collectConsole'; readonly requestId: number }
+	/**
+	 * "Is there an agent in the document you are showing?" Asked after every `load` event,
+	 * because silence is the only sign of a document the proxy does not serve — and silence is
+	 * not something a *time* can be read off, so the answer carries the number of the question.
+	 */
+	| { readonly kind: 'alive'; readonly probeId: number }
 	| { readonly kind: 'request'; readonly requestId: number; readonly request: PageRequest };
 
 /** Injected page script -> parent frame -> webview. */
@@ -126,6 +132,8 @@ export type AgentEvent =
 		readonly error?: string;
 	}
 	| { readonly kind: 'pageError'; readonly message: string }
+	/** The answer to `alive`, from the document that was holding the frame when it was asked. */
+	| { readonly kind: 'alive'; readonly probeId: number }
 	| {
 		readonly kind: 'console';
 		readonly requestId: number;
