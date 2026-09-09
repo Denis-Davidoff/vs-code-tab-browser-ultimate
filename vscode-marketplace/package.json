@@ -1,8 +1,8 @@
 {
 	"name": "tab-browser-ultimate-promo",
 	"displayName": "AI Browser🏆 Claude + Codex",
-	"description": "Guide and installer for AI Browser — VS Code's built-in browser wired to Claude Code and Codex. The full build installs from the VSIX linked in this listing.",
-	"version": "0.5.2",
+	"description": "Embedded browser tab with AI capabilities, Claude and Codex integration",
+	"version": "0.5.3",
 	"publisher": "DenysDavydov",
 	"license": "MIT",
 	"icon": "media/icon.png",
