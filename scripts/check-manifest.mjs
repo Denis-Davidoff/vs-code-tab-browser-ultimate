@@ -121,6 +121,29 @@ if (new Set(actions).size !== actions.length) {
 	problems.push('two primary buttons share a lastElementAction value');
 }
 
+/*
+ * One chord drives the right-hand icon: nine bindings, same key, and the same
+ * mutually exclusive `when` set as the buttons. If a `when` drifted, the key
+ * would either fire nothing or fire two tools at once.
+ */
+const keybindings = contributes.keybindings ?? [];
+if (keybindings.length) {
+	const keys = new Set(keybindings.map(k => `${k.key}|${k.mac ?? ''}`));
+	if (keys.size !== 1) {
+		problems.push(`keybindings use ${keys.size} different chords; expected one`);
+	}
+	const boundWhens = keybindings.map(k => k.when).sort();
+	const buttonWhens = primaries.map(m => m.when).sort();
+	if (JSON.stringify(boundWhens) !== JSON.stringify(buttonWhens)) {
+		problems.push('keybinding conditions do not match the navigation@2 buttons');
+	}
+	for (const binding of keybindings) {
+		if (!commands.has(binding.command)) {
+			problems.push(`keybinding for unknown command ${binding.command}`);
+		}
+	}
+}
+
 if (problems.length) {
 	console.error(`check-manifest: ${problems.length} problem(s)`);
 	for (const problem of problems) {
@@ -130,4 +153,5 @@ if (problems.length) {
 }
 
 console.log(`check-manifest: ok — ${commands.size} commands, ${submenus.size} submenu(s), `
-	+ `${referenced.size} icon files, ${actions.length} primary buttons`);
+	+ `${referenced.size} icon files, ${actions.length} primary buttons, `
+	+ `${keybindings.length} keybindings`);

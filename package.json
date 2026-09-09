@@ -351,6 +351,62 @@
 				"id": "aiBrowserMcp",
 				"label": "AI Browser"
 			}
+		],
+		"keybindings": [
+			{
+				"command": "aiBrowser.copyElement",
+				"key": "ctrl+alt+c",
+				"mac": "cmd+alt+c",
+				"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'element'"
+			},
+			{
+				"command": "aiBrowser.copyElementCssPath",
+				"key": "ctrl+alt+c",
+				"mac": "cmd+alt+c",
+				"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'cssPath'"
+			},
+			{
+				"command": "aiBrowser.copyElementXPath",
+				"key": "ctrl+alt+c",
+				"mac": "cmd+alt+c",
+				"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'xpath'"
+			},
+			{
+				"command": "aiBrowser.addElementToClaudeCode",
+				"key": "ctrl+alt+c",
+				"mac": "cmd+alt+c",
+				"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'claude:element' && aiBrowser.claudeInstalled"
+			},
+			{
+				"command": "aiBrowser.addCssPathToClaudeCode",
+				"key": "ctrl+alt+c",
+				"mac": "cmd+alt+c",
+				"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'claude:cssPath' && aiBrowser.claudeInstalled"
+			},
+			{
+				"command": "aiBrowser.addXPathToClaudeCode",
+				"key": "ctrl+alt+c",
+				"mac": "cmd+alt+c",
+				"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'claude:xpath' && aiBrowser.claudeInstalled"
+			},
+			{
+				"command": "aiBrowser.addElementToCodex",
+				"key": "ctrl+alt+c",
+				"mac": "cmd+alt+c",
+				"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'codex:element' && aiBrowser.codexInstalled"
+			},
+			{
+				"command": "aiBrowser.addCssPathToCodex",
+				"key": "ctrl+alt+c",
+				"mac": "cmd+alt+c",
+				"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'codex:cssPath' && aiBrowser.codexInstalled"
+			},
+			{
+				"command": "aiBrowser.addXPathToCodex",
+				"key": "ctrl+alt+c",
+				"mac": "cmd+alt+c",
+				"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'codex:xpath' && aiBrowser.codexInstalled"
+			}
 		]
 	},
 	"scripts": {

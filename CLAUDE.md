@@ -384,6 +384,22 @@ evaluated before activation, so without it the context key is unset on a fresh w
 toolbar shows a lone chevron with no primary button. Two visually adjacent buttons is as close
 as an extension gets — they are not fused into one control the way Run/Debug is.
 
+**One chord drives whichever tool is active:** `Ctrl+Alt+C` / `Cmd+Alt+C`, contributed **nine
+times** — once per command, each carrying the same `when` as its button. Since those conditions
+are mutually exclusive, exactly one binding can match, so the key always runs what the
+right-hand icon shows. `check-manifest` verifies the nine share a chord and that their
+conditions match the buttons exactly; a drifted `when` would leave the key firing nothing, or
+two tools at once.
+
+Why this chord, after checking the VS Code sources for what is actually taken: `Cmd+Shift+C` is
+out because one of its holders is scoped `TerminalContextKeys.notFocus`, which is true in a
+browser tab, so it would collide with "Open New External Terminal" exactly where we need it.
+`Cmd+Alt+X` is the only mnemonic-adjacent chord with *zero* occurrences in the whole repository,
+but X means nothing here. `Cmd+Alt+C` is mnemonic (the whole feature copies things), and its
+existing holders are scoped to comments, chat, search and editor focus — none of which apply in
+a browser editor. Every binding is also scoped to `activeEditor == 'workbench.editor.browser'`,
+so it is inert everywhere else.
+
 **The `when` clause is the easy thing to get wrong.** It must be
 `activeEditor == 'workbench.editor.browser'`. The `activeEditor` context key holds the *editor
 (pane)* id — `BrowserEditorInput.EDITOR_ID`, i.e. `BrowserViewEditorId` from
