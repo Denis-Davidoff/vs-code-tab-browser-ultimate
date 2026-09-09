@@ -34,7 +34,8 @@
 		"onWebviewPanel:aiBrowser.view",
 		"onCommand:aiBrowser.copyElement",
 		"onCommand:aiBrowser.copyElementCssPath",
-		"onView:aiBrowser.tools"
+		"onView:aiBrowser.tools",
+		"onStartupFinished"
 	],
 	"capabilities": {
 		"virtualWorkspaces": true,
@@ -53,19 +54,28 @@
 				"command": "aiBrowser.copyElementXPath",
 				"title": "%command.copyElementXPath.title%",
 				"category": "%displayName%",
-				"icon": "$(inspect)"
+				"icon": {
+					"light": "media/icons/crosshair-green-light.svg",
+					"dark": "media/icons/crosshair-green-dark.svg"
+				}
 			},
 			{
 				"command": "aiBrowser.copyElement",
 				"title": "%command.copyElement.title%",
 				"category": "%displayName%",
-				"icon": "$(inspect)"
+				"icon": {
+					"light": "media/icons/crosshair-red-light.svg",
+					"dark": "media/icons/crosshair-red-dark.svg"
+				}
 			},
 			{
 				"command": "aiBrowser.copyElementCssPath",
 				"title": "%command.copyElementCssPath.title%",
 				"category": "%displayName%",
-				"icon": "$(symbol-color)"
+				"icon": {
+					"light": "media/icons/crosshair-blue-light.svg",
+					"dark": "media/icons/crosshair-blue-dark.svg"
+				}
 			}
 		],
 		"configuration": [
@@ -103,8 +113,23 @@
 		"menus": {
 			"editor/title": [
 				{
-					"submenu": "aiBrowser.elementMenu",
+					"command": "aiBrowser.copyElement",
 					"group": "navigation@1",
+					"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'element'"
+				},
+				{
+					"command": "aiBrowser.copyElementXPath",
+					"group": "navigation@1",
+					"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'xpath'"
+				},
+				{
+					"command": "aiBrowser.copyElementCssPath",
+					"group": "navigation@1",
+					"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'cssPath'"
+				},
+				{
+					"submenu": "aiBrowser.elementMenu",
+					"group": "navigation@2",
 					"when": "activeEditor == 'workbench.editor.browser'"
 				}
 			],
@@ -144,7 +169,7 @@
 			{
 				"id": "aiBrowser.elementMenu",
 				"label": "%submenu.elementMenu.label%",
-				"icon": "$(inspect)"
+				"icon": "$(chevron-down)"
 			}
 		]
 	},

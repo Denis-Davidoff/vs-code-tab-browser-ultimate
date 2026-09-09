@@ -301,6 +301,38 @@ a `contributes.submenus` entry (`aiBrowser.elementMenu`) placed into `editor/tit
 its default of `true`. **The `icon` on the submenu declaration is what makes it a toolbar
 button** — without one it collapses into the tab's overflow menu.
 
+**The element icons are custom SVGs, not codicons, and they have to be.** The three commands
+use a crosshair with a coloured centre — red for Copy Element, green for XPath, blue for CSS
+Path — from `media/icons/crosshair-{colour}-{light,dark}.svg`. A codicon could not do it: VS
+Code renders codicons as font glyphs and recolours them, so any colour baked into one is lost.
+A custom SVG is drawn as a `background-image` and keeps its own fills — but by the same token it
+cannot inherit `currentColor`, which is why the ring and ticks ship as a light/dark pair while
+the centre dot stays fixed. The activity bar container icon
+(`media/activity-icon.svg`) is the opposite case and must stay a flat `currentColor` shape,
+because that one *is* recoloured.
+
+[src/toolsView.ts](src/toolsView.ts) points its `TreeItem.iconPath` at the very same files, so
+the panel list and the browser tab cannot drift apart.
+
+**The primary button is a faked split button.** VS Code has the real thing —
+`isSplitButton: { togglePrimaryAction: true }` on a submenu item, rendered by
+`DropdownWithDefaultActionViewItem`, which even persists the last action under
+`${submenu.id}_lastActionId` — and the built-in browser uses it for its own "Add to Chat"
+button. Extensions cannot: `menusExtensionPoint.ts` builds an extension's submenu item as
+`{ submenu, icon, title, group, order, when }` and never sets that flag, and the manifest
+schema accepts only `submenu` / `when` / `group`.
+
+So instead: **three** primary buttons in `navigation@1`, each with a `when` on the
+`aiBrowser.lastElementAction` context key, so exactly one is ever visible; the dropdown sits
+beside them in `navigation@2` with a `$(chevron-down)` icon. [src/lastAction.ts](src/lastAction.ts)
+keeps the context key and a memento in step — the memento because a context key does not
+survive a restart. Each command records itself before running, in `extension.ts`.
+
+`onStartupFinished` is in `activationEvents` **for this to work at all**: `when` clauses are
+evaluated before activation, so without it the context key is unset on a fresh window and the
+toolbar shows a lone chevron with no primary button. Two visually adjacent buttons is as close
+as an extension gets — they are not fused into one control the way Run/Debug is.
+
 **The `when` clause is the easy thing to get wrong.** It must be
 `activeEditor == 'workbench.editor.browser'`. The `activeEditor` context key holds the *editor
 (pane)* id — `BrowserEditorInput.EDITOR_ID`, i.e. `BrowserViewEditorId` from
@@ -322,6 +354,22 @@ All in [src/elementPicker.ts](src/elementPicker.ts), all sharing `withPickedElem
 The CSS path deliberately leaves classes out. Utility-class frameworks produce long, unstable
 class lists, and a selector built from them reads worse and breaks sooner than a positional
 one; the full class list is in "Copy Element" for anyone who wants it.
+
+**Copy Element goes to the clipboard as text, and stays that way.** An attach-as-file route
+was built and removed on request: it wrote the Markdown to `globalStorageUri` and passed the URI
+to `workbench.action.chat.attachFile`. Do not rebuild it without being asked. Worth keeping from
+that detour: **`vscode.env.clipboard` is text-only** — there is no API for putting a *file* on
+the system clipboard, so "paste attaches a file" is unreachable without shelling out to the OS,
+and `attachFile` accepts only `file` / `vscode-remote` / `untitled` URIs.
+
+**Element picking is single-flight, and has to be.** Each pick opens its own CDP session and
+turns on inspect mode. Two at once means a single click delivers
+`Overlay.inspectNodeRequested` to *both* sessions, both commands run to completion, and the
+later one overwrites the clipboard — which the user sees as "sometimes it copies an action I did
+not choose". `pendingPick` in [src/elementPicker.ts](src/elementPicker.ts) cancels any pick
+already in flight, so the latest choice wins. Related: clearing inspect mode belongs in
+`finally`, because on cancellation the `await` throws and a statement placed after it never
+runs — leaving the page stranded in picking state.
 
 **The Markdown format is a port, not an invention.** `renderElementMarkdown` follows
 `createElementContextValue` / `formatElementPath` from `browserEditorChatFeatures.ts`, and

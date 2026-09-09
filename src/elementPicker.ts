@@ -138,15 +138,35 @@ const cssPathFunctionDeclaration = `function () {
  * Element selection is `Overlay.setInspectMode`, the same mechanism behind the
  * built-in browser's "Add Element to Chat", so hover highlighting comes free.
  */
+/**
+ * The pick currently waiting for a click, if any.
+ *
+ * Element selection has to be single-flight. Each pick opens its own CDP
+ * session and turns on inspect mode; two at once means one click delivers
+ * `Overlay.inspectNodeRequested` to *both* sessions, both commands complete,
+ * and whichever finishes last overwrites the clipboard — which shows up as
+ * "sometimes it copies the action I did not choose". Starting a pick therefore
+ * cancels any pick already in flight: the most recent choice is the one the
+ * user means.
+ */
+let pendingPick: vscode.CancellationTokenSource | undefined;
+
 async function withPickedElement<T>(
 	tab: vscode.BrowserTab,
 	token: vscode.CancellationToken,
 	use: (client: CDPClient, sessionId: string, backendNodeId: number) => Promise<T>,
 ): Promise<T | undefined> {
 
+	pendingPick?.cancel();
+
+	const cts = new vscode.CancellationTokenSource();
+	pendingPick = cts;
+	const externalCancel = token.onCancellationRequested(() => cts.cancel());
+
 	const client = new CDPClient(await tab.startCDPSession());
+	let sessionId: string | undefined;
 	try {
-		const sessionId = await client.attachToPage();
+		sessionId = await client.attachToPage();
 
 		await client.send('DOM.enable', {}, sessionId);
 		await client.send('CSS.enable', {}, sessionId);
@@ -162,16 +182,21 @@ async function withPickedElement<T>(
 			},
 		}, sessionId);
 
-		const { backendNodeId } = await client.once('Overlay.inspectNodeRequested', token);
-
-		// Leave inspect mode before anything that can throw, or the page is
-		// stuck in "pick an element" state.
-		await client.send('Overlay.setInspectMode', { mode: 'none', highlightConfig: {} }, sessionId)
-			.catch(() => { /* the page may have navigated away */ });
-
+		const { backendNodeId } = await client.once('Overlay.inspectNodeRequested', cts.token);
 		return await use(client, sessionId, backendNodeId);
 	} finally {
+		// Has to be in `finally`: on cancellation the await above throws, and
+		// leaving inspect mode on strands the page in "pick an element" state.
+		if (sessionId !== undefined) {
+			await client.send('Overlay.setInspectMode', { mode: 'none', highlightConfig: {} }, sessionId)
+				.catch(() => { /* cancelled, navigated away, or already detached */ });
+		}
 		client.dispose();
+		externalCancel.dispose();
+		if (pendingPick === cts) {
+			pendingPick = undefined;
+		}
+		cts.dispose();
 	}
 }
 
@@ -218,10 +243,10 @@ function requireBrowserTab(): vscode.BrowserTab | undefined {
 	return tab;
 }
 
-async function pickAndCopy(
+async function pickAndDeliver<T>(
 	title: string,
-	produce: (client: CDPClient, sessionId: string, backendNodeId: number, tab: vscode.BrowserTab) => Promise<string | undefined>,
-	report: (copied: string) => string,
+	produce: (client: CDPClient, sessionId: string, backendNodeId: number, tab: vscode.BrowserTab) => Promise<T | undefined>,
+	deliver: (value: T) => Promise<void>,
 ): Promise<void> {
 
 	const tab = requireBrowserTab();
@@ -237,11 +262,10 @@ async function pickAndCopy(
 		try {
 			const value = await withPickedElement(tab, token, (client, sessionId, backendNodeId) =>
 				produce(client, sessionId, backendNodeId, tab));
-			if (!value) {
+			if (value === undefined) {
 				return;
 			}
-			await vscode.env.clipboard.writeText(value);
-			vscode.window.showInformationMessage(report(value));
+			await deliver(value);
 		} catch (err) {
 			if (err instanceof vscode.CancellationError) {
 				return;
@@ -258,31 +282,40 @@ function short(value: string): string {
 	return firstLine.length > 80 ? `${firstLine.slice(0, 79)}…` : firstLine;
 }
 
+async function copyToClipboard(value: string, label: string): Promise<void> {
+	await vscode.env.clipboard.writeText(value);
+	vscode.window.showInformationMessage(vscode.l10n.t("{0} copied: {1}", label, short(value)));
+}
+
 export function copyElementXPath(): Promise<void> {
-	return pickAndCopy(
+	return pickAndDeliver(
 		vscode.l10n.t("Click an element in the browser to copy its XPath"),
 		(client, sessionId, backendNodeId) =>
 			evaluateOnNode(client, sessionId, backendNodeId, xpathFunctionDeclaration),
-		copied => vscode.l10n.t("XPath copied: {0}", short(copied)),
+		value => copyToClipboard(value, vscode.l10n.t("XPath")),
 	);
 }
 
 export function copyElementCssPath(): Promise<void> {
-	return pickAndCopy(
+	return pickAndDeliver(
 		vscode.l10n.t("Click an element in the browser to copy its CSS path"),
 		(client, sessionId, backendNodeId) =>
 			evaluateOnNode(client, sessionId, backendNodeId, cssPathFunctionDeclaration),
-		copied => vscode.l10n.t("CSS path copied: {0}", short(copied)),
+		value => copyToClipboard(value, vscode.l10n.t("CSS path")),
 	);
 }
 
 export function copyElement(): Promise<void> {
-	return pickAndCopy(
+	return pickAndDeliver(
 		vscode.l10n.t("Click an element in the browser to copy its full context"),
 		async (client, sessionId, backendNodeId, tab) => {
 			const data = await extractElementData(client, sessionId, backendNodeId);
 			return renderElementMarkdown(data, tab.url);
 		},
-		() => vscode.l10n.t("Element context copied as Markdown."),
+		async markdown => {
+			await vscode.env.clipboard.writeText(markdown);
+			vscode.window.showInformationMessage(vscode.l10n.t(
+				"Element context copied as Markdown ({0} characters).", String(markdown.length)));
+		},
 	);
 }

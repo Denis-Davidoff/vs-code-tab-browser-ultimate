@@ -8,6 +8,7 @@ import { AIBrowserManager } from './aiBrowserManager';
 import { AIBrowserView } from './aiBrowserView';
 import { copyElement, copyElementCssPath, copyElementXPath } from './elementPicker';
 import { ToolsViewProvider } from './toolsView';
+import { LastElementAction, type ElementActionId } from './lastAction';
 
 declare class URL {
 	constructor(input: string, base?: string | URL);
@@ -95,11 +96,22 @@ export function activate(context: vscode.ExtensionContext) {
 	}));
 
 	context.subscriptions.push(vscode.window.registerTreeDataProvider(
-		ToolsViewProvider.viewId, new ToolsViewProvider()));
+		ToolsViewProvider.viewId, new ToolsViewProvider(context.extensionUri)));
 
-	context.subscriptions.push(vscode.commands.registerCommand(copyElementCommand, () => copyElement()));
-	context.subscriptions.push(vscode.commands.registerCommand(copyXPathCommand, () => copyElementXPath()));
-	context.subscriptions.push(vscode.commands.registerCommand(copyCssPathCommand, () => copyElementCssPath()));
+	// The toolbar's primary button repeats whichever of these ran last, so every
+	// one of them records itself.
+	const lastAction = new LastElementAction(context.globalState);
+	lastAction.initialize();
+
+	const registerElementCommand = (id: string, remembered: ElementActionId, run: () => Promise<void>) =>
+		context.subscriptions.push(vscode.commands.registerCommand(id, async () => {
+			await lastAction.record(remembered);
+			await run();
+		}));
+
+	registerElementCommand(copyElementCommand, 'element', copyElement);
+	registerElementCommand(copyXPathCommand, 'xpath', copyElementXPath);
+	registerElementCommand(copyCssPathCommand, 'cssPath', copyElementCssPath);
 
 	context.subscriptions.push(vscode.commands.registerCommand(openApiCommand, async (url: vscode.Uri, showOptions?: {
 		preserveFocus?: boolean;

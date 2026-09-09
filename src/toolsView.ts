@@ -8,6 +8,7 @@ import * as vscode from 'vscode';
 interface Tool {
 	readonly label: string;
 	readonly description: string;
+	/** Basename in `media/icons`, without the `-light` / `-dark` suffix. */
 	readonly icon: string;
 	readonly command: string;
 }
@@ -23,23 +24,25 @@ export class ToolsViewProvider implements vscode.TreeDataProvider<Tool> {
 
 	public static readonly viewId = 'aiBrowser.tools';
 
+	constructor(private readonly extensionUri: vscode.Uri) { }
+
 	private readonly tools: readonly Tool[] = [
 		{
 			label: vscode.l10n.t("Copy Element"),
 			description: vscode.l10n.t("Full context as Markdown"),
-			icon: 'inspect',
+			icon: 'crosshair-red',
 			command: 'aiBrowser.copyElement',
 		},
 		{
 			label: vscode.l10n.t("Copy XPath"),
 			description: vscode.l10n.t("Anchored on a unique id"),
-			icon: 'symbol-key',
+			icon: 'crosshair-green',
 			command: 'aiBrowser.copyElementXPath',
 		},
 		{
 			label: vscode.l10n.t("Copy CSS Path"),
 			description: vscode.l10n.t("Selector with :nth-of-type"),
-			icon: 'symbol-color',
+			icon: 'crosshair-blue',
 			command: 'aiBrowser.copyElementCssPath',
 		},
 	];
@@ -51,7 +54,13 @@ export class ToolsViewProvider implements vscode.TreeDataProvider<Tool> {
 	public getTreeItem(tool: Tool): vscode.TreeItem {
 		const item = new vscode.TreeItem(tool.label, vscode.TreeItemCollapsibleState.None);
 		item.description = tool.description;
-		item.iconPath = new vscode.ThemeIcon(tool.icon);
+		// The same files the toolbar buttons use, so the list and the browser tab
+		// cannot drift apart. A ThemeIcon would not do: these are deliberately
+		// coloured, and VS Code recolours codicons.
+		item.iconPath = {
+			light: vscode.Uri.joinPath(this.extensionUri, 'media', 'icons', `${tool.icon}-light.svg`),
+			dark: vscode.Uri.joinPath(this.extensionUri, 'media', 'icons', `${tool.icon}-dark.svg`),
+		};
 		item.tooltip = vscode.l10n.t("{0} — pick an element in the integrated browser", tool.label);
 		item.command = { command: tool.command, title: tool.label };
 		return item;

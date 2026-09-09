@@ -1,23 +1,50 @@
 # AI Browser
 
-Displays web content inside VS Code, using an iframe embedded in a webview panel. The panel
-provides its own address bar, back/forward/reload controls, and a button to open the current
-page in the system browser.
+Element inspection tools for VS Code's built-in browser: pick an element on the page and copy
+its full context, its XPath, or its CSS path.
 
-If VS Code's built-in browser is available (the `workbench.action.browser.open` command), the
-extension delegates to it instead of opening its own panel.
+Pages open in VS Code's built-in browser, and the extension drives it over the Chrome DevTools
+Protocol. It also carries its own webview panel with an address bar and navigation controls,
+kept for anyone who wants it — set `aiBrowser.useIntegratedBrowser` to `false`.
+
+> Uses the `browser` and `externalUriOpener` API proposals, so it installs from a VSIX rather
+> than the Marketplace, and needs a VS Code recent enough to provide them.
+
+## Copying element info
+
+Open a page in the built-in browser, then use either the **AI Browser** panel in the activity
+bar or the crosshair button on the browser tab's toolbar. The button repeats whichever action
+you used last; the chevron beside it opens the full list. Hover highlights elements the way
+DevTools does — click one and the result is yours.
+
+| Action | Result |
+|---|---|
+| Copy Element | the full context as Markdown — element, URL, HTML path, outer HTML, dimensions, matched CSS |
+| Copy XPath | `//*[@id="main"]/span`, or `/html/body/ul/li[2]` when nothing stable can anchor it |
+| Copy CSS Path | `#main > div > li:nth-of-type(2)` |
+
+**Copy Element** runs to several kilobytes, mostly matched CSS — it all goes to the clipboard
+as Markdown.
+
+The output matches what the built-in browser attaches for its own "Add Element to Chat", because
+the CSS assembly is the same upstream code.
 
 ## Commands
 
 | Command | Id |
 |---|---|
+| AI Browser: Copy Element | `aiBrowser.copyElement` |
+| AI Browser: Copy Element XPath | `aiBrowser.copyElementXPath` |
+| AI Browser: Copy CSS Path | `aiBrowser.copyElementCssPath` |
 | AI Browser: Show | `aiBrowser.show` |
 
 ## Settings
 
 | Setting | Default | Description |
 |---|---|---|
-| `aiBrowser.focusLockIndicator.enabled` | `true` | Show the floating indicator that appears while focus is inside the browser panel. |
+| `aiBrowser.useIntegratedBrowser` | `true` | Open URLs in VS Code's built-in browser. Set to `false` for the extension's own webview panel. |
+| `aiBrowser.searchEngine` | `google` | Engine used when the panel's address bar gets a search term. `none` disables search. |
+| `aiBrowser.focusLockIndicator.enabled` | `true` | Show the floating indicator that appears while focus is inside the webview panel. |
 
 ## Use from another extension
 
@@ -32,6 +59,14 @@ await vscode.commands.executeCommand('aiBrowser.api.open', vscode.Uri.parse('htt
 
 The extension also registers an external URI opener for `http` and `https`, so localhost URLs
 surfaced by VS Code (for example from a forwarded port) can be opened in the panel.
+
+## Packaging
+
+```sh
+npm run package     # -> ai-browser.vsix
+```
+
+Install it with **Extensions: Install from VSIX…**.
 
 ## Development
 
