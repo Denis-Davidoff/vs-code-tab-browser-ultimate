@@ -108,8 +108,8 @@
 				"title": "%command.addElementToClaudeCode.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-red-light.svg",
-					"dark": "media/icons/crosshair-red-dark.svg"
+					"light": "media/icons/crosshair-red-claude-light.svg",
+					"dark": "media/icons/crosshair-red-claude-dark.svg"
 				}
 			},
 			{
@@ -117,8 +117,8 @@
 				"title": "%command.addCssPathToClaudeCode.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-blue-light.svg",
-					"dark": "media/icons/crosshair-blue-dark.svg"
+					"light": "media/icons/crosshair-blue-claude-light.svg",
+					"dark": "media/icons/crosshair-blue-claude-dark.svg"
 				}
 			},
 			{
@@ -126,8 +126,8 @@
 				"title": "%command.addXPathToClaudeCode.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-green-light.svg",
-					"dark": "media/icons/crosshair-green-dark.svg"
+					"light": "media/icons/crosshair-green-claude-light.svg",
+					"dark": "media/icons/crosshair-green-claude-dark.svg"
 				}
 			},
 			{
@@ -135,8 +135,8 @@
 				"title": "%command.addElementToCodex.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-red-light.svg",
-					"dark": "media/icons/crosshair-red-dark.svg"
+					"light": "media/icons/crosshair-red-codex-light.svg",
+					"dark": "media/icons/crosshair-red-codex-dark.svg"
 				}
 			},
 			{
@@ -144,8 +144,8 @@
 				"title": "%command.addCssPathToCodex.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-blue-light.svg",
-					"dark": "media/icons/crosshair-blue-dark.svg"
+					"light": "media/icons/crosshair-blue-codex-light.svg",
+					"dark": "media/icons/crosshair-blue-codex-dark.svg"
 				}
 			},
 			{
@@ -153,8 +153,8 @@
 				"title": "%command.addXPathToCodex.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-green-light.svg",
-					"dark": "media/icons/crosshair-green-dark.svg"
+					"light": "media/icons/crosshair-green-codex-light.svg",
+					"dark": "media/icons/crosshair-green-codex-dark.svg"
 				}
 			}
 		],
@@ -344,6 +344,7 @@
 		"typecheck-webview": "tsc --project ./preview-src/tsconfig.json --noEmit",
 		"typecheck-tests": "tsc --project ./tsconfig.test.json",
 		"test": "node --test preview-src/*.test.ts src/*.test.ts",
+		"check-manifest": "node ./scripts/check-manifest.mjs",
 		"package": "vsce package --no-dependencies --out ai-browser.vsix",
 		"download-api": "dts dev",
 		"vscode:prepublish": "npm run compile"

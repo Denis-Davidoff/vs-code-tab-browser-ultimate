@@ -8,3 +8,4 @@ vscode.proposed.*.d.ts
 package-lock.json
 .vscode/**
 CLAUDE.md
+scripts/**

@@ -204,6 +204,7 @@ typecheck-ext            tsc --project ./tsconfig.json --noEmit
 typecheck-webview        tsc --project ./preview-src/tsconfig.json --noEmit
 typecheck-tests          tsc --project ./tsconfig.test.json    ← test files, no emit
 test                     node --test preview-src/*.test.ts src/*.test.ts
+check-manifest           node ./scripts/check-manifest.mjs      ← menus, icons, activation
 package                  vsce package … --out ai-browser.vsix  ← see Packaging a VSIX
 download-api             dts dev                               ← refresh the proposed-API d.ts
 vscode:prepublish        npm run compile
@@ -333,6 +334,29 @@ it in the response header, and maps it to the client kind; clients echo the head
 Connection` reports who has called in the last 10 minutes, which answers "is anything actually
 using this?" — a question the config states cannot. Freshness is computed on read, so there is
 no timer.
+
+**The element icons are custom SVGs, not codicons, and they have to be.** A codicon is a font
+glyph that VS Code recolours, so any colour baked into one is lost. A custom SVG is drawn as a
+`background-image` and keeps its own fills — but by the same token it cannot inherit
+`currentColor`, which is why everything here ships as a light/dark pair.
+
+**Each element icon encodes two things at once**, so the grid is 3 × 3 —
+`media/icons/crosshair-<dot>[-<destination>]-<theme>.svg`, eighteen files:
+
+| kind → dot | destination → ring |
+|---|---|
+| element: red `#E03131` | Copy: theme grey |
+| CSS path: blue `#1971C2` | Claude Code: yellow — `#FFD43B` dark, `#A16207` light |
+| XPath: green `#2F9E44` | Codex: blue-white — `#C5F6FA` dark, `#0E7490` light |
+
+The same kind keeps its dot across destinations; the same destination keeps its ring across
+kinds. As with the globe, the light variant of each ring is that hue taken down to something
+readable — a pale yellow or a blue-white is invisible on a white background.
+
+**`npm run check-manifest` guards all of this**, because none of it produces a compile error:
+a menu item pointing at a missing command, a command with no activation event, an icon path
+with a typo, an icon file nobody references, two primary buttons sharing a `lastElementAction`,
+and this grid losing its shape. Run it after touching `package.json` or `media/icons`.
 
 **The primary button is a faked split button.** VS Code has the real thing —
 `isSplitButton: { togglePrimaryAction: true }` on a submenu item, rendered by
