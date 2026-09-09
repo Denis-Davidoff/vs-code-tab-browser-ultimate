@@ -12,5 +12,11 @@
 	"command.connectCodex.title": "Connect Codex",
 	"command.checkMcpConnection.title": "Check Connection",
 	"configuration.mcp.enabled.description": "Run a local MCP server so Claude Code, Codex and VS Code chat can drive the integrated browser. It listens on loopback only and requires a per-workspace token.",
-	"configuration.mcp.port.description": "Preferred port for the MCP server. Each window takes the next free port from here, so a second window uses `port + 1`. Reconnect the assistant if the port changes."
+	"configuration.mcp.port.description": "Preferred port for the MCP server. Each window takes the next free port from here, so a second window uses `port + 1`. Reconnect the assistant if the port changes.",
+	"command.addElementToClaudeCode.title": "Add Element to Claude Code",
+	"command.addCssPathToClaudeCode.title": "Add CSS Path to Claude Code",
+	"command.addXPathToClaudeCode.title": "Add XPath to Claude Code",
+	"command.addElementToCodex.title": "Add Element to Codex",
+	"command.addCssPathToCodex.title": "Add CSS Path to Codex",
+	"command.addXPathToCodex.title": "Add XPath to Codex"
 }

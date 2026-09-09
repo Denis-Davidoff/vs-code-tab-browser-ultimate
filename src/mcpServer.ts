@@ -23,6 +23,10 @@ import {
 const maxRequestBytes = 1024 * 1024;
 const portsToTry = 20;
 
+/** How long after the last call an assistant still counts as connected. */
+const clientIdleMs = 10 * 60 * 1000;
+const decayCheckMs = 60 * 1000;
+
 export class McpServer implements vscode.Disposable {
 
 	private _server: http.Server | undefined;
@@ -37,6 +41,22 @@ export class McpServer implements vscode.Disposable {
 	private readonly _sockets = new Set<net.Socket>();
 
 	private readonly _tools: readonly Tool[];
+
+	/**
+	 * When an authorized client last talked to us.
+	 *
+	 * Streamable HTTP is request/response — there is no connection to observe —
+	 * so "an assistant is connected" can only mean "one has made a call
+	 * recently". The window below is what makes the state decay after the
+	 * assistant quits, instead of staying on until the window closes.
+	 */
+	private _lastActivity = 0;
+	private _hadClient = false;
+	private _decayTimer: NodeJS.Timeout | undefined;
+
+	private readonly _onDidChangeClient = new vscode.EventEmitter<boolean>();
+	/** Fires when "an assistant is talking to us" flips either way. */
+	public readonly onDidChangeClient = this._onDidChangeClient.event;
 
 	constructor(
 		private readonly browser: BrowserController,
@@ -75,6 +95,23 @@ export class McpServer implements vscode.Disposable {
 		return this._tools.length;
 	}
 
+	public get hasClient(): boolean {
+		return Date.now() - this._lastActivity < clientIdleMs;
+	}
+
+	private _noteActivity(): void {
+		this._lastActivity = Date.now();
+		this._publishClient();
+	}
+
+	private _publishClient(): void {
+		const now = this.hasClient;
+		if (now !== this._hadClient) {
+			this._hadClient = now;
+			this._onDidChangeClient.fire(now);
+		}
+	}
+
 	/**
 	 * Binds to the first free port at or after `preferredPort`.
 	 *
@@ -88,6 +125,8 @@ export class McpServer implements vscode.Disposable {
 			try {
 				this._server = await this._listen(port);
 				this._port = port;
+				// Nothing pushes the state back down on its own, so poll for decay.
+				this._decayTimer = setInterval(() => this._publishClient(), decayCheckMs);
 				return;
 			} catch (err: any) {
 				if (err?.code !== 'EADDRINUSE') {
@@ -171,6 +210,8 @@ export class McpServer implements vscode.Disposable {
 			case 'ok':
 				break;
 		}
+
+		this._noteActivity();
 
 		let raw: string;
 		try {
@@ -316,6 +357,11 @@ export class McpServer implements vscode.Disposable {
 	}
 
 	public dispose(): void {
+		if (this._decayTimer) {
+			clearInterval(this._decayTimer);
+			this._decayTimer = undefined;
+		}
+		this._onDidChangeClient.dispose();
 		for (const socket of this._sockets) {
 			socket.destroy();
 		}

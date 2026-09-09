@@ -5,7 +5,11 @@
 
 import * as vscode from 'vscode';
 import { CDPClient } from './cdp';
-import { extractElementData, renderElementMarkdown } from './elementContext';
+import { extractElementData, formatAncestor, renderElementMarkdown } from './elementContext';
+import { assistantName, handOver, type AssistantId } from './assistants';
+import {
+	formatElementReport, formatPathReport, reportFileName, type PathKind,
+} from './reportFormat';
 
 /**
  * Builds an XPath for an element, evaluated inside the page.
@@ -317,5 +321,95 @@ export function copyElement(): Promise<void> {
 			vscode.window.showInformationMessage(vscode.l10n.t(
 				"Element context copied as Markdown ({0} characters).", String(markdown.length)));
 		},
+	);
+}
+
+/* ------------------------------------------------ handing a report to a chat */
+
+/**
+ * Delivers a report, falling back to the clipboard on every refusal.
+ *
+ * This is the only place that decides between "give it to the assistant" and
+ * "put it on the clipboard", so a missing extension or a folderless window
+ * never loses what the user just picked.
+ */
+async function deliverToAssistant(
+	assistant: AssistantId,
+	report: string,
+	fileName: string,
+): Promise<void> {
+
+	let outcome: Awaited<ReturnType<typeof handOver>>;
+	try {
+		outcome = await handOver(assistant, report, fileName);
+	} catch (err) {
+		outcome = 'unavailable';
+		console.warn('[ai-browser] hand-over failed:', err);
+	}
+
+	switch (outcome) {
+		case 'delivered':
+			vscode.window.showInformationMessage(vscode.l10n.t(
+				"Sent to {0} as {1}.", assistantName(assistant), fileName));
+			return;
+
+		case 'noWorkspace':
+			await vscode.env.clipboard.writeText(report);
+			vscode.window.showWarningMessage(vscode.l10n.t(
+				"{0} addresses files by their path inside the workspace, and no folder is open — the report was copied to the clipboard instead.",
+				assistantName(assistant)));
+			return;
+
+		case 'unavailable':
+			await vscode.env.clipboard.writeText(report);
+			vscode.window.showWarningMessage(vscode.l10n.t(
+				"{0} is not available, so the report was copied to the clipboard instead.",
+				assistantName(assistant)));
+			return;
+	}
+}
+
+/** Descriptor of the picked element, used in the heading and the file name. */
+function describeElement(ancestors: { tagName: string; id?: string; classNames?: string[] }[]): string {
+	return ancestors.length ? formatAncestor(ancestors[ancestors.length - 1]) : 'element';
+}
+
+export function addElementToAssistant(assistant: AssistantId): Promise<void> {
+	return pickAndDeliver(
+		vscode.l10n.t("Click an element to send its context to {0}", assistantName(assistant)),
+		async (client, sessionId, backendNodeId, tab) => {
+			const data = await extractElementData(client, sessionId, backendNodeId);
+			const descriptor = describeElement(data.ancestors);
+			return {
+				report: formatElementReport(renderElementMarkdown(data, tab.url), descriptor),
+				fileName: reportFileName('element', descriptor),
+			};
+		},
+		({ report, fileName }) => deliverToAssistant(assistant, report, fileName),
+	);
+}
+
+export function addPathToAssistant(assistant: AssistantId, kind: PathKind): Promise<void> {
+	const declaration = kind === 'css' ? cssPathFunctionDeclaration : xpathFunctionDeclaration;
+
+	return pickAndDeliver(
+		kind === 'css'
+			? vscode.l10n.t("Click an element to send its CSS path to {0}", assistantName(assistant))
+			: vscode.l10n.t("Click an element to send its XPath to {0}", assistantName(assistant)),
+		async (client, sessionId, backendNodeId, tab) => {
+			const path = await evaluateOnNode(client, sessionId, backendNodeId, declaration);
+			if (!path) {
+				return undefined;
+			}
+			// The descriptor needs the element itself, which the path does not
+			// carry — one extra round trip, worth it for a readable file name.
+			const data = await extractElementData(client, sessionId, backendNodeId);
+			const descriptor = describeElement(data.ancestors);
+			return {
+				report: formatPathReport(descriptor, kind, path, tab.url),
+				fileName: reportFileName(kind, descriptor),
+			};
+		},
+		({ report, fileName }) => deliverToAssistant(assistant, report, fileName),
 	);
 }

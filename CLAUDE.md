@@ -299,6 +299,22 @@ It is a `contributes.submenus` entry (`aiBrowser.elementMenu`) placed into `edit
 its default of `true`. **The `icon` on the submenu declaration is what makes it a toolbar
 button** — without one it collapses into the tab's overflow menu.
 
+That icon is a globe, and **it exists twice**: `media/icons/globe-{light,dark}.svg` and
+`globe-connected-{light,dark}.svg`, the second one green.
+
+**A submenu's icon is static in `contributes`, so a colour cannot be changed at runtime.** The
+green globe is therefore a *second submenu declaration* — `aiBrowser.elementMenuConnected` —
+carrying the same twelve items, with the two placed in `editor/title` under complementary
+`when` clauses on `aiBrowser.assistantConnected`. That is why `contributes.menus` holds the
+item list twice; keep the two copies identical.
+
+Green means **an assistant has actually called the server**, not merely that a config file
+points at it. Streamable HTTP is request/response, so there is no connection to observe:
+`McpServer` timestamps every authorized request and counts a client as present for 10 minutes
+after the last one, with a 60-second interval to let the state decay once the assistant quits.
+`McpLifecycle` mirrors the flag into the context key, and clears it whenever there is no
+server.
+
 **The element icons are custom SVGs, not codicons, and they have to be.** The three commands
 use a crosshair with a coloured centre — red for Copy Element, green for XPath, blue for CSS
 Path — from `media/icons/crosshair-{colour}-{light,dark}.svg`. A codicon could not do it: VS
@@ -542,6 +558,22 @@ symptom is a bare 401 that reads like a broken server.
 Duplicate Codex entries are **reported, never repaired**: the global file is not ours, and
 removing the wrong one of a pair turns working tools into a 401.
 
+### The server is per window; the tools follow the active tab
+
+Deliberate, and asked about — leave it alone unless someone asks for the other behaviour.
+
+The token and port belong to the **workspace**, so "connecting" attaches an assistant to this
+VS Code window. But `BrowserController._requireTab()` resolves
+`vscode.window.activeBrowserTab` on **every call**, so a tool acts on whichever browser tab is
+focused at that moment, not on the tab whose dropdown was used to connect. With two tabs open,
+switching between calls sends the next `browser_click` to the other page; `browser_navigate`
+always opens a new tab.
+
+Pinning the controller to one tab at connect time is the obvious alternative (with
+`browser_state` reporting which tab it is bound to, and a clear error once that tab is closed).
+It was considered and postponed. Until then, describe the behaviour as "attached to a VS Code
+window, acting on the active browser tab" rather than "connected to a browser tab".
+
 ### Lifecycle
 
 [src/mcpLifecycle.ts](src/mcpLifecycle.ts) keeps the server's disposables **apart from
@@ -550,13 +582,53 @@ down the extension. Restarts are serialised through a promise chain, or two sett
 a row race for the same port. Commands are registered unconditionally and go through
 `withServer`, which explains why there is nothing to connect — better than "command not found".
 
+## Handing reports to Claude Code and Codex
+
+Six dropdown entries — element / CSS path / XPath, to each assistant — write a Markdown report
+and hand it over. [src/assistants.ts](src/assistants.ts) owns the mechanics,
+[src/reportFormat.ts](src/reportFormat.ts) the text (leaf module, under test).
+
+**Neither extension has an API.** Both are driven through commands they register, and the two
+are shaped differently enough that there is no shared path:
+
+| | Claude Code | Codex |
+|---|---|---|
+| command | `claude-vscode.insertAtMention` | `chatgpt.addFileToThread` |
+| arguments | **none** — it builds `@<path relative to the workspace>` from the *active editor* | the URI, directly |
+| reports live in | `<folder>/.ai-browser/` | the temp directory |
+| needs a folder | yes, with a `file` scheme | no |
+
+Because Claude Code's command takes no arguments, the sequence is: write the file → open it →
+`showTextDocument({ preview: true, preserveFocus: false })` → run the command → **close the tab
+by URI**. By URI and not `closeActiveEditor`, because inserting the mention reveals the chat, so
+the active tab at that moment is quite likely the chat itself.
+
+A file in both cases, never text: `addFileToThread` discards anything whose scheme is not
+`file`, and the agent reads the path from disk later, so a virtual document is no use. Even a
+one-line selector travels as a file.
+
+Every command id above is an implementation detail of somebody else's extension, not a
+contract, so availability is checked as `getExtension(id)` **and**
+`getCommands(true).includes(command)` — an older version may not register it — and every
+refusal falls back to the clipboard with a message saying why. The same facts are published as
+`aiBrowser.claudeInstalled` / `aiBrowser.codexInstalled` context keys, so the menu hides
+entries that could not work; they are re-published on `vscode.extensions.onDidChange`.
+
+`.ai-browser/` gets a `.gitignore` of `*` on first creation — these are drafts for one
+conversation. Reports are swept after 5 hours, at most hourly from the write path plus once on
+activation.
+
+**Page content is always fenced with a fence longer than the longest backtick run inside it**
+(`fenced` in `reportFormat.ts`). A page routinely contains backticks — a template literal in an
+inline script, Markdown in a CMS preview — and a plain three-backtick fence closes early, after
+which the rest of the report is read as Markdown.
+
 ### Not built yet
 
-Two pieces of the spec are deliberately outstanding, and neither is needed by the three panel
-rows: **port repair** for configs written by an earlier session (`mcpRefresh`, with a
-filesystem lock, since every window would repair its own entry in the one global file), and
-**handing text and files to the assistants' chats** (`claude-vscode.insertAtMention`,
-`chatgpt.addFileToThread`).
+**Port repair** for configs written by an earlier session (`mcpRefresh`, with a filesystem lock,
+since every window would repair its own entry in the one global file), and **plain-text
+hand-over** — `claude-vscode.editor.open(undefined, prompt)` opens a new Claude Code
+conversation with a prompt, but Codex has no equivalent, so reports go as files for both.
 
 ## Things that break silently
 

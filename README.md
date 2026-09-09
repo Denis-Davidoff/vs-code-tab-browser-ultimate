@@ -14,7 +14,8 @@ kept for anyone who wants it — set `aiBrowser.useIntegratedBrowser` to `false`
 
 Open a page in the built-in browser and use the crosshair button on the browser tab's toolbar.
 The button repeats whichever action you used last; the chevron beside it opens the full list,
-which also holds the connection entries below. Hover highlights elements the way
+which also holds the assistant and connection entries below. The globe on that dropdown turns
+**green** while an assistant is actually calling the browser. Hover highlights elements the way
 DevTools does — click one and the result is yours.
 
 | Action | Result |
@@ -28,6 +29,17 @@ as Markdown.
 
 The output matches what the built-in browser attaches for its own "Add Element to Chat", because
 the CSS assembly is the same upstream code.
+
+## Sending an element to Claude Code or Codex
+
+The dropdown also has, for each assistant, **Add Element / Add CSS Path / Add XPath**. Each one
+picks an element, writes a small Markdown report and attaches it to that assistant's chat.
+Entries appear only for assistants you have installed, and if the hand-over cannot happen the
+report lands on the clipboard with a note saying why.
+
+Claude Code addresses files by their path inside the workspace, so its reports go to
+`.ai-browser/` (auto-ignored by git) and a folder has to be open. Codex takes an absolute path,
+so its reports go to the temp directory. Reports are swept after five hours.
 
 ## Connecting Claude Code and Codex
 
@@ -56,6 +68,12 @@ clear 401 instead of letting an assistant edit the wrong repository. Settings:
 | Command | Id |
 |---|---|
 | AI Browser: Copy Element | `aiBrowser.copyElement` |
+| AI Browser: Add Element to Claude Code | `aiBrowser.addElementToClaudeCode` |
+| AI Browser: Add CSS Path to Claude Code | `aiBrowser.addCssPathToClaudeCode` |
+| AI Browser: Add XPath to Claude Code | `aiBrowser.addXPathToClaudeCode` |
+| AI Browser: Add Element to Codex | `aiBrowser.addElementToCodex` |
+| AI Browser: Add CSS Path to Codex | `aiBrowser.addCssPathToCodex` |
+| AI Browser: Add XPath to Codex | `aiBrowser.addXPathToCodex` |
 | AI Browser: Copy CSS Path | `aiBrowser.copyElementCssPath` |
 | AI Browser: Copy Element XPath | `aiBrowser.copyElementXPath` |
 | AI Browser: Connect Claude Code | `aiBrowser.connectClaudeCode` |

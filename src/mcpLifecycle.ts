@@ -30,6 +30,9 @@ export class McpLifecycle implements vscode.Disposable {
 	/** Serialises restarts; two setting changes in a row must not race for a port. */
 	private _chain: Promise<void> = Promise.resolve();
 
+	/** Subscription to the running server's client-activity signal. */
+	private _clientWatch: vscode.Disposable | undefined;
+
 	private readonly _onDidChangeState = new vscode.EventEmitter<McpState>();
 	public readonly onDidChangeState = this._onDidChangeState.event;
 
@@ -46,6 +49,16 @@ export class McpLifecycle implements vscode.Disposable {
 	private _setState(state: McpState): void {
 		this._state = state;
 		this._onDidChangeState.fire(state);
+	}
+
+	/**
+	 * Drives the green globe in the browser tab's toolbar.
+	 *
+	 * A submenu's icon is static in `contributes`, so the two colours are two
+	 * submenu declarations picked apart by this context key.
+	 */
+	private _publishConnected(connected: boolean): void {
+		vscode.commands.executeCommand('setContext', 'aiBrowser.assistantConnected', connected);
 	}
 
 	/**
@@ -75,10 +88,14 @@ export class McpLifecycle implements vscode.Disposable {
 	}
 
 	private async _apply(): Promise<void> {
+		this._clientWatch?.dispose();
+		this._clientWatch = undefined;
 		for (const part of this._parts) {
 			part.dispose();
 		}
 		this._parts = [];
+		// No server means nothing can be talking to us.
+		this._publishConnected(false);
 
 		const configuration = vscode.workspace.getConfiguration('aiBrowser');
 		if (!configuration.get<boolean>('mcp.enabled', true)) {
@@ -104,6 +121,9 @@ export class McpLifecycle implements vscode.Disposable {
 		if (registration) {
 			this._parts.push(registration);
 		}
+
+		this._clientWatch = server.onDidChangeClient(connected => this._publishConnected(connected));
+		this._publishConnected(server.hasClient);
 
 		this._setState({ kind: 'running', server });
 	}
@@ -137,6 +157,8 @@ export class McpLifecycle implements vscode.Disposable {
 	}
 
 	public dispose(): void {
+		this._clientWatch?.dispose();
+		this._clientWatch = undefined;
 		for (const part of this._parts) {
 			part.dispose();
 		}

@@ -6,7 +6,10 @@
 import * as vscode from 'vscode';
 import { AIBrowserManager } from './aiBrowserManager';
 import { AIBrowserView } from './aiBrowserView';
-import { copyElement, copyElementCssPath, copyElementXPath } from './elementPicker';
+import {
+	addElementToAssistant, addPathToAssistant, copyElement, copyElementCssPath, copyElementXPath,
+} from './elementPicker';
+import { cleanUpReports, publishAssistantContext, type AssistantId } from './assistants';
 import { LastElementAction, type ElementActionId } from './lastAction';
 import { BrowserController } from './browserController';
 import { McpLifecycle } from './mcpLifecycle';
@@ -132,6 +135,23 @@ export function activate(context: vscode.ExtensionContext) {
 		() => mcp.withServer(connectCodex)));
 	context.subscriptions.push(vscode.commands.registerCommand(checkMcpCommand,
 		() => mcp.withServer(checkConnection)));
+
+	// Menu items for the assistants are gated on `when` clauses, so their
+	// installation state has to be published — and re-published, since an
+	// extension can be installed while this window is open.
+	publishAssistantContext();
+	context.subscriptions.push(vscode.extensions.onDidChange(publishAssistantContext));
+	cleanUpReports();
+
+	for (const assistant of ['claude', 'codex'] as AssistantId[]) {
+		const suffix = assistant === 'claude' ? 'ClaudeCode' : 'Codex';
+		context.subscriptions.push(vscode.commands.registerCommand(
+			`aiBrowser.addElementTo${suffix}`, () => addElementToAssistant(assistant)));
+		context.subscriptions.push(vscode.commands.registerCommand(
+			`aiBrowser.addCssPathTo${suffix}`, () => addPathToAssistant(assistant, 'css')));
+		context.subscriptions.push(vscode.commands.registerCommand(
+			`aiBrowser.addXPathTo${suffix}`, () => addPathToAssistant(assistant, 'xpath')));
+	}
 
 	registerElementCommand(copyElementCommand, 'element', copyElement);
 	registerElementCommand(copyXPathCommand, 'xpath', copyElementXPath);

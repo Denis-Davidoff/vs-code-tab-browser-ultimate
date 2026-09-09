@@ -37,7 +37,13 @@
 		"onStartupFinished",
 		"onCommand:aiBrowser.connectClaudeCode",
 		"onCommand:aiBrowser.connectCodex",
-		"onCommand:aiBrowser.checkMcpConnection"
+		"onCommand:aiBrowser.checkMcpConnection",
+		"onCommand:aiBrowser.addElementToClaudeCode",
+		"onCommand:aiBrowser.addCssPathToClaudeCode",
+		"onCommand:aiBrowser.addXPathToClaudeCode",
+		"onCommand:aiBrowser.addElementToCodex",
+		"onCommand:aiBrowser.addCssPathToCodex",
+		"onCommand:aiBrowser.addXPathToCodex"
 	],
 	"capabilities": {
 		"virtualWorkspaces": true,
@@ -96,6 +102,36 @@
 				"title": "%command.checkMcpConnection.title%",
 				"category": "%displayName%",
 				"icon": "$(pulse)"
+			},
+			{
+				"command": "aiBrowser.addElementToClaudeCode",
+				"title": "%command.addElementToClaudeCode.title%",
+				"category": "%displayName%"
+			},
+			{
+				"command": "aiBrowser.addCssPathToClaudeCode",
+				"title": "%command.addCssPathToClaudeCode.title%",
+				"category": "%displayName%"
+			},
+			{
+				"command": "aiBrowser.addXPathToClaudeCode",
+				"title": "%command.addXPathToClaudeCode.title%",
+				"category": "%displayName%"
+			},
+			{
+				"command": "aiBrowser.addElementToCodex",
+				"title": "%command.addElementToCodex.title%",
+				"category": "%displayName%"
+			},
+			{
+				"command": "aiBrowser.addCssPathToCodex",
+				"title": "%command.addCssPathToCodex.title%",
+				"category": "%displayName%"
+			},
+			{
+				"command": "aiBrowser.addXPathToCodex",
+				"title": "%command.addXPathToCodex.title%",
+				"category": "%displayName%"
 			}
 		],
 		"configuration": [
@@ -147,24 +183,29 @@
 		"menus": {
 			"editor/title": [
 				{
-					"command": "aiBrowser.copyElement",
+					"submenu": "aiBrowser.elementMenu",
 					"group": "navigation@1",
+					"when": "activeEditor == 'workbench.editor.browser' && !aiBrowser.assistantConnected"
+				},
+				{
+					"submenu": "aiBrowser.elementMenuConnected",
+					"group": "navigation@1",
+					"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.assistantConnected"
+				},
+				{
+					"command": "aiBrowser.copyElement",
+					"group": "navigation@2",
 					"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'element'"
 				},
 				{
-					"command": "aiBrowser.copyElementXPath",
-					"group": "navigation@1",
-					"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'xpath'"
-				},
-				{
 					"command": "aiBrowser.copyElementCssPath",
-					"group": "navigation@1",
+					"group": "navigation@2",
 					"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'cssPath'"
 				},
 				{
-					"submenu": "aiBrowser.elementMenu",
+					"command": "aiBrowser.copyElementXPath",
 					"group": "navigation@2",
-					"when": "activeEditor == 'workbench.editor.browser'"
+					"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'xpath'"
 				}
 			],
 			"aiBrowser.elementMenu": [
@@ -181,16 +222,102 @@
 					"group": "1_copy@3"
 				},
 				{
+					"command": "aiBrowser.addElementToClaudeCode",
+					"group": "2_claude@1",
+					"when": "aiBrowser.claudeInstalled"
+				},
+				{
+					"command": "aiBrowser.addCssPathToClaudeCode",
+					"group": "2_claude@2",
+					"when": "aiBrowser.claudeInstalled"
+				},
+				{
+					"command": "aiBrowser.addXPathToClaudeCode",
+					"group": "2_claude@3",
+					"when": "aiBrowser.claudeInstalled"
+				},
+				{
+					"command": "aiBrowser.addElementToCodex",
+					"group": "3_codex@1",
+					"when": "aiBrowser.codexInstalled"
+				},
+				{
+					"command": "aiBrowser.addCssPathToCodex",
+					"group": "3_codex@2",
+					"when": "aiBrowser.codexInstalled"
+				},
+				{
+					"command": "aiBrowser.addXPathToCodex",
+					"group": "3_codex@3",
+					"when": "aiBrowser.codexInstalled"
+				},
+				{
 					"command": "aiBrowser.connectClaudeCode",
-					"group": "2_mcp@1"
+					"group": "4_mcp@1"
 				},
 				{
 					"command": "aiBrowser.connectCodex",
-					"group": "2_mcp@2"
+					"group": "4_mcp@2"
 				},
 				{
 					"command": "aiBrowser.checkMcpConnection",
-					"group": "2_mcp@3"
+					"group": "4_mcp@3"
+				}
+			],
+			"aiBrowser.elementMenuConnected": [
+				{
+					"command": "aiBrowser.copyElement",
+					"group": "1_copy@1"
+				},
+				{
+					"command": "aiBrowser.copyElementCssPath",
+					"group": "1_copy@2"
+				},
+				{
+					"command": "aiBrowser.copyElementXPath",
+					"group": "1_copy@3"
+				},
+				{
+					"command": "aiBrowser.addElementToClaudeCode",
+					"group": "2_claude@1",
+					"when": "aiBrowser.claudeInstalled"
+				},
+				{
+					"command": "aiBrowser.addCssPathToClaudeCode",
+					"group": "2_claude@2",
+					"when": "aiBrowser.claudeInstalled"
+				},
+				{
+					"command": "aiBrowser.addXPathToClaudeCode",
+					"group": "2_claude@3",
+					"when": "aiBrowser.claudeInstalled"
+				},
+				{
+					"command": "aiBrowser.addElementToCodex",
+					"group": "3_codex@1",
+					"when": "aiBrowser.codexInstalled"
+				},
+				{
+					"command": "aiBrowser.addCssPathToCodex",
+					"group": "3_codex@2",
+					"when": "aiBrowser.codexInstalled"
+				},
+				{
+					"command": "aiBrowser.addXPathToCodex",
+					"group": "3_codex@3",
+					"when": "aiBrowser.codexInstalled"
+				},
+				{
+					"command": "aiBrowser.connectClaudeCode",
+					"group": "4_mcp@1"
+				},
+				{
+					"command": "aiBrowser.connectCodex",
+					"group": "4_mcp@2"
+				},
+				{
+					"command": "aiBrowser.checkMcpConnection",
+					"group": "4_mcp@3"
 				}
 			]
 		},
@@ -198,7 +325,18 @@
 			{
 				"id": "aiBrowser.elementMenu",
 				"label": "%submenu.elementMenu.label%",
-				"icon": "$(chevron-down)"
+				"icon": {
+					"light": "media/icons/globe-light.svg",
+					"dark": "media/icons/globe-dark.svg"
+				}
+			},
+			{
+				"id": "aiBrowser.elementMenuConnected",
+				"label": "%submenu.elementMenu.label%",
+				"icon": {
+					"light": "media/icons/globe-connected-light.svg",
+					"dark": "media/icons/globe-connected-dark.svg"
+				}
 			}
 		],
 		"mcpServerDefinitionProviders": [
