@@ -384,12 +384,21 @@ evaluated before activation, so without it the context key is unset on a fresh w
 toolbar shows a lone chevron with no primary button. Two visually adjacent buttons is as close
 as an extension gets — they are not fused into one control the way Run/Debug is.
 
-**One chord drives whichever tool is active:** `Ctrl+Alt+C` / `Cmd+Alt+C`, contributed **nine
-times** — once per command, each carrying the same `when` as its button. Since those conditions
-are mutually exclusive, exactly one binding can match, so the key always runs what the
-right-hand icon shows. `check-manifest` verifies the nine share a chord and that their
-conditions match the buttons exactly; a drifted `when` would leave the key firing nothing, or
-two tools at once.
+**One chord drives whichever tool is active:** `Ctrl+Alt+C` / `Cmd+Alt+C`. Since the nine
+`when` conditions are mutually exclusive, exactly one binding can match, so the key always runs
+what the right-hand icon shows.
+
+**The chord sits on nine `repeat.*` delegate commands, not on the commands in the dropdown**,
+and that split is not decorative. VS Code prints a command's keybinding beside **every** menu
+item that invokes it, with no way to opt out — so binding the dropdown commands directly put
+`Cmd+Alt+C` on nine rows of the menu. Each delegate shares its twin's icon and title, is the
+one contributed to `editor/title`, and is hidden from the command palette with
+`commandPalette` + `when: false` so the same nine actions do not appear twice there.
+
+`check-manifest` holds this together: one chord across the nine, conditions matching the
+buttons exactly, no dropdown command carrying a keybinding, and every delegate mirroring its
+twin's icon. A drifted `when` would otherwise leave the key firing nothing, or two tools at
+once — verified by temporarily adding a bad binding and watching it fail.
 
 Why this chord, after checking the VS Code sources for what is actually taken: `Cmd+Shift+C` is
 out because one of its holders is scoped `TerminalContextKeys.notFocus`, which is true in a
@@ -857,6 +866,38 @@ interaction under [TypeScript configuration](#typescript-configuration).
   which checks the prefix against the schemes the parser actually recognizes.
 
 ## Removed on purpose — do not reintroduce
+
+- **A custom cursor while an element is being picked.** Two attempts, both dead ends, and the
+  second one explains the first.
+
+  The idea was `* { cursor: … !important }` injected into the page, which is exactly what VS
+  Code's own browser does (`ElementPicker` in
+  `vs/platform/browserView/electron-browser/preload-browserView.ts`). It never took. The
+  reason is in `browserViewFrameInspector.startInspection`:
+
+  ```ts
+  const mode = this._isPaused && options.mode !== BrowserElementSelectionMode.Comment
+      ? 'cdp' : 'preload';
+  ```
+
+  VS Code uses `Overlay.setInspectMode` **only when the debugger is paused**; the normal path is
+  its own in-page picker, and the cursor style belongs to that picker.
+
+  **The symptom, which is the fingerprint of this problem:** the crosshair *does* appear the
+  moment the command starts, and then the instant you move over an element you get that
+  element's cursor back — a hand over links, an I-beam over text. So the injected rule is
+  applied and working; what happens is that the CDP inspect overlay starts tracking the pointer
+  and takes the cursor over. That overlay is a separate document rendered by the browser
+  process, so nothing injected into the page reaches it. Our element picking is built entirely
+  on `Overlay.setInspectMode`, so there is no page-level rule that can win.
+
+  Changing the cursor would therefore mean replacing the picker with our own in-page one:
+  hover tracking, our own highlight, `Runtime.addBinding` to report the click. That trades
+  DevTools-quality highlighting for a cursor, and was judged not worth it.
+
+  Also learned on the way, and still true: **Chromium does not accept SVG as a cursor image**,
+  and an unusable `url()` invalidates the whole declaration instead of falling through to the
+  keyword after it — so `cursor: url(data:image/svg+xml…), crosshair` changes nothing at all.
 
 - **The web/browser target** (`esbuild.browser.mts`, `tsconfig.browser.json`, the `browser`
   manifest field, the `*-web` scripts) — this extension is desktop-only. The `isWeb()` helper

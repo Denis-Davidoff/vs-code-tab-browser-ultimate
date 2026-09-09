@@ -144,6 +144,49 @@ if (keybindings.length) {
 	}
 }
 
+/*
+ * The chord lives on the `repeat.*` delegates, never on the commands that appear
+ * in the dropdown. VS Code prints a command's keybinding beside every menu item
+ * that invokes it with no way to opt out, so a keybinding on a dropdown command
+ * puts the chord on nine menu rows.
+ */
+const bound = new Set(keybindings.map(k => k.command));
+for (const item of contributes.menus['aiBrowser.elementMenu'] ?? []) {
+	if (bound.has(item.command)) {
+		problems.push(`${item.command} is in the dropdown and has a keybinding; the chord belongs on its repeat.* twin`);
+	}
+}
+
+/* each delegate must mirror its twin's icon, and stay out of the palette */
+const hiddenFromPalette = new Set(
+	(contributes.menus.commandPalette ?? []).filter(m => m.when === 'false').map(m => m.command));
+const twins = {
+	'aiBrowser.repeat.element': 'aiBrowser.copyElement',
+	'aiBrowser.repeat.cssPath': 'aiBrowser.copyElementCssPath',
+	'aiBrowser.repeat.xpath': 'aiBrowser.copyElementXPath',
+	'aiBrowser.repeat.claude.element': 'aiBrowser.addElementToClaudeCode',
+	'aiBrowser.repeat.claude.cssPath': 'aiBrowser.addCssPathToClaudeCode',
+	'aiBrowser.repeat.claude.xpath': 'aiBrowser.addXPathToClaudeCode',
+	'aiBrowser.repeat.codex.element': 'aiBrowser.addElementToCodex',
+	'aiBrowser.repeat.codex.cssPath': 'aiBrowser.addCssPathToCodex',
+	'aiBrowser.repeat.codex.xpath': 'aiBrowser.addXPathToCodex',
+};
+for (const [delegate, twin] of Object.entries(twins)) {
+	if (!commands.has(delegate)) {
+		problems.push(`missing repeat delegate ${delegate}`);
+		continue;
+	}
+	if (JSON.stringify(commands.get(delegate).icon) !== JSON.stringify(commands.get(twin)?.icon)) {
+		problems.push(`${delegate} does not share the icon of ${twin}`);
+	}
+	if (!hiddenFromPalette.has(delegate)) {
+		problems.push(`${delegate} is not hidden from the command palette`);
+	}
+	if (!bound.has(delegate)) {
+		problems.push(`${delegate} has no keybinding`);
+	}
+}
+
 if (problems.length) {
 	console.error(`check-manifest: ${problems.length} problem(s)`);
 	for (const problem of problems) {
@@ -154,4 +197,4 @@ if (problems.length) {
 
 console.log(`check-manifest: ok — ${commands.size} commands, ${submenus.size} submenu(s), `
 	+ `${referenced.size} icon files, ${actions.length} primary buttons, `
-	+ `${keybindings.length} keybindings`);
+	+ `${keybindings.length} keybindings, ${Object.keys(twins).length} repeat delegates`);

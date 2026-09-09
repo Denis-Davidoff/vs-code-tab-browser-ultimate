@@ -7,7 +7,8 @@ import * as vscode from 'vscode';
 import { AIBrowserManager } from './aiBrowserManager';
 import { AIBrowserView } from './aiBrowserView';
 import {
-	addElementToAssistant, addPathToAssistant, copyElement, copyElementCssPath, copyElementXPath,
+	addElementToAssistant, addPathToAssistant, copyElement, copyElementCssPath, copyElementXPath
+,
 } from './elementPicker';
 import { cleanUpReports, publishAssistantContext, type AssistantId } from './assistants';
 import { LastElementAction, type ElementActionId } from './lastAction';
@@ -164,6 +165,27 @@ export function activate(context: vscode.ExtensionContext) {
 	registerElementCommand(copyElementCommand, 'element', copyElement);
 	registerElementCommand(copyXPathCommand, 'xpath', copyElementXPath);
 	registerElementCommand(copyCssPathCommand, 'cssPath', copyElementCssPath);
+
+	// The toolbar button and the Cmd+Alt+C chord run these `repeat.*` twins
+	// rather than the commands above. The reason is presentational: VS Code
+	// prints a command's keybinding beside every menu item that invokes it, with
+	// no way to opt out, so the chord had to move off the commands that appear in
+	// the dropdown. Each twin shares its original's icon and title, so the button
+	// and its tooltip are unchanged.
+	const repeats: [ElementActionId, () => Promise<void>][] = [
+		['element', copyElement],
+		['cssPath', copyElementCssPath],
+		['xpath', copyElementXPath],
+		['claude:element', () => addElementToAssistant('claude')],
+		['claude:cssPath', () => addPathToAssistant('claude', 'css')],
+		['claude:xpath', () => addPathToAssistant('claude', 'xpath')],
+		['codex:element', () => addElementToAssistant('codex')],
+		['codex:cssPath', () => addPathToAssistant('codex', 'css')],
+		['codex:xpath', () => addPathToAssistant('codex', 'xpath')],
+	];
+	for (const [action, run] of repeats) {
+		registerElementCommand(`aiBrowser.repeat.${action.replace(':', '.')}`, action, run);
+	}
 
 	context.subscriptions.push(vscode.commands.registerCommand(openApiCommand, async (url: vscode.Uri, showOptions?: {
 		preserveFocus?: boolean;
