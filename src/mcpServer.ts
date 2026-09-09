@@ -7,10 +7,12 @@ import * as http from 'http';
 import * as net from 'net';
 import * as vscode from 'vscode';
 import { BrowserController } from './browserController';
+import { generateUuid } from './uuid';
 import {
-	authorizeRequest, dispatch, invalidRequest, invalidRequestReason, isNotification, normalisePath,
-	number, parseError, schema, string, stringOrUndefined, numberOrUndefined,
-	type DispatchContext, type Tool,
+	authorizeRequest, classifyClient, dispatch, initializeClientName, invalidRequest,
+	invalidRequestReason, isNotification, normalisePath, number, parseError, schema, string,
+	stringOrUndefined, numberOrUndefined,
+	type ClientKind, type DispatchContext, type Tool,
 } from './mcpProtocol';
 
 /**
@@ -26,6 +28,12 @@ const portsToTry = 20;
 /** How long after the last call an assistant still counts as connected. */
 const clientIdleMs = 10 * 60 * 1000;
 const decayCheckMs = 60 * 1000;
+
+/** Which assistants are currently calling the server. */
+export interface ClientSet {
+	readonly claude: boolean;
+	readonly codex: boolean;
+}
 
 export class McpServer implements vscode.Disposable {
 
@@ -51,12 +59,26 @@ export class McpServer implements vscode.Disposable {
 	 * assistant quits, instead of staying on until the window closes.
 	 */
 	private _lastActivity = 0;
-	private _hadClient = false;
 	private _decayTimer: NodeJS.Timeout | undefined;
 
-	private readonly _onDidChangeClient = new vscode.EventEmitter<boolean>();
-	/** Fires when "an assistant is talking to us" flips either way. */
-	public readonly onDidChangeClient = this._onDidChangeClient.event;
+	/** Last call from each recognised assistant. */
+	private readonly _lastByKind = new Map<ClientKind, number>();
+
+	/**
+	 * `Mcp-Session-Id` → which assistant owns it.
+	 *
+	 * Only `initialize` carries `clientInfo`, so without this every later
+	 * `tools/call` would be anonymous and the per-assistant dots would decay
+	 * while the assistant was still working. We mint a session id at initialize,
+	 * return it in the response header, and MCP clients echo it back.
+	 */
+	private readonly _sessionKinds = new Map<string, ClientKind>();
+
+	private _published: ClientSet = { claude: false, codex: false };
+
+	private readonly _onDidChangeClients = new vscode.EventEmitter<ClientSet>();
+	/** Fires when the set of assistants currently calling us changes. */
+	public readonly onDidChangeClients = this._onDidChangeClients.event;
 
 	constructor(
 		private readonly browser: BrowserController,
@@ -99,16 +121,25 @@ export class McpServer implements vscode.Disposable {
 		return Date.now() - this._lastActivity < clientIdleMs;
 	}
 
-	private _noteActivity(): void {
-		this._lastActivity = Date.now();
-		this._publishClient();
+	/** Which assistants have called recently. */
+	public get clients(): ClientSet {
+		const fresh = (kind: ClientKind) => Date.now() - (this._lastByKind.get(kind) ?? 0) < clientIdleMs;
+		return { claude: fresh('claude'), codex: fresh('codex') };
 	}
 
-	private _publishClient(): void {
-		const now = this.hasClient;
-		if (now !== this._hadClient) {
-			this._hadClient = now;
-			this._onDidChangeClient.fire(now);
+	private _noteActivity(kind: ClientKind | undefined): void {
+		this._lastActivity = Date.now();
+		if (kind && kind !== 'other') {
+			this._lastByKind.set(kind, Date.now());
+		}
+		this._publishClients();
+	}
+
+	private _publishClients(): void {
+		const now = this.clients;
+		if (now.claude !== this._published.claude || now.codex !== this._published.codex) {
+			this._published = now;
+			this._onDidChangeClients.fire(now);
 		}
 	}
 
@@ -126,7 +157,7 @@ export class McpServer implements vscode.Disposable {
 				this._server = await this._listen(port);
 				this._port = port;
 				// Nothing pushes the state back down on its own, so poll for decay.
-				this._decayTimer = setInterval(() => this._publishClient(), decayCheckMs);
+				this._decayTimer = setInterval(() => this._publishClients(), decayCheckMs);
 				return;
 			} catch (err: any) {
 				if (err?.code !== 'EADDRINUSE') {
@@ -211,8 +242,6 @@ export class McpServer implements vscode.Disposable {
 				break;
 		}
 
-		this._noteActivity();
-
 		let raw: string;
 		try {
 			raw = await this._readBody(req);
@@ -236,6 +265,22 @@ export class McpServer implements vscode.Disposable {
 		}
 
 		const request = body as { id?: unknown; method?: unknown; params?: any };
+
+		// Attribute the call: `initialize` names the client, everything after it
+		// is identified by the session id we handed out.
+		const clientName = initializeClientName(request);
+		let sessionId = stringOrUndefined(req.headers['mcp-session-id'] as string | undefined);
+		let kind = sessionId ? this._sessionKinds.get(sessionId) : undefined;
+
+		if (clientName !== undefined) {
+			kind = classifyClient(clientName);
+			sessionId = generateUuid();
+			this._sessionKinds.set(sessionId, kind);
+			res.setHeader('mcp-session-id', sessionId);
+		}
+
+		this._noteActivity(kind);
+
 		const response = await dispatch(request, this._context());
 
 		if (response === undefined) {
@@ -361,7 +406,8 @@ export class McpServer implements vscode.Disposable {
 			clearInterval(this._decayTimer);
 			this._decayTimer = undefined;
 		}
-		this._onDidChangeClient.dispose();
+		this._onDidChangeClients.dispose();
+		this._sessionKinds.clear();
 		for (const socket of this._sockets) {
 			socket.destroy();
 		}

@@ -113,6 +113,10 @@ export function codexClientState(
 			}
 			seen.add(entry.name);
 
+			if (entry.name.includes('.')) {
+				continue; // a sub-table such as `<name>.http_headers`, not a server
+			}
+
 			if (entry.values.get('enabled') === 'false') {
 				states.push('disabled');
 				continue;
@@ -124,10 +128,7 @@ export function codexClientState(
 				continue;
 			}
 
-			if (configured === urlWithToken) {
-				states.push('thisServer');
-			} else if (entry.values.has('bearer_token_env_var')) {
-				// The variable's value lives in Codex's environment, not ours.
+			if (configured === urlWithToken || hasCredentials(entry, entries)) {
 				states.push('thisServer');
 			} else {
 				states.push('staleToken');
@@ -136,6 +137,26 @@ export function codexClientState(
 	}
 
 	return bestState(states);
+}
+
+/**
+ * Whether a Codex entry carries credentials we cannot verify and must trust.
+ *
+ * Three forms, all supported by Codex, and the reason the earlier "Codex can
+ * only *name* a token" belief was wrong:
+ *   - `http_headers = { Authorization = "Bearer …" }` — an inline table, which
+ *     is what this extension now writes;
+ *   - `[mcp_servers.<name>.http_headers]` — the same thing as a sub-table, which
+ *     the parser reports as a *separate* entry whose name carries the suffix, so
+ *     it has to be found among the siblings;
+ *   - `bearer_token_env_var = "FOO"` — the value lives in Codex's environment,
+ *     so its presence is all that can be checked from here.
+ */
+function hasCredentials(entry: CodexEntry, siblings: readonly CodexEntry[]): boolean {
+	if (entry.values.has('bearer_token_env_var') || entry.values.has('http_headers')) {
+		return true;
+	}
+	return siblings.some(other => other.name === `${entry.name}.http_headers`);
 }
 
 /**
@@ -159,7 +180,7 @@ export function codexOurEntries(
 				continue;
 			}
 			seen.add(entry.name);
-			if (entry.values.get('enabled') === 'false') {
+			if (entry.values.get('enabled') === 'false' || entry.name.includes('.')) {
 				continue;
 			}
 			if (isSameServer(entry.values.get('url') ?? '', url)) {

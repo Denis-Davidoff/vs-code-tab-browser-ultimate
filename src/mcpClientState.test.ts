@@ -150,3 +150,44 @@ suite('codexOurEntries', () => {
 		assert.deepStrictEqual(codexOurEntries(parse(project, project), url), ['ai-browser']);
 	});
 });
+
+suite('codexClientState: credential forms', () => {
+
+	test('inline http_headers counts as credentials', () => {
+		const text = `[mcp_servers.ai-browser]\nurl = "${url}"\nhttp_headers = { Authorization = "Bearer ${token}" }\n`;
+		assert.strictEqual(codexClientState(parse(text), url, urlWithToken), 'thisServer');
+	});
+
+	test('an http_headers sub-table counts too', () => {
+		// Codex also accepts `[mcp_servers.<name>.http_headers]`, which the parser
+		// reports as a separate entry whose name carries the suffix.
+		const text = [
+			'[mcp_servers.ai-browser]',
+			`url = "${url}"`,
+			'[mcp_servers.ai-browser.http_headers]',
+			`Authorization = "Bearer ${token}"`,
+		].join('\n');
+		assert.strictEqual(codexClientState(parse(text), url, urlWithToken), 'thisServer');
+	});
+
+	test('a sub-table does not count as a server of its own', () => {
+		const text = [
+			'[mcp_servers.ai-browser]',
+			`url = "${url}"`,
+			'http_headers = { Authorization = "Bearer x" }',
+			'[mcp_servers.ai-browser.http_headers]',
+			`Authorization = "Bearer ${token}"`,
+		].join('\n');
+		assert.deepStrictEqual(codexOurEntries(parse(text), url), ['ai-browser']);
+	});
+
+	test('env-var credentials are still trusted', () => {
+		const text = `[mcp_servers.ai-browser]\nurl = "${url}"\nbearer_token_env_var = "AI_BROWSER_TOKEN"\n`;
+		assert.strictEqual(codexClientState(parse(text), url, urlWithToken), 'thisServer');
+	});
+
+	test('the endpoint with no credentials at all is still stale', () => {
+		const text = `[mcp_servers.ai-browser]\nurl = "${url}"\n`;
+		assert.strictEqual(codexClientState(parse(text), url, urlWithToken), 'staleToken');
+	});
+});

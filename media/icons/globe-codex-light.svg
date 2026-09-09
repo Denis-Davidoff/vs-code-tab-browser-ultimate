@@ -1,7 +1,9 @@
 <svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
-	<g fill="none" stroke="#FFFFFF" stroke-width="1.15" stroke-linecap="round">
+	<g fill="none" stroke="#3B3B3B" stroke-width="1.15" stroke-linecap="round">
 		<circle cx="8" cy="8" r="6.9"/>
 		<path d="M1.1 8h13.8"/>
 		<ellipse cx="8" cy="8" rx="3" ry="6.9"/>
 	</g>
+	<!-- Codex is talking to us -->
+	<circle cx="3.1" cy="12.9" r="3.1" fill="#0C8599"/>
 </svg>

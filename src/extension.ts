@@ -143,14 +143,16 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(vscode.extensions.onDidChange(publishAssistantContext));
 	cleanUpReports();
 
+	// These record themselves too, so the toolbar button repeats "Add XPath to
+	// Codex" just as readily as "Copy XPath".
 	for (const assistant of ['claude', 'codex'] as AssistantId[]) {
 		const suffix = assistant === 'claude' ? 'ClaudeCode' : 'Codex';
-		context.subscriptions.push(vscode.commands.registerCommand(
-			`aiBrowser.addElementTo${suffix}`, () => addElementToAssistant(assistant)));
-		context.subscriptions.push(vscode.commands.registerCommand(
-			`aiBrowser.addCssPathTo${suffix}`, () => addPathToAssistant(assistant, 'css')));
-		context.subscriptions.push(vscode.commands.registerCommand(
-			`aiBrowser.addXPathTo${suffix}`, () => addPathToAssistant(assistant, 'xpath')));
+		registerElementCommand(`aiBrowser.addElementTo${suffix}`, `${assistant}:element`,
+			() => addElementToAssistant(assistant));
+		registerElementCommand(`aiBrowser.addCssPathTo${suffix}`, `${assistant}:cssPath`,
+			() => addPathToAssistant(assistant, 'css'));
+		registerElementCommand(`aiBrowser.addXPathTo${suffix}`, `${assistant}:xpath`,
+			() => addPathToAssistant(assistant, 'xpath'));
 	}
 
 	registerElementCommand(copyElementCommand, 'element', copyElement);

@@ -4,4 +4,6 @@
 		<path d="M1.1 8h13.8"/>
 		<ellipse cx="8" cy="8" rx="3" ry="6.9"/>
 	</g>
+	<!-- Codex is talking to us -->
+	<circle cx="3.1" cy="12.9" r="3.1" fill="#22B8CF"/>
 </svg>

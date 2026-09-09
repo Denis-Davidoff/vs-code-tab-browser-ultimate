@@ -5,7 +5,7 @@
 
 import * as vscode from 'vscode';
 import { BrowserController } from './browserController';
-import { McpServer } from './mcpServer';
+import { McpServer, type ClientSet } from './mcpServer';
 import { registerWithVsCode, workspaceFolder } from './mcpSetup';
 import { generateUuid } from './uuid';
 
@@ -52,13 +52,14 @@ export class McpLifecycle implements vscode.Disposable {
 	}
 
 	/**
-	 * Drives the green globe in the browser tab's toolbar.
+	 * Drives the corner dots on the globe in the browser tab's toolbar.
 	 *
-	 * A submenu's icon is static in `contributes`, so the two colours are two
-	 * submenu declarations picked apart by this context key.
+	 * A submenu's icon is static in `contributes`, so each combination is its own
+	 * submenu declaration, picked apart by these context keys.
 	 */
-	private _publishConnected(connected: boolean): void {
-		vscode.commands.executeCommand('setContext', 'aiBrowser.assistantConnected', connected);
+	private _publishClients(clients: ClientSet): void {
+		vscode.commands.executeCommand('setContext', 'aiBrowser.claudeConnected', clients.claude);
+		vscode.commands.executeCommand('setContext', 'aiBrowser.codexConnected', clients.codex);
 	}
 
 	/**
@@ -95,7 +96,7 @@ export class McpLifecycle implements vscode.Disposable {
 		}
 		this._parts = [];
 		// No server means nothing can be talking to us.
-		this._publishConnected(false);
+		this._publishClients({ claude: false, codex: false });
 
 		const configuration = vscode.workspace.getConfiguration('aiBrowser');
 		if (!configuration.get<boolean>('mcp.enabled', true)) {
@@ -122,8 +123,8 @@ export class McpLifecycle implements vscode.Disposable {
 			this._parts.push(registration);
 		}
 
-		this._clientWatch = server.onDidChangeClient(connected => this._publishConnected(connected));
-		this._publishConnected(server.hasClient);
+		this._clientWatch = server.onDidChangeClients(clients => this._publishClients(clients));
+		this._publishClients(server.clients);
 
 		this._setState({ kind: 'running', server });
 	}

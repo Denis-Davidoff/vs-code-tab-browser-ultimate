@@ -163,38 +163,69 @@ export function claudeCliCommand(server: McpServer): string {
 /* ------------------------------------------------------------------------ Codex */
 
 /**
- * Writes our table into the project's `.codex/config.toml`.
+ * Renders our `[mcp_servers.<name>]` table.
  *
- * Three details matter, each learned from a broken file:
- *   - the newline style is taken from the existing file, otherwise the whole of
- *     somebody else's config shows up in the diff;
- *   - an existing table of ours is *replaced by line range*, not appended to —
- *     the same table twice is TOML that does not parse at all;
- *   - the table is located with the parser, not `text.includes('[mcp_servers.…]')`,
+ * The credentials go in `http_headers`, as an **inline** table. Codex supports
+ * `http_headers` (static), `env_http_headers` and `bearer_token_env_var`, so the
+ * token does not need to sit in the URL after all — that was an earlier
+ * misreading. Inline rather than a `[mcp_servers.<name>.http_headers]`
+ * sub-table on purpose: a sub-table is a second table, and replacing ours by
+ * line range would orphan it.
+ */
+function codexTable(name: string, server: McpServer): string[] {
+	return [
+		`[mcp_servers.${name}]`,
+		`url = "${server.url}"`,
+		`http_headers = { Authorization = "Bearer ${server.token}" }`,
+	];
+}
+
+/**
+ * Writes our table into a Codex config, replacing any previous copy.
+ *
+ * Details that each cost a broken file:
+ *   - the newline style comes from the existing file, or the whole of somebody
+ *     else's config turns up in the diff;
+ *   - our table is *replaced by line range*, never appended to — the same table
+ *     twice is TOML that does not parse at all, taking every other server in the
+ *     file down with it;
+ *   - a stale `[mcp_servers.<name>.http_headers]` sub-table is removed with it,
+ *     since we no longer write that form and leaving it behind would apply
+ *     headers to a table that has its own inline ones;
+ *   - the table is found with the parser, not `text.includes('[mcp_servers.…]')`,
  *     because `[mcp_servers.ai-browser] # ours` is the same table.
  */
-export async function writeCodexProjectConfig(
-	folder: vscode.WorkspaceFolder,
+async function writeCodexConfig(
+	uri: vscode.Uri,
+	name: string,
 	server: McpServer,
 ): Promise<void> {
 
-	const uri = codexProjectConfigUri(folder);
 	const existing = await readText(uri) ?? '';
 	const newline = /\r\n/.test(existing) ? '\r\n' : '\n';
-
-	const table = [
-		`[mcp_servers.${serverName}]`,
-		`url = "${server.urlWithToken}"`,
-	];
-
 	const lines = existing === '' ? [] : existing.split(/\r?\n/);
-	const ours = codexEntries(existing).find(entry => entry.name === serverName);
+
+	// Ours, plus any sub-table of ours, as line ranges to drop.
+	const ranges = codexEntries(existing)
+		.filter(entry => entry.name === name || entry.name.startsWith(`${name}.`))
+		.map(entry => [entry.firstLine, entry.endLine] as const)
+		.sort((a, b) => a[0] - b[0]);
 
 	let next: string[];
-	if (ours) {
-		next = [...lines.slice(0, ours.firstLine), ...table, ...lines.slice(ours.endLine)];
+	if (ranges.length) {
+		next = [];
+		let cursor = 0;
+		for (const [from, to] of ranges) {
+			next.push(...lines.slice(cursor, from));
+			cursor = to;
+		}
+		const tail = lines.slice(cursor);
+		next = [...next, ...codexTable(name, server), ...tail];
 	} else {
-		next = lines.length ? [...lines, ...(lines.at(-1) === '' ? [] : ['']), ...table] : table;
+		const table = codexTable(name, server);
+		next = lines.length
+			? [...lines, ...(lines.at(-1) === '' ? [] : ['']), ...table]
+			: table;
 	}
 
 	let text = next.join(newline);
@@ -205,15 +236,42 @@ export async function writeCodexProjectConfig(
 }
 
 /**
- * The command that adds us to the *global* Codex config.
+ * Writes the **global** `~/.codex/config.toml`.
  *
- * The extension never writes `~/.codex/config.toml` itself: that file belongs to
- * `codex mcp add`, which already knows how to leave other people's servers
- * alone.
+ * This is the one Codex always reads, on every surface. A project
+ * `.codex/config.toml` is only loaded for *trusted* projects, and the desktop
+ * app has been reported to ignore it entirely — which is exactly the "Codex
+ * cannot see the server" symptom.
+ *
+ * The entry is named per project, so two projects do not overwrite each other.
+ * Not locked: unlike a repair on startup, this runs on a button press, and two
+ * windows racing for it would need the user to click in both at the same moment.
+ */
+export async function writeCodexGlobalConfig(
+	folder: vscode.WorkspaceFolder | undefined,
+	server: McpServer,
+): Promise<string> {
+	const name = folder ? codexEntryName(folder) : `${serverName}-window`;
+	await writeCodexConfig(codexGlobalConfigUri(), name, server);
+	return name;
+}
+
+export async function writeCodexProjectConfig(
+	folder: vscode.WorkspaceFolder,
+	server: McpServer,
+): Promise<void> {
+	await writeCodexConfig(codexProjectConfigUri(folder), serverName, server);
+}
+
+/**
+ * The command that adds us to the global Codex config.
+ *
+ * Offered alongside the write because `codex mcp add` is the officially
+ * supported route, and some people would rather run it than have a file edited.
  */
 export function codexCliCommand(folder: vscode.WorkspaceFolder | undefined, server: McpServer): string {
 	const name = folder ? codexEntryName(folder) : `${serverName}-window`;
-	return `codex mcp add ${name} --url ${server.urlWithToken}`;
+	return `codex mcp add ${name} --url ${server.url}`;
 }
 
 /* ---------------------------------------------------------------- connection UX */
@@ -221,17 +279,21 @@ export function codexCliCommand(folder: vscode.WorkspaceFolder | undefined, serv
 /**
  * The text the user pastes into the assistant.
  *
- * Two lines, on purpose. It deliberately says nothing about "picking up the
- * server": both assistants read their MCP servers at startup and do not
- * re-read, so Claude Code has to be restarted and Codex needs a new
- * conversation. That belongs in the dialog, where the user is, not in a prompt
- * addressed to the model.
+ * It names the **tools**, not a config file, and that is the important part.
+ * Both assistants load MCP servers when they start and never re-read the
+ * config, so if the server is loaded the tools are already in the session and
+ * no prompt is needed at all; and if it is not loaded, telling the model to go
+ * and read `config.toml` cannot help — it will read the file, agree the server
+ * is configured, and still have no tools. That instruction was in here, and it
+ * is exactly what made Codex look stupid.
+ *
+ * The fallback line therefore points at the CLI command, which changes the
+ * config for the *next* session, rather than at the file.
  */
-export function connectionPrompt(client: 'claude' | 'codex', cliCommand: string): string {
-	const source = client === 'claude' ? '`.mcp.json`' : '`.codex/config.toml`';
+export function connectionPrompt(entryName: string, cliCommand: string): string {
 	return [
-		`Use MCP \`${serverName}\` from ${source}`,
-		`If it is not in the file, run \`${cliCommand}\`.`,
+		`Use the \`${entryName}\` MCP tools (they start with \`browser_\`) to inspect the page in the integrated browser.`,
+		`If you have no such tools, they were not loaded at startup: run \`${cliCommand}\` and start a new session.`,
 	].join('\n');
 }
 
@@ -262,7 +324,7 @@ export async function connectClaudeCode(server: McpServer): Promise<void> {
 				// The prompt is copied either way: its second line covers the case
 				// where the entry is missing, which is precisely what an unparsable
 				// file leaves behind.
-				await vscode.env.clipboard.writeText(connectionPrompt('claude', cli));
+				await vscode.env.clipboard.writeText(connectionPrompt(serverName, cli));
 
 				if (outcome === 'unparsable') {
 					vscode.window.showErrorMessage(vscode.l10n.t(
@@ -296,23 +358,49 @@ export async function connectClaudeCode(server: McpServer): Promise<void> {
 export async function connectCodex(server: McpServer): Promise<void> {
 	const folder = workspaceFolder();
 	const cli = codexCliCommand(folder, server);
-
 	const actions: { label: string; run: () => Thenable<void> }[] = [];
 
+	// The project file leads, matching Claude Code: one button that writes the
+	// entry and copies the prompt. The global config is the fallback below —
+	// note that it is the one Codex always reads, whereas a *project* config is
+	// only loaded for trusted projects, which is the usual reason Codex cannot
+	// see the server.
 	if (folder) {
 		actions.push({
-			label: vscode.l10n.t("1. Write .codex/config.toml"),
+			label: vscode.l10n.t("Write .codex/config.toml & copy connection prompt"),
 			run: async () => {
-				await writeCodexProjectConfig(folder, server);
-				vscode.window.showInformationMessage(vscode.l10n.t(
-					"Wrote `.codex/config.toml`. Codex reads a project config once the repository is trusted; start a new conversation to pick it up."));
+				try {
+					await writeCodexProjectConfig(folder, server);
+					await vscode.env.clipboard.writeText(connectionPrompt(serverName, cli));
+					vscode.window.showInformationMessage(vscode.l10n.t(
+						"Wrote `.codex/config.toml` and copied the prompt. Start a NEW Codex conversation, then paste it. If Codex still has no browser tools, the project is probably not trusted — use the global config instead."));
+				} catch (err) {
+					await vscode.env.clipboard.writeText(cli);
+					vscode.window.showErrorMessage(vscode.l10n.t(
+						"Could not write `.codex/config.toml` ({0}). The `codex mcp add` command is on your clipboard instead.",
+						err instanceof Error ? err.message : String(err)));
+				}
 			},
 		});
-		actions.push({
-			label: vscode.l10n.t("2. Copy connection prompt"),
-			run: () => vscode.env.clipboard.writeText(connectionPrompt('codex', cli)),
-		});
 	}
+
+	actions.push({
+		label: vscode.l10n.t("Write global ~/.codex/config.toml"),
+		run: async () => {
+			try {
+				const name = await writeCodexGlobalConfig(folder, server);
+				await vscode.env.clipboard.writeText(connectionPrompt(name, cli));
+				vscode.window.showInformationMessage(vscode.l10n.t(
+					"Added `{0}` to ~/.codex/config.toml and copied the prompt. Start a NEW Codex conversation, then paste it.",
+					name));
+			} catch (err) {
+				await vscode.env.clipboard.writeText(cli);
+				vscode.window.showErrorMessage(vscode.l10n.t(
+					"Could not write ~/.codex/config.toml ({0}). The `codex mcp add` command is on your clipboard instead.",
+					err instanceof Error ? err.message : String(err)));
+			}
+		},
+	});
 
 	actions.push({
 		label: vscode.l10n.t("Copy CLI command"),
@@ -323,9 +411,11 @@ export async function connectCodex(server: McpServer): Promise<void> {
 		vscode.l10n.t("Connect Codex to the browser"),
 		[
 			vscode.l10n.t("Server: {0}", server.url ?? '—'),
-			vscode.l10n.t("Codex can only name a bearer token in its config, and the extension does not control its environment, so the token travels in the URL."),
-			folder ? '' : vscode.l10n.t("No folder is open, so only the CLI command is available."),
-			vscode.l10n.t("Codex reads MCP servers when a conversation starts — begin a new one after connecting."),
+			folder
+				? vscode.l10n.t("The first button writes the project's `.codex/config.toml` and puts a short prompt on your clipboard. Paste that prompt into a Codex conversation.")
+				: vscode.l10n.t("No folder is open, so only the global config and the CLI command are available."),
+			vscode.l10n.t("Codex loads MCP servers only when a conversation starts and never re-reads the config — start a NEW conversation after connecting. If it says it cannot see the server, it was not loaded, and sending it to read config.toml will not change that."),
+			vscode.l10n.t("A project config is only loaded for projects Codex trusts, and some surfaces ignore it entirely. If the tools do not turn up, use the global config."),
 		].filter(Boolean).join('\n\n'),
 		actions);
 }

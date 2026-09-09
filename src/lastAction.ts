@@ -5,14 +5,28 @@
 
 import * as vscode from 'vscode';
 
-export type ElementActionId = 'element' | 'xpath' | 'cssPath';
+/**
+ * Every action the toolbar button can repeat: the three copies, and the same
+ * three for each assistant. The value is compared verbatim in `when` clauses,
+ * so these strings are part of the manifest's contract.
+ */
+export type ElementActionId =
+	| 'element' | 'cssPath' | 'xpath'
+	| 'claude:element' | 'claude:cssPath' | 'claude:xpath'
+	| 'codex:element' | 'codex:cssPath' | 'codex:xpath';
+
+const allActions: readonly string[] = [
+	'element', 'cssPath', 'xpath',
+	'claude:element', 'claude:cssPath', 'claude:xpath',
+	'codex:element', 'codex:cssPath', 'codex:xpath',
+];
 
 const contextKey = 'aiBrowser.lastElementAction';
 const mementoKey = 'aiBrowser.lastElementAction';
 const fallback: ElementActionId = 'element';
 
 function isElementActionId(value: unknown): value is ElementActionId {
-	return value === 'element' || value === 'xpath' || value === 'cssPath';
+	return typeof value === 'string' && allActions.includes(value);
 }
 
 /**

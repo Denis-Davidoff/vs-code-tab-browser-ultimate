@@ -14,8 +14,11 @@ kept for anyone who wants it — set `aiBrowser.useIntegratedBrowser` to `false`
 
 Open a page in the built-in browser and use the crosshair button on the browser tab's toolbar.
 The button repeats whichever action you used last; the chevron beside it opens the full list,
-which also holds the assistant and connection entries below. The globe on that dropdown turns
-**green** while an assistant is actually calling the browser. Hover highlights elements the way
+which also holds the assistant and connection entries below.
+
+The globe on that dropdown shows who is using the browser: an **orange** dot in the top-right
+while Claude Code is calling it, a **teal** dot in the bottom-left for Codex, both if both are.
+A dot means real traffic, not just a config file pointing at the server. Hover highlights elements the way
 DevTools does — click one and the result is yours.
 
 | Action | Result |
@@ -50,13 +53,18 @@ tab has three entries for it:
 | Entry | What it does |
 |---|---|
 | Connect Claude Code | writes `.mcp.json`, or hands you the `claude mcp add` command |
-| Connect Codex | writes `.codex/config.toml`, or hands you the `codex mcp add` command |
+| Connect Codex | writes `.codex/config.toml`, with `~/.codex/config.toml` as a fallback |
 | Check Connection | calls the server for real and reports where each client is pointed |
 
 VS Code's own chat needs no configuration — the server registers itself.
 
 Both assistants read their MCP servers **once, at startup**: restart Claude Code, and start a
-new conversation in Codex, after connecting.
+new conversation in Codex, after connecting. If an assistant says it cannot see the server,
+it was not loaded — telling it to read the config file will not help.
+
+For Codex the project's `.codex/config.toml` comes first, but note that Codex only loads a
+project config for projects it **trusts**, and some of its surfaces ignore one entirely. If the
+browser tools do not turn up, use the global `~/.codex/config.toml` button instead.
 
 The server listens on loopback only, refuses any request carrying an `Origin`, and requires a
 token that belongs to this workspace — so a config copied from another project fails with a

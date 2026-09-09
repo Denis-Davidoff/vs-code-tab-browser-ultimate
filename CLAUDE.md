@@ -71,9 +71,15 @@ The external URI opener does not fire for arbitrary URLs — only for the hosts 
 `enabledHosts` (`localhost`, `127.0.0.1`, `0.0.0.0` and the IPv6 equivalents). For anything
 else it returns `ExternalUriOpenerPriority.None`, so VS Code opens the system browser.
 
-Settings: `aiBrowser.useIntegratedBrowser` (**default `true`**), `aiBrowser.focusLockIndicator.enabled`
-(delegate to VS Code's built-in browser instead of our panel — **off by default**, see
-[Special cases](#special-cases-and-non-obvious-decisions)) and `aiBrowser.searchEngine`.
+Settings:
+
+| Setting | Default | |
+|---|---|---|
+| `aiBrowser.useIntegratedBrowser` | `true` | delegate to VS Code's built-in browser; `false` brings back the webview panel |
+| `aiBrowser.mcp.enabled` | `true` | run the local MCP server for assistants |
+| `aiBrowser.mcp.port` | `43110` | preferred port; each window takes the next free one |
+| `aiBrowser.searchEngine` | `google` | engine for the panel's address bar; `none` disables search |
+| `aiBrowser.focusLockIndicator.enabled` | `true` | the panel's focus indicator |
 
 ## Architecture: two independent halves
 
@@ -94,6 +100,17 @@ Compiled with `tsc`, **no bundling**. `main: ./out/extension`.
 - [src/elementContext.ts](src/elementContext.ts) — pulls element data out of the page over CDP
 - [src/elementMarkdown.ts](src/elementMarkdown.ts) — renders that data as Markdown
 - [src/cssHelpers.ts](src/cssHelpers.ts) — copied verbatim from vscode, builds the CSS section
+- [src/reportFormat.ts](src/reportFormat.ts) — report text and file names (leaf, under test)
+- [src/assistants.ts](src/assistants.ts) — handing reports to Claude Code and Codex
+- [src/lastAction.ts](src/lastAction.ts) — which element command the toolbar button repeats
+- [src/browserController.ts](src/browserController.ts) — what the browser can do, for MCP
+- [src/mcpProtocol.ts](src/mcpProtocol.ts) — JSON-RPC dispatch and the auth decision (leaf, under test)
+- [src/mcpServer.ts](src/mcpServer.ts) — HTTP transport, tools, client attribution
+- [src/mcpSetup.ts](src/mcpSetup.ts) — client config writing and the connect dialogs
+- [src/mcpCheck.ts](src/mcpCheck.ts) — the Check Connection report
+- [src/mcpClientState.ts](src/mcpClientState.ts) — config states (leaf, under test)
+- [src/codexToml.ts](src/codexToml.ts) — the mini TOML table parser (leaf, under test)
+- [src/mcpLifecycle.ts](src/mcpLifecycle.ts) — server lifetime and context keys
 
 **There is only ever one panel.** `AIBrowserManager._activeView` is a single slot: a repeat
 `show()` reuses the existing panel rather than creating a second one. If multiple tabs are ever
@@ -299,33 +316,27 @@ It is a `contributes.submenus` entry (`aiBrowser.elementMenu`) placed into `edit
 its default of `true`. **The `icon` on the submenu declaration is what makes it a toolbar
 button** — without one it collapses into the tab's overflow menu.
 
-That icon is a globe, and **it exists twice**: `media/icons/globe-{light,dark}.svg` and
-`globe-connected-{light,dark}.svg`, the second one green.
+That icon is a globe with a coloured dot per connected assistant: **orange in the top-right for
+Claude Code, teal in the bottom-left for Codex**. Four states — neither, one, the other, both —
+each as `media/icons/globe{,-claude,-codex,-both}-{light,dark}.svg`.
 
-**A submenu's icon is static in `contributes`, so a colour cannot be changed at runtime.** The
-green globe is therefore a *second submenu declaration* — `aiBrowser.elementMenuConnected` —
-carrying the same twelve items, with the two placed in `editor/title` under complementary
-`when` clauses on `aiBrowser.assistantConnected`. That is why `contributes.menus` holds the
-item list twice; keep the two copies identical.
+**A submenu's icon is static in `contributes`, so nothing can be recoloured at runtime.** Each
+state is therefore its own submenu declaration, and the four are placed in `editor/title` under
+mutually exclusive `when` clauses over `aiBrowser.claudeConnected` /
+`aiBrowser.codexConnected`. That is why `contributes.menus` carries the twelve-item list four
+times — **the copies must stay identical**, and
+`scratchpad/fourmenus.py`-style generation from one list is how they were kept so.
 
-Green means **an assistant has actually called the server**, not merely that a config file
-points at it. Streamable HTTP is request/response, so there is no connection to observe:
-`McpServer` timestamps every authorized request and counts a client as present for 10 minutes
-after the last one, with a 60-second interval to let the state decay once the assistant quits.
-`McpLifecycle` mirrors the flag into the context key, and clears it whenever there is no
-server.
+The globe is "white" in the sense that matters: literally `#FFFFFF` on dark themes, near-black
+on light ones. A literal white in both would be invisible on a light theme.
 
-**The element icons are custom SVGs, not codicons, and they have to be.** The three commands
-use a crosshair with a coloured centre — red for Copy Element, green for XPath, blue for CSS
-Path — from `media/icons/crosshair-{colour}-{light,dark}.svg`. A codicon could not do it: VS
-Code renders codicons as font glyphs and recolours them, so any colour baked into one is lost.
-A custom SVG is drawn as a `background-image` and keeps its own fills — but by the same token it
-cannot inherit `currentColor`, which is why the ring and ticks ship as a light/dark pair while
-the centre dot stays fixed.
-
-The opposite rule applies to anything VS Code recolours — an activity bar container icon, for
-instance, has to be a flat `currentColor` shape, and colour baked into one is simply lost. Worth
-remembering before reaching for these files somewhere new.
+**A dot means that assistant has actually called the server**, not that a config points at it.
+Attribution is the interesting part, because only `initialize` carries `clientInfo.name`
+(`classifyClient` matches it), and every later `tools/call` is anonymous. So the server mints an
+`Mcp-Session-Id` at initialize, returns it in the response header, and maps it to the client
+kind; clients echo the header, and later calls refresh that assistant's timestamp. Without that,
+a dot would decay while its assistant was still working. Freshness is 10 minutes, with a
+60-second tick so the state falls back once an assistant quits.
 
 **The primary button is a faked split button.** VS Code has the real thing —
 `isSplitButton: { togglePrimaryAction: true }` on a submenu item, rendered by
@@ -335,9 +346,16 @@ button. Extensions cannot: `menusExtensionPoint.ts` builds an extension's submen
 `{ submenu, icon, title, group, order, when }` and never sets that flag, and the manifest
 schema accepts only `submenu` / `when` / `group`.
 
-So instead: **three** primary buttons in `navigation@1`, each with a `when` on the
-`aiBrowser.lastElementAction` context key, so exactly one is ever visible; the dropdown sits
-beside them in `navigation@2` with a `$(chevron-down)` icon. [src/lastAction.ts](src/lastAction.ts)
+So instead: **nine** primary buttons in `navigation@2` — the three copies plus the same three
+for each assistant — each with a `when` on the `aiBrowser.lastElementAction` context key, so
+exactly one is ever visible. The dropdown sits *before* them in `navigation@1`. The Add buttons
+carry the extra condition `aiBrowser.claudeInstalled` / `codexInstalled`, or a remembered action
+would leave the toolbar with no primary button at all once the assistant is uninstalled.
+
+The nine action ids (`element`, `cssPath`, `xpath` and `<assistant>:<kind>`) are compared
+verbatim in `when` clauses, which makes them **part of the manifest's contract** — renaming one
+in `lastAction.ts` alone silently removes a button. Add commands reuse the crosshair colour of
+the matching Copy command, so the button looks the same whichever destination it repeats. [src/lastAction.ts](src/lastAction.ts)
 keeps the context key and a memento in step — the memento because a context key does not
 survive a restart. Each command records itself before running, in `extension.ts`.
 
@@ -479,8 +497,9 @@ would be more surface area than the feature.
    holding project B; a workspace-scoped token makes that an honest 401 instead of an agent
    quietly editing the wrong project.
 4. **POST on one endpoint.** There is no SSE stream, so GET is 405. The token is accepted as
-   `Authorization: Bearer …` **or** as the last path segment — the second form exists only
-   because Codex cannot do otherwise (below).
+   `Authorization: Bearer …` **or** as the last path segment. The path form is no longer written
+   by anything here — Codex turned out to accept a static header after all — but it stays
+   accepted, because configs written before that discovery still use it.
 
 All four live in `authorizeRequest` in [src/mcpProtocol.ts](src/mcpProtocol.ts), away from
 `http`, so they are covered by tests rather than by inspection.
@@ -511,21 +530,43 @@ as "try the next".
 |---|---|---|
 | VS Code chat | nowhere | `lm.registerMcpServerDefinitionProvider`, reached through a cast so `engines.vscode` need not move; **the `McpHttpServerDefinition` constructor is positional** — an options object does not work |
 | Claude Code | `.mcp.json` in the project | `{ type, url, headers.Authorization }` |
-| Codex | `.codex/config.toml` in the project | `[mcp_servers.ai-browser]` with the token **in the URL** |
+| Codex | `.codex/config.toml` in the project, or `~/.codex/config.toml` | `[mcp_servers.<name>]` with inline `http_headers` |
 
-**Codex takes the token in the URL because it has no other option.** Its config can only
-*name* a bearer token (`bearer_token_env_var = "FOO"`), and the extension does not control the
-environment Codex is launched in — hence `McpServer.urlWithToken`.
+**Codex offers both files, project first.** The primary button writes the project's
+`.codex/config.toml`; the global `~/.codex/config.toml` is the second button. That order is a
+deliberate choice — the project file keeps the server with the project — but the trade-off is
+real and belongs in the dialog text: **a project config is only loaded for projects Codex
+trusts**, and the desktop surface has been reported to ignore it outright
+([openai/codex#13025](https://github.com/openai/codex/issues/13025)), whereas
+`~/.codex/config.toml` is read on every surface, always. That is the usual reason Codex "cannot
+see the server", so the global button exists as the fix and the messages point at it.
+
+The global entry is named per project (`ai-browser-<slug>-<sha1[0:6]>`); the project entry uses
+the bare `ai-browser`, since a project file has only one project.
+
+**Codex does take a static `Authorization` header** — `http_headers`, alongside
+`env_http_headers` and `bearer_token_env_var`
+([docs](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)). An earlier note here claimed
+it could only *name* a token, which is why the token used to ride in the URL; that was wrong.
+We now write `http_headers = { Authorization = "Bearer …" }` as an **inline** table — a
+`[mcp_servers.<name>.http_headers]` sub-table would be a second table, and replacing ours by
+line range would orphan it. The token-in-URL form is still *accepted* when reading, since
+existing configs have it, and a stale sub-table of ours is removed on write.
+
+**Neither assistant re-reads its config.** Both load MCP servers at startup: Claude Code needs
+a restart, Codex a brand-new conversation. This is why the connection prompt names the *tools*
+and never tells the model to go and read `config.toml` — a model sent to read the file will
+confirm the server is configured and still have no tools, which is precisely what made Codex
+look stupid.
 
 **A broken `.mcp.json` is never overwritten.** `readClaudeConfig` returns `{}` for absent,
 the object for parsed, and `undefined` for unparsable — and on `undefined` the write is
 abandoned, because rewriting it would delete every other MCP server the project has.
 
-**The global `~/.codex/config.toml` is never written by the extension.** It belongs to
-`codex mcp add`, which already knows how to leave other people's servers alone; it is offered
-as a command instead. That command's entry is named per project
-(`ai-browser-<slug>-<sha1[0:6]>`): one shared name would let the second project overwrite the
-first, and since the token is in the URL that hijacked entry would even authenticate.
+One shared global name would let the second project overwrite the first, hence the hash.
+`codex mcp add` is still offered as a command for anyone who would rather not have a file
+edited. The global write is **not** locked — unlike a repair on startup it happens on a button
+press, so two windows would have to be clicked at the same moment.
 
 ### The mini TOML parser
 

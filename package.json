@@ -106,32 +106,56 @@
 			{
 				"command": "aiBrowser.addElementToClaudeCode",
 				"title": "%command.addElementToClaudeCode.title%",
-				"category": "%displayName%"
+				"category": "%displayName%",
+				"icon": {
+					"light": "media/icons/crosshair-red-light.svg",
+					"dark": "media/icons/crosshair-red-dark.svg"
+				}
 			},
 			{
 				"command": "aiBrowser.addCssPathToClaudeCode",
 				"title": "%command.addCssPathToClaudeCode.title%",
-				"category": "%displayName%"
+				"category": "%displayName%",
+				"icon": {
+					"light": "media/icons/crosshair-blue-light.svg",
+					"dark": "media/icons/crosshair-blue-dark.svg"
+				}
 			},
 			{
 				"command": "aiBrowser.addXPathToClaudeCode",
 				"title": "%command.addXPathToClaudeCode.title%",
-				"category": "%displayName%"
+				"category": "%displayName%",
+				"icon": {
+					"light": "media/icons/crosshair-green-light.svg",
+					"dark": "media/icons/crosshair-green-dark.svg"
+				}
 			},
 			{
 				"command": "aiBrowser.addElementToCodex",
 				"title": "%command.addElementToCodex.title%",
-				"category": "%displayName%"
+				"category": "%displayName%",
+				"icon": {
+					"light": "media/icons/crosshair-red-light.svg",
+					"dark": "media/icons/crosshair-red-dark.svg"
+				}
 			},
 			{
 				"command": "aiBrowser.addCssPathToCodex",
 				"title": "%command.addCssPathToCodex.title%",
-				"category": "%displayName%"
+				"category": "%displayName%",
+				"icon": {
+					"light": "media/icons/crosshair-blue-light.svg",
+					"dark": "media/icons/crosshair-blue-dark.svg"
+				}
 			},
 			{
 				"command": "aiBrowser.addXPathToCodex",
 				"title": "%command.addXPathToCodex.title%",
-				"category": "%displayName%"
+				"category": "%displayName%",
+				"icon": {
+					"light": "media/icons/crosshair-green-light.svg",
+					"dark": "media/icons/crosshair-green-dark.svg"
+				}
 			}
 		],
 		"configuration": [
@@ -185,12 +209,22 @@
 				{
 					"submenu": "aiBrowser.elementMenu",
 					"group": "navigation@1",
-					"when": "activeEditor == 'workbench.editor.browser' && !aiBrowser.assistantConnected"
+					"when": "activeEditor == 'workbench.editor.browser' && !aiBrowser.claudeConnected && !aiBrowser.codexConnected"
 				},
 				{
-					"submenu": "aiBrowser.elementMenuConnected",
+					"submenu": "aiBrowser.elementMenuClaude",
 					"group": "navigation@1",
-					"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.assistantConnected"
+					"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.claudeConnected && !aiBrowser.codexConnected"
+				},
+				{
+					"submenu": "aiBrowser.elementMenuCodex",
+					"group": "navigation@1",
+					"when": "activeEditor == 'workbench.editor.browser' && !aiBrowser.claudeConnected && aiBrowser.codexConnected"
+				},
+				{
+					"submenu": "aiBrowser.elementMenuBoth",
+					"group": "navigation@1",
+					"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.claudeConnected && aiBrowser.codexConnected"
 				},
 				{
 					"command": "aiBrowser.copyElement",
@@ -206,6 +240,36 @@
 					"command": "aiBrowser.copyElementXPath",
 					"group": "navigation@2",
 					"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'xpath'"
+				},
+				{
+					"command": "aiBrowser.addElementToClaudeCode",
+					"group": "navigation@2",
+					"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'claude:element' && aiBrowser.claudeInstalled"
+				},
+				{
+					"command": "aiBrowser.addCssPathToClaudeCode",
+					"group": "navigation@2",
+					"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'claude:cssPath' && aiBrowser.claudeInstalled"
+				},
+				{
+					"command": "aiBrowser.addXPathToClaudeCode",
+					"group": "navigation@2",
+					"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'claude:xpath' && aiBrowser.claudeInstalled"
+				},
+				{
+					"command": "aiBrowser.addElementToCodex",
+					"group": "navigation@2",
+					"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'codex:element' && aiBrowser.codexInstalled"
+				},
+				{
+					"command": "aiBrowser.addCssPathToCodex",
+					"group": "navigation@2",
+					"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'codex:cssPath' && aiBrowser.codexInstalled"
+				},
+				{
+					"command": "aiBrowser.addXPathToCodex",
+					"group": "navigation@2",
+					"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'codex:xpath' && aiBrowser.codexInstalled"
 				}
 			],
 			"aiBrowser.elementMenu": [
@@ -264,7 +328,119 @@
 					"group": "4_mcp@3"
 				}
 			],
-			"aiBrowser.elementMenuConnected": [
+			"aiBrowser.elementMenuClaude": [
+				{
+					"command": "aiBrowser.copyElement",
+					"group": "1_copy@1"
+				},
+				{
+					"command": "aiBrowser.copyElementCssPath",
+					"group": "1_copy@2"
+				},
+				{
+					"command": "aiBrowser.copyElementXPath",
+					"group": "1_copy@3"
+				},
+				{
+					"command": "aiBrowser.addElementToClaudeCode",
+					"group": "2_claude@1",
+					"when": "aiBrowser.claudeInstalled"
+				},
+				{
+					"command": "aiBrowser.addCssPathToClaudeCode",
+					"group": "2_claude@2",
+					"when": "aiBrowser.claudeInstalled"
+				},
+				{
+					"command": "aiBrowser.addXPathToClaudeCode",
+					"group": "2_claude@3",
+					"when": "aiBrowser.claudeInstalled"
+				},
+				{
+					"command": "aiBrowser.addElementToCodex",
+					"group": "3_codex@1",
+					"when": "aiBrowser.codexInstalled"
+				},
+				{
+					"command": "aiBrowser.addCssPathToCodex",
+					"group": "3_codex@2",
+					"when": "aiBrowser.codexInstalled"
+				},
+				{
+					"command": "aiBrowser.addXPathToCodex",
+					"group": "3_codex@3",
+					"when": "aiBrowser.codexInstalled"
+				},
+				{
+					"command": "aiBrowser.connectClaudeCode",
+					"group": "4_mcp@1"
+				},
+				{
+					"command": "aiBrowser.connectCodex",
+					"group": "4_mcp@2"
+				},
+				{
+					"command": "aiBrowser.checkMcpConnection",
+					"group": "4_mcp@3"
+				}
+			],
+			"aiBrowser.elementMenuCodex": [
+				{
+					"command": "aiBrowser.copyElement",
+					"group": "1_copy@1"
+				},
+				{
+					"command": "aiBrowser.copyElementCssPath",
+					"group": "1_copy@2"
+				},
+				{
+					"command": "aiBrowser.copyElementXPath",
+					"group": "1_copy@3"
+				},
+				{
+					"command": "aiBrowser.addElementToClaudeCode",
+					"group": "2_claude@1",
+					"when": "aiBrowser.claudeInstalled"
+				},
+				{
+					"command": "aiBrowser.addCssPathToClaudeCode",
+					"group": "2_claude@2",
+					"when": "aiBrowser.claudeInstalled"
+				},
+				{
+					"command": "aiBrowser.addXPathToClaudeCode",
+					"group": "2_claude@3",
+					"when": "aiBrowser.claudeInstalled"
+				},
+				{
+					"command": "aiBrowser.addElementToCodex",
+					"group": "3_codex@1",
+					"when": "aiBrowser.codexInstalled"
+				},
+				{
+					"command": "aiBrowser.addCssPathToCodex",
+					"group": "3_codex@2",
+					"when": "aiBrowser.codexInstalled"
+				},
+				{
+					"command": "aiBrowser.addXPathToCodex",
+					"group": "3_codex@3",
+					"when": "aiBrowser.codexInstalled"
+				},
+				{
+					"command": "aiBrowser.connectClaudeCode",
+					"group": "4_mcp@1"
+				},
+				{
+					"command": "aiBrowser.connectCodex",
+					"group": "4_mcp@2"
+				},
+				{
+					"command": "aiBrowser.checkMcpConnection",
+					"group": "4_mcp@3"
+				}
+			],
+			"aiBrowser.elementMenuBoth": [
 				{
 					"command": "aiBrowser.copyElement",
 					"group": "1_copy@1"
@@ -331,11 +507,27 @@
 				}
 			},
 			{
-				"id": "aiBrowser.elementMenuConnected",
+				"id": "aiBrowser.elementMenuClaude",
 				"label": "%submenu.elementMenu.label%",
 				"icon": {
-					"light": "media/icons/globe-connected-light.svg",
-					"dark": "media/icons/globe-connected-dark.svg"
+					"light": "media/icons/globe-claude-light.svg",
+					"dark": "media/icons/globe-claude-dark.svg"
+				}
+			},
+			{
+				"id": "aiBrowser.elementMenuCodex",
+				"label": "%submenu.elementMenu.label%",
+				"icon": {
+					"light": "media/icons/globe-codex-light.svg",
+					"dark": "media/icons/globe-codex-dark.svg"
+				}
+			},
+			{
+				"id": "aiBrowser.elementMenuBoth",
+				"label": "%submenu.elementMenu.label%",
+				"icon": {
+					"light": "media/icons/globe-both-light.svg",
+					"dark": "media/icons/globe-both-dark.svg"
 				}
 			}
 		],

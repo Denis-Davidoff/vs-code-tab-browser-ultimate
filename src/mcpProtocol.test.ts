@@ -8,6 +8,7 @@ import { suite, test } from 'node:test';
 import {
 	dispatch, errorCodes, invalidRequestReason, isNotification, schema, string,
 	stringOrUndefined, numberOrUndefined, authorizeRequest, normalisePath,
+	classifyClient, initializeClientName,
 	type DispatchContext, type Tool, type RequestFacts,
 } from './mcpProtocol.ts';
 
@@ -189,5 +190,48 @@ suite('authorizeRequest', () => {
 		assert.strictEqual(normalisePath('/mcp/?x=1'), '/mcp');
 		assert.strictEqual(normalisePath('/mcp///'), '/mcp');
 		assert.strictEqual(normalisePath(undefined), '');
+	});
+});
+
+suite('classifyClient', () => {
+
+	test('recognises Claude Code by name', () => {
+		assert.strictEqual(classifyClient('claude-code'), 'claude');
+		assert.strictEqual(classifyClient('Claude Code'), 'claude');
+		assert.strictEqual(classifyClient('claude-ai'), 'claude');
+	});
+
+	test('recognises Codex under each of its names', () => {
+		assert.strictEqual(classifyClient('codex'), 'codex');
+		assert.strictEqual(classifyClient('Codex CLI'), 'codex');
+		assert.strictEqual(classifyClient('chatgpt'), 'codex');
+		assert.strictEqual(classifyClient('openai-codex'), 'codex');
+	});
+
+	test('anything else is other, and lights no dot', () => {
+		assert.strictEqual(classifyClient('cursor'), 'other');
+		assert.strictEqual(classifyClient(''), 'other');
+		assert.strictEqual(classifyClient(undefined), 'other');
+	});
+});
+
+suite('initializeClientName', () => {
+
+	test('reads clientInfo.name from initialize', () => {
+		assert.strictEqual(
+			initializeClientName({ method: 'initialize', params: { clientInfo: { name: 'claude-code' } } }),
+			'claude-code');
+	});
+
+	test('other methods carry no clientInfo, so attribution needs a session id', () => {
+		assert.strictEqual(
+			initializeClientName({ method: 'tools/call', params: { clientInfo: { name: 'claude-code' } } }),
+			undefined);
+	});
+
+	test('a malformed initialize is not a name', () => {
+		assert.strictEqual(initializeClientName({ method: 'initialize' }), undefined);
+		assert.strictEqual(initializeClientName({ method: 'initialize', params: {} }), undefined);
+		assert.strictEqual(initializeClientName({ method: 'initialize', params: { clientInfo: { name: 7 } } }), undefined);
 	});
 });

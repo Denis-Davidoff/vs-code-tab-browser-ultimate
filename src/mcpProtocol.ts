@@ -260,3 +260,33 @@ export function authorizeRequest(facts: RequestFacts, token: string): Decision {
 
 	return { kind: 'ok' };
 }
+
+/* -------------------------------------------------------------- client kinds */
+
+/** Which assistant is on the other end, as far as we can tell. */
+export type ClientKind = 'claude' | 'codex' | 'other';
+
+/**
+ * Classifies a client from the `clientInfo.name` it sends with `initialize`.
+ *
+ * That name is the only self-identification in the protocol, and it is a
+ * best-effort match: an unrecognised client is `other` and simply does not
+ * light up a dot.
+ */
+export function classifyClient(clientName: string | undefined): ClientKind {
+	const name = (clientName ?? '').toLowerCase();
+	if (name.includes('claude')) {
+		return 'claude';
+	}
+	if (name.includes('codex') || name.includes('chatgpt') || name.includes('openai')) {
+		return 'codex';
+	}
+	return 'other';
+}
+
+/** `clientInfo.name` from an `initialize` request, if this is one. */
+export function initializeClientName(request: JsonRpcRequest): string | undefined {
+	return request.method === 'initialize'
+		? stringOrUndefined(request.params?.clientInfo?.name)
+		: undefined;
+}
