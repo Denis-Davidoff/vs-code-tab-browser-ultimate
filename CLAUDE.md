@@ -183,10 +183,12 @@ build-webview            node ./esbuild.webview.mts            ← preview-src/ 
 watch-ext                tsc ... --watch
 watch-webview            node ./esbuild.webview.mts --watch
 watch-typecheck-webview  tsc --project ./preview-src/tsconfig.json --noEmit --watch
-typecheck                run-p -l typecheck-ext typecheck-webview
+typecheck                run-p -l typecheck-ext typecheck-webview typecheck-tests
 typecheck-ext            tsc --project ./tsconfig.json --noEmit
 typecheck-webview        tsc --project ./preview-src/tsconfig.json --noEmit
-test                     node --test preview-src/*.test.ts   ← Node's runner, no deps
+typecheck-tests          tsc --project ./tsconfig.test.json    ← test files, no emit
+test                     node --test preview-src/*.test.ts src/*.test.ts
+package                  vsce package … --out ai-browser.vsix  ← see Packaging a VSIX
 download-api             dts dev                               ← refresh the proposed-API d.ts
 vscode:prepublish        npm run compile
 ```
@@ -505,6 +507,37 @@ The `Simple Browser` → `AI Browser` rename follows these cases:
 | `aiBrowser` | Command ids, settings section, `viewType`, activation events |
 | `ai-browser` | Package `name`, DOM element id |
 | `AI Browser` | User-visible strings (`displayName`, `category`, panel title) |
+
+## Packaging a VSIX
+
+`npm run package` → `ai-browser.vsix` (gitignored). `vscode:prepublish` runs the full
+`compile` first, so the webview assets are always fresh in the package. `--no-dependencies` is
+safe here precisely because there are no runtime dependencies.
+
+Three things vsce insists on, each of which stopped the first attempt:
+
+- **`@types/vscode` may not be newer than `engines.vscode`.** This is what forced
+  `engines.vscode` to `^1.136.0`, and that is honest rather than a workaround: the `browser`
+  API proposal only exists in recent VS Code, so the earlier `^1.74.0` was understating what
+  the extension actually needs.
+- **A `repository` field is required** as soon as the README has relative links (ours points
+  at this file). Without it packaging fails outright; the alternative is passing
+  `--baseContentUrl`, which is worse because it has to be repeated on every invocation.
+- **`@vscode/vsce` pulls in two packages with blocked install scripts** (`@vscode/vsce-sign`,
+  `keytar`) under the npm 11 `allowScripts` policy. Leave them blocked — they are only needed
+  for `vsce publish`, and `package` works without them.
+
+The root [LICENSE](LICENSE) is MIT and carries **both** copyright lines — Microsoft's, for the
+forked and copied code, and the project's own. That is the honest form for this repository.
+It does not replace the per-file `Copyright (c) Microsoft Corporation … Licensed under the MIT
+License` headers, which are still there on everything copied from vscode (`cssHelpers.ts`,
+`browserSearch.ts`, the forked simple-browser sources). MIT requires that notice to travel with
+the code, so **do not strip those headers** — the root LICENSE complements them rather than
+standing in for them.
+
+Because of the proposed APIs this VSIX **cannot go to the Marketplace**; install it with
+"Extensions: Install from VSIX…", and note the extension only activates its browser features
+on a VS Code new enough to carry the `browser` proposal.
 
 ## Known issues, not yet fixed
 

@@ -10,8 +10,12 @@
 	"icon": "media/icon.png",
 	"publisher": "DenysDavydov",
 	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/Denis-Davidoff/ai-browser.git"
+	},
 	"engines": {
-		"vscode": "^1.74.0"
+		"vscode": "^1.136.0"
 	},
 	"main": "./out/extension",
 	"categories": [
@@ -157,6 +161,7 @@
 		"typecheck-webview": "tsc --project ./preview-src/tsconfig.json --noEmit",
 		"typecheck-tests": "tsc --project ./tsconfig.test.json",
 		"test": "node --test preview-src/*.test.ts src/*.test.ts",
+		"package": "vsce package --no-dependencies --out ai-browser.vsix",
 		"download-api": "dts dev",
 		"vscode:prepublish": "npm run compile"
 	},
@@ -165,6 +170,7 @@
 		"@types/vscode": "^1.136.0",
 		"@vscode/codicons": "^0.0.36",
 		"@vscode/dts": "^0.4.1",
+		"@vscode/vsce": "^3.9.2",
 		"esbuild": "^0.28.2",
 		"npm-run-all2": "^9.0.3",
 		"typescript": "^5.9.3"

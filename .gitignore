@@ -7,3 +7,6 @@ media/codicon.css.map
 # Build output
 out/
 node_modules/
+
+# build artifact of `npm run package`
+*.vsix
