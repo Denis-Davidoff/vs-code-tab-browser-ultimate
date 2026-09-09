@@ -1,0 +1,85 @@
+{
+	"name": "tab-browser-ultimate",
+	"displayName": "AI Browser🏆 Claude + Codex",
+	"description": "Guide and installer for AI Browser — VS Code's built-in browser wired to Claude Code and Codex. The full build installs from the VSIX linked in this listing.",
+	"version": "0.5.2",
+	"publisher": "DenysDavydov",
+	"license": "MIT",
+	"icon": "media/icon.png",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate.git"
+	},
+	"bugs": {
+		"url": "https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/issues"
+	},
+	"homepage": "https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate#readme",
+	"engines": {
+		"vscode": "^1.85.0"
+	},
+	"main": "./extension.js",
+	"categories": [
+		"AI",
+		"Other"
+	],
+	"keywords": [
+		"browser",
+		"embedded browser",
+		"copilot browser",
+		"ai claude",
+		"ai codex",
+		"ai copilot",
+		"ai chatgpt",
+		"ai chat gpt",
+		"ai panel",
+		"browser panel",
+		"simple browser",
+		"tab browser",
+		"ai browser",
+		"chatgpt browser",
+		"claude browser",
+		"claude mcp",
+		"codex mcp",
+		"codex",
+		"claude",
+		"chatgpt",
+		"chat gpt",
+		"chat gpt mcp",
+		"codex browser",
+		"ai chat browser",
+		"ai tab browser",
+		"frontend browser",
+		"frontend ai",
+		"frontend chatgpt",
+		"frontend claude",
+		"preview",
+		"webview",
+		"ai",
+		"assistant",
+		"devtools",
+		"localhost",
+		"inspect element"
+	],
+	"activationEvents": [
+		"onStartupFinished"
+	],
+	"contributes": {
+		"commands": [
+			{
+				"command": "aiBrowser.marketplace.getFullBuild",
+				"title": "Download the Full Build (VSIX)",
+				"category": "AI Browser"
+			},
+			{
+				"command": "aiBrowser.marketplace.openGuide",
+				"title": "Open the Guide",
+				"category": "AI Browser"
+			}
+		]
+	},
+	"scripts": {
+		"prepare-package": "node ./scripts/prepare.mjs",
+		"package": "npm run prepare-package && ../node_modules/.bin/vsce package --no-dependencies --out tab-browser-ultimate-marketplace.vsix",
+		"publish": "../node_modules/.bin/vsce publish --packagePath tab-browser-ultimate-marketplace.vsix"
+	}
+}

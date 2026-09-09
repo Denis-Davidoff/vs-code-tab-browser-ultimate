@@ -7,3 +7,7 @@ media/codicon.css.map
 # Build output
 out/
 node_modules/
+
+# Marketplace stub build artifacts
+marketplace/media/
+marketplace/*.vsix

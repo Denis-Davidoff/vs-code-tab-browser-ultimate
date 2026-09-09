@@ -994,28 +994,77 @@ standing in for them.
 
 ### Open VSX is the only registry, and that is the whole distribution story
 
-`vsce publish` refuses an extension that declares `enabledApiProposals` — **but the refusal is
-client-side and `--allow-all-proposed-apis` lifts it**, which is what `publish:vsce` passes. So
-both registries are in play, and the listing on each
-(`DenysDavydov.tab-browser-ultimate`, 0.3.17 on both) predates this rewrite. Two things to know:
+**There is one publish script at the root, `publish:ovsx`, and that is deliberate.** The
+Marketplace does not get the real build at all — it gets the stub in [marketplace/](marketplace/),
+published from that folder, see
+[The Marketplace build](#the-marketplace-build-is-a-second-stubbed-extension-in-marketplace).
+Both listings (`DenysDavydov.tab-browser-ultimate`, 0.3.17 on both) predate this rewrite.
 
-- **Both publish scripts upload the committed `.vsix`** rather than repackaging, so the bytes in
-  a registry and the bytes in the repository are the same. `ovsx` resolves its token as
+**Removed on purpose: `publish:vsce` and `publish:all`.** They pushed the real build to the
+Marketplace with `--allow-all-proposed-apis` — `vsce publish` refuses a proposal-declaring
+extension, but that refusal is client-side and the flag lifts it. It never worked anyway: two
+attempts died on `Request timeout: /_apis/gallery` with everything else in place — flag passed,
+PAT found, signing binary present, host answering a GET in 250 ms. The stub replaced the whole
+idea, so do not put the scripts back.
+
+- **The publish script uploads the committed `.vsix`** rather than repackaging, so the bytes in
+  the registry and the bytes in the repository are the same. `ovsx` resolves its token as
   `-p` → `OVSX_PAT` → **the OS keychain** (an earlier `ovsx login` put one there, which is why
   nothing needs exporting on this machine and CI still does); the namespace has to be created
-  once with `ovsx create-namespace`, and each registry refuses a version it already has, so
+  once with `ovsx create-namespace`, and the registry refuses a version it already has, so
   `version` must move every time.
-- **`publish:vsce` has never got through.** Two attempts died on
-  `Request timeout: /_apis/gallery` with everything else in place — flag passed, PAT found,
-  signing binary present, host answering a GET in 250 ms. It is the upload that stalls, so treat
-  it as environmental until it succeeds from a plain terminal; do not "fix" it by editing the
-  script.
 - **VS Code installs the committed file** with "Extensions: Install from VSIX…". This is why the
   `.vsix` is tracked at all — see above.
 
 Publishing does not grant the proposals: the editor still has to be new enough for the `browser`
 proposal, and some builds only hand proposed APIs to an extension named with
 `--enable-proposed-api DenysDavydov.tab-browser-ultimate`.
+
+### The Marketplace build is a second, stubbed extension in `marketplace/`
+
+[marketplace/](marketplace/) is a whole second extension with its own manifest, packaged and
+published on its own. It exists because the Marketplace is where people look and the real build
+cannot live there, so what goes up is the **listing** — readme, screenshots, the video slot — plus
+two commands that open the download and the docs. [marketplace/extension.js](marketplace/extension.js)
+is the entire implementation, and it says hello once per machine and never again.
+
+It is **the same extension id**, `DenysDavydov.tab-browser-ultimate`, deliberately: the real VSIX
+then installs *over* it, with nothing to uninstall first. That choice is also the one dangerous
+thing here.
+
+**The version rule, which is load-bearing.** VS Code keeps checking the gallery for updates to an
+id even after a VSIX was installed by hand, so if the Marketplace version ever climbs above the
+VSIX's, auto-update silently replaces the working extension with the stub. Hence: **the stub lives
+on `0.4.x`, the real build on `0.5.x` and up, and they never cross.** `0.4.0` also clears the
+`0.3.17` already in the gallery, which a new upload has to beat.
+[marketplace/scripts/prepare.mjs](marketplace/scripts/prepare.mjs) refuses to package when that
+ordering breaks — verified by setting the stub to `0.9.0` and watching it fail.
+
+The same script checks the three other things that are silent until the listing is live:
+
+- **No `enabledApiProposals`** in the stub manifest, which is the whole reason it can be published
+  at all.
+- **Readme images must be absolute `https://` URLs.** vsce rewrites a relative path against the
+  package root — here `marketplace/` — so `![](demo.png)` would point at the repository root and
+  render broken. Everything in the listing links to `raw.githubusercontent.com`.
+- **No `<iframe>` and no `<video>`.** The Marketplace strips both, so an embed renders as nothing.
+  A video is a still image linking out, or a GIF, which is why the readme carries a commented-out
+  slot with both snippets ready rather than an embed. Html comments are stripped before these two
+  checks run, or the template would report itself as a mistake.
+
+Mechanics worth knowing:
+
+- **Plain JavaScript, no build, no dependencies, no tsconfig.** The stub is one file; a compile
+  step for it would be more machinery than extension. Its scripts reach the root's binaries
+  (`../node_modules/.bin/vsce`), so the folder needs no `npm install` of its own.
+- **The icon is copied from the real extension at package time** and gitignored, so there is one
+  source of truth for it. `marketplace/media/` and `marketplace/*.vsix` are both build output.
+- **`marketplace/**` is in the root [.vscodeignore](.vscodeignore)**, or the folder would ride
+  along inside the real VSIX.
+- The stub's `.vsix` is **not** committed, unlike the real one — nobody installs it by hand, it
+  only ever gets uploaded.
+
+Publishing it: `cd marketplace && npm run package && npm run publish`.
 
 ## Known issues, not yet fixed
 

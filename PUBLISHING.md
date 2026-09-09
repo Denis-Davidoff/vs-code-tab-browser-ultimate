@@ -1,20 +1,20 @@
 # Publishing
 
-**Two registries, one artifact.** Both scripts upload the committed
-`tab-browser-ultimate.vsix` rather than repackaging, so the bytes in a registry are the bytes in
-the repository — which is also what VS Code users download directly.
+**Two registries, two different artifacts.** Open VSX gets the real extension; the Marketplace
+gets the stub in [marketplace/](marketplace/) — see [Two artifacts, one id](#two-artifacts-one-id).
 
 ```sh
 npm run package        # -> tab-browser-ultimate.vsix (compiles first, via vscode:prepublish)
 npm run publish:ovsx   # -> Open VSX
-npm run publish:vsce   # -> VS Code Marketplace  (see the caveat below)
-npm run publish:all    # both, ovsx first
 ```
 
-**`publish:vsce` carries `--allow-all-proposed-apis`, and it is load-bearing.** `vsce publish`
-refuses an extension that declares `enabledApiProposals` (this one declares
-`externalUriOpener` and `browser`); the flag turns that client-side check off. What it cannot
-promise is that the service accepts the upload — see below.
+The publish script uploads the committed `.vsix` rather than repackaging, so the bytes in the
+registry are the bytes in the repository — which is also what VS Code users download directly.
+
+**There is no `publish:vsce` any more, and putting it back is not the fix for anything.** It
+pushed the real build to the Marketplace with `--allow-all-proposed-apis`, which lifts vsce's
+client-side refusal of a proposal-declaring extension, and it never once completed — see below.
+The stub is what goes to the Marketplace now.
 
 ### Current state of the two listings
 
@@ -27,12 +27,13 @@ promise is that the service accepts the upload — see below.
 the committed `.vsix`. Until it is published, a reader who follows the README's "install from the
 marketplace" line gets the 0.3.x proxy build, not this one.
 
-**`publish:vsce` has not completed successfully yet.** Two attempts both ended in
+**The Marketplace upload of the real build never completed.** Two attempts both ended in
 `ERROR Request timeout: /_apis/gallery` — after vsce's own three internal retries, with the
 manifest check bypassed, a PAT resolved from the macOS keychain and the signing binary present.
-The host answers a plain GET in 250 ms, so it is the upload itself that stalls; that points at
-the network the attempt was made from rather than at anything in this repository. Try it from a
-normal terminal, and with `VSCE_PAT` exported if the keychain entry turns out to be stale.
+The host answers a plain GET in 250 ms, so it was the upload itself that stalled. That history is
+worth keeping, because the stub is small enough that it may well go through where the 540 KB real
+build did not; if the stub also times out, export `VSCE_PAT` and try from a plain terminal before
+suspecting the manifest.
 
 ## This is not a first publish
 
@@ -57,6 +58,26 @@ The setup is therefore already done and does not need repeating:
 - **The namespace exists.** `npx ovsx create-namespace DenysDavydov` is a one-time step that has
   already happened; running it again is harmless but pointless.
 
+## Two artifacts, one id
+
+The Marketplace no longer gets the real build. It gets the stub in
+[marketplace/](marketplace/) — the listing, its readme and video, and two commands that point at
+the download. Same extension id, so the real VSIX installs over it.
+
+```sh
+cd marketplace
+npm run package   # -> marketplace/tab-browser-ultimate-marketplace.vsix (runs prepare.mjs first)
+npm run publish   # -> VS Code Marketplace
+```
+
+**The stub stays on `0.4.x` and the real build on `0.5.x` and up — never let them cross.** VS Code
+keeps checking the gallery for an id even after a hand-installed VSIX, so a stub version above the
+real one turns auto-update into a silent downgrade to a do-nothing extension. `prepare.mjs`
+refuses to package when the ordering breaks; it also copies the icon, and rejects a readme with a
+relative image or an `<iframe>`/`<video>`, neither of which the Marketplace renders.
+
+The root has no Marketplace publish script at all any more: this is the only route there.
+
 ## Every release
 
 1. **Bump `version` in `package.json`** — the registry refuses a version it already has (the
@@ -65,8 +86,10 @@ The setup is therefore already done and does not need repeating:
 2. `npm run compile && npm run typecheck && npm test && npm run check-manifest`.
 3. `npm run package`, then **commit the rebuilt `.vsix`** — it is tracked, and a stale one means
    VS Code users install the previous version.
-4. `npm run publish:ovsx`, and `npm run publish:vsce` if the Marketplace upload is working.
-5. Push, and tag the commit if you want the download to be findable by version.
+4. `npm run publish:ovsx` — Open VSX carries the real build.
+5. If the listing text or the video changed, bump `marketplace/package.json` **within `0.4.x`**
+   and `cd marketplace && npm run package && npm run publish`.
+6. Push, and tag the commit if you want the download to be findable by version.
 
 ## What an update actually does to existing users
 

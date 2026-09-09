@@ -1,0 +1,4 @@
+scripts/**
+assets/**
+.vscodeignore
+*.vsix

@@ -9,3 +9,4 @@ package-lock.json
 .vscode/**
 CLAUDE.md
 scripts/**
+marketplace/**
