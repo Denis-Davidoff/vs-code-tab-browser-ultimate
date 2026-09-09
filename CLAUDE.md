@@ -290,6 +290,15 @@ The manifest declares `enabledApiProposals: ["externalUriOpener", "browser"]` �
   extension id is `publisher`.`name`, so it follows the slug, not the display name), which is set in
   [.vscode/launch.json](.vscode/launch.json). Without it, activation fails on
   `registerExternalUriOpener`.
+- **A hand-installed VSIX needs the same flag, and F5 does not cover it.** `launch.json` only
+  grants the proposals inside the Extension Development Host. In a normal window the extension
+  is just an installed extension, so VS Code clears its proposal list and logs
+  `Extension 'DenysDavydov.tab-browser-ultimate' CANNOT use API proposal: browser. Its
+  package.json#enabledApiProposals-property declares:  but NOT browser.` — the empty "declares"
+  is the fingerprint: the manifest is fine, the *grant* is missing. The persistent fix is
+  `"enable-proposed-api": ["DenysDavydov.tab-browser-ultimate"]` in `argv.json`
+  (`~/.vscode/argv.json`, Preferences: Configure Runtime Arguments), followed by a **full quit**
+  — Reload Window is not enough, the flag is read at process start.
 - An extension using proposed API **cannot be published to the Marketplace** — it can only be
   distributed as a VSIX, or the code has to move to stable API.
 

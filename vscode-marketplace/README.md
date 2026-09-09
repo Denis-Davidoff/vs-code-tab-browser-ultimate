@@ -3,6 +3,27 @@
 **VS Code's own browser tab, wired to your AI assistant: click an element and it becomes a
 prompt, or hand the whole browser over and let the agent drive it.**
 
+## ⚠️ Important: enable the browser API
+
+After installing the full extension (see below), **fully quit VS Code** and run this command
+in your terminal to allow the extension to use the proposed browser API:
+
+```sh
+code --enable-proposed-api DenysDavydov.tab-browser-ultimate
+```
+
+Without this permission, browser features may fail with `CANNOT use API proposal: browser`.
+
+Alternatively, open **Preferences: Configure Runtime Arguments** from the Command Palette
+and add this property to the existing JSON object in `argv.json`:
+
+```json
+"enable-proposed-api": ["DenysDavydov.tab-browser-ultimate"]
+```
+
+If the property already exists, append the extension ID to its array. Then fully quit and
+reopen VS Code; **Reload Window is not enough**.
+
 ![AI Browser in action](https://raw.githubusercontent.com/Denis-Davidoff/vs-code-tab-browser-ultimate/main/demo.png)
 
 ---

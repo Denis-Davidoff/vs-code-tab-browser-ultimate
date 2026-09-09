@@ -370,7 +370,24 @@ source is in [vscode-marketplace/](vscode-marketplace/); see [PUBLISHING.md](PUB
 from **VS Code 1.112**. On an older editor the extension still loads and falls back to the
 webview panel. Some editors also only grant proposed apis to an extension named on the command
 line (`--enable-proposed-api DenysDavydov.tab-browser-ultimate`); without that the extension
-loads but the browser features stay unavailable.
+loads but the browser features stay unavailable, and the log says
+`CANNOT use API proposal: browser`. If you see this error, fully quit VS Code, then run
+the following command in your terminal to enable the required proposed APIs for this extension:
+
+```sh
+code --enable-proposed-api DenysDavydov.tab-browser-ultimate
+```
+
+Alternatively, enable the proposed APIs permanently: run
+**Preferences: Configure Runtime Arguments** from the Command Palette and add the following
+property inside the existing JSON object in `argv.json` (not `settings.json`):
+
+```json
+"enable-proposed-api": ["DenysDavydov.tab-browser-ultimate"]
+```
+
+If `enable-proposed-api` already exists, append the extension ID to its array.
+Then fully quit and reopen VS Code — Reload Window does not pick it up.
 
 ## Development
 
