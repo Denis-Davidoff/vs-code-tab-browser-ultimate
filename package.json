@@ -587,7 +587,7 @@
 		"typecheck-tests": "tsc --project ./tsconfig.test.json",
 		"test": "node --test preview-src/*.test.ts src/*.test.ts",
 		"check-manifest": "node ./scripts/check-manifest.mjs",
-		"package": "vsce package --no-dependencies --out ai-browser.vsix",
+		"package": "vsce package --no-dependencies --out tab-browser-ultimate.vsix",
 		"download-api": "dts dev",
 		"vscode:prepublish": "npm run compile"
 	},

@@ -337,8 +337,8 @@ proposed apis:
 
 ```sh
 npm install
-npm run package                          # -> ai-browser.vsix
-code --install-extension ai-browser.vsix
+npm run package                          # -> tab-browser-ultimate.vsix
+code --install-extension tab-browser-ultimate.vsix
 ```
 
 Or take the `.vsix` from the releases page and use **Extensions: Install from VSIX…** from the

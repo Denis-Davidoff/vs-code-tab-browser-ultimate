@@ -208,7 +208,7 @@ typecheck-webview        tsc --project ./preview-src/tsconfig.json --noEmit
 typecheck-tests          tsc --project ./tsconfig.test.json    ← test files, no emit
 test                     node --test preview-src/*.test.ts src/*.test.ts
 check-manifest           node ./scripts/check-manifest.mjs      ← menus, icons, activation
-package                  vsce package … --out ai-browser.vsix  ← see Packaging a VSIX
+package                  vsce package … --out tab-browser-ultimate.vsix  ← see Packaging a VSIX
 download-api             dts dev                               ← refresh the proposed-API d.ts
 vscode:prepublish        npm run compile
 ```
@@ -929,7 +929,10 @@ The `Simple Browser` → `AI Browser` rename follows these cases:
 
 ## Packaging a VSIX
 
-`npm run package` → `ai-browser.vsix` (gitignored). `vscode:prepublish` runs the full
+`npm run package` → `tab-browser-ultimate.vsix`, which is **committed on purpose** — it is how VS Code
+users install, the Marketplace being closed to an extension that declares API proposals, so
+`*.vsix` is deliberately absent from `.gitignore`. Rebuild and commit it with any change that
+ships. `vscode:prepublish` runs the full
 `compile` first, so the webview assets are always fresh in the package. `--no-dependencies` is
 safe here precisely because there are no runtime dependencies.
 
