@@ -6,6 +6,7 @@
 import * as vscode from 'vscode';
 import { CDPClient } from './cdp';
 import { extractElementData, renderElementMarkdown } from './elementContext';
+import { isBrowserApiGranted } from './proposedApi';
 
 /**
  * What the browser can do, expressed without transport or CDP detail.
@@ -134,7 +135,7 @@ export class BrowserController implements vscode.Disposable {
 	 * text the assistant sees when there is nothing to drive.
 	 */
 	private _requireTab(): vscode.BrowserTab {
-		if (!('browserTabs' in vscode.window)) {
+		if (!isBrowserApiGranted()) {
 			throw new Error(
 				'The integrated browser is unavailable in this editor. It needs the `browser` API proposal; ' +
 				'the user can enable it with the "AI Browser: Enable Integrated Browser API" command.');
@@ -164,7 +165,7 @@ export class BrowserController implements vscode.Disposable {
 	}
 
 	public async state(): Promise<unknown> {
-		if (!('browserTabs' in vscode.window)) {
+		if (!isBrowserApiGranted()) {
 			return {
 				available: false,
 				reason: 'The `browser` API proposal is not enabled. Ask the user to run '
@@ -203,7 +204,7 @@ export class BrowserController implements vscode.Disposable {
 				'because other schemes would let this tool read local files.');
 		}
 
-		if (!('browserTabs' in vscode.window)) {
+		if (!isBrowserApiGranted()) {
 			throw new Error('The integrated browser is unavailable in this editor. Ask the user to run '
 				+ '"AI Browser: Enable Integrated Browser API".');
 		}
@@ -378,7 +379,7 @@ export class BrowserController implements vscode.Disposable {
 
 	/** URL of the tab a screenshot came from, for naming the file. */
 	public get activeUrl(): string | undefined {
-		return ('browserTabs' in vscode.window) ? vscode.window.activeBrowserTab?.url : undefined;
+		return isBrowserApiGranted() ? vscode.window.activeBrowserTab?.url : undefined;
 	}
 
 	public async click(selector: string): Promise<unknown> {

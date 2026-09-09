@@ -102,8 +102,70 @@ async function hostShipsBrowserApi(): Promise<boolean | undefined> {
 	}
 }
 
+/**
+ * Is the `browser` proposal actually granted to us?
+ *
+ * **Presence is not permission, and testing with `in` gets this exactly
+ * backwards.** VS Code builds the `window` namespace per extension and defines
+ * the proposal-gated members unconditionally, gating them inside the getter:
+ *
+ * ```js
+ * get browserTabs() { return checkProposedApiEnabled(extension, 'browser'), extHostBrowsers.browserTabs; }
+ * ```
+ *
+ * So `'browserTabs' in vscode.window` is **true on every host that carries the
+ * proposal at all**, granted or not; it is the *read* that throws. The old
+ * check therefore reported `granted` on precisely the hosts where the grant was
+ * missing — VS Code, VSCodium and Devin without the flag — which hid the button
+ * that fixes it and made the command answer "already enabled".
+ *
+ * Reading it settles both questions at once: a throw means the proposal exists
+ * but is not ours, and `undefined` means the host does not implement it (Kiro,
+ * Cursor), where the property is not defined at all.
+ */
+export function isBrowserApiGranted(): boolean {
+	try {
+		return vscode.window.browserTabs !== undefined;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Should a URL go to the built-in browser rather than our webview panel?
+ *
+ * Lives here rather than in `extension.ts` because three callers need the same
+ * answer — the entry points, and the status bar's Open File — and a second copy
+ * of it drifted once already: Open File reached for
+ * `workbench.action.browser.openFile` whenever the command existed, ignoring
+ * both the setting and the grant, so on a host where the user had chosen the
+ * panel it still opened a native tab nothing could attach to.
+ *
+ * Delegation is opt-in: our own panel is the point of this extension, and the
+ * open command exists in every recent VS Code, so delegating whenever it is
+ * available meant our panel never opened at all.
+ */
+export async function shouldUseIntegratedBrowser(): Promise<boolean> {
+	const preferIntegrated = vscode.workspace
+		.getConfiguration('aiBrowser')
+		.get<boolean>('useIntegratedBrowser', true);
+	if (!preferIntegrated) {
+		return false;
+	}
+
+	// The open command can exist on a host that never grants the `browser`
+	// proposal (Cursor is one). Delegating then opens a tab we cannot attach
+	// to, and the element commands fail with a proposed-API error.
+	if (!isBrowserApiGranted()) {
+		return false;
+	}
+
+	const commands = await vscode.commands.getCommands(true);
+	return commands.includes(integratedBrowserCommand);
+}
+
 async function proposalState(): Promise<'granted' | 'missing' | 'unsupported'> {
-	if ('browserTabs' in vscode.window) {
+	if (isBrowserApiGranted()) {
 		return 'granted';
 	}
 
@@ -152,8 +214,51 @@ function extensionId(): string {
 		?? 'DenysDavydov.tab-browser-ultimate';
 }
 
+/**
+ * Where the editor reads `argv.json` from, copying the editor's own rule.
+ *
+ * From `main.js` — `VSCODE_PORTABLE` wins outright, otherwise the data folder
+ * under the home directory, and running from source appends `-dev` to it:
+ *
+ * ```js
+ * if (process.env.VSCODE_PORTABLE) return join(process.env.VSCODE_PORTABLE, 'argv.json');
+ * let folder = product.dataFolderName;
+ * if (process.env.VSCODE_DEV) folder = `${folder}-dev`;
+ * return join(os.homedir(), folder, 'argv.json');
+ * ```
+ *
+ * Assuming the home directory alone means a portable install gets the grant
+ * written to a file it never reads, and then a restart that changes nothing.
+ * The variables are the main process's, and the extension host is its child, so
+ * they are inherited — which only holds locally, hence `canWriteArgv`.
+ */
 function argvUri(host: HostInfo): vscode.Uri {
-	return vscode.Uri.file(path.join(os.homedir(), host.dataFolderName, 'argv.json'));
+	const portable = process.env['VSCODE_PORTABLE'];
+	if (portable) {
+		return vscode.Uri.file(path.join(portable, 'argv.json'));
+	}
+	const folder = process.env['VSCODE_DEV']
+		? `${host.dataFolderName}-dev`
+		: host.dataFolderName;
+	return vscode.Uri.file(path.join(os.homedir(), folder, 'argv.json'));
+}
+
+/**
+ * Can this window's `argv.json` be written from here at all?
+ *
+ * In a remote or web window the extension host is not on the machine that
+ * launched the editor: `os.homedir()` is the *remote* home, and a grant written
+ * there is read by nobody. Worse, it is not even detectable as futile —
+ * `hostShipsBrowserApi` reads the server's extension host bundle, which does
+ * contain `browserTabs`, so the state comes out as `grantMissing` and the user
+ * is asked to restart for a file that has no effect.
+ *
+ * `workbench.action.configureRuntimeArguments` runs in the renderer, which *is*
+ * local, so it still opens the right file — which is why the remote path offers
+ * that instead of writing.
+ */
+function canWriteArgv(): boolean {
+	return vscode.env.remoteName === undefined && vscode.env.uiKind === vscode.UIKind.Desktop;
 }
 
 /** The file's text, or '' when it does not exist yet. */
@@ -174,6 +279,17 @@ interface HostInfo {
 	readonly applicationName: string;
 	/** What to call the editor in a message. */
 	readonly name: string;
+	/**
+	 * Did this come from the host's own `product.json`, or is it the guess?
+	 *
+	 * On a host with no `product.json` at `appRoot` the folder is a guess, and
+	 * `.vscode` is then **somebody else's** directory. Theia is the case: no
+	 * such file, so the guess pointed `argv.json` at the real VS Code's, and a
+	 * dialog that mentions what it found there would tell a Theia user to go and
+	 * edit VS Code's configuration. Nothing writes on an unsupported host, so
+	 * the only leak was that sentence — which is now suppressed.
+	 */
+	readonly resolved: boolean;
 }
 
 /**
@@ -191,6 +307,7 @@ async function hostInfo(): Promise<HostInfo> {
 		dataFolderName: '.vscode',
 		applicationName: 'code',
 		name: vscode.env.appName,
+		resolved: false,
 	};
 	try {
 		const uri = vscode.Uri.file(path.join(vscode.env.appRoot, 'product.json'));
@@ -202,6 +319,7 @@ async function hostInfo(): Promise<HostInfo> {
 			dataFolderName: typeof folder === 'string' && folder ? folder : fallback.dataFolderName,
 			applicationName: typeof app === 'string' && app ? app : fallback.applicationName,
 			name: vscode.env.appName,
+			resolved: typeof folder === 'string' && !!folder,
 		};
 	} catch {
 		// A fork that hides product.json, or a remote/web host. `.vscode` is the
@@ -235,7 +353,9 @@ export async function enableBrowserApi(): Promise<void> {
 		// A grant may already be sitting in the file from before this was
 		// detected properly, and saying so matters: the user restarted for it
 		// and is entitled to know it was not their mistake.
-		const stale = (await readArgv(argvUri(host))).includes(id);
+		// Only worth mentioning when the path is actually this editor's; see
+		// `HostInfo.resolved`.
+		const stale = host.resolved && (await readArgv(argvUri(host))).includes(id);
 		const usePanel = vscode.l10n.t("Use the webview panel");
 		const choice = await vscode.window.showWarningMessage(
 			vscode.l10n.t("{0} does not support the integrated browser API", host.name),
@@ -256,6 +376,28 @@ export async function enableBrowserApi(): Promise<void> {
 	}
 
 	const uri = argvUri(host);
+
+	if (!canWriteArgv()) {
+		// The file belongs to the machine running the editor, not to the one
+		// running this extension host.
+		const open = vscode.l10n.t("Open argv.json");
+		const copy = vscode.l10n.t("Copy the line");
+		const line = `"enable-proposed-api": [${JSON.stringify(id)}]`;
+		const choice = await vscode.window.showWarningMessage(
+			vscode.l10n.t("The browser API has to be enabled on the machine running {0}", host.name),
+			{
+				modal: true,
+				detail: vscode.l10n.t("This window is remote, so `argv.json` here is not the file the editor reads. Add this to the local `argv.json` — \"Open argv.json\" opens the right one — then fully quit and reopen:\n\n{0}", line),
+			},
+			open, copy);
+		if (choice === open) {
+			await openArgv(uri);
+		} else if (choice === copy) {
+			await vscode.env.clipboard.writeText(line);
+		}
+		return;
+	}
+
 	const source = await readArgv(uri);
 
 	let result;

@@ -120,6 +120,123 @@ function freshFile(extensionId: string): string {
 	return `{\n\t"enable-proposed-api": [\n\t\t${JSON.stringify(extensionId)}\n\t]\n}\n`;
 }
 
+interface ArrayRange {
+	/** Offset of `[`. */
+	readonly open: number;
+	/** Offset of the matching `]`. */
+	readonly close: number;
+}
+
+/**
+ * The bracket range of the array that is *this key's own value*.
+ *
+ * Scanning forward for the next `[` from the key is not the same thing, and the
+ * difference is a corrupted file: given
+ * `{"enable-proposed-api": true, "js-flags": ["--x"]}` the loose search finds
+ * the **neighbour's** array and appends our id into it, reporting success. The
+ * "not an array" guard never fires, someone else's setting is silently
+ * rewritten, and the grant is still missing.
+ *
+ * So the value is read where it actually starts: after the key's colon. Nesting
+ * is tracked, because an element may itself be an array.
+ */
+function valueArrayRange(mask: string, keyAt: number): ArrayRange | undefined {
+	const colon = mask.indexOf(':', keyAt);
+	if (colon < 0) {
+		return undefined;
+	}
+	let at = colon + 1;
+	while (at < mask.length && /\s/.test(mask[at])) {
+		at++;
+	}
+	if (mask[at] !== '[') {
+		return undefined;
+	}
+	const open = at;
+	let depth = 0;
+	for (let i = open; i < mask.length; i++) {
+		if (mask[i] === '[') {
+			depth++;
+		} else if (mask[i] === ']') {
+			depth--;
+			if (depth === 0) {
+				return { open, close: i };
+			}
+		}
+	}
+	return undefined;
+}
+
+interface ArrayEntry {
+	readonly value: string;
+	/** Offset just past this entry's closing quote, where an append belongs. */
+	readonly endsAt: number;
+}
+
+/**
+ * The string entries of a JSONC array, with the position of each.
+ *
+ * `JSON.parse` on the raw text cannot do this: `argv.json` is JSONC, so
+ * `["other.ext",]` and `["other.ext" // ours\n]` are both legal and both make
+ * `JSON.parse` throw. That threw on a *correct* file, and the fallout was worse
+ * than a refusal — the state check treats an unreadable value as "grant
+ * missing", so an editor that was already configured pulsed `Enable Browser
+ * API` forever.
+ *
+ * Returns `undefined` for anything that is not a flat list of strings. That is
+ * deliberate: this array holds extension ids, so another shape is something we
+ * do not model, and rewriting what we cannot read is how other people's grants
+ * get lost.
+ */
+function arrayEntries(source: string, range: ArrayRange): ArrayEntry[] | undefined {
+	const entries: ArrayEntry[] = [];
+	let i = range.open + 1;
+	while (i < range.close) {
+		const c = source[i];
+		if (/\s/.test(c) || c === ',') {
+			i++;
+			continue;
+		}
+		if (c === '/' && source[i + 1] === '/') {
+			while (i < range.close && source[i] !== '\n') {
+				i++;
+			}
+			continue;
+		}
+		if (c === '/' && source[i + 1] === '*') {
+			const endsAt = source.indexOf('*/', i + 2);
+			if (endsAt < 0 || endsAt > range.close) {
+				return undefined;
+			}
+			i = endsAt + 2;
+			continue;
+		}
+		if (c !== '"') {
+			// A number, an object, a nested array, `true` — not our shape.
+			return undefined;
+		}
+		let j = i + 1;
+		while (j < range.close && source[j] !== '"') {
+			j += source[j] === '\\' ? 2 : 1;
+		}
+		if (source[j] !== '"') {
+			return undefined;
+		}
+		let value: unknown;
+		try {
+			value = JSON.parse(source.slice(i, j + 1));
+		} catch {
+			return undefined;
+		}
+		if (typeof value !== 'string') {
+			return undefined;
+		}
+		entries.push({ value, endsAt: j + 1 });
+		i = j + 1;
+	}
+	return entries;
+}
+
 /**
  * Adds `extensionId` to `enable-proposed-api`, preserving comments and layout.
  *
@@ -142,32 +259,29 @@ export function grantProposedApi(source: string, extensionId: string): GrantResu
 	}
 
 	const mask = maskJsonc(source);
-	const open = mask.indexOf('[', keyAt);
-	const close = open < 0 ? -1 : mask.indexOf(']', open);
-	if (open < 0 || close < 0) {
-		// The key is there but not as an array (`true`, a string, a truncated
-		// edit). Replacing a value we do not understand risks losing someone
-		// else's grant, so this is reported rather than guessed at.
+	const range = valueArrayRange(mask, keyAt);
+	if (!range) {
+		// The key is there but its value is not an array (`true`, a string, a
+		// truncated edit). Replacing a value we do not understand risks losing
+		// someone else's grant, so this is reported rather than guessed at.
 		throw new Error(`"enable-proposed-api" in argv.json is not an array — fix it by hand, then try again.`);
 	}
 
-	const inner = source.slice(open + 1, close);
-	let listed: unknown[];
-	try {
-		listed = JSON.parse(`[${inner}]`);
-	} catch {
+	const entries = arrayEntries(source, range);
+	if (!entries) {
 		throw new Error(`"enable-proposed-api" in argv.json could not be read — fix it by hand, then try again.`);
 	}
-	if (listed.includes(extensionId)) {
+	if (entries.some(e => e.value === extensionId)) {
 		return { text: source, changed: false, alreadyListed: true };
 	}
 
 	const entry = JSON.stringify(extensionId);
-	const addition = listed.length === 0 ? entry : `, ${entry}`;
-	// Append inside the brackets, after the last element rather than at `close`,
-	// so a multi-line array keeps its closing bracket on its own line.
-	const tail = inner.length - inner.trimEnd().length;
-	const insertAt = close - tail;
+	const last = entries[entries.length - 1];
+	// Append immediately after the last element rather than before the closing
+	// bracket. Anything between the two may be a trailing comma (which would
+	// make ours a second one) or a line comment (which would swallow the id).
+	const insertAt = last ? last.endsAt : range.open + 1;
+	const addition = last ? `, ${entry}` : entry;
 	return {
 		text: source.slice(0, insertAt) + addition + source.slice(insertAt),
 		changed: true,

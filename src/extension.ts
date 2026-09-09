@@ -17,7 +17,9 @@ import { McpLifecycle } from './mcpLifecycle';
 import { connectClaudeCode, connectCodex } from './mcpSetup';
 import { checkConnection } from './mcpCheck';
 import { copyScreenshot } from './screenshot';
-import { enableBrowserApi, integratedBrowserCommand } from './proposedApi';
+import {
+	enableBrowserApi, integratedBrowserCommand, shouldUseIntegratedBrowser,
+} from './proposedApi';
 import { registerStatusBar } from './statusBar';
 
 declare class URL {
@@ -51,34 +53,6 @@ const checkMcpCommand = 'aiBrowser.checkMcpConnection';
 const enableBrowserApiCommand = 'aiBrowser.enableBrowserApi';
 
 const openerId = 'aiBrowser.open';
-
-/**
- * Checks if the integrated browser should be used instead of the AI browser.
- *
- * Delegation is opt-in: our own panel is the point of this extension, and
- * `workbench.action.browser.open` exists in every recent VS Code, so
- * delegating whenever the command is available meant our panel never opened
- * at all. Users who prefer VS Code's built-in browser (agent sharing, CDP,
- * device emulation) can still switch back via the setting.
- */
-async function shouldUseIntegratedBrowser(): Promise<boolean> {
-	const preferIntegrated = vscode.workspace
-		.getConfiguration('aiBrowser')
-		.get<boolean>('useIntegratedBrowser', true);
-	if (!preferIntegrated) {
-		return false;
-	}
-
-	// The open command can exist on a host that never grants the `browser`
-	// proposal (Cursor is one). Delegating then opens a tab we cannot attach
-	// to, and the element commands fail with a proposed-API error.
-	if (!('browserTabs' in vscode.window)) {
-		return false;
-	}
-
-	const commands = await vscode.commands.getCommands(true);
-	return commands.includes(integratedBrowserCommand);
-}
 
 /**
  * Opens a URL in the integrated browser

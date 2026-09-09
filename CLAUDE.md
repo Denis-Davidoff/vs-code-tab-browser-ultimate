@@ -266,7 +266,7 @@ The floor is deliberately lower than what the features need, and the gap is the 
 Below 1.112 the extension still loads and still works, as the webview panel. VS Code logs
 `Extension … wants API proposal 'browser' but that proposal DOES NOT EXIST` and drops it from
 the list — an error in the log, not a failed activation — and every entry point guards with
-`'browserTabs' in vscode.window` before touching the API. The same is true of
+`isBrowserApiGranted()` before touching the API. The same is true of
 `contributes.mcpServerDefinitionProviders` (a contribution point since 1.101) and of
 `lm.registerMcpServerDefinitionProvider`, which is reached through an optional call precisely so
 an older host just gets nothing.
@@ -312,6 +312,9 @@ The manifest declares `enabledApiProposals: ["externalUriOpener", "browser"]` �
 look identical from the outside (no toolbar icons, nothing on the clipboard) while having
 nothing in common. Audited by reading the shipped bundles, not by guessing:
 
+Seven measured, and only three work. Theia is audited separately, below the table — it has none
+of these paths.
+
 | | VS Code 1.137 | VSCodium 1.135 | Devin 1.126 | Cursor 3.19.19 | Antigravity 1.107 | Kiro 1.0.437 |
 |---|---|---|---|---|---|---|
 | `browser` in `allApiProposals` | yes | yes | yes | **no** | no | **no** |
@@ -324,6 +327,24 @@ nothing in common. Audited by reading the shipped bundles, not by guessing:
 Two more measured and unsupported, both cleanly: **Trae 1.107.1** (base 1.107, so it predates
 the proposal — 169 proposals, nothing browser-related at all, `dataFolderName` `.trae`) and
 Antigravity IDE, the same shape.
+
+**Theia IDE 1.75 is not a VS Code build**, and it is the one host that has to be audited
+differently: no `product.json` at `appRoot`, no `out/vs/...` tree, everything inside a 91 MB
+`app.asar` (grep it with `grep -a`). Markers: zero `browserTabs`, zero `startCDPSession`, zero
+`workbench.action.browser.open`, zero `vscode.proposed.browser` — while `enabledApiProposals`
+appears 44 times, so it implements the *mechanism* for plugin proposals without carrying this
+one. Being a re-implementation rather than a fork, there is no version it could rebase onto.
+
+It is classified correctly, and by the **fallback**: with no `out/vs/...` bundle to read,
+`hostShipsBrowserApi` returns `undefined` and the command proxy decides — no browser command,
+so `unsupported`. That is the fallback earning its place rather than a lucky guess.
+
+Theia also exposed a real defect in `hostInfo`. With no `product.json` the `dataFolderName`
+guess is `.vscode`, which on that machine is the **real VS Code's** directory — so the
+"unsupported" dialog read a foreign `argv.json` and was about to advise removing an entry from
+another editor's configuration. Hence `HostInfo.resolved`: the note is only shown when the path
+came from a `product.json` we actually read. Nothing was ever written there, since an
+unsupported host is never written to; the leak was the sentence.
 
 **Kiro is the interesting row**: the only host measured that has the browser UI and the commands
 but not the API. It is why detection reads the extension host bundle rather than probing for a
@@ -377,7 +398,7 @@ extensions — there is no `browserTabs`, no `activeBrowserTab`, no CDP of any k
 `extensionHostProcess.js`, and `cursor-browser-automation` contributes zero commands while
 using internal-only proposals. So both symptoms follow: `activeEditor ==
 'workbench.editor.browser'` never matches, hence no icons, and every element or screenshot
-command stops at the `'browserTabs' in vscode.window` guard, hence an empty clipboard.
+command stops at the `isBrowserApiGranted()` guard, hence an empty clipboard.
 
 **Do not "fix" Cursor by adding `workbench.editor.browserEditor` to the `when` clauses.** The
 icons would appear and every one of them would fail on the guard — a worse result than no
@@ -432,7 +453,7 @@ features looked broken. [src/proposedApi.ts](src/proposedApi.ts) decides and dri
 
 | State | How it is detected | What happens |
 |---|---|---|
-| `granted` | `'browserTabs' in vscode.window` | says so, does nothing |
+| `granted` | `isBrowserApiGranted()` — a *read*, not an `in` | says so, does nothing |
 | `grantMissing` | no `browserTabs`, but `workbench.action.browser.open` is registered | writes `argv.json`, offers to quit |
 | `unsupported` | no `browserTabs`, no such command | explains, offers the webview panel |
 
@@ -506,6 +527,99 @@ Also worth knowing:
 - **`browserController.ts`'s messages name the command rather than carrying a button.** They are
   read by a model over MCP as well as shown to the user, and a model cannot click.
 
+### Presence is not permission: `in` lies about the grant
+
+**Never ask whether a proposed-API member exists. Read it.** `isBrowserApiGranted()` in
+[src/proposedApi.ts](src/proposedApi.ts) is the only correct test, and every guard goes through
+it.
+
+VS Code builds the `window` namespace per extension and defines proposal-gated members
+**unconditionally**, putting the check inside the getter. From `extensionHostProcess.js`:
+
+```js
+get browserTabs() { return checkProposedApiEnabled(extension, 'browser'), extHostBrowsers.browserTabs; }
+```
+
+So `'browserTabs' in vscode.window` is **true on every host that carries the proposal at all**,
+granted or not — the *read* is what throws. The old guard therefore reported `granted` on
+exactly the hosts where the grant was missing, which is the worst possible direction:
+
+- the status bar item that fixes it stayed hidden, and the command answered "already enabled";
+- `requireBrowserTab()` passed its guard and then threw on `activeBrowserTab`, so an element
+  command surfaced a raw error instead of the refusal written for it — and that error toast
+  paused the browser, which is how it was first noticed.
+
+This is why VSCodium looked like "everything works except the picker": the proposal is in its
+registry, so `in` said yes, while its log repeated `CANNOT USE these API proposals`. Kiro and
+Cursor never showed the bug — they do not implement the API at all, so the property is genuinely
+absent and `in` happened to be right.
+
+The read settles both questions at once:
+
+```ts
+try { return vscode.window.browserTabs !== undefined; } catch { return false; }
+```
+
+A throw means the proposal exists but is not ours; `undefined` means the host does not implement
+it. Anything else the `browser` proposal adds later — `activeBrowserTab`, `openBrowserTab` — is
+gated the same way, so the same rule applies.
+
+### `argv.json` is not always under the home directory
+
+`argvUri` copies the editor's own rule out of `main.js`, and each branch is a real install:
+
+```js
+if (process.env.VSCODE_PORTABLE) return join(process.env.VSCODE_PORTABLE, 'argv.json');
+let folder = product.dataFolderName;
+if (process.env.VSCODE_DEV) folder = `${folder}-dev`;
+return join(os.homedir(), folder, 'argv.json');
+```
+
+Assuming `~/<dataFolderName>` alone writes a portable install's grant into a file the editor
+never reads, and then asks for a restart that changes nothing — the same dead end as the Kiro
+bug, from a different direction. The variables belong to the main process and the extension host
+inherits them, which only holds when the two are on one machine.
+
+**Which is why a remote or web window is refused outright** (`canWriteArgv`). There the
+extension host is not on the machine that launched the editor: `os.homedir()` is the *remote*
+home. It is not even self-correcting, because `hostShipsBrowserApi` reads the **server's**
+extension host bundle, which does contain `browserTabs` — so the state comes out `grantMissing`
+and everything downstream looks fine. The command explains and offers
+`workbench.action.configureRuntimeArguments`, which runs in the renderer and so opens the
+*local* file, plus the line on the clipboard.
+
+Verified against a stubbed `vscode` for all five: normal, `VSCODE_PORTABLE`, `VSCODE_DEV`,
+remote and web.
+
+### Editing `enable-proposed-api` — two ways it went wrong
+
+Both were found by review, both reproduced, and both matter more than they look.
+
+**The value has to be located by the key, not by the next `[`.** `mask.indexOf('[', keyAt)` is
+not "this key's array": given
+
+```jsonc
+{ "enable-proposed-api": true, "js-flags": ["--harmony"] }
+```
+
+it finds the **neighbour's** array, appends our id into `js-flags`, and reports success. The
+"not an array" guard never fires, someone else's setting is silently rewritten, and the grant is
+still missing. `valueArrayRange` now starts at the key's colon and tracks nesting.
+
+**The array contents are JSONC, so `JSON.parse` on the raw text is wrong.** `["other.ext",]` and
+`["other.ext" // ours\n]` are both legal and both make `JSON.parse` throw — and the fallout is
+worse than a refusal, because the state check treats an unreadable value as "grant missing", so
+an editor that was **already configured** pulses `Enable Browser API` forever. `arrayEntries`
+walks the array itself, skipping comments and commas.
+
+**It also decides where an append goes**, which the same shapes break: inserting before the
+closing bracket lands after a trailing comma (making a second one) or *inside* a line comment
+(swallowing the id). So the insert point is the end offset of the last element, which is always
+before both. Non-string contents are refused rather than rewritten, for the same reason a
+non-array value is.
+
+Every case above is in [src/argvJson.test.ts](src/argvJson.test.ts).
+
 ### The status bar: one permanent button, one that hides itself
 
 [src/statusBar.ts](src/statusBar.ts) puts two items on the left, and they have different jobs.
@@ -529,6 +643,16 @@ grant states hide it:
 | `grantMissing` | `$(alert) Enable Browser API`, warning background |
 | `awaitingRestart` | `$(debug-restart) Restart to finish`, warning background |
 | `unsupported` | hidden |
+
+**`Open File` is in the menu only when the built-in browser will take it.** It is gated on
+`shouldUseIntegratedBrowser()`, which is why that helper lives in
+[src/proposedApi.ts](src/proposedApi.ts) rather than in `extension.ts` — three callers need the
+same answer, and the second copy drifted: Open File reached for
+`workbench.action.browser.openFile` whenever the command was registered, ignoring both the
+setting and the grant, so on a host where the user had just chosen the webview panel it still
+opened a native tab nothing could attach to. There is deliberately **no panel fallback** either:
+a `file:` URI in the panel is blocked by `localResourceRoots` and renders blank with no error,
+which is worse than the entry not being there.
 
 **`unsupported` hides the warning item, but the menu must still explain itself.** A permanent
 apology in every window is nagging, so the item stays hidden — but hiding it and saying nothing
@@ -813,6 +937,15 @@ that detour: **`vscode.env.clipboard` is text-only** — there is no API for put
 the system clipboard, so "paste attaches a file" is unreachable without shelling out to the OS,
 and `attachFile` accepts only `file` / `vscode-remote` / `untitled` URIs.
 
+**The pick slot is claimed before the cancel button appears, and that order is the fix.**
+`beginPick()` / `endPick()` own `pendingPick`, and `pickAndDeliver` calls them around the button
+rather than letting `withPickedElement` assign the slot on its way past
+`await tab.startCDPSession()`. It used to: for as long as that await took, `Cancel pick` was on
+screen calling `cancel()` on `undefined` — or on the *previous* pick's token — so the button did
+nothing on exactly the slow sessions where someone would reach for it. The same move fixed a
+leak: a rejection from `startCDPSession` escaped past the cleanup, leaving the slot pointing at a
+dead token until the next pick reclaimed it. The client is now constructed inside the `try`.
+
 **Element picking is single-flight, and has to be.** Each pick opens its own CDP session and
 turns on inspect mode. Two at once means a single click delivers
 `Overlay.inspectNodeRequested` to *both* sessions, both commands run to completion, and the
@@ -855,9 +988,11 @@ element.
 2. For a button on the browser tab, put it in the `aiBrowser.elementMenu` submenu (see
    [The dropdown on the browser tab](#the-dropdown-on-the-browser-tab)) rather than adding
    another `editor/title` entry — one dropdown beats a row of icons.
-3. Guard twice, with different messages: `'browserTabs' in vscode.window` (proposal missing,
-   or launched without the flag) and `vscode.window.activeBrowserTab` (nothing open). The
-   fixes are unrelated, so one message would send people the wrong way.
+3. Guard twice, with different messages: `isBrowserApiGranted()` from
+   [src/proposedApi.ts](src/proposedApi.ts) (proposal missing, or launched without the flag)
+   and `vscode.window.activeBrowserTab` (nothing open). The fixes are unrelated, so one message
+   would send people the wrong way. **Never test the API with `in`** —
+   [presence is not permission](#presence-is-not-permission-in-lies-about-the-grant).
 4. `new CDPClient(await tab.startCDPSession())` → `attachToPage()` → `client.send(method,
    params, sessionId)`. Enable the domains you use (`DOM.enable`, `Overlay.enable`, …) first.
 5. Undo anything that changes page state before any step that can throw, and
@@ -1170,6 +1305,17 @@ No compile error for any of these — they only surface at runtime.
     and clicks do not reach the page until it is dismissed. See
     [A notification pauses the built-in browser](#a-notification-pauses-the-built-in-browser).
     Confirmations must go through `confirm()` in [src/notify.ts](src/notify.ts).
+11. **Testing a proposed API with `in`** (`'browserTabs' in vscode.window`) → true whether or
+    not the proposal is granted, because the getter is always defined and throws only when read.
+    Reports the API as available on exactly the hosts where it is not. Use
+    `isBrowserApiGranted()`; see
+    [Presence is not permission](#presence-is-not-permission-in-lies-about-the-grant).
+12. **Assuming `argv.json` is under the home directory** → a portable install
+    (`VSCODE_PORTABLE`) or a build run from source (`VSCODE_DEV`) reads a different file, so the
+    grant is written where nothing looks for it.
+13. **`Open File` on a host without the built-in browser** → a `file:` URI in the webview panel
+    is blocked by `localResourceRoots`, so the panel renders blank with no error. The menu entry
+    is therefore gated on `shouldUseIntegratedBrowser()` rather than falling back.
 
 ## Special cases and non-obvious decisions
 
@@ -1220,7 +1366,7 @@ interaction under [TypeScript configuration](#typescript-configuration).
   `aiBrowser.useIntegratedBrowser`, which now defaults to **`true`** — the built-in browser is
   where features get built (see [the main approach](#how-we-build-features--the-main-approach)),
   and it is what the element picker attaches to. Setting it to `false` brings the panel back.
-  It also requires `'browserTabs' in vscode.window`. The open command can exist on a host that
+  It also requires `isBrowserApiGranted()`. The open command can exist on a host that
   never ships the `browser` proposal (Cursor logs `proposal DOES NOT EXIST` and still activates).
   Delegating in that case opens a tab the extension cannot attach to.
 

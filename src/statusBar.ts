@@ -4,7 +4,10 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import { browserApiState, onDidChangeGrantState, type BrowserApiState } from './proposedApi';
+import {
+	browserApiState, integratedBrowserCommand, onDidChangeGrantState,
+	shouldUseIntegratedBrowser, type BrowserApiState,
+} from './proposedApi';
 
 /*
  * Two status bar items, with different jobs.
@@ -142,11 +145,17 @@ async function showMenu(): Promise<void> {
 		detail: vscode.l10n.t("Type or paste an address"),
 		run: () => openUrl(),
 	});
-	items.push({
-		label: vscode.l10n.t("$(file) Open File…"),
-		detail: vscode.l10n.t("Preview a local HTML file"),
-		run: () => openFile(),
-	});
+	if (await shouldUseIntegratedBrowser()) {
+		// Only offered when the built-in browser will take it. The webview panel
+		// cannot show a local file at all — its `localResourceRoots` is `media/`
+		// and the page lives in a cross-origin iframe, so a `file:` URL there is
+		// a blank panel with no error.
+		items.push({
+			label: vscode.l10n.t("$(file) Open File…"),
+			detail: vscode.l10n.t("Preview a local HTML file"),
+			run: () => openFile(),
+		});
+	}
 
 	if (state !== 'granted') {
 		items.push({ label: vscode.l10n.t("Setup"), kind: vscode.QuickPickItemKind.Separator });
@@ -215,12 +224,16 @@ async function openUrl(): Promise<void> {
 }
 
 /**
- * Opens a local file in the browser.
+ * Opens a local file in the built-in browser.
  *
- * The built-in browser has its own picker for this
- * (`workbench.action.browser.openFile`), which knows how it wants to serve a
- * `file:` page, so it is preferred whenever the host registers it. Our own
- * dialog is the fallback for the panel and for a host without that command.
+ * Reached only when `shouldUseIntegratedBrowser()` said yes, so the browser is
+ * there to take it. Its own picker is preferred — it knows how it wants to
+ * serve a `file:` page — and our dialog covers a host that has the browser but
+ * not that particular command.
+ *
+ * There is deliberately **no panel fallback**. Handing a `file:` URI to the
+ * panel produced a blank page and no error, which is worse than the entry not
+ * being in the menu.
  */
 async function openFile(): Promise<void> {
 	const commands = await vscode.commands.getCommands(true);
@@ -235,6 +248,7 @@ async function openFile(): Promise<void> {
 	});
 	const file = picked?.[0];
 	if (file) {
-		await vscode.commands.executeCommand('aiBrowser.show', file.toString(true));
+		await vscode.commands.executeCommand(
+			integratedBrowserCommand, file.toString(true));
 	}
 }

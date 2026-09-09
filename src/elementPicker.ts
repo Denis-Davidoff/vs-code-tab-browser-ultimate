@@ -8,6 +8,7 @@ import { CDPClient } from './cdp';
 import { confirm, refuse } from './notify';
 import { extractElementData, formatAncestor, renderElementMarkdown } from './elementContext';
 import { assistantName, handOver, type AssistantId } from './assistants';
+import { isBrowserApiGranted } from './proposedApi';
 import {
 	formatElementReport, formatPathReport, reportFileName, type PathKind,
 } from './reportFormat';
@@ -168,21 +169,46 @@ export function cancelPendingPick(): void {
 	pendingPick?.cancel();
 }
 
-async function withPickedElement<T>(
-	tab: vscode.BrowserTab,
-	use: (client: CDPClient, sessionId: string, backendNodeId: number) => Promise<T>,
-): Promise<T | undefined> {
-
+/**
+ * Claims the single pick slot, cancelling whatever held it.
+ *
+ * Separate from `withPickedElement` so that `pendingPick` is established
+ * *before* the cancel button goes up. It used to be assigned inside, one
+ * `await tab.startCDPSession()` later, and a click in that window called
+ * `cancel()` on `undefined` — or, worse, on the previous pick's token — so the
+ * button did nothing on exactly the slow sessions where someone would reach
+ * for it.
+ */
+function beginPick(): vscode.CancellationTokenSource {
 	pendingPick?.cancel();
-
 	// The only cancellation source is this token: a superseding pick and the
 	// status bar button both go through `pendingPick`.
 	const cts = new vscode.CancellationTokenSource();
 	pendingPick = cts;
+	return cts;
+}
 
-	const client = new CDPClient(await tab.startCDPSession());
+/** Releases the slot, if this pick still holds it. */
+function endPick(cts: vscode.CancellationTokenSource): void {
+	if (pendingPick === cts) {
+		pendingPick = undefined;
+	}
+	cts.dispose();
+}
+
+async function withPickedElement<T>(
+	tab: vscode.BrowserTab,
+	cts: vscode.CancellationTokenSource,
+	use: (client: CDPClient, sessionId: string, backendNodeId: number) => Promise<T>,
+): Promise<T | undefined> {
+
+	// Inside the `try`, not before it: a rejection from `startCDPSession` used
+	// to escape past the cleanup below, leaving the slot pointing at a dead
+	// token until the next pick reclaimed it.
+	let client: CDPClient | undefined;
 	let sessionId: string | undefined;
 	try {
+		client = new CDPClient(await tab.startCDPSession());
 		sessionId = await client.attachToPage();
 
 		await client.send('DOM.enable', {}, sessionId);
@@ -204,15 +230,11 @@ async function withPickedElement<T>(
 	} finally {
 		// Has to be in `finally`: on cancellation the await above throws, and
 		// leaving inspect mode on strands the page in "pick an element" state.
-		if (sessionId !== undefined) {
+		if (client && sessionId !== undefined) {
 			await client.send('Overlay.setInspectMode', { mode: 'none', highlightConfig: {} }, sessionId)
 				.catch(() => { /* cancelled, navigated away, or already detached */ });
 		}
-		client.dispose();
-		if (pendingPick === cts) {
-			pendingPick = undefined;
-		}
-		cts.dispose();
+		client?.dispose();
 	}
 }
 
@@ -245,7 +267,7 @@ function requireBrowserTab(): vscode.BrowserTab | undefined {
 	// `browserTabs` is a proposed API: absent on a VS Code without it, or when
 	// the extension was launched without --enable-proposed-api. Worth telling
 	// apart from "no tab is open" — the fixes are unrelated.
-	if (!('browserTabs' in vscode.window)) {
+	if (!isBrowserApiGranted()) {
 		// Deliberately not a notification. A browser tab is very likely the thing
 		// on screen right now, and a toast over it pauses the page — the exact
 		// complaint this whole surface was built to remove. The actionable half
@@ -278,6 +300,9 @@ async function pickAndDeliver<T>(
 	// `ProgressLocation.Window` is the status bar: it renders `$(icon)` syntax
 	// and, unlike `Notification`, does not paint over the browser and pause the
 	// page. It also has no cancel button, hence the one below.
+	// The slot is claimed first, so the button that cancels it is never live
+	// before there is something for it to cancel.
+	const cts = beginPick();
 	const cancel = cancelButton();
 	try {
 		await vscode.window.withProgress({
@@ -285,7 +310,7 @@ async function pickAndDeliver<T>(
 			title: `$(inspect) ${title}`,
 		}, async () => {
 			try {
-				const value = await withPickedElement(tab,
+				const value = await withPickedElement(tab, cts,
 					(client, sessionId, backendNodeId) =>
 						produce(client, sessionId, backendNodeId, tab));
 				if (value === undefined) {
@@ -302,6 +327,7 @@ async function pickAndDeliver<T>(
 		});
 	} finally {
 		cancel.dispose();
+		endPick(cts);
 	}
 }
 

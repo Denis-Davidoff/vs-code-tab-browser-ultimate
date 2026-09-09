@@ -16,10 +16,11 @@ there is not the problem, the missing API is. **Measured by reading the shipped 
 | **Antigravity IDE** | 1.107 | ❌ no | — | nothing helps — base predates the API |
 | **Kiro** | 1.0.437 | ❌ no | — | nothing helps — has the browser, not the API |
 | **Trae** | 1.107.1 | ❌ no | — | nothing helps — base predates the API |
+| **Theia IDE** | 1.75 | ❌ no | — | nothing helps — not a VS Code build |
 
 **The original VS Code is the awkward one, and that is why it is third.** It is the only editor
 here whose gallery is the VS Code Marketplace, and the Marketplace **cannot host this extension
-at all** — it rejects anything declaring API proposals, which is exactly what the browser
+at all** — it rejects anything declaring API proposals, which is exactly what the browser 
 features need. So on VS Code there is no one-click install: download
 [**tab-browser-ultimate.vsix**](https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/raw/main/tab-browser-ultimate.vsix)
 and run **Extensions: Install from VSIX…**. What is listed on the Marketplace is a stub that
@@ -37,7 +38,7 @@ named in `--enable-proposed-api` exactly once, which is what the status bar butt
 one running the extension in development mode (`F5`), which is a developer path, not an install.
 
 A fork shipping its own browser is not the same thing as supporting this extension. Cursor,
-Kiro and VSCodium all have a browser; only VSCodium exposes VS Code's browser API to extensions,
+Kiro and VSCodium all have a browser of some kind; only VSCodium exposes VS Code's browser API to extensions,
 and that is the part that matters here. Kiro is the clearest case — it carries VS Code's browser
 tab and its commands, but none of the API behind them, so no flag and no restart can help.
 
@@ -48,6 +49,11 @@ tab and its commands, but none of the API behind them, so no flag and no restart
 its own, but it is a separate implementation that is not exposed to extensions at all: no
 browser tabs API, no CDP. What still works there is the webview panel — set
 `aiBrowser.useIntegratedBrowser` to `false` and run **AI Browser: Show**.
+
+**Theia is a third kind of "no", and a permanent one.** It is not a VS Code build at all — a
+separate IDE that re-implements the extension API — so there is no VS Code version to rebase
+onto and nothing to enable. Its bundle has no `browser` proposal, no browser tabs API and no
+CDP channel for extensions. Everything that does not need the browser API works there normally.
 
 **Trae and Antigravity IDE are a different kind of "no": they are simply too old.** Both are
 built on VS Code 1.107, and the `browser` proposal first shipped in 1.112 — so there is no
@@ -456,8 +462,8 @@ such API and nothing can be done — that is Cursor.
 **AI Browser: Enable Integrated Browser API** from the Command Palette. It adds this extension to
 `enable-proposed-api` in your editor's `argv.json`, keeping the file's comments and any other
 extension already listed, and then offers to quit the editor. Once the API is on, the button
-disappears; while a restart is still pending it reads **Restart to finish**. The same fix is also
-offered by the "Fix this" button on the error you get from any element command.
+disappears; while a restart is still pending it reads **Restart to finish**. Any element command
+run before then says so in the status bar and points at the same button.
 
 **A full quit is required, not Reload Window** — `argv.json` is read when the process starts.
 

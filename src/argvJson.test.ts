@@ -146,6 +146,54 @@ suite('grantProposedApi', () => {
 		assert.ok(!text.includes(',,'));
 	});
 
+	test("a neighbouring array is never mistaken for our value", () => {
+		// The loose "next `[` after the key" search appended into `js-flags`
+		// and reported success: someone else's setting rewritten, our grant
+		// still missing, and the not-an-array guard never firing.
+		const source = '{\n\t"enable-proposed-api": true,\n\t"js-flags": ["--harmony"]\n}\n';
+		assert.throws(() => grantProposedApi(source, ID), /not an array/);
+		// And the neighbour is untouched, since nothing was written.
+		assert.ok(source.includes('["--harmony"]'));
+	});
+
+	test('a trailing comma inside the array is legal JSONC and is accepted', () => {
+		const { text, changed } = grantProposedApi('{\n\t"enable-proposed-api": ["other.ext",]\n}\n', ID);
+		assert.ok(changed);
+		assert.ok(text.includes(`"other.ext", ${JSON.stringify(ID)},`), text);
+		assert.ok(!text.includes(',,'), 'no double comma');
+	});
+
+	test('a comment inside the array does not swallow the appended id', () => {
+		const source = '{\n\t"enable-proposed-api": [\n\t\t"other.ext" // theirs\n\t]\n}\n';
+		const { text } = grantProposedApi(source, ID);
+		// Appended after the element, before the comment — not after the comment,
+		// where the rest of the line is comment and the id would vanish.
+		const idAt = text.indexOf(ID);
+		assert.ok(idAt > 0 && idAt < text.indexOf('// theirs'), text);
+		assert.ok(text.includes('// theirs'), 'their comment survives');
+	});
+
+	test('already listed is still detected through a comment and a trailing comma', () => {
+		const source = `{\n\t"enable-proposed-api": [\n\t\t${JSON.stringify(ID)}, // ours\n\t]\n}\n`;
+		const { changed, alreadyListed } = grantProposedApi(source, ID);
+		assert.ok(!changed, 'a configured editor must not be told the grant is missing');
+		assert.ok(alreadyListed);
+	});
+
+	test('a block comment inside the array is skipped', () => {
+		const source = '{\n\t"enable-proposed-api": [/* none yet */]\n}\n';
+		const { text, changed } = grantProposedApi(source, ID);
+		assert.ok(changed);
+		assert.ok(text.includes('/* none yet */'), 'comment kept');
+		assert.ok(text.includes(JSON.stringify(ID)));
+	});
+
+	test('an array of something other than strings is refused', () => {
+		assert.throws(
+			() => grantProposedApi('{\n\t"enable-proposed-api": [1, 2]\n}\n', ID),
+			/could not be read/);
+	});
+
 	test('a value that is not an array is refused, never overwritten', () => {
 		assert.throws(
 			() => grantProposedApi('{\n\t"enable-proposed-api": true\n}\n', ID),

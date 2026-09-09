@@ -16,8 +16,8 @@ the API on. It takes one click:
 
 The extension adds itself to `enable-proposed-api` in your `argv.json`, keeping the file's
 comments and anything already listed there. The button then disappears — while a restart is
-still pending it reads **Restart to finish**. The same fix is also offered by the **Fix this**
-button on the error any element command shows.
+still pending it reads **Restart to finish**. Any element command run before then says so in the
+status bar and points at the same button.
 
 A permanent **AI Browser** button stays in the status bar: clicking it opens a menu with Open
 URL, Open File, Connect Claude Code, Connect Codex, Check Connection and Settings.
@@ -61,6 +61,7 @@ takes:
 | **Antigravity IDE** | 1.107 | ❌ no | — | nothing helps — base predates the API |
 | **Kiro** | 1.0.437 | ❌ no | — | nothing helps — has the browser, not the API |
 | **Trae** | 1.107.1 | ❌ no | — | nothing helps — base predates the API |
+| **Theia IDE** | 1.75 | ❌ no | — | nothing helps — not a VS Code build |
 
 **On VS Code:**
 **[⬇️ download tab-browser-ultimate.vsix](https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/raw/main/tab-browser-ultimate.vsix)**
