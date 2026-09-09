@@ -14,8 +14,12 @@ code --enable-proposed-api DenysDavydov.tab-browser-ultimate
 
 Without this permission, browser features may fail with `CANNOT use API proposal: browser`.
 
-Alternatively, open **Preferences: Configure Runtime Arguments** from the Command Palette
-and add this property to the existing JSON object in `argv.json`:
+Alternatively, enable it permanently through VS Code (this also works if your terminal
+does not recognize `code`):
+
+1. Press **`Cmd+Shift+P` on macOS** or **`Ctrl+Shift+P` on Windows/Linux** to open the Command Palette.
+2. Search for **Preferences: Configure Runtime Arguments** and select it.
+3. In the `argv.json` file that opens, add the following property inside the existing `{ ... }`:
 
 ```json
 "enable-proposed-api": ["DenysDavydov.tab-browser-ultimate"]
