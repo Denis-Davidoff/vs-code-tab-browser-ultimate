@@ -34,8 +34,10 @@
 		"onWebviewPanel:aiBrowser.view",
 		"onCommand:aiBrowser.copyElement",
 		"onCommand:aiBrowser.copyElementCssPath",
-		"onView:aiBrowser.tools",
-		"onStartupFinished"
+		"onStartupFinished",
+		"onCommand:aiBrowser.connectClaudeCode",
+		"onCommand:aiBrowser.connectCodex",
+		"onCommand:aiBrowser.checkMcpConnection"
 	],
 	"capabilities": {
 		"virtualWorkspaces": true,
@@ -76,6 +78,24 @@
 					"light": "media/icons/crosshair-blue-light.svg",
 					"dark": "media/icons/crosshair-blue-dark.svg"
 				}
+			},
+			{
+				"command": "aiBrowser.connectClaudeCode",
+				"title": "%command.connectClaudeCode.title%",
+				"category": "%displayName%",
+				"icon": "$(plug)"
+			},
+			{
+				"command": "aiBrowser.connectCodex",
+				"title": "%command.connectCodex.title%",
+				"category": "%displayName%",
+				"icon": "$(plug)"
+			},
+			{
+				"command": "aiBrowser.checkMcpConnection",
+				"title": "%command.checkMcpConnection.title%",
+				"category": "%displayName%",
+				"icon": "$(pulse)"
 			}
 		],
 		"configuration": [
@@ -106,6 +126,20 @@
 						"default": "google",
 						"title": "Search Engine",
 						"description": "%configuration.searchEngine.description%"
+					},
+					"aiBrowser.mcp.enabled": {
+						"type": "boolean",
+						"default": true,
+						"title": "MCP Server Enabled",
+						"markdownDescription": "%configuration.mcp.enabled.description%"
+					},
+					"aiBrowser.mcp.port": {
+						"type": "number",
+						"default": 43110,
+						"minimum": 1024,
+						"maximum": 65535,
+						"title": "MCP Server Port",
+						"markdownDescription": "%configuration.mcp.port.description%"
 					}
 				}
 			}
@@ -139,29 +173,24 @@
 					"group": "1_copy@1"
 				},
 				{
-					"command": "aiBrowser.copyElementXPath",
+					"command": "aiBrowser.copyElementCssPath",
 					"group": "1_copy@2"
 				},
 				{
-					"command": "aiBrowser.copyElementCssPath",
+					"command": "aiBrowser.copyElementXPath",
 					"group": "1_copy@3"
-				}
-			]
-		},
-		"viewsContainers": {
-			"activitybar": [
+				},
 				{
-					"id": "aiBrowser",
-					"title": "%displayName%",
-					"icon": "media/activity-icon.svg"
-				}
-			]
-		},
-		"views": {
-			"aiBrowser": [
+					"command": "aiBrowser.connectClaudeCode",
+					"group": "2_mcp@1"
+				},
 				{
-					"id": "aiBrowser.tools",
-					"name": "%view.tools.name%"
+					"command": "aiBrowser.connectCodex",
+					"group": "2_mcp@2"
+				},
+				{
+					"command": "aiBrowser.checkMcpConnection",
+					"group": "2_mcp@3"
 				}
 			]
 		},
@@ -170,6 +199,12 @@
 				"id": "aiBrowser.elementMenu",
 				"label": "%submenu.elementMenu.label%",
 				"icon": "$(chevron-down)"
+			}
+		],
+		"mcpServerDefinitionProviders": [
+			{
+				"id": "aiBrowserMcp",
+				"label": "AI Browser"
 			}
 		]
 	},

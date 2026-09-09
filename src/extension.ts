@@ -7,8 +7,11 @@ import * as vscode from 'vscode';
 import { AIBrowserManager } from './aiBrowserManager';
 import { AIBrowserView } from './aiBrowserView';
 import { copyElement, copyElementCssPath, copyElementXPath } from './elementPicker';
-import { ToolsViewProvider } from './toolsView';
 import { LastElementAction, type ElementActionId } from './lastAction';
+import { BrowserController } from './browserController';
+import { McpLifecycle } from './mcpLifecycle';
+import { connectClaudeCode, connectCodex } from './mcpSetup';
+import { checkConnection } from './mcpCheck';
 
 declare class URL {
 	constructor(input: string, base?: string | URL);
@@ -36,6 +39,9 @@ const enabledHosts = new Set<string>([
 const copyXPathCommand = 'aiBrowser.copyElementXPath';
 const copyElementCommand = 'aiBrowser.copyElement';
 const copyCssPathCommand = 'aiBrowser.copyElementCssPath';
+const connectClaudeCommand = 'aiBrowser.connectClaudeCode';
+const connectCodexCommand = 'aiBrowser.connectCodex';
+const checkMcpCommand = 'aiBrowser.checkMcpConnection';
 
 const openerId = 'aiBrowser.open';
 
@@ -95,9 +101,6 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	}));
 
-	context.subscriptions.push(vscode.window.registerTreeDataProvider(
-		ToolsViewProvider.viewId, new ToolsViewProvider(context.extensionUri)));
-
 	// The toolbar's primary button repeats whichever of these ran last, so every
 	// one of them records itself.
 	const lastAction = new LastElementAction(context.globalState);
@@ -108,6 +111,27 @@ export function activate(context: vscode.ExtensionContext) {
 			await lastAction.record(remembered);
 			await run();
 		}));
+
+	// --- MCP: the browser exposed to Claude Code, Codex and VS Code chat --------
+	const browser = new BrowserController();
+	context.subscriptions.push(browser);
+
+	const mcp = new McpLifecycle(context, browser, context.extension.packageJSON.version ?? '0.0.0');
+	context.subscriptions.push(mcp);
+	mcp.apply();
+
+	context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
+		if (e.affectsConfiguration('aiBrowser.mcp.enabled') || e.affectsConfiguration('aiBrowser.mcp.port')) {
+			mcp.apply();
+		}
+	}));
+
+	context.subscriptions.push(vscode.commands.registerCommand(connectClaudeCommand,
+		() => mcp.withServer(connectClaudeCode)));
+	context.subscriptions.push(vscode.commands.registerCommand(connectCodexCommand,
+		() => mcp.withServer(connectCodex)));
+	context.subscriptions.push(vscode.commands.registerCommand(checkMcpCommand,
+		() => mcp.withServer(checkConnection)));
 
 	registerElementCommand(copyElementCommand, 'element', copyElement);
 	registerElementCommand(copyXPathCommand, 'xpath', copyElementXPath);

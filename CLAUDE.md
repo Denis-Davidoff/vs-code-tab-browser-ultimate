@@ -94,7 +94,6 @@ Compiled with `tsc`, **no bundling**. `main: ./out/extension`.
 - [src/elementContext.ts](src/elementContext.ts) — pulls element data out of the page over CDP
 - [src/elementMarkdown.ts](src/elementMarkdown.ts) — renders that data as Markdown
 - [src/cssHelpers.ts](src/cssHelpers.ts) — copied verbatim from vscode, builds the CSS section
-- [src/toolsView.ts](src/toolsView.ts) — the activity bar panel
 
 **There is only ever one panel.** `AIBrowserManager._activeView` is a single slot: a repeat
 `show()` reuses the existing panel rather than creating a second one. If multiple tabs are ever
@@ -281,22 +280,21 @@ distribution story, which was already VSIX-only, but proposed APIs break without
 the extension stops activating after a VS Code update, run `npm run download-api` and check
 both `.d.ts` files.
 
-### The activity bar panel
-
-`contributes.viewsContainers.activitybar` adds an **AI Browser** container holding one view,
-`aiBrowser.tools`, backed by [src/toolsView.ts](src/toolsView.ts). It is a `TreeDataProvider`
-with three static rows, each carrying a `command` — not a webview. Three fixed rows need no
-custom rendering, and a tree brings theming, keyboard navigation and accessibility for free
-with no CSP or bundling involved. `media/activity-icon.svg` must stay a single flat
-`currentColor` shape, because VS Code recolours activity bar icons.
-
-`onView:aiBrowser.tools` is in `activationEvents`: without it the view renders empty until the
-extension is activated by something else.
-
 ### The dropdown on the browser tab
 
-One toolbar button on the browser tab opens a dropdown with all three element commands. It is
-a `contributes.submenus` entry (`aiBrowser.elementMenu`) placed into `editor/title`;
+One toolbar button on the browser tab opens a dropdown holding **everything the extension
+does** — the three element commands, then the three MCP ones. Two `group` prefixes
+(`1_copy@n`, `2_mcp@n`) put a separator between them; ordering comes from the `@n` suffix, not
+from the position in the `contributes.menus` array.
+
+There is no activity bar panel any more. It was a `TreeDataProvider` in `src/toolsView.ts`, and
+it went away when the same commands landed in this dropdown; `media/activity-icon.svg` went
+with it. One consequence worth knowing: the dropdown is gated on
+`activeEditor == 'workbench.editor.browser'`, so **Connect Claude Code / Connect Codex / Check
+Connection are only reachable from a browser tab** — or from the command palette, where every
+command still appears.
+
+It is a `contributes.submenus` entry (`aiBrowser.elementMenu`) placed into `editor/title`;
 `editor/title` allows submenus because `menusExtensionPoint.ts` leaves `supportsSubmenus` at
 its default of `true`. **The `icon` on the submenu declaration is what makes it a toolbar
 button** — without one it collapses into the tab's overflow menu.
@@ -307,12 +305,11 @@ Path — from `media/icons/crosshair-{colour}-{light,dark}.svg`. A codicon could
 Code renders codicons as font glyphs and recolours them, so any colour baked into one is lost.
 A custom SVG is drawn as a `background-image` and keeps its own fills — but by the same token it
 cannot inherit `currentColor`, which is why the ring and ticks ship as a light/dark pair while
-the centre dot stays fixed. The activity bar container icon
-(`media/activity-icon.svg`) is the opposite case and must stay a flat `currentColor` shape,
-because that one *is* recoloured.
+the centre dot stays fixed.
 
-[src/toolsView.ts](src/toolsView.ts) points its `TreeItem.iconPath` at the very same files, so
-the panel list and the browser tab cannot drift apart.
+The opposite rule applies to anything VS Code recolours — an activity bar container icon, for
+instance, has to be a flat `currentColor` shape, and colour baked into one is simply lost. Worth
+remembering before reaching for these files somewhere new.
 
 **The primary button is a faked split button.** VS Code has the real thing —
 `isSplitButton: { togglePrimaryAction: true }` on a submenu item, rendered by
@@ -348,8 +345,8 @@ All in [src/elementPicker.ts](src/elementPicker.ts), all sharing `withPickedElem
 | Command | Output |
 |---|---|
 | `aiBrowser.copyElement` | the full Markdown context, matching the built-in browser's "Add Element to Chat" |
-| `aiBrowser.copyElementXPath` | `//*[@id="main"]/span` or `/html/body/ul/li[2]` |
 | `aiBrowser.copyElementCssPath` | `#main > div > li:nth-of-type(2)` |
+| `aiBrowser.copyElementXPath` | `//*[@id="main"]/span` or `/html/body/ul/li[2]` |
 
 The CSS path deliberately leaves classes out. Utility-class frameworks produce long, unstable
 class lists, and a selector built from them reads worse and breaks sooner than a positional
@@ -425,6 +422,141 @@ explicit `.ts` imports and live in their own no-emit project
 never reach `out/` and never ship in the VSIX. This is why `elementMarkdown.ts` was split out
 of `elementContext.ts` — the renderer is testable precisely because it imports nothing.
 `import type` is fine anywhere; it is erased.
+
+## MCP: the browser exposed to Claude Code, Codex and VS Code chat
+
+The dropdown's three assistant entries (Connect Claude Code, Connect Codex, Check Connection)
+sit on top of a local MCP server. Server name, everywhere: **`ai-browser`**
+([src/mcpClientState.ts](src/mcpClientState.ts) owns the constant).
+
+### Layers
+
+```
+MCP client (Claude Code / Codex / VS Code chat)
+   │  HTTP POST, JSON-RPC 2.0, Bearer
+   ▼
+McpServer          src/mcpServer.ts       transport, auth, tool registry
+   │  ▲ src/mcpProtocol.ts — dispatch and the auth decision, no vscode, under test
+   ▼
+BrowserController  src/browserController.ts   what the browser can do
+   ▼
+CDPClient → the integrated browser
+```
+
+`BrowserController` is the **only** place where "no tab is open" becomes a sentence a model can
+act on. It throws `Error`; `dispatch` reports the message as `isError: true`. The transport
+knows nothing about tabs, and the controller knows nothing about JSON-RPC.
+
+### Why there is no SDK
+
+The MCP SDK is deliberately unused: this is a handful of methods over one POST, and the SDK
+would be more surface area than the feature.
+
+### The security model — four rules, and none works alone
+
+1. **Loopback only** — `listen(port, '127.0.0.1')`.
+2. **Any request carrying `Origin` is refused with 403, before its credentials are looked at.**
+   A page cannot *read* a cross-origin response, but issuing the request is already enough to
+   drive the browser.
+3. **The token is per workspace, not per user** — `mcp.token:<folderUri>` in `globalState`.
+   Ports are handed out in the order windows open, so project A's config can address the window
+   holding project B; a workspace-scoped token makes that an honest 401 instead of an agent
+   quietly editing the wrong project.
+4. **POST on one endpoint.** There is no SSE stream, so GET is 405. The token is accepted as
+   `Authorization: Bearer …` **or** as the last path segment — the second form exists only
+   because Codex cannot do otherwise (below).
+
+All four live in `authorizeRequest` in [src/mcpProtocol.ts](src/mcpProtocol.ts), away from
+`http`, so they are covered by tests rather than by inspection.
+
+Other transport details that are load-bearing: the body is capped at 1 MB; the handler is
+wrapped so nothing escapes (a client that never gets a response waits forever); `server.on
+('error', () => {})` is attached *after* a successful `listen`, or a late socket error becomes
+an uncaught exception in the extension host; live sockets are tracked so `dispose()` can
+destroy them, because a keep-alive connection otherwise keeps the port when the setting is
+switched off. `start()` walks 20 ports from the preferred one, treating **only** `EADDRINUSE`
+as "try the next".
+
+### Protocol details that bite
+
+- **Notifications get 202 with an empty body.** Answering `notifications/initialized` breaks
+  the handshake.
+- **`initialize` echoes the client's `protocolVersion`**; strict clients abandon a handshake
+  that answers with a different one.
+- **A tool's failure is a result, not a protocol error.** `{ isError: true }` is something the
+  model reads and can recover from; a `-32603` never reaches it.
+- Batches and bare arrays are refused rather than half-supported.
+- `browser_navigate` refuses anything but http/https. Otherwise an agent points the browser at
+  a local file and reads it back with `browser_text` — a browser tool turned into a file reader.
+
+### Three clients, three places to configure
+
+| Client | Where | How |
+|---|---|---|
+| VS Code chat | nowhere | `lm.registerMcpServerDefinitionProvider`, reached through a cast so `engines.vscode` need not move; **the `McpHttpServerDefinition` constructor is positional** — an options object does not work |
+| Claude Code | `.mcp.json` in the project | `{ type, url, headers.Authorization }` |
+| Codex | `.codex/config.toml` in the project | `[mcp_servers.ai-browser]` with the token **in the URL** |
+
+**Codex takes the token in the URL because it has no other option.** Its config can only
+*name* a bearer token (`bearer_token_env_var = "FOO"`), and the extension does not control the
+environment Codex is launched in — hence `McpServer.urlWithToken`.
+
+**A broken `.mcp.json` is never overwritten.** `readClaudeConfig` returns `{}` for absent,
+the object for parsed, and `undefined` for unparsable — and on `undefined` the write is
+abandoned, because rewriting it would delete every other MCP server the project has.
+
+**The global `~/.codex/config.toml` is never written by the extension.** It belongs to
+`codex mcp add`, which already knows how to leave other people's servers alone; it is offered
+as a command instead. That command's entry is named per project
+(`ai-browser-<slug>-<sha1[0:6]>`): one shared name would let the second project overwrite the
+first, and since the token is in the URL that hijacked entry would even authenticate.
+
+### The mini TOML parser
+
+[src/codexToml.ts](src/codexToml.ts) is not a TOML parser — it is exactly as much of one as the
+two readers (checking, and replacing our table) need, and **they must agree on where a table
+starts and ends**. `endLine` stops after the last key rather than at the next header, so a
+comment above the neighbouring table is not swallowed into ours.
+
+`scanLine` is the core, and every case it handles was a real failure: `#` inside a string is
+not a comment; `[` inside a string does not open an array; `enabled_tools = [` left open means
+following lines are continuation; triple quotes inside a *literal* string open nothing; four or
+five closing quotes still close once. A naive quote count got this wrong in both directions —
+our table became invisible and connecting wrote it a second time, which is TOML that does not
+parse at all.
+
+**`code` versus `text`.** `scanLine` returns both, and the distinction is not cosmetic: `code`
+has string contents removed and answers structural questions; `text` is the line minus a real
+comment and is what values and quoted table names are parsed from. Using `code` for values
+reads every setting as empty.
+
+### Checking
+
+[src/mcpCheck.ts](src/mcpCheck.ts) does both halves, because a listening server proves nothing:
+a real `tools/list` over loopback with the token, plus each client's config state. States are
+ordered worst-last — `thisServer`, `staleToken`, `otherServer`, `disabled`, `none` — and a file
+with several entries is judged by its best one. `staleToken` earns its own state because it is
+the common accident: `.mcp.json` copied from another project, right URL, wrong token, and the
+symptom is a bare 401 that reads like a broken server.
+
+Duplicate Codex entries are **reported, never repaired**: the global file is not ours, and
+removing the wrong one of a pair turns working tools into a 401.
+
+### Lifecycle
+
+[src/mcpLifecycle.ts](src/mcpLifecycle.ts) keeps the server's disposables **apart from
+`context.subscriptions`**: switching the setting off must give the port back without tearing
+down the extension. Restarts are serialised through a promise chain, or two setting changes in
+a row race for the same port. Commands are registered unconditionally and go through
+`withServer`, which explains why there is nothing to connect — better than "command not found".
+
+### Not built yet
+
+Two pieces of the spec are deliberately outstanding, and neither is needed by the three panel
+rows: **port repair** for configs written by an earlier session (`mcpRefresh`, with a
+filesystem lock, since every window would repair its own entry in the one global file), and
+**handing text and files to the assistants' chats** (`claude-vscode.insertAtMention`,
+`chatgpt.addFileToThread`).
 
 ## Things that break silently
 

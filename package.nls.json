@@ -5,8 +5,12 @@
 	"configuration.useIntegratedBrowser.description": "Open URLs in VS Code's built-in browser rather than the AI Browser webview panel. The built-in browser is what the element-picker commands attach to, and it supports clipboard shortcuts, find in page and DevTools that the panel cannot. Turn it off only if you specifically want the panel.",
 	"configuration.searchEngine.description": "Search engine used when the address bar input is a search term rather than a URL. Set to 'none' to disable address bar search.",
 	"command.copyElementXPath.title": "Copy Element XPath",
-	"view.tools.name": "Element Tools",
 	"command.copyElement.title": "Copy Element",
 	"command.copyElementCssPath.title": "Copy CSS Path",
-	"submenu.elementMenu.label": "Copy Element Info"
+	"submenu.elementMenu.label": "Copy Element Info",
+	"command.connectClaudeCode.title": "Connect Claude Code",
+	"command.connectCodex.title": "Connect Codex",
+	"command.checkMcpConnection.title": "Check Connection",
+	"configuration.mcp.enabled.description": "Run a local MCP server so Claude Code, Codex and VS Code chat can drive the integrated browser. It listens on loopback only and requires a per-workspace token.",
+	"configuration.mcp.port.description": "Preferred port for the MCP server. Each window takes the next free port from here, so a second window uses `port + 1`. Reconnect the assistant if the port changes."
 }

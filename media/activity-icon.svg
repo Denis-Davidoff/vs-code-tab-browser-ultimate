@@ -1,8 +1,0 @@
-<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-	<!--
-		Activity bar icons are recoloured by VS Code, so this must be a single
-		flat shape with currentColor and no fills of its own.
-	-->
-	<path fill="currentColor" d="M3 4h18a1 1 0 0 1 1 1v5h-2V8H4v11h6v2H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm1 2v1h16V6H4z"/>
-	<path fill="currentColor" d="M13 12l8 3-3.2 1.2L20 20l-1.7 1-2.2-3.6L13.6 20 13 12z"/>
-</svg>
