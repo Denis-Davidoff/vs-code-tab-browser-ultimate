@@ -589,6 +589,8 @@
 		"check-manifest": "node ./scripts/check-manifest.mjs",
 		"package": "vsce package --no-dependencies --out tab-browser-ultimate.vsix",
 		"publish:ovsx": "ovsx publish tab-browser-ultimate.vsix",
+		"publish:vsce": "vsce publish --packagePath tab-browser-ultimate.vsix --allow-all-proposed-apis",
+		"publish:all": "npm run publish:ovsx && npm run publish:vsce",
 		"verify-pat": "ovsx verify-pat DenysDavydov",
 		"download-api": "dts dev",
 		"vscode:prepublish": "npm run compile"

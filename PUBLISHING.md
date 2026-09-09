@@ -1,19 +1,38 @@
 # Publishing
 
-**One registry: Open VSX.** The VS Code Marketplace refuses an extension that declares
-`enabledApiProposals`, and this one declares two (`externalUriOpener`, `browser`) — so there is
-deliberately no `publish` script for it. VS Code users install the committed
-`tab-browser-ultimate.vsix`; every other editor gets it from
-[Open VSX](https://open-vsx.org/extension/DenysDavydov/tab-browser-ultimate).
+**Two registries, one artifact.** Both scripts upload the committed
+`tab-browser-ultimate.vsix` rather than repackaging, so the bytes in a registry are the bytes in
+the repository — which is also what VS Code users download directly.
 
 ```sh
 npm run package        # -> tab-browser-ultimate.vsix (compiles first, via vscode:prepublish)
-npm run publish:ovsx   # uploads that exact file  (needs OVSX_PAT)
+npm run publish:ovsx   # -> Open VSX
+npm run publish:vsce   # -> VS Code Marketplace  (see the caveat below)
+npm run publish:all    # both, ovsx first
 ```
 
-`publish:ovsx` names the `.vsix` on purpose rather than letting `ovsx` package the folder
-itself: the artifact that reaches the registry is then the same bytes as the one committed to
-the repository, which is what VS Code users install.
+**`publish:vsce` carries `--allow-all-proposed-apis`, and it is load-bearing.** `vsce publish`
+refuses an extension that declares `enabledApiProposals` (this one declares
+`externalUriOpener` and `browser`); the flag turns that client-side check off. What it cannot
+promise is that the service accepts the upload — see below.
+
+### Current state of the two listings
+
+| | Latest published | Reach |
+| --- | --- | --- |
+| [Open VSX](https://open-vsx.org/extension/DenysDavydov/tab-browser-ultimate) | **0.3.17** (2026-09-08) | ~1.5k downloads across 14 versions |
+| [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=DenysDavydov.tab-browser-ultimate) | **0.3.17** | 2 installs, one 5★ rating |
+
+**Both registries still serve the previous implementation.** This rewrite (0.5.0) exists only as
+the committed `.vsix`. Until it is published, a reader who follows the README's "install from the
+marketplace" line gets the 0.3.x proxy build, not this one.
+
+**`publish:vsce` has not completed successfully yet.** Two attempts both ended in
+`ERROR Request timeout: /_apis/gallery` — after vsce's own three internal retries, with the
+manifest check bypassed, a PAT resolved from the macOS keychain and the signing binary present.
+The host answers a plain GET in 250 ms, so it is the upload itself that stalls; that points at
+the network the attempt was made from rather than at anything in this repository. Try it from a
+normal terminal, and with `VSCE_PAT` exported if the keychain entry turns out to be stale.
 
 ## This is not a first publish
 
@@ -27,9 +46,14 @@ before shipping one.
 
 The setup is therefore already done and does not need repeating:
 
-- **The token** lives in `OVSX_PAT` (from https://open-vsx.org/user-settings/tokens). `ovsx`
-  reads it from the environment, so nothing is passed on the command line. Confirm it with
-  `npm run verify-pat`, which answers `PAT valid to publish at DenysDavydov`.
+- **The Open VSX token is already stored in the OS keychain**, put there by an earlier
+  `ovsx login`. `ovsx` looks in three places in order — `-p`, then `OVSX_PAT`, then that store —
+  so nothing has to be exported on this machine, while CI needs `OVSX_PAT`
+  (from https://open-vsx.org/user-settings/tokens). Confirm either way with `npm run verify-pat`,
+  which answers `PAT valid to publish at DenysDavydov`.
+- **The Marketplace token** is an Azure DevOps PAT (all organizations, scope
+  *Marketplace → Manage*), in `VSCE_PAT` or stored by `npx vsce login DenysDavydov`. One is
+  already in this machine's keychain under `vscode-vsce`.
 - **The namespace exists.** `npx ovsx create-namespace DenysDavydov` is a one-time step that has
   already happened; running it again is harmless but pointless.
 
@@ -41,7 +65,7 @@ The setup is therefore already done and does not need repeating:
 2. `npm run compile && npm run typecheck && npm test && npm run check-manifest`.
 3. `npm run package`, then **commit the rebuilt `.vsix`** — it is tracked, and a stale one means
    VS Code users install the previous version.
-4. `npm run publish:ovsx`.
+4. `npm run publish:ovsx`, and `npm run publish:vsce` if the Marketplace upload is working.
 5. Push, and tag the commit if you want the download to be findable by version.
 
 ## What an update actually does to existing users
@@ -65,9 +89,10 @@ thinking about whether the version number should be a major one rather than 0.5.
 
 ## Worth knowing
 
-- **Open VSX does not gate proposed apis at publish time**, which is why this route works at
-  all. What it cannot do is grant them at runtime: an editor still has to be new enough to carry
-  the `browser` proposal, and some builds only hand proposed apis to an extension named with
+- **Open VSX does not gate proposed apis at publish time**, and `vsce` only gates them in the
+  client, where `--allow-all-proposed-apis` lifts it. Neither registry can *grant* them at
+  runtime, which is the part that matters: an editor still has to be new enough for the `browser`
+  proposal, and some builds only hand proposed apis to an extension named with
   `--enable-proposed-api DenysDavydov.tab-browser-ultimate`. That belongs in the release notes,
   not in a workaround.
 - **The README is the marketplace page.** Relative links in it resolve through the `repository`

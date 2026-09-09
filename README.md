@@ -1,17 +1,23 @@
 # AI Browser — Claude Code and Codex, pointed at the page you are looking at
 
-> **Where you install it from depends on which registry your editor uses.** The extension needs
-> the `browser` and `externalUriOpener` API proposals, and the VS Code Marketplace does not
-> accept an extension that declares them.
+> **The fastest way in is the VSIX in this repository:**
+> [**tab-browser-ultimate.vsix**](https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/raw/main/tab-browser-ultimate.vsix)
+> → **Extensions: Install from VSIX…**. It is the current build, on every editor.
 >
-> - **Open VSX** (VSCodium, Cursor, Windsurf, Theia and the other editors that use it) — install
->   it straight from the marketplace, nothing else to do:
->   [open-vsx.org/extension/DenysDavydov/tab-browser-ultimate](https://open-vsx.org/extension/DenysDavydov/tab-browser-ultimate)
-> - **VS Code, from the Microsoft Marketplace** — it is not listed there; install the VSIX
->   instead. See [Installing](#installing).
+> The marketplace listings —
+> [Open VSX](https://open-vsx.org/extension/DenysDavydov/tab-browser-ultimate) and the
+> [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=DenysDavydov.tab-browser-ultimate)
+> — still carry the previous 0.3.x implementation while this rewrite is being released; see
+> [Installing](#installing).
 >
 > Either way the browser features need an editor new enough to carry the `browser` proposal
-> (VS Code `^1.136.0`).
+> (VS Code `^1.136.0`), and it declares two API proposals (`externalUriOpener`, `browser`), which
+> some editors only grant to an extension named with `--enable-proposed-api`.
+
+Press `Cmd`/`Ctrl` + `Shift` + `P` to open the command palette, run **AI Browser: Show**, enter
+the url you want — then work with the elements on the page exactly as below.
+
+![AI Browser in action](demo.png)
 
 **VS Code's own browser tab, wired to your AI assistant: click an element and it becomes a
 prompt, or hand the whole browser over and let the agent drive it.**
@@ -328,21 +334,32 @@ All of them are in the command palette under **AI Browser**.
 
 ## Installing
 
-**Open VSX editors** — VSCodium, Cursor, Windsurf and friends — get it from the marketplace
-like any other extension: search for **AI Browser** in the Extensions view, or take it from
-[open-vsx.org/extension/DenysDavydov/tab-browser-ultimate](https://open-vsx.org/extension/DenysDavydov/tab-browser-ultimate).
+**The VSIX is the current build, and it works everywhere.** It is committed, so this is one
+download and one command — nothing to build:
 
-**VS Code** needs the VSIX, since the Microsoft Marketplace rejects an extension that declares
-proposed apis:
+1. Download
+   [**tab-browser-ultimate.vsix**](https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/raw/main/tab-browser-ultimate.vsix)
+   ([or view it in the repository](https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/blob/main/tab-browser-ultimate.vsix)).
+2. Run **Extensions: Install from VSIX…** from the command palette and pick it — or from a
+   terminal:
+
+   ```sh
+   code --install-extension ~/Downloads/tab-browser-ultimate.vsix
+   ```
+
+To build it yourself instead:
 
 ```sh
 npm install
-npm run package                          # -> tab-browser-ultimate.vsix
-code --install-extension tab-browser-ultimate.vsix
+npm run package          # -> tab-browser-ultimate.vsix
 ```
 
-Or take the `.vsix` from the releases page and use **Extensions: Install from VSIX…** from the
-command palette.
+**From a marketplace**, once this version is released there:
+[Open VSX](https://open-vsx.org/extension/DenysDavydov/tab-browser-ultimate) for VSCodium,
+Cursor, Windsurf and Theia; the
+[VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=DenysDavydov.tab-browser-ultimate)
+for VS Code. Both are on 0.3.17 — the previous implementation — until the release lands; see
+[PUBLISHING.md](PUBLISHING.md).
 
 `engines.vscode` is `^1.136.0`, because that is where the `browser` proposal exists — an older
 editor will not install it at all. Some editors also only grant proposed apis to an extension

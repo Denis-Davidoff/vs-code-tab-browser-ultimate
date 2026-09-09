@@ -964,17 +964,22 @@ standing in for them.
 
 ### Open VSX is the only registry, and that is the whole distribution story
 
-Because of the proposed APIs this VSIX **cannot go to the VS Code Marketplace** — `vsce publish`
-refuses an extension that declares `enabledApiProposals`, which is why there is **no `publish`
-script for it and adding one would be a dead end**. Two consequences, and neither is a
-workaround:
+`vsce publish` refuses an extension that declares `enabledApiProposals` — **but the refusal is
+client-side and `--allow-all-proposed-apis` lifts it**, which is what `publish:vsce` passes. So
+both registries are in play, and the listing on each
+(`DenysDavydov.tab-browser-ultimate`, 0.3.17 on both) predates this rewrite. Two things to know:
 
-- **Open VSX takes it**, so every editor that uses that registry (VSCodium, Cursor, Windsurf,
-  Theia) installs it like any other extension. `npm run publish:ovsx` uploads the committed
-  `.vsix` rather than repackaging, so the bytes in the registry and the bytes in the repository
-  are the same. `ovsx` picks the token up from **`OVSX_PAT`** on its own; the namespace
-  (`DenysDavydov`) has to be created once with `ovsx create-namespace` before the first publish,
-  and the registry refuses a version it already has, so `version` must move every time.
+- **Both publish scripts upload the committed `.vsix`** rather than repackaging, so the bytes in
+  a registry and the bytes in the repository are the same. `ovsx` resolves its token as
+  `-p` → `OVSX_PAT` → **the OS keychain** (an earlier `ovsx login` put one there, which is why
+  nothing needs exporting on this machine and CI still does); the namespace has to be created
+  once with `ovsx create-namespace`, and each registry refuses a version it already has, so
+  `version` must move every time.
+- **`publish:vsce` has never got through.** Two attempts died on
+  `Request timeout: /_apis/gallery` with everything else in place — flag passed, PAT found,
+  signing binary present, host answering a GET in 250 ms. It is the upload that stalls, so treat
+  it as environmental until it succeeds from a plain terminal; do not "fix" it by editing the
+  script.
 - **VS Code installs the committed file** with "Extensions: Install from VSIX…". This is why the
   `.vsix` is tracked at all — see above.
 
