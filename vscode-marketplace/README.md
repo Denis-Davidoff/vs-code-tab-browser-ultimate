@@ -40,7 +40,7 @@ Without this, browser features fail with `CANNOT use API proposal: browser`.
 webview panel is what works instead (set `aiBrowser.useIntegratedBrowser` to `false` and run
 **AI Browser: Show**). The table below says which is which.
 
-![AI Browser in action](https://raw.githubusercontent.com/Denis-Davidoff/vs-code-tab-browser-ultimate/main/demo.png)
+[![AI Browser in action](https://raw.githubusercontent.com/Denis-Davidoff/vs-code-tab-browser-ultimate/main/ai-browser-instruct.jpg)](https://raw.githubusercontent.com/Denis-Davidoff/vs-code-tab-browser-ultimate/main/ai-browser-instruct.jpg)
 
 ---
 

@@ -26,8 +26,9 @@ features need. So on VS Code there is no one-click install: download
 and run **Extensions: Install from VSIX…**. What is listed on the Marketplace is a stub that
 links back here, not the extension.
 
-Every other supported editor uses Open VSX — directly on VSCodium
-(`open-vsx.org`), through a mirror on Devin (`marketplace.windsurf.com`) — where the real build
+[![AI Browser in action](ai-browser-instruct.jpg)](https://raw.githubusercontent.com/Denis-Davidoff/vs-code-tab-browser-ultimate/main/ai-browser-instruct.jpg)
+
+Every other supported editor uses Open VSX (`open-vsx.org`), where the real build
 **is** published, so there it is a normal one-click install. The `.vsix` works everywhere too,
 if you prefer it.
 
@@ -88,8 +89,6 @@ base, with the `browser` proposal left in** — so a fork's own version number t
 
 Press `Cmd`/`Ctrl` + `Shift` + `P` to open the command palette, run **AI Browser: Show**, enter
 the url you want — then work with the elements on the page exactly as below.
-
-![AI Browser in action](demo.png)
 
 **VS Code's own browser tab, wired to your AI assistant: click an element and it becomes a
 prompt, or hand the whole browser over and let the agent drive it.**
