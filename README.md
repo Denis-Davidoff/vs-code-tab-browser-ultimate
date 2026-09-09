@@ -1,4 +1,4 @@
-# AI Browser — Claude Code and Codex, pointed at the page you are looking at
+# 🚀 First integrated browser for VS Code editor with Claude Code and Codex support 🎆
 
 > **The fastest way in is the VSIX in this repository:**
 > [**tab-browser-ultimate.vsix**](https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/raw/main/tab-browser-ultimate.vsix)
@@ -6,9 +6,8 @@
 >
 > The marketplace listings —
 > [Open VSX](https://open-vsx.org/extension/DenysDavydov/tab-browser-ultimate) and the
-> [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=DenysDavydov.tab-browser-ultimate)
-> — still carry the previous 0.3.x implementation while this rewrite is being released; see
-> [Installing](#installing).
+> [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=DenysDavydov.tab-browser-ultimate) or download directly from github [https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/raw/refs/heads/main/tab-browser-ultimate.vsix]
+> see [Installing](#installing).
 >
 > Either way the browser features need an editor new enough to carry the `browser` proposal
 > (**VS Code 1.112 or later**), and it declares two API proposals (`externalUriOpener`,
