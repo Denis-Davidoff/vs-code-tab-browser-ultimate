@@ -10,7 +10,10 @@ The extension is a fork of `simple-browser` from the microsoft/vscode monorepo, 
 a standalone project and renamed. Every tie to the monorepo (gulp, shared esbuild helpers,
 `../../node_modules`) has been removed.
 
-Published as `DenysDavydov.ai-browser`.
+Published as `DenysDavydov.tab-browser-ultimate` — the package `name` (and so the extension
+id and the marketplace slug) is `tab-browser-ultimate`, while everything user-visible says
+"AI Browser": `displayName`, the command `category`, and the `aiBrowser.*` identifiers. Open
+VSX carries it; the VS Code Marketplace cannot, because of the API proposals.
 
 ## How we build features — the main approach
 
@@ -252,7 +255,8 @@ The manifest declares `enabledApiProposals: ["externalUriOpener", "browser"]` �
   [vscode.proposed.browser.d.ts](vscode.proposed.browser.d.ts) are **checked into the repo** so
   the build works offline, and both are listed in `tsconfig.json`'s `include`. Refresh them
   with `npm run download-api`.
-- Launching requires the `--enable-proposed-api=DenysDavydov.ai-browser` flag, which is set in
+- Launching requires the `--enable-proposed-api=DenysDavydov.tab-browser-ultimate` flag (the
+  extension id is `publisher`.`name`, so it follows the slug, not the display name), which is set in
   [.vscode/launch.json](.vscode/launch.json). Without it, activation fails on
   `registerExternalUriOpener`.
 - An extension using proposed API **cannot be published to the Marketplace** — it can only be

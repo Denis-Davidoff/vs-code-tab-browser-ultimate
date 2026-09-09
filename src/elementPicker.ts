@@ -235,7 +235,7 @@ function requireBrowserTab(): vscode.BrowserTab | undefined {
 	// apart from "no tab is open" — the fixes are unrelated.
 	if (!('browserTabs' in vscode.window)) {
 		vscode.window.showErrorMessage(vscode.l10n.t(
-			"The integrated browser API is not available. It is a proposed API: launch with --enable-proposed-api=DenysDavydov.ai-browser on a recent VS Code."));
+			"The integrated browser API is not available. It is a proposed API: launch with --enable-proposed-api=DenysDavydov.tab-browser-ultimate on a recent VS Code."));
 		return undefined;
 	}
 
