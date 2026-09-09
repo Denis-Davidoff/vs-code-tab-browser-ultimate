@@ -321,6 +321,10 @@ nothing in common. Audited by reading the shipped bundles, not by guessing:
 | open command | `workbench.action.browser.open` | same | same | `…openBrowserEditor` | — | **same** |
 | `dataFolderName` (`argv.json`) | `.vscode` | `.vscode-oss` | `.devin` | `.cursor` | `.antigravity-ide` | `.kiro` |
 
+Two more measured and unsupported, both cleanly: **Trae 1.107.1** (base 1.107, so it predates
+the proposal — 169 proposals, nothing browser-related at all, `dataFolderName` `.trae`) and
+Antigravity IDE, the same shape.
+
 **Kiro is the interesting row**: the only host measured that has the browser UI and the commands
 but not the API. It is why detection reads the extension host bundle rather than probing for a
 command — see
@@ -526,9 +530,12 @@ grant states hide it:
 | `awaitingRestart` | `$(debug-restart) Restart to finish`, warning background |
 | `unsupported` | hidden |
 
-**`unsupported` hides it on purpose.** On Cursor the button could never do anything but
-apologise, and it would say so in every window forever. That path stays reachable from the menu,
-where the user went looking for it.
+**`unsupported` hides the warning item, but the menu must still explain itself.** A permanent
+apology in every window is nagging, so the item stays hidden — but hiding it and saying nothing
+else leaves "nothing works and nothing says why", which is exactly how Trae was reported. So the
+menu carries `$(circle-slash) Why are the browser tools unavailable?` under *Setup* whenever the
+state is not `granted`. The menu is opened deliberately, so an explanation there costs nothing
+and no screen space.
 
 **`awaitingRestart` exists because the fix is two steps.** After the write, the file names us but
 the process does not, and both facts are true at once. Without this state the button would still

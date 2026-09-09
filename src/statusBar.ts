@@ -58,6 +58,8 @@ export function registerStatusBar(context: vscode.ExtensionContext): void {
 /**
  * Shows the item only while it has something actionable to say.
  *
+ * The `unsupported` case is explained in the menu instead — see `showMenu`.
+ *
  * `granted` hides it — a permanent badge for a solved problem is noise. So does
  * `unsupported`: on Cursor the button could never do anything but apologise,
  * and it would say so in every window forever. That case is reachable from the
@@ -146,13 +148,21 @@ async function showMenu(): Promise<void> {
 		run: () => openFile(),
 	});
 
-	if (state === 'grantMissing' || state === 'awaitingRestart') {
+	if (state !== 'granted') {
 		items.push({ label: vscode.l10n.t("Setup"), kind: vscode.QuickPickItemKind.Separator });
 		items.push({
 			label: state === 'grantMissing'
 				? vscode.l10n.t("$(alert) Enable Browser API")
-				: vscode.l10n.t("$(debug-restart) Restart to finish enabling the API"),
-			detail: vscode.l10n.t("Element tools, screenshots and the MCP browser tools need it"),
+				: state === 'awaitingRestart'
+					? vscode.l10n.t("$(debug-restart) Restart to finish enabling the API")
+					// An editor that cannot ever provide the API still owes the
+					// user a reason. The warning item stays hidden here — it
+					// would apologise in every window forever — but this menu
+					// is opened deliberately, so the explanation belongs in it.
+					// Without it the experience is "nothing works and nothing
+					// says why", which is how Trae was reported.
+					: vscode.l10n.t("$(circle-slash) Why are the browser tools unavailable?"),
+			detail: vscode.l10n.t("Element tools, screenshots and the MCP browser tools need the browser API"),
 			run: () => vscode.commands.executeCommand('aiBrowser.enableBrowserApi'),
 		});
 	}

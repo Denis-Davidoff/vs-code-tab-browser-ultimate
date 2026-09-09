@@ -35,35 +35,53 @@ already there:
 
 Without this, browser features fail with `CANNOT use API proposal: browser`.
 
-**On Cursor the browser features cannot work at all** — Cursor does not ship VS Code's `browser`
-API proposal, so enabling proposed APIs grants nothing, and its own browser is not exposed to
-extensions. Its log says `that proposal DOES NOT EXIST`. The webview panel still works there:
-set `aiBrowser.useIntegratedBrowser` to `false` and run **AI Browser: Show**. Devin does work,
-with the same one-click step above.
+**This step is not enough on every editor.** Enabling proposed APIs only grants what the editor
+*has*, and some forks ship no `browser` API at all — on those, nothing here can help, and the
+webview panel is what works instead (set `aiBrowser.useIntegratedBrowser` to `false` and run
+**AI Browser: Show**). The table below says which is which.
 
 ![AI Browser in action](https://raw.githubusercontent.com/Denis-Davidoff/vs-code-tab-browser-ultimate/main/demo.png)
 
 ---
 
-## 📦 One step to install
+## 📦 Install, and which editors it works on
 
-This Marketplace entry is the guide. The working extension ships as a **VSIX**, because it is
-built on VS Code API proposals and the Marketplace does not accept those.
+This Marketplace entry is the guide. The working extension ships as a **VSIX** and on **Open
+VSX**, because it is built on VS Code API proposals and the Marketplace does not accept those.
 
-**[⬇️ Download tab-browser-ultimate.vsix](https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/raw/main/tab-browser-ultimate.vsix)**
-→ in VS Code press `Cmd`/`Ctrl` + `Shift` + `P` → **Extensions: Install from VSIX…** → pick the
-file.
+**Measured by reading the shipped builds on 2026-09-09**, ordered by how much work each one
+takes:
 
-Or install straight from
-**[Open VSX](https://open-vsx.org/extension/DenysDavydov/tab-browser-ultimate)**, which carries
-the full build in one click (Cursor, Windsurf, VSCodium and anything else on that registry).
+| Editor | Tested | Browser features | How to install | Then |
+|---|---|---|---|---|
+| **VSCodium** | 1.135 | ✅ yes | Open VSX, one click | Enable Browser API, quit and reopen |
+| **Devin** | 1.126 | ✅ yes | Open VSX, one click | Enable Browser API, quit and reopen |
+| **VS Code** | 1.137 | ✅ yes | **the `.vsix` by hand** | Enable Browser API, quit and reopen |
+| **Cursor** | 3.19.19 | ❌ no | — | nothing helps — the API is absent |
+| **Antigravity IDE** | 1.107 | ❌ no | — | nothing helps — base predates the API |
+| **Kiro** | 1.0.437 | ❌ no | — | nothing helps — has the browser, not the API |
+| **Trae** | 1.107.1 | ❌ no | — | nothing helps — base predates the API |
+
+**On VS Code:**
+**[⬇️ download tab-browser-ultimate.vsix](https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/raw/main/tab-browser-ultimate.vsix)**
+→ press `Cmd`/`Ctrl` + `Shift` + `P` → **Extensions: Install from VSIX…** → pick the file. There
+is no one-click route here, and it is not an oversight: VS Code's gallery *is* this Marketplace,
+and it rejects any extension declaring API proposals — which is exactly what the browser
+features are built on.
+
+**Everywhere else:** install from
+**[Open VSX](https://open-vsx.org/extension/DenysDavydov/tab-browser-ultimate)** in one click —
+directly on VSCodium, through a mirror on Devin. Note that *installing* and *working* are
+different questions: Open VSX will happily install this on Cursor, where the browser features
+can never run. The `.vsix` works on any of them too, if you prefer it.
 
 Once the full build is in, this entry has done its job — it goes quiet on its own, and you can
 uninstall it whenever you like.
 
 > The browser features need **VS Code 1.112 or later** — that is where the editor's own browser
-> tab and its `browser` API proposal exist. On an older editor the extension still loads and
-> falls back to its webview panel.
+> tab and its `browser` API proposal exist, and a fork's own version number does not tell you
+> (Cursor reports a 1.128 base and still lacks it). On an editor without it the extension still
+> loads and falls back to its webview panel.
 
 <!--
   🎥 VIDEO SLOT — fill this in when the recording is up, then delete these comment markers.

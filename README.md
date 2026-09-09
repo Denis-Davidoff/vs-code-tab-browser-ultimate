@@ -4,17 +4,31 @@
 
 The browser features are built on VS Code's own browser tab, reached through the `browser` API
 proposal. An editor that does not ship that proposal cannot run them — installing the extension
-there is not the problem, the missing API is. **Measured by reading the shipped builds,
-2026-09-09:**
+there is not the problem, the missing API is. **Measured by reading the shipped builds on
+2026-09-09**, ordered by how much work each one takes:
 
-| Editor | Version tested | Browser features | What it takes |
-|---|---|---|---|
-| **VS Code** | 1.137 | ✅ yes | one click, then quit and reopen |
-| **VSCodium** | 1.135 | ✅ yes | one click, then quit and reopen |
-| **Devin** | 1.126 | ✅ yes | one click, then quit and reopen |
-| **Cursor** | 3.19.19 | ❌ no | nothing helps — the API is absent |
-| **Antigravity IDE** | 1.107 | ❌ no | nothing helps — base predates the API |
-| **Kiro** | 1.0.437 | ❌ no | nothing helps — has the browser, not the API |
+| Editor | Version tested | Browser features | How to install | Then |
+|---|---|---|---|---|
+| **VSCodium** | 1.135 | ✅ yes | Open VSX, one click | Enable Browser API, quit and reopen |
+| **Devin** | 1.126 | ✅ yes | Open VSX, one click | Enable Browser API, quit and reopen |
+| **VS Code** | 1.137 | ✅ yes | **the `.vsix` by hand** | Enable Browser API, quit and reopen |
+| **Cursor** | 3.19.19 | ❌ no | — | nothing helps — the API is absent |
+| **Antigravity IDE** | 1.107 | ❌ no | — | nothing helps — base predates the API |
+| **Kiro** | 1.0.437 | ❌ no | — | nothing helps — has the browser, not the API |
+| **Trae** | 1.107.1 | ❌ no | — | nothing helps — base predates the API |
+
+**The original VS Code is the awkward one, and that is why it is third.** It is the only editor
+here whose gallery is the VS Code Marketplace, and the Marketplace **cannot host this extension
+at all** — it rejects anything declaring API proposals, which is exactly what the browser
+features need. So on VS Code there is no one-click install: download
+[**tab-browser-ultimate.vsix**](https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/raw/main/tab-browser-ultimate.vsix)
+and run **Extensions: Install from VSIX…**. What is listed on the Marketplace is a stub that
+links back here, not the extension.
+
+Every other supported editor uses Open VSX — directly on VSCodium
+(`open-vsx.org`), through a mirror on Devin (`marketplace.windsurf.com`) — where the real build
+**is** published, so there it is a normal one-click install. The `.vsix` works everywhere too,
+if you prefer it.
 
 So there are two groups, not three. **No editor grants the API on its own** — not even VSCodium,
 which is otherwise the most vanilla build there is. Every supported editor needs the extension
@@ -35,8 +49,16 @@ its own, but it is a separate implementation that is not exposed to extensions a
 browser tabs API, no CDP. What still works there is the webview panel — set
 `aiBrowser.useIntegratedBrowser` to `false` and run **AI Browser: Show**.
 
-**Using another editor?** Install the extension and run **AI Browser: Enable Integrated Browser
-API** from the command palette. It tells you which of three answers applies: already enabled,
+**Trae and Antigravity IDE are a different kind of "no": they are simply too old.** Both are
+built on VS Code 1.107, and the `browser` proposal first shipped in 1.112 — so there is no
+browser editor, no browser commands and no API in either build (169 and 179 proposals
+respectively, neither including `browser`). Unlike Cursor and Kiro, these two could start
+working on their own: whenever ByteDance or Google rebases onto 1.112 or newer, the API comes
+along with it. Nothing needs to change here for that to happen.
+
+**Using another editor?** Click the **AI Browser** button in the status bar and pick the entry
+under *Setup* — or run **AI Browser: Enable Integrated Browser API** from the command palette.
+It tells you which of three answers applies: already enabled,
 one click away, or this editor cannot do it. The rule it checks is **a VS Code 1.112 or newer
 base, with the `browser` proposal left in** — so a fork's own version number tells you nothing
 (Cursor reports a 1.128 base and still lacks it).
@@ -465,9 +487,9 @@ editor itself rather than assuming `~/.vscode`:
 
 | Editor | File |
 |---|---|
-| VS Code | `~/.vscode/argv.json` |
 | VSCodium | `~/.vscode-oss/argv.json` |
 | Devin | `~/.devin/argv.json` |
+| VS Code | `~/.vscode/argv.json` |
 
 Any other editor: **Preferences: Configure Runtime Arguments** opens the right file wherever it
 is. Which editors have the API at all is in
