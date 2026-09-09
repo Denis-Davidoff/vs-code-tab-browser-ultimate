@@ -136,8 +136,8 @@ export class BrowserController implements vscode.Disposable {
 	private _requireTab(): vscode.BrowserTab {
 		if (!('browserTabs' in vscode.window)) {
 			throw new Error(
-				'The integrated browser is unavailable in this VS Code. It needs the `browser` API proposal, ' +
-				'and the extension must be launched with --enable-proposed-api.');
+				'The integrated browser is unavailable in this editor. It needs the `browser` API proposal; ' +
+				'the user can enable it with the "AI Browser: Enable Integrated Browser API" command.');
 		}
 
 		const tab = vscode.window.activeBrowserTab;
@@ -165,7 +165,11 @@ export class BrowserController implements vscode.Disposable {
 
 	public async state(): Promise<unknown> {
 		if (!('browserTabs' in vscode.window)) {
-			return { available: false, reason: 'The `browser` API proposal is not available in this VS Code.' };
+			return {
+				available: false,
+				reason: 'The `browser` API proposal is not enabled. Ask the user to run '
+					+ '"AI Browser: Enable Integrated Browser API".',
+			};
 		}
 
 		const tabs = vscode.window.browserTabs ?? [];
@@ -200,7 +204,8 @@ export class BrowserController implements vscode.Disposable {
 		}
 
 		if (!('browserTabs' in vscode.window)) {
-			throw new Error('The integrated browser is unavailable in this VS Code.');
+			throw new Error('The integrated browser is unavailable in this editor. Ask the user to run '
+				+ '"AI Browser: Enable Integrated Browser API".');
 		}
 
 		// A new tab means a new page: the cached session and the picked element

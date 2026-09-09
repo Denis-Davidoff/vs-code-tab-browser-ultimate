@@ -5,6 +5,7 @@
 
 import * as vscode from 'vscode';
 import { CDPClient } from './cdp';
+import { confirm, refuse } from './notify';
 import { extractElementData, formatAncestor, renderElementMarkdown } from './elementContext';
 import { assistantName, handOver, type AssistantId } from './assistants';
 import {
@@ -155,17 +156,29 @@ const cssPathFunctionDeclaration = `function () {
  */
 let pendingPick: vscode.CancellationTokenSource | undefined;
 
+/**
+ * Cancels a pick in flight.
+ *
+ * The cancel affordance is a status bar button rather than the cancel button on
+ * a progress notification, because that notification is what froze the page —
+ * see [notify.ts](notify.ts). It reuses the same token a superseding pick
+ * cancels, so there is one cancellation path, already proven.
+ */
+export function cancelPendingPick(): void {
+	pendingPick?.cancel();
+}
+
 async function withPickedElement<T>(
 	tab: vscode.BrowserTab,
-	token: vscode.CancellationToken,
 	use: (client: CDPClient, sessionId: string, backendNodeId: number) => Promise<T>,
 ): Promise<T | undefined> {
 
 	pendingPick?.cancel();
 
+	// The only cancellation source is this token: a superseding pick and the
+	// status bar button both go through `pendingPick`.
 	const cts = new vscode.CancellationTokenSource();
 	pendingPick = cts;
-	const externalCancel = token.onCancellationRequested(() => cts.cancel());
 
 	const client = new CDPClient(await tab.startCDPSession());
 	let sessionId: string | undefined;
@@ -196,7 +209,6 @@ async function withPickedElement<T>(
 				.catch(() => { /* cancelled, navigated away, or already detached */ });
 		}
 		client.dispose();
-		externalCancel.dispose();
 		if (pendingPick === cts) {
 			pendingPick = undefined;
 		}
@@ -234,8 +246,13 @@ function requireBrowserTab(): vscode.BrowserTab | undefined {
 	// the extension was launched without --enable-proposed-api. Worth telling
 	// apart from "no tab is open" — the fixes are unrelated.
 	if (!('browserTabs' in vscode.window)) {
-		vscode.window.showErrorMessage(vscode.l10n.t(
-			"The integrated browser API is not available. It is a proposed API: launch with --enable-proposed-api=DenysDavydov.tab-browser-ultimate on a recent VS Code."));
+		// Deliberately not a notification. A browser tab is very likely the thing
+		// on screen right now, and a toast over it pauses the page — the exact
+		// complaint this whole surface was built to remove. The actionable half
+		// is already there: the status bar carries `Enable Browser API` in
+		// precisely this state.
+		refuse(vscode.l10n.t(
+			"Browser API not enabled — click \"Enable Browser API\" in the status bar."));
 		return undefined;
 	}
 
@@ -258,27 +275,50 @@ async function pickAndDeliver<T>(
 		return;
 	}
 
-	await vscode.window.withProgress({
-		location: vscode.ProgressLocation.Notification,
-		cancellable: true,
-		title,
-	}, async (_progress, token) => {
-		try {
-			const value = await withPickedElement(tab, token, (client, sessionId, backendNodeId) =>
-				produce(client, sessionId, backendNodeId, tab));
-			if (value === undefined) {
-				return;
+	// `ProgressLocation.Window` is the status bar: it renders `$(icon)` syntax
+	// and, unlike `Notification`, does not paint over the browser and pause the
+	// page. It also has no cancel button, hence the one below.
+	const cancel = cancelButton();
+	try {
+		await vscode.window.withProgress({
+			location: vscode.ProgressLocation.Window,
+			title: `$(inspect) ${title}`,
+		}, async () => {
+			try {
+				const value = await withPickedElement(tab,
+					(client, sessionId, backendNodeId) =>
+						produce(client, sessionId, backendNodeId, tab));
+				if (value === undefined) {
+					return;
+				}
+				await deliver(value);
+			} catch (err) {
+				if (err instanceof vscode.CancellationError) {
+					return;
+				}
+				vscode.window.showErrorMessage(vscode.l10n.t(
+					"AI Browser: {0}", err instanceof Error ? err.message : String(err)));
 			}
-			await deliver(value);
-		} catch (err) {
-			if (err instanceof vscode.CancellationError) {
-				return;
-			}
-			vscode.window.showErrorMessage(vscode.l10n.t(
-				"AI Browser: {0}", err instanceof Error ? err.message : String(err)));
-		}
-	});
+		});
+	} finally {
+		cancel.dispose();
+	}
 }
+
+/** The cancel affordance for a pick, for as long as one is running. */
+function cancelButton(): vscode.Disposable {
+	const item = vscode.window.createStatusBarItem(
+		'aiBrowser.cancelPick', vscode.StatusBarAlignment.Left, 1001);
+	item.name = vscode.l10n.t("AI Browser: cancel element pick");
+	item.text = vscode.l10n.t("$(stop-circle) Cancel pick");
+	item.tooltip = vscode.l10n.t("Stop picking an element");
+	item.command = cancelPickCommand;
+	item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+	item.show();
+	return item;
+}
+
+export const cancelPickCommand = 'aiBrowser.cancelElementPick';
 
 /** Truncates a value so a notification stays readable. */
 function short(value: string): string {
@@ -288,7 +328,7 @@ function short(value: string): string {
 
 async function copyToClipboard(value: string, label: string): Promise<void> {
 	await vscode.env.clipboard.writeText(value);
-	vscode.window.showInformationMessage(vscode.l10n.t("{0} copied: {1}", label, short(value)));
+	confirm(vscode.l10n.t("{0} copied: {1}", label, short(value)));
 }
 
 export function copyElementXPath(): Promise<void> {
@@ -318,7 +358,7 @@ export function copyElement(): Promise<void> {
 		},
 		async markdown => {
 			await vscode.env.clipboard.writeText(markdown);
-			vscode.window.showInformationMessage(vscode.l10n.t(
+			confirm(vscode.l10n.t(
 				"Element context copied as Markdown ({0} characters).", String(markdown.length)));
 		},
 	);
@@ -349,8 +389,7 @@ async function deliverToAssistant(
 
 	switch (outcome) {
 		case 'delivered':
-			vscode.window.showInformationMessage(vscode.l10n.t(
-				"Sent to {0} as {1}.", assistantName(assistant), fileName));
+			confirm(vscode.l10n.t("Sent to {0} as {1}.", assistantName(assistant), fileName));
 			return;
 
 		case 'noWorkspace':

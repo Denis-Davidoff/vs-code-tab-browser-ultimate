@@ -5,6 +5,7 @@
 
 import * as vscode from 'vscode';
 import { BrowserController } from './browserController';
+import { confirm } from './notify';
 import { copyImage, screenshotFileName } from './clipboardImage';
 
 /**
@@ -39,7 +40,7 @@ export async function copyScreenshot(
 		const delivery = await copyImage(png, screenshotFileName(browser.activeUrl, fullPage));
 
 		if (delivery.kind === 'clipboard') {
-			vscode.window.showInformationMessage(clipped
+			confirm(clipped
 				? vscode.l10n.t("Screenshot copied, cut off at 16384 px — the page is taller than one image can hold.")
 				: vscode.l10n.t("Screenshot copied to the clipboard."));
 			return;

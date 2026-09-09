@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate",
 	"displayName": "AI Browser🏆 Claude + Codex",
 	"description": "Embedded browser tab with AI capabilities, Claude and Codex integration",
-	"version": "0.5.5",
+	"version": "0.5.6",
 	"enabledApiProposals": [
 		"externalUriOpener",
 		"browser"
@@ -81,6 +81,8 @@
 		"onCommand:aiBrowser.connectClaudeCode",
 		"onCommand:aiBrowser.connectCodex",
 		"onCommand:aiBrowser.checkMcpConnection",
+		"onCommand:aiBrowser.enableBrowserApi",
+		"onCommand:aiBrowser.statusMenu",
 		"onCommand:aiBrowser.addElementToClaudeCode",
 		"onCommand:aiBrowser.addCssPathToClaudeCode",
 		"onCommand:aiBrowser.addXPathToClaudeCode",
@@ -156,6 +158,18 @@
 				"title": "%command.checkMcpConnection.title%",
 				"category": "%displayName%",
 				"icon": "$(pulse)"
+			},
+			{
+				"command": "aiBrowser.enableBrowserApi",
+				"title": "%command.enableBrowserApi.title%",
+				"category": "%displayName%",
+				"icon": "$(shield)"
+			},
+			{
+				"command": "aiBrowser.statusMenu",
+				"title": "%command.statusMenu.title%",
+				"category": "%displayName%",
+				"icon": "$(globe)"
 			},
 			{
 				"command": "aiBrowser.addElementToClaudeCode",

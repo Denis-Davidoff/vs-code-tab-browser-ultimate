@@ -99,6 +99,10 @@ Compiled with `tsc`, **no bundling**. `main: ./out/extension`.
 - [src/dispose.ts](src/dispose.ts) — base `Disposable` with `_register`
 - [src/uuid.ts](src/uuid.ts) — nonce generator, copied from `vs/base/common/uuid`
 - [src/cdp.ts](src/cdp.ts) — CDP client for the built-in browser (not used by the panel)
+- [src/proposedApi.ts](src/proposedApi.ts) — the one-click `browser` grant, and host detection
+- [src/argvJson.ts](src/argvJson.ts) — surgical JSONC edits to `argv.json` (leaf, under test)
+- [src/statusBar.ts](src/statusBar.ts) — the two status bar items and their menu
+- [src/notify.ts](src/notify.ts) — confirmations, kept out of the notification area
 - [src/elementPicker.ts](src/elementPicker.ts) — the three element commands
 - [src/elementContext.ts](src/elementContext.ts) — pulls element data out of the page over CDP
 - [src/elementMarkdown.ts](src/elementMarkdown.ts) — renders that data as Markdown
@@ -302,6 +306,324 @@ The manifest declares `enabledApiProposals: ["externalUriOpener", "browser"]` �
 - An extension using proposed API **cannot be published to the Marketplace** — it can only be
   distributed as a VSIX, or the code has to move to stable API.
 
+### Forks of VS Code — measured, 2026-09-09
+
+`enabledApiProposals` plus `argv.json` is **not** enough on a fork, and the two failure modes
+look identical from the outside (no toolbar icons, nothing on the clipboard) while having
+nothing in common. Audited by reading the shipped bundles, not by guessing:
+
+| | VS Code 1.137 | VSCodium 1.135 | Devin 1.126 | Cursor 3.19.19 | Antigravity 1.107 | Kiro 1.0.437 |
+|---|---|---|---|---|---|---|
+| `browser` in `allApiProposals` | yes | yes | yes | **no** | no | **no** |
+| `browserTabs` in extHost | yes | yes | yes | **no** | no | **no** |
+| upstream `browserView` contrib | yes | yes | yes | **no** | no | **yes** |
+| editor id (our `when` clause) | `workbench.editor.browser` | same | same | `…browserEditor` | — | **same** |
+| open command | `workbench.action.browser.open` | same | same | `…openBrowserEditor` | — | **same** |
+| `dataFolderName` (`argv.json`) | `.vscode` | `.vscode-oss` | `.devin` | `.cursor` | `.antigravity-ide` | `.kiro` |
+
+**Kiro is the interesting row**: the only host measured that has the browser UI and the commands
+but not the API. It is why detection reads the extension host bundle rather than probing for a
+command — see
+[Enabling the grant in one click](#enabling-the-grant-in-one-click).
+
+**Devin works** — confirmed on 1.126.0. It is Windsurf-derived (`windsurf.browserFeatureEnabled`
+context keys are still in the bundle) but carries the upstream browser whole: the proposal, the
+full extHost API, the same editor id, the same open command. Its proposal list differs from VS
+Code's by five names, none of them ours. The version tested there first was **0.3.17**, the
+pre-rewrite proxy build with none of these features — the log gave it away, activating on
+`onWebviewPanel:tabBrowser.view`, an old viewType.
+
+Devin still needs the grant, exactly as VS Code does, and **from its own
+`~/.devin/argv.json`** — it is not in the host's `product.json`
+`extensionEnabledApiProposals`, so `argv.json` is the only route. That per-fork path is the
+reason [src/proposedApi.ts](src/proposedApi.ts) reads `dataFolderName` instead of hard-coding
+`.vscode`.
+
+**VSCodium works, but not by itself** — measured on 1.135.06055: the proposal, the extHost API,
+the upstream editor id and the open command are all present, which is what the OSS rebuild of
+the same source should look like. It still needs the grant like every other host; its log repeats
+`CANNOT USE these API proposals 'externalUriOpener, browser'` until it has one. **No measured
+editor grants the proposal on its own**, so there is no "works out of the box" tier — the only
+grant-free path is extension development mode.
+
+Worth knowing because it misleads: VSCodium ships a working browser of its own, so a page opens
+and its own element selection works while ours refuses. That looks like "the extension works
+here" when nothing of ours is running, and our refusal *toast* then pauses that browser (see
+[A notification pauses the built-in browser](#a-notification-pauses-the-built-in-browser)) —
+which reads as a bug in our picker.
+
+Two caveats on that row. Its `dataFolderName` is **`.vscode-oss`**, so the grant goes
+in `~/.vscode-oss/argv.json` — a hard-coded `.vscode` would have written a file it never reads.
+And its minifier inlines command ids, which is the reason the prefix grep below exists in two
+spellings.
+
+**Cursor cannot work, and no setting changes that.** `--enable-proposed-api` only grants
+proposals the host *has*, and Cursor's `allApiProposals` is a divergent snapshot — 150 entries
+against VS Code's 179, missing 45 of them, plus 17 of its own (`cursor`, `cursorAgentHost`,
+`control`, …) — with no `browser` among them, despite `product.json` claiming
+`vscodeVersion: 1.128.0`. The renderer log says so directly:
+`wants API proposal 'browser' but that proposal DOES NOT EXIST`. Activation still succeeds and
+`externalUriOpener` still works; only that one proposal is dropped.
+
+Cursor ships its **own, unrelated** browser: input `workbench.input.browserEditor`, editor
+`workbench.editor.browserEditor`, commands `workbench.action.openBrowserEditor` /
+`newBrowserTab` / `reloadBrowserTab` / `focusBrowserLocationBar`, and its patched built-in
+`simple-browser` delegates to that instead of the upstream command. None of it reaches
+extensions — there is no `browserTabs`, no `activeBrowserTab`, no CDP of any kind in
+`extensionHostProcess.js`, and `cursor-browser-automation` contributes zero commands while
+using internal-only proposals. So both symptoms follow: `activeEditor ==
+'workbench.editor.browser'` never matches, hence no icons, and every element or screenshot
+command stops at the `'browserTabs' in vscode.window` guard, hence an empty clipboard.
+
+**Do not "fix" Cursor by adding `workbench.editor.browserEditor` to the `when` clauses.** The
+icons would appear and every one of them would fail on the guard — a worse result than no
+button. Cursor is a webview-panel host (`aiBrowser.useIntegratedBrowser: false`), and that is
+the whole story until Cursor adopts the proposal.
+
+**Grep for the open command in *two* spellings, or it lies in both directions.** Command ids are
+built from a template literal — ``Qm="workbench.action.browser", Ec=(re=>(re.Open=`${Qm}.open`, …))``
+— and whether the literal survives depends on the fork's minifier:
+
+| | `"workbench.action.browser.open"` | `"workbench.action.browser"` |
+|---|---|---|
+| VS Code, Devin | absent | **present** (prefix kept) |
+| VSCodium | **present** (inlined) | absent |
+| Cursor, Antigravity | absent | absent |
+
+So a zero count on either alone proves nothing; VSCodium looked like it had no browser at all on
+the prefix check, having in fact inlined every id. Test both. The literal also appears in
+`extensions/simple-browser/dist/extension.js` everywhere, which only *calls* it — upstream
+simple-browser probes for it with `getCommands(true)` exactly as we do.
+
+None of this touches the extension: `browserApiState()` asks `getCommands(true)` at runtime, so
+the minifier's choice is invisible to it. It was only ever a hazard for auditing a fork from the
+outside.
+
+How to audit a fork without launching it:
+
+```sh
+R="/Applications/<Fork>.app/Contents/Resources/app"
+python3 -c "import json;d=json.load(open('$R/product.json'));print(d.get('vscodeVersion'),d.get('version'),d.get('dataFolderName'))"
+F="$R/out/vs/workbench/workbench.desktop.main.js"
+grep -c 'vscode.proposed.browser.d.ts' "$F"      # proposal registered at all
+grep -c '"workbench.editor.browser"' "$F"        # upstream editor id, our `when`
+grep -cE '"workbench\.action\.browser(\.open)?"' "$F"  # open command, either spelling
+grep -coE 'browserTabs|startCDPSession' "$R/out/vs/workbench/api/node/extensionHostProcess.js"
+```
+
+`argv.json` lives under the fork's own `dataFolderName` — `~/.cursor/argv.json`,
+`~/.devin/argv.json` — and the renderer log under
+`~/Library/Application Support/<nameShort>/logs/<stamp>/window*/renderer.log` is where the
+proposal verdict is printed. Read that log first; it separates "proposal does not exist" (the
+fork, unfixable) from "CANNOT use API proposal" (the grant, fixable) in one line.
+
+### Enabling the grant in one click
+
+`aiBrowser.enableBrowserApi` ("AI Browser: Enable Integrated Browser API") writes the grant
+itself, because the manual instructions were the single most common reason the headline
+features looked broken. [src/proposedApi.ts](src/proposedApi.ts) decides and drives it,
+[src/argvJson.ts](src/argvJson.ts) does the editing (leaf module, under test).
+
+**Three states, and only the middle one is fixable** — `browserApiState()`:
+
+| State | How it is detected | What happens |
+|---|---|---|
+| `granted` | `'browserTabs' in vscode.window` | says so, does nothing |
+| `grantMissing` | no `browserTabs`, but `workbench.action.browser.open` is registered | writes `argv.json`, offers to quit |
+| `unsupported` | no `browserTabs`, no such command | explains, offers the webview panel |
+
+**The `grantMissing` / `unsupported` split reads the host's own build, and it has to.** The
+question is whether the host *implements* the API or is merely withholding the grant, and the
+witness is its extension host bundle:
+`${vscode.env.appRoot}/out/vs/workbench/api/node/extensionHostProcess.js` searched for
+`browserTabs`. Two megabytes, read once per session and cached, searched as **bytes** — turning
+it into a JS string to call `includes` costs far more than the answer is worth.
+
+**This replaced a proxy that was wrong, and the counterexample is Kiro.** The proxy was
+`getCommands(true).includes('workbench.action.browser.open')` — reasoning that a host shipping
+the upstream browser registers that command, which is true, and that a host carrying the
+proposal never lacks it, which is also true. The direction that matters is the other one: **Kiro
+1.0.437 ships the browser as an editor feature — the command and the `workbench.editor.browser`
+pane are both present — while shipping none of the extension-facing half.** 171 proposals, no
+`browser` among them, zero `browserTabs` in its extension host.
+
+The failure was not subtle, and it is exactly why the split is worth getting right: the proxy
+said "the grant is missing", so the button offered a fix, wrote `~/.kiro/argv.json`, told the
+user to quit and reopen — and on the next start the API was still absent, so the item read
+`Restart to finish` **forever**. Reported as "the button didn't disappear after restarting". A
+wrong `unsupported` merely hides a working button; a wrong `grantMissing` edits the user's
+launch configuration and asks them to restart for nothing.
+
+Measured separation, exact on all six editors here: `browserTabs` is present once in VS Code,
+VSCodium and Devin, and not at all in Cursor, Antigravity IDE and Kiro. The command proxy is
+kept only as the fallback for when the file cannot be read at all — an unknown layout, or a
+remote or web host where that bundle is not ours.
+
+**`argv.json` lives under the host's own `dataFolderName`** — `.vscode`, `.cursor`, `.devin` —
+and nothing in the extension API exposes it. It is read from the `product.json` sitting next to
+`vscode.env.appRoot`, verified present on all three. Every field falls back, since a fork may
+omit any of it, and the dialog always names the full path so a wrong guess is visible rather
+than silent.
+
+**`argv.json` is JSONC, so `JSON.parse` + `JSON.stringify` is not an option.** The shipped file
+is mostly comments: a header ending in "PLEASE DO NOT CHANGE WITHOUT UNDERSTANDING THE IMPACT",
+then a commented-out example of every supported switch. A round-trip through `JSON` hands the
+user back a file with all of it gone. So `argvJson.ts` splices text and leaves the rest
+byte-for-byte alone, and a test asserts each of those comments survives.
+
+**`maskJsonc` is the core, and the reason is a real failure mode.** The shipped file already
+contains `// "enable-proposed-api": [...]` as an example, so deciding "is the key there?" with
+`indexOf` finds the *comment*, appends a second real key below it, and the file then has two —
+which is exactly the shape that made our Codex table invisible once (see
+[The mini TOML parser](#the-mini-toml-parser); same distinction, same reason). The mask blanks
+comments and string *contents* while preserving every offset, so structural questions are asked
+of the mask and values are read from the original text at the offsets it found. It keeps the
+quotes, so a one-character key reads as `" "` in the mask — assertions comparing against `"k"`
+are testing the wrong thing.
+
+A value that is present but not an array is **refused, never overwritten**: it may be somebody
+else's grant in a shape we do not model, and losing it would break their extension to fix ours.
+
+**Quit, not Reload Window.** `argv.json` is read at process start, so the dialog's button runs
+`workbench.action.quit` (present on VS Code, Cursor and Devin). Reload Window silently changes
+nothing, which reads as "the fix did not work".
+
+Also worth knowing:
+
+- **The old file is copied to `argv.json.bak` before writing.** This file decides how the editor
+  launches and the user did not ask for it to be edited byte by byte.
+- **`workbench.action.configureRuntimeArguments` is preferred over opening the path.** It creates
+  the file from the editor's own template when it does not exist yet, and it exists on all three
+  hosts. Opening the URI is the fallback.
+- **There is no startup notification.** There was one, and it had to go: a toast at activation
+  can pause a browser tab restored with the window — see
+  [A notification pauses the built-in browser](#a-notification-pauses-the-built-in-browser).
+  The pulsing item carries the same message without ever painting over the page.
+- **`browserController.ts`'s messages name the command rather than carrying a button.** They are
+  read by a model over MCP as well as shown to the user, and a model cannot click.
+
+### The status bar: one permanent button, one that hides itself
+
+[src/statusBar.ts](src/statusBar.ts) puts two items on the left, and they have different jobs.
+
+**`$(globe) AI Browser` is permanent and opens a QuickPick.** It is not decoration: the dropdown
+on the browser tab is gated on `activeEditor == 'workbench.editor.browser'`, so before this the
+MCP commands had no home outside the command palette — the limitation recorded under
+[The dropdown on the browser tab](#the-dropdown-on-the-browser-tab). The menu holds Open URL /
+Open File, the three assistant commands, Settings, and the enable entry while it is relevant.
+
+It deliberately **does not mirror the tab's dropdown.** The element and screenshot commands are
+already one click away whenever a tab is focused, and a second copy here would be a longer menu
+saying the same thing.
+
+**`$(alert) Enable Browser API` appears only while it has something to do.** Three of the four
+grant states hide it:
+
+| State | Item |
+|---|---|
+| `granted` | hidden — a permanent badge for a solved problem is noise |
+| `grantMissing` | `$(alert) Enable Browser API`, warning background |
+| `awaitingRestart` | `$(debug-restart) Restart to finish`, warning background |
+| `unsupported` | hidden |
+
+**`unsupported` hides it on purpose.** On Cursor the button could never do anything but
+apologise, and it would say so in every window forever. That path stays reachable from the menu,
+where the user went looking for it.
+
+**`awaitingRestart` exists because the fix is two steps.** After the write, the file names us but
+the process does not, and both facts are true at once. Without this state the button would still
+read "Enable" after a successful click, which reads as the fix having failed. It is derived
+rather than remembered — the state check asks whether `argv.json` already lists us — so it
+survives a window reload, which a session flag would not. `onDidChangeGrantState` fires after
+the write so the item flips immediately rather than at the next activation.
+
+**`backgroundColor` accepts exactly two colours, and silently ignores everything else.** Per the
+`.d.ts`: `statusBarItem.errorBackground` and `statusBarItem.warningBackground`, nothing more.
+There is no theme colour of our own to reach for and no point defining one. Warning is the right
+one here — red reads as "something broke", and nothing has.
+
+**There is no animation API, and `~spin` is the wrong word.** The only animation primitive
+anywhere near a status bar item is the `~spin` codicon modifier, which universally means "work
+in progress" — a spinning alert triangle reads as a hung extension, not an invitation. So the
+animation is the background going on and off, in `pulse`: three blinks at 700ms a phase (about
+0.7Hz), once per window, then steady. Slow on purpose, because a status bar is peripheral vision
+and anything faster is a flashing-content problem rather than a hint; bounded on purpose,
+because a permanently blinking button is the kind of thing people disable an extension over. The
+final tick sets the background on in **one** assignment rather than off-then-on, which the
+renderer is free to show as a flicker.
+
+**No setting to hide these.** VS Code already lets a user right-click the status bar and hide any
+individual item, and it remembers that per item id — which is why both are created with explicit
+ids (`aiBrowser.status`, `aiBrowser.enableApi`) and a `name`, since the name is what that
+context menu lists.
+
+**Verified with a fake `vscode`.** `statusBar.ts` imports `proposedApi.ts`, which imports
+`vscode`, so it can never be an `npm test` file (see the leaf-module rule under
+[Recipe for the next feature](#recipe-for-the-next-feature)). It was checked instead by loading
+the compiled `out/statusBar.js` against a stubbed `vscode` module and printing what each grant
+state renders — all four states, plus the menu contents, plus the pulse settling on. Worth
+redoing that way after changing this file; a typecheck says nothing about which item is visible.
+
+### A notification pauses the built-in browser
+
+The single worst bug this extension has shipped, and the mechanism is worth knowing before
+adding any UI: **the browser editor is a native view laid over the workbench, so anything that
+has to paint on top of it takes the live page away.**
+
+`_refreshOverlayObscured` in the browser editor:
+
+```js
+const overlapping = this._overlayManager.getOverlappingOverlays(this._container);
+const anyOverlay = overlapping.length > 0;
+const isNotification = overlapping.some(o => o.type === OverlayType.Notification);
+this._overlayPauseEl.classList.toggle('show-message', isNotification);
+if (anyOverlay !== this._overlayObscured) { this._overlayObscured = anyOverlay; this._refresh(); }
+```
+
+`_refresh()` then swaps the running page for a screenshot, and when one of the overlapping
+overlays is a notification toast the user additionally gets an overlay reading **"Paused due to
+Notification — Dismiss the notification to continue using the browser."** (`nls` messages 8112
+and 8113; they are indexed, so grepping the workbench bundle for the text finds nothing — search
+`out/nls.messages.json` instead).
+
+**What we were doing wrong:** element picking ran inside
+`withProgress({ location: ProgressLocation.Notification, cancellable: true })`. That toast is up
+for the *entire* pick — which is the one moment the user is looking at the page and clicking in
+it. So every pick froze the page behind a "Paused" overlay that had to be dismissed before the
+click could land. It read as a broken picker; it was our own progress notification.
+
+**The rule now: a notification is for a refusal or a decision, never a confirmation.** Successes
+go through `confirm()` in [src/notify.ts](src/notify.ts), which is
+`window.setStatusBarMessage`. The status bar is part of the workbench layout rather than an
+overlay, so none of the above applies to it.
+
+- **Progress belongs in `ProgressLocation.Window`** — the status bar. It renders `$(icon)`
+  syntax, which `Notification` does not, so the pick label carries `$(inspect)`.
+- **`Window` has no cancel button** (`cancellable` is honoured for `Notification` only, per the
+  `.d.ts`), and cancelling a pick is load-bearing. So the cancel affordance is a status bar
+  button, `$(stop-circle) Cancel pick`, shown only while a pick runs. It drives `pendingPick`,
+  the same token a superseding pick cancels — one cancellation path, already proven, rather than
+  a second one to keep in step.
+- **`aiBrowser.cancelElementPick` is deliberately not in `contributes.commands`.** It exists for
+  that button; contributing it would put a palette entry there that is inert whenever no pick is
+  running.
+- **The startup nudge is gone.** A warning toast at activation could pause a browser tab that was
+  restored with the window, and the pulsing status bar item says the same thing without ever
+  painting over the page. Do not bring the notification back.
+
+**What is still allowed to be a notification, and why.** Three paths keep theirs, knowingly:
+the pick failing with an error, and the two assistant fall-backs ("Claude Code is not available,
+so the report went to the clipboard"). Each reports that the thing the user asked for did **not**
+happen, and each is rare; a paused page is an acceptable price for not losing that. The modal in
+`enableBrowserApi` is the same call — it asks a question, and blocking is the point.
+
+**"Browser API not enabled" is not among them.** It was, and it kept the bug alive after the
+progress notification was fixed: press an element command in an editor without the grant and the
+refusal toast paused the very tab you were looking at. It now goes through `refuse()` to the
+status bar, because in exactly that state the `Enable Browser API` button is already sitting
+there — the toast added nothing but the pause. The lesson generalises: a refusal that the status
+bar already offers a fix for does not need a notification at all.
+
 ### Debugging (F5)
 
 [.vscode/launch.json](.vscode/launch.json) holds an `extensionHost` configuration. Its
@@ -352,9 +674,11 @@ from the position in the `contributes.menus` array.
 There is no activity bar panel any more. It was a `TreeDataProvider` in `src/toolsView.ts`, and
 it went away when the same commands landed in this dropdown; `media/activity-icon.svg` went
 with it. One consequence worth knowing: the dropdown is gated on
-`activeEditor == 'workbench.editor.browser'`, so **Connect Claude Code / Connect Codex / Check
-Connection are only reachable from a browser tab** — or from the command palette, where every
-command still appears.
+`activeEditor == 'workbench.editor.browser'`, so from here **Connect Claude Code / Connect Codex
+/ Check Connection are only reachable from a browser tab**. They are also in the command
+palette, where every command still appears, and in the status bar menu — which is the surface
+that exists because of this gap, see
+[The status bar](#the-status-bar-one-permanent-button-one-that-hides-itself).
 
 It is a `contributes.submenus` entry (`aiBrowser.elementMenu`) placed into `editor/title`;
 `editor/title` allows submenus because `menusExtensionPoint.ts` leaves `supportsSubmenus` at
@@ -531,8 +855,11 @@ element.
    params, sessionId)`. Enable the domains you use (`DOM.enable`, `Overlay.enable`, …) first.
 5. Undo anything that changes page state before any step that can throw, and
    `client.dispose()` in a `finally`.
-6. Long interactions get `withProgress({ cancellable: true })`, with the token passed to
-   `client.once(...)` so cancelling actually unblocks it.
+6. Long interactions get `withProgress({ location: ProgressLocation.Window })` — **never
+   `Notification`**, which pauses the browser
+   ([why](#a-notification-pauses-the-built-in-browser)). `Window` has no cancel button, so
+   anything cancellable needs its own affordance; the element pick uses a status bar button
+   driving `pendingPick`. Pass the token to `client.once(...)` so cancelling actually unblocks.
 
 Pure logic is worth testing outside VS Code — `npm test` needs no VS Code instance — but that
 imposes a real constraint, learned the hard way:
@@ -827,6 +1154,15 @@ No compile error for any of these — they only surface at runtime.
    1.74 or later; every command here also gets an explicit `onCommand:` entry.
 8. **Forgetting `npm run compile` after a clone** → `media/index.js` is not in git, panel is
    blank.
+9. **A `StatusBarItem.backgroundColor` other than `statusBarItem.errorBackground` or
+   `statusBarItem.warningBackground`** → ignored, and the item renders with no background at
+   all. Those two are the whole supported set; a `ThemeColor` of our own typechecks fine and
+   does nothing.
+10. **Any notification, dialog or `ProgressLocation.Notification` shown while a browser tab is
+    visible** → the page is replaced by a screenshot and a "Paused due to Notification" overlay,
+    and clicks do not reach the page until it is dismissed. See
+    [A notification pauses the built-in browser](#a-notification-pauses-the-built-in-browser).
+    Confirmations must go through `confirm()` in [src/notify.ts](src/notify.ts).
 
 ## Special cases and non-obvious decisions
 
@@ -877,6 +1213,15 @@ interaction under [TypeScript configuration](#typescript-configuration).
   `aiBrowser.useIntegratedBrowser`, which now defaults to **`true`** — the built-in browser is
   where features get built (see [the main approach](#how-we-build-features--the-main-approach)),
   and it is what the element picker attaches to. Setting it to `false` brings the panel back.
+  It also requires `'browserTabs' in vscode.window`. The open command can exist on a host that
+  never ships the `browser` proposal (Cursor logs `proposal DOES NOT EXIST` and still activates).
+  Delegating in that case opens a tab the extension cannot attach to.
+
+- **`registerExternalUriOpener` aborts `activate` if the proposal is not granted.** Unlike
+  `browser`, which is dropped with a log line, calling `registerExternalUriOpener` without
+  `--enable-proposed-api` throws `CANNOT use API proposal: externalUriOpener` and the whole
+  extension fails to load. The call is wrapped in try/catch so the panel and commands still
+  register. The opener is then simply absent.
 
 - **`preview-src/browserSearch.ts` is copied from microsoft/vscode** (MIT), from
   `src/vs/workbench/contrib/browserView/common/browserSearch.ts` at `1.134.0-1325-gaa7291eba7d`.
@@ -1006,7 +1351,7 @@ standing in for them.
 **There is one publish script at the root, `publish:ovsx`, and that is deliberate.** The
 Marketplace does not get the real build at all — it gets the stub in [vscode-marketplace/](vscode-marketplace/),
 published from that folder, see
-[The Marketplace build](#the-marketplace-build-is-a-second-stubbed-extension-in-marketplace).
+[The Marketplace build](#the-marketplace-build-is-a-second-stubbed-extension-in-vscode-marketplace).
 The Open VSX listing (`DenysDavydov.tab-browser-ultimate`, 0.3.17) predates this rewrite and is
 updated in place. The Marketplace listing under that same id also predates it, is stuck on the
 0.3.x proxy build, and is being removed by hand — the stub publishes under a **new** id rather

@@ -5,28 +5,41 @@ prompt, or hand the whole browser over and let the agent drive it.**
 
 ## ⚠️ Important: enable the browser API
 
-After installing the full extension (see below), **fully quit VS Code** and run this command
-in your terminal to allow the extension to use the proposed browser API:
+VS Code only hands a proposed API to an extension that was named on the command line, so after
+installing the full extension (see below) the browser features stay unavailable until you turn
+the API on. It takes one click:
 
-```sh
-code --enable-proposed-api DenysDavydov.tab-browser-ultimate
-```
+1. Click the orange **Enable Browser API** button in the status bar — or open the Command
+   Palette (**`Cmd+Shift+P`** / **`Ctrl+Shift+P`**) and run
+   **AI Browser: Enable Integrated Browser API**.
+2. Choose **Quit** when it offers to.
 
-Without this permission, browser features may fail with `CANNOT use API proposal: browser`.
+The extension adds itself to `enable-proposed-api` in your `argv.json`, keeping the file's
+comments and anything already listed there. The button then disappears — while a restart is
+still pending it reads **Restart to finish**. The same fix is also offered by the **Fix this**
+button on the error any element command shows.
 
-Alternatively, enable it permanently through VS Code (this also works if your terminal
-does not recognize `code`):
+A permanent **AI Browser** button stays in the status bar: clicking it opens a menu with Open
+URL, Open File, Connect Claude Code, Connect Codex, Check Connection and Settings.
 
-1. Press **`Cmd+Shift+P` on macOS** or **`Ctrl+Shift+P` on Windows/Linux** to open the Command Palette.
-2. Search for **Preferences: Configure Runtime Arguments** and select it.
-3. In the `argv.json` file that opens, add the following property inside the existing `{ ... }`:
+**A full quit is required — Reload Window is not enough**, because `argv.json` is only read when
+the process starts.
+
+Prefer to do it by hand? Run **Preferences: Configure Runtime Arguments** from the Command
+Palette and add this property inside the existing `{ ... }`, appending to the array if it is
+already there:
 
 ```json
 "enable-proposed-api": ["DenysDavydov.tab-browser-ultimate"]
 ```
 
-If the property already exists, append the extension ID to its array. Then fully quit and
-reopen VS Code; **Reload Window is not enough**.
+Without this, browser features fail with `CANNOT use API proposal: browser`.
+
+**On Cursor the browser features cannot work at all** — Cursor does not ship VS Code's `browser`
+API proposal, so enabling proposed APIs grants nothing, and its own browser is not exposed to
+extensions. Its log says `that proposal DOES NOT EXIST`. The webview panel still works there:
+set `aiBrowser.useIntegratedBrowser` to `false` and run **AI Browser: Show**. Devin does work,
+with the same one-click step above.
 
 ![AI Browser in action](https://raw.githubusercontent.com/Denis-Davidoff/vs-code-tab-browser-ultimate/main/demo.png)
 

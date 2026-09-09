@@ -7,7 +7,7 @@
 			"request": "launch",
 			"args": [
 				"--extensionDevelopmentPath=${workspaceFolder}",
-				// Required: the extension uses the proposed `externalUriOpener` API.
+				// Required: proposed APIs `externalUriOpener` and `browser`.
 				"--enable-proposed-api=DenysDavydov.tab-browser-ultimate"
 			],
 			"outFiles": [

@@ -1,18 +1,62 @@
 # 🚀 First integrated browser for VS Code editor with Claude Code and Codex support 🎆
 
+## Which editors this works on
+
+The browser features are built on VS Code's own browser tab, reached through the `browser` API
+proposal. An editor that does not ship that proposal cannot run them — installing the extension
+there is not the problem, the missing API is. **Measured by reading the shipped builds,
+2026-09-09:**
+
+| Editor | Version tested | Browser features | What it takes |
+|---|---|---|---|
+| **VS Code** | 1.137 | ✅ yes | one click, then quit and reopen |
+| **VSCodium** | 1.135 | ✅ yes | one click, then quit and reopen |
+| **Devin** | 1.126 | ✅ yes | one click, then quit and reopen |
+| **Cursor** | 3.19.19 | ❌ no | nothing helps — the API is absent |
+| **Antigravity IDE** | 1.107 | ❌ no | nothing helps — base predates the API |
+| **Kiro** | 1.0.437 | ❌ no | nothing helps — has the browser, not the API |
+
+So there are two groups, not three. **No editor grants the API on its own** — not even VSCodium,
+which is otherwise the most vanilla build there is. Every supported editor needs the extension
+named in `--enable-proposed-api` exactly once, which is what the status bar button writes; see
+[Enabling the browser API](#enabling-the-browser-api). The only editor that needs *nothing* is
+one running the extension in development mode (`F5`), which is a developer path, not an install.
+
+A fork shipping its own browser is not the same thing as supporting this extension. Cursor,
+Kiro and VSCodium all have a browser; only VSCodium exposes VS Code's browser API to extensions,
+and that is the part that matters here. Kiro is the clearest case — it carries VS Code's browser
+tab and its commands, but none of the API behind them, so no flag and no restart can help.
+
+**Cursor is not supported, and no setting changes that.** Its proposal list simply has no
+`browser` entry — 150 proposals against VS Code's 179, and that one is not among them — so
+`--enable-proposed-api` grants nothing and the log says
+`wants API proposal 'browser' but that proposal DOES NOT EXIST`. Cursor does have a browser of
+its own, but it is a separate implementation that is not exposed to extensions at all: no
+browser tabs API, no CDP. What still works there is the webview panel — set
+`aiBrowser.useIntegratedBrowser` to `false` and run **AI Browser: Show**.
+
+**Using another editor?** Install the extension and run **AI Browser: Enable Integrated Browser
+API** from the command palette. It tells you which of three answers applies: already enabled,
+one click away, or this editor cannot do it. The rule it checks is **a VS Code 1.112 or newer
+base, with the `browser` proposal left in** — so a fork's own version number tells you nothing
+(Cursor reports a 1.128 base and still lacks it).
+
 > **The fastest way in is the VSIX in this repository:**
 > [**tab-browser-ultimate.vsix**](https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/raw/main/tab-browser-ultimate.vsix)
-> → **Extensions: Install from VSIX…**. It is the current build, on every editor.
+> → **Extensions: Install from VSIX…**. It is the current build.
 >
 > [**Open VSX**](https://open-vsx.org/extension/DenysDavydov/tab-browser-ultimate) carries the
-> same build for Cursor, Windsurf, VSCodium and Theia. The
+> same build, and is the one-click route on VSCodium, Devin, Cursor, Windsurf and Theia —
+> installing is not the same as the browser features working, see the table above. The
 > [**VS Code Marketplace**](https://marketplace.visualstudio.com/items?itemName=DenysDavydov.tab-browser-ultimate-promo)
 > entry is the guide and the download link, not the extension itself — the Marketplace does not
-> accept an extension that declares API proposals. See [Installing](#installing). 
+> accept an extension that declares API proposals. See [Installing](#installing).
 >
-> Either way the browser features need an editor new enough to carry the `browser` proposal
-> (**VS Code 1.112 or later**), and it declares two API proposals (`externalUriOpener`,
-> `browser`), which some editors only grant to an extension named with `--enable-proposed-api`.
+> On a supported editor there is **one step after installing**: the extension declares two API
+> proposals (`externalUriOpener`, `browser`) and an editor only grants those to an extension
+> named with `--enable-proposed-api`. Click the orange **Enable Browser API** button in the
+> status bar and it writes that for you — see
+> [Enabling the browser API](#enabling-the-browser-api).
 
 Press `Cmd`/`Ctrl` + `Shift` + `P` to open the command palette, run **AI Browser: Show**, enter
 the url you want — then work with the elements on the page exactly as below.
@@ -321,6 +365,8 @@ All of them are in the command palette under **AI Browser**.
 | Connect Codex | `aiBrowser.connectCodex` |
 | Check Connection | `aiBrowser.checkMcpConnection` |
 | Show | `aiBrowser.show` |
+| Enable Integrated Browser API | `aiBrowser.enableBrowserApi` |
+| Menu | `aiBrowser.statusMenu` |
 
 ## Settings
 
@@ -356,7 +402,9 @@ npm run package          # -> tab-browser-ultimate.vsix
 
 **From a marketplace:**
 [Open VSX](https://open-vsx.org/extension/DenysDavydov/tab-browser-ultimate) carries the full
-build, and is the one-click route on VSCodium, Cursor, Windsurf and Theia.
+build, and is the one-click route on VSCodium, Cursor, Windsurf and Theia — though installing is
+not the same as the browser features working there, see
+[Which editors this works on](#which-editors-this-works-on).
 
 The [VS Code Marketplace entry](https://marketplace.visualstudio.com/items?itemName=DenysDavydov.tab-browser-ultimate-promo)
 is deliberately **not** the extension: an extension declaring API proposals cannot be published
@@ -368,26 +416,62 @@ source is in [vscode-marketplace/](vscode-marketplace/); see [PUBLISHING.md](PUB
 `engines.vscode` is `^1.85.0`, so the extension installs on almost anything — but the
 `browser` proposal, and with it every element tool, screenshot and MCP browser tool, only exists
 from **VS Code 1.112**. On an older editor the extension still loads and falls back to the
-webview panel. Some editors also only grant proposed apis to an extension named on the command
-line (`--enable-proposed-api DenysDavydov.tab-browser-ultimate`); without that the extension
-loads but the browser features stay unavailable, and the log says
-`CANNOT use API proposal: browser`. If you see this error, fully quit VS Code, then run
-the following command in your terminal to enable the required proposed APIs for this extension:
+webview panel.
 
-```sh
-code --enable-proposed-api DenysDavydov.tab-browser-ultimate
-```
+### Enabling the browser API
 
-Alternatively, enable the proposed APIs permanently: run
-**Preferences: Configure Runtime Arguments** from the Command Palette and add the following
-property inside the existing JSON object in `argv.json` (not `settings.json`):
+VS Code only hands a proposed API to an extension that was named on the command line, so on a
+fresh install the extension loads but the browser features stay unavailable. The log says so, in
+one of two wordings depending on the version — `CANNOT use API proposal: browser`, or
+`CANNOT USE these API proposals 'externalUriOpener, browser'. You MUST start in extension
+development mode or use the --enable-proposed-api command line flag`.
+
+That message means the grant is missing and is fixable. It is **not** the same as
+`wants API proposal 'browser' but that proposal DOES NOT EXIST`, which means the editor has no
+such API and nothing can be done — that is Cursor.
+
+**Click the orange `Enable Browser API` button in the status bar** — or run
+**AI Browser: Enable Integrated Browser API** from the Command Palette. It adds this extension to
+`enable-proposed-api` in your editor's `argv.json`, keeping the file's comments and any other
+extension already listed, and then offers to quit the editor. Once the API is on, the button
+disappears; while a restart is still pending it reads **Restart to finish**. The same fix is also
+offered by the "Fix this" button on the error you get from any element command.
+
+**A full quit is required, not Reload Window** — `argv.json` is read when the process starts.
+
+To do it by hand instead: run **Preferences: Configure Runtime Arguments** from the Command
+Palette and add this property inside the existing JSON object in `argv.json` (not
+`settings.json`), appending to the array if the property is already there:
 
 ```json
 "enable-proposed-api": ["DenysDavydov.tab-browser-ultimate"]
 ```
 
-If `enable-proposed-api` already exists, append the extension ID to its array.
-Then fully quit and reopen VS Code — Reload Window does not pick it up.
+The file lives under your editor's own folder — `~/.vscode/argv.json` for VS Code,
+`~/.devin/argv.json` for Devin — which is why the Command Palette route is more reliable than
+typing a path.
+
+### The status bar
+
+A permanent **AI Browser** button sits in the status bar. Clicking it opens a menu with
+Open URL, Open File, the three assistant commands (Connect Claude Code, Connect Codex, Check
+Connection) and Settings — the assistant commands are otherwise only reachable from a browser
+tab or the Command Palette. To hide either button, right-click the status bar.
+
+### Where `argv.json` lives
+
+The grant is per editor, and so is the file — which is why the button reads the path from the
+editor itself rather than assuming `~/.vscode`:
+
+| Editor | File |
+|---|---|
+| VS Code | `~/.vscode/argv.json` |
+| VSCodium | `~/.vscode-oss/argv.json` |
+| Devin | `~/.devin/argv.json` |
+
+Any other editor: **Preferences: Configure Runtime Arguments** opens the right file wherever it
+is. Which editors have the API at all is in
+[Which editors this works on](#which-editors-this-works-on).
 
 ## Development
 

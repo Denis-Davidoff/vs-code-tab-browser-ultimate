@@ -7,8 +7,8 @@ import * as vscode from 'vscode';
 import { AIBrowserManager } from './aiBrowserManager';
 import { AIBrowserView } from './aiBrowserView';
 import {
-	addElementToAssistant, addPathToAssistant, copyElement, copyElementCssPath, copyElementXPath
-,
+	addElementToAssistant, addPathToAssistant, cancelPendingPick, cancelPickCommand,
+	copyElement, copyElementCssPath, copyElementXPath,
 } from './elementPicker';
 import { cleanUpReports, publishAssistantContext, type AssistantId } from './assistants';
 import { LastElementAction, type ElementActionId } from './lastAction';
@@ -17,6 +17,8 @@ import { McpLifecycle } from './mcpLifecycle';
 import { connectClaudeCode, connectCodex } from './mcpSetup';
 import { checkConnection } from './mcpCheck';
 import { copyScreenshot } from './screenshot';
+import { enableBrowserApi, integratedBrowserCommand } from './proposedApi';
+import { registerStatusBar } from './statusBar';
 
 declare class URL {
 	constructor(input: string, base?: string | URL);
@@ -25,7 +27,6 @@ declare class URL {
 
 const openApiCommand = 'aiBrowser.api.open';
 const showCommand = 'aiBrowser.show';
-const integratedBrowserCommand = 'workbench.action.browser.open';
 
 const enabledHosts = new Set<string>([
 	'localhost',
@@ -47,6 +48,7 @@ const copyCssPathCommand = 'aiBrowser.copyElementCssPath';
 const connectClaudeCommand = 'aiBrowser.connectClaudeCode';
 const connectCodexCommand = 'aiBrowser.connectCodex';
 const checkMcpCommand = 'aiBrowser.checkMcpConnection';
+const enableBrowserApiCommand = 'aiBrowser.enableBrowserApi';
 
 const openerId = 'aiBrowser.open';
 
@@ -64,6 +66,13 @@ async function shouldUseIntegratedBrowser(): Promise<boolean> {
 		.getConfiguration('aiBrowser')
 		.get<boolean>('useIntegratedBrowser', true);
 	if (!preferIntegrated) {
+		return false;
+	}
+
+	// The open command can exist on a host that never grants the `browser`
+	// proposal (Cursor is one). Delegating then opens a tab we cannot attach
+	// to, and the element commands fail with a proposed-API error.
+	if (!('browserTabs' in vscode.window)) {
 		return false;
 	}
 
@@ -143,6 +152,15 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(vscode.commands.registerCommand(checkMcpCommand,
 		() => mcp.withServer(checkConnection)));
 
+	context.subscriptions.push(vscode.commands.registerCommand(enableBrowserApiCommand,
+		() => enableBrowserApi()));
+
+	// Not contributed to the manifest on purpose: it only exists for the status
+	// bar button shown while a pick is running, and a palette entry that is
+	// inert the rest of the time would be worse than none.
+	context.subscriptions.push(vscode.commands.registerCommand(cancelPickCommand,
+		() => cancelPendingPick()));
+
 	// Menu items for the assistants are gated on `when` clauses, so their
 	// installation state has to be published — and re-published, since an
 	// extension can be installed while this window is open.
@@ -198,31 +216,42 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	}));
 
-	context.subscriptions.push(vscode.window.registerExternalUriOpener(openerId, {
-		canOpenExternalUri(uri: vscode.Uri) {
-			// We have to replace the IPv6 hosts with IPv4 because URL can't handle IPv6.
-			const originalUri = new URL(uri.toString(true));
-			if (enabledHosts.has(originalUri.hostname)) {
-				return isWeb()
-					? vscode.ExternalUriOpenerPriority.Default
-					: vscode.ExternalUriOpenerPriority.Option;
-			}
+	// Calling this without `--enable-proposed-api` throws and aborts activate.
+	// The `browser` proposal is dropped with a log line; this one is not.
+	try {
+		context.subscriptions.push(vscode.window.registerExternalUriOpener(openerId, {
+			canOpenExternalUri(uri: vscode.Uri) {
+				// We have to replace the IPv6 hosts with IPv4 because URL can't handle IPv6.
+				const originalUri = new URL(uri.toString(true));
+				if (enabledHosts.has(originalUri.hostname)) {
+					return isWeb()
+						? vscode.ExternalUriOpenerPriority.Default
+						: vscode.ExternalUriOpenerPriority.Option;
+				}
 
-			return vscode.ExternalUriOpenerPriority.None;
-		},
-		async openExternalUri(resolveUri: vscode.Uri) {
-			if (await shouldUseIntegratedBrowser()) {
-				await openInIntegratedBrowser(resolveUri.toString(true));
-			} else {
-				return manager.show(resolveUri, {
-					viewColumn: vscode.window.activeTextEditor ? vscode.ViewColumn.Beside : vscode.ViewColumn.Active
-				});
+				return vscode.ExternalUriOpenerPriority.None;
+			},
+			async openExternalUri(resolveUri: vscode.Uri) {
+				if (await shouldUseIntegratedBrowser()) {
+					await openInIntegratedBrowser(resolveUri.toString(true));
+				} else {
+					return manager.show(resolveUri, {
+						viewColumn: vscode.window.activeTextEditor ? vscode.ViewColumn.Beside : vscode.ViewColumn.Active
+					});
+				}
 			}
-		}
-	}, {
-		schemes: ['http', 'https'],
-		label: vscode.l10n.t("Open in AI browser"),
-	}));
+		}, {
+			schemes: ['http', 'https'],
+			label: vscode.l10n.t("Open in AI browser"),
+		}));
+	} catch {
+		// Host refused the proposal. The rest of the extension still works.
+	}
+
+	// The permanent status bar entry, plus the warning one that hides itself
+	// once the grant is in place.
+	registerStatusBar(context);
+
 }
 
 function isWeb(): boolean {
