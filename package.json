@@ -43,7 +43,9 @@
 		"onCommand:aiBrowser.addXPathToClaudeCode",
 		"onCommand:aiBrowser.addElementToCodex",
 		"onCommand:aiBrowser.addCssPathToCodex",
-		"onCommand:aiBrowser.addXPathToCodex"
+		"onCommand:aiBrowser.addXPathToCodex",
+		"onCommand:aiBrowser.copyScreenshot",
+		"onCommand:aiBrowser.copyFullScreenshot"
 	],
 	"capabilities": {
 		"virtualWorkspaces": true,
@@ -156,6 +158,18 @@
 					"light": "media/icons/crosshair-green-codex-light.svg",
 					"dark": "media/icons/crosshair-green-codex-dark.svg"
 				}
+			},
+			{
+				"command": "aiBrowser.copyScreenshot",
+				"title": "%command.copyScreenshot.title%",
+				"category": "%displayName%",
+				"icon": "$(device-camera)"
+			},
+			{
+				"command": "aiBrowser.copyFullScreenshot",
+				"title": "%command.copyFullScreenshot.title%",
+				"category": "%displayName%",
+				"icon": "$(device-camera)"
 			}
 		],
 		"configuration": [
@@ -271,46 +285,54 @@
 					"group": "1_copy@3"
 				},
 				{
+					"command": "aiBrowser.copyScreenshot",
+					"group": "2_shot@1"
+				},
+				{
+					"command": "aiBrowser.copyFullScreenshot",
+					"group": "2_shot@2"
+				},
+				{
 					"command": "aiBrowser.addElementToClaudeCode",
-					"group": "2_claude@1",
+					"group": "3_claude@1",
 					"when": "aiBrowser.claudeInstalled"
 				},
 				{
 					"command": "aiBrowser.addCssPathToClaudeCode",
-					"group": "2_claude@2",
+					"group": "3_claude@2",
 					"when": "aiBrowser.claudeInstalled"
 				},
 				{
 					"command": "aiBrowser.addXPathToClaudeCode",
-					"group": "2_claude@3",
+					"group": "3_claude@3",
 					"when": "aiBrowser.claudeInstalled"
 				},
 				{
 					"command": "aiBrowser.addElementToCodex",
-					"group": "3_codex@1",
+					"group": "4_codex@1",
 					"when": "aiBrowser.codexInstalled"
 				},
 				{
 					"command": "aiBrowser.addCssPathToCodex",
-					"group": "3_codex@2",
+					"group": "4_codex@2",
 					"when": "aiBrowser.codexInstalled"
 				},
 				{
 					"command": "aiBrowser.addXPathToCodex",
-					"group": "3_codex@3",
+					"group": "4_codex@3",
 					"when": "aiBrowser.codexInstalled"
 				},
 				{
 					"command": "aiBrowser.connectClaudeCode",
-					"group": "4_mcp@1"
+					"group": "5_mcp@1"
 				},
 				{
 					"command": "aiBrowser.connectCodex",
-					"group": "4_mcp@2"
+					"group": "5_mcp@2"
 				},
 				{
 					"command": "aiBrowser.checkMcpConnection",
-					"group": "4_mcp@3"
+					"group": "5_mcp@3"
 				}
 			]
 		},

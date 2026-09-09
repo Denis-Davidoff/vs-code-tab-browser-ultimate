@@ -322,6 +322,60 @@ export class BrowserController implements vscode.Disposable {
 			: 'The console is empty. Note that only messages logged since this tab was first inspected are captured.';
 	}
 
+	/**
+	 * PNG of the page.
+	 *
+	 * `captureBeyondViewport` is stated rather than left to the default, which
+	 * has moved between Chromium versions — `false` is the visible area, `true`
+	 * goes past it.
+	 *
+	 * For a full page the size is taken from `Page.getLayoutMetrics` and passed
+	 * as an explicit `clip`. Relying on `captureBeyondViewport` alone is what
+	 * produces the familiar half-captured screenshot, because the capture is
+	 * still bounded by the viewport unless the region is spelled out.
+	 */
+	public async capture(fullPage: boolean): Promise<{ png: Buffer; clipped: boolean }> {
+		const session = await this._withSession();
+		await session.client.send('Page.enable', {}, session.sessionId);
+
+		let clip: object | undefined;
+		let clipped = false;
+
+		if (fullPage) {
+			const metrics = await session.client.send('Page.getLayoutMetrics', {}, session.sessionId);
+			const size = metrics.cssContentSize ?? metrics.contentSize;
+			const width = Math.ceil(size?.width ?? 0);
+			const height = Math.ceil(size?.height ?? 0);
+
+			if (width > 0 && height > 0) {
+				// Chromium cannot allocate a texture beyond roughly this, and past
+				// it the capture comes back blank rather than failing. Better a
+				// truthfully clipped image than an empty one.
+				const limit = 16384;
+				clipped = height > limit;
+				clip = { x: 0, y: 0, width, height: Math.min(height, limit), scale: 1 };
+			}
+		}
+
+		const { data } = await session.client.send('Page.captureScreenshot', {
+			format: 'png',
+			captureBeyondViewport: fullPage,
+			...(clip ? { clip } : {}),
+		}, session.sessionId);
+
+		if (typeof data !== 'string' || data.length === 0) {
+			throw new Error(fullPage
+				? 'The browser returned an empty screenshot. The page may be too large to capture in one image.'
+				: 'The browser returned an empty screenshot');
+		}
+		return { png: Buffer.from(data, 'base64'), clipped };
+	}
+
+	/** URL of the tab a screenshot came from, for naming the file. */
+	public get activeUrl(): string | undefined {
+		return ('browserTabs' in vscode.window) ? vscode.window.activeBrowserTab?.url : undefined;
+	}
+
 	public async click(selector: string): Promise<unknown> {
 		const session = await this._withSession();
 		return evaluate(session, `(() => {

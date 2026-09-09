@@ -15,6 +15,7 @@ import { BrowserController } from './browserController';
 import { McpLifecycle } from './mcpLifecycle';
 import { connectClaudeCode, connectCodex } from './mcpSetup';
 import { checkConnection } from './mcpCheck';
+import { copyScreenshot } from './screenshot';
 
 declare class URL {
 	constructor(input: string, base?: string | URL);
@@ -128,6 +129,11 @@ export function activate(context: vscode.ExtensionContext) {
 			mcp.apply();
 		}
 	}));
+
+	context.subscriptions.push(vscode.commands.registerCommand('aiBrowser.copyScreenshot',
+		() => copyScreenshot(browser, false)));
+	context.subscriptions.push(vscode.commands.registerCommand('aiBrowser.copyFullScreenshot',
+		() => copyScreenshot(browser, true)));
 
 	context.subscriptions.push(vscode.commands.registerCommand(connectClaudeCommand,
 		() => mcp.withServer(connectClaudeCode)));

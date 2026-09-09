@@ -350,6 +350,21 @@ export class McpServer implements vscode.Disposable {
 				run: args => browser.consoleOutput(args.clear === true),
 			},
 			{
+				name: 'browser_screenshot', title: 'Screenshot',
+				description: 'PNG of the page, base64-encoded. Captures the visible area unless fullPage is true.',
+				inputSchema: schema({
+					fullPage: { type: 'boolean', description: 'Capture the whole scrollable page' },
+				}),
+				run: async args => {
+					const { png, clipped } = await browser.capture(args.fullPage === true);
+					return {
+						mimeType: 'image/png',
+						clipped: clipped || undefined,
+						base64: png.toString('base64'),
+					};
+				},
+			},
+			{
 				name: 'browser_click', title: 'Click',
 				description: 'Clicks the first element matching a CSS selector.',
 				inputSchema: schema({ selector: string('CSS selector of the element to click') }, ['selector']),

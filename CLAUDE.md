@@ -684,6 +684,51 @@ activation.
 inline script, Markdown in a CMS preview — and a plain three-backtick fence closes early, after
 which the rest of the report is read as Markdown.
 
+### Copy Screenshot
+
+Two dropdown entries — visible area and full page — in a group of their own (`2_shot`), which
+is what puts a separator around them. Group names sort alphabetically, so the numeric prefixes
+(`1_copy`, `2_shot`, `3_claude`, `4_codex`, `5_mcp`) are the running order of the whole menu.
+
+Capturing is one CDP call, but two arguments matter:
+
+- **`captureBeyondViewport`** is stated, never left to the default, which has moved between
+  Chromium versions. `false` is the visible area.
+- For a full page an explicit **`clip`** is passed, sized from `Page.getLayoutMetrics`
+  (`cssContentSize`). `captureBeyondViewport: true` on its own is what produces the familiar
+  half-captured screenshot — the capture stays bounded by the viewport unless the region is
+  spelled out.
+
+The clip height is capped at **16384 px**: past roughly that Chromium cannot allocate the
+texture and returns a *blank* image rather than an error, so the capture is truthfully clipped
+and the notification says so.
+
+**The clipboard is the hard half.** `vscode.env.clipboard` is text only; there is no image
+clipboard in the extension API. [src/clipboardImage.ts](src/clipboardImage.ts) shells out, and
+the PNG is written to a temp file first — every platform tool wants a path, and the file is what
+remains when the clipboard cannot be reached:
+
+| Platform | Tool |
+|---|---|
+| macOS | `osascript -e 'set the clipboard to (read (POSIX file "…") as «class PNGf»)'` |
+| Windows | PowerShell `-STA`, `[System.Windows.Forms.Clipboard]::SetImage` |
+| Linux | `xclip -t image/png -i <file>`, then `wl-copy` from **stdin** on Wayland |
+
+The macOS `«class PNGf»` coercion is not optional: without it the bytes land as generic data and
+nothing pastes them as a picture. Verified on this machine — afterwards `clipboard info` lists
+`«class PNGf»`, with TIFF/JPEG/GIF conversions offered for free.
+
+`execFile` with an argument array, never `exec`, so the path never reaches a shell. In a remote
+or web window the attempt is skipped: the extension host's clipboard belongs to another machine.
+Screenshots are swept after 24 hours.
+
+The same capture is the `browser_screenshot` MCP tool, with a `fullPage` flag — one tool rather
+than two, since the only difference is that argument.
+
+**Not part of the repeat button.** The nine `navigation@2` candidates are element actions; a
+screenshot picks nothing, so folding it in would mean a button with no crosshair and a hole in
+the icon grid `check-manifest` enforces.
+
 ### Not built yet
 
 **Port repair** for configs written by an earlier session (`mcpRefresh`, with a filesystem lock,

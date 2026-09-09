@@ -23,6 +23,8 @@ DevTools does — click one and the result is yours.
 | Copy Element | the full context as Markdown — element, URL, HTML path, outer HTML, dimensions, matched CSS |
 | Copy CSS Path | `#main > div > li:nth-of-type(2)` |
 | Copy XPath | `//*[@id="main"]/span`, or `/html/body/ul/li[2]` when nothing stable can anchor it |
+| Copy Screenshot (Visible Area) | a PNG of what is on screen, on the clipboard |
+| Copy Screenshot (Full Page) | the whole scrollable page, cut off past 16384 px |
 
 **Copy Element** runs to several kilobytes, mostly matched CSS — it all goes to the clipboard
 as Markdown.
@@ -79,6 +81,8 @@ clear 401 instead of letting an assistant edit the wrong repository. Settings:
 | AI Browser: Add Element to Codex | `aiBrowser.addElementToCodex` |
 | AI Browser: Add CSS Path to Codex | `aiBrowser.addCssPathToCodex` |
 | AI Browser: Add XPath to Codex | `aiBrowser.addXPathToCodex` |
+| AI Browser: Copy Screenshot (Visible Area) | `aiBrowser.copyScreenshot` |
+| AI Browser: Copy Screenshot (Full Page) | `aiBrowser.copyFullScreenshot` |
 | AI Browser: Copy CSS Path | `aiBrowser.copyElementCssPath` |
 | AI Browser: Copy Element XPath | `aiBrowser.copyElementXPath` |
 | AI Browser: Connect Claude Code | `aiBrowser.connectClaudeCode` |

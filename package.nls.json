@@ -18,5 +18,7 @@
 	"command.addXPathToClaudeCode.title": "Add XPath to Claude Code",
 	"command.addElementToCodex.title": "Add Element to Codex",
 	"command.addCssPathToCodex.title": "Add CSS Path to Codex",
-	"command.addXPathToCodex.title": "Add XPath to Codex"
+	"command.addXPathToCodex.title": "Add XPath to Codex",
+	"command.copyScreenshot.title": "Copy Screenshot (Visible Area)",
+	"command.copyFullScreenshot.title": "Copy Screenshot (Full Page)"
 }
