@@ -316,27 +316,23 @@ It is a `contributes.submenus` entry (`aiBrowser.elementMenu`) placed into `edit
 its default of `true`. **The `icon` on the submenu declaration is what makes it a toolbar
 button** — without one it collapses into the tab's overflow menu.
 
-That icon is a globe with a coloured dot per connected assistant: **orange in the top-right for
-Claude Code, teal in the bottom-left for Codex**. Four states — neither, one, the other, both —
-each as `media/icons/globe{,-claude,-codex,-both}-{light,dark}.svg`.
+That icon is a plain globe, `media/icons/globe-{light,dark}.svg`, filling the box (`r=6.9` in a
+16×16 viewport). It is "white" in the sense that matters: literally `#FFFFFF` on dark themes and
+near-black on light ones, since a literal white in both would be invisible on a light theme.
 
-**A submenu's icon is static in `contributes`, so nothing can be recoloured at runtime.** Each
-state is therefore its own submenu declaration, and the four are placed in `editor/title` under
-mutually exclusive `when` clauses over `aiBrowser.claudeConnected` /
-`aiBrowser.codexConnected`. That is why `contributes.menus` carries the twelve-item list four
-times — **the copies must stay identical**, and
-`scratchpad/fourmenus.py`-style generation from one list is how they were kept so.
+**Removed on request:** per-assistant dots in the corners (orange for Claude Code, teal for
+Codex). Do not reintroduce them without being asked. They needed one submenu declaration per
+combination — a submenu's icon is static in `contributes`, so nothing can be recoloured at
+runtime — which meant the twelve-item list appeared four times in `contributes.menus`, all
+copies obliged to stay identical.
 
-The globe is "white" in the sense that matters: literally `#FFFFFF` on dark themes, near-black
-on light ones. A literal white in both would be invisible on a light theme.
-
-**A dot means that assistant has actually called the server**, not that a config points at it.
-Attribution is the interesting part, because only `initialize` carries `clientInfo.name`
-(`classifyClient` matches it), and every later `tools/call` is anonymous. So the server mints an
-`Mcp-Session-Id` at initialize, returns it in the response header, and maps it to the client
-kind; clients echo the header, and later calls refresh that assistant's timestamp. Without that,
-a dot would decay while its assistant was still working. Freshness is 10 minutes, with a
-60-second tick so the state falls back once an assistant quits.
+What survived from that work, because it is useful on its own: the server attributes calls to an
+assistant. Only `initialize` carries `clientInfo.name` (`classifyClient` matches it) and every
+later `tools/call` is anonymous, so the server mints an `Mcp-Session-Id` at initialize, returns
+it in the response header, and maps it to the client kind; clients echo the header. `Check
+Connection` reports who has called in the last 10 minutes, which answers "is anything actually
+using this?" — a question the config states cannot. Freshness is computed on read, so there is
+no timer.
 
 **The primary button is a faked split button.** VS Code has the real thing —
 `isSplitButton: { togglePrimaryAction: true }` on a submenu item, rendered by

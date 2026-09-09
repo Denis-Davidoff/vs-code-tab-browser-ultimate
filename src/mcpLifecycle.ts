@@ -5,7 +5,7 @@
 
 import * as vscode from 'vscode';
 import { BrowserController } from './browserController';
-import { McpServer, type ClientSet } from './mcpServer';
+import { McpServer } from './mcpServer';
 import { registerWithVsCode, workspaceFolder } from './mcpSetup';
 import { generateUuid } from './uuid';
 
@@ -30,9 +30,6 @@ export class McpLifecycle implements vscode.Disposable {
 	/** Serialises restarts; two setting changes in a row must not race for a port. */
 	private _chain: Promise<void> = Promise.resolve();
 
-	/** Subscription to the running server's client-activity signal. */
-	private _clientWatch: vscode.Disposable | undefined;
-
 	private readonly _onDidChangeState = new vscode.EventEmitter<McpState>();
 	public readonly onDidChangeState = this._onDidChangeState.event;
 
@@ -49,17 +46,6 @@ export class McpLifecycle implements vscode.Disposable {
 	private _setState(state: McpState): void {
 		this._state = state;
 		this._onDidChangeState.fire(state);
-	}
-
-	/**
-	 * Drives the corner dots on the globe in the browser tab's toolbar.
-	 *
-	 * A submenu's icon is static in `contributes`, so each combination is its own
-	 * submenu declaration, picked apart by these context keys.
-	 */
-	private _publishClients(clients: ClientSet): void {
-		vscode.commands.executeCommand('setContext', 'aiBrowser.claudeConnected', clients.claude);
-		vscode.commands.executeCommand('setContext', 'aiBrowser.codexConnected', clients.codex);
 	}
 
 	/**
@@ -89,14 +75,10 @@ export class McpLifecycle implements vscode.Disposable {
 	}
 
 	private async _apply(): Promise<void> {
-		this._clientWatch?.dispose();
-		this._clientWatch = undefined;
 		for (const part of this._parts) {
 			part.dispose();
 		}
 		this._parts = [];
-		// No server means nothing can be talking to us.
-		this._publishClients({ claude: false, codex: false });
 
 		const configuration = vscode.workspace.getConfiguration('aiBrowser');
 		if (!configuration.get<boolean>('mcp.enabled', true)) {
@@ -122,9 +104,6 @@ export class McpLifecycle implements vscode.Disposable {
 		if (registration) {
 			this._parts.push(registration);
 		}
-
-		this._clientWatch = server.onDidChangeClients(clients => this._publishClients(clients));
-		this._publishClients(server.clients);
 
 		this._setState({ kind: 'running', server });
 	}
@@ -158,8 +137,6 @@ export class McpLifecycle implements vscode.Disposable {
 	}
 
 	public dispose(): void {
-		this._clientWatch?.dispose();
-		this._clientWatch = undefined;
 		for (const part of this._parts) {
 			part.dispose();
 		}

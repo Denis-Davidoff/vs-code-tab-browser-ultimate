@@ -1,9 +1,0 @@
-<svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
-	<g fill="none" stroke="#3B3B3B" stroke-width="1.15" stroke-linecap="round">
-		<circle cx="8" cy="8" r="6.9"/>
-		<path d="M1.1 8h13.8"/>
-		<ellipse cx="8" cy="8" rx="3" ry="6.9"/>
-	</g>
-	<!-- Claude Code is talking to us -->
-	<circle cx="12.9" cy="3.1" r="3.1" fill="#E8590C"/>
-</svg>

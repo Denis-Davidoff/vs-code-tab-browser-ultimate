@@ -15,10 +15,7 @@ kept for anyone who wants it — set `aiBrowser.useIntegratedBrowser` to `false`
 Open a page in the built-in browser and use the crosshair button on the browser tab's toolbar.
 The button repeats whichever action you used last; the chevron beside it opens the full list,
 which also holds the assistant and connection entries below.
-
-The globe on that dropdown shows who is using the browser: an **orange** dot in the top-right
-while Claude Code is calling it, a **teal** dot in the bottom-left for Codex, both if both are.
-A dot means real traffic, not just a config file pointing at the server. Hover highlights elements the way
+ Hover highlights elements the way
 DevTools does — click one and the result is yours.
 
 | Action | Result |
@@ -54,7 +51,7 @@ tab has three entries for it:
 |---|---|
 | Connect Claude Code | writes `.mcp.json`, or hands you the `claude mcp add` command |
 | Connect Codex | writes `.codex/config.toml`, with `~/.codex/config.toml` as a fallback |
-| Check Connection | calls the server for real and reports where each client is pointed |
+| Check Connection | calls the server for real, reports where each client is pointed, and which have called recently |
 
 VS Code's own chat needs no configuration — the server registers itself.
 

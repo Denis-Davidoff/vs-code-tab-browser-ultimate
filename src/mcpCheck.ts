@@ -112,11 +112,22 @@ export async function checkConnection(server: McpServer): Promise<void> {
 	const codex = codexClientState(codexFiles, url, server.urlWithToken);
 	const duplicates = codexOurEntries(codexFiles, url);
 
+	// Who has actually called, as opposed to who is merely configured. The
+	// server attributes calls by the `Mcp-Session-Id` it mints at `initialize`,
+	// because only `initialize` carries `clientInfo`.
+	const callers = [
+		server.clients.claude ? 'Claude Code' : undefined,
+		server.clients.codex ? 'Codex' : undefined,
+	].filter(Boolean) as string[];
+
 	const lines = [
 		vscode.l10n.t("Server: {0}", url),
 		probe.ok
 			? vscode.l10n.t("Reachable — {0}", probe.detail)
 			: vscode.l10n.t("NOT reachable — {0}", probe.detail),
+		callers.length
+			? vscode.l10n.t("Called recently by: {0}", callers.join(', '))
+			: vscode.l10n.t("No assistant has called this server in the last 10 minutes."),
 		'',
 		vscode.l10n.t("Claude Code: {0}", describe(claude)),
 		vscode.l10n.t("Codex: {0}", describe(codex)),

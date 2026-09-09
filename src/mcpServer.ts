@@ -25,9 +25,8 @@ import {
 const maxRequestBytes = 1024 * 1024;
 const portsToTry = 20;
 
-/** How long after the last call an assistant still counts as connected. */
+/** How long after its last call an assistant still counts as active. Read on demand. */
 const clientIdleMs = 10 * 60 * 1000;
-const decayCheckMs = 60 * 1000;
 
 /** Which assistants are currently calling the server. */
 export interface ClientSet {
@@ -59,8 +58,6 @@ export class McpServer implements vscode.Disposable {
 	 * assistant quits, instead of staying on until the window closes.
 	 */
 	private _lastActivity = 0;
-	private _decayTimer: NodeJS.Timeout | undefined;
-
 	/** Last call from each recognised assistant. */
 	private readonly _lastByKind = new Map<ClientKind, number>();
 
@@ -74,11 +71,6 @@ export class McpServer implements vscode.Disposable {
 	 */
 	private readonly _sessionKinds = new Map<string, ClientKind>();
 
-	private _published: ClientSet = { claude: false, codex: false };
-
-	private readonly _onDidChangeClients = new vscode.EventEmitter<ClientSet>();
-	/** Fires when the set of assistants currently calling us changes. */
-	public readonly onDidChangeClients = this._onDidChangeClients.event;
 
 	constructor(
 		private readonly browser: BrowserController,
@@ -132,15 +124,6 @@ export class McpServer implements vscode.Disposable {
 		if (kind && kind !== 'other') {
 			this._lastByKind.set(kind, Date.now());
 		}
-		this._publishClients();
-	}
-
-	private _publishClients(): void {
-		const now = this.clients;
-		if (now.claude !== this._published.claude || now.codex !== this._published.codex) {
-			this._published = now;
-			this._onDidChangeClients.fire(now);
-		}
 	}
 
 	/**
@@ -156,8 +139,6 @@ export class McpServer implements vscode.Disposable {
 			try {
 				this._server = await this._listen(port);
 				this._port = port;
-				// Nothing pushes the state back down on its own, so poll for decay.
-				this._decayTimer = setInterval(() => this._publishClients(), decayCheckMs);
 				return;
 			} catch (err: any) {
 				if (err?.code !== 'EADDRINUSE') {
@@ -402,11 +383,6 @@ export class McpServer implements vscode.Disposable {
 	}
 
 	public dispose(): void {
-		if (this._decayTimer) {
-			clearInterval(this._decayTimer);
-			this._decayTimer = undefined;
-		}
-		this._onDidChangeClients.dispose();
 		this._sessionKinds.clear();
 		for (const socket of this._sockets) {
 			socket.destroy();
