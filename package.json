@@ -1,25 +1,61 @@
 {
-	"name": "ai-browser",
-	"displayName": "%displayName%",
-	"description": "%description%",
+	"name": "tab-browser-ultimate",
+	"displayName": "AI Browser🏆 Claude + Codex",
+	"description": "Embedded browser tab with AI capabilities, Claude and Codex integration",
+	"version": "0.5.0",
 	"enabledApiProposals": [
 		"externalUriOpener",
 		"browser"
 	],
-	"version": "0.2.0",
 	"icon": "media/icon.png",
 	"publisher": "DenysDavydov",
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/Denis-Davidoff/ai-browser.git"
+		"url": "https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate.git"
 	},
+	"bugs": {
+		"url": "https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/issues"
+	},
+	"homepage": "https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate#readme",
 	"engines": {
 		"vscode": "^1.136.0"
 	},
 	"main": "./out/extension",
 	"categories": [
+		"AI",
 		"Other"
+	],
+	"keywords": [
+		"browser",
+		"embedded browser",
+		"browser panel",
+		"simple browser",
+		"tab browser",
+		"ai browser",
+		"chatgpt browser",
+		"claude browser",
+		"claude mcp",
+		"codex mcp",
+		"codex",
+		"claude",
+		"chatgpt",
+		"chat gpt",
+		"chat gpt mcp",
+		"codex browser",
+		"ai chat browser",
+		"ai tab browser",
+		"frontend browser",
+		"frontend ai",
+		"frontend chatgpt",
+		"frontend claude",
+		"preview",
+		"webview",
+		"ai",
+		"assistant",
+		"devtools",
+		"localhost",
+		"inspect element"
 	],
 	"extensionKind": [
 		"ui",

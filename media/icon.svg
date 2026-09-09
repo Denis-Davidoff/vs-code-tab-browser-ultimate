@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+	<defs>
+		<linearGradient id="backdrop" x1="0" y1="0" x2="0.4" y2="1">
+			<stop offset="0" stop-color="#1d2b3f"/>
+			<stop offset="1" stop-color="#0d1420"/>
+		</linearGradient>
+		<!-- In user space, not in each shape's own box: a straight tick has a bounding box of
+		     zero area, and an objectBoundingBox gradient paints nothing at all on one. -->
+		<linearGradient id="ocean" gradientUnits="userSpaceOnUse"
+			x1="38" y1="34" x2="166" y2="166">
+			<stop offset="0" stop-color="#63d7ff"/>
+			<stop offset="0.5" stop-color="#3d9bff"/>
+			<stop offset="1" stop-color="#7b6bff"/>
+		</linearGradient>
+		<linearGradient id="letters" x1="0" y1="0" x2="0" y2="1">
+			<stop offset="0" stop-color="#ffffff"/>
+			<stop offset="1" stop-color="#cfe4ff"/>
+		</linearGradient>
+		<filter id="halo" x="-60%" y="-60%" width="220%" height="220%">
+			<feGaussianBlur stdDeviation="12"/>
+		</filter>
+	</defs>
+
+	<rect width="256" height="256" rx="58" fill="url(#backdrop)"/>
+
+	<!-- the reticle, with a halo so it lifts off the backdrop -->
+	<circle cx="102" cy="100" r="66" fill="none" stroke="#4da3ff" stroke-opacity="0.45"
+		stroke-width="16" filter="url(#halo)"/>
+
+	<g fill="none" stroke="url(#ocean)" stroke-linecap="round">
+		<circle cx="102" cy="100" r="66" stroke-width="14"/>
+		<circle cx="102" cy="100" r="29" stroke-width="7" stroke-opacity="0.85"/>
+		<!-- ticks reaching through the ring, stopping at the inner circle -->
+		<g stroke-width="14">
+			<path d="M102 20 v42"/>
+			<path d="M102 138 v42"/>
+			<path d="M22 100 h42"/>
+			<path d="M140 100 h42"/>
+		</g>
+	</g>
+	<circle cx="102" cy="100" r="8" fill="url(#ocean)"/>
+
+	<!-- and the two letters that say what it is for -->
+	<text x="222" y="216" text-anchor="end"
+		font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif"
+		font-size="92" font-weight="800" letter-spacing="-2"
+		fill="url(#letters)" stroke="#101b29" stroke-width="12" stroke-linejoin="round"
+		paint-order="stroke fill">AI</text>
+</svg>
