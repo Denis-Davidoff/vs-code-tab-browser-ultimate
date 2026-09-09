@@ -11,8 +11,8 @@
 > [Installing](#installing).
 >
 > Either way the browser features need an editor new enough to carry the `browser` proposal
-> (VS Code `^1.136.0`), and it declares two API proposals (`externalUriOpener`, `browser`), which
-> some editors only grant to an extension named with `--enable-proposed-api`.
+> (**VS Code 1.112 or later**), and it declares two API proposals (`externalUriOpener`,
+> `browser`), which some editors only grant to an extension named with `--enable-proposed-api`.
 
 Press `Cmd`/`Ctrl` + `Shift` + `P` to open the command palette, run **AI Browser: Show**, enter
 the url you want — then work with the elements on the page exactly as below.
@@ -361,10 +361,12 @@ Cursor, Windsurf and Theia; the
 for VS Code. Both are on 0.3.17 — the previous implementation — until the release lands; see
 [PUBLISHING.md](PUBLISHING.md).
 
-`engines.vscode` is `^1.136.0`, because that is where the `browser` proposal exists — an older
-editor will not install it at all. Some editors also only grant proposed apis to an extension
-named on the command line (`--enable-proposed-api DenysDavydov.tab-browser-ultimate`); without that the
-extension loads but the browser features stay unavailable.
+`engines.vscode` is `^1.85.0`, so the extension installs on almost anything — but the
+`browser` proposal, and with it every element tool, screenshot and MCP browser tool, only exists
+from **VS Code 1.112**. On an older editor the extension still loads and falls back to the
+webview panel. Some editors also only grant proposed apis to an extension named on the command
+line (`--enable-proposed-api DenysDavydov.tab-browser-ultimate`); without that the extension
+loads but the browser features stay unavailable.
 
 ## Development
 

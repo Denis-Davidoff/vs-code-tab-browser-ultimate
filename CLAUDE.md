@@ -247,6 +247,35 @@ non-obvious:
 
 `minify` is on for production builds and off in watch mode; sourcemaps are always emitted.
 
+### Why `engines.vscode` is 1.85
+
+The floor is deliberately lower than what the features need, and the gap is the point.
+
+- **`externalUriOpener`** has been a proposal since VS Code 1.53 and its `.d.ts` is byte-for-byte
+  the same at 1.85 as it is today (modulo three `export` keywords). Nothing here constrains the
+  floor.
+- **`browser` is far newer.** `vscode.proposed.browser.d.ts` was added to microsoft/vscode on
+  2026-03-13 and first shipped in **1.112.0** — the tag 1.111.0 has no such file. So everything
+  built on the built-in browser (element commands, screenshots, the MCP browser tools) needs
+  **1.112.0 or later**, whatever `engines` says.
+
+Below 1.112 the extension still loads and still works, as the webview panel. VS Code logs
+`Extension … wants API proposal 'browser' but that proposal DOES NOT EXIST` and drops it from
+the list — an error in the log, not a failed activation — and every entry point guards with
+`'browserTabs' in vscode.window` before touching the API. The same is true of
+`contributes.mcpServerDefinitionProviders` (a contribution point since 1.101) and of
+`lm.registerMcpServerDefinitionProvider`, which is reached through an optional call precisely so
+an older host just gets nothing.
+
+What actually holds the floor at 1.85 rather than lower: `vscode.l10n` (1.73), `window.tabGroups`
+(1.67), implicit command activation (1.74). 1.85 is a round number comfortably above all three,
+and `@types/vscode@1.85.0` typechecks the whole tree with zero errors — verified by installing it
+and running `npm run typecheck`.
+
+The trade-off is honest to state: a 1.85 floor means someone on an old VS Code can install this
+and find the headline feature missing. Raising `engines` to `^1.112.0` is the alternative, and
+the only reason not to is reach.
+
 ### Proposed API
 
 The manifest declares `enabledApiProposals: ["externalUriOpener", "browser"]` — the first for
@@ -943,10 +972,11 @@ below.
 
 Three things vsce insists on, each of which stopped the first attempt:
 
-- **`@types/vscode` may not be newer than `engines.vscode`.** This is what forced
-  `engines.vscode` to `^1.136.0`, and that is honest rather than a workaround: the `browser`
-  API proposal only exists in recent VS Code, so the earlier `^1.74.0` was understating what
-  the extension actually needs.
+- **`@types/vscode` may not be newer than `engines.vscode`.** `engines.vscode` is `^1.85.0`,
+  so `@types/vscode` is pinned to the exact `1.85.0` — a caret there would let a fresh install
+  pull the latest typings and fail packaging. See
+  [Why `engines.vscode` is 1.85](#why-enginesvscode-is-185) for what that floor does and does
+  not promise.
 - **A `repository` field is required** as soon as the README has relative links (ours points
   at this file). Without it packaging fails outright; the alternative is passing
   `--baseContentUrl`, which is worse because it has to be repeated on every invocation.

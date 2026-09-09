@@ -80,8 +80,9 @@ are not release notes — they are things that will break for somebody:
   console capture, html files served from disk with reload on save, page zoom, terminal-link
   takeover, address-bar completion, the page's own favicon on the tab.
 - **It needs a newer editor and proposed APIs.** The old build ran anywhere on stable API;
-  this one wants VS Code 1.136+ and the `browser` proposal, which some editors only grant to an
-  extension named with `--enable-proposed-api`. Where that is not granted, a user who updates
+  `engines.vscode` is `^1.85.0` so this one still installs widely, but its browser features want
+  VS Code 1.112+ and the `browser` proposal, which some editors only grant to an extension named
+  with `--enable-proposed-api`. Where that is not granted, a user who updates
   is left with the webview panel and no element tools at all.
 
 None of that argues against publishing — it argues for saying so in the release, and for
