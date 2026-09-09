@@ -588,6 +588,8 @@
 		"test": "node --test preview-src/*.test.ts src/*.test.ts",
 		"check-manifest": "node ./scripts/check-manifest.mjs",
 		"package": "vsce package --no-dependencies --out tab-browser-ultimate.vsix",
+		"publish:ovsx": "ovsx publish tab-browser-ultimate.vsix",
+		"verify-pat": "ovsx verify-pat DenysDavydov",
 		"download-api": "dts dev",
 		"vscode:prepublish": "npm run compile"
 	},
@@ -599,6 +601,7 @@
 		"@vscode/vsce": "^3.9.2",
 		"esbuild": "^0.28.2",
 		"npm-run-all2": "^9.0.3",
+		"ovsx": "^1.1.1",
 		"typescript": "^5.9.3"
 	},
 	"allowScripts": {

@@ -374,7 +374,8 @@ action, or a keybinding whose `when` has drifted from its button all fail silent
 that never appears, or a key that fires nothing.
 
 See [CLAUDE.md](CLAUDE.md) for the architecture notes, the build details, and the log of
-everything in here that looks wrong but is deliberate.
+everything in here that looks wrong but is deliberate, and
+[PUBLISHING.md](PUBLISHING.md) for how a release reaches Open VSX.
 
 ## Differences from upstream Simple Browser
 

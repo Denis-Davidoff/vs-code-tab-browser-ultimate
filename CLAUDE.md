@@ -209,6 +209,8 @@ typecheck-tests          tsc --project ./tsconfig.test.json    ← test files, n
 test                     node --test preview-src/*.test.ts src/*.test.ts
 check-manifest           node ./scripts/check-manifest.mjs      ← menus, icons, activation
 package                  vsce package … --out tab-browser-ultimate.vsix  ← see Packaging a VSIX
+publish:ovsx             ovsx publish tab-browser-ultimate.vsix ← Open VSX, needs OVSX_PAT
+verify-pat               ovsx verify-pat DenysDavydov          ← is the token good?
 download-api             dts dev                               ← refresh the proposed-API d.ts
 vscode:prepublish        npm run compile
 ```
@@ -929,12 +931,15 @@ The `Simple Browser` → `AI Browser` rename follows these cases:
 
 ## Packaging a VSIX
 
-`npm run package` → `tab-browser-ultimate.vsix`, which is **committed on purpose** — it is how VS Code
-users install, the Marketplace being closed to an extension that declares API proposals, so
-`*.vsix` is deliberately absent from `.gitignore`. Rebuild and commit it with any change that
-ships. `vscode:prepublish` runs the full
-`compile` first, so the webview assets are always fresh in the package. `--no-dependencies` is
-safe here precisely because there are no runtime dependencies.
+`npm run package` → `tab-browser-ultimate.vsix`, which is **committed on purpose** — it is how
+VS Code users install, the Marketplace being closed to an extension that declares API proposals,
+so `*.vsix` is deliberately absent from `.gitignore`. Rebuild and commit it with any change that
+ships. `vscode:prepublish` runs the full `compile` first, so the webview assets are always fresh
+in the package. `--no-dependencies` is safe here precisely because there are no runtime
+dependencies.
+
+The release steps live in [PUBLISHING.md](PUBLISHING.md); what is non-obvious about them is
+below.
 
 Three things vsce insists on, each of which stopped the first attempt:
 
@@ -957,9 +962,25 @@ License` headers, which are still there on everything copied from vscode (`cssHe
 the code, so **do not strip those headers** — the root LICENSE complements them rather than
 standing in for them.
 
-Because of the proposed APIs this VSIX **cannot go to the Marketplace**; install it with
-"Extensions: Install from VSIX…", and note the extension only activates its browser features
-on a VS Code new enough to carry the `browser` proposal.
+### Open VSX is the only registry, and that is the whole distribution story
+
+Because of the proposed APIs this VSIX **cannot go to the VS Code Marketplace** — `vsce publish`
+refuses an extension that declares `enabledApiProposals`, which is why there is **no `publish`
+script for it and adding one would be a dead end**. Two consequences, and neither is a
+workaround:
+
+- **Open VSX takes it**, so every editor that uses that registry (VSCodium, Cursor, Windsurf,
+  Theia) installs it like any other extension. `npm run publish:ovsx` uploads the committed
+  `.vsix` rather than repackaging, so the bytes in the registry and the bytes in the repository
+  are the same. `ovsx` picks the token up from **`OVSX_PAT`** on its own; the namespace
+  (`DenysDavydov`) has to be created once with `ovsx create-namespace` before the first publish,
+  and the registry refuses a version it already has, so `version` must move every time.
+- **VS Code installs the committed file** with "Extensions: Install from VSIX…". This is why the
+  `.vsix` is tracked at all — see above.
+
+Publishing does not grant the proposals: the editor still has to be new enough for the `browser`
+proposal, and some builds only hand proposed APIs to an extension named with
+`--enable-proposed-api DenysDavydov.tab-browser-ultimate`.
 
 ## Known issues, not yet fixed
 
