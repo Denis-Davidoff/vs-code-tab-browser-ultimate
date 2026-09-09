@@ -8,7 +8,7 @@
 > same build for Cursor, Windsurf, VSCodium and Theia. The
 > [**VS Code Marketplace**](https://marketplace.visualstudio.com/items?itemName=DenysDavydov.tab-browser-ultimate-promo)
 > entry is the guide and the download link, not the extension itself — the Marketplace does not
-> accept an extension that declares API proposals. See [Installing](#installing).
+> accept an extension that declares API proposals. See [Installing](#installing). 
 >
 > Either way the browser features need an editor new enough to carry the `browser` proposal
 > (**VS Code 1.112 or later**), and it declares two API proposals (`externalUriOpener`,
