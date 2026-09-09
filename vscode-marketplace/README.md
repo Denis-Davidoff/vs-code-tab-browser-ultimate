@@ -16,9 +16,12 @@ built on VS Code API proposals and the Marketplace does not accept those.
 → in VS Code press `Cmd`/`Ctrl` + `Shift` + `P` → **Extensions: Install from VSIX…** → pick the
 file.
 
-It installs **over this entry** — same extension id, so nothing to uninstall first. Or install
-straight from **[Open VSX](https://open-vsx.org/extension/DenysDavydov/tab-browser-ultimate)**,
-which carries the full build (Cursor, Windsurf, VSCodium and anything else on that registry).
+Or install straight from
+**[Open VSX](https://open-vsx.org/extension/DenysDavydov/tab-browser-ultimate)**, which carries
+the full build in one click (Cursor, Windsurf, VSCodium and anything else on that registry).
+
+Once the full build is in, this entry has done its job — it goes quiet on its own, and you can
+uninstall it whenever you like.
 
 > The browser features need **VS Code 1.112 or later** — that is where the editor's own browser
 > tab and its `browser` API proposal exist. On an older editor the extension still loads and
@@ -91,7 +94,8 @@ Two commands, and that is the whole of it:
 | **AI Browser: Download the Full Build (VSIX)** | opens the download |
 | **AI Browser: Open the Guide** | opens the documentation |
 
-It also says hello once, the first time it starts, and never again.
+It says hello once, the first time it starts, and never again — and not at all if the full build
+is already installed, in which case both commands hide themselves too.
 
 ## Links
 

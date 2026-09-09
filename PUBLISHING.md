@@ -1,31 +1,33 @@
 # Publishing
 
 **Two registries, two different artifacts.** Open VSX gets the real extension; the Marketplace
-gets the stub in [marketplace/](marketplace/) — see [Two artifacts, one id](#two-artifacts-one-id).
+gets the stub in [vscode-marketplace/](vscode-marketplace/) — see [Two artifacts, one id](#two-artifacts-one-id).
 
 ```sh
 npm run package        # -> tab-browser-ultimate.vsix (compiles first, via vscode:prepublish)
-npm run publish:ovsx   # -> Open VSX
+npm run publish:ovsx   # -> rebuilds, then uploads to Open VSX
 ```
 
-The publish script uploads the committed `.vsix` rather than repackaging, so the bytes in the
-registry are the bytes in the repository — which is also what VS Code users download directly.
+**Publishing always packages first.** `publish:ovsx` runs `package` itself, which in turn runs
+`compile` through `vscode:prepublish`, so a registry can never receive a `.vsix` built from
+source older than the working tree. Run `package` on its own only when you want the artifact
+without the upload — before committing it, say.
 
 **There is no `publish:vsce` any more, and putting it back is not the fix for anything.** It
 pushed the real build to the Marketplace with `--allow-all-proposed-apis`, which lifts vsce's
 client-side refusal of a proposal-declaring extension, and it never once completed — see below.
 The stub is what goes to the Marketplace now.
 
-### Current state of the two listings
+### Current state of the listings
 
-| | Latest published | Reach |
-| --- | --- | --- |
-| [Open VSX](https://open-vsx.org/extension/DenysDavydov/tab-browser-ultimate) | **0.3.17** (2026-09-08) | ~1.5k downloads across 14 versions |
-| [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=DenysDavydov.tab-browser-ultimate) | **0.3.17** | 2 installs, one 5★ rating |
+| | Id | Latest published | Reach |
+| --- | --- | --- | --- |
+| [Open VSX](https://open-vsx.org/extension/DenysDavydov/tab-browser-ultimate) | `tab-browser-ultimate` | **0.3.17** (2026-09-08) | ~1.5k downloads across 14 versions |
+| VS Code Marketplace, old | `tab-browser-ultimate` | **0.3.17** | 2 installs, one 5★ rating — being removed by hand |
+| VS Code Marketplace, new | `tab-browser-ultimate-promo` | not yet published | the listing, from `vscode-marketplace/` |
 
-**Both registries still serve the previous implementation.** This rewrite (0.5.0) exists only as
-the committed `.vsix`. Until it is published, a reader who follows the README's "install from the
-marketplace" line gets the 0.3.x proxy build, not this one.
+**Open VSX still serves the previous implementation.** This rewrite exists only as the committed
+`.vsix` until it is published there.
 
 **The Marketplace upload of the real build never completed.** Two attempts both ended in
 `ERROR Request timeout: /_apis/gallery` — after vsce's own three internal retries, with the
@@ -58,23 +60,29 @@ The setup is therefore already done and does not need repeating:
 - **The namespace exists.** `npx ovsx create-namespace DenysDavydov` is a one-time step that has
   already happened; running it again is harmless but pointless.
 
-## Two artifacts, one id
+## Two artifacts, two ids
 
 The Marketplace no longer gets the real build. It gets the stub in
-[marketplace/](marketplace/) — the listing, its readme and video, and two commands that point at
-the download. Same extension id, so the real VSIX installs over it.
+[vscode-marketplace/](vscode-marketplace/) — the listing, its readme and video, and two commands
+that point at the download — published as **`DenysDavydov.tab-browser-ultimate-promo`**, an id of
+its own.
 
 ```sh
-cd marketplace
-npm run package   # -> marketplace/tab-browser-ultimate-marketplace.vsix (runs prepare.mjs first)
-npm run publish   # -> VS Code Marketplace
+cd vscode-marketplace
+npm run publish   # packages (via prepare.mjs) and uploads to the VS Code Marketplace
 ```
 
-**The stub stays on `0.4.x` and the real build on `0.5.x` and up — never let them cross.** VS Code
-keeps checking the gallery for an id even after a hand-installed VSIX, so a stub version above the
-real one turns auto-update into a silent downgrade to a do-nothing extension. `prepare.mjs`
-refuses to package when the ordering breaks; it also copies the icon, and rejects a readme with a
-relative image or an `<iframe>`/`<video>`, neither of which the Marketplace renders.
+**Separate ids mean the versions do not interact** — nothing auto-updates from one to the other,
+and both can be installed at once, which is the normal end state. The stub detects the real build
+and goes quiet: no welcome message, and its two commands hide themselves from the palette. Keeping
+the two version numbers equal is a convention, so the listing says which release it describes;
+`prepare.mjs` only notes a mismatch. What it does enforce: the icon is copied from the real
+extension, and a readme with a relative image or an `<iframe>`/`<video>` is rejected, since the
+Marketplace renders none of those.
+
+**The old `DenysDavydov.tab-browser-ultimate` listing on the Marketplace is being removed by
+hand.** It serves the 0.3.x proxy build and nothing here updates it any more; Open VSX keeps that
+id for the real extension.
 
 The root has no Marketplace publish script at all any more: this is the only route there.
 
@@ -84,11 +92,12 @@ The root has no Marketplace publish script at all any more: this is the only rou
    published set is 0.3.1 … 0.3.17, and this repository is at 0.5.0), and `--skip-duplicate`
    only makes that failure quiet, not a new release.
 2. `npm run compile && npm run typecheck && npm test && npm run check-manifest`.
-3. `npm run package`, then **commit the rebuilt `.vsix`** — it is tracked, and a stale one means
-   VS Code users install the previous version.
-4. `npm run publish:ovsx` — Open VSX carries the real build.
-5. If the listing text or the video changed, bump `marketplace/package.json` **within `0.4.x`**
-   and `cd marketplace && npm run package && npm run publish`.
+3. `npm run publish:ovsx` — it packages first, so the upload is always current. Open VSX carries
+   the real build.
+4. **Commit the rebuilt `.vsix`** — it is tracked, and a stale one means VS Code users install the
+   previous version.
+5. If the listing text or the video changed, set `vscode-marketplace/package.json` to **the same
+   version** as the root and `cd vscode-marketplace && npm run publish`.
 6. Push, and tag the commit if you want the download to be findable by version.
 
 ## What an update actually does to existing users

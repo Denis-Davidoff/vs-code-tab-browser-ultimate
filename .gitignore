@@ -9,5 +9,5 @@ out/
 node_modules/
 
 # Marketplace stub build artifacts
-marketplace/media/
-marketplace/*.vsix
+vscode-marketplace/media/
+vscode-marketplace/*.vsix

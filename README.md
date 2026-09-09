@@ -6,9 +6,9 @@
 >
 > [**Open VSX**](https://open-vsx.org/extension/DenysDavydov/tab-browser-ultimate) carries the
 > same build for Cursor, Windsurf, VSCodium and Theia. The
-> [**VS Code Marketplace**](https://marketplace.visualstudio.com/items?itemName=DenysDavydov.tab-browser-ultimate)
-> entry is the guide and the download link, not the extension — the Marketplace does not accept an
-> extension that declares API proposals. See [Installing](#installing).
+> [**VS Code Marketplace**](https://marketplace.visualstudio.com/items?itemName=DenysDavydov.tab-browser-ultimate-promo)
+> entry is the guide and the download link, not the extension itself — the Marketplace does not
+> accept an extension that declares API proposals. See [Installing](#installing).
 >
 > Either way the browser features need an editor new enough to carry the `browser` proposal
 > (**VS Code 1.112 or later**), and it declares two API proposals (`externalUriOpener`,
@@ -358,12 +358,12 @@ npm run package          # -> tab-browser-ultimate.vsix
 [Open VSX](https://open-vsx.org/extension/DenysDavydov/tab-browser-ultimate) carries the full
 build, and is the one-click route on VSCodium, Cursor, Windsurf and Theia.
 
-The [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=DenysDavydov.tab-browser-ultimate)
-entry is deliberately **not** the extension: an extension declaring API proposals cannot be
-published there, so what is listed is the guide, the video and the download — two commands and
-nothing else. It shares this extension's id, so the VSIX installs straight over it with nothing to
-uninstall first. Its source is in [marketplace/](marketplace/), and it stays on `0.4.x` so that
-auto-update can never pull it over the real build; see [PUBLISHING.md](PUBLISHING.md).
+The [VS Code Marketplace entry](https://marketplace.visualstudio.com/items?itemName=DenysDavydov.tab-browser-ultimate-promo)
+is deliberately **not** the extension: an extension declaring API proposals cannot be published
+there, so what is listed is the guide, the video and the download — two commands and nothing else.
+It publishes under its own id, `tab-browser-ultimate-promo`, and once the real build is installed
+it goes quiet: no messages, and its commands hide themselves. Uninstall it whenever you like. Its
+source is in [vscode-marketplace/](vscode-marketplace/); see [PUBLISHING.md](PUBLISHING.md).
 
 `engines.vscode` is `^1.85.0`, so the extension installs on almost anything — but the
 `browser` proposal, and with it every element tool, screenshot and MCP browser tool, only exists

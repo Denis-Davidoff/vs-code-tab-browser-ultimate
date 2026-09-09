@@ -1,5 +1,5 @@
 {
-	"name": "tab-browser-ultimate",
+	"name": "tab-browser-ultimate-promo",
 	"displayName": "AI Browser🏆 Claude + Codex",
 	"description": "Guide and installer for AI Browser — VS Code's built-in browser wired to Claude Code and Codex. The full build installs from the VSIX linked in this listing.",
 	"version": "0.5.2",
@@ -66,20 +66,32 @@
 	"contributes": {
 		"commands": [
 			{
-				"command": "aiBrowser.marketplace.getFullBuild",
+				"command": "aiBrowser.promo.getFullBuild",
 				"title": "Download the Full Build (VSIX)",
 				"category": "AI Browser"
 			},
 			{
-				"command": "aiBrowser.marketplace.openGuide",
+				"command": "aiBrowser.promo.openGuide",
 				"title": "Open the Guide",
 				"category": "AI Browser"
 			}
-		]
+		],
+		"menus": {
+			"commandPalette": [
+				{
+					"command": "aiBrowser.promo.getFullBuild",
+					"when": "!aiBrowser.fullBuildInstalled"
+				},
+				{
+					"command": "aiBrowser.promo.openGuide",
+					"when": "!aiBrowser.fullBuildInstalled"
+				}
+			]
+		}
 	},
 	"scripts": {
 		"prepare-package": "node ./scripts/prepare.mjs",
-		"package": "npm run prepare-package && ../node_modules/.bin/vsce package --no-dependencies --out tab-browser-ultimate-marketplace.vsix",
-		"publish": "../node_modules/.bin/vsce publish --packagePath tab-browser-ultimate-marketplace.vsix"
+		"package": "npm run prepare-package && ../node_modules/.bin/vsce package --no-dependencies --out tab-browser-ultimate-promo.vsix",
+		"publish": "npm run package && ../node_modules/.bin/vsce publish --packagePath tab-browser-ultimate-promo.vsix"
 	}
 }

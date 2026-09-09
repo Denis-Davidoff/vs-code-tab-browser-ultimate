@@ -3,7 +3,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 // Runs before `vsce package` in this folder. It copies the icon from the real extension and
-// then checks the four things that would otherwise only be discovered after the listing is
+// then checks the three things that would otherwise only be discovered after the listing is
 // live — every one of them is silent at package time.
 
 import { readFileSync, mkdirSync, copyFileSync, existsSync } from 'node:fs';
@@ -18,29 +18,12 @@ const real = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 
 const problems = [];
 
-/** @param {string} v */
-const parts = v => v.split('-')[0].split('.').map(Number);
-
-/** Returns true when a < b. */
-function lt(a, b) {
-	const [x, y] = [parts(a), parts(b)];
-	for (let i = 0; i < 3; i++) {
-		if (x[i] !== y[i]) {
-			return x[i] < y[i];
-		}
-	}
-	return false;
-}
-
-// 1. The version rule, and it is the load-bearing one. Both builds carry the same extension id,
-// so a user who installs the real VSIX over this one keeps getting gallery update checks for
-// that id. If the gallery version ever climbs past the VSIX, auto-update quietly swaps the
-// working extension for this stub.
-if (!lt(stub.version, real.version)) {
-	problems.push(
-		`version ${stub.version} is not below the real build's ${real.version} — ` +
-		`auto-update would replace the working extension with this stub. ` +
-		`The stub lives on 0.4.x, the real build on 0.5.x and up.`);
+// 1. The two builds are separate extensions with separate ids, so their versions do not
+// interact at all — nothing auto-updates across them. Keeping the numbers equal is a
+// convention, not a safety rule: it makes the listing say which release it describes. A
+// mismatch is reported and nothing more.
+if (stub.version !== real.version) {
+	console.warn(`prepare: note — listing is ${stub.version}, the extension it describes is ${real.version}`);
 }
 
 // 2. A proposal in the manifest is what keeps an extension out of the Marketplace in the first
@@ -86,4 +69,4 @@ if (readme.includes('VIDEO SLOT')) {
 	console.warn('prepare: note — the video slot in README.md is still commented out');
 }
 
-console.log(`prepare: ok — stub ${stub.version} < real ${real.version}, icon copied from ${real.icon}`);
+console.log(`prepare: ok — ${stub.name} ${stub.version}, icon copied from ${real.icon}`);
