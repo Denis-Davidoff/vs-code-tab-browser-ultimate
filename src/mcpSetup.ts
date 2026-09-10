@@ -320,7 +320,17 @@ export async function writeCodexGlobalConfig(
  */
 export function codexCliCommand(folder: vscode.WorkspaceFolder | undefined, server: McpServer): string {
 	const name = folder ? codexEntryName(folder) : `${serverName}-window`;
-	return `codex mcp add ${name} --url ${server.url}`;
+	// **The token has to travel.** This command is handed over on exactly the
+	// path where writing the config failed, so it has to stand on its own — and
+	// without credentials the entry it creates answers 401 on every call, which
+	// reads as a broken server rather than as a command missing an argument.
+	//
+	// The token rides in the URL path rather than in a header flag: the server
+	// accepts that form (rule 4 of the security model, kept for exactly this
+	// kind of client), it needs no `codex mcp add` option this project has
+	// verified, and the startup repair still recognises the entry, because it
+	// matches on the token wherever the token sits.
+	return `codex mcp add ${name} --url ${server.urlWithToken ?? server.url}`;
 }
 
 /* ---------------------------------------------------------------- connection UX */

@@ -159,9 +159,17 @@ export function activate(context: vscode.ExtensionContext) {
 			refuse(vscode.l10n.t("Open a page in the integrated browser and run this from that tab."));
 			return;
 		}
-		const shared = await browser.shareTab(tab);
-		confirm(vscode.l10n.t("Shared with assistants: {0} — the browser tools now act on this tab only",
-			shared.title || shared.url));
+		try {
+			const shared = await browser.shareTab(tab);
+			confirm(vscode.l10n.t("Shared with assistants: {0} — the browser tools now act on this tab only",
+				shared.title || shared.url));
+		} catch (err) {
+			// A refusal, not a crash: the tab can close while the click is
+			// queued behind another share transition. Through `refuse()` because
+			// a toast here would pause whatever browser tab is on screen.
+			refuse(vscode.l10n.t("Could not share the tab: {0}",
+				err instanceof Error ? err.message : String(err)));
+		}
 	}));
 
 	context.subscriptions.push(vscode.commands.registerCommand(stopSharingTabCommand, async () => {

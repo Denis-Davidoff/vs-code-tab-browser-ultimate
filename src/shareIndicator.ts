@@ -3,8 +3,6 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import type { CDPClient } from './cdp';
-
 /*
  * Marking the shared tab *on the tab itself*.
  *
@@ -28,13 +26,45 @@ import type { CDPClient } from './cdp';
  * from every title this extension reports back (see {@link stripMarker}).
  */
 
+/**
+ * The slice of `CDPClient` this module uses.
+ *
+ * Structural rather than an `import type`, so this file imports **nothing** and
+ * `npm test` can load it directly — the same reason `elementMarkdown.ts` was
+ * split out of `elementContext.ts`. A type-only import is erased at runtime but
+ * not at *typecheck* time: it pulled `cdp.ts`, and with it the `browser`
+ * proposal's typings, into the test project, which by design compiles the test
+ * files alone. `CDPClient` satisfies this as it stands.
+ */
+export interface PageChannel {
+	send(method: string, params?: object, sessionId?: string): Promise<any>;
+}
+
 /** Shared, but no assistant has driven it yet. */
 export const sharedMarker = '🔗';
 
 /** An assistant has acted on this tab at least once. */
 export const inUseMarker = '🤖';
 
+/**
+ * What separates a page's title from our marker: a thin space, U+2009.
+ *
+ * Not a plain space, and that is the whole point. An emoji is not ours to own —
+ * a CI dashboard called `Deploy Bot 🤖` and a link tool called `Docs 🔗` are
+ * ordinary titles — and with a plain space the page-side strip could not tell
+ * the page's own trailing emoji from the suffix we appended. It ate it: the
+ * page's title was rewritten to `Deploy Bot` in its own live document, and
+ * `clear()` left it that way for good, while every title we reported lost the
+ * emoji too. A thin space in front of a trailing emoji is not something a title
+ * has by accident, so `separator + marker` identifies the suffix as ours, and
+ * it renders on the tab the same as before.
+ */
+const separator = '\u2009';
+
 const markers = [sharedMarker, inUseMarker];
+
+/** The exact strings this extension appends, longest-lived contract in here. */
+const suffixes = markers.map(marker => `${separator}${marker}`);
 
 /**
  * The page title without our marker.
@@ -48,17 +78,38 @@ export function stripMarker(title: string | undefined): string | undefined {
 	if (!title) {
 		return title;
 	}
-	let out = title;
-	let stripped = false;
-	for (const marker of markers) {
-		if (out.endsWith(` ${marker}`)) {
-			out = out.slice(0, -(marker.length + 1));
-			stripped = true;
+	// **One** suffix, not every marker in a loop. Stripping both could take two
+	// emoji off a title that only ever carried one of ours, and the loop form
+	// also stripped a plain-space `… 🤖` that belonged to the page.
+	for (const suffix of suffixes) {
+		if (title.endsWith(suffix)) {
+			return title.slice(0, -suffix.length).trimEnd();
 		}
 	}
-	// Only a title we actually cut is trimmed. Trimming unconditionally edits
-	// somebody else's page title — a trailing space in it is theirs, not ours.
-	return stripped ? out.trimEnd() : out;
+	return title;
+}
+
+/**
+ * Takes the marker out of serialized page HTML.
+ *
+ * `browser_html` returns `document.documentElement.outerHTML`, so a shared
+ * tab's `<title>` carried our suffix straight into it — into the one tool a
+ * model reaches for to *verify* a page, diff it, or generate an assertion from
+ * it, which is the worst possible place for content that is not the page's. It
+ * also contradicted the reason a floating badge was rejected in the first
+ * place.
+ *
+ * Doing this by text is safe only because of {@link separator}: the pair
+ * `U+2009` + marker is not something a document contains of its own. The first
+ * occurrence is enough — there is exactly one, in the title.
+ */
+export function stripMarkerFromHtml(html: string): string {
+	for (const suffix of suffixes) {
+		if (html.includes(suffix)) {
+			return html.replace(suffix, '');
+		}
+	}
+	return html;
 }
 
 /**
@@ -93,35 +144,35 @@ export function stripMarker(title: string | undefined): string | undefined {
  * `removeEventListener`.
  */
 function installerSource(marker: string): string {
-	return `(function (marker, all) {
+	return `(function (suffix, all) {
 	var key = '__aiBrowserShareMarker';
 	var existing = window[key];
-	if (existing) { existing.set(marker); return; }
+	if (existing) { existing.set(suffix); return; }
 
 	var state = {
-		marker: marker,
+		suffix: suffix,
 		observer: undefined,
 		removed: false,
+		// One suffix, and only one of *ours*: the page's own trailing emoji is
+		// not preceded by our separator, so it is left alone. Taking it was a
+		// silent, irreversible edit of someone else's document.
 		strip: function (title) {
-			var out = title;
 			for (var i = 0; i < all.length; i++) {
-				var suffix = ' ' + all[i];
-				if (out.endsWith(suffix)) { out = out.slice(0, -suffix.length); }
+				if (title.endsWith(all[i])) { return title.slice(0, -all[i].length); }
 			}
-			return out;
+			return title;
 		},
 		apply: function () {
 			// No <title> yet — this runs at document start on a fresh
 			// navigation — and assigning one before <head> exists is a no-op,
 			// so wait for the document rather than fighting it.
 			if (state.removed || !document.head) { return; }
-			var suffix = ' ' + state.marker;
 			var title = document.title || '';
-			if (!title.endsWith(suffix)) { document.title = state.strip(title) + suffix; }
+			if (!title.endsWith(state.suffix)) { document.title = state.strip(title) + state.suffix; }
 		},
 		set: function (next) {
 			if (state.removed) { return; }
-			state.marker = next;
+			state.suffix = next;
 			state.apply();
 		},
 		remove: function () {
@@ -169,7 +220,26 @@ function installerSource(marker: string): string {
 	} else {
 		start();
 	}
-})(${JSON.stringify(marker)}, ${JSON.stringify(markers)})`;
+})(${JSON.stringify(separator + marker)}, ${JSON.stringify(suffixes)})`;
+}
+
+/**
+ * Evaluates in the page and treats a page-side throw as a failure.
+ *
+ * CDP reports a thrown expression as a **successful reply** carrying
+ * `exceptionDetails`, so ignoring that field made both callers lie: `_install`
+ * recorded a marker it had not applied — and the `_marker === marker`
+ * short-circuit then suppressed every retry for the life of the session — while
+ * `clear()` reported it had reached the page, so `_clearIndicator` skipped the
+ * private-session route that exists for exactly this case. A page can cause it:
+ * freeze the object we look for, replace `endsWith`, break `MutationObserver`.
+ */
+async function evaluateInPage(client: PageChannel, sessionId: string, expression: string): Promise<void> {
+	const reply = await client.send('Runtime.evaluate', { expression }, sessionId);
+	if (reply?.exceptionDetails) {
+		const details = reply.exceptionDetails;
+		throw new Error(details.exception?.description ?? details.text ?? 'The page rejected the marker script');
+	}
 }
 
 /**
@@ -215,10 +285,18 @@ export class ShareIndicator {
 	 */
 	private _queue: Promise<void> = Promise.resolve();
 
-	constructor(
-		private readonly _client: CDPClient,
-		private readonly _sessionId: string,
-	) { }
+	private readonly _client: PageChannel;
+	private readonly _sessionId: string;
+
+	// Plain fields rather than parameter properties: this module is loaded
+	// directly by `npm test`, and Node *strips* types rather than compiling
+	// them, so `constructor(private readonly x)` fails at load with
+	// ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX. The same rule that keeps `enum` out of
+	// anything a test can reach.
+	constructor(client: PageChannel, sessionId: string) {
+		this._client = client;
+		this._sessionId = sessionId;
+	}
 
 	/** Puts the marker on the page, replacing whichever one was there. */
 	public set(marker: string): Promise<void> {
@@ -255,7 +333,7 @@ export class ShareIndicator {
 
 		// The script above only runs on the *next* document; the page in front
 		// of the user is marked by evaluating the same source now.
-		await this._client.send('Runtime.evaluate', { expression: source }, this._sessionId);
+		await evaluateInPage(this._client, this._sessionId, source);
 	}
 
 	/**
@@ -276,9 +354,8 @@ export class ShareIndicator {
 			this._marker = undefined;
 			try {
 				await this._removeScript();
-				await this._client.send('Runtime.evaluate', {
-					expression: `window.__aiBrowserShareMarker?.remove()`,
-				}, this._sessionId);
+				await evaluateInPage(this._client, this._sessionId,
+					'window.__aiBrowserShareMarker && window.__aiBrowserShareMarker.remove()');
 				return true;
 			} catch {
 				// The session is gone. Reported rather than swallowed, because

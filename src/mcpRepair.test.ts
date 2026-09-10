@@ -149,6 +149,29 @@ suite('repairCodexToml', () => {
 		assert.ok(result.text.includes(`url = "${url}"`));
 	});
 
+	test('a quoted key is edited, never duplicated', () => {
+		// The corrupting shape: the token is visible in a bare `url`, so the
+		// table is recognised as ours, while `"http_headers"` is quoted. Read as
+		// absent, it was *added* a second time — two definitions of one key,
+		// which is TOML that does not parse, so every MCP server in the file
+		// went with it, unattended, at window start.
+		const before = [
+			`[mcp_servers.ai-browser]`,
+			`url = "http://127.0.0.1:49999/mcp/${token}"`,
+			`"http_headers" = { X-Org = "acme" }`,
+			``,
+		].join('\n');
+
+		const result = repairToml(before);
+		assert.ok(result.changed);
+
+		const headerLines = result.text.split('\n').filter(line => /http_headers/.test(line));
+		assert.strictEqual(headerLines.length, 1, 'one definition of http_headers');
+		assert.ok(headerLines[0].includes(`Authorization = "Bearer ${token}"`), 'ours is set');
+		assert.ok(headerLines[0].includes('X-Org'), "the user's header survives");
+		assert.ok(result.text.includes(`url = "${url}"`));
+	});
+
 	test('keeps keys the user added to our table', () => {
 		// The reason this is line surgery and not a table rewrite: repair runs
 		// unattended, and silently dropping someone's settings is not a repair.

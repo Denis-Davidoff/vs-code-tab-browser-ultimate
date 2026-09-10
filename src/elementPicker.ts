@@ -22,13 +22,40 @@ import {
  * self-contained function expression.
  */
 const xpathFunctionDeclaration = `function () {
+	// XPath 1.0 string literals have **no escape mechanism at all**, so a value
+	// carrying both quote kinds can only be written with concat(). JSON escaping
+	// looks like the answer and is not: an id of \`button"save\` produced
+	// //*[@id="button\\"save"], which no XPath engine accepts — so a perfectly
+	// valid id yielded a path that fails the moment it is used.
+	function xpathLiteral(value) {
+		// Built rather than written, to keep the quoting readable in here.
+		var dq = String.fromCharCode(34);
+		if (value.indexOf(dq) === -1) {
+			return dq + value + dq;
+		}
+		if (value.indexOf("'") === -1) {
+			return "'" + value + "'";
+		}
+		var parts = value.split(dq);
+		var pieces = [];
+		for (var i = 0; i < parts.length; i++) {
+			if (parts[i] !== '') {
+				pieces.push(dq + parts[i] + dq);
+			}
+			if (i < parts.length - 1) {
+				pieces.push("'" + dq + "'");
+			}
+		}
+		return 'concat(' + pieces.join(', ') + ')';
+	}
+
 	function uniqueById(el) {
 		if (!el.id) {
 			return null;
 		}
 		try {
 			var matches = el.ownerDocument.querySelectorAll('[id="' + CSS.escape(el.id) + '"]');
-			return matches.length === 1 ? '//*[@id=' + JSON.stringify(el.id) + ']' : null;
+			return matches.length === 1 ? '//*[@id=' + xpathLiteral(el.id) + ']' : null;
 		} catch (e) {
 			return null;
 		}
@@ -313,7 +340,14 @@ async function pickAndDeliver<T>(
 				const value = await withPickedElement(tab, cts,
 					(client, sessionId, backendNodeId) =>
 						produce(client, sessionId, backendNodeId, tab));
-				if (value === undefined) {
+				// Cancellation is checked again here, and not only by the await
+				// above: the token can be cancelled *after* the click has
+				// arrived, and extraction is several CDP round trips. A
+				// superseded pick that still delivered overwrote the newer
+				// pick's clipboard — "sometimes it copies an action I did not
+				// choose", which is the exact symptom `pendingPick` exists to
+				// prevent.
+				if (value === undefined || cts.token.isCancellationRequested) {
 					return;
 				}
 				await deliver(value);

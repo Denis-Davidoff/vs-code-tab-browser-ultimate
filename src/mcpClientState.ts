@@ -139,7 +139,7 @@ export function codexClientState(
 				continue;
 			}
 
-			if (configured === urlWithToken || hasCredentials(entry, entries)) {
+			if (configured === urlWithToken || credentialsOf(entry, entries, token) !== 'foreign') {
 				states.push('thisServer');
 			} else {
 				states.push('staleToken');
@@ -151,7 +151,8 @@ export function codexClientState(
 }
 
 /**
- * Whether a Codex entry carries credentials we cannot verify and must trust.
+ * Whether a Codex entry's credentials are ours, unverifiable, or somebody
+ * else's.
  *
  * Three forms, all supported by Codex, and the reason the earlier "Codex can
  * only *name* a token" belief was wrong:
@@ -163,11 +164,57 @@ export function codexClientState(
  *   - `bearer_token_env_var = "FOO"` — the value lives in Codex's environment,
  *     so its presence is all that can be checked from here.
  */
-function hasCredentials(entry: CodexEntry, siblings: readonly CodexEntry[]): boolean {
-	if (entry.values.has('bearer_token_env_var') || entry.values.has('http_headers')) {
-		return true;
+type Credentials = 'ours' | 'unverifiable' | 'foreign';
+
+function credentialsOf(entry: CodexEntry, siblings: readonly CodexEntry[], token: string): Credentials {
+	// The value lives in Codex's environment; nothing here can read it.
+	if (entry.values.has('bearer_token_env_var')) {
+		return 'unverifiable';
 	}
-	return siblings.some(other => other.name === `${entry.name}.http_headers`);
+
+	const inline = entry.values.get('http_headers');
+	if (inline !== undefined) {
+		return judgeAuthorization(inline, token);
+	}
+
+	const subTable = siblings.find(other => other.name === `${entry.name}.http_headers`);
+	if (subTable) {
+		const header = [...subTable.values].find(([key]) => key.toLowerCase() === 'authorization');
+		if (!header) {
+			return 'unverifiable';
+		}
+		return header[1].includes(token) ? 'ours' : 'foreign';
+	}
+
+	return 'foreign';
+}
+
+/**
+ * What an `http_headers` value says about the token.
+ *
+ * The presence of *any* header used to count as credentials, which made the
+ * check blind to the accident it exists for: a config copied from another
+ * project carries the right URL and another workspace's token, and this
+ * reported it as correctly configured — so the report suppressed the reconnect
+ * advice while every call 401'd. The Claude side has always compared the token;
+ * only Codex trusted the shape.
+ *
+ * A value that is present but unreadable — a multi-line string, a form not
+ * modelled here — is `unverifiable`, deliberately: a false "reconnect" sends
+ * the user to fix a file that is already right, which is the worse error.
+ */
+function judgeAuthorization(raw: string, token: string): Credentials {
+	// A multi-line value first, or the pattern below reads its opening """ as an
+	// empty basic string and condemns a header that is perfectly correct — the
+	// worse of the two errors, since it sends the user to fix a good file.
+	if (/authorization\s*=\s*("""|''')/i.test(raw)) {
+		return 'unverifiable';
+	}
+	const match = /authorization\s*=\s*(?:"((?:[^"\\]|\\.)*)"|'([^']*)')/i.exec(raw);
+	if (match) {
+		return (match[1] ?? match[2] ?? '').includes(token) ? 'ours' : 'foreign';
+	}
+	return /authorization/i.test(raw) ? 'unverifiable' : 'foreign';
 }
 
 /**

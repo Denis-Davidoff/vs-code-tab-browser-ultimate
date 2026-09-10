@@ -146,7 +146,23 @@ export function scanLine(line: string, initialQuote?: string): ScanResult {
 }
 
 const tableHeader = /^\s*\[\s*mcp_servers\s*\.\s*([^\]\s]+)\s*\]\s*$/;
-const keyValue = /^\s*([A-Za-z0-9_.-]+)\s*=\s*(.*)$/;
+
+/**
+ * A key and the rest of its line.
+ *
+ * **The key may be quoted**, and missing that was a config-corrupting bug
+ * rather than a gap. TOML lets `"url" = "…"` mean exactly what `url = "…"`
+ * means, and a bare-key-only pattern reported such a table as having no `url`
+ * at all — so the repair took its "no url, insert both lines" branch and wrote
+ * a *second* `url` next to the first. Two definitions of one key is TOML that
+ * does not parse, so an unattended startup repair took every MCP server the
+ * user had with it. Same family as the rename collision in
+ * `Things that break silently`.
+ *
+ * The quotes are stripped by {@link unquote} before the key is recorded, so
+ * every reader asks for the bare name and both spellings answer.
+ */
+const keyValue = /^\s*("(?:[^"\\]|\\.)*"|'[^']*'|[A-Za-z0-9_.-]+)\s*=\s*(.*)$/;
 
 /**
  * Strips the quoting from a value.
@@ -230,30 +246,35 @@ export function codexEntries(text: string): CodexEntry[] {
 		// `text`, not `code`: `code` has string contents stripped, which loses both
 		// quoted table names and every value. The regexes are anchored, so a
 		// string that merely contains `[mcp_servers.x]` cannot masquerade as a
-		// header.
-		const code = scan.text;
+		// header. Named `text` here on purpose — it was called `code`, shadowing
+		// the very distinction the comment above draws.
+		const text = scan.text;
 
-		if (tableHeader.test(code)) {
+		if (tableHeader.test(text)) {
 			flush();
 			current = {
-				name: tableName(code),
+				name: tableName(text),
 				values: new Map(),
 				valueLines: new Map(),
 				valueEndLines: new Map(),
 				firstLine: index,
 				endLine: index + 1,
 			};
-		} else if (/^\s*\[/.test(code)) {
+		} else if (/^\s*\[/.test(text)) {
 			// Some other table: ours ended at its last key, not here.
 			flush();
 		} else if (current) {
-			const kv = keyValue.exec(code);
+			const kv = keyValue.exec(text);
 			if (kv) {
-				current.values.set(kv[1], unquote(kv[2]));
-				current.valueLines.set(kv[1], index);
-				current.valueEndLines.set(kv[1], index + 1);
+				// The bare name, so a reader asking for `url` finds it whether
+				// the file wrote `url` or `"url"`. Recording the quoted spelling
+				// verbatim is what made the repair believe the key was absent.
+				const key = unquote(kv[1]);
+				current.values.set(key, unquote(kv[2]));
+				current.valueLines.set(key, index);
+				current.valueEndLines.set(key, index + 1);
 				current.endLine = index + 1;
-				openKey = kv[1];
+				openKey = key;
 			}
 		}
 

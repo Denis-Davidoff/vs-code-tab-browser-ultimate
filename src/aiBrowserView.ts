@@ -49,7 +49,7 @@ export class AIBrowserView extends Disposable {
 			retainContextWhenHidden: true,
 			...AIBrowserView.getWebviewOptions(extensionUri)
 		});
-		return new AIBrowserView(extensionUri, url, webview);
+		return new AIBrowserView(extensionUri, url, webview, showOptions);
 	}
 
 	public static restore(
@@ -57,13 +57,17 @@ export class AIBrowserView extends Disposable {
 		url: string,
 		webviewPanel: vscode.WebviewPanel,
 	): AIBrowserView {
-		return new AIBrowserView(extensionUri, url, webviewPanel);
+		// `preserveFocus` on the restore path: the panel is being brought back
+		// with the window, and revealing it then would pull focus to a browser
+		// nobody asked for at that moment.
+		return new AIBrowserView(extensionUri, url, webviewPanel, { preserveFocus: true });
 	}
 
 	private constructor(
 		private readonly extensionUri: vscode.Uri,
 		url: string,
 		webviewPanel: vscode.WebviewPanel,
+		showOptions?: ShowOptions,
 	) {
 		super();
 
@@ -97,7 +101,12 @@ export class AIBrowserView extends Disposable {
 			}
 		}));
 
-		this.show(url);
+		// **The options have to be forwarded.** The panel above is created with
+		// `preserveFocus`, and this call is what fills in its html — but with no
+		// options it reveals with `preserveFocus` undefined, so the panel took
+		// focus anyway and the flag on `createWebviewPanel` bought nothing. It
+		// is the same reveal either way; only the argument was missing.
+		this.show(url, showOptions);
 	}
 
 	public override dispose() {

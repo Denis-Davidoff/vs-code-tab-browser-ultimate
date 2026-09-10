@@ -133,6 +133,27 @@ suite('codexEntries', () => {
 		assert.strictEqual(entry.name, 'ai-browser-abc123');
 	});
 
+	test('a quoted key is the same key', () => {
+		// TOML says `"url" = …` and `url = …` are one key, and reading the
+		// quoted form as *absent* is what let the repair write a second `url`
+		// beside it — two definitions of one key, which is TOML that does not
+		// parse, taking every MCP server in the file with it.
+		const [entry] = codexEntries([
+			'[mcp_servers.ours]',
+			'"url" = "http://a"',
+			"'http_headers' = { Authorization = \"Bearer t\" }",
+		].join('\n'));
+
+		assert.strictEqual(entry.values.get('url'), 'http://a');
+		assert.strictEqual(entry.valueLines.get('url'), 1);
+		assert.strictEqual(entry.values.get('http_headers'), '{ Authorization = "Bearer t" }');
+	});
+
+	test('a `#` inside a quoted key is still not a comment', () => {
+		const [entry] = codexEntries('[mcp_servers.ours]\n"ur#l" = "http://a"\n');
+		assert.strictEqual(entry.values.get('ur#l'), 'http://a');
+	});
+
 	test('an empty file yields nothing', () => {
 		assert.deepStrictEqual(codexEntries(''), []);
 	});

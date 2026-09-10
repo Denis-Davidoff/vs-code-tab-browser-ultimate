@@ -323,7 +323,8 @@ toolbar menu on the browser tab, or in the status bar menu — pins them to one 
   marker is stripped from every title the tools report, so an assistant never reads it as part
   of the page.
 - if the shared tab is closed, the tools **pause** rather than fall back to another page —
-  falling back would quietly undo the instruction. The status bar says so and one click resumes.
+  falling back would quietly undo the instruction. The status bar says so, and the menu behind it
+  offers to end the share, which lets the assistants follow you again.
 
 Commands *you* press — the screenshot buttons, the element picker — always act on the tab in
 front of you, sharing or not.

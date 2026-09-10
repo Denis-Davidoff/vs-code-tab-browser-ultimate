@@ -100,6 +100,51 @@ suite('codexClientState', () => {
 		assert.strictEqual(codexClientState(parse(text), url, urlWithToken, token), 'staleToken');
 	});
 
+	test('a header carrying our token is our entry', () => {
+		const text = `[mcp_servers.ai-browser]\nurl = "${url}"\nhttp_headers = { Authorization = "Bearer ${token}" }\n`;
+		assert.strictEqual(codexClientState(parse(text), url, urlWithToken, token), 'thisServer');
+	});
+
+	test("a header carrying somebody else's token is stale", () => {
+		// The accident this state exists for: a config copied from another
+		// project has the right URL and the wrong token. Counting *any* header
+		// as credentials reported it as correctly configured and suppressed the
+		// reconnect advice, while every call answered 401 — which reads as a
+		// broken server. The Claude side always compared the token; only Codex
+		// trusted the shape.
+		const text = `[mcp_servers.ai-browser]\nurl = "${url}"\nhttp_headers = { Authorization = "Bearer someone-else" }\n`;
+		assert.strictEqual(codexClientState(parse(text), url, urlWithToken, token), 'staleToken');
+	});
+
+	test('headers without any authorization are not credentials', () => {
+		const text = `[mcp_servers.ai-browser]\nurl = "${url}"\nhttp_headers = { X-Org = "acme" }\n`;
+		assert.strictEqual(codexClientState(parse(text), url, urlWithToken, token), 'staleToken');
+	});
+
+	test('an authorization we cannot read is trusted, not condemned', () => {
+		// A false "reconnect" sends the user to fix a file that is already
+		// right, which is the worse of the two errors.
+		const text = [
+			`[mcp_servers.ai-browser]`,
+			`url = "${url}"`,
+			`http_headers = { Authorization = """Bearer ${token}""" }`,
+		].join('\n');
+		assert.strictEqual(codexClientState(parse(text), url, urlWithToken, token), 'thisServer');
+	});
+
+	test('a header sub-table is judged by its authorization too', () => {
+		const ours = [
+			`[mcp_servers.ai-browser]`,
+			`url = "${url}"`,
+			`[mcp_servers.ai-browser.http_headers]`,
+			`Authorization = "Bearer ${token}"`,
+		].join('\n');
+		const theirs = ours.replace(`Bearer ${token}`, 'Bearer someone-else');
+
+		assert.strictEqual(codexClientState(parse(ours), url, urlWithToken, token), 'thisServer');
+		assert.strictEqual(codexClientState(parse(theirs), url, urlWithToken, token), 'staleToken');
+	});
+
 	test('a different port carrying our token is our own stale entry', () => {
 		// The token is what separates the two: this entry was written by this
 		// window and only the port has moved, so "another server" would send

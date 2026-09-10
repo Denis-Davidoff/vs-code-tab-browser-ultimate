@@ -111,7 +111,7 @@ Compiled with `tsc`, **no bundling**. `main: ./out/extension`.
 - [src/assistants.ts](src/assistants.ts) — handing reports to Claude Code and Codex
 - [src/lastAction.ts](src/lastAction.ts) — which element command the toolbar button repeats
 - [src/browserController.ts](src/browserController.ts) — what the browser can do, for MCP
-- [src/shareIndicator.ts](src/shareIndicator.ts) — the marker on a shared tab, page-side
+- [src/shareIndicator.ts](src/shareIndicator.ts) — the marker on a shared tab, page-side (leaf, under test)
 - [src/mcpProtocol.ts](src/mcpProtocol.ts) — JSON-RPC dispatch and the auth decision (leaf, under test)
 - [src/mcpPort.ts](src/mcpPort.ts) — which port a window tries first (leaf, under test)
 - [src/mcpRepair.ts](src/mcpRepair.ts) — correcting a stale entry in a client config (leaf, under test)
@@ -810,9 +810,10 @@ both `.d.ts` files.
 One toolbar button on the browser tab opens a dropdown holding **everything the extension
 does** — sharing this tab, the three element commands, then the three MCP ones. `Stop Sharing
 Tab` is gated on the `aiBrowser.tabShared` context key, republished from `extension.ts` on every
-share change, so it is only there while there is something to stop. Two `group` prefixes
-(`1_copy@n`, `2_mcp@n`) put a separator between them; ordering comes from the `@n` suffix, not
-from the position in the `contributes.menus` array.
+share change, so it is only there while there is something to stop. Six `group` prefixes
+(`0_share`, `1_copy`, `2_shot`, `3_claude`, `4_codex`, `5_mcp`) put separators between the
+sections; ordering comes from the `@n` suffix, not from the position in the `contributes.menus`
+array.
 
 There is no activity bar panel any more. It was a `TreeDataProvider` in `src/toolsView.ts`, and
 it went away when the same commands landed in this dropdown; `media/activity-icon.svg` went
@@ -1141,6 +1142,24 @@ We now write `http_headers = { Authorization = "Bearer …" }` as an **inline** 
 line range would orphan it. The token-in-URL form is still *accepted* when reading, since
 existing configs have it, and a stale sub-table of ours is removed on write.
 
+**The `codex mcp add` fallback carries the token.** It is handed over on exactly the path where
+writing the config failed, so it has to stand on its own — and without credentials the entry it
+creates answers 401 on every call, which reads as a broken server rather than as a command
+missing an argument. The token rides in the URL path there: the server accepts that form (rule 4
+of the security model, kept for clients like this), it needs no `codex mcp add` option this
+project has verified, and the startup repair still recognises the entry, because it matches on
+the token wherever the token sits.
+
+**A Codex entry's credentials are *checked*, not assumed from their shape.** The presence of any
+`http_headers` used to count as authentication, which made the check blind to the accident it
+exists for: a config copied from another project has the right URL and another workspace's
+token, and `Check Connection` reported it as correctly configured — suppressing the reconnect
+advice while every call 401'd. `judgeAuthorization` reads the `Authorization` value and compares
+it to the token; a value it cannot read (a multi-line string, a form not modelled) is
+`unverifiable` and trusted, deliberately, because a false "reconnect" sends the user to fix a
+file that is already right. `bearer_token_env_var` stays trusted for the same reason — the value
+is in Codex's environment.
+
 **Neither assistant re-reads its config.** Both load MCP servers at startup: Claude Code needs
 a restart, Codex a brand-new conversation. This is why the connection prompt names the *tools*
 and never tells the model to go and read `config.toml` — a model sent to read the file will
@@ -1175,6 +1194,16 @@ following lines are continuation; triple quotes inside a *literal* string open n
 five closing quotes still close once. A naive quote count got this wrong in both directions —
 our table became invisible and connecting wrote it a second time, which is TOML that does not
 parse at all.
+
+**A quoted key is the same key.** TOML says `"url" = …` and `url = …` are one key, and reading
+the quoted form as *absent* is the worst kind of miss for a writer: the repair took its "no url,
+insert both lines" branch and wrote a second definition beside the first, which is TOML that
+does not parse — so an unattended startup repair took every MCP server in the user's file with
+it. The same family as the rename collision below. `keyValue` now accepts a quoted key and
+`unquote` normalises it before it is recorded, so every reader asks for the bare name and both
+spellings answer. The local variable in `codexEntries` that holds `scan.text` is named `text`
+for the same reason the distinction exists — it used to be called `code`, shadowing the very
+rule the comment above it draws.
 
 **`code` versus `text`.** `scanLine` returns both, and the distinction is not cosmetic: `code`
 has string contents removed and answers structural questions; `text` is the line minus a real
@@ -1540,6 +1569,20 @@ Three things fix it, and each covers a different part:
   which is right: serving it from under the new owner is how a call comes to report one tab and
   act on another.
 
+**The lazy loss of a share must refuse, not act.** `_resolveTab` is what *discovers* a shared
+tab that has gone — the only detector on a host that does not fire `onDidCloseBrowserTab` — so a
+gate read before it can still be looking at a share this very call is about to end. `navigate`
+is the one tool that *acts* rather than refusing, and in that window it opened a brand-new tab at
+a model-chosen URL and reported `openedNewTab: true` while every later call refused. It now
+re-checks `_shareLost` after resolving, and so does `_requireTab`, which had been answering the
+worse refusal of the two: "No browser tab is open … call `browser_navigate` with a URL first",
+an instruction to take the one action that bypassed the pause.
+
+**The closure-discovering branch honours `user` too.** The `_shareLost` short-circuit did, but
+the branch that finds `_sharedTab` missing returned nothing for everyone — so on a host without
+the close event, the first user press after the tab went answered "No browser tab is open" with
+another tab in plain sight. Same line, drawn in both places.
+
 **`_sharedTab` still moves *before* the old tab is cleaned**, and that order is load-bearing for
 a different reason: while it still named the old tab, a concurrent tool resolving it could send
 `_sessionFor` down the arm-on-open path and re-mark the very tab being cleaned.
@@ -1581,12 +1624,13 @@ Everything about the implementation follows from the page being someone else's:
   whenever a session for the shared tab opens, which is also what re-marks the page after the
   host drops a session.
 - **`stripMarker` is applied to every title that leaves the extension** — tool results, the
-  status bar, the share state. Otherwise an agent reads the page title as `Orders 🤖` and files
-  a screenshot under it. There are **two sources** of a title and both need it: `BrowserTab.title`
-  (`state`, `tabs`, the share state, the menu) and `document.title` read in the page
-  (`navigate`, `snapshot`). `snapshot` was missed on the first pass precisely because it comes
-  from the second one. It also only trims when it actually cut something: a trailing space in
-  someone else's page title is theirs, not ours.
+  status bar, the share state — or an agent reads the page title as `Orders 🤖` and quotes it
+  back. (Screenshot file names are **not** among them: they come from the URL's hostname plus a
+  timestamp, in `clipboardImage.ts`. An earlier version of this paragraph claimed otherwise and
+  sent a reader looking for a naming path that does not exist.) There are **two sources** of a
+  title and both need it: `BrowserTab.title` (`state`, `tabs`, `selectTab`, the share state, the
+  menu) and `document.title` read in the page (`navigate`, `snapshot`). Both `snapshot` and
+  `selectTab` were missed on the first pass, one from each source.
 - **`set()` and `clear()` are serialised on one queue, not merely deduplicated** (`_enqueue`).
   They race by construction: the marker is armed from two places — a session opening, and the
   share being set — while `clear` comes from a button that can be pressed at any moment.
@@ -1632,6 +1676,60 @@ Everything about the implementation follows from the page being someone else's:
   could never come back on that page. The flag is what makes the disarms a tidiness measure
   rather than correctness. Verified against stub pages that throw from each.
 
+**The suffix is separated by U+2009, a thin space, and that is what makes it ours.** An emoji is
+not: `Deploy Bot 🤖` and `Docs 🔗` are ordinary titles, and with a plain space the page-side strip
+could not tell the page's own trailing emoji from the one we appended — so it ate it, in the
+page's live document, and `clear()` left the title that way for good, while every title reported
+lost the emoji too. A thin space in front of a trailing emoji is not something a title has by
+accident, so `separator + marker` identifies the suffix, `stripMarker` takes off **one** such
+suffix and never a loop of markers, and a page that already ends in our emoji simply gets ours
+appended after its own. Verified in [src/shareIndicator.test.ts](src/shareIndicator.test.ts).
+
+**`browser_html` is stripped too** (`stripMarkerFromHtml`). `html()` returns
+`document.documentElement.outerHTML`, so a shared tab carried `<title>Orders🔗</title>` into the
+one tool a model reaches for to *verify* a page — and that contradicted the very reason a
+floating badge was rejected. Doing it by text is safe only because of the separator: the pair is
+not something a document contains of its own.
+
+**A page-side throw is a *successful* CDP reply carrying `exceptionDetails`**, and ignoring that
+field made both callers lie. `_install` recorded a marker it had not applied, so the
+`_marker === marker` short-circuit suppressed every retry for the session; `clear()` reported it
+had reached the page, so `_clearIndicator` skipped the private-session route that exists for
+exactly that case. A page can cause it — freeze the object we look for, replace `endsWith`,
+break `MutationObserver` — so `evaluateInPage` inspects the field and throws.
+
+**Every best-effort CDP call inside a transition is bounded** (`bounded`, `indicatorTimeoutMs`),
+and this is the sharpest edge the gate added. `CDPClient.send` has no timeout of its own: it
+settles on a reply or on the channel closing, and a page that has stopped servicing its main
+thread — an infinite loop in a dev build, a paused renderer, a modal dialog handed to the
+debugger client — answers neither. For one tool call that is survivable. Inside `_transact` it
+was not: the transition never settled, and because every tool *and* every user command awaits
+`_settle()`, the whole surface hung silently — `stopSharing`, the only documented escape,
+included. Reproduced against a stubbed channel that drops `Runtime.evaluate`. One budget covers
+the *whole* cleanup rather than one per route, because the private-session fallback exists for a
+session that was dropped, not for a page that has stopped answering, and there it can only fail
+the same way.
+
+**`dispose` takes the marker off, and sends it directly.** The browser editor belongs to the
+workbench, so disabling or reloading the extension leaves the page alive: the suffix and the
+observer re-applying it stayed in a live document with nothing able to call `remove()`. The send
+cannot go through `indicator.clear()` — that queue's first `await` defers the work past the
+`_dropSession()` on the next line, so nothing was ever written — while `CDPClient.send` hands
+the message to the host synchronously, which is what makes an attempt on a synchronous teardown
+path worth anything at all.
+
+**Re-sharing the tab that is already shared is a no-op.** The toolbar entry sits in the shared
+tab's own menu, so it is one click away, and clearing `_shareUsedBy` there took the marker from
+🤖 back to 🔗 and the tooltip back to "no assistant has used it yet" — advice for a broken setup
+— while the assistants carried on working. The context key cannot express "this tab is the
+shared one", so the menu keeps the entry (it is also how a share is *moved* from the toolbar)
+and the transaction absorbs the repeat.
+
+**`_shareTab` refuses a tab that has closed.** Its body can run several CDP round-trips after
+the click that queued it, so the tab can be gone by its turn — and adopting it left the UI
+advertising a share on a tab that no longer existed, with `tab-0` for an id, until some tool
+happened to resolve a tab. The command reports the refusal through `refuse()`, never a toast.
+
 **A one-off read of another tab must not move the cached session** — `_borrowSession`. The
 cache is single (`_session` / `_sessionTab`) and `_sessionFor` *drops* whatever it holds, which
 is right for the tools, whose subject really has moved, and wrong for a screenshot: a
@@ -1641,6 +1739,13 @@ while sharing is still in force — the symptom arriving long after the action t
 the console buffer the assistant was collecting goes with it. So `capture` reuses the cached
 session only when it already belongs to that tab, and otherwise opens a throwaway one and
 disposes it, the same shape the element picker uses.
+
+**But only for a tab the caller *named*.** `capture` with no `preferred` tab is acting on the
+tools' own subject, and that session is cached rather than borrowed: routing every capture
+through `_borrowSession` quietly cost the console its priming, because a screenshot used to
+leave an attached session behind and a following `browser_console` had the page's log from that
+moment on. With a throwaway it answered "The console is empty" for everything before the next
+call — and console capture is the whole reason the session is cached at all.
 
 A floating badge injected into the page was the alternative and was rejected: it lands in every
 screenshot the agent takes, and shows up in `browser_html` / `browser_text` as page content that
@@ -1908,7 +2013,37 @@ No compile error for any of these — they only surface at runtime.
     share moving is the common case, and the marker's registration goes with the session), or
     runs after `dispose` and leaves a session with nothing left to close it. Guard with
     `_stillWanted`, and set `_disposed` before tearing anything down.
-41. **`Open File` on a host without the built-in browser** → a `file:` URI in the webview panel
+41. **Reading a quoted TOML key as absent** → `"url" = …` is the same key as `url = …`, so a
+    writer that misses it adds a second definition, and two definitions of one key is TOML that
+    does not parse — taking every MCP server in the file with it, unattended, at window start.
+42. **Handing over a CLI command with no credentials** → the entry it creates answers 401 on
+    every call, and the fallback is offered precisely when the config could not be written, so
+    there is nothing else to fall back to.
+43. **Treating the presence of a header as authentication** → a config copied from another
+    project keeps the right URL and the wrong token, and the check reports it as correct while
+    every call 401s. Compare the value; trust only what cannot be read.
+44. **JSON-escaping a value into an XPath literal** → XPath 1.0 has no escape mechanism inside
+    string literals, so an id containing a quote produces an expression that no engine accepts.
+    Quote with the other delimiter, or `concat()`. Verified with `xmllint`.
+45. **Creating a webview panel with `preserveFocus` and then revealing it without the options**
+    → the reveal takes focus anyway and the flag on `createWebviewPanel` buys nothing.
+46. **A cancelled element pick that still delivers** → cancellation stops the *wait* for the
+    click, not the extraction after it, so a superseded pick overwrote the newer one's
+    clipboard. Check the token again before delivering.
+47. **An unbounded best-effort CDP call inside a serialised transition** → `CDPClient.send` has
+    no timeout, so a page that has stopped answering never settles the transition, and
+    everything queued behind the gate — every tool, every user command, the recovery command
+    included — hangs with no error. Bound it (`bounded`).
+48. **Ignoring `exceptionDetails` on `Runtime.evaluate`** → CDP answers a page-side throw with a
+    *successful* reply, so a failed install is recorded as done (suppressing every retry) and a
+    failed cleanup reports success (skipping the caller's second route).
+49. **A parameter property in a module `npm test` loads** → Node strips types rather than
+    compiling them, so `constructor(private readonly x)` fails at load with
+    `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`, exactly like `enum`. A type-only import is erased at
+    runtime but **not** at typecheck time, so it still drags the imported file into the test
+    project — declare the structural slice instead, as `shareIndicator.ts` does with
+    `PageChannel`.
+50. **`Open File` on a host without the built-in browser** → a `file:` URI in the webview panel
     is blocked by `localResourceRoots`, so the panel renders blank with no error. The menu entry
     is therefore gated on `shouldUseIntegratedBrowser()` rather than falling back.
 
