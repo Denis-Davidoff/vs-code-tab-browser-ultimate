@@ -157,7 +157,7 @@ export function activate(context: vscode.ExtensionContext) {
 		() => mcp.withServer(async server =>
 			connectCodex(server, await giveFocusedTab(forKind('codex'))))));
 	context.subscriptions.push(vscode.commands.registerCommand(checkMcpCommand,
-		() => mcp.withServer(checkConnection)));
+		() => mcp.withServer(server => checkConnection(server, browser))));
 
 	context.subscriptions.push(vscode.commands.registerCommand(enableBrowserApiCommand,
 		() => enableBrowserApi()));

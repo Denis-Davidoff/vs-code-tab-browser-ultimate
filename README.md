@@ -25,7 +25,7 @@ there is not the problem, the missing API is. **Measured by reading the shipped 
 **1–2** install, then click **AI Browser** in the status bar — the menu tells you whether this
 editor supports the browser tools · **2.1–2.2** let it write `enable-proposed-api` into
 `argv.json`, then quit and reopen · **3–4** open a page and find the two buttons at the top right
-of the browser tab · **5–7** *Connect Claude Code / Codex and Share This Tab*, then paste the copied
+of the browser tab · **5–7** *Connect Claude Code* / *Connect Codex*, then paste the copied
 prompt into the assistant · **8** done.
 
 **The original VS Code is the awkward one, and that is why it is third.** It is the only editor
@@ -151,7 +151,7 @@ The menu, in order:
 | Copy Screenshot (Full Page) | the whole scrollable page, truncated past 16384 px |
 | Add Element / CSS Path / XPath to Claude Code | the same three picks, handed to the Claude Code chat |
 | Add Element / CSS Path / XPath to Codex | the same, for Codex |
-| Share Tab with Claude Code / Codex, Connect … and Share This Tab, Check Connection | the mcp server, [below](#giving-an-assistant-the-browser-mcp) |
+| Share Tab with Claude Code / Codex, Connect Claude Code / Codex, Check Connection | the mcp server, [below](#giving-an-assistant-the-browser-mcp) |
 
 The assistant entries only appear for an assistant that is actually installed, and the menu is
 attached to the browser tab — from anywhere else, use the command palette.
@@ -274,7 +274,8 @@ a `file:` url would turn a browser tool into a file reader.
 
 1. **Open a page** in the built-in browser.
 2. **Run the connect command** — from the globe menu on the browser tab, or from the command
-   palette: **AI Browser: Connect Claude Code and Share This Tab** / **Connect Codex and Share This Tab**.
+   palette: **AI Browser: Connect Claude Code** / **Connect Codex** — run from a browser tab and
+   the assistant is given that tab as well.
 3. **Press the first button.** **Write .mcp.json & copy connection prompt** (Claude Code) or
    **Write .codex/config.toml & copy connection prompt** (Codex) writes the entry and puts one
    line on the clipboard; paste that into the assistant's chat. The entry carries this window's
@@ -319,7 +320,7 @@ an assistant is working while you read something else. You can hand **one tab to
 | **Share Tab with Claude Code** | gives Claude Code the tab you are on |
 | **Share Tab with Codex** | gives Codex the tab you are on |
 | **Share Tab with All Assistants** | gives it to every assistant that has no tab of its own |
-| **Connect Claude Code / Codex and Share This Tab** | writes the assistant's config, copies the check prompt, and gives it this tab |
+| **Connect Claude Code / Codex** | writes the assistant's config, copies the check prompt, and — when run from a browser tab — gives it that tab |
 | **Stop Sharing Tab** | releases one assignment, or all of them |
 
 Several assistants can work on the same tab, and each one only ever works on the tab it was
@@ -427,8 +428,8 @@ All of them are in the command palette under **AI Browser**.
 | Share Tab with Codex | `aiBrowser.shareTabWithCodex` |
 | Share Tab with All Assistants | `aiBrowser.shareTab` |
 | Stop Sharing Tab | `aiBrowser.stopSharingTab` |
-| Connect Claude Code and Share This Tab | `aiBrowser.connectClaudeCode` |
-| Connect Codex and Share This Tab | `aiBrowser.connectCodex` |
+| Connect Claude Code | `aiBrowser.connectClaudeCode` |
+| Connect Codex | `aiBrowser.connectCodex` |
 | Check Connection | `aiBrowser.checkMcpConnection` |
 | Show | `aiBrowser.show` |
 | Enable Integrated Browser API | `aiBrowser.enableBrowserApi` |

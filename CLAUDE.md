@@ -1593,6 +1593,26 @@ The share entry in the status bar menu is also offered when it *cannot* act, for
 reason: it used to be hidden whenever a browser tab was not focused, which is exactly when
 somebody goes looking for it. Picking it runs the command, which explains what it needs.
 
+**"Nothing is focused" and "no tab exists" are two different facts, and the menu used only
+one.** Everything about giving a tab away was gated on `focusedTab`, so with **no browser tab
+open at all** the menu still offered "Give a tab to an assistant" — and the connect rows still
+read "Connect Claude Code *and share this tab*", naming a tab that did not exist. Reported as a
+plain error, and it is one: a menu that offers to hand over something the window does not have.
+So `hasOpenTabs` gates the section, and the connect labels carry the "and share this tab" half
+only while something is focused — the command itself already shared whatever was focused and
+nothing otherwise, so only the promise was wrong. The same conditional wording is in the
+`Check Connection` report, whose buttons run those same commands, and it asks the controller
+rather than re-deriving the focus rule: a second copy of `focusedTab` would drift, and drifting
+reproduces exactly this mislabelling. The dropdown on the browser tab needs none of this: it
+only renders while a browser tab is the active editor.
+
+**A palette title cannot be conditional, so it has to be true in every state** — which is why
+`command.connectClaudeCode.title` is plain `Connect Claude Code` again rather than
+"… and Share This Tab". The manifest string is one string for every surface, including a window
+with no browser tab in it, and a title that promises a share the command will not make is the
+same defect one surface along. The sharing is said where it can be conditional: the status bar
+label, the report's buttons, and the confirmation the command itself prints.
+
 The trade-off is worth stating: someone who connects with a tab open now has a share they did
 not ask for, and if that tab is closed the tools pause. That is visible — 🔗 in the status bar,
 the marker on the tab, and the confirmation naming `Stop Sharing Tab` — and the alternative was
@@ -2245,7 +2265,17 @@ No compile error for any of these — they only surface at runtime.
     exact setup the feature targets (Claude Code driven from a terminal through `.mcp.json`).
 72. **Naming a command title in a message while renaming that command** → the sentence points at
     a palette entry nobody can find. Renames have to sweep `l10n.t` strings and the README table.
-73. **`Open File` on a host without the built-in browser** → a `file:` URI in the webview panel
+73. **Gating a "give this tab away" entry on focus rather than on existence** → with no browser
+    tab open at all the menu still offered to hand one over, and the connect rows still promised
+    "and share this tab". Two different facts: nothing focused is ordinary, nothing open is not.
+74. **A static title that describes a conditional action** → a palette entry is one string for
+    every state, so "Connect … and Share This Tab" promised a share in a window with no browser
+    tab. Conditional wording belongs where it can be conditional — a menu label built in code.
+75. **Packaging whatever the working tree happens to contain** → `.vscodeignore` is an allowlist
+    by omission, so a file this extension's *own* command writes into the project root
+    (`.mcp.json`, carrying the workspace token) rode into the VSIX. Check `unzip -l` after
+    adding any tool that writes at the repository root.
+76. **`Open File` on a host without the built-in browser** → a `file:` URI in the webview panel
     is blocked by `localResourceRoots`, so the panel renders blank with no error. The menu entry
     is therefore gated on `shouldUseIntegratedBrowser()` rather than falling back.
 
@@ -2597,6 +2627,21 @@ Mechanics worth knowing:
 
 Publishing it: `cd vscode-marketplace && npm run publish` — like the root script, it packages
 first.
+
+### `.mcp.json` is gitignored **in this repository**, and that is not a contradiction
+
+Upstream's design is that a project commits `.mcp.json` and shares it with a team, and the
+[Not built yet](#not-built-yet) entry on a stdio bridge is about exactly that trade-off. It
+holds for a *consumer's* project. It does not hold here: this repository is public, and pressing
+`Connect Claude Code` while working **on the extension itself** writes the workspace's bearer
+token into the repository root — the only thing guarding a loopback server that can drive the
+developer's browser. So `.mcp.json` is in `.gitignore` and in `.vscodeignore`, the second
+because it was otherwise packaged into the VSIX as `extension/.mcp.json` and would have shipped
+the token to everyone who installed it. Found by review while the file was staged and not yet
+committed, so nothing leaked; if it ever does reach a commit, rotating the token is not enough
+on its own — the token is the identity `repairConfigs` matches on, so every config naming this
+window stops being recognisable at the same moment (see
+[The port moves](#the-port-moves-and-the-config-remembers-the-old-one)).
 
 ## Known issues, not yet fixed
 

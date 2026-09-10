@@ -550,6 +550,18 @@ export class BrowserController implements vscode.Disposable {
 		return isBrowserApiGranted() ? vscode.window.activeBrowserTab : undefined;
 	}
 
+	/**
+	 * Whether the window has any browser tab at all.
+	 *
+	 * Distinct from {@link focusedTab}, and the distinction is what the menu got
+	 * wrong: "no tab is focused" is the normal state while somebody reads a
+	 * file, and "no tab exists" is the state where every entry about giving a
+	 * tab away is nonsense.
+	 */
+	public get hasOpenTabs(): boolean {
+		return isBrowserApiGranted() && (vscode.window.browserTabs ?? []).length > 0;
+	}
+
 	/** Gives every open tab an id and forgets the ones that have closed. */
 	private _identify(open: readonly vscode.BrowserTab[]): void {
 		for (const tab of open) {

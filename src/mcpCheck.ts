@@ -14,6 +14,7 @@ import {
 	claudeConfigUri, claudeLocalConfigUri, codexGlobalConfigUri, codexProjectConfigUri,
 	workspaceFolder,
 } from './mcpSetup';
+import type { BrowserController } from './browserController';
 import type { McpServer } from './mcpServer';
 
 /**
@@ -93,7 +94,7 @@ function describe(state: ClientState): string {
 	}
 }
 
-export async function checkConnection(server: McpServer): Promise<void> {
+export async function checkConnection(server: McpServer, browser: BrowserController): Promise<void> {
 	const url = server.url;
 	if (!url || !server.urlWithToken) {
 		vscode.window.showWarningMessage(vscode.l10n.t("The MCP server is not listening."));
@@ -173,13 +174,23 @@ export async function checkConnection(server: McpServer): Promise<void> {
 		// focused tab to that assistant, and an action labelled the same as the
 		// palette entry must not do half of what that entry does.
 		actions.push({
-			label: vscode.l10n.t("Connect Claude Code and share this tab"),
+			// The label promises the share only when there is a tab to share:
+			// the command gives away whatever is focused and gives nothing
+			// otherwise, so with no browser tab open the longer wording named
+			// something that does not exist. Asked of the controller, which
+			// owns the focus rule — a second copy of it here would drift, and
+			// drifting reproduces exactly this mislabelling.
+			label: browser.focusedTab
+				? vscode.l10n.t("Connect Claude Code and share this tab")
+				: vscode.l10n.t("Connect Claude Code"),
 			run: () => vscode.commands.executeCommand('aiBrowser.connectClaudeCode'),
 		});
 	}
 	if (codex !== 'thisServer') {
 		actions.push({
-			label: vscode.l10n.t("Connect Codex and share this tab"),
+			label: browser.focusedTab
+				? vscode.l10n.t("Connect Codex and share this tab")
+				: vscode.l10n.t("Connect Codex"),
 			run: () => vscode.commands.executeCommand('aiBrowser.connectCodex'),
 		});
 	}

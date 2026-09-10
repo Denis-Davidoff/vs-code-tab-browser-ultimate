@@ -11,3 +11,10 @@ node_modules/
 # Marketplace stub build artifacts
 vscode-marketplace/media/
 vscode-marketplace/*.vsix
+# Written by this extension's own "Connect Claude Code" when it is used on this
+# repository, and it carries the workspace's MCP bearer token. Upstream's design
+# is that a project commits `.mcp.json` and shares it with a team; that is fine
+# for a *consumer's* project and wrong here, because this repository is public
+# and the token is the only thing guarding a loopback server that can drive the
+# developer's browser.
+.mcp.json

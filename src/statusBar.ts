@@ -206,6 +206,12 @@ async function showMenu(controller: BrowserController): Promise<void> {
 	// Read before the QuickPick is shown: a focused browser tab is what "share
 	// this tab" means, and clicking the status bar does not move focus.
 	const focused = controller.focusedTab;
+	// **Two different facts, and the menu used only one of them.** "Nothing is
+	// focused" is the ordinary state while somebody reads a file, and it is
+	// what the entries below check; "no browser tab exists" is the state where
+	// every sentence about giving *this* tab or *a* tab away is nonsense, and
+	// the menu was still offering them.
+	const anyTab = controller.hasOpenTabs;
 
 	items.push({ label: vscode.l10n.t("Open"), kind: vscode.QuickPickItemKind.Separator });
 	items.push({
@@ -245,14 +251,26 @@ async function showMenu(controller: BrowserController): Promise<void> {
 	}
 
 	items.push({ label: vscode.l10n.t("Assistants"), kind: vscode.QuickPickItemKind.Separator });
+	// The label says "and share this tab" only when there *is* a tab to share:
+	// the command shares whatever is focused and shares nothing otherwise, so
+	// with no browser tab open the longer label promised something it could not
+	// do.
 	items.push({
-		label: vscode.l10n.t("$(comment-discussion) Connect Claude Code and share this tab"),
-		detail: vscode.l10n.t("Writes its config, copies the check prompt, and gives it the tab you are on"),
+		label: focused
+			? vscode.l10n.t("$(comment-discussion) Connect Claude Code and share this tab")
+			: vscode.l10n.t("$(comment-discussion) Connect Claude Code"),
+		detail: focused
+			? vscode.l10n.t("Writes its config, copies the check prompt, and gives it the tab you are on")
+			: vscode.l10n.t("Writes its config and copies the check prompt"),
 		run: () => vscode.commands.executeCommand('aiBrowser.connectClaudeCode'),
 	});
 	items.push({
-		label: vscode.l10n.t("$(comment-discussion) Connect Codex and share this tab"),
-		detail: vscode.l10n.t("Writes its config, copies the check prompt, and gives it the tab you are on"),
+		label: focused
+			? vscode.l10n.t("$(comment-discussion) Connect Codex and share this tab")
+			: vscode.l10n.t("$(comment-discussion) Connect Codex"),
+		detail: focused
+			? vscode.l10n.t("Writes its config, copies the check prompt, and gives it the tab you are on")
+			: vscode.l10n.t("Writes its config and copies the check prompt"),
 		run: () => vscode.commands.executeCommand('aiBrowser.connectCodex'),
 	});
 	items.push({
@@ -266,7 +284,7 @@ async function showMenu(controller: BrowserController): Promise<void> {
 	// reads better at the end of a list than at the top of one. The tab
 	// dropdown says the same thing with its group prefix (`6_share`).
 	const shares = controller.shares;
-	if (shares.assignments.length > 0 || shares.paused.length > 0 || focused) {
+	if (shares.assignments.length > 0 || shares.paused.length > 0 || focused || anyTab) {
 		items.push({ label: vscode.l10n.t("Shared tabs"), kind: vscode.QuickPickItemKind.Separator });
 	}
 
@@ -313,15 +331,16 @@ async function showMenu(controller: BrowserController): Promise<void> {
 			detail: vscode.l10n.t("Assistants with no tab of their own then work on this one"),
 			run: () => vscode.commands.executeCommand('aiBrowser.shareTab'),
 		});
-	} else if (shares.assignments.length === 0 && shares.paused.length === 0) {
-		// Offered even though it cannot act from here, because the alternative
-		// is a feature nobody finds: hidden whenever a browser tab is not
+	} else if (anyTab && shares.assignments.length === 0 && shares.paused.length === 0) {
+		// Offered while a browser tab exists but is not focused, because the
+		// alternative is a feature nobody finds: hidden whenever a tab was not
 		// focused, this entry was invisible exactly when someone went looking
 		// for it — and "Connect" took the blame for the tools following the
-		// active tab. Picking it runs the command, which says what it needs.
+		// active tab. **But only while there is a tab at all**: with none open
+		// it was an entry about giving away something that does not exist.
 		items.push({
 			label: vscode.l10n.t("$(link) Give a tab to an assistant"),
-			detail: vscode.l10n.t("Until you do, the browser tools follow whichever browser tab you are looking at — open a page and run this from that tab"),
+			detail: vscode.l10n.t("Click the browser tab you mean, then run this from it — until then the browser tools follow whichever tab you are looking at"),
 			run: () => vscode.commands.executeCommand('aiBrowser.shareTab'),
 		});
 	}

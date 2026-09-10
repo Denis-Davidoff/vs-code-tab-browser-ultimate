@@ -5,6 +5,7 @@ tsconfig*.json
 esbuild*.mts
 vscode.proposed.*.d.ts
 .gitignore
+.mcp.json
 package-lock.json
 .vscode/**
 CLAUDE.md
