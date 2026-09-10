@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate",
 	"displayName": "AI Browser🏆 Claude + Codex",
 	"description": "Embedded browser tab with AI capabilities, Claude and Codex integration",
-	"version": "0.5.11",
+	"version": "0.5.12",
 	"enabledApiProposals": [
 		"externalUriOpener",
 		"browser"
