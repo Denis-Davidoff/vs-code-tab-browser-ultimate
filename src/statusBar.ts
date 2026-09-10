@@ -244,9 +244,27 @@ async function showMenu(controller: BrowserController): Promise<void> {
 		});
 	}
 
-	// The assignments come first, because they are the per-page half of the same
-	// job the entries below do once: those attach an assistant to this window,
-	// these say which page inside it each one works on.
+	items.push({ label: vscode.l10n.t("Assistants"), kind: vscode.QuickPickItemKind.Separator });
+	items.push({
+		label: vscode.l10n.t("$(comment-discussion) Connect Claude Code and share this tab"),
+		detail: vscode.l10n.t("Writes its config, copies the check prompt, and gives it the tab you are on"),
+		run: () => vscode.commands.executeCommand('aiBrowser.connectClaudeCode'),
+	});
+	items.push({
+		label: vscode.l10n.t("$(comment-discussion) Connect Codex and share this tab"),
+		detail: vscode.l10n.t("Writes its config, copies the check prompt, and gives it the tab you are on"),
+		run: () => vscode.commands.executeCommand('aiBrowser.connectCodex'),
+	});
+	items.push({
+		label: vscode.l10n.t("$(pulse) Check Connection"),
+		run: () => vscode.commands.executeCommand('aiBrowser.checkMcpConnection'),
+	});
+
+	// The assignments come *after* the connect entries, in both menus, and the
+	// order is asked for rather than derived: connecting is the thing done once
+	// per project, while an assignment is what changes from page to page, so it
+	// reads better at the end of a list than at the top of one. The tab
+	// dropdown says the same thing with its group prefix (`6_share`).
 	const shares = controller.shares;
 	if (shares.assignments.length > 0 || shares.paused.length > 0 || focused) {
 		items.push({ label: vscode.l10n.t("Shared tabs"), kind: vscode.QuickPickItemKind.Separator });
@@ -314,22 +332,6 @@ async function showMenu(controller: BrowserController): Promise<void> {
 			run: () => vscode.commands.executeCommand('aiBrowser.stopSharingTab'),
 		});
 	}
-
-	items.push({ label: vscode.l10n.t("Assistants"), kind: vscode.QuickPickItemKind.Separator });
-	items.push({
-		label: vscode.l10n.t("$(comment-discussion) Connect Claude Code and share this tab"),
-		detail: vscode.l10n.t("Writes its config, copies the check prompt, and gives it the tab you are on"),
-		run: () => vscode.commands.executeCommand('aiBrowser.connectClaudeCode'),
-	});
-	items.push({
-		label: vscode.l10n.t("$(comment-discussion) Connect Codex and share this tab"),
-		detail: vscode.l10n.t("Writes its config, copies the check prompt, and gives it the tab you are on"),
-		run: () => vscode.commands.executeCommand('aiBrowser.connectCodex'),
-	});
-	items.push({
-		label: vscode.l10n.t("$(pulse) Check Connection"),
-		run: () => vscode.commands.executeCommand('aiBrowser.checkMcpConnection'),
-	});
 
 	items.push({ label: '', kind: vscode.QuickPickItemKind.Separator });
 	items.push({

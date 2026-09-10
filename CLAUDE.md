@@ -809,12 +809,20 @@ both `.d.ts` files.
 ### The dropdown on the browser tab
 
 One toolbar button on the browser tab opens a dropdown holding **everything the extension
-does** — sharing this tab, the three element commands, then the three MCP ones. `Stop Sharing
-Tab` is gated on the `aiBrowser.tabShared` context key, republished from `extension.ts` on every
-share change, so it is only there while there is something to stop. Six `group` prefixes
-(`0_share`, `1_copy`, `2_shot`, `3_claude`, `4_codex`, `5_mcp`) put separators between the
+does** — the three element commands, the screenshots, the per-assistant hand-overs, the three
+MCP ones, and the tab assignments last. `Stop Sharing Tab` is gated on the
+`aiBrowser.tabShared` context key, republished from `extension.ts` on every share change, so it
+is only there while there is something to stop. Six `group` prefixes
+(`1_copy`, `2_shot`, `3_claude`, `4_codex`, `5_mcp`, `6_share`) put separators between the
 sections; ordering comes from the `@n` suffix, not from the position in the `contributes.menus`
-array.
+array — the array is kept in the same order anyway, because a file that reads in a different
+order than the menu renders is a trap for the next edit.
+
+**The assignments sit at the end of both menus, and that was asked for rather than derived.**
+Connecting is done once per project; an assignment is what changes from page to page, and it
+reads better at the foot of a list than at the head of one. The status bar menu is ordered in
+code (`showMenu`) and the dropdown by that group prefix, so moving one means moving both — they
+are the same list to a user.
 
 There is no activity bar panel any more. It was a `TreeDataProvider` in `src/toolsView.ts`, and
 it went away when the same commands landed in this dropdown; `media/activity-icon.svg` went
@@ -1925,7 +1933,7 @@ which the rest of the report is read as Markdown.
 
 Two dropdown entries — visible area and full page — in a group of their own (`2_shot`), which
 is what puts a separator around them. Group names sort alphabetically, so the numeric prefixes
-(`0_share`, `1_copy`, `2_shot`, `3_claude`, `4_codex`, `5_mcp`) are the running order of the
+(`1_copy`, `2_shot`, `3_claude`, `4_codex`, `5_mcp`, `6_share`) are the running order of the
 whole menu.
 
 Capturing is one CDP call, but two arguments matter:

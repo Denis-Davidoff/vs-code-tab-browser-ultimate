@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate",
 	"displayName": "AI Browser🏆 Claude + Codex",
 	"description": "Embedded browser tab with AI capabilities, Claude and Codex integration",
-	"version": "0.5.16",
+	"version": "0.5.17",
 	"enabledApiProposals": [
 		"externalUriOpener",
 		"browser"
@@ -444,23 +444,6 @@
 			],
 			"aiBrowser.elementMenu": [
 				{
-					"command": "aiBrowser.shareTabWithClaudeCode",
-					"group": "0_share@2"
-				},
-				{
-					"command": "aiBrowser.shareTabWithCodex",
-					"group": "0_share@3"
-				},
-				{
-					"command": "aiBrowser.shareTab",
-					"group": "0_share@1"
-				},
-				{
-					"command": "aiBrowser.stopSharingTab",
-					"group": "0_share@4",
-					"when": "aiBrowser.tabShared"
-				},
-				{
 					"command": "aiBrowser.copyElement",
 					"group": "1_copy@1"
 				},
@@ -521,6 +504,23 @@
 				{
 					"command": "aiBrowser.checkMcpConnection",
 					"group": "5_mcp@3"
+				},
+				{
+					"command": "aiBrowser.shareTab",
+					"group": "6_share@1"
+				},
+				{
+					"command": "aiBrowser.shareTabWithClaudeCode",
+					"group": "6_share@2"
+				},
+				{
+					"command": "aiBrowser.shareTabWithCodex",
+					"group": "6_share@3"
+				},
+				{
+					"command": "aiBrowser.stopSharingTab",
+					"group": "6_share@4",
+					"when": "aiBrowser.tabShared"
 				}
 			],
 			"commandPalette": [
