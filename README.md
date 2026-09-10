@@ -266,8 +266,10 @@ read and drive the page itself instead of being handed reports about it:
 
 | Tool | What it does |
 | --- | --- |
-| `browser_state` | Whether a page is open, and its url and title |
-| `browser_navigate` | Open an http(s) url in the browser |
+| `browser_state` | Whether a page is open, which tab the tools act on, and how that tab was chosen |
+| `browser_tabs` | Every open tab with an id, which one is in use and which one you are looking at |
+| `browser_select_tab` | Fix the tools on one tab by id — or `auto` to follow the one in front of you |
+| `browser_navigate` | Open an http(s) url, reusing the tab in use unless asked for a new one |
 | `browser_snapshot` | The interactive elements on the page, with selectors for the tools below |
 | `browser_inspect_element` | Arm the picker and wait for you to click something, then report it |
 | `browser_selected_element` | The element you picked last, without prompting again |
@@ -321,11 +323,25 @@ into a 401.
 ### Scope, and what it is attached to
 
 The server belongs to the **window**: the token is per workspace and the port is taken in the
-order windows open, so connecting attaches an assistant to this VS Code window. Within it, every
-tool resolves the **active** browser tab at the moment it is called — so with two browser tabs
-open, switching between calls sends the next `browser_click` to the other page, and
-`browser_navigate` always opens a new tab. Describe it to yourself as "attached to a window,
-acting on the active tab".
+order windows open, so connecting attaches an assistant to this VS Code window.
+
+Within it, the tools act on **one tab at a time**, and which one is decided per call: the tab
+selected with `browser_select_tab`, else the browser tab you have in front of you, else the last
+one the tools used. So an assistant can be told "work on this page" and it keeps working on it
+while you read something else — and with no selection at all it simply follows you, including
+through clicking into a file, which no longer looks to it like "no browser tab is open".
+
+`browser_navigate` **reuses that tab** rather than opening another, which is what stops an agent
+from leaving a trail of editor tabs behind; pass `newTab` when a second page is genuinely
+wanted. Two other things do still open tabs and are not ours to change: opening a url from the
+command palette or a localhost link, and the page's own `target="_blank"` popups.
+
+Tab ids (`tab-1`, `tab-2`, …) are minted by the extension, because the editor's browser api
+exposes no identity of its own. They last as long as the window, so an assistant has to list
+before it selects rather than reusing an id from an earlier conversation. A selection is dropped
+if that tab is closed, and `browser_state` then reports `selection: automatic` again. Commands
+*you* press — the screenshot buttons on the toolbar — always act on the tab you are looking at,
+whatever the assistant has selected.
 
 ### Security
 

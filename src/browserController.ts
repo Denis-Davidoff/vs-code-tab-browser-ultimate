@@ -174,30 +174,98 @@ export class BrowserController implements vscode.Disposable {
 	 */
 	private _lastTab: vscode.BrowserTab | undefined;
 
+	/**
+	 * The tab an assistant asked for by id, and the reason {@link _resolveTab}
+	 * has a first branch at all.
+	 *
+	 * It outranks the focused editor on purpose: an assistant that was told
+	 * "work on this one" must keep working on it while the user reads a
+	 * different page. The user's own commands do not go through here — the
+	 * toolbar's screenshot passes {@link focusedTab} — so a pin set by an agent
+	 * can never redirect a button the user pressed.
+	 */
+	private _pinnedTab: vscode.BrowserTab | undefined;
+
+	/**
+	 * Ids handed out for `browser_tabs`, because the `browser` proposal exposes
+	 * none: `BrowserTab` carries url, title, icon and two methods, and nothing
+	 * that survives being written down. So identity is ours to mint, keyed on
+	 * the tab object — which the extension host builds once per tab and only
+	 * mutates in place, so it is stable for as long as the tab is open.
+	 */
+	private readonly _tabIds = new Map<vscode.BrowserTab, string>();
+	private _nextTabId = 1;
+
 	/** Last element the user picked, so a follow-up question does not re-prompt. */
 	private _selectedElement: string | undefined;
 
 	/**
-	 * Which tab the tools act on: the active one, else the one last used, else
-	 * the most recently opened.
+	 * Which tab the tools act on: the one selected by id, else the active one,
+	 * else the one last used, else the most recently opened.
 	 *
 	 * The last fallback is deliberate rather than a refusal — with a single tab
 	 * open, which is the usual case, it is the only answer that can be right.
 	 */
 	private _resolveTab(): vscode.BrowserTab | undefined {
+		const open = vscode.window.browserTabs ?? [];
+
+		if (this._pinnedTab) {
+			if (open.includes(this._pinnedTab)) {
+				return this._pinnedTab;
+			}
+			// The tab was closed. Falling back beats refusing every call until
+			// something selects again, and `selection` reports which happened.
+			this._pinnedTab = undefined;
+		}
+
 		const active = vscode.window.activeBrowserTab;
 		if (active) {
 			this._lastTab = active;
 			return active;
 		}
 
-		const open = vscode.window.browserTabs ?? [];
 		if (this._lastTab && open.includes(this._lastTab)) {
 			return this._lastTab;
 		}
 
 		this._lastTab = open.length > 0 ? open[open.length - 1] : undefined;
 		return this._lastTab;
+	}
+
+	/**
+	 * The browser tab the user is looking at, if any.
+	 *
+	 * This is what a command the *user* pressed should act on, whatever an
+	 * assistant has selected. `undefined` means no browser tab has focus, and
+	 * the caller falls back to {@link _resolveTab}.
+	 */
+	public get focusedTab(): vscode.BrowserTab | undefined {
+		return isBrowserApiGranted() ? vscode.window.activeBrowserTab : undefined;
+	}
+
+	/** Gives every open tab an id and forgets the ones that have closed. */
+	private _identify(open: readonly vscode.BrowserTab[]): void {
+		for (const tab of open) {
+			if (!this._tabIds.has(tab)) {
+				this._tabIds.set(tab, `tab-${this._nextTabId++}`);
+			}
+		}
+		for (const known of [...this._tabIds.keys()]) {
+			if (!open.includes(known)) {
+				this._tabIds.delete(known);
+			}
+		}
+	}
+
+	/** The id of a tab, minting one if this is the first time it is named. */
+	private _idOf(tab: vscode.BrowserTab): string {
+		this._identify(vscode.window.browserTabs ?? []);
+		return this._tabIds.get(tab) ?? 'tab-0';
+	}
+
+	/** How the tab in use was chosen, which is what tells a model whether its choice still holds. */
+	private get _selectionKind(): 'selected' | 'automatic' {
+		return this._pinnedTab ? 'selected' : 'automatic';
 	}
 
 	/**
@@ -254,15 +322,96 @@ export class BrowserController implements vscode.Disposable {
 			};
 		}
 
-		const tabs = vscode.window.browserTabs ?? [];
-		// `active` is the tab the tools will act on, which is not the same thing
-		// as the focused editor: see `_resolveTab`.
+		const open = vscode.window.browserTabs ?? [];
+		this._identify(open);
+		// The tab the tools will act on, which is not the same thing as the
+		// focused editor: see `_resolveTab`.
 		const target = this._resolveTab();
 		return {
 			available: true,
-			openTabs: tabs.length,
-			active: target ? { url: target.url, title: target.title } : undefined,
+			openTabs: open.length,
+			tab: target ? { id: this._tabIds.get(target), url: target.url, title: target.title } : undefined,
+			selection: this._selectionKind,
 			hasSelectedElement: this._selectedElement !== undefined,
+		};
+	}
+
+	/**
+	 * Every open tab with an id to address it by.
+	 *
+	 * The ids are ours, not the editor's — see {@link _tabIds} — so they are
+	 * only good for as long as this window lives, and a model has to list before
+	 * it selects rather than remembering an id from an earlier conversation.
+	 */
+	public async tabs(): Promise<unknown> {
+		if (!isBrowserApiGranted()) {
+			return {
+				available: false,
+				reason: 'The `browser` API proposal is not enabled. Ask the user to run '
+					+ '"AI Browser: Enable Integrated Browser API".',
+			};
+		}
+
+		const open = vscode.window.browserTabs ?? [];
+		this._identify(open);
+		const target = this._resolveTab();
+		const focused = vscode.window.activeBrowserTab;
+
+		return {
+			selection: this._selectionKind,
+			tabs: open.map(tab => ({
+				id: this._tabIds.get(tab),
+				url: tab.url,
+				title: tab.title,
+				inUse: tab === target,
+				focusedInEditor: tab === focused,
+			})),
+		};
+	}
+
+	/**
+	 * Points every later tool at one tab, by an id from {@link tabs}.
+	 *
+	 * `auto` releases it, which is the state everything starts in: follow the
+	 * focused tab, and fall back to the last one used. A selection also outlives
+	 * the user clicking into a file or into another page — that is the point of
+	 * it — but not the tab being closed, after which `selection` reads
+	 * `automatic` again.
+	 */
+	public async selectTab(id: string): Promise<unknown> {
+		if (!isBrowserApiGranted()) {
+			throw new Error('The integrated browser is unavailable in this editor. Ask the user to run '
+				+ '"AI Browser: Enable Integrated Browser API".');
+		}
+
+		const open = vscode.window.browserTabs ?? [];
+		this._identify(open);
+
+		if (id === 'auto') {
+			this._pinnedTab = undefined;
+			const target = this._resolveTab();
+			return {
+				selection: this._selectionKind,
+				tab: target ? { id: this._tabIds.get(target), url: target.url, title: target.title } : undefined,
+			};
+		}
+
+		const match = open.find(tab => this._tabIds.get(tab) === id);
+		if (!match) {
+			throw new Error(`No open browser tab has the id ${id}. `
+				+ 'Call `browser_tabs` for the current list — ids change as tabs open and close.');
+		}
+
+		this._pinnedTab = match;
+		this._lastTab = match;
+		// The session in hand may belong to the tab we are leaving.
+		if (this._sessionTab !== match) {
+			this._dropSession();
+			this._selectedElement = undefined;
+		}
+		return {
+			selection: this._selectionKind,
+			tab: { id, url: match.url, title: match.title },
 		};
 	}
 
@@ -314,7 +463,13 @@ export class BrowserController implements vscode.Disposable {
 			this._dropSession();
 			const tab = await vscode.window.openBrowserTab(url, { preserveFocus: true });
 			this._lastTab = tab;
-			return { url: tab.url, title: tab.title, openedNewTab: true };
+			// A selection follows the tab this call created, or the next tool would
+			// go back to the page the caller just chose to leave. It is opened with
+			// `preserveFocus`, so the focused-tab branch cannot be relied on either.
+			if (this._pinnedTab) {
+				this._pinnedTab = tab;
+			}
+			return { url: tab.url, title: tab.title, tabId: this._idOf(tab), openedNewTab: true };
 		}
 
 		try {
@@ -368,7 +523,7 @@ export class BrowserController implements vscode.Disposable {
 		} catch {
 			info = undefined;
 		}
-		return { url: info?.url ?? url, title: info?.title, openedNewTab: false };
+		return { url: info?.url ?? url, title: info?.title, tabId: this._idOf(tab), openedNewTab: false };
 	}
 
 	/** A compact list of things worth interacting with, for orientation. */
@@ -491,8 +646,12 @@ export class BrowserController implements vscode.Disposable {
 	 * produces the familiar half-captured screenshot, because the capture is
 	 * still bounded by the viewport unless the region is spelled out.
 	 */
-	public async capture(fullPage: boolean): Promise<{ png: Buffer; clipped: boolean }> {
-		const session = await this._withSession();
+	public async capture(
+		fullPage: boolean,
+		preferred?: vscode.BrowserTab,
+	): Promise<{ png: Buffer; clipped: boolean; url: string | undefined }> {
+		const tab = preferred ?? this._requireTab();
+		const session = await this._sessionFor(tab);
 		await session.client.send('Page.enable', {}, session.sessionId);
 
 		let clip: object | undefined;
@@ -525,12 +684,7 @@ export class BrowserController implements vscode.Disposable {
 				? 'The browser returned an empty screenshot. The page may be too large to capture in one image.'
 				: 'The browser returned an empty screenshot');
 		}
-		return { png: Buffer.from(data, 'base64'), clipped };
-	}
-
-	/** URL of the tab a screenshot came from, for naming the file. */
-	public get activeUrl(): string | undefined {
-		return isBrowserApiGranted() ? this._resolveTab()?.url : undefined;
+		return { png: Buffer.from(data, 'base64'), clipped, url: tab.url };
 	}
 
 	public async click(selector: string): Promise<unknown> {

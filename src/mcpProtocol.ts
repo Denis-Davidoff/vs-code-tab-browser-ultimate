@@ -95,7 +95,9 @@ function instructions(workspaceName: string | undefined): string {
 	const where = workspaceName ? ` for the workspace \`${workspaceName}\`` : '';
 	return [
 		`Controls the integrated browser in VS Code${where}.`,
-		'Call `browser_state` first: it reports whether a page is open and what it is.',
+		'Call `browser_state` first: it reports whether a page is open, which tab the tools act on, and how it was chosen.',
+		'With more than one tab open, `browser_tabs` lists them with ids and `browser_select_tab` fixes the tools on one;'
+		+ ' without a selection they follow whichever tab the user has in front of them.',
 		'`browser_inspect_element` waits for the user to click an element, so only call it when you have asked them to.',
 	].join(' ');
 }

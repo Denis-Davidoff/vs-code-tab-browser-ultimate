@@ -1161,13 +1161,35 @@ symptom is a bare 401 that reads like a broken server.
 Duplicate Codex entries are **reported, never repaired**: the global file is not ours, and
 removing the wrong one of a pair turns working tools into a 401.
 
-### The server is per window; the tools follow the active tab, then remember it
+### The server is per window; the tools act on one tab, chosen per call
 
 The token and port belong to the **workspace**, so "connecting" attaches an assistant to this
 VS Code window rather than to a browser tab. Which tab a tool then drives is decided per call by
-`BrowserController._resolveTab()`: **the active browser tab, else the one last used, else the
-most recently opened.** With two tabs open, switching between calls sends the next
-`browser_click` to the other page.
+`BrowserController._resolveTab()`: **the tab selected by id, else the active browser tab, else
+the one last used, else the most recently opened.**
+
+**`browser_tabs` and `browser_select_tab` are what make more than one tab workable**, and the
+first thing to know is that **the ids are ours.** `BrowserTab` in the proposal carries `url`,
+`title`, `icon`, `startCDPSession()` and `close()` — no identity at all, and the extension host
+keeps its own id private. So `_tabIds` mints `tab-1`, `tab-2`, … keyed on the tab *object*,
+which works only because that object is stable for the life of the tab (the host builds `value`
+once and `update()` mutates fields in place). They are per window and per session, hence the
+tool description telling a model to list before it selects: an id from an earlier conversation
+means nothing.
+
+A selection **outranks the focused editor**, which is the whole point — "work on this one" has
+to survive the user reading a different page — and that is exactly why the user's own commands
+do not go through `_resolveTab()`. `copyScreenshot` passes `browser.focusedTab`, so a toolbar
+button always captures the tab in front of the person who pressed it, whatever an agent has
+selected. `capture()` takes the tab as an argument for that reason, and returns the URL it
+captured so the file name comes from the page in the image rather than from a second lookup that
+could resolve differently. Keep any future user-facing command on the same side of that line.
+
+A selection is dropped when its tab closes — falling back beats refusing every call until
+something selects again — and `selection` in `browser_state` / `browser_tabs` is what reports
+which of the two is in force. `navigate` with `newTab` moves an existing selection onto the tab
+it just opened, or the next tool would go back to the page the caller chose to leave; the new
+tab is opened with `preserveFocus`, so the focused-tab branch cannot be relied on to do it.
 
 **`vscode.window.activeBrowserTab` alone is not usable for this, and that was a real bug.** The
 extension host sets it from `activeEditorPane?.input instanceof BrowserEditorInput` and nothing
@@ -1178,9 +1200,10 @@ page sat there in plain sight. The memory is a plain field, revalidated against
 `vscode.window.browserTabs` (tab objects are identity-stable, which `_sessionFor` already
 relied on), so a closed tab is never handed out.
 
-Pinning the controller to one tab at connect time is still the other design (with
-`browser_state` naming the bound tab, and an error once it closes). It stays postponed. Describe
-the behaviour as "attached to a VS Code window, acting on the browser tab in use".
+Pinning the controller to one tab **at connect time** was the other design, and it is now moot:
+the selection is explicit, driven by the model when it needs it, rather than implied by which
+tab happened to be focused when a config file was written. Describe the behaviour as "attached
+to a VS Code window, acting on the selected browser tab, or on the one in front of the user".
 
 **`browser_navigate` reuses that tab instead of opening one**, which is the whole reason the
 resolution above matters. `openBrowserTab` is the only thing the `browser` proposal offers and

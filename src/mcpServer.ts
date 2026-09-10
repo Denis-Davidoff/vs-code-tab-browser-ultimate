@@ -301,9 +301,27 @@ export class McpServer implements vscode.Disposable {
 		return [
 			{
 				name: 'browser_state', title: 'Browser state',
-				description: 'Reports whether a page is open in the integrated browser, and its URL and title. Call this first.',
+				description: 'Reports whether a page is open in the integrated browser, which tab the tools are acting on, '
+					+ 'and how that tab was chosen. Call this first.',
 				inputSchema: schema({}),
 				run: () => browser.state(),
+			},
+			{
+				name: 'browser_tabs', title: 'List tabs',
+				description: 'Lists every open browser tab with an id, which tab the tools are acting on, and which one '
+					+ 'the user has in front of them. Pass an id to browser_select_tab to work on a specific one.',
+				inputSchema: schema({}),
+				run: () => browser.tabs(),
+			},
+			{
+				name: 'browser_select_tab', title: 'Select a tab',
+				description: 'Points every later tool at one browser tab. The selection survives the user switching '
+					+ 'editors or looking at another page, so use it whenever more than one tab is open. '
+					+ 'Ids come from browser_tabs and are only valid while this window is open.',
+				inputSchema: schema({
+					id: string('Tab id from browser_tabs, or "auto" to follow whichever tab is in front of the user'),
+				}, ['id']),
+				run: args => browser.selectTab(stringOrUndefined(args.id) ?? ''),
 			},
 			{
 				name: 'browser_navigate', title: 'Navigate',

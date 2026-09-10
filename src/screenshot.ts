@@ -29,15 +29,18 @@ export async function copyScreenshot(
 	}, async () => {
 		let png: Buffer;
 		let clipped: boolean;
+		let url: string | undefined;
 		try {
-			({ png, clipped } = await browser.capture(fullPage));
+			// The tab the user is looking at, whatever an assistant has selected
+			// over MCP — this is a button they pressed themselves.
+			({ png, clipped, url } = await browser.capture(fullPage, browser.focusedTab));
 		} catch (err) {
 			vscode.window.showErrorMessage(vscode.l10n.t(
 				"Could not capture the page: {0}", err instanceof Error ? err.message : String(err)));
 			return;
 		}
 
-		const delivery = await copyImage(png, screenshotFileName(browser.activeUrl, fullPage));
+		const delivery = await copyImage(png, screenshotFileName(url, fullPage));
 
 		if (delivery.kind === 'clipboard') {
 			confirm(clipped
