@@ -22,5 +22,7 @@
 	"command.addCssPathToCodex.title": "Add CSS Path to Codex",
 	"command.addXPathToCodex.title": "Add XPath to Codex",
 	"command.copyScreenshot.title": "Copy Screenshot (Visible Area)",
-	"command.copyFullScreenshot.title": "Copy Screenshot (Full Page)"
+	"command.copyFullScreenshot.title": "Copy Screenshot (Full Page)",
+	"command.shareTab.title": "Share Tab with Assistants",
+	"command.stopSharingTab.title": "Stop Sharing Tab"
 }

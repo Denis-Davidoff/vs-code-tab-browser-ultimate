@@ -111,6 +111,7 @@ Compiled with `tsc`, **no bundling**. `main: ./out/extension`.
 - [src/assistants.ts](src/assistants.ts) — handing reports to Claude Code and Codex
 - [src/lastAction.ts](src/lastAction.ts) — which element command the toolbar button repeats
 - [src/browserController.ts](src/browserController.ts) — what the browser can do, for MCP
+- [src/shareIndicator.ts](src/shareIndicator.ts) — the marker on a shared tab, page-side
 - [src/mcpProtocol.ts](src/mcpProtocol.ts) — JSON-RPC dispatch and the auth decision (leaf, under test)
 - [src/mcpPort.ts](src/mcpPort.ts) — which port a window tries first (leaf, under test)
 - [src/mcpRepair.ts](src/mcpRepair.ts) — correcting a stale entry in a client config (leaf, under test)
@@ -686,6 +687,12 @@ because a permanently blinking button is the kind of thing people disable an ext
 final tick sets the background on in **one** assignment rather than off-then-on, which the
 renderer is free to show as a flicker.
 
+**The permanent item also carries the share.** `$(globe) AI Browser` becomes
+`… 🔗` while a tab is shared, `… 🤖` once an assistant has driven it, and
+`… $(debug-pause)` with a warning background when the shared tab was closed and the tools are
+paused — the one share state that is waiting on the user. See
+[The marker on the shared tab](#the-marker-on-the-shared-tab).
+
 **No setting to hide these.** VS Code already lets a user right-click the status bar and hide any
 individual item, and it remembers that per item id — which is why both are created with explicit
 ids (`aiBrowser.status`, `aiBrowser.enableApi`) and a `name`, since the name is what that
@@ -801,7 +808,9 @@ both `.d.ts` files.
 ### The dropdown on the browser tab
 
 One toolbar button on the browser tab opens a dropdown holding **everything the extension
-does** — the three element commands, then the three MCP ones. Two `group` prefixes
+does** — sharing this tab, the three element commands, then the three MCP ones. `Stop Sharing
+Tab` is gated on the `aiBrowser.tabShared` context key, republished from `extension.ts` on every
+share change, so it is only there while there is something to stop. Two `group` prefixes
 (`1_copy@n`, `2_mcp@n`) put a separator between them; ordering comes from the `@n` suffix, not
 from the position in the `contributes.menus` array.
 
@@ -1426,6 +1435,221 @@ built-in extension uses it. And a page's own `window.open` / `target="_blank"` b
 editor tab in the main process (`setWindowOpenHandler` → child view with `pinned: true`), which
 `browser_click` reaches through `el.click()` like any other click.
 
+### Sharing one tab: the user's half of "work on this page"
+
+`aiBrowser.shareTab` / `aiBrowser.stopSharingTab` add a **third level of tab intent**, above
+both existing ones, and the reason it had to exist is that the other two are not
+interchangeable:
+
+| level | who sets it | can the model release it |
+|---|---|---|
+| `_sharedTab` | the user, by command | **no** |
+| `_pinnedTab` | the model, `browser_select_tab` | yes |
+| automatic | focused → last used → most recently opened | n/a |
+
+`browser_select_tab` was the only way to fix the tools on a tab, and it is called by the *model*
+— so the user had no way to state the same thing, and without a selection every call followed
+`activeBrowserTab`. Click into another page while an agent works and the agent went with you;
+`browser_navigate` then drove the page you had just opened. A share sits above the focused
+editor for that reason, and above the model's pin so it cannot be handed back.
+
+**Sharing does not fall back when its tab closes, and that is the one place it deliberately
+differs from a pin.** A pin reverting to automatic is right for a choice the model made; doing
+the same to the user's choice resumes work on whatever happens to be focused, which is exactly
+the failure the share exists to prevent. So the state goes to `lost`, every tool answers
+`shareLostMessage`, and `browser_state` reports `selection: 'paused'` with `sharedTabClosed`.
+Only the user can leave that state (share again, or stop sharing) — which is why the message
+names the command instead of suggesting the model do something.
+
+**`_resolveTab` takes a `user` flag, and forgetting it breaks the toolbar.** A lost share pauses
+the *assistants*; a button the user pressed has nothing to do with them. The first version
+short-circuited in `_resolveTab` for everyone, so after the shared tab closed a screenshot
+answered "No browser tab is open" with another tab open in plain sight. `capture` therefore
+takes `user` too, and `screenshot.ts` passes it — the same line already drawn by
+`focusedTab`.
+
+**Two refusals, because the alternative is a silent no-op.** Under a share,
+`browser_select_tab` cannot take effect and `navigate(newTab: true)` would open a tab that the
+next tool ignores — the "reports `tab-2`, acts on `tab-1`" shape recorded above. Both throw and
+say who can change it. Navigating *inside* the shared tab stays allowed: the share is on the
+tab, not on the URL.
+
+**Other tabs are still listed.** `browser_tabs` marks the shared one (`sharedByUser`) and leaves
+the rest visible as context — hiding them would only make the ids in that list confusing, and
+what they are not is *selectable*, which the refusal already says.
+
+**Who touched it is tracked at the point a tab is handed out, not per request.** `beginCall` /
+`endCall` in the controller are set by the transport around `tools/call` only, and `_noteTabUse`
+records the caller when `_requireTab` hands out the shared tab. Deliberately not "an assistant
+made a call": `browser_tabs` and `browser_state` answer without touching a page, and a marker
+lighting up on those would claim work on a tab nothing had opened. With two assistants calling
+at once the *label* can name the wrong one; the fact being guarded — the tab was used at all —
+is unaffected, and that is not worth a caller argument on every tool.
+
+**Every `tools/call` is attributed, `other` when the client cannot be named.** The transport
+passes `kind ?? 'other'`, and the fallback is the point: only `initialize` carries
+`clientInfo.name`, so a client that does not echo the `Mcp-Session-Id` header back is anonymous
+on every call after it. Gating attribution on a *recognised* client left the marker reading 🔗 —
+"nobody has picked this up" — while that very client was driving the page, which is the one
+thing the marker exists to tell apart.
+
+**Moving a share is a transaction, and tool calls wait for it.** Sharing is several async steps
+over the fields the tools read — the marker comes off one page, the session moves, the marker
+goes on another — and a call landing in the middle interfered with it in two ways at once, both
+reproduced with a concurrent `browser_snapshot`:
+
+- the call resolved the **new** tab, so `_sessionFor` dropped the session the cleanup was still
+  using. The marker stayed on the old tab, and *nothing could ever remove it*, because
+  `stopSharing` only knows the current one;
+- the call itself failed with `The browser session was replaced while it was opening` — an
+  internal sentence handed to a model.
+
+Three things fix it, and each covers a different part:
+
+- **`_transact` / `_settle`.** Transitions run in call order (two clicks on "Share this tab
+  instead" cannot interleave), and every path that resolves a tab — `_withSession`, `navigate`,
+  `capture`, `inspectElement`, `state`, `tabs`, `selectTab` — awaits `_settle()` first. Measured
+  against a stubbed CDP channel: a snapshot fired during a switch now opens **no** extra session
+  (one per tab) and answers on the new tab.
+- **`_clearIndicator` has a second route to the page.** The gate orders calls that *arrive*
+  during a transition; one already past it can still be holding the session the transition
+  drops. So the cleanup tries the cached session first — it holds the registration identifier,
+  and removing that is what stops the marker coming back on the next navigation — and falls back
+  to a session of its own, which nobody else can drop. This is why `ShareIndicator.clear()`
+  **returns a boolean instead of swallowing its failure**: "the marker is off" and "the channel
+  died before it could be taken off" must not look the same to the caller that has another way
+  in.
+- **A superseded open retries once, and only while its tab is still the subject.**
+  `_sessionFor(tab, retries = 1)`: a session that arrives unwanted because the cache moved is a
+  stale attempt rather than a failure — *if the caller still wants that tab*. The first version
+  retried unconditionally and that was worse than the error it removed, measured both ways
+  against a stubbed channel with the handshake held open:
+
+  | | unconditional retry | `_stillWanted` |
+  |---|---|---|
+  | open X in flight, user shares Y | Y left with **no live session** while sharing Y is in force — its marker registration gone with it — and X holding the cache | Y keeps its session and registration; the stale call is refused |
+  | open in flight, then `dispose()` | a second session opened and **left running**, with nothing left to close it | one session, opened and closed |
+
+  So `_stillWanted` answers no to anything that has taken over — the controller disposed, the
+  tab closed, a share moved or paused, a newer open for a different tab, a pin elsewhere — and
+  it is side-effect free on purpose, since `_resolveTab` moves `_lastTab` and can end a share,
+  neither of which a stale request may do. `_disposed` is set *first* in `dispose`, so an open
+  landing after it sees it; `_sessionFor` refuses outright once it is set. The retry also clears
+  its own `_opening` entry before recursing — otherwise it matches on the tab and awaits the
+  very promise it is running inside. A request that loses its subject is told to ask again,
+  which is right: serving it from under the new owner is how a call comes to report one tab and
+  act on another.
+
+**`_sharedTab` still moves *before* the old tab is cleaned**, and that order is load-bearing for
+a different reason: while it still named the old tab, a concurrent tool resolving it could send
+`_sessionFor` down the arm-on-open path and re-mark the very tab being cleaned.
+
+### The marker on the shared tab
+
+The share is also visible **on the tab itself**, because an assistant driving a page in the
+background looks exactly like an assistant doing nothing.
+
+Nothing in the `browser` proposal decorates a browser tab — there is no badge, no description,
+no colour, and `contributes.menus` cannot reach that toolbar either (see
+[the dropdown](#the-dropdown-on-the-browser-tab)). What an extension *can* reach is the page,
+over CDP, and the editor tab is labelled with `document.title`. So the marker is a suffix on the
+title, installed by [src/shareIndicator.ts](src/shareIndicator.ts):
+
+| | |
+|---|---|
+| 🔗 | shared, no assistant has driven it yet |
+| 🤖 | an assistant has driven it at least once |
+
+The two states are the point. A share nobody picked up is the common failure — neither
+assistant re-reads its config, so one that was never restarted has no `browser_` tools at all —
+and 🔗 that never becomes 🤖 is what that looks like from outside.
+
+Everything about the implementation follows from the page being someone else's:
+
+- **The suffix is re-applied, not set once.** A page rewrites its own title constantly: an SPA
+  on every route change, a chat on every unread count. Setting it once meant the marker survived
+  until the first such write. A `MutationObserver` on `document.head` catches both the text
+  changing and the `<title>` element being replaced, at a fraction of the cost of observing
+  `document`. It cannot loop: `apply` writes only when the suffix is missing, so our own write
+  wakes the observer, finds it already there and stops.
+- **It is registered with `Page.addScriptToEvaluateOnNewDocument` as well as evaluated**, or it
+  would be gone after the first navigation. The identifier is kept so `clear()` can remove it —
+  without that, un-sharing left the marker to come back on the next page load.
+- **The indicator hangs off the `TabSession`, not off the controller.** A registered script
+  identifier belongs to the session it was registered on. Held on the controller it outlived a
+  dropped session, so "stop sharing" removed an id that no longer existed. `_sessionFor` arms it
+  whenever a session for the shared tab opens, which is also what re-marks the page after the
+  host drops a session.
+- **`stripMarker` is applied to every title that leaves the extension** — tool results, the
+  status bar, the share state. Otherwise an agent reads the page title as `Orders 🤖` and files
+  a screenshot under it. There are **two sources** of a title and both need it: `BrowserTab.title`
+  (`state`, `tabs`, the share state, the menu) and `document.title` read in the page
+  (`navigate`, `snapshot`). `snapshot` was missed on the first pass precisely because it comes
+  from the second one. It also only trims when it actually cut something: a trailing space in
+  someone else's page title is theirs, not ours.
+- **`set()` and `clear()` are serialised on one queue, not merely deduplicated** (`_enqueue`).
+  They race by construction: the marker is armed from two places — a session opening, and the
+  share being set — while `clear` comes from a button that can be pressed at any moment.
+  Overlapped, a `clear` arriving mid-install did *nothing twice* — `_scriptId` was not assigned
+  yet, so there was no registration to remove, and `window.__aiBrowserShareMarker` did not exist
+  yet, so `remove()` was a no-op — and the install then completed **after** it, putting the
+  marker back on a tab nobody was sharing and re-registering the script that returns it on every
+  later navigation, with nobody holding the identifier any more. The chain itself never rejects
+  (a rejected link is inherited by everything queued behind it) while the caller of `set` still
+  gets the real error.
+- **`_marker` records what is on the page, and is written after the install, never before it.**
+  Written up front it recorded the *request*: one rejected install left the indicator believing
+  the marker was there, and since the same session keeps the same indicator, the
+  `_marker === marker` short-circuit then suppressed every retry — a shared tab with no marker
+  for the rest of the session.
+- **`clear()` never short-circuits on having no marker recorded.** A fresh indicator on a newly
+  opened session knows nothing, while the page may still carry a marker installed by the session
+  before it — which is precisely what `stopSharing` and a re-share have to clean up.
+- **Moving a share un-marks the tab it moves off** (`_clearIndicator` in `shareTab`). Dropping
+  the old session takes the registration with it, so the marker does not return on that tab's
+  next navigation — but the live document keeps the suffix *and* the observer re-applying it. So
+  "Share this tab instead" left both tabs looking shared, permanently: `stopSharing` only knows
+  about the current `_sharedTab`. It runs before `_dropSession` (so the session holding the
+  script identifier is still there) and after `_sharedTab` has moved (or `_sessionFor` re-arms
+  the marker on the tab being cleaned), and it skips a tab that has closed, since
+  `startCDPSession` on one only throws.
+- **Page-side, `remove()` disarms the deferred start, not just the observer.** The script runs at
+  document start on a navigation, so on a page still loading the real work is queued on
+  `DOMContentLoaded`. Un-sharing before that fires used to leave the listener armed: `start` ran
+  off its closure, re-applied the suffix and built a *second* observer — and `window[key]` was
+  already deleted, so no later `clear()` could reach it. Hence `state.removed`, checked by
+  `start`, `apply` and `set`, plus an explicit `removeEventListener`.
+- **Everything about it is best effort.** A session the host dropped, a tab mid-close, a page
+  that has not committed — each is a reason the marker does not matter, and none of them may
+  turn sharing into an error.
+- **The page-side `remove` runs in someone else's page, so its order is deliberate**: the
+  `removed` flag first (a queued observer or `DOMContentLoaded` callback then finds the marker
+  gone rather than putting it back), then the title, then `delete window[key]`, and only then
+  the two disarms, each in its own `try`. A page is free to have replaced or broken
+  `removeEventListener` or `MutationObserver.prototype.disconnect`, and with the old order that
+  left our suffix on its tab permanently; deleting the global late was the same trap from the
+  other side, because a surviving `removed` state makes every later `set` refuse, so the marker
+  could never come back on that page. The flag is what makes the disarms a tidiness measure
+  rather than correctness. Verified against stub pages that throw from each.
+
+**A one-off read of another tab must not move the cached session** — `_borrowSession`. The
+cache is single (`_session` / `_sessionTab`) and `_sessionFor` *drops* whatever it holds, which
+is right for the tools, whose subject really has moved, and wrong for a screenshot: a
+`addScriptToEvaluateOnNewDocument` registration is per-session state, so disposing the shared
+tab's session disarms the marker on it. Share A, screenshot B, reload A and the marker is gone
+while sharing is still in force — the symptom arriving long after the action that caused it, and
+the console buffer the assistant was collecting goes with it. So `capture` reuses the cached
+session only when it already belongs to that tab, and otherwise opens a throwaway one and
+disposes it, the same shape the element picker uses.
+
+A floating badge injected into the page was the alternative and was rejected: it lands in every
+screenshot the agent takes, and shows up in `browser_html` / `browser_text` as page content that
+is not the page's. A title suffix is visible in exactly one place — the tab.
+
+The status bar carries the same two emoji, deliberately the same ones, so the item and the tab
+read as one indicator rather than two that happen to agree; `lost` is the only share state that
+takes a background there, since it is the only one waiting on the user.
+
 ### Lifecycle
 
 [src/mcpLifecycle.ts](src/mcpLifecycle.ts) keeps the server's disposables **apart from
@@ -1479,7 +1703,8 @@ which the rest of the report is read as Markdown.
 
 Two dropdown entries — visible area and full page — in a group of their own (`2_shot`), which
 is what puts a separator around them. Group names sort alphabetically, so the numeric prefixes
-(`1_copy`, `2_shot`, `3_claude`, `4_codex`, `5_mcp`) are the running order of the whole menu.
+(`0_share`, `1_copy`, `2_shot`, `3_claude`, `4_codex`, `5_mcp`) are the running order of the
+whole menu.
 
 Capturing is one CDP call, but two arguments matter:
 
@@ -1530,6 +1755,15 @@ the 401 does, since project A's config would then always reach project A's windo
 merely failing to reach anyone else's. Not built because repair covers the same ground without
 a new HTTP hop, a shared registry file to keep pruned, or a story for a window closing
 mid-call.
+
+**A share per assistant.** One tab is shared with everything at once, because that is the shape
+the feature was asked for and it costs nothing beyond the precedence rule. Claude on one page
+and Codex on another would need two things: the caller threaded into `Tool.run` and `dispatch`
+(both under test) rather than the in-flight `beginCall` field, and — the real cost — a *map* of
+CDP sessions instead of the single `_session`. The session is cached precisely because console
+capture only happens while something is attached, so two clients alternating between two tabs
+would drop the buffer on every other call. Not built until someone actually drives two
+assistants on two pages at once.
 
 **A stdio bridge, which would remove the token from the repository.** `.mcp.json` is designed
 to be committed and shared with a team, and we write a bearer token into it. The harm is
@@ -1632,7 +1866,49 @@ No compile error for any of these — they only surface at runtime.
     arriving together both see no cache and both open; the second overwrites the first, which
     is then never disposed. `BrowserController._sessionFor` shares the pending promise and
     keeps a token so a session arriving after a `dispose` closes itself.
-30. **`Open File` on a host without the built-in browser** → a `file:` URI in the webview panel
+30. **Reporting a page title without `stripMarker`** → the marker this extension appends to a
+    shared tab's title (🔗 / 🤖) travels into tool results and screenshot file names, and an
+    agent reads it as part of the page.
+31. **Short-circuiting `_resolveTab` for a paused share on *every* caller** → a lost share is
+    meant to pause the assistants, and pausing the user too makes a toolbar screenshot answer
+    "No browser tab is open" with another tab open in front of them. User paths pass
+    `user: true`.
+32. **Installing a page-side marker without `Page.addScriptToEvaluateOnNewDocument`, or
+    without keeping its identifier** → the marker disappears on the first navigation, or comes
+    back after un-sharing on the next page load.
+33. **Removing a page-side marker without also disarming what will re-install it** → tearing
+    down a CDP session takes the *registration* away and nothing else, so the title suffix and
+    the `MutationObserver` keeping it there live on in the document; and a `DOMContentLoaded`
+    listener left armed re-installs both after the removal, into a page whose
+    `window.__aiBrowserShareMarker` has been deleted, so nothing can ever reach them again.
+34. **Letting `set` and `clear` on the same page-side installer overlap** → the clear finds
+    nothing installed yet and is a no-op on both halves, then the install completes behind it and
+    the thing just removed is back, with its identifier no longer held by anyone. Serialise them.
+35. **Recording page-side state before the call that establishes it succeeds** → the failed
+    install is remembered as done, and the "already in that state" short-circuit then suppresses
+    every retry for the life of the session.
+36. **Moving the single cached CDP session for a one-off read of another tab** → the session
+    that is dropped takes its page-side registrations with it, so a screenshot of one tab
+    disarms the share marker on another (visible only on that tab's next reload) and discards
+    the console buffer an assistant was collecting. Borrow a throwaway session instead —
+    `_borrowSession`.
+37. **Changing which tab is shared without serialising against tool calls** → a call arriving
+    mid-transition drops the session the cleanup is using, leaving the marker on a tab nobody
+    is sharing and no later `stopSharing` able to reach it, and the call itself fails with an
+    internal sentence about a replaced session. Transitions go through `_transact`; tool paths
+    await `_settle()`.
+38. **Swallowing a failure inside a best-effort cleanup that has a second route** → the caller
+    cannot tell "done" from "the channel died", so the fallback never runs.
+    `ShareIndicator.clear()` reports instead.
+39. **Attributing a `tools/call` only when the client is recognised** → only `initialize` names
+    a client, so an assistant that does not echo `Mcp-Session-Id` drives the shared tab while
+    its marker still says nobody has picked it up.
+40. **Resuming a superseded async open without re-checking what it was for** → the retry comes
+    back for a tab that is no longer the subject and drops the session of the one that is (a
+    share moving is the common case, and the marker's registration goes with the session), or
+    runs after `dispose` and leaves a session with nothing left to close it. Guard with
+    `_stillWanted`, and set `_disposed` before tearing anything down.
+41. **`Open File` on a host without the built-in browser** → a `file:` URI in the webview panel
     is blocked by `localResourceRoots`, so the panel renders blank with no error. The menu entry
     is therefore gated on `shouldUseIntegratedBrowser()` rather than falling back.
 

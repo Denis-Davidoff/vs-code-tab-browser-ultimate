@@ -18,8 +18,9 @@ import { connectClaudeCode, connectCodex } from './mcpSetup';
 import { checkConnection } from './mcpCheck';
 import { copyScreenshot } from './screenshot';
 import {
-	enableBrowserApi, integratedBrowserCommand, shouldUseIntegratedBrowser,
+	enableBrowserApi, integratedBrowserCommand, isBrowserApiGranted, shouldUseIntegratedBrowser,
 } from './proposedApi';
+import { confirm, refuse } from './notify';
 import { registerStatusBar } from './statusBar';
 
 declare class URL {
@@ -51,6 +52,8 @@ const connectClaudeCommand = 'aiBrowser.connectClaudeCode';
 const connectCodexCommand = 'aiBrowser.connectCodex';
 const checkMcpCommand = 'aiBrowser.checkMcpConnection';
 const enableBrowserApiCommand = 'aiBrowser.enableBrowserApi';
+const shareTabCommand = 'aiBrowser.shareTab';
+const stopSharingTabCommand = 'aiBrowser.stopSharingTab';
 
 const openerId = 'aiBrowser.open';
 
@@ -128,6 +131,47 @@ export function activate(context: vscode.ExtensionContext) {
 
 	context.subscriptions.push(vscode.commands.registerCommand(enableBrowserApiCommand,
 		() => enableBrowserApi()));
+
+	// --- sharing one tab with the assistants -----------------------------------
+	//
+	// The share is the user's half of "work on this page": the MCP tools follow
+	// whichever tab is in front of the user by default, which is right until an
+	// assistant is working while the user reads something else. Both
+	// confirmations go through `confirm()` rather than a notification — the
+	// browser tab is on screen by definition when this is used, and a toast
+	// would pause the very page being handed over.
+	const publishShareContext = () => {
+		const state = browser.share.state;
+		void vscode.commands.executeCommand('setContext', 'aiBrowser.tabShared', state !== 'none');
+	};
+	publishShareContext();
+	context.subscriptions.push(browser.onDidChangeShare(publishShareContext));
+
+	context.subscriptions.push(vscode.commands.registerCommand(shareTabCommand, async () => {
+		if (!isBrowserApiGranted()) {
+			refuse(vscode.l10n.t("Sharing a tab needs the integrated browser API — see the AI Browser status bar item."));
+			return;
+		}
+		// The focused tab, never the resolved one: this is a user gesture, and
+		// "this tab" can only mean the one they are looking at.
+		const tab = browser.focusedTab;
+		if (!tab) {
+			refuse(vscode.l10n.t("Open a page in the integrated browser and run this from that tab."));
+			return;
+		}
+		const shared = await browser.shareTab(tab);
+		confirm(vscode.l10n.t("Shared with assistants: {0} — the browser tools now act on this tab only",
+			shared.title || shared.url));
+	}));
+
+	context.subscriptions.push(vscode.commands.registerCommand(stopSharingTabCommand, async () => {
+		if (browser.share.state === 'none') {
+			refuse(vscode.l10n.t("No tab is shared."));
+			return;
+		}
+		await browser.stopSharing();
+		confirm(vscode.l10n.t("Stopped sharing — the browser tools follow whichever tab is in front of you again"));
+	}));
 
 	// Not contributed to the manifest on purpose: it only exists for the status
 	// bar button shown while a pick is running, and a palette entry that is
@@ -224,7 +268,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 	// The permanent status bar entry, plus the warning one that hides itself
 	// once the grant is in place.
-	registerStatusBar(context);
+	registerStatusBar(context, browser);
 
 }
 

@@ -98,6 +98,8 @@ function instructions(workspaceName: string | undefined): string {
 		'Call `browser_state` first: it reports whether a page is open, which tab the tools act on, and how it was chosen.',
 		'With more than one tab open, `browser_tabs` lists them with ids and `browser_select_tab` fixes the tools on one;'
 		+ ' without a selection they follow whichever tab the user has in front of them.',
+		'The user can also **share** one tab, and that outranks everything: the tools then act on that tab only, they'
+		+ ' cannot be moved off it, and if it is closed they pause until another is shared. `browser_state` says so.',
 		'`browser_inspect_element` waits for the user to click an element, so only call it when you have asked them to.',
 	].join(' ');
 }

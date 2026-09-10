@@ -256,7 +256,7 @@ read and drive the page itself instead of being handed reports about it:
 | --- | --- |
 | `browser_state` | Whether a page is open, which tab the tools act on, and how that tab was chosen |
 | `browser_tabs` | Every open tab with an id, which one is in use and which one you are looking at |
-| `browser_select_tab` | Fix the tools on one tab by id — or `auto` to follow the one in front of you |
+| `browser_select_tab` | Fix the tools on one tab by id — or `auto` to follow the one in front of you; refused while you have [shared a tab](#sharing-one-tab) |
 | `browser_navigate` | Open an http(s) url, reusing the tab in use unless asked for a new one |
 | `browser_snapshot` | The interactive elements on the page, with selectors for the tools below |
 | `browser_inspect_element` | Arm the picker and wait for you to click something, then report it |
@@ -308,14 +308,34 @@ ten minutes, which is the only honest answer to "is anything using this?". Dupli
 entries are reported and never repaired: removing the wrong one of a pair turns working tools
 into a 401.
 
+### Sharing one tab
+
+By default the tools follow whichever browser tab you have in front of you, which is right until
+an assistant is working while you read something else. **Share Tab with Assistants** — in the
+toolbar menu on the browser tab, or in the status bar menu — pins them to one page instead:
+
+- the tools act on that tab only, whatever you open or focus afterwards;
+- the assistant **cannot move off it**: `browser_select_tab` and `browser_navigate` with
+  `newTab` are both refused, and told why;
+- the tab says so itself. A 🔗 is appended to its title while it is shared, and it becomes a 🤖
+  once an assistant has actually driven it — so a share nobody picked up (the usual cause: an
+  assistant that was never restarted, so it never loaded the server) is visible as such. The
+  marker is stripped from every title the tools report, so an assistant never reads it as part
+  of the page.
+- if the shared tab is closed, the tools **pause** rather than fall back to another page —
+  falling back would quietly undo the instruction. The status bar says so and one click resumes.
+
+Commands *you* press — the screenshot buttons, the element picker — always act on the tab in
+front of you, sharing or not.
+
 ### Scope, and what it is attached to
 
 The server belongs to the **window**: the token is per workspace and the port is taken in the
 order windows open, so connecting attaches an assistant to this VS Code window.
 
 Within it, the tools act on **one tab at a time**, and which one is decided per call: the tab
-selected with `browser_select_tab`, else the browser tab you have in front of you, else the last
-one the tools used. So an assistant can be told "work on this page" and it keeps working on it
+you have shared, else the tab selected with `browser_select_tab`, else the browser tab you have
+in front of you, else the last one the tools used. So an assistant can be told "work on this page" and it keeps working on it
 while you read something else — and with no selection at all it simply follows you, including
 through clicking into a file, which no longer looks to it like "no browser tab is open".
 
@@ -392,6 +412,8 @@ All of them are in the command palette under **AI Browser**.
 | Add Element to Codex | `aiBrowser.addElementToCodex` |
 | Add CSS Path to Codex | `aiBrowser.addCssPathToCodex` |
 | Add XPath to Codex | `aiBrowser.addXPathToCodex` |
+| Share Tab with Assistants | `aiBrowser.shareTab` |
+| Stop Sharing Tab | `aiBrowser.stopSharingTab` |
 | Connect Claude Code | `aiBrowser.connectClaudeCode` |
 | Connect Codex | `aiBrowser.connectCodex` |
 | Check Connection | `aiBrowser.checkMcpConnection` |
@@ -485,9 +507,11 @@ typing a path.
 ### The status bar
 
 A permanent **AI Browser** button sits in the status bar. Clicking it opens a menu with
-Open URL, Open File, the three assistant commands (Connect Claude Code, Connect Codex, Check
-Connection) and Settings — the assistant commands are otherwise only reachable from a browser
-tab or the Command Palette. To hide either button, right-click the status bar.
+Open URL, Open File, sharing a tab, the three assistant commands (Connect Claude Code, Connect
+Codex, Check Connection) and Settings — the assistant commands are otherwise only reachable from
+a browser tab or the Command Palette. The button also carries the share: 🔗 while a tab is
+shared, 🤖 once an assistant has driven it, and a pause icon if that tab was closed. To hide
+either button, right-click the status bar.
 
 ### Where `argv.json` lives
 

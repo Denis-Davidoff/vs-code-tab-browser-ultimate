@@ -264,7 +264,29 @@ export class McpServer implements vscode.Disposable {
 
 		this._noteActivity(kind);
 
-		const response = await dispatch(request, this._context());
+		// Who is calling, for as long as the call lasts. The controller reads it
+		// when it hands out the shared tab, which is how the marker on that tab
+		// can say an assistant has actually driven it — see `_noteTabUse`.
+		// Cleared in `finally`, or a failed call would leave the last caller
+		// attributed to every later one.
+		//
+		// `?? 'other'` and not `kind &&`: only `initialize` names a client, and a
+		// client that does not echo the session id back is anonymous on every
+		// call after it. Skipping those left the marker on a shared tab reading
+		// 🔗 — "nobody has picked this up" — while that very client drove the
+		// page, which is the one thing the marker exists to tell apart. An
+		// unrecognised assistant is `other` everywhere else here too.
+		let response;
+		if (request.method === 'tools/call') {
+			this.browser.beginCall(kind ?? 'other');
+			try {
+				response = await dispatch(request, this._context());
+			} finally {
+				this.browser.endCall();
+			}
+		} else {
+			response = await dispatch(request, this._context());
+		}
 
 		if (response === undefined) {
 			// A notification. Answering one breaks the handshake, so 202 with no body.
@@ -311,13 +333,16 @@ export class McpServer implements vscode.Disposable {
 			{
 				name: 'browser_tabs', title: 'List tabs',
 				description: 'Lists every open browser tab with an id, which tab the tools are acting on, and which one '
-					+ 'the user has in front of them. Pass an id to browser_select_tab to work on a specific one.',
+					+ 'the user has in front of them, and marks the one the user has shared with you if any. Pass an id '
+					+ 'to browser_select_tab to work on a specific one — unless a tab is shared, in which case the '
+					+ 'tools stay on it.',
 				inputSchema: schema({}),
 				run: () => browser.tabs(),
 			},
 			{
 				name: 'browser_select_tab', title: 'Select a tab',
-				description: 'Points every later tool at one browser tab. The selection survives the user switching '
+				description: 'Points every later tool at one browser tab. Refused while the user has shared a tab '
+					+ 'with you, because the tools act on that one only. The selection survives the user switching '
 					+ 'editors or looking at another page, so use it whenever more than one tab is open. '
 					+ 'Ids come from browser_tabs and are only valid while this window is open.',
 				inputSchema: schema({
@@ -332,7 +357,11 @@ export class McpServer implements vscode.Disposable {
 					+ 'leave a trail of editor tabs behind; pass newTab to keep the current page open.',
 				inputSchema: schema({
 					url: string('Absolute http(s) URL to open'),
-					newTab: { type: 'boolean', description: 'Open a second browser tab instead of reusing the current one' },
+					newTab: {
+						type: 'boolean',
+						description: 'Open a second browser tab instead of reusing the current one. '
+							+ 'Refused while the user has shared a tab with you.',
+					},
 				}, ['url']),
 				run: args => browser.navigate(stringOrUndefined(args.url) ?? '', args.newTab === true),
 			},
