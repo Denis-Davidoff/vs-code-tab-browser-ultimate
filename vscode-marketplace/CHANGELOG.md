@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.11
+
+This entry now watches for new releases of the full build. A VSIX installed by hand never
+updates itself, and nothing else would tell you a version is out.
+
+- **AI Browser: Check for Updates** — asks Open VSX, falling back to the repository.
+- The check also runs on its own, at most once every six hours, and only speaks up when a
+  release is newer than the one installed. Each version is offered once.
+- Anything that is not an available update goes to the status bar instead of a notification.
+
 ## 0.5.2
 
 The guide for AI Browser on the Marketplace: readme, screenshots and the download for the full

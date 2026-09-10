@@ -307,9 +307,14 @@ export class McpServer implements vscode.Disposable {
 			},
 			{
 				name: 'browser_navigate', title: 'Navigate',
-				description: 'Opens an http or https URL in the integrated browser.',
-				inputSchema: schema({ url: string('Absolute http(s) URL to open') }, ['url']),
-				run: args => browser.navigate(stringOrUndefined(args.url) ?? ''),
+				description: 'Opens an http or https URL in the integrated browser. '
+					+ 'This reuses the browser tab already in use, so repeated navigation does not '
+					+ 'leave a trail of editor tabs behind; pass newTab to keep the current page open.',
+				inputSchema: schema({
+					url: string('Absolute http(s) URL to open'),
+					newTab: { type: 'boolean', description: 'Open a second browser tab instead of reusing the current one' },
+				}, ['url']),
+				run: args => browser.navigate(stringOrUndefined(args.url) ?? '', args.newTab === true),
 			},
 			{
 				name: 'browser_snapshot', title: 'Snapshot',
@@ -322,7 +327,6 @@ export class McpServer implements vscode.Disposable {
 				description: 'Turns on the element picker and waits for the user to click an element, then returns its full context. '
 					+ 'This blocks on a person, so only call it right after asking the user to pick something.',
 				inputSchema: schema({ timeoutMs: number('How long to wait for the click, default 30000') }),
-				slowMs: 35_000,
 				run: args => browser.inspectElement(numberOrUndefined(args.timeoutMs) ?? 30_000),
 			},
 			{
@@ -388,7 +392,6 @@ export class McpServer implements vscode.Disposable {
 					timeoutMs: number('How long to wait, default 10000'),
 				}),
 				// The tool itself waits up to 10s, so its own budget must exceed that.
-				slowMs: 35_000,
 				run: args => browser.waitFor(
 					stringOrUndefined(args.selector),
 					stringOrUndefined(args.text),

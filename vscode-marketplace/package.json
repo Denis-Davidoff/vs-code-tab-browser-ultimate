@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate-promo",
 	"displayName": "AI Browser🏆 Claude & Codex",
 	"description": "Embedded browser tab with AI capabilities, Claude and Codex integration",
-	"version": "0.5.9",
+	"version": "0.5.11",
 	"publisher": "DenysDavydov",
 	"license": "MIT",
 	"icon": "media/icon.png",
@@ -73,6 +73,11 @@
 			{
 				"command": "aiBrowser.promo.openGuide",
 				"title": "Open the Guide",
+				"category": "AI Browser"
+			},
+			{
+				"command": "aiBrowser.promo.checkForUpdates",
+				"title": "Check for Updates",
 				"category": "AI Browser"
 			}
 		],

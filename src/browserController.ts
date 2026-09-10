@@ -60,6 +60,9 @@ class TabSession {
 		await this.client.send('CSS.enable', {}, this.sessionId);
 		await this.client.send('Runtime.enable', {}, this.sessionId);
 		await this.client.send('Log.enable', {}, this.sessionId);
+		// Page is enabled here rather than per call because `navigate` waits for
+		// `Page.loadEventFired` on this session.
+		await this.client.send('Page.enable', {}, this.sessionId);
 
 		this._subscriptions.push(this.client.on('Runtime.consoleAPICalled', (params: any) => {
 			const text = (params.args ?? [])
@@ -83,6 +86,17 @@ class TabSession {
 		if (this._console.length > consoleLimit) {
 			this._console.splice(0, this._console.length - consoleLimit);
 		}
+	}
+
+	/**
+	 * Whether the channel under this session has gone.
+	 *
+	 * The host can drop a session; a stale one then rejects every send with "CDP
+	 * session closed", which reads to a model as the browser being broken rather
+	 * than as something to retry.
+	 */
+	public get isClosed(): boolean {
+		return this.client.isClosed;
 	}
 
 	public get consoleLines(): readonly ConsoleLine[] {
@@ -115,6 +129,28 @@ async function evaluate(session: TabSession, expression: string): Promise<any> {
 	return result?.value;
 }
 
+/**
+ * Waits for a navigation to finish, and gives up rather than blocking a tool.
+ *
+ * The listener has to be in place *before* `Page.navigate` is sent: a fast load
+ * fires the event before anything is listening, and the wait then runs to its
+ * timeout for a page that is already there. Timing out is not an error — the
+ * page is still loading, and the next tool sees whatever is there by then.
+ */
+function waitForLoad(session: TabSession, timeoutMs: number): { settled: Promise<boolean>; cancel(): void } {
+	const source = new vscode.CancellationTokenSource();
+	const timer = setTimeout(() => source.cancel(), timeoutMs);
+	const settled = session.client.once('Page.loadEventFired', source.token)
+		.then(() => true, () => false)
+		.finally(() => {
+			clearTimeout(timer);
+			source.dispose();
+		});
+	// Callable so a navigation that will never fire the event does not leave the
+	// timer armed for the full timeout behind it.
+	return { settled, cancel: () => source.cancel() };
+}
+
 /** Embeds a value as a JS literal, so a selector cannot break out of the expression. */
 function literal(value: unknown): string {
 	return JSON.stringify(value ?? null);
@@ -125,11 +161,47 @@ export class BrowserController implements vscode.Disposable {
 	private _session: TabSession | undefined;
 	private _sessionTab: vscode.BrowserTab | undefined;
 
+	/**
+	 * The tab the tools last acted on.
+	 *
+	 * `vscode.window.activeBrowserTab` means "a browser editor is the active
+	 * pane", nothing more — the extension host sets it from
+	 * `activeEditorPane?.input instanceof BrowserEditorInput` — so it goes
+	 * `undefined` the moment the user clicks into a file, which is the normal
+	 * thing to do while an agent works. Without a memory of the tab, every tool
+	 * refuses with "no browser tab is open" whenever a document has focus, and
+	 * `browser_navigate` opens a second tab for the page already sitting there.
+	 */
+	private _lastTab: vscode.BrowserTab | undefined;
+
 	/** Last element the user picked, so a follow-up question does not re-prompt. */
 	private _selectedElement: string | undefined;
 
 	/**
-	 * The active tab, or a refusal the model can act on.
+	 * Which tab the tools act on: the active one, else the one last used, else
+	 * the most recently opened.
+	 *
+	 * The last fallback is deliberate rather than a refusal — with a single tab
+	 * open, which is the usual case, it is the only answer that can be right.
+	 */
+	private _resolveTab(): vscode.BrowserTab | undefined {
+		const active = vscode.window.activeBrowserTab;
+		if (active) {
+			this._lastTab = active;
+			return active;
+		}
+
+		const open = vscode.window.browserTabs ?? [];
+		if (this._lastTab && open.includes(this._lastTab)) {
+			return this._lastTab;
+		}
+
+		this._lastTab = open.length > 0 ? open[open.length - 1] : undefined;
+		return this._lastTab;
+	}
+
+	/**
+	 * The tab to act on, or a refusal the model can act on.
 	 *
 	 * Every tool goes through here, which is why the wording matters: this is the
 	 * text the assistant sees when there is nothing to drive.
@@ -141,7 +213,7 @@ export class BrowserController implements vscode.Disposable {
 				'the user can enable it with the "AI Browser: Enable Integrated Browser API" command.');
 		}
 
-		const tab = vscode.window.activeBrowserTab;
+		const tab = this._resolveTab();
 		if (!tab) {
 			throw new Error(
 				'No browser tab is open. Ask the user to open a page, or call `browser_navigate` with a URL first.');
@@ -150,18 +222,27 @@ export class BrowserController implements vscode.Disposable {
 	}
 
 	private async _withSession(): Promise<TabSession> {
-		const tab = this._requireTab();
+		return this._sessionFor(this._requireTab());
+	}
 
-		if (this._session && this._sessionTab === tab) {
+	/** The cached session for a tab, opening a fresh one when there is none to reuse. */
+	private async _sessionFor(tab: vscode.BrowserTab): Promise<TabSession> {
+		if (this._session && this._sessionTab === tab && !this._session.isClosed) {
 			return this._session;
 		}
 
 		// A different tab: the old session's console belongs to a page that is
 		// no longer the subject.
-		this._session?.dispose();
+		this._dropSession();
 		this._session = await TabSession.open(tab);
 		this._sessionTab = tab;
 		return this._session;
+	}
+
+	private _dropSession(): void {
+		this._session?.dispose();
+		this._session = undefined;
+		this._sessionTab = undefined;
 	}
 
 	public async state(): Promise<unknown> {
@@ -174,23 +255,35 @@ export class BrowserController implements vscode.Disposable {
 		}
 
 		const tabs = vscode.window.browserTabs ?? [];
-		const active = vscode.window.activeBrowserTab;
+		// `active` is the tab the tools will act on, which is not the same thing
+		// as the focused editor: see `_resolveTab`.
+		const target = this._resolveTab();
 		return {
 			available: true,
 			openTabs: tabs.length,
-			active: active ? { url: active.url, title: active.title } : undefined,
+			active: target ? { url: target.url, title: target.title } : undefined,
 			hasSelectedElement: this._selectedElement !== undefined,
 		};
 	}
 
 	/**
-	 * Opens a URL, reusing the active tab when there is one.
+	 * Opens a URL, driving the tab the tools are already on unless a new one is
+	 * asked for.
+	 *
+	 * Reuse is the default because the alternative piles up editor tabs. There is
+	 * no "navigate" in the `browser` proposal, and `openBrowserTab` always mints
+	 * a new editor — `$openBrowserTab` generates a fresh id per call, so VS Code
+	 * cannot even collapse the tabs into one preview slot — which left an agent
+	 * that navigated ten times with ten tabs behind it. `Page.navigate` over the
+	 * session we already hold drives the existing tab instead, and stays attached
+	 * across the load, so the console of the new page is captured from its first
+	 * line rather than from whenever the next tool happens to attach.
 	 *
 	 * `file:` is refused. Otherwise an agent can point the browser at any file on
 	 * disk and then read it back with `browser_text` — turning a browser tool
 	 * into an unrestricted file reader.
 	 */
-	public async navigate(rawUrl: string): Promise<unknown> {
+	public async navigate(rawUrl: string, newTab = false): Promise<unknown> {
 		let parsed: URL;
 		try {
 			parsed = new URL(rawUrl);
@@ -209,15 +302,73 @@ export class BrowserController implements vscode.Disposable {
 				+ '"AI Browser: Enable Integrated Browser API".');
 		}
 
-		// A new tab means a new page: the cached session and the picked element
-		// both describe something that is gone.
-		this._session?.dispose();
-		this._session = undefined;
-		this._sessionTab = undefined;
+		// Either way this is a new page, so the element the user picked describes
+		// something that is gone.
 		this._selectedElement = undefined;
 
-		const tab = await vscode.window.openBrowserTab(parsed.toString(), { preserveFocus: true });
-		return { url: tab.url, title: tab.title };
+		const url = parsed.toString();
+		const target = newTab ? undefined : this._resolveTab();
+
+		if (!target) {
+			// Nothing to drive: the cached session belongs to a page we are leaving.
+			this._dropSession();
+			const tab = await vscode.window.openBrowserTab(url, { preserveFocus: true });
+			this._lastTab = tab;
+			return { url: tab.url, title: tab.title, openedNewTab: true };
+		}
+
+		try {
+			return await this._navigateInTab(target, url);
+		} catch (err) {
+			// A session can be dropped by the host between two calls. One fresh
+			// attempt, and only for that, so a real navigation failure still
+			// reports itself instead of being retried twice.
+			if (!String(err).includes('CDP session closed')) {
+				throw err;
+			}
+			this._dropSession();
+			return await this._navigateInTab(target, url);
+		}
+	}
+
+	/** How long `navigate` waits for the load event before reporting what it has. */
+	private static readonly _navigationTimeoutMs = 15_000;
+
+	private async _navigateInTab(tab: vscode.BrowserTab, url: string): Promise<unknown> {
+		const session = await this._sessionFor(tab);
+		// The buffer describes the page being left.
+		session.clearConsole();
+
+		const load = waitForLoad(session, BrowserController._navigationTimeoutMs);
+		try {
+			const result = await session.client.send('Page.navigate', { url }, session.sessionId);
+			if (result?.errorText) {
+				throw new Error(`Could not open ${url}: ${result.errorText}`);
+			}
+
+			// A same-document navigation — `/docs` to `/docs#intro` — loads nothing
+			// and fires no load event, and CDP says so by omitting `loaderId` from
+			// the reply ("the previously committed loaderId would not change").
+			// Waiting for an event that cannot come stalls every anchor change for
+			// the full timeout.
+			if (result?.loaderId) {
+				await load.settled;
+			}
+		} finally {
+			load.cancel();
+		}
+
+		// Read the page rather than the tab: `BrowserTab.url` catches up over an
+		// event and can still hold the previous address here. Best effort — the
+		// navigation happened either way, and reporting it as a failure because a
+		// title could not be read would be a lie.
+		let info: { url?: string; title?: string } | undefined;
+		try {
+			info = await evaluate(session, '({ url: location.href, title: document.title })');
+		} catch {
+			info = undefined;
+		}
+		return { url: info?.url ?? url, title: info?.title, openedNewTab: false };
 	}
 
 	/** A compact list of things worth interacting with, for orientation. */
@@ -379,7 +530,7 @@ export class BrowserController implements vscode.Disposable {
 
 	/** URL of the tab a screenshot came from, for naming the file. */
 	public get activeUrl(): string | undefined {
-		return isBrowserApiGranted() ? vscode.window.activeBrowserTab?.url : undefined;
+		return isBrowserApiGranted() ? this._resolveTab()?.url : undefined;
 	}
 
 	public async click(selector: string): Promise<unknown> {
@@ -440,8 +591,6 @@ export class BrowserController implements vscode.Disposable {
 	}
 
 	public dispose(): void {
-		this._session?.dispose();
-		this._session = undefined;
-		this._sessionTab = undefined;
+		this._dropSession();
 	}
 }

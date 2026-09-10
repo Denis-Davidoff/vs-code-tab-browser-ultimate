@@ -38,8 +38,6 @@ export interface Tool {
 	readonly title: string;
 	readonly description: string;
 	readonly inputSchema: ToolSchema;
-	/** Extra time this tool needs beyond the default request timeout, in ms. */
-	readonly slowMs?: number;
 	run(args: Record<string, unknown>): Promise<unknown>;
 }
 

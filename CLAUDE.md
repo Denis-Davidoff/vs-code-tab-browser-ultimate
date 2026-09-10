@@ -1079,6 +1079,10 @@ as "try the next".
 - **A tool's failure is a result, not a protocol error.** `{ isError: true }` is something the
   model reads and can recover from; a `-32603` never reaches it.
 - Batches and bare arrays are refused rather than half-supported.
+- **There is no per-tool timeout, and `Tool.slowMs` was removed rather than kept as decoration.**
+  It was declared and set on the three slow tools, and read by nothing at all, so the comments
+  claiming a bigger budget for them were simply false — the client's own timeout is the only one
+  in play. Do not reintroduce the field without a consumer.
 - `browser_navigate` refuses anything but http/https. Otherwise an agent points the browser at
   a local file and reads it back with `browser_text` — a browser tool turned into a file reader.
 
@@ -1157,21 +1161,59 @@ symptom is a bare 401 that reads like a broken server.
 Duplicate Codex entries are **reported, never repaired**: the global file is not ours, and
 removing the wrong one of a pair turns working tools into a 401.
 
-### The server is per window; the tools follow the active tab
-
-Deliberate, and asked about — leave it alone unless someone asks for the other behaviour.
+### The server is per window; the tools follow the active tab, then remember it
 
 The token and port belong to the **workspace**, so "connecting" attaches an assistant to this
-VS Code window. But `BrowserController._requireTab()` resolves
-`vscode.window.activeBrowserTab` on **every call**, so a tool acts on whichever browser tab is
-focused at that moment, not on the tab whose dropdown was used to connect. With two tabs open,
-switching between calls sends the next `browser_click` to the other page; `browser_navigate`
-always opens a new tab.
+VS Code window rather than to a browser tab. Which tab a tool then drives is decided per call by
+`BrowserController._resolveTab()`: **the active browser tab, else the one last used, else the
+most recently opened.** With two tabs open, switching between calls sends the next
+`browser_click` to the other page.
 
-Pinning the controller to one tab at connect time is the obvious alternative (with
-`browser_state` reporting which tab it is bound to, and a clear error once that tab is closed).
-It was considered and postponed. Until then, describe the behaviour as "attached to a VS Code
-window, acting on the active browser tab" rather than "connected to a browser tab".
+**`vscode.window.activeBrowserTab` alone is not usable for this, and that was a real bug.** The
+extension host sets it from `activeEditorPane?.input instanceof BrowserEditorInput` and nothing
+else, so it is `undefined` the moment any other editor is focused — a file, a diff, a chat.
+That is the normal thing for a user to do while an agent works, and until the fallback existed
+every tool answered "No browser tab is open" for as long as a document had focus, while the
+page sat there in plain sight. The memory is a plain field, revalidated against
+`vscode.window.browserTabs` (tab objects are identity-stable, which `_sessionFor` already
+relied on), so a closed tab is never handed out.
+
+Pinning the controller to one tab at connect time is still the other design (with
+`browser_state` naming the bound tab, and an error once it closes). It stays postponed. Describe
+the behaviour as "attached to a VS Code window, acting on the browser tab in use".
+
+**`browser_navigate` reuses that tab instead of opening one**, which is the whole reason the
+resolution above matters. `openBrowserTab` is the only thing the `browser` proposal offers and
+it always mints a new editor — `$openBrowserTab` generates a fresh id per call, so VS Code
+cannot even collapse the results into one preview slot — and an agent navigating ten times left
+ten tabs behind. So `navigate` drives the resolved tab with `Page.navigate` over the session it
+already holds, and only calls `openBrowserTab` when there is no tab at all or the caller passes
+`newTab: true`. Two things fall out of it, both wanted: the console stays attached across the
+load, so the new page is captured from its first line, and the result reports `openedNewTab` so
+the model knows which happened.
+
+Three details in that path are load-bearing. The `Page.loadEventFired` listener is registered
+**before** `Page.navigate` is sent, or a fast load fires it before anything is listening and the
+wait runs to its full 15s for a page that is already there. A rejection carrying
+`CDP session closed` is retried exactly once with a fresh session, because the host can drop a
+session between two calls — narrow on purpose, so a genuine navigation failure still reports
+itself rather than being attempted twice.
+
+And **the wait only happens when `Page.navigate` reports a `loaderId`.** A same-document
+navigation — `/docs` to `/docs#intro` — loads nothing and fires no load event, and CDP signals
+it by omitting that field ("the previously committed loaderId would not change"). Waiting
+unconditionally made every anchor change take the full 15s timeout and then answer correctly,
+which is the worst shape a bug can have: right answer, absurd latency, nothing in the logs.
+Measured against a stubbed CDP channel: 12 ms for the anchor, ~350 ms for a real load.
+
+**Two other tab sources are not ours and cannot be fixed from here.** `aiBrowser.show` /
+`api.open` / the external URI opener go through `workbench.action.browser.open`, which also
+opens a new tab per call; it does accept an undocumented `{ url, reuseUrlFilter, openToSide }`
+options object (glob-matched on authority and path, scheme compared only when the filter starts
+with `scheme:`) that navigates a matching existing tab instead, but it is in no `.d.ts` and no
+built-in extension uses it. And a page's own `window.open` / `target="_blank"` becomes a new
+editor tab in the main process (`setWindowOpenHandler` → child view with `pinned: true`), which
+`browser_click` reaches through `el.click()` like any other click.
 
 ### Lifecycle
 
@@ -1536,18 +1578,63 @@ proposal, and some builds only hand proposed APIs to an extension named with
 
 [vscode-marketplace/](vscode-marketplace/) is a whole second extension with its own manifest, packaged and
 published on its own. It exists because the Marketplace is where people look and the real build
-cannot live there, so what goes up is the **listing** — readme, screenshots, the video slot — plus
-two commands that open the download and the docs. [vscode-marketplace/extension.js](vscode-marketplace/extension.js)
-is the entire implementation, and it says hello once per machine and never again.
+cannot live there, so what goes up is the **listing** — readme, screenshots, the video slot —
+plus the update watch below. [vscode-marketplace/extension.js](vscode-marketplace/extension.js)
+is the entire implementation.
 
 **Its id is its own**, `DenysDavydov.tab-browser-ultimate-promo`, and the whole design follows
 from that. The two are unrelated extensions to VS Code: nothing updates across them, and the
 normal end state is *both installed* — someone finds the listing, installs the real build, and
 this one stays behind. So the stub checks `getExtension('DenysDavydov.tab-browser-ultimate')`
-and goes quiet when the real build is there: no welcome, and a
-`aiBrowser.fullBuildInstalled` context key that hides both of its commands from the palette
+and stops advertising when the real build is there: no welcome, and a
+`aiBrowser.fullBuildInstalled` context key that hides the two listing commands from the palette
 through `contributes.menus.commandPalette`. The key is republished on
 `extensions.onDidChange`, so installing the real build takes effect without a reload.
+
+**Once the real build is installed the stub is the update notifier, and that is now its point.**
+The real build is hand-installed from a VSIX, so **nothing** updates it and nothing announces a
+release: the Marketplace gallery only tracks the promo id, and an Open VSX install exists on
+some hosts but not on VS Code itself. So the stub asks
+`https://open-vsx.org/api/DenysDavydov/tab-browser-ultimate` for the current version and offers
+the `.vsix` link that comes back with it — pinned to that version, unlike the `main` VSIX in the
+repository, which is whatever was committed last. That repository manifest is the fallback when
+the registry cannot be reached, and being offline is treated as nothing to say rather than as an
+error. `AI Browser: Check for Updates` is the manual route and is deliberately the one palette
+entry with no `when`, since it is the half that stays useful.
+
+Four decisions in there are worth keeping:
+
+- **The automatic check is delayed 10s after activation**, because a notification pauses the
+  built-in browser
+  ([why](#a-notification-pauses-the-built-in-browser)) and a window that restores a browser tab
+  is exactly the window that must not be greeted with a toast as it opens.
+- **A toast is only for an available update.** "You are up to date" and "could not reach the
+  registry" go to `setStatusBarMessage`, the same rule the real build follows through
+  [src/notify.ts](src/notify.ts).
+- **Once per version, not once per window** (`aiBrowser.promo.offeredVersion`), plus a six-hour
+  throttle on the request itself (`aiBrowser.promo.lastCheck`). A manual check ignores both.
+- **The throttle is stamped only by a request that reached a registry.** Stamping before the
+  fetch means a laptop whose first window of the day opens offline buys six hours of silence for
+  every window after it.
+- **A timer, not a single `setTimeout`.** The startup look is one-shot, so on its own it left a
+  window that stays open for days checking exactly once ever, while the readme promised "every
+  six hours". An hourly tick drives it now; the tick only has to be finer than the throttle,
+  which is what actually paces the requests.
+- **The watch is armed from two places**: activation, and `extensions.onDidChange`. The flow this
+  build exists for installs the real extension *after* activation — find the listing, download,
+  install — so arming only at activation left the watch inert until a reload, in exactly the
+  session where it had just been asked for. It disarms again if the real build is removed.
+- **Versions are compared field by field as numbers.** `'0.5.10' > '0.5.9'` is false as strings,
+  which would have hidden every release between .9 and .20; anything non-numeric (`-rc.1`)
+  answers "not newer", because failing to offer an update is recoverable and offering a
+  downgrade is not.
+
+It has no test project of its own — plain JavaScript, no build step. It was verified the way
+[the status bar](#the-status-bar-one-permanent-button-one-that-hides-itself) was: by loading
+`extension.js` against a stubbed `vscode` and a stubbed `fetch`, and printing what each state
+does — welcome with no real build, an offer when the registry is ahead, the status bar line when
+it is not, silence when offline, silence for a version already offered, and silence while
+throttled. Worth redoing that way after touching this file.
 
 **The earlier design used the same id for both**, so that the VSIX would install over the
 listing with nothing to uninstall. It was dropped, and it should stay dropped: VS Code keeps

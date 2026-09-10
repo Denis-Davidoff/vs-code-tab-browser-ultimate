@@ -76,8 +76,11 @@ directly on VSCodium, through a mirror on Devin. Note that *installing* and *wor
 different questions: Open VSX will happily install this on Cursor, where the browser features
 can never run. The `.vsix` works on any of them too, if you prefer it.
 
-Once the full build is in, this entry has done its job — it goes quiet on its own, and you can
-uninstall it whenever you like.
+Once the full build is in, this entry stops advertising itself — but keep it, because it has a
+second job: **it tells you when a new version is released.** A VSIX installed by hand never
+updates itself, and neither VS Code nor Open VSX will say a word about it. This one checks for
+you, at most every few hours, and stays silent unless there is something newer than what you
+have.
 
 > The browser features need **VS Code 1.112 or later** — that is where the editor's own browser
 > tab and its `browser` API proposal exist, and a fork's own version number does not tell you
@@ -144,15 +147,25 @@ the editor: the page you are looking at is the page your agent reads and drives.
 
 ## What this build does
 
-Two commands, and that is the whole of it:
+It is the listing, and it is the update watch — the second half is the reason to keep it
+installed:
 
 | Command | |
 |---|---|
+| **AI Browser: Check for Updates** | asks Open VSX for the latest release, right now |
 | **AI Browser: Download the Full Build (VSIX)** | opens the download |
 | **AI Browser: Open the Guide** | opens the documentation |
 
-It says hello once, the first time it starts, and never again — and not at all if the full build
-is already installed, in which case both commands hide themselves too.
+**The update watch** runs on its own once the full build is installed: it asks Open VSX (and
+falls back to the repository) at most once every six hours, compares the answer with the version
+you have, and only then says anything. Each release is offered once, not once per window, and
+the offer opens the `.vsix` for that exact version. Everything that is not an available update —
+"you are up to date", "could not reach the registry" — goes to the status bar rather than a
+notification.
+
+It says hello once, the first time it starts, and never again. Before the full build is
+installed the two listing commands are in the Command Palette; afterwards they hide themselves
+and only **Check for Updates** remains.
 
 ## Links
 

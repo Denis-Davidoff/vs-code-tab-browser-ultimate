@@ -67,6 +67,11 @@ export class CDPClient implements vscode.Disposable {
 		}
 	}
 
+	/** Whether the channel has gone. Every {@link send} on a closed client rejects. */
+	public get isClosed(): boolean {
+		return this._closed;
+	}
+
 	public send(method: string, params?: object, sessionId?: string): Promise<any> {
 		if (this._closed) {
 			return Promise.reject(new Error('CDP session closed'));
