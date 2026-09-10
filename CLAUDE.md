@@ -1121,6 +1121,12 @@ and never tells the model to go and read `config.toml` — a model sent to read 
 confirm the server is configured and still have no tools, which is precisely what made Codex
 look stupid.
 
+**And it asks for a check, not for work.** The line used to end "to inspect the page in the
+integrated browser", which both assistants took as the task: they opened the browser tools on
+whatever page was open and started reporting on it, before the user had asked for anything. The
+paste exists to find out whether the tools arrived, so it now asks exactly that and says not to
+use them yet.
+
 **A broken `.mcp.json` is never overwritten.** `readClaudeConfig` returns `{}` for absent,
 the object for parsed, and `undefined` for unparsable — and on `undefined` the write is
 abandoned, because rewriting it would delete every other MCP server the project has.

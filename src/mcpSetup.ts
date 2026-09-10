@@ -289,10 +289,16 @@ export function codexCliCommand(folder: vscode.WorkspaceFolder | undefined, serv
  *
  * The fallback line therefore points at the CLI command, which changes the
  * config for the *next* session, rather than at the file.
+ *
+ * It also asks for a *check*, not for work. The line used to end "to inspect
+ * the page in the integrated browser", and both assistants read that as the
+ * task: they went straight to the browser and started reporting on whatever
+ * page happened to be open, before the user had asked for anything. All this
+ * paste is for is finding out whether the tools arrived.
  */
 export function connectionPrompt(entryName: string, cliCommand: string): string {
 	return [
-		`Use the \`${entryName}\` MCP tools (they start with \`browser_\`) to inspect the page in the integrated browser.`,
+		`Do you have the \`${entryName}\` MCP tools (they start with \`browser_\`)? Just check — do not use them yet.`,
 		`If you have no such tools, they were not loaded at startup: run \`${cliCommand}\` and start a new session.`,
 	].join('\n');
 }
