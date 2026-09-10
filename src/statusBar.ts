@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import type { BrowserController, ShareState } from './browserController';
+import type { BrowserController, ShareView } from './browserController';
 import { inUseMarker, sharedMarker, stripMarker } from './shareIndicator';
 import {
 	browserApiState, integratedBrowserCommand, onDidChangeGrantState,
@@ -38,7 +38,7 @@ export function registerStatusBar(context: vscode.ExtensionContext, controller: 
 	// The share is the one piece of state this item carries, because it is the
 	// one piece a user can lose track of: an assistant driving a tab in the
 	// background looks exactly like an assistant doing nothing.
-	const applyShare = () => applyShareState(item, controller.share);
+	const applyShare = () => applyShareState(item, controller.shares);
 	applyShare();
 	context.subscriptions.push(controller.onDidChangeShare(applyShare));
 
@@ -96,49 +96,60 @@ function applyState(item: vscode.StatusBarItem, state: BrowserApiState): void {
 }
 
 /**
- * The permanent item, carrying the share state.
+ * The permanent item, carrying the assignments.
  *
- * The marker is the same emoji that sits on the shared tab itself, so the two
- * read as one thing rather than as two indicators that happen to agree.
+ * The glyphs are the ones on the tabs themselves, so the item and the tab read
+ * as one indicator rather than as two that happen to agree. With more than one
+ * assignment the item counts them instead of listing them — a status bar is
+ * peripheral vision, and the tooltip is where "who is on what" belongs.
  *
- * `lost` is the only state that takes a background. It is not decoration: the
- * assistants are paused until the user acts, so this is precisely the case the
- * warning colour exists for — and the only two colours the API accepts are
- * `warningBackground` and `errorBackground`, per the `.d.ts`. Red would say
- * something broke, and nothing did.
+ * A paused assignment is the only state that takes a background. It is not
+ * decoration: that assistant is stopped until the user acts, which is precisely
+ * the case the warning colour exists for — and the only two colours the API
+ * accepts are `warningBackground` and `errorBackground`, per the `.d.ts`. Red
+ * would say something broke, and nothing did.
  */
-function applyShareState(item: vscode.StatusBarItem, share: ShareState): void {
-	if (share.state === 'lost') {
+function applyShareState(item: vscode.StatusBarItem, shares: ShareView): void {
+	const { assignments, paused } = shares;
+
+	if (paused.length > 0) {
 		item.text = `$(globe) AI Browser $(debug-pause)`;
-		item.tooltip = new vscode.MarkdownString(vscode.l10n.t(
-			"**The shared tab was closed, so the browser tools are paused.**\n\nThey will not fall back to another page on their own — share a tab again, or stop sharing to let the assistants follow whichever tab is in front of you."));
+		item.tooltip = new vscode.MarkdownString([
+			vscode.l10n.t("**Paused, because a shared tab was closed.**"),
+			'\n\n',
+			paused.map(entry => `- ${entry.label}`).join('\n'),
+			'\n\n',
+			vscode.l10n.t("They will not fall back to another page on their own — give them a tab again, or stop sharing."),
+		].join(''));
 		item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
 		return;
 	}
 
 	item.backgroundColor = undefined;
 
-	if (share.state === 'shared') {
-		const used = share.usedBy.length > 0;
-		item.text = `$(globe) AI Browser ${used ? inUseMarker : sharedMarker}`;
-		const who = share.usedBy.map(assistantName).join(', ');
-		item.tooltip = new vscode.MarkdownString([
-			vscode.l10n.t("**Shared with assistants**"),
-			`\n\n${share.title || share.url || ''}`,
-			'\n\n',
-			used
-				? vscode.l10n.t("Driven by {0}. The browser tools act on this tab only.", who)
-				: vscode.l10n.t("No assistant has used it yet. If one reports no `browser_` tools, it has to be restarted to load them."),
-		].join(''));
+	if (assignments.length === 0) {
+		item.text = '$(globe) AI Browser';
+		item.tooltip = vscode.l10n.t("AI Browser — open a page, give a tab to an assistant");
 		return;
 	}
 
-	item.text = '$(globe) AI Browser';
-	item.tooltip = vscode.l10n.t("AI Browser — open a page, connect an assistant");
-}
-
-function assistantName(kind: string): string {
-	return kind === 'claude' ? 'Claude Code' : kind === 'codex' ? 'Codex' : vscode.l10n.t("another assistant");
+	const used = assignments.some(assignment => assignment.usedBy.length > 0);
+	const glyph = used ? inUseMarker : sharedMarker;
+	item.text = assignments.length === 1
+		? `$(globe) AI Browser ${glyph}`
+		: `$(globe) AI Browser ${glyph}${assignments.length}`;
+	item.tooltip = new vscode.MarkdownString([
+		vscode.l10n.t("**Shared tabs**"),
+		'\n\n',
+		assignments.map(assignment => {
+			const page = assignment.title || assignment.url;
+			return assignment.usedBy.length > 0
+				? `- ${assignment.label} → ${page} · ${vscode.l10n.t("working")}`
+				: `- ${assignment.label} → ${page} · ${vscode.l10n.t("not picked up yet")}`;
+		}).join('\n'),
+		'\n\n',
+		vscode.l10n.t("An assistant with a tab of its own acts on that tab and sees no other. If one reports no `browser_` tools, it has to be restarted to load them."),
+	].join(''));
 }
 
 /**
@@ -195,7 +206,6 @@ async function showMenu(controller: BrowserController): Promise<void> {
 	// Read before the QuickPick is shown: a focused browser tab is what "share
 	// this tab" means, and clicking the status bar does not move focus.
 	const focused = controller.focusedTab;
-	const share = controller.share;
 
 	items.push({ label: vscode.l10n.t("Open"), kind: vscode.QuickPickItemKind.Separator });
 	items.push({
@@ -234,50 +244,86 @@ async function showMenu(controller: BrowserController): Promise<void> {
 		});
 	}
 
-	// Sharing sits above the connect entries because it is the per-page half of
-	// the same job: Connect attaches an assistant to this window once, sharing
-	// says which page inside it to work on.
-	if (share.state !== 'none' || focused) {
-		items.push({ label: vscode.l10n.t("Shared tab"), kind: vscode.QuickPickItemKind.Separator });
+	// The assignments come first, because they are the per-page half of the same
+	// job the entries below do once: those attach an assistant to this window,
+	// these say which page inside it each one works on.
+	const shares = controller.shares;
+	if (shares.assignments.length > 0 || shares.paused.length > 0 || focused) {
+		items.push({ label: vscode.l10n.t("Shared tabs"), kind: vscode.QuickPickItemKind.Separator });
 	}
-	if (share.state === 'shared') {
+
+	for (const assignment of shares.assignments) {
 		items.push({
-			label: vscode.l10n.t("$(circle-slash) Stop sharing"),
-			description: share.title || share.url,
-			detail: share.usedBy.length > 0
-				? vscode.l10n.t("Assistants act on this tab only — {0} has used it", share.usedBy.map(assistantName).join(', '))
-				: vscode.l10n.t("Assistants act on this tab only — none has used it yet"),
-			run: () => vscode.commands.executeCommand('aiBrowser.stopSharingTab'),
+			label: vscode.l10n.t("$(circle-slash) Stop sharing with {0}", assignment.label),
+			description: assignment.title || assignment.url,
+			detail: assignment.usedBy.length > 0
+				? vscode.l10n.t("Working on this tab and no other")
+				: vscode.l10n.t("Has this tab and has not picked it up yet — if it reports no `browser_` tools, restart it"),
+			run: () => vscode.commands.executeCommand('aiBrowser.stopSharingTab', assignment.target),
 		});
 	}
-	if (share.state === 'lost') {
+
+	for (const entry of shares.paused) {
 		items.push({
-			label: vscode.l10n.t("$(debug-pause) Sharing paused — the shared tab was closed"),
-			detail: vscode.l10n.t("Pick this to let the assistants follow whichever tab is in front of you again"),
-			run: () => vscode.commands.executeCommand('aiBrowser.stopSharingTab'),
+			label: vscode.l10n.t("$(debug-pause) {0} is paused — its tab was closed", entry.label),
+			detail: vscode.l10n.t("Pick this to let it follow whichever tab is in front of you again"),
+			run: () => vscode.commands.executeCommand('aiBrowser.stopSharingTab', entry.target),
 		});
 	}
-	if (focused && focused !== controller.sharedTab) {
+
+	if (focused) {
+		// Stripped like every other title we show: a tab that was shared a
+		// moment ago can still be carrying the suffix if the page could not be
+		// reached when sharing stopped.
+		const page = stripMarker(focused.title) || focused.url;
+		const alreadyShared = controller.isShared(focused);
 		items.push({
-			label: share.state === 'shared'
-				? vscode.l10n.t("$(link) Share this tab instead")
+			label: vscode.l10n.t("$(link) Give this tab to Claude Code"),
+			description: page,
+			run: () => vscode.commands.executeCommand('aiBrowser.shareTabWithClaudeCode'),
+		});
+		items.push({
+			label: vscode.l10n.t("$(link) Give this tab to Codex"),
+			description: page,
+			run: () => vscode.commands.executeCommand('aiBrowser.shareTabWithCodex'),
+		});
+		items.push({
+			label: alreadyShared
+				? vscode.l10n.t("$(link) Give this tab to every assistant")
 				: vscode.l10n.t("$(link) Share this tab with assistants"),
-			// Stripped like every other title we show: a tab that was shared a
-			// moment ago can still be carrying the suffix if the page could not
-			// be reached when sharing stopped.
-			description: stripMarker(focused.title) || focused.url,
-			detail: vscode.l10n.t("The browser tools then act on this tab only, whatever else you open"),
+			description: page,
+			detail: vscode.l10n.t("Assistants with no tab of their own then work on this one"),
 			run: () => vscode.commands.executeCommand('aiBrowser.shareTab'),
+		});
+	} else if (shares.assignments.length === 0 && shares.paused.length === 0) {
+		// Offered even though it cannot act from here, because the alternative
+		// is a feature nobody finds: hidden whenever a browser tab is not
+		// focused, this entry was invisible exactly when someone went looking
+		// for it — and "Connect" took the blame for the tools following the
+		// active tab. Picking it runs the command, which says what it needs.
+		items.push({
+			label: vscode.l10n.t("$(link) Give a tab to an assistant"),
+			detail: vscode.l10n.t("Until you do, the browser tools follow whichever browser tab you are looking at — open a page and run this from that tab"),
+			run: () => vscode.commands.executeCommand('aiBrowser.shareTab'),
+		});
+	}
+
+	if (shares.assignments.length > 1) {
+		items.push({
+			label: vscode.l10n.t("$(circle-slash) Stop sharing everything"),
+			run: () => vscode.commands.executeCommand('aiBrowser.stopSharingTab'),
 		});
 	}
 
 	items.push({ label: vscode.l10n.t("Assistants"), kind: vscode.QuickPickItemKind.Separator });
 	items.push({
-		label: vscode.l10n.t("$(comment-discussion) Connect Claude Code"),
+		label: vscode.l10n.t("$(comment-discussion) Connect Claude Code and share this tab"),
+		detail: vscode.l10n.t("Writes its config, copies the check prompt, and gives it the tab you are on"),
 		run: () => vscode.commands.executeCommand('aiBrowser.connectClaudeCode'),
 	});
 	items.push({
-		label: vscode.l10n.t("$(comment-discussion) Connect Codex"),
+		label: vscode.l10n.t("$(comment-discussion) Connect Codex and share this tab"),
+		detail: vscode.l10n.t("Writes its config, copies the check prompt, and gives it the tab you are on"),
 		run: () => vscode.commands.executeCommand('aiBrowser.connectCodex'),
 	});
 	items.push({

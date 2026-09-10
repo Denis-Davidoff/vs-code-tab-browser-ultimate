@@ -111,6 +111,7 @@ Compiled with `tsc`, **no bundling**. `main: ./out/extension`.
 - [src/assistants.ts](src/assistants.ts) — handing reports to Claude Code and Codex
 - [src/lastAction.ts](src/lastAction.ts) — which element command the toolbar button repeats
 - [src/browserController.ts](src/browserController.ts) — what the browser can do, for MCP
+- [src/shareRegistry.ts](src/shareRegistry.ts) — who works on which tab (leaf, under test)
 - [src/shareIndicator.ts](src/shareIndicator.ts) — the marker on a shared tab, page-side (leaf, under test)
 - [src/mcpProtocol.ts](src/mcpProtocol.ts) — JSON-RPC dispatch and the auth decision (leaf, under test)
 - [src/mcpPort.ts](src/mcpPort.ts) — which port a window tries first (leaf, under test)
@@ -1464,17 +1465,101 @@ built-in extension uses it. And a page's own `window.open` / `target="_blank"` b
 editor tab in the main process (`setWindowOpenHandler` → child view with `pinned: true`), which
 `browser_click` reaches through `el.click()` like any other click.
 
-### Sharing one tab: the user's half of "work on this page"
+### Giving a tab to an assistant
 
-`aiBrowser.shareTab` / `aiBrowser.stopSharingTab` add a **third level of tab intent**, above
-both existing ones, and the reason it had to exist is that the other two are not
-interchangeable:
+The user hands **one tab to one assistant**, and several assistants can be on the same tab.
+`src/shareRegistry.ts` owns the rules — a leaf with tests, no `vscode`, no CDP — and the
+controller above it only resolves CDP sessions and drives the browser.
+
+**The map runs assistant → tab, and the direction is the design.** Keyed the other way it would
+be a set per tab, and "which tab does *this* call act on" — the only question a tool ever asks —
+would need a scan. This way several assistants pointing at one page falls out for free, while
+one assistant is never in two places at once.
+
+Three levels of intent, resolved most specific first:
 
 | level | who sets it | can the model release it |
 |---|---|---|
-| `_sharedTab` | the user, by command | **no** |
-| `_pinnedTab` | the model, `browser_select_tab` | yes |
+| one conversation (`Mcp-Session-Id`) | the user | **no** |
+| one assistant (`claude` / `codex` / `other`) | the user | **no** |
+| every assistant with no tab of its own | the user | **no** |
+| `_pins` — one per caller | the model, `browser_select_tab` | yes |
 | automatic | focused → last used → most recently opened | n/a |
+
+**A conversation is addressable but not identifiable**, which is why the UI assigns by
+*assistant* today: `Mcp-Session-Id` is minted per `initialize`, so it changes on every restart,
+and MCP carries no name or cwd to tell two Claude conversations apart — only "called 5s ago",
+which `Check Connection` already reports. The registry takes session-scoped targets, so the day
+that is worth exposing the rules are already in place.
+
+**Who is calling is passed, not parked.** `Tool.run(args, caller)` and `dispatch(request, ctx,
+caller)` carry it, and the field it replaced (`beginCall` / `endCall` around a single `_caller`)
+could be cleared by a second overlapping call while the first was still running. That was
+tolerable while it only decided a *label*; it decides which tab a call acts on now, and a tab is
+not a label.
+
+**Everything that was per window had to become per caller, and four things were missed** —
+all found by review, all reproduced against a stubbed channel:
+
+- **The model's own selection** (`browser_select_tab`) was a single field. Codex selecting a tab
+  redirected *Claude's* next call to it, `browser_state` reported `selection: "selected"` to a
+  caller that had selected nothing, and giving a tab to one assistant cleared the field for
+  everybody — so an unrelated assistant silently changed page. It is `_pins`, keyed by
+  `callerKey`.
+
+  **Which pins an assignment clears is a rule, not a key.** An assignment outranks a selection,
+  so a shadowed pin has to go — otherwise it resurrects a stale choice the moment the assignment
+  is released. Deriving one key from the target was not the same thing: a Codex *conversation*
+  keeps its pin under `session:<id>`, so giving Codex a tab deleted `kind:codex` and left the
+  conversation's own pin behind, which it went straight back to as soon as the assignment was
+  released — and "share with all assistants" cleared only `kind:other`. So each pin is asked
+  where it resolves *now*, and the ones landing on the assignment just written are cleared: one
+  rule for a conversation, an assistant and everybody, while a caller with a narrower assignment
+  of its own keeps its selection. A pin therefore records the caller it belongs to, not just the
+  tab.
+
+  **And the fallback below it had to move with it.** `_lastTab` was written by `selectTab`, by
+  `shareTab` and by `navigate`'s new-tab branch — one caller's choice recorded in a field every
+  caller reads — so with no browser tab focused, which is the normal thing to do while an agent
+  works, an unassigned caller fell through to it and got the page somebody else had chosen. The
+  per-caller pin had fixed the level above and left this one window-wide. It now means only
+  "the tab the user was last looking at", written where the user's own focus was seen and
+  nowhere else. Reproduced both ways.
+- **`Mcp-Session-Id` → assistant lived on the server instance** and was cleared on dispose, so
+  anything that restarts the server (`aiBrowser.mcp.port`, the enabled setting) made every live
+  conversation anonymous: `initialize` had happened against the old instance, the new one saw
+  `other`, and an assistant that had been given a tab went back to following the user. The map
+  belongs to the window, so `McpLifecycle` owns it and hands it in.
+- **A closed tab was only cleaned up if it held an assignment.** Closing an ordinary tab — the
+  common case — left its `TabSession` undisposed and still counting against the session limit,
+  and kept the element picked on it keyed to a tab that no longer existed.
+- **Usage was reported per tab, not per assignment.** Let Claude use a tab, then give the same
+  tab to Codex, and Codex was immediately shown as "working" — suppressing the one hint that
+  matters, that it has not picked the tab up and may need restarting. `usedByTarget` filters to
+  the assignment's own assistant; the everyone assignment still reports everyone.
+
+**Isolation has to hold on every path, and three of them missed it at first** — all found by
+review, all reproduced:
+
+- **`browser_screenshot` was calling `capture` with no caller.** With the caller now optional —
+  that is how a command the *user* pressed is recognised — a missing argument read as "the user
+  pressed this", so an assistant assigned one tab got a picture of whichever tab the person was
+  focused on, and a paused one got a picture at all. Reproduced against an unrelated tab.
+- **A paused caller was handed the whole tab list.** `browser_tabs` computed its visible set from
+  "has an assignment", and a paused caller has none in that sense, so it fell through to every
+  open tab — addresses, one-time links, query-string tokens — next to `selection: "paused"`.
+  Paused now returns an empty list and withholds the count as well.
+- **The picked element was one field for the window.** `browser_selected_element` handed whoever
+  asked the context picked on the *other* assistant's page. It is a map keyed by tab now, read
+  through the caller's own assignment, which also retires an invalidation that had to be
+  remembered on every path that changed tabs.
+
+**An assistant with a tab of its own sees no other.** `browser_tabs` returns that one tab and a
+count of the rest, `browser_state` the same, and `browser_select_tab` refuses. Listing every
+other tab was defensible while nothing could be selected — "they are context" — but a user who
+gives one page to an assistant is bounding what it can see, and every other address in the
+window (one-time links, tokens in a query string) is not part of that. An assistant with *no*
+assignment still sees everything and follows the user: nothing has been bounded.
 
 `browser_select_tab` was the only way to fix the tools on a tab, and it is called by the *model*
 — so the user had no way to state the same thing, and without a selection every call followed
@@ -1482,20 +1567,44 @@ interchangeable:
 `browser_navigate` then drove the page you had just opened. A share sits above the focused
 editor for that reason, and above the model's pin so it cannot be handed back.
 
-**Sharing does not fall back when its tab closes, and that is the one place it deliberately
-differs from a pin.** A pin reverting to automatic is right for a choice the model made; doing
-the same to the user's choice resumes work on whatever happens to be focused, which is exactly
-the failure the share exists to prevent. So the state goes to `lost`, every tool answers
-`shareLostMessage`, and `browser_state` reports `selection: 'paused'` with `sharedTabClosed`.
-Only the user can leave that state (share again, or stop sharing) — which is why the message
-names the command instead of suggesting the model do something.
+**Connecting from a browser tab now shares that tab**, and this was a real report rather than a
+refinement: "the agents go into the active tab, not the one I connected them to" — from someone
+who had never pressed `Share Tab with Assistants`, because nothing led them to it. The wording is
+what did it. "Connect Claude Code" reads as *connect it to what I am looking at*, while the
+server has always belonged to the **window**, so without a share the tools followed whichever
+tab was active — behaving exactly as designed and looking broken. Two changes, both in
+`extension.ts` / `mcpSetup.ts`:
 
-**`_resolveTab` takes a `user` flag, and forgetting it breaks the toolbar.** A lost share pauses
-the *assistants*; a button the user pressed has nothing to do with them. The first version
-short-circuited in `_resolveTab` for everyone, so after the shared tab closed a screenshot
-answered "No browser tab is open" with another tab open in plain sight. `capture` therefore
-takes `user` too, and `screenshot.ts` passes it — the same line already drawn by
-`focusedTab`.
+- a connect made while a browser tab is focused shares it, names the page in the confirmation,
+  and tells the model in the pasted prompt (stated, not asked for — the paste stays a *check*,
+  so it says "for when you do use them" rather than sending the model off to the page);
+- a connect made from anywhere else — the setup case, where the config is written long before
+  there is a page — shares nothing and says what the alternative is, naming the command.
+
+The share entry in the status bar menu is also offered when it *cannot* act, for the same
+reason: it used to be hidden whenever a browser tab was not focused, which is exactly when
+somebody goes looking for it. Picking it runs the command, which explains what it needs.
+
+The trade-off is worth stating: someone who connects with a tab open now has a share they did
+not ask for, and if that tab is closed the tools pause. That is visible — 🔗 in the status bar,
+the marker on the tab, and the confirmation naming `Stop Sharing Tab` — and the alternative was
+a feature nobody found.
+
+**A closed tab pauses the assistants that were on it, and nobody else.** A pin reverting to
+automatic is right for a choice the model made; doing the same to the user's choice resumes work
+on whatever happens to be focused, which is the failure this exists to prevent. So the
+assignment moves to `lost` rather than being deleted — "the page you were given is gone" and
+"you were never given one" are different answers, and deleting the entry would silently turn the
+first into the second. The paused assistant answers `shareLostMessage`, which names *it*, while
+every other assignment in the window carries on. **A paused caller does not fall through to a
+broader assignment either**: resuming Claude on the page everybody else follows is undoing the
+instruction just as thoroughly as resuming it on the focused tab.
+
+**A command the user pressed carries no caller, and that is now the whole of the distinction.**
+It used to be a `user` flag threaded through `_resolveTab` and `capture`, and forgetting it in
+one branch was enough to answer a toolbar screenshot with "No browser tab is open" while another
+tab sat in plain sight. With the rules in the registry there is nothing to forget: a paused
+assignment belongs to one assistant, so it cannot spill onto a person who never had one.
 
 **Two refusals, because the alternative is a silent no-op.** Under a share,
 `browser_select_tab` cannot take effect and `navigate(newTab: true)` would open a tab that the
@@ -1503,17 +1612,10 @@ next tool ignores — the "reports `tab-2`, acts on `tab-1`" shape recorded abov
 say who can change it. Navigating *inside* the shared tab stays allowed: the share is on the
 tab, not on the URL.
 
-**Other tabs are still listed.** `browser_tabs` marks the shared one (`sharedByUser`) and leaves
-the rest visible as context — hiding them would only make the ids in that list confusing, and
-what they are not is *selectable*, which the refusal already says.
-
-**Who touched it is tracked at the point a tab is handed out, not per request.** `beginCall` /
-`endCall` in the controller are set by the transport around `tools/call` only, and `_noteTabUse`
-records the caller when `_requireTab` hands out the shared tab. Deliberately not "an assistant
-made a call": `browser_tabs` and `browser_state` answer without touching a page, and a marker
-lighting up on those would claim work on a tab nothing had opened. With two assistants calling
-at once the *label* can name the wrong one; the fact being guarded — the tab was used at all —
-is unaffected, and that is not worth a caller argument on every tool.
+**Use is recorded at the point a tab is handed out, not per request.** `_noteTabUse` runs when
+`_requireTab` gives a caller its tab. Deliberately not "an assistant made a call":
+`browser_tabs` and `browser_state` answer without touching a page, and a marker lighting up on
+those would claim work on a tab nothing had opened.
 
 **Every `tools/call` is attributed, `other` when the client cannot be named.** The transport
 passes `kind ?? 'other'`, and the fallback is the point: only `initialize` carries
@@ -1548,44 +1650,32 @@ Three things fix it, and each covers a different part:
   **returns a boolean instead of swallowing its failure**: "the marker is off" and "the channel
   died before it could be taken off" must not look the same to the caller that has another way
   in.
-- **A superseded open retries once, and only while its tab is still the subject.**
-  `_sessionFor(tab, retries = 1)`: a session that arrives unwanted because the cache moved is a
-  stale attempt rather than a failure — *if the caller still wants that tab*. The first version
-  retried unconditionally and that was worse than the error it removed, measured both ways
-  against a stubbed channel with the handshake held open:
+- **Eviction passes over a tab somebody is *using*, not only an assigned one.** "Least recently
+  used" is really "least recently acquired" — `_touch` runs when a session is handed out, not
+  while it works — so the longest-running call sat at the front of the queue: a
+  `browser_wait_for` on a pinned tab was evicted by another assistant opening tabs and answered
+  the model with the internal `CDP client disposed`. A pinned tab is claimed as well as an
+  assigned one, and the tab whose session has *just arrived* is never the victim: it is both the
+  most recent and unassigned, so the spare search chose it and handed the opener a session that
+  had already been disposed.
+- **A session that arrives unwanted closes itself.** With one session per tab the only reasons
+  are that the controller was disposed or the tab closed, both of which `_sessionFor` checks
+  when the open lands — the retry, the token and the `_stillWanted` predicate that a single
+  cached session needed are gone with the shape that needed them.
 
-  | | unconditional retry | `_stillWanted` |
-  |---|---|---|
-  | open X in flight, user shares Y | Y left with **no live session** while sharing Y is in force — its marker registration gone with it — and X holding the cache | Y keeps its session and registration; the stale call is refused |
-  | open in flight, then `dispose()` | a second session opened and **left running**, with nothing left to close it | one session, opened and closed |
+**The lazy loss of an assignment must refuse, not act.** Resolution is what *discovers* an
+assigned tab that has gone — the only detector on a host that does not fire
+`onDidCloseBrowserTab` — so a gate read before it can still be looking at an assignment this
+very call is about to end. `navigate` is the one tool that *acts* rather than refusing, and in
+that window it opened a brand-new tab at a model-chosen URL and reported `openedNewTab: true`
+while every later call refused. It re-checks after resolving, and so does `_requireTab`, which
+had been answering the worse refusal of the two: "No browser tab is open … call
+`browser_navigate` with a URL first", an instruction to take the one action that bypassed the
+pause.
 
-  So `_stillWanted` answers no to anything that has taken over — the controller disposed, the
-  tab closed, a share moved or paused, a newer open for a different tab, a pin elsewhere — and
-  it is side-effect free on purpose, since `_resolveTab` moves `_lastTab` and can end a share,
-  neither of which a stale request may do. `_disposed` is set *first* in `dispose`, so an open
-  landing after it sees it; `_sessionFor` refuses outright once it is set. The retry also clears
-  its own `_opening` entry before recursing — otherwise it matches on the tab and awaits the
-  very promise it is running inside. A request that loses its subject is told to ask again,
-  which is right: serving it from under the new owner is how a call comes to report one tab and
-  act on another.
-
-**The lazy loss of a share must refuse, not act.** `_resolveTab` is what *discovers* a shared
-tab that has gone — the only detector on a host that does not fire `onDidCloseBrowserTab` — so a
-gate read before it can still be looking at a share this very call is about to end. `navigate`
-is the one tool that *acts* rather than refusing, and in that window it opened a brand-new tab at
-a model-chosen URL and reported `openedNewTab: true` while every later call refused. It now
-re-checks `_shareLost` after resolving, and so does `_requireTab`, which had been answering the
-worse refusal of the two: "No browser tab is open … call `browser_navigate` with a URL first",
-an instruction to take the one action that bypassed the pause.
-
-**The closure-discovering branch honours `user` too.** The `_shareLost` short-circuit did, but
-the branch that finds `_sharedTab` missing returned nothing for everyone — so on a host without
-the close event, the first user press after the tab went answered "No browser tab is open" with
-another tab in plain sight. Same line, drawn in both places.
-
-**`_sharedTab` still moves *before* the old tab is cleaned**, and that order is load-bearing for
-a different reason: while it still named the old tab, a concurrent tool resolving it could send
-`_sessionFor` down the arm-on-open path and re-mark the very tab being cleaned.
+**An assignment is written *before* the tab it moves off is cleaned**, and that order is
+load-bearing: while the registry still named the old tab, a concurrent tool resolving it could
+send `_sessionFor` down the arm-on-open path and re-mark the very tab being cleaned.
 
 ### The marker on the shared tab
 
@@ -1600,8 +1690,16 @@ title, installed by [src/shareIndicator.ts](src/shareIndicator.ts):
 
 | | |
 |---|---|
-| 🔗 | shared, no assistant has driven it yet |
+| 🔗 | given out, nobody has driven it yet |
 | 🤖 | an assistant has driven it at least once |
+| 🟠 🟦 🟣 | *whose* tab it is — Claude Code, Codex, anything unnamed |
+
+Two facts, two positions: `🔗🟠` is "Claude's tab, not picked up yet", `🤖🟠🟦` is "Claude and
+Codex both work here, and somebody has". A tab given to *every* assistant carries no trailing
+glyph, so the common case reads exactly as it did before. The colours are the ones the
+per-assistant dots on the toolbar icons used before they were removed — the only prior art this
+project has for "which assistant" at a glance — and `markerSuffix` in
+[src/shareIndicator.ts](src/shareIndicator.ts) composes them.
 
 The two states are the point. A share nobody picked up is the common failure — neither
 assistant re-reads its config, so one that was never restarted has no `browser_` tools at all —
@@ -1623,6 +1721,18 @@ Everything about the implementation follows from the page being someone else's:
   dropped session, so "stop sharing" removed an id that no longer existed. `_sessionFor` arms it
   whenever a session for the shared tab opens, which is also what re-marks the page after the
   host drops a session.
+- **Nothing caches what is on the page.** There was a field, and it was a belief rather than a
+  fact: the handle lives on `window`, so a page can call `remove()` on it, and a page that
+  defines `window.__aiBrowserShareMarker` before we arrive makes the installer take its
+  `existing.set` branch and do whatever it likes. Both left the extension convinced the marker
+  was applied, after which every later arm sent nothing at all — so a page could keep itself
+  unmarked while an assistant drove it. An install is cheap enough to repeat; a marker that
+  cannot come back is not. `clear()` already declined to trust that state for the same reason.
+- **`stripMarkerFromHtml` edits the `<title>` element and nothing else.** Scanning the whole
+  document for the separator followed by our glyphs found *decoys* — a `<meta>` description, an
+  inline legend like `🟠 degraded` — matched one first, deleted it from the page's own content
+  and left the real marker in the title. Both halves of what the separator exists to prevent, in
+  the one tool a model uses to verify a page.
 - **`stripMarker` is applied to every title that leaves the extension** — tool results, the
   status bar, the share state — or an agent reads the page title as `Orders 🤖` and quotes it
   back. (Screenshot file names are **not** among them: they come from the URL's hostname plus a
@@ -1730,22 +1840,29 @@ the click that queued it, so the tab can be gone by its turn — and adopting it
 advertising a share on a tab that no longer existed, with `tab-0` for an id, until some tool
 happened to resolve a tab. The command reports the refusal through `refuse()`, never a toast.
 
-**A one-off read of another tab must not move the cached session** — `_borrowSession`. The
-cache is single (`_session` / `_sessionTab`) and `_sessionFor` *drops* whatever it holds, which
-is right for the tools, whose subject really has moved, and wrong for a screenshot: a
-`addScriptToEvaluateOnNewDocument` registration is per-session state, so disposing the shared
-tab's session disarms the marker on it. Share A, screenshot B, reload A and the marker is gone
-while sharing is still in force — the symptom arriving long after the action that caused it, and
-the console buffer the assistant was collecting goes with it. So `capture` reuses the cached
-session only when it already belongs to that tab, and otherwise opens a throwaway one and
-disposes it, the same shape the element picker uses.
+**One CDP session per tab, not one per window** — `_sessions`. A single slot was tenable only
+while the tools acted on one tab: with Claude on one page and Codex on another it would be
+dropped and re-opened on every alternating call, which costs a handshake each time and, worse,
+loses the **console** — capture only happens while something is attached, so a buffer thrown
+away every other call reports an empty log for everything that mattered. That is the entire
+reason a session is cached rather than opened per call, and the harness checks it: two
+assistants, two tabs, each reading its own log.
 
-**But only for a tab the caller *named*.** `capture` with no `preferred` tab is acting on the
-tools' own subject, and that session is cached rather than borrowed: routing every capture
-through `_borrowSession` quietly cost the console its priming, because a screenshot used to
-leave an attached session behind and a following `browser_console` had the page's log from that
-moment on. With a throwaway it answered "The console is empty" for everything before the next
-call — and console capture is the whole reason the session is cached at all.
+The map also retires machinery rather than adding it. With a session per tab an arriving open is
+only ever unwanted because the controller was disposed or the tab closed — never because
+somebody asked for a different tab — so `_openToken`, `_stillWanted` and the bounded retry that
+guarded "superseded while opening" are **gone**, along with the class of bug they existed for.
+
+It is bounded at four, because a session is a live channel into a page and an agent can open tabs
+all day. Eviction passes over a tab somebody is assigned to while any unassigned one remains:
+throwing away the page an assistant is working on — its console buffer and its marker
+registration with it — to make room for a page nobody asked about is the wrong trade every time.
+
+**A one-off read still must not take a session that is in use** — `_borrowSession`. `capture`
+with a tab named by the caller (the toolbar passes the one in front of the user) reuses that
+tab's session if there is one and otherwise opens a throwaway, the same shape the element picker
+uses; `capture` with no named tab is acting on the tools' own subject, so that one is cached —
+routing every capture through the throwaway path quietly cost the console its priming.
 
 A floating badge injected into the page was the alternative and was rejected: it lands in every
 screenshot the agent takes, and shows up in `browser_html` / `browser_text` as page content that
@@ -1861,14 +1978,15 @@ merely failing to reach anyone else's. Not built because repair covers the same 
 a new HTTP hop, a shared registry file to keep pruned, or a story for a window closing
 mid-call.
 
-**A share per assistant.** One tab is shared with everything at once, because that is the shape
-the feature was asked for and it costs nothing beyond the precedence rule. Claude on one page
-and Codex on another would need two things: the caller threaded into `Tool.run` and `dispatch`
-(both under test) rather than the in-flight `beginCall` field, and — the real cost — a *map* of
-CDP sessions instead of the single `_session`. The session is cached precisely because console
-capture only happens while something is attached, so two clients alternating between two tabs
-would drop the buffer on every other call. Not built until someone actually drives two
-assistants on two pages at once.
+**Assigning a tab to one conversation rather than to an assistant.** The registry takes
+session-scoped targets and resolves them above the assistant, so the mechanism is in place and
+tested; nothing in the UI writes one. What is missing is not code but *identity*: an
+`Mcp-Session-Id` changes on every restart, and MCP carries no name or working directory, so two
+Claude conversations can only be told apart by "called 5s ago" — a row a user would have to
+correlate by timing. Worth building when someone actually runs two conversations of the same
+assistant on two pages; a rule for inheriting an orphaned session assignment (the newest
+session of that kind takes it over) would have to come with it, or every restart would strand
+one.
 
 **A stdio bridge, which would remove the token from the repository.** `.mcp.json` is designed
 to be committed and shared with a team, and we write a bearer token into it. The harm is
@@ -2011,8 +2129,9 @@ No compile error for any of these — they only surface at runtime.
 40. **Resuming a superseded async open without re-checking what it was for** → the retry comes
     back for a tab that is no longer the subject and drops the session of the one that is (a
     share moving is the common case, and the marker's registration goes with the session), or
-    runs after `dispose` and leaves a session with nothing left to close it. Guard with
-    `_stillWanted`, and set `_disposed` before tearing anything down.
+    runs after `dispose` and leaves a session with nothing left to close it. Set `_disposed`
+    before tearing anything down, and have the arriving session check what it was for. (The
+    guard this once named, `_stillWanted`, went with the single cached session — see item 66.)
 41. **Reading a quoted TOML key as absent** → `"url" = …` is the same key as `url = …`, so a
     writer that misses it adds a second definition, and two definitions of one key is TOML that
     does not parse — taking every MCP server in the file with it, unattended, at window start.
@@ -2043,7 +2162,82 @@ No compile error for any of these — they only surface at runtime.
     runtime but **not** at typecheck time, so it still drags the imported file into the test
     project — declare the structural slice instead, as `shareIndicator.ts` does with
     `PageChannel`.
-50. **`Open File` on a host without the built-in browser** → a `file:` URI in the webview panel
+50. **Parking the caller in a field instead of passing it** → two overlapping `tools/call`s and
+    the second one's cleanup clears the field under the first, so a call acts on another
+    assistant's tab. Tolerable while it only decided a label; not once it decides the tab.
+    `Tool.run(args, caller)`.
+51. **Letting a paused assignment fall through to a broader one** → the assistant resumes on the
+    page everybody else follows, which undoes the user's instruction exactly as thoroughly as
+    resuming on the focused tab. The first key with anything to say decides.
+52. **Listing every tab to an assistant that was given one** → the user bounded what it can see,
+    and the list hands back every other address in the window, one-time links and query-string
+    tokens included.
+53. **A tool that forgets to pass the caller** → the caller is optional, because that is how a
+    command the user pressed is told apart from an assistant's call, so a missing argument does
+    not fail — it silently acts on the *user's* tab. `browser_screenshot` did exactly that.
+54. **Computing "what may this caller see" from "does it have an assignment"** → a *paused*
+    caller has none, so it fell through to the full tab list at the very moment its assignment
+    was meant to be protecting it.
+55. **Reading a command argument from an `editor/title` menu as your own parameter** → VS Code
+    hands that command the editor's resource, so the first argument is a `Uri`; the share
+    commands resolved a key from it and threw, which killed the entry that matters most. Guard
+    with a shape check (`isShareTarget`).
+56. **Leaving one field window-wide while its neighbours became per caller** → the model's own
+    tab selection redirected another assistant's calls and reported `selection: "selected"` to a
+    caller that had selected nothing. Anything a caller can set belongs in a map keyed by
+    `callerKey`.
+57. **Clearing a per-caller map wholesale when one entry was meant** → giving a tab to Claude
+    took Codex's chosen tab away with it, and its next call silently followed Claude's page.
+    The mirror image is just as real: deriving *one* key from the assignment misses the pins of
+    the callers it also shadows — a conversation's pin lives under `session:<id>`, so it
+    survived an assignment made to its assistant and came back the moment that was released.
+    Ask each entry where it resolves now.
+58. **State that identifies a caller living on the server instance** → a restart from a setting
+    change makes every live conversation anonymous, and an assistant that had been given a tab
+    goes back to following the user. `McpLifecycle` owns `Mcp-Session-Id` → assistant.
+59. **Cleaning up a closed tab only when it was assigned** → the ordinary case leaks its CDP
+    session (still counting against the limit) and keeps whatever was picked on it, keyed to a
+    tab that no longer exists.
+60. **Clearing a picked element only on the assigned path** → an unassigned caller reads the
+    previous document's element after a same-tab navigation, with `hasSelectedElement` still
+    saying yes. It belongs to the tab being navigated, whoever asked.
+61. **Reporting a tab's whole usage history against one assignment** → a fresh assignment looks
+    like work in progress, which hides the "not picked up yet, restart it" hint that the two
+    marker states exist for.
+62. **A gesture that shares before it can fail** → the connect paths that return early never
+    mentioned the assignment made a moment earlier, so closing that tab later paused an
+    assistant with advice about a share the user did not remember making. Every failure path
+    carries `scopeNote`.
+63. **`_dropSession()` with no argument now closes every tab's session** → it used to be the
+    only session there was. Two paths in `navigate` still called it that way, taking another
+    assistant's console buffer and marker registration with them.
+64. **A method reference where a call was meant** (`selection: this._selectionKind`) →
+    `JSON.stringify` drops function properties, so the field simply vanished from the result
+    with no error anywhere.
+65. **Scanning for the marker separator only once** → a thin space is a real typographic
+    character, so a page whose own title reads `1 000 Orders` defeated the scan and leaked our
+    glyph into `browser_html`.
+66. **One cached CDP session while assistants are on different tabs** → it is dropped and
+    re-opened on every alternating call, and the console buffer — the only reason it is cached —
+    is lost each time. One session per tab, bounded, and eviction passes over the tabs somebody
+    is assigned to.
+67. **Fixing a redirect one level up and leaving the fallback window-wide** → the per-caller pin
+    stopped one caller's selection from redirecting another, while `_lastTab` — written by
+    `selectTab` and by `shareTab` — kept doing it in the focus state that is most common.
+68. **Evicting by "least recently acquired" while calls are in flight** → the longest-running
+    call is at the front of the queue, so an unrelated assistant's activity kills it with the
+    internal `CDP client disposed`. Pass over what is claimed, and never evict the session that
+    has just arrived.
+69. **Caching what a page is supposed to be showing** → the page owns the handle and can take
+    the marker off, so a cached "already applied" makes every later attempt send nothing.
+70. **Searching a whole document for something that only exists in one element** → a decoy
+    matches first, the page's own content is edited and the real thing is left behind.
+71. **A menu entry gated on a context key that means something else** → `claudeInstalled` is
+    "the Claude Code *extension* is installed", and gating the share entry on it hid it from the
+    exact setup the feature targets (Claude Code driven from a terminal through `.mcp.json`).
+72. **Naming a command title in a message while renaming that command** → the sentence points at
+    a palette entry nobody can find. Renames have to sweep `l10n.t` strings and the README table.
+73. **`Open File` on a host without the built-in browser** → a `file:` URI in the webview panel
     is blocked by `localResourceRoots`, so the panel renders blank with no error. The menu entry
     is therefore gated on `shouldUseIntegratedBrowser()` rather than falling back.
 

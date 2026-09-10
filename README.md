@@ -25,7 +25,7 @@ there is not the problem, the missing API is. **Measured by reading the shipped 
 **1–2** install, then click **AI Browser** in the status bar — the menu tells you whether this
 editor supports the browser tools · **2.1–2.2** let it write `enable-proposed-api` into
 `argv.json`, then quit and reopen · **3–4** open a page and find the two buttons at the top right
-of the browser tab · **5–7** *Connect Claude Code* / *Connect Codex*, then paste the copied
+of the browser tab · **5–7** *Connect Claude Code / Codex and Share This Tab*, then paste the copied
 prompt into the assistant · **8** done.
 
 **The original VS Code is the awkward one, and that is why it is third.** It is the only editor
@@ -151,7 +151,7 @@ The menu, in order:
 | Copy Screenshot (Full Page) | the whole scrollable page, truncated past 16384 px |
 | Add Element / CSS Path / XPath to Claude Code | the same three picks, handed to the Claude Code chat |
 | Add Element / CSS Path / XPath to Codex | the same, for Codex |
-| Connect Claude Code / Connect Codex / Check Connection | the mcp server, [below](#giving-an-assistant-the-browser-mcp) |
+| Share Tab with Claude Code / Codex, Connect … and Share This Tab, Check Connection | the mcp server, [below](#giving-an-assistant-the-browser-mcp) |
 
 The assistant entries only appear for an assistant that is actually installed, and the menu is
 attached to the browser tab — from anywhere else, use the command palette.
@@ -256,7 +256,7 @@ read and drive the page itself instead of being handed reports about it:
 | --- | --- |
 | `browser_state` | Whether a page is open, which tab the tools act on, and how that tab was chosen |
 | `browser_tabs` | Every open tab with an id, which one is in use and which one you are looking at |
-| `browser_select_tab` | Fix the tools on one tab by id — or `auto` to follow the one in front of you; refused while you have [shared a tab](#sharing-one-tab) |
+| `browser_select_tab` | Fix the tools on one tab by id — or `auto` to follow the one in front of you; refused for an assistant you have [given a tab](#giving-a-tab-to-an-assistant) |
 | `browser_navigate` | Open an http(s) url, reusing the tab in use unless asked for a new one |
 | `browser_snapshot` | The interactive elements on the page, with selectors for the tools below |
 | `browser_inspect_element` | Arm the picker and wait for you to click something, then report it |
@@ -274,7 +274,7 @@ a `file:` url would turn a browser tool into a file reader.
 
 1. **Open a page** in the built-in browser.
 2. **Run the connect command** — from the globe menu on the browser tab, or from the command
-   palette: **AI Browser: Connect Claude Code** / **Connect Codex**.
+   palette: **AI Browser: Connect Claude Code and Share This Tab** / **Connect Codex and Share This Tab**.
 3. **Press the first button.** **Write .mcp.json & copy connection prompt** (Claude Code) or
    **Write .codex/config.toml & copy connection prompt** (Codex) writes the entry and puts one
    line on the clipboard; paste that into the assistant's chat. The entry carries this window's
@@ -308,26 +308,35 @@ ten minutes, which is the only honest answer to "is anything using this?". Dupli
 entries are reported and never repaired: removing the wrong one of a pair turns working tools
 into a 401.
 
-### Sharing one tab
+### Giving a tab to an assistant
 
 By default the tools follow whichever browser tab you have in front of you, which is right until
-an assistant is working while you read something else. **Share Tab with Assistants** — in the
-toolbar menu on the browser tab, or in the status bar menu — pins them to one page instead:
+an assistant is working while you read something else. You can hand **one tab to one assistant**
+— from the toolbar menu on the browser tab, or from the status bar menu:
 
-- the tools act on that tab only, whatever you open or focus afterwards;
-- the assistant **cannot move off it**: `browser_select_tab` and `browser_navigate` with
-  `newTab` are both refused, and told why;
-- the tab says so itself. A 🔗 is appended to its title while it is shared, and it becomes a 🤖
-  once an assistant has actually driven it — so a share nobody picked up (the usual cause: an
-  assistant that was never restarted, so it never loaded the server) is visible as such. The
-  marker is stripped from every title the tools report, so an assistant never reads it as part
-  of the page.
-- if the shared tab is closed, the tools **pause** rather than fall back to another page —
-  falling back would quietly undo the instruction. The status bar says so, and the menu behind it
-  offers to end the share, which lets the assistants follow you again.
+| Command | What it does |
+| --- | --- |
+| **Share Tab with Claude Code** | gives Claude Code the tab you are on |
+| **Share Tab with Codex** | gives Codex the tab you are on |
+| **Share Tab with All Assistants** | gives it to every assistant that has no tab of its own |
+| **Connect Claude Code / Codex and Share This Tab** | writes the assistant's config, copies the check prompt, and gives it this tab |
+| **Stop Sharing Tab** | releases one assignment, or all of them |
+
+Several assistants can work on the same tab, and each one only ever works on the tab it was
+given:
+
+- its tools act on that tab, whatever you open or focus afterwards;
+- it **sees no other tab** — `browser_tabs` returns its own and a count of the rest, and
+  `browser_select_tab` is refused, so a page you did not hand over is not something it can read;
+- the tab says so itself. A 🔗 is appended to its title while nobody has driven it, 🤖 once
+  somebody has, and 🟠 / 🟦 name Claude Code / Codex — so `🤖🟠🟦` is "both of them work here,
+  and one has". The marker is stripped from every title the tools report, so an assistant never
+  reads it as part of the page;
+- if that tab is closed, **only that assistant pauses** — the others carry on. It will not fall
+  back to another page on its own; the status bar says who is waiting, and one click releases it.
 
 Commands *you* press — the screenshot buttons, the element picker — always act on the tab in
-front of you, sharing or not.
+front of you, no matter what any assistant has been given.
 
 ### Scope, and what it is attached to
 
@@ -335,8 +344,9 @@ The server belongs to the **window**: the token is per workspace and the port is
 order windows open, so connecting attaches an assistant to this VS Code window.
 
 Within it, the tools act on **one tab at a time**, and which one is decided per call: the tab
-you have shared, else the tab selected with `browser_select_tab`, else the browser tab you have
-in front of you, else the last one the tools used. So an assistant can be told "work on this page" and it keeps working on it
+it was given (its own conversation's tab, else its assistant's, else the one every assistant
+shares), else the tab it selected with `browser_select_tab`, else the browser tab you have in
+front of you, else the last one the tools used. So an assistant can be told "work on this page" and it keeps working on it
 while you read something else — and with no selection at all it simply follows you, including
 through clicking into a file, which no longer looks to it like "no browser tab is open".
 
@@ -413,10 +423,12 @@ All of them are in the command palette under **AI Browser**.
 | Add Element to Codex | `aiBrowser.addElementToCodex` |
 | Add CSS Path to Codex | `aiBrowser.addCssPathToCodex` |
 | Add XPath to Codex | `aiBrowser.addXPathToCodex` |
-| Share Tab with Assistants | `aiBrowser.shareTab` |
+| Share Tab with Claude Code | `aiBrowser.shareTabWithClaudeCode` |
+| Share Tab with Codex | `aiBrowser.shareTabWithCodex` |
+| Share Tab with All Assistants | `aiBrowser.shareTab` |
 | Stop Sharing Tab | `aiBrowser.stopSharingTab` |
-| Connect Claude Code | `aiBrowser.connectClaudeCode` |
-| Connect Codex | `aiBrowser.connectCodex` |
+| Connect Claude Code and Share This Tab | `aiBrowser.connectClaudeCode` |
+| Connect Codex and Share This Tab | `aiBrowser.connectCodex` |
 | Check Connection | `aiBrowser.checkMcpConnection` |
 | Show | `aiBrowser.show` |
 | Enable Integrated Browser API | `aiBrowser.enableBrowserApi` |
@@ -508,10 +520,12 @@ typing a path.
 ### The status bar
 
 A permanent **AI Browser** button sits in the status bar. Clicking it opens a menu with
-Open URL, Open File, sharing a tab, the three assistant commands (Connect Claude Code, Connect
-Codex, Check Connection) and Settings — the assistant commands are otherwise only reachable from
-a browser tab or the Command Palette. The button also carries the share: 🔗 while a tab is
-shared, 🤖 once an assistant has driven it, and a pause icon if that tab was closed. To hide
+Open URL, Open File, the tab assignments (give the tab you are on to Claude Code, to Codex or to
+every assistant, and stop sharing one or all of them), the three assistant commands (Connect
+Claude Code / Codex and share this tab, Check Connection) and Settings — the assistant commands
+are otherwise only reachable from a browser tab or the Command Palette. The button also carries
+the assignments: 🔗 while a tab is given out and nobody has driven it, 🤖 once somebody has, a
+count when there is more than one, and a pause icon when an assigned tab was closed. To hide
 either button, right-click the status bar.
 
 ### Where `argv.json` lives

@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import type { CallerIdentity } from './shareRegistry';
+
 /*
  * JSON-RPC dispatch for the MCP server, with no transport and no vscode import
  * so it stays loadable by `npm test`. The MCP SDK is deliberately not used: what
@@ -33,12 +35,33 @@ export interface ToolSchema {
 	readonly additionalProperties: false;
 }
 
+/**
+ * Who is calling, carried to the tool rather than parked in a field.
+ *
+ * An alias rather than a second declaration: `shareRegistry.ts` owns this shape
+ * because it owns the resolution rules that read it, and two identical
+ * interfaces would have drifted silently — structural typing hides a field
+ * added to one and ignored by the other. Type-only, so this leaf still imports
+ * nothing at runtime.
+ *
+ * The share is per assistant now, so "which tab does this call act on" cannot
+ * be answered without knowing whose call it is — and the previous shape, an
+ * in-flight `_caller` on the controller, was only ever good enough for a label:
+ * two overlapping `tools/call`s and the second one's `endCall` cleared the field
+ * under the first. A tab is not a label.
+ *
+ * `sessionId` is the finer grain — one conversation rather than one assistant —
+ * and it is present whenever the client echoes the `Mcp-Session-Id` header it
+ * was given at `initialize`.
+ */
+export type Caller = CallerIdentity;
+
 export interface Tool {
 	readonly name: string;
 	readonly title: string;
 	readonly description: string;
 	readonly inputSchema: ToolSchema;
-	run(args: Record<string, unknown>): Promise<unknown>;
+	run(args: Record<string, unknown>, caller: Caller): Promise<unknown>;
 }
 
 export function schema(
@@ -126,6 +149,7 @@ function asText(value: unknown): string {
 export async function dispatch(
 	request: JsonRpcRequest,
 	ctx: DispatchContext,
+	caller: Caller = { kind: 'other' },
 ): Promise<JsonRpcResponse | undefined> {
 
 	if (isNotification(request)) {
@@ -166,7 +190,7 @@ export async function dispatch(
 
 			const args = (request.params?.arguments ?? {}) as Record<string, unknown>;
 			try {
-				const value = await tool.run(args);
+				const value = await tool.run(args, caller);
 				return result(id, { content: [{ type: 'text', text: asText(value) }] });
 			} catch (err) {
 				return result(id, toolFailure(err instanceof Error ? err.message : String(err)));

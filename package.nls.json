@@ -8,8 +8,8 @@
 	"command.copyElement.title": "Copy Element",
 	"command.copyElementCssPath.title": "Copy CSS Path",
 	"submenu.elementMenu.label": "Copy Element Info",
-	"command.connectClaudeCode.title": "Connect Claude Code",
-	"command.connectCodex.title": "Connect Codex",
+	"command.connectClaudeCode.title": "Connect Claude Code and Share This Tab",
+	"command.connectCodex.title": "Connect Codex and Share This Tab",
 	"command.checkMcpConnection.title": "Check Connection",
 	"command.enableBrowserApi.title": "Enable Integrated Browser API",
 	"command.statusMenu.title": "Menu",
@@ -23,6 +23,8 @@
 	"command.addXPathToCodex.title": "Add XPath to Codex",
 	"command.copyScreenshot.title": "Copy Screenshot (Visible Area)",
 	"command.copyFullScreenshot.title": "Copy Screenshot (Full Page)",
-	"command.shareTab.title": "Share Tab with Assistants",
-	"command.stopSharingTab.title": "Stop Sharing Tab"
+	"command.shareTab.title": "Share Tab with All Assistants",
+	"command.stopSharingTab.title": "Stop Sharing Tab",
+	"command.shareTabWithClaudeCode.title": "Share Tab with Claude Code",
+	"command.shareTabWithCodex.title": "Share Tab with Codex"
 }

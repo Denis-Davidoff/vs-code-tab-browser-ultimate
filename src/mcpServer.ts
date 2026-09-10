@@ -12,7 +12,7 @@ import {
 	authorizeRequest, classifyClient, dispatch, initializeClientName, invalidRequest,
 	invalidRequestReason, isNotification, normalisePath, number, parseError, schema, string,
 	stringOrUndefined, numberOrUndefined,
-	type ClientKind, type DispatchContext, type Tool,
+	type Caller, type ClientKind, type DispatchContext, type Tool,
 } from './mcpProtocol';
 
 /**
@@ -68,7 +68,7 @@ export class McpServer implements vscode.Disposable {
 	 * while the assistant was still working. We mint a session id at initialize,
 	 * return it in the response header, and MCP clients echo it back.
 	 */
-	private readonly _sessionKinds = new Map<string, ClientKind>();
+	private readonly _sessionKinds: Map<string, ClientKind>;
 
 
 	constructor(
@@ -76,7 +76,22 @@ export class McpServer implements vscode.Disposable {
 		private readonly _token: string,
 		private readonly _folderName: string | undefined,
 		private readonly _version: string,
+		/**
+		 * Handed in, and outliving this instance, because a tab assignment is
+		 * keyed on the *assistant* — and the only thing that knows which
+		 * assistant a session id belongs to is this map.
+		 *
+		 * It used to be created here and cleared in `dispose`, so switching
+		 * `aiBrowser.mcp.port` (or anything else that restarts the server) made
+		 * every live conversation anonymous again: `initialize` had happened
+		 * against the old instance, the new one classified it as `other`, and
+		 * an assistant that had been given a tab silently went back to
+		 * following whichever tab the user was looking at — the exact failure
+		 * the assignment exists to prevent. The window owns it now.
+		 */
+		sessionKinds: Map<string, ClientKind>,
 	) {
+		this._sessionKinds = sessionKinds;
 		this._tools = this._buildTools();
 	}
 
@@ -264,29 +279,20 @@ export class McpServer implements vscode.Disposable {
 
 		this._noteActivity(kind);
 
-		// Who is calling, for as long as the call lasts. The controller reads it
-		// when it hands out the shared tab, which is how the marker on that tab
-		// can say an assistant has actually driven it — see `_noteTabUse`.
-		// Cleared in `finally`, or a failed call would leave the last caller
-		// attributed to every later one.
+		// Who is calling, handed to the call itself rather than parked on the
+		// controller. The share is per assistant, so this decides *which tab* a
+		// tool acts on — and the field it replaces could be cleared by a second,
+		// overlapping call while the first was still running, which is tolerable
+		// for a label and not for a tab.
 		//
-		// `?? 'other'` and not `kind &&`: only `initialize` names a client, and a
+		// `?? 'other'` and not `kind &&`: only `initialize` names a client, so a
 		// client that does not echo the session id back is anonymous on every
 		// call after it. Skipping those left the marker on a shared tab reading
 		// 🔗 — "nobody has picked this up" — while that very client drove the
 		// page, which is the one thing the marker exists to tell apart. An
 		// unrecognised assistant is `other` everywhere else here too.
-		let response;
-		if (request.method === 'tools/call') {
-			this.browser.beginCall(kind ?? 'other');
-			try {
-				response = await dispatch(request, this._context());
-			} finally {
-				this.browser.endCall();
-			}
-		} else {
-			response = await dispatch(request, this._context());
-		}
+		const caller: Caller = { kind: kind ?? 'other', sessionId };
+		const response = await dispatch(request, this._context(), caller);
 
 		if (response === undefined) {
 			// A notification. Answering one breaks the handshake, so 202 with no body.
@@ -328,16 +334,16 @@ export class McpServer implements vscode.Disposable {
 				description: 'Reports whether a page is open in the integrated browser, which tab the tools are acting on, '
 					+ 'and how that tab was chosen. Call this first.',
 				inputSchema: schema({}),
-				run: () => browser.state(),
+				run: (_args, caller) => browser.state(caller),
 			},
 			{
 				name: 'browser_tabs', title: 'List tabs',
-				description: 'Lists every open browser tab with an id, which tab the tools are acting on, and which one '
-					+ 'the user has in front of them, and marks the one the user has shared with you if any. Pass an id '
-					+ 'to browser_select_tab to work on a specific one — unless a tab is shared, in which case the '
-					+ 'tools stay on it.',
+				description: 'The browser tabs you may act on. If the user has given you a tab, that is the only one '
+					+ 'listed and browser_select_tab is refused — the rest of the window is not yours to read. '
+					+ 'Otherwise every open tab is listed, and you may pass an id to browser_select_tab to work on '
+					+ 'one of them.',
 				inputSchema: schema({}),
-				run: () => browser.tabs(),
+				run: (_args, caller) => browser.tabs(caller),
 			},
 			{
 				name: 'browser_select_tab', title: 'Select a tab',
@@ -348,7 +354,7 @@ export class McpServer implements vscode.Disposable {
 				inputSchema: schema({
 					id: string('Tab id from browser_tabs, or "auto" to follow whichever tab is in front of the user'),
 				}, ['id']),
-				run: args => browser.selectTab(stringOrUndefined(args.id) ?? ''),
+				run: (args, caller) => browser.selectTab(stringOrUndefined(args.id) ?? '', caller),
 			},
 			{
 				name: 'browser_navigate', title: 'Navigate',
@@ -363,44 +369,44 @@ export class McpServer implements vscode.Disposable {
 							+ 'Refused while the user has shared a tab with you.',
 					},
 				}, ['url']),
-				run: args => browser.navigate(stringOrUndefined(args.url) ?? '', args.newTab === true),
+				run: (args, caller) => browser.navigate(stringOrUndefined(args.url) ?? '', args.newTab === true, caller),
 			},
 			{
 				name: 'browser_snapshot', title: 'Snapshot',
 				description: 'Lists the interactive elements on the page with selectors you can pass to browser_click or browser_fill.',
 				inputSchema: schema({}),
-				run: () => browser.snapshot(),
+				run: (_args, caller) => browser.snapshot(caller),
 			},
 			{
 				name: 'browser_inspect_element', title: 'Inspect an element',
 				description: 'Turns on the element picker and waits for the user to click an element, then returns its full context. '
 					+ 'This blocks on a person, so only call it right after asking the user to pick something.',
 				inputSchema: schema({ timeoutMs: number('How long to wait for the click, default 30000') }),
-				run: args => browser.inspectElement(numberOrUndefined(args.timeoutMs) ?? 30_000),
+				run: (args, caller) => browser.inspectElement(numberOrUndefined(args.timeoutMs) ?? 30_000, caller),
 			},
 			{
 				name: 'browser_selected_element', title: 'Last selected element',
 				description: 'Returns the element the user most recently picked, without prompting again.',
 				inputSchema: schema({}),
-				run: () => browser.selectedElement(),
+				run: (_args, caller) => browser.selectedElement(caller),
 			},
 			{
 				name: 'browser_html', title: 'Read HTML',
 				description: 'Outer HTML of the whole document, or of the first element matching a CSS selector.',
 				inputSchema: schema({ selector: string('Optional CSS selector') }),
-				run: args => browser.html(stringOrUndefined(args.selector)),
+				run: (args, caller) => browser.html(stringOrUndefined(args.selector), caller),
 			},
 			{
 				name: 'browser_text', title: 'Read text',
 				description: 'Visible text of the page body, or of the first element matching a CSS selector.',
 				inputSchema: schema({ selector: string('Optional CSS selector') }),
-				run: args => browser.text(stringOrUndefined(args.selector)),
+				run: (args, caller) => browser.text(stringOrUndefined(args.selector), caller),
 			},
 			{
 				name: 'browser_console', title: 'Console output',
 				description: 'Console messages and uncaught errors captured from the page.',
 				inputSchema: schema({ clear: { type: 'boolean', description: 'Clear the buffer after reading' } }),
-				run: args => browser.consoleOutput(args.clear === true),
+				run: (args, caller) => browser.consoleOutput(args.clear === true, caller),
 			},
 			{
 				name: 'browser_screenshot', title: 'Screenshot',
@@ -408,8 +414,12 @@ export class McpServer implements vscode.Disposable {
 				inputSchema: schema({
 					fullPage: { type: 'boolean', description: 'Capture the whole scrollable page' },
 				}),
-				run: async args => {
-					const { png, clipped } = await browser.capture(args.fullPage === true);
+				run: async (args, caller) => {
+					// The caller, or this reads as a command the *user* pressed
+					// and captures the tab they are focused on — an assistant
+					// with a tab of its own would get a picture of a page it was
+					// never given, and a paused one would get a picture at all.
+					const { png, clipped } = await browser.capture(args.fullPage === true, undefined, caller);
 					return {
 						mimeType: 'image/png',
 						clipped: clipped || undefined,
@@ -421,7 +431,7 @@ export class McpServer implements vscode.Disposable {
 				name: 'browser_click', title: 'Click',
 				description: 'Clicks the first element matching a CSS selector.',
 				inputSchema: schema({ selector: string('CSS selector of the element to click') }, ['selector']),
-				run: args => browser.click(stringOrUndefined(args.selector) ?? ''),
+				run: (args, caller) => browser.click(stringOrUndefined(args.selector) ?? '', caller),
 			},
 			{
 				name: 'browser_fill', title: 'Fill a field',
@@ -430,7 +440,7 @@ export class McpServer implements vscode.Disposable {
 					selector: string('CSS selector of the field'),
 					value: string('Value to set'),
 				}, ['selector', 'value']),
-				run: args => browser.fill(stringOrUndefined(args.selector) ?? '', stringOrUndefined(args.value) ?? ''),
+				run: (args, caller) => browser.fill(stringOrUndefined(args.selector) ?? '', stringOrUndefined(args.value) ?? '', caller),
 			},
 			{
 				name: 'browser_wait_for', title: 'Wait for',
@@ -441,16 +451,16 @@ export class McpServer implements vscode.Disposable {
 					timeoutMs: number('How long to wait, default 10000'),
 				}),
 				// The tool itself waits up to 10s, so its own budget must exceed that.
-				run: args => browser.waitFor(
+				run: (args, caller) => browser.waitFor(
 					stringOrUndefined(args.selector),
 					stringOrUndefined(args.text),
-					numberOrUndefined(args.timeoutMs) ?? 10_000),
+					numberOrUndefined(args.timeoutMs) ?? 10_000,
+					caller),
 			},
 		];
 	}
 
 	public dispose(): void {
-		this._sessionKinds.clear();
 		for (const socket of this._sockets) {
 			socket.destroy();
 		}

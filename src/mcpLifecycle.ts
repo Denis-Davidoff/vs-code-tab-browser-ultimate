@@ -5,6 +5,7 @@
 
 import * as vscode from 'vscode';
 import { BrowserController } from './browserController';
+import type { ClientKind } from './mcpProtocol';
 import { portOffset, portOrder } from './mcpPort';
 import { McpServer } from './mcpServer';
 import { registerWithVsCode, repairConfigs, workspaceFolder } from './mcpSetup';
@@ -31,6 +32,17 @@ export class McpLifecycle implements vscode.Disposable {
 
 	/** Serialises restarts; two setting changes in a row must not race for a port. */
 	private _chain: Promise<void> = Promise.resolve();
+
+	/**
+	 * `Mcp-Session-Id` → which assistant owns it, kept **across** restarts.
+	 *
+	 * The server used to own this and clear it on dispose, which made every
+	 * live conversation anonymous again whenever a setting restarted it — and
+	 * an assistant that had been given a tab then went back to following the
+	 * user, because the assignment is keyed on the assistant and nothing could
+	 * say which one was calling. It belongs to the window, so it lives here.
+	 */
+	private readonly _sessionKinds = new Map<string, ClientKind>();
 
 	private readonly _onDidChangeState = new vscode.EventEmitter<McpState>();
 	public readonly onDidChangeState = this._onDidChangeState.event;
@@ -97,7 +109,8 @@ export class McpLifecycle implements vscode.Disposable {
 		this._setState({ kind: 'starting' });
 
 		const folder = workspaceFolder();
-		const server = new McpServer(this.browser, this._workspaceToken(), folder?.name, this.version);
+		const server = new McpServer(
+			this.browser, this._workspaceToken(), folder?.name, this.version, this._sessionKinds);
 
 		try {
 			await server.start(this._portOrder(configuration, folder));

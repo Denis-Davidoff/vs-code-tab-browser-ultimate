@@ -7,9 +7,11 @@ import * as vscode from 'vscode';
 import { CDPClient } from './cdp';
 import { extractElementData, renderElementMarkdown } from './elementContext';
 import { isBrowserApiGranted } from './proposedApi';
+import { markerSuffix, ShareIndicator, stripMarker, stripMarkerFromHtml } from './shareIndicator';
 import {
-	inUseMarker, ShareIndicator, sharedMarker, stripMarker, stripMarkerFromHtml,
-} from './shareIndicator';
+	callerKey, everyone, ShareRegistry, targetName,
+	type CallerIdentity, type ShareTarget,
+} from './shareRegistry';
 import type { ClientKind } from './mcpProtocol';
 
 /**
@@ -29,19 +31,21 @@ interface ConsoleLine {
 /** How many console lines to keep. Enough to be useful, bounded so it cannot grow without limit. */
 const consoleLimit = 200;
 
-/**
- * The share, as the UI needs to see it.
- *
- * `lost` is a state of its own rather than a flag on `none`, because the two
- * mean opposite things to the user: nothing is shared, versus something was and
- * the assistants are waiting.
- */
-export interface ShareState {
-	readonly state: 'none' | 'shared' | 'lost';
+/** One assignment, as the UI shows it. */
+export interface ShareEntry {
+	readonly target: ShareTarget;
+	/** Who it is for, as it reads in a row: `Claude Code`, `all assistants`. */
+	readonly label: string;
+	readonly tabId: string;
+	readonly url: string;
+	readonly title: string | undefined;
 	readonly usedBy: readonly ClientKind[];
-	readonly id?: string;
-	readonly url?: string;
-	readonly title?: string;
+}
+
+/** Every assignment in this window, plus the ones waiting on the user. */
+export interface ShareView {
+	readonly assignments: readonly ShareEntry[];
+	readonly paused: readonly { readonly target: ShareTarget; readonly label: string }[];
 }
 
 /**
@@ -52,11 +56,14 @@ export interface ShareState {
  * user, and only the user can move it. The message therefore has to name the
  * fix, because the model cannot apply it.
  */
-const shareLostMessage =
-	'The browser tab the user shared with you has been closed, so the browser tools are paused. They will not fall '
-	+ 'back to whichever page the user happens to be looking at. Ask the user to open the page you should work with '
-	+ 'and share it — "AI Browser: Share Tab with Assistants", from the status bar menu or the toolbar menu on the '
-	+ 'browser tab.';
+function shareLostMessage(target: ShareTarget): string {
+	const whose = target.scope === 'everyone'
+		? 'The browser tab the user shared with the assistants'
+		: `The browser tab the user shared with ${targetName(target)}`;
+	return `${whose} has been closed, so the browser tools are paused for you. They will not fall back to whichever `
+		+ 'page the user happens to be looking at. Ask the user to open the page you should work with and share it — '
+		+ '"AI Browser: Share Tab with…", from the status bar menu or the toolbar menu on the browser tab.';
+}
 
 /**
  * A CDP session held open for one tab.
@@ -243,6 +250,27 @@ function bounded<T>(work: Promise<T>, ms: number): Promise<T | undefined> {
 	});
 }
 
+/**
+ * Whether two targets are the same assignment.
+ *
+ * Deliberately structural and deliberately small: the registry owns key
+ * identity (`keyOf`), and the one question this file has to ask — "is the
+ * assignment a caller just resolved to the one being written?" — is answered
+ * without a second key format to keep in step.
+ */
+function sameTarget(a: ShareTarget, b: ShareTarget): boolean {
+	if (a.scope !== b.scope) {
+		return false;
+	}
+	if (a.scope === 'kind' && b.scope === 'kind') {
+		return a.kind === b.kind;
+	}
+	if (a.scope === 'session' && b.scope === 'session') {
+		return a.session === b.session;
+	}
+	return true;
+}
+
 /** Embeds a value as a JS literal, so a selector cannot break out of the expression. */
 function literal(value: unknown): string {
 	return JSON.stringify(value ?? null);
@@ -250,29 +278,45 @@ function literal(value: unknown): string {
 
 export class BrowserController implements vscode.Disposable {
 
-	private _session: TabSession | undefined;
-	private _sessionTab: vscode.BrowserTab | undefined;
+	/**
+	 * One CDP session per tab, not one for the window.
+	 *
+	 * It was a single slot, and that was only tenable while the tools acted on
+	 * one tab: now Claude can be on one page and Codex on another, and a single
+	 * slot would be dropped and re-opened on every alternating call — which
+	 * costs a handshake each time and, worse, loses the **console**. Capture
+	 * only happens while something is attached, so a buffer that is thrown away
+	 * every other call reports an empty log for everything that mattered. That
+	 * is the whole reason a session is cached rather than opened per call.
+	 *
+	 * Bounded, because a session is a live channel into a page and an agent can
+	 * open tabs all day. The least recently used one goes first, and a tab
+	 * somebody is assigned to is passed over while any unassigned one remains —
+	 * evicting the page an assistant is working on to make room for a page
+	 * nobody asked about is the wrong trade every time.
+	 */
+	private readonly _sessions = new Map<vscode.BrowserTab, TabSession>();
+
+	/** Least recently used first, so eviction has an order to follow. */
+	private _sessionOrder: vscode.BrowserTab[] = [];
+
+	private static readonly _sessionLimit = 4;
 
 	/**
-	 * An open that has been started but has not finished yet.
+	 * Opens in flight, per tab.
 	 *
-	 * Opening a session is asynchronous, so without this two calls arriving
-	 * together both find no cached session and both open one — the second
-	 * overwrites the field holding the first, which is then never disposed.
-	 * The CDP session stays live with its console listeners attached, for the
-	 * life of the window. Reproduced with two concurrent `browser_console`
-	 * calls: two sessions opened, one closed.
-	 */
-	private _opening: { tab: vscode.BrowserTab; token: object; promise: Promise<TabSession> } | undefined;
-
-	/**
-	 * Identity of the open currently wanted.
+	 * Opening is asynchronous, so without this two calls arriving together both
+	 * find no session and both open one — the second overwrites the first,
+	 * which is then never disposed while its console listeners stay attached
+	 * for the life of the window. Reproduced once with two concurrent
+	 * `browser_console` calls.
 	 *
-	 * Cleared by {@link _dropSession}, so a session that arrives after the
-	 * controller has moved on can see that nobody wants it and close itself
-	 * rather than leaking.
+	 * Per tab rather than one slot, which also retires the whole "superseded
+	 * while opening" apparatus: with a map, an open is only ever unwanted
+	 * because the controller was disposed or the tab closed, never because
+	 * somebody else asked for a different tab.
 	 */
-	private _openToken: object | undefined;
+	private readonly _opening = new Map<vscode.BrowserTab, Promise<TabSession>>();
 
 	/**
 	 * The tab the tools last acted on.
@@ -286,70 +330,54 @@ export class BrowserController implements vscode.Disposable {
 	 * `browser_navigate` opens a second tab for the page already sitting there.
 	 */
 	private _lastTab: vscode.BrowserTab | undefined;
+	//
+	// **Written only where the user's own focus was seen.** It used to be
+	// written by `selectTab`, by `shareTab` and by `navigate`'s new-tab
+	// branch — one caller's choice, recorded in a field every caller reads —
+	// so Codex selecting a tab still redirected Claude's next call one level
+	// below the per-caller pin that was introduced to stop exactly that:
+	// with no browser tab focused, which the docstring above calls the normal
+	// thing to do while an agent works, an unassigned caller fell through to
+	// `_lastTab` and got the page somebody else had chosen. Reproduced.
 
 	/**
-	 * The tab an assistant asked for by id, and the reason {@link _resolveTab}
-	 * has a first branch at all.
+	 * The tab a caller selected for itself, **per caller**.
 	 *
-	 * It outranks the focused editor on purpose: an assistant that was told
-	 * "work on this one" must keep working on it while the user reads a
-	 * different page. The user's own commands do not go through here — the
-	 * toolbar's screenshot passes {@link focusedTab} — so a pin set by an agent
-	 * can never redirect a button the user pressed.
+	 * It was one field for the window while everything around it became per
+	 * caller, and that is a redirect: Codex calling `browser_select_tab tab-2`
+	 * moved Claude's next tool call to tab-2, and `browser_state` then reported
+	 * `selection: "selected"` to a caller that had selected nothing. Giving a
+	 * tab to one assistant cleared it for everybody too, so an unrelated
+	 * assistant silently changed page.
+	 *
+	 * Keyed by {@link callerKey} — the conversation when the client echoes its
+	 * session id, the assistant otherwise — and it stays *below* an assignment:
+	 * a selection is the model's own guess and the user's instruction outranks
+	 * it.
 	 */
-	private _pinnedTab: vscode.BrowserTab | undefined;
+	private readonly _pins = new Map<string, { readonly tab: vscode.BrowserTab; readonly caller: CallerIdentity }>();
 
 	/**
-	 * The tab the **user** shared with the assistants — the strongest of the
-	 * three levels of intent, and the only one an assistant cannot move.
+	 * Who works on which tab — **assistant → tab**, and the direction is the
+	 * design.
 	 *
-	 * `_pinnedTab` was never enough for "work on this page and no other": it is
-	 * set by the model, so the user had no way to state the same thing, and
-	 * without it every call followed `activeBrowserTab` — click into another
-	 * page and the agent went with you. A share sits above both: above the
-	 * focused editor, so reading a second page does not redirect the agent, and
-	 * above the model's own selection, so it cannot be released by
-	 * `browser_select_tab` either.
+	 * A single `_sharedTab` could only say "the assistants work here", and the
+	 * ask was the other thing: Claude on one page, Codex on another, and both
+	 * on the same page when that is what is wanted. Several assistants pointing
+	 * at one tab falls out for free this way round, while one assistant is
+	 * never in two places at once — and "which tab does this call act on", the
+	 * only question a tool ever asks, is a single lookup.
+	 *
+	 * The rules themselves — precedence between a conversation, an assistant
+	 * and everybody, what a closed tab does to each of them, who has driven
+	 * what — live in [src/shareRegistry.ts](src/shareRegistry.ts), which is a
+	 * leaf with tests. This class only resolves sessions and drives CDP.
 	 *
 	 * The user's own commands still do not come through here — the toolbar's
-	 * screenshot passes {@link focusedTab} — so a share never redirects a button
-	 * the user pressed.
+	 * screenshot passes {@link focusedTab} — so a share never redirects a
+	 * button the user pressed.
 	 */
-	private _sharedTab: vscode.BrowserTab | undefined;
-
-	/**
-	 * Set when the shared tab has gone, and the reason the tools then refuse.
-	 *
-	 * A pin falls back to automatic when its tab closes, which is right for a
-	 * choice the model made and wrong for one the user made: silently resuming
-	 * on whatever is focused undoes exactly the instruction that was given. So
-	 * the share is not replaced by a guess — every tool answers
-	 * {@link shareLostMessage} until the user shares something again.
-	 */
-	private _shareLost = false;
-
-	/**
-	 * Which assistants have actually driven the shared tab.
-	 *
-	 * "Shared" and "an assistant has looked at it" are different facts, and only
-	 * the second means work is happening — which is what the marker on the tab
-	 * distinguishes, and what makes a share that nobody picked up visible as
-	 * such (an assistant that was never restarted, so it never loaded the
-	 * server, is the common case).
-	 */
-	private readonly _shareUsedBy = new Set<ClientKind>();
-
-	/**
-	 * The assistant whose `tools/call` is being handled, if any.
-	 *
-	 * Set by the transport around dispatch ({@link beginCall}), so the tab-use
-	 * note can say *who* touched the tab without every tool having to carry a
-	 * caller argument. With two assistants calling at once the label can name
-	 * the wrong one of the two; the fact it is guarding — that the tab was used
-	 * at all — is unaffected, and a cosmetic label is not worth threading a
-	 * parameter through the whole tool table for.
-	 */
-	private _caller: ClientKind | undefined;
+	private readonly _shares = new ShareRegistry<vscode.BrowserTab>();
 
 	/**
 	 * A share transition in progress, and the reason one is needed at all.
@@ -402,11 +430,7 @@ export class BrowserController implements vscode.Disposable {
 		// on a host without it, reading the event throws.
 		try {
 			if (isBrowserApiGranted()) {
-				this._tabWatch = vscode.window.onDidCloseBrowserTab(tab => {
-					if (tab === this._sharedTab) {
-						this._loseShare();
-					}
-				});
+				this._tabWatch = vscode.window.onDidCloseBrowserTab(tab => this._loseTab(tab));
 			}
 		} catch {
 			// No browser API here; there is nothing to share in the first place.
@@ -423,8 +447,21 @@ export class BrowserController implements vscode.Disposable {
 	private readonly _tabIds = new Map<vscode.BrowserTab, string>();
 	private _nextTabId = 1;
 
-	/** Last element the user picked, so a follow-up question does not re-prompt. */
-	private _selectedElement: string | undefined;
+	/**
+	 * The element last picked, **per tab**.
+	 *
+	 * It was one field for the window, which crossed the boundary the whole
+	 * feature exists to draw: with Claude on one page and Codex on another,
+	 * `browser_selected_element` handed whichever of them asked the context
+	 * picked on the *other* one — a page it was never given. Keyed by tab, the
+	 * lookup goes through the caller's own assignment, so there is nothing to
+	 * cross.
+	 *
+	 * It also removes an invalidation that had to be remembered: selecting or
+	 * navigating away used to leave a stale element behind unless the code
+	 * cleared it, and now a tab simply has its own or has none.
+	 */
+	private readonly _selectedElements = new Map<vscode.BrowserTab, string>();
 
 	/**
 	 * Which tab the tools act on: the one selected by id, else the active one,
@@ -433,43 +470,18 @@ export class BrowserController implements vscode.Disposable {
 	 * The last fallback is deliberate rather than a refusal — with a single tab
 	 * open, which is the usual case, it is the only answer that can be right.
 	 */
-	private _resolveTab(user = false): vscode.BrowserTab | undefined {
+	private _resolveTab(caller?: CallerIdentity): vscode.BrowserTab | undefined {
 		const open = vscode.window.browserTabs ?? [];
 
-		// The user's share comes first, and does not fall back: see
-		// `_shareLost`. Everything below it is a guess about intent, and a
-		// guess must not override a statement of it.
-		//
-		// `user` is what keeps that from spilling onto the person: a lost share
-		// pauses the assistants, and a toolbar command has nothing to do with
-		// them. Without this the fall-through reached "No browser tab is open"
-		// for a screenshot pressed with another tab open in plain sight.
-		if (this._shareLost && !user) {
-			return undefined;
-		}
-		if (this._sharedTab) {
-			if (open.includes(this._sharedTab)) {
-				return this._sharedTab;
-			}
-			this._loseShare();
-			// The assistants pause here; the user does not — the same line the
-			// `user` flag draws above. This is the resolve that *discovers* the
-			// closure, which normally `onDidCloseBrowserTab` beat to it, but on
-			// a host that does not fire it this branch is the discoverer, and
-			// returning nothing answered a toolbar screenshot with "No browser
-			// tab is open" while another tab sat in plain sight.
-			if (!user) {
-				return undefined;
-			}
-		}
-
-		if (this._pinnedTab) {
-			if (open.includes(this._pinnedTab)) {
-				return this._pinnedTab;
+		const key = caller ? callerKey(caller) : undefined;
+		const pinned = key ? this._pins.get(key)?.tab : undefined;
+		if (pinned) {
+			if (open.includes(pinned)) {
+				return pinned;
 			}
 			// The tab was closed. Falling back beats refusing every call until
 			// something selects again, and `selection` reports which happened.
-			this._pinnedTab = undefined;
+			this._pins.delete(key!);
 		}
 
 		const active = vscode.window.activeBrowserTab;
@@ -484,6 +496,47 @@ export class BrowserController implements vscode.Disposable {
 
 		this._lastTab = open.length > 0 ? open[open.length - 1] : undefined;
 		return this._lastTab;
+	}
+
+	/**
+	 * The tab one caller acts on, or why it has none.
+	 *
+	 * An assignment answers first and **does not fall through**: the user chose
+	 * that page for this assistant, so resuming it on another — the one
+	 * everybody else follows, or whatever happens to be focused — is undoing
+	 * the instruction rather than recovering from it. Only a caller with no
+	 * assignment at all follows the user, which is the state everything starts
+	 * in and the right default for "just look at what I am looking at".
+	 *
+	 * Nothing here has a `user` flag any more, and that is the point of moving
+	 * the rules into the registry: a paused assignment belongs to one
+	 * assistant, so it can no longer spill onto a button the person pressed —
+	 * their commands simply never carry a caller.
+	 */
+	private _resolveForCaller(caller: CallerIdentity): {
+		readonly tab?: vscode.BrowserTab;
+		readonly paused?: ShareTarget;
+		readonly target?: ShareTarget;
+	} {
+		const open = vscode.window.browserTabs ?? [];
+		const resolution = this._shares.resolve(caller);
+
+		if (resolution.kind === 'paused') {
+			return { paused: resolution.target };
+		}
+
+		if (resolution.kind === 'shared') {
+			if (open.includes(resolution.tab)) {
+				return { tab: resolution.tab, target: resolution.target };
+			}
+			// The resolve that *discovers* the closure — normally
+			// `onDidCloseBrowserTab` beats it to this, but on a host that does
+			// not fire the event it is the only detector there is.
+			this._loseTab(resolution.tab);
+			return { paused: resolution.target };
+		}
+
+		return { tab: this._resolveTab(caller) };
 	}
 
 	/**
@@ -517,17 +570,25 @@ export class BrowserController implements vscode.Disposable {
 		return this._tabIds.get(tab) ?? 'tab-0';
 	}
 
-	/** How the tab in use was chosen, which is what tells a model whether its choice still holds. */
-	private get _selectionKind(): 'shared' | 'paused' | 'selected' | 'automatic' {
-		if (this._sharedTab) {
+	/**
+	 * How this caller's tab was chosen, which is what tells a model whether its
+	 * own choice still holds.
+	 *
+	 * Per caller now, because the answer differs between them: the same window
+	 * can have Claude on a page of its own, Codex following the user, and a
+	 * third assistant paused because the page it was given was closed.
+	 */
+	private _selectionKind(caller: CallerIdentity): 'shared' | 'paused' | 'selected' | 'automatic' {
+		const resolution = this._shares.resolve(caller);
+		if (resolution.kind === 'shared') {
 			return 'shared';
 		}
 		// Not `automatic`: nothing is being followed, and reporting the mode the
 		// tools *would* be in reads as "carry on" next to a refusal.
-		if (this._shareLost) {
+		if (resolution.kind === 'paused') {
 			return 'paused';
 		}
-		return this._pinnedTab ? 'selected' : 'automatic';
+		return this._pins.has(callerKey(caller)) ? 'selected' : 'automatic';
 	}
 
 	/**
@@ -536,39 +597,34 @@ export class BrowserController implements vscode.Disposable {
 	 * Every tool goes through here, which is why the wording matters: this is the
 	 * text the assistant sees when there is nothing to drive.
 	 */
-	private _requireTab(user = false): vscode.BrowserTab {
+	private _requireTab(caller?: CallerIdentity): vscode.BrowserTab {
 		if (!isBrowserApiGranted()) {
 			throw new Error(
 				'The integrated browser is unavailable in this editor. It needs the `browser` API proposal; ' +
 				'the user can enable it with the "AI Browser: Enable Integrated Browser API" command.');
 		}
 
-		// A lost share pauses the *assistants*. A command the user pressed is
-		// not one of them, and blocking it would be answering a question nobody
-		// asked: they can see which tab they are in.
-		if (this._shareLost && !user) {
-			throw new Error(shareLostMessage);
+		// No caller means a command the user pressed. It never pauses: a lost
+		// assignment is an assistant's problem, and blocking a button would be
+		// answering a question nobody asked — they can see which tab they are
+		// in.
+		if (!caller) {
+			const tab = this._resolveTab();
+			if (!tab) {
+				throw new Error('No browser tab is open.');
+			}
+			return tab;
 		}
 
-		const tab = this._resolveTab(user);
-
-		// Re-checked *after* resolving, not only before: `_resolveTab` is what
-		// discovers a shared tab that has closed, so the pre-check above can
-		// still be looking at a share that this line has just ended. Reported
-		// the wrong refusal — "No browser tab is open. … call `browser_navigate`
-		// with a URL first" — which is an instruction to take the one action
-		// that bypasses the pause.
-		if (this._shareLost && !user) {
-			throw new Error(shareLostMessage);
+		const { tab, paused } = this._resolveForCaller(caller);
+		if (paused) {
+			throw new Error(shareLostMessage(paused));
 		}
-
 		if (!tab) {
 			throw new Error(
 				'No browser tab is open. Ask the user to open a page, or call `browser_navigate` with a URL first.');
 		}
-		if (!user) {
-			this._noteTabUse(tab);
-		}
+		this._noteTabUse(tab, caller);
 		return tab;
 	}
 
@@ -580,172 +636,150 @@ export class BrowserController implements vscode.Disposable {
 	 * on those would say "in use" about a tab nothing had opened. So the note is
 	 * taken where a tab is actually handed out for work.
 	 */
-	private _noteTabUse(tab: vscode.BrowserTab): void {
-		const caller = this._caller;
-		if (!caller || tab !== this._sharedTab || this._shareUsedBy.has(caller)) {
+	private _noteTabUse(tab: vscode.BrowserTab, caller: CallerIdentity): void {
+		if (!this._shares.stateOf(tab) || !this._shares.noteUse(tab, caller.kind)) {
 			return;
 		}
-		this._shareUsedBy.add(caller);
-		void this._armIndicator();
+		void this._armMarker(tab);
 		this._onDidChangeShare.fire();
 	}
 
 	/**
-	 * Which assistant's call is in flight, set by the transport around dispatch.
+	 * The session for the tab this caller acts on.
 	 *
-	 * Kept as a pair rather than a wrapper because the transport has to clear it
-	 * even when dispatch throws.
+	 * Every tool goes through here, which is why it takes the caller: the tab
+	 * is no longer a property of the window but of whoever is asking.
 	 */
-	public beginCall(caller: ClientKind): void {
-		this._caller = caller;
-	}
-
-	public endCall(): void {
-		this._caller = undefined;
-	}
-
-	private async _withSession(): Promise<TabSession> {
+	private async _withSession(caller: CallerIdentity): Promise<TabSession> {
 		await this._settle();
-		return this._sessionFor(this._requireTab());
+		return this._sessionFor(this._requireTab(caller));
 	}
 
 	/**
-	 * Whether an open that has just been superseded is still worth finishing.
+	 * The session for a tab, opening one if there is none to reuse.
 	 *
-	 * Deliberately side-effect free — `_resolveTab` moves `_lastTab` and can end
-	 * a share, neither of which a stale request may do — and deliberately
-	 * conservative: every branch here answers "no" to something that has *taken
-	 * over*, and a request that lost its subject is a request whose caller
-	 * should be told to ask again rather than one to serve from under the new
-	 * owner.
+	 * No "superseded while opening" case any more: a session belongs to its tab
+	 * rather than to the window, so the only reasons an arriving one is unwanted
+	 * are that the controller was disposed or the tab closed — both of which it
+	 * checks for itself, and neither of which another caller can cause. The
+	 * retry, the token and the `_stillWanted` predicate that guarded that shape
+	 * are gone with it.
 	 */
-	private _stillWanted(tab: vscode.BrowserTab): boolean {
-		if (this._disposed) {
-			return false;
-		}
-		if (!(vscode.window.browserTabs ?? []).includes(tab)) {
-			return false;
-		}
-		// A share decides for itself, and a paused one decides that nothing is
-		// the subject.
-		if (this._shareLost) {
-			return false;
-		}
-		if (this._sharedTab) {
-			return tab === this._sharedTab;
-		}
-		// Somebody is already opening a different tab: that request is newer
-		// than ours, and two opens pulling against each other is worse than one
-		// of them failing.
-		if (this._opening && this._opening.tab !== tab) {
-			return false;
-		}
-		if (this._pinnedTab) {
-			return tab === this._pinnedTab;
-		}
-		return true;
-	}
-
-	/**
-	 * The cached session for a tab, opening a fresh one when there is none to
-	 * reuse.
-	 *
-	 * `retries` exists for the one interleaving that is nobody's mistake: a
-	 * share transition drops the cache while this open is in flight, so the
-	 * session that arrives is unwanted. Opening again is right — the caller
-	 * still wants this tab — and it is bounded at one attempt so two callers
-	 * pulling in different directions cannot ping-pong. Only a request that is
-	 * superseded twice gives up, and it gives up with something the model can
-	 * act on rather than with a description of our internals.
-	 */
-	private _sessionFor(tab: vscode.BrowserTab, retries = 1): Promise<TabSession> {
+	private _sessionFor(tab: vscode.BrowserTab): Promise<TabSession> {
 		if (this._disposed) {
 			return Promise.reject(new Error('The integrated browser connection has been closed.'));
 		}
 
-		if (this._session && this._sessionTab === tab && !this._session.isClosed) {
-			return Promise.resolve(this._session);
+		const cached = this._sessions.get(tab);
+		if (cached && !cached.isClosed) {
+			this._touch(tab);
+			return Promise.resolve(cached);
+		}
+		if (cached) {
+			this._dropSession(tab);
 		}
 
 		// An open already under way for this tab is shared, not raced.
-		if (this._opening?.tab === tab) {
-			return this._opening.promise;
+		const pending = this._opening.get(tab);
+		if (pending) {
+			return pending;
 		}
 
-		// A different tab: the old session's console belongs to a page that is
-		// no longer the subject.
-		this._dropSession();
-
-		const token = {};
-		this._openToken = token;
 		const promise = TabSession.open(tab).then(session => {
-			if (this._openToken !== token) {
-				// Superseded while we were opening — by another tab, by a share
-				// moving, or by the controller being disposed. Nobody will ever
-				// read this one, so it closes itself instead of leaking.
+			const open = vscode.window.browserTabs ?? [];
+			if (this._disposed || !open.includes(tab)) {
+				// Nobody will ever read this one, so it closes itself rather
+				// than leaking: before the map, an open landing after `dispose`
+				// was cached and left running with nothing to close it.
 				session.dispose();
-				// Retried **only while this tab is still the one to act on**.
-				// Retrying regardless was worse than the error it was avoiding:
-				// an open superseded *because the share moved* came back for the
-				// old tab and dropped the newly shared tab's session — sharing
-				// still in force, its marker registration gone with the session
-				// — and after `dispose` it opened a session with nothing left to
-				// close it.
-				if (retries > 0 && this._stillWanted(tab)) {
-					// Our own `_opening` entry has to go first, or the retry
-					// finds it, matches on the tab and awaits the very promise
-					// it is running inside.
-					if (this._opening?.token === token) {
-						this._opening = undefined;
-					}
-					return this._sessionFor(tab, retries - 1);
-				}
-				throw new Error(
-					'The browser session was replaced while it was opening, which happens when the tab the tools '
-					+ 'act on changes. Call the tool again.');
+				throw new Error('The integrated browser connection has been closed.');
 			}
-			this._openToken = undefined;
-			this._opening = undefined;
-			this._session = session;
-			this._sessionTab = tab;
+			this._opening.delete(tab);
+			this._sessions.set(tab, session);
+			this._touch(tab);
+			this._evict(tab);
 			// A fresh session means a fresh page-side world: whatever marker was
 			// installed by the previous one is gone with it, along with the
 			// registration that would have survived a navigation.
-			if (tab === this._sharedTab) {
-				void session.indicator.set(this._shareUsedBy.size > 0 ? inUseMarker : sharedMarker)
+			const state = this._shares.stateOf(tab);
+			if (state) {
+				void session.indicator.set(markerSuffix(state))
 					.catch(() => { /* the marker is a hint, never a failure */ });
 			}
 			return session;
 		});
-		this._opening = { tab, token, promise };
-		// A rejection has to release the slot. `_opening?.tab === tab` above
-		// hands the *same* promise to every later caller, so one failed
-		// handshake — a page that crashed, a host hiccup — made that tab
-		// permanently broken: every tool answered with the original error until
-		// something happened to drop the session. Under a share nothing does,
-		// because every tool resolves the same tab, so the assistant was stuck
-		// for the life of the window. Guarded on the token, or a newer attempt
-		// would be cleared by an older one's failure.
+
+		this._opening.set(tab, promise);
+		// A rejection has to release the entry, or the failed attempt is cached:
+		// the lookup above would hand the same rejected promise to every later
+		// call, so one failed handshake — a page that crashed, a host hiccup —
+		// made that tab permanently broken until something dropped it.
 		promise.catch(() => {
-			if (this._opening?.token === token) {
-				this._opening = undefined;
-			}
-			if (this._openToken === token) {
-				this._openToken = undefined;
+			if (this._opening.get(tab) === promise) {
+				this._opening.delete(tab);
 			}
 		});
 		return promise;
 	}
 
-	private _dropSession(): void {
-		this._session?.dispose();
-		this._session = undefined;
-		this._sessionTab = undefined;
-		// An open still in flight is no longer wanted. Clearing the token is
-		// what tells it to close itself when it arrives; there is nothing to
-		// dispose here yet.
-		this._openToken = undefined;
-		this._opening = undefined;
+	/** Marks a tab as the most recently used, for eviction order. */
+	private _touch(tab: vscode.BrowserTab): void {
+		this._sessionOrder = this._sessionOrder.filter(known => known !== tab);
+		this._sessionOrder.push(tab);
+	}
+
+	/**
+	 * Keeps the number of live channels bounded.
+	 *
+	 * A tab somebody is assigned to is passed over while any unassigned one
+	 * remains: evicting the page an assistant is working on — losing its
+	 * console buffer and its marker registration — to make room for a page
+	 * nobody asked about is the wrong trade every time. When every session
+	 * belongs to an assignment, the least recently used goes anyway; the
+	 * alternative is an unbounded number of open channels.
+	 */
+	private _evict(arriving?: vscode.BrowserTab): void {
+		while (this._sessions.size > BrowserController._sessionLimit) {
+			// The arrival is never the victim. It is the most recently used *and*
+			// unassigned whenever the caller has no tab of its own, so the spare
+			// search below picked it — the opener then got a session that had
+			// already been disposed, and its first send failed with "CDP session
+			// closed", the one error the docs single out as reading to a model
+			// as a broken browser rather than as something to retry.
+			const candidates = this._sessionOrder.filter(tab =>
+				tab !== arriving && this._sessions.has(tab));
+			// A tab that somebody is *using* is passed over the same way an
+			// assigned one is. "Least recently used" is really "least recently
+			// acquired" — `_touch` runs when a session is handed out, not while
+			// it works — so the longest-running call sat at the front of the
+			// queue: a `browser_wait_for` on a pinned tab was evicted by another
+			// assistant opening tabs, and answered the model with the internal
+			// `CDP client disposed`. Reproduced.
+			const claimed = (tab: vscode.BrowserTab) =>
+				this._shares.stateOf(tab) !== undefined
+				|| [...this._pins.values()].some(pin => pin.tab === tab);
+			const spare = candidates.find(tab => !claimed(tab));
+			const victim = spare ?? candidates[0];
+			if (!victim) {
+				return;
+			}
+			this._dropSession(victim);
+		}
+	}
+
+	/** Closes the session for one tab, or for all of them. */
+	private _dropSession(tab?: vscode.BrowserTab): void {
+		if (!tab) {
+			for (const known of [...this._sessions.keys()]) {
+				this._dropSession(known);
+			}
+			this._opening.clear();
+			return;
+		}
+		this._sessions.get(tab)?.dispose();
+		this._sessions.delete(tab);
+		this._opening.delete(tab);
+		this._sessionOrder = this._sessionOrder.filter(known => known !== tab);
 	}
 
 	/* ------------------------------------------------------------ sharing a tab */
@@ -778,109 +812,187 @@ export class BrowserController implements vscode.Disposable {
 		}
 	}
 
-	/** The shared tab itself, for the one question the UI asks that {@link share} cannot answer: is this it? */
-	public get sharedTab(): vscode.BrowserTab | undefined {
-		return this._sharedTab;
-	}
-
-	/** What the status bar and the menu need to render the share. */
-	public get share(): ShareState {
-		if (this._shareLost) {
-			return { state: 'lost', usedBy: [] };
-		}
-		const tab = this._sharedTab;
-		if (!tab) {
-			return { state: 'none', usedBy: [] };
-		}
+	/** Everything the UI needs to render the assignments and undo them. */
+	public get shares(): ShareView {
 		return {
-			state: 'shared',
-			usedBy: [...this._shareUsedBy],
-			id: this._idOf(tab),
-			url: tab.url,
-			title: stripMarker(tab.title),
+			assignments: this._shares.assignments().map(assignment => ({
+				target: assignment.target,
+				label: targetName(assignment.target),
+				tabId: this._idOf(assignment.tab),
+				url: assignment.tab.url,
+				title: stripMarker(assignment.tab.title),
+				usedBy: assignment.usedBy,
+			})),
+			paused: this._shares.pausedTargets().map(target => ({ target, label: targetName(target) })),
 		};
 	}
 
-	/**
-	 * Fixes the tools on one tab, on the user's instruction.
-	 *
-	 * Clearing the assistant's own selection is part of it: a pin under a share
-	 * can never take effect, and leaving it in place would bring it back the
-	 * moment sharing stopped — the agent would resume on a page chosen in a
-	 * conversation that has since moved on.
-	 *
-	 * **Moving a share has to un-mark the tab it is moving off.** Dropping the
-	 * old session takes the *registration* with it, so the marker does not come
-	 * back on that tab's next navigation — but it does nothing to the document
-	 * in front of the user: the title suffix stays, and the observer that keeps
-	 * re-applying it stays with it. So "Share this tab instead" left both tabs
-	 * looking shared, with no way ever to clean the old one up, since
-	 * `stopSharing` only knows about the current `_sharedTab`.
-	 */
-	public shareTab(tab: vscode.BrowserTab): Promise<{ id: string; url: string; title: string | undefined }> {
-		return this._transact(() => this._shareTab(tab));
+	/** Whether this tab is assigned to anyone, for the menu that offers to move it. */
+	public isShared(tab: vscode.BrowserTab): boolean {
+		return this._shares.stateOf(tab) !== undefined;
 	}
 
-	private async _shareTab(tab: vscode.BrowserTab): Promise<{ id: string; url: string; title: string | undefined }> {
+	/**
+	 * Gives one tab to one target, on the user's instruction.
+	 *
+	 * Clearing the assistant's own pin is part of it: a pin under an assignment
+	 * can never take effect, and leaving it in place would bring it back the
+	 * moment the assignment was released — the agent would resume on a page
+	 * chosen in a conversation that has since moved on.
+	 */
+	public shareTab(
+		tab: vscode.BrowserTab,
+		target: ShareTarget = everyone,
+	): Promise<{ id: string; url: string; title: string | undefined; label: string }> {
+		return this._transact(() => this._shareTab(tab, target));
+	}
+
+	private async _shareTab(
+		tab: vscode.BrowserTab,
+		target: ShareTarget,
+	): Promise<{ id: string; url: string; title: string | undefined; label: string }> {
 		// Checked here rather than at the caller, because `_transact` can defer
-		// this body past several CDP round-trips: two clicks on "Share this tab
-		// instead" queue up, and the second one's tab can be closed by the time
-		// its turn comes. Adopting it left the UI advertising a share on a tab
-		// that no longer existed — 🔗 in the status bar, "Stop sharing" in the
-		// menu, a confirmation naming the page — with nothing to heal it until
-		// some tool happened to resolve a tab.
+		// this body past several CDP round-trips: two clicks queue up, and the
+		// second one's tab can be closed by the time its turn comes. Adopting it
+		// left the UI advertising a share on a tab that no longer existed.
 		if (!(vscode.window.browserTabs ?? []).includes(tab)) {
 			throw new Error('That browser tab is no longer open.');
 		}
 
-		const previous = this._sharedTab;
+		// Asked of the target itself: building a caller from it and resolving
+		// that answered with a *different* assignment for `everyone` (it became
+		// `{ kind: 'other' }`, which resolves `kind:other` first), so the tab
+		// this target was moving off could keep its marker with nothing able to
+		// clean it.
+		const heldBefore = this._shares.tabOf(target);
+		const alreadyThere = heldBefore === tab;
 
-		// Re-sharing the tab that is *already* shared is a no-op, and has to be:
-		// the toolbar menu offers the entry on the shared tab too, so it is one
-		// click away, and clearing `_shareUsedBy` there took the marker from 🤖
-		// back to 🔗 and the tooltip back to "no assistant has used it yet" —
-		// advice for a broken setup — while the assistants carried on working.
-		if (previous === tab && !this._shareLost) {
-			return { id: this._idOf(tab), url: tab.url, title: stripMarker(tab.title) };
+		// Re-giving the tab that this target already holds is a no-op, and has
+		// to be: the entry sits in the shared tab's own menu, so it is one click
+		// away, and re-running it took the marker from 🤖 back to 🔗 and the
+		// tooltip back to "no assistant has used it yet" — advice for a broken
+		// setup — while the assistants carried on working.
+		if (alreadyThere) {
+			return {
+				id: this._idOf(tab), url: tab.url, title: stripMarker(tab.title), label: targetName(target),
+			};
 		}
 
-		this._sharedTab = tab;
-		this._shareLost = false;
-		this._shareUsedBy.clear();
-		this._pinnedTab = undefined;
+		const releasedTab = heldBefore;
+
+		this._shares.share(target, tab);
+		// Deliberately *not* `_lastTab = tab`: that field is the tab the user
+		// was last looking at, and an assignment made for one assistant is not
+		// that. Writing it here handed the assigned page to every unassigned
+		// caller as its fallback.
+		// **Every caller this assignment now answers for** loses its own
+		// selection, and nobody else does. An assignment outranks a selection,
+		// so a shadowed pin would resurrect a stale choice the moment the
+		// assignment was released — and deriving one key from the target was
+		// not the same thing: a Codex *conversation* keeps its pin under
+		// `session:<id>`, so giving Codex a tab deleted `kind:codex` and left
+		// the conversation's own pin behind, which it then went back to as soon
+		// as the assignment was released. Asking the registry who each pin
+		// resolves to now covers a conversation, an assistant and everybody
+		// with one rule.
+		for (const [key, pin] of [...this._pins]) {
+			const resolution = this._shares.resolve(pin.caller);
+			if (resolution.kind === 'shared' && resolution.tab === tab
+				&& this._shares.tabOf(resolution.target) === tab
+				&& sameTarget(resolution.target, target)) {
+				this._pins.delete(key);
+			}
+		}
 		this._lastTab = tab;
 		this._onDidChangeShare.fire();
 
-		// Before `_dropSession` below, so the live session — the one that holds
-		// the script identifier — is the one used to tidy up where possible.
-		// After `_sharedTab` has moved, or `_sessionFor` would re-arm the marker
-		// on the very tab being cleaned.
-		if (previous && previous !== tab) {
-			await this._clearIndicator(previous);
+		// The tab this target was moved *off* keeps its marker only if somebody
+		// else still holds it. Before this, "give it to Codex instead" left both
+		// tabs looking shared, permanently.
+		if (releasedTab && releasedTab !== tab) {
+			await this._refreshMarker(releasedTab);
 		}
-
-		if (this._sessionTab !== tab) {
-			this._dropSession();
-			this._selectedElement = undefined;
-		}
-		await this._armIndicator();
-		return { id: this._idOf(tab), url: tab.url, title: stripMarker(tab.title) };
+		await this._armMarker(tab);
+		return {
+			id: this._idOf(tab), url: tab.url, title: stripMarker(tab.title), label: targetName(target),
+		};
 	}
 
-	/** Releases the share, and takes the marker off the page it was on. */
-	public stopSharing(): Promise<void> {
-		return this._transact(() => this._stopSharing());
+	/** Releases one assignment, or every one of them, and tidies the tabs. */
+	public stopSharing(target?: ShareTarget): Promise<void> {
+		return this._transact(() => this._stopSharing(target));
 	}
 
-	private async _stopSharing(): Promise<void> {
-		const tab = this._sharedTab;
-		this._sharedTab = undefined;
-		this._shareLost = false;
-		this._shareUsedBy.clear();
+	private async _stopSharing(target?: ShareTarget): Promise<void> {
+		const tabs = target ? [this._shares.stop(target)] : this._shares.stopAll();
 		this._onDidChangeShare.fire();
+		for (const tab of tabs) {
+			if (tab) {
+				await this._refreshMarker(tab);
+			}
+		}
+	}
 
-		if (tab) {
-			await this._clearIndicator(tab);
+	/**
+	 * A tab has closed: every assignment on it pauses, and nobody else's moves.
+	 *
+	 * Paused rather than released, because "the page you were given is gone" and
+	 * "you were never given one" are different answers — see the registry.
+	 */
+	private _loseTab(tab: vscode.BrowserTab): void {
+		// The cleanup is unconditional, and used to sit behind the early return
+		// below: closing an ordinary tab — the common case — left its
+		// `TabSession` undisposed and still counting against the session limit,
+		// and kept the element markdown picked on it for the life of the
+		// window, keyed by a tab that no longer exists.
+		this._selectedElements.delete(tab);
+		this._dropSession(tab);
+		for (const [key, pin] of [...this._pins]) {
+			if (pin.tab === tab) {
+				this._pins.delete(key);
+			}
+		}
+
+		if (this._shares.forget(tab).length === 0) {
+			return;
+		}
+		this._onDidChangeShare.fire();
+	}
+
+	/**
+	 * Puts the right marker on a tab, or takes it off if nobody holds it now.
+	 *
+	 * Bounded, because this runs inside a transaction the user is waiting on and
+	 * a page that has stopped answering must not hold it open — see `bounded`.
+	 */
+	private async _refreshMarker(tab: vscode.BrowserTab): Promise<void> {
+		if (this._shares.stateOf(tab)) {
+			await this._armMarker(tab);
+			return;
+		}
+		await this._clearIndicator(tab);
+	}
+
+	private async _armMarker(tab: vscode.BrowserTab): Promise<void> {
+		await bounded(this._armMarkerNow(tab), indicatorTimeoutMs);
+	}
+
+	private async _armMarkerNow(tab: vscode.BrowserTab): Promise<void> {
+		const state = this._shares.stateOf(tab);
+		if (!state) {
+			return;
+		}
+		try {
+			const session = await this._sessionFor(tab);
+			const current = this._shares.stateOf(tab);
+			if (!current) {
+				return;
+			}
+			await session.indicator.set(markerSuffix(current));
+		} catch {
+			// Best effort: a session the host dropped, a tab mid-close, a page
+			// that has not committed. None of them may turn sharing into an
+			// error the user has to read.
 		}
 	}
 
@@ -888,19 +1000,11 @@ export class BrowserController implements vscode.Disposable {
 	 * Takes the marker off one tab, and does not depend on the shared cache to
 	 * do it.
 	 *
-	 * The cached session is tried first when it belongs to this tab, because it
-	 * is the one holding the registration identifier and removing that is what
-	 * stops the marker coming back on the tab's next navigation.
-	 *
-	 * **If that fails, a session of our own finishes the job.** It is not a
-	 * belt-and-braces flourish: a tool call resolving the *new* shared tab
-	 * drops the cached session, and it can do so while this clear is mid-flight
-	 * — reproduced, with the marker left on a tab nobody was sharing and no
-	 * later `stopSharing` able to reach it, since that only knows the current
-	 * tab. A private session cannot be dropped by anyone else. It cannot remove
-	 * a registration it never made, but a session that has been dropped took
-	 * its registrations with it, so what is left to clean is the live document:
-	 * the title, and the observer that re-applies it.
+	 * The cached session is tried first when there is one, because it holds the
+	 * registration identifier and removing that is what stops the marker coming
+	 * back on the tab's next navigation. If that fails, a session of our own
+	 * finishes the job: a page can stop answering, and a tool call can drop the
+	 * cached session mid-clear.
 	 *
 	 * Never for a tab that has closed — there is nothing left to mark, and
 	 * `startCDPSession` on it would only throw.
@@ -909,19 +1013,12 @@ export class BrowserController implements vscode.Disposable {
 		if (!(vscode.window.browserTabs ?? []).includes(tab)) {
 			return;
 		}
-
-		// One bounded attempt covering both routes: a page that has stopped
-		// answering must not hold the whole transition — and with it every tool
-		// — open. See `bounded` and `indicatorTimeoutMs`.
 		await bounded(this._clearMarker(tab), indicatorTimeoutMs);
 	}
 
-	/** The cached session, then a private one; see {@link _clearIndicator}. */
 	private async _clearMarker(tab: vscode.BrowserTab): Promise<void> {
-		const cached = this._sessionTab === tab && this._session && !this._session.isClosed
-			? this._session
-			: undefined;
-		if (cached && await cached.indicator.clear().catch(() => false)) {
+		const cached = this._sessions.get(tab);
+		if (cached && !cached.isClosed && await cached.indicator.clear().catch(() => false)) {
 			return;
 		}
 		await this._clearWithOwnSession(tab);
@@ -945,73 +1042,8 @@ export class BrowserController implements vscode.Disposable {
 		}
 	}
 
-	/** The shared tab has closed: pause the tools rather than pick a replacement. */
-	private _loseShare(): void {
-		if (!this._sharedTab) {
-			return;
-		}
-		this._sharedTab = undefined;
-		this._shareLost = true;
-		this._shareUsedBy.clear();
-		this._selectedElement = undefined;
-		// The session belonged to a page that no longer exists, and its console
-		// buffer describes it.
-		this._dropSession();
-		this._onDidChangeShare.fire();
-	}
 
-	/**
-	 * One last attempt to take the marker off, on a path that cannot await.
-	 *
-	 * Sent **directly**, not through `indicator.clear()`: that goes onto the
-	 * indicator's serialising queue, whose first `await` defers the work past
-	 * the `_dropSession()` below — the channel was already torn down by the time
-	 * anything was written, so nothing reached the page. `CDPClient.send` hands
-	 * the message to the host inside its own constructor, synchronously, which
-	 * is what makes this worth attempting at all here.
-	 */
-	private _unmarkOnDispose(): void {
-		const tab = this._sharedTab;
-		const session = this._session;
-		if (!tab || !session || this._sessionTab !== tab || session.isClosed) {
-			return;
-		}
-		void session.client.send('Runtime.evaluate', {
-			expression: 'window.__aiBrowserShareMarker && window.__aiBrowserShareMarker.remove()',
-		}, session.sessionId).catch(() => { /* the window is closing anyway */ });
-	}
-
-	/**
-	 * Puts the right marker on the shared tab, best effort.
-	 *
-	 * Best effort on purpose: every reason this can fail — a session the host
-	 * dropped, a tab mid-close, a page that has not committed yet — is a reason
-	 * the marker does not matter, and none of them should turn sharing into an
-	 * error the user has to read.
-	 */
-	private async _armIndicator(): Promise<void> {
-		const tab = this._sharedTab;
-		if (!tab) {
-			return;
-		}
-		// Bounded for the same reason as the clear: this runs inside a
-		// transaction, and an unanswering page would hold it forever.
-		await bounded(this._armIndicatorNow(tab), indicatorTimeoutMs);
-	}
-
-	private async _armIndicatorNow(tab: vscode.BrowserTab): Promise<void> {
-		try {
-			const session = await this._sessionFor(tab);
-			if (this._sharedTab !== tab) {
-				return;
-			}
-			await session.indicator.set(this._shareUsedBy.size > 0 ? inUseMarker : sharedMarker);
-		} catch {
-			// See above.
-		}
-	}
-
-	public async state(): Promise<unknown> {
+	public async state(caller: CallerIdentity): Promise<unknown> {
 		await this._settle();
 		if (!isBrowserApiGranted()) {
 			return {
@@ -1023,17 +1055,27 @@ export class BrowserController implements vscode.Disposable {
 
 		const open = vscode.window.browserTabs ?? [];
 		this._identify(open);
-		// The tab the tools will act on, which is not the same thing as the
-		// focused editor: see `_resolveTab`.
-		const target = this._resolveTab();
+		// The tab *this caller* will act on, which is not the same thing as the
+		// focused editor, and not the same thing as another assistant's tab.
+		const { tab: target, paused, target: assignment } = this._resolveForCaller(caller);
+		// `assignment !== undefined` is not the test — a *paused* caller has no
+		// assignment in that sense, and answering it with the window's tab count
+		// is the same mistake the sibling method was fixed for: the moment its
+		// page is gone is not the moment to start describing the others.
+		const bounded = assignment !== undefined || paused !== undefined;
 		return {
 			available: true,
-			openTabs: open.length,
+			// Assigned callers are told how many other tabs exist, not what
+			// they are: the page they were given is their scope, and every
+			// other address in the window — one-time links, tokens in a query
+			// string — is not theirs to read.
+			openTabs: paused ? 0 : (bounded ? 1 : open.length),
+			...(assignment && open.length > 1 ? { otherTabsInWindow: open.length - 1 } : {}),
 			tab: target ? { id: this._tabIds.get(target), url: target.url, title: stripMarker(target.title) } : undefined,
-			selection: this._selectionKind,
-			...(this._sharedTab ? { sharedByUser: true } : {}),
-			...(this._shareLost ? { sharedTabClosed: true, note: shareLostMessage } : {}),
-			hasSelectedElement: this._selectedElement !== undefined,
+			selection: this._selectionKind(caller),
+			...(assignment ? { sharedByUser: true, sharedWith: targetName(assignment) } : {}),
+			...(paused ? { sharedTabClosed: true, note: shareLostMessage(paused) } : {}),
+			hasSelectedElement: target !== undefined && this._selectedElements.has(target),
 		};
 	}
 
@@ -1044,7 +1086,7 @@ export class BrowserController implements vscode.Disposable {
 	 * only good for as long as this window lives, and a model has to list before
 	 * it selects rather than remembering an id from an earlier conversation.
 	 */
-	public async tabs(): Promise<unknown> {
+	public async tabs(caller: CallerIdentity): Promise<unknown> {
 		await this._settle();
 		if (!isBrowserApiGranted()) {
 			return {
@@ -1056,22 +1098,35 @@ export class BrowserController implements vscode.Disposable {
 
 		const open = vscode.window.browserTabs ?? [];
 		this._identify(open);
-		const target = this._resolveTab();
+		const { tab: target, paused, target: assignment } = this._resolveForCaller(caller);
 		const focused = vscode.window.activeBrowserTab;
 
+		// **An assigned caller sees its own tab and nothing else.** The other
+		// tabs used to be listed as context, on the reasoning that they are not
+		// *selectable* anyway — but a user who gives one page to an assistant is
+		// bounding what it can see, and a list of every other address in the
+		// window (one-time links, tokens in a query string) is the one hole in
+		// that. Unassigned callers still get the whole list: nothing has been
+		// bounded, and they follow the user.
+		// A paused caller gets **nothing**, not the full list: the page it was
+		// given is gone, and answering with every other tab in the window —
+		// their addresses, one-time links and query-string tokens included — is
+		// the opposite of what the assignment was for. The note says what
+		// happened; the count of others is withheld for the same reason.
+		const visible = paused ? [] : (assignment && target ? [target] : open);
+
 		return {
-			selection: this._selectionKind,
-			...(this._shareLost ? { sharedTabClosed: true, note: shareLostMessage } : {}),
-			// Other tabs are still listed while one is shared: they are context,
-			// and hiding them would only make the ids in this list confusing.
-			// What they are not is selectable — `browser_select_tab` refuses
-			// while a share is in force, and says why.
-			tabs: open.map(tab => ({
+			selection: this._selectionKind(caller),
+			...(paused ? { sharedTabClosed: true, note: shareLostMessage(paused) } : {}),
+			...(assignment && open.length > visible.length
+				? { otherTabsInWindow: open.length - visible.length }
+				: {}),
+			tabs: visible.map(tab => ({
 				id: this._tabIds.get(tab),
 				url: tab.url,
 				title: stripMarker(tab.title),
 				inUse: tab === target,
-				sharedByUser: tab === this._sharedTab,
+				sharedByUser: this._shares.stateOf(tab) !== undefined,
 				focusedInEditor: tab === focused,
 			})),
 		};
@@ -1086,7 +1141,7 @@ export class BrowserController implements vscode.Disposable {
 	 * it — but not the tab being closed, after which `selection` reads
 	 * `automatic` again.
 	 */
-	public async selectTab(id: string): Promise<unknown> {
+	public async selectTab(id: string, caller: CallerIdentity): Promise<unknown> {
 		// Before the share checks below, or a selection arriving mid-transition
 		// would be judged against a share that is halfway moved.
 		await this._settle();
@@ -1095,13 +1150,14 @@ export class BrowserController implements vscode.Disposable {
 				+ '"AI Browser: Enable Integrated Browser API".');
 		}
 
-		if (this._shareLost) {
-			throw new Error(shareLostMessage);
+		const assignment = this._shares.resolve(caller);
+		if (assignment.kind === 'paused') {
+			throw new Error(shareLostMessage(assignment.target));
 		}
-		if (this._sharedTab) {
+		if (assignment.kind === 'shared') {
 			throw new Error(
-				`The user has shared one browser tab with you (${this._idOf(this._sharedTab)}), and the tools act on `
-				+ 'that tab only — a selection made here could never take effect. Ask the user to share a different '
+				`The user has given you one browser tab (${this._idOf(assignment.tab)}), and your tools act on that `
+				+ 'tab only — a selection made here could never take effect. Ask the user to give you a different '
 				+ 'tab, or to stop sharing, from the AI Browser status bar menu.');
 		}
 
@@ -1109,10 +1165,10 @@ export class BrowserController implements vscode.Disposable {
 		this._identify(open);
 
 		if (id === 'auto') {
-			this._pinnedTab = undefined;
+			this._pins.delete(callerKey(caller));
 			const target = this._resolveTab();
 			return {
-				selection: this._selectionKind,
+				selection: this._selectionKind(caller),
 				tab: target
 					? { id: this._tabIds.get(target), url: target.url, title: stripMarker(target.title) }
 					: undefined,
@@ -1125,15 +1181,14 @@ export class BrowserController implements vscode.Disposable {
 				+ 'Call `browser_tabs` for the current list — ids change as tabs open and close.');
 		}
 
-		this._pinnedTab = match;
-		this._lastTab = match;
+		// The pin above is this caller's; `_lastTab` is the user's, and a
+		// selection is not a user action.
+		this._pins.set(callerKey(caller), { tab: match, caller });
 		// The session in hand may belong to the tab we are leaving.
-		if (this._sessionTab !== match) {
-			this._dropSession();
-			this._selectedElement = undefined;
-		}
+		// Nothing to invalidate: a picked element belongs to its tab now, so
+		// selecting another cannot hand back the one picked on this.
 		return {
-			selection: this._selectionKind,
+			selection: this._selectionKind(caller),
 			tab: { id, url: match.url, title: stripMarker(match.title) },
 		};
 	}
@@ -1155,7 +1210,7 @@ export class BrowserController implements vscode.Disposable {
 	 * disk and then read it back with `browser_text` — turning a browser tool
 	 * into an unrestricted file reader.
 	 */
-	public async navigate(rawUrl: string, newTab = false): Promise<unknown> {
+	public async navigate(rawUrl: string, newTab: boolean, caller: CallerIdentity): Promise<unknown> {
 		await this._settle();
 		let parsed: URL;
 		try {
@@ -1175,48 +1230,54 @@ export class BrowserController implements vscode.Disposable {
 				+ '"AI Browser: Enable Integrated Browser API".');
 		}
 
-		if (this._shareLost) {
-			throw new Error(shareLostMessage);
+		const assignment = this._shares.resolve(caller);
+		if (assignment.kind === 'paused') {
+			throw new Error(shareLostMessage(assignment.target));
 		}
-		// A new tab under a share would be opened and then never used — it lands
-		// below the share in `_resolveTab`, so the next tool goes back to the
-		// shared page. That shape is already recorded as a bug worth avoiding:
-		// a call that reports one tab while everything after it acts on another.
-		if (this._sharedTab && newTab) {
+		// A new tab under an assignment would be opened and then never used — it
+		// is not the tab this caller resolves to, so the next tool goes back to
+		// the page it was given. That shape is already recorded as a bug worth
+		// avoiding: a call that reports one tab while everything after it acts
+		// on another.
+		if (assignment.kind === 'shared' && newTab) {
 			throw new Error(
-				'The user has shared one browser tab with you, and the tools stay on it — a new tab would be opened '
-				+ 'and then never used. Navigate in the shared tab instead (drop `newTab`), or ask the user to share '
+				'The user has given you one browser tab, and your tools stay on it — a new tab would be opened and '
+				+ 'then never used. Navigate in your own tab instead (drop `newTab`), or ask the user to give you '
 				+ 'another tab.');
 		}
 
-		// Either way this is a new page, so the element the user picked describes
-		// something that is gone.
-		this._selectedElement = undefined;
+		// Whatever was picked on the tab being navigated describes something
+		// that is gone. Cleared for the *resolved* tab further down — keyed by
+		// tab, this used to be conditional on the caller having an assignment,
+		// which left an unassigned caller reading the previous document's
+		// element after a same-tab navigation, with `hasSelectedElement` still
+		// saying yes.
 
 		const url = parsed.toString();
-		const target = newTab ? undefined : this._resolveTab();
-
-		// `_resolveTab` can *end* the share inside this very call — it is the
-		// lazy detector for a shared tab that has gone, and the only one on a
-		// host that does not fire `onDidCloseBrowserTab` — so the gate at the
-		// top of this method is not the last word. Without this re-check the one
-		// tool that *acts* instead of refusing went on to open a brand-new tab
-		// at a model-chosen URL, in precisely the state the share exists to
-		// pause, and reported `openedNewTab: true` while every later call
-		// refused.
-		if (this._shareLost) {
-			throw new Error(shareLostMessage);
+		// Resolved through the caller, and re-checked afterwards: resolution is
+		// the lazy detector for an assigned tab that has gone — the only one on
+		// a host that does not fire `onDidCloseBrowserTab` — so the gate above
+		// is not the last word. Without the re-check the one tool that *acts*
+		// instead of refusing went on to open a brand-new tab at a model-chosen
+		// URL, in precisely the state the assignment exists to pause, and
+		// reported `openedNewTab: true` while every later call refused.
+		const resolved = newTab ? { tab: undefined, paused: undefined } : this._resolveForCaller(caller);
+		if (resolved.paused) {
+			throw new Error(shareLostMessage(resolved.paused));
 		}
+		const target = resolved.tab;
 
 		if (target) {
-			this._noteTabUse(target);
+			this._selectedElements.delete(target);
+			this._noteTabUse(target, caller);
 		}
 
 		if (!target) {
-			// Nothing to drive: the cached session belongs to a page we are leaving.
-			this._dropSession();
+			// Nothing to drive, and nothing of this caller's to drop: sessions
+			// belong to tabs now, so the no-argument form would have closed
+			// every one of them — another assistant's console buffer and its
+			// marker registration with it.
 			const tab = await vscode.window.openBrowserTab(url, { preserveFocus: true });
-			this._lastTab = tab;
 			// An explicit `newTab` selects the tab it just created, and it has
 			// to: the tab is opened with `preserveFocus`, so the *old* tab
 			// stays active and wins the focused-tab branch of `_resolveTab`,
@@ -1230,8 +1291,8 @@ export class BrowserController implements vscode.Disposable {
 			// the user's focus should still lead. An existing selection is
 			// carried over either way, or the next tool would go back to the
 			// page the caller chose to leave.
-			if (newTab || this._pinnedTab) {
-				this._pinnedTab = tab;
+			if (newTab || this._pins.has(callerKey(caller))) {
+				this._pins.set(callerKey(caller), { tab, caller });
 			}
 			return { url: tab.url, title: stripMarker(tab.title), tabId: this._idOf(tab), openedNewTab: true };
 		}
@@ -1245,7 +1306,9 @@ export class BrowserController implements vscode.Disposable {
 			if (!String(err).includes('CDP session closed')) {
 				throw err;
 			}
-			this._dropSession();
+			// This tab's session, not everyone's: the no-argument form closed
+			// every session in the window to recover one of them.
+			this._dropSession(target);
 			return await this._navigateInTab(target, url);
 		}
 	}
@@ -1312,8 +1375,8 @@ export class BrowserController implements vscode.Disposable {
 	 * Classes are deliberately not used, for the reason given under the element
 	 * commands: utility-class frameworks make them long and unstable.
 	 */
-	public async snapshot(): Promise<unknown> {
-		const session = await this._withSession();
+	public async snapshot(caller: CallerIdentity): Promise<unknown> {
+		const session = await this._withSession(caller);
 		const value = await evaluate(session, `(() => {
 			// The exact test the consumer performs, so a selector cannot pass
 			// here and pick a different element there.
@@ -1378,9 +1441,9 @@ export class BrowserController implements vscode.Disposable {
 	 * call it after asking. The result is remembered for
 	 * {@link selectedElement}.
 	 */
-	public async inspectElement(timeoutMs: number): Promise<unknown> {
+	public async inspectElement(timeoutMs: number, caller: CallerIdentity): Promise<unknown> {
 		await this._settle();
-		const tab = this._requireTab();
+		const tab = this._requireTab(caller);
 		const client = new CDPClient(await tab.startCDPSession());
 		let sessionId: string | undefined;
 
@@ -1399,8 +1462,9 @@ export class BrowserController implements vscode.Disposable {
 			try {
 				const { backendNodeId } = await client.once('Overlay.inspectNodeRequested', cts.token);
 				const data = await extractElementData(client, sessionId, backendNodeId);
-				this._selectedElement = renderElementMarkdown(data, tab.url);
-				return this._selectedElement;
+				const rendered = renderElementMarkdown(data, tab.url);
+				this._selectedElements.set(tab, rendered);
+				return rendered;
 			} catch (err) {
 				if (err instanceof vscode.CancellationError) {
 					throw new Error(
@@ -1420,16 +1484,24 @@ export class BrowserController implements vscode.Disposable {
 		}
 	}
 
-	public async selectedElement(): Promise<unknown> {
-		if (!this._selectedElement) {
-			throw new Error(
-				'No element has been picked yet. Call `browser_inspect_element` after asking the user to click one.');
+	public async selectedElement(caller: CallerIdentity): Promise<unknown> {
+		// Resolved through the caller, so this can only ever return what was
+		// picked on the tab that caller works on.
+		const { tab, paused } = this._resolveForCaller(caller);
+		if (paused) {
+			throw new Error(shareLostMessage(paused));
 		}
-		return this._selectedElement;
+		const picked = tab ? this._selectedElements.get(tab) : undefined;
+		if (!picked) {
+			throw new Error(
+				'No element has been picked on your tab yet. Call `browser_inspect_element` after asking the user to '
+				+ 'click one.');
+		}
+		return picked;
 	}
 
-	public async html(selector: string | undefined): Promise<unknown> {
-		const session = await this._withSession();
+	public async html(selector: string | undefined, caller: CallerIdentity): Promise<unknown> {
+		const session = await this._withSession(caller);
 		const value = await evaluate(session, `(() => {
 			const sel = ${literal(selector)};
 			const el = sel ? document.querySelector(sel) : document.documentElement;
@@ -1441,8 +1513,8 @@ export class BrowserController implements vscode.Disposable {
 		return typeof value === 'string' ? stripMarkerFromHtml(value) : value;
 	}
 
-	public async text(selector: string | undefined): Promise<unknown> {
-		const session = await this._withSession();
+	public async text(selector: string | undefined, caller: CallerIdentity): Promise<unknown> {
+		const session = await this._withSession(caller);
 		return evaluate(session, `(() => {
 			const sel = ${literal(selector)};
 			const el = sel ? document.querySelector(sel) : document.body;
@@ -1451,8 +1523,8 @@ export class BrowserController implements vscode.Disposable {
 		})()`);
 	}
 
-	public async consoleOutput(clear: boolean): Promise<unknown> {
-		const session = await this._withSession();
+	public async consoleOutput(clear: boolean, caller: CallerIdentity): Promise<unknown> {
+		const session = await this._withSession(caller);
 		const lines = session.consoleLines.map(line => `[${line.level}] ${line.text}`);
 		if (clear) {
 			session.clearConsole();
@@ -1477,7 +1549,7 @@ export class BrowserController implements vscode.Disposable {
 	public async capture(
 		fullPage: boolean,
 		preferred?: vscode.BrowserTab,
-		user = false,
+		caller?: CallerIdentity,
 	): Promise<{ png: Buffer; clipped: boolean; url: string | undefined }> {
 		await this._settle();
 
@@ -1489,7 +1561,7 @@ export class BrowserController implements vscode.Disposable {
 			// the capture. With a throwaway it answers "The console is empty"
 			// for everything that happened before the next call — and console
 			// capture is the whole reason the session is cached at all.
-			const tab = this._requireTab(user);
+			const tab = this._requireTab(caller);
 			return this._capture(tab, await this._sessionFor(tab), fullPage);
 		}
 
@@ -1519,8 +1591,9 @@ export class BrowserController implements vscode.Disposable {
 		tab: vscode.BrowserTab,
 		run: (session: TabSession) => Promise<T>,
 	): Promise<T> {
-		if (this._session && this._sessionTab === tab && !this._session.isClosed) {
-			return run(this._session);
+		const cached = this._sessions.get(tab);
+		if (cached && !cached.isClosed) {
+			return run(cached);
 		}
 		const session = await TabSession.open(tab);
 		try {
@@ -1569,8 +1642,8 @@ export class BrowserController implements vscode.Disposable {
 		return { png: Buffer.from(data, 'base64'), clipped, url: tab.url };
 	}
 
-	public async click(selector: string): Promise<unknown> {
-		const session = await this._withSession();
+	public async click(selector: string, caller: CallerIdentity): Promise<unknown> {
+		const session = await this._withSession(caller);
 		return evaluate(session, `(() => {
 			const el = document.querySelector(${literal(selector)});
 			if (!el) { throw new Error('No element matches ' + ${literal(selector)}); }
@@ -1580,8 +1653,8 @@ export class BrowserController implements vscode.Disposable {
 		})()`);
 	}
 
-	public async fill(selector: string, value: string): Promise<unknown> {
-		const session = await this._withSession();
+	public async fill(selector: string, value: string, caller: CallerIdentity): Promise<unknown> {
+		const session = await this._withSession(caller);
 		return evaluate(session, `(() => {
 			const el = document.querySelector(${literal(selector)});
 			if (!el) { throw new Error('No element matches ' + ${literal(selector)}); }
@@ -1603,12 +1676,13 @@ export class BrowserController implements vscode.Disposable {
 		selector: string | undefined,
 		text: string | undefined,
 		timeoutMs: number,
+		caller: CallerIdentity,
 	): Promise<unknown> {
 		if (!selector && !text) {
 			throw new Error('Give either a selector or a text to wait for.');
 		}
 
-		const session = await this._withSession();
+		const session = await this._withSession(caller);
 		return evaluate(session, `(async () => {
 			const sel = ${literal(selector)};
 			const needle = ${literal(text)};
@@ -1626,6 +1700,30 @@ export class BrowserController implements vscode.Disposable {
 		})()`);
 	}
 
+	/**
+	 * One last attempt to take every marker off, on a path that cannot await.
+	 *
+	 * Sent **directly**, not through `indicator.clear()`: that goes onto the
+	 * indicator's serialising queue, whose first `await` defers the work past
+	 * the `_dropSession()` below — the channel was already torn down by the
+	 * time anything was written, so nothing reached the page.
+	 * `CDPClient.send` hands the message to the host inside its own
+	 * constructor, synchronously, which is what makes this worth attempting at
+	 * all here. The browser editor belongs to the workbench, so a disable or a
+	 * reload of this extension leaves those pages alive.
+	 */
+	private _unmarkAllOnDispose(): void {
+		for (const tab of this._shares.tabs()) {
+			const session = this._sessions.get(tab);
+			if (!session || session.isClosed) {
+				continue;
+			}
+			void session.client.send('Runtime.evaluate', {
+				expression: 'window.__aiBrowserShareMarker && window.__aiBrowserShareMarker.remove()',
+			}, session.sessionId).catch(() => { /* the window is closing anyway */ });
+		}
+	}
+
 	public dispose(): void {
 		// First, so an open still in flight sees it when it lands.
 		this._disposed = true;
@@ -1637,7 +1735,7 @@ export class BrowserController implements vscode.Disposable {
 		// navigation. `send` hands the message to the host synchronously, which
 		// is why this can still be worth doing on a synchronous teardown path;
 		// it is best effort and nothing waits for it.
-		this._unmarkOnDispose();
+		this._unmarkAllOnDispose();
 		this._tabWatch?.dispose();
 		this._onDidChangeShare.dispose();
 		this._dropSession();

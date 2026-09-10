@@ -12,7 +12,7 @@ import {
 } from './mcpClientState';
 import {
 	claudeConfigUri, claudeLocalConfigUri, codexGlobalConfigUri, codexProjectConfigUri,
-	connectClaudeCode, connectCodex, workspaceFolder,
+	workspaceFolder,
 } from './mcpSetup';
 import type { McpServer } from './mcpServer';
 
@@ -169,10 +169,19 @@ export async function checkConnection(server: McpServer): Promise<void> {
 	// Only offer to fix the clients that need it.
 	const actions: { label: string; run: () => Thenable<void> }[] = [];
 	if (claude !== 'thisServer') {
-		actions.push({ label: vscode.l10n.t("Connect Claude Code"), run: () => connectClaudeCode(server) });
+		// Through the command, not the function: the command also gives the
+		// focused tab to that assistant, and an action labelled the same as the
+		// palette entry must not do half of what that entry does.
+		actions.push({
+			label: vscode.l10n.t("Connect Claude Code and share this tab"),
+			run: () => vscode.commands.executeCommand('aiBrowser.connectClaudeCode'),
+		});
 	}
 	if (codex !== 'thisServer') {
-		actions.push({ label: vscode.l10n.t("Connect Codex"), run: () => connectCodex(server) });
+		actions.push({
+			label: vscode.l10n.t("Connect Codex and share this tab"),
+			run: () => vscode.commands.executeCommand('aiBrowser.connectCodex'),
+		});
 	}
 
 	const choice = await vscode.window.showInformationMessage(

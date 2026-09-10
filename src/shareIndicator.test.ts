@@ -7,7 +7,7 @@ import * as assert from 'node:assert';
 import { suite, test } from 'node:test';
 import { runInNewContext } from 'node:vm';
 import {
-	inUseMarker, ShareIndicator, sharedMarker, stripMarker, stripMarkerFromHtml,
+	inUseMarker, markerSuffix, ShareIndicator, sharedMarker, stripMarker, stripMarkerFromHtml,
 } from './shareIndicator.ts';
 import type { PageChannel } from './shareIndicator.ts';
 
@@ -102,6 +102,18 @@ suite('stripMarker', () => {
 		assert.strictEqual(stripMarker(`Orders${separator}${inUseMarker}`), 'Orders');
 	});
 
+	test('takes off a composed suffix whole', () => {
+		assert.strictEqual(stripMarker(`Orders${separator}🤖🟠🟦`), 'Orders');
+		assert.strictEqual(stripMarker(`Orders${separator}🔗🟣`), 'Orders');
+	});
+
+	test('leaves a tail that is not made of our glyphs', () => {
+		// The separator alone does not make a suffix ours: a title that happens
+		// to end in a thin space and something else is the page's.
+		assert.strictEqual(stripMarker(`Orders${separator}v2`), `Orders${separator}v2`);
+		assert.strictEqual(stripMarker(`Orders${separator}🤖x`), `Orders${separator}🤖x`);
+	});
+
 	test('leaves a title that never carried one', () => {
 		assert.strictEqual(stripMarker('Orders'), 'Orders');
 		assert.strictEqual(stripMarker('Orders '), 'Orders ');
@@ -123,11 +135,59 @@ suite('stripMarker', () => {
 	});
 });
 
+suite('markerSuffix', () => {
+
+	test('a tab shared with everyone reads as it always did', () => {
+		assert.strictEqual(markerSuffix({ used: false, kinds: [], everyone: true }), sharedMarker);
+		assert.strictEqual(markerSuffix({ used: true, kinds: [], everyone: true }), inUseMarker);
+	});
+
+	test('an assistant-specific share names the assistant after the state', () => {
+		// Two facts, two positions: whether anybody has driven it, then whose
+		// tab it is. The leading glyph is what keeps "shared but nobody picked
+		// it up" visible, which is the state this marker exists for.
+		assert.strictEqual(markerSuffix({ used: false, kinds: ['claude'], everyone: false }), '🔗🟠');
+		assert.strictEqual(markerSuffix({ used: true, kinds: ['claude'], everyone: false }), '🤖🟠');
+	});
+
+	test('a tab given to two assistants carries both', () => {
+		assert.strictEqual(
+			markerSuffix({ used: true, kinds: ['claude', 'codex'], everyone: false }), '🤖🟠🟦');
+		assert.strictEqual(
+			markerSuffix({ used: false, kinds: ['claude', 'codex', 'other'], everyone: true }), '🔗🟠🟦🟣');
+	});
+});
+
 suite('stripMarkerFromHtml', () => {
 
 	test('removes the marker from a serialized title', () => {
 		const html = `<html><head><title>Orders${separator}${sharedMarker}</title></head><body>x</body></html>`;
 		assert.strictEqual(stripMarkerFromHtml(html), '<html><head><title>Orders</title></head><body>x</body></html>');
+	});
+
+	test('removes a composed suffix from a serialized title', () => {
+		const html = `<html><head><title>Orders${separator}🤖🟠🟦</title></head></html>`;
+		assert.strictEqual(stripMarkerFromHtml(html), '<html><head><title>Orders</title></head></html>');
+	});
+
+	test("finds our suffix past a thin space of the page's own", () => {
+		// A thin space is a real typographic character: a title like `1 000
+		// Orders` has one, and a scan that gave up on the first occurrence left
+		// our glyph in the html of every such page.
+		const html = `<html><head><title>1${separator}000 Orders${separator}🤖🟠</title></head></html>`;
+		assert.strictEqual(
+			stripMarkerFromHtml(html), `<html><head><title>1${separator}000 Orders</title></head></html>`);
+	});
+
+	test("never touches the page's own content", () => {
+		// A `<meta>` description or an inline legend can carry a thin space
+		// before one of our glyphs. Scanning the whole document matched that
+		// decoy first: the page's own text was edited and the real marker was
+		// left in the title.
+		const html = `<html><head><meta content="Deploy${separator}🔗 status">`
+			+ `<title>Orders${separator}🤖🟠</title></head></html>`;
+		assert.strictEqual(stripMarkerFromHtml(html),
+			`<html><head><meta content="Deploy${separator}🔗 status"><title>Orders</title></head></html>`);
 	});
 
 	test('leaves html that carries none of ours', () => {
@@ -168,6 +228,18 @@ suite('the page-side installer', () => {
 		assert.strictEqual(page.run('typeof window.__aiBrowserShareMarker'), 'undefined');
 	});
 
+	test('a composed suffix installs and comes off whole', async () => {
+		const page = fakeDocument('Orders');
+		page.run(await installerFor('🤖🟠🟦'));
+		assert.strictEqual(page.state.title, `Orders${separator}🤖🟠🟦`);
+
+		page.rename('Orders (3)');
+		assert.strictEqual(page.state.title, `Orders (3)${separator}🤖🟠🟦`);
+
+		page.run('window.__aiBrowserShareMarker.remove()');
+		assert.strictEqual(page.state.title, 'Orders (3)');
+	});
+
 	test('a page whose own title ends in the same emoji keeps it', async () => {
 		const page = fakeDocument(`Deploy Bot ${inUseMarker}`);
 		page.run(await installerFor(sharedMarker));
@@ -205,12 +277,17 @@ suite('ShareIndicator', () => {
 		assert.deepStrictEqual(fake.methods(), ['Page.addScriptToEvaluateOnNewDocument', 'Runtime.evaluate']);
 	});
 
-	test('setting the marker it already has sends nothing', async () => {
+	test('setting the marker again re-installs it', async () => {
+		// No "already there" short-circuit: the page owns the handle, so it can
+		// take the marker off — and a page that defines
+		// `window.__aiBrowserShareMarker` itself makes the installer do whatever
+		// it likes. A cached belief meant every later arm sent nothing at all,
+		// so a page could keep itself unmarked while an assistant drove it.
 		const fake = fakeClient();
 		const indicator = new ShareIndicator(fake.client, 'session');
 		await indicator.set(sharedMarker);
 		await indicator.set(sharedMarker);
-		assert.strictEqual(fake.methods().length, 2);
+		assert.strictEqual(fake.sources().length, 2, 'the second arm reached the page');
 	});
 
 	test('changing the marker replaces the registration', async () => {
@@ -233,10 +310,10 @@ suite('ShareIndicator', () => {
 		assert.strictEqual(await indicator.clear(), false);
 	});
 
-	test('a page-side throw is not recorded as an installed marker', async () => {
+	test('a page-side throw still leaves the next attempt free to try', async () => {
 		// CDP answers a thrown expression with a *successful* reply carrying
-		// `exceptionDetails`. Recording the marker anyway made the "already in
-		// that state" short-circuit suppress every retry for the session.
+		// `exceptionDetails`, so the throw has to be detected — and nothing may
+		// remember the failure as success.
 		const fake = fakeClient({ throws: true });
 		const indicator = new ShareIndicator(fake.client, 'session');
 		await assert.rejects(() => indicator.set(sharedMarker));

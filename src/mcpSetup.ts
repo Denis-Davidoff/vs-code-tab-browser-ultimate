@@ -361,11 +361,21 @@ export function codexCliCommand(folder: vscode.WorkspaceFolder | undefined, serv
  * stale. Every subsequent Connect fixed a file nothing read. The CLI command is
  * still offered — but only on the path where writing the file actually failed.
  */
-export function connectionPrompt(entryName: string): string {
-	return [
+export function connectionPrompt(entryName: string, shared?: SharedPage): string {
+	const lines = [
 		`Do you have the \`${entryName}\` MCP tools (they start with \`browser_\`)? Just check — do not use them yet.`,
 		`If you have none, they were simply not loaded at startup. The config is already written and correct, so just restart your session — do not add or edit any MCP configuration yourself.`,
-	].join('\n');
+	];
+	if (shared) {
+		// Stated, not asked for: the paste is still a *check*, and the rule that
+		// it must not send the model off to inspect a page stands. This line
+		// exists so the model does not go looking for a tab to select — the user
+		// has already chosen one.
+		lines.push(`For when you do use them: the user has given you one browser tab — ${shared.title ?? shared.url}`
+			+ ` (${shared.url}). Every browser tool of yours acts on that tab, and only that tab; you cannot and need`
+			+ ' not select another, and other tabs in the window are not yours to read.');
+	}
+	return lines.join('\n');
 }
 
 /**
@@ -383,12 +393,49 @@ export function connectionPrompt(entryName: string): string {
  * page the user is about to ask an assistant to work on. Failures still get a
  * real notification — they need attention, and they are rare.
  */
-export async function connectClaudeCode(server: McpServer): Promise<void> {
+/** The page a connect pinned the assistants to, if there was one. */
+export interface SharedPage {
+	readonly url: string;
+	readonly title?: string;
+	/** Who it was given to, as it reads in a sentence: `Claude Code`, `all assistants`. */
+	readonly label?: string;
+}
+
+/**
+ * What the confirmation says about *which page* the assistant will drive.
+ *
+ * Connecting attaches an assistant to the **window**, and that is exactly the
+ * thing nobody reads twice: "Connect Claude Code" invites the belief that it is
+ * bound to the tab in front of you, so the tools then followed whichever tab
+ * was active and looked broken. Reported as "the agents go into the active tab,
+ * not the one I connected them to" — with the share never pressed at all.
+ *
+ * So a connect made from a browser tab now shares that tab, and a connect made
+ * from anywhere else says what the alternative is.
+ */
+function scopeNote(shared: SharedPage | undefined): string {
+	return shared
+		? vscode.l10n.t(" {0} works on {1} — use \"Stop Sharing Tab\" to let it follow you again.",
+			shared.label ?? vscode.l10n.t("It"), shared.title ?? shared.url)
+		// The command is named, so the title has to be the one the palette
+		// actually has: it was renamed in the same change that added this
+		// sentence, and naming a title nobody can find is worse than naming
+		// none.
+		: vscode.l10n.t(" The tools follow whichever browser tab you are looking at;"
+			+ " run \"Share Tab with Claude Code\" or \"Share Tab with Codex\" from a tab to give one away.");
+}
+
+export async function connectClaudeCode(server: McpServer, shared?: SharedPage): Promise<void> {
 	const folder = workspaceFolder();
 	if (!folder) {
 		await vscode.env.clipboard.writeText(claudeCliCommand(server));
+		// The tab was given away before this ran, so the message says so.
+		// Silence here left an assignment the user was never told about — and
+		// closing that tab later paused every Claude call with advice about a
+		// share they did not remember making.
 		vscode.window.showWarningMessage(vscode.l10n.t(
-			"No folder is open, so there is no `.mcp.json` to write. The `claude mcp add` command is on your clipboard instead."));
+			"No folder is open, so there is no `.mcp.json` to write. The `claude mcp add` command is on your clipboard instead.")
+			+ scopeNote(shared));
 		return;
 	}
 
@@ -396,13 +443,14 @@ export async function connectClaudeCode(server: McpServer): Promise<void> {
 	if (outcome === 'unparsable') {
 		await vscode.env.clipboard.writeText(claudeCliCommand(server));
 		vscode.window.showErrorMessage(vscode.l10n.t(
-			"`.mcp.json` could not be parsed, so it was left alone — rewriting it would drop the project's other MCP servers. Fix or delete it and try again. The `claude mcp add` command is on your clipboard instead."));
+			"`.mcp.json` could not be parsed, so it was left alone — rewriting it would drop the project's other MCP servers. Fix or delete it and try again. The `claude mcp add` command is on your clipboard instead.")
+			+ scopeNote(shared));
 		return;
 	}
 
-	await vscode.env.clipboard.writeText(connectionPrompt(serverName));
+	await vscode.env.clipboard.writeText(connectionPrompt(serverName, shared));
 	confirm(vscode.l10n.t(
-		"Wrote .mcp.json, prompt copied — restart Claude Code, then paste it."));
+		"Wrote .mcp.json, prompt copied — restart Claude Code, then paste it.") + scopeNote(shared));
 }
 
 /**
@@ -420,18 +468,19 @@ export async function connectClaudeCode(server: McpServer): Promise<void> {
  * names — the project file uses the bare `ai-browser`, the global one a
  * per-project name — so Codex would load both and list every tool twice.
  */
-export async function connectCodex(server: McpServer): Promise<void> {
+export async function connectCodex(server: McpServer, shared?: SharedPage): Promise<void> {
 	const folder = workspaceFolder();
 	try {
 		const name = await writeCodexGlobalConfig(folder, server);
-		await vscode.env.clipboard.writeText(connectionPrompt(name));
+		await vscode.env.clipboard.writeText(connectionPrompt(name, shared));
 		confirm(vscode.l10n.t(
-			"Wrote ~/.codex/config.toml, prompt copied — start a NEW Codex conversation, then paste it."));
+			"Wrote ~/.codex/config.toml, prompt copied — start a NEW Codex conversation, then paste it.")
+			+ scopeNote(shared));
 	} catch (err) {
 		await vscode.env.clipboard.writeText(codexCliCommand(folder, server));
 		vscode.window.showErrorMessage(vscode.l10n.t(
 			"Could not write ~/.codex/config.toml ({0}). The `codex mcp add` command is on your clipboard instead.",
-			err instanceof Error ? err.message : String(err)));
+			err instanceof Error ? err.message : String(err)) + scopeNote(shared));
 	}
 }
 

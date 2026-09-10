@@ -14,7 +14,8 @@ import { cleanUpReports, publishAssistantContext, type AssistantId } from './ass
 import { LastElementAction, type ElementActionId } from './lastAction';
 import { BrowserController } from './browserController';
 import { McpLifecycle } from './mcpLifecycle';
-import { connectClaudeCode, connectCodex } from './mcpSetup';
+import { connectClaudeCode, connectCodex, type SharedPage } from './mcpSetup';
+import { everyone, forKind, isShareTarget, targetName, type ShareTarget } from './shareRegistry';
 import { checkConnection } from './mcpCheck';
 import { copyScreenshot } from './screenshot';
 import {
@@ -54,6 +55,8 @@ const checkMcpCommand = 'aiBrowser.checkMcpConnection';
 const enableBrowserApiCommand = 'aiBrowser.enableBrowserApi';
 const shareTabCommand = 'aiBrowser.shareTab';
 const stopSharingTabCommand = 'aiBrowser.stopSharingTab';
+const shareWithClaudeCommand = 'aiBrowser.shareTabWithClaudeCode';
+const shareWithCodexCommand = 'aiBrowser.shareTabWithCodex';
 
 const openerId = 'aiBrowser.open';
 
@@ -122,32 +125,59 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(vscode.commands.registerCommand('aiBrowser.copyFullScreenshot',
 		() => copyScreenshot(browser, true)));
 
+	// **"Share Tab with Claude Code" is one gesture that means both halves.**
+	// It was "Connect", which attaches the server to the *window*, and that
+	// invited the belief that it bound the tab in front of you — so the tools
+	// followed whichever tab was active and looked broken. Now the entry says
+	// what it does and does it: the config is written if it has to be, and the
+	// focused tab is given to *that* assistant.
+	//
+	// A connect made from anywhere else — the setup case, where the config is
+	// written long before there is a page — assigns nothing and says what the
+	// alternative is.
+	const giveFocusedTab = async (target: ShareTarget): Promise<SharedPage | undefined> => {
+		const tab = browser.focusedTab;
+		if (!tab) {
+			return undefined;
+		}
+		try {
+			const shared = await browser.shareTab(tab, target);
+			return { url: shared.url, title: shared.title, label: shared.label };
+		} catch {
+			// The tab went while the click was queued. Connecting is still
+			// worth finishing; it simply assigns nothing.
+			return undefined;
+		}
+	};
+
 	context.subscriptions.push(vscode.commands.registerCommand(connectClaudeCommand,
-		() => mcp.withServer(connectClaudeCode)));
+		() => mcp.withServer(async server =>
+			connectClaudeCode(server, await giveFocusedTab(forKind('claude'))))));
 	context.subscriptions.push(vscode.commands.registerCommand(connectCodexCommand,
-		() => mcp.withServer(connectCodex)));
+		() => mcp.withServer(async server =>
+			connectCodex(server, await giveFocusedTab(forKind('codex'))))));
 	context.subscriptions.push(vscode.commands.registerCommand(checkMcpCommand,
 		() => mcp.withServer(checkConnection)));
 
 	context.subscriptions.push(vscode.commands.registerCommand(enableBrowserApiCommand,
 		() => enableBrowserApi()));
 
-	// --- sharing one tab with the assistants -----------------------------------
+	// --- giving a tab to an assistant -----------------------------------------
 	//
-	// The share is the user's half of "work on this page": the MCP tools follow
-	// whichever tab is in front of the user by default, which is right until an
-	// assistant is working while the user reads something else. Both
-	// confirmations go through `confirm()` rather than a notification — the
-	// browser tab is on screen by definition when this is used, and a toast
-	// would pause the very page being handed over.
+	// The MCP tools follow whichever tab is in front of the user by default,
+	// which is right until an assistant is working while the user reads
+	// something else. Every confirmation here goes through `confirm()` rather
+	// than a notification — a browser tab is on screen by definition when these
+	// are used, and a toast would pause the very page being handed over.
 	const publishShareContext = () => {
-		const state = browser.share.state;
-		void vscode.commands.executeCommand('setContext', 'aiBrowser.tabShared', state !== 'none');
+		const shares = browser.shares;
+		const any = shares.assignments.length > 0 || shares.paused.length > 0;
+		void vscode.commands.executeCommand('setContext', 'aiBrowser.tabShared', any);
 	};
 	publishShareContext();
 	context.subscriptions.push(browser.onDidChangeShare(publishShareContext));
 
-	context.subscriptions.push(vscode.commands.registerCommand(shareTabCommand, async () => {
+	const share = async (target: ShareTarget) => {
 		if (!isBrowserApiGranted()) {
 			refuse(vscode.l10n.t("Sharing a tab needs the integrated browser API — see the AI Browser status bar item."));
 			return;
@@ -160,26 +190,44 @@ export function activate(context: vscode.ExtensionContext) {
 			return;
 		}
 		try {
-			const shared = await browser.shareTab(tab);
-			confirm(vscode.l10n.t("Shared with assistants: {0} — the browser tools now act on this tab only",
-				shared.title || shared.url));
+			const shared = await browser.shareTab(tab, target);
+			confirm(vscode.l10n.t("{0} now works on {1} — and on nothing else",
+				shared.label, shared.title || shared.url));
 		} catch (err) {
 			// A refusal, not a crash: the tab can close while the click is
-			// queued behind another share transition. Through `refuse()` because
-			// a toast here would pause whatever browser tab is on screen.
+			// queued behind another transition. Through `refuse()` because a
+			// toast here would pause whatever browser tab is on screen.
 			refuse(vscode.l10n.t("Could not share the tab: {0}",
 				err instanceof Error ? err.message : String(err)));
 		}
-	}));
+	};
 
-	context.subscriptions.push(vscode.commands.registerCommand(stopSharingTabCommand, async () => {
-		if (browser.share.state === 'none') {
-			refuse(vscode.l10n.t("No tab is shared."));
-			return;
-		}
-		await browser.stopSharing();
-		confirm(vscode.l10n.t("Stopped sharing — the browser tools follow whichever tab is in front of you again"));
-	}));
+	// `isShareTarget` and not `target ?? everyone`: a command invoked from an
+	// `editor/title` menu is handed the **editor's resource**, so the first
+	// argument is a `Uri` whenever this runs from the browser tab's own toolbar
+	// — which resolved a key from a `Uri`, threw, and killed the entry that
+	// matters most.
+	context.subscriptions.push(vscode.commands.registerCommand(shareTabCommand,
+		(target?: unknown) => share(isShareTarget(target) ? target : everyone)));
+	context.subscriptions.push(vscode.commands.registerCommand(shareWithClaudeCommand,
+		() => share(forKind('claude'))));
+	context.subscriptions.push(vscode.commands.registerCommand(shareWithCodexCommand,
+		() => share(forKind('codex'))));
+
+	context.subscriptions.push(vscode.commands.registerCommand(stopSharingTabCommand,
+		async (argument?: unknown) => {
+			// See above: from the toolbar this argument is the editor's Uri.
+			const target = isShareTarget(argument) ? argument : undefined;
+			const shares = browser.shares;
+			if (shares.assignments.length === 0 && shares.paused.length === 0) {
+				refuse(vscode.l10n.t("No tab is shared."));
+				return;
+			}
+			await browser.stopSharing(target);
+			confirm(target
+				? vscode.l10n.t("{0} follows whichever tab is in front of you again", targetName(target))
+				: vscode.l10n.t("Stopped sharing — the assistants follow whichever tab is in front of you again"));
+		}));
 
 	// Not contributed to the manifest on purpose: it only exists for the status
 	// bar button shown while a pick is running, and a palette entry that is

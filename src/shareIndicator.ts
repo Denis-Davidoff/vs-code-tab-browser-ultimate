@@ -3,6 +3,9 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import type { ClientKind } from './mcpProtocol';
+import type { TabShareState } from './shareRegistry';
+
 /*
  * Marking the shared tab *on the tab itself*.
  *
@@ -25,6 +28,7 @@
  * A title suffix is visible in exactly one place — the tab — and is stripped
  * from every title this extension reports back (see {@link stripMarker}).
  */
+
 
 /**
  * The slice of `CDPClient` this module uses.
@@ -61,10 +65,36 @@ export const inUseMarker = '🤖';
  */
 const separator = '\u2009';
 
-const markers = [sharedMarker, inUseMarker];
+/**
+ * One glyph per assistant, so a tab says *whose* it is.
+ *
+ * The colours are the ones the per-assistant dots on the toolbar icons used
+ * before they were removed, which is the only prior art this project has for
+ * "which assistant" at a glance. `other` covers VS Code chat and anything that
+ * did not name itself.
+ */
+const assistantGlyphs: Record<ClientKind, string> = {
+	claude: '🟠',
+	codex: '🟦',
+	other: '🟣',
+};
 
-/** The exact strings this extension appends, longest-lived contract in here. */
-const suffixes = markers.map(marker => `${separator}${marker}`);
+/** Every glyph the suffix can be made of — the contract `stripMarker` reverses. */
+const glyphs = [sharedMarker, inUseMarker, ...Object.values(assistantGlyphs)];
+
+/**
+ * What to append for one tab, given who holds it.
+ *
+ * Two facts, two positions. The leading glyph keeps the distinction that made
+ * the marker worth having — 🔗 nobody has picked this up, 🤖 somebody has
+ * driven it — and the trailing ones name the assistants the tab was given to
+ * *specifically*. A tab shared with everyone carries no trailing glyph, so the
+ * common case reads exactly as it did before.
+ */
+export function markerSuffix(state: TabShareState): string {
+	const lead = state.used ? inUseMarker : sharedMarker;
+	return lead + state.kinds.map(kind => assistantGlyphs[kind]).join('');
+}
 
 /**
  * The page title without our marker.
@@ -78,15 +108,35 @@ export function stripMarker(title: string | undefined): string | undefined {
 	if (!title) {
 		return title;
 	}
-	// **One** suffix, not every marker in a loop. Stripping both could take two
-	// emoji off a title that only ever carried one of ours, and the loop form
-	// also stripped a plain-space `… 🤖` that belonged to the page.
-	for (const suffix of suffixes) {
-		if (title.endsWith(suffix)) {
-			return title.slice(0, -suffix.length).trimEnd();
-		}
+	// The tail after the **last** separator has to be made of our glyphs and
+	// nothing else. A fixed list of suffixes cannot do this any more — the
+	// suffix is composed now, `🤖🟠🟦` and so on — and matching loosely would
+	// take a page's own trailing emoji, which is the failure this separator was
+	// introduced to end.
+	const at = title.lastIndexOf(separator);
+	if (at === -1) {
+		return title;
 	}
-	return title;
+	if (!isGlyphRun(title.slice(at + separator.length))) {
+		return title;
+	}
+	return title.slice(0, at).trimEnd();
+}
+
+/** Whether `tail` is a non-empty run of our own glyphs, and nothing else. */
+function isGlyphRun(tail: string): boolean {
+	if (tail.length === 0) {
+		return false;
+	}
+	let index = 0;
+	while (index < tail.length) {
+		const glyph = glyphs.find(candidate => tail.startsWith(candidate, index));
+		if (!glyph) {
+			return false;
+		}
+		index += glyph.length;
+	}
+	return true;
 }
 
 /**
@@ -104,12 +154,25 @@ export function stripMarker(title: string | undefined): string | undefined {
  * occurrence is enough — there is exactly one, in the title.
  */
 export function stripMarkerFromHtml(html: string): string {
-	for (const suffix of suffixes) {
-		if (html.includes(suffix)) {
-			return html.replace(suffix, '');
-		}
+	// **Inside `<title>` and nowhere else.** Scanning the whole document for a
+	// separator followed by our glyphs found *decoys*: a `<meta>` description
+	// or an inline legend (`🟠 degraded`) preceded by a thin space matched
+	// first, so the page's own content was edited and the real marker was left
+	// in the title. The suffix only ever exists in one element, so that is the
+	// only place to look.
+	const open = /<title\b[^>]*>/i.exec(html);
+	if (!open) {
+		return html;
 	}
-	return html;
+	const from = open.index + open[0].length;
+	const to = html.toLowerCase().indexOf('</title>', from);
+	if (to === -1) {
+		return html;
+	}
+
+	const title = html.slice(from, to);
+	const stripped = stripMarker(title);
+	return stripped === title ? html : html.slice(0, from) + stripped + html.slice(to);
 }
 
 /**
@@ -144,7 +207,7 @@ export function stripMarkerFromHtml(html: string): string {
  * `removeEventListener`.
  */
 function installerSource(marker: string): string {
-	return `(function (suffix, all) {
+	return `(function (suffix, sep, all) {
 	var key = '__aiBrowserShareMarker';
 	var existing = window[key];
 	if (existing) { existing.set(suffix); return; }
@@ -153,14 +216,25 @@ function installerSource(marker: string): string {
 		suffix: suffix,
 		observer: undefined,
 		removed: false,
-		// One suffix, and only one of *ours*: the page's own trailing emoji is
-		// not preceded by our separator, so it is left alone. Taking it was a
-		// silent, irreversible edit of someone else's document.
+		// Only what is ours: the separator, followed by a run made entirely of
+		// our glyphs. The page's own trailing emoji is not preceded by the
+		// separator, so it is left alone — taking it was a silent, irreversible
+		// edit of someone else's document.
 		strip: function (title) {
-			for (var i = 0; i < all.length; i++) {
-				if (title.endsWith(all[i])) { return title.slice(0, -all[i].length); }
+			var at = title.lastIndexOf(sep);
+			if (at === -1) { return title; }
+			var tail = title.slice(at + sep.length);
+			if (tail.length === 0) { return title; }
+			var index = 0;
+			while (index < tail.length) {
+				var glyph = null;
+				for (var i = 0; i < all.length; i++) {
+					if (tail.startsWith(all[i], index)) { glyph = all[i]; break; }
+				}
+				if (!glyph) { return title; }
+				index += glyph.length;
 			}
-			return title;
+			return title.slice(0, at);
 		},
 		apply: function () {
 			// No <title> yet — this runs at document start on a fresh
@@ -220,7 +294,7 @@ function installerSource(marker: string): string {
 	} else {
 		start();
 	}
-})(${JSON.stringify(separator + marker)}, ${JSON.stringify(suffixes)})`;
+})(${JSON.stringify(separator + marker)}, ${JSON.stringify(separator)}, ${JSON.stringify(glyphs)})`;
 }
 
 /**
@@ -253,16 +327,15 @@ async function evaluateInPage(client: PageChannel, sessionId: string, expression
 export class ShareIndicator {
 
 	/**
-	 * The marker that is actually on the page, as far as we know.
+	 * No field remembers what is on the page, and that is deliberate.
 	 *
-	 * Recorded **after** a successful install, never before it. Setting it up
-	 * front recorded the *request* instead: one rejected install then left the
-	 * indicator believing the marker was there, and because the same session
-	 * keeps the same indicator, the `_marker === marker` short-circuit below
-	 * suppressed every retry — a shared tab with no marker for the rest of the
-	 * session.
+	 * There was one, and it was a belief rather than a fact: the handle lives
+	 * on `window`, so the page can take the marker off, and a page can define
+	 * `window.__aiBrowserShareMarker` before we arrive and make our installer
+	 * do nothing. Both left the extension convinced the marker was applied,
+	 * after which every later arm sent nothing at all. An install is cheap
+	 * enough to repeat; a marker that cannot come back is not.
 	 */
-	private _marker: string | undefined;
 	private _scriptId: string | undefined;
 
 	/**
@@ -301,11 +374,18 @@ export class ShareIndicator {
 	/** Puts the marker on the page, replacing whichever one was there. */
 	public set(marker: string): Promise<void> {
 		return this._enqueue(async () => {
-			if (this._marker === marker) {
-				return;
-			}
+			// **Installed every time, with no "already there" short-circuit.**
+			// The handle lives on `window`, so the page can call `remove()` on
+			// it — and a page can also define `window.__aiBrowserShareMarker`
+			// itself before we arrive, in which case our installer takes its
+			// `existing.set` branch and does whatever that page wants. Either
+			// way the extension had recorded the marker as applied, and every
+			// later arm then sent *nothing at all*, so a page could keep itself
+			// unmarked for the rest of the session while an assistant drove it.
+			// `clear()` already declines to trust this state for the same
+			// reason; the round trip it saved was not worth a marker that
+			// cannot come back.
 			await this._install(marker);
-			this._marker = marker;
 		});
 	}
 
@@ -351,7 +431,6 @@ export class ShareIndicator {
 	 */
 	public clear(): Promise<boolean> {
 		return this._enqueue(async () => {
-			this._marker = undefined;
 			try {
 				await this._removeScript();
 				await evaluateInPage(this._client, this._sessionId,

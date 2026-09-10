@@ -31,9 +31,10 @@ export async function copyScreenshot(
 		let clipped: boolean;
 		let url: string | undefined;
 		try {
-			// The tab the user is looking at, whatever an assistant has selected
-			// over MCP — this is a button they pressed themselves.
-			({ png, clipped, url } = await browser.capture(fullPage, browser.focusedTab, true));
+			// The tab the user is looking at, whatever any assistant has been
+			// given over MCP — this is a button they pressed themselves. No
+			// caller, which is what tells the controller the same thing.
+			({ png, clipped, url } = await browser.capture(fullPage, browser.focusedTab));
 		} catch (err) {
 			vscode.window.showErrorMessage(vscode.l10n.t(
 				"Could not capture the page: {0}", err instanceof Error ? err.message : String(err)));
