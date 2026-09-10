@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate-promo",
 	"displayName": "AI Browser🏆 Claude & Codex",
 	"description": "Embedded browser tab with AI capabilities, Claude and Codex integration",
-	"version": "0.5.13",
+	"version": "0.5.14",
 	"publisher": "DenysDavydov",
 	"license": "MIT",
 	"icon": "media/icon.png",
@@ -66,6 +66,11 @@
 	"contributes": {
 		"commands": [
 			{
+				"command": "aiBrowser.promo.install",
+				"title": "Install the Full Build…",
+				"category": "AI Browser"
+			},
+			{
 				"command": "aiBrowser.promo.getFullBuild",
 				"title": "Download the Full Build (VSIX)",
 				"category": "AI Browser"
@@ -83,6 +88,10 @@
 		],
 		"menus": {
 			"commandPalette": [
+				{
+					"command": "aiBrowser.promo.install",
+					"when": "!aiBrowser.fullBuildInstalled"
+				},
 				{
 					"command": "aiBrowser.promo.getFullBuild",
 					"when": "!aiBrowser.fullBuildInstalled"

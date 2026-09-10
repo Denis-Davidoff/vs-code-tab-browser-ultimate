@@ -18,6 +18,16 @@ there is not the problem, the missing API is. **Measured by reading the shipped 
 | **Trae** | 1.107.1 | ❌ no | — | nothing helps — base predates the API |
 | **Theia IDE** | 1.75 | ❌ no | — | nothing helps — not a VS Code build |
 
+**Setup at a glance** — the whole path in eight numbered steps; click the picture for full size:
+
+[![Step-by-step setup: install, enable the browser API, open a page, connect Claude Code or Codex](ai-browser-instruct.jpg)](https://raw.githubusercontent.com/Denis-Davidoff/vs-code-tab-browser-ultimate/main/ai-browser-instruct.jpg)
+
+**1–2** install, then click **AI Browser** in the status bar — the menu tells you whether this
+editor supports the browser tools · **2.1–2.2** let it write `enable-proposed-api` into
+`argv.json`, then quit and reopen · **3–4** open a page and find the two buttons at the top right
+of the browser tab · **5–7** *Connect Claude Code* / *Connect Codex*, then paste the copied
+prompt into the assistant · **8** done.
+
 **The original VS Code is the awkward one, and that is why it is third.** It is the only editor
 here whose gallery is the VS Code Marketplace, and the Marketplace **cannot host this extension
 at all** — it rejects anything declaring API proposals, which is exactly what the browser 
@@ -25,8 +35,6 @@ features need. So on VS Code there is no one-click install: download
 [**tab-browser-ultimate.vsix**](https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/raw/main/tab-browser-ultimate.vsix)
 and run **Extensions: Install from VSIX…**. What is listed on the Marketplace is a stub that
 links back here, not the extension.
-
-[![AI Browser in action](ai-browser-instruct.jpg)](https://raw.githubusercontent.com/Denis-Davidoff/vs-code-tab-browser-ultimate/main/ai-browser-instruct.jpg)
 
 Every other supported editor uses Open VSX (`open-vsx.org`), where the real build
 **is** published, so there it is a normal one-click install. The `.vsix` works everywhere too,
@@ -38,37 +46,17 @@ named in `--enable-proposed-api` exactly once, which is what the status bar butt
 [Enabling the browser API](#enabling-the-browser-api). The only editor that needs *nothing* is
 one running the extension in development mode (`F5`), which is a developer path, not an install.
 
-A fork shipping its own browser is not the same thing as supporting this extension. Cursor,
-Kiro and VSCodium all have a browser of some kind; only VSCodium exposes VS Code's browser API to extensions,
-and that is the part that matters here. Kiro is the clearest case — it carries VS Code's browser
-tab and its commands, but none of the API behind them, so no flag and no restart can help.
+A fork shipping its own browser is not the same thing as supporting this extension: Cursor and
+Kiro have one and expose no API behind it, so no flag or restart helps. Trae and Antigravity are
+built on VS Code 1.107, older than the 1.112 that introduced the proposal — they may start
+working after a rebase. Theia is not a VS Code build at all, so its "no" is permanent. On all of
+them the webview panel still works: set `aiBrowser.useIntegratedBrowser` to `false` and run
+**AI Browser: Show**.
 
-**Cursor is not supported, and no setting changes that.** Its proposal list simply has no
-`browser` entry — 150 proposals against VS Code's 179, and that one is not among them — so
-`--enable-proposed-api` grants nothing and the log says
-`wants API proposal 'browser' but that proposal DOES NOT EXIST`. Cursor does have a browser of
-its own, but it is a separate implementation that is not exposed to extensions at all: no
-browser tabs API, no CDP. What still works there is the webview panel — set
-`aiBrowser.useIntegratedBrowser` to `false` and run **AI Browser: Show**.
-
-**Theia is a third kind of "no", and a permanent one.** It is not a VS Code build at all — a
-separate IDE that re-implements the extension API — so there is no VS Code version to rebase
-onto and nothing to enable. Its bundle has no `browser` proposal, no browser tabs API and no
-CDP channel for extensions. Everything that does not need the browser API works there normally.
-
-**Trae and Antigravity IDE are a different kind of "no": they are simply too old.** Both are
-built on VS Code 1.107, and the `browser` proposal first shipped in 1.112 — so there is no
-browser editor, no browser commands and no API in either build (169 and 179 proposals
-respectively, neither including `browser`). Unlike Cursor and Kiro, these two could start
-working on their own: whenever ByteDance or Google rebases onto 1.112 or newer, the API comes
-along with it. Nothing needs to change here for that to happen.
-
-**Using another editor?** Click the **AI Browser** button in the status bar and pick the entry
-under *Setup* — or run **AI Browser: Enable Integrated Browser API** from the command palette.
-It tells you which of three answers applies: already enabled,
-one click away, or this editor cannot do it. The rule it checks is **a VS Code 1.112 or newer
-base, with the `browser` proposal left in** — so a fork's own version number tells you nothing
-(Cursor reports a 1.128 base and still lacks it).
+**Not sure about your editor?** Run **AI Browser: Enable Integrated Browser API**, or pick it
+under *Setup* in the status bar menu, and it says which of the three answers applies. The rule is
+a VS Code 1.112 or newer base with the `browser` proposal left in — a fork's own version number
+tells you nothing (Cursor reports 1.128 and still lacks it).
 
 > **The fastest way in is the VSIX in this repository:**
 > [**tab-browser-ultimate.vsix**](https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/raw/main/tab-browser-ultimate.vsix)

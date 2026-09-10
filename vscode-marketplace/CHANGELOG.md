@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.14
+
+The listing now says what it is from the status bar, not only in a toast that can be missed.
+
+- **Install AI Browser** in the status bar — opens a dialog with three version numbers (this
+  listing, the latest full build on Open VSX, the full build installed here) and the download.
+  It reads **Update AI Browser x.y.z** when the installed build is behind, and disappears
+  entirely once the full build is installed and current.
+- **AI Browser: Install the Full Build…** is the same dialog from the Command Palette.
+- The welcome notice is now shown once per released version of this listing rather than once
+  per machine, so installing it always introduces it. It waits ten seconds after startup, since
+  a notification pauses a restored browser tab.
+
 ## 0.5.11
 
 This entry now watches for new releases of the full build. A VSIX installed by hand never

@@ -150,8 +150,14 @@ the editor: the page you are looking at is the page your agent reads and drives.
 It is the listing, and it is the update watch — the second half is the reason to keep it
 installed:
 
+**Install AI Browser** sits in the status bar while there is something to do about it. It opens
+a dialog with the three version numbers — this listing, the latest full build on Open VSX, and
+the one installed here — and the download. Once the full build is installed and current the
+button is gone; while it is behind, it reads **Update AI Browser**.
+
 | Command | |
 |---|---|
+| **AI Browser: Install the Full Build…** | the same dialog, from the Command Palette |
 | **AI Browser: Check for Updates** | asks Open VSX for the latest release, right now |
 | **AI Browser: Download the Full Build (VSIX)** | opens the download |
 | **AI Browser: Open the Guide** | opens the documentation |
@@ -163,9 +169,10 @@ the offer opens the `.vsix` for that exact version. Everything that is not an av
 "you are up to date", "could not reach the registry" — goes to the status bar rather than a
 notification.
 
-It says hello once, the first time it starts, and never again. Before the full build is
-installed the two listing commands are in the Command Palette; afterwards they hide themselves
-and only **Check for Updates** remains.
+It says hello once per released version of this listing, ten seconds after startup — a
+notification would otherwise pause a browser tab restored with the window. Before the full build
+is installed the listing commands are in the Command Palette; afterwards they hide themselves and
+only **Check for Updates** remains.
 
 ## Links
 

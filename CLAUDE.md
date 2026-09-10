@@ -1615,9 +1615,9 @@ is the entire implementation.
 from that. The two are unrelated extensions to VS Code: nothing updates across them, and the
 normal end state is *both installed* — someone finds the listing, installs the real build, and
 this one stays behind. So the stub checks `getExtension('DenysDavydov.tab-browser-ultimate')`
-and stops advertising when the real build is there: no welcome, and a
-`aiBrowser.fullBuildInstalled` context key that hides the two listing commands from the palette
-through `contributes.menus.commandPalette`. The key is republished on
+and stops advertising when the real build is there: no welcome, no footer button once the
+installed version is current, and a `aiBrowser.fullBuildInstalled` context key that hides the
+three listing commands from the palette through `contributes.menus.commandPalette`. The key is republished on
 `extensions.onDidChange`, so installing the real build takes effect without a reload.
 
 **Once the real build is installed the stub is the update notifier, and that is now its point.**
@@ -1631,12 +1631,42 @@ the registry cannot be reached, and being offline is treated as nothing to say r
 error. `AI Browser: Check for Updates` is the manual route and is deliberately the one palette
 entry with no `when`, since it is the half that stays useful.
 
-Four decisions in there are worth keeping:
+**Before that, though, it has to survive its own first impression**, and this is the one complaint
+the listing reliably gets: someone installs it, nothing happens, and they conclude the extension
+is broken. A toast at startup is not an answer — it can be missed once and is then gone forever.
+So the state is carried by a **status bar item**, `$(cloud-download) Install AI Browser`, which is
+also the one attention-getting surface that cannot pause a browser tab. It has exactly three
+states, and the third is the point:
 
-- **The automatic check is delayed 10s after activation**, because a notification pauses the
-  built-in browser
+| | Item |
+|---|---|
+| real build absent | `$(cloud-download) Install AI Browser`, warning background — nothing the listing advertises works yet |
+| installed, a newer release known | `$(cloud-download) Update AI Browser <version>`, no background |
+| installed and current, *or* the registry unreachable | hidden |
+
+The unreachable case is folded into "current" deliberately: with the real build installed and no
+*known* newer release there is nothing to act on, and a button offering to install what is already
+installed is precisely the noise this build must not add.
+
+Its dialog is **modal**, and that is the one modal here. It is user-invoked, and the answer — three
+version numbers side by side: this listing, the latest full build on Open VSX, the one installed
+locally — is the whole reason the button was pressed. Versions are refreshed first under
+`ProgressLocation.Window`; `Notification` would pause the browser tab behind it.
+
+Decisions worth keeping:
+
+- **Everything that can put a notification on screen is delayed 10s after activation** — the
+  update check and the welcome notice both — because a notification pauses the built-in browser
   ([why](#a-notification-pauses-the-built-in-browser)) and a window that restores a browser tab
-  is exactly the window that must not be greeted with a toast as it opens.
+  is exactly the window that must not be greeted with a toast as it opens. The status bar item is
+  exempt and appears immediately: it is part of the workbench layout and overlays nothing.
+- **The welcome notice is once per released listing version** (`aiBrowser.promo.noticeVersion`),
+  not once per machine. It was a bare "shown" flag, whose failure mode is the wrong one: install,
+  dismiss, and no later release of the listing can ever introduce itself again — including on a
+  machine where the flag was set by a version that predates every feature being announced.
+- **The last answer from the registry is cached** (`aiBrowser.promo.latestRelease`). The six-hour
+  throttle exists to stop repeated *requests*, but the button and its dialog need a version to
+  name in every window, including the nine that open inside those six hours.
 - **A toast is only for an available update.** "You are up to date" and "could not reach the
   registry" go to `setStatusBarMessage`, the same rule the real build follows through
   [src/notify.ts](src/notify.ts).
@@ -1649,10 +1679,13 @@ Four decisions in there are worth keeping:
   window that stays open for days checking exactly once ever, while the readme promised "every
   six hours". An hourly tick drives it now; the tick only has to be finer than the throttle,
   which is what actually paces the requests.
-- **The watch is armed from two places**: activation, and `extensions.onDidChange`. The flow this
-  build exists for installs the real extension *after* activation — find the listing, download,
-  install — so arming only at activation left the watch inert until a reload, in exactly the
-  session where it had just been asked for. It disarms again if the real build is removed.
+- **The watch runs whether or not the real build is installed**, because its answer is also what
+  the footer button and its dialog are built out of; what changes is what is done with it — with
+  no real build there is nothing to *update*, so the check refreshes the button and says nothing.
+  It used to be armed only when the real build was present, and from two places (activation and
+  `extensions.onDidChange`) because the flow this build exists for installs the real extension
+  *after* activation. Arming unconditionally makes that moot; `onDidChange` is still subscribed,
+  now to refresh the button and the context key the moment the install lands.
 - **Versions are compared field by field as numbers.** `'0.5.10' > '0.5.9'` is false as strings,
   which would have hidden every release between .9 and .20; anything non-numeric (`-rc.1`)
   answers "not newer", because failing to offer an update is recoverable and offering a
@@ -1660,10 +1693,12 @@ Four decisions in there are worth keeping:
 
 It has no test project of its own — plain JavaScript, no build step. It was verified the way
 [the status bar](#the-status-bar-one-permanent-button-one-that-hides-itself) was: by loading
-`extension.js` against a stubbed `vscode` and a stubbed `fetch`, and printing what each state
-does — welcome with no real build, an offer when the registry is ahead, the status bar line when
-it is not, silence when offline, silence for a version already offered, and silence while
-throttled. Worth redoing that way after touching this file.
+`extension.js` against a stubbed `vscode`, a stubbed `fetch` and fake timers, and printing what
+each state does — for every one of them, both what the footer button reads and what reaches the
+screen: welcome with no real build, the modal and its three versions, the same modal with the
+registry unreachable, silence for a listing version already introduced, hidden button with the
+real build current, `Update AI Browser` with it behind, and hidden again when the registry cannot
+be reached. Worth redoing that way after touching this file.
 
 **The earlier design used the same id for both**, so that the VSIX would install over the
 listing with nothing to uninstall. It was dropped, and it should stay dropped: VS Code keeps
