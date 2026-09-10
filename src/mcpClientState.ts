@@ -25,9 +25,11 @@ export const serverName = 'ai-browser';
  * A config holding several entries is judged by its best one — one working
  * entry is enough for the client to work, whatever else is in the file.
  */
-export type ClientState = 'thisServer' | 'staleToken' | 'otherServer' | 'disabled' | 'none';
+export type ClientState =
+	'thisServer' | 'wrongPort' | 'staleToken' | 'otherServer' | 'disabled' | 'none';
 
-const severity: readonly ClientState[] = ['thisServer', 'staleToken', 'otherServer', 'disabled', 'none'];
+const severity: readonly ClientState[] =
+	['thisServer', 'wrongPort', 'staleToken', 'otherServer', 'disabled', 'none'];
 
 export function bestState(states: readonly ClientState[]): ClientState {
 	for (const candidate of severity) {
@@ -55,6 +57,14 @@ export function isSameServer(configured: string, url: string): boolean {
  * file was copied from another project, so the URL is right and the token
  * belongs to a different workspace. The symptom is a bare 401, which reads like
  * a broken server rather than a stale file.
+ *
+ * `wrongPort` is its mirror image and used to be misreported as `otherServer`,
+ * which sent people entirely the wrong way. The token is *ours*, so the entry
+ * was written by this window; only the port has moved, because ports change
+ * when windows open in a different order. "There is a different server there"
+ * suggests deleting the entry; the truth is that it is our own entry and the
+ * startup repair will correct it. Telling the two apart needs the token, which
+ * is why it is checked before the URL is judged.
  */
 export function claudeClientState(text: string, url: string, token: string): ClientState {
 	let parsed: any;
@@ -74,7 +84,7 @@ export function claudeClientState(text: string, url: string, token: string): Cli
 
 	const configured = typeof entry.url === 'string' ? entry.url : '';
 	if (!isSameServer(configured, url)) {
-		return 'otherServer';
+		return claudeEntryCarriesToken(entry, token) ? 'wrongPort' : 'otherServer';
 	}
 
 	const authorization = entry.headers?.Authorization ?? entry.headers?.authorization;
@@ -102,6 +112,7 @@ export function codexClientState(
 	files: readonly (readonly CodexEntry[])[],
 	url: string,
 	urlWithToken: string,
+	token: string,
 ): ClientState {
 	const states: ClientState[] = [];
 	const seen = new Set<string>();
@@ -124,7 +135,7 @@ export function codexClientState(
 
 			const configured = entry.values.get('url') ?? '';
 			if (!isSameServer(configured, url)) {
-				states.push('otherServer');
+				states.push(codexEntryCarriesToken(entry, entries, token) ? 'wrongPort' : 'otherServer');
 				continue;
 			}
 
@@ -190,4 +201,128 @@ export function codexOurEntries(
 	}
 
 	return names;
+}
+
+/* ------------------------------------------------------ recognising our own */
+
+/**
+ * Whether an entry carries **our** token, in either place it can live.
+ *
+ * This is what separates "our entry, stale port" from "somebody else's
+ * server", and it must stay equivalent to `claudeEntryIsOurs` in
+ * `mcpRepair.ts`, which decides what may be rewritten — see the note on
+ * `codexEntryCarriesToken` for why the two are duplicated rather than shared. The token is the only part of an entry that is stable and provably
+ * ours: names have changed between releases and the URL is exactly the part
+ * that goes stale.
+ */
+export function claudeEntryCarriesToken(entry: any, token: string): boolean {
+	if (typeof entry !== 'object' || entry === null) {
+		return false;
+	}
+	const authorization = entry.headers?.Authorization ?? entry.headers?.authorization;
+	if (typeof authorization === 'string' && authorization.includes(token)) {
+		return true;
+	}
+	return typeof entry.url === 'string' && entry.url.endsWith(`/${token}`);
+}
+
+/**
+ * The same question for a Codex table.
+ *
+ * **This must stay exactly equivalent to `codexOurTables` in `mcpRepair.ts`.**
+ * The two answer the same question for different callers — one decides what
+ * the check *reports*, the other what the repair *rewrites* — and if they
+ * disagree, the same entry gets silently rewritten by one and reported as a
+ * stranger to delete by the other. They cannot share code: both are leaf
+ * modules that `npm test` loads directly, so neither may take a relative value
+ * import of the other. `mcpRepair.test.ts` asserts that they agree instead.
+ *
+ * The rule: any value of the table, or of any table sharing its root name,
+ * contains the token. Scanning every value rather than just `url` and
+ * `http_headers` is what catches a `[mcp_servers.<name>.http_headers]`
+ * sub-table, where the key is the header name; it is safe because the token is
+ * 64 hex characters and does not turn up in a config by coincidence.
+ */
+export function codexEntryCarriesToken(
+	entry: CodexEntry,
+	siblings: readonly CodexEntry[],
+	token: string,
+): boolean {
+	const root = rootTable(entry.name);
+	return siblings.some(other =>
+		rootTable(other.name) === root
+		&& [...other.values.values()].some(value => value.includes(token)));
+}
+
+/** `ai-browser.http_headers` -> `ai-browser`; anything else unchanged. */
+function rootTable(name: string): string {
+	const dot = name.indexOf('.');
+	return dot === -1 ? name : name.slice(0, dot);
+}
+
+/**
+ * Codex entries that look like ours by *name* but are not ours by token.
+ *
+ * These are the leftovers: entries for projects that have moved or been
+ * deleted, and entries belonging to other windows. They are reported and never
+ * touched — an entry that looks stale from here may be another window's live
+ * one, and removing it would break a working assistant to tidy ours.
+ */
+export function codexStrangers(
+	files: readonly (readonly CodexEntry[])[],
+	token: string,
+): string[] {
+	const names: string[] = [];
+	const seen = new Set<string>();
+
+	for (const entries of files) {
+		for (const entry of entries) {
+			if (seen.has(entry.name) || entry.name.includes('.')) {
+				continue;
+			}
+			seen.add(entry.name);
+			const looksLikeOurs = entry.name === serverName || entry.name.startsWith(`${serverName}-`);
+			if (looksLikeOurs && !codexEntryCarriesToken(entry, entries, token)) {
+				names.push(entry.name);
+			}
+		}
+	}
+
+	return names;
+}
+
+/**
+ * Servers configured for this project in Claude Code's **local scope**.
+ *
+ * Local scope lives in `~/.claude.json` under `projects[<path>].mcpServers`,
+ * and it *overrides* the project's `.mcp.json`. That makes it the one place a
+ * stale entry cannot be fixed by pressing Connect: the write lands in
+ * `.mcp.json`, the shadow keeps winning, and the assistant stays pinned to
+ * whatever port it was given months ago. The symptom is the worst kind —
+ * everything looks correctly configured and nothing works.
+ *
+ * Reported, never repaired. `~/.claude.json` is Claude Code's own file and
+ * holds its credentials and history; a lost update from us rewriting it would
+ * cost far more than the stale entry does. `claude mcp remove <name> --scope
+ * local` is its owner's tool for the job.
+ */
+export function claudeLocalScopeShadows(
+	text: string,
+	folderPath: string,
+	token: string,
+): string[] {
+	let parsed: any;
+	try {
+		parsed = JSON.parse(text);
+	} catch {
+		return [];
+	}
+
+	const servers = parsed?.projects?.[folderPath]?.mcpServers;
+	if (typeof servers !== 'object' || servers === null) {
+		return [];
+	}
+
+	return Object.keys(servers).filter(name =>
+		name === serverName || claudeEntryCarriesToken(servers[name], token));
 }

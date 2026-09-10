@@ -180,6 +180,20 @@ export class AIBrowserView extends Disposable {
 	}
 }
 
+/**
+ * Escapes a value for use inside a double-quoted HTML attribute.
+ *
+ * **`&` first, and that order is the whole point.** The browser decodes entity
+ * references when it reads an attribute, so a value that already contains the
+ * text `&quot;` comes back out as a bare `"`. That value is the settings JSON,
+ * so a URL like `https://example.com/?q=&quot;` put a raw quote inside the
+ * JSON string, `JSON.parse` threw in `getSettings()`, and the panel stayed
+ * blank with `Could not load settings` — the failure mode listed under
+ * "Things that break silently". Escaping the ampersand first makes the
+ * round-trip exact; doing it second would re-escape our own `&quot;`.
+ */
 function escapeAttribute(value: string | vscode.Uri): string {
-	return value.toString().replace(/"/g, '&quot;');
+	return value.toString()
+		.replace(/&/g, '&amp;')
+		.replace(/"/g, '&quot;');
 }

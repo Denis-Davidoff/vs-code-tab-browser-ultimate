@@ -5,8 +5,10 @@
 
 import * as vscode from 'vscode';
 import { BrowserController } from './browserController';
+import { portOffset, portOrder } from './mcpPort';
 import { McpServer } from './mcpServer';
-import { registerWithVsCode, workspaceFolder } from './mcpSetup';
+import { registerWithVsCode, repairConfigs, workspaceFolder } from './mcpSetup';
+import { confirm } from './notify';
 import { generateUuid } from './uuid';
 
 export type McpState =
@@ -51,10 +53,16 @@ export class McpLifecycle implements vscode.Disposable {
 	/**
 	 * The token is per *workspace*, not per user.
 	 *
-	 * Ports are handed out in the order windows open, so project A's config can
-	 * end up addressing the window that has project B open. With a
+	 * A config can end up addressing the window that has another project open —
+	 * ports move when windows are opened in a different order. With a
 	 * workspace-scoped token that mistake is an honest 401 instead of an agent
 	 * quietly editing the wrong project.
+	 *
+	 * It is also the **identity** the startup repair matches on: the token is
+	 * the only part of an entry that is stable and provably ours, which is what
+	 * lets `repairConfigs` correct a stale port without touching anybody else's
+	 * server. Never regenerate it for an existing workspace — every config
+	 * naming this window would become unrecognisable at once.
 	 */
 	private _workspaceToken(): string {
 		const folder = workspaceFolder();
@@ -92,7 +100,7 @@ export class McpLifecycle implements vscode.Disposable {
 		const server = new McpServer(this.browser, this._workspaceToken(), folder?.name, this.version);
 
 		try {
-			await server.start(configuration.get<number>('mcp.port', 43110));
+			await server.start(this._portOrder(configuration, folder));
 		} catch (err) {
 			server.dispose();
 			this._setState({ kind: 'failed', error: err instanceof Error ? err.message : String(err) });
@@ -106,6 +114,38 @@ export class McpLifecycle implements vscode.Disposable {
 		}
 
 		this._setState({ kind: 'running', server });
+
+		// Repair runs after the port is known and must never be able to hold up
+		// activation, so it is not awaited and cannot throw into this path.
+		void repairConfigs(server).then(report => {
+			if (report.files.length) {
+				confirm(vscode.l10n.t(
+					"Updated the MCP port in {0}.", report.files.join(', ')));
+			}
+		}, () => { });
+	}
+
+	/**
+	 * Which ports to try, in order.
+	 *
+	 * The first one is derived from the folder URI so that a window lands on the
+	 * same port after every restart — the whole reason configs used to go stale.
+	 * An **explicitly configured** `aiBrowser.mcp.port` is exempt: someone who
+	 * names a port means that port, and hashing them somewhere else would be a
+	 * surprise, so their walk starts where they said.
+	 */
+	private _portOrder(
+		configuration: vscode.WorkspaceConfiguration,
+		folder: vscode.WorkspaceFolder | undefined,
+	): number[] {
+		const base = configuration.get<number>('mcp.port', 43110);
+		const setting = configuration.inspect<number>('mcp.port');
+		const explicit = setting?.globalValue !== undefined
+			|| setting?.workspaceValue !== undefined
+			|| setting?.workspaceFolderValue !== undefined;
+
+		const offset = explicit || !folder ? 0 : portOffset(folder.uri.toString());
+		return portOrder(base, offset);
 	}
 
 	/**

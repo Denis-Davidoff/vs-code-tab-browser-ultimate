@@ -23,7 +23,6 @@ import {
  */
 
 const maxRequestBytes = 1024 * 1024;
-const portsToTry = 20;
 
 /** How long after its last call an assistant still counts as active. Read on demand. */
 const clientIdleMs = 10 * 60 * 1000;
@@ -127,15 +126,19 @@ export class McpServer implements vscode.Disposable {
 	}
 
 	/**
-	 * Binds to the first free port at or after `preferredPort`.
+	 * Binds to the first free port in `ports`, in the order given.
 	 *
-	 * Several windows each run their own server, so the second one has to move
-	 * along: the first takes 43110, the next 43111. Only `EADDRINUSE` is treated
-	 * as "try the next one" — any other bind error is real and is reported.
+	 * Several windows each run their own server, so a window whose preferred
+	 * port is taken has to move along. Only `EADDRINUSE` is treated as "try the
+	 * next one" — any other bind error is real and is reported.
+	 *
+	 * The order is decided by {@link portOrder} rather than here, because the
+	 * *first* entry is the interesting one: deriving it from the folder URI is
+	 * what makes a window land on the same port after a restart, so a config
+	 * written last week still addresses this window. See `mcpPort.ts`.
 	 */
-	public async start(preferredPort: number): Promise<void> {
-		for (let offset = 0; offset < portsToTry; offset++) {
-			const port = preferredPort + offset;
+	public async start(ports: readonly number[]): Promise<void> {
+		for (const port of ports) {
 			try {
 				this._server = await this._listen(port);
 				this._port = port;
@@ -146,8 +149,7 @@ export class McpServer implements vscode.Disposable {
 				}
 			}
 		}
-		throw new Error(
-			`No free port in ${preferredPort}–${preferredPort + portsToTry - 1}.`);
+		throw new Error(`No free port among ${ports.length} tried from ${ports[0]}.`);
 	}
 
 	private _listen(port: number): Promise<http.Server> {

@@ -31,18 +31,20 @@ export class CDPClient implements vscode.Disposable {
 	private _nextId = 1;
 	private readonly _pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
 	private readonly _listeners = new Set<(event: CDPEvent) => void>();
+	/**
+	 * How to abandon each outstanding {@link once} waiter.
+	 *
+	 * Kept apart from `_listeners`, which only knows how to *deliver* an event.
+	 * Dropping a listener does not settle the promise built around it, so
+	 * without this a waiter survives the client that owns it.
+	 */
+	private readonly _waiters = new Set<(error: Error) => void>();
 	private readonly _disposables: vscode.Disposable[] = [];
 	private _closed = false;
 
 	constructor(private readonly session: vscode.BrowserCDPSession) {
 		this._disposables.push(session.onDidReceiveMessage(raw => this._receive(raw)));
-		this._disposables.push(session.onDidClose(() => {
-			this._closed = true;
-			for (const { reject } of this._pending.values()) {
-				reject(new Error('CDP session closed'));
-			}
-			this._pending.clear();
-		}));
+		this._disposables.push(session.onDidClose(() => this._failPending('CDP session closed')));
 	}
 
 	private _receive(raw: unknown): void {
@@ -100,20 +102,37 @@ export class CDPClient implements vscode.Disposable {
 
 	/** Resolves with the first event matching `method`, or rejects on cancellation. */
 	public once(method: string, token: vscode.CancellationToken): Promise<any> {
+		if (this._closed) {
+			return Promise.reject(new Error('CDP session closed'));
+		}
+
 		return new Promise<any>((resolve, reject) => {
+			const done = () => {
+				this._listeners.delete(listener);
+				this._waiters.delete(fail);
+				sub.dispose();
+			};
 			const listener = (event: CDPEvent) => {
 				if (event.method === method) {
-					this._listeners.delete(listener);
-					sub.dispose();
+					done();
 					resolve(event.params);
 				}
 			};
+			// Registered so that closing or disposing the client abandons this
+			// wait. Without it the promise outlives its client: `_listeners` is
+			// cleared, the event can never arrive, and the caller waits for
+			// ever — or, where there is a timeout, waits out the whole of it
+			// for an answer that cannot come.
+			const fail = (error: Error) => {
+				done();
+				reject(error);
+			};
 			const sub = token.onCancellationRequested(() => {
-				this._listeners.delete(listener);
-				sub.dispose();
+				done();
 				reject(new vscode.CancellationError());
 			});
 			this._listeners.add(listener);
+			this._waiters.add(fail);
 		});
 	}
 
@@ -138,8 +157,40 @@ export class CDPClient implements vscode.Disposable {
 		return sessionId;
 	}
 
-	public dispose(): void {
+	/**
+	 * Settles everything still in flight, so nothing can wait forever.
+	 *
+	 * Shared by session close and {@link dispose}, and the second caller is the
+	 * one that was missing: disposing tore down the `onDidClose` subscription
+	 * *before* it could fire, so a command still awaiting a reply was left
+	 * pending for good. A long `browser_wait_for` interrupted by another tool
+	 * call switching tabs — which disposes this client — hung until the
+	 * assistant gave up, with no error anywhere.
+	 *
+	 * It covers both kinds of outstanding work: replies to commands
+	 * (`_pending`) and waits for an event (`_waiters`). Clearing `_listeners`
+	 * alone silences a waiter without ever settling it, which is the same bug
+	 * wearing a different hat.
+	 */
+	private _failPending(reason: string): void {
 		this._closed = true;
+
+		// Copied out first: rejecting runs continuations that may call back in.
+		const pending = [...this._pending.values()];
+		const waiters = [...this._waiters];
+		this._pending.clear();
+		this._waiters.clear();
+
+		for (const { reject } of pending) {
+			reject(new Error(reason));
+		}
+		for (const fail of waiters) {
+			fail(new Error(reason));
+		}
+	}
+
+	public dispose(): void {
+		this._failPending('CDP client disposed');
 		for (const d of this._disposables) {
 			d.dispose();
 		}

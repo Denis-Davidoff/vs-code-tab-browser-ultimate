@@ -20,6 +20,16 @@ export interface CodexEntry {
 	readonly values: Map<string, string>;
 	/** Line index of each key, for surgical edits that keep the rest of the line. */
 	readonly valueLines: Map<string, number>;
+	/**
+	 * Line index just past the last line of each key's *value*.
+	 *
+	 * Almost always `valueLines + 1`, and the exception is the one that matters:
+	 * a value can span lines (`url = """…"""`, `enabled_tools = [`), and an
+	 * edit that replaces only the key's first line leaves the continuation and
+	 * the closing delimiter behind as garbage. Anything rewriting a value must
+	 * replace this whole range.
+	 */
+	readonly valueEndLines: Map<string, number>;
 	/** Line index of the `[mcp_servers.<name>]` header. */
 	readonly firstLine: number;
 	/**
@@ -138,8 +148,17 @@ export function scanLine(line: string, initialQuote?: string): ScanResult {
 const tableHeader = /^\s*\[\s*mcp_servers\s*\.\s*([^\]\s]+)\s*\]\s*$/;
 const keyValue = /^\s*([A-Za-z0-9_.-]+)\s*=\s*(.*)$/;
 
+/**
+ * Strips the quoting from a value.
+ *
+ * It must **not** try to remove a comment. `scanLine` has already truncated
+ * the line at a real comment, and it is the only thing that can tell a real
+ * one from a `#` inside a string. Stripping again here read
+ * `url = "http://h/mcp#frag"` as `"http://h/mcp` — an unbalanced quote, so
+ * even the unquoting below then failed and the caller got the mangled text.
+ */
 function unquote(raw: string): string {
-	const value = raw.trim().replace(/\s*#.*$/, '').trim();
+	const value = raw.trim();
 	const match = /^(?:"""([\s\S]*)"""|'''([\s\S]*)'''|"((?:[^"\\]|\\.)*)"|'([^']*)')$/.exec(value);
 	if (!match) {
 		return value;
@@ -169,9 +188,13 @@ export function codexEntries(text: string): CodexEntry[] {
 		name: string;
 		values: Map<string, string>;
 		valueLines: Map<string, number>;
+		valueEndLines: Map<string, number>;
 		firstLine: number;
 		endLine: number;
 	} | undefined;
+
+	/** The key whose value is still being read, for continuation lines. */
+	let openKey: string | undefined;
 
 	let quote: string | undefined;
 	let depth = 0;
@@ -194,11 +217,15 @@ export function codexEntries(text: string): CodexEntry[] {
 			// Part of a value that started earlier; never structural.
 			if (current) {
 				current.endLine = index + 1;
+				if (openKey !== undefined) {
+					current.valueEndLines.set(openKey, index + 1);
+				}
 			}
 			quote = nextQuote;
 			depth = nextDepth;
 			continue;
 		}
+		openKey = undefined;
 
 		// `text`, not `code`: `code` has string contents stripped, which loses both
 		// quoted table names and every value. The regexes are anchored, so a
@@ -212,6 +239,7 @@ export function codexEntries(text: string): CodexEntry[] {
 				name: tableName(code),
 				values: new Map(),
 				valueLines: new Map(),
+				valueEndLines: new Map(),
 				firstLine: index,
 				endLine: index + 1,
 			};
@@ -223,7 +251,9 @@ export function codexEntries(text: string): CodexEntry[] {
 			if (kv) {
 				current.values.set(kv[1], unquote(kv[2]));
 				current.valueLines.set(kv[1], index);
+				current.valueEndLines.set(kv[1], index + 1);
 				current.endLine = index + 1;
+				openKey = kv[1];
 			}
 		}
 

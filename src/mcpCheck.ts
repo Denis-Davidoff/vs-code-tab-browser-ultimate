@@ -7,11 +7,12 @@ import * as http from 'http';
 import * as vscode from 'vscode';
 import { codexEntries } from './codexToml';
 import {
-	claudeClientState, codexClientState, codexOurEntries, serverName, type ClientState,
+	claudeClientState, claudeLocalScopeShadows, codexClientState, codexOurEntries,
+	codexStrangers, serverName, type ClientState,
 } from './mcpClientState';
 import {
-	claudeConfigUri, codexGlobalConfigUri, codexProjectConfigUri, connectClaudeCode,
-	connectCodex, workspaceFolder,
+	claudeConfigUri, claudeLocalConfigUri, codexGlobalConfigUri, codexProjectConfigUri,
+	connectClaudeCode, connectCodex, workspaceFolder,
 } from './mcpSetup';
 import type { McpServer } from './mcpServer';
 
@@ -84,6 +85,7 @@ async function readText(uri: vscode.Uri): Promise<string> {
 function describe(state: ClientState): string {
 	switch (state) {
 		case 'thisServer': return vscode.l10n.t("connected to this window");
+		case 'wrongPort': return vscode.l10n.t("our entry, but on a stale port — reconnect to fix it");
 		case 'staleToken': return vscode.l10n.t("right address, wrong token — it will get a 401");
 		case 'otherServer': return vscode.l10n.t("pointed at a different port, probably another window");
 		case 'disabled': return vscode.l10n.t("configured but disabled");
@@ -102,6 +104,7 @@ export async function checkConnection(server: McpServer): Promise<void> {
 
 	const folder = workspaceFolder();
 	const claudeText = folder ? await readText(claudeConfigUri(folder)) : '';
+	const claudeLocal = await readText(claudeLocalConfigUri());
 	const codexProject = folder ? await readText(codexProjectConfigUri(folder)) : '';
 	const codexGlobal = await readText(codexGlobalConfigUri());
 
@@ -109,8 +112,12 @@ export async function checkConnection(server: McpServer): Promise<void> {
 	const codexFiles = [codexEntries(codexProject), codexEntries(codexGlobal)];
 
 	const claude = claudeClientState(claudeText, url, server.token);
-	const codex = codexClientState(codexFiles, url, server.urlWithToken);
+	const codex = codexClientState(codexFiles, url, server.urlWithToken, server.token);
 	const duplicates = codexOurEntries(codexFiles, url);
+	const strangers = codexStrangers(codexFiles, server.token);
+	const shadows = folder
+		? claudeLocalScopeShadows(claudeLocal, folder.uri.fsPath, server.token)
+		: [];
 
 	// Who has actually called, as opposed to who is merely configured. The
 	// server attributes calls by the `Mcp-Session-Id` it mints at `initialize`,
@@ -133,6 +140,23 @@ export async function checkConnection(server: McpServer): Promise<void> {
 		vscode.l10n.t("Codex: {0}", describe(codex)),
 		vscode.l10n.t("VS Code chat: registered automatically, no config file"),
 	];
+
+	if (shadows.length) {
+		// The one stale entry that pressing Connect cannot fix, because it wins
+		// over the file Connect writes. Named explicitly, with the command that
+		// removes it: this is Claude Code's own file and not ours to edit.
+		lines.push('', vscode.l10n.t(
+			"Claude Code also has {0} in its local scope (~/.claude.json), which OVERRIDES .mcp.json — so reconnecting cannot fix it. Remove it with: claude mcp remove {1} --scope local",
+			shadows.map(name => `\`${name}\``).join(', '), shadows[0]));
+	}
+
+	if (strangers.length) {
+		// Left alone on purpose: one of these may be another window's live
+		// entry, and removing it would break a working assistant to tidy ours.
+		lines.push('', vscode.l10n.t(
+			"Codex has {0} entries that look like ours but belong to other projects or windows ({1}). They are left alone; remove any you no longer need with `codex mcp remove <name>`.",
+			String(strangers.length), strangers.join(', ')));
+	}
 
 	if (duplicates.length > 1) {
 		// Reported, not repaired: the global file is not ours to edit, and

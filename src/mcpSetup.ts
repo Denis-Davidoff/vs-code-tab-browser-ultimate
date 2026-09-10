@@ -6,8 +6,13 @@
 import * as crypto from 'crypto';
 import * as vscode from 'vscode';
 import { codexEntries } from './codexToml';
+import { lockPath, withLock } from './fileLock';
 import { serverName } from './mcpClientState';
+import {
+	codexTableLines, repairClaudeJson, repairCodexToml, spliceCodexTables, type Endpoint,
+} from './mcpRepair';
 import type { McpServer } from './mcpServer';
+import { confirm } from './notify';
 
 /**
  * Three clients, three places to configure, and only one of them has an API.
@@ -89,6 +94,18 @@ export function claudeConfigUri(folder: vscode.WorkspaceFolder): vscode.Uri {
 	return vscode.Uri.joinPath(folder.uri, '.mcp.json');
 }
 
+/**
+ * Claude Code's own `~/.claude.json`.
+ *
+ * Read only, and only to *report* the local-scope entries that shadow
+ * `.mcp.json` — see `claudeLocalScopeShadows`. This file holds Claude Code's
+ * credentials and history; we do not write it.
+ */
+export function claudeLocalConfigUri(): vscode.Uri {
+	const home = process.env.HOME ?? process.env.USERPROFILE ?? '';
+	return vscode.Uri.file(`${home}/.claude.json`);
+}
+
 export function codexProjectConfigUri(folder: vscode.WorkspaceFolder): vscode.Uri {
 	return vscode.Uri.joinPath(folder.uri, '.codex', 'config.toml');
 }
@@ -155,8 +172,22 @@ export async function writeClaudeConfig(
 	return 'written';
 }
 
+/**
+ * The command that adds us to Claude Code, for when writing the file failed.
+ *
+ * **`--scope project`, never `--scope local`.** Local scope lives in
+ * `~/.claude.json` under `projects[cwd].mcpServers`, and it *overrides*
+ * `.mcp.json` — so a local-scope copy shadows the very file this extension
+ * maintains. Once one exists, pressing Connect rewrites `.mcp.json` and nothing
+ * reads it: the assistant keeps using whatever port the shadow was written
+ * with, forever. That is exactly how a stale port turned into "Claude cannot
+ * see the browser and reconnecting does not help".
+ *
+ * `--scope project` writes the same `.mcp.json` we write, so the two can never
+ * disagree.
+ */
 export function claudeCliCommand(server: McpServer): string {
-	return `claude mcp add --transport http --scope local ${serverName} ${server.url} `
+	return `claude mcp add --transport http --scope project ${serverName} ${server.url} `
 		+ `--header "Authorization: Bearer ${server.token}"`;
 }
 
@@ -172,12 +203,18 @@ export function claudeCliCommand(server: McpServer): string {
  * sub-table on purpose: a sub-table is a second table, and replacing ours by
  * line range would orphan it.
  */
-function codexTable(name: string, server: McpServer): string[] {
-	return [
-		`[mcp_servers.${name}]`,
-		`url = "${server.url}"`,
-		`http_headers = { Authorization = "Bearer ${server.token}" }`,
-	];
+/**
+ * The endpoint description the writers and the repair share.
+ *
+ * `server.url` is read through a getter backed by the live port, so it becomes
+ * `undefined` the moment the server is disposed — a setting toggled, a window
+ * closing. Anything that reads it *after* an await can therefore find nothing
+ * there and write `url = ""` into the user's config. Callers on an unattended
+ * path capture it once, up front, and pass it in; the `?? ''` here is the
+ * last resort for the click paths, which hold a live server by construction.
+ */
+function endpoint(server: McpServer, name: string, url = server.url ?? ''): Endpoint {
+	return { url, token: server.token, name };
 }
 
 /**
@@ -205,28 +242,15 @@ async function writeCodexConfig(
 	const newline = /\r\n/.test(existing) ? '\r\n' : '\n';
 	const lines = existing === '' ? [] : existing.split(/\r?\n/);
 
-	// Ours, plus any sub-table of ours, as line ranges to drop.
+	// Ours, plus any sub-table of ours, as line ranges to drop. The splice
+	// itself lives in `mcpRepair.ts` because the startup repair needs exactly
+	// the same operation, and two copies of it would be two chances to write
+	// TOML that does not parse.
 	const ranges = codexEntries(existing)
 		.filter(entry => entry.name === name || entry.name.startsWith(`${name}.`))
-		.map(entry => [entry.firstLine, entry.endLine] as const)
-		.sort((a, b) => a[0] - b[0]);
+		.map(entry => [entry.firstLine, entry.endLine] as const);
 
-	let next: string[];
-	if (ranges.length) {
-		next = [];
-		let cursor = 0;
-		for (const [from, to] of ranges) {
-			next.push(...lines.slice(cursor, from));
-			cursor = to;
-		}
-		const tail = lines.slice(cursor);
-		next = [...next, ...codexTable(name, server), ...tail];
-	} else {
-		const table = codexTable(name, server);
-		next = lines.length
-			? [...lines, ...(lines.at(-1) === '' ? [] : ['']), ...table]
-			: table;
-	}
+	const next = spliceCodexTables(lines, ranges, codexTableLines(name, endpoint(server, name)));
 
 	let text = next.join(newline);
 	if (!text.endsWith(newline)) {
@@ -244,24 +268,49 @@ async function writeCodexConfig(
  * cannot see the server" symptom.
  *
  * The entry is named per project, so two projects do not overwrite each other.
- * Not locked: unlike a repair on startup, this runs on a button press, and two
- * windows racing for it would need the user to click in both at the same moment.
+ *
+ * **Locked.** This used to be unlocked, on the reasoning that a button press
+ * cannot race itself. That stopped being true when the startup repair started
+ * writing the same file: a machine restoring a session opens every window at
+ * once, each repairing its own entry, and a Connect click can land in the
+ * middle of that. Two interleaved read-modify-writes of one TOML file lose an
+ * entry at best and corrupt every MCP server the user has at worst.
  */
+/**
+ * The lock name for one config file.
+ *
+ * Derived from the URI so that the connect path and the startup repair, which
+ * are different call sites writing the same file, take the *same* lock. Two
+ * lock names for one file is the same as no lock at all.
+ */
+export function configLockName(uri: vscode.Uri): string {
+	return crypto.createHash('sha1').update(uri.toString()).digest('hex').slice(0, 12);
+}
+
+export function codexGlobalLock(): string {
+	return lockPath(configLockName(codexGlobalConfigUri()));
+}
+
 export async function writeCodexGlobalConfig(
 	folder: vscode.WorkspaceFolder | undefined,
 	server: McpServer,
 ): Promise<string> {
 	const name = folder ? codexEntryName(folder) : `${serverName}-window`;
-	await writeCodexConfig(codexGlobalConfigUri(), name, server);
+	const wrote = await withLock(codexGlobalLock(), () =>
+		writeCodexConfig(codexGlobalConfigUri(), name, server));
+	if (!wrote) {
+		throw new Error('another window is writing ~/.codex/config.toml');
+	}
 	return name;
 }
 
-export async function writeCodexProjectConfig(
-	folder: vscode.WorkspaceFolder,
-	server: McpServer,
-): Promise<void> {
-	await writeCodexConfig(codexProjectConfigUri(folder), serverName, server);
-}
+/*
+ * There is deliberately no `writeCodexProjectConfig` any more. Connect Codex
+ * writes the global file, for the reasons in the doc comment above it, and a
+ * writer nothing calls is a writer that drifts out of step with the one that
+ * is used. Project `.codex/config.toml` files written by earlier releases are
+ * still *read* — by the check and by the repair — so they keep working.
+ */
 
 /**
  * The command that adds us to the global Codex config.
@@ -287,141 +336,182 @@ export function codexCliCommand(folder: vscode.WorkspaceFolder | undefined, serv
  * is configured, and still have no tools. That instruction was in here, and it
  * is exactly what made Codex look stupid.
  *
- * The fallback line therefore points at the CLI command, which changes the
- * config for the *next* session, rather than at the file.
- *
  * It also asks for a *check*, not for work. The line used to end "to inspect
  * the page in the integrated browser", and both assistants read that as the
  * task: they went straight to the browser and started reporting on whatever
- * page happened to be open, before the user had asked for anything. All this
- * paste is for is finding out whether the tools arrived.
+ * page happened to be open, before the user had asked for anything.
+ *
+ * **And it tells the model not to configure anything itself.** The second line
+ * used to hand over `claude mcp add …`, and the condition guarding it — "if you
+ * have no such tools" — is *always true* at the moment this prompt is pasted,
+ * because the config was written seconds ago and neither assistant re-reads it.
+ * So the fallback fired every single time: the model dutifully added a second,
+ * local-scope copy of the server, which then shadowed the `.mcp.json` this
+ * extension maintains and pinned the assistant to a port that would later go
+ * stale. Every subsequent Connect fixed a file nothing read. The CLI command is
+ * still offered — but only on the path where writing the file actually failed.
  */
-export function connectionPrompt(entryName: string, cliCommand: string): string {
+export function connectionPrompt(entryName: string): string {
 	return [
 		`Do you have the \`${entryName}\` MCP tools (they start with \`browser_\`)? Just check — do not use them yet.`,
-		`If you have no such tools, they were not loaded at startup: run \`${cliCommand}\` and start a new session.`,
+		`If you have none, they were simply not loaded at startup. The config is already written and correct, so just restart your session — do not add or edit any MCP configuration yourself.`,
 	].join('\n');
 }
 
-async function offer(
-	title: string,
-	detail: string,
-	actions: { label: string; run: () => Thenable<void> }[],
-): Promise<void> {
-	const choice = await vscode.window.showInformationMessage(
-		title, { modal: true, detail }, ...actions.map(a => a.label));
-	await actions.find(a => a.label === choice)?.run();
-}
-
+/**
+ * Connecting is one click and no dialog.
+ *
+ * There used to be a modal with two or three buttons on it. It asked questions
+ * whose answer never varied — of course the file should be written, of course
+ * the prompt should be copied — and it stood between the user and the one
+ * thing they wanted. Now the click does the work and says what it did.
+ *
+ * The confirmation goes through {@link confirm}, not `showInformationMessage`,
+ * and that is not a style choice: a notification paints over the built-in
+ * browser and pauses the live page behind it. Connecting is very often done
+ * with a browser tab open, so a success toast here would freeze exactly the
+ * page the user is about to ask an assistant to work on. Failures still get a
+ * real notification — they need attention, and they are rare.
+ */
 export async function connectClaudeCode(server: McpServer): Promise<void> {
 	const folder = workspaceFolder();
-	const cli = claudeCliCommand(server);
-	const actions: { label: string; run: () => Thenable<void> }[] = [];
-
-	if (folder) {
-		// One button for both halves: writing the entry and copying the prompt
-		// were never useful separately — the prompt tells the assistant to read
-		// exactly the entry the write creates.
-		actions.push({
-			label: vscode.l10n.t("Write .mcp.json & copy connection prompt"),
-			run: async () => {
-				const outcome = await writeClaudeConfig(folder, server);
-
-				// The prompt is copied either way: its second line covers the case
-				// where the entry is missing, which is precisely what an unparsable
-				// file leaves behind.
-				await vscode.env.clipboard.writeText(connectionPrompt(serverName, cli));
-
-				if (outcome === 'unparsable') {
-					vscode.window.showErrorMessage(vscode.l10n.t(
-						"`.mcp.json` could not be parsed, so it was left alone — rewriting it would drop the project's other MCP servers. Fix or delete it and try again. The prompt is on your clipboard and tells Claude Code how to add the server itself."));
-					return;
-				}
-
-				vscode.window.showInformationMessage(vscode.l10n.t(
-					"Wrote `.mcp.json` and copied the prompt. Restart Claude Code, then paste the prompt into its chat."));
-			},
-		});
+	if (!folder) {
+		await vscode.env.clipboard.writeText(claudeCliCommand(server));
+		vscode.window.showWarningMessage(vscode.l10n.t(
+			"No folder is open, so there is no `.mcp.json` to write. The `claude mcp add` command is on your clipboard instead."));
+		return;
 	}
 
-	actions.push({
-		label: vscode.l10n.t("Copy CLI command"),
-		run: () => vscode.env.clipboard.writeText(cli),
-	});
+	const outcome = await writeClaudeConfig(folder, server);
+	if (outcome === 'unparsable') {
+		await vscode.env.clipboard.writeText(claudeCliCommand(server));
+		vscode.window.showErrorMessage(vscode.l10n.t(
+			"`.mcp.json` could not be parsed, so it was left alone — rewriting it would drop the project's other MCP servers. Fix or delete it and try again. The `claude mcp add` command is on your clipboard instead."));
+		return;
+	}
 
-	await offer(
-		vscode.l10n.t("Connect Claude Code to the browser"),
-		[
-			vscode.l10n.t("Server: {0}", server.url ?? '—'),
-			folder
-				? vscode.l10n.t("The button below writes `.mcp.json` and puts a short prompt on your clipboard. Paste that prompt into the Claude Code chat — it tells the assistant to use the server from the file.")
-				: vscode.l10n.t("No folder is open, so only the CLI command is available."),
-			vscode.l10n.t("Claude Code reads MCP servers when it starts and does not re-read them — restart it before pasting the prompt."),
-		].filter(Boolean).join('\n\n'),
-		actions);
+	await vscode.env.clipboard.writeText(connectionPrompt(serverName));
+	confirm(vscode.l10n.t(
+		"Wrote .mcp.json, prompt copied — restart Claude Code, then paste it."));
 }
 
+/**
+ * Connects Codex by writing the **global** `~/.codex/config.toml`.
+ *
+ * The project file used to lead, on the reasoning that a server belongs with
+ * the project it serves. Dropping the dialog forced the question, and the
+ * global file wins it: a project `.codex/config.toml` is only loaded for
+ * projects Codex *trusts*, and the desktop surface has been reported to ignore
+ * it outright (openai/codex#13025). That is the usual reason "Codex cannot see
+ * the server", and a one-click action must not land on the option that
+ * sometimes silently does nothing.
+ *
+ * Writing both was considered and is wrong: the two entries have different
+ * names — the project file uses the bare `ai-browser`, the global one a
+ * per-project name — so Codex would load both and list every tool twice.
+ */
 export async function connectCodex(server: McpServer): Promise<void> {
 	const folder = workspaceFolder();
-	const cli = codexCliCommand(folder, server);
-	const actions: { label: string; run: () => Thenable<void> }[] = [];
+	try {
+		const name = await writeCodexGlobalConfig(folder, server);
+		await vscode.env.clipboard.writeText(connectionPrompt(name));
+		confirm(vscode.l10n.t(
+			"Wrote ~/.codex/config.toml, prompt copied — start a NEW Codex conversation, then paste it."));
+	} catch (err) {
+		await vscode.env.clipboard.writeText(codexCliCommand(folder, server));
+		vscode.window.showErrorMessage(vscode.l10n.t(
+			"Could not write ~/.codex/config.toml ({0}). The `codex mcp add` command is on your clipboard instead.",
+			err instanceof Error ? err.message : String(err)));
+	}
+}
 
-	// The project file leads, matching Claude Code: one button that writes the
-	// entry and copies the prompt. The global config is the fallback below —
-	// note that it is the one Codex always reads, whereas a *project* config is
-	// only loaded for trusted projects, which is the usual reason Codex cannot
-	// see the server.
-	if (folder) {
-		actions.push({
-			label: vscode.l10n.t("Write .codex/config.toml & copy connection prompt"),
-			run: async () => {
-				try {
-					await writeCodexProjectConfig(folder, server);
-					await vscode.env.clipboard.writeText(connectionPrompt(serverName, cli));
-					vscode.window.showInformationMessage(vscode.l10n.t(
-						"Wrote `.codex/config.toml` and copied the prompt. Start a NEW Codex conversation, then paste it. If Codex still has no browser tools, the project is probably not trusted — use the global config instead."));
-				} catch (err) {
-					await vscode.env.clipboard.writeText(cli);
-					vscode.window.showErrorMessage(vscode.l10n.t(
-						"Could not write `.codex/config.toml` ({0}). The `codex mcp add` command is on your clipboard instead.",
-						err instanceof Error ? err.message : String(err)));
-				}
-			},
-		});
+/* ---------------------------------------------------------------------- repair */
+
+/** What {@link repairConfigs} changed, for the caller to report. */
+export interface RepairReport {
+	/** Human-readable names of the files that were rewritten. */
+	readonly files: string[];
+	/** Entries that were ours and were folded into the canonical one. */
+	readonly collapsed: string[];
+	/** True when the global Codex file was skipped because another window held the lock. */
+	readonly lockBusy: boolean;
+}
+
+/**
+ * Brings this window's entries in every assistant config back into line.
+ *
+ * Runs on every start, right after the port is known. What it fixes is the one
+ * failure this whole area kept producing: the port is written into a config
+ * once, at connect time, and a window's port can change between restarts, so
+ * the entry ends up addressing a *neighbour's* window and the workspace-scoped
+ * token turns that into a bare 401. The assistant then reports "no tools" and
+ * nothing about the situation says why.
+ *
+ * Three properties make this safe to do unattended, and all three matter:
+ *
+ *   - **It only ever touches entries carrying our own token.** Identification
+ *     is by token, never by name or URL — see `mcpRepair.ts` for why. An entry
+ *     that merely looks like ours may be another window's live entry.
+ *   - **It never creates a file or an entry.** An absent config is left absent:
+ *     repairing is not connecting, and a window must not quietly wire an
+ *     assistant the user never connected.
+ *   - **It is silent unless something actually changed**, which is rare — only
+ *     when the port moved or an old duplicate was still lying around.
+ */
+export async function repairConfigs(server: McpServer): Promise<RepairReport> {
+	const report: RepairReport = { files: [], collapsed: [], lockBusy: false };
+
+	// Captured before the first await. `server.url` goes undefined when the
+	// server is disposed, and a repair can be waiting on a lock when that
+	// happens — reading it later would write an empty URL into the config.
+	const url = server.url;
+	if (!url) {
+		return report;
 	}
 
-	actions.push({
-		label: vscode.l10n.t("Write global ~/.codex/config.toml"),
-		run: async () => {
-			try {
-				const name = await writeCodexGlobalConfig(folder, server);
-				await vscode.env.clipboard.writeText(connectionPrompt(name, cli));
-				vscode.window.showInformationMessage(vscode.l10n.t(
-					"Added `{0}` to ~/.codex/config.toml and copied the prompt. Start a NEW Codex conversation, then paste it.",
-					name));
-			} catch (err) {
-				await vscode.env.clipboard.writeText(cli);
-				vscode.window.showErrorMessage(vscode.l10n.t(
-					"Could not write ~/.codex/config.toml ({0}). The `codex mcp add` command is on your clipboard instead.",
-					err instanceof Error ? err.message : String(err)));
+	const folder = workspaceFolder();
+	let busy = false;
+
+	/**
+	 * Reads, repairs and writes one config, under that file's own lock.
+	 *
+	 * Every file here is locked, not just the global one. Two windows on the
+	 * *same folder* share a token and hold different ports, so both recognise
+	 * the same entry as theirs and both rewrite it — the lock does not settle
+	 * which of them wins (last start does) but it does keep the two
+	 * read-modify-writes from interleaving into a broken file.
+	 */
+	const apply = async (uri: vscode.Uri, label: string, repair: (text: string) => {
+		text: string; changed: boolean; collapsed: readonly string[];
+	}): Promise<void> => {
+		const took = await withLock(lockPath(configLockName(uri)), async () => {
+			const text = await readText(uri);
+			if (text === undefined) {
+				return; // absent: repairing is not connecting
 			}
-		},
-	});
+			const result = repair(text);
+			if (!result.changed) {
+				return;
+			}
+			await writeText(uri, result.text);
+			report.files.push(label);
+			report.collapsed.push(...result.collapsed);
+		});
+		// Losing a race is not an error: the next start repairs it.
+		busy ||= !took;
+	};
 
-	actions.push({
-		label: vscode.l10n.t("Copy CLI command"),
-		run: () => vscode.env.clipboard.writeText(cli),
-	});
+	if (folder) {
+		await apply(claudeConfigUri(folder), '.mcp.json', text =>
+			repairClaudeJson(text, endpoint(server, serverName, url)));
 
-	await offer(
-		vscode.l10n.t("Connect Codex to the browser"),
-		[
-			vscode.l10n.t("Server: {0}", server.url ?? '—'),
-			folder
-				? vscode.l10n.t("The first button writes the project's `.codex/config.toml` and puts a short prompt on your clipboard. Paste that prompt into a Codex conversation.")
-				: vscode.l10n.t("No folder is open, so only the global config and the CLI command are available."),
-			vscode.l10n.t("Codex loads MCP servers only when a conversation starts and never re-reads the config — start a NEW conversation after connecting. If it says it cannot see the server, it was not loaded, and sending it to read config.toml will not change that."),
-			vscode.l10n.t("A project config is only loaded for projects Codex trusts, and some surfaces ignore it entirely. If the tools do not turn up, use the global config."),
-		].filter(Boolean).join('\n\n'),
-		actions);
+		await apply(codexProjectConfigUri(folder), '.codex/config.toml', text =>
+			repairCodexToml(text, codexEntries(text), endpoint(server, serverName, url)));
+	}
+
+	const globalName = folder ? codexEntryName(folder) : `${serverName}-window`;
+	await apply(codexGlobalConfigUri(), '~/.codex/config.toml', text =>
+		repairCodexToml(text, codexEntries(text), endpoint(server, globalName, url)));
+
+	return busy ? { ...report, lockBusy: true } : report;
 }

@@ -48,12 +48,23 @@ async function prune(): Promise<void> {
 	}
 }
 
-/** Runs a command that expects the image on stdin, such as `wl-copy`. */
+/**
+ * Runs a command that expects the image on stdin, such as `wl-copy`.
+ *
+ * **`stdin` needs its own error handler.** A screenshot is a large buffer, so
+ * the write is not atomic; if the child exits before it has all been read, the
+ * pipe write fails with `EPIPE`. An error on a stream with no listener is
+ * thrown, and here that means an unhandled exception in the extension host
+ * rather than the file-on-disk fallback the caller is ready for. The child's
+ * own `error` event does not cover it — that one is about spawning.
+ */
 function runWithStdin(command: string, args: string[], data: Buffer): Promise<void> {
 	return new Promise((resolve, reject) => {
 		const child = spawn(command, args, { stdio: ['pipe', 'ignore', 'ignore'] });
 		child.on('error', reject);
 		child.on('close', code => code === 0 ? resolve() : reject(new Error(`${command} exited ${code}`)));
+		child.stdin.on('error', (err: Error) => reject(
+			new Error(`${command} did not take the image (${err.message})`)));
 		child.stdin.end(data);
 	});
 }

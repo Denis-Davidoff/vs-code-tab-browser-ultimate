@@ -112,6 +112,9 @@ Compiled with `tsc`, **no bundling**. `main: ./out/extension`.
 - [src/lastAction.ts](src/lastAction.ts) — which element command the toolbar button repeats
 - [src/browserController.ts](src/browserController.ts) — what the browser can do, for MCP
 - [src/mcpProtocol.ts](src/mcpProtocol.ts) — JSON-RPC dispatch and the auth decision (leaf, under test)
+- [src/mcpPort.ts](src/mcpPort.ts) — which port a window tries first (leaf, under test)
+- [src/mcpRepair.ts](src/mcpRepair.ts) — correcting a stale entry in a client config (leaf, under test)
+- [src/fileLock.ts](src/fileLock.ts) — the cross-process lock on the global Codex config
 - [src/mcpServer.ts](src/mcpServer.ts) — HTTP transport, tools, client attribution
 - [src/mcpSetup.ts](src/mcpSetup.ts) — client config writing and the connect dialogs
 - [src/mcpCheck.ts](src/mcpCheck.ts) — the Check Connection report
@@ -1051,9 +1054,12 @@ would be more surface area than the feature.
    A page cannot *read* a cross-origin response, but issuing the request is already enough to
    drive the browser.
 3. **The token is per workspace, not per user** — `mcp.token:<folderUri>` in `globalState`.
-   Ports are handed out in the order windows open, so project A's config can address the window
-   holding project B; a workspace-scoped token makes that an honest 401 instead of an agent
-   quietly editing the wrong project.
+   A config can end up addressing the window that has another project open, so a
+   workspace-scoped token makes that an honest 401 instead of an agent quietly editing the
+   wrong project. The token is also the **identity** the startup repair matches on — see
+   [The port moves and the config remembers](#the-port-moves-and-the-config-remembers-the-old-one)
+   — so it must never be regenerated for an existing workspace: every config naming that
+   window would stop being recognisable at once.
 4. **POST on one endpoint.** There is no SSE stream, so GET is 405. The token is accepted as
    `Authorization: Bearer …` **or** as the last path segment. The path form is no longer written
    by anything here — Codex turned out to accept a static header after all — but it stays
@@ -1094,14 +1100,25 @@ as "try the next".
 | Claude Code | `.mcp.json` in the project | `{ type, url, headers.Authorization }` |
 | Codex | `.codex/config.toml` in the project, or `~/.codex/config.toml` | `[mcp_servers.<name>]` with inline `http_headers` |
 
-**Codex offers both files, project first.** The primary button writes the project's
-`.codex/config.toml`; the global `~/.codex/config.toml` is the second button. That order is a
-deliberate choice — the project file keeps the server with the project — but the trade-off is
-real and belongs in the dialog text: **a project config is only loaded for projects Codex
-trusts**, and the desktop surface has been reported to ignore it outright
-([openai/codex#13025](https://github.com/openai/codex/issues/13025)), whereas
+**Connect Codex writes the global `~/.codex/config.toml`, and Connect is one click with no
+dialog.** Both halves changed together and the second forced the first.
+
+There used to be a modal with two or three buttons on it, asking questions whose answer never
+varied — of course the file should be written, of course the prompt should be copied. Now the
+click writes the file, copies the prompt and says what it did. Dropping the dialog meant
+choosing a Codex file rather than offering both, and the global one wins: **a project config is
+only loaded for projects Codex trusts**, and the desktop surface has been reported to ignore it
+outright ([openai/codex#13025](https://github.com/openai/codex/issues/13025)), whereas
 `~/.codex/config.toml` is read on every surface, always. That is the usual reason Codex "cannot
-see the server", so the global button exists as the fix and the messages point at it.
+see the server", and a one-click action must not land on the option that sometimes silently
+does nothing. Writing *both* is not an option: the two entries have different names, so Codex
+would load both and list every tool twice.
+
+**The confirmation goes through `confirm()`, not a notification** — connecting is very often
+done with a browser tab open, and a success toast would pause exactly the page the user is
+about to hand to an assistant. Failures keep their notification: they are rare and they need
+attention. The `Copy CLI command` button is gone from the happy path; the CLI command is what
+lands on the clipboard when writing the file *fails*.
 
 The global entry is named per project (`ai-browser-<slug>-<sha1[0:6]>`); the project entry uses
 the bare `ai-browser`, since a project file has only one project.
@@ -1167,6 +1184,156 @@ symptom is a bare 401 that reads like a broken server.
 Duplicate Codex entries are **reported, never repaired**: the global file is not ours, and
 removing the wrong one of a pair turns working tools into a 401.
 
+### The port moves, and the config remembers the old one
+
+The single most confusing failure this feature has had, and it took three separate mistakes
+stacked on each other. Measured on a machine with two windows up, 43110 and 43111, where Codex
+could click a button and Claude Code insisted it had no tools at all.
+
+**What was actually wrong, in order of importance:**
+
+1. **The connection prompt told the model to create a shadowing duplicate.** Its second line
+   handed over `claude mcp add --transport http --scope local …`, guarded by "if you have no
+   such tools" — a condition that is **always true** at the moment the prompt is pasted,
+   because neither assistant re-reads its config and the file was written seconds ago. So the
+   fallback fired every single time. Local scope lives in `~/.claude.json` under
+   `projects[cwd].mcpServers` and **overrides `.mcp.json`**, so from then on every press of
+   Connect rewrote a file nothing read. This is why the bug looked unfixable: reconnecting
+   genuinely did nothing.
+2. **The port was assigned in window-open order.** First window took 43110, next 43111, and a
+   window's port therefore changed whenever the windows were opened in a different order —
+   while the port had been baked into the config once, at connect time.
+3. **Nothing ever identified an entry as ours.** `Check Connection` compared the whole URL, so
+   our own entry on a moved port was reported as `otherServer` — "there is a different server
+   there" — which advises deleting a perfectly good entry of the user's own.
+
+The asymmetry that made it baffling was luck: Codex still had an old entry from a previous
+release, carrying the token in the URL path, and that one happened to land on a live window. So
+Codex had tools — and was silently clicking buttons in **another project's** window, which is
+the worse half of the same bug and produced no error anywhere.
+
+**The fixes, in the same order.**
+
+**`claudeCliCommand` writes `--scope project`, never `--scope local`**, so the CLI and this
+extension edit the same `.mcp.json` and cannot disagree. And the prompt no longer carries a CLI
+command at all on the success path: it ends with *do not add or edit any MCP configuration
+yourself*. The command is still offered, but only where writing the file actually failed.
+
+**A window's first-choice port is derived from the folder URI** ([src/mcpPort.ts](src/mcpPort.ts)),
+so it is the same after every restart. `McpServer.start` now takes the whole list of ports to
+try rather than a starting number, because the interesting decision is which one comes first.
+It is a preference and not a reservation — two folders can hash to the same offset — so the
+walk still falls through, wrapping inside the span so every window tries the same 20 ports. An
+**explicitly configured** `aiBrowser.mcp.port` is exempt and starts exactly where it says:
+someone who names a port means that port.
+
+**`repairConfigs` corrects what has already gone stale**, on every start, right after the port
+is known. Everything about it follows from one rule:
+
+> **An entry is identified by its token, never by its name or its URL.**
+
+The token is the only part of an entry that is stable and provably ours. Names have changed
+between releases (`tab-browser` before `ai-browser`, plus the per-project names in the global
+Codex file) and the URL is precisely the part that goes stale, so matching on either would miss
+our own entries or rewrite somebody else's. From that follow the three properties that make an
+unattended rewrite safe:
+
+- it only touches entries carrying **our** token;
+- it **never creates** a file or an entry — repairing is not connecting, and an absent config
+  stays absent;
+- it is silent unless something changed, and reports through `confirm()` when it did.
+
+**The Codex repair is line surgery, not table replacement**, and that distinction is
+load-bearing. The connect path replaces our table wholesale, which is right — the user just
+asked for it to be made correct. Repair runs unattended, so it edits only the lines that are
+wrong (the header if the name is from an older release, `url`, and `http_headers`), leaving
+anything the user added to the table — `startup_timeout_sec`, `enabled_tools`, a comment —
+where it is. Whole-table removal is still used for *duplicates* of ours, which are not tables
+to fix.
+
+Two smaller things fall out of it. **The global `~/.codex/config.toml` write is now locked**
+([src/fileLock.ts](src/fileLock.ts)) — it used to be unlocked on the reasoning that a button
+press cannot race itself, which stopped being true the moment every window started repairing
+the same file on startup; a machine restoring a session opens them all at once. Losing the race
+is not an error, since the next start repairs it. And **`spliceCodexTables` lives in
+`mcpRepair.ts`** so the connect path and the repair path share one implementation: two copies
+would be two chances to write TOML that does not parse.
+
+**What is reported and deliberately not repaired.** Two things, for the same reason in both
+cases — the file is not ours and a wrong guess breaks something that works:
+
+- **Local-scope entries in `~/.claude.json`.** `Check Connection` now reads that file and names
+  them, with `claude mcp remove <name> --scope local`. It is Claude Code's own config, holding
+  its credentials and history; a lost update from us would cost far more than the stale entry.
+  Without this the check was blind to the one entry that Connect cannot fix.
+- **Codex entries that look like ours by name but carry another token** (`codexStrangers`).
+  One of those may be another window's *live* entry.
+
+**Four ways the repair itself corrupted a config, all found by review and all now tested.**
+Each one is the kind that only fires on somebody else's config, which is exactly why they are
+worth writing down:
+
+- **The rename can collide.** Our token in a `tab-browser` table while an `ai-browser` table
+  belongs to someone else: renaming ours produces two `[mcp_servers.ai-browser]` headers, which
+  is TOML that does not parse — every MCP server the user has, gone, unattended, at window
+  start. The `.mcp.json` version of the same mistake silently *overwrote* the stranger. When
+  the target name is taken by something that is not ours, the entry keeps the name it has.
+- **A value can span lines.** A triple-quoted `url` and an `enabled_tools = [` both continue
+  onto the next line, and replacing only the key's first line strands the continuation and its
+  closing delimiter as garbage. `CodexEntry` gained `valueEndLines` for this, and every value
+  edit replaces the whole range.
+- **Not every sub-table of ours is ours to delete.** Dropping `<name>.http_headers` is right —
+  we replace it with the inline form — but the same condition was eating
+  `<name>.env_http_headers`, which is the user's.
+- **Two lock names for one file is the same as no lock.** The connect path and the repair path
+  write the same `~/.codex/config.toml`; they now derive the lock name from the URI
+  (`configLockName`) so they take the same one. Every repaired file is locked, not just the
+  global one — two windows on the *same folder* share a token and hold different ports, so both
+  recognise the same entry as theirs. The lock does not decide which wins (the last start does,
+  and either port authenticates, since the token is the same) but it keeps the two
+  read-modify-writes from interleaving.
+
+**The ownership rule is deliberately written twice**, in `codexOurTables` and in
+`codexEntryCarriesToken`. Both are leaf modules that `npm test` loads directly, so neither may
+take a relative value import of the other — the constraint under
+[Recipe for the next feature](#recipe-for-the-next-feature). Duplication here is a real hazard:
+the two versions had drifted, so the same entry could be silently rewritten by the repair and
+reported by the check as a stranger to delete. A test in
+[src/mcpRepair.test.ts](src/mcpRepair.test.ts) asserts the two agree on a table of cases; add
+to it rather than trusting that they still match.
+
+**`server.url` must be captured before the first await.** It is a getter over the live port, so
+it goes `undefined` the moment the server is disposed — a setting toggled, a window closing —
+and a repair can be sitting on a lock when that happens. Reading it afterwards wrote an empty
+`url` into the user's config.
+
+**The repair may only ever *narrow* what it changes, and three more ways it did not.** Found by
+review after the first round, and each is the same mistake seen from a different angle — a
+rewrite that was broader than the thing being corrected:
+
+- **A sub-table has to follow its parent across a rename.** Migrating `tab-browser` to
+  `ai-browser` left `[mcp_servers.tab-browser.env_http_headers]` behind, and TOML then
+  *recreates* `mcp_servers.tab-browser` from it — so the settings are lost to the real server
+  and a second, urlless one appears in their place. Every sub-table of ours is renamed with the
+  table it belongs to.
+- **`http_headers` is merged, not replaced.** Writing
+  `{ Authorization = "Bearer …" }` over the whole inline table deleted an `X-Org` the user had
+  added, on every start, even when the URL was already right. Only the authorization is ours to
+  set. `parseInlineTable` / `mergeAuthorization` do exactly as much inline-table handling as
+  that needs — the same reasoning as the mini TOML parser next door.
+- **A header *sub-table* is now kept and edited, not flattened into the inline form.** The
+  conversion was lossy for the same reason. The one case where it still goes is a sub-table
+  sitting *beside* an inline `http_headers` — two sets of headers on one server is ambiguous,
+  so its keys are folded into the inline table and it is removed.
+
+A scenario deliberately out of scope: an entry whose *token* is stale is not ours to recognise
+at all, so repair cannot touch it. That is what `staleToken` in the check is for.
+
+**And `Check Connection` gained a state it was missing.** `wrongPort` — our token, a moved port
+— used to be reported as `otherServer`. The old test suite even encoded the mistake: its "a
+different port is another server" fixture used `…:49999/mcp/abc123`, which carries the token
+under test, so it was asserting the wrong answer for our own entry. It is now two tests.
+
 ### The server is per window; the tools act on one tab, chosen per call
 
 The token and port belong to the **workspace**, so "connecting" attaches an assistant to this
@@ -1193,9 +1360,24 @@ could resolve differently. Keep any future user-facing command on the same side 
 
 A selection is dropped when its tab closes — falling back beats refusing every call until
 something selects again — and `selection` in `browser_state` / `browser_tabs` is what reports
-which of the two is in force. `navigate` with `newTab` moves an existing selection onto the tab
-it just opened, or the next tool would go back to the page the caller chose to leave; the new
-tab is opened with `preserveFocus`, so the focused-tab branch cannot be relied on to do it.
+which of the two is in force.
+
+`navigate` with `newTab` **selects** the tab it just opened, whether or not anything was
+selected before, or the next tool would go back to the page the caller chose to leave. It has
+to be explicit: the tab is opened with `preserveFocus`, so the *old* tab stays active and wins
+the focused-tab branch, which sits above `_lastTab`. This was once guarded on a selection
+already existing, and the symptom of that is worth recognising — the call reports `tab-2` and
+every following tool acts on `tab-1`. The other way into the same branch, "no tab was open at
+all", deliberately does *not* select: nothing was chosen, so the user's focus should still lead.
+
+**`browser_snapshot` only ever hands out a selector that resolves back to the element it
+describes**, checked in the page with the same `document.querySelector` call that `click` and
+`fill` will make. Without that check the builder fell back to the bare tag name, so two
+buttons with no `id` and no `name` were both reported as `button` — and since `querySelector`
+returns the first match, an agent told to press Delete pressed Save, successfully and
+silently. The order is unique `id`, then `tag[name=…]`, then a positional `:nth-of-type` path;
+an element that cannot be addressed from `document` at all, such as one inside a shadow root,
+is listed with no selector rather than with a wrong one.
 
 **`vscode.window.activeBrowserTab` alone is not usable for this, and that was a real bug.** The
 extension host sets it from `activeEditorPane?.input instanceof BrowserEditorInput` and nothing
@@ -1340,9 +1522,25 @@ the icon grid `check-manifest` enforces.
 
 ### Not built yet
 
-**Port repair** for configs written by an earlier session (`mcpRefresh`, with a filesystem lock,
-since every window would repair its own entry in the one global file), and **plain-text
-hand-over** — `claude-vscode.editor.open(undefined, prompt)` opens a new Claude Code
+**A window registry and cross-window routing.** Repair fixes a config at the next window start;
+routing would make a wrong port not matter at all — a window receiving a valid token that is
+not its own would look the owner up in a registry (`~/.ai-browser/windows.json`: token, port,
+folder, pid) and proxy the call there. It also upholds rule 3 of the security model better than
+the 401 does, since project A's config would then always reach project A's window rather than
+merely failing to reach anyone else's. Not built because repair covers the same ground without
+a new HTTP hop, a shared registry file to keep pruned, or a story for a window closing
+mid-call.
+
+**A stdio bridge, which would remove the token from the repository.** `.mcp.json` is designed
+to be committed and shared with a team, and we write a bearer token into it. The harm is
+bounded — loopback only, and worthless on another machine — but so is the entry: a colleague
+who clones the repository gets an MCP server that can never work for them and fails on every
+Claude Code start. The real fix is to put a *command* in the config instead of a URL and have
+the bridge resolve port and token from the registry at session start. That removes port drift
+and the token from git in one move, and it is a bigger change than everything above put
+together, so it is recorded rather than done.
+
+**Plain-text hand-over** — `claude-vscode.editor.open(undefined, prompt)` opens a new Claude Code
 conversation with a prompt, but Codex has no equivalent, so reports go as files for both.
 
 ## Things that break silently
@@ -1384,7 +1582,57 @@ No compile error for any of these — they only surface at runtime.
 12. **Assuming `argv.json` is under the home directory** → a portable install
     (`VSCODE_PORTABLE`) or a build run from source (`VSCODE_DEV`) reads a different file, so the
     grant is written where nothing looks for it.
-13. **`Open File` on a host without the built-in browser** → a `file:` URI in the webview panel
+13. **`claude mcp add --scope local`** (or telling a model to run it) → the entry lands in
+    `~/.claude.json` and **overrides** the project's `.mcp.json`, so every later Connect
+    rewrites a file nothing reads. Symptom: the assistant reports no tools and reconnecting
+    never helps. Use `--scope project`; see
+    [The port moves](#the-port-moves-and-the-config-remembers-the-old-one).
+14. **Identifying our own config entry by name or URL rather than by token** → the name has
+    changed between releases and the URL is exactly what goes stale, so a repair matching on
+    either silently skips our own entries, or rewrites another window's live one.
+15. **Replacing a whole Codex table during the unattended repair** → anything the user added to
+    it (`startup_timeout_sec`, `enabled_tools`, comments) disappears with no error. Repair edits
+    lines; only the connect path may replace a table.
+16. **Writing `~/.codex/config.toml` without the lock, or under a different lock name than the
+    other writer uses** → several windows repair the same global file on startup, and two
+    interleaved read-modify-writes lose an entry or corrupt every MCP server the user has.
+17. **Renaming a config entry onto a name that is already taken** → two tables with the same
+    header is TOML that does not parse; the JSON equivalent silently overwrites somebody else's
+    server. Check the target name is free or already ours first.
+18. **Replacing only the first line of a TOML value** → a multi-line value (a triple-quoted
+    string, an array left open) leaves its continuation and closing delimiter behind. Use
+    `valueEndLines` and replace the whole range.
+19. **Reading `server.url` after an await on an unattended path** → the getter is backed by the
+    live port and goes `undefined` on dispose, so a config gets an empty `url`. Capture it
+    first.
+21. **A snapshot selector that only *describes* an element rather than resolving to it** →
+    `click` and `fill` use `document.querySelector`, which returns the first match, so two
+    buttons with no `id` and no `name` shared the selector `button` and "press Delete" pressed
+    Save. Every selector is now checked with the same call its consumer will make; an element
+    that cannot be addressed is listed without one.
+22. **Disposing a `CDPClient` without settling its outstanding work** → `dispose` tears down the
+    `onDidClose` subscription before it can fire, so commands in `_pending` and waits in
+    `_waiters` are never rejected and their callers hang. Both go through `_failPending`.
+23. **Leaving `&` unescaped in an HTML attribute** → the browser decodes entities when reading
+    the attribute, so a value containing the text `&quot;` comes back as a bare quote. In the
+    settings JSON that means `JSON.parse` throws and the panel stays blank. Escape `&` first.
+24. **Writing to a child process's `stdin` with no `error` listener** → a stream error with no
+    listener is thrown, so an `EPIPE` from a clipboard helper that exited early becomes an
+    unhandled exception in the extension host instead of the file fallback.
+26. **Leaving a sub-table behind when renaming its parent table** → TOML implicitly recreates
+    the old parent from `[mcp_servers.<old>.<sub>]`, so the settings are lost to the renamed
+    server and a second, urlless one appears.
+27. **Replacing a whole `http_headers` inline table** → any header the user added is deleted,
+    silently, on every window start. Merge, and set only `Authorization`.
+28. **Stripping a comment from a TOML value that `scanLine` already handled** → `unquote` ran
+    `/\s*#.*$/` over text whose comments were gone, so `url = "http://h/mcp#frag"` came back as
+    an unbalanced `"http://h/mcp`. Only the scanner can tell a real comment from a `#` inside a
+    string.
+29. **Opening a cached async resource without guarding the in-flight open** → two calls
+    arriving together both see no cache and both open; the second overwrites the first, which
+    is then never disposed. `BrowserController._sessionFor` shares the pending promise and
+    keeps a token so a session arriving after a `dispose` closes itself.
+30. **`Open File` on a host without the built-in browser** → a `file:` URI in the webview panel
     is blocked by `localResourceRoots`, so the panel renders blank with no error. The menu entry
     is therefore gated on `shouldUseIntegratedBrowser()` rather than falling back.
 

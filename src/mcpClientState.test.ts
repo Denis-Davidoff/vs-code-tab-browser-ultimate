@@ -87,42 +87,50 @@ suite('codexClientState', () => {
 
 	test('recognises the token-in-url form', () => {
 		const text = `[mcp_servers.ai-browser]\nurl = "${urlWithToken}"\n`;
-		assert.strictEqual(codexClientState(parse(text), url, urlWithToken), 'thisServer');
+		assert.strictEqual(codexClientState(parse(text), url, urlWithToken, token), 'thisServer');
 	});
 
 	test('the same endpoint with a named env var is accepted', () => {
 		const text = `[mcp_servers.ai-browser]\nurl = "${url}"\nbearer_token_env_var = "AI_BROWSER_TOKEN"\n`;
-		assert.strictEqual(codexClientState(parse(text), url, urlWithToken), 'thisServer');
+		assert.strictEqual(codexClientState(parse(text), url, urlWithToken, token), 'thisServer');
 	});
 
 	test('the same endpoint with no credentials at all is stale', () => {
 		const text = `[mcp_servers.ai-browser]\nurl = "${url}"\n`;
-		assert.strictEqual(codexClientState(parse(text), url, urlWithToken), 'staleToken');
+		assert.strictEqual(codexClientState(parse(text), url, urlWithToken, token), 'staleToken');
 	});
 
-	test('a different port is another server', () => {
+	test('a different port carrying our token is our own stale entry', () => {
+		// The token is what separates the two: this entry was written by this
+		// window and only the port has moved, so "another server" would send
+		// the user off to delete a perfectly good entry of their own.
 		const text = '[mcp_servers.ai-browser]\nurl = "http://127.0.0.1:49999/mcp/abc123"\n';
-		assert.strictEqual(codexClientState(parse(text), url, urlWithToken), 'otherServer');
+		assert.strictEqual(codexClientState(parse(text), url, urlWithToken, token), 'wrongPort');
+	});
+
+	test('a different port with someone else\'s token is another server', () => {
+		const text = '[mcp_servers.ai-browser]\nurl = "http://127.0.0.1:49999/mcp/zzz999"\n';
+		assert.strictEqual(codexClientState(parse(text), url, urlWithToken, token), 'otherServer');
 	});
 
 	test('the project file wins over the global one for the same name', () => {
 		const project = `[mcp_servers.ai-browser]\nurl = "${urlWithToken}"\n`;
 		const global = '[mcp_servers.ai-browser]\nurl = "http://127.0.0.1:1/mcp"\n';
-		assert.strictEqual(codexClientState(parse(project, global), url, urlWithToken), 'thisServer');
+		assert.strictEqual(codexClientState(parse(project, global), url, urlWithToken, token), 'thisServer');
 	});
 
 	test('a global entry under another name still counts', () => {
 		const global = `[mcp_servers.ai-browser-proj-abc123]\nurl = "${urlWithToken}"\n`;
-		assert.strictEqual(codexClientState(parse('', global), url, urlWithToken), 'thisServer');
+		assert.strictEqual(codexClientState(parse('', global), url, urlWithToken, token), 'thisServer');
 	});
 
 	test('disabled is reported', () => {
 		const text = `[mcp_servers.ai-browser]\nurl = "${urlWithToken}"\nenabled = false\n`;
-		assert.strictEqual(codexClientState(parse(text), url, urlWithToken), 'disabled');
+		assert.strictEqual(codexClientState(parse(text), url, urlWithToken, token), 'disabled');
 	});
 
 	test('an empty config is none', () => {
-		assert.strictEqual(codexClientState(parse('', ''), url, urlWithToken), 'none');
+		assert.strictEqual(codexClientState(parse('', ''), url, urlWithToken, token), 'none');
 	});
 });
 
@@ -155,7 +163,7 @@ suite('codexClientState: credential forms', () => {
 
 	test('inline http_headers counts as credentials', () => {
 		const text = `[mcp_servers.ai-browser]\nurl = "${url}"\nhttp_headers = { Authorization = "Bearer ${token}" }\n`;
-		assert.strictEqual(codexClientState(parse(text), url, urlWithToken), 'thisServer');
+		assert.strictEqual(codexClientState(parse(text), url, urlWithToken, token), 'thisServer');
 	});
 
 	test('an http_headers sub-table counts too', () => {
@@ -167,7 +175,7 @@ suite('codexClientState: credential forms', () => {
 			'[mcp_servers.ai-browser.http_headers]',
 			`Authorization = "Bearer ${token}"`,
 		].join('\n');
-		assert.strictEqual(codexClientState(parse(text), url, urlWithToken), 'thisServer');
+		assert.strictEqual(codexClientState(parse(text), url, urlWithToken, token), 'thisServer');
 	});
 
 	test('a sub-table does not count as a server of its own', () => {
@@ -183,11 +191,11 @@ suite('codexClientState: credential forms', () => {
 
 	test('env-var credentials are still trusted', () => {
 		const text = `[mcp_servers.ai-browser]\nurl = "${url}"\nbearer_token_env_var = "AI_BROWSER_TOKEN"\n`;
-		assert.strictEqual(codexClientState(parse(text), url, urlWithToken), 'thisServer');
+		assert.strictEqual(codexClientState(parse(text), url, urlWithToken, token), 'thisServer');
 	});
 
 	test('the endpoint with no credentials at all is still stale', () => {
 		const text = `[mcp_servers.ai-browser]\nurl = "${url}"\n`;
-		assert.strictEqual(codexClientState(parse(text), url, urlWithToken), 'staleToken');
+		assert.strictEqual(codexClientState(parse(text), url, urlWithToken, token), 'staleToken');
 	});
 });

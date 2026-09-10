@@ -162,6 +162,27 @@ export class BrowserController implements vscode.Disposable {
 	private _sessionTab: vscode.BrowserTab | undefined;
 
 	/**
+	 * An open that has been started but has not finished yet.
+	 *
+	 * Opening a session is asynchronous, so without this two calls arriving
+	 * together both find no cached session and both open one — the second
+	 * overwrites the field holding the first, which is then never disposed.
+	 * The CDP session stays live with its console listeners attached, for the
+	 * life of the window. Reproduced with two concurrent `browser_console`
+	 * calls: two sessions opened, one closed.
+	 */
+	private _opening: { tab: vscode.BrowserTab; promise: Promise<TabSession> } | undefined;
+
+	/**
+	 * Identity of the open currently wanted.
+	 *
+	 * Cleared by {@link _dropSession}, so a session that arrives after the
+	 * controller has moved on can see that nobody wants it and close itself
+	 * rather than leaking.
+	 */
+	private _openToken: object | undefined;
+
+	/**
 	 * The tab the tools last acted on.
 	 *
 	 * `vscode.window.activeBrowserTab` means "a browser editor is the active
@@ -294,23 +315,49 @@ export class BrowserController implements vscode.Disposable {
 	}
 
 	/** The cached session for a tab, opening a fresh one when there is none to reuse. */
-	private async _sessionFor(tab: vscode.BrowserTab): Promise<TabSession> {
+	private _sessionFor(tab: vscode.BrowserTab): Promise<TabSession> {
 		if (this._session && this._sessionTab === tab && !this._session.isClosed) {
-			return this._session;
+			return Promise.resolve(this._session);
+		}
+
+		// An open already under way for this tab is shared, not raced.
+		if (this._opening?.tab === tab) {
+			return this._opening.promise;
 		}
 
 		// A different tab: the old session's console belongs to a page that is
 		// no longer the subject.
 		this._dropSession();
-		this._session = await TabSession.open(tab);
-		this._sessionTab = tab;
-		return this._session;
+
+		const token = {};
+		this._openToken = token;
+		const promise = TabSession.open(tab).then(session => {
+			if (this._openToken !== token) {
+				// Superseded while we were opening — by another tab, or by the
+				// controller being disposed. Nobody will ever read this one, so
+				// it closes itself instead of leaking.
+				session.dispose();
+				throw new Error('The browser session was replaced while it was opening.');
+			}
+			this._openToken = undefined;
+			this._opening = undefined;
+			this._session = session;
+			this._sessionTab = tab;
+			return session;
+		});
+		this._opening = { tab, promise };
+		return promise;
 	}
 
 	private _dropSession(): void {
 		this._session?.dispose();
 		this._session = undefined;
 		this._sessionTab = undefined;
+		// An open still in flight is no longer wanted. Clearing the token is
+		// what tells it to close itself when it arrives; there is nothing to
+		// dispose here yet.
+		this._openToken = undefined;
+		this._opening = undefined;
 	}
 
 	public async state(): Promise<unknown> {
@@ -463,10 +510,20 @@ export class BrowserController implements vscode.Disposable {
 			this._dropSession();
 			const tab = await vscode.window.openBrowserTab(url, { preserveFocus: true });
 			this._lastTab = tab;
-			// A selection follows the tab this call created, or the next tool would
-			// go back to the page the caller just chose to leave. It is opened with
-			// `preserveFocus`, so the focused-tab branch cannot be relied on either.
-			if (this._pinnedTab) {
+			// An explicit `newTab` selects the tab it just created, and it has
+			// to: the tab is opened with `preserveFocus`, so the *old* tab
+			// stays active and wins the focused-tab branch of `_resolveTab`,
+			// which sits above `_lastTab`. This used to be guarded on a
+			// selection already existing, which meant `navigate(newTab: true)`
+			// reported the new tab and then every following tool acted on the
+			// old one.
+			//
+			// The other way into this branch is "no tab was open at all", and
+			// that one deliberately does not select: nothing was chosen, so
+			// the user's focus should still lead. An existing selection is
+			// carried over either way, or the next tool would go back to the
+			// page the caller chose to leave.
+			if (newTab || this._pinnedTab) {
 				this._pinnedTab = tab;
 			}
 			return { url: tab.url, title: tab.title, tabId: this._idOf(tab), openedNewTab: true };
@@ -526,20 +583,77 @@ export class BrowserController implements vscode.Disposable {
 		return { url: info?.url ?? url, title: info?.title, tabId: this._idOf(tab), openedNewTab: false };
 	}
 
-	/** A compact list of things worth interacting with, for orientation. */
+	/**
+	 * A compact list of things worth interacting with, for orientation.
+	 *
+	 * **Every selector it hands out is verified to resolve back to the element
+	 * it describes**, and that is not a refinement — it is the difference
+	 * between this tool being safe and being dangerous. `click` and `fill`
+	 * resolve a selector with `document.querySelector`, which returns the
+	 * *first* match. The old builder fell back to the bare tag name, so two
+	 * buttons with no `id` and no `name` were both reported as `button`, and an
+	 * agent told to press the second one pressed the first: asked for Delete,
+	 * it clicked Save. Nothing anywhere reported a problem — the click
+	 * succeeded, on the wrong element.
+	 *
+	 * So the builder tries a unique `id`, then `tag[name=…]`, then a positional
+	 * `:nth-of-type` path, and **checks each candidate with the same call
+	 * `click` will make** before accepting it. An element that cannot be
+	 * addressed — inside a shadow root, say — is listed with no `selector` at
+	 * all rather than with one that would act on something else.
+	 *
+	 * Classes are deliberately not used, for the reason given under the element
+	 * commands: utility-class frameworks make them long and unstable.
+	 */
 	public async snapshot(): Promise<unknown> {
 		const session = await this._withSession();
 		const value = await evaluate(session, `(() => {
+			// The exact test the consumer performs, so a selector cannot pass
+			// here and pick a different element there.
+			const resolves = (sel, el) => {
+				try { return !!sel && document.querySelector(sel) === el; } catch (e) { return false; }
+			};
+			const idFor = (el) => el.id ? '#' + CSS.escape(el.id) : undefined;
+			const pathFor = (el) => {
+				const parts = [];
+				let node = el;
+				while (node && node.nodeType === 1) {
+					const byId = idFor(node);
+					// A duplicate id resolves to somebody else, so it is only an
+					// anchor when it actually points back at this node.
+					if (byId && document.querySelector(byId) === node) { parts.unshift(byId); break; }
+					const parent = node.parentElement;
+					let part = node.tagName.toLowerCase();
+					if (parent) {
+						const twins = Array.prototype.filter.call(parent.children, (c) => c.tagName === node.tagName);
+						if (twins.length > 1) { part += ':nth-of-type(' + (twins.indexOf(node) + 1) + ')'; }
+					}
+					parts.unshift(part);
+					if (!parent) { break; }
+					node = parent;
+				}
+				return parts.join(' > ');
+			};
+			const selectorFor = (el) => {
+				const byId = idFor(el);
+				if (resolves(byId, el)) { return byId; }
+				const name = el.getAttribute('name');
+				const byName = name ? el.tagName.toLowerCase() + '[name=' + JSON.stringify(name) + ']' : undefined;
+				if (resolves(byName, el)) { return byName; }
+				const path = pathFor(el);
+				return resolves(path, el) ? path : undefined;
+			};
+
 			const out = [];
 			const nodes = document.querySelectorAll('a[href], button, input, select, textarea, [role="button"], [role="link"], [contenteditable="true"]');
 			for (const el of nodes) {
 				const rect = el.getBoundingClientRect();
 				if (rect.width === 0 || rect.height === 0) { continue; }
 				const label = (el.getAttribute('aria-label') || el.innerText || el.value || el.getAttribute('placeholder') || el.getAttribute('title') || '').trim().slice(0, 80);
-				let selector = el.tagName.toLowerCase();
-				if (el.id) { selector = '#' + CSS.escape(el.id); }
-				else if (el.getAttribute('name')) { selector += '[name=' + JSON.stringify(el.getAttribute('name')) + ']'; }
-				out.push({ tag: el.tagName.toLowerCase(), type: el.getAttribute('type') || undefined, label, selector });
+				const entry = { tag: el.tagName.toLowerCase(), type: el.getAttribute('type') || undefined, label };
+				const selector = selectorFor(el);
+				if (selector) { entry.selector = selector; }
+				out.push(entry);
 				if (out.length >= 150) { break; }
 			}
 			return { url: location.href, title: document.title, elements: out };
