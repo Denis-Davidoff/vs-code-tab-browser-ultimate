@@ -657,10 +657,11 @@ request and it is the wrong default for this extension specifically: a dev serve
 `localhost:3000` does not speak https, the external URI opener only ever fires for those hosts,
 and `https://localhost:3000` is a valid-looking string that cannot connect — the opposite of
 what "always a valid url" is asking for. `preview-src/index.ts` already chose the same way for
-the panel's address bar, so both halves behave alike. One line in `addDefaultScheme` makes it
-strict if that is ever wanted.
+the panel's address bar — but only that choice; the panel still prefixes an unknown
+`scheme://`, so the two are no longer interchangeable. One line in `addDefaultScheme` makes the
+scheme strict if that is ever wanted.
 
-Three things about it are load-bearing:
+Several things about it are load-bearing:
 
 - **Deciding "has a scheme already" with a pattern gets `localhost:3000` wrong.** It matches
   `^[a-z][a-z0-9+.-]*:` exactly as a real scheme does, so a syntactic check reads `localhost` as
@@ -678,25 +679,44 @@ Three things about it are load-bearing:
   shared import was possible at all, which was false and would have entrenched the duplication.
 - **The result is parsed before it is returned** — and parsing alone is not enough, which took a
   second pass to get right. `new URL()` *invents* a host rather than failing, so
-  `/Users/m5/x.html` came back as `https:///Users/m5/x.html`, `./rel.html` as `https://./rel.html`,
-  `//example.com` as `https:////example.com` and `C:\dev\index.html` as
-  `https://c/dev/index.html` — every one a valid URL pointing somewhere nobody asked for. So the
-  scheme-less branch also refuses input that cannot be an authority at all (`looksLikeAuthority`)
-  and requires a non-empty `hostname`, since `https://?q=1` is a URL with no host.
-  `normalizeAddress` returns `undefined`, which is what the prompt's `validateInput` refuses on.
+  `/Users/m5/x.html` came back as `https:///Users/m5/x.html` (host `users`), `./rel.html` as
+  `https://./rel.html` (host `.`) and `C:\dev\index.html` as `https://c/dev/index.html` (host
+  `c`) — every one a valid URL pointing somewhere nobody asked for. So the scheme-less branch also
+  refuses input that cannot be an authority at all (`looksLikeAuthority`) and requires a non-empty
+  `hostname`, since `https://?q=1` is a URL with no host. `normalizeAddress` returns `undefined`,
+  which is what the prompt's `validateInput` refuses on.
+- **`//example.com` is not one of those, and grouping it with them cost a working address.** The
+  second pass refused it alongside the paths above on the stated grounds that it "parses into a
+  host nobody named" — but `https:////example.com` collapses its slashes and resolves to
+  `https://example.com/`, which is exactly the page meant. A protocol-relative address is a real
+  one missing only its scheme, and it is what a copy out of HTML or Markdown looks like, so the
+  leading `//` is stripped and the rest goes through the normal rules. The lesson generalises: a
+  refusal needs its *own* evidence, not membership of a list that mostly deserves it.
 - **Input that already declares a scheme is handed on untouched, known to us or not**
   (`declaresScheme`). `ws://localhost:8080` is not in `knownSchemes`, and prefixing produced
   `https://ws://localhost:8080` — which parses, hostname `ws`, so nothing downstream refused it
   and the browser silently opened nonsense. The `://` is what separates this from the
   `localhost:3000` trap: that has no authority separator and must still be prefixed. Mangling an
   address is strictly worse than relaying one the browser will reject.
+- **An opaque scheme is relayed too, and telling one from `host:port` is the whole trick.**
+  `tel:+361234567` and `localhost:3000` have the identical shape `word:rest`; only the *rest*
+  separates them, and a port is digits followed by nothing or a path. Reading these as a host
+  mangled `magnet:?xt=…` into `https://magnet:?xt=…` and refused `tel:`, `sms:`, `webcal:` and
+  `bitcoin:` outright — while the README promised pass-through for any scheme. The Windows-drive
+  test runs *first*, or `C:\dev` reads as the opaque scheme `c:` and is relayed to a browser that
+  cannot open it instead of being refused.
 - **A `Uri` argument must survive.** `aiBrowser.show` is typed `url?: string`, but
   `executeCommand` is untyped at runtime and `AIBrowserManager.show` has always accepted
   `string | vscode.Uri` — so a caller passing one used to work, and `input.trim()` inside
   `normalizeAddress` turned it into a `TypeError` that lost the open entirely. `asAddress` in
-  `extension.ts` relays anything that is not a string, and relays a string it could not normalise
+  `extension.ts` **converts** it with `toString(true)`, and relays a string it could not normalise
   unchanged rather than dropping it: the prompt is where an unusable address is refused, not the
-  programmatic command.
+  programmatic command. Converting rather than relaying is the load-bearing half —
+  `workbench.action.browser.open` reads its argument as
+  `typeof e == "string" ? { url: e } : e ?? {}`, so a `Uri` becomes its undocumented *options*
+  object, which carries no `url`, and the editor opens a **blank tab in silence**. Relaying the
+  object traded a loud `TypeError` for a quiet wrong result on the default path, which is worse;
+  `api.open` and the external URI opener already stringify for exactly this reason.
 
 It is applied in `aiBrowser.show` as well as at the prompt, since that command takes a URL from
 other callers too, and it is idempotent so the second pass changes nothing. `undefined` stays
@@ -1172,6 +1192,23 @@ report exists to carry.
 backtick** — including inside its comments, where one silently closes the string and the
 compiler then reports a cascade of syntax errors several lines away. `xpathFunctionDeclaration`
 escapes its backticks; `documentLocationFunctionDeclaration` simply has none.
+
+**A locator it cannot promise is refused, not emitted.** Two shapes break the "navigate, then
+find" contract silently, and both read as precise:
+
+- **An element inside a shadow root.** The builder walks `parentElement`, which is `null` at the
+  boundary, so it returns a path rooted *inside* the shadow tree with nothing marking that — and
+  `document.querySelector` cannot cross into one. The page-side function reports
+  `getRootNode() !== ownerDocument` for this.
+- **A frame with no address of its own.** A `srcdoc` frame reports `about:srcdoc` and a frame a
+  script filled in reports `about:blank`; both name a document that exists only inside the page
+  that built it (`isNavigable`).
+
+`locatorRefusal` turns either into a refusal through `refuse()` — the status bar, never a toast,
+since a notification would pause the very tab being picked in. Only `cssLocation` refuses: `css`
+and `xpath` travel with prose that does not claim their URL is a navigation target. This is the
+rule already written down for `browser_snapshot` — never hand out a selector that does not
+resolve with the call its consumer will make.
 
 The kind is `cssLocation` in `PathKind` and in `ElementActionId`, camelCase because it is
 compared verbatim in `when` clauses. File names go through `fileToken`, which hyphenates it to
@@ -2544,7 +2581,24 @@ No compile error for any of these — they only surface at runtime.
     back as a *successful* CDP reply carrying `exceptionDetails`, which `evaluateOnNode` turns
     into a rejection, so a fallback wrapping only `JSON.parse` never ran and the whole element
     pick died with an error toast instead of falling back.
-86. **`Open File` on a host without the built-in browser** → a `file:` URI in the webview panel
+86. **Reading an unknown `scheme:` as `host:port`** → `tel:+361234567` and `localhost:3000` are
+    the same shape, so a check that only knew `scheme://` mangled `magnet:?xt=…` into
+    `https://magnet:?xt=…` and refused the rest outright. Only what follows the colon separates
+    them: a port is digits. Test the Windows-drive form first, or `C:\dev` reads as scheme `c:`.
+87. **Passing a `vscode.Uri` to `workbench.action.browser.open`** → it reads a non-string
+    argument as its undocumented options object (`typeof e == "string" ? { url: e } : e ?? {}`),
+    which has no `url`, so the editor opens a blank tab and says nothing. Convert with
+    `toString(true)` first, as `api.open` and the external URI opener do.
+88. **Promising a locator that cannot be reconstructed** → the CSS builder walks `parentElement`,
+    which is `null` at a shadow boundary, so an element inside a shadow root yielded a path
+    rooted in the shadow tree that `document.querySelector` can never reach; and a `srcdoc` or
+    script-filled frame reports `about:srcdoc` / `about:blank`, an address nobody can navigate
+    back to. Both read as precise and resolve to nothing.
+89. **Refusing an input because it resembles ones that deserved it** → `//example.com` was
+    grouped with `/Users/…`, `./rel` and `C:\dev` as "parses into a host nobody named", but its
+    slashes collapse and it resolves to exactly the page meant, so a working address stopped
+    working. A refusal needs its own evidence.
+90. **`Open File` on a host without the built-in browser** → a `file:` URI in the webview panel
     is blocked by `localResourceRoots`, so the panel renders blank with no error. The menu entry
     is therefore gated on `shouldUseIntegratedBrowser()` rather than falling back.
 

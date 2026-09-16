@@ -188,9 +188,17 @@ const cssPathFunctionDeclaration = `function () {
 // No backticks anywhere below: every page-side source here is a template
 // literal, so one inside a comment closes the string.
 const documentLocationFunctionDeclaration = `function () {
-	var result = { url: '', top: true, known: false };
+	var result = { url: '', top: true, known: false, shadow: false };
 	try {
 		var node = this.nodeType === 1 ? this : this.parentElement;
+		// Inside a shadow tree the root is the ShadowRoot rather than the
+		// document, and the selector builder cannot say so: it walks
+		// parentElement, which is null at the boundary, so it silently returns a
+		// path rooted inside the shadow tree that document.querySelector can
+		// never resolve.
+		if (node && node.getRootNode) {
+			result.shadow = node.getRootNode() !== node.ownerDocument;
+		}
 		var win = node && node.ownerDocument && node.ownerDocument.defaultView;
 		if (win) {
 			result.url = String(win.location.href);
@@ -332,15 +340,27 @@ async function evaluateOnNode(
 	return typeof result?.value === 'string' && result.value ? result.value : undefined;
 }
 
+/**
+ * Whether an address can be navigated back to.
+ *
+ * `about:srcdoc` is what a `srcdoc` iframe reports and `about:blank` is what a
+ * frame a script filled in reports — both name a document that exists only
+ * inside the page that built it, so a locator pointing at one cannot be
+ * reconstructed by anybody. `blob:` and `data:` are the same shape.
+ */
+function isNavigable(url: string | undefined): boolean {
+	return url !== undefined && /^(https?|file):/i.test(url);
+}
+
 /** Where the picked element's own document lives, and whether it is the top one. */
 async function documentLocation(
 	client: CDPClient,
 	sessionId: string,
 	backendNodeId: number,
 	tab: vscode.BrowserTab,
-): Promise<{ url: string | undefined; embeddedIn?: string }> {
+): Promise<{ url: string | undefined; embeddedIn?: string; shadow: boolean }> {
 
-	let parsed: { url?: string; top?: boolean; known?: boolean } = {};
+	let parsed: { url?: string; top?: boolean; known?: boolean; shadow?: boolean } = {};
 	try {
 		// The evaluation is inside the `try`, not only the parse. A page-side
 		// throw comes back as a *successful* CDP reply carrying
@@ -356,10 +376,35 @@ async function documentLocation(
 	} catch {
 		// Fall back to the tab's own URL rather than lose the pick.
 	}
+	const shadow = parsed.shadow === true;
 	if (!parsed.known || !parsed.url) {
-		return { url: tab.url };
+		return { url: tab.url, shadow };
 	}
-	return parsed.top ? { url: parsed.url } : { url: parsed.url, embeddedIn: tab.url };
+	return parsed.top
+		? { url: parsed.url, shadow }
+		: { url: parsed.url, embeddedIn: tab.url, shadow };
+}
+
+/**
+ * Why this element cannot be handed out as a "navigate, then find" locator, if
+ * it cannot.
+ *
+ * The rule is the one already written down for `browser_snapshot`: never hand
+ * out a selector that does not resolve with the call its consumer will make. A
+ * pair that cannot be reconstructed is worse than no pair, because it reads as
+ * precise.
+ */
+function locatorRefusal(location: { url: string | undefined; shadow: boolean }): string | undefined {
+	if (location.shadow) {
+		return vscode.l10n.t(
+			"That element is inside a shadow root, so a CSS path cannot reach it from the page. Use \"Copy Element\" instead.");
+	}
+	if (!isNavigable(location.url)) {
+		return vscode.l10n.t(
+			"That element is in a frame with no address of its own ({0}), so the page cannot be reopened at it. Use \"Copy Element\" instead.",
+			location.url ?? 'unknown');
+	}
+	return undefined;
 }
 
 function requireBrowserTab(): vscode.BrowserTab | undefined {
@@ -503,7 +548,17 @@ export function copyElementCssLocation(): Promise<void> {
 			// tab: the two differ inside an iframe, and the selector is rooted in
 			// the former. It is also read now rather than when the pick started,
 			// since a page can navigate while the user is choosing.
-			const { url } = await documentLocation(client, sessionId, backendNodeId, tab);
+			const location = await documentLocation(client, sessionId, backendNodeId, tab);
+			// Refused rather than handed over wrong: this command promises a pair
+			// that resolves, and a shadow root or an address-less frame breaks
+			// that promise silently. `refuse` is the status bar, never a toast —
+			// a notification would pause the very tab being picked in.
+			const refusal = locatorRefusal(location);
+			if (refusal) {
+				refuse(refusal);
+				return undefined;
+			}
+			const { url } = location;
 			// Wrapped as inline code, because this one lands in a chat message
 			// rather than in a file: the separator and the `>` of the selector
 			// are both Markdown-significant, so an unwrapped string is reflowed
@@ -620,8 +675,18 @@ export function addPathToAssistant(assistant: AssistantId, kind: PathKind): Prom
 			// Every kind gets the element's own document, not the tab's URL —
 			// all three selectors are rooted in that document, so inside an
 			// iframe the tab's URL names a page none of them resolve against.
-			const { url, embeddedIn } = await documentLocation(
-				client, sessionId, backendNodeId, tab);
+			const location = await documentLocation(client, sessionId, backendNodeId, tab);
+			// Only `cssLocation` promises a self-contained "navigate, then find"
+			// pair, so only it refuses. `css` and `xpath` travel with prose that
+			// does not claim the URL is a navigation target.
+			if (kind === 'cssLocation') {
+				const refusal = locatorRefusal(location);
+				if (refusal) {
+					refuse(refusal);
+					return undefined;
+				}
+			}
+			const { url, embeddedIn } = location;
 			const path = kind === 'cssLocation' ? withLocation(built, url) : built;
 			// The descriptor needs the element itself, which the path does not
 			// carry — one extra round trip, worth it for a readable file name.

@@ -81,19 +81,42 @@ export function hasKnownScheme(input: string): boolean {
 	return match !== null && knownSchemes.has(match[1].toLowerCase());
 }
 
+/** What follows the colon in `host:port` — a port, and then nothing or a path. */
+const portPattern = /^\d+(?:$|[/?#])/;
+
+/** `C:\` or `C:/` — a Windows drive, not a one-letter scheme. */
+const windowsDrivePattern = /^[a-z]:[\\/]/i;
+
 /**
  * Whether the input declares a scheme at all — known to us or not.
  *
- * The `://` half is what makes this safe to ask separately. `localhost:3000`
- * matches `scheme:` and must still be prefixed; `ws://localhost:8080` matches
- * `scheme://` and must not be, because prefixing produced
- * `https://ws://localhost:8080`, which **parses** — hostname `ws` — so nothing
- * downstream refused it and the browser silently opened nonsense. Anything with
- * an authority separator is left exactly as it was, which is also what this
- * command did before the normaliser existed.
+ * Three questions, because one test cannot separate the cases:
+ *
+ * - `scheme://` is unambiguous. `ws://localhost:8080` is not in the known list,
+ *   and prefixing produced `https://ws://localhost:8080`, which **parses** —
+ *   hostname `ws` — so nothing downstream refused it and the browser silently
+ *   opened nonsense.
+ * - A scheme we know needs no separator: `mailto:`, `about:`, `data:`.
+ * - An **opaque** scheme we do not know is the hard one, because `tel:+3612345`
+ *   and `localhost:3000` have the identical shape `word:rest`. What separates
+ *   them is the *rest*: a port is digits, optionally followed by a path, query
+ *   or fragment. Anything else — `+3612345`, `?xt=urn:…`, `calendar.example/x`
+ *   — is an opaque scheme, and prefixing it either mangled it
+ *   (`https://magnet:?xt=…`) or made it unparseable and so refused outright.
+ *
+ * A one-letter "scheme" followed by a slash is excluded first: `C:\dev` is a
+ * Windows drive, and reading it as a scheme would hand the browser a path it
+ * cannot open instead of refusing it.
  */
 function declaresScheme(input: string): boolean {
-	return authoritySchemePattern.test(input) || hasKnownScheme(input);
+	if (windowsDrivePattern.test(input)) {
+		return false;
+	}
+	if (authoritySchemePattern.test(input) || hasKnownScheme(input)) {
+		return true;
+	}
+	const match = schemePattern.exec(input);
+	return match !== null && !portPattern.test(input.slice(match[0].length));
 }
 
 /**
@@ -106,12 +129,13 @@ function declaresScheme(input: string): boolean {
  * parses, so the parse check alone let all of them through.
  */
 function looksLikeAuthority(input: string): boolean {
-	// A path or a protocol-relative URL, not a host.
+	// A path, not a host. A protocol-relative address is *not* in this set — it
+	// is stripped of its leading `//` before we get here.
 	if (/^[/.\\]/.test(input)) {
 		return false;
 	}
 	// A Windows drive letter, not a scheme. `Open File` is the route for those.
-	if (/^[a-z]:[\\/]/i.test(input)) {
+	if (windowsDrivePattern.test(input)) {
 		return false;
 	}
 	return true;
@@ -122,8 +146,10 @@ function looksLikeAuthority(input: string): boolean {
  *
  * `https` everywhere except localhost-like hosts, which get `http` — a dev
  * server on `localhost:3000` almost never speaks https, and those are the
- * addresses this extension exists to open. `preview-src/index.ts` picks the
- * same way for the panel's address bar, so both halves behave alike.
+ * addresses this extension exists to open. `preview-src/index.ts` makes the same
+ * `http`/`https` choice for the panel's address bar — but only that choice: it
+ * still prefixes an unknown `scheme://`, which this module stopped doing, so the
+ * two are no longer interchangeable.
  */
 export function addDefaultScheme(input: string): string {
 	const asHttps = `https://${input}`;
@@ -155,11 +181,19 @@ export function normalizeAddress(input: string): string | undefined {
 		return parses(trimmed) ? trimmed : undefined;
 	}
 
-	if (!looksLikeAuthority(trimmed)) {
+	// A protocol-relative address is a real one missing only its scheme, and it is
+	// what a copy out of HTML or Markdown looks like. `https://` + `//example.com`
+	// does resolve correctly, but only by an accident of URL parsing — four
+	// slashes collapse — so the slashes are dropped rather than relied upon. An
+	// earlier pass grouped this with the genuinely broken cases and refused it,
+	// losing an address that had always worked.
+	const bare = trimmed.startsWith('//') ? trimmed.slice(2) : trimmed;
+
+	if (!looksLikeAuthority(bare)) {
 		return undefined;
 	}
 
-	const candidate = addDefaultScheme(trimmed);
+	const candidate = addDefaultScheme(bare);
 	// Parsed *and* checked for a host: the parse alone answers "is this a URL",
 	// which is not the question — `https://?q=1` is a URL with no host.
 	try {

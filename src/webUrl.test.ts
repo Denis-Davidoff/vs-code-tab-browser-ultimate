@@ -109,13 +109,55 @@ suite('normalizeAddress', () => {
 		assert.strictEqual(normalizeAddress('gopher://a'), 'gopher://a');
 	});
 
+	test('an opaque scheme is relayed, not read as host:port', () => {
+		// `tel:+361234567` and `localhost:3000` have the identical shape
+		// `word:rest`. What separates them is the rest: a port is digits. Reading
+		// these as a host mangled `magnet:?xt=…` into `https://magnet:?xt=…` and
+		// refused the others outright, while the README promised pass-through.
+		for (const input of [
+			'tel:+361234567', 'sms:+1234', 'magnet:?xt=urn:btih:abc',
+			'webcal:calendar.example/x', 'bitcoin:1abc', 'foo:bar',
+		]) {
+			assert.strictEqual(normalizeAddress(input), input, input);
+		}
+	});
+
+	test('host:port is still not a scheme', () => {
+		// The other side of the same test — breaking this re-opens the trap that
+		// `hasKnownScheme` exists for.
+		assert.strictEqual(normalizeAddress('localhost:3000'), 'http://localhost:3000');
+		assert.strictEqual(normalizeAddress('localhost:3000/app'), 'http://localhost:3000/app');
+		assert.strictEqual(normalizeAddress('example.com:8080?q=1'), 'https://example.com:8080?q=1');
+		assert.strictEqual(normalizeAddress('[::1]:8080'), 'http://[::1]:8080');
+		assert.strictEqual(normalizeAddress('1.2.3.4:80'), 'https://1.2.3.4:80');
+	});
+
+	test('a drive letter still loses to the scheme test', () => {
+		// `C:\dev` reads as the opaque scheme `c:` unless the drive check runs
+		// first — and then it would be relayed to a browser that cannot open it
+		// instead of refused.
+		assert.strictEqual(normalizeAddress('C:\\dev\\index.html'), undefined);
+		assert.strictEqual(normalizeAddress('C:/dev/index.html'), undefined);
+	});
+
 	test('a path is refused rather than turned into a host', () => {
 		// Every one of these parses once `https://` is in front of it, which is
 		// why the parse check alone was not enough: `/Users/m5/x.html` became
 		// `https:///Users/m5/x.html` and `./rel.html` became `https://./rel.html`.
-		for (const input of ['/Users/m5/x.html', './rel.html', '../up.html', '//example.com']) {
+		for (const input of ['/Users/m5/x.html', './rel.html', '../up.html']) {
 			assert.strictEqual(normalizeAddress(input), undefined, input);
 		}
+	});
+
+	test('a protocol-relative address keeps working', () => {
+		// Grouped with the paths above at first and refused, which lost an
+		// address that had always opened: `https://` + `//example.com` collapses
+		// its slashes and resolves to `https://example.com/`. The scheme rule
+		// still applies to what is left.
+		assert.strictEqual(normalizeAddress('//example.com'), 'https://example.com');
+		assert.strictEqual(normalizeAddress('//example.com/a?q=1'), 'https://example.com/a?q=1');
+		assert.strictEqual(normalizeAddress('//localhost:3000'), 'http://localhost:3000');
+		assert.strictEqual(normalizeAddress('///x'), undefined, 'three slashes is still a path');
 	});
 
 	test('a Windows drive letter is not a scheme', () => {

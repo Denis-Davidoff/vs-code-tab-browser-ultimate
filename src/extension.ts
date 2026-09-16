@@ -64,11 +64,12 @@ const openerId = 'aiBrowser.open';
 /**
  * Hands an address to the built-in browser.
  *
- * Takes a `Uri` as well as a string because `aiBrowser.show` has always relayed
- * whatever it was given, and the built-in command accepts both. `api.open`
- * stringifies its own `Uri` first, which is why that one arrives as a string.
+ * A string, always: the built-in command reads a non-string argument as its
+ * options object and opens a blank tab. Every caller converts first — `api.open`
+ * and the external URI opener with `toString(true)`, `aiBrowser.show` through
+ * `asAddress`.
  */
-async function openInIntegratedBrowser(url?: string | vscode.Uri): Promise<void> {
+async function openInIntegratedBrowser(url?: string): Promise<void> {
 	await vscode.commands.executeCommand(integratedBrowserCommand, url);
 }
 
@@ -89,17 +90,32 @@ export function activate(context: vscode.ExtensionContext) {
 	 * `url` is typed `string`, but `executeCommand` is untyped at runtime and
 	 * `manager.show` has always accepted a `vscode.Uri` as well — so a caller
 	 * passing one used to work. `normalizeAddress` starts with `input.trim()`,
-	 * which turned that into a `TypeError` and lost the open entirely. Anything
-	 * that is not a string is passed through exactly as it arrived; `undefined`
-	 * stays `undefined`, which is how this command asks the browser to open with
-	 * no address at all. A string that cannot be made into an address is handed
-	 * on unchanged rather than dropped, so the failure stays the caller's.
+	 * which turned that into a `TypeError` and lost the open entirely.
+	 *
+	 * **A `Uri` is converted, not relayed**, and that is the whole point of this
+	 * helper. `workbench.action.browser.open` reads its argument as
+	 * `typeof e == "string" ? { url: e } : e ?? {}` — so anything that is not a
+	 * string becomes its undocumented *options* object, which has no `url`, and
+	 * the editor opens a **blank tab in silence**. Relaying the object therefore
+	 * replaced a loud `TypeError` with a quiet wrong result on the default path,
+	 * which is worse. `api.open` and the external URI opener already stringify
+	 * with `toString(true)` for exactly this reason.
+	 *
+	 * The shape is duck-typed rather than `instanceof`, because a value that
+	 * crossed a command boundary is not guaranteed to be the same class object.
+	 * `undefined` stays `undefined`, which is how this command asks the browser
+	 * to open with no address at all, and a string that cannot be made into an
+	 * address is handed on unchanged so the failure stays the caller's.
 	 */
-	const asAddress = (url: unknown): string | vscode.Uri | undefined => {
-		if (typeof url !== 'string') {
-			return url as vscode.Uri | undefined;
+	const asAddress = (url: unknown): string | undefined => {
+		if (typeof url === 'string') {
+			return normalizeAddress(url) ?? url;
 		}
-		return normalizeAddress(url) ?? url;
+		const uri = url as vscode.Uri | undefined;
+		if (uri && typeof uri.scheme === 'string' && typeof uri.toString === 'function') {
+			return uri.toString(true);
+		}
+		return undefined;
 	};
 
 	context.subscriptions.push(vscode.commands.registerCommand(showCommand, async (url?: string) => {

@@ -537,7 +537,8 @@ type `localhost:3000` and it opens `http://localhost:3000`, type `example.com` a
 `https://example.com`; `http` for localhost-like hosts because a dev server there does not speak
 https, `https` for everything else. An address that already carries a scheme is left exactly as
 you typed it, whatever that scheme is. Anything that is not an address — a file path, a relative
-path — is refused in the box rather than opened as a broken tab; use **Open File** for those.
+path — is refused in the box rather than opened as a broken tab; **Open File** is the route
+for those, where the built-in browser is in use.
 
 Clicking the button opens a menu with
 Open URL, Open File, the tab assignments (give the tab you are on to Claude Code, to Codex or to
