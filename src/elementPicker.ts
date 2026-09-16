@@ -340,14 +340,21 @@ async function documentLocation(
 	tab: vscode.BrowserTab,
 ): Promise<{ url: string | undefined; embeddedIn?: string }> {
 
-	const raw = await evaluateOnNode(
-		client, sessionId, backendNodeId, documentLocationFunctionDeclaration);
 	let parsed: { url?: string; top?: boolean; known?: boolean } = {};
 	try {
+		// The evaluation is inside the `try`, not only the parse. A page-side
+		// throw comes back as a *successful* CDP reply carrying
+		// `exceptionDetails`, which `evaluateOnNode` turns into a rejection — so
+		// with only the parse guarded, a page that had replaced
+		// `Document.prototype.defaultView` or `JSON.stringify` failed the whole
+		// pick with an error toast, which is exactly what the fallback below
+		// exists to avoid. It costs every kind now, not just this one:
+		// `addPathToAssistant` calls this for `css` and `xpath` too.
+		const raw = await evaluateOnNode(
+			client, sessionId, backendNodeId, documentLocationFunctionDeclaration);
 		parsed = raw ? JSON.parse(raw) : {};
 	} catch {
-		// The page is free to have replaced `JSON.stringify`; fall back rather
-		// than fail a pick over it.
+		// Fall back to the tab's own URL rather than lose the pick.
 	}
 	if (!parsed.known || !parsed.url) {
 		return { url: tab.url };

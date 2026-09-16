@@ -676,10 +676,27 @@ Three things about it are load-bearing:
   copy, `localhostHosts` in `preview-src/index.ts`, is the only unavoidable one: the webview is a
   separate bundle with its own tsconfig and runtime. An earlier version of this note claimed no
   shared import was possible at all, which was false and would have entrenched the duplication.
-- **The result is parsed before it is returned.** Prefixing a scheme onto anything at all yields
-  a string that *looks* like a URL and is not (`https://hello world`), and opening that is a
-  broken tab rather than an answer. `normalizeAddress` returns `undefined` instead, which is what
-  the prompt's `validateInput` refuses on.
+- **The result is parsed before it is returned** — and parsing alone is not enough, which took a
+  second pass to get right. `new URL()` *invents* a host rather than failing, so
+  `/Users/m5/x.html` came back as `https:///Users/m5/x.html`, `./rel.html` as `https://./rel.html`,
+  `//example.com` as `https:////example.com` and `C:\dev\index.html` as
+  `https://c/dev/index.html` — every one a valid URL pointing somewhere nobody asked for. So the
+  scheme-less branch also refuses input that cannot be an authority at all (`looksLikeAuthority`)
+  and requires a non-empty `hostname`, since `https://?q=1` is a URL with no host.
+  `normalizeAddress` returns `undefined`, which is what the prompt's `validateInput` refuses on.
+- **Input that already declares a scheme is handed on untouched, known to us or not**
+  (`declaresScheme`). `ws://localhost:8080` is not in `knownSchemes`, and prefixing produced
+  `https://ws://localhost:8080` — which parses, hostname `ws`, so nothing downstream refused it
+  and the browser silently opened nonsense. The `://` is what separates this from the
+  `localhost:3000` trap: that has no authority separator and must still be prefixed. Mangling an
+  address is strictly worse than relaying one the browser will reject.
+- **A `Uri` argument must survive.** `aiBrowser.show` is typed `url?: string`, but
+  `executeCommand` is untyped at runtime and `AIBrowserManager.show` has always accepted
+  `string | vscode.Uri` — so a caller passing one used to work, and `input.trim()` inside
+  `normalizeAddress` turned it into a `TypeError` that lost the open entirely. `asAddress` in
+  `extension.ts` relays anything that is not a string, and relays a string it could not normalise
+  unchanged rather than dropping it: the prompt is where an unusable address is refused, not the
+  programmatic command.
 
 It is applied in `aiBrowser.show` as well as at the prompt, since that command takes a URL from
 other callers too, and it is idempotent so the second pass changes nothing. `undefined` stays
@@ -2511,8 +2528,23 @@ No compile error for any of these — they only surface at runtime.
     schemes actually recognised — `hasKnownScheme`.
 82. **Prefixing a scheme without parsing the result** → anything at all becomes a
     URL-shaped string (`https://hello world`), and the browser opens a broken tab instead of the
-    caller reporting that it could not be understood.
-83. **`Open File` on a host without the built-in browser** → a `file:` URI in the webview panel
+    caller reporting that it could not be understood. **Parsing is not sufficient either**:
+    `new URL()` invents a host rather than failing, so a filesystem path, a relative path, a
+    protocol-relative URL and a Windows drive letter all came back as valid URLs pointing at
+    hosts nobody named. Require an authority shape and a non-empty `hostname` as well.
+83. **Prefixing a scheme onto input that already declares an unknown one** → `ws://host` became
+    `https://ws://host`, which parses with hostname `ws`, so the mangled form was opened
+    silently. Test for `scheme://` separately from the known-scheme list, and relay rather than
+    rewrite.
+84. **Normalising an argument whose type is wider at runtime than in its signature** →
+    `aiBrowser.show` is typed `string` and is reachable through `executeCommand`, which is
+    untyped; `input.trim()` on the `vscode.Uri` that used to work became a `TypeError` and the
+    open was lost.
+85. **Guarding only the parse when the call before it can also throw** → a page-side throw comes
+    back as a *successful* CDP reply carrying `exceptionDetails`, which `evaluateOnNode` turns
+    into a rejection, so a fallback wrapping only `JSON.parse` never ran and the whole element
+    pick died with an error toast instead of falling back.
+86. **`Open File` on a host without the built-in browser** → a `file:` URI in the webview panel
     is blocked by `localResourceRoots`, so the panel renders blank with no error. The menu entry
     is therefore gated on `shouldUseIntegratedBrowser()` rather than falling back.
 

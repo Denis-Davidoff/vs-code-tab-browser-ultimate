@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.21
+
+Caught up with the full build, which the version number now matches again.
+
+- **CSS Path + Location** described: the selector with the page in front of it, in the order an
+  assistant uses them — navigate, then find.
+- The toolbar dropdown is two levels now; the tour says so, with a submenu per assistant holding
+  its hand-overs, its Connect and its Share Tab.
+- `AI Browser: Show` takes a bare address — the scheme is supplied, `http` for a local dev
+  server and `https` otherwise.
+- Corrected: the repeat key runs one of twelve actions, not nine, and the CSS selector anchors
+  on a unique `id` just as the XPath does — the old wording said only the XPath did, and it had
+  already misled a reader into rebuilding something that existed.
+
 ## 0.5.14
 
 The listing now says what it is from the status bar, not only in a toast that can be missed.

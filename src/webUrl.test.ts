@@ -100,6 +100,38 @@ suite('normalizeAddress', () => {
 		}
 	});
 
+	test('an unknown scheme is handed on, never prefixed', () => {
+		// `https://` + `ws://localhost:8080` parses — hostname `ws` — so the
+		// parse check let the mangled form through and the browser silently
+		// opened nonsense. Anything carrying `scheme://` is left alone.
+		assert.strictEqual(normalizeAddress('ws://localhost:8080'), 'ws://localhost:8080');
+		assert.strictEqual(normalizeAddress('chrome-extension://abc/x'), 'chrome-extension://abc/x');
+		assert.strictEqual(normalizeAddress('gopher://a'), 'gopher://a');
+	});
+
+	test('a path is refused rather than turned into a host', () => {
+		// Every one of these parses once `https://` is in front of it, which is
+		// why the parse check alone was not enough: `/Users/m5/x.html` became
+		// `https:///Users/m5/x.html` and `./rel.html` became `https://./rel.html`.
+		for (const input of ['/Users/m5/x.html', './rel.html', '../up.html', '//example.com']) {
+			assert.strictEqual(normalizeAddress(input), undefined, input);
+		}
+	});
+
+	test('a Windows drive letter is not a scheme', () => {
+		// `C:` matches `scheme:` syntactically, and prefixing produced
+		// `https://c/dev/index.html` — a valid URL pointing at a host named `c`.
+		assert.strictEqual(normalizeAddress('C:\\dev\\index.html'), undefined);
+		assert.strictEqual(normalizeAddress('C:/dev/index.html'), undefined);
+		assert.strictEqual(normalizeAddress('d:\\x'), undefined);
+	});
+
+	test('a host is required, not merely a parseable URL', () => {
+		// `https://?q=1` is a URL and has no host.
+		assert.strictEqual(normalizeAddress('?q=1'), undefined);
+		assert.strictEqual(normalizeAddress('#frag'), undefined);
+	});
+
 	test('refuses what cannot become an address', () => {
 		// Prefixing a scheme onto anything yields a string that looks like a URL
 		// and is not; opening it is a broken tab instead of an answer.

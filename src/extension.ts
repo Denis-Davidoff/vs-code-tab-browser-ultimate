@@ -61,7 +61,14 @@ const openerId = 'aiBrowser.open';
 /**
  * Opens a URL in the integrated browser
  */
-async function openInIntegratedBrowser(url?: string): Promise<void> {
+/**
+ * Hands an address to the built-in browser.
+ *
+ * Takes a `Uri` as well as a string because `aiBrowser.show` has always relayed
+ * whatever it was given, and the built-in command accepts both. `api.open`
+ * stringifies its own `Uri` first, which is why that one arrives as a string.
+ */
+async function openInIntegratedBrowser(url?: string | vscode.Uri): Promise<void> {
 	await vscode.commands.executeCommand(integratedBrowserCommand, url);
 }
 
@@ -76,14 +83,32 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	}));
 
+	/**
+	 * What to hand on for whatever this command was given.
+	 *
+	 * `url` is typed `string`, but `executeCommand` is untyped at runtime and
+	 * `manager.show` has always accepted a `vscode.Uri` as well — so a caller
+	 * passing one used to work. `normalizeAddress` starts with `input.trim()`,
+	 * which turned that into a `TypeError` and lost the open entirely. Anything
+	 * that is not a string is passed through exactly as it arrived; `undefined`
+	 * stays `undefined`, which is how this command asks the browser to open with
+	 * no address at all. A string that cannot be made into an address is handed
+	 * on unchanged rather than dropped, so the failure stays the caller's.
+	 */
+	const asAddress = (url: unknown): string | vscode.Uri | undefined => {
+		if (typeof url !== 'string') {
+			return url as vscode.Uri | undefined;
+		}
+		return normalizeAddress(url) ?? url;
+	};
+
 	context.subscriptions.push(vscode.commands.registerCommand(showCommand, async (url?: string) => {
 		if (await shouldUseIntegratedBrowser()) {
 			// A scheme-less address reaches the built-in browser too, so it is
 			// supplied before the hand-over rather than only on the panel path.
 			// `undefined` stays `undefined`: that is how this command asks the
 			// browser to open with no address at all.
-			return openInIntegratedBrowser(
-				url === undefined ? undefined : normalizeAddress(url) ?? url);
+			return openInIntegratedBrowser(asAddress(url));
 		}
 
 		if (!url) {
@@ -104,7 +129,7 @@ export function activate(context: vscode.ExtensionContext) {
 		// takes a URL from other callers too — the status bar menu, and any
 		// extension that runs it. Supplying the scheme is idempotent, so a
 		// caller that already passed a full address is unaffected.
-		const address = url === undefined ? undefined : normalizeAddress(url);
+		const address = asAddress(url);
 		if (address) {
 			manager.show(address);
 		}

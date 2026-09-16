@@ -535,8 +535,9 @@ typing a path.
 A permanent **AI Browser** button sits in the status bar. **Open URL** takes a bare address —
 type `localhost:3000` and it opens `http://localhost:3000`, type `example.com` and it opens
 `https://example.com`; `http` for localhost-like hosts because a dev server there does not speak
-https, `https` for everything else. Anything that cannot be made into an address is refused in
-the box rather than opened as a broken tab.
+https, `https` for everything else. An address that already carries a scheme is left exactly as
+you typed it, whatever that scheme is. Anything that is not an address — a file path, a relative
+path — is refused in the box rather than opened as a broken tab; use **Open File** for those.
 
 Clicking the button opens a menu with
 Open URL, Open File, the tab assignments (give the tab you are on to Claude Code, to Codex or to

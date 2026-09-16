@@ -72,10 +72,49 @@ const knownSchemes: ReadonlySet<string> = new Set([
 
 const schemePattern = /^([a-z][a-z0-9+\-.]*):/i;
 
+/** A scheme followed by `//`, which is unambiguous whether or not we know it. */
+const authoritySchemePattern = /^[a-z][a-z0-9+\-.]*:\/\//i;
+
 /** Whether the input already starts with a scheme we recognise. */
 export function hasKnownScheme(input: string): boolean {
 	const match = schemePattern.exec(input);
 	return match !== null && knownSchemes.has(match[1].toLowerCase());
+}
+
+/**
+ * Whether the input declares a scheme at all — known to us or not.
+ *
+ * The `://` half is what makes this safe to ask separately. `localhost:3000`
+ * matches `scheme:` and must still be prefixed; `ws://localhost:8080` matches
+ * `scheme://` and must not be, because prefixing produced
+ * `https://ws://localhost:8080`, which **parses** — hostname `ws` — so nothing
+ * downstream refused it and the browser silently opened nonsense. Anything with
+ * an authority separator is left exactly as it was, which is also what this
+ * command did before the normaliser existed.
+ */
+function declaresScheme(input: string): boolean {
+	return authoritySchemePattern.test(input) || hasKnownScheme(input);
+}
+
+/**
+ * Whether scheme-less input can be read as `host[:port][/path]` at all.
+ *
+ * Needed because `new URL('https://' + input)` invents a host rather than
+ * failing: `/Users/m5/x.html` became `https:///Users/m5/x.html`, `./rel.html`
+ * became `https://./rel.html`, `//example.com` became `https:////example.com`
+ * and `C:\dev\index.html` became `https://c/dev/index.html`. Every one of those
+ * parses, so the parse check alone let all of them through.
+ */
+function looksLikeAuthority(input: string): boolean {
+	// A path or a protocol-relative URL, not a host.
+	if (/^[/.\\]/.test(input)) {
+		return false;
+	}
+	// A Windows drive letter, not a scheme. `Open File` is the route for those.
+	if (/^[a-z]:[\\/]/i.test(input)) {
+		return false;
+	}
+	return true;
 }
 
 /**
@@ -109,13 +148,32 @@ export function normalizeAddress(input: string): string | undefined {
 		return undefined;
 	}
 
-	const candidate = hasKnownScheme(trimmed) ? trimmed : addDefaultScheme(trimmed);
+	if (declaresScheme(trimmed)) {
+		// Already an address of some kind. Returned untouched even when the
+		// scheme is one we do not model — mangling it is strictly worse than
+		// handing it on and letting the browser refuse it.
+		return parses(trimmed) ? trimmed : undefined;
+	}
+
+	if (!looksLikeAuthority(trimmed)) {
+		return undefined;
+	}
+
+	const candidate = addDefaultScheme(trimmed);
+	// Parsed *and* checked for a host: the parse alone answers "is this a URL",
+	// which is not the question — `https://?q=1` is a URL with no host.
 	try {
-		// Parsed, not pattern-matched: this is the only check that answers the
-		// question the caller actually has — will the browser take it.
-		new URL(candidate);
-		return candidate;
+		return new URL(candidate).hostname ? candidate : undefined;
 	} catch {
 		return undefined;
+	}
+}
+
+function parses(candidate: string): boolean {
+	try {
+		new URL(candidate);
+		return true;
+	} catch {
+		return false;
 	}
 }
