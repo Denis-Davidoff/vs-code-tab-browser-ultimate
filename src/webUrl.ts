@@ -23,19 +23,33 @@ declare class URL {
 }
 
 /**
- * Hosts that get `http` rather than `https`.
+ * Hosts this extension treats as a local dev server.
+ *
+ * Two questions are answered from it and they are deliberately the same
+ * predicate: which URIs the external opener claims (`extension.ts`), and which
+ * scheme-less addresses get `http` rather than `https` (below). Letting them
+ * drift means the opener offers to open a host whose typed form then gets
+ * `https` and cannot connect.
  *
  * The bracketed IPv6 forms are deliberate: `URL.hostname` returns an IPv6
- * authority with its brackets, so `::1` would never match. The same set, in the
- * same spelling, is `enabledHosts` in `extension.ts` and `localhostHosts` in
- * `preview-src/index.ts` — three runtimes, no shared import possible.
+ * authority with its brackets, so `::1` would never match.
+ *
+ * `preview-src/index.ts` carries a third copy, `localhostHosts`, and **that one
+ * is genuinely unavoidable** — the webview is a separate bundle with its own
+ * tsconfig and runtime, so nothing in `src/` can reach it. This module is a leaf
+ * (no relative value imports, so `npm test` can load it), which constrains what
+ * *it* may import and not who may import it — `extension.ts` imports from here.
  */
-const localHosts: ReadonlySet<string> = new Set([
+export const localHosts: ReadonlySet<string> = new Set([
 	'localhost',
+	// localhost IPv4
 	'127.0.0.1',
+	// localhost IPv6
 	'[0:0:0:0:0:0:0:1]',
 	'[::1]',
+	// all interfaces IPv4
 	'0.0.0.0',
+	// all interfaces IPv6
 	'[0:0:0:0:0:0:0:0]',
 	'[::]',
 ]);

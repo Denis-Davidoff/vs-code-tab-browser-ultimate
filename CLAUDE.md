@@ -103,7 +103,7 @@ Compiled with `tsc`, **no bundling**. `main: ./out/extension`.
 - [src/argvJson.ts](src/argvJson.ts) — surgical JSONC edits to `argv.json` (leaf, under test)
 - [src/statusBar.ts](src/statusBar.ts) — the two status bar items and their menu
 - [src/notify.ts](src/notify.ts) — confirmations, kept out of the notification area
-- [src/elementPicker.ts](src/elementPicker.ts) — the three element commands
+- [src/elementPicker.ts](src/elementPicker.ts) — the four element commands
 - [src/elementContext.ts](src/elementContext.ts) — pulls element data out of the page over CDP
 - [src/elementMarkdown.ts](src/elementMarkdown.ts) — renders that data as Markdown
 - [src/cssHelpers.ts](src/cssHelpers.ts) — copied verbatim from vscode, builds the CSS section
@@ -668,9 +668,14 @@ Three things about it are load-bearing:
   one case the whole module exists for. `hasKnownScheme` compares against a *list*, mirroring
   `ALL_KNOWN_SCHEMES` in `preview-src/browserSearch.ts`.
 - **The host set holds the bracketed IPv6 spellings**, because `URL.hostname` returns an IPv6
-  authority with its brackets — `::1` would never match. It is the third copy of that set
-  (`enabledHosts` in `extension.ts`, `localhostHosts` in `preview-src/index.ts`); three runtimes,
-  no shared import possible.
+  authority with its brackets — `::1` would never match. **It is exported and `extension.ts`
+  imports it** rather than keeping its own: `enabledHosts` (which URIs the external opener claims)
+  and this (which addresses get `http`) are one predicate — "is this a local dev server" — and two
+  copies let the opener claim a host whose typed form then gets `https` and cannot connect. The
+  leaf-module rule constrains what `webUrl.ts` may *import*, not who may import it. The third
+  copy, `localhostHosts` in `preview-src/index.ts`, is the only unavoidable one: the webview is a
+  separate bundle with its own tsconfig and runtime. An earlier version of this note claimed no
+  shared import was possible at all, which was false and would have entrenched the duplication.
 - **The result is parsed before it is returned.** Prefixing a scheme onto anything at all yields
   a string that *looks* like a URL and is not (`https://hello world`), and opening that is a
   broken tab rather than an answer. `normalizeAddress` returns `undefined` instead, which is what
@@ -868,8 +873,10 @@ Share Tab with All Assistants                                   4_share@1
 Stop Sharing Tab                                                4_share@2   when tabShared
 ```
 
-That is eleven rows where it used to be twenty-one. The `group` prefixes put the separators in;
-ordering comes from the `@n` suffix, not from the position in the `contributes.menus` array —
+That is eleven rows. The menu had eighteen before this change, and a flat one would have
+had twenty-one once the fourth element kind was added. The `group` prefixes put the
+separators in; ordering comes from the `@n` suffix, not from the position in the
+`contributes.menus` array —
 the array is kept in the same order anyway, because a file that reads in a different order than
 the menu renders is a trap for the next edit. `Stop Sharing Tab` is gated on the
 `aiBrowser.tabShared` context key, republished from `extension.ts` on every share change, so it
@@ -2470,7 +2477,11 @@ No compile error for any of these — they only surface at runtime.
 75. **Packaging whatever the working tree happens to contain** → `.vscodeignore` is an allowlist
     by omission, so a file this extension's *own* command writes into the project root
     (`.mcp.json`, carrying the workspace token) rode into the VSIX. Check `unzip -l` after
-    adding any tool that writes at the repository root.
+    adding any tool that writes at the repository root. **It happened a second time** with
+    `.ai-browser/`, the report directory `assistants.ts` creates when handing an element to
+    Claude Code — and git hid it, because that directory gets its own `.gitignore` of `*` on
+    creation, so `git status` is clean while `vsce` packs it anyway. A clean working tree is not
+    evidence that the package is clean; only `unzip -l` is.
 76. **Two element kinds sharing a centre dot** → the icon is the only label a primary button
     has, so the toolbar shows the same picture for two different actions and the `Cmd+Alt+C`
     chord looks like it fires at random. The old grid check only compared dots *within* a kind;
@@ -2664,6 +2675,21 @@ dependencies.
 
 The release steps live in [PUBLISHING.md](PUBLISHING.md); what is non-obvious about them is
 below.
+
+**Verify the package by extracting it, never by trusting that the build ran.** The committed
+`.vsix` went out of date once in this repository's history and nothing caught it: a commit
+changed shipped source without repackaging, so the artifact and the source both claimed the same
+version while the artifact was missing an entire module. Two checks settle it, and they are
+cheap:
+
+```sh
+rm -rf /tmp/vsix && unzip -q tab-browser-ultimate.vsix -d /tmp/vsix
+diff -rq /tmp/vsix/extension/out out          # must be silent
+unzip -l tab-browser-ultimate.vsix | grep -E '\.ai-browser/|\.mcp\.json'   # must be empty
+```
+
+The first catches a stale package, the second the allowlist-by-omission hazard in
+breaks-silently #75. Run both after `npm run package`, before committing.
 
 Three things vsce insists on, each of which stopped the first attempt:
 

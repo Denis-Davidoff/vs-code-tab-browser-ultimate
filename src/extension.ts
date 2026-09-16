@@ -12,7 +12,7 @@ import {
 } from './elementPicker';
 import { cleanUpReports, publishAssistantContext, type AssistantId } from './assistants';
 import { LastElementAction, type ElementActionId } from './lastAction';
-import { normalizeAddress } from './webUrl';
+import { localHosts, normalizeAddress } from './webUrl';
 import { BrowserController } from './browserController';
 import { McpLifecycle } from './mcpLifecycle';
 import { connectClaudeCode, connectCodex, type SharedPage } from './mcpSetup';
@@ -33,19 +33,15 @@ declare class URL {
 const openApiCommand = 'aiBrowser.api.open';
 const showCommand = 'aiBrowser.show';
 
-const enabledHosts = new Set<string>([
-	'localhost',
-	// localhost IPv4
-	'127.0.0.1',
-	// localhost IPv6
-	'[0:0:0:0:0:0:0:1]',
-	'[::1]',
-	// all interfaces IPv4
-	'0.0.0.0',
-	// all interfaces IPv6
-	'[0:0:0:0:0:0:0:0]',
-	'[::]'
-]);
+/**
+ * Hosts the external URI opener claims.
+ *
+ * The same set decides which scheme-less address gets `http` in `webUrl.ts`, and
+ * it is imported rather than repeated: the two answer one question — "is this a
+ * local dev server" — and a second copy would let the opener claim a host whose
+ * typed form then gets `https` and cannot connect.
+ */
+const enabledHosts = localHosts;
 
 const copyXPathCommand = 'aiBrowser.copyElementXPath';
 const copyElementCommand = 'aiBrowser.copyElement';

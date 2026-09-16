@@ -5,7 +5,7 @@
 
 import * as assert from 'node:assert';
 import { suite, test } from 'node:test';
-import { addDefaultScheme, hasKnownScheme, normalizeAddress } from './webUrl.ts';
+import { addDefaultScheme, hasKnownScheme, localHosts, normalizeAddress } from './webUrl.ts';
 
 suite('hasKnownScheme', () => {
 
@@ -26,6 +26,21 @@ suite('hasKnownScheme', () => {
 
 	test('an unknown scheme is not known', () => {
 		assert.ok(!hasKnownScheme('gopher://a'));
+	});
+});
+
+suite('localHosts', () => {
+
+	test('carries the bracketed IPv6 spellings', () => {
+		// `URL.hostname` returns an IPv6 authority *with* its brackets, so a bare
+		// `::1` in this set would never match anything. It is shared with the
+		// external URI opener in `extension.ts`, so getting it wrong would make
+		// the opener claim a host whose typed form then cannot connect.
+		for (const host of ['localhost', '127.0.0.1', '0.0.0.0', '[::1]', '[::]',
+			'[0:0:0:0:0:0:0:1]', '[0:0:0:0:0:0:0:0]']) {
+			assert.ok(localHosts.has(host), host);
+		}
+		assert.ok(!localHosts.has('::1'), 'an unbracketed IPv6 form would never match');
 	});
 });
 

@@ -124,7 +124,7 @@ the editor: the page you are looking at is the page your agent reads and drives.
 - 📸 **Screenshots that paste as pictures.** The visible area or the whole scrollable page, on
   the system clipboard as a real PNG — `Cmd`/`Ctrl` + `V` into a chat, an issue or a document.
 - ⌨️ **One key repeats what you did last.** The toolbar's right-hand button and
-  `Cmd`/`Ctrl` + `Alt` + `C` both run the action you used last, whichever of the nine it was.
+  `Cmd`/`Ctrl` + `Alt` + `C` both run the action you used last, whichever of the twelve it was.
 - 🔌 **An MCP server, with nothing to install.** No package, no separate process to babysit: the
   extension starts a local server on activation, and one command configures Claude Code, Codex
   or VS Code's own chat to use it.
