@@ -549,9 +549,9 @@ suite('codexDeadTables / removeCodexTables', () => {
 
 	const dead = 'gone00000000000000000000000000000000000000000000000000000000dead';
 
-	const prune = (text: string, tokens: string[]) => {
+	const prune = (text: string, tokens: string[], keep = token) => {
 		const entries = codexEntries(text);
-		return removeCodexTables(text, entries, codexDeadTables(entries, new Set(tokens)));
+		return removeCodexTables(text, entries, codexDeadTables(entries, new Set(tokens), keep));
 	};
 
 	test('removes a dead entry whole, sub-table and all', () => {
@@ -622,16 +622,37 @@ suite('codexDeadTables / removeCodexTables', () => {
 		assert.ok(repaired.text.startsWith('# my servers'));
 	});
 
-	test('never touches our own live entry, even when its token is passed', () => {
-		// Belt and braces: `deadWorkspaceTokens` already excludes it, but the
-		// consequence of getting this wrong is a window deleting its own config.
+	test('never touches our own entry, even when our own token is declared dead', () => {
+		// The guard that matters, and the one the old version of this test only
+		// claimed to exercise: it passed `[dead, foreign]`, so `token` never
+		// reached the function and the live table would in fact have been
+		// removed. `deadWorkspaceTokens` refuses to declare our own token dead,
+		// but this function is the one that deletes, so it refuses too.
 		const before = [
+			'[mcp_servers.ai-browser]',
+			'url = "http://127.0.0.1:43110/mcp"',
+			`http_headers = { Authorization = "Bearer ${token}" }`,
+			'',
+		].join('\n');
+
+		const entries = codexEntries(before);
+		assert.deepStrictEqual(codexDeadTables(entries, new Set([token]), token), []);
+		assert.strictEqual(prune(before, [token, dead, foreign]).changed, false);
+	});
+
+	test('a dead sibling goes while our own entry stays, in one file', () => {
+		const before = [
+			'[mcp_servers.ai-browser-old-abc123]',
+			`http_headers = { Authorization = "Bearer ${dead}" }`,
+			'',
 			'[mcp_servers.ai-browser]',
 			`http_headers = { Authorization = "Bearer ${token}" }`,
 			'',
 		].join('\n');
 
-		assert.strictEqual(prune(before, [dead, foreign]).changed, false);
+		const result = prune(before, [dead, token]);
+		assert.deepStrictEqual(result.removed, ['ai-browser-old-abc123']);
+		assert.ok(result.text.includes(`Bearer ${token}`));
 	});
 
 	test('keeps the file\'s CRLF line endings', () => {

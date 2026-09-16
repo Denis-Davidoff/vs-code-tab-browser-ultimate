@@ -152,12 +152,14 @@ export async function checkConnection(server: McpServer, browser: BrowserControl
 	}
 
 	if (strangers.length) {
-		// What is left after the startup prune: entries carrying a token this
-		// machine never minted, so nothing here can say whether the project
-		// behind them exists. One of these may be another window's live entry,
-		// and removing it would break a working assistant to tidy ours.
+		// `codexStrangers` compares against *this window's* token only, so what
+		// is left here is two groups, not one: entries of other live projects
+		// and windows, whose tokens this machine did mint, and entries carrying
+		// a token it never minted. The message must not collapse them — saying
+		// they "could not be matched" invites removing a working neighbour's
+		// server. Either way they are left alone: one of them may be live.
 		lines.push('', vscode.l10n.t(
-			"Codex has {0} entries that look like ours but cannot be matched to a project on this machine ({1}). Entries for projects that no longer exist are removed automatically at startup; these could not be identified, so they are left alone — remove any you no longer need with `codex mcp remove <name>`.",
+			"Codex has {0} entries that look like ours but do not carry this window's token ({1}). Entries whose project no longer exists are removed automatically at startup, so these belong to other projects or windows, or to a config this machine did not write. They are left alone — remove any you no longer need with `codex mcp remove <name>`.",
 			String(strangers.length), strangers.join(', ')));
 	}
 

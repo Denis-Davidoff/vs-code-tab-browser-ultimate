@@ -1603,24 +1603,51 @@ deletes rather than corrects. Everything about it follows from that:
 - **A file rewritten only to drop a dead entry is not reported as a port fix.** `Rewrite.repaired`
   is separate from `Rewrite.changed` for exactly that — otherwise the window announces it
   updated a port it never touched.
-- **Four things are never dead, and the fourth is the subtle one.** A token whose folder is still
-  there (this window's included); the `no-folder` token, which never named a folder; a non-`file`
-  URI, where the extension host answering is on a different machine from the folder; and **a
-  folder whose parent directory is missing too**. That last one is what an unmounted volume or an
-  unreachable share looks like — the whole branch is absent, not the project — and without it the
-  first window opened with an external drive detached would delete the config of every project on
-  it. It costs a false negative on a project deleted together with its parent, which is the safe
-  direction: a missed entry is tidied on a later start, a wrongly deleted one costs somebody a
-  reconnect.
+- **Nothing counts as dead but a proof, and there are two of them.** `presence()` answers
+  `present` / `missing` / `unknown`, and only a clean `FileNotFound` is `missing`. Collapsing
+  that to a boolean — a bare `catch { return false }` — is how a live project gets deleted:
+  `NoPermissions` (macOS gates `~/Documents` and `~/Desktop` behind TCC), a transient I/O error,
+  a provider that cannot reach its store and a stalled mount all fail the same way, and every one
+  of them happens to a folder that is very much there. The second proof is **the parent directory
+  reading `present`**, which is what an unmounted volume or an unreachable share fails — the whole
+  branch is absent, not the project — and without it the first window opened with an external
+  drive detached would delete the config of every project on it. The two are independent: the
+  parent guard says nothing about an error landing on the folder itself while its parent reads
+  fine, which is exactly the shape of a permission failure.
+- **Every other state keeps the entry**, and that asymmetry is deliberate: a missed entry is
+  tidied on a later start, a wrongly deleted one costs somebody a reconnect. A dangling symlink is
+  safe from both sides — VS Code's disk provider resolves one to `SymbolicLink | Unknown` and
+  returns it rather than throwing, so it reads as `present`, and a provider that throws instead
+  lands on `unknown`. The other exclusions are a folder that is still there (this window's
+  included), the `no-folder` token, which never named a folder, and a non-`file` URI, where the
+  extension host answering is on a different machine from the folder.
+- **Each `stat` is bounded** (`statTimeoutMs`), and the scan runs them in parallel. The list is
+  every folder ever opened, and `workspace.fs.stat` has no timeout of its own, so one mount that
+  has stopped answering would otherwise hold the whole repair behind it — the same failure shape
+  as an unbounded CDP call inside a transition. A timeout answers `unknown`, so it keeps the entry.
+- **A confirmed-dead `globalState` key is forgotten, but only after a *complete* repair.**
+  Without that the scan is unbounded: it would stat every folder the extension has ever opened,
+  on every activation and every `aiBrowser.mcp.*` change, for the life of the machine. The
+  ordering is the load-bearing half — a run that lost a lock may not have reached the entry the
+  token identifies, and forgetting the token first strands that entry for good, because nothing
+  can ever recognise it again. `RepairReport.complete` exists for this; it replaced `lockBusy`,
+  which was written and never read.
+- **`codexDeadTables` refuses our own token as well**, although `deadWorkspaceTokens` already
+  does. It is the function that deletes, the parameter is **required** so it cannot be omitted by
+  accident, and a caller assembling the set some other way — a future window registry, a test —
+  would otherwise wipe the config of the window it is running in.
 - **The cost of a deletion, stated plainly:** `repairConfigs` never *creates* an entry, so a
   pruned project does not get one back by being reopened — the user presses `Connect Codex`
   there once. That is the whole price, and it is why the bar for "provably gone" is set where it
   is rather than at "the port does not answer", which is also true of every window that is simply
   closed.
-- **What is left for `codexStrangers` is now a smaller and more honest set**: entries carrying a
-  token this machine never minted — a config synced from another machine, or one predating a
-  `globalState` reset. Those look exactly like dead entries from here and may be perfectly live,
-  so the report still names them and still refuses to touch them. Its wording says so.
+- **What `codexStrangers` still reports is two groups, and the message must not collapse them.**
+  It compares against *this window's* token only, so the list holds entries of other **live**
+  projects and windows — tokens this machine did mint, folders that are still there — as well as
+  entries carrying a token it never minted, from a config synced off another machine or one
+  predating a `globalState` reset. A first pass at the wording said they "cannot be matched to a
+  project on this machine", which is false for the first group and invites removing a working
+  neighbour's server. Both are left alone; the text names both.
 
 **Four ways the repair itself corrupted a config, all found by review and all now tested.**
 Each one is the kind that only fires on somebody else's config, which is exactly why they are
@@ -2651,11 +2678,12 @@ No compile error for any of these — they only surface at runtime.
 90. **`Open File` on a host without the built-in browser** → a `file:` URI in the webview panel
     is blocked by `localResourceRoots`, so the panel renders blank with no error. The menu entry
     is therefore gated on `shouldUseIntegratedBrowser()` rather than falling back.
-91. **Deciding a project folder is gone from a single failed `stat`** → an unmounted volume and
-    an unreachable share look exactly like a deleted project, so the first window opened with an
-    external drive detached would prune the Codex config of every project on it — silently, at
-    startup, and unrecoverably except by reconnecting each one. Require the folder's *parent* to
-    still be there before calling it gone.
+91. **Treating every `stat` failure as absence** → `NoPermissions` (macOS TCC on `~/Documents`),
+    a transient I/O error and a stalled mount all fail the same way as a deleted folder, so a
+    bare `catch { return false }` prunes the Codex entry of a live project, silently, at startup.
+    Only a clean `FileNotFound` proves absence; everything else must keep the entry. Separately,
+    require the folder's *parent* to read as present, or an unmounted volume takes every project
+    on it — the two guards cover different failures and neither implies the other.
 92. **Pruning a config entry on "looks like ours by name"** → the per-project names in
     `~/.codex/config.toml` are shared by every window and every machine this extension has run
     on, so one of them may be another window's live entry. Only a token this machine minted

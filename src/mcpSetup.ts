@@ -499,6 +499,23 @@ export const tokenKeyPrefix = 'mcp.token:';
 /** `mcp.token:<folderUri>` -> the token, for every folder we have ever served. */
 export type TokenStore = Pick<vscode.Memento, 'keys' | 'get'>;
 
+/** Tokens proven dead, and the `globalState` keys that held them. */
+export interface DeadWorkspaces {
+	readonly tokens: Set<string>;
+	/**
+	 * The keys to forget once the prune has actually landed.
+	 *
+	 * Without this the scan is unbounded: it stats every folder this extension
+	 * has ever opened, on every activation and every `aiBrowser.mcp.*` change,
+	 * for the rest of the machine's life. Forgetting a key is safe precisely
+	 * because the folder is gone — nothing can ever authenticate with that
+	 * token again — but it must wait for a **complete** repair, or a run that
+	 * lost the lock would forget the token before the entry it identifies has
+	 * been removed, stranding that entry forever.
+	 */
+	readonly keys: string[];
+}
+
 /**
  * Tokens of ours whose workspace folder no longer exists on disk.
  *
@@ -529,8 +546,8 @@ export type TokenStore = Pick<vscode.Memento, 'keys' | 'get'>;
 export async function deadWorkspaceTokens(
 	store: TokenStore,
 	ourToken: string,
-): Promise<Set<string>> {
-	const dead = new Set<string>();
+): Promise<DeadWorkspaces> {
+	const candidates: { key: string; token: string; uri: vscode.Uri }[] = [];
 
 	for (const key of store.keys()) {
 		if (!key.startsWith(tokenKeyPrefix)) {
@@ -556,30 +573,104 @@ export async function deadWorkspaceTokens(
 			continue;
 		}
 
-		if (await folderIsGone(uri)) {
-			dead.add(token);
+		candidates.push({ key, token, uri });
+	}
+
+	// In parallel, because this is a list of every folder ever opened and the
+	// checks are independent. Each one is bounded by `statTimeoutMs`, so a
+	// single stalled mount costs that budget rather than blocking the rest.
+	const verdicts = await Promise.all(candidates.map(c => folderIsGone(c.uri)));
+
+	const tokens = new Set<string>();
+	const keys: string[] = [];
+	for (const [at, gone] of verdicts.entries()) {
+		if (gone) {
+			tokens.add(candidates[at].token);
+			keys.push(candidates[at].key);
 		}
 	}
 
-	return dead;
+	return { tokens, keys };
 }
 
-async function exists(uri: vscode.Uri): Promise<boolean> {
+/**
+ * How long one `stat` may take before the answer is "cannot tell".
+ *
+ * `workspace.fs.stat` has no timeout of its own, and one of the paths in the
+ * list may well be on a mount that has stopped answering. Without a budget that
+ * single folder holds up the repair behind it — the same failure shape as the
+ * unbounded CDP call inside a transition.
+ */
+const statTimeoutMs = 2000;
+
+/**
+ * Three answers, and collapsing them to two is how a live project gets deleted.
+ *
+ * `unknown` is everything that is not a clean "no such file": `NoPermissions`
+ * (macOS gates `~/Documents` and `~/Desktop` behind TCC, and the first `stat`
+ * after an update can fail there), a transient I/O error, a provider that
+ * cannot reach its backing store, a stalled mount. Every one of those happens
+ * to a folder that is very much alive, and treating them as absence — which
+ * a bare `catch { return false }` does — silently deletes that project's Codex
+ * entry at startup.
+ *
+ * The parent-directory guard does not cover this: it proves the *branch* is
+ * mounted, so it catches a detached volume, and says nothing about an error
+ * landing on the folder itself while its parent reads fine.
+ *
+ * A dangling symlink is safe either way. VS Code's disk provider resolves one
+ * to `SymbolicLink | Unknown` and returns it rather than throwing, so it reads
+ * as `present`; a provider that throws something else instead lands on
+ * `unknown`. Only a clean `FileNotFound` prunes.
+ */
+type Presence = 'present' | 'missing' | 'unknown';
+
+async function presence(uri: vscode.Uri): Promise<Presence> {
+	let timer: NodeJS.Timeout | undefined;
 	try {
-		await vscode.workspace.fs.stat(uri);
-		return true;
-	} catch {
-		return false;
+		const answer = await Promise.race([
+			vscode.workspace.fs.stat(uri).then(() => 'present' as const),
+			new Promise<'unknown'>(resolve => {
+				timer = setTimeout(() => resolve('unknown'), statTimeoutMs);
+			}),
+		]);
+		return answer;
+	} catch (err) {
+		return isFileNotFound(err) ? 'missing' : 'unknown';
+	} finally {
+		clearTimeout(timer);
 	}
 }
 
-/** Missing, *and* its parent is there to prove the branch itself is mounted. */
+/**
+ * Whether an error is specifically "there is no such file".
+ *
+ * `FileSystemError.code` is read off the value rather than through
+ * `instanceof`: a file system provider is free to reject with its own error,
+ * and a Node-style `ENOENT` reaches us the same way. Anything unrecognised is
+ * *not* a proof of absence, which is the direction that matters.
+ */
+function isFileNotFound(err: unknown): boolean {
+	const code = (err as { code?: unknown } | undefined)?.code;
+	return code === 'FileNotFound' || code === 'ENOENT';
+}
+
+/**
+ * Proven missing, *and* its parent proven present.
+ *
+ * Both halves have to be definite. The folder must answer `missing` — not
+ * merely fail — and the parent must answer `present`, since an `unknown` there
+ * is exactly what an unmounted volume or an unreachable share looks like.
+ */
 async function folderIsGone(uri: vscode.Uri): Promise<boolean> {
-	if (await exists(uri)) {
+	if (await presence(uri) !== 'missing') {
 		return false;
 	}
 	const parent = uri.with({ path: uri.path.replace(/\/[^/]+\/?$/, '') });
-	return parent.path !== uri.path && parent.path !== '' && await exists(parent);
+	if (parent.path === uri.path || parent.path === '') {
+		return false;
+	}
+	return await presence(parent) === 'present';
 }
 
 /* ---------------------------------------------------------------------- repair */
@@ -592,8 +683,15 @@ export interface RepairReport {
 	readonly collapsed: string[];
 	/** Codex entries removed because the project they were written for is gone. */
 	readonly removed: string[];
-	/** True when the global Codex file was skipped because another window held the lock. */
-	readonly lockBusy: boolean;
+	/**
+	 * True when every config was actually examined.
+	 *
+	 * False when the server had no URL to write, or when another window held a
+	 * lock and that file was skipped. The caller must not act on the run as if
+	 * it were final — forgetting a dead token after an incomplete run would
+	 * strand the entry that token identifies.
+	 */
+	readonly complete: boolean;
 }
 
 /** What one config rewrite produced, for {@link repairConfigs} to account for. */
@@ -641,7 +739,7 @@ export async function repairConfigs(
 	server: McpServer,
 	deadTokens: ReadonlySet<string> = new Set(),
 ): Promise<RepairReport> {
-	const report: RepairReport = { files: [], collapsed: [], removed: [], lockBusy: false };
+	const report: RepairReport = { files: [], collapsed: [], removed: [], complete: false };
 
 	// Captured before the first await. `server.url` goes undefined when the
 	// server is disposed, and a repair can be waiting on a lock when that
@@ -697,7 +795,9 @@ export async function repairConfigs(
 	 * with the window next door.
 	 */
 	const rewriteCodex = (name: string) => (text: string): Rewrite => {
-		const pruned = removeCodexTables(text, codexEntries(text), codexDeadTables(codexEntries(text), deadTokens));
+		const entries = codexEntries(text);
+		const pruned = removeCodexTables(
+			text, entries, codexDeadTables(entries, deadTokens, server.token));
 		const repaired = repairCodexToml(
 			pruned.text, codexEntries(pruned.text), endpoint(server, name, url));
 		return {
@@ -721,5 +821,5 @@ export async function repairConfigs(
 	const globalName = folder ? codexEntryName(folder) : `${serverName}-window`;
 	await apply(codexGlobalConfigUri(), '~/.codex/config.toml', rewriteCodex(globalName));
 
-	return busy ? { ...report, lockBusy: true } : report;
+	return { ...report, complete: !busy };
 }

@@ -8,7 +8,10 @@ import { BrowserController } from './browserController';
 import type { ClientKind } from './mcpProtocol';
 import { portOffset, portOrder } from './mcpPort';
 import { McpServer } from './mcpServer';
-import { deadWorkspaceTokens, registerWithVsCode, repairConfigs, workspaceFolder } from './mcpSetup';
+import {
+	deadWorkspaceTokens, registerWithVsCode, repairConfigs, tokenKeyPrefix, workspaceFolder,
+	type RepairReport,
+} from './mcpSetup';
 import { confirm } from './notify';
 import { generateUuid } from './uuid';
 
@@ -78,7 +81,7 @@ export class McpLifecycle implements vscode.Disposable {
 	 */
 	private _workspaceToken(): string {
 		const folder = workspaceFolder();
-		const key = `mcp.token:${folder?.uri.toString() ?? 'no-folder'}`;
+		const key = `${tokenKeyPrefix}${folder?.uri.toString() ?? 'no-folder'}`;
 		const existing = this.context.globalState.get<string>(key);
 		if (existing) {
 			return existing;
@@ -134,24 +137,55 @@ export class McpLifecycle implements vscode.Disposable {
 		// dead-token scan is part of the same chain for the same reason: it
 		// stats a handful of folders, which is cheap but not instant.
 		void deadWorkspaceTokens(this.context.globalState, token)
-			.catch(() => new Set<string>())
-			.then(dead => repairConfigs(server, dead))
-			.then(report => {
-				// One message, because the status bar shows one at a time and a
-				// second `confirm` would simply replace the first.
-				const parts: string[] = [];
-				if (report.files.length) {
-					parts.push(vscode.l10n.t("updated the MCP port in {0}", report.files.join(', ')));
+			.catch(() => ({ tokens: new Set<string>(), keys: [] }))
+			.then(async dead => {
+				const report = await repairConfigs(server, dead.tokens);
+				// Only after a complete run: a repair that lost a lock may not
+				// have reached the entry this token identifies, and forgetting
+				// the token first would strand that entry for good.
+				if (report.complete) {
+					await Promise.all(dead.keys.map(key =>
+						this.context.globalState.update(key, undefined)));
 				}
-				if (report.removed.length) {
-					parts.push(vscode.l10n.t(
-						"removed {0} Codex entries for projects that no longer exist ({1})",
-						String(report.removed.length), report.removed.join(', ')));
-				}
-				if (parts.length) {
-					confirm(`${parts.join('; ')}.`);
-				}
+				this._reportRepair(report);
 			}, () => { });
+	}
+
+	/**
+	 * One complete sentence per outcome, never clauses joined at run time.
+	 *
+	 * The status bar shows one message at a time, so a second `confirm` would
+	 * simply replace the first — and a sentence assembled from translated
+	 * fragments cannot be reordered or repunctuated by a translator, which is
+	 * what building it from `'; '` and lowercase clauses amounted to.
+	 */
+	private _reportRepair(report: RepairReport): void {
+		const files = report.files.join(', ');
+		const names = report.removed.join(', ');
+		// `vscode.l10n` has no plural form, so the two cases are two strings.
+		// One of them is the common one — a single project usually goes at a
+		// time — and "Removed 1 Codex entries" is the sort of thing that reads
+		// as a placeholder nobody finished.
+		const one = report.removed.length === 1;
+
+		if (report.files.length && report.removed.length) {
+			confirm(one
+				? vscode.l10n.t(
+					"Updated the MCP port in {0} and removed the Codex entry of a project that no longer exists ({1}).",
+					files, names)
+				: vscode.l10n.t(
+					"Updated the MCP port in {0} and removed {1} Codex entries for projects that no longer exist ({2}).",
+					files, String(report.removed.length), names));
+		} else if (report.files.length) {
+			confirm(vscode.l10n.t("Updated the MCP port in {0}.", files));
+		} else if (report.removed.length) {
+			confirm(one
+				? vscode.l10n.t(
+					"Removed the Codex entry of a project that no longer exists ({0}).", names)
+				: vscode.l10n.t(
+					"Removed {0} Codex entries for projects that no longer exist ({1}).",
+					String(report.removed.length), names));
+		}
 	}
 
 	/**

@@ -251,10 +251,20 @@ export interface Prune {
  * Entries carrying a token we never minted are still none of our business: a
  * config synced from another machine, or one predating a `globalState` reset,
  * looks exactly like a dead entry from here and may be perfectly live.
+ *
+ * **`keepToken` is required, and it is belt and braces on purpose.**
+ * `deadWorkspaceTokens` already refuses to declare this window's own token
+ * dead, so in normal operation the guard never fires. It is here because this
+ * is the one function in the file that *deletes*, and a caller that assembled
+ * the set some other way — a future window registry, a test — would otherwise
+ * quietly wipe the config of the window it is running in. Required rather than
+ * optional so it cannot be left out by accident, which is how an optional
+ * caller argument silently changed whose tab a tool acted on once already.
  */
 export function codexDeadTables(
 	entries: readonly CodexEntry[],
 	deadTokens: ReadonlySet<string>,
+	keepToken: string,
 ): string[] {
 	if (deadTokens.size === 0) {
 		return [];
@@ -262,9 +272,19 @@ export function codexDeadTables(
 
 	const dead = new Set<string>();
 	for (const token of deadTokens) {
+		if (token === keepToken) {
+			continue;
+		}
 		for (const name of codexOurTables(entries, token)) {
 			dead.add(name);
 		}
+	}
+
+	// A table carrying our own token is never dead, whatever else it carries:
+	// one entry can hold two tokens only if somebody's file is already odd, and
+	// deleting the live one to honour a dead one is the wrong way to resolve it.
+	for (const name of codexOurTables(entries, keepToken)) {
+		dead.delete(name);
 	}
 
 	// In file order, sub-tables included: a `[mcp_servers.<name>.http_headers]`
