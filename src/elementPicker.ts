@@ -10,7 +10,8 @@ import { extractElementData, formatAncestor, renderElementMarkdown } from './ele
 import { assistantName, handOver, type AssistantId } from './assistants';
 import { isBrowserApiGranted } from './proposedApi';
 import {
-	formatElementReport, formatPathReport, reportFileName, type PathKind,
+	formatElementReport, formatPathReport, inlineCode, reportFileName, withLocation,
+	type PathKind,
 } from './reportFormat';
 
 /**
@@ -409,6 +410,36 @@ export function copyElementCssPath(): Promise<void> {
 	);
 }
 
+/**
+ * The CSS path plus the address of the page it was picked on, as one line.
+ *
+ * A selector on its own is ambiguous the moment more than one page is in play —
+ * an assistant handed `#main > li:nth-of-type(2)` has no way to know which route
+ * it belongs to, and guesses. The joined form answers both questions at once and
+ * still splits cleanly on ` @ `; see `locationSeparator` for why that separator
+ * and not a bracketed suffix.
+ */
+export function copyElementCssLocation(): Promise<void> {
+	return pickAndDeliver(
+		vscode.l10n.t("Click an element in the browser to copy its CSS path and page address"),
+		async (client, sessionId, backendNodeId, tab) => {
+			const path = await evaluateOnNode(
+				client, sessionId, backendNodeId, cssPathFunctionDeclaration);
+			// `tab.url` is read here rather than when the pick started: a page can
+			// navigate while the user is choosing, and the address that belongs
+			// with the selector is the one the element was actually picked on.
+			//
+			// Wrapped as inline code, because this one lands in a chat message
+			// rather than in a file: the separator and the `>` of the selector
+			// are both Markdown-significant, so an unwrapped string is reflowed
+			// by whatever renders it. The report path does not get this — its
+			// value goes inside a fenced block, which already does the job.
+			return path ? inlineCode(withLocation(path, tab.url)) : undefined;
+		},
+		value => copyToClipboard(value, vscode.l10n.t("CSS path + location")),
+	);
+}
+
 export function copyElement(): Promise<void> {
 	return pickAndDeliver(
 		vscode.l10n.t("Click an element in the browser to copy its full context"),
@@ -488,18 +519,30 @@ export function addElementToAssistant(assistant: AssistantId): Promise<void> {
 	);
 }
 
+/** The progress title, which names the format the user is about to get. */
+function pathPickTitle(kind: PathKind, assistant: AssistantId): string {
+	const name = assistantName(assistant);
+	switch (kind) {
+		case 'css':
+			return vscode.l10n.t("Click an element to send its CSS path to {0}", name);
+		case 'cssLocation':
+			return vscode.l10n.t("Click an element to send its CSS path and page address to {0}", name);
+		case 'xpath':
+			return vscode.l10n.t("Click an element to send its XPath to {0}", name);
+	}
+}
+
 export function addPathToAssistant(assistant: AssistantId, kind: PathKind): Promise<void> {
-	const declaration = kind === 'css' ? cssPathFunctionDeclaration : xpathFunctionDeclaration;
+	const declaration = kind === 'xpath' ? xpathFunctionDeclaration : cssPathFunctionDeclaration;
 
 	return pickAndDeliver(
-		kind === 'css'
-			? vscode.l10n.t("Click an element to send its CSS path to {0}", assistantName(assistant))
-			: vscode.l10n.t("Click an element to send its XPath to {0}", assistantName(assistant)),
+		pathPickTitle(kind, assistant),
 		async (client, sessionId, backendNodeId, tab) => {
-			const path = await evaluateOnNode(client, sessionId, backendNodeId, declaration);
-			if (!path) {
+			const built = await evaluateOnNode(client, sessionId, backendNodeId, declaration);
+			if (!built) {
 				return undefined;
 			}
+			const path = kind === 'cssLocation' ? withLocation(built, tab.url) : built;
 			// The descriptor needs the element itself, which the path does not
 			// carry — one extra round trip, worth it for a readable file name.
 			const data = await extractElementData(client, sessionId, backendNodeId);

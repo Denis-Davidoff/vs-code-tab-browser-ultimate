@@ -8,7 +8,7 @@ import { AIBrowserManager } from './aiBrowserManager';
 import { AIBrowserView } from './aiBrowserView';
 import {
 	addElementToAssistant, addPathToAssistant, cancelPendingPick, cancelPickCommand,
-	copyElement, copyElementCssPath, copyElementXPath,
+	copyElement, copyElementCssLocation, copyElementCssPath, copyElementXPath,
 } from './elementPicker';
 import { cleanUpReports, publishAssistantContext, type AssistantId } from './assistants';
 import { LastElementAction, type ElementActionId } from './lastAction';
@@ -49,6 +49,7 @@ const enabledHosts = new Set<string>([
 const copyXPathCommand = 'aiBrowser.copyElementXPath';
 const copyElementCommand = 'aiBrowser.copyElement';
 const copyCssPathCommand = 'aiBrowser.copyElementCssPath';
+const copyCssLocationCommand = 'aiBrowser.copyElementCssLocation';
 const connectClaudeCommand = 'aiBrowser.connectClaudeCode';
 const connectCodexCommand = 'aiBrowser.connectCodex';
 const checkMcpCommand = 'aiBrowser.checkMcpConnection';
@@ -250,6 +251,8 @@ export function activate(context: vscode.ExtensionContext) {
 			() => addElementToAssistant(assistant));
 		registerElementCommand(`aiBrowser.addCssPathTo${suffix}`, `${assistant}:cssPath`,
 			() => addPathToAssistant(assistant, 'css'));
+		registerElementCommand(`aiBrowser.addCssLocationTo${suffix}`, `${assistant}:cssLocation`,
+			() => addPathToAssistant(assistant, 'cssLocation'));
 		registerElementCommand(`aiBrowser.addXPathTo${suffix}`, `${assistant}:xpath`,
 			() => addPathToAssistant(assistant, 'xpath'));
 	}
@@ -257,6 +260,7 @@ export function activate(context: vscode.ExtensionContext) {
 	registerElementCommand(copyElementCommand, 'element', copyElement);
 	registerElementCommand(copyXPathCommand, 'xpath', copyElementXPath);
 	registerElementCommand(copyCssPathCommand, 'cssPath', copyElementCssPath);
+	registerElementCommand(copyCssLocationCommand, 'cssLocation', copyElementCssLocation);
 
 	// The toolbar button and the Cmd+Alt+C chord run these `repeat.*` twins
 	// rather than the commands above. The reason is presentational: VS Code
@@ -267,12 +271,15 @@ export function activate(context: vscode.ExtensionContext) {
 	const repeats: [ElementActionId, () => Promise<void>][] = [
 		['element', copyElement],
 		['cssPath', copyElementCssPath],
+		['cssLocation', copyElementCssLocation],
 		['xpath', copyElementXPath],
 		['claude:element', () => addElementToAssistant('claude')],
 		['claude:cssPath', () => addPathToAssistant('claude', 'css')],
+		['claude:cssLocation', () => addPathToAssistant('claude', 'cssLocation')],
 		['claude:xpath', () => addPathToAssistant('claude', 'xpath')],
 		['codex:element', () => addElementToAssistant('codex')],
 		['codex:cssPath', () => addPathToAssistant('codex', 'css')],
+		['codex:cssLocation', () => addPathToAssistant('codex', 'cssLocation')],
 		['codex:xpath', () => addPathToAssistant('codex', 'xpath')],
 	];
 	for (const [action, run] of repeats) {

@@ -7,7 +7,68 @@
  * Report text and file names. No imports at all, so `npm test` can load it.
  */
 
-export type PathKind = 'css' | 'xpath';
+export type PathKind = 'css' | 'cssLocation' | 'xpath';
+
+/**
+ * What separates the page from the selector picked on it.
+ *
+ * Three things had to be true at once, and each one eliminated a candidate.
+ *
+ * It must not be legal inside either half, or the string cannot be split back
+ * apart. That rules out the `[page: …]` form this started as: `[…]` is valid CSS
+ * attribute-selector syntax, so a bracketed suffix reads as part of the chain —
+ * to a person, to a model, and to anything that pastes the whole string into
+ * `querySelector`. It also rules out `>>`, which is Playwright's own chaining
+ * operator, and `page=… css=…`, where the key order becomes part of the contract
+ * because the selector contains spaces and so has to come last.
+ *
+ * It must carry direction, because the two halves are not interchangeable. An
+ * arrow says which way to read; `@` only works with the selector first ("input
+ * @ that page"), and putting the page first while keeping it says the opposite
+ * of what is meant.
+ *
+ * And the **spaces are part of it**. `CSS.escape` emits code points at or above
+ * U+0080 unchanged, so an id containing an arrow survives into the selector
+ * unescaped — but it escapes every non-alphanumeric ASCII character, the space
+ * included, so ` → ` with its spaces cannot occur inside the selector half. A
+ * bare `→` is not a separator; the padded one is.
+ */
+export const locationSeparator = ' → ';
+
+/**
+ * Joins the address of a page to a selector picked on it.
+ *
+ * The page comes first because that is the order the pair is used in: navigate,
+ * then find. Everything before the separator is an argument for
+ * `browser_navigate`, everything after it an argument for
+ * `document.querySelector`.
+ *
+ * A URL-less tab (nothing has committed yet) yields the bare selector rather
+ * than a dangling separator — half an answer beats a malformed one.
+ */
+export function withLocation(path: string, url: string | undefined): string {
+	return url ? `${url}${locationSeparator}${path}` : path;
+}
+
+/**
+ * Wraps a one-liner as Markdown inline code.
+ *
+ * The delimiter is grown past the longest backtick run inside the value, on the
+ * same reasoning as {@link fenced}: a URL may legally carry a backtick in its
+ * query string, and a single-backtick wrapper around one closes early, leaving
+ * the tail of the address as prose. A value that begins or ends with a backtick
+ * is padded with spaces, which CommonMark strips back off when both sides have
+ * one.
+ */
+export function inlineCode(value: string): string {
+	let longest = 0;
+	for (const run of value.match(/`+/g) ?? []) {
+		longest = Math.max(longest, run.length);
+	}
+	const delimiter = '`'.repeat(longest + 1);
+	const pad = value.startsWith('`') || value.endsWith('`') ? ' ' : '';
+	return `${delimiter}${pad}${value}${pad}${delimiter}`;
+}
 
 /**
  * Wraps page content in a fenced block whose fence is always one backtick
@@ -40,7 +101,31 @@ export function stamp(now: Date = new Date()): string {
 }
 
 function pathLabel(kind: PathKind): string {
-	return kind === 'css' ? 'CSS selector' : 'XPath';
+	switch (kind) {
+		case 'css': return 'CSS selector';
+		case 'cssLocation': return 'Page address and CSS selector';
+		case 'xpath': return 'XPath';
+	}
+}
+
+/**
+ * The fence language, which is not simply the kind.
+ *
+ * A `cssLocation` body is a selector *and* a URL joined by ` @ `, so it is not
+ * valid CSS; labelling it `css` invites a reader — a syntax highlighter or a
+ * model — to parse it as a rule and fail on the tail.
+ */
+function fenceLanguage(kind: PathKind): string {
+	switch (kind) {
+		case 'css': return 'css';
+		case 'cssLocation': return 'text';
+		case 'xpath': return 'xpath';
+	}
+}
+
+/** Lowercase, hyphenated token for a file name; the kind itself is camelCase. */
+function fileToken(kind: PathKind | 'element'): string {
+	return kind === 'cssLocation' ? 'css-location' : kind;
 }
 
 /**
@@ -58,8 +143,14 @@ export function formatPathReport(
 		url
 			? `${pathLabel(kind)} of an element on ${url}`
 			: `${pathLabel(kind)} of an element in the integrated browser`,
-		fenced(path, kind === 'css' ? 'css' : 'xpath'),
 	];
+	if (kind === 'cssLocation') {
+		// Spelled out because the reader is usually a model: without it the
+		// combined line invites a paste of the whole string into
+		// `querySelector`, separator and address included.
+		lines.push(`Format: \`<page url>${locationSeparator}<css selector>\``);
+	}
+	lines.push(fenced(path, fenceLanguage(kind)));
 	return `${lines.join('\n\n')}\n`;
 }
 
@@ -73,5 +164,5 @@ export function reportFileName(
 	descriptor: string,
 	now: Date = new Date(),
 ): string {
-	return `element-${kind}-${slugify(descriptor)}-${stamp(now)}.md`;
+	return `element-${fileToken(kind)}-${slugify(descriptor)}-${stamp(now)}.md`;
 }

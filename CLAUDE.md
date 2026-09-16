@@ -809,16 +809,66 @@ both `.d.ts` files.
 ### The dropdown on the browser tab
 
 One toolbar button on the browser tab opens a dropdown holding **everything the extension
-does** — the three element commands, the screenshots, the per-assistant hand-overs, the three
-MCP ones, and the tab assignments last. `Stop Sharing Tab` is gated on the
-`aiBrowser.tabShared` context key, republished from `extension.ts` on every share change, so it
-is only there while there is something to stop. Six `group` prefixes
-(`1_copy`, `2_shot`, `3_claude`, `4_codex`, `5_mcp`, `6_share`) put separators between the
-sections; ordering comes from the `@n` suffix, not from the position in the `contributes.menus`
-array — the array is kept in the same order anyway, because a file that reads in a different
-order than the menu renders is a trap for the next edit.
+does**. It is two levels: what acts on the page stays at the top, and everything belonging to
+one assistant is folded into that assistant's own submenu.
 
-**The assignments sit at the end of both menus, and that was asked for rather than derived.**
+```
+Copy Element / CSS Path / CSS Path + Location / Element XPath   1_copy@1..4
+─────
+Copy Screenshot (Visible Area) / (Full Page)                    2_shot@1..2
+─────
+Claude Code ▸                                                   3_assistant@1
+    Add Element / CSS Path / CSS Path + Location / XPath        1_add@1..4   when <a>Installed
+    ─────
+    Connect Claude Code                                         2_mcp@1
+    Share Tab with Claude Code                                  2_mcp@2
+Codex ▸                                                         3_assistant@2
+Check Connection                                                3_assistant@3
+─────
+Share Tab with All Assistants                                   4_share@1
+Stop Sharing Tab                                                4_share@2   when tabShared
+```
+
+That is eleven rows where it used to be twenty-one. The `group` prefixes put the separators in;
+ordering comes from the `@n` suffix, not from the position in the `contributes.menus` array —
+the array is kept in the same order anyway, because a file that reads in a different order than
+the menu renders is a trap for the next edit. `Stop Sharing Tab` is gated on the
+`aiBrowser.tabShared` context key, republished from `extension.ts` on every share change, so it
+is only there while there is something to stop.
+
+**Nesting is possible, and the rule that permits it is worth knowing before adding a third
+level.** `menusExtensionPoint` looks the target menu up in the built-in table first and falls
+back to the extension's own declared submenus, synthesizing `{ key, id, description }` for
+them — with **no `supportsSubmenus` property at all**. The guard below it reads
+`if (n.supportsSubmenus === false)`, a strict comparison, so `undefined` sails past: a submenu
+an extension declares always accepts submenus. Rendering recurses through
+`new MenuInfo(item.submenu, …).createActionGroups()`, so depth is unbounded — and **nothing
+detects a cycle**, in the validator or the renderer, so a submenu that reaches itself hangs the
+menu on open.
+
+Two behaviours fall out of that code and are relied on here:
+
+- **An empty submenu is not rendered at all** — the join of its groups is checked with
+  `m.length > 0` before the `SubmenuItemAction` is pushed. So a submenu whose every item is
+  hidden by a `when` clause disappears rather than showing a dead row with an empty flyout.
+- **The same submenu cannot be added twice to one parent** (a warning, and the second is
+  dropped).
+
+**Only the Add entries are gated on `aiBrowser.<assistant>Installed`; the submenu itself is
+not.** That key means "the assistant's *VS Code extension* is installed", and Connect / Share
+are exactly what the terminal-driven setup needs — gating the container on it would hide the
+feature from the setup it targets, which is breaks-silently #71 one level up. It also has a
+mechanical consequence worth stating: because Connect and Share are never gated, neither
+submenu can ever be empty, so the disappearing-submenu rule above never fires on them.
+
+**A command's title is one string for every surface, so the entries inside the submenus repeat
+their assistant's name** — "Add Element to Claude Code" under a heading that already says
+"Claude Code". A menu item cannot override a title (`menusExtensionPoint` builds it as
+`{ command, alt, group, order, when }`, taking the title from the command), and shortening the
+command title itself would break the command palette, where the bare "Add Element" says
+nothing. Same rule as breaks-silently #74.
+
+**The assignments sit at the end of every menu, and that was asked for rather than derived.**
 Connecting is done once per project; an assignment is what changes from page to page, and it
 reads better at the foot of a list than at the head of one. The status bar menu is ordered in
 code (`showMenu`) and the dropdown by that group prefix, so moving one means moving both — they
@@ -833,10 +883,13 @@ palette, where every command still appears, and in the status bar menu — which
 that exists because of this gap, see
 [The status bar](#the-status-bar-one-permanent-button-one-that-hides-itself).
 
-It is a `contributes.submenus` entry (`aiBrowser.elementMenu`) placed into `editor/title`;
+It is a `contributes.submenus` entry (`aiBrowser.elementMenu`) placed into `editor/title`, with
+`aiBrowser.claudeMenu` and `aiBrowser.codexMenu` nested inside it;
 `editor/title` allows submenus because `menusExtensionPoint.ts` leaves `supportsSubmenus` at
 its default of `true`. **The `icon` on the submenu declaration is what makes it a toolbar
-button** — without one it collapses into the tab's overflow menu.
+button** — without one it collapses into the tab's overflow menu. The two nested submenus
+therefore carry **no** icon: there is no toolbar slot for them, and inside a dropdown the field
+does nothing.
 
 That icon is a plain globe, `media/icons/globe-{light,dark}.svg`, filling the box (`r=6.9` in a
 16×16 viewport). It is "white" in the sense that matters: literally `#FFFFFF` on dark themes and
@@ -861,23 +914,27 @@ glyph that VS Code recolours, so any colour baked into one is lost. A custom SVG
 `background-image` and keeps its own fills — but by the same token it cannot inherit
 `currentColor`, which is why everything here ships as a light/dark pair.
 
-**Each element icon encodes two things at once**, so the grid is 3 × 3 —
-`media/icons/crosshair-<dot>[-<destination>]-<theme>.svg`, eighteen files:
+**Each element icon encodes two things at once**, so the grid is 4 × 3 —
+`media/icons/crosshair-<dot>[-<destination>]-<theme>.svg`, twenty-four files:
 
 | kind → dot | destination → ring |
 |---|---|
 | element: red `#E03131` | Copy: theme grey |
 | CSS path: blue `#1971C2` | Claude Code: yellow — `#FFD43B` dark, `#A16207` light |
-| XPath: green `#2F9E44` | Codex: blue-white — `#C5F6FA` dark, `#0E7490` light |
+| CSS path + location: grape `#AE3EC9` | Codex: blue-white — `#C5F6FA` dark, `#0E7490` light |
+| XPath: green `#2F9E44` | |
 
 The same kind keeps its dot across destinations; the same destination keeps its ring across
-kinds. As with the globe, the light variant of each ring is that hue taken down to something
+kinds; and **no two kinds share a dot**, which `check-manifest` now asserts separately. The
+within-a-kind rule was there from the start and the across-kinds one was not, so a fourth kind
+could have been given blue and produced two toolbar buttons that say the same thing — the icon
+is the only label a primary button has. As with the globe, the light variant of each ring is that hue taken down to something
 readable — a pale yellow or a blue-white is invisible on a white background.
 
 **`npm run check-manifest` guards all of this**, because none of it produces a compile error:
 a menu item pointing at a missing command, a command with no activation event, an icon path
 with a typo, an icon file nobody references, two primary buttons sharing a `lastElementAction`,
-and this grid losing its shape. Run it after touching `package.json` or `media/icons`.
+two kinds sharing a centre dot, and this grid losing its shape. Run it after touching `package.json` or `media/icons`.
 
 **The primary button is a faked split button.** VS Code has the real thing —
 `isSplitButton: { togglePrimaryAction: true }` on a submenu item, rendered by
@@ -887,13 +944,14 @@ button. Extensions cannot: `menusExtensionPoint.ts` builds an extension's submen
 `{ submenu, icon, title, group, order, when }` and never sets that flag, and the manifest
 schema accepts only `submenu` / `when` / `group`.
 
-So instead: **nine** primary buttons in `navigation@2` — the three copies plus the same three
+So instead: **twelve** primary buttons in `navigation@2` — the four copies plus the same four
 for each assistant — each with a `when` on the `aiBrowser.lastElementAction` context key, so
 exactly one is ever visible. The dropdown sits *before* them in `navigation@1`. The Add buttons
 carry the extra condition `aiBrowser.claudeInstalled` / `codexInstalled`, or a remembered action
 would leave the toolbar with no primary button at all once the assistant is uninstalled.
 
-The nine action ids (`element`, `cssPath`, `xpath` and `<assistant>:<kind>`) are compared
+The twelve action ids (`element`, `cssPath`, `cssLocation`, `xpath` and `<assistant>:<kind>`)
+are compared
 verbatim in `when` clauses, which makes them **part of the manifest's contract** — renaming one
 in `lastAction.ts` alone silently removes a button. Add commands reuse the crosshair colour of
 the matching Copy command, so the button looks the same whichever destination it repeats. [src/lastAction.ts](src/lastAction.ts)
@@ -905,18 +963,18 @@ evaluated before activation, so without it the context key is unset on a fresh w
 toolbar shows a lone chevron with no primary button. Two visually adjacent buttons is as close
 as an extension gets — they are not fused into one control the way Run/Debug is.
 
-**One chord drives whichever tool is active:** `Ctrl+Alt+C` / `Cmd+Alt+C`. Since the nine
+**One chord drives whichever tool is active:** `Ctrl+Alt+C` / `Cmd+Alt+C`. Since the twelve
 `when` conditions are mutually exclusive, exactly one binding can match, so the key always runs
 what the right-hand icon shows.
 
-**The chord sits on nine `repeat.*` delegate commands, not on the commands in the dropdown**,
-and that split is not decorative. VS Code prints a command's keybinding beside **every** menu
-item that invokes it, with no way to opt out — so binding the dropdown commands directly put
-`Cmd+Alt+C` on nine rows of the menu. Each delegate shares its twin's icon and title, is the
-one contributed to `editor/title`, and is hidden from the command palette with
-`commandPalette` + `when: false` so the same nine actions do not appear twice there.
+**The chord sits on twelve `repeat.*` delegate commands, not on the commands in the
+dropdown**, and that split is not decorative. VS Code prints a command's keybinding beside
+**every** menu item that invokes it, with no way to opt out — so binding the dropdown commands
+directly put `Cmd+Alt+C` on twelve rows of the menu. Each delegate shares its twin's icon and
+title, is the one contributed to `editor/title`, and is hidden from the command palette with
+`commandPalette` + `when: false` so the same twelve actions do not appear twice there.
 
-`check-manifest` holds this together: one chord across the nine, conditions matching the
+`check-manifest` holds this together: one chord across the twelve, conditions matching the
 buttons exactly, no dropdown command carrying a keybinding, and every delegate mirroring its
 twin's icon. A drifted `when` would otherwise leave the key firing nothing, or two tools at
 once — verified by temporarily adding a bad binding and watching it fail.
@@ -938,7 +996,7 @@ so it is inert everywhere else.
 `browserEditorInput.ts`, and picking the wrong one produces a button that simply never appears,
 with no error anywhere.
 
-### The three element commands
+### The four element commands
 
 All in [src/elementPicker.ts](src/elementPicker.ts), all sharing `withPickedElement`:
 
@@ -946,11 +1004,20 @@ All in [src/elementPicker.ts](src/elementPicker.ts), all sharing `withPickedElem
 |---|---|
 | `aiBrowser.copyElement` | the full Markdown context, matching the built-in browser's "Add Element to Chat" |
 | `aiBrowser.copyElementCssPath` | `#main > div > li:nth-of-type(2)` |
+| `aiBrowser.copyElementCssLocation` | the page in front of the same selector, wrapped as inline code: `http://localhost:3000/a/b → #main > div > li:nth-of-type(2)` |
 | `aiBrowser.copyElementXPath` | `//*[@id="main"]/span` or `/html/body/ul/li[2]` |
 
 The CSS path deliberately leaves classes out. Utility-class frameworks produce long, unstable
 class lists, and a selector built from them reads worse and breaks sooner than a positional
 one; the full class list is in "Copy Element" for anyone who wants it.
+
+**Both path builders anchor on a unique `id`** — `cssPathFunctionDeclaration` short-circuits its
+walk exactly as `xpathFunctionDeclaration` does, and has since it was written. Worth stating
+because the *documentation* did not, and a reader planning this feature concluded from the
+`#main > …` examples and the paragraph above that only XPath anchored, and nearly rebuilt
+something that was already there. A page with no id anywhere above the element is what produces
+the long `html > body > div:nth-of-type(2) > …` chain, and that is the page's doing, not the
+builder's.
 
 **Copy Element goes to the clipboard as text, and stays that way.** An attach-as-file route
 was built and removed on request: it wrote the Markdown to `globalStorageUri` and passed the URI
@@ -958,6 +1025,65 @@ to `workbench.action.chat.attachFile`. Do not rebuild it without being asked. Wo
 that detour: **`vscode.env.clipboard` is text-only** — there is no API for putting a *file* on
 the system clipboard, so "paste attaches a file" is unreachable without shelling out to the OS,
 and `attachFile` accepts only `file` / `vscode-remote` / `untitled` URIs.
+
+### `CSS Path + Location`, and why the separator is ` → `
+
+The problem it solves is that a selector alone is ambiguous the moment more than one page is in
+play: an assistant handed `#main > li:nth-of-type(2)` cannot tell which route it belongs to,
+and guesses. The joined form answers both questions in one line that is still short enough to
+paste into a sentence.
+
+**The page comes first**, because that is the order the pair is *used* in — navigate, then find
+— and because the two halves are not interchangeable, so the string has to say which way it
+reads. Everything before the separator is an argument for `browser_navigate`, everything after
+it an argument for `document.querySelector`.
+
+**The separator went through three forms, and each was eliminated by a different rule**
+(`locationSeparator` in [src/reportFormat.ts](src/reportFormat.ts)):
+
+- It must not be legal inside either half, or the string cannot be split back apart. That killed
+  the bracketed suffix this started as — `… > input [page: http://localhost/a/b]` is *valid CSS
+  attribute-selector syntax* at that position, so the tail reads as part of the chain to a
+  person, to a model, and to anything that pastes the whole string into `querySelector`. It also
+  killed `>>` (Playwright's own chaining operator) and `page=… css=…`, where the key order
+  becomes part of the contract because the selector contains spaces and so has to come last.
+- It must carry **direction**. ` @ ` was the form before this one and it only works with the
+  selector first — "input @ that page" — so putting the page first while keeping `@` would have
+  said the opposite of what is meant. An arrow reads the same way the pair is consumed.
+- **The spaces are part of the separator, and that is not cosmetic.** `CSS.escape` emits code
+  points at or above U+0080 unchanged, so an id containing an arrow survives into the selector
+  half *unescaped* — but it escapes every non-alphanumeric ASCII character, the space included,
+  so ` → ` with its spaces cannot occur there. A bare `→` is not a separator; the padded one is.
+  Tested with both shapes of hostile id.
+
+The cost, stated plainly: `→` is not ASCII, so it is not typeable on a plain keyboard and a
+shell splitting on it needs the literal. That was judged acceptable because the consumer is a
+chat message read by a model, not a pipeline — but ` -> ` is the same design in ASCII if that
+ever stops being true.
+
+Four consequences in the code:
+
+- **The report is fenced as `text`, never as `css`** (`fenceLanguage`). The body is a selector
+  *and* a URL, so calling it CSS invites a highlighter or a model to parse it as a rule and
+  fail on the tail.
+- **The report spells the format out** — a `Format:` line naming `<page url> → <css selector>`.
+  Its reader is usually a model, and without the line the combined string invites a paste of
+  the whole thing — separator and address included — into `querySelector`.
+- **The clipboard copy is wrapped as Markdown inline code, and the report's is not.** This one
+  is pasted into a chat message, where both the separator and the `>` of the selector are
+  significant and an unwrapped string gets reflowed; the report's copy already sits inside a
+  fenced block, so wrapping it again would only add noise. `inlineCode` grows its delimiter past
+  any backtick run in the value and pads a value that begins or ends with one, for the reason
+  `fenced` next door exists — a backtick is legal in a URL query string, and a single-backtick
+  wrapper around one closes early, leaving the tail of the address as prose.
+- **`tab.url` is read when the element is delivered, not when the pick starts.** A page can
+  navigate while the user is choosing, and the address that belongs with the selector is the one
+  the element was actually picked on.
+
+The kind is `cssLocation` in `PathKind` and in `ElementActionId`, camelCase because it is
+compared verbatim in `when` clauses. File names go through `fileToken`, which hyphenates it to
+`css-location` — otherwise it would be the one mixed-case name in `.ai-browser/`.
+
 
 **The pick slot is claimed before the cancel button appears, and that order is the fix.**
 `beginPick()` / `endPick()` own `pendingPick`, and `pickAndDeliver` calls them around the button
@@ -1991,7 +2117,7 @@ Screenshots are swept after 24 hours.
 The same capture is the `browser_screenshot` MCP tool, with a `fullPage` flag — one tool rather
 than two, since the only difference is that argument.
 
-**Not part of the repeat button.** The nine `navigation@2` candidates are element actions; a
+**Not part of the repeat button.** The twelve `navigation@2` candidates are element actions; a
 screenshot picks nothing, so folding it in would mean a button with no crosshair and a hole in
 the icon grid `check-manifest` enforces.
 
@@ -2275,7 +2401,15 @@ No compile error for any of these — they only surface at runtime.
     by omission, so a file this extension's *own* command writes into the project root
     (`.mcp.json`, carrying the workspace token) rode into the VSIX. Check `unzip -l` after
     adding any tool that writes at the repository root.
-76. **`Open File` on a host without the built-in browser** → a `file:` URI in the webview panel
+76. **Two element kinds sharing a centre dot** → the icon is the only label a primary button
+    has, so the toolbar shows the same picture for two different actions and the `Cmd+Alt+C`
+    chord looks like it fires at random. The old grid check only compared dots *within* a kind;
+    `check-manifest` now also asserts they differ across kinds.
+77. **A manifest guard that names one menu by hand** → moving entries into a nested submenu
+    took eight of the twelve commands out of the guard's reach, and a check that inspects
+    nothing still reports success. `check-manifest` now sweeps every declared submenu rather
+    than `aiBrowser.elementMenu` alone.
+78. **`Open File` on a host without the built-in browser** → a `file:` URI in the webview panel
     is blocked by `localResourceRoots`, so the panel renders blank with no error. The menu entry
     is therefore gated on `shouldUseIntegratedBrowser()` rather than falling back.
 

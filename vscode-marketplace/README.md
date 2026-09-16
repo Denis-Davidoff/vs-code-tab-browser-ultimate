@@ -55,7 +55,7 @@ takes:
 | Editor | Tested | Browser features | How to install | Then |
 |---|---|---|---|---|
 | **VSCodium** | 1.135 | ✅ yes | Open VSX, one click | Enable Browser API, quit and reopen |
-| **Devin** | 1.126 | ✅ yes | Open VSX, one click | Enable Browser API, quit and reopen |
+| **Devin** (Windsurf) | 1.126 | ✅ yes | Open VSX, one click | Enable Browser API, quit and reopen |
 | **VS Code** | 1.137 | ✅ yes | **the `.vsix` by hand** | Enable Browser API, quit and reopen |
 | **Cursor** | 3.19.19 | ❌ no | — | nothing helps — the API is absent |
 | **Antigravity IDE** | 1.107 | ❌ no | — | nothing helps — base predates the API |

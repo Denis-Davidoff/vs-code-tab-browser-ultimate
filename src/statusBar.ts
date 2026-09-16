@@ -282,7 +282,8 @@ async function showMenu(controller: BrowserController): Promise<void> {
 	// order is asked for rather than derived: connecting is the thing done once
 	// per project, while an assignment is what changes from page to page, so it
 	// reads better at the end of a list than at the top of one. The tab
-	// dropdown says the same thing with its group prefix (`6_share`).
+	// dropdown says the same thing with its group prefixes — `2_mcp@2` inside
+	// each assistant's submenu, and `4_share` at the top level.
 	const shares = controller.shares;
 	if (shares.assignments.length > 0 || shares.paused.length > 0 || focused || anyTab) {
 		items.push({ label: vscode.l10n.t("Shared tabs"), kind: vscode.QuickPickItemKind.Separator });
