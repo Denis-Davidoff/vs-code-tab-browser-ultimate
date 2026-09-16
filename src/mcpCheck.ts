@@ -152,10 +152,12 @@ export async function checkConnection(server: McpServer, browser: BrowserControl
 	}
 
 	if (strangers.length) {
-		// Left alone on purpose: one of these may be another window's live
-		// entry, and removing it would break a working assistant to tidy ours.
+		// What is left after the startup prune: entries carrying a token this
+		// machine never minted, so nothing here can say whether the project
+		// behind them exists. One of these may be another window's live entry,
+		// and removing it would break a working assistant to tidy ours.
 		lines.push('', vscode.l10n.t(
-			"Codex has {0} entries that look like ours but belong to other projects or windows ({1}). They are left alone; remove any you no longer need with `codex mcp remove <name>`.",
+			"Codex has {0} entries that look like ours but cannot be matched to a project on this machine ({1}). Entries for projects that no longer exist are removed automatically at startup; these could not be identified, so they are left alone — remove any you no longer need with `codex mcp remove <name>`.",
 			String(strangers.length), strangers.join(', ')));
 	}
 

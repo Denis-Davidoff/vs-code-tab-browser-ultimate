@@ -8,7 +8,8 @@ import { suite, test } from 'node:test';
 import { codexEntries } from './codexToml.ts';
 import { codexEntryCarriesToken } from './mcpClientState.ts';
 import {
-	codexOurTables, mergeAuthorization, parseInlineTable, repairClaudeJson, repairCodexToml,
+	codexDeadTables, codexOurTables, mergeAuthorization, parseInlineTable, removeCodexTables,
+	repairClaudeJson, repairCodexToml,
 } from './mcpRepair.ts';
 
 const token = 'ourtoken0000000000000000000000000000000000000000000000000000abcd';
@@ -532,5 +533,154 @@ suite('parseInlineTable and mergeAuthorization', () => {
 		assert.ok(out.includes('X-Org = "keep"'), out);
 		assert.ok(!out.includes('"drop"'), out);
 		assert.ok(out.includes(`Authorization = "Bearer ${token}"`), out);
+	});
+});
+
+/*
+ * Pruning entries whose project is gone.
+ *
+ * The safety of this rests entirely on *which* tokens the caller declares dead
+ * — that is a filesystem question answered in `deadWorkspaceTokens` — so what
+ * is worth pinning down here is the file surgery: that a dead table goes whole,
+ * that a live one is untouched however much it looks like ours, and that the
+ * repair still sees a correct file afterwards.
+ */
+suite('codexDeadTables / removeCodexTables', () => {
+
+	const dead = 'gone00000000000000000000000000000000000000000000000000000000dead';
+
+	const prune = (text: string, tokens: string[]) => {
+		const entries = codexEntries(text);
+		return removeCodexTables(text, entries, codexDeadTables(entries, new Set(tokens)));
+	};
+
+	test('removes a dead entry whole, sub-table and all', () => {
+		const before = [
+			'[mcp_servers.other]',
+			'url = "http://example/mcp"',
+			'',
+			'[mcp_servers.ai-browser-old-abc123]',
+			'url = "http://127.0.0.1:43110/mcp"',
+			'startup_timeout_sec = 30',
+			'',
+			'[mcp_servers.ai-browser-old-abc123.env_http_headers]',
+			`Authorization = "Bearer ${dead}"`,
+			'',
+		].join('\n');
+
+		const result = prune(before, [dead]);
+		assert.ok(result.changed);
+		assert.deepStrictEqual(result.removed, ['ai-browser-old-abc123']);
+		assert.ok(!result.text.includes('ai-browser-old-abc123'));
+		assert.ok(!result.text.includes('startup_timeout_sec'));
+		assert.ok(result.text.includes('[mcp_servers.other]'));
+	});
+
+	test('leaves an entry whose token is not declared dead', () => {
+		const before = [
+			'[mcp_servers.ai-browser-live-def456]',
+			'url = "http://127.0.0.1:43111/mcp"',
+			`http_headers = { Authorization = "Bearer ${foreign}" }`,
+			'',
+		].join('\n');
+
+		assert.strictEqual(prune(before, [dead]).changed, false);
+	});
+
+	test('an empty dead set changes nothing', () => {
+		const before = [
+			'[mcp_servers.ai-browser-old-abc123]',
+			`http_headers = { Authorization = "Bearer ${dead}" }`,
+			'',
+		].join('\n');
+
+		assert.strictEqual(prune(before, []).changed, false);
+	});
+
+	test('prunes the dead entry and still repairs ours in the same file', () => {
+		const before = [
+			'# my servers',
+			'[mcp_servers.ai-browser-old-abc123]',
+			'url = "http://127.0.0.1:43110/mcp"',
+			`http_headers = { Authorization = "Bearer ${dead}" }`,
+			'',
+			'[mcp_servers.ai-browser]',
+			'url = "http://127.0.0.1:43999/mcp"',
+			`http_headers = { Authorization = "Bearer ${token}" }`,
+			'',
+		].join('\n');
+
+		const pruned = prune(before, [dead]);
+		assert.deepStrictEqual(pruned.removed, ['ai-browser-old-abc123']);
+
+		const repaired = repairToml(pruned.text);
+		assert.ok(repaired.changed);
+		assert.ok(repaired.text.includes(`url = "${url}"`));
+		assert.ok(!repaired.text.includes('43999'));
+		assert.ok(!repaired.text.includes(dead));
+		// The header comment is not part of any table, so it stays where it is.
+		assert.ok(repaired.text.startsWith('# my servers'));
+	});
+
+	test('never touches our own live entry, even when its token is passed', () => {
+		// Belt and braces: `deadWorkspaceTokens` already excludes it, but the
+		// consequence of getting this wrong is a window deleting its own config.
+		const before = [
+			'[mcp_servers.ai-browser]',
+			`http_headers = { Authorization = "Bearer ${token}" }`,
+			'',
+		].join('\n');
+
+		assert.strictEqual(prune(before, [dead, foreign]).changed, false);
+	});
+
+	test('keeps the file\'s CRLF line endings', () => {
+		const before = [
+			'[mcp_servers.other]',
+			'url = "http://example/mcp"',
+			'',
+			'[mcp_servers.ai-browser-old-abc123]',
+			`http_headers = { Authorization = "Bearer ${dead}" }`,
+			'',
+		].join('\r\n');
+
+		const result = prune(before, [dead]);
+		assert.ok(result.changed);
+		assert.ok(result.text.includes('\r\n'));
+		assert.ok(!/[^\r]\n/.test(result.text));
+	});
+
+	test('collapses the blank line the removed table left behind', () => {
+		const before = [
+			'[mcp_servers.ai-browser-old-abc123]',
+			`http_headers = { Authorization = "Bearer ${dead}" }`,
+			'',
+			'[mcp_servers.other]',
+			'url = "http://example/mcp"',
+			'',
+		].join('\n');
+
+		const result = prune(before, [dead]);
+		assert.strictEqual(result.text, '[mcp_servers.other]\nurl = "http://example/mcp"\n');
+	});
+
+	test('two dead projects go in one pass', () => {
+		const second = 'gone11111111111111111111111111111111111111111111111111111111beef';
+		const before = [
+			'[mcp_servers.ai-browser-a-aaaaaa]',
+			`http_headers = { Authorization = "Bearer ${dead}" }`,
+			'',
+			'[mcp_servers.ai-browser-b-bbbbbb]',
+			`http_headers = { Authorization = "Bearer ${second}" }`,
+			'',
+			'[mcp_servers.other]',
+			'url = "http://example/mcp"',
+			'',
+		].join('\n');
+
+		const result = prune(before, [dead, second]);
+		assert.deepStrictEqual(
+			[...result.removed].sort(), ['ai-browser-a-aaaaaa', 'ai-browser-b-bbbbbb']);
+		assert.strictEqual(result.text, '[mcp_servers.other]\nurl = "http://example/mcp"\n');
 	});
 });

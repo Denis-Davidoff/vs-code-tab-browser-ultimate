@@ -208,6 +208,127 @@ function rootTable(name: string): string {
 	return dot === -1 ? name : name.slice(0, dot);
 }
 
+/* ------------------------------------------------------------- pruning the dead */
+
+/**
+ * What {@link removeCodexTables} did.
+ *
+ * Deliberately not a {@link Repair}: `collapsed` there means "folded into the
+ * canonical entry, and still configured", while these entries are gone. Two
+ * names for one field is how a reader ends up reporting a deletion as a merge.
+ */
+export interface Prune {
+	/** The new file contents. Identical to the input when `changed` is false. */
+	readonly text: string;
+	readonly changed: boolean;
+	/** Root table names that were removed. */
+	readonly removed: readonly string[];
+}
+
+/**
+ * Codex tables belonging to a workspace of ours whose folder no longer exists.
+ *
+ * These are the leftovers the global `~/.codex/config.toml` accumulates: it is
+ * named per project (`ai-browser-<slug>-<hash>`), nothing ever removes an
+ * entry, so every project that is deleted or moved leaves one behind forever.
+ * `Check Connection` used to do no more than list them and ask the user to run
+ * `codex mcp remove` by hand.
+ *
+ * **The caller decides which tokens are dead, and that division is the whole
+ * safety argument.** This function only asks the one question it can answer
+ * from the file — which tables carry which token — through `codexOurTables`,
+ * the *same* predicate the repair uses, so a table can never be pruned by one
+ * rule and rewritten by another. Whether a token belongs to a project that is
+ * really gone is a filesystem question, answered in `deadWorkspaceTokens`.
+ *
+ * A token is admissible here only because it is one **we minted ourselves**:
+ * `globalState` is shared across every window of this extension, so it holds
+ * `mcp.token:<folderUri>` for every folder this extension has ever served on
+ * this machine. That is what turns "looks like ours by name" — which is all
+ * `codexStrangers` could ever say, and why it refuses to touch anything — into
+ * "provably ours, for a folder that is provably gone".
+ *
+ * Entries carrying a token we never minted are still none of our business: a
+ * config synced from another machine, or one predating a `globalState` reset,
+ * looks exactly like a dead entry from here and may be perfectly live.
+ */
+export function codexDeadTables(
+	entries: readonly CodexEntry[],
+	deadTokens: ReadonlySet<string>,
+): string[] {
+	if (deadTokens.size === 0) {
+		return [];
+	}
+
+	const dead = new Set<string>();
+	for (const token of deadTokens) {
+		for (const name of codexOurTables(entries, token)) {
+			dead.add(name);
+		}
+	}
+
+	// In file order, sub-tables included: a `[mcp_servers.<name>.http_headers]`
+	// left behind would make TOML recreate its parent as a second, urlless
+	// server — the same trap the rename path has to avoid.
+	return entries.map(entry => entry.name).filter(name => dead.has(name));
+}
+
+/**
+ * Removes whole tables, by line range.
+ *
+ * Only the tables themselves: a comment sitting *above* a header is not part of
+ * the table as far as the parser is concerned, and it may just as well belong
+ * to the file rather than to the entry, so it is left where it is. Blank lines
+ * following a removed table are taken, or every prune would leave a widening
+ * gap in the user's file.
+ *
+ * The newline style comes from the existing file, for the same reason it does
+ * in `repairCodexToml` — otherwise the whole of somebody else's config turns up
+ * in the diff.
+ */
+export function removeCodexTables(
+	text: string,
+	entries: readonly CodexEntry[],
+	names: readonly string[],
+): Prune {
+	const unchanged: Prune = { text, changed: false, removed: [] };
+	if (names.length === 0) {
+		return unchanged;
+	}
+
+	const wanted = new Set(names);
+	const lines = text.split(/\r?\n/);
+	const remove = new Set<number>();
+
+	for (const entry of entries) {
+		if (!wanted.has(entry.name)) {
+			continue;
+		}
+		for (let line = entry.firstLine; line < entry.endLine; line++) {
+			remove.add(line);
+		}
+		// Blank separators that belonged to this table. Stops at the first line
+		// with anything on it, so a comment introducing the *next* table stays.
+		for (let line = entry.endLine; line < lines.length && lines[line].trim() === ''; line++) {
+			remove.add(line);
+		}
+	}
+
+	if (remove.size === 0) {
+		return unchanged;
+	}
+
+	const newline = /\r\n/.test(text) ? '\r\n' : '\n';
+	let next = lines.filter((_, line) => !remove.has(line)).join(newline);
+	if (next !== '' && !next.endsWith(newline)) {
+		next += newline;
+	}
+
+	return next === text
+		? unchanged
+		: { text: next, changed: true, removed: [...new Set(names.map(rootTable))] };
+}
+
 /**
  * Replaces a set of tables with one, by line range.
  *

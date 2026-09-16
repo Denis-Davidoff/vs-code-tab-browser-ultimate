@@ -9,7 +9,8 @@ import { codexEntries } from './codexToml';
 import { lockPath, withLock } from './fileLock';
 import { serverName } from './mcpClientState';
 import {
-	codexTableLines, repairClaudeJson, repairCodexToml, spliceCodexTables, type Endpoint,
+	codexDeadTables, codexTableLines, removeCodexTables, repairClaudeJson, repairCodexToml,
+	spliceCodexTables, type Endpoint,
 } from './mcpRepair';
 import type { McpServer } from './mcpServer';
 import { confirm } from './notify';
@@ -484,6 +485,103 @@ export async function connectCodex(server: McpServer, shared?: SharedPage): Prom
 	}
 }
 
+/* ----------------------------------------------------------------------- prune */
+
+/**
+ * The `globalState` key prefix under which every workspace token is kept.
+ *
+ * Owned here rather than in `mcpLifecycle.ts`, where the tokens are minted,
+ * because reading the *whole set* of them back is now a second use of the same
+ * convention and two spellings of a storage key is the same as no key at all.
+ */
+export const tokenKeyPrefix = 'mcp.token:';
+
+/** `mcp.token:<folderUri>` -> the token, for every folder we have ever served. */
+export type TokenStore = Pick<vscode.Memento, 'keys' | 'get'>;
+
+/**
+ * Tokens of ours whose workspace folder no longer exists on disk.
+ *
+ * `globalState` is shared across every window of this extension, so it holds a
+ * `mcp.token:<folderUri>` entry for each folder this extension has ever served
+ * on this machine. That is the piece the Codex "strangers" report never had:
+ * it could only say an entry *looked* like ours by name, which is why it
+ * refused to touch anything and asked the user to run `codex mcp remove` by
+ * hand. With the minted tokens in view, an entry can be shown to be ours and
+ * its project shown to be gone — and only then is it safe to delete.
+ *
+ * Four things are deliberately **not** treated as dead, because each of them is
+ * a live project that merely cannot be seen from here:
+ *
+ *   - a token whose folder is still there, obviously, including this window's;
+ *   - the `no-folder` token, which never named a folder to check;
+ *   - a folder on a non-`file` URI — a remote or virtual workspace, where the
+ *     extension host answering this question is on a different machine from the
+ *     one that holds the folder;
+ *   - a folder whose **parent directory is missing too**. That is what an
+ *     unmounted volume or an unreachable network share looks like: the whole
+ *     branch is absent, not the project. Only a folder whose parent is still
+ *     there is provably gone rather than merely unreachable. It costs a false
+ *     negative on a project deleted together with its parent, which is the safe
+ *     direction — a missed entry is tidied next time, a wrongly deleted one
+ *     costs somebody a reconnect.
+ */
+export async function deadWorkspaceTokens(
+	store: TokenStore,
+	ourToken: string,
+): Promise<Set<string>> {
+	const dead = new Set<string>();
+
+	for (const key of store.keys()) {
+		if (!key.startsWith(tokenKeyPrefix)) {
+			continue;
+		}
+		const token = store.get<string>(key);
+		if (typeof token !== 'string' || token === '' || token === ourToken) {
+			continue;
+		}
+
+		const raw = key.slice(tokenKeyPrefix.length);
+		if (raw === 'no-folder') {
+			continue;
+		}
+
+		let uri: vscode.Uri;
+		try {
+			uri = vscode.Uri.parse(raw, true);
+		} catch {
+			continue;
+		}
+		if (uri.scheme !== 'file') {
+			continue;
+		}
+
+		if (await folderIsGone(uri)) {
+			dead.add(token);
+		}
+	}
+
+	return dead;
+}
+
+async function exists(uri: vscode.Uri): Promise<boolean> {
+	try {
+		await vscode.workspace.fs.stat(uri);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/** Missing, *and* its parent is there to prove the branch itself is mounted. */
+async function folderIsGone(uri: vscode.Uri): Promise<boolean> {
+	if (await exists(uri)) {
+		return false;
+	}
+	const parent = uri.with({ path: uri.path.replace(/\/[^/]+\/?$/, '') });
+	return parent.path !== uri.path && parent.path !== '' && await exists(parent);
+}
+
 /* ---------------------------------------------------------------------- repair */
 
 /** What {@link repairConfigs} changed, for the caller to report. */
@@ -492,8 +590,22 @@ export interface RepairReport {
 	readonly files: string[];
 	/** Entries that were ours and were folded into the canonical one. */
 	readonly collapsed: string[];
+	/** Codex entries removed because the project they were written for is gone. */
+	readonly removed: string[];
 	/** True when the global Codex file was skipped because another window held the lock. */
 	readonly lockBusy: boolean;
+}
+
+/** What one config rewrite produced, for {@link repairConfigs} to account for. */
+interface Rewrite {
+	readonly text: string;
+	/** True when anything at all changed and the file is worth writing. */
+	readonly changed: boolean;
+	readonly collapsed: readonly string[];
+	/** Codex tables dropped because the project they name is gone. */
+	readonly removed: readonly string[];
+	/** True when the *repair* changed something, as opposed to the prune. */
+	readonly repaired: boolean;
 }
 
 /**
@@ -516,9 +628,20 @@ export interface RepairReport {
  *     assistant the user never connected.
  *   - **It is silent unless something actually changed**, which is rare — only
  *     when the port moved or an old duplicate was still lying around.
+ *
+ * It also **prunes** Codex entries of ours whose project folder is gone, which
+ * is the one thing here that deletes rather than corrects. It rests on the same
+ * rule: an entry is identified by its token, and `deadWorkspaceTokens` admits
+ * only tokens this extension minted itself, for folders it has checked are
+ * missing while their parent directory is not. Anything it cannot prove — an
+ * entry with an unfamiliar token, a remote folder, an unmounted volume — is
+ * left for `codexStrangers` to report, exactly as before.
  */
-export async function repairConfigs(server: McpServer): Promise<RepairReport> {
-	const report: RepairReport = { files: [], collapsed: [], lockBusy: false };
+export async function repairConfigs(
+	server: McpServer,
+	deadTokens: ReadonlySet<string> = new Set(),
+): Promise<RepairReport> {
+	const report: RepairReport = { files: [], collapsed: [], removed: [], lockBusy: false };
 
 	// Captured before the first await. `server.url` goes undefined when the
 	// server is disposed, and a repair can be waiting on a lock when that
@@ -540,37 +663,63 @@ export async function repairConfigs(server: McpServer): Promise<RepairReport> {
 	 * which of them wins (last start does) but it does keep the two
 	 * read-modify-writes from interleaving into a broken file.
 	 */
-	const apply = async (uri: vscode.Uri, label: string, repair: (text: string) => {
-		text: string; changed: boolean; collapsed: readonly string[];
-	}): Promise<void> => {
+	const apply = async (uri: vscode.Uri, label: string, rewrite: (text: string) => Rewrite): Promise<void> => {
 		const took = await withLock(lockPath(configLockName(uri)), async () => {
 			const text = await readText(uri);
 			if (text === undefined) {
 				return; // absent: repairing is not connecting
 			}
-			const result = repair(text);
+			const result = rewrite(text);
 			if (!result.changed) {
 				return;
 			}
 			await writeText(uri, result.text);
-			report.files.push(label);
+			// Only a *repair* means the port moved. A file rewritten purely to
+			// drop a dead entry must not be reported as one, or the window says
+			// it fixed a port it never touched.
+			if (result.repaired) {
+				report.files.push(label);
+			}
 			report.collapsed.push(...result.collapsed);
+			report.removed.push(...result.removed);
 		});
 		// Losing a race is not an error: the next start repairs it.
 		busy ||= !took;
 	};
 
-	if (folder) {
-		await apply(claudeConfigUri(folder), '.mcp.json', text =>
-			repairClaudeJson(text, endpoint(server, serverName, url)));
+	/**
+	 * Prune, then repair — in that order, and it has to be that way round.
+	 *
+	 * Both are expressed as line ranges over the same text, so the repair must
+	 * see the text the prune produced or it edits lines that have moved. Doing
+	 * both inside one `apply` is also what keeps this to a single locked
+	 * read-modify-write per file: two passes would be two chances to interleave
+	 * with the window next door.
+	 */
+	const rewriteCodex = (name: string) => (text: string): Rewrite => {
+		const pruned = removeCodexTables(text, codexEntries(text), codexDeadTables(codexEntries(text), deadTokens));
+		const repaired = repairCodexToml(
+			pruned.text, codexEntries(pruned.text), endpoint(server, name, url));
+		return {
+			text: repaired.text,
+			changed: pruned.changed || repaired.changed,
+			collapsed: repaired.collapsed,
+			removed: pruned.removed,
+			repaired: repaired.changed,
+		};
+	};
 
-		await apply(codexProjectConfigUri(folder), '.codex/config.toml', text =>
-			repairCodexToml(text, codexEntries(text), endpoint(server, serverName, url)));
+	if (folder) {
+		await apply(claudeConfigUri(folder), '.mcp.json', text => {
+			const repaired = repairClaudeJson(text, endpoint(server, serverName, url));
+			return { ...repaired, removed: [], repaired: repaired.changed };
+		});
+
+		await apply(codexProjectConfigUri(folder), '.codex/config.toml', rewriteCodex(serverName));
 	}
 
 	const globalName = folder ? codexEntryName(folder) : `${serverName}-window`;
-	await apply(codexGlobalConfigUri(), '~/.codex/config.toml', text =>
-		repairCodexToml(text, codexEntries(text), endpoint(server, globalName, url)));
+	await apply(codexGlobalConfigUri(), '~/.codex/config.toml', rewriteCodex(globalName));
 
 	return busy ? { ...report, lockBusy: true } : report;
 }

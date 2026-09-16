@@ -1572,6 +1572,56 @@ cases — the file is not ours and a wrong guess breaks something that works:
 - **Codex entries that look like ours by name but carry another token** (`codexStrangers`).
   One of those may be another window's *live* entry.
 
+### Pruning the entries of projects that no longer exist
+
+The global `~/.codex/config.toml` only ever grew. Its entries are named per project
+(`ai-browser-<slug>-<sha1[0:6]>`) and nothing removed one, so every project that was deleted or
+moved left one behind for good — and `Check Connection` could do no better than list them and
+ask the user to run `codex mcp remove` by hand, because "looks like ours by name" is all
+`codexStrangers` can prove.
+
+**The missing piece was in `globalState` the whole time.** It is shared across every window of
+this extension, and `_workspaceToken` stores each token under `mcp.token:<folderUri>` — so
+`Memento.keys()` yields every folder this extension has ever served on this machine, with its
+token. That turns "looks like ours" into two provable facts at once: *this entry carries a token
+we minted* and *the folder it was minted for is gone*. Only then is a deletion safe, and
+`deadWorkspaceTokens` in [src/mcpSetup.ts](src/mcpSetup.ts) is where the proof is assembled.
+
+It runs **once per window start**, inside `repairConfigs`, and it is the one thing there that
+deletes rather than corrects. Everything about it follows from that:
+
+- **The file surgery and the filesystem question are separate, deliberately.**
+  `codexDeadTables` / `removeCodexTables` in [src/mcpRepair.ts](src/mcpRepair.ts) only ask which
+  tables carry which token, through `codexOurTables` — the *same* predicate the repair uses, so
+  a table can never be pruned by one ownership rule and rewritten by another. That keeps them in
+  the leaf module `npm test` loads directly, which is why the surgery is tested and the stat
+  calls are not.
+- **Prune first, repair second, in one locked read-modify-write.** Both are expressed as line
+  ranges over the same text, so a repair that ran on the pre-prune text would edit lines that
+  have moved. Doing them in one `apply` also keeps it to a single locked pass per file; two
+  passes would be two chances to interleave with the window next door.
+- **A file rewritten only to drop a dead entry is not reported as a port fix.** `Rewrite.repaired`
+  is separate from `Rewrite.changed` for exactly that — otherwise the window announces it
+  updated a port it never touched.
+- **Four things are never dead, and the fourth is the subtle one.** A token whose folder is still
+  there (this window's included); the `no-folder` token, which never named a folder; a non-`file`
+  URI, where the extension host answering is on a different machine from the folder; and **a
+  folder whose parent directory is missing too**. That last one is what an unmounted volume or an
+  unreachable share looks like — the whole branch is absent, not the project — and without it the
+  first window opened with an external drive detached would delete the config of every project on
+  it. It costs a false negative on a project deleted together with its parent, which is the safe
+  direction: a missed entry is tidied on a later start, a wrongly deleted one costs somebody a
+  reconnect.
+- **The cost of a deletion, stated plainly:** `repairConfigs` never *creates* an entry, so a
+  pruned project does not get one back by being reopened — the user presses `Connect Codex`
+  there once. That is the whole price, and it is why the bar for "provably gone" is set where it
+  is rather than at "the port does not answer", which is also true of every window that is simply
+  closed.
+- **What is left for `codexStrangers` is now a smaller and more honest set**: entries carrying a
+  token this machine never minted — a config synced from another machine, or one predating a
+  `globalState` reset. Those look exactly like dead entries from here and may be perfectly live,
+  so the report still names them and still refuses to touch them. Its wording says so.
+
 **Four ways the repair itself corrupted a config, all found by review and all now tested.**
 Each one is the kind that only fires on somebody else's config, which is exactly why they are
 worth writing down:
@@ -2601,6 +2651,15 @@ No compile error for any of these — they only surface at runtime.
 90. **`Open File` on a host without the built-in browser** → a `file:` URI in the webview panel
     is blocked by `localResourceRoots`, so the panel renders blank with no error. The menu entry
     is therefore gated on `shouldUseIntegratedBrowser()` rather than falling back.
+91. **Deciding a project folder is gone from a single failed `stat`** → an unmounted volume and
+    an unreachable share look exactly like a deleted project, so the first window opened with an
+    external drive detached would prune the Codex config of every project on it — silently, at
+    startup, and unrecoverably except by reconnecting each one. Require the folder's *parent* to
+    still be there before calling it gone.
+92. **Pruning a config entry on "looks like ours by name"** → the per-project names in
+    `~/.codex/config.toml` are shared by every window and every machine this extension has run
+    on, so one of them may be another window's live entry. Only a token this machine minted
+    (`mcp.token:<folderUri>` in `globalState`) identifies an entry well enough to delete it.
 
 ## Special cases and non-obvious decisions
 

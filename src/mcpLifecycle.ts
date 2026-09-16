@@ -8,7 +8,7 @@ import { BrowserController } from './browserController';
 import type { ClientKind } from './mcpProtocol';
 import { portOffset, portOrder } from './mcpPort';
 import { McpServer } from './mcpServer';
-import { registerWithVsCode, repairConfigs, workspaceFolder } from './mcpSetup';
+import { deadWorkspaceTokens, registerWithVsCode, repairConfigs, workspaceFolder } from './mcpSetup';
 import { confirm } from './notify';
 import { generateUuid } from './uuid';
 
@@ -109,8 +109,9 @@ export class McpLifecycle implements vscode.Disposable {
 		this._setState({ kind: 'starting' });
 
 		const folder = workspaceFolder();
+		const token = this._workspaceToken();
 		const server = new McpServer(
-			this.browser, this._workspaceToken(), folder?.name, this.version, this._sessionKinds);
+			this.browser, token, folder?.name, this.version, this._sessionKinds);
 
 		try {
 			await server.start(this._portOrder(configuration, folder));
@@ -129,13 +130,28 @@ export class McpLifecycle implements vscode.Disposable {
 		this._setState({ kind: 'running', server });
 
 		// Repair runs after the port is known and must never be able to hold up
-		// activation, so it is not awaited and cannot throw into this path.
-		void repairConfigs(server).then(report => {
-			if (report.files.length) {
-				confirm(vscode.l10n.t(
-					"Updated the MCP port in {0}.", report.files.join(', ')));
-			}
-		}, () => { });
+		// activation, so it is not awaited and cannot throw into this path. The
+		// dead-token scan is part of the same chain for the same reason: it
+		// stats a handful of folders, which is cheap but not instant.
+		void deadWorkspaceTokens(this.context.globalState, token)
+			.catch(() => new Set<string>())
+			.then(dead => repairConfigs(server, dead))
+			.then(report => {
+				// One message, because the status bar shows one at a time and a
+				// second `confirm` would simply replace the first.
+				const parts: string[] = [];
+				if (report.files.length) {
+					parts.push(vscode.l10n.t("updated the MCP port in {0}", report.files.join(', ')));
+				}
+				if (report.removed.length) {
+					parts.push(vscode.l10n.t(
+						"removed {0} Codex entries for projects that no longer exist ({1})",
+						String(report.removed.length), report.removed.join(', ')));
+				}
+				if (parts.length) {
+					confirm(`${parts.join('; ')}.`);
+				}
+			}, () => { });
 	}
 
 	/**
