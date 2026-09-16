@@ -85,6 +85,33 @@ async function readText(uri: vscode.Uri): Promise<string | undefined> {
 	}
 }
 
+/**
+ * A config read that tells "there is no such file" from "I could not read it".
+ *
+ * `readText` answers `undefined` for both, which is right for every caller that
+ * only wants the contents. It is wrong for the *repair*, because that decides
+ * whether a run was complete, and `complete` is what licenses forgetting a dead
+ * workspace token. Treating an unreadable file as absent made a window report a
+ * complete run, forget the token, and leave the entry it identified in a file
+ * nothing could ever recognise it in again — the exact harm `complete` exists
+ * to prevent, entered from the one direction it did not cover.
+ *
+ * Same rule as `presence()`: only a clean `FileNotFound` proves absence.
+ */
+type ConfigRead =
+	| { readonly kind: 'absent' }
+	| { readonly kind: 'unreadable' }
+	| { readonly kind: 'text'; readonly text: string };
+
+async function readConfig(uri: vscode.Uri): Promise<ConfigRead> {
+	try {
+		const bytes = await vscode.workspace.fs.readFile(uri);
+		return { kind: 'text', text: Buffer.from(bytes).toString('utf8') };
+	} catch (err) {
+		return isFileNotFound(err) ? { kind: 'absent' } : { kind: 'unreadable' };
+	}
+}
+
 async function writeText(uri: vscode.Uri, text: string): Promise<void> {
 	const parent = uri.with({ path: uri.path.replace(/\/[^/]+$/, '') });
 	await vscode.workspace.fs.createDirectory(parent);
@@ -496,24 +523,99 @@ export async function connectCodex(server: McpServer, shared?: SharedPage): Prom
  */
 export const tokenKeyPrefix = 'mcp.token:';
 
+/**
+ * The `globalState` key prefix under which each window records that it is alive.
+ *
+ * **A missing folder does not prove its token is unused, and that gap could
+ * delete a live server's entry.** The MCP server authorizes by token alone; it
+ * holds its token and port in memory and nothing subscribes to
+ * `onDidChangeWorkspaceFolders`, so a window whose folder is deleted or
+ * *renamed* on disk keeps listening and keeps answering. Another window
+ * starting at that moment saw only "folder gone" and pruned the entry of a
+ * server that was answering.
+ *
+ * So a window stamps its own folder here, at activation and on a timer, and a
+ * token is prunable only once nobody has stamped it for {@link seenGraceMs}.
+ */
+export const seenKeyPrefix = 'mcp.seen:';
+
+/**
+ * How long a workspace must go unserved before its entry may be pruned.
+ *
+ * Seven days rather than hours, deliberately: the entries this cleans up
+ * accumulate over months, so nothing is lost by waiting, while a short window
+ * would start betting against an extension host that was merely suspended. The
+ * heartbeat ticks hourly, so the margin is three orders of magnitude.
+ */
+export const seenGraceMs = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Marks a workspace whose entries have already been pruned.
+ *
+ * **A tombstone, because deleting `mcp.token:<folderUri>` destroys the
+ * workspace's identity, and that identity is used for more than this prune.**
+ * `_workspaceToken` mints a fresh token when the key is gone, which the comment
+ * above it forbids in as many words — "never regenerate it for an existing
+ * workspace, every config naming that window would stop being recognisable at
+ * once". A folder can come back at the same URI (`git worktree remove` then
+ * `add`, a restore from the Trash, a re-clone into the same directory), and
+ * `.mcp.json` is *designed to be committed*, so a re-clone brings it back
+ * carrying the old token. Regenerate, and `repairClaudeJson` — which matches by
+ * token — can no longer see that entry to fix it: every call 401s and the
+ * assistant reports no tools, with nothing able to repair it.
+ *
+ * So the token stays and the folder is tombstoned instead. The scan skips it,
+ * which is all the unbounded-scan problem ever needed, and `markWorkspaceAlive`
+ * lifts the stone the moment a window serves that folder again.
+ */
+export const prunedKeyPrefix = 'mcp.pruned:';
+
 /** `mcp.token:<folderUri>` -> the token, for every folder we have ever served. */
-export type TokenStore = Pick<vscode.Memento, 'keys' | 'get'>;
+export type TokenStore = Pick<vscode.Memento, 'keys' | 'get' | 'update'>;
 
 /** Tokens proven dead, and the `globalState` keys that held them. */
 export interface DeadWorkspaces {
 	readonly tokens: Set<string>;
 	/**
-	 * The keys to forget once the prune has actually landed.
+	 * Folder URIs to tombstone once the prune has actually landed.
 	 *
 	 * Without this the scan is unbounded: it stats every folder this extension
 	 * has ever opened, on every activation and every `aiBrowser.mcp.*` change,
-	 * for the rest of the machine's life. Forgetting a key is safe precisely
-	 * because the folder is gone — nothing can ever authenticate with that
-	 * token again — but it must wait for a **complete** repair, or a run that
-	 * lost the lock would forget the token before the entry it identifies has
-	 * been removed, stranding that entry forever.
+	 * for the rest of the machine's life. Tombstoning must wait for a
+	 * **complete** repair, or a run that lost the lock, or could not read a
+	 * config that exists, would write the stone before the entry it identifies
+	 * has been removed — and the scan would then never look at it again.
 	 */
-	readonly keys: string[];
+	readonly folders: string[];
+}
+
+/**
+ * Records that this window is serving `folder`, for the prune's grace period.
+ *
+ * It also lifts any tombstone: a folder that is being served is by definition
+ * back, and leaving the stone would hide it from the scan forever if it were
+ * ever to disappear a second time.
+ */
+export function markWorkspaceAlive(store: TokenStore, folder: vscode.WorkspaceFolder | undefined): void {
+	if (!folder) {
+		return; // a window with no folder has no entry anybody could prune
+	}
+	const raw = folder.uri.toString();
+	void store.update(`${seenKeyPrefix}${raw}`, Date.now());
+	if (store.get(`${prunedKeyPrefix}${raw}`) !== undefined) {
+		void store.update(`${prunedKeyPrefix}${raw}`, undefined);
+	}
+}
+
+/**
+ * Records that this folder's entries have been pruned, keeping its token.
+ *
+ * The heartbeat goes, since nothing reads it under a stone; the token stays,
+ * for the reason written on {@link prunedKeyPrefix}.
+ */
+export function markWorkspacePruned(store: TokenStore, folderUri: string): void {
+	void store.update(`${seenKeyPrefix}${folderUri}`, undefined);
+	void store.update(`${prunedKeyPrefix}${folderUri}`, true);
 }
 
 /**
@@ -546,8 +648,9 @@ export interface DeadWorkspaces {
 export async function deadWorkspaceTokens(
 	store: TokenStore,
 	ourToken: string,
+	now = Date.now(),
 ): Promise<DeadWorkspaces> {
-	const candidates: { key: string; token: string; uri: vscode.Uri }[] = [];
+	const candidates: { raw: string; token: string; uri: vscode.Uri }[] = [];
 
 	for (const key of store.keys()) {
 		if (!key.startsWith(tokenKeyPrefix)) {
@@ -562,6 +665,9 @@ export async function deadWorkspaceTokens(
 		if (raw === 'no-folder') {
 			continue;
 		}
+		if (store.get(`${prunedKeyPrefix}${raw}`) !== undefined) {
+			continue; // already pruned; the token is kept, the scan moves on
+		}
 
 		let uri: vscode.Uri;
 		try {
@@ -573,7 +679,23 @@ export async function deadWorkspaceTokens(
 			continue;
 		}
 
-		candidates.push({ key, token, uri });
+		// A window that is still serving this folder, however absent the folder
+		// itself is. Without this the prune races a live server.
+		const seenKey = `${seenKeyPrefix}${raw}`;
+		const seen = store.get<number>(seenKey);
+		if (typeof seen !== 'number') {
+			// A workspace from before the heartbeat existed: there is no
+			// evidence either way, and "no evidence" must not read as "dead"
+			// — a window running an older build is exactly the live one we
+			// cannot see. Start its grace period now and leave it alone.
+			void store.update(seenKey, now);
+			continue;
+		}
+		if (now - seen < seenGraceMs) {
+			continue;
+		}
+
+		candidates.push({ raw, token, uri });
 	}
 
 	// In parallel, because this is a list of every folder ever opened and the
@@ -582,15 +704,15 @@ export async function deadWorkspaceTokens(
 	const verdicts = await Promise.all(candidates.map(c => folderIsGone(c.uri)));
 
 	const tokens = new Set<string>();
-	const keys: string[] = [];
+	const folders: string[] = [];
 	for (const [at, gone] of verdicts.entries()) {
 		if (gone) {
 			tokens.add(candidates[at].token);
-			keys.push(candidates[at].key);
+			folders.push(candidates[at].raw);
 		}
 	}
 
-	return { tokens, keys };
+	return { tokens, folders };
 }
 
 /**
@@ -686,10 +808,11 @@ export interface RepairReport {
 	/**
 	 * True when every config was actually examined.
 	 *
-	 * False when the server had no URL to write, or when another window held a
-	 * lock and that file was skipped. The caller must not act on the run as if
-	 * it were final — forgetting a dead token after an incomplete run would
-	 * strand the entry that token identifies.
+	 * False when the server had no URL to write, when another window held a lock
+	 * and that file was skipped, or when a config that exists could not be read.
+	 * The caller must not act on the run as if it were final — forgetting a dead
+	 * token after an incomplete run would strand the entry that token
+	 * identifies, because nothing could ever recognise it again.
 	 */
 	readonly complete: boolean;
 }
@@ -751,6 +874,7 @@ export async function repairConfigs(
 
 	const folder = workspaceFolder();
 	let busy = false;
+	let unreadable = false;
 
 	/**
 	 * Reads, repairs and writes one config, under that file's own lock.
@@ -763,11 +887,17 @@ export async function repairConfigs(
 	 */
 	const apply = async (uri: vscode.Uri, label: string, rewrite: (text: string) => Rewrite): Promise<void> => {
 		const took = await withLock(lockPath(configLockName(uri)), async () => {
-			const text = await readText(uri);
-			if (text === undefined) {
-				return; // absent: repairing is not connecting
+			const read = await readConfig(uri);
+			if (read.kind === 'absent') {
+				return; // repairing is not connecting
 			}
-			const result = rewrite(text);
+			if (read.kind === 'unreadable') {
+				// The file is there and we could not look inside it, so this run
+				// cannot claim to have examined every config.
+				unreadable = true;
+				return;
+			}
+			const result = rewrite(read.text);
 			if (!result.changed) {
 				return;
 			}
@@ -794,10 +924,10 @@ export async function repairConfigs(
 	 * read-modify-write per file: two passes would be two chances to interleave
 	 * with the window next door.
 	 */
-	const rewriteCodex = (name: string) => (text: string): Rewrite => {
+	const rewriteCodex = (name: string, prune: ReadonlySet<string>) => (text: string): Rewrite => {
 		const entries = codexEntries(text);
 		const pruned = removeCodexTables(
-			text, entries, codexDeadTables(entries, deadTokens, server.token));
+			text, entries, codexDeadTables(entries, prune, server.token));
 		const repaired = repairCodexToml(
 			pruned.text, codexEntries(pruned.text), endpoint(server, name, url));
 		return {
@@ -815,11 +945,24 @@ export async function repairConfigs(
 			return { ...repaired, removed: [], repaired: repaired.changed };
 		});
 
-		await apply(codexProjectConfigUri(folder), '.codex/config.toml', rewriteCodex(serverName));
+		// **The project file is repaired but never pruned**, and the asymmetry
+		// with the global one below is the point. Pruning exists for the global
+		// `~/.codex/config.toml`, which is named per project and only ever grew;
+		// a project's own `.codex/config.toml` has one entry, lives inside the
+		// folder and is routinely committed. Worse, it *travels with the
+		// folder*: move or re-clone a project and its entry still carries the
+		// token minted for the old path, so a prune here deleted a line from a
+		// version-controlled file of a live project and announced that the
+		// project no longer existed. An entry we can no longer place is what
+		// `staleToken` in `Check Connection` is for — the disposition CLAUDE.md
+		// already records as deliberate. The sibling `.mcp.json` is left alone
+		// in exactly the same situation, and now these two agree.
+		await apply(codexProjectConfigUri(folder), '.codex/config.toml',
+			rewriteCodex(serverName, new Set()));
 	}
 
 	const globalName = folder ? codexEntryName(folder) : `${serverName}-window`;
-	await apply(codexGlobalConfigUri(), '~/.codex/config.toml', rewriteCodex(globalName));
+	await apply(codexGlobalConfigUri(), '~/.codex/config.toml', rewriteCodex(globalName, deadTokens));
 
-	return { ...report, complete: !busy };
+	return { ...report, complete: !busy && !unreadable };
 }

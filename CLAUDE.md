@@ -1587,8 +1587,38 @@ token. That turns "looks like ours" into two provable facts at once: *this entry
 we minted* and *the folder it was minted for is gone*. Only then is a deletion safe, and
 `deadWorkspaceTokens` in [src/mcpSetup.ts](src/mcpSetup.ts) is where the proof is assembled.
 
-It runs **once per window start**, inside `repairConfigs`, and it is the one thing there that
-deletes rather than corrects. Everything about it follows from that:
+**When it runs, precisely**, because a first pass at this paragraph got it wrong in both halves:
+the scan is `deadWorkspaceTokens`, called from `McpLifecycle._apply` **before** `repairConfigs`
+and outside it — only the table surgery happens inside — and `_apply` runs at activation *and*
+again on every `aiBrowser.mcp.enabled` / `aiBrowser.mcp.port` change
+([extension.ts](src/extension.ts)), not once per window. That matters twice over: a reader
+looking for the scan inside `repairConfigs` will not find it, and an unattended deletion runs
+more often than "once at startup" suggests.
+
+It is the one thing in the repair that deletes rather than corrects, and everything about it
+follows from that:
+
+- **A missing folder does not prove its token is unused, and that gap would have deleted a live
+  server's entry.** The MCP server authorizes by token alone; it holds its token and port in
+  memory, and nothing subscribes to `onDidChangeWorkspaceFolders` — so a window whose folder is
+  deleted, or merely **renamed**, keeps listening and keeps answering. Another window starting in
+  that moment saw only "folder gone". So each window stamps `mcp.seen:<folderUri>` at activation
+  and on an hourly tick (`markWorkspaceAlive`), and a token is prunable only once nobody has
+  stamped it for `seenGraceMs` — **seven days**, chosen long on purpose: these entries accumulate
+  over months, so waiting costs nothing, while a few hours would be betting against an extension
+  host that was merely suspended. A workspace with **no** stamp at all — one from before the
+  heartbeat existed, which is exactly where a live window running an older build hides — is not
+  evidence of death: its grace period is seeded on first sight and it is left alone that round.
+  The stamp is forgotten together with the token, or `globalState` keeps a row for a workspace
+  nothing can name.
+- **The project's own `.codex/config.toml` is repaired but never pruned**, and the asymmetry with
+  the global file is deliberate. Pruning exists for `~/.codex/config.toml`, which is named per
+  project and only ever grew. A project config has one entry, lives inside the folder, is
+  routinely committed — and *travels with the folder*, so after a move or a re-clone its entry
+  still carries the token minted for the old path. Pruning there deleted a line from a
+  version-controlled file of a live project and announced that the project no longer existed. An
+  entry that can no longer be placed is what `staleToken` in `Check Connection` is for. The
+  sibling `.mcp.json` is left alone in the same situation, and the two now agree.
 
 - **The file surgery and the filesystem question are separate, deliberately.**
   `codexDeadTables` / `removeCodexTables` in [src/mcpRepair.ts](src/mcpRepair.ts) only ask which
@@ -1613,7 +1643,12 @@ deletes rather than corrects. Everything about it follows from that:
   branch is absent, not the project — and without it the first window opened with an external
   drive detached would delete the config of every project on it. The two are independent: the
   parent guard says nothing about an error landing on the folder itself while its parent reads
-  fine, which is exactly the shape of a permission failure.
+  fine, which is exactly the shape of a permission failure. **Stated precisely, because it is one
+  directory level more optimistic than it sounds:** it catches an unmounted volume only where the
+  mount point itself disappears (macOS removes `/Volumes/X` on eject) or the project sits below
+  the first level. A Linux mount point that survives unmounting as an empty directory leaves a
+  project *directly* inside it reading `missing` with a `present` parent. The heartbeat grace
+  period is what actually covers that case, and the tombstone keeps the cost to one reconnect.
 - **Every other state keeps the entry**, and that asymmetry is deliberate: a missed entry is
   tidied on a later start, a wrongly deleted one costs somebody a reconnect. A dangling symlink is
   safe from both sides — VS Code's disk provider resolves one to `SymbolicLink | Unknown` and
@@ -1625,13 +1660,32 @@ deletes rather than corrects. Everything about it follows from that:
   every folder ever opened, and `workspace.fs.stat` has no timeout of its own, so one mount that
   has stopped answering would otherwise hold the whole repair behind it — the same failure shape
   as an unbounded CDP call inside a transition. A timeout answers `unknown`, so it keeps the entry.
-- **A confirmed-dead `globalState` key is forgotten, but only after a *complete* repair.**
-  Without that the scan is unbounded: it would stat every folder the extension has ever opened,
-  on every activation and every `aiBrowser.mcp.*` change, for the life of the machine. The
-  ordering is the load-bearing half — a run that lost a lock may not have reached the entry the
-  token identifies, and forgetting the token first strands that entry for good, because nothing
-  can ever recognise it again. `RepairReport.complete` exists for this; it replaced `lockBusy`,
-  which was written and never read.
+- **"Absent" and "could not be read" are different answers here too** (`readConfig`). `readText`
+  maps every failure to `undefined`, which is right for a caller that only wants the contents and
+  wrong for this one: `apply` read it as "no such file", so a run that never looked inside an
+  existing `~/.codex/config.toml` reported itself **complete**, the dead token was forgotten, and
+  the entry it identified stayed in a file nothing could ever recognise it in again — the exact
+  harm `complete` exists to prevent, entered from the one direction it did not cover. Same rule
+  as `presence()`: only a clean `FileNotFound` is absence.
+- **A pruned workspace is *tombstoned*, never forgotten** (`prunedKeyPrefix`), and the difference
+  is the sharpest thing here. Deleting `mcp.token:<folderUri>` looked like the obvious way to stop
+  the scan growing without bound — and it destroys the workspace's identity, which the comment on
+  `_workspaceToken` forbids in as many words: *never regenerate it for an existing workspace*. A
+  folder can come back at the same URI — `git worktree remove` then `add`, a restore from the
+  Trash, a re-clone into the same directory — and **`.mcp.json` is designed to be committed**, so
+  the re-clone brings it back carrying the old token. Regenerate, and `repairClaudeJson` matches
+  by token and can no longer see that entry to correct it: every call 401s, the assistant reports
+  no tools, and nothing in the extension can repair it. The blast radius was wider than the
+  feature, too — the key went for every dead candidate whether or not a Codex table was ever
+  found, so somebody who only uses Claude Code and has no `~/.codex/config.toml` at all lost their
+  token. So the token stays, a stone marks the folder, the scan skips it (which is all the
+  unbounded-scan problem ever needed), and `markWorkspaceAlive` lifts the stone the moment a
+  window serves that folder again.
+- **The stone is laid only after a *complete* repair.** The ordering is the load-bearing half — a
+  run that lost a lock, or could not read a config that exists, may not have reached the entry
+  the token identifies, and tombstoning first takes it out of the scan while it is still there.
+  `RepairReport.complete` exists for this; it replaced `lockBusy`, which was written and never
+  read.
 - **`codexDeadTables` refuses our own token as well**, although `deadWorkspaceTokens` already
   does. It is the function that deletes, the parameter is **required** so it cannot be omitted by
   accident, and a caller assembling the set some other way — a future window registry, a test —
@@ -2688,6 +2742,29 @@ No compile error for any of these — they only surface at runtime.
     `~/.codex/config.toml` are shared by every window and every machine this extension has run
     on, so one of them may be another window's live entry. Only a token this machine minted
     (`mcp.token:<folderUri>` in `globalState`) identifies an entry well enough to delete it.
+93. **Catching a chain's failure with the second argument of `.then`** → `p.then(f, r)` routes
+    only *p*'s rejection into `r`, never one thrown by `f` itself. Moving awaited work inside the
+    fulfillment callback turns that handler into dead code with no compile error, and the
+    rejection escapes as an unhandled promise rejection — on the fire-and-forget path that was
+    written to be silent. Put the guard on the tail: `.then(f).catch(…)`.
+94. **Treating "I could not read it" as "it is not there"** → a `catch` that returns `undefined`
+    for every read failure makes a run that never opened an existing config report itself
+    complete, so the token identifying an entry in that file is forgotten and the entry becomes
+    unrecognisable for good. Only a clean `FileNotFound` is absence — the same rule the folder
+    check already follows.
+95. **Inferring that a token is unused from its folder being gone** → the MCP server authorizes
+    by token and holds it in memory, and nothing watches the workspace folders, so a window whose
+    folder was deleted or renamed keeps answering. Another window pruned the entry of a server
+    that was serving. Liveness needs its own evidence — a heartbeat plus a grace period.
+96. **Unattended deletion inside the project folder** → `.codex/config.toml` is committed and
+    travels with the folder, so after a move or re-clone its entry names the old path; deleting
+    it edits a version-controlled file and reports that a live project no longer exists. Prune
+    the global config only.
+97. **Deleting a workspace's token to keep a scan bounded** → `mcp.token:<folderUri>` is the
+    workspace's *identity*, not a cache entry: remove it and the next open mints a new token,
+    while the committed `.mcp.json` a re-clone restores still carries the old one. The repair
+    matches by token, so it cannot see that entry to fix it — every call 401s with nothing able
+    to recover it. Tombstone the folder and keep the token.
 
 ## Special cases and non-obvious decisions
 

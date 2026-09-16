@@ -9,8 +9,8 @@ import type { ClientKind } from './mcpProtocol';
 import { portOffset, portOrder } from './mcpPort';
 import { McpServer } from './mcpServer';
 import {
-	deadWorkspaceTokens, registerWithVsCode, repairConfigs, tokenKeyPrefix, workspaceFolder,
-	type RepairReport,
+	deadWorkspaceTokens, markWorkspaceAlive, markWorkspacePruned, registerWithVsCode, repairConfigs,
+	tokenKeyPrefix, workspaceFolder, type RepairReport,
 } from './mcpSetup';
 import { confirm } from './notify';
 import { generateUuid } from './uuid';
@@ -50,11 +50,26 @@ export class McpLifecycle implements vscode.Disposable {
 	private readonly _onDidChangeState = new vscode.EventEmitter<McpState>();
 	public readonly onDidChangeState = this._onDidChangeState.event;
 
+	/**
+	 * Keeps this window's "still serving" stamp fresh while it stays open.
+	 *
+	 * Hourly, and a plain interval rather than a one-shot: a window that stays
+	 * open for days would otherwise stamp itself once and then age out of the
+	 * prune's grace period while very much alive — the same one-shot mistake
+	 * the promo build's update check made. The tick only has to be far finer
+	 * than `seenGraceMs`, which it is by three orders of magnitude.
+	 */
+	private readonly _heartbeat: ReturnType<typeof setInterval>;
+
 	constructor(
 		private readonly context: vscode.ExtensionContext,
 		private readonly browser: BrowserController,
 		private readonly version: string,
-	) { }
+	) {
+		markWorkspaceAlive(this.context.globalState, workspaceFolder());
+		this._heartbeat = setInterval(
+			() => markWorkspaceAlive(this.context.globalState, workspaceFolder()), 60 * 60 * 1000);
+	}
 
 	public get state(): McpState {
 		return this._state;
@@ -112,6 +127,7 @@ export class McpLifecycle implements vscode.Disposable {
 		this._setState({ kind: 'starting' });
 
 		const folder = workspaceFolder();
+		markWorkspaceAlive(this.context.globalState, folder);
 		const token = this._workspaceToken();
 		const server = new McpServer(
 			this.browser, token, folder?.name, this.version, this._sessionKinds);
@@ -136,19 +152,33 @@ export class McpLifecycle implements vscode.Disposable {
 		// activation, so it is not awaited and cannot throw into this path. The
 		// dead-token scan is part of the same chain for the same reason: it
 		// stats a handful of folders, which is cheap but not instant.
+		//
+		// **The guard is a trailing `catch`, not the second argument of `then`,
+		// and that is the whole of it.** `p.then(onFulfilled, onRejected)`
+		// routes only *p*'s rejection into `onRejected` — never one thrown by
+		// `onFulfilled` itself. This chain used to read
+		// `repairConfigs(server).then(report => …, () => { })`, where the repair
+		// *was* `p` and the handler covered it; moving the repair inside the
+		// callback silently turned that handler into dead code and let a failed
+		// config write (`writeText` is the one unguarded call, and `withLock`
+		// rethrows it) escape as an unhandled rejection in the extension host —
+		// on the one path written to be silent.
 		void deadWorkspaceTokens(this.context.globalState, token)
-			.catch(() => ({ tokens: new Set<string>(), keys: [] }))
+			.catch(() => ({ tokens: new Set<string>(), folders: [] as string[] }))
 			.then(async dead => {
 				const report = await repairConfigs(server, dead.tokens);
-				// Only after a complete run: a repair that lost a lock may not
-				// have reached the entry this token identifies, and forgetting
-				// the token first would strand that entry for good.
+				// Only after a complete run: a repair that lost a lock, or could
+				// not read a config that exists, may not have reached the entry
+				// this token identifies, and tombstoning it first would take it
+				// out of the scan while the entry is still there.
 				if (report.complete) {
-					await Promise.all(dead.keys.map(key =>
-						this.context.globalState.update(key, undefined)));
+					for (const folder of dead.folders) {
+						markWorkspacePruned(this.context.globalState, folder);
+					}
 				}
 				this._reportRepair(report);
-			}, () => { });
+			})
+			.catch(() => { });
 	}
 
 	/**
@@ -240,6 +270,7 @@ export class McpLifecycle implements vscode.Disposable {
 	}
 
 	public dispose(): void {
+		clearInterval(this._heartbeat);
 		for (const part of this._parts) {
 			part.dispose();
 		}

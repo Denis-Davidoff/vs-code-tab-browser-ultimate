@@ -152,14 +152,22 @@ export async function checkConnection(server: McpServer, browser: BrowserControl
 	}
 
 	if (strangers.length) {
-		// `codexStrangers` compares against *this window's* token only, so what
-		// is left here is two groups, not one: entries of other live projects
-		// and windows, whose tokens this machine did mint, and entries carrying
-		// a token it never minted. The message must not collapse them — saying
-		// they "could not be matched" invites removing a working neighbour's
-		// server. Either way they are left alone: one of them may be live.
+		// `codexStrangers` compares against *this window's* token only, so this
+		// list is several groups at once: entries of other live projects and
+		// windows, entries whose token this machine never minted, and entries
+		// whose token it minted but has since forgotten. The message may not
+		// collapse them, and two earlier wordings did. Saying they "could not
+		// be matched to a project on this machine" is false for the first group
+		// and invites deleting a working neighbour's server. Saying the dead
+		// ones are "removed automatically at startup, so these are…" turns a
+		// best-effort prune into a premise — and it is exactly the entries the
+		// prune deliberately does not touch (a folder deleted together with its
+		// parent, an unreadable config, a remote workspace, a window still
+		// inside its grace period) that are most likely to be sitting here.
+		// State what is known — the token is not this window's — and nothing
+		// more.
 		lines.push('', vscode.l10n.t(
-			"Codex has {0} entries that look like ours but do not carry this window's token ({1}). Entries whose project no longer exists are removed automatically at startup, so these belong to other projects or windows, or to a config this machine did not write. They are left alone — remove any you no longer need with `codex mcp remove <name>`.",
+			"Codex has {0} entries that look like ours but do not carry this window's token ({1}). They may belong to other projects or windows, or to a workspace this machine no longer has a record of. They are left alone, since one of them may be in use — remove any you no longer need with `codex mcp remove <name>`.",
 			String(strangers.length), strangers.join(', ')));
 	}
 
