@@ -1080,6 +1080,36 @@ Four consequences in the code:
   navigate while the user is choosing, and the address that belongs with the selector is the one
   the element was actually picked on.
 
+**The address comes from the element's own document, not from `tab.url`, and that is a
+correctness fix rather than a refinement.** Both path builders walk `parentElement` and stop at
+the `<html>` of the node's *own* document — they even test id uniqueness with
+`el.ownerDocument` — so an element inside an iframe yields a selector rooted in the **frame's**
+document. One `querySelector` call cannot cross a document boundary, so pairing that selector
+with the tab's URL produced a locator that reads as precise and is wrong: navigate there, run
+the selector, get `null` or a different element. `documentLocationFunctionDeclaration` reads
+`ownerDocument.defaultView.location.href` in the page, so the two halves always describe one
+document.
+
+This follows the rule already written down for `browser_snapshot` — never hand out a selector
+that does not resolve with the call its consumer will make. It applies to the plain CSS path and
+XPath reports too, which embed a URL in their prose and had the same mismatch.
+
+Three details: comparing `win === win.top` is legal across origins because it reads no property
+of the other document; a document we cannot read at all leaves `known` false and falls back to
+`tab.url`, which is the best available; and the *frame* case adds a line to the report naming
+the top page, while the one-liner stays a pair — it has no room, and the pair resolves on its
+own.
+
+**The `Format:` line is emitted from the body, not from the kind.** `withLocation` yields the
+bare selector when the tab has no URL to give, and a `Format:` line promising
+`<url> → <selector>` above a fenced block holding only a selector misdescribes the one thing the
+report exists to carry.
+
+**Every page-side source in `elementPicker.ts` is a template literal, so it may not contain a
+backtick** — including inside its comments, where one silently closes the string and the
+compiler then reports a cascade of syntax errors several lines away. `xpathFunctionDeclaration`
+escapes its backticks; `documentLocationFunctionDeclaration` simply has none.
+
 The kind is `cssLocation` in `PathKind` and in `ElementActionId`, camelCase because it is
 compared verbatim in `when` clauses. File names go through `fileToken`, which hyphenates it to
 `css-location` — otherwise it would be the one mixed-case name in `.ai-browser/`.
@@ -2079,8 +2109,9 @@ which the rest of the report is read as Markdown.
 
 Two dropdown entries — visible area and full page — in a group of their own (`2_shot`), which
 is what puts a separator around them. Group names sort alphabetically, so the numeric prefixes
-(`1_copy`, `2_shot`, `3_claude`, `4_codex`, `5_mcp`, `6_share`) are the running order of the
-whole menu.
+(`1_copy`, `2_shot`, `3_assistant`, `4_share` at the top level, `1_add` and `2_mcp` inside each
+assistant's submenu) are the running order of the menu — see
+[the dropdown](#the-dropdown-on-the-browser-tab) for the whole tree.
 
 Capturing is one CDP call, but two arguments matter:
 
@@ -2409,7 +2440,11 @@ No compile error for any of these — they only surface at runtime.
     took eight of the twelve commands out of the guard's reach, and a check that inspects
     nothing still reports success. `check-manifest` now sweeps every declared submenu rather
     than `aiBrowser.elementMenu` alone.
-78. **`Open File` on a host without the built-in browser** → a `file:` URI in the webview panel
+78. **Pairing a selector with `tab.url`** → both path builders are rooted in the node's *own*
+    document, so an element inside an iframe gets a selector the top page will never resolve,
+    advertised against the top page's address. Read the URL from
+    `ownerDocument.defaultView.location.href` instead, so both halves describe one document.
+79. **`Open File` on a host without the built-in browser** → a `file:` URI in the webview panel
     is blocked by `localResourceRoots`, so the panel renders blank with no error. The menu entry
     is therefore gated on `shouldUseIntegratedBrowser()` rather than falling back.
 

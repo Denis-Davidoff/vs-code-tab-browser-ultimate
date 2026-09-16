@@ -111,7 +111,7 @@ function pathLabel(kind: PathKind): string {
 /**
  * The fence language, which is not simply the kind.
  *
- * A `cssLocation` body is a selector *and* a URL joined by ` @ `, so it is not
+ * A `cssLocation` body is a selector *and* a URL joined by ` → `, so it is not
  * valid CSS; labelling it `css` invites a reader — a syntax highlighter or a
  * model — to parse it as a rule and fail on the tail.
  */
@@ -137,6 +137,7 @@ export function formatPathReport(
 	kind: PathKind,
 	path: string,
 	url: string | undefined,
+	embeddedIn?: string,
 ): string {
 	const lines = [
 		`# ${pathLabel(kind)} of \`${descriptor}\``,
@@ -144,11 +145,22 @@ export function formatPathReport(
 			? `${pathLabel(kind)} of an element on ${url}`
 			: `${pathLabel(kind)} of an element in the integrated browser`,
 	];
-	if (kind === 'cssLocation') {
+	// Asked of the body, not of the kind. `withLocation` yields the bare selector
+	// when the tab has no URL to give — nothing has committed yet — and a
+	// `Format:` line promising a separator that the fenced block below does not
+	// contain describes the one thing a report must not get wrong.
+	if (kind === 'cssLocation' && path.includes(locationSeparator)) {
 		// Spelled out because the reader is usually a model: without it the
 		// combined line invites a paste of the whole string into
 		// `querySelector`, separator and address included.
 		lines.push(`Format: \`<page url>${locationSeparator}<css selector>\``);
+	}
+	if (embeddedIn) {
+		// The pair above addresses the frame's own document, which is the only
+		// way it resolves with one `querySelector`. Where it came from is still
+		// worth saying, and the report has room for it where the one-liner does
+		// not.
+		lines.push(`Picked inside a frame embedded in ${embeddedIn}.`);
 	}
 	lines.push(fenced(path, fenceLanguage(kind)));
 	return `${lines.join('\n\n')}\n`;

@@ -166,6 +166,47 @@ const cssPathFunctionDeclaration = `function () {
 }`;
 
 /**
+ * The address of the document the picked element actually lives in.
+ *
+ * Both path builders walk `parentElement` and stop at the `<html>` of the node's
+ * **own** document, and they test id uniqueness with `el.ownerDocument`. So an
+ * element inside an iframe yields a selector rooted at the *frame's* document —
+ * which `document.querySelector` on the top page will never resolve, because one
+ * `querySelector` call cannot cross a document boundary. Pairing that selector
+ * with `tab.url` therefore produced a locator that reads as precise and is
+ * wrong: navigate there, run the selector, get `null` or a different element.
+ *
+ * The pair is made self-consistent instead, by taking the URL from the same
+ * document the selector is rooted in. That follows the rule this project already
+ * applies in `browser_snapshot` — never hand out a selector that does not
+ * resolve with the call its consumer will make.
+ *
+ * `top` is reported separately so the report can say where the frame was
+ * embedded; the one-line form has no room for it and does not need it, since the
+ * pair resolves on its own.
+ */
+// No backticks anywhere below: every page-side source here is a template
+// literal, so one inside a comment closes the string.
+const documentLocationFunctionDeclaration = `function () {
+	var result = { url: '', top: true, known: false };
+	try {
+		var node = this.nodeType === 1 ? this : this.parentElement;
+		var win = node && node.ownerDocument && node.ownerDocument.defaultView;
+		if (win) {
+			result.url = String(win.location.href);
+			// Comparing the window references is legal across origins; it is not
+			// a read of any property on the other document.
+			result.top = win === win.top;
+			result.known = true;
+		}
+	} catch (e) {
+		// A document we are not allowed to read. The known flag stays false and the
+		// caller falls back to the tab's own URL, which is the best it has.
+	}
+	return JSON.stringify(result);
+}`;
+
+/**
  * Turns on the browser's element inspector, waits for the user to pick an
  * element, and hands the picked node to `use`.
  *
@@ -289,6 +330,29 @@ async function evaluateOnNode(
 		throw new Error(exceptionDetails.text ?? 'Evaluation failed in the page');
 	}
 	return typeof result?.value === 'string' && result.value ? result.value : undefined;
+}
+
+/** Where the picked element's own document lives, and whether it is the top one. */
+async function documentLocation(
+	client: CDPClient,
+	sessionId: string,
+	backendNodeId: number,
+	tab: vscode.BrowserTab,
+): Promise<{ url: string | undefined; embeddedIn?: string }> {
+
+	const raw = await evaluateOnNode(
+		client, sessionId, backendNodeId, documentLocationFunctionDeclaration);
+	let parsed: { url?: string; top?: boolean; known?: boolean } = {};
+	try {
+		parsed = raw ? JSON.parse(raw) : {};
+	} catch {
+		// The page is free to have replaced `JSON.stringify`; fall back rather
+		// than fail a pick over it.
+	}
+	if (!parsed.known || !parsed.url) {
+		return { url: tab.url };
+	}
+	return parsed.top ? { url: parsed.url } : { url: parsed.url, embeddedIn: tab.url };
 }
 
 function requireBrowserTab(): vscode.BrowserTab | undefined {
@@ -416,7 +480,7 @@ export function copyElementCssPath(): Promise<void> {
  * A selector on its own is ambiguous the moment more than one page is in play —
  * an assistant handed `#main > li:nth-of-type(2)` has no way to know which route
  * it belongs to, and guesses. The joined form answers both questions at once and
- * still splits cleanly on ` @ `; see `locationSeparator` for why that separator
+ * still splits cleanly on ` → `; see `locationSeparator` for why that separator
  * and not a bracketed suffix.
  */
 export function copyElementCssLocation(): Promise<void> {
@@ -425,16 +489,20 @@ export function copyElementCssLocation(): Promise<void> {
 		async (client, sessionId, backendNodeId, tab) => {
 			const path = await evaluateOnNode(
 				client, sessionId, backendNodeId, cssPathFunctionDeclaration);
-			// `tab.url` is read here rather than when the pick started: a page can
-			// navigate while the user is choosing, and the address that belongs
-			// with the selector is the one the element was actually picked on.
-			//
+			if (!path) {
+				return undefined;
+			}
+			// The address comes from the element's own document, not from the
+			// tab: the two differ inside an iframe, and the selector is rooted in
+			// the former. It is also read now rather than when the pick started,
+			// since a page can navigate while the user is choosing.
+			const { url } = await documentLocation(client, sessionId, backendNodeId, tab);
 			// Wrapped as inline code, because this one lands in a chat message
 			// rather than in a file: the separator and the `>` of the selector
 			// are both Markdown-significant, so an unwrapped string is reflowed
 			// by whatever renders it. The report path does not get this — its
 			// value goes inside a fenced block, which already does the job.
-			return path ? inlineCode(withLocation(path, tab.url)) : undefined;
+			return inlineCode(withLocation(path, url));
 		},
 		value => copyToClipboard(value, vscode.l10n.t("CSS path + location")),
 	);
@@ -542,13 +610,18 @@ export function addPathToAssistant(assistant: AssistantId, kind: PathKind): Prom
 			if (!built) {
 				return undefined;
 			}
-			const path = kind === 'cssLocation' ? withLocation(built, tab.url) : built;
+			// Every kind gets the element's own document, not the tab's URL —
+			// all three selectors are rooted in that document, so inside an
+			// iframe the tab's URL names a page none of them resolve against.
+			const { url, embeddedIn } = await documentLocation(
+				client, sessionId, backendNodeId, tab);
+			const path = kind === 'cssLocation' ? withLocation(built, url) : built;
 			// The descriptor needs the element itself, which the path does not
 			// carry — one extra round trip, worth it for a readable file name.
 			const data = await extractElementData(client, sessionId, backendNodeId);
 			const descriptor = describeElement(data.ancestors);
 			return {
-				report: formatPathReport(descriptor, kind, path, tab.url),
+				report: formatPathReport(descriptor, kind, path, url, embeddedIn),
 				fileName: reportFileName(kind, descriptor),
 			};
 		},

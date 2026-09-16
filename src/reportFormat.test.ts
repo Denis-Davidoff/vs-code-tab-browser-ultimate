@@ -208,6 +208,32 @@ suite('report bodies', () => {
 		assert.ok(report.includes('Format: `<page url> → <css selector>`'), report);
 	});
 
+	test('no format line when the body has no separator to describe', () => {
+		// `withLocation` yields the bare selector when the tab has no URL, and a
+		// `Format:` line promising `<url> → <selector>` above a block holding
+		// only a selector misdescribes the one thing the report exists to carry.
+		const path = withLocation('#main > div', undefined);
+		const report = formatPathReport('div', 'cssLocation', path, undefined);
+		assert.ok(!report.includes('Format:'), report);
+		assert.ok(report.includes('```text\n#main > div\n```'), report);
+	});
+
+	test('a frame pick says where the frame was embedded', () => {
+		// The pair addresses the frame's own document, because that is the only
+		// way one `querySelector` resolves it. The top page is still worth
+		// naming, and the report has room where the one-liner does not.
+		const path = withLocation('#btn', 'http://widget.test/w');
+		const report = formatPathReport(
+			'button#btn', 'cssLocation', path, 'http://widget.test/w', 'http://localhost:3000/a');
+		assert.ok(report.includes('Picked inside a frame embedded in http://localhost:3000/a.'), report);
+		assert.ok(report.includes('http://widget.test/w → #btn'), report);
+	});
+
+	test('a top-level pick carries no frame note', () => {
+		const report = formatPathReport('div', 'css', '#main', 'http://h/x');
+		assert.ok(!report.includes('embedded in'), report);
+	});
+
 	test('a plain css report gains no format line', () => {
 		const report = formatPathReport('div', 'css', '#main > div', 'http://h/x');
 		assert.ok(!report.includes('Format:'), report);
