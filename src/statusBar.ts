@@ -6,6 +6,7 @@
 import * as vscode from 'vscode';
 import type { BrowserController, ShareView } from './browserController';
 import { inUseMarker, sharedMarker, stripMarker } from './shareIndicator';
+import { normalizeAddress } from './webUrl';
 import {
 	browserApiState, integratedBrowserCommand, onDidChangeGrantState,
 	shouldUseIntegratedBrowser, type BrowserApiState,
@@ -380,9 +381,35 @@ async function openUrl(): Promise<void> {
 		title: vscode.l10n.t("AI Browser"),
 		placeHolder: vscode.l10n.t("https://example.com"),
 		prompt: vscode.l10n.t("Enter url to visit"),
+		// Without this the box closes the instant it loses focus and resolves
+		// `undefined`, which this function then reads as "cancelled" and does
+		// nothing — indistinguishable from Enter not working.
+		//
+		// It matters on this path in particular. The box is opened from the
+		// status bar menu, so the quick pick hides first and restores focus to
+		// `previousFocusElement`; when that element no longer has an
+		// `offsetParent` — which is what happens to a status bar entry VS Code
+		// has re-rendered, and this item re-renders on every share change and on
+		// every tick of `pulse` — the controller falls back to `returnFocus()`
+		// into the editor group. That focus can land after our box is already
+		// up, and takes it away.
+		//
+		// It is also simply the right setting for a prompt someone may have to
+		// leave to go and copy the address they are being asked for.
+		ignoreFocusOut: true,
+		// The other route to "Enter did nothing": an empty box resolves `''`,
+		// which is falsy, so the function returned silently. With a placeholder
+		// that looks like a value, pressing Enter on an untouched box is an easy
+		// thing to do. Refusing it keeps the box up and says why — and the same
+		// check covers input no scheme can rescue, which would otherwise open a
+		// broken tab rather than report anything.
+		validateInput: value => normalizeAddress(value)
+			? undefined
+			: vscode.l10n.t("Enter an address, for example localhost:3000"),
 	});
-	if (url) {
-		await vscode.commands.executeCommand('aiBrowser.show', url);
+	const address = url === undefined ? undefined : normalizeAddress(url);
+	if (address) {
+		await vscode.commands.executeCommand('aiBrowser.show', address);
 	}
 }
 

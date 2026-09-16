@@ -532,7 +532,13 @@ typing a path.
 
 ### The status bar
 
-A permanent **AI Browser** button sits in the status bar. Clicking it opens a menu with
+A permanent **AI Browser** button sits in the status bar. **Open URL** takes a bare address —
+type `localhost:3000` and it opens `http://localhost:3000`, type `example.com` and it opens
+`https://example.com`; `http` for localhost-like hosts because a dev server there does not speak
+https, `https` for everything else. Anything that cannot be made into an address is refused in
+the box rather than opened as a broken tab.
+
+Clicking the button opens a menu with
 Open URL, Open File, the tab assignments (give the tab you are on to Claude Code, to Codex or to
 every assistant, and stop sharing one or all of them), the three assistant commands (Connect
 Claude Code / Codex and share this tab, Check Connection) and Settings — the assistant commands

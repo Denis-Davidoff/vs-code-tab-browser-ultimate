@@ -12,6 +12,7 @@ import {
 } from './elementPicker';
 import { cleanUpReports, publishAssistantContext, type AssistantId } from './assistants';
 import { LastElementAction, type ElementActionId } from './lastAction';
+import { normalizeAddress } from './webUrl';
 import { BrowserController } from './browserController';
 import { McpLifecycle } from './mcpLifecycle';
 import { connectClaudeCode, connectCodex, type SharedPage } from './mcpSetup';
@@ -81,18 +82,35 @@ export function activate(context: vscode.ExtensionContext) {
 
 	context.subscriptions.push(vscode.commands.registerCommand(showCommand, async (url?: string) => {
 		if (await shouldUseIntegratedBrowser()) {
-			return openInIntegratedBrowser(url);
+			// A scheme-less address reaches the built-in browser too, so it is
+			// supplied before the hand-over rather than only on the panel path.
+			// `undefined` stays `undefined`: that is how this command asks the
+			// browser to open with no address at all.
+			return openInIntegratedBrowser(
+				url === undefined ? undefined : normalizeAddress(url) ?? url);
 		}
 
 		if (!url) {
 			url = await vscode.window.showInputBox({
 				placeHolder: vscode.l10n.t("https://example.com"),
-				prompt: vscode.l10n.t("Enter url to visit")
+				prompt: vscode.l10n.t("Enter url to visit"),
+				// Same reason as the status bar's own prompt in `statusBar.ts`:
+				// a box that vanishes on focus loss resolves `undefined`, and
+				// the caller cannot tell that from a cancel.
+				ignoreFocusOut: true,
+				validateInput: value => normalizeAddress(value)
+					? undefined
+					: vscode.l10n.t("Enter an address, for example localhost:3000"),
 			});
 		}
 
-		if (url) {
-			manager.show(url);
+		// Normalised here rather than only at the prompt, because this command
+		// takes a URL from other callers too — the status bar menu, and any
+		// extension that runs it. Supplying the scheme is idempotent, so a
+		// caller that already passed a full address is unaffected.
+		const address = url === undefined ? undefined : normalizeAddress(url);
+		if (address) {
+			manager.show(address);
 		}
 	}));
 

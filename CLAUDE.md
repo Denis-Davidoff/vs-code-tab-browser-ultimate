@@ -108,6 +108,7 @@ Compiled with `tsc`, **no bundling**. `main: ./out/extension`.
 - [src/elementMarkdown.ts](src/elementMarkdown.ts) — renders that data as Markdown
 - [src/cssHelpers.ts](src/cssHelpers.ts) — copied verbatim from vscode, builds the CSS section
 - [src/reportFormat.ts](src/reportFormat.ts) — report text and file names (leaf, under test)
+- [src/webUrl.ts](src/webUrl.ts) — turning typed input into an address (leaf, under test)
 - [src/assistants.ts](src/assistants.ts) — handing reports to Claude Code and Codex
 - [src/lastAction.ts](src/lastAction.ts) — which element command the toolbar button repeats
 - [src/browserController.ts](src/browserController.ts) — what the browser can do, for MCP
@@ -648,6 +649,44 @@ grant states hide it:
 | `grantMissing` | `$(alert) Enable Browser API`, warning background |
 | `awaitingRestart` | `$(debug-restart) Restart to finish`, warning background |
 | `unsupported` | hidden |
+
+**A scheme-less address gets one, and it is not always `https`.**
+`normalizeAddress` in [src/webUrl.ts](src/webUrl.ts) (leaf module, under test) supplies
+`https://` for an ordinary host and **`http://` for localhost-like ones**. Always-https was the
+request and it is the wrong default for this extension specifically: a dev server on
+`localhost:3000` does not speak https, the external URI opener only ever fires for those hosts,
+and `https://localhost:3000` is a valid-looking string that cannot connect — the opposite of
+what "always a valid url" is asking for. `preview-src/index.ts` already chose the same way for
+the panel's address bar, so both halves behave alike. One line in `addDefaultScheme` makes it
+strict if that is ever wanted.
+
+Three things about it are load-bearing:
+
+- **Deciding "has a scheme already" with a pattern gets `localhost:3000` wrong.** It matches
+  `^[a-z][a-z0-9+.-]*:` exactly as a real scheme does, so a syntactic check reads `localhost` as
+  the scheme, leaves the input untouched, and hands the browser something it cannot open — the
+  one case the whole module exists for. `hasKnownScheme` compares against a *list*, mirroring
+  `ALL_KNOWN_SCHEMES` in `preview-src/browserSearch.ts`.
+- **The host set holds the bracketed IPv6 spellings**, because `URL.hostname` returns an IPv6
+  authority with its brackets — `::1` would never match. It is the third copy of that set
+  (`enabledHosts` in `extension.ts`, `localhostHosts` in `preview-src/index.ts`); three runtimes,
+  no shared import possible.
+- **The result is parsed before it is returned.** Prefixing a scheme onto anything at all yields
+  a string that *looks* like a URL and is not (`https://hello world`), and opening that is a
+  broken tab rather than an answer. `normalizeAddress` returns `undefined` instead, which is what
+  the prompt's `validateInput` refuses on.
+
+It is applied in `aiBrowser.show` as well as at the prompt, since that command takes a URL from
+other callers too, and it is idempotent so the second pass changes nothing. `undefined` stays
+`undefined` on the integrated path: that is how the command asks the browser to open with no
+address at all.
+
+**Both prompts set `ignoreFocusOut` and refuse an empty value**, and each half fixes a separate
+route to the same report — "Open URL, press Enter, nothing happens". See breaks-silently #79 and
+#80; the short version is that `showInputBox` answers `undefined` for a box that lost focus and
+`''` for a box nobody typed in, and the caller could not tell either from a deliberate cancel.
+The focus half bites hardest here precisely because this box is opened from a status bar menu,
+which is also the surface that re-renders itself under `pulse` and on every share change.
 
 **`Open File` is in the menu only when the built-in browser will take it.** It is gated on
 `shouldUseIntegratedBrowser()`, which is why that helper lives in
@@ -2444,7 +2483,25 @@ No compile error for any of these — they only surface at runtime.
     document, so an element inside an iframe gets a selector the top page will never resolve,
     advertised against the top page's address. Read the URL from
     `ownerDocument.defaultView.location.href` instead, so both halves describe one document.
-79. **`Open File` on a host without the built-in browser** → a `file:` URI in the webview panel
+79. **`showInputBox` without `ignoreFocusOut`** → it closes the moment it loses focus and
+    resolves `undefined`, which every caller here reads as "cancelled" and answers with
+    silence, so the report is "Enter does nothing". Worst on a box opened from the status bar
+    menu: the quick pick hides first and restores focus to `previousFocusElement`, and when that
+    element has no `offsetParent` — what happens to a status bar entry VS Code has re-rendered,
+    and ours re-renders on every share change and every `pulse` tick — the controller falls back
+    to `returnFocus()` into the editor group, which can land after the box is already up.
+80. **An empty value that is falsy and therefore silent** → `showInputBox` resolves `''` when
+    Enter is pressed on an untouched box, and a placeholder that looks like a value invites
+    exactly that. `if (url)` then returns without a word, which is the same symptom as the item
+    above from a completely different cause. Refuse it in `validateInput` instead.
+81. **Deciding "does this already have a scheme" with a pattern** → `^[a-z][a-z0-9+.-]*:`
+    matches `localhost:3000`, so the check reads `localhost` as the scheme and leaves the input
+    alone; the browser is then handed an address it cannot open. Compare against the list of
+    schemes actually recognised — `hasKnownScheme`.
+82. **Prefixing a scheme without parsing the result** → anything at all becomes a
+    URL-shaped string (`https://hello world`), and the browser opens a broken tab instead of the
+    caller reporting that it could not be understood.
+83. **`Open File` on a host without the built-in browser** → a `file:` URI in the webview panel
     is blocked by `localResourceRoots`, so the panel renders blank with no error. The menu entry
     is therefore gated on `shouldUseIntegratedBrowser()` rather than falling back.
 
