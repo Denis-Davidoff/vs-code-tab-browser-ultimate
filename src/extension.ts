@@ -8,10 +8,11 @@ import { AIBrowserManager } from './aiBrowserManager';
 import { AIBrowserView } from './aiBrowserView';
 import {
 	addElementToAssistant, addPathToAssistant, cancelPendingPick, cancelPickCommand,
-	copyElement, copyElementCssPath, copyElementXPath,
+	copyElement, copyElementCssLocation, copyElementCssPath, copyElementXPath,
 } from './elementPicker';
 import { cleanUpReports, publishAssistantContext, type AssistantId } from './assistants';
 import { LastElementAction, type ElementActionId } from './lastAction';
+import { localHosts, normalizeAddress } from './webUrl';
 import { BrowserController } from './browserController';
 import { McpLifecycle } from './mcpLifecycle';
 import { connectClaudeCode, connectCodex, type SharedPage } from './mcpSetup';
@@ -32,23 +33,20 @@ declare class URL {
 const openApiCommand = 'aiBrowser.api.open';
 const showCommand = 'aiBrowser.show';
 
-const enabledHosts = new Set<string>([
-	'localhost',
-	// localhost IPv4
-	'127.0.0.1',
-	// localhost IPv6
-	'[0:0:0:0:0:0:0:1]',
-	'[::1]',
-	// all interfaces IPv4
-	'0.0.0.0',
-	// all interfaces IPv6
-	'[0:0:0:0:0:0:0:0]',
-	'[::]'
-]);
+/**
+ * Hosts the external URI opener claims.
+ *
+ * The same set decides which scheme-less address gets `http` in `webUrl.ts`, and
+ * it is imported rather than repeated: the two answer one question — "is this a
+ * local dev server" — and a second copy would let the opener claim a host whose
+ * typed form then gets `https` and cannot connect.
+ */
+const enabledHosts = localHosts;
 
 const copyXPathCommand = 'aiBrowser.copyElementXPath';
 const copyElementCommand = 'aiBrowser.copyElement';
 const copyCssPathCommand = 'aiBrowser.copyElementCssPath';
+const copyCssLocationCommand = 'aiBrowser.copyElementCssLocation';
 const connectClaudeCommand = 'aiBrowser.connectClaudeCode';
 const connectCodexCommand = 'aiBrowser.connectCodex';
 const checkMcpCommand = 'aiBrowser.checkMcpConnection';
@@ -62,6 +60,14 @@ const openerId = 'aiBrowser.open';
 
 /**
  * Opens a URL in the integrated browser
+ */
+/**
+ * Hands an address to the built-in browser.
+ *
+ * A string, always: the built-in command reads a non-string argument as its
+ * options object and opens a blank tab. Every caller converts first — `api.open`
+ * and the external URI opener with `toString(true)`, `aiBrowser.show` through
+ * `asAddress`.
  */
 async function openInIntegratedBrowser(url?: string): Promise<void> {
 	await vscode.commands.executeCommand(integratedBrowserCommand, url);
@@ -78,20 +84,70 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	}));
 
+	/**
+	 * What to hand on for whatever this command was given.
+	 *
+	 * `url` is typed `string`, but `executeCommand` is untyped at runtime and
+	 * `manager.show` has always accepted a `vscode.Uri` as well — so a caller
+	 * passing one used to work. `normalizeAddress` starts with `input.trim()`,
+	 * which turned that into a `TypeError` and lost the open entirely.
+	 *
+	 * **A `Uri` is converted, not relayed**, and that is the whole point of this
+	 * helper. `workbench.action.browser.open` reads its argument as
+	 * `typeof e == "string" ? { url: e } : e ?? {}` — so anything that is not a
+	 * string becomes its undocumented *options* object, which has no `url`, and
+	 * the editor opens a **blank tab in silence**. Relaying the object therefore
+	 * replaced a loud `TypeError` with a quiet wrong result on the default path,
+	 * which is worse. `api.open` and the external URI opener already stringify
+	 * with `toString(true)` for exactly this reason.
+	 *
+	 * The shape is duck-typed rather than `instanceof`, because a value that
+	 * crossed a command boundary is not guaranteed to be the same class object.
+	 * `undefined` stays `undefined`, which is how this command asks the browser
+	 * to open with no address at all, and a string that cannot be made into an
+	 * address is handed on unchanged so the failure stays the caller's.
+	 */
+	const asAddress = (url: unknown): string | undefined => {
+		if (typeof url === 'string') {
+			return normalizeAddress(url) ?? url;
+		}
+		const uri = url as vscode.Uri | undefined;
+		if (uri && typeof uri.scheme === 'string' && typeof uri.toString === 'function') {
+			return uri.toString(true);
+		}
+		return undefined;
+	};
+
 	context.subscriptions.push(vscode.commands.registerCommand(showCommand, async (url?: string) => {
 		if (await shouldUseIntegratedBrowser()) {
-			return openInIntegratedBrowser(url);
+			// A scheme-less address reaches the built-in browser too, so it is
+			// supplied before the hand-over rather than only on the panel path.
+			// `undefined` stays `undefined`: that is how this command asks the
+			// browser to open with no address at all.
+			return openInIntegratedBrowser(asAddress(url));
 		}
 
 		if (!url) {
 			url = await vscode.window.showInputBox({
 				placeHolder: vscode.l10n.t("https://example.com"),
-				prompt: vscode.l10n.t("Enter url to visit")
+				prompt: vscode.l10n.t("Enter url to visit"),
+				// Same reason as the status bar's own prompt in `statusBar.ts`:
+				// a box that vanishes on focus loss resolves `undefined`, and
+				// the caller cannot tell that from a cancel.
+				ignoreFocusOut: true,
+				validateInput: value => normalizeAddress(value)
+					? undefined
+					: vscode.l10n.t("Enter an address, for example localhost:3000"),
 			});
 		}
 
-		if (url) {
-			manager.show(url);
+		// Normalised here rather than only at the prompt, because this command
+		// takes a URL from other callers too — the status bar menu, and any
+		// extension that runs it. Supplying the scheme is idempotent, so a
+		// caller that already passed a full address is unaffected.
+		const address = asAddress(url);
+		if (address) {
+			manager.show(address);
 		}
 	}));
 
@@ -250,6 +306,8 @@ export function activate(context: vscode.ExtensionContext) {
 			() => addElementToAssistant(assistant));
 		registerElementCommand(`aiBrowser.addCssPathTo${suffix}`, `${assistant}:cssPath`,
 			() => addPathToAssistant(assistant, 'css'));
+		registerElementCommand(`aiBrowser.addCssLocationTo${suffix}`, `${assistant}:cssLocation`,
+			() => addPathToAssistant(assistant, 'cssLocation'));
 		registerElementCommand(`aiBrowser.addXPathTo${suffix}`, `${assistant}:xpath`,
 			() => addPathToAssistant(assistant, 'xpath'));
 	}
@@ -257,6 +315,7 @@ export function activate(context: vscode.ExtensionContext) {
 	registerElementCommand(copyElementCommand, 'element', copyElement);
 	registerElementCommand(copyXPathCommand, 'xpath', copyElementXPath);
 	registerElementCommand(copyCssPathCommand, 'cssPath', copyElementCssPath);
+	registerElementCommand(copyCssLocationCommand, 'cssLocation', copyElementCssLocation);
 
 	// The toolbar button and the Cmd+Alt+C chord run these `repeat.*` twins
 	// rather than the commands above. The reason is presentational: VS Code
@@ -267,12 +326,15 @@ export function activate(context: vscode.ExtensionContext) {
 	const repeats: [ElementActionId, () => Promise<void>][] = [
 		['element', copyElement],
 		['cssPath', copyElementCssPath],
+		['cssLocation', copyElementCssLocation],
 		['xpath', copyElementXPath],
 		['claude:element', () => addElementToAssistant('claude')],
 		['claude:cssPath', () => addPathToAssistant('claude', 'css')],
+		['claude:cssLocation', () => addPathToAssistant('claude', 'cssLocation')],
 		['claude:xpath', () => addPathToAssistant('claude', 'xpath')],
 		['codex:element', () => addElementToAssistant('codex')],
 		['codex:cssPath', () => addPathToAssistant('codex', 'css')],
+		['codex:cssLocation', () => addPathToAssistant('codex', 'cssLocation')],
 		['codex:xpath', () => addPathToAssistant('codex', 'xpath')],
 	];
 	for (const [action, run] of repeats) {

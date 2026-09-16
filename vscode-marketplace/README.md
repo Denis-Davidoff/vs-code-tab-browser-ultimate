@@ -55,7 +55,7 @@ takes:
 | Editor | Tested | Browser features | How to install | Then |
 |---|---|---|---|---|
 | **VSCodium** | 1.135 | ✅ yes | Open VSX, one click | Enable Browser API, quit and reopen |
-| **Devin** | 1.126 | ✅ yes | Open VSX, one click | Enable Browser API, quit and reopen |
+| **Devin** (Windsurf) | 1.126 | ✅ yes | Open VSX, one click | Enable Browser API, quit and reopen |
 | **VS Code** | 1.137 | ✅ yes | **the `.vsix` by hand** | Enable Browser API, quit and reopen |
 | **Cursor** | 3.19.19 | ❌ no | — | nothing helps — the API is absent |
 | **Antigravity IDE** | 1.107 | ❌ no | — | nothing helps — base predates the API |
@@ -115,16 +115,19 @@ the editor: the page you are looking at is the page your agent reads and drives.
   where it sits in the html, its outer markup, its box, and the css that actually applies to it
   — matched rules in cascade order, inherited rules, resolved values and css variables. Hover
   highlighting comes from the DevTools overlay, so picking feels like the inspector.
-- 📍 **Or just its address.** A CSS selector or an XPath, built to survive the next rebuild: the
-  XPath anchors on a unique `id` when there is one and adds a positional predicate only where a
-  tag really repeats; the selector deliberately leaves utility class names out.
+- 📍 **Or just its address.** A CSS selector or an XPath, built to survive the next rebuild:
+  both anchor on a unique `id` when there is one and add a positional predicate only where a tag
+  really repeats; the selector deliberately leaves utility class names out. **CSS Path +
+  Location** adds the page in front of it — `http://localhost:3000/checkout → #main >
+  li:nth-of-type(2)` — so an assistant knows which route the selector belongs to, in the order it
+  will use them: navigate, then find.
 - ✨ **One click turns it into a prompt.** Send the element, its selector or its path straight
   into Claude Code or Codex as a file their agent reads — so "make this button match the one
   above" is a sentence, not a paragraph of description.
 - 📸 **Screenshots that paste as pictures.** The visible area or the whole scrollable page, on
   the system clipboard as a real PNG — `Cmd`/`Ctrl` + `V` into a chat, an issue or a document.
 - ⌨️ **One key repeats what you did last.** The toolbar's right-hand button and
-  `Cmd`/`Ctrl` + `Alt` + `C` both run the action you used last, whichever of the nine it was.
+  `Cmd`/`Ctrl` + `Alt` + `C` both run the action you used last, whichever of the twelve it was.
 - 🔌 **An MCP server, with nothing to install.** No package, no separate process to babysit: the
   extension starts a local server on activation, and one command configures Claude Code, Codex
   or VS Code's own chat to use it.
@@ -139,8 +142,11 @@ the editor: the page you are looking at is the page your agent reads and drives.
 
 ## Getting started, once the VSIX is in
 
-1. `Cmd`/`Ctrl` + `Shift` + `P` → **AI Browser: Show** → type a url.
-2. The globe button on the browser tab opens everything the extension does.
+1. `Cmd`/`Ctrl` + `Shift` + `P` → **AI Browser: Show** → type a url. A bare `localhost:3000` is
+   enough; the scheme is supplied for you, `http` for a local dev server and `https` otherwise.
+2. The globe button on the browser tab opens everything the extension does — the copies and
+   screenshots at the top, and a submenu per assistant holding its hand-overs, its Connect and
+   its Share Tab.
 3. To let an assistant drive the page: same dropdown → **Connect Claude Code** or
    **Connect Codex**, then restart Claude Code / start a new Codex conversation, because
    neither re-reads its config while running.

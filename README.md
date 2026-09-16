@@ -10,7 +10,7 @@ there is not the problem, the missing API is. **Measured by reading the shipped 
 | Editor | Version tested | Browser features | How to install | Then |
 |---|---|---|---|---|
 | **VSCodium** | 1.135 | ✅ yes | Open VSX, one click | Enable Browser API, quit and reopen |
-| **Devin** | 1.126 | ✅ yes | Open VSX, one click | Enable Browser API, quit and reopen |
+| **Devin** (Windsurf) | 1.126 | ✅ yes | Open VSX, one click | Enable Browser API, quit and reopen |
 | **VS Code** | 1.137 | ✅ yes | **the `.vsix` by hand** | Enable Browser API, quit and reopen |
 | **Cursor** | 3.19.19 | ❌ no | — | nothing helps — the API is absent |
 | **Antigravity IDE** | 1.107 | ❌ no | — | nothing helps — base predates the API |
@@ -94,16 +94,20 @@ the editor: the page you are looking at is the page your agent reads and drives.
   where it sits in the html, its outer markup, its box, and the css that actually applies to it
   — matched rules in cascade order, inherited rules, resolved values and css variables. Hover
   highlighting comes from the DevTools overlay, so picking feels like the inspector.
-- 📍 **Or just its address.** A CSS selector or an XPath, built to survive the next rebuild: the
-  XPath anchors on a unique `id` when there is one and adds a positional predicate only where a
-  tag really repeats; the selector deliberately leaves utility class names out.
+- 📍 **Or just its address.** A CSS selector or an XPath, built to survive the next rebuild:
+  both anchor on a unique `id` when there is one and add a positional predicate only where a
+  tag really repeats; the selector deliberately leaves utility class names out. **Copy CSS
+  Path + Location** puts the page in front of it — `http://localhost:3000/checkout → #main >
+  li:nth-of-type(2)` — so an assistant reading it knows which route the selector belongs to
+  instead of guessing, in the order it will use them: navigate, then find. It arrives on the
+  clipboard already wrapped as inline code, ready to paste into a chat message.
 - ✨ **One click turns it into a prompt.** Send the element, its selector or its path straight
   into Claude Code or Codex as a file their agent reads — so "make this button match the one
   above" is a sentence, not a paragraph of description.
 - 📸 **Screenshots that paste as pictures.** The visible area or the whole scrollable page, on
   the system clipboard as a real PNG — `Cmd`/`Ctrl` + `V` into a chat, an issue or a document.
 - ⌨️ **One key repeats what you did last.** The toolbar's right-hand button and
-  `Cmd`/`Ctrl` + `Alt` + `C` both run the action you used last, whichever of the nine it was.
+  `Cmd`/`Ctrl` + `Alt` + `C` both run the action you used last, whichever of the twelve it was.
 - 🔌 **An MCP server, with nothing to install.** No package, no separate process to babysit: the
   extension starts a local server on activation, and one command configures Claude Code, Codex
   or VS Code's own chat to use it.
@@ -134,8 +138,8 @@ Open a page — `Cmd`/`Ctrl` + click a localhost url a dev server printed, or ru
 
 - **a globe**, which opens a menu holding everything the extension does;
 - **a crosshair**, which repeats the entry you used last. Its colour says which one: red for the
-  element, blue for the css path, green for the xpath, with a ring around it when the
-  destination is Claude Code or Codex rather than the clipboard.
+  element, blue for the css path, purple for the css path + location, green for the xpath, with a
+  ring around it when the destination is Claude Code or Codex rather than the clipboard.
 
 `Cmd`/`Ctrl` + `Alt` + `C` runs whatever that second button shows, and is inert outside a
 browser tab. Every entry is also in the command palette under **AI Browser**.
@@ -146,15 +150,20 @@ The menu, in order:
 | --- | --- |
 | Copy Element | the full context as Markdown — element, url, html path, outer html, dimensions, matched css |
 | Copy CSS Path | `#main > div > li:nth-of-type(2)` |
+| Copy CSS Path + Location | the page and the selector on one line, wrapped as inline code: `http://localhost:3000/a/b → #main > div > li:nth-of-type(2)` |
 | Copy Element XPath | `//*[@id="main"]/span`, or `/html/body/ul/li[2]` when nothing stable can anchor it |
 | Copy Screenshot (Visible Area) | a PNG of what is on screen, on the clipboard |
 | Copy Screenshot (Full Page) | the whole scrollable page, truncated past 16384 px |
-| Add Element / CSS Path / XPath to Claude Code | the same three picks, handed to the Claude Code chat |
-| Add Element / CSS Path / XPath to Codex | the same, for Codex |
-| Share Tab with Claude Code / Codex, Connect Claude Code / Codex, Check Connection | the mcp server, [below](#giving-an-assistant-the-browser-mcp) |
+| Claude Code ▸ | a submenu: the same four picks handed to the Claude Code chat, plus Connect and Share Tab |
+| Codex ▸ | the same, for Codex |
+| Check Connection | the mcp server, [below](#giving-an-assistant-the-browser-mcp) |
+| Share Tab with All Assistants / Stop Sharing Tab | [below](#giving-an-assistant-the-browser-mcp) |
 
-The assistant entries only appear for an assistant that is actually installed, and the menu is
-attached to the browser tab — from anywhere else, use the command palette.
+Everything belonging to one assistant lives in that assistant's submenu, which is what keeps the
+top level at eleven rows. The four **Add** entries there appear only for an assistant whose
+extension is actually installed; **Connect** and **Share Tab** are always there, because an
+assistant driven from a terminal through `.mcp.json` needs them and has no extension to detect.
+The menu is attached to the browser tab — from anywhere else, use the command palette.
 
 Picking is single-flight: starting a pick cancels one already waiting, so the clipboard always
 holds the action you chose last rather than one you had abandoned.
@@ -415,14 +424,17 @@ All of them are in the command palette under **AI Browser**.
 | --- | --- |
 | Copy Element | `aiBrowser.copyElement` |
 | Copy CSS Path | `aiBrowser.copyElementCssPath` |
+| Copy CSS Path + Location | `aiBrowser.copyElementCssLocation` |
 | Copy Element XPath | `aiBrowser.copyElementXPath` |
 | Copy Screenshot (Visible Area) | `aiBrowser.copyScreenshot` |
 | Copy Screenshot (Full Page) | `aiBrowser.copyFullScreenshot` |
 | Add Element to Claude Code | `aiBrowser.addElementToClaudeCode` |
 | Add CSS Path to Claude Code | `aiBrowser.addCssPathToClaudeCode` |
+| Add CSS Path + Location to Claude Code | `aiBrowser.addCssLocationToClaudeCode` |
 | Add XPath to Claude Code | `aiBrowser.addXPathToClaudeCode` |
 | Add Element to Codex | `aiBrowser.addElementToCodex` |
 | Add CSS Path to Codex | `aiBrowser.addCssPathToCodex` |
+| Add CSS Path + Location to Codex | `aiBrowser.addCssLocationToCodex` |
 | Add XPath to Codex | `aiBrowser.addXPathToCodex` |
 | Share Tab with Claude Code | `aiBrowser.shareTabWithClaudeCode` |
 | Share Tab with Codex | `aiBrowser.shareTabWithCodex` |
@@ -520,7 +532,15 @@ typing a path.
 
 ### The status bar
 
-A permanent **AI Browser** button sits in the status bar. Clicking it opens a menu with
+A permanent **AI Browser** button sits in the status bar. **Open URL** takes a bare address —
+type `localhost:3000` and it opens `http://localhost:3000`, type `example.com` and it opens
+`https://example.com`; `http` for localhost-like hosts because a dev server there does not speak
+https, `https` for everything else. An address that already carries a scheme is left exactly as
+you typed it, whatever that scheme is. Anything that is not an address — a file path, a relative
+path — is refused in the box rather than opened as a broken tab; **Open File** is the route
+for those, where the built-in browser is in use.
+
+Clicking the button opens a menu with
 Open URL, Open File, the tab assignments (give the tab you are on to Claude Code, to Codex or to
 every assistant, and stop sharing one or all of them), the three assistant commands (Connect
 Claude Code / Codex and share this tab, Check Connection) and Settings — the assistant commands

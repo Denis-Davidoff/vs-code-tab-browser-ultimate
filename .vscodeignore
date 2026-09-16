@@ -6,6 +6,7 @@ esbuild*.mts
 vscode.proposed.*.d.ts
 .gitignore
 .mcp.json
+.ai-browser/**
 package-lock.json
 .vscode/**
 CLAUDE.md

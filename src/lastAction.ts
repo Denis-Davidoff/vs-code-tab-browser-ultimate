@@ -6,19 +6,19 @@
 import * as vscode from 'vscode';
 
 /**
- * Every action the toolbar button can repeat: the three copies, and the same
- * three for each assistant. The value is compared verbatim in `when` clauses,
+ * Every action the toolbar button can repeat: the four copies, and the same
+ * four for each assistant. The value is compared verbatim in `when` clauses,
  * so these strings are part of the manifest's contract.
  */
 export type ElementActionId =
-	| 'element' | 'cssPath' | 'xpath'
-	| 'claude:element' | 'claude:cssPath' | 'claude:xpath'
-	| 'codex:element' | 'codex:cssPath' | 'codex:xpath';
+	| 'element' | 'cssPath' | 'cssLocation' | 'xpath'
+	| 'claude:element' | 'claude:cssPath' | 'claude:cssLocation' | 'claude:xpath'
+	| 'codex:element' | 'codex:cssPath' | 'codex:cssLocation' | 'codex:xpath';
 
 const allActions: readonly string[] = [
-	'element', 'cssPath', 'xpath',
-	'claude:element', 'claude:cssPath', 'claude:xpath',
-	'codex:element', 'codex:cssPath', 'codex:xpath',
+	'element', 'cssPath', 'cssLocation', 'xpath',
+	'claude:element', 'claude:cssPath', 'claude:cssLocation', 'claude:xpath',
+	'codex:element', 'codex:cssPath', 'codex:cssLocation', 'codex:xpath',
 ];
 
 const contextKey = 'aiBrowser.lastElementAction';
@@ -40,8 +40,8 @@ function isElementActionId(value: unknown): value is ElementActionId {
  * items from `{submenu, icon, title, group, order, when}` only and never sets
  * that flag, so it is unavailable from a manifest.
  *
- * Instead: three primary buttons contributed to `editor/title`, each with a
- * `when` clause on the {@link contextKey} context key, so exactly one is
+ * Instead: one primary button per action contributed to `editor/title`, each
+ * with a `when` clause on the {@link contextKey} context key, so exactly one is
  * visible at a time. The value is mirrored into a memento, because a context
  * key does not survive a restart.
  */

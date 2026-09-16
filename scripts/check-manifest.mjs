@@ -84,12 +84,14 @@ for (const file of readdirSync(join(root, 'media', 'icons'))) {
 /*
  * The element commands encode two things in one icon: the centre dot is *what*
  * is copied, the ring is *where it goes*. So the same kind must share a dot
- * across destinations, and the same destination must share a ring across kinds —
- * which, given the file naming, reduces to the stems lining up.
+ * across destinations, the same destination must share a ring across kinds, and
+ * no two kinds may share a dot — which, given the file naming, reduces to the
+ * stems lining up.
  */
 const grid = {
 	element: ['aiBrowser.copyElement', 'aiBrowser.addElementToClaudeCode', 'aiBrowser.addElementToCodex'],
 	cssPath: ['aiBrowser.copyElementCssPath', 'aiBrowser.addCssPathToClaudeCode', 'aiBrowser.addCssPathToCodex'],
+	cssLocation: ['aiBrowser.copyElementCssLocation', 'aiBrowser.addCssLocationToClaudeCode', 'aiBrowser.addCssLocationToCodex'],
 	xpath: ['aiBrowser.copyElementXPath', 'aiBrowser.addXPathToClaudeCode', 'aiBrowser.addXPathToCodex'],
 };
 const stem = id => {
@@ -111,6 +113,13 @@ for (const [kind, ids] of Object.entries(grid)) {
 	}
 }
 
+const dots = Object.entries(grid)
+	.map(([kind, ids]) => [kind, stem(ids[0])?.dot])
+	.filter(([, dot]) => dot);
+if (new Set(dots.map(([, dot]) => dot)).size !== dots.length) {
+	problems.push(`two kinds share a centre dot: ${dots.map(([k, d]) => `${k}=${d}`).join(', ')}`);
+}
+
 /* exactly one primary button may match at a time */
 const primaries = (contributes.menus['editor/title'] ?? []).filter(m => m.group === 'navigation@2');
 const actions = primaries.map(m => /lastElementAction == '([^']+)'/.exec(m.when ?? '')?.[1]);
@@ -122,9 +131,9 @@ if (new Set(actions).size !== actions.length) {
 }
 
 /*
- * One chord drives the right-hand icon: nine bindings, same key, and the same
- * mutually exclusive `when` set as the buttons. If a `when` drifted, the key
- * would either fire nothing or fire two tools at once.
+ * One chord drives the right-hand icon: one binding per action, same key, and
+ * the same mutually exclusive `when` set as the buttons. If a `when` drifted,
+ * the key would either fire nothing or fire two tools at once.
  */
 const keybindings = contributes.keybindings ?? [];
 if (keybindings.length) {
@@ -148,12 +157,20 @@ if (keybindings.length) {
  * The chord lives on the `repeat.*` delegates, never on the commands that appear
  * in the dropdown. VS Code prints a command's keybinding beside every menu item
  * that invokes it with no way to opt out, so a keybinding on a dropdown command
- * puts the chord on nine menu rows.
+ * puts the chord on every row of the menu.
+ *
+ * Swept across *every* submenu we declare, not just the top-level one. It used
+ * to read `menus['aiBrowser.elementMenu']` alone, and the moment the assistant
+ * entries moved down into `aiBrowser.claudeMenu` / `codexMenu` that guard went
+ * blind to eight of the twelve commands it exists for — silently, because a
+ * check that inspects nothing still passes.
  */
 const bound = new Set(keybindings.map(k => k.command));
-for (const item of contributes.menus['aiBrowser.elementMenu'] ?? []) {
-	if (bound.has(item.command)) {
-		problems.push(`${item.command} is in the dropdown and has a keybinding; the chord belongs on its repeat.* twin`);
+for (const id of submenus.keys()) {
+	for (const item of contributes.menus[id] ?? []) {
+		if (bound.has(item.command)) {
+			problems.push(`${item.command} is in submenu ${id} and has a keybinding; the chord belongs on its repeat.* twin`);
+		}
 	}
 }
 
@@ -163,12 +180,15 @@ const hiddenFromPalette = new Set(
 const twins = {
 	'aiBrowser.repeat.element': 'aiBrowser.copyElement',
 	'aiBrowser.repeat.cssPath': 'aiBrowser.copyElementCssPath',
+	'aiBrowser.repeat.cssLocation': 'aiBrowser.copyElementCssLocation',
 	'aiBrowser.repeat.xpath': 'aiBrowser.copyElementXPath',
 	'aiBrowser.repeat.claude.element': 'aiBrowser.addElementToClaudeCode',
 	'aiBrowser.repeat.claude.cssPath': 'aiBrowser.addCssPathToClaudeCode',
+	'aiBrowser.repeat.claude.cssLocation': 'aiBrowser.addCssLocationToClaudeCode',
 	'aiBrowser.repeat.claude.xpath': 'aiBrowser.addXPathToClaudeCode',
 	'aiBrowser.repeat.codex.element': 'aiBrowser.addElementToCodex',
 	'aiBrowser.repeat.codex.cssPath': 'aiBrowser.addCssPathToCodex',
+	'aiBrowser.repeat.codex.cssLocation': 'aiBrowser.addCssLocationToCodex',
 	'aiBrowser.repeat.codex.xpath': 'aiBrowser.addXPathToCodex',
 };
 for (const [delegate, twin] of Object.entries(twins)) {
