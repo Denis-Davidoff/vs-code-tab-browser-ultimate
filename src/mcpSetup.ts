@@ -5,7 +5,7 @@
 
 import * as crypto from 'crypto';
 import * as vscode from 'vscode';
-import { codexEntries } from './codexToml';
+import { codexEntries, codexUnterminated } from './codexToml';
 import { lockPath, withLock } from './fileLock';
 import { serverName } from './mcpClientState';
 import {
@@ -195,6 +195,25 @@ export async function writeClaudeConfig(
 ): Promise<'written' | 'unparsable'> {
 
 	const uri = claudeConfigUri(folder);
+	// **Under the same lock as the repair**, which writes this very file.
+	// `writeCodexGlobalConfig` was given the lock for exactly this reason and
+	// this one was left without: a Connect pressed while any window's startup
+	// repair — or the `claude mcp add --scope project` fallback this extension
+	// hands the user — is mid-write on a team-shared `.mcp.json` loses whichever
+	// edit lands first. One locked writer and one unlocked is the same as no
+	// lock (breaks-silently #16). Losing the race reports as `unparsable`, which
+	// is the existing refusal path and leaves the file untouched.
+	let outcome: 'written' | 'unparsable' = 'unparsable';
+	const took = await withLock(lockPath(configLockName(uri)), async () => {
+		outcome = await writeClaudeConfigLocked(uri, server);
+	});
+	return took ? outcome : 'unparsable';
+}
+
+async function writeClaudeConfigLocked(
+	uri: vscode.Uri,
+	server: McpServer,
+): Promise<'written' | 'unparsable'> {
 	const config = await readClaudeConfig(uri);
 	if (config === undefined) {
 		return 'unparsable';
@@ -288,6 +307,11 @@ async function writeCodexConfig(
 		throw new Error('the existing config could not be read');
 	}
 	const existing = read.kind === 'absent' ? '' : read.text;
+	if (codexUnterminated(existing)) {
+		// Same trap as the unattended path: our table's line range would run to
+		// end of file and the splice would take every server below it with us.
+		throw new Error('the existing config ends inside an unclosed value');
+	}
 	const newline = /\r\n/.test(existing) ? '\r\n' : '\n';
 	const lines = existing === '' ? [] : existing.split(/\r?\n/);
 
@@ -596,6 +620,28 @@ export const prunedKeyPrefix = 'mcp.pruned:';
 /** `mcp.token:<folderUri>` -> the token, for every folder we have ever served. */
 export type TokenStore = Pick<vscode.Memento, 'keys' | 'get' | 'update'>;
 
+/** An empty verdict, for the callers that do not prune at all. */
+export function emptyScan(): DeadWorkspaces {
+	return { tokens: new Set(), folders: [], byFolder: new Map(), at: Date.now() };
+}
+
+/**
+ * The prune's two halves, kept apart because only one of them may hold a lock.
+ *
+ * `scan` surveys the filesystem and is slow; `confirm` re-checks that verdict
+ * from `globalState` alone and is not. See {@link stillDead}.
+ */
+export interface DeadScan {
+	readonly scan: () => Promise<DeadWorkspaces>;
+	readonly confirm: (surveyed: DeadWorkspaces) => DeadWorkspaces;
+}
+
+/** Prunes nothing, for callers that only want the repair. */
+export const noScan: DeadScan = {
+	scan: async () => emptyScan(),
+	confirm: surveyed => surveyed,
+};
+
 /** Tokens proven dead, and the `globalState` keys that held them. */
 export interface DeadWorkspaces {
 	readonly tokens: Set<string>;
@@ -615,6 +661,45 @@ export interface DeadWorkspaces {
 	 * entry it identifies is gone — and then nothing ever looks again.
 	 */
 	readonly folders: string[];
+	/** When the verdict was taken, for callers that must re-check it later. */
+	readonly at: number;
+	/** Folder URI -> its token, so a narrowed verdict can drop the right ones. */
+	readonly byFolder: ReadonlyMap<string, string>;
+}
+
+/**
+ * Re-checks a survey's verdict from `globalState` alone, with no filesystem.
+ *
+ * **The survey must not run under the config lock and this must.** The survey
+ * stats every historical folder — two sequential `presence` calls each, so up to
+ * `2 * statTimeoutMs` for one stalled mount — while `withLock` gives up after
+ * `attempts * retryMs`, one second. Holding the lock across the survey therefore
+ * made every other window's `apply` report `took === false`, skip
+ * `~/.codex/config.toml` entirely and return `complete: false`: no port repair
+ * and no tombstones, for all of them, on exactly the session restore the lock
+ * was introduced for. So the survey runs outside and this runs inside — memento
+ * reads only, microseconds — immediately before the rewrite.
+ *
+ * What it can still catch is the thing that actually changes fast: another
+ * window opening the folder, which stamps it alive and lifts its stone. A folder
+ * restored on disk but not yet opened by anybody leaves no signal either way,
+ * and that residual is unchanged by where the survey runs.
+ */
+export function stillDead(store: TokenStore, dead: DeadWorkspaces): DeadWorkspaces {
+	const folders = dead.folders.filter(raw => {
+		if (store.get(`${prunedKeyPrefix}${raw}`) !== undefined) {
+			return false; // already buried by somebody else
+		}
+		const seen = store.get<number>(`${seenKeyPrefix}${raw}`);
+		return !(typeof seen === 'number' && seen > dead.at);
+	});
+	if (folders.length === dead.folders.length) {
+		return { ...dead, at: Date.now() };
+	}
+	const kept = new Set(folders);
+	const tokens = new Set(
+		[...dead.byFolder].filter(([raw]) => kept.has(raw)).map(([, token]) => token));
+	return { tokens, folders, byFolder: dead.byFolder, at: Date.now() };
 }
 
 /**
@@ -646,8 +731,10 @@ export async function markWorkspaceAlive(
 	const raw = folder.uri.toString();
 	// Stone first, stamp second, and each awaited. If only the first lands the
 	// folder is visible to the scan with no stamp, which seeds a fresh grace
-	// period — it self-heals. The other order would leave it stamped but
-	// hidden, which is stale rather than wrong but never corrects itself.
+	// period. The other order would leave it stamped but hidden — stale rather
+	// than wrong, and the hourly heartbeat does retry the removal, so it heals
+	// within the hour while the window stays open; this order heals on the next
+	// scan instead, which does not depend on the window living that long.
 	if (store.get(`${prunedKeyPrefix}${raw}`) !== undefined) {
 		await store.update(`${prunedKeyPrefix}${raw}`, undefined);
 	}
@@ -660,7 +747,26 @@ export async function markWorkspaceAlive(
  * The heartbeat goes, since nothing reads it under a stone; the token stays,
  * for the reason written on {@link prunedKeyPrefix}.
  */
-export async function markWorkspacePruned(store: TokenStore, folderUri: string): Promise<void> {
+export async function markWorkspacePruned(
+	store: TokenStore,
+	folderUri: string,
+	/**
+	 * When the verdict that authorises this stone was taken.
+	 *
+	 * **A stamp newer than the verdict means the folder came back**, and the
+	 * stone must not go down. The config lock orders the *writers* of the file;
+	 * it says nothing about `markWorkspaceAlive`, which another window calls
+	 * without taking it. So a workspace restored between the verdict and this
+	 * call would otherwise be tombstoned — taken out of the scan permanently
+	 * while being live — and `repairConfigs` never recreates an entry, so its
+	 * owner would have to reconnect by hand with nothing explaining why.
+	 */
+	decidedAt: number,
+): Promise<void> {
+	const seen = store.get<number>(`${seenKeyPrefix}${folderUri}`);
+	if (typeof seen === 'number' && seen > decidedAt) {
+		return;
+	}
 	// The stone goes down first: if the second write is the one that fails, the
 	// folder is tombstoned with a stale stamp, which the scan simply skips. The
 	// other order leaves it visible with no stamp, so the next start seeds a
@@ -680,9 +786,12 @@ export async function markWorkspacePruned(store: TokenStore, folderUri: string):
  * hand. With the minted tokens in view, an entry can be shown to be ours and
  * its project shown to be gone — and only then is it safe to delete.
  *
- * Six things are deliberately **not** treated as dead, because each is a live
+ * Eight things are deliberately **not** treated as dead, because each is a live
  * project that merely cannot be seen from here — and the list has to be complete,
- * since it is what anyone auditing "what can stop a deletion" will read:
+ * since it is what anyone auditing "what can stop a deletion" will read. It said
+ * six once, while the body had eight `continue`s, and the two it omitted were
+ * the tombstone and the seeding rule — the second of which is why nothing at all
+ * is prunable for the first week after an upgrade:
  *
  *   - a token whose folder is still there, obviously, including this window's;
  *   - the `no-folder` token, which never named a folder to check;
@@ -701,7 +810,12 @@ export async function markWorkspacePruned(store: TokenStore, folderUri: string):
  *     list while being the answer to "a folder can be gone while its server is
  *     still serving";
  *   - a folder already under a tombstone: it has been dealt with, and looking
- *     again is what the stone exists to stop.
+ *     again is what the stone exists to stop;
+ *   - a workspace with **no stamp at all**, which is seeded and skipped this
+ *     round. On the first run of this build that is every historical workspace
+ *     on the machine, so the feature does nothing for its first seven days;
+ *   - a `mcp.token:` key whose URI will not parse, which is not a folder we can
+ *     ask about at all.
  */
 export async function deadWorkspaceTokens(
 	store: TokenStore,
@@ -763,21 +877,26 @@ export async function deadWorkspaceTokens(
 
 	const tokens = new Set<string>();
 	const folders: string[] = [];
+	const byFolder = new Map<string, string>();
 	for (const [at, gone] of verdicts.entries()) {
 		if (gone) {
 			tokens.add(candidates[at].token);
 			folders.push(candidates[at].raw);
+			byFolder.set(candidates[at].raw, candidates[at].token);
 		}
 	}
 
-	return { tokens, folders };
+	return { tokens, folders, byFolder, at: now };
 }
 
 /**
  * How long one `stat` may take before the answer is "cannot tell".
  *
  * `workspace.fs.stat` has no timeout of its own, and one of the paths in the
- * list may well be on a mount that has stopped answering. Without a budget that
+ * list may well be on a mount that has stopped answering. The budget is **per
+ * call**, and `folderIsGone` makes two of them in sequence, so one stalled
+ * folder costs up to `2 * statTimeoutMs` — the number to use when sizing
+ * anything downstream of the scan. Without a budget that
  * single folder holds up the repair behind it — the same failure shape as the
  * unbounded CDP call inside a transition.
  */
@@ -868,6 +987,8 @@ export interface RepairReport {
 	 * a folder that came back in between is simply absent from this list.
 	 */
 	readonly pruned: string[];
+	/** When that decision was taken, to be re-checked before a stone goes down. */
+	prunedAt: number;
 	/**
 	 * True when every config was actually examined.
 	 *
@@ -922,9 +1043,17 @@ interface Rewrite {
  */
 export async function repairConfigs(
 	server: McpServer,
-	resolveDead: () => Promise<DeadWorkspaces> = async () => ({ tokens: new Set(), folders: [] }),
+	dead: DeadScan = noScan,
+	/**
+	 * Asked under the lock, immediately before each write: is this run still the
+	 * one that should be believed? Returning false abandons the write and marks
+	 * the run incomplete.
+	 */
+	stillWanted?: () => boolean,
 ): Promise<RepairReport> {
-	const report: RepairReport = { files: [], removed: [], pruned: [], complete: false };
+	const report: RepairReport = {
+		files: [], removed: [], pruned: [], prunedAt: Date.now(), complete: false,
+	};
 
 	// Captured before the first await. `server.url` goes undefined when the
 	// server is disposed, and a repair can be waiting on a lock when that
@@ -937,6 +1066,7 @@ export async function repairConfigs(
 	const folder = workspaceFolder();
 	let busy = false;
 	let unreadable = false;
+	let superseded = false;
 
 	/**
 	 * Reads, repairs and writes one config, under that file's own lock.
@@ -952,7 +1082,7 @@ export async function repairConfigs(
 		label: string,
 		rewrite: (text: string) => Rewrite,
 		/**
-		 * Runs inside the lock, before the file is read.
+		 * Runs inside the lock, immediately before the rewrite.
 		 *
 		 * The prune's *decision* belongs here and not at the call site. It used
 		 * to be taken before `repairConfigs` was even called, and the set then
@@ -961,16 +1091,20 @@ export async function repairConfigs(
 		 * lifts its tombstone) and the stale verdict still deleted the entry of
 		 * a workspace that was live again by the time the write happened, then
 		 * tombstoned it. Deciding under the lock makes the verdict as fresh as
-		 * the write it authorises.
+		 * the write it authorises — and it runs *after* the read, not before,
+		 * so the only thing between deciding and writing is the rewrite itself.
 		 */
 		inside?: () => Promise<void>,
 	): Promise<void> => {
 		const took = await withLock(lockPath(configLockName(uri)), async () => {
-			if (inside) {
-				await inside();
-			}
 			const read = await readConfig(uri);
 			if (read.kind === 'absent') {
+				if (inside) {
+					// Still decide: a user with no `~/.codex/config.toml` must
+					// get their tombstones, or the scan stats every dead folder
+					// on every start for ever.
+					await inside();
+				}
 				return; // repairing is not connecting
 			}
 			if (read.kind === 'unreadable') {
@@ -979,8 +1113,22 @@ export async function repairConfigs(
 				unreadable = true;
 				return;
 			}
+			if (inside) {
+				await inside();
+			}
 			const result = rewrite(read.text);
 			if (!result.changed) {
+				return;
+			}
+			// **Checked here, holding the lock, with the bytes ready to go.**
+			// The caller's own guard runs only after `repairConfigs` resolves,
+			// which is far too late: an older run can take this lock *after* a
+			// newer one has given up waiting for it, write the port the newer
+			// run replaced, and only then discover it was superseded — leaving
+			// the config pointing at a server that is gone. The last thing
+			// before the write is the right place to ask.
+			if (stillWanted && !stillWanted()) {
+				superseded = true;
 				return;
 			}
 			await writeText(uri, result.text);
@@ -1006,6 +1154,14 @@ export async function repairConfigs(
 	 * with the window next door.
 	 */
 	const rewriteCodex = (name: string, prune: ReadonlySet<string>) => (text: string): Rewrite => {
+		if (codexUnterminated(text)) {
+			// A value that never closes makes its table's range run to end of
+			// file, so a deletion would take every table below it — the user's
+			// other MCP servers and our own live entry — while reporting the one
+			// name it meant to remove. A file we cannot finish reading is not
+			// one to rewrite, exactly as for an unparsable `.mcp.json`.
+			return { text, changed: false, removed: [], repaired: false };
+		}
 		const entries = codexEntries(text);
 		const pruned = removeCodexTables(
 			text, entries, codexDeadTables(entries, prune, server.token));
@@ -1044,20 +1200,26 @@ export async function repairConfigs(
 	// The global config is the only file the prune touches, so it is also the
 	// only one whose lock has to cover the decision. `dead` is filled in by the
 	// hook below, which runs inside that lock; `rewriteCodex` reads it after.
-	let dead: DeadWorkspaces = { tokens: new Set(), folders: [] };
+	// The survey runs **here**, outside every lock: it stats the filesystem and
+	// can be slow. Only its confirmation happens under the lock, below.
+	const surveyed = await dead.scan();
+	let confirmed: DeadWorkspaces = emptyScan();
 	const globalName = folder ? codexEntryName(folder) : `${serverName}-window`;
 	await apply(
 		codexGlobalConfigUri(),
 		'~/.codex/config.toml',
-		text => rewriteCodex(globalName, dead.tokens)(text),
+		text => rewriteCodex(globalName, confirmed.tokens)(text),
 		async () => {
-			dead = await resolveDead();
+			confirmed = dead.confirm(surveyed);
+			report.prunedAt = confirmed.at;
 			// Recorded here rather than after the write, because an absent
 			// config returns early and never reaches it — and a user with no
 			// `~/.codex/config.toml` at all must still get their tombstones,
 			// or the scan stats every dead folder on every start for ever.
-			report.pruned.push(...dead.folders);
+			report.pruned.push(...confirmed.folders);
 		});
 
-	return { ...report, complete: !busy && !unreadable };
+	// A superseded run is not a complete one: it must not lay tombstones for a
+	// decision whose write it abandoned.
+	return { ...report, complete: !busy && !unreadable && !superseded };
 }

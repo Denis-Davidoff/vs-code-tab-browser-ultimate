@@ -705,3 +705,75 @@ suite('codexDeadTables / removeCodexTables', () => {
 		assert.strictEqual(result.text, '[mcp_servers.other]\nurl = "http://example/mcp"\n');
 	});
 });
+
+/*
+ * The shape that emptied a user's whole global Codex config.
+ *
+ * `codexEntries` keeps a table open across continuation lines, which is right
+ * for identifying one. An unclosed `[` never closes, so the table's range runs
+ * to end of file — and once a value is left open the parser stops recognising
+ * headers at all, so the tables about to be destroyed are not even in `entries`.
+ * Deleting that range took every other MCP server and the live entry of the
+ * window doing the deleting, and reported the one name it meant to remove.
+ */
+suite('removeCodexTables refuses a range that swallows other tables', () => {
+
+	const dead = 'gone00000000000000000000000000000000000000000000000000000000dead';
+
+	const wipe = [
+		'# Codex configuration',
+		'model = "gpt-5"',
+		'',
+		'[mcp_servers.ai-browser-oldproj-a1b2c3]',
+		`http_headers = { Authorization = "Bearer ${dead}" }`,
+		'enabled_tools = [',
+		'',
+		'[mcp_servers.github]',
+		'command = "npx"',
+		'',
+		`[mcp_servers.ai-browser]`,
+		`http_headers = { Authorization = "Bearer ${token}" }`,
+		'',
+	].join('\n');
+
+	test('an unclosed value leaves every other server alone', () => {
+		const entries = codexEntries(wipe);
+		const result = removeCodexTables(wipe, entries, codexDeadTables(entries, new Set([dead]), token));
+
+		assert.strictEqual(result.changed, false);
+		assert.deepStrictEqual(result.removed, []);
+		assert.strictEqual(result.text, wipe);
+	});
+
+	test('the same file with the bracket closed prunes normally', () => {
+		const sound = wipe.replace('enabled_tools = [', 'enabled_tools = []');
+		const entries = codexEntries(sound);
+		const result = removeCodexTables(sound, entries, codexDeadTables(entries, new Set([dead]), token));
+
+		assert.deepStrictEqual(result.removed, ['ai-browser-oldproj-a1b2c3']);
+		assert.ok(result.text.includes('[mcp_servers.github]'));
+		assert.ok(result.text.includes(`Bearer ${token}`));
+	});
+
+	test('a multi-line array inside a dead table is still removed whole', () => {
+		const text = [
+			'[mcp_servers.ai-browser-old-abc123]',
+			`http_headers = { Authorization = "Bearer ${dead}" }`,
+			'enabled_tools = [',
+			'  "a",',
+			'  "b",',
+			']',
+			'',
+			'[mcp_servers.other]',
+			'url = "http://example/mcp"',
+			'',
+		].join('\n');
+
+		const entries = codexEntries(text);
+		const result = removeCodexTables(text, entries, codexDeadTables(entries, new Set([dead]), token));
+
+		assert.deepStrictEqual(result.removed, ['ai-browser-old-abc123']);
+		assert.ok(!result.text.includes('enabled_tools'));
+		assert.ok(result.text.includes('[mcp_servers.other]'));
+	});
+});

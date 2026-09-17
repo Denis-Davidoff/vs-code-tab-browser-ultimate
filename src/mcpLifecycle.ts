@@ -9,8 +9,8 @@ import type { ClientKind } from './mcpProtocol';
 import { portOffset, portOrder } from './mcpPort';
 import { McpServer } from './mcpServer';
 import {
-	deadWorkspaceTokens, markWorkspaceAlive, markWorkspacePruned, registerWithVsCode, repairConfigs,
-	tokenKeyPrefix, workspaceFolder, type RepairReport,
+	deadWorkspaceTokens, emptyScan, markWorkspaceAlive, markWorkspacePruned, registerWithVsCode,
+	repairConfigs, stillDead, tokenKeyPrefix, workspaceFolder, type RepairReport,
 } from './mcpSetup';
 import { confirm } from './notify';
 import { generateUuid } from './uuid';
@@ -98,13 +98,16 @@ export class McpLifecycle implements vscode.Disposable {
 		private readonly browser: BrowserController,
 		private readonly version: string,
 	) {
-		// Before the first `_apply` there is no served identity yet, so the
-		// first folder is the best available guess — and at that moment it is
-		// also the one `_workspaceToken` is about to key on.
-		void markWorkspaceAlive(this.context.globalState, workspaceFolder()).catch(() => { });
+		// **Only `_servedFolder`, and only once there is one.** Stamping
+		// `workspaceFolder()` unconditionally wrote a `mcp.seen:` row for every
+		// window, including one with `aiBrowser.mcp.enabled: false` — which
+		// never reaches `_workspaceToken`, so the row had no `mcp.token:` to
+		// belong to. Nothing reads such a row (the scan iterates token keys) and
+		// nothing removes it, so it accumulated one permanent entry per folder
+		// ever opened with MCP off, in a memento rewritten whole on every
+		// update. A window that serves nothing has nothing to keep alive.
 		this._heartbeat = setInterval(() => {
-			void markWorkspaceAlive(
-				this.context.globalState, this._servedFolder ?? workspaceFolder()).catch(() => { });
+			void markWorkspaceAlive(this.context.globalState, this._servedFolder).catch(() => { });
 		}, 60 * 60 * 1000);
 	}
 
@@ -131,15 +134,18 @@ export class McpLifecycle implements vscode.Disposable {
 	 * server. Never regenerate it for an existing workspace — every config
 	 * naming this window would become unrecognisable at once.
 	 */
-	private _workspaceToken(): string {
-		const folder = workspaceFolder();
+	private _workspaceToken(folder: vscode.WorkspaceFolder | undefined): string {
 		const key = `${tokenKeyPrefix}${folder?.uri.toString() ?? 'no-folder'}`;
 		const existing = this.context.globalState.get<string>(key);
 		if (existing) {
 			return existing;
 		}
 		const token = `${generateUuid()}${generateUuid()}`.replace(/-/g, '');
-		this.context.globalState.update(key, token);
+		// The one write in this file whose loss is unrecoverable (item 97), and
+		// it was the one with no handler at all — item 100's rule broken in the
+		// file that states it. It still cannot be awaited, because the caller
+		// needs the token synchronously, but a rejection must not escape.
+		void Promise.resolve(this.context.globalState.update(key, token)).catch(() => { });
 		return token;
 	}
 
@@ -155,6 +161,16 @@ export class McpLifecycle implements vscode.Disposable {
 		}
 		this._parts = [];
 
+		// Bumped **before** the enabled check, and `_servedFolder` cleared with
+		// it. Turning the MCP server off has to invalidate a repair still in
+		// flight from the previous run just as a restart does — returning early
+		// left that older repair authoritative, free to write a port for a
+		// server that no longer exists. And a window that is not serving must
+		// not go on stamping its folder as served, or nothing in that workspace
+		// can ever become prunable while the window stays open.
+		const generation = ++this._generation;
+		this._servedFolder = undefined;
+
 		const configuration = vscode.workspace.getConfiguration('aiBrowser');
 		if (!configuration.get<boolean>('mcp.enabled', true)) {
 			this._setState({ kind: 'disabled' });
@@ -163,11 +179,14 @@ export class McpLifecycle implements vscode.Disposable {
 
 		this._setState({ kind: 'starting' });
 
-		const generation = ++this._generation;
+		// Folder and token are resolved together, before the first await.
+		// `_workspaceToken` used to read `workspaceFolders[0]` again for itself,
+		// so an await in between could hand the server a token minted for one
+		// folder while the heartbeat protected another — the identity mismatch
+		// `_servedFolder` exists to prevent, reintroduced through the await.
 		const folder = workspaceFolder();
-		this._servedFolder = folder;
+		const token = this._workspaceToken(folder);
 		await markWorkspaceAlive(this.context.globalState, folder).catch(() => { });
-		const token = this._workspaceToken();
 		const server = new McpServer(
 			this.browser, token, folder?.name, this.version, this._sessionKinds);
 
@@ -188,6 +207,11 @@ export class McpLifecycle implements vscode.Disposable {
 			return;
 		}
 
+		// Only now: the window is actually serving this folder's token, so only
+		// now may the heartbeat claim it. Set before `start` succeeded, a failed
+		// or refused start left the stamp being refreshed hourly for a server
+		// that never came up.
+		this._servedFolder = folder;
 		this._parts.push(server);
 		const registration = registerWithVsCode(server, this.version);
 		if (registration) {
@@ -221,8 +245,20 @@ export class McpLifecycle implements vscode.Disposable {
 		// become live again, and then tombstone it.
 		// The scan's own failure degrades to "prune nothing", never to "repair
 		// nothing": a stat that threw must not cost the window its port fix.
-		void repairConfigs(server, () => deadWorkspaceTokens(this.context.globalState, token)
-			.catch(() => ({ tokens: new Set<string>(), folders: [] as string[] })))
+		void repairConfigs(
+			server,
+			{
+				// Slow half, run outside every lock.
+				scan: () => deadWorkspaceTokens(this.context.globalState, token)
+					.catch(() => emptyScan()),
+				// Fast half, run under the lock immediately before the write.
+				confirm: surveyed => stillDead(this.context.globalState, surveyed),
+			},
+			// Asked under the lock, with the bytes ready and before the write.
+			// The guard below runs only after `repairConfigs` resolves, which
+			// cannot stop an older run that took the lock late from writing a
+			// port the newer run had already replaced.
+			() => !this._disposed && generation === this._generation)
 			.then(async report => {
 				if (this._disposed || generation !== this._generation) {
 					// A newer `_apply`, or a teardown, happened while this ran.
@@ -236,7 +272,8 @@ export class McpLifecycle implements vscode.Disposable {
 				// it out of the scan while the entry is still there.
 				if (report.complete) {
 					for (const folder of report.pruned) {
-						await markWorkspacePruned(this.context.globalState, folder);
+						await markWorkspacePruned(
+							this.context.globalState, folder, report.prunedAt);
 					}
 				}
 				this._reportRepair(report);

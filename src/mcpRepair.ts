@@ -318,6 +318,39 @@ export function removeCodexTables(
 
 	const wanted = new Set(names);
 	const lines = text.split(/\r?\n/);
+
+	// **A table's range must not contain another table's header**, and checking
+	// it here is what makes this primitive safe on its own. The parser keeps a
+	// table open across continuation lines, which is right for identifying one;
+	// but an unclosed `[` never brings the depth back to zero, so that table's
+	// `endLine` runs to end of file and every table below it is inside it.
+	// Deleting that range took the user's whole global Codex config — every
+	// other MCP server and the live entry of the window doing the deleting —
+	// while reporting the single name it meant to remove.
+	//
+	// It has to be checked against the *text*, not against the other entries:
+	// once a value is left open the parser stops recognising headers at all, so
+	// the tables about to be destroyed are not in `entries` to be compared with.
+	// A bare `[table]` line inside a range we are deleting is the fingerprint.
+	// (An array element such as `["a"],` does not match — the pattern demands
+	// the header be the whole line.) The leaf-module rule forbids importing the
+	// parser's own "did this document terminate" answer, since a relative
+	// *value* import would stop `npm test` loading this file; `rewriteCodex`
+	// asks that question too, and this is the guard that does not depend on the
+	// caller remembering to.
+	const header = /^\s*\[\[?[^\]]+\]\]?\s*(#.*)?$/;
+
+	for (const entry of entries) {
+		if (!wanted.has(entry.name)) {
+			continue;
+		}
+		for (let line = entry.firstLine + 1; line < entry.endLine; line++) {
+			if (header.test(lines[line])) {
+				return unchanged;
+			}
+		}
+	}
+
 	const remove = new Set<number>();
 
 	for (const entry of entries) {

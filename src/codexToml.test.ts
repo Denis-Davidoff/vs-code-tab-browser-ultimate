@@ -5,7 +5,7 @@
 
 import * as assert from 'node:assert';
 import { suite, test } from 'node:test';
-import { codexEntries, scanLine } from './codexToml.ts';
+import { codexEntries, codexUnterminated, scanLine } from './codexToml.ts';
 
 suite('scanLine', () => {
 
@@ -156,5 +156,38 @@ suite('codexEntries', () => {
 
 	test('an empty file yields nothing', () => {
 		assert.deepStrictEqual(codexEntries(''), []);
+	});
+});
+
+suite('codexUnterminated', () => {
+
+	test('a well-formed file terminates', () => {
+		assert.strictEqual(codexUnterminated([
+			'[mcp_servers.a]', 'url = "http://x/mcp"', 'enabled_tools = ["a", "b"]', '',
+		].join('\n')), false);
+	});
+
+	test('a multi-line array that closes terminates', () => {
+		assert.strictEqual(codexUnterminated([
+			'[mcp_servers.a]', 'enabled_tools = [', '  "a",', ']', '',
+		].join('\n')), false);
+	});
+
+	test('an unclosed array does not', () => {
+		assert.strictEqual(codexUnterminated([
+			'[mcp_servers.a]', 'enabled_tools = [', '  "a",', '',
+		].join('\n')), true);
+	});
+
+	test('an unclosed triple-quoted string does not', () => {
+		assert.strictEqual(codexUnterminated([
+			'[mcp_servers.a]', 'instructions = """', 'hello', '',
+		].join('\n')), true);
+	});
+
+	test('a `[` inside a string is not structural', () => {
+		assert.strictEqual(codexUnterminated([
+			'[mcp_servers.a]', 'url = "http://x/mcp?a[b]"', 'note = "["', '',
+		].join('\n')), false);
 	});
 });

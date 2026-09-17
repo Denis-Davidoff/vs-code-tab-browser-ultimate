@@ -167,9 +167,16 @@ export async function checkConnection(server: McpServer, browser: BrowserControl
 		// parent, an unreadable config, a remote workspace, a window still
 		// inside its grace period) that are most likely to be sitting here.
 		// State what is known — the token is not this window's — and nothing
-		// more.
+		// more. A third wording broke that rule from the other side by promising
+		// the dead ones are "cleaned up on its own after a week": true only for
+		// a token this machine minted, and the two groups most likely to be
+		// listed here are exactly the ones no week will ever clean — an entry
+		// whose token `globalState` has no record of is never even a candidate,
+		// and an entry in the *project* config is never pruned at all. The
+		// promise sent the user off to wait instead of running the one command
+		// that works.
 		lines.push('', vscode.l10n.t(
-			"Codex has {0} entries that look like ours but do not carry this window's token ({1}). They may belong to other projects or windows, or to a workspace this machine no longer has a record of. Nothing here removes one while it may be in use; an entry whose project is provably gone is cleaned up on its own after a week. Remove any you no longer need with `codex mcp remove <name>`.",
+			"Codex has {0} entries that look like ours but do not carry this window's token ({1}). They may belong to other projects or windows, or to a workspace this machine has no record of. They are left alone — remove any you no longer need with `codex mcp remove <name>`.",
 			String(strangers.length), strangers.join(', ')));
 	}
 

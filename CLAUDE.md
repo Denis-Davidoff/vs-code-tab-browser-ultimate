@@ -1592,13 +1592,26 @@ token. That turns "looks like ours" into two provable facts at once: *this entry
 we minted* and *the folder it was minted for is gone*. Only then is a deletion safe, and
 `deadWorkspaceTokens` in [src/mcpSetup.ts](src/mcpSetup.ts) is where the proof is assembled.
 
-**When it runs, precisely**, because a first pass at this paragraph got it wrong in both halves:
-the scan is `deadWorkspaceTokens`, called from `McpLifecycle._apply` **before** `repairConfigs`
-and outside it — only the table surgery happens inside — and `_apply` runs at activation *and*
-again on every `aiBrowser.mcp.enabled` / `aiBrowser.mcp.port` change
-([extension.ts](src/extension.ts)), not once per window. That matters twice over: a reader
-looking for the scan inside `repairConfigs` will not find it, and an unattended deletion runs
-more often than "once at startup" suggests.
+**When it runs, precisely** — and this paragraph has now been wrong twice, in opposite
+directions, so read it against the code rather than trusting it. The verdict has **two halves
+that run in different places, and that split is the whole point**:
+
+- `deadWorkspaceTokens` — the *survey* — stats the filesystem, so it runs **outside every lock**.
+  It is handed to `repairConfigs` as a function rather than a result, and called before any lock
+  is taken.
+- `stillDead` — the *confirmation* — re-reads `mcp.seen:` / `mcp.pruned:` from `globalState` and
+  touches no file, so it runs **inside the config lock**, immediately before the rewrite.
+
+Neither may move. Passing a resolved set instead of the pair is item 99: a verdict that travels
+across the lock deletes the entry of a workspace that came back in the meantime. Running the
+*survey* under the lock is the mirror mistake, item 104: it can cost `2 * statTimeoutMs` for one
+stalled mount while `withLock` gives up after `attempts * retryMs` — one second — so every other
+window skips `~/.codex/config.toml` entirely and reports `complete: false`. No port repair and no
+tombstones, for all of them, on exactly the session restore the lock exists for.
+
+`_apply` runs at activation *and* again on every `aiBrowser.mcp.enabled` / `aiBrowser.mcp.port`
+change ([extension.ts](src/extension.ts)), so an unattended deletion runs more often than "once
+at startup" suggests.
 
 It is the one thing in the repair that deletes rather than corrects, and everything about it
 follows from that:
@@ -2811,12 +2824,39 @@ No compile error for any of these — they only surface at runtime.
     the fire-and-forget repair, so two runs can be in flight and the file lock decides the order;
     the older one can land last and write the port the newer run replaced. That is the stale-port
     symptom the whole feature exists to remove, and it survives until the next window start.
-    Stamp a generation at `_apply` and check it after every await.
+    **Checking the generation after the repair resolves does not fix it** — by then every write
+    has happened, and all the guard suppresses is the report and the tombstones. Ask under the
+    lock, with the bytes ready, immediately before the write (`stillWanted`), and bump the
+    generation *before* the disabled early return, or turning MCP off leaves the older repair
+    authoritative.
 103. **A `dispose()` that sets no flag** → an `_apply` suspended at `await server.start(...)`
     pushes into a `_parts` array nobody will dispose again, leaving a loopback HTTP server
     listening after the window is done with it; and the repair chain can still write the user's
-    config and lay tombstones after deactivation. Set `_disposed` first and check it after each
-    await.
+    config and lay tombstones after deactivation. Set `_disposed` first, check it after each
+    await, and — for the write itself — through the same `stillWanted` hook as item 102.
+104. **Doing slow work under a lock whose acquisition budget is shorter than that work** → the
+    prune's filesystem survey can spend `2 * statTimeoutMs` on one stalled mount, while
+    `withLock` waits `attempts * retryMs` — one second — before giving up. Held across the
+    survey, the config lock made every sibling window skip the file it was queuing for, which
+    on session restore is all of them. Split the slow half out: survey outside, confirm inside.
+105. **Deleting a parser's line range without checking what is inside it** → `codexEntries` keeps
+    a table open across continuation lines, which is right for *identifying* one and unsafe as a
+    *deletion* range: an unclosed `[` never closes, so that table runs to end of file — and once
+    a value is left open the parser stops recognising headers at all, so the tables about to be
+    destroyed are not even in `entries` to be compared against. One dead entry emptied the
+    user's whole global Codex config, every other MCP server and the deleting window's own live
+    entry with it, and the confirmation named the single entry it meant to remove. Refuse a range
+    containing a bare `[table]` line, and refuse to rewrite a document that ends inside an
+    unclosed value at all (`codexUnterminated`).
+106. **One locked writer and one unlocked writer of the same file** → that is the same as no
+    lock (item 16 from the other direction). `.mcp.json` was rewritten by the repair under
+    `configLockName` and by Connect with nothing, so a press during any window's startup repair
+    lost whichever edit landed first — on a file teams commit.
+107. **Stamping liveness from a window that serves nothing** → the heartbeat wrote a
+    `mcp.seen:<folderUri>` row unconditionally, so a window with `aiBrowser.mcp.enabled: false`
+    — which never mints a token — left a row with no `mcp.token:` to belong to. Nothing reads it
+    and nothing removes it, so it accumulates for ever in a memento that is rewritten whole on
+    every update. Keep alive only what is actually being served.
 
 ## Special cases and non-obvious decisions
 

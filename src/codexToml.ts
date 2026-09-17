@@ -196,6 +196,41 @@ function tableName(header: string): string {
  * them — a `[mcp_servers.…]` sitting inside somebody's `instructions = """…"""`
  * is prose, and treating it as a table would rewrite their config.
  */
+/**
+ * Whether the document ends inside a value that was never closed.
+ *
+ * **A file that answers true must not be rewritten.** `codexEntries` keeps a
+ * table open across continuation lines, which is right for *identifying* one —
+ * a multi-line array or triple-quoted string belongs to the table it started
+ * in. It is unsafe as a *deletion* range: an unbalanced `[` never brings the
+ * depth back to zero, so that table's `endLine` runs to end of file and every
+ * table below it falls inside it. Pruning one dead entry then deleted the
+ * user's whole global Codex config — every other MCP server and this window's
+ * own live entry — while reporting the one name it meant to remove.
+ *
+ * The precondition is malformed TOML, which Codex cannot load either; the point
+ * is that "broken" and "emptied" are very different states to hand back, one is
+ * a character to restore and the other is not, and nothing here takes a backup.
+ * It is also reachable from this project's own history — several past releases
+ * wrote TOML that does not parse.
+ *
+ * So both writers ask first, and leave a file they cannot finish reading alone.
+ */
+export function codexUnterminated(text: string): boolean {
+	// Mirrors `codexEntries`' own accounting exactly — `scan.depth` and the same
+	// clamp — because a second, independently written counter is the drift this
+	// project has already been bitten by once (`codexOurTables` vs
+	// `codexEntryCarriesToken`). If the two ever disagree, this one is wrong.
+	let quote: string | undefined;
+	let depth = 0;
+	for (const line of text.split(/\r?\n/)) {
+		const scan = scanLine(line, quote);
+		quote = scan.multiline;
+		depth = Math.max(0, depth + scan.depth);
+	}
+	return quote !== undefined || depth > 0;
+}
+
 export function codexEntries(text: string): CodexEntry[] {
 	const lines = text.split(/\r?\n/);
 	const entries: CodexEntry[] = [];
