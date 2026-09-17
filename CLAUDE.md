@@ -1448,8 +1448,13 @@ writers go through `readConfig` for that reason; `writeCodexConfig` throws inste
 
 One shared global name would let the second project overwrite the first, hence the hash.
 `codex mcp add` is still offered as a command for anyone who would rather not have a file
-edited. The global write is **not** locked — unlike a repair on startup it happens on a button
-press, so two windows would have to be clicked at the same moment.
+edited. **The global write is locked**, like every other writer of that file — see
+[The port moves](#the-port-moves-and-the-config-remembers-the-old-one). It used to be
+unlocked, on the reasoning that a button press cannot race itself; that stopped being true the
+moment every window began repairing the same file at startup, and an earlier draft of this
+paragraph still said "not locked" long after `writeCodexGlobalConfig` had taken the lock. Two
+statements about one file is how breaks-silently #16 and #106 get reintroduced by somebody
+tidying up.
 
 ### The mini TOML parser
 
@@ -1469,6 +1474,21 @@ following lines are continuation; triple quotes inside a *literal* string open n
 five closing quotes still close once. A naive quote count got this wrong in both directions —
 our table became invisible and connecting wrote it a second time, which is TOML that does not
 parse at all.
+
+**`[` and `{` are counted apart, and one shared counter was a data-loss bug.** An unclosed
+inline table cancelled by a stray `]` — two ordinary typos in opposite directions, several lines
+apart — made the whole document balance, so `codexUnterminated` called it well-formed and every
+guard resting on it passed, including the one deciding whether a deletion range covers another
+server's table. `ScanResult` therefore carries `depth` and `braces` separately and every consumer
+requires both to be zero (item 120).
+
+**`codexRangeDeletable` is the range guard, and it is deliberately part textual.** A range may be
+deleted only if it closes *and* holds no **credible** table header after its first line — a dotted
+path of bare or quoted keys, matched against the raw line without consulting the scanner. Both
+halves are needed and each covers the other's blind spot: asking the scanner alone misses a header
+hidden behind an unclosed `[` (item 119), while a loose textual test fires on `  [3, 4]`, a nested
+array's last element, and refuses a legitimate config for good (item 114). A credible header
+inside a triple-quoted string is refused too — a known false refusal, and the cheap direction.
 
 **A quoted key is the same key.** TOML says `"url" = …` and `url = …` are one key, and reading
 the quoted form as *absent* is the worst kind of miss for a writer: the repair took its "no url,
@@ -2466,7 +2486,7 @@ tested; nothing in the UI writes one. What is missing is not code but *identity*
 `Mcp-Session-Id` changes on every restart, and MCP carries no name or working directory, so two
 Claude conversations can only be told apart by "called 5s ago" — a row a user would have to
 correlate by timing. Worth building when someone actually runs two conversations of the same
-assistant on two pages; a rule for inheriting an left over session assignment (the newest
+assistant on two pages; a rule for inheriting a left-over session assignment (the newest
 session of that kind takes it over) would have to come with it, or every restart would strand
 one.
 
@@ -2830,7 +2850,7 @@ No compile error for any of these — they only surface at runtime.
     workspace's *identity*, not a cache entry: remove it and the next open mints a new token,
     while the committed `.mcp.json` a re-clone restores still carries the old one. The repair
     matches by token, so it cannot see that entry to fix it — every call 401s with nothing able
-    to recover it. Completion marker the folder and keep the token.
+    to recover it. Mark the folder as handled and keep the token.
 98. **A heartbeat that follows `workspaceFolders[0]` instead of the identity being served** →
     removing or reordering the first folder of a multi-root window does not restart the MCP
     server, so it keeps accepting the token minted for the old folder while the stamp moves to
@@ -2878,8 +2898,8 @@ No compile error for any of these — they only surface at runtime.
     user's whole global Codex config, every other MCP server and the deleting window's own live
     entry with it, and the confirmation named the single entry it meant to remove. Ask
     `codexRangeDeletable` of every range, and refuse to rewrite a document that ends inside an
-    unclosed value at all (`codexUnterminated`). The first version of that guard tested the
-    *text* for something header-shaped, which item 114 records as wrong in both directions.
+    unclosed value at all (`codexUnterminated`). That guard has been wrong in both directions
+    since — too textual (item 114), then too structural (item 119) — and now needs both halves.
 106. **One locked writer and one unlocked writer of the same file** → that is the same as no
     lock (item 16 from the other direction). `.mcp.json` was rewritten by the repair under
     `configLockName` and by Connect with nothing, so a press during any window's startup repair
@@ -2933,8 +2953,10 @@ No compile error for any of these — they only surface at runtime.
     refusal suppressed the completion marker permanently. And it goes blind exactly when it
     matters: once a value is left open every later line reads as continuation, so the real
     `[mcp_servers.someone-else]` header inside the range is invisible. `codexRangeDeletable` asks
-    both halves — no top-level header after the range's first line, **and** the range closes —
-    because neither alone is safe.
+    both halves, because neither alone is safe. **The first attempt at it got the header half
+    wrong in the opposite direction** — it asked the scanner, which is blind in precisely the case
+    above — so read item 119 for the rule as it actually stands: a *credible* header tested
+    against the raw line whatever the scanner believes, plus the range closing.
 115. **Ignoring escapes inside a multi-line basic string** → the scanner closed on every `"""`,
     including one preceded by a backslash, where the quote is content rather than the delimiter.
     Two such sequences on a line rebalance the scan, so `codexUnterminated` answers "well-formed"
@@ -2959,6 +2981,38 @@ No compile error for any of these — they only surface at runtime.
     not ordered by a millisecond clock, so `seen > decidedAt` treats a stamp that may be newer as
     older and marks a live workspace as handled. Use `>=`: the conservative reading costs a
     deferred prune, the other costs somebody a reconnect.
+
+119. **A structural check where a textual one was load-bearing** → the guard on a deletion range
+    was rewritten to ask the scanner whether a line is a table header, which is exactly the
+    question the scanner cannot answer once it has lost track. An unclosed `[` *before* a
+    `[mcp_servers.someone-else]`, with a later `]` rebalancing the range, hid that header
+    completely: the range ended at depth zero, both halves of the rule passed, and the user's
+    server was deleted while the confirmation named only the entry meant to go. The replaced
+    textual rule had caught this and was traded away for precision on a different case. The rule
+    now needs *both* — a **credible** header (a dotted path of bare or quoted keys, so `  [3, 4]`
+    is content and `[mcp_servers.x]` is not) tested against the raw line regardless of parser
+    state, **and** the range closing.
+120. **One counter for two kinds of bracket** → `scanLine` incremented the same `depth` for `[`
+    and `{`, so an unclosed inline table was cancelled by a stray `]` — two ordinary hand-edit
+    typos, in opposite directions, several lines apart. The document then balanced,
+    `codexUnterminated` reported it well-formed, every guard that rests on it passed, and a
+    deletion range covering another server's table was approved. Count them apart and require
+    both to be zero.
+121. **Making a check required on two of three deleters** → `deletable` was made a required
+    parameter on `removeCodexTables` and `spliceCodexTables` explicitly so a caller could not opt
+    out, while `repairCodexToml` in the same file went on deleting whole line ranges — a
+    duplicate of ours, a header sub-table being folded inline — with no check at all, on the
+    strength of the caller's document-wide `codexUnterminated`. Item 120 shows that guard is not
+    sufficient. When a rule gets an enforcement mechanism, sweep every site that performs the
+    operation, not the ones being edited at the time.
+122. **A serialising gate in front of unbounded I/O** → chaining the repairs so the newest writes
+    last (item 117) put `vscode.workspace.fs.readFile` / `createDirectory` / `writeFile` behind a
+    gate, none of which carries a timeout, and `withLock` bounds only *acquiring* a lock rather
+    than the work under it. One stalled network home then stopped every later repair in that
+    window for its whole lifetime, silently. Item 47 one layer up, created by the fix for item
+    117. Bound the **wait**, not the work: a queued run waits `repairQueueWaitMs` and then
+    proceeds, so the pathological case degrades to the old concurrent behaviour — where the lock
+    and `stillWanted` still protect the write — instead of to no repairs at all.
 
 ## Special cases and non-obvious decisions
 

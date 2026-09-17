@@ -274,3 +274,71 @@ suite('an escaped quote does not close a multi-line basic string', () => {
 		assert.strictEqual(codexUnterminated(literal), false);
 	});
 });
+suite('a deletion range never covers another table', () => {
+
+	// CR-18. An unclosed `[` *before* a foreign header hides it from a purely
+	// structural scan, and a later `]` rebalances the range so it ends at depth
+	// zero — satisfying both halves of the old rule. The foreign server was
+	// deleted and the confirmation named only the entry it meant to remove.
+	test('a header hidden inside an unclosed array still stands the range off', () => {
+		const text = [
+			'[mcp_servers.ai-browser-old-abc123]',
+			'enabled_tools = [',
+			'[mcp_servers.someone-elses-server]',
+			'url = "http://example.com/mcp"',
+			']',
+			'',
+		].join('\n');
+
+		assert.strictEqual(codexUnterminated(text), false, 'the document itself balances');
+		assert.strictEqual(codexRangeDeletable(text, 0, 5), false);
+	});
+
+	// The same wound through the other door: `[`/`]` and `{`/`}` used to share
+	// one counter, so a missing `}` was cancelled by a stray `]` — two ordinary
+	// typos — and the whole document read as well-formed.
+	test('an unclosed brace is not cancelled by a stray bracket', () => {
+		const text = [
+			'[mcp_servers.ai-browser-oldproj-abc123]',
+			'http_headers = { Authorization = "Bearer x"',
+			'',
+			'[mcp_servers.github]',
+			'args = ["run"]]',
+			'',
+		].join('\n');
+
+		assert.strictEqual(codexUnterminated(text), true);
+	});
+
+	test('a brace and a bracket are counted apart', () => {
+		assert.strictEqual(codexUnterminated('a = {\n'), true, 'unclosed inline table');
+		assert.strictEqual(codexUnterminated('a = [\n'), true, 'unclosed array');
+		assert.strictEqual(codexUnterminated('a = { b = 1 }\nc = [1]\n'), false, 'both balanced');
+	});
+
+	test('a credible header is refused wherever it hides', () => {
+		const inString = [
+			'[mcp_servers.a]',
+			'note = """',
+			'[mcp_servers.looks-real]',
+			'"""',
+			'',
+		].join('\n');
+		// A false refusal, and the deliberate direction: one untidied entry
+		// beats deleting a table this parser cannot prove is prose.
+		assert.strictEqual(codexRangeDeletable(inString, 0, 4), false);
+	});
+
+	test('array content that merely looks bracketed is still deletable', () => {
+		const text = [
+			'[mcp_servers.a]',
+			'matrix = [',
+			'  [1, 2],',
+			'  [3, 4]',
+			']',
+			'',
+		].join('\n');
+
+		assert.strictEqual(codexRangeDeletable(text, 0, 5), true);
+	});
+});

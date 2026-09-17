@@ -15,6 +15,23 @@ import {
 import { confirm } from './notify';
 import { generateUuid } from './uuid';
 
+/**
+ * How long a queued repair waits for the one before it before going anyway.
+ *
+ * Generous on purpose: it is not a deadline for the work, only the point at
+ * which "wait your turn" stops being worth more than "run at all". See
+ * {@link McpLifecycle._repairs}.
+ */
+const repairQueueWaitMs = 15_000;
+
+/** A timer that never keeps the extension host alive on its own. */
+function settleAfter(ms: number): Promise<void> {
+	return new Promise<void>(resolve => {
+		const timer = setTimeout(resolve, ms);
+		(timer as { unref?: () => void }).unref?.();
+	});
+}
+
 export type McpState =
 	| { kind: 'starting' }
 	| { kind: 'running'; server: McpServer }
@@ -107,12 +124,29 @@ export class McpLifecycle implements vscode.Disposable {
 	 * newer run is starved out entirely and the obsolete endpoint is what
 	 * remains on disk.
 	 *
-	 * Chaining them makes that unreachable rather than unlikely: a repair does
-	 * not begin until the previous one has settled, so the newest always writes
-	 * last and never contends with its own predecessor for the lock. It costs
-	 * the newer repair a wait, which is bounded — the survey's stats are capped
-	 * by `statTimeoutMs` and run in parallel, and every lock gives up after a
-	 * second. Nothing awaits this chain, so activation is unaffected.
+	 * Chaining them makes that ordering hold: a repair does not begin until the
+	 * previous one has settled, so the newest writes last and never contends
+	 * with its own predecessor for the lock.
+	 *
+	 * **The wait on the predecessor is bounded, and that is not a detail.**
+	 * `repairConfigs` reaches `vscode.workspace.fs.readFile`, `createDirectory`
+	 * and `writeFile`, none of which carries a timeout — the same property that
+	 * forced `statTimeoutMs` onto the survey — and `withLock` bounds only
+	 * *acquiring* the lock, never the work under it. An unbounded chain would
+	 * therefore turn one stalled network home into a permanent stop on every
+	 * later repair in the window: no port fix, for any config, with nothing
+	 * logged, until the window is restarted. That is item 47's shape — an
+	 * unbounded call behind a serialising gate — and the gate added here would
+	 * have been the thing that created it.
+	 *
+	 * So a queued repair waits {@link repairQueueWaitMs} for its predecessor and
+	 * then proceeds regardless. Normal runs finish far inside that budget (three
+	 * lock acquisitions of at most a second each, plus a parallel survey capped
+	 * by `statTimeoutMs`), so the ordering property holds in every case it was
+	 * introduced for; a run that has hung degrades to the old concurrent
+	 * behaviour, where the lock and `stillWanted` still protect the write, rather
+	 * than to no repairs at all. Nothing awaits this chain, so activation is
+	 * unaffected either way.
 	 */
 	private _repairs: Promise<void> = Promise.resolve();
 
@@ -290,7 +324,8 @@ export class McpLifecycle implements vscode.Disposable {
 		// The scan's own failure degrades to "prune nothing", never to "repair
 		// nothing": a stat that threw must not cost the window its port fix.
 		// Queued behind any repair still running, for the reason on `_repairs`.
-		this._repairs = this._repairs.catch(() => { }).then(() => repairConfigs(
+		const queued = this._repairs.catch(() => { });
+		this._repairs = Promise.race([queued, settleAfter(repairQueueWaitMs)]).then(() => repairConfigs(
 			server,
 			{
 				// Slow half, run outside every lock.

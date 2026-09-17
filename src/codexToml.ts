@@ -55,8 +55,21 @@ interface ScanResult {
 	 * has already been ruled out as a comment.
 	 */
 	readonly text: string;
-	/** Net bracket depth contributed by this line, for multi-line arrays. */
+	/**
+	 * Net `[`/`]` depth contributed by this line, for multi-line arrays.
+	 *
+	 * **Kept apart from {@link braces}, and that separation is load-bearing.**
+	 * One shared counter let an unclosed `{` be cancelled by a stray `]` — two
+	 * ordinary hand-edit typos — so the document balanced, `codexUnterminated`
+	 * answered "well-formed", and a deletion range that covered another
+	 * server's table was approved. Two wrongs made a right in the one arithmetic
+	 * that decides whether a config may be rewritten.
+	 */
 	readonly depth: number;
+	/** Net `{`/`}` depth. An inline table that does not close on its own line is
+	 * already malformed TOML, so this leaving a line open is a refusal signal
+	 * rather than a continuation this parser needs to model. */
+	readonly braces: number;
 	/** Quote style left open at end of line: `"""`, `'''`, or undefined. */
 	readonly multiline: string | undefined;
 }
@@ -74,6 +87,7 @@ interface ScanResult {
 export function scanLine(line: string, initialQuote?: string): ScanResult {
 	let code = '';
 	let depth = 0;
+	let braces = 0;
 	let quote = initialQuote;
 	let i = 0;
 	let commentAt = -1;
@@ -142,10 +156,14 @@ export function scanLine(line: string, initialQuote?: string): ScanResult {
 			continue;
 		}
 
-		if (ch === '[' || ch === '{') {
+		if (ch === '[') {
 			depth++;
-		} else if (ch === ']' || ch === '}') {
+		} else if (ch === ']') {
 			depth--;
+		} else if (ch === '{') {
+			braces++;
+		} else if (ch === '}') {
+			braces--;
 		}
 
 		code += ch;
@@ -156,6 +174,7 @@ export function scanLine(line: string, initialQuote?: string): ScanResult {
 		code,
 		text: commentAt === -1 ? line : line.slice(0, commentAt),
 		depth,
+		braces,
 		multiline: quote,
 	};
 }
@@ -231,13 +250,34 @@ export function codexUnterminated(text: string): boolean {
 	// `codexEntryCarriesToken`). If the two ever disagree, this one is wrong.
 	let quote: string | undefined;
 	let depth = 0;
+	let braces = 0;
 	for (const line of text.split(/\r?\n/)) {
 		const scan = scanLine(line, quote);
 		quote = scan.multiline;
 		depth = Math.max(0, depth + scan.depth);
+		braces = Math.max(0, braces + scan.braces);
 	}
-	return quote !== undefined || depth > 0;
+	return quote !== undefined || depth > 0 || braces > 0;
 }
+
+/**
+ * A line that is credibly a table header — `[key]` or `[[key]]`, where the key
+ * is a dotted path of bare or quoted TOML keys, with an optional comment.
+ *
+ * **This is the discriminator the whole guard turns on**, because the two things
+ * it must tell apart look identical to a looser test:
+ *
+ *   - `  [3, 4]` — the last element of a nested array, written without a
+ *     trailing comma. Well-formed TOML, and a whole line wrapped in brackets.
+ *     `3, 4` is not a key path (the comma disqualifies it), so this is content.
+ *   - `[mcp_servers.someone-elses-server]` — a real table, and deleting the
+ *     range that contains it takes a server the user configured by hand.
+ *
+ * `[1]` satisfies both readings and is therefore treated as a header: refusing
+ * a prune costs a tidy-up, approving one costs somebody their config.
+ */
+const credibleHeader =
+	/^\s*\[\[?\s*(?:[A-Za-z0-9_-]+|"(?:[^"\\]|\\.)*"|'[^']*')(?:\s*\.\s*(?:[A-Za-z0-9_-]+|"(?:[^"\\]|\\.)*"|'[^']*'))*\s*\]\]?\s*(?:#.*)?$/;
 
 /**
  * Whether the lines `[from, to)` can be deleted as one unit.
@@ -246,53 +286,52 @@ export function codexUnterminated(text: string): boolean {
  * and it answers the one question that makes a range safe: **does this range
  * contain anything that is not the table it names?**
  *
- * Two conditions, and neither is sufficient on its own — each is blind in the
- * precise case the other covers:
+ * Two conditions, and neither is sufficient alone:
  *
- *   - **No top-level header after the range's own first line.** A range that
- *     covers a second `[table]` takes somebody else's server with it.
+ *   - **No credible table header after the range's own first line** — tested
+ *     against the raw text, *regardless of what the scanner believes the
+ *     structural state to be*. That last clause is the whole lesson. An earlier
+ *     version only looked for a header while it thought it was at top level, and
+ *     an unclosed `[` before a header — with a later `]` rebalancing the range —
+ *     hid a real `[mcp_servers.someone-else]` from it completely. The range then
+ *     satisfied both conditions and the deletion took that server with it, while
+ *     the confirmation named only the one entry it meant to remove.
  *   - **The range ends at structural level.** Scanning it from its own first
- *     line has to bring quoting and bracket depth back to nothing. If it does
- *     not, the parser lost track *inside this very range*, so the `endLine`
- *     that produced it is not to be trusted — it runs to end of file, and every
- *     table below is inside it.
+ *     line must bring quoting, bracket depth and brace depth back to nothing. If
+ *     it does not, the parser lost track *inside this very range*, so the
+ *     `endLine` that produced it is not to be trusted.
  *
- * Why both, concretely. A purely *textual* header check (which this replaced)
- * fires on `  [3, 4]` — the last element of a nested array written without a
- * trailing comma, which is well-formed TOML — so a legitimate config could
- * never be pruned, and the refusal that followed suppressed the completion
- * marker for good. A purely *structural* check is worse in the other
- * direction: once a value is left open, every later line reads as continuation,
- * so a real `[mcp_servers.someone-else]` header inside the range becomes
- * invisible and the deletion goes ahead. The second condition is what catches
- * that, because the range never closes.
+ * The reverse mistake is just as real and is why the first condition is not a
+ * bare "does this line start with `[`": that fires on a nested array's last
+ * element, refusing a legitimate prune for good, since the refusal propagates to
+ * the completion marker.
  *
- * Deliberately **not** a whole-document verdict. `codexUnterminated` is that,
- * and it is still the right question for a writer rebuilding the file; this one
- * is per range, so one table whose value is open cannot stand off the prune of
- * every other table in the file.
+ * A credible header sitting inside a triple-quoted string is refused too. That
+ * is a false refusal, taken knowingly: it costs one untidied entry, where the
+ * other direction costs a server the extension never owned.
+ *
+ * Deliberately **not** a whole-document verdict. `codexUnterminated` is that.
  */
 export function codexRangeDeletable(text: string, from: number, to: number): boolean {
 	const lines = text.split(/\r?\n/);
 	let quote: string | undefined;
 	let depth = 0;
+	let braces = 0;
 
 	for (let index = from; index < to && index < lines.length; index++) {
-		const inContinuation = quote !== undefined || depth > 0;
-		const scan = scanLine(lines[index], quote);
-
-		// `text`, not `code`: a quoted table name lives in the string contents
-		// that `code` drops. Anchored, so a value merely *containing* a bracket
-		// cannot masquerade as a header.
-		if (!inContinuation && index > from && /^\s*\[/.test(scan.text)) {
+		// Before the scan, and without consulting it: the point is to see a
+		// header the structural view has lost.
+		if (index > from && credibleHeader.test(lines[index])) {
 			return false;
 		}
 
+		const scan = scanLine(lines[index], quote);
 		quote = scan.multiline;
 		depth = Math.max(0, depth + scan.depth);
+		braces = Math.max(0, braces + scan.braces);
 	}
 
-	return quote === undefined && depth === 0;
+	return quote === undefined && depth === 0 && braces === 0;
 }
 
 /**

@@ -5,7 +5,7 @@
 
 import * as assert from 'node:assert';
 import { suite, test } from 'node:test';
-import { codexEntries, codexRangeDeletable } from './codexToml.ts';
+import { codexEntries, codexRangeDeletable, codexUnterminated } from './codexToml.ts';
 import { codexEntryCarriesToken } from './mcpClientState.ts';
 import {
 	codexRetiredTables, codexOurTables, mergeAuthorization, parseInlineTable, removeCodexTables,
@@ -18,7 +18,8 @@ const url = 'http://127.0.0.1:43117/mcp';
 const endpoint = { url, token, name: 'ai-browser' };
 
 const repairToml = (text: string, name = 'ai-browser') =>
-	repairCodexToml(text, codexEntries(text), { ...endpoint, name });
+	repairCodexToml(text, codexEntries(text), { ...endpoint, name },
+		(from, to) => codexRangeDeletable(text, from, to));
 
 suite('repairClaudeJson', () => {
 
@@ -786,7 +787,7 @@ suite('removeCodexTables refuses a range that covers other tables', () => {
  * A refusal has to be distinguishable from "nothing to do".
  *
  * Both leave the text identical, and only one of them means the tables are
- * still in the file. A caller that completion markers on the strength of a completed
+ * still in the file. A caller that records a completion marker on the strength of a completed
  * run needs the difference: a marker laid on a refusal takes the folder out of
  * the scan for good while its table sits there.
  */
@@ -879,5 +880,58 @@ suite('removeCodexTables reports a refusal', () => {
 		// The array went with its own table, and the neighbour stayed.
 		assert.ok(!result.text.includes('matrix'));
 		assert.ok(result.text.includes('[mcp_servers.other]'));
+	});
+});
+suite('repairCodexToml refuses a range it may not delete', () => {
+
+	// It deletes whole line ranges too — a duplicate of ours, and a header
+	// sub-table folded into the inline form — and did so with no range check at
+	// all, trusting the caller's document-wide guard. A range can hide another
+	// table's header while the document still balances, and an unrelated server
+	// was removed with `collapsed` naming only our own old entry.
+	test('a duplicate whose range hides a foreign table is left alone', () => {
+		const text = [
+			'[mcp_servers.tab-browser]',
+			`http_headers = { Authorization = "Bearer ${token}" }`,
+			'enabled_tools = [',
+			'[mcp_servers.github]',
+			'command = "docker"',
+			']',
+			'',
+			'[mcp_servers.ai-browser]',
+			'url = "http://127.0.0.1:43110/mcp"',
+			`http_headers = { Authorization = "Bearer ${token}" }`,
+			'',
+		].join('\n');
+
+		// The document balances, so the caller's own guard does not fire.
+		assert.strictEqual(codexUnterminated(text), false);
+
+		const result = repairCodexToml(text, codexEntries(text), { ...endpoint, name: 'ai-browser' },
+			(from, to) => codexRangeDeletable(text, from, to));
+
+		assert.strictEqual(result.changed, false, 'the whole repair stands down');
+		assert.strictEqual(result.text, text);
+		assert.ok(result.text.includes('[mcp_servers.github]'));
+	});
+
+	test('an ordinary duplicate is still collapsed', () => {
+		const text = [
+			'[mcp_servers.tab-browser]',
+			'url = "http://127.0.0.1:43110/mcp"',
+			`http_headers = { Authorization = "Bearer ${token}" }`,
+			'',
+			'[mcp_servers.ai-browser]',
+			'url = "http://127.0.0.1:43110/mcp"',
+			`http_headers = { Authorization = "Bearer ${token}" }`,
+			'',
+		].join('\n');
+
+		const result = repairCodexToml(text, codexEntries(text), { ...endpoint, name: 'ai-browser' },
+			(from, to) => codexRangeDeletable(text, from, to));
+
+		assert.strictEqual(result.changed, true);
+		assert.deepStrictEqual(result.collapsed, ['tab-browser']);
+		assert.ok(!result.text.includes('[mcp_servers.tab-browser]'));
 	});
 });

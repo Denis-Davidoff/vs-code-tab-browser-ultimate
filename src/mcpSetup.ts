@@ -676,7 +676,7 @@ export interface WorkspaceScan {
 export interface MissingWorkspaces {
 	readonly tokens: Set<string>;
 	/**
-	 * Folder URIs to completion marker once the prune has actually landed.
+	 * Folder URIs to mark as handled once the prune has actually landed.
 	 *
 	 * It bounds the scan, but only over the folders it actually marks, and the
 	 * distinction is worth stating because the obvious reading is wrong: a
@@ -1054,14 +1054,20 @@ export interface RepairReport {
 	/** When that decision was taken, to be re-checked before a marker is recorded. */
 	prunedAt: number;
 	/**
-	 * True when every config was actually examined.
+	 * True when `~/.codex/config.toml` was actually dealt with.
 	 *
-	 * False when the server had no URL to write, when another window held a lock
-	 * and that file was skipped, when a config that exists could not be read,
-	 * when a newer run superseded this one, **or when a rewrite declined to
-	 * touch a file it was asked to** — the last of these was added with the
-	 * refusals and not with this list, so a run that deliberately left the
-	 * entries in place still called itself complete and a marker was recorded.
+	 * **Scoped to that one file, not to every config this run repairs**, because
+	 * this flag gates exactly one thing — the prune's completion marker — and
+	 * only the global file can hold a table belonging to a *different* folder.
+	 * It is false when the server had no URL to write, when a newer run
+	 * superseded this one, or when the global config was skipped for a held
+	 * lock, could not be read, or was deliberately left alone by a rewrite that
+	 * declined it. A failure on `.mcp.json` or on the project
+	 * `.codex/config.toml` does **not** clear it: those cannot strand a pruned
+	 * entry, and letting them block the marker meant one committed, permanently
+	 * broken project file suppressed the markers for every folder, for ever.
+	 * See items 108 and 112.
+	 *
 	 * The caller must not act on the run as if it were final — recording a completion marker after
 	 * an incomplete run takes the folder out of the scan while its entry may
 	 * still be sitting in a file this run never managed to open.
@@ -1294,8 +1300,12 @@ export async function repairConfigs(
 		const pruned = removeCodexTables(
 			text, entries, codexRetiredTables(entries, prune, server.token),
 			(from, to) => codexRangeDeletable(text, from, to));
+		// `pruned.text` throughout, including the range check: the prune has
+		// already moved every line below whatever it removed, so a predicate
+		// closing over the pre-prune text would be answering about other lines.
 		const repaired = repairCodexToml(
-			pruned.text, codexEntries(pruned.text), endpoint(server, name, url));
+			pruned.text, codexEntries(pruned.text), endpoint(server, name, url),
+			(from, to) => codexRangeDeletable(pruned.text, from, to));
 		return {
 			text: repaired.text,
 			changed: pruned.changed || repaired.changed,

@@ -226,7 +226,8 @@ export interface Prune {
 	/**
 	 * True when a table this was *asked* to remove was left in place.
 	 *
-	 * A caller that completion markers on the strength of a completed run has to know
+	 * A caller that records a completion marker on the strength of a completed run
+	 * has to know
 	 * the difference between "nothing to do" and "I declined": both leave the
 	 * file untouched, and only the second means the entry is still there.
 	 */
@@ -515,6 +516,18 @@ export function repairCodexToml(
 	text: string,
 	entries: readonly CodexEntry[],
 	endpoint: Endpoint,
+	/**
+	 * The same range check the two pruners take, and for the same reason.
+	 *
+	 * This function deletes whole line ranges too — a duplicate of ours, and a
+	 * header sub-table being folded into the inline form — and it was doing so
+	 * with no check at all, relying on the caller's document-wide
+	 * `codexUnterminated`. That is not sufficient: a range can hide another
+	 * table's header while the document as a whole still balances, which is
+	 * exactly what `codexRangeDeletable` exists to catch. Required, so this site
+	 * cannot drift back out of the rule.
+	 */
+	deletable: RangeDeletable,
 ): Repair {
 	const unchanged: Repair = { text, changed: false, collapsed: [] };
 
@@ -536,6 +549,28 @@ export function repairCodexToml(
 
 	const remove = new Set<number>();
 	const replace = new Map<number, string[]>();
+
+	/**
+	 * Marks a whole entry for removal, or stands the repair down.
+	 *
+	 * A range this may not delete abandons the *entire* repair rather than
+	 * skipping one deletion: the two sites below both pair their removal with an
+	 * edit elsewhere — a duplicate is dropped because the canonical entry is
+	 * being corrected, a header sub-table is dropped because its keys are folded
+	 * into the inline table — so half of either pair is worse than neither. The
+	 * file is already malformed in that case; leaving it exactly as the user
+	 * wrote it is the only honest answer.
+	 */
+	let refusedRange = false;
+	const removeWholeEntry = (entry: CodexEntry): void => {
+		if (!deletable(entry.firstLine, entry.endLine)) {
+			refusedRange = true;
+			return;
+		}
+		for (let line = entry.firstLine; line < entry.endLine; line++) {
+			remove.add(line);
+		}
+	};
 
 	/** Marks a key's whole value range for replacement by `with`. */
 	const replaceValue = (entry: CodexEntry, key: string, wth: string[]): void => {
@@ -563,9 +598,7 @@ export function repairCodexToml(
 
 		// A duplicate of ours, sub-tables and all: not a table to fix.
 		if (rootTable(entry.name) !== source) {
-			for (let line = entry.firstLine; line < entry.endLine; line++) {
-				remove.add(line);
-			}
+			removeWholeEntry(entry);
 			continue;
 		}
 
@@ -576,9 +609,7 @@ export function repairCodexToml(
 			// ambiguous shape: two sets of headers on one server. Its keys are
 			// folded into the inline table (below) and it goes.
 			if (entry === headerSubTable && inlineHeaders !== undefined) {
-				for (let line = entry.firstLine; line < entry.endLine; line++) {
-					remove.add(line);
-				}
+				removeWholeEntry(entry);
 				continue;
 			}
 
@@ -648,6 +679,13 @@ export function repairCodexToml(
 	let next = out.join(newline);
 	if (!next.endsWith(newline)) {
 		next += newline;
+	}
+
+	// Stood down after the fact, and deliberately *before* anything is returned:
+	// the removals and the edits that pair with them are assembled together, so
+	// the only safe answer once a range has been refused is the original text.
+	if (refusedRange) {
+		return unchanged;
 	}
 
 	const collapsed = roots.filter(name => name !== canonical);
