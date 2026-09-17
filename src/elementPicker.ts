@@ -280,8 +280,8 @@ async function withPickedElement<T>(
 ): Promise<T | undefined> {
 
 	// Inside the `try`, not before it: a rejection from `startCDPSession` used
-	// to escape past the cleanup below, leaving the slot pointing at a dead
-	// token until the next pick reclaimed it.
+	// to escape past the cleanup below, leaving the slot pointing at a token
+	// that is no longer live until the next pick reclaimed it.
 	let client: CDPClient | undefined;
 	let sessionId: string | undefined;
 	try {

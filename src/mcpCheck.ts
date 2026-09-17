@@ -152,10 +152,31 @@ export async function checkConnection(server: McpServer, browser: BrowserControl
 	}
 
 	if (strangers.length) {
-		// Left alone on purpose: one of these may be another window's live
-		// entry, and removing it would break a working assistant to tidy ours.
+		// `codexStrangers` compares against *this window's* token only, so this
+		// list is several groups at once: entries of other live projects and
+		// windows, and entries whose token this machine has no record of — one
+		// it never minted, or one lost to a `globalState` reset. (Nothing
+		// *forgets* a token any more; an earlier version of this comment said
+		// so, from the design the completion marker replaced.) The message may not
+		// collapse the groups, and two earlier wordings did. Saying they "could not
+		// be matched to a project on this machine" is false for the first group
+		// and invites deleting a working neighbour's server. Saying the missing
+		// ones are "removed automatically at startup, so these are…" turns a
+		// best-effort prune into a premise — and it is exactly the entries the
+		// prune deliberately does not touch (a folder deleted together with its
+		// parent, an unreadable config, a remote workspace, a window still
+		// inside its grace period) that are most likely to be sitting here.
+		// State what is known — the token is not this window's — and nothing
+		// more. A third wording broke that rule from the other side by promising
+		// the missing ones are "cleaned up on its own after a week": true only for
+		// a token this machine minted, and the two groups most likely to be
+		// listed here are exactly the ones no week will ever clean — an entry
+		// whose token `globalState` has no record of is never even a candidate,
+		// and an entry in the *project* config is never pruned at all. The
+		// promise sent the user off to wait instead of running the one command
+		// that works.
 		lines.push('', vscode.l10n.t(
-			"Codex has {0} entries that look like ours but belong to other projects or windows ({1}). They are left alone; remove any you no longer need with `codex mcp remove <name>`.",
+			"Codex has {0} entries that look like ours but do not carry this window's token ({1}). They may belong to other projects or windows, or to a workspace this machine has no record of. They are left alone — remove any you no longer need with `codex mcp remove <name>`.",
 			String(strangers.length), strangers.join(', ')));
 	}
 

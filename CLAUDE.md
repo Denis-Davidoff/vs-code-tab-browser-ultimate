@@ -31,7 +31,7 @@ keyboard shortcut while the page has focus, find in page, site permissions, stor
 real per-page DevTools, page zoom, and any history beyond what was typed in the address bar.
 Each of those is a CDP call away in the built-in browser.
 
-This was worked out the long way. **Do not re-derive these dead ends:**
+This was worked out the long way. **Do not re-derive these ruled-out approaches:**
 
 - Extensions cannot contribute to the built-in browser's toolbar or its "..." overflow menu.
   The `contributes.menus` allowlist has 96 keys and not one maps to a `Browser*` `MenuId`, and
@@ -168,7 +168,7 @@ Messages:
 Panel state for restoring across restarts: the webview calls `vscode.setState({ url })` and the
 extension registers a `WebviewPanelSerializer` for `viewType = 'aiBrowser.view'`.
 
-**Dead code:** the webview handles a `{ type: 'focus' }` message that the extension never
+**Unused code:** the webview handles a `{ type: 'focus' }` message that the extension never
 sends — a leftover from the monorepo. Either wire it up or delete it.
 
 ## Panel CSP — the main constraint when extending
@@ -582,7 +582,7 @@ return join(os.homedir(), folder, 'argv.json');
 ```
 
 Assuming `~/<dataFolderName>` alone writes a portable install's grant into a file the editor
-never reads, and then asks for a restart that changes nothing — the same dead end as the Kiro
+never reads, and then asks for a restart that changes nothing — the same ruled-out path as the Kiro
 bug, from a different direction. The variables belong to the main process and the extension host
 inherits them, which only holds when the two are on one machine.
 
@@ -620,7 +620,7 @@ walks the array itself, skipping comments and commas.
 
 **It also decides where an append goes**, which the same shapes break: inserting before the
 closing bracket lands after a trailing comma (making a second one) or *inside* a line comment
-(swallowing the id). So the insert point is the end offset of the last element, which is always
+(covering the id). So the insert point is the end offset of the last element, which is always
 before both. Non-string contents are refused rather than rewritten, for the same reason a
 non-array value is.
 
@@ -933,7 +933,7 @@ Two behaviours fall out of that code and are relied on here:
 
 - **An empty submenu is not rendered at all** — the join of its groups is checked with
   `m.length > 0` before the `SubmenuItemAction` is pushed. So a submenu whose every item is
-  hidden by a `when` clause disappears rather than showing a dead row with an empty flyout.
+  hidden by a `when` clause disappears rather than showing a missing row with an empty flyout.
 - **The same submenu cannot be added twice to one parent** (a warning, and the second is
   dropped).
 
@@ -1124,11 +1124,11 @@ it an argument for `document.querySelector`.
 **The separator went through three forms, and each was eliminated by a different rule**
 (`locationSeparator` in [src/reportFormat.ts](src/reportFormat.ts)):
 
-- It must not be legal inside either half, or the string cannot be split back apart. That killed
+- It must not be legal inside either half, or the string cannot be split back apart. That stopped
   the bracketed suffix this started as — `… > input [page: http://localhost/a/b]` is *valid CSS
   attribute-selector syntax* at that position, so the tail reads as part of the chain to a
   person, to a model, and to anything that pastes the whole string into `querySelector`. It also
-  killed `>>` (Playwright's own chaining operator) and `page=… css=…`, where the key order
+  stopped `>>` (Playwright's own chaining operator) and `page=… css=…`, where the key order
   becomes part of the contract because the selector contains spaces and so has to come last.
 - It must carry **direction**. ` @ ` was the form before this one and it only works with the
   selector first — "input @ that page" — so putting the page first while keeping `@` would have
@@ -1222,7 +1222,7 @@ rather than letting `withPickedElement` assign the slot on its way past
 screen calling `cancel()` on `undefined` — or on the *previous* pick's token — so the button did
 nothing on exactly the slow sessions where someone would reach for it. The same move fixed a
 leak: a rejection from `startCDPSession` escaped past the cleanup, leaving the slot pointing at a
-dead token until the next pick reclaimed it. The client is now constructed inside the `try`.
+retired token until the next pick reclaimed it. The client is now constructed inside the `try`.
 
 **Element picking is single-flight, and has to be.** Each pick opens its own CDP session and
 turns on inspect mode. Two at once means a single click delivers
@@ -1404,7 +1404,7 @@ the bare `ai-browser`, since a project file has only one project.
 it could only *name* a token, which is why the token used to ride in the URL; that was wrong.
 We now write `http_headers = { Authorization = "Bearer …" }` as an **inline** table — a
 `[mcp_servers.<name>.http_headers]` sub-table would be a second table, and replacing ours by
-line range would orphan it. The token-in-URL form is still *accepted* when reading, since
+line range would leave it behind. The token-in-URL form is still *accepted* when reading, since
 existing configs have it, and a stale sub-table of ours is removed on write.
 
 **The `codex mcp add` fallback carries the token.** It is handed over on exactly the path where
@@ -1437,28 +1437,58 @@ whatever page was open and started reporting on it, before the user had asked fo
 paste exists to find out whether the tools arrived, so it now asks exactly that and says not to
 use them yet.
 
-**A broken `.mcp.json` is never overwritten.** `readClaudeConfig` returns `{}` for absent,
-the object for parsed, and `undefined` for unparsable — and on `undefined` the write is
-abandoned, because rewriting it would delete every other MCP server the project has.
+**A `.mcp.json` that cannot be read or parsed is never overwritten.** `readClaudeConfig` returns
+`{}` for absent, the object for parsed, and `undefined` for **either** unparsable **or
+unreadable** — and on `undefined` the write is abandoned, because rewriting it would delete every
+other MCP server the project has. The unreadable half was missing and the statement above was
+simply false for it: a read error answered `{}`, so a transient failure on a committed,
+team-shared file replaced it with our single entry and said it had succeeded. Both connect
+writers go through `readConfig` for that reason; `writeCodexConfig` throws instead, which
+`connectCodex` already reports with the `codex mcp add` fallback.
 
 One shared global name would let the second project overwrite the first, hence the hash.
 `codex mcp add` is still offered as a command for anyone who would rather not have a file
-edited. The global write is **not** locked — unlike a repair on startup it happens on a button
-press, so two windows would have to be clicked at the same moment.
+edited. **The global write is locked**, like every other writer of that file — see
+[The port moves](#the-port-moves-and-the-config-remembers-the-old-one). It used to be
+unlocked, on the reasoning that a button press cannot race itself; that stopped being true the
+moment every window began repairing the same file at startup, and an earlier draft of this
+paragraph still said "not locked" long after `writeCodexGlobalConfig` had taken the lock. Two
+statements about one file is how breaks-silently #16 and #106 get reintroduced by somebody
+tidying up.
 
 ### The mini TOML parser
 
 [src/codexToml.ts](src/codexToml.ts) is not a TOML parser — it is exactly as much of one as the
 two readers (checking, and replacing our table) need, and **they must agree on where a table
 starts and ends**. `endLine` stops after the last key rather than at the next header, so a
-comment above the neighbouring table is not swallowed into ours.
+comment above the neighbouring table is not covered into ours.
 
-`scanLine` is the core, and every case it handles was a real failure: `#` inside a string is
+`scanLine` is the core, and every case it handles was a real failure: an escaped quote inside a
+triple-quoted **basic** string is content and not the closing delimiter — two of those on one line
+rebalance a scanner that ignores the backslash, so the document reads as well-formed while a
+`[mcp_servers.x]` sitting inside somebody's prose is reported as a real table, and the repair
+rewrites the inside of a string (item 115; the triple-apostrophe form is literal, where a
+backslash is just a character); `#` inside a string is
 not a comment; `[` inside a string does not open an array; `enabled_tools = [` left open means
 following lines are continuation; triple quotes inside a *literal* string open nothing; four or
 five closing quotes still close once. A naive quote count got this wrong in both directions —
 our table became invisible and connecting wrote it a second time, which is TOML that does not
 parse at all.
+
+**`[` and `{` are counted apart, and one shared counter was a data-loss bug.** An unclosed
+inline table cancelled by a stray `]` — two ordinary typos in opposite directions, several lines
+apart — made the whole document balance, so `codexUnterminated` called it well-formed and every
+guard resting on it passed, including the one deciding whether a deletion range covers another
+server's table. `ScanResult` therefore carries `depth` and `braces` separately and every consumer
+requires both to be zero (item 120).
+
+**`codexRangeDeletable` is the range guard, and it is deliberately part textual.** A range may be
+deleted only if it closes *and* holds no **credible** table header after its first line — a dotted
+path of bare or quoted keys, matched against the raw line without consulting the scanner. Both
+halves are needed and each covers the other's blind spot: asking the scanner alone misses a header
+hidden behind an unclosed `[` (item 119), while a loose textual test fires on `  [3, 4]`, a nested
+array's last element, and refuses a legitimate config for good (item 114). A credible header
+inside a triple-quoted string is refused too — a known false refusal, and the cheap direction.
 
 **A quoted key is the same key.** TOML says `"url" = …` and `url = …` are one key, and reading
 the quoted form as *absent* is the worst kind of miss for a writer: the repair took its "no url,
@@ -1571,6 +1601,185 @@ cases — the file is not ours and a wrong guess breaks something that works:
   Without this the check was blind to the one entry that Connect cannot fix.
 - **Codex entries that look like ours by name but carry another token** (`codexStrangers`).
   One of those may be another window's *live* entry.
+
+### Pruning the entries of projects that no longer exist
+
+The global `~/.codex/config.toml` only ever grew. Its entries are named per project
+(`ai-browser-<slug>-<sha1[0:6]>`) and nothing removed one, so every project that was deleted or
+moved left one behind for good — and `Check Connection` could do no better than list them and
+ask the user to run `codex mcp remove` by hand, because "looks like ours by name" is all
+`codexStrangers` can prove.
+
+**The missing piece was in `globalState` the whole time.** It is shared across every window of
+this extension, and `_workspaceToken` stores each token under `mcp.token:<folderUri>` — so
+`Memento.keys()` yields every folder this extension has ever served on this machine, with its
+token. That turns "looks like ours" into two provable facts at once: *this entry carries a token
+we minted* and *the folder it was minted for is gone*. Only then is a deletion safe, and
+`missingWorkspaceTokens` in [src/mcpSetup.ts](src/mcpSetup.ts) is where the proof is assembled.
+
+**When it runs, precisely** — and this paragraph has now been wrong twice, in opposite
+directions, so read it against the code rather than trusting it. The verdict has **two halves
+that run in different places, and that split is the whole point**:
+
+- `missingWorkspaceTokens` — the *survey* — stats the filesystem, so it runs **outside every lock**.
+  It is handed to `repairConfigs` as a function rather than a result, and never called while a
+  lock is held. (It does run after the two project configs have been repaired, each under and
+  then out of its own lock — the invariant is "not while holding one", not "first".)
+- `stillMissing` — the *confirmation* — re-reads `mcp.seen:` / `mcp.pruned:` from `globalState` and
+  touches no file, so it runs **inside the config lock**, immediately before the rewrite.
+
+Neither may move. Passing a resolved set instead of the pair is item 99: a verdict that travels
+across the lock deletes the entry of a workspace that came back in the meantime. Running the
+*survey* under the lock is the mirror mistake, item 104: it can cost `2 * statTimeoutMs` for one
+stalled mount while `withLock` gives up after `attempts * retryMs` — one second — so every other
+window skips `~/.codex/config.toml` entirely and reports `complete: false`. No port repair and no
+completion markers, for all of them, on exactly the session restore the lock exists for.
+
+`_apply` runs at activation *and* again on every `aiBrowser.mcp.enabled` / `aiBrowser.mcp.port`
+change ([extension.ts](src/extension.ts)), so an unattended deletion runs more often than "once
+at startup" suggests.
+
+It is the one thing in the repair that deletes rather than corrects, and everything about it
+follows from that:
+
+- **A missing folder does not prove its token is unused, and that gap would have deleted a live
+  server's entry.** The MCP server authorizes by token alone; it holds its token and port in
+  memory, and nothing subscribes to `onDidChangeWorkspaceFolders` — so a window whose folder is
+  deleted, or merely **renamed**, keeps listening and keeps answering. Another window starting in
+  that moment saw only "folder gone". So each window stamps `mcp.seen:<folderUri>` at activation
+  and on an hourly tick (`markWorkspaceAlive`), and a token is prunable only once nobody has
+  stamped it for `seenGraceMs` — **seven days**, chosen long on purpose: these entries accumulate
+  over months, so waiting costs nothing, while a few hours would be betting against an extension
+  host that was merely suspended. A workspace with **no** stamp at all — one from before the
+  heartbeat existed, which is exactly where a live window running an older build hides — is not
+  evidence of removal: its grace period is seeded on first sight and it is left alone that round.
+  **One consequence to expect on upgrade:** the first window to run this build seeds every
+  historical workspace on the machine, so nothing at all is pruned for the first seven days. That
+  is the seeding rule working rather than a failure, but the section's opening — "only ever grew"
+  — does not lead a reader to expect it.
+  The stamp is dropped when the marker is recorded, but **the token is not** — see the completion marker
+  bullet below, and item 97. An earlier draft of this sentence said the two were forgotten
+  together; that was the pre-completion marker design, and left standing it reads as a rule to uphold,
+  pointing a maintainer straight back at the failure item 97 exists to prevent.
+- **The project's own `.codex/config.toml` is repaired but never pruned**, and the asymmetry with
+  the global file is deliberate. Pruning exists for `~/.codex/config.toml`, which is named per
+  project and only ever grew. A project config has one entry, lives inside the folder, is
+  routinely committed — and *travels with the folder*, so after a move or a re-clone its entry
+  still carries the token minted for the old path. Pruning there deleted a line from a
+  version-controlled file of a live project and announced that the project no longer existed. An
+  entry that can no longer be placed is what `staleToken` in `Check Connection` is for. The
+  sibling `.mcp.json` is left alone in the same situation, and the two now agree.
+
+- **The file surgery and the filesystem question are separate, deliberately.**
+  `codexRetiredTables` / `removeCodexTables` in [src/mcpRepair.ts](src/mcpRepair.ts) only ask which
+  tables carry which token, through `codexOurTables` — the *same* predicate the repair uses, so
+  a table can never be pruned by one ownership rule and rewritten by another. That keeps them in
+  the leaf module `npm test` loads directly, which is why the surgery is tested and the stat
+  calls are not.
+- **Prune first, repair second, in one locked read-modify-write.** Both are expressed as line
+  ranges over the same text, so a repair that ran on the pre-prune text would edit lines that
+  have moved. Doing them in one `apply` also keeps it to a single locked pass per file; two
+  passes would be two chances to interleave with the window next door.
+- **A file rewritten only to drop a stale entry is not reported as a port fix.** `Rewrite.repaired`
+  is separate from `Rewrite.changed` for exactly that — otherwise the window announces it
+  updated a port it never touched.
+- **Nothing counts as missing but a proof, and there are two of them.** `presence()` answers
+  `present` / `missing` / `unknown`, and only a clean `FileNotFound` is `missing`. Collapsing
+  that to a boolean — a bare `catch { return false }` — is how a live project gets deleted:
+  `NoPermissions` (macOS gates `~/Documents` and `~/Desktop` behind TCC), a transient I/O error,
+  a provider that cannot reach its store and a stalled mount all fail the same way, and every one
+  of them happens to a folder that is very much there. The second proof is **the parent directory
+  reading `present`**, which is what an unmounted volume or an unreachable share fails — the whole
+  branch is absent, not the project — and without it the first window opened with an external
+  drive detached would delete the config of every project on it. The two are independent: the
+  parent guard says nothing about an error landing on the folder itself while its parent reads
+  fine, which is exactly the shape of a permission failure. **Stated precisely, because it is one
+  directory level more optimistic than it sounds:** it catches an unmounted volume only where the
+  mount point itself disappears (macOS removes `/Volumes/X` on eject) or the project sits below
+  the first level. A Linux mount point that survives unmounting as an empty directory leaves a
+  project *directly* inside it reading `missing` with a `present` parent. The heartbeat grace
+  period **defers** that case rather than covering it: a drive plugged in monthly, or a share
+  mounted for one project a quarter, is unstamped for far longer than a week, which is the normal
+  lifetime of removable storage rather than an edge case. What bounds it is the completion marker — the
+  token survives, so the cost is one `Connect Codex` — and the honest statement is that a
+  long-unmounted project can lose its entry and be told it "no longer exists". A laptop suspended
+  for longer than a week has the same open tail: the heartbeat cannot tick while it is asleep, so
+  a window whose folder was deleted before the suspend can be pruned by whichever window wakes
+  first. Both are bounded the same way and neither is closed.
+- **Every other state keeps the entry**, and that asymmetry is deliberate: a missed entry is
+  tidied on a later start, a wrongly deleted one costs somebody a reconnect. A dangling symlink is
+  safe from both sides — VS Code's disk provider resolves one to `SymbolicLink | Unknown` and
+  returns it rather than throwing, so it reads as `present`, and a provider that throws instead
+  lands on `unknown`. The other exclusions are a folder that is still there (this window's
+  included), the `no-folder` token, which never named a folder, and a non-`file` URI, where the
+  extension host answering is on a different machine from the folder.
+- **Each `stat` is bounded** (`statTimeoutMs`), and the scan runs them in parallel. The list is
+  every folder ever opened, and `workspace.fs.stat` has no timeout of its own, so one mount that
+  has stopped answering would otherwise hold the whole repair behind it — the same failure shape
+  as an unbounded CDP call inside a transition. A timeout answers `unknown`, so it keeps the entry.
+- **"Absent" and "could not be read" are different answers here too** (`readConfig`). `readText`
+  maps every failure to `undefined`, which is right for a caller that only wants the contents and
+  wrong for this one: `apply` read it as "no such file", so a run that never looked inside an
+  existing `~/.codex/config.toml` reported itself **complete**, the retired token was forgotten, and
+  the entry it identified stayed in a file nothing could ever recognise it in again — the exact
+  harm `complete` exists to prevent, entered from the one direction it did not cover. Same rule
+  as `presence()`: only a clean `FileNotFound` is absence.
+- **A pruned workspace is *marked as handled*, never forgotten** (`handledKeyPrefix`), and the difference
+  is the sharpest thing here. Deleting `mcp.token:<folderUri>` looked like the obvious way to stop
+  the scan growing without bound — and it removes the workspace's identity, which the comment on
+  `_workspaceToken` forbids in as many words: *never regenerate it for an existing workspace*. A
+  folder can come back at the same URI — `git worktree remove` then `add`, a restore from the
+  Trash, a re-clone into the same directory — and **`.mcp.json` is designed to be committed**, so
+  the re-clone brings it back carrying the old token. Regenerate, and `repairClaudeJson` matches
+  by token and can no longer see that entry to correct it: every call 401s, the assistant reports
+  no tools, and nothing in the extension can repair it. The blast radius was wider than the
+  feature, too — the key went for every missing candidate whether or not a Codex table was ever
+  found, so somebody who only uses Claude Code and has no `~/.codex/config.toml` at all lost their
+  token. So the token stays, a marker records the folder, the scan skips it, and
+  `markWorkspaceAlive` clears the marker the moment a window serves that folder again. **The marker
+  bounds only what it marks**, which an earlier draft of this bullet overstated as solving the
+  unbounded scan outright: a folder that still exists and has simply not been opened for a while
+  never gets one, so it is stat'd again on every run for the life of the machine. That is a few
+  hundred parallel, individually capped `stat` calls on a long project history — cheap rather
+  than free, and not the bound the sentence used to promise.
+- **The marker is laid only after a *complete* repair.** The ordering is the load-bearing half — a
+  run that lost a lock, could not read a config that exists, or **declined to rewrite one**, may
+  not have reached the entry the token identifies, and recording a completion marker first takes it out of the scan
+  while it is still there. `RepairReport.complete` exists for this; it replaced `lockBusy`, which
+  was written and never read. That last clause was missing for a revision: the refusals of item
+  105 were added without extending `complete`, so a run that deliberately left the entries in
+  place still called itself complete, the marker was recorded — and since only `markWorkspaceAlive`
+  clears a marker, and that needs a window *serving* the folder, the entries could never be looked
+  at again even after the user repaired their TOML. A refusal now reports itself, `Prune.refused`
+  → `Rewrite.refused` → `complete`.
+
+  **And those flags are scoped to `~/.codex/config.toml` alone**, which is the second half and was
+  missing for a revision. `complete` gates nothing but this marker, and only the global file can
+  hold a pruned entry — so sharing one set of flags across all three configs meant the *project*
+  `.codex/config.toml`, rewritten with an empty prune set, could block the marker for ever with an
+  unterminated value of its own. That file is committed and travels with the project, so it stays
+  broken, and the folders the global prune really had cleaned were re-stat'd on every activation
+  for the life of the machine. See item 112.
+- **`codexRetiredTables` refuses our own token as well**, although `missingWorkspaceTokens` already
+  does. It is the function that deletes, the parameter is **required** so it cannot be omitted by
+  accident, and a caller assembling the set some other way — a future window registry, a test —
+  would otherwise wipe the config of the window it is running in.
+- **The cost of a deletion, stated plainly:** `repairConfigs` never *creates* an entry, so a
+  pruned project does not get one back by being reopened — the user presses `Connect Codex`
+  there once. That is the whole price, and it is why the bar for "provably gone" is set where it
+  is rather than at "the port does not answer", which is also true of every window that is simply
+  closed.
+- **What `codexStrangers` still reports is several groups, and the message must not collapse
+  them.** It compares against *this window's* token only, so the list holds entries of other
+  **live** projects and windows (tokens this machine did mint, folders still there); entries
+  carrying a token it never minted, from a config synced off another machine or one predating a
+  `globalState` reset; and stale entries the prune deliberately did not touch — a folder deleted
+  together with its parent, a document it refused to rewrite, a window still inside its grace
+  period. Two wordings have over-claimed here in opposite directions: "cannot be matched to a
+  project on this machine" is false for the first group and invites removing a working
+  neighbour's server, and "cleaned up on its own after a week" is false for the second and third
+  and sends the user off to wait instead of running the one command that works. All of them are
+  left alone, and the text says only what is known — the token is not this window's.
 
 **Four ways the repair itself corrupted a config, all found by review and all now tested.**
 Each one is the kind that only fires on somebody else's config, which is exactly why they are
@@ -1931,7 +2140,7 @@ Three things fix it, and each covers a different part:
   drops. So the cleanup tries the cached session first — it holds the registration identifier,
   and removing that is what stops the marker coming back on the next navigation — and falls back
   to a session of its own, which nobody else can drop. This is why `ShareIndicator.clear()`
-  **returns a boolean instead of swallowing its failure**: "the marker is off" and "the channel
+  **returns a boolean instead of covering its failure**: "the marker is off" and "the channel
   died before it could be taken off" must not look the same to the caller that has another way
   in.
 - **Eviction passes over a tab somebody is *using*, not only an assigned one.** "Least recently
@@ -1939,7 +2148,7 @@ Three things fix it, and each covers a different part:
   while it works — so the longest-running call sat at the front of the queue: a
   `browser_wait_for` on a pinned tab was evicted by another assistant opening tabs and answered
   the model with the internal `CDP client disposed`. A pinned tab is claimed as well as an
-  assigned one, and the tab whose session has *just arrived* is never the victim: it is both the
+  assigned one, and the tab whose session has *just arrived* is never the target: it is both the
   most recent and unassigned, so the spare search chose it and handed the opener a session that
   had already been disposed.
 - **A session that arrives unwanted closes itself.** With one session per tab the only reasons
@@ -2164,6 +2373,14 @@ down the extension. Restarts are serialised through a promise chain, or two sett
 a row race for the same port. Commands are registered unconditionally and go through
 `withServer`, which explains why there is nothing to connect — better than "command not found".
 
+**The repair has a chain of its own** (`_repairs`), separate from `_chain`. Activation must not
+wait on a filesystem survey, so `_apply` does not await the repair — which allowed two repairs to
+be in flight at once, with the file lock alone deciding which landed last. The generation check
+under the lock is the last word before a write and is still not enough on its own: an older repair
+can take the lock before the generation moves, pass its check, and be inside `writeText` when the
+newer run arrives to find the lock held and give up after its one second. Chaining the repairs
+makes the newest always write last. See item 117.
+
 ## Handing reports to Claude Code and Codex
 
 Six dropdown entries — element / CSS path / XPath, to each assistant — write a Markdown report
@@ -2269,7 +2486,7 @@ tested; nothing in the UI writes one. What is missing is not code but *identity*
 `Mcp-Session-Id` changes on every restart, and MCP carries no name or working directory, so two
 Claude conversations can only be told apart by "called 5s ago" — a row a user would have to
 correlate by timing. Worth building when someone actually runs two conversations of the same
-assistant on two pages; a rule for inheriting an orphaned session assignment (the newest
+assistant on two pages; a rule for inheriting a left-over session assignment (the newest
 session of that kind takes it over) would have to come with it, or every restart would strand
 one.
 
@@ -2405,7 +2622,7 @@ No compile error for any of these — they only surface at runtime.
     is sharing and no later `stopSharing` able to reach it, and the call itself fails with an
     internal sentence about a replaced session. Transitions go through `_transact`; tool paths
     await `_settle()`.
-38. **Swallowing a failure inside a best-effort cleanup that has a second route** → the caller
+38. **Covering a failure inside a best-effort cleanup that has a second route** → the caller
     cannot tell "done" from "the channel died", so the fallback never runs.
     `ShareIndicator.clear()` reports instead.
 39. **Attributing a `tools/call` only when the client is recognised** → only `initialize` names
@@ -2465,7 +2682,7 @@ No compile error for any of these — they only surface at runtime.
     was meant to be protecting it.
 55. **Reading a command argument from an `editor/title` menu as your own parameter** → VS Code
     hands that command the editor's resource, so the first argument is a `Uri`; the share
-    commands resolved a key from it and threw, which killed the entry that matters most. Guard
+    commands resolved a key from it and threw, which stopped the entry that matters most. Guard
     with a shape check (`isShareTarget`).
 56. **Leaving one field window-wide while its neighbours became per caller** → the model's own
     tab selection redirected another assistant's calls and reported `selection: "selected"` to a
@@ -2510,7 +2727,7 @@ No compile error for any of these — they only surface at runtime.
     stopped one caller's selection from redirecting another, while `_lastTab` — written by
     `selectTab` and by `shareTab` — kept doing it in the focus state that is most common.
 68. **Evicting by "least recently acquired" while calls are in flight** → the longest-running
-    call is at the front of the queue, so an unrelated assistant's activity kills it with the
+    call is at the front of the queue, so an unrelated assistant's activity stops it with the
     internal `CDP client disposed`. Pass over what is claimed, and never evict the session that
     has just arrived.
 69. **Caching what a page is supposed to be showing** → the page owns the handle and can take
@@ -2601,6 +2818,201 @@ No compile error for any of these — they only surface at runtime.
 90. **`Open File` on a host without the built-in browser** → a `file:` URI in the webview panel
     is blocked by `localResourceRoots`, so the panel renders blank with no error. The menu entry
     is therefore gated on `shouldUseIntegratedBrowser()` rather than falling back.
+91. **Treating every `stat` failure as absence** → `NoPermissions` (macOS TCC on `~/Documents`),
+    a transient I/O error and a stalled mount all fail the same way as a deleted folder, so a
+    bare `catch { return false }` prunes the Codex entry of a live project, silently, at startup.
+    Only a clean `FileNotFound` proves absence; everything else must keep the entry. Separately,
+    require the folder's *parent* to read as present, or an unmounted volume takes every project
+    on it — the two guards cover different failures and neither implies the other.
+92. **Pruning a config entry on "looks like ours by name"** → the per-project names in
+    `~/.codex/config.toml` are shared by every window and every machine this extension has run
+    on, so one of them may be another window's live entry. Only a token this machine minted
+    (`mcp.token:<folderUri>` in `globalState`) identifies an entry well enough to delete it.
+93. **Catching a chain's failure with the second argument of `.then`** → `p.then(f, r)` routes
+    only *p*'s rejection into `r`, never one thrown by `f` itself. Moving awaited work inside the
+    fulfillment callback turns that handler into unreachable code with no compile error, and the
+    rejection escapes as an unhandled promise rejection — on the fire-and-forget path that was
+    written to be silent. Put the guard on the tail: `.then(f).catch(…)`.
+94. **Treating "I could not read it" as "it is not there"** → a `catch` that returns `undefined`
+    for every read failure makes a run that never opened an existing config report itself
+    complete, so the folder is marked as handled and the scan never looks at that file again, leaving
+    the entry there for good. Only a clean `FileNotFound` is absence — the same rule the folder
+    check already follows.
+95. **Inferring that a token is unused from its folder being gone** → the MCP server authorizes
+    by token and holds it in memory, and nothing watches the workspace folders, so a window whose
+    folder was deleted or renamed keeps answering. Another window pruned the entry of a server
+    that was serving. Liveness needs its own evidence — a heartbeat plus a grace period.
+96. **Unattended deletion inside the project folder** → `.codex/config.toml` is committed and
+    travels with the folder, so after a move or re-clone its entry names the old path; deleting
+    it edits a version-controlled file and reports that a live project no longer exists. Prune
+    the global config only.
+97. **Deleting a workspace's token to keep a scan bounded** → `mcp.token:<folderUri>` is the
+    workspace's *identity*, not a cache entry: remove it and the next open mints a new token,
+    while the committed `.mcp.json` a re-clone restores still carries the old one. The repair
+    matches by token, so it cannot see that entry to fix it — every call 401s with nothing able
+    to recover it. Mark the folder as handled and keep the token.
+98. **A heartbeat that follows `workspaceFolders[0]` instead of the identity being served** →
+    removing or reordering the first folder of a multi-root window does not restart the MCP
+    server, so it keeps accepting the token minted for the old folder while the stamp moves to
+    the new one. The old folder then ages past the grace period and another window deletes the
+    entry of a server that is still answering. Stamp the folder the running server was built for.
+99. **Deciding what to delete outside the lock that performs the deletion** → the verdict travels
+    across every await in between, so a workspace restored — or merely reopened elsewhere, which
+    lifts its completion marker — in that window still has its live entry removed, and is then marked as handled
+    so nothing looks again. Resolve the decision inside the lock it authorises.
+100. **`void`-ing a `Memento.update`** → it persists the whole memento through the main process
+    and can reject, so a discarded promise is an unhandled rejection — item 93 one layer down, in
+    the helper written to fix it. It also hides partial persistence: two independent unawaited
+    writes can leave a heartbeat and a completion marker disagreeing. Return the promise, order the two
+    so the half that lands is the safe half, and await it inside a guarded chain.
+101. **Giving the destructive reader the weaker read** → a path that *rebuilds* a config from
+    what it reads must distinguish "no such file" from "I could not read it", or one transient
+    error replaces a global `~/.codex/config.toml`, or a committed team `.mcp.json`, with a
+    single entry of ours — and reports success. The distinction existed (`readConfig`) and was
+    applied only to the repair, where the same failure merely skips a run. Check which caller
+    actually removes data before deciding which one needs the careful read.
+102. **An unawaited repair from a superseded `_apply`** → `_chain` serialises `_apply` but not
+    the fire-and-forget repair, so two runs can be in flight and the file lock decides the order;
+    the older one can land last and write the port the newer run replaced. That is the stale-port
+    symptom the whole feature exists to remove, and it survives until the next window start.
+    **Checking the generation after the repair resolves does not fix it** — by then every write
+    has happened, and all the guard suppresses is the report and the completion markers. Ask under the
+    lock, with the bytes ready, immediately before the write (`stillWanted`), and bump the
+    generation *before* the disabled early return, or turning MCP off leaves the older repair
+    authoritative.
+103. **A `dispose()` that sets no flag** → an `_apply` suspended at `await server.start(...)`
+    pushes into a `_parts` array nobody will dispose again, leaving a loopback HTTP server
+    listening after the window is done with it; and the repair chain can still write the user's
+    config and lay completion markers after deactivation. Set `_disposed` first, check it after each
+    await, and — for the write itself — through the same `stillWanted` hook as item 102.
+104. **Doing slow work under a lock whose acquisition budget is shorter than that work** → the
+    prune's filesystem survey can spend `2 * statTimeoutMs` on one stalled mount, while
+    `withLock` waits `attempts * retryMs` — one second — before giving up. Held across the
+    survey, the config lock made every sibling window skip the file it was queuing for, which
+    on session restore is all of them. Split the slow half out: survey outside, confirm inside.
+105. **Deleting a parser's line range without checking what is inside it** → `codexEntries` keeps
+    a table open across continuation lines, which is right for *identifying* one and unsafe as a
+    *deletion* range: an unclosed `[` never closes, so that table runs to end of file — and once
+    a value is left open the parser stops recognising headers at all, so the tables about to be
+    removed are not even in `entries` to be compared against. One stale entry emptied the
+    user's whole global Codex config, every other MCP server and the deleting window's own live
+    entry with it, and the confirmation named the single entry it meant to remove. Ask
+    `codexRangeDeletable` of every range, and refuse to rewrite a document that ends inside an
+    unclosed value at all (`codexUnterminated`). That guard has been wrong in both directions
+    since — too textual (item 114), then too structural (item 119) — and now needs both halves.
+106. **One locked writer and one unlocked writer of the same file** → that is the same as no
+    lock (item 16 from the other direction). `.mcp.json` was rewritten by the repair under
+    `configLockName` and by Connect with nothing, so a press during any window's startup repair
+    lost whichever edit landed first — on a file teams commit.
+107. **Stamping liveness from a window that serves nothing** → the heartbeat wrote a
+    `mcp.seen:<folderUri>` row unconditionally, so a window with `aiBrowser.mcp.enabled: false`
+    — which never mints a token — left a row with no `mcp.token:` to belong to. Nothing reads it
+    and nothing removes it, so it accumulates for ever in a memento that is rewritten whole on
+    every update. Keep alive only what is actually being served.
+108. **A refusal that looks like "nothing to do"** → both leave the file byte-identical, and only
+    one means the entries are still there. A guard added without a way to report itself let a run
+    that declined to rewrite a config still answer `complete`, so the caller marked as handled folders
+    whose tables it had just refused to touch — and a marker is only lifted by a window serving
+    that folder, which a deleted folder never has again. Give every refusal a flag and fold it
+    into the same disjunction as the other incomplete states.
+109. **Refusing per call where the unit of work is per entry** → one odd table stood off the
+    prune of every other stale table in the file, and because a refusal left no trace in the
+    report it read as the feature quietly doing nothing. Drop the entry, keep the rest, and
+    report only what was actually removed.
+110. **Folding a new failure into an existing refusal's *message*** → reusing the outcome was
+    safe for the file and wrong for the user: a lost lock was reported as "`.mcp.json` could not
+    be read or parsed — fix or delete it", about a healthy, committed file that had not even been
+    opened, on a path where an unwritable `os.tmpdir()` makes the advice permanent. Reuse the
+    refusal, not the sentence.
+
+111. **A prose sweep that edits string literals** → renaming vocabulary across comments and docs
+    with a script rewrote `'orphans'` inside `inheritableCSSProperties`, a set of **real CSS
+    property names**, to `'leftovers'`. It typechecks, every test passes, and the only symptom is
+    that `orphans` silently stops being reported as inherited in Copy Element output — in a file
+    whose whole contract is being a verbatim copy of upstream. Split each line on backticks and
+    transform only the prose, and afterwards diff the sweep commit and read every changed line
+    that is not a comment.
+112. **One refusal flag shared by several files** → `complete` gates exactly one thing, the prune's
+    completion marker, and only `~/.codex/config.toml` can hold a pruned entry. Folding the
+    *project* `.codex/config.toml`'s refusal into the same flag let an unterminated value there —
+    in a file that is committed, travels with the project and therefore stays broken — force
+    `complete: false` for ever, suppressing the markers for folders the global prune really had
+    cleaned. The scan then re-stats those folders on every activation and never heals. Scope a
+    failure flag to the file whose outcome the decision actually depends on.
+113. **A guard whose refusal is indistinguishable from success** → `spliceCodexTables` returned the
+    input unchanged when it declined, which is byte-for-byte what a splice with nothing to do
+    returns. `writeCodexConfig` wrote the identical file back and `connectCodex` reported "Wrote
+    ~/.codex/config.toml" while the stale url and token sat there. Return `undefined`, or a flag —
+    the one thing a refusal must not look like is success. Item 108 is the same rule for the
+    unattended path; this is the interactive one, and it was missed because the comment asserted
+    the guard "cannot fire today".
+114. **A textual approximation of a structural question** → "does any line in this range look like
+    `[table]`" is wrong in *both* directions, and the two failures hide each other. It fires on
+    `  [3, 4]`, the last element of a nested array written without a trailing comma, which is
+    well-formed TOML — so a legitimate config could never be pruned, and under item 112 that
+    refusal suppressed the completion marker permanently. And it goes blind exactly when it
+    matters: once a value is left open every later line reads as continuation, so the real
+    `[mcp_servers.someone-else]` header inside the range is invisible. `codexRangeDeletable` asks
+    both halves, because neither alone is safe. **The first attempt at it got the header half
+    wrong in the opposite direction** — it asked the scanner, which is blind in precisely the case
+    above — so read item 119 for the rule as it actually stands: a *credible* header tested
+    against the raw line whatever the scanner believes, plus the range closing.
+115. **Ignoring escapes inside a multi-line basic string** → the scanner closed on every `"""`,
+    including one preceded by a backslash, where the quote is content rather than the delimiter.
+    Two such sequences on a line rebalance the scan, so `codexUnterminated` answers "well-formed"
+    while a `[mcp_servers.x]` written inside somebody's prose is reported as a real table — which
+    the repair would then rewrite, inside a string. The single-line branch had always honoured
+    `\"`; the multi-line one had not. The literal form (`'''`) is not affected, because a
+    backslash there is just a character.
+116. **Stamping liveness before the thing being stamped exists** → `markWorkspaceAlive` ran before
+    `server.start()`, so a start that failed or was superseded still wrote a fresh `mcp.seen`
+    stamp *and lifted the folder's completion marker*, putting it back into the scan and holding
+    off its pruning for the whole grace period on the strength of a server that never came up.
+    Item 107 from a different direction: stamp only what is actually being served, which means
+    after the start succeeded, next to `_servedFolder`.
+117. **Fire-and-forget work that can starve its own successor of a lock** → `_chain` orders
+    `_apply` but deliberately does not await the repair, so two repairs could run at once. The
+    generation check under the lock is the last word before a write and still not enough: an older
+    repair can take the lock *before* the generation moves, pass its check, and still be inside
+    `writeText` when the newer run arrives — and `withLock` gives up after one second, so on slow
+    storage the newer run is starved out and the obsolete endpoint is what remains on disk. Give
+    such work its own chain (`_repairs`) so the newest always writes last.
+118. **Comparing timestamps with `>` across processes** → two events in the same millisecond are
+    not ordered by a millisecond clock, so `seen > decidedAt` treats a stamp that may be newer as
+    older and marks a live workspace as handled. Use `>=`: the conservative reading costs a
+    deferred prune, the other costs somebody a reconnect.
+
+119. **A structural check where a textual one was load-bearing** → the guard on a deletion range
+    was rewritten to ask the scanner whether a line is a table header, which is exactly the
+    question the scanner cannot answer once it has lost track. An unclosed `[` *before* a
+    `[mcp_servers.someone-else]`, with a later `]` rebalancing the range, hid that header
+    completely: the range ended at depth zero, both halves of the rule passed, and the user's
+    server was deleted while the confirmation named only the entry meant to go. The replaced
+    textual rule had caught this and was traded away for precision on a different case. The rule
+    now needs *both* — a **credible** header (a dotted path of bare or quoted keys, so `  [3, 4]`
+    is content and `[mcp_servers.x]` is not) tested against the raw line regardless of parser
+    state, **and** the range closing.
+120. **One counter for two kinds of bracket** → `scanLine` incremented the same `depth` for `[`
+    and `{`, so an unclosed inline table was cancelled by a stray `]` — two ordinary hand-edit
+    typos, in opposite directions, several lines apart. The document then balanced,
+    `codexUnterminated` reported it well-formed, every guard that rests on it passed, and a
+    deletion range covering another server's table was approved. Count them apart and require
+    both to be zero.
+121. **Making a check required on two of three deleters** → `deletable` was made a required
+    parameter on `removeCodexTables` and `spliceCodexTables` explicitly so a caller could not opt
+    out, while `repairCodexToml` in the same file went on deleting whole line ranges — a
+    duplicate of ours, a header sub-table being folded inline — with no check at all, on the
+    strength of the caller's document-wide `codexUnterminated`. Item 120 shows that guard is not
+    sufficient. When a rule gets an enforcement mechanism, sweep every site that performs the
+    operation, not the ones being edited at the time.
+122. **A serialising gate in front of unbounded I/O** → chaining the repairs so the newest writes
+    last (item 117) put `vscode.workspace.fs.readFile` / `createDirectory` / `writeFile` behind a
+    gate, none of which carries a timeout, and `withLock` bounds only *acquiring* a lock rather
+    than the work under it. One stalled network home then stopped every later repair in that
+    window for its whole lifetime, silently. Item 47 one layer up, created by the fix for item
+    117. Bound the **wait**, not the work: a queued run waits `repairQueueWaitMs` and then
+    proceeds, so the pathological case degrades to the old concurrent behaviour — where the lock
+    and `stillWanted` still protect the write — instead of to no repairs at all.
 
 ## Special cases and non-obvious decisions
 
@@ -2694,7 +3106,7 @@ interaction under [TypeScript configuration](#typescript-configuration).
 
 ## Removed on purpose — do not reintroduce
 
-- **A custom cursor while an element is being picked.** Two attempts, both dead ends, and the
+- **A custom cursor while an element is being picked.** Two attempts, both ruled out, and the
   second one explains the first.
 
   The idea was `* { cursor: … !important }` injected into the page, which is exactly what VS

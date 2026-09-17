@@ -176,7 +176,7 @@ suite('isShareTarget', () => {
 		// A command invoked from `editor/title` is given the editor's resource,
 		// so the first argument is a `Uri` whenever the entry is used from the
 		// browser tab's own toolbar — and reading that as a target resolved a
-		// key from it and threw, which killed the entry that matters most.
+		// key from it and threw, which stopped the entry that matters most.
 		assert.strictEqual(isShareTarget({ scheme: 'file', path: '/tmp/x', fsPath: '/tmp/x' }), false);
 		assert.strictEqual(isShareTarget(undefined), false);
 		assert.strictEqual(isShareTarget(null), false);

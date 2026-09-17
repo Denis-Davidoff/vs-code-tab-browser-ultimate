@@ -36,7 +36,7 @@ export interface CodexEntry {
 	 * Line index just past the last key of this table.
 	 *
 	 * Deliberately *not* the next table header: a comment sitting above the next
-	 * table belongs to that table, and swallowing it into ours would delete
+	 * table belongs to that table, and covering it into ours would delete
 	 * someone else's note on every rewrite.
 	 */
 	readonly endLine: number;
@@ -55,8 +55,21 @@ interface ScanResult {
 	 * has already been ruled out as a comment.
 	 */
 	readonly text: string;
-	/** Net bracket depth contributed by this line, for multi-line arrays. */
+	/**
+	 * Net `[`/`]` depth contributed by this line, for multi-line arrays.
+	 *
+	 * **Kept apart from {@link braces}, and that separation is load-bearing.**
+	 * One shared counter let an unclosed `{` be cancelled by a stray `]` — two
+	 * ordinary hand-edit typos — so the document balanced, `codexUnterminated`
+	 * answered "well-formed", and a deletion range that covered another
+	 * server's table was approved. Two wrongs made a right in the one arithmetic
+	 * that decides whether a config may be rewritten.
+	 */
 	readonly depth: number;
+	/** Net `{`/`}` depth. An inline table that does not close on its own line is
+	 * already malformed TOML, so this leaving a line open is a refusal signal
+	 * rather than a continuation this parser needs to model. */
+	readonly braces: number;
 	/** Quote style left open at end of line: `"""`, `'''`, or undefined. */
 	readonly multiline: string | undefined;
 }
@@ -74,6 +87,7 @@ interface ScanResult {
 export function scanLine(line: string, initialQuote?: string): ScanResult {
 	let code = '';
 	let depth = 0;
+	let braces = 0;
 	let quote = initialQuote;
 	let i = 0;
 	let commentAt = -1;
@@ -83,6 +97,21 @@ export function scanLine(line: string, initialQuote?: string): ScanResult {
 
 		if (quote) {
 			// Inside a multi-line string: only its own closing delimiter matters.
+			//
+			// **A basic string processes escapes; a literal one does not.** In a
+			// triple-quoted basic string, a backslash-escaped quote followed by
+			// two ordinary ones is content, not the delimiter, and closing on it
+			// ends the string in the wrong place. Two such sequences on a line
+			// rebalance the scan, so the document reads as well-formed while a
+			// `[mcp_servers.x]` written inside somebody's prose is reported as a
+			// real table — and the repair would then rewrite the inside of a
+			// string. The triple-apostrophe form is literal, where a backslash is
+			// just a character, so this applies to the basic form alone. Mirrors
+			// the single-line branch below, which has always honoured `\"`.
+			if (quote === '"""' && line[i] === '\\') {
+				i += 2;
+				continue;
+			}
 			if (rest.startsWith(quote)) {
 				quote = undefined;
 				i += 3;
@@ -127,10 +156,14 @@ export function scanLine(line: string, initialQuote?: string): ScanResult {
 			continue;
 		}
 
-		if (ch === '[' || ch === '{') {
+		if (ch === '[') {
 			depth++;
-		} else if (ch === ']' || ch === '}') {
+		} else if (ch === ']') {
 			depth--;
+		} else if (ch === '{') {
+			braces++;
+		} else if (ch === '}') {
+			braces--;
 		}
 
 		code += ch;
@@ -141,6 +174,7 @@ export function scanLine(line: string, initialQuote?: string): ScanResult {
 		code,
 		text: commentAt === -1 ? line : line.slice(0, commentAt),
 		depth,
+		braces,
 		multiline: quote,
 	};
 }
@@ -187,6 +221,117 @@ function unquote(raw: string): string {
 function tableName(header: string): string {
 	const raw = tableHeader.exec(header)?.[1] ?? '';
 	return unquote(raw);
+}
+
+/**
+ * Whether the document ends inside a value that was never closed.
+ *
+ * **A file that answers true must not be rewritten.** `codexEntries` keeps a
+ * table open across continuation lines, which is right for *identifying* one —
+ * a multi-line array or triple-quoted string belongs to the table it started
+ * in. It is unsafe as a *deletion* range: an unbalanced `[` never brings the
+ * depth back to zero, so that table's `endLine` runs to end of file and every
+ * table below it falls inside it. Pruning one stale entry then deleted the
+ * user's whole global Codex config — every other MCP server and this window's
+ * own live entry — while reporting the one name it meant to remove.
+ *
+ * The precondition is malformed TOML, which Codex cannot load either; the point
+ * is that "broken" and "emptied" are very different states to hand back, one is
+ * a character to restore and the other is not, and nothing here takes a backup.
+ * It is also reachable from this project's own history — several past releases
+ * wrote TOML that does not parse.
+ *
+ * So both writers ask first, and leave a file they cannot finish reading alone.
+ */
+export function codexUnterminated(text: string): boolean {
+	// Mirrors `codexEntries`' own accounting exactly — `scan.depth` and the same
+	// clamp — because a second, independently written counter is the drift this
+	// project has already been bitten by once (`codexOurTables` vs
+	// `codexEntryCarriesToken`). If the two ever disagree, this one is wrong.
+	let quote: string | undefined;
+	let depth = 0;
+	let braces = 0;
+	for (const line of text.split(/\r?\n/)) {
+		const scan = scanLine(line, quote);
+		quote = scan.multiline;
+		depth = Math.max(0, depth + scan.depth);
+		braces = Math.max(0, braces + scan.braces);
+	}
+	return quote !== undefined || depth > 0 || braces > 0;
+}
+
+/**
+ * A line that is credibly a table header — `[key]` or `[[key]]`, where the key
+ * is a dotted path of bare or quoted TOML keys, with an optional comment.
+ *
+ * **This is the discriminator the whole guard turns on**, because the two things
+ * it must tell apart look identical to a looser test:
+ *
+ *   - `  [3, 4]` — the last element of a nested array, written without a
+ *     trailing comma. Well-formed TOML, and a whole line wrapped in brackets.
+ *     `3, 4` is not a key path (the comma disqualifies it), so this is content.
+ *   - `[mcp_servers.someone-elses-server]` — a real table, and deleting the
+ *     range that contains it takes a server the user configured by hand.
+ *
+ * `[1]` satisfies both readings and is therefore treated as a header: refusing
+ * a prune costs a tidy-up, approving one costs somebody their config.
+ */
+const credibleHeader =
+	/^\s*\[\[?\s*(?:[A-Za-z0-9_-]+|"(?:[^"\\]|\\.)*"|'[^']*')(?:\s*\.\s*(?:[A-Za-z0-9_-]+|"(?:[^"\\]|\\.)*"|'[^']*'))*\s*\]\]?\s*(?:#.*)?$/;
+
+/**
+ * Whether the lines `[from, to)` can be deleted as one unit.
+ *
+ * Both line-range deleters in `mcpRepair.ts` ask this before removing a table,
+ * and it answers the one question that makes a range safe: **does this range
+ * contain anything that is not the table it names?**
+ *
+ * Two conditions, and neither is sufficient alone:
+ *
+ *   - **No credible table header after the range's own first line** — tested
+ *     against the raw text, *regardless of what the scanner believes the
+ *     structural state to be*. That last clause is the whole lesson. An earlier
+ *     version only looked for a header while it thought it was at top level, and
+ *     an unclosed `[` before a header — with a later `]` rebalancing the range —
+ *     hid a real `[mcp_servers.someone-else]` from it completely. The range then
+ *     satisfied both conditions and the deletion took that server with it, while
+ *     the confirmation named only the one entry it meant to remove.
+ *   - **The range ends at structural level.** Scanning it from its own first
+ *     line must bring quoting, bracket depth and brace depth back to nothing. If
+ *     it does not, the parser lost track *inside this very range*, so the
+ *     `endLine` that produced it is not to be trusted.
+ *
+ * The reverse mistake is just as real and is why the first condition is not a
+ * bare "does this line start with `[`": that fires on a nested array's last
+ * element, refusing a legitimate prune for good, since the refusal propagates to
+ * the completion marker.
+ *
+ * A credible header sitting inside a triple-quoted string is refused too. That
+ * is a false refusal, taken knowingly: it costs one untidied entry, where the
+ * other direction costs a server the extension never owned.
+ *
+ * Deliberately **not** a whole-document verdict. `codexUnterminated` is that.
+ */
+export function codexRangeDeletable(text: string, from: number, to: number): boolean {
+	const lines = text.split(/\r?\n/);
+	let quote: string | undefined;
+	let depth = 0;
+	let braces = 0;
+
+	for (let index = from; index < to && index < lines.length; index++) {
+		// Before the scan, and without consulting it: the point is to see a
+		// header the structural view has lost.
+		if (index > from && credibleHeader.test(lines[index])) {
+			return false;
+		}
+
+		const scan = scanLine(lines[index], quote);
+		quote = scan.multiline;
+		depth = Math.max(0, depth + scan.depth);
+		braces = Math.max(0, braces + scan.braces);
+	}
+
+	return quote === undefined && depth === 0 && braces === 0;
 }
 
 /**

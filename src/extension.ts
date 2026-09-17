@@ -261,7 +261,7 @@ export function activate(context: vscode.ExtensionContext) {
 	// `isShareTarget` and not `target ?? everyone`: a command invoked from an
 	// `editor/title` menu is handed the **editor's resource**, so the first
 	// argument is a `Uri` whenever this runs from the browser tab's own toolbar
-	// — which resolved a key from a `Uri`, threw, and killed the entry that
+	// — which resolved a key from a `Uri`, threw, and stopped the entry that
 	// matters most.
 	context.subscriptions.push(vscode.commands.registerCommand(shareTabCommand,
 		(target?: unknown) => share(isShareTarget(target) ? target : everyone)));

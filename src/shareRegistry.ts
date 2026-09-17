@@ -301,7 +301,7 @@ export class ShareRegistry<T> {
  * VS Code hands a command invoked from `editor/title` the **editor's resource**
  * as its first argument, so a command that reads `arg0` as its own parameter
  * gets a `Uri` instead — and the share commands then resolved a key from
- * `undefined` and threw, which killed sharing from the browser tab's own
+ * `undefined` and threw, which stopped sharing from the browser tab's own
  * toolbar. Anything that is not shaped like a target is treated as "no
  * argument".
  */

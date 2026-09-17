@@ -5,10 +5,11 @@
 
 import * as assert from 'node:assert';
 import { suite, test } from 'node:test';
-import { codexEntries } from './codexToml.ts';
+import { codexEntries, codexRangeDeletable, codexUnterminated } from './codexToml.ts';
 import { codexEntryCarriesToken } from './mcpClientState.ts';
 import {
-	codexOurTables, mergeAuthorization, parseInlineTable, repairClaudeJson, repairCodexToml,
+	codexRetiredTables, codexOurTables, mergeAuthorization, parseInlineTable, removeCodexTables,
+	repairClaudeJson, repairCodexToml,
 } from './mcpRepair.ts';
 
 const token = 'ourtoken0000000000000000000000000000000000000000000000000000abcd';
@@ -17,7 +18,8 @@ const url = 'http://127.0.0.1:43117/mcp';
 const endpoint = { url, token, name: 'ai-browser' };
 
 const repairToml = (text: string, name = 'ai-browser') =>
-	repairCodexToml(text, codexEntries(text), { ...endpoint, name });
+	repairCodexToml(text, codexEntries(text), { ...endpoint, name },
+		(from, to) => codexRangeDeletable(text, from, to));
 
 suite('repairClaudeJson', () => {
 
@@ -532,5 +534,404 @@ suite('parseInlineTable and mergeAuthorization', () => {
 		assert.ok(out.includes('X-Org = "keep"'), out);
 		assert.ok(!out.includes('"drop"'), out);
 		assert.ok(out.includes(`Authorization = "Bearer ${token}"`), out);
+	});
+});
+
+/*
+ * Pruning entries whose project is gone.
+ *
+ * The safety of this rests entirely on *which* tokens the caller declares missing
+ * — that is a filesystem question answered in `missingWorkspaceTokens` — so what
+ * is worth pinning down here is the file surgery: that a stale table goes whole,
+ * that a live one is untouched however much it looks like ours, and that the
+ * repair still sees a correct file afterwards.
+ */
+suite('codexRetiredTables / removeCodexTables', () => {
+
+	const retired = 'gone00000000000000000000000000000000000000000000000000000000aaaa';
+
+	const prune = (text: string, tokens: string[], keep = token) => {
+		const entries = codexEntries(text);
+		return removeCodexTables(text, entries, codexRetiredTables(entries, new Set(tokens), keep),
+			(from, to) => codexRangeDeletable(text, from, to));
+	};
+
+	test('removes a retired entry whole, sub-table and all', () => {
+		const before = [
+			'[mcp_servers.other]',
+			'url = "http://example/mcp"',
+			'',
+			'[mcp_servers.ai-browser-old-abc123]',
+			'url = "http://127.0.0.1:43110/mcp"',
+			'startup_timeout_sec = 30',
+			'',
+			'[mcp_servers.ai-browser-old-abc123.env_http_headers]',
+			`Authorization = "Bearer ${retired}"`,
+			'',
+		].join('\n');
+
+		const result = prune(before, [retired]);
+		assert.ok(result.changed);
+		assert.deepStrictEqual(result.removed, ['ai-browser-old-abc123']);
+		assert.ok(!result.text.includes('ai-browser-old-abc123'));
+		assert.ok(!result.text.includes('startup_timeout_sec'));
+		assert.ok(result.text.includes('[mcp_servers.other]'));
+	});
+
+	test('leaves an entry whose token is not declared retired', () => {
+		const before = [
+			'[mcp_servers.ai-browser-live-def456]',
+			'url = "http://127.0.0.1:43111/mcp"',
+			`http_headers = { Authorization = "Bearer ${foreign}" }`,
+			'',
+		].join('\n');
+
+		assert.strictEqual(prune(before, [retired]).changed, false);
+	});
+
+	test('an empty retired set changes nothing', () => {
+		const before = [
+			'[mcp_servers.ai-browser-old-abc123]',
+			`http_headers = { Authorization = "Bearer ${retired}" }`,
+			'',
+		].join('\n');
+
+		assert.strictEqual(prune(before, []).changed, false);
+	});
+
+	test('prunes the retired entry and still repairs ours in the same file', () => {
+		const before = [
+			'# my servers',
+			'[mcp_servers.ai-browser-old-abc123]',
+			'url = "http://127.0.0.1:43110/mcp"',
+			`http_headers = { Authorization = "Bearer ${retired}" }`,
+			'',
+			'[mcp_servers.ai-browser]',
+			'url = "http://127.0.0.1:43999/mcp"',
+			`http_headers = { Authorization = "Bearer ${token}" }`,
+			'',
+		].join('\n');
+
+		const pruned = prune(before, [retired]);
+		assert.deepStrictEqual(pruned.removed, ['ai-browser-old-abc123']);
+
+		const repaired = repairToml(pruned.text);
+		assert.ok(repaired.changed);
+		assert.ok(repaired.text.includes(`url = "${url}"`));
+		assert.ok(!repaired.text.includes('43999'));
+		assert.ok(!repaired.text.includes(retired));
+		// The header comment is not part of any table, so it stays where it is.
+		assert.ok(repaired.text.startsWith('# my servers'));
+	});
+
+	test('never touches our own entry, even when our own token is declared retired', () => {
+		// The guard that matters, and the one the old version of this test only
+		// claimed to exercise: it passed `[retired, foreign]`, so `token` never
+		// reached the function and the live table would in fact have been
+		// removed. `missingWorkspaceTokens` refuses to declare our own token missing,
+		// but this function is the one that deletes, so it refuses too.
+		const before = [
+			'[mcp_servers.ai-browser]',
+			'url = "http://127.0.0.1:43110/mcp"',
+			`http_headers = { Authorization = "Bearer ${token}" }`,
+			'',
+		].join('\n');
+
+		const entries = codexEntries(before);
+		assert.deepStrictEqual(codexRetiredTables(entries, new Set([token]), token), []);
+		assert.strictEqual(prune(before, [token, retired, foreign]).changed, false);
+	});
+
+	test('a retired sibling goes while our own entry stays, in one file', () => {
+		const before = [
+			'[mcp_servers.ai-browser-old-abc123]',
+			`http_headers = { Authorization = "Bearer ${retired}" }`,
+			'',
+			'[mcp_servers.ai-browser]',
+			`http_headers = { Authorization = "Bearer ${token}" }`,
+			'',
+		].join('\n');
+
+		const result = prune(before, [retired, token]);
+		assert.deepStrictEqual(result.removed, ['ai-browser-old-abc123']);
+		assert.ok(result.text.includes(`Bearer ${token}`));
+	});
+
+	test('keeps the file\'s CRLF line endings', () => {
+		const before = [
+			'[mcp_servers.other]',
+			'url = "http://example/mcp"',
+			'',
+			'[mcp_servers.ai-browser-old-abc123]',
+			`http_headers = { Authorization = "Bearer ${retired}" }`,
+			'',
+		].join('\r\n');
+
+		const result = prune(before, [retired]);
+		assert.ok(result.changed);
+		assert.ok(result.text.includes('\r\n'));
+		assert.ok(!/[^\r]\n/.test(result.text));
+	});
+
+	test('collapses the blank line the removed table left behind', () => {
+		const before = [
+			'[mcp_servers.ai-browser-old-abc123]',
+			`http_headers = { Authorization = "Bearer ${retired}" }`,
+			'',
+			'[mcp_servers.other]',
+			'url = "http://example/mcp"',
+			'',
+		].join('\n');
+
+		const result = prune(before, [retired]);
+		assert.strictEqual(result.text, '[mcp_servers.other]\nurl = "http://example/mcp"\n');
+	});
+
+	test('two retired projects go in one pass', () => {
+		const second = 'gone11111111111111111111111111111111111111111111111111111111beef';
+		const before = [
+			'[mcp_servers.ai-browser-a-aaaaaa]',
+			`http_headers = { Authorization = "Bearer ${retired}" }`,
+			'',
+			'[mcp_servers.ai-browser-b-bbbbbb]',
+			`http_headers = { Authorization = "Bearer ${second}" }`,
+			'',
+			'[mcp_servers.other]',
+			'url = "http://example/mcp"',
+			'',
+		].join('\n');
+
+		const result = prune(before, [retired, second]);
+		assert.deepStrictEqual(
+			[...result.removed].sort(), ['ai-browser-a-aaaaaa', 'ai-browser-b-bbbbbb']);
+		assert.strictEqual(result.text, '[mcp_servers.other]\nurl = "http://example/mcp"\n');
+	});
+});
+
+/*
+ * The shape that emptied a user's whole global Codex config.
+ *
+ * `codexEntries` keeps a table open across continuation lines, which is right
+ * for identifying one. An unclosed `[` never closes, so the table's range runs
+ * to end of file — and once a value is left open the parser stops recognising
+ * headers at all, so the tables about to be removed are not even in `entries`.
+ * Deleting that range took every other MCP server and the live entry of the
+ * window doing the deleting, and reported the one name it meant to remove.
+ */
+suite('removeCodexTables refuses a range that covers other tables', () => {
+
+	const retired = 'gone00000000000000000000000000000000000000000000000000000000aaaa';
+
+	const wipe = [
+		'# Codex configuration',
+		'model = "gpt-5"',
+		'',
+		'[mcp_servers.ai-browser-oldproj-a1b2c3]',
+		`http_headers = { Authorization = "Bearer ${retired}" }`,
+		'enabled_tools = [',
+		'',
+		'[mcp_servers.github]',
+		'command = "npx"',
+		'',
+		`[mcp_servers.ai-browser]`,
+		`http_headers = { Authorization = "Bearer ${token}" }`,
+		'',
+	].join('\n');
+
+	test('an unclosed value leaves every other server alone', () => {
+		const entries = codexEntries(wipe);
+		const result = removeCodexTables(wipe, entries, codexRetiredTables(entries, new Set([retired]), token),
+			(from, to) => codexRangeDeletable(wipe, from, to));
+
+		assert.strictEqual(result.changed, false);
+		assert.deepStrictEqual(result.removed, []);
+		assert.strictEqual(result.text, wipe);
+	});
+
+	test('the same file with the bracket closed prunes normally', () => {
+		const sound = wipe.replace('enabled_tools = [', 'enabled_tools = []');
+		const entries = codexEntries(sound);
+		const result = removeCodexTables(sound, entries, codexRetiredTables(entries, new Set([retired]), token),
+			(from, to) => codexRangeDeletable(sound, from, to));
+
+		assert.deepStrictEqual(result.removed, ['ai-browser-oldproj-a1b2c3']);
+		assert.ok(result.text.includes('[mcp_servers.github]'));
+		assert.ok(result.text.includes(`Bearer ${token}`));
+	});
+
+	test('a multi-line array inside a retired table is still removed whole', () => {
+		const text = [
+			'[mcp_servers.ai-browser-old-abc123]',
+			`http_headers = { Authorization = "Bearer ${retired}" }`,
+			'enabled_tools = [',
+			'  "a",',
+			'  "b",',
+			']',
+			'',
+			'[mcp_servers.other]',
+			'url = "http://example/mcp"',
+			'',
+		].join('\n');
+
+		const entries = codexEntries(text);
+		const result = removeCodexTables(text, entries, codexRetiredTables(entries, new Set([retired]), token),
+			(from, to) => codexRangeDeletable(text, from, to));
+
+		assert.deepStrictEqual(result.removed, ['ai-browser-old-abc123']);
+		assert.ok(!result.text.includes('enabled_tools'));
+		assert.ok(result.text.includes('[mcp_servers.other]'));
+	});
+});
+
+/*
+ * A refusal has to be distinguishable from "nothing to do".
+ *
+ * Both leave the text identical, and only one of them means the tables are
+ * still in the file. A caller that records a completion marker on the strength of a completed
+ * run needs the difference: a marker laid on a refusal takes the folder out of
+ * the scan for good while its table sits there.
+ */
+suite('removeCodexTables reports a refusal', () => {
+
+	const odd = 'odd000000000000000000000000000000000000000000000000000000000abcd';
+	const plain = 'pln000000000000000000000000000000000000000000000000000000000beef';
+
+	// The odd table comes *after* the plain one on purpose. An unclosed value
+	// makes every later line read as continuation, so the parser can only still
+	// see the tables above it — which is exactly what makes "stands off one
+	// entry without blocking the rest" a real scenario rather than a contrived
+	// one.
+	const file = [
+		'[mcp_servers.ai-browser-plain-222222]',
+		`http_headers = { Authorization = "Bearer ${plain}" }`,
+		'',
+		'[mcp_servers.ai-browser-odd-111111]',
+		`http_headers = { Authorization = "Bearer ${odd}" }`,
+		'enabled_tools = [',
+		'',
+		'[mcp_servers.other]',
+		'url = "http://example/mcp"',
+		'',
+	].join('\n');
+
+	test('nothing to do is not a refusal', () => {
+		const entries = codexEntries(file);
+		const result = removeCodexTables(file, entries, [],
+			(from, to) => codexRangeDeletable(file, from, to));
+
+		assert.strictEqual(result.changed, false);
+		assert.strictEqual(result.refused, false);
+	});
+
+	test('one odd table stands off without blocking the others', () => {
+		const entries = codexEntries(file);
+		const names = codexRetiredTables(entries, new Set([odd, plain]), token);
+		const result = removeCodexTables(file, entries, names,
+			(from, to) => codexRangeDeletable(file, from, to));
+
+		assert.strictEqual(result.refused, true);
+		assert.deepStrictEqual(result.removed, ['ai-browser-plain-222222']);
+		// The one it declined is still there; the one it took is gone.
+		assert.ok(result.text.includes(odd));
+		assert.ok(!result.text.includes(plain));
+		// And the unrelated server the odd table's range ran over is untouched.
+		assert.ok(result.text.includes('[mcp_servers.other]'));
+	});
+
+	test('a refusal that removes nothing still says so', () => {
+		const entries = codexEntries(file);
+		const names = codexRetiredTables(entries, new Set([odd]), token);
+		const result = removeCodexTables(file, entries, names,
+			(from, to) => codexRangeDeletable(file, from, to));
+
+		assert.strictEqual(result.changed, false);
+		assert.strictEqual(result.refused, true);
+		assert.deepStrictEqual(result.removed, []);
+	});
+
+	// The regression this rule was rewritten for. `  [3, 4]` — the last element
+	// of a nested array, written without a trailing comma — is a whole line that
+	// *looks* like a table header, and the textual guard this replaced refused
+	// the table because of it. That refusal was not merely a missed prune: it
+	// propagated to `complete`, so the folder was never marked as handled and
+	// the entry could never be removed on any later run either.
+	test('a nested array is not mistaken for a table header', () => {
+		const nested = [
+			'[mcp_servers.ai-browser-nested-333333]',
+			`http_headers = { Authorization = "Bearer ${odd}" }`,
+			'matrix = [',
+			'  [1, 2],',
+			'  [3, 4]',
+			']',
+			'',
+			'[mcp_servers.other]',
+			'url = "http://example/mcp"',
+			'',
+		].join('\n');
+
+		const entries = codexEntries(nested);
+		const names = codexRetiredTables(entries, new Set([odd]), token);
+		const result = removeCodexTables(nested, entries, names,
+			(from, to) => codexRangeDeletable(nested, from, to));
+
+		assert.strictEqual(result.refused, false);
+		assert.deepStrictEqual(result.removed, ['ai-browser-nested-333333']);
+		assert.ok(!result.text.includes(odd));
+		// The array went with its own table, and the neighbour stayed.
+		assert.ok(!result.text.includes('matrix'));
+		assert.ok(result.text.includes('[mcp_servers.other]'));
+	});
+});
+suite('repairCodexToml refuses a range it may not delete', () => {
+
+	// It deletes whole line ranges too — a duplicate of ours, and a header
+	// sub-table folded into the inline form — and did so with no range check at
+	// all, trusting the caller's document-wide guard. A range can hide another
+	// table's header while the document still balances, and an unrelated server
+	// was removed with `collapsed` naming only our own old entry.
+	test('a duplicate whose range hides a foreign table is left alone', () => {
+		const text = [
+			'[mcp_servers.tab-browser]',
+			`http_headers = { Authorization = "Bearer ${token}" }`,
+			'enabled_tools = [',
+			'[mcp_servers.github]',
+			'command = "docker"',
+			']',
+			'',
+			'[mcp_servers.ai-browser]',
+			'url = "http://127.0.0.1:43110/mcp"',
+			`http_headers = { Authorization = "Bearer ${token}" }`,
+			'',
+		].join('\n');
+
+		// The document balances, so the caller's own guard does not fire.
+		assert.strictEqual(codexUnterminated(text), false);
+
+		const result = repairCodexToml(text, codexEntries(text), { ...endpoint, name: 'ai-browser' },
+			(from, to) => codexRangeDeletable(text, from, to));
+
+		assert.strictEqual(result.changed, false, 'the whole repair stands down');
+		assert.strictEqual(result.text, text);
+		assert.ok(result.text.includes('[mcp_servers.github]'));
+	});
+
+	test('an ordinary duplicate is still collapsed', () => {
+		const text = [
+			'[mcp_servers.tab-browser]',
+			'url = "http://127.0.0.1:43110/mcp"',
+			`http_headers = { Authorization = "Bearer ${token}" }`,
+			'',
+			'[mcp_servers.ai-browser]',
+			'url = "http://127.0.0.1:43110/mcp"',
+			`http_headers = { Authorization = "Bearer ${token}" }`,
+			'',
+		].join('\n');
+
+		const result = repairCodexToml(text, codexEntries(text), { ...endpoint, name: 'ai-browser' },
+			(from, to) => codexRangeDeletable(text, from, to));
+
+		assert.strictEqual(result.changed, true);
+		assert.deepStrictEqual(result.collapsed, ['tab-browser']);
+		assert.ok(!result.text.includes('[mcp_servers.tab-browser]'));
 	});
 });

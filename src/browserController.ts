@@ -220,7 +220,7 @@ function waitForLoad(session: TabSession, timeoutMs: number): { settled: Promise
 const indicatorTimeoutMs = 1500;
 
 /**
- * Bounds a best-effort CDP round trip, and swallows its failure.
+ * Bounds a best-effort CDP round trip, and absorbs its failure.
  *
  * `CDPClient.send` has no timeout of its own: it settles on a reply or on the
  * channel closing, and a page that has stopped servicing its main thread — an
@@ -752,7 +752,7 @@ export class BrowserController implements vscode.Disposable {
 	 */
 	private _evict(arriving?: vscode.BrowserTab): void {
 		while (this._sessions.size > BrowserController._sessionLimit) {
-			// The arrival is never the victim. It is the most recently used *and*
+			// The arrival is never the target. It is the most recently used *and*
 			// unassigned whenever the caller has no tab of its own, so the spare
 			// search below picked it — the opener then got a session that had
 			// already been disposed, and its first send failed with "CDP session
@@ -771,11 +771,11 @@ export class BrowserController implements vscode.Disposable {
 				this._shares.stateOf(tab) !== undefined
 				|| [...this._pins.values()].some(pin => pin.tab === tab);
 			const spare = candidates.find(tab => !claimed(tab));
-			const victim = spare ?? candidates[0];
-			if (!victim) {
+			const target = spare ?? candidates[0];
+			if (!target) {
 				return;
 			}
-			this._dropSession(victim);
+			this._dropSession(target);
 		}
 	}
 
@@ -799,7 +799,7 @@ export class BrowserController implements vscode.Disposable {
 	/**
 	 * Runs a share transition, after any already queued.
 	 *
-	 * The chain kept in `_transition` is a swallowed copy, so a transition that
+	 * The chain kept in `_transition` is a copy whose rejection is absorbed, so a transition that
 	 * fails cannot reject in the face of the next one — or of a tool waiting in
 	 * {@link _settle}. The caller still gets the real error.
 	 */
