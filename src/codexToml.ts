@@ -83,6 +83,21 @@ export function scanLine(line: string, initialQuote?: string): ScanResult {
 
 		if (quote) {
 			// Inside a multi-line string: only its own closing delimiter matters.
+			//
+			// **A basic string processes escapes; a literal one does not.** In a
+			// triple-quoted basic string, a backslash-escaped quote followed by
+			// two ordinary ones is content, not the delimiter, and closing on it
+			// ends the string in the wrong place. Two such sequences on a line
+			// rebalance the scan, so the document reads as well-formed while a
+			// `[mcp_servers.x]` written inside somebody's prose is reported as a
+			// real table — and the repair would then rewrite the inside of a
+			// string. The triple-apostrophe form is literal, where a backslash is
+			// just a character, so this applies to the basic form alone. Mirrors
+			// the single-line branch below, which has always honoured `\"`.
+			if (quote === '"""' && line[i] === '\\') {
+				i += 2;
+				continue;
+			}
 			if (rest.startsWith(quote)) {
 				quote = undefined;
 				i += 3;
@@ -222,6 +237,62 @@ export function codexUnterminated(text: string): boolean {
 		depth = Math.max(0, depth + scan.depth);
 	}
 	return quote !== undefined || depth > 0;
+}
+
+/**
+ * Whether the lines `[from, to)` can be deleted as one unit.
+ *
+ * Both line-range deleters in `mcpRepair.ts` ask this before removing a table,
+ * and it answers the one question that makes a range safe: **does this range
+ * contain anything that is not the table it names?**
+ *
+ * Two conditions, and neither is sufficient on its own — each is blind in the
+ * precise case the other covers:
+ *
+ *   - **No top-level header after the range's own first line.** A range that
+ *     covers a second `[table]` takes somebody else's server with it.
+ *   - **The range ends at structural level.** Scanning it from its own first
+ *     line has to bring quoting and bracket depth back to nothing. If it does
+ *     not, the parser lost track *inside this very range*, so the `endLine`
+ *     that produced it is not to be trusted — it runs to end of file, and every
+ *     table below is inside it.
+ *
+ * Why both, concretely. A purely *textual* header check (which this replaced)
+ * fires on `  [3, 4]` — the last element of a nested array written without a
+ * trailing comma, which is well-formed TOML — so a legitimate config could
+ * never be pruned, and the refusal that followed suppressed the completion
+ * marker for good. A purely *structural* check is worse in the other
+ * direction: once a value is left open, every later line reads as continuation,
+ * so a real `[mcp_servers.someone-else]` header inside the range becomes
+ * invisible and the deletion goes ahead. The second condition is what catches
+ * that, because the range never closes.
+ *
+ * Deliberately **not** a whole-document verdict. `codexUnterminated` is that,
+ * and it is still the right question for a writer rebuilding the file; this one
+ * is per range, so one table whose value is open cannot stand off the prune of
+ * every other table in the file.
+ */
+export function codexRangeDeletable(text: string, from: number, to: number): boolean {
+	const lines = text.split(/\r?\n/);
+	let quote: string | undefined;
+	let depth = 0;
+
+	for (let index = from; index < to && index < lines.length; index++) {
+		const inContinuation = quote !== undefined || depth > 0;
+		const scan = scanLine(lines[index], quote);
+
+		// `text`, not `code`: a quoted table name lives in the string contents
+		// that `code` drops. Anchored, so a value merely *containing* a bracket
+		// cannot masquerade as a header.
+		if (!inContinuation && index > from && /^\s*\[/.test(scan.text)) {
+			return false;
+		}
+
+		quote = scan.multiline;
+		depth = Math.max(0, depth + scan.depth);
+	}
+
+	return quote === undefined && depth === 0;
 }
 
 /**

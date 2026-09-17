@@ -318,6 +318,7 @@ export function removeCodexTables(
 	text: string,
 	entries: readonly CodexEntry[],
 	names: readonly string[],
+	deletable: RangeDeletable,
 ): Prune {
 	const unchanged: Prune = { text, changed: false, removed: [], refused: false };
 	if (names.length === 0) {
@@ -327,8 +328,8 @@ export function removeCodexTables(
 	const wanted = new Set(names);
 	const lines = text.split(/\r?\n/);
 
-	// **A table's range must not contain another table's header**, and checking
-	// it here is what makes this primitive safe on its own. The parser keeps a
+	// **A table's range must not contain another table's header**, and asking
+	// per entry is what makes this primitive safe on its own. The parser keeps a
 	// table open across continuation lines, which is right for identifying one;
 	// but an unclosed `[` never brings the depth back to zero, so that table's
 	// `endLine` runs to end of file and every table below it is inside it.
@@ -336,16 +337,14 @@ export function removeCodexTables(
 	// other MCP server and the live entry of the window doing the deleting —
 	// while reporting the single name it meant to remove.
 	//
-	// It has to be checked against the *text*, not against the other entries:
-	// once a value is left open the parser stops recognising headers at all, so
-	// the tables about to be removed are not in `entries` to be compared with.
-	// A bare `[table]` line inside a range we are deleting is the fingerprint.
-	// (An array element such as `["a"],` does not match — the pattern demands
-	// the header be the whole line.) The leaf-module rule forbids importing the
-	// parser's own "did this document terminate" answer, since a relative
-	// *value* import would stop `npm test` loading this file; `rewriteCodex`
-	// asks that question too, and this is the guard that does not depend on the
-	// caller remembering to.
+	// `deletable` answers it, and the two halves of its rule are both needed
+	// here: a range holding a second header is unsafe, and so is one that never
+	// closes, because that is the parser having lost track *inside this range*.
+	// Testing the text alone for something header-shaped — which this used to do
+	// — refused a table containing a nested array, since `  [3, 4]` is a whole
+	// line and matches; testing structure alone goes blind the moment a value is
+	// left open, which is the case the guard exists for.
+	//
 	// **Refuse per entry, not per call.** This used to `return unchanged` for the
 	// whole invocation, so one odd table stood off the prune of every other missing
 	// table in the file — and, because a refusal leaves no trace in `removed`,
@@ -355,13 +354,10 @@ export function removeCodexTables(
 		if (!wanted.has(entry.name)) {
 			continue;
 		}
-		for (let line = entry.firstLine + 1; line < entry.endLine; line++) {
-			if (looksLikeHeader(lines[line])) {
-				// The whole root goes, sub-tables with it: half a table removed
-				// is worse than none.
-				refused.add(rootTable(entry.name));
-				break;
-			}
+		if (!deletable(entry.firstLine, entry.endLine)) {
+			// The whole root goes, sub-tables with it: half a table removed is
+			// worse than none.
+			refused.add(rootTable(entry.name));
 		}
 	}
 	if (refused.size > 0) {
@@ -419,47 +415,42 @@ export function removeCodexTables(
  * because `[mcp_servers.ai-browser] # ours` is the same table.
  */
 /**
- * Whether a line is, on its own, a table header.
+ * Whether the lines `[from, to)` may be removed as one unit.
  *
- * Shared by both line-range deleters, because the rule they enforce with it is
- * the same one: **a range being removed must not contain another table.** The
- * pattern stays permissive on purpose — its two failure directions are not
- * symmetric. A false positive skips one prune; a false negative empties
- * somebody's config. So a line that merely *looks* like a header stands the
- * deletion off, including the last element of a nested array written without a
- * trailing comma, which is legal TOML and does match.
+ * Supplied by the caller rather than computed here, for the reason given at the
+ * top of this file: the scanner lives in `codexToml.ts`, and a *value* import of
+ * it would stop `npm test` loading this module directly. `codexRangeDeletable`
+ * is the implementation every caller passes; the parameter is **required** so
+ * that a caller cannot quietly opt out of the check, the same discipline
+ * `keepToken` is under.
+ *
+ * A second, independently written copy of the rule is exactly the drift this
+ * project has already been bitten by (`codexOurTables` against
+ * `codexEntryCarriesToken`), which is why this is a hole for the real one
+ * rather than an approximation of it. The approximation it replaced — "does any
+ * line in the range *look* like a header" — was wrong in both directions: it
+ * fired on the last element of a nested array, and it was blind to a real
+ * header once a value had been left open.
  */
-function looksLikeHeader(line: string): boolean {
-	return /^\s*\[\[?[^\]]+\]\]?\s*(#.*)?$/.test(line);
-}
-
-/** Whether any range would take a table header that is not its own first line. */
-function rangeCoversATable(
-	lines: readonly string[],
-	ranges: readonly (readonly [number, number])[],
-): boolean {
-	return ranges.some(([from, to]) => {
-		for (let line = from + 1; line < to; line++) {
-			if (looksLikeHeader(lines[line])) {
-				return true;
-			}
-		}
-		return false;
-	});
-}
+export type RangeDeletable = (from: number, to: number) => boolean;
 
 export function spliceCodexTables(
 	lines: readonly string[],
 	ranges: readonly (readonly [number, number])[],
 	table: readonly string[],
-): string[] {
+	deletable: RangeDeletable,
+): string[] | undefined {
 	// The same standing-off rule `removeCodexTables` applies, and it belongs here
-	// too rather than only in its callers. Both of them do test the document with
-	// `codexUnterminated` first, so today this cannot fire — which is the point:
-	// the rule was written as "refuse such a range", and a guard that lives only
-	// in the caller is one refactor away from being gone.
-	if (rangeCoversATable(lines, ranges)) {
-		return [...lines];
+	// too rather than only in its callers — a guard that lives only in the caller
+	// is one refactor away from being gone.
+	//
+	// **`undefined`, never the input unchanged.** Returning `[...lines]` made a
+	// refusal indistinguishable from a splice that had nothing to do: the caller
+	// wrote the identical file back and reported "Wrote ~/.codex/config.toml"
+	// while the stale url and token were still in it. The one thing a refusal
+	// must not look like is success.
+	if (!ranges.every(([from, to]) => deletable(from, to))) {
+		return undefined;
 	}
 
 	const sorted = [...ranges].sort((a, b) => a[0] - b[0]);

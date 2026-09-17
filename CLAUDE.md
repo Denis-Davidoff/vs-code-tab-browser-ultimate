@@ -1404,7 +1404,7 @@ the bare `ai-browser`, since a project file has only one project.
 it could only *name* a token, which is why the token used to ride in the URL; that was wrong.
 We now write `http_headers = { Authorization = "Bearer …" }` as an **inline** table — a
 `[mcp_servers.<name>.http_headers]` sub-table would be a second table, and replacing ours by
-line range would leftover it. The token-in-URL form is still *accepted* when reading, since
+line range would leave it behind. The token-in-URL form is still *accepted* when reading, since
 existing configs have it, and a stale sub-table of ours is removed on write.
 
 **The `codex mcp add` fallback carries the token.** It is handed over on exactly the path where
@@ -1458,7 +1458,12 @@ two readers (checking, and replacing our table) need, and **they must agree on w
 starts and ends**. `endLine` stops after the last key rather than at the next header, so a
 comment above the neighbouring table is not covered into ours.
 
-`scanLine` is the core, and every case it handles was a real failure: `#` inside a string is
+`scanLine` is the core, and every case it handles was a real failure: an escaped quote inside a
+triple-quoted **basic** string is content and not the closing delimiter — two of those on one line
+rebalance a scanner that ignores the backslash, so the document reads as well-formed while a
+`[mcp_servers.x]` sitting inside somebody's prose is reported as a real table, and the repair
+rewrites the inside of a string (item 115; the triple-apostrophe form is literal, where a
+backslash is just a character); `#` inside a string is
 not a comment; `[` inside a string does not open an array; `enabled_tools = [` left open means
 following lines are continuation; triple quotes inside a *literal* string open nothing; four or
 five closing quotes still close once. A naive quote count got this wrong in both directions —
@@ -1727,6 +1732,14 @@ follows from that:
   clears a marker, and that needs a window *serving* the folder, the entries could never be looked
   at again even after the user repaired their TOML. A refusal now reports itself, `Prune.refused`
   → `Rewrite.refused` → `complete`.
+
+  **And those flags are scoped to `~/.codex/config.toml` alone**, which is the second half and was
+  missing for a revision. `complete` gates nothing but this marker, and only the global file can
+  hold a pruned entry — so sharing one set of flags across all three configs meant the *project*
+  `.codex/config.toml`, rewritten with an empty prune set, could block the marker for ever with an
+  unterminated value of its own. That file is committed and travels with the project, so it stays
+  broken, and the folders the global prune really had cleaned were re-stat'd on every activation
+  for the life of the machine. See item 112.
 - **`codexRetiredTables` refuses our own token as well**, although `missingWorkspaceTokens` already
   does. It is the function that deletes, the parameter is **required** so it cannot be omitted by
   accident, and a caller assembling the set some other way — a future window registry, a test —
@@ -2340,6 +2353,14 @@ down the extension. Restarts are serialised through a promise chain, or two sett
 a row race for the same port. Commands are registered unconditionally and go through
 `withServer`, which explains why there is nothing to connect — better than "command not found".
 
+**The repair has a chain of its own** (`_repairs`), separate from `_chain`. Activation must not
+wait on a filesystem survey, so `_apply` does not await the repair — which allowed two repairs to
+be in flight at once, with the file lock alone deciding which landed last. The generation check
+under the lock is the last word before a write and is still not enough on its own: an older repair
+can take the lock before the generation moves, pass its check, and be inside `writeText` when the
+newer run arrives to find the lock held and give up after its one second. Chaining the repairs
+makes the newest always write last. See item 117.
+
 ## Handing reports to Claude Code and Codex
 
 Six dropdown entries — element / CSS path / XPath, to each assistant — write a Markdown report
@@ -2855,9 +2876,10 @@ No compile error for any of these — they only surface at runtime.
     a value is left open the parser stops recognising headers at all, so the tables about to be
     removed are not even in `entries` to be compared against. One stale entry emptied the
     user's whole global Codex config, every other MCP server and the deleting window's own live
-    entry with it, and the confirmation named the single entry it meant to remove. Refuse a range
-    containing a bare `[table]` line, and refuse to rewrite a document that ends inside an
-    unclosed value at all (`codexUnterminated`).
+    entry with it, and the confirmation named the single entry it meant to remove. Ask
+    `codexRangeDeletable` of every range, and refuse to rewrite a document that ends inside an
+    unclosed value at all (`codexUnterminated`). The first version of that guard tested the
+    *text* for something header-shaped, which item 114 records as wrong in both directions.
 106. **One locked writer and one unlocked writer of the same file** → that is the same as no
     lock (item 16 from the other direction). `.mcp.json` was rewritten by the repair under
     `configLockName` and by Connect with nothing, so a press during any window's startup repair
@@ -2882,6 +2904,61 @@ No compile error for any of these — they only surface at runtime.
     be read or parsed — fix or delete it", about a healthy, committed file that had not even been
     opened, on a path where an unwritable `os.tmpdir()` makes the advice permanent. Reuse the
     refusal, not the sentence.
+
+111. **A prose sweep that edits string literals** → renaming vocabulary across comments and docs
+    with a script rewrote `'orphans'` inside `inheritableCSSProperties`, a set of **real CSS
+    property names**, to `'leftovers'`. It typechecks, every test passes, and the only symptom is
+    that `orphans` silently stops being reported as inherited in Copy Element output — in a file
+    whose whole contract is being a verbatim copy of upstream. Split each line on backticks and
+    transform only the prose, and afterwards diff the sweep commit and read every changed line
+    that is not a comment.
+112. **One refusal flag shared by several files** → `complete` gates exactly one thing, the prune's
+    completion marker, and only `~/.codex/config.toml` can hold a pruned entry. Folding the
+    *project* `.codex/config.toml`'s refusal into the same flag let an unterminated value there —
+    in a file that is committed, travels with the project and therefore stays broken — force
+    `complete: false` for ever, suppressing the markers for folders the global prune really had
+    cleaned. The scan then re-stats those folders on every activation and never heals. Scope a
+    failure flag to the file whose outcome the decision actually depends on.
+113. **A guard whose refusal is indistinguishable from success** → `spliceCodexTables` returned the
+    input unchanged when it declined, which is byte-for-byte what a splice with nothing to do
+    returns. `writeCodexConfig` wrote the identical file back and `connectCodex` reported "Wrote
+    ~/.codex/config.toml" while the stale url and token sat there. Return `undefined`, or a flag —
+    the one thing a refusal must not look like is success. Item 108 is the same rule for the
+    unattended path; this is the interactive one, and it was missed because the comment asserted
+    the guard "cannot fire today".
+114. **A textual approximation of a structural question** → "does any line in this range look like
+    `[table]`" is wrong in *both* directions, and the two failures hide each other. It fires on
+    `  [3, 4]`, the last element of a nested array written without a trailing comma, which is
+    well-formed TOML — so a legitimate config could never be pruned, and under item 112 that
+    refusal suppressed the completion marker permanently. And it goes blind exactly when it
+    matters: once a value is left open every later line reads as continuation, so the real
+    `[mcp_servers.someone-else]` header inside the range is invisible. `codexRangeDeletable` asks
+    both halves — no top-level header after the range's first line, **and** the range closes —
+    because neither alone is safe.
+115. **Ignoring escapes inside a multi-line basic string** → the scanner closed on every `"""`,
+    including one preceded by a backslash, where the quote is content rather than the delimiter.
+    Two such sequences on a line rebalance the scan, so `codexUnterminated` answers "well-formed"
+    while a `[mcp_servers.x]` written inside somebody's prose is reported as a real table — which
+    the repair would then rewrite, inside a string. The single-line branch had always honoured
+    `\"`; the multi-line one had not. The literal form (`'''`) is not affected, because a
+    backslash there is just a character.
+116. **Stamping liveness before the thing being stamped exists** → `markWorkspaceAlive` ran before
+    `server.start()`, so a start that failed or was superseded still wrote a fresh `mcp.seen`
+    stamp *and lifted the folder's completion marker*, putting it back into the scan and holding
+    off its pruning for the whole grace period on the strength of a server that never came up.
+    Item 107 from a different direction: stamp only what is actually being served, which means
+    after the start succeeded, next to `_servedFolder`.
+117. **Fire-and-forget work that can starve its own successor of a lock** → `_chain` orders
+    `_apply` but deliberately does not await the repair, so two repairs could run at once. The
+    generation check under the lock is the last word before a write and still not enough: an older
+    repair can take the lock *before* the generation moves, pass its check, and still be inside
+    `writeText` when the newer run arrives — and `withLock` gives up after one second, so on slow
+    storage the newer run is starved out and the obsolete endpoint is what remains on disk. Give
+    such work its own chain (`_repairs`) so the newest always writes last.
+118. **Comparing timestamps with `>` across processes** → two events in the same millisecond are
+    not ordered by a millisecond clock, so `seen > decidedAt` treats a stamp that may be newer as
+    older and marks a live workspace as handled. Use `>=`: the conservative reading costs a
+    deferred prune, the other costs somebody a reconnect.
 
 ## Special cases and non-obvious decisions
 

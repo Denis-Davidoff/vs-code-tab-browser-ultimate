@@ -5,7 +5,7 @@
 
 import * as assert from 'node:assert';
 import { suite, test } from 'node:test';
-import { codexEntries, codexUnterminated, scanLine } from './codexToml.ts';
+import { codexEntries, codexRangeDeletable, codexUnterminated, scanLine } from './codexToml.ts';
 
 suite('scanLine', () => {
 
@@ -189,5 +189,88 @@ suite('codexUnterminated', () => {
 		assert.strictEqual(codexUnterminated([
 			'[mcp_servers.a]', 'url = "http://x/mcp?a[b]"', 'note = "["', '',
 		].join('\n')), false);
+	});
+});
+
+suite('codexRangeDeletable', () => {
+
+	// The regression it was written for. `  [3, 4]` is the last element of a
+	// nested array, written without a trailing comma — well-formed TOML, and a
+	// whole line that looks exactly like a table header.
+	const nested = [
+		'[mcp_servers.a]',
+		'matrix = [',
+		'  [1, 2],',
+		'  [3, 4]',
+		']',
+		'',
+		'[mcp_servers.b]',
+		'url = "http://x/mcp"',
+		'',
+	].join('\n');
+
+	test('a nested array is not mistaken for a table header', () => {
+		assert.strictEqual(codexRangeDeletable(nested, 0, 5), true);
+	});
+
+	test('a range holding a second table is refused', () => {
+		assert.strictEqual(codexRangeDeletable(nested, 0, 8), false);
+	});
+
+	// The other half of the rule, and the case a purely structural check is
+	// blind to: once a value is left open, every later line reads as
+	// continuation, so the real header below becomes invisible. The range never
+	// closing is what catches it.
+	test('a range that never closes is refused', () => {
+		const open = [
+			'[mcp_servers.a]',
+			'enabled_tools = [',
+			'',
+			'[mcp_servers.someone-else]',
+			'url = "http://x/mcp"',
+			'',
+		].join('\n');
+
+		assert.strictEqual(codexRangeDeletable(open, 0, 6), false);
+	});
+
+	test('an ordinary table is deletable', () => {
+		const plain = ['[mcp_servers.a]', 'url = "http://x/mcp"', ''].join('\n');
+		assert.strictEqual(codexRangeDeletable(plain, 0, 2), true);
+	});
+});
+
+suite('an escaped quote does not close a multi-line basic string', () => {
+
+	// `\"""` is an escaped quote followed by two ordinary ones: content, not the
+	// delimiter. Two of them on a line rebalance a scanner that ignores the
+	// backslash, so the document reads as well-formed while prose inside the
+	// string is reported as structure — and the repair would rewrite it.
+	const text = [
+		'[mcp_servers.ai-browser]',
+		'url = "http://127.0.0.1:43110/mcp"',
+		'notes = """say \\""" here',
+		'[mcp_servers.not-a-real-table]',
+		'still inside the string \\""" end"""',
+		'',
+	].join('\n');
+
+	test('prose inside the string is not read as a table', () => {
+		assert.deepStrictEqual(codexEntries(text).map(e => e.name), ['ai-browser']);
+	});
+
+	test('the document still terminates', () => {
+		assert.strictEqual(codexUnterminated(text), false);
+	});
+
+	test('an escaped backslash still lets the delimiter close', () => {
+		// `\\` is an escaped backslash, so the `"""` after it really does close.
+		const closes = ['[mcp_servers.a]', 'note = """x\\\\"""', ''].join('\n');
+		assert.strictEqual(codexUnterminated(closes), false);
+	});
+
+	test('a literal string treats a backslash as content', () => {
+		const literal = ["[mcp_servers.a]", "note = '''x\\'''", ''].join('\n');
+		assert.strictEqual(codexUnterminated(literal), false);
 	});
 });

@@ -220,7 +220,7 @@ function waitForLoad(session: TabSession, timeoutMs: number): { settled: Promise
 const indicatorTimeoutMs = 1500;
 
 /**
- * Bounds a best-effort CDP round trip, and covers its failure.
+ * Bounds a best-effort CDP round trip, and absorbs its failure.
  *
  * `CDPClient.send` has no timeout of its own: it settles on a reply or on the
  * channel closing, and a page that has stopped servicing its main thread — an
@@ -799,7 +799,7 @@ export class BrowserController implements vscode.Disposable {
 	/**
 	 * Runs a share transition, after any already queued.
 	 *
-	 * The chain kept in `_transition` is a covered copy, so a transition that
+	 * The chain kept in `_transition` is a copy whose rejection is absorbed, so a transition that
 	 * fails cannot reject in the face of the next one — or of a tool waiting in
 	 * {@link _settle}. The caller still gets the real error.
 	 */

@@ -69,7 +69,7 @@ const inheritableCSSProperties = new Set([
 	'color', 'cursor', 'direction', 'font', 'font-family', 'font-feature-settings',
 	'font-kerning', 'font-size', 'font-size-adjust', 'font-stretch', 'font-style',
 	'font-variant', 'font-weight', 'letter-spacing', 'line-height', 'list-style',
-	'list-style-image', 'list-style-position', 'list-style-type', 'leftovers',
+	'list-style-image', 'list-style-position', 'list-style-type', 'orphans',
 	'overflow-wrap', 'quotes', 'tab-size', 'text-align', 'text-align-last',
 	'text-indent', 'text-transform', 'visibility', 'white-space', 'widows',
 	'word-break', 'word-spacing', 'writing-mode',

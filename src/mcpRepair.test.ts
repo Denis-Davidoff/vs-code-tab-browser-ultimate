@@ -5,7 +5,7 @@
 
 import * as assert from 'node:assert';
 import { suite, test } from 'node:test';
-import { codexEntries } from './codexToml.ts';
+import { codexEntries, codexRangeDeletable } from './codexToml.ts';
 import { codexEntryCarriesToken } from './mcpClientState.ts';
 import {
 	codexRetiredTables, codexOurTables, mergeAuthorization, parseInlineTable, removeCodexTables,
@@ -551,7 +551,8 @@ suite('codexRetiredTables / removeCodexTables', () => {
 
 	const prune = (text: string, tokens: string[], keep = token) => {
 		const entries = codexEntries(text);
-		return removeCodexTables(text, entries, codexRetiredTables(entries, new Set(tokens), keep));
+		return removeCodexTables(text, entries, codexRetiredTables(entries, new Set(tokens), keep),
+			(from, to) => codexRangeDeletable(text, from, to));
 	};
 
 	test('removes a retired entry whole, sub-table and all', () => {
@@ -738,7 +739,8 @@ suite('removeCodexTables refuses a range that covers other tables', () => {
 
 	test('an unclosed value leaves every other server alone', () => {
 		const entries = codexEntries(wipe);
-		const result = removeCodexTables(wipe, entries, codexRetiredTables(entries, new Set([retired]), token));
+		const result = removeCodexTables(wipe, entries, codexRetiredTables(entries, new Set([retired]), token),
+			(from, to) => codexRangeDeletable(wipe, from, to));
 
 		assert.strictEqual(result.changed, false);
 		assert.deepStrictEqual(result.removed, []);
@@ -748,7 +750,8 @@ suite('removeCodexTables refuses a range that covers other tables', () => {
 	test('the same file with the bracket closed prunes normally', () => {
 		const sound = wipe.replace('enabled_tools = [', 'enabled_tools = []');
 		const entries = codexEntries(sound);
-		const result = removeCodexTables(sound, entries, codexRetiredTables(entries, new Set([retired]), token));
+		const result = removeCodexTables(sound, entries, codexRetiredTables(entries, new Set([retired]), token),
+			(from, to) => codexRangeDeletable(sound, from, to));
 
 		assert.deepStrictEqual(result.removed, ['ai-browser-oldproj-a1b2c3']);
 		assert.ok(result.text.includes('[mcp_servers.github]'));
@@ -770,7 +773,8 @@ suite('removeCodexTables refuses a range that covers other tables', () => {
 		].join('\n');
 
 		const entries = codexEntries(text);
-		const result = removeCodexTables(text, entries, codexRetiredTables(entries, new Set([retired]), token));
+		const result = removeCodexTables(text, entries, codexRetiredTables(entries, new Set([retired]), token),
+			(from, to) => codexRangeDeletable(text, from, to));
 
 		assert.deepStrictEqual(result.removed, ['ai-browser-old-abc123']);
 		assert.ok(!result.text.includes('enabled_tools'));
@@ -788,19 +792,21 @@ suite('removeCodexTables refuses a range that covers other tables', () => {
  */
 suite('removeCodexTables reports a refusal', () => {
 
-	const odd = 'odd000000000000000000000000000000000000000000000000000000000dead';
+	const odd = 'odd000000000000000000000000000000000000000000000000000000000abcd';
 	const plain = 'pln000000000000000000000000000000000000000000000000000000000beef';
 
+	// The odd table comes *after* the plain one on purpose. An unclosed value
+	// makes every later line read as continuation, so the parser can only still
+	// see the tables above it — which is exactly what makes "stands off one
+	// entry without blocking the rest" a real scenario rather than a contrived
+	// one.
 	const file = [
-		'[mcp_servers.ai-browser-odd-111111]',
-		`http_headers = { Authorization = "Bearer ${odd}" }`,
-		'matrix = [',
-		'  [1, 2],',
-		'  [3, 4]',
-		']',
-		'',
 		'[mcp_servers.ai-browser-plain-222222]',
 		`http_headers = { Authorization = "Bearer ${plain}" }`,
+		'',
+		'[mcp_servers.ai-browser-odd-111111]',
+		`http_headers = { Authorization = "Bearer ${odd}" }`,
+		'enabled_tools = [',
 		'',
 		'[mcp_servers.other]',
 		'url = "http://example/mcp"',
@@ -809,7 +815,8 @@ suite('removeCodexTables reports a refusal', () => {
 
 	test('nothing to do is not a refusal', () => {
 		const entries = codexEntries(file);
-		const result = removeCodexTables(file, entries, []);
+		const result = removeCodexTables(file, entries, [],
+			(from, to) => codexRangeDeletable(file, from, to));
 
 		assert.strictEqual(result.changed, false);
 		assert.strictEqual(result.refused, false);
@@ -818,23 +825,59 @@ suite('removeCodexTables reports a refusal', () => {
 	test('one odd table stands off without blocking the others', () => {
 		const entries = codexEntries(file);
 		const names = codexRetiredTables(entries, new Set([odd, plain]), token);
-		const result = removeCodexTables(file, entries, names);
+		const result = removeCodexTables(file, entries, names,
+			(from, to) => codexRangeDeletable(file, from, to));
 
 		assert.strictEqual(result.refused, true);
 		assert.deepStrictEqual(result.removed, ['ai-browser-plain-222222']);
 		// The one it declined is still there; the one it took is gone.
 		assert.ok(result.text.includes(odd));
 		assert.ok(!result.text.includes(plain));
+		// And the unrelated server the odd table's range ran over is untouched.
 		assert.ok(result.text.includes('[mcp_servers.other]'));
 	});
 
 	test('a refusal that removes nothing still says so', () => {
 		const entries = codexEntries(file);
 		const names = codexRetiredTables(entries, new Set([odd]), token);
-		const result = removeCodexTables(file, entries, names);
+		const result = removeCodexTables(file, entries, names,
+			(from, to) => codexRangeDeletable(file, from, to));
 
 		assert.strictEqual(result.changed, false);
 		assert.strictEqual(result.refused, true);
 		assert.deepStrictEqual(result.removed, []);
+	});
+
+	// The regression this rule was rewritten for. `  [3, 4]` — the last element
+	// of a nested array, written without a trailing comma — is a whole line that
+	// *looks* like a table header, and the textual guard this replaced refused
+	// the table because of it. That refusal was not merely a missed prune: it
+	// propagated to `complete`, so the folder was never marked as handled and
+	// the entry could never be removed on any later run either.
+	test('a nested array is not mistaken for a table header', () => {
+		const nested = [
+			'[mcp_servers.ai-browser-nested-333333]',
+			`http_headers = { Authorization = "Bearer ${odd}" }`,
+			'matrix = [',
+			'  [1, 2],',
+			'  [3, 4]',
+			']',
+			'',
+			'[mcp_servers.other]',
+			'url = "http://example/mcp"',
+			'',
+		].join('\n');
+
+		const entries = codexEntries(nested);
+		const names = codexRetiredTables(entries, new Set([odd]), token);
+		const result = removeCodexTables(nested, entries, names,
+			(from, to) => codexRangeDeletable(nested, from, to));
+
+		assert.strictEqual(result.refused, false);
+		assert.deepStrictEqual(result.removed, ['ai-browser-nested-333333']);
+		assert.ok(!result.text.includes(odd));
+		// The array went with its own table, and the neighbour stayed.
+		assert.ok(!result.text.includes('matrix'));
+		assert.ok(result.text.includes('[mcp_servers.other]'));
 	});
 });

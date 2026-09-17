@@ -393,7 +393,7 @@ export class ShareIndicator {
 	 * Runs `work` after everything already queued, whatever became of it.
 	 *
 	 * The returned promise is the caller's own: it carries `work`'s rejection.
-	 * The promise kept as the chain is a covered copy, so a failed install
+	 * The promise kept as the chain is a copy whose rejection is absorbed, so a failed install
 	 * cannot turn the next `clear` into an unhandled rejection.
 	 */
 	private _enqueue<T>(work: () => Promise<T>): Promise<T> {
@@ -437,7 +437,7 @@ export class ShareIndicator {
 					'window.__aiBrowserShareMarker && window.__aiBrowserShareMarker.remove()');
 				return true;
 			} catch {
-				// The session is gone. Reported rather than covered, because
+				// The session is gone. Reported rather than absorbed, because
 				// the caller has a second way to reach the page — see
 				// `_clearIndicator` — and "the marker is off" and "the channel
 				// died before it could be taken off" must not look the same.

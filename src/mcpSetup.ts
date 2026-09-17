@@ -5,7 +5,7 @@
 
 import * as crypto from 'crypto';
 import * as vscode from 'vscode';
-import { codexEntries, codexUnterminated } from './codexToml';
+import { codexEntries, codexRangeDeletable, codexUnterminated } from './codexToml';
 import { lockPath, withLock } from './fileLock';
 import { serverName } from './mcpClientState';
 import {
@@ -267,7 +267,7 @@ export function claudeCliCommand(server: McpServer): string {
  * token does not need to sit in the URL after all — that was an earlier
  * misreading. Inline rather than a `[mcp_servers.<name>.http_headers]`
  * sub-table on purpose: a sub-table is a second table, and replacing ours by
- * line range would leftover it.
+ * line range would leave it behind.
  */
 /**
  * The endpoint description the writers and the repair share.
@@ -331,7 +331,18 @@ async function writeCodexConfig(
 		.filter(entry => entry.name === name || entry.name.startsWith(`${name}.`))
 		.map(entry => [entry.firstLine, entry.endLine] as const);
 
-	const next = spliceCodexTables(lines, ranges, codexTableLines(name, endpoint(server, name)));
+	const next = spliceCodexTables(
+		lines, ranges, codexTableLines(name, endpoint(server, name)),
+		(from, to) => codexRangeDeletable(existing, from, to));
+	if (!next) {
+		// A range we would replace holds something that is not our table. The
+		// splice reports this rather than handing back the input, because the
+		// two are indistinguishable to a writer: this used to write the file
+		// back byte-identical and confirm "Wrote ~/.codex/config.toml" while the
+		// stale url and token stayed exactly where they were. Throwing lands in
+		// `connectCodex`'s catch, which says so and offers `codex mcp add`.
+		throw new Error('the existing table could not be replaced safely');
+	}
 
 	let text = next.join(newline);
 	if (!text.endsWith(newline)) {
@@ -710,7 +721,9 @@ export function stillMissing(store: TokenStore, surveyed: MissingWorkspaces): Mi
 			return false; // already marked by somebody else
 		}
 		const seen = store.get<number>(`${seenKeyPrefix}${raw}`);
-		return !(typeof seen === 'number' && seen > surveyed.at);
+		// `>=` for the reason `markWorkspaceHandled` uses it: a stamp in the
+		// same millisecond as the survey is not provably older than it.
+		return !(typeof seen === 'number' && seen >= surveyed.at);
 	});
 	if (folders.length === surveyed.folders.length) {
 		return { ...surveyed, at: Date.now() };
@@ -782,8 +795,15 @@ export async function markWorkspaceHandled(
 	 */
 	decidedAt: number,
 ): Promise<void> {
-	const seen = store.get<number>(`${seenKeyPrefix}${folderUri}`);
-	if (typeof seen === 'number' && seen > decidedAt) {
+	// **`>=`, not `>`.** Two events in the same millisecond are not ordered by a
+	// millisecond clock, and the conservative reading is the only safe one: a
+	// stamp that may be newer than the verdict must be treated as newer.
+	const cameBack = () => {
+		const seen = store.get<number>(`${seenKeyPrefix}${folderUri}`);
+		return typeof seen === 'number' && seen >= decidedAt;
+	};
+
+	if (cameBack()) {
 		return;
 	}
 	// The marker is recorded first: if the second write is the one that fails, the
@@ -791,6 +811,27 @@ export async function markWorkspaceHandled(
 	// other order leaves it visible with no stamp, so the next start seeds a
 	// grace period and the whole seven days begin again.
 	await store.update(`${handledKeyPrefix}${folderUri}`, true);
+
+	// **Read again, after the write, and stand down if the folder came back.**
+	// The check above and the writes below are separate trips through the main
+	// process, and `markWorkspaceAlive` is called by other windows without
+	// taking the config lock — so this interleaving is available: we read a
+	// stale stamp, the live window lifts its marker and stamps afresh, and we
+	// then mark a *serving* workspace as handled and delete the stamp that said
+	// so. Re-reading catches the common case, where their stamp has landed by
+	// now.
+	//
+	// **It narrows the window; it does not close it**, and there is no way to
+	// close it here: `Memento` offers no compare-and-swap, so "check and write"
+	// cannot be made one operation. The residual is bounded rather than
+	// permanent — the hourly heartbeat calls `markWorkspaceAlive`, which lifts
+	// the marker again — and the stamp is left in place here so that heartbeat
+	// has something to find. Do not re-order these two writes without rereading
+	// this: deleting the stamp first destroys the evidence this check reads.
+	if (cameBack()) {
+		await store.update(`${handledKeyPrefix}${folderUri}`, undefined);
+		return;
+	}
 	await store.update(`${seenKeyPrefix}${folderUri}`, undefined);
 }
 
@@ -1113,10 +1154,26 @@ export async function repairConfigs(
 		return report;
 	}
 
+	// **Scoped to the file the prune touches, not to every file this repairs.**
+	// `complete` gates one thing only — `markWorkspaceHandled` — and a marker
+	// says "the stale Codex table for this missing folder is gone". Only
+	// `~/.codex/config.toml` can hold such a table, so only its outcome can
+	// block the marker.
+	//
+	// Sharing one set of flags across all three files was a permanent trap: the
+	// project `.codex/config.toml` is rewritten with an *empty* prune set, yet
+	// an unterminated value there set `refused`, forced `complete: false`, and
+	// so suppressed the markers for folders the global prune really had cleaned
+	// up. That file is committed and travels with the project, so it stays
+	// broken — and a marker is only ever lifted by a window serving that folder,
+	// which a missing folder never has again. The scan therefore re-stats those
+	// folders on every activation for the life of the machine and never heals.
 	let busy = false;
 	let unreadable = false;
-	let superseded = false;
 	let refused = false;
+	// Run-wide, and deliberately not scoped: a superseded run must not lay a
+	// marker for a decision whose write it abandoned, whichever file it was in.
+	let superseded = false;
 
 	/**
 	 * Reads, repairs and writes one config, under that file's own lock.
@@ -1145,6 +1202,14 @@ export async function repairConfigs(
 		 * so the only thing between deciding and writing is the rewrite itself.
 		 */
 		inside?: () => Promise<void>,
+		/**
+		 * Whether a failure on this file may block a completion marker.
+		 *
+		 * True for `~/.codex/config.toml` alone — it is the only file the prune
+		 * removes anything from, so it is the only one whose outcome a marker
+		 * depends on. See the flags above for what sharing them cost.
+		 */
+		prunes = false,
 	): Promise<void> => {
 		const took = await withLock(lockPath(configLockName(uri)), async () => {
 			const read = await readConfig(uri);
@@ -1160,7 +1225,9 @@ export async function repairConfigs(
 			if (read.kind === 'unreadable') {
 				// The file is there and we could not look inside it, so this run
 				// cannot claim to have examined every config.
-				unreadable = true;
+				if (prunes) {
+					unreadable = true;
+				}
 				return;
 			}
 			if (inside) {
@@ -1172,7 +1239,9 @@ export async function repairConfigs(
 				// not reach the entries it was asked about. Recorded before the
 				// `changed` test, because a refusal and a no-op both leave the
 				// text identical and only one of them must block a completion marker.
-				refused = true;
+				if (prunes) {
+					refused = true;
+				}
 			}
 			if (!result.changed) {
 				return;
@@ -1198,7 +1267,9 @@ export async function repairConfigs(
 			report.removed.push(...result.removed);
 		});
 		// Losing a race is not an error: the next start repairs it.
-		busy ||= !took;
+		if (prunes) {
+			busy ||= !took;
+		}
 	};
 
 	/**
@@ -1221,7 +1292,8 @@ export async function repairConfigs(
 		}
 		const entries = codexEntries(text);
 		const pruned = removeCodexTables(
-			text, entries, codexRetiredTables(entries, prune, server.token));
+			text, entries, codexRetiredTables(entries, prune, server.token),
+			(from, to) => codexRangeDeletable(text, from, to));
 		const repaired = repairCodexToml(
 			pruned.text, codexEntries(pruned.text), endpoint(server, name, url));
 		return {
@@ -1278,7 +1350,8 @@ export async function repairConfigs(
 			// `~/.codex/config.toml` at all must still get their completion markers,
 			// or the scan stats every missing folder on every start for ever.
 			report.pruned.push(...confirmed.folders);
-		});
+		},
+		true);
 
 	// A superseded run is not a complete one: it must not lay completion markers for a
 	// decision whose write it abandoned.

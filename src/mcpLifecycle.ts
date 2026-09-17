@@ -92,6 +92,30 @@ export class McpLifecycle implements vscode.Disposable {
 	 */
 	private _generation = 0;
 
+	/**
+	 * Serialises the repairs themselves, which `_chain` does not.
+	 *
+	 * `_chain` orders `_apply`, but the repair is deliberately not awaited by it
+	 * — activation must not wait on a filesystem survey — so without this two
+	 * repairs could be in flight at once and the file lock alone decided which
+	 * landed last. The generation check under the lock (`stillWanted`) is the
+	 * last word before a write, and it is still not enough on its own: an older
+	 * repair can take the lock *before* the generation moves, pass its check,
+	 * and still be inside `writeText` — which awaits a directory creation and a
+	 * filesystem write — when the newer run arrives. `withLock` gives up after
+	 * `attempts * retryMs`, one second, so on slow or network-backed storage the
+	 * newer run is starved out entirely and the obsolete endpoint is what
+	 * remains on disk.
+	 *
+	 * Chaining them makes that unreachable rather than unlikely: a repair does
+	 * not begin until the previous one has settled, so the newest always writes
+	 * last and never contends with its own predecessor for the lock. It costs
+	 * the newer repair a wait, which is bounded — the survey's stats are capped
+	 * by `statTimeoutMs` and run in parallel, and every lock gives up after a
+	 * second. Nothing awaits this chain, so activation is unaffected.
+	 */
+	private _repairs: Promise<void> = Promise.resolve();
+
 	/** Set before anything is torn down, so work in flight can stop. */
 	private _disposed = false;
 
@@ -188,7 +212,6 @@ export class McpLifecycle implements vscode.Disposable {
 		// `_servedFolder` exists to prevent, reintroduced through the await.
 		const folder = workspaceFolder();
 		const token = this._workspaceToken(folder);
-		await markWorkspaceAlive(this.context.globalState, folder).catch(() => { });
 		const server = new McpServer(
 			this.browser, token, folder?.name, this.version, this._sessionKinds);
 
@@ -214,6 +237,22 @@ export class McpLifecycle implements vscode.Disposable {
 		// or refused start left the stamp being refreshed hourly for a server
 		// that never came up.
 		this._servedFolder = folder;
+
+		// **Stamped here, not before `start`**, for the reason directly above and
+		// for item 107's rule: keep alive only what is actually being served. A
+		// stamp taken earlier was written even when the start then failed or was
+		// superseded — and because `markWorkspaceAlive` also *lifts* the handled
+		// marker, a window whose server never came up would clear that marker,
+		// put the folder back into the scan, and hold off its pruning for the
+		// whole grace period on the strength of a server that does not exist.
+		//
+		// Not awaited, and that is deliberate: an await here would sit between
+		// the supersede check above and the `_parts.push` below, which is
+		// precisely the gap item 103 is about — a dispose landing inside it
+		// leaves a listening server in an array nobody disposes again. The
+		// rejection is handled, so nothing escapes.
+		void markWorkspaceAlive(this.context.globalState, folder).catch(() => { });
+
 		this._parts.push(server);
 		const registration = registerWithVsCode(server, this.version);
 		if (registration) {
@@ -250,7 +289,8 @@ export class McpLifecycle implements vscode.Disposable {
 		// yet opened by anybody leaves no signal either way.
 		// The scan's own failure degrades to "prune nothing", never to "repair
 		// nothing": a stat that threw must not cost the window its port fix.
-		void repairConfigs(
+		// Queued behind any repair still running, for the reason on `_repairs`.
+		this._repairs = this._repairs.catch(() => { }).then(() => repairConfigs(
 			server,
 			{
 				// Slow half, run outside every lock.
@@ -286,7 +326,7 @@ export class McpLifecycle implements vscode.Disposable {
 				}
 				this._reportRepair(report);
 			})
-			.catch(() => { });
+			.catch(() => { }));
 	}
 
 	/**
