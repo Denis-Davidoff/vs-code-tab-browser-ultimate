@@ -1437,9 +1437,14 @@ whatever page was open and started reporting on it, before the user had asked fo
 paste exists to find out whether the tools arrived, so it now asks exactly that and says not to
 use them yet.
 
-**A broken `.mcp.json` is never overwritten.** `readClaudeConfig` returns `{}` for absent,
-the object for parsed, and `undefined` for unparsable — and on `undefined` the write is
-abandoned, because rewriting it would delete every other MCP server the project has.
+**A `.mcp.json` that cannot be read or parsed is never overwritten.** `readClaudeConfig` returns
+`{}` for absent, the object for parsed, and `undefined` for **either** unparsable **or
+unreadable** — and on `undefined` the write is abandoned, because rewriting it would delete every
+other MCP server the project has. The unreadable half was missing and the statement above was
+simply false for it: a read error answered `{}`, so a transient failure on a committed,
+team-shared file replaced it with our single entry and said it had succeeded. Both connect
+writers go through `readConfig` for that reason; `writeCodexConfig` throws instead, which
+`connectCodex` already reports with the `codex mcp add` fallback.
 
 One shared global name would let the second project overwrite the first, hence the hash.
 `codex mcp add` is still offered as a command for anyone who would rather not have a file
@@ -1609,8 +1614,14 @@ follows from that:
   host that was merely suspended. A workspace with **no** stamp at all — one from before the
   heartbeat existed, which is exactly where a live window running an older build hides — is not
   evidence of death: its grace period is seeded on first sight and it is left alone that round.
-  The stamp is forgotten together with the token, or `globalState` keeps a row for a workspace
-  nothing can name.
+  **One consequence to expect on upgrade:** the first window to run this build seeds every
+  historical workspace on the machine, so nothing at all is pruned for the first seven days. That
+  is the seeding rule working rather than a failure, but the section's opening — "only ever grew"
+  — does not lead a reader to expect it.
+  The stamp is dropped when the stone goes down, but **the token is not** — see the tombstone
+  bullet below, and item 97. An earlier draft of this sentence said the two were forgotten
+  together; that was the pre-tombstone design, and left standing it reads as a rule to uphold,
+  pointing a maintainer straight back at the failure item 97 exists to prevent.
 - **The project's own `.codex/config.toml` is repaired but never pruned**, and the asymmetry with
   the global file is deliberate. Pruning exists for `~/.codex/config.toml`, which is named per
   project and only ever grew. A project config has one entry, lives inside the folder, is
@@ -1648,7 +1659,14 @@ follows from that:
   mount point itself disappears (macOS removes `/Volumes/X` on eject) or the project sits below
   the first level. A Linux mount point that survives unmounting as an empty directory leaves a
   project *directly* inside it reading `missing` with a `present` parent. The heartbeat grace
-  period is what actually covers that case, and the tombstone keeps the cost to one reconnect.
+  period **defers** that case rather than covering it: a drive plugged in monthly, or a share
+  mounted for one project a quarter, is unstamped for far longer than a week, which is the normal
+  lifetime of removable storage rather than an edge case. What bounds it is the tombstone — the
+  token survives, so the cost is one `Connect Codex` — and the honest statement is that a
+  long-unmounted project can lose its entry and be told it "no longer exists". A laptop suspended
+  for longer than a week has the same open tail: the heartbeat cannot tick while it is asleep, so
+  a window whose folder was deleted before the suspend can be pruned by whichever window wakes
+  first. Both are bounded the same way and neither is closed.
 - **Every other state keeps the entry**, and that asymmetry is deliberate: a missed entry is
   tidied on a later start, a wrongly deleted one costs somebody a reconnect. A dangling symlink is
   safe from both sides — VS Code's disk provider resolves one to `SymbolicLink | Unknown` and
@@ -1678,9 +1696,13 @@ follows from that:
   no tools, and nothing in the extension can repair it. The blast radius was wider than the
   feature, too — the key went for every dead candidate whether or not a Codex table was ever
   found, so somebody who only uses Claude Code and has no `~/.codex/config.toml` at all lost their
-  token. So the token stays, a stone marks the folder, the scan skips it (which is all the
-  unbounded-scan problem ever needed), and `markWorkspaceAlive` lifts the stone the moment a
-  window serves that folder again.
+  token. So the token stays, a stone marks the folder, the scan skips it, and
+  `markWorkspaceAlive` lifts the stone the moment a window serves that folder again. **The stone
+  bounds only what it buries**, which an earlier draft of this bullet overstated as solving the
+  unbounded scan outright: a folder that still exists and has simply not been opened for a while
+  never gets one, so it is stat'd again on every run for the life of the machine. That is a few
+  hundred parallel, individually capped `stat` calls on a long project history — cheap rather
+  than free, and not the bound the sentence used to promise.
 - **The stone is laid only after a *complete* repair.** The ordering is the load-bearing half — a
   run that lost a lock, or could not read a config that exists, may not have reached the entry
   the token identifies, and tombstoning first takes it out of the scan while it is still there.
@@ -2749,8 +2771,8 @@ No compile error for any of these — they only surface at runtime.
     written to be silent. Put the guard on the tail: `.then(f).catch(…)`.
 94. **Treating "I could not read it" as "it is not there"** → a `catch` that returns `undefined`
     for every read failure makes a run that never opened an existing config report itself
-    complete, so the token identifying an entry in that file is forgotten and the entry becomes
-    unrecognisable for good. Only a clean `FileNotFound` is absence — the same rule the folder
+    complete, so the folder is tombstoned and the scan never looks at that file again, leaving
+    the entry there for good. Only a clean `FileNotFound` is absence — the same rule the folder
     check already follows.
 95. **Inferring that a token is unused from its folder being gone** → the MCP server authorizes
     by token and holds it in memory, and nothing watches the workspace folders, so a window whose
@@ -2765,6 +2787,36 @@ No compile error for any of these — they only surface at runtime.
     while the committed `.mcp.json` a re-clone restores still carries the old one. The repair
     matches by token, so it cannot see that entry to fix it — every call 401s with nothing able
     to recover it. Tombstone the folder and keep the token.
+98. **A heartbeat that follows `workspaceFolders[0]` instead of the identity being served** →
+    removing or reordering the first folder of a multi-root window does not restart the MCP
+    server, so it keeps accepting the token minted for the old folder while the stamp moves to
+    the new one. The old folder then ages past the grace period and another window deletes the
+    entry of a server that is still answering. Stamp the folder the running server was built for.
+99. **Deciding what to delete outside the lock that performs the deletion** → the verdict travels
+    across every await in between, so a workspace restored — or merely reopened elsewhere, which
+    lifts its tombstone — in that window still has its live entry removed, and is then tombstoned
+    so nothing looks again. Resolve the decision inside the lock it authorises.
+100. **`void`-ing a `Memento.update`** → it persists the whole memento through the main process
+    and can reject, so a discarded promise is an unhandled rejection — item 93 one layer down, in
+    the helper written to fix it. It also hides partial persistence: two independent unawaited
+    writes can leave a heartbeat and a tombstone disagreeing. Return the promise, order the two
+    so the half that lands is the safe half, and await it inside a guarded chain.
+101. **Giving the destructive reader the weaker read** → a path that *rebuilds* a config from
+    what it reads must distinguish "no such file" from "I could not read it", or one transient
+    error replaces a global `~/.codex/config.toml`, or a committed team `.mcp.json`, with a
+    single entry of ours — and reports success. The distinction existed (`readConfig`) and was
+    applied only to the repair, where the same failure merely skips a run. Check which caller
+    actually destroys data before deciding which one needs the careful read.
+102. **An unawaited repair from a superseded `_apply`** → `_chain` serialises `_apply` but not
+    the fire-and-forget repair, so two runs can be in flight and the file lock decides the order;
+    the older one can land last and write the port the newer run replaced. That is the stale-port
+    symptom the whole feature exists to remove, and it survives until the next window start.
+    Stamp a generation at `_apply` and check it after every await.
+103. **A `dispose()` that sets no flag** → an `_apply` suspended at `await server.start(...)`
+    pushes into a `_parts` array nobody will dispose again, leaving a loopback HTTP server
+    listening after the window is done with it; and the repair chain can still write the user's
+    config and lay tombstones after deactivation. Set `_disposed` first and check it after each
+    await.
 
 ## Special cases and non-obvious decisions
 

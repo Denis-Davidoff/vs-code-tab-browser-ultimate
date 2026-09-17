@@ -77,24 +77,24 @@ export function workspaceFolder(): vscode.WorkspaceFolder | undefined {
 	return vscode.workspace.workspaceFolders?.[0];
 }
 
-async function readText(uri: vscode.Uri): Promise<string | undefined> {
-	try {
-		return Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
-	} catch {
-		return undefined; // absent
-	}
-}
-
 /**
  * A config read that tells "there is no such file" from "I could not read it".
  *
- * `readText` answers `undefined` for both, which is right for every caller that
- * only wants the contents. It is wrong for the *repair*, because that decides
- * whether a run was complete, and `complete` is what licenses forgetting a dead
- * workspace token. Treating an unreadable file as absent made a window report a
- * complete run, forget the token, and leave the entry it identified in a file
- * nothing could ever recognise it in again — the exact harm `complete` exists
- * to prevent, entered from the one direction it did not cover.
+ * A plain `try/catch` answering `undefined` for both is fine for a caller that
+ * only wants the contents — `mcpCheck.ts` keeps one, because misreading a state
+ * in a report costs a wrong line and nothing more. Every reader in *this* file
+ * acts on what it reads, and for both of them the collapse was harmful:
+ *
+ *   - the **repair** decides whether a run was complete, and `complete` is what
+ *     licenses tombstoning a dead workspace. An unreadable file read as absent
+ *     made a window report a complete run and lay the stone, after which
+ *     `deadWorkspaceTokens` skips that folder for good — so the entry sitting
+ *     in the file nobody managed to open is never looked at again.
+ *   - the **connect** writers rebuild the file from what they read, so the same
+ *     collapse replaced a global `~/.codex/config.toml`, or a committed and
+ *     team-shared `.mcp.json`, with our single entry — deleting every other MCP
+ *     server the user had, and reporting success. That path is the destructive
+ *     one and it had the weaker read of the two, which is the wrong way round.
  *
  * Same rule as `presence()`: only a clean `FileNotFound` proves absence.
  */
@@ -166,12 +166,23 @@ export function codexEntryName(folder: vscode.WorkspaceFolder): string {
  * project has configured.
  */
 export async function readClaudeConfig(uri: vscode.Uri): Promise<Record<string, any> | undefined> {
-	const text = await readText(uri);
-	if (text === undefined || text.trim() === '') {
+	// `readConfig`, not `readText`: this is a *destructive* reader — whatever it
+	// returns is what the file is rebuilt from — so "I could not read it" must
+	// not arrive here as `{}`. It did, and the consequence was total: a
+	// transient read error (EMFILE under load, a hiccup on a network home) made
+	// the write replace a committed, team-shared `.mcp.json` with nothing but
+	// our own entry, and report success. The distinction was already written
+	// next door for the *repair*, where the same failure only costs a skipped
+	// run; the path that rewrites the file had the weaker read of the two.
+	const read = await readConfig(uri);
+	if (read.kind === 'unreadable') {
+		return undefined; // refuse, exactly as for unparsable
+	}
+	if (read.kind === 'absent' || read.text.trim() === '') {
 		return {};
 	}
 	try {
-		const parsed = JSON.parse(text);
+		const parsed = JSON.parse(read.text);
 		return typeof parsed === 'object' && parsed !== null ? parsed : undefined;
 	} catch {
 		return undefined;
@@ -266,7 +277,17 @@ async function writeCodexConfig(
 	server: McpServer,
 ): Promise<void> {
 
-	const existing = await readText(uri) ?? '';
+	// Same rule as `readClaudeConfig`: this rebuilds the file from what it reads,
+	// so an unreadable config must stop the write rather than be read as empty.
+	// `~/.codex/config.toml` is global — treating a read error as "no file"
+	// replaced every MCP server on the machine with our one table, and the
+	// button still said it had succeeded. The throw lands in `connectCodex`'s
+	// catch, which reports it and puts `codex mcp add` on the clipboard.
+	const read = await readConfig(uri);
+	if (read.kind === 'unreadable') {
+		throw new Error('the existing config could not be read');
+	}
+	const existing = read.kind === 'absent' ? '' : read.text;
 	const newline = /\r\n/.test(existing) ? '\r\n' : '\n';
 	const lines = existing === '' ? [] : existing.split(/\r?\n/);
 
@@ -471,7 +492,7 @@ export async function connectClaudeCode(server: McpServer, shared?: SharedPage):
 	if (outcome === 'unparsable') {
 		await vscode.env.clipboard.writeText(claudeCliCommand(server));
 		vscode.window.showErrorMessage(vscode.l10n.t(
-			"`.mcp.json` could not be parsed, so it was left alone — rewriting it would drop the project's other MCP servers. Fix or delete it and try again. The `claude mcp add` command is on your clipboard instead.")
+			"`.mcp.json` could not be read or parsed, so it was left alone — rewriting it would drop the project's other MCP servers. Fix or delete it and try again. The `claude mcp add` command is on your clipboard instead.")
 			+ scopeNote(shared));
 		return;
 	}
@@ -545,7 +566,9 @@ export const seenKeyPrefix = 'mcp.seen:';
  * Seven days rather than hours, deliberately: the entries this cleans up
  * accumulate over months, so nothing is lost by waiting, while a short window
  * would start betting against an extension host that was merely suspended. The
- * heartbeat ticks hourly, so the margin is three orders of magnitude.
+ * heartbeat ticks hourly, so the margin is 168 ticks — stated as a number
+ * because "orders of magnitude" was wrong by one and anyone shortening the
+ * grace period would have trusted a safety factor that never existed.
  */
 export const seenGraceMs = 7 * 24 * 60 * 60 * 1000;
 
@@ -579,12 +602,17 @@ export interface DeadWorkspaces {
 	/**
 	 * Folder URIs to tombstone once the prune has actually landed.
 	 *
-	 * Without this the scan is unbounded: it stats every folder this extension
-	 * has ever opened, on every activation and every `aiBrowser.mcp.*` change,
-	 * for the rest of the machine's life. Tombstoning must wait for a
-	 * **complete** repair, or a run that lost the lock, or could not read a
-	 * config that exists, would write the stone before the entry it identifies
-	 * has been removed — and the scan would then never look at it again.
+	 * It bounds the scan, but only over the folders it actually buries, and the
+	 * distinction is worth stating because the obvious reading is wrong: a
+	 * folder that still *exists* and simply has not been opened for a while
+	 * never gets a stone, so it is stat'd again on every activation and every
+	 * `aiBrowser.mcp.*` change, for the life of the machine. On a long project
+	 * history that is a few hundred `stat` calls per run — parallel and each
+	 * capped at {@link statTimeoutMs}, so it is cheap rather than free.
+	 *
+	 * Tombstoning must wait for a **complete** repair: a run that lost the lock,
+	 * or could not read a config that exists, would lay the stone before the
+	 * entry it identifies is gone — and then nothing ever looks again.
 	 */
 	readonly folders: string[];
 }
@@ -595,16 +623,35 @@ export interface DeadWorkspaces {
  * It also lifts any tombstone: a folder that is being served is by definition
  * back, and leaving the stone would hide it from the scan forever if it were
  * ever to disappear a second time.
+ *
+ * **It returns its promise rather than discarding it**, and every caller either
+ * awaits it inside a guarded chain or attaches its own `catch`. `Memento.update`
+ * can reject — it persists the whole memento through the main process — and a
+ * `void`-ed rejection is an unhandled rejection in the extension host, which is
+ * the same defect as item 93 one layer down, in the helper written to fix it.
  */
-export function markWorkspaceAlive(store: TokenStore, folder: vscode.WorkspaceFolder | undefined): void {
+export async function markWorkspaceAlive(
+	store: TokenStore,
+	folder: vscode.WorkspaceFolder | undefined,
+): Promise<void> {
 	if (!folder) {
 		return; // a window with no folder has no entry anybody could prune
 	}
-	const raw = folder.uri.toString();
-	void store.update(`${seenKeyPrefix}${raw}`, Date.now());
-	if (store.get(`${prunedKeyPrefix}${raw}`) !== undefined) {
-		void store.update(`${prunedKeyPrefix}${raw}`, undefined);
+	if (folder.uri.scheme !== 'file') {
+		// The scan only ever considers `file:` folders, so a stamp for anything
+		// else is a row in `globalState` nothing will ever read — one per remote
+		// workspace, for ever.
+		return;
 	}
+	const raw = folder.uri.toString();
+	// Stone first, stamp second, and each awaited. If only the first lands the
+	// folder is visible to the scan with no stamp, which seeds a fresh grace
+	// period — it self-heals. The other order would leave it stamped but
+	// hidden, which is stale rather than wrong but never corrects itself.
+	if (store.get(`${prunedKeyPrefix}${raw}`) !== undefined) {
+		await store.update(`${prunedKeyPrefix}${raw}`, undefined);
+	}
+	await store.update(`${seenKeyPrefix}${raw}`, Date.now());
 }
 
 /**
@@ -613,9 +660,13 @@ export function markWorkspaceAlive(store: TokenStore, folder: vscode.WorkspaceFo
  * The heartbeat goes, since nothing reads it under a stone; the token stays,
  * for the reason written on {@link prunedKeyPrefix}.
  */
-export function markWorkspacePruned(store: TokenStore, folderUri: string): void {
-	void store.update(`${seenKeyPrefix}${folderUri}`, undefined);
-	void store.update(`${prunedKeyPrefix}${folderUri}`, true);
+export async function markWorkspacePruned(store: TokenStore, folderUri: string): Promise<void> {
+	// The stone goes down first: if the second write is the one that fails, the
+	// folder is tombstoned with a stale stamp, which the scan simply skips. The
+	// other order leaves it visible with no stamp, so the next start seeds a
+	// grace period and the whole seven days begin again.
+	await store.update(`${prunedKeyPrefix}${folderUri}`, true);
+	await store.update(`${seenKeyPrefix}${folderUri}`, undefined);
 }
 
 /**
@@ -629,8 +680,9 @@ export function markWorkspacePruned(store: TokenStore, folderUri: string): void 
  * hand. With the minted tokens in view, an entry can be shown to be ours and
  * its project shown to be gone — and only then is it safe to delete.
  *
- * Four things are deliberately **not** treated as dead, because each of them is
- * a live project that merely cannot be seen from here:
+ * Six things are deliberately **not** treated as dead, because each is a live
+ * project that merely cannot be seen from here — and the list has to be complete,
+ * since it is what anyone auditing "what can stop a deletion" will read:
  *
  *   - a token whose folder is still there, obviously, including this window's;
  *   - the `no-folder` token, which never named a folder to check;
@@ -643,7 +695,13 @@ export function markWorkspacePruned(store: TokenStore, folderUri: string): void 
  *     there is provably gone rather than merely unreachable. It costs a false
  *     negative on a project deleted together with its parent, which is the safe
  *     direction — a missed entry is tidied next time, a wrongly deleted one
- *     costs somebody a reconnect.
+ *     costs somebody a reconnect;
+ *   - a folder some window has stamped within {@link seenGraceMs}. This is the
+ *     one the liveness argument actually rests on, and it was missing from this
+ *     list while being the answer to "a folder can be gone while its server is
+ *     still serving";
+ *   - a folder already under a tombstone: it has been dealt with, and looking
+ *     again is what the stone exists to stop.
  */
 export async function deadWorkspaceTokens(
 	store: TokenStore,
@@ -688,7 +746,7 @@ export async function deadWorkspaceTokens(
 			// evidence either way, and "no evidence" must not read as "dead"
 			// — a window running an older build is exactly the live one we
 			// cannot see. Start its grace period now and leave it alone.
-			void store.update(seenKey, now);
+			await store.update(seenKey, now);
 			continue;
 		}
 		if (now - seen < seenGraceMs) {
@@ -801,18 +859,23 @@ async function folderIsGone(uri: vscode.Uri): Promise<boolean> {
 export interface RepairReport {
 	/** Human-readable names of the files that were rewritten. */
 	readonly files: string[];
-	/** Entries that were ours and were folded into the canonical one. */
-	readonly collapsed: string[];
 	/** Codex entries removed because the project they were written for is gone. */
 	readonly removed: string[];
+	/**
+	 * Folder URIs whose death was decided **under the lock** on this run.
+	 *
+	 * These, and not the caller's own earlier scan, are what may be tombstoned:
+	 * a folder that came back in between is simply absent from this list.
+	 */
+	readonly pruned: string[];
 	/**
 	 * True when every config was actually examined.
 	 *
 	 * False when the server had no URL to write, when another window held a lock
 	 * and that file was skipped, or when a config that exists could not be read.
-	 * The caller must not act on the run as if it were final — forgetting a dead
-	 * token after an incomplete run would strand the entry that token
-	 * identifies, because nothing could ever recognise it again.
+	 * The caller must not act on the run as if it were final — tombstoning after
+	 * an incomplete run takes the folder out of the scan while its entry may
+	 * still be sitting in a file this run never managed to open.
 	 */
 	readonly complete: boolean;
 }
@@ -822,7 +885,6 @@ interface Rewrite {
 	readonly text: string;
 	/** True when anything at all changed and the file is worth writing. */
 	readonly changed: boolean;
-	readonly collapsed: readonly string[];
 	/** Codex tables dropped because the project they name is gone. */
 	readonly removed: readonly string[];
 	/** True when the *repair* changed something, as opposed to the prune. */
@@ -860,9 +922,9 @@ interface Rewrite {
  */
 export async function repairConfigs(
 	server: McpServer,
-	deadTokens: ReadonlySet<string> = new Set(),
+	resolveDead: () => Promise<DeadWorkspaces> = async () => ({ tokens: new Set(), folders: [] }),
 ): Promise<RepairReport> {
-	const report: RepairReport = { files: [], collapsed: [], removed: [], complete: false };
+	const report: RepairReport = { files: [], removed: [], pruned: [], complete: false };
 
 	// Captured before the first await. `server.url` goes undefined when the
 	// server is disposed, and a repair can be waiting on a lock when that
@@ -885,8 +947,28 @@ export async function repairConfigs(
 	 * which of them wins (last start does) but it does keep the two
 	 * read-modify-writes from interleaving into a broken file.
 	 */
-	const apply = async (uri: vscode.Uri, label: string, rewrite: (text: string) => Rewrite): Promise<void> => {
+	const apply = async (
+		uri: vscode.Uri,
+		label: string,
+		rewrite: (text: string) => Rewrite,
+		/**
+		 * Runs inside the lock, before the file is read.
+		 *
+		 * The prune's *decision* belongs here and not at the call site. It used
+		 * to be taken before `repairConfigs` was even called, and the set then
+		 * travelled across every await in between — the lock included. Restore
+		 * a folder in that window (or simply open it in another window, which
+		 * lifts its tombstone) and the stale verdict still deleted the entry of
+		 * a workspace that was live again by the time the write happened, then
+		 * tombstoned it. Deciding under the lock makes the verdict as fresh as
+		 * the write it authorises.
+		 */
+		inside?: () => Promise<void>,
+	): Promise<void> => {
 		const took = await withLock(lockPath(configLockName(uri)), async () => {
+			if (inside) {
+				await inside();
+			}
 			const read = await readConfig(uri);
 			if (read.kind === 'absent') {
 				return; // repairing is not connecting
@@ -908,7 +990,6 @@ export async function repairConfigs(
 			if (result.repaired) {
 				report.files.push(label);
 			}
-			report.collapsed.push(...result.collapsed);
 			report.removed.push(...result.removed);
 		});
 		// Losing a race is not an error: the next start repairs it.
@@ -933,7 +1014,6 @@ export async function repairConfigs(
 		return {
 			text: repaired.text,
 			changed: pruned.changed || repaired.changed,
-			collapsed: repaired.collapsed,
 			removed: pruned.removed,
 			repaired: repaired.changed,
 		};
@@ -942,7 +1022,7 @@ export async function repairConfigs(
 	if (folder) {
 		await apply(claudeConfigUri(folder), '.mcp.json', text => {
 			const repaired = repairClaudeJson(text, endpoint(server, serverName, url));
-			return { ...repaired, removed: [], repaired: repaired.changed };
+			return { text: repaired.text, changed: repaired.changed, removed: [], repaired: repaired.changed };
 		});
 
 		// **The project file is repaired but never pruned**, and the asymmetry
@@ -961,8 +1041,23 @@ export async function repairConfigs(
 			rewriteCodex(serverName, new Set()));
 	}
 
+	// The global config is the only file the prune touches, so it is also the
+	// only one whose lock has to cover the decision. `dead` is filled in by the
+	// hook below, which runs inside that lock; `rewriteCodex` reads it after.
+	let dead: DeadWorkspaces = { tokens: new Set(), folders: [] };
 	const globalName = folder ? codexEntryName(folder) : `${serverName}-window`;
-	await apply(codexGlobalConfigUri(), '~/.codex/config.toml', rewriteCodex(globalName, deadTokens));
+	await apply(
+		codexGlobalConfigUri(),
+		'~/.codex/config.toml',
+		text => rewriteCodex(globalName, dead.tokens)(text),
+		async () => {
+			dead = await resolveDead();
+			// Recorded here rather than after the write, because an absent
+			// config returns early and never reaches it — and a user with no
+			// `~/.codex/config.toml` at all must still get their tombstones,
+			// or the scan stats every dead folder on every start for ever.
+			report.pruned.push(...dead.folders);
+		});
 
 	return { ...report, complete: !busy && !unreadable };
 }

@@ -57,18 +57,55 @@ export class McpLifecycle implements vscode.Disposable {
 	 * open for days would otherwise stamp itself once and then age out of the
 	 * prune's grace period while very much alive — the same one-shot mistake
 	 * the promo build's update check made. The tick only has to be far finer
-	 * than `seenGraceMs`, which it is by three orders of magnitude.
+	 * than `seenGraceMs`; at an hour against seven days the margin is 168.
 	 */
 	private readonly _heartbeat: ReturnType<typeof setInterval>;
+
+	/**
+	 * The folder the running server's token was minted for.
+	 *
+	 * **The heartbeat stamps this, not `workspaceFolder()`, and the difference
+	 * is a live server losing its config entry.** `workspaceFolder()` is
+	 * `workspaceFolders[0]`, which moves: remove or reorder the first folder of
+	 * a multi-root window and it names a different folder — while the server
+	 * keeps running and keeps accepting the token minted for the old one,
+	 * because nothing restarts it (only `aiBrowser.mcp.*` changes call
+	 * `apply()`). The stamp would then follow the new folder, the old one would
+	 * age past the grace period, and another window would delete the entry of a
+	 * server that is still answering. The identity to keep alive is the one the
+	 * server is serving.
+	 */
+	private _servedFolder: vscode.WorkspaceFolder | undefined;
+
+	/**
+	 * Which `_apply` a piece of deferred work belongs to.
+	 *
+	 * `_chain` serialises `_apply` itself, but the repair is deliberately not
+	 * awaited, so two runs can have repairs in flight at once and the file lock
+	 * decides which lands last — which can be the *older* one. Two quick edits
+	 * to `aiBrowser.mcp.port` then leave the superseded port in the config: the
+	 * exact stale-port symptom this whole feature exists to remove, and it
+	 * would sit there until the next window start. The window is real because
+	 * the scan can spend up to `statTimeoutMs` before the repair even begins.
+	 */
+	private _generation = 0;
+
+	/** Set before anything is torn down, so work in flight can stop. */
+	private _disposed = false;
 
 	constructor(
 		private readonly context: vscode.ExtensionContext,
 		private readonly browser: BrowserController,
 		private readonly version: string,
 	) {
-		markWorkspaceAlive(this.context.globalState, workspaceFolder());
-		this._heartbeat = setInterval(
-			() => markWorkspaceAlive(this.context.globalState, workspaceFolder()), 60 * 60 * 1000);
+		// Before the first `_apply` there is no served identity yet, so the
+		// first folder is the best available guess — and at that moment it is
+		// also the one `_workspaceToken` is about to key on.
+		void markWorkspaceAlive(this.context.globalState, workspaceFolder()).catch(() => { });
+		this._heartbeat = setInterval(() => {
+			void markWorkspaceAlive(
+				this.context.globalState, this._servedFolder ?? workspaceFolder()).catch(() => { });
+		}, 60 * 60 * 1000);
 	}
 
 	public get state(): McpState {
@@ -126,8 +163,10 @@ export class McpLifecycle implements vscode.Disposable {
 
 		this._setState({ kind: 'starting' });
 
+		const generation = ++this._generation;
 		const folder = workspaceFolder();
-		markWorkspaceAlive(this.context.globalState, folder);
+		this._servedFolder = folder;
+		await markWorkspaceAlive(this.context.globalState, folder).catch(() => { });
 		const token = this._workspaceToken();
 		const server = new McpServer(
 			this.browser, token, folder?.name, this.version, this._sessionKinds);
@@ -137,6 +176,15 @@ export class McpLifecycle implements vscode.Disposable {
 		} catch (err) {
 			server.dispose();
 			this._setState({ kind: 'failed', error: err instanceof Error ? err.message : String(err) });
+			return;
+		}
+
+		if (this._disposed || generation !== this._generation) {
+			// Disposed, or superseded, while `start` was in flight. Pushing into
+			// `_parts` now would hand the server to an array nobody disposes
+			// again, leaving a loopback HTTP server listening after the window
+			// is done with it.
+			server.dispose();
 			return;
 		}
 
@@ -163,17 +211,32 @@ export class McpLifecycle implements vscode.Disposable {
 		// config write (`writeText` is the one unguarded call, and `withLock`
 		// rethrows it) escape as an unhandled rejection in the extension host —
 		// on the one path written to be silent.
-		void deadWorkspaceTokens(this.context.globalState, token)
-			.catch(() => ({ tokens: new Set<string>(), folders: [] as string[] }))
-			.then(async dead => {
-				const report = await repairConfigs(server, dead.tokens);
+		//
+		// **The scan is handed over as a function, not as a result.**
+		// `repairConfigs` runs it inside the lock it is about to write under, so
+		// the verdict cannot go stale between deciding and deleting: a folder
+		// restored in that window — or merely opened in another window, which
+		// lifts its tombstone — is simply not in the set any more. Passing the
+		// resolved set instead let an older verdict delete an entry that had
+		// become live again, and then tombstone it.
+		// The scan's own failure degrades to "prune nothing", never to "repair
+		// nothing": a stat that threw must not cost the window its port fix.
+		void repairConfigs(server, () => deadWorkspaceTokens(this.context.globalState, token)
+			.catch(() => ({ tokens: new Set<string>(), folders: [] as string[] })))
+			.then(async report => {
+				if (this._disposed || generation !== this._generation) {
+					// A newer `_apply`, or a teardown, happened while this ran.
+					// Its repair is the one that should be believed, and the
+					// tombstones belong to whichever scan actually decided them.
+					return;
+				}
 				// Only after a complete run: a repair that lost a lock, or could
 				// not read a config that exists, may not have reached the entry
-				// this token identifies, and tombstoning it first would take it
-				// out of the scan while the entry is still there.
+				// this token identifies, and laying the stone first would take
+				// it out of the scan while the entry is still there.
 				if (report.complete) {
-					for (const folder of dead.folders) {
-						markWorkspacePruned(this.context.globalState, folder);
+					for (const folder of report.pruned) {
+						await markWorkspacePruned(this.context.globalState, folder);
 					}
 				}
 				this._reportRepair(report);
@@ -270,6 +333,8 @@ export class McpLifecycle implements vscode.Disposable {
 	}
 
 	public dispose(): void {
+		// Before anything is torn down, so work already in flight sees it.
+		this._disposed = true;
 		clearInterval(this._heartbeat);
 		for (const part of this._parts) {
 			part.dispose();

@@ -154,9 +154,11 @@ export async function checkConnection(server: McpServer, browser: BrowserControl
 	if (strangers.length) {
 		// `codexStrangers` compares against *this window's* token only, so this
 		// list is several groups at once: entries of other live projects and
-		// windows, entries whose token this machine never minted, and entries
-		// whose token it minted but has since forgotten. The message may not
-		// collapse them, and two earlier wordings did. Saying they "could not
+		// windows, and entries whose token this machine has no record of — one
+		// it never minted, or one lost to a `globalState` reset. (Nothing
+		// *forgets* a token any more; an earlier version of this comment said
+		// so, from the design the tombstone replaced.) The message may not
+		// collapse the groups, and two earlier wordings did. Saying they "could not
 		// be matched to a project on this machine" is false for the first group
 		// and invites deleting a working neighbour's server. Saying the dead
 		// ones are "removed automatically at startup, so these are…" turns a
@@ -167,7 +169,7 @@ export async function checkConnection(server: McpServer, browser: BrowserControl
 		// State what is known — the token is not this window's — and nothing
 		// more.
 		lines.push('', vscode.l10n.t(
-			"Codex has {0} entries that look like ours but do not carry this window's token ({1}). They may belong to other projects or windows, or to a workspace this machine no longer has a record of. They are left alone, since one of them may be in use — remove any you no longer need with `codex mcp remove <name>`.",
+			"Codex has {0} entries that look like ours but do not carry this window's token ({1}). They may belong to other projects or windows, or to a workspace this machine no longer has a record of. Nothing here removes one while it may be in use; an entry whose project is provably gone is cleaned up on its own after a week. Remove any you no longer need with `codex mcp remove <name>`.",
 			String(strangers.length), strangers.join(', ')));
 	}
 
