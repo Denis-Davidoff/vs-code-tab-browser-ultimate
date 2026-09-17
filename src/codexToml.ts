@@ -36,7 +36,7 @@ export interface CodexEntry {
 	 * Line index just past the last key of this table.
 	 *
 	 * Deliberately *not* the next table header: a comment sitting above the next
-	 * table belongs to that table, and swallowing it into ours would delete
+	 * table belongs to that table, and covering it into ours would delete
 	 * someone else's note on every rewrite.
 	 */
 	readonly endLine: number;
@@ -190,13 +190,6 @@ function tableName(header: string): string {
 }
 
 /**
- * Every `[mcp_servers.*]` table in `text`, in file order.
- *
- * Lines inside an unterminated multi-line value belong to the value that opened
- * them — a `[mcp_servers.…]` sitting inside somebody's `instructions = """…"""`
- * is prose, and treating it as a table would rewrite their config.
- */
-/**
  * Whether the document ends inside a value that was never closed.
  *
  * **A file that answers true must not be rewritten.** `codexEntries` keeps a
@@ -204,7 +197,7 @@ function tableName(header: string): string {
  * a multi-line array or triple-quoted string belongs to the table it started
  * in. It is unsafe as a *deletion* range: an unbalanced `[` never brings the
  * depth back to zero, so that table's `endLine` runs to end of file and every
- * table below it falls inside it. Pruning one dead entry then deleted the
+ * table below it falls inside it. Pruning one stale entry then deleted the
  * user's whole global Codex config — every other MCP server and this window's
  * own live entry — while reporting the one name it meant to remove.
  *
@@ -231,6 +224,13 @@ export function codexUnterminated(text: string): boolean {
 	return quote !== undefined || depth > 0;
 }
 
+/**
+ * Every `[mcp_servers.*]` table in `text`, in file order.
+ *
+ * Lines inside an unterminated multi-line value belong to the value that opened
+ * them — a `[mcp_servers.…]` sitting inside somebody's `instructions = """…"""`
+ * is prose, and treating it as a table would rewrite their config.
+ */
 export function codexEntries(text: string): CodexEntry[] {
 	const lines = text.split(/\r?\n/);
 	const entries: CodexEntry[] = [];

@@ -208,7 +208,7 @@ function rootTable(name: string): string {
 	return dot === -1 ? name : name.slice(0, dot);
 }
 
-/* ------------------------------------------------------------- pruning the dead */
+/* ------------------------------------------------------------- pruning the missing */
 
 /**
  * What {@link removeCodexTables} did.
@@ -223,6 +223,14 @@ export interface Prune {
 	readonly changed: boolean;
 	/** Root table names that were removed. */
 	readonly removed: readonly string[];
+	/**
+	 * True when a table this was *asked* to remove was left in place.
+	 *
+	 * A caller that completion markers on the strength of a completed run has to know
+	 * the difference between "nothing to do" and "I declined": both leave the
+	 * file untouched, and only the second means the entry is still there.
+	 */
+	readonly refused: boolean;
 }
 
 /**
@@ -234,12 +242,12 @@ export interface Prune {
  * `Check Connection` used to do no more than list them and ask the user to run
  * `codex mcp remove` by hand.
  *
- * **The caller decides which tokens are dead, and that division is the whole
+ * **The caller decides which tokens are missing, and that division is the whole
  * safety argument.** This function only asks the one question it can answer
  * from the file — which tables carry which token — through `codexOurTables`,
  * the *same* predicate the repair uses, so a table can never be pruned by one
  * rule and rewritten by another. Whether a token belongs to a project that is
- * really gone is a filesystem question, answered in `deadWorkspaceTokens`.
+ * really gone is a filesystem question, answered in `missingWorkspaceTokens`.
  *
  * A token is admissible here only because it is one **we minted ourselves**:
  * `globalState` is shared across every window of this extension, so it holds
@@ -250,47 +258,47 @@ export interface Prune {
  *
  * Entries carrying a token we never minted are still none of our business: a
  * config synced from another machine, or one predating a `globalState` reset,
- * looks exactly like a dead entry from here and may be perfectly live.
+ * looks exactly like a stale entry from here and may be perfectly live.
  *
  * **`keepToken` is required, and it is belt and braces on purpose.**
- * `deadWorkspaceTokens` already refuses to declare this window's own token
- * dead, so in normal operation the guard never fires. It is here because this
+ * `missingWorkspaceTokens` already refuses to declare this window's own token
+ * missing, so in normal operation the guard never fires. It is here because this
  * is the one function in the file that *deletes*, and a caller that assembled
  * the set some other way — a future window registry, a test — would otherwise
  * quietly wipe the config of the window it is running in. Required rather than
  * optional so it cannot be left out by accident, which is how an optional
  * caller argument silently changed whose tab a tool acted on once already.
  */
-export function codexDeadTables(
+export function codexRetiredTables(
 	entries: readonly CodexEntry[],
-	deadTokens: ReadonlySet<string>,
+	missingTokens: ReadonlySet<string>,
 	keepToken: string,
 ): string[] {
-	if (deadTokens.size === 0) {
+	if (missingTokens.size === 0) {
 		return [];
 	}
 
-	const dead = new Set<string>();
-	for (const token of deadTokens) {
+	const retired = new Set<string>();
+	for (const token of missingTokens) {
 		if (token === keepToken) {
 			continue;
 		}
 		for (const name of codexOurTables(entries, token)) {
-			dead.add(name);
+			retired.add(name);
 		}
 	}
 
-	// A table carrying our own token is never dead, whatever else it carries:
+	// A table carrying our own token is never missing, whatever else it carries:
 	// one entry can hold two tokens only if somebody's file is already odd, and
-	// deleting the live one to honour a dead one is the wrong way to resolve it.
+	// removing the live one to honour a retired one is the wrong way to resolve it.
 	for (const name of codexOurTables(entries, keepToken)) {
-		dead.delete(name);
+		retired.delete(name);
 	}
 
 	// In file order, sub-tables included: a `[mcp_servers.<name>.http_headers]`
 	// left behind would make TOML recreate its parent as a second, urlless
 	// server — the same trap the rename path has to avoid.
-	return entries.map(entry => entry.name).filter(name => dead.has(name));
+	return entries.map(entry => entry.name).filter(name => retired.has(name));
 }
 
 /**
@@ -311,7 +319,7 @@ export function removeCodexTables(
 	entries: readonly CodexEntry[],
 	names: readonly string[],
 ): Prune {
-	const unchanged: Prune = { text, changed: false, removed: [] };
+	const unchanged: Prune = { text, changed: false, removed: [], refused: false };
 	if (names.length === 0) {
 		return unchanged;
 	}
@@ -330,7 +338,7 @@ export function removeCodexTables(
 	//
 	// It has to be checked against the *text*, not against the other entries:
 	// once a value is left open the parser stops recognising headers at all, so
-	// the tables about to be destroyed are not in `entries` to be compared with.
+	// the tables about to be removed are not in `entries` to be compared with.
 	// A bare `[table]` line inside a range we are deleting is the fingerprint.
 	// (An array element such as `["a"],` does not match — the pattern demands
 	// the header be the whole line.) The leaf-module rule forbids importing the
@@ -338,16 +346,32 @@ export function removeCodexTables(
 	// *value* import would stop `npm test` loading this file; `rewriteCodex`
 	// asks that question too, and this is the guard that does not depend on the
 	// caller remembering to.
-	const header = /^\s*\[\[?[^\]]+\]\]?\s*(#.*)?$/;
-
+	// **Refuse per entry, not per call.** This used to `return unchanged` for the
+	// whole invocation, so one odd table stood off the prune of every other missing
+	// table in the file — and, because a refusal leaves no trace in `removed`,
+	// that showed up as the feature quietly doing nothing.
+	const refused = new Set<string>();
 	for (const entry of entries) {
 		if (!wanted.has(entry.name)) {
 			continue;
 		}
 		for (let line = entry.firstLine + 1; line < entry.endLine; line++) {
-			if (header.test(lines[line])) {
-				return unchanged;
+			if (looksLikeHeader(lines[line])) {
+				// The whole root goes, sub-tables with it: half a table removed
+				// is worse than none.
+				refused.add(rootTable(entry.name));
+				break;
 			}
+		}
+	}
+	if (refused.size > 0) {
+		for (const name of [...wanted]) {
+			if (refused.has(rootTable(name))) {
+				wanted.delete(name);
+			}
+		}
+		if (wanted.size === 0) {
+			return { ...unchanged, refused: true };
 		}
 	}
 
@@ -377,9 +401,13 @@ export function removeCodexTables(
 		next += newline;
 	}
 
+	// `wanted`, not `names`: an entry stood off above is not one we removed, and
+	// reporting it would put a name in the confirmation for a table still in the
+	// file — the shape that let a completion marker follow a deletion that never happened.
+	const removed = [...new Set([...wanted].map(rootTable))];
 	return next === text
-		? unchanged
-		: { text: next, changed: true, removed: [...new Set(names.map(rootTable))] };
+		? { ...unchanged, refused: refused.size > 0 }
+		: { text: next, changed: true, removed, refused: refused.size > 0 };
 }
 
 /**
@@ -390,11 +418,50 @@ export function removeCodexTables(
  * ranges come from the parser rather than from `text.includes('[mcp_servers.…]')`,
  * because `[mcp_servers.ai-browser] # ours` is the same table.
  */
+/**
+ * Whether a line is, on its own, a table header.
+ *
+ * Shared by both line-range deleters, because the rule they enforce with it is
+ * the same one: **a range being removed must not contain another table.** The
+ * pattern stays permissive on purpose — its two failure directions are not
+ * symmetric. A false positive skips one prune; a false negative empties
+ * somebody's config. So a line that merely *looks* like a header stands the
+ * deletion off, including the last element of a nested array written without a
+ * trailing comma, which is legal TOML and does match.
+ */
+function looksLikeHeader(line: string): boolean {
+	return /^\s*\[\[?[^\]]+\]\]?\s*(#.*)?$/.test(line);
+}
+
+/** Whether any range would take a table header that is not its own first line. */
+function rangeCoversATable(
+	lines: readonly string[],
+	ranges: readonly (readonly [number, number])[],
+): boolean {
+	return ranges.some(([from, to]) => {
+		for (let line = from + 1; line < to; line++) {
+			if (looksLikeHeader(lines[line])) {
+				return true;
+			}
+		}
+		return false;
+	});
+}
+
 export function spliceCodexTables(
 	lines: readonly string[],
 	ranges: readonly (readonly [number, number])[],
 	table: readonly string[],
 ): string[] {
+	// The same standing-off rule `removeCodexTables` applies, and it belongs here
+	// too rather than only in its callers. Both of them do test the document with
+	// `codexUnterminated` first, so today this cannot fire — which is the point:
+	// the rule was written as "refuse such a range", and a guard that lives only
+	// in the caller is one refactor away from being gone.
+	if (rangeCoversATable(lines, ranges)) {
+		return [...lines];
+	}
+
 	const sorted = [...ranges].sort((a, b) => a[0] - b[0]);
 
 	if (sorted.length === 0) {

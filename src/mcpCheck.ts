@@ -157,10 +157,10 @@ export async function checkConnection(server: McpServer, browser: BrowserControl
 		// windows, and entries whose token this machine has no record of — one
 		// it never minted, or one lost to a `globalState` reset. (Nothing
 		// *forgets* a token any more; an earlier version of this comment said
-		// so, from the design the tombstone replaced.) The message may not
+		// so, from the design the completion marker replaced.) The message may not
 		// collapse the groups, and two earlier wordings did. Saying they "could not
 		// be matched to a project on this machine" is false for the first group
-		// and invites deleting a working neighbour's server. Saying the dead
+		// and invites deleting a working neighbour's server. Saying the missing
 		// ones are "removed automatically at startup, so these are…" turns a
 		// best-effort prune into a premise — and it is exactly the entries the
 		// prune deliberately does not touch (a folder deleted together with its
@@ -168,7 +168,7 @@ export async function checkConnection(server: McpServer, browser: BrowserControl
 		// inside its grace period) that are most likely to be sitting here.
 		// State what is known — the token is not this window's — and nothing
 		// more. A third wording broke that rule from the other side by promising
-		// the dead ones are "cleaned up on its own after a week": true only for
+		// the missing ones are "cleaned up on its own after a week": true only for
 		// a token this machine minted, and the two groups most likely to be
 		// listed here are exactly the ones no week will ever clean — an entry
 		// whose token `globalState` has no record of is never even a candidate,

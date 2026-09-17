@@ -163,7 +163,7 @@ suite('grantProposedApi', () => {
 		assert.ok(!text.includes(',,'), 'no double comma');
 	});
 
-	test('a comment inside the array does not swallow the appended id', () => {
+	test('a comment inside the array does not cover the appended id', () => {
 		const source = '{\n\t"enable-proposed-api": [\n\t\t"other.ext" // theirs\n\t]\n}\n';
 		const { text } = grantProposedApi(source, ID);
 		// Appended after the element, before the comment — not after the comment,

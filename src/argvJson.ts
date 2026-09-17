@@ -279,7 +279,7 @@ export function grantProposedApi(source: string, extensionId: string): GrantResu
 	const last = entries[entries.length - 1];
 	// Append immediately after the last element rather than before the closing
 	// bracket. Anything between the two may be a trailing comma (which would
-	// make ours a second one) or a line comment (which would swallow the id).
+	// make ours a second one) or a line comment (which would cover the id).
 	const insertAt = last ? last.endsAt : range.open + 1;
 	const addition = last ? `, ${entry}` : entry;
 	return {

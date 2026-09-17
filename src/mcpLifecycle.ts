@@ -9,8 +9,8 @@ import type { ClientKind } from './mcpProtocol';
 import { portOffset, portOrder } from './mcpPort';
 import { McpServer } from './mcpServer';
 import {
-	deadWorkspaceTokens, emptyScan, markWorkspaceAlive, markWorkspacePruned, registerWithVsCode,
-	repairConfigs, stillDead, tokenKeyPrefix, workspaceFolder, type RepairReport,
+	missingWorkspaceTokens, emptyScan, markWorkspaceAlive, markWorkspaceHandled, registerWithVsCode,
+	repairConfigs, stillMissing, tokenKeyPrefix, workspaceFolder, type RepairReport,
 } from './mcpSetup';
 import { confirm } from './notify';
 import { generateUuid } from './uuid';
@@ -85,8 +85,10 @@ export class McpLifecycle implements vscode.Disposable {
 	 * decides which lands last — which can be the *older* one. Two quick edits
 	 * to `aiBrowser.mcp.port` then leave the superseded port in the config: the
 	 * exact stale-port symptom this whole feature exists to remove, and it
-	 * would sit there until the next window start. The window is real because
-	 * the scan can spend up to `statTimeoutMs` before the repair even begins.
+	 * would sit there until the next window start. The window is real: the survey
+	 * can spend up to `2 * statTimeoutMs` on a single stalled folder — two
+	 * sequential `presence` calls — and the two project configs are repaired
+	 * before it even runs.
 	 */
 	private _generation = 0;
 
@@ -222,7 +224,7 @@ export class McpLifecycle implements vscode.Disposable {
 
 		// Repair runs after the port is known and must never be able to hold up
 		// activation, so it is not awaited and cannot throw into this path. The
-		// dead-token scan is part of the same chain for the same reason: it
+		// missing-workspace scan is part of the same chain for the same reason: it
 		// stats a handful of folders, which is cheap but not instant.
 		//
 		// **The guard is a trailing `catch`, not the second argument of `then`,
@@ -231,29 +233,35 @@ export class McpLifecycle implements vscode.Disposable {
 		// `onFulfilled` itself. This chain used to read
 		// `repairConfigs(server).then(report => …, () => { })`, where the repair
 		// *was* `p` and the handler covered it; moving the repair inside the
-		// callback silently turned that handler into dead code and let a failed
+		// callback silently turned that handler into unreachable code and let a failed
 		// config write (`writeText` is the one unguarded call, and `withLock`
 		// rethrows it) escape as an unhandled rejection in the extension host —
 		// on the one path written to be silent.
 		//
-		// **The scan is handed over as a function, not as a result.**
-		// `repairConfigs` runs it inside the lock it is about to write under, so
-		// the verdict cannot go stale between deciding and deleting: a folder
-		// restored in that window — or merely opened in another window, which
-		// lifts its tombstone — is simply not in the set any more. Passing the
-		// resolved set instead let an older verdict delete an entry that had
-		// become live again, and then tombstone it.
+		// **The scan is handed over as a pair of functions, not as a result**, and
+		// the two run in different places on purpose. The survey stats the
+		// filesystem, so it runs outside every lock; `confirm` re-reads
+		// `globalState` alone and runs *under* the config lock, immediately
+		// before the write. Passing a resolved set instead let an older verdict
+		// delete an entry that had become live again (item 99); running the
+		// survey under the lock exhausted every sibling window's one-second
+		// acquisition budget (item 104). What `confirm` can catch is another
+		// window stamping the folder alive — a folder restored on disk and not
+		// yet opened by anybody leaves no signal either way.
 		// The scan's own failure degrades to "prune nothing", never to "repair
 		// nothing": a stat that threw must not cost the window its port fix.
 		void repairConfigs(
 			server,
 			{
 				// Slow half, run outside every lock.
-				scan: () => deadWorkspaceTokens(this.context.globalState, token)
+				scan: () => missingWorkspaceTokens(this.context.globalState, token)
 					.catch(() => emptyScan()),
 				// Fast half, run under the lock immediately before the write.
-				confirm: surveyed => stillDead(this.context.globalState, surveyed),
+				confirm: surveyed => stillMissing(this.context.globalState, surveyed),
 			},
+			// The folder this run's token was minted for, resolved before the
+			// first await and handed on rather than re-derived.
+			folder,
 			// Asked under the lock, with the bytes ready and before the write.
 			// The guard below runs only after `repairConfigs` resolves, which
 			// cannot stop an older run that took the lock late from writing a
@@ -263,16 +271,16 @@ export class McpLifecycle implements vscode.Disposable {
 				if (this._disposed || generation !== this._generation) {
 					// A newer `_apply`, or a teardown, happened while this ran.
 					// Its repair is the one that should be believed, and the
-					// tombstones belong to whichever scan actually decided them.
+					// completion markers belong to whichever scan actually decided them.
 					return;
 				}
 				// Only after a complete run: a repair that lost a lock, or could
 				// not read a config that exists, may not have reached the entry
-				// this token identifies, and laying the stone first would take
+				// this token identifies, and laying the marker first would take
 				// it out of the scan while the entry is still there.
 				if (report.complete) {
 					for (const folder of report.pruned) {
-						await markWorkspacePruned(
+						await markWorkspaceHandled(
 							this.context.globalState, folder, report.prunedAt);
 					}
 				}
