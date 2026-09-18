@@ -94,9 +94,17 @@ export function readManifestVersion(body: unknown): string | undefined {
 /**
  * Whether enough time has passed since the last look at the repository.
  *
- * Ten windows opened in a morning are one request, not ten. A stamp in the
- * future — a clock that moved, a machine restored from a backup — is treated as
- * due rather than as six hours of silence that could last indefinitely.
+ * It bounds checks that *reached* GitHub and nothing else, so it is weaker than
+ * it looks in two directions, both accepted: the caller stamps only a request
+ * that got an answer, so an offline machine retries on every tick; and windows
+ * that start together all read the stamp before any of them writes it, so a
+ * restored session of ten windows is ten requests. An earlier version of this
+ * comment claimed the opposite — "ten windows in a morning are one request" —
+ * which is the sentence CLAUDE.md now names as wrong.
+ *
+ * A stamp in the future — a clock that moved, a machine restored from a backup
+ * — is treated as due rather than as six hours of silence that could last
+ * indefinitely.
  */
 export function dueForCheck(lastCheck: unknown, now: number, intervalMs: number): boolean {
 	const last = Number(lastCheck ?? 0);

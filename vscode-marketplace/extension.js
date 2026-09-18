@@ -134,6 +134,60 @@ function installedVersion() {
 	return typeof version === 'string' ? version : undefined;
 }
 
+/**
+ * What a version may look like, and nothing else.
+ *
+ * **A security boundary, not tidiness**, and the same one the full build applies in
+ * `src/updateVersion.ts` — written twice because these two extensions cannot share code, exactly
+ * like `isNewer` below. The value arrives from the network and is interpolated into a
+ * notification body, and VS Code renders a notification body as *linked text* whose links are
+ * opened with `allowCommands: true`. So a `version` of
+ * `1.0.0 [Install now](command:workbench.action.terminal.sendSequence?…)` renders as a button
+ * that runs a command on one click, and `isNewer` is no defence: it stops at the first field
+ * that differs and never looks at the rest.
+ *
+ * Both sources are checked. Open VSX is a third party, and the raw manifest's trust boundary is
+ * a GitHub name rather than a signature — a repository that is renamed or deleted frees that
+ * name for anybody to re-register, while every installed copy goes on polling it.
+ */
+const VERSION_SHAPE = /^\d+(\.\d+){0,3}([-+][0-9A-Za-z.-]+)?$/;
+
+/**
+ * The version out of a fetched document, or `undefined` when it is not one.
+ *
+ * @param {unknown} value
+ * @returns {string | undefined}
+ */
+function readVersion(value) {
+	if (typeof value !== 'string') {
+		return undefined;
+	}
+	const trimmed = value.trim();
+	return VERSION_SHAPE.test(trimmed) ? trimmed : undefined;
+}
+
+/**
+ * A download URL we are willing to hand to `openExternal`, or `undefined`.
+ *
+ * `files.download` comes out of the registry's own reply, so it is checked rather than trusted:
+ * https only, and only from the registry we asked. Anything else falls back to {@link VSIX_URL},
+ * which is a constant in this file.
+ *
+ * @param {unknown} value
+ * @returns {string | undefined}
+ */
+function readDownload(value) {
+	if (typeof value !== 'string') {
+		return undefined;
+	}
+	try {
+		const url = new URL(value);
+		return url.protocol === 'https:' && url.hostname === 'open-vsx.org' ? url.toString() : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 /** @param {string} url */
 async function getJson(url) {
 	const controller = new AbortController();
@@ -160,8 +214,9 @@ async function getJson(url) {
 async function fetchLatestRelease() {
 	try {
 		const info = await getJson(OPEN_VSX_API);
-		if (typeof info?.version === 'string') {
-			return { version: info.version, download: info.files?.download ?? VSIX_URL, source: 'Open VSX' };
+		const version = readVersion(info?.version);
+		if (version) {
+			return { version, download: readDownload(info?.files?.download) ?? VSIX_URL, source: 'Open VSX' };
 		}
 	} catch {
 		// Offline, blocked by a proxy, or the registry is down. The repository still answers.
@@ -169,8 +224,9 @@ async function fetchLatestRelease() {
 
 	try {
 		const manifest = await getJson(RAW_MANIFEST_URL);
-		if (typeof manifest?.version === 'string') {
-			return { version: manifest.version, download: VSIX_URL, source: 'GitHub' };
+		const version = readVersion(manifest?.version);
+		if (version) {
+			return { version, download: VSIX_URL, source: 'GitHub' };
 		}
 	} catch {
 		// Nothing reachable. Nothing to say.
@@ -186,10 +242,13 @@ async function fetchLatestRelease() {
  */
 function cachedRelease(context) {
 	const cached = context.globalState.get(LATEST_RELEASE_KEY);
-	if (cached && typeof cached === 'object' && typeof cached.version === 'string') {
+	// Re-checked on the way out, not only on the way in: this row may have been written by a
+	// build that predates the check above, and it is read on every window start for ever.
+	const version = readVersion(cached && typeof cached === 'object' ? cached.version : undefined);
+	if (version) {
 		return {
-			version: cached.version,
-			download: typeof cached.download === 'string' ? cached.download : VSIX_URL,
+			version,
+			download: readDownload(cached.download) ?? VSIX_URL,
 			source: typeof cached.source === 'string' ? cached.source : 'Open VSX',
 		};
 	}

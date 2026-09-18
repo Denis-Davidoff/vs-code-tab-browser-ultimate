@@ -207,7 +207,18 @@ class UpdateWatch implements vscode.Disposable {
 		// that changes without either event above — closing the split, or
 		// switching the other group to a file. Without this the notice waits
 		// for the hourly tick instead.
+		//
+		// **Both events are needed, and `onDidChangeTabGroups` alone was the
+		// wrong one for the case named above.** `$acceptTabOperation` in the
+		// extension host fires `_onDidChangeTabs` for a tab opening, closing or
+		// being updated — which is what switching the visible tab *within* a
+		// group is — while `_onDidChangeTabGroups` fires only when a group is
+		// opened or closed or its own DTO changes (`isActive`, `viewColumn`).
+		// So a browser tab that stops being visible in a group that is *not*
+		// focused fires neither that event nor `onDidChangeActiveBrowserTab`,
+		// which was already `undefined`.
 		this._subs.push(vscode.window.tabGroups.onDidChangeTabGroups(() => this._deliver()));
+		this._subs.push(vscode.window.tabGroups.onDidChangeTabs(() => this._deliver()));
 	}
 
 	/**
@@ -324,10 +335,21 @@ class UpdateWatch implements vscode.Disposable {
 		}
 	}
 
-	/** Opens a link, and says so in the status bar if it could not be opened. */
+	/**
+	 * Opens a link, and says so in the status bar if it could not be opened.
+	 *
+	 * The *returned* `false` is checked as well as a throw: `openExternal`
+	 * resolves to whether the URI was actually opened, and only a throw was
+	 * being treated as failure — so on any host that reports a refusal that way
+	 * the click did nothing at all and the fallback below, which exists so that
+	 * a failure is visible, never ran.
+	 */
 	private async _open(url: string): Promise<void> {
 		try {
-			await vscode.env.openExternal(vscode.Uri.parse(url));
+			if (await vscode.env.openExternal(vscode.Uri.parse(url))) {
+				return;
+			}
+			throw new Error('the editor declined to open it');
 		} catch {
 			// The link is the whole answer to what the user just clicked, so a
 			// failure has to be visible — through the status bar, since a

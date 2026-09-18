@@ -3055,6 +3055,19 @@ No compile error for any of these — they only surface at runtime.
     the repository's releases page, which has zero releases and zero tags because
     `PUBLISHING.md` never cuts one. It typechecks, it opens, and it is empty. A link is only as
     good as the step that fills it.
+128. **Subscribing to `onDidChangeTabGroups` for something that is a *tab* change** →
+    `$acceptTabOperation` fires `_onDidChangeTabs` when a tab opens, closes or is updated, and
+    switching which tab is visible inside a group is an update; `_onDidChangeTabGroups` fires
+    only when a group opens or closes or its own DTO changes (`isActive`, `viewColumn`). So a
+    browser tab that stops being visible in a group that is *not* focused fires neither that
+    event nor `onDidChangeActiveBrowserTab`, which was already `undefined`. Subscribe to both.
+129. **Checking only for a throw from `openExternal`** → it resolves to *whether* the URI was
+    opened, so a refusal reported that way reads as success and the fallback that exists to make
+    the failure visible never runs. The click does nothing and says nothing.
+130. **A validated boundary in one of two builds that read the same source** → this repository
+    ships two extensions that cannot share code, so a rule written for one leaves the other
+    open on the identical input. The convention already recorded for `codexOurTables` applies to
+    security rules too: write it twice, and say in both places that it is written twice.
 
 ## Special cases and non-obvious decisions
 
@@ -3459,7 +3472,13 @@ at the first field that *differs*, answers "newer" on the leading `99`, and neve
 payload. The trust boundary here is a **GitHub name, not a signature** — a repository that is
 renamed or deleted frees that name for anybody to re-register, and every installed copy goes on
 polling it every six hours with no user action — so `readManifestVersion` refuses anything that
-is not a plain version (`versionShape`). Unlike shipping a bad VSIX this needs no publish, no
+is not a plain version (`versionShape`). **The promo build applies the same rule**
+(`readVersion` / `VERSION_SHAPE` in [vscode-marketplace/extension.js](vscode-marketplace/extension.js)),
+because it reads that same manifest as its fallback and renders the answer into a toast of its
+own — a boundary enforced in one of two builds that share a source is not a boundary. It also
+checks `files.download` from the registry's reply (`readDownload`: https, and only
+`open-vsx.org`) before handing it to `openExternal`, and re-checks its cached row on the way out,
+since that row may have been written by a build that predates the check. Unlike shipping a bad VSIX this needs no publish, no
 signature and no install step, which is why the check is at the boundary rather than at the use.
 
 **The two builds must not disagree about which of two versions is newer**, so `isNewerVersion`
@@ -3480,8 +3499,10 @@ releases page was a dead end.** It was written that way and looked right; `gh re
 `git tag` are both **empty**, and `PUBLISHING.md`'s six release steps never cut a release — so
 the primary action of the one toast this whole feature exists to show opened a page with nothing
 on it. The raw `main` URL is what the README already documents as *the* download and what the
-promo build opens, so all three now name one artifact. Check that before changing it: a link is
-only as good as the process that populates it.
+promo build falls back to, so all three now name one artifact. Check that before changing it: a
+link is only as good as the process that populates it. (Precisely: the promo's *update* toast
+opens the pinned Open VSX file when the registry answered, and this URL only when it did not —
+both are real artifacts, so the divergence is in which copy, never in which release.)
 
 Four precautions keep it from becoming the failure recorded under
 [A notification pauses the built-in browser](#a-notification-pauses-the-built-in-browser):
@@ -3492,8 +3513,9 @@ Four precautions keep it from becoming the failure recorded under
 - **The first look is 10s after activation**, the same delay and the same reason as the promo
   build: a window that restores a browser tab must not be greeted with a toast as it opens.
 - **A notice is held back while a browser page is *visible*, not merely while one is focused**,
-  and delivered from `onDidChangeActiveBrowserTab`, `onDidCloseBrowserTab` or
-  `tabGroups.onDidChangeTabGroups` the moment that stops being true — so it never takes away the
+  and delivered from `onDidChangeActiveBrowserTab`, `onDidCloseBrowserTab`,
+  `tabGroups.onDidChangeTabGroups` or `tabGroups.onDidChangeTabs` the moment that stops being
+  true — so it never takes away the
   page being read, and it does not wait an hour either. The first version of this guard asked
   `activeBrowserTab` alone and was wrong for the normal way this extension is used: the editor
   decides the pause **geometrically** — `_refreshOverlayObscured` asks the overlay manager for

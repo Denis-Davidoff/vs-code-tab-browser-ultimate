@@ -22,7 +22,7 @@ The stub is what goes to the Marketplace now.
 
 | | Id | Latest published | Reach |
 | --- | --- | --- | --- |
-| [Open VSX](https://open-vsx.org/extension/DenysDavydov/tab-browser-ultimate) | `tab-browser-ultimate` | **0.5.23** (checked 2026-09-18) | ~1.5k downloads across 14 versions |
+| [Open VSX](https://open-vsx.org/extension/DenysDavydov/tab-browser-ultimate) | `tab-browser-ultimate` | **0.5.23** (checked 2026-09-18) | 5916 downloads across 34 versions |
 | VS Code Marketplace, old | `tab-browser-ultimate` | **0.3.17** | 2 installs, one 5★ rating — being removed by hand |
 | VS Code Marketplace, new | `tab-browser-ultimate-promo` | not yet published | the listing, from `vscode-marketplace/` |
 
@@ -42,12 +42,15 @@ suspecting the manifest.
 ## This is not a first publish
 
 `DenysDavydov.tab-browser-ultimate` **is already live on Open VSX**, and has been since before
-this rewrite: fourteen versions up to **0.3.17**, published 2026-09-08, ~1.5k downloads. Those
-users are running the *previous* implementation — the local proxy, the injected page script, the
-sidebar, the in-page context menu. A publish from this repository replaces that build for every
-one of them, and the two are not feature-equal in either direction. Read
+this rewrite — 34 versions and ~5.9k downloads as of 2026-09-18, the latest being **0.5.23**.
+
+**The changeover already happened.** Open VSX served 0.3.x — the local proxy, the injected page
+script, the sidebar, the in-page context menu — until this rewrite was published over it, so the
+users described in
 [What an update actually does to existing users](#what-an-update-actually-does-to-existing-users)
-before shipping one.
+have already been updated, and that section is a record of what they lost rather than a warning
+about the next publish. It is still worth reading before shipping, because anybody still sitting
+on 0.3.x meets all of it the moment they update.
 
 The setup is therefore already done and does not need repeating:
 
@@ -90,9 +93,12 @@ The root has no Marketplace publish script at all any more: this is the only rou
 
 ## Every release
 
-1. **Bump `version` in `package.json`** — the registry refuses a version it already has (the
-   published set is 0.3.1 … 0.3.17, and this repository is at 0.5.0), and `--skip-duplicate`
-   only makes that failure quiet, not a new release.
+1. **Bump `version` in `package.json`** — the registry refuses a version it already has, and
+   `--skip-duplicate` only makes that failure quiet, not a new release. The published set now
+   runs past **0.5.23**, so read the current one from
+   `https://open-vsx.org/api/DenysDavydov/tab-browser-ultimate` rather than from any number
+   written down here; a stale figure in this file is what made an earlier draft of it claim the
+   set stopped at 0.3.17.
 2. `npm run compile && npm run typecheck && npm test && npm run check-manifest`.
 3. `npm run publish:ovsx` — it packages first, so the upload is always current. Open VSX carries
    the real build.
@@ -117,8 +123,9 @@ releases ever do get cut, that constant in `src/updateCheck.ts` is what has to m
 
 ## What an update actually does to existing users
 
-A version published from here is an automatic update for everyone on 0.3.x, so the differences
-are not release notes — they are things that will break for somebody:
+A version published from here was an automatic update for everyone on 0.3.x, and still is for
+anyone who has not taken one since. The differences are not release notes — they are things that
+broke, or still will break, for somebody:
 
 - **The settings namespace moved.** The old build read `tabBrowser.*`; this one reads
   `aiBrowser.*`. Every setting a user has tuned stops applying, silently, with their old values
