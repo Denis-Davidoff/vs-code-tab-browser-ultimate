@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate",
 	"displayName": "AI Browser🏆 Claude + Codex",
 	"description": "Embedded browser tab with AI capabilities, Claude and Codex integration",
-	"version": "0.5.23",
+	"version": "0.5.24",
 	"enabledApiProposals": [
 		"externalUriOpener",
 		"browser"
@@ -438,7 +438,13 @@
 						"title": "MCP Server Enabled",
 						"markdownDescription": "%configuration.mcp.enabled.description%"
 					},
-					"aiBrowser.mcp.port": {
+					"aiBrowser.updateCheck.enabled": {
+					"type": "boolean",
+					"default": true,
+					"title": "Check For Updates",
+					"markdownDescription": "%configuration.updateCheck.enabled.description%"
+				},
+				"aiBrowser.mcp.port": {
 						"type": "number",
 						"default": 43110,
 						"minimum": 1024,
