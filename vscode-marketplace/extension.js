@@ -44,6 +44,20 @@ const RAW_MANIFEST_URL = 'https://raw.githubusercontent.com/Denis-Davidoff/vs-co
 const FULL_BUILD_ID = 'DenysDavydov.tab-browser-ultimate';
 
 /**
+ * The first full build that watches for releases by itself.
+ *
+ * From here on this listing must not announce an update, or the normal end state — both
+ * installed, which is what this build is designed for — produces two toasts for one release,
+ * with different wording, from two extensions that cannot see each other's state. The full
+ * build's is the one to keep: it holds the notice back while a browser page is visible, which
+ * this one cannot do, having no access to the `browser` proposal.
+ *
+ * Kept as a version rather than a flag because an older full build has no watch of its own, and
+ * for those installs this listing is still the only thing that will ever mention a release.
+ */
+const SELF_UPDATING_FROM = '0.5.24';
+
+/**
  * The listing version whose welcome notice has already been shown.
  *
  * Keyed on the version rather than being a bare "shown" flag, so installing this entry — or
@@ -373,6 +387,13 @@ async function checkForUpdates(context, item, manual) {
 		if (manual) {
 			status(`AI Browser ${installed} is the latest release.`);
 		}
+		return;
+	}
+
+	// The full build announces its own releases from SELF_UPDATING_FROM on, so this one stays
+	// quiet rather than saying the same thing a second time. A manual check still answers —
+	// the user asked, and the footer button is the surface that asked them to.
+	if (!manual && !isNewer(SELF_UPDATING_FROM, installed)) {
 		return;
 	}
 

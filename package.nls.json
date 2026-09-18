@@ -32,5 +32,5 @@
 	"command.stopSharingTab.title": "Stop Sharing Tab",
 	"command.shareTabWithClaudeCode.title": "Share Tab with Claude Code",
 	"command.shareTabWithCodex.title": "Share Tab with Codex",
-	"configuration.updateCheck.enabled.description": "Look for new releases of AI Browser in the [repository](https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/releases) and show a notification when one is out. This extension is installed from a VSIX, so nothing else updates it. The check runs at most every six hours, announces each release once, and says nothing when there is no update."
+	"configuration.updateCheck.enabled.description": "Look for new releases of AI Browser in the [repository](https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate) and show a notification when one is out. This extension is installed from a VSIX, so nothing else updates it. Once it has reached GitHub it waits six hours before asking again; it announces each release once, and says nothing when there is no update."
 }

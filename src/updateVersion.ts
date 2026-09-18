@@ -53,17 +53,42 @@ export function isNewerVersion(candidate: string, installed: string): boolean {
 }
 
 /**
+ * What a version may look like, and nothing else.
+ *
+ * **This is a security boundary, not tidiness.** The value arrives from the
+ * network and is interpolated into a notification message — and VS Code renders
+ * a notification body as *linked text*, opening those links with
+ * `allowCommands: true` (`renderMessage` in the notification renderer:
+ * `render(e.message, { callback: n => openerService.open(parse(n), { allowCommands: true }) })`).
+ * So a `version` of `99.0.0 [Update now](command:workbench.action.terminal.sendSequence?…)`
+ * renders as a button that runs a command on one click. `isNewerVersion` is no
+ * defence: it stops at the first field that *differs*, so it answers "newer" on
+ * the leading `99` and never looks at the rest.
+ *
+ * The trust boundary here is a GitHub name rather than a signature — a
+ * repository that is renamed or deleted frees that name for anybody to
+ * re-register, and every installed copy goes on polling it — so the value is
+ * checked rather than trusted.
+ */
+const versionShape = /^\d+(\.\d+){0,3}([-+][0-9A-Za-z.-]+)?$/;
+
+/**
  * The `version` of a manifest we just fetched, if it has a usable one.
  *
  * The body is whatever the network handed back, so it is treated as untrusted
  * input rather than as a manifest: a proxy login page, an HTML error, a JSON
- * document with a `version` that is a number or an object. Anything that is not
- * a non-empty string answers `undefined`, which the caller reads as "nothing to
- * say" — the same answer as being offline.
+ * document with a `version` that is a number or an object, or a string built to
+ * be rendered rather than to be read. Anything that is not a plain version
+ * answers `undefined`, which the caller reads as "nothing to say" — the same
+ * answer as being offline.
  */
 export function readManifestVersion(body: unknown): string | undefined {
 	const version = (body as { version?: unknown } | null | undefined)?.version;
-	return typeof version === 'string' && version.trim() !== '' ? version.trim() : undefined;
+	if (typeof version !== 'string') {
+		return undefined;
+	}
+	const trimmed = version.trim();
+	return versionShape.test(trimmed) ? trimmed : undefined;
 }
 
 /**

@@ -22,12 +22,14 @@ The stub is what goes to the Marketplace now.
 
 | | Id | Latest published | Reach |
 | --- | --- | --- | --- |
-| [Open VSX](https://open-vsx.org/extension/DenysDavydov/tab-browser-ultimate) | `tab-browser-ultimate` | **0.3.17** (2026-09-08) | ~1.5k downloads across 14 versions |
+| [Open VSX](https://open-vsx.org/extension/DenysDavydov/tab-browser-ultimate) | `tab-browser-ultimate` | **0.5.23** (checked 2026-09-18) | ~1.5k downloads across 14 versions |
 | VS Code Marketplace, old | `tab-browser-ultimate` | **0.3.17** | 2 installs, one 5★ rating — being removed by hand |
 | VS Code Marketplace, new | `tab-browser-ultimate-promo` | not yet published | the listing, from `vscode-marketplace/` |
 
-**Open VSX still serves the previous implementation.** This rewrite exists only as the committed
-`.vsix` until it is published there.
+**Open VSX carries this rewrite now** — the row above said 0.3.17 long after it had been
+published past that, and a stale number here is not harmless: it was read during a review as
+evidence that the update notification pointed users at a downgrade. Re-read it from
+`https://open-vsx.org/api/DenysDavydov/tab-browser-ultimate` rather than from this table.
 
 **The Marketplace upload of the real build never completed.** Two attempts both ended in
 `ERROR Request timeout: /_apis/gallery` — after vsce's own three internal retries, with the
@@ -99,6 +101,19 @@ The root has no Marketplace publish script at all any more: this is the only rou
 5. If the listing text or the video changed, set `vscode-marketplace/package.json` to **the same
    version** as the root and `cd vscode-marketplace && npm run publish`.
 6. Push, and tag the commit if you want the download to be findable by version.
+
+**Steps 1 and 4 must reach `main` together.** Since 0.5.24 the installed extension reads
+`main`'s `package.json` and treats its `version` as *a release you can install* — so pushing the
+bump ahead of the rebuilt `.vsix` tells every existing install that a version exists, hands them
+a download of the previous one, and **burns the announcement**: the version is recorded as
+offered, so when it really ships nobody is told. Bump and repackage in one commit, or push them
+together. See
+[The real build watches for releases too](CLAUDE.md#the-real-build-watches-for-releases-too).
+
+**There is no GitHub Release, deliberately, and the update button knows it.** Nothing in these
+steps creates one, so the notification's `Download from GitHub` opens
+`raw/main/tab-browser-ultimate.vsix` — the URL the README documents and the promo build uses. If
+releases ever do get cut, that constant in `src/updateCheck.ts` is what has to move with them.
 
 ## What an update actually does to existing users
 

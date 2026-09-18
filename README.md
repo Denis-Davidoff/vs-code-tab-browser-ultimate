@@ -456,7 +456,7 @@ All of them are in the command palette under **AI Browser**.
 | `aiBrowser.mcp.port` | `43110` | Preferred port for that server; each further window takes the next free one. |
 | `aiBrowser.searchEngine` | `google` | Engine used when the *panel's* address bar gets a search term; `none` disables search. |
 | `aiBrowser.focusLockIndicator.enabled` | `true` | Show the "Focus Lock" hint while focus is inside the webview panel. |
-| `aiBrowser.updateCheck.enabled` | `true` | Watch the repository for a newer release and say so once, with a link to Open VSX or the releases page. |
+| `aiBrowser.updateCheck.enabled` | `true` | Watch the repository for a newer release and say so once, with a link to Open VSX or to the committed VSIX. |
 
 ## Installing
 

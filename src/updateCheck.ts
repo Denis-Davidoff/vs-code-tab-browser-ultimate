@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
+import { refuse } from './notify';
 import { isBrowserApiGranted } from './proposedApi';
 import { dueForCheck, isNewerVersion, readManifestVersion } from './updateVersion';
 
@@ -24,9 +25,18 @@ import { dueForCheck, isNewerVersion, readManifestVersion } from './updateVersio
 const manifestUrl =
 	'https://raw.githubusercontent.com/Denis-Davidoff/vs-code-tab-browser-ultimate/main/package.json';
 
-/** Where the `.vsix` of each release is attached. */
-const releasesUrl =
-	'https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/releases';
+/**
+ * Where the `.vsix` actually is.
+ *
+ * Deliberately the committed artifact on `main` and **not** the repository's
+ * releases page: `PUBLISHING.md` has six release steps and none of them cuts a
+ * GitHub Release, so that page is empty — the button would have been a dead
+ * end on the one surface this feature exists to provide. This is the same URL
+ * the README documents as *the* download and the same one the promo build
+ * opens, so all three agree.
+ */
+const vsixUrl =
+	'https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/raw/main/tab-browser-ultimate.vsix';
 
 /** The registry that can install it in place, on the hosts that have it. */
 const openVsxUrl = 'https://open-vsx.org/extension/DenysDavydov/tab-browser-ultimate';
@@ -38,7 +48,17 @@ const settingKey = 'updateCheck.enabled';
 /** The release already announced, so this is once per version, not once per window. */
 const offeredVersionKey = 'aiBrowser.update.offeredVersion';
 
-/** When the repository was last asked, so opening ten windows is still one request. */
+/**
+ * When the repository was last *reached*.
+ *
+ * It bounds successful checks and nothing else, and the two gaps are worth
+ * knowing rather than rounding off: a request that reached nobody does not
+ * stamp it (see {@link UpdateWatch._tick}), so an offline machine retries on
+ * every tick; and windows that start together all read this before any of them
+ * writes it, so a restored session of ten windows is ten requests, not one.
+ * Both are accepted — the alternative to the first is a laptop that opens
+ * offline once and then says nothing for six hours.
+ */
 const lastCheckKey = 'aiBrowser.update.lastCheck';
 
 const checkIntervalMs = 6 * 60 * 60 * 1000;
@@ -73,21 +93,45 @@ function enabled(): boolean {
 }
 
 /**
- * Whether a browser page is in front of the user right now.
+ * Whether a browser page can be seen right now.
  *
  * A toast shown over the built-in browser replaces the live page with a
  * screenshot and a "Paused due to Notification" overlay until it is dismissed.
  * An update notice is the least urgent thing this extension has to say, so it
  * waits rather than doing that — see {@link UpdateWatch._deliver}.
  *
- * `activeBrowserTab` is the only visibility signal the proposal offers: a
- * browser tab that is visible in a split but not active cannot be seen from
- * here, since `window.tabGroups` reports no input for it. It covers the case
- * that matters, which is someone looking at a page.
+ * **The question is visibility, not focus**, and testing `activeBrowserTab`
+ * alone got that wrong. The editor decides the pause geometrically —
+ * `_refreshOverlayObscured` asks the overlay manager for anything *overlapping*
+ * the browser container and never consults which pane has focus — so a browser
+ * tab in a split beside a file, which is the normal way this extension is used,
+ * is paused by a toast while `activeBrowserTab` is `undefined`. That is
+ * breaks-silently #10, whose wording is "while a browser tab is **visible**".
+ *
+ * There is no direct signal for it: the proposal exposes only the active tab,
+ * and `window.tabGroups` has no `TabInputBrowser` — a browser editor is one of
+ * the inputs the extension host does not model, so it arrives as `input:
+ * undefined`. That is what the second test uses, and it is deliberately the
+ * cautious direction: another unmodelled editor being visible merely defers the
+ * notice to the next delivery attempt, while missing a visible browser pauses
+ * somebody's page.
  */
-function browserTabInFront(): boolean {
+function browserTabVisible(): boolean {
 	try {
-		return isBrowserApiGranted() && vscode.window.activeBrowserTab !== undefined;
+		if (!isBrowserApiGranted()) {
+			return false;
+		}
+		if (vscode.window.activeBrowserTab !== undefined) {
+			return true;
+		}
+		if ((vscode.window.browserTabs ?? []).length === 0) {
+			// Nothing to pause, so no need to ask the weaker question below.
+			return false;
+		}
+		// `activeTab` is the visible one of its group, which is exactly the set
+		// that can overlap a toast.
+		return vscode.window.tabGroups.all.some(
+			group => group.activeTab !== undefined && group.activeTab.input === undefined);
 	} catch {
 		return false;
 	}
@@ -154,10 +198,16 @@ class UpdateWatch implements vscode.Disposable {
 		try {
 			if (isBrowserApiGranted()) {
 				this._subs.push(vscode.window.onDidChangeActiveBrowserTab(() => this._deliver()));
+				this._subs.push(vscode.window.onDidCloseBrowserTab(() => this._deliver()));
 			}
 		} catch {
 			// No browser API on this host; nothing can be paused by a toast.
 		}
+		// `browserTabVisible` also asks which tab is visible in each group, and
+		// that changes without either event above — closing the split, or
+		// switching the other group to a file. Without this the notice waits
+		// for the hourly tick instead.
+		this._subs.push(vscode.window.tabGroups.onDidChangeTabGroups(() => this._deliver()));
 	}
 
 	/**
@@ -219,11 +269,17 @@ class UpdateWatch implements vscode.Disposable {
 	 */
 	private _deliver(): void {
 		const offer = this._pending;
-		if (!offer || this._disposed || !enabled() || browserTabInFront()) {
+		if (!offer || this._disposed || !enabled() || browserTabVisible()) {
 			return;
 		}
 		this._pending = undefined;
-		void this._announce(offer);
+		// The rejection handler is the point of the `void`, not an afterthought:
+		// `_announce` awaits `openExternal` and a settings write, either of
+		// which can fail, and an unhandled rejection here is breaks-silently
+		// #93 on the one path written to be silent.
+		this._announce(offer).catch(err => {
+			console.warn('[ai-browser] update notice failed:', err);
+		});
 	}
 
 	/**
@@ -257,18 +313,57 @@ class UpdateWatch implements vscode.Disposable {
 
 		switch (choice) {
 			case openVsx:
-				await vscode.env.openExternal(vscode.Uri.parse(openVsxUrl));
+				await this._open(openVsxUrl);
 				return;
 			case github:
-				await vscode.env.openExternal(vscode.Uri.parse(releasesUrl));
+				await this._open(vsixUrl);
 				return;
 			case never:
-				// Global, and the same switch as the checkbox in Settings, so
-				// there is a way back from this button. A window-scoped write
-				// would silently not apply anywhere else.
-				await vscode.workspace.getConfiguration(settingSection)
-					.update(settingKey, false, vscode.ConfigurationTarget.Global);
+				await this._optOut();
 				return;
+		}
+	}
+
+	/** Opens a link, and says so in the status bar if it could not be opened. */
+	private async _open(url: string): Promise<void> {
+		try {
+			await vscode.env.openExternal(vscode.Uri.parse(url));
+		} catch {
+			// The link is the whole answer to what the user just clicked, so a
+			// failure has to be visible — through the status bar, since a
+			// second toast would pause a page the first one did not.
+			try {
+				await vscode.env.clipboard.writeText(url);
+			} catch {
+				// Then the message below is all there is, which is still better
+				// than a click that did nothing.
+			}
+			refuse(vscode.l10n.t("Could not open the link — it is on the clipboard: {0}", url));
+		}
+	}
+
+	/**
+	 * Turns the watch off for good.
+	 *
+	 * Global, and the same switch as the checkbox in Settings, so there is a way
+	 * back from this button; a window-scoped write would silently not apply
+	 * anywhere else.
+	 *
+	 * **The failure has to be reported**, which is why this is not one unguarded
+	 * `await`. VS Code refuses to write settings while `settings.json` has a
+	 * syntax error, so the one button whose whole meaning is "stop asking me"
+	 * silently did not apply — and the version had already been recorded as
+	 * announced, so the only visible consequence was the *next* release
+	 * appearing regardless.
+	 */
+	private async _optOut(): Promise<void> {
+		try {
+			await vscode.workspace.getConfiguration(settingSection)
+				.update(settingKey, false, vscode.ConfigurationTarget.Global);
+		} catch (err) {
+			refuse(vscode.l10n.t(
+				"Could not turn update notices off ({0}). Set \"aiBrowser.updateCheck.enabled\" to false in Settings.",
+				err instanceof Error ? err.message : String(err)));
 		}
 	}
 

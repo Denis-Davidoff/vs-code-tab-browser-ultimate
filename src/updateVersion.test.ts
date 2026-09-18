@@ -70,6 +70,28 @@ suite('readManifestVersion', () => {
 		assert.strictEqual(readManifestVersion({ version: '  ' }), undefined);
 		assert.strictEqual(readManifestVersion({ version: { major: 1 } }), undefined);
 	});
+
+	test('a prerelease or build suffix is still a version', () => {
+		assert.strictEqual(readManifestVersion({ version: '1.0.0-rc.1' }), '1.0.0-rc.1');
+		assert.strictEqual(readManifestVersion({ version: '1.0.0+build.7' }), '1.0.0+build.7');
+		assert.strictEqual(readManifestVersion({ version: '2' }), '2');
+	});
+
+	test('a value built to be rendered rather than read is refused', () => {
+		// The security boundary. A notification body is rendered as linked text
+		// and its links are opened with `allowCommands: true`, so a Markdown
+		// link in this value is a one-click command. `isNewerVersion` is no
+		// defence: it answers "newer" on the leading 99 and never reaches the
+		// payload.
+		const hostile = '99.0.0 [Update now](command:workbench.action.terminal.sendSequence?%7B%22text%22%3A%22id%5Cn%22%7D)';
+		assert.strictEqual(isNewerVersion(hostile, '0.5.24'), true);
+		assert.strictEqual(readManifestVersion({ version: hostile }), undefined);
+
+		assert.strictEqual(readManifestVersion({ version: '1.0.0 [x](https://example.com)' }), undefined);
+		assert.strictEqual(readManifestVersion({ version: '1.0.0\n\n[x](command:foo)' }), undefined);
+		assert.strictEqual(readManifestVersion({ version: '<img src=x>' }), undefined);
+		assert.strictEqual(readManifestVersion({ version: '1.0.0 '.repeat(200) }), undefined);
+	});
 });
 
 suite('dueForCheck', () => {
