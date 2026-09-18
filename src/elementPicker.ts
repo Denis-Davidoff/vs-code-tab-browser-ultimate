@@ -430,6 +430,54 @@ function requireBrowserTab(): vscode.BrowserTab | undefined {
 	return tab;
 }
 
+/**
+ * Ends the pick when the tab it is running in goes away.
+ *
+ * A pick is a wait for `Overlay.inspectNodeRequested` on that tab's own CDP
+ * session, so a closed tab means the click can never arrive — and nothing
+ * settles the wait on its own. `MainThreadBrowsers` closes a browser editor by
+ * disposing its input, which fires `$onDidCloseBrowserTab` and leaves
+ * `_cdpSessions` untouched: the session group is only destroyed by
+ * `$closeCDPSession` or by the group service, so `BrowserCDPSession.onDidClose`
+ * never fires for this. The `once` promise therefore hung for ever, taking
+ * `withProgress` with it, and `$(stop-circle) Cancel pick` stayed in the status
+ * bar for the rest of the session with nothing behind it to cancel.
+ *
+ * `onDidChangeActiveBrowserTab` is watched as well, for the same reason
+ * `browserController` re-checks membership rather than trusting the close
+ * event: it is what still arrives on a host that does not fire
+ * `onDidCloseBrowserTab`, and the picked tab is by construction the active one,
+ * so closing it changes which tab is active.
+ */
+function watchTabClose(
+	tab: vscode.BrowserTab,
+	cts: vscode.CancellationTokenSource,
+): vscode.Disposable {
+
+	const subs: vscode.Disposable[] = [];
+	try {
+		subs.push(vscode.window.onDidCloseBrowserTab(gone => {
+			if (gone === tab) {
+				cts.cancel();
+			}
+		}));
+		subs.push(vscode.window.onDidChangeActiveBrowserTab(() => {
+			if (!(vscode.window.browserTabs ?? []).includes(tab)) {
+				cts.cancel();
+			}
+		}));
+	} catch {
+		// Proposal-gated, like every other use of it. `requireBrowserTab` has
+		// already refused on a host without the grant, so this is belt and
+		// braces rather than a path anyone reaches.
+	}
+	return new vscode.Disposable(() => {
+		for (const sub of subs) {
+			sub.dispose();
+		}
+	});
+}
+
 async function pickAndDeliver<T>(
 	title: string,
 	produce: (client: CDPClient, sessionId: string, backendNodeId: number, tab: vscode.BrowserTab) => Promise<T | undefined>,
@@ -448,6 +496,10 @@ async function pickAndDeliver<T>(
 	// before there is something for it to cancel.
 	const cts = beginPick();
 	const cancel = cancelButton();
+	// Armed with the button, and for the same reason: both exist only for as
+	// long as there is a pick, and the tab closing is the one way a pick ends
+	// that nothing else notices.
+	const watch = watchTabClose(tab, cts);
 	try {
 		await vscode.window.withProgress({
 			location: vscode.ProgressLocation.Window,
@@ -469,7 +521,12 @@ async function pickAndDeliver<T>(
 				}
 				await deliver(value);
 			} catch (err) {
-				if (err instanceof vscode.CancellationError) {
+				// The token is checked as well as the error type: a pick
+				// cancelled part-way through its setup surfaces as whatever the
+				// step it was in threw — a closed session, a tab that is no
+				// longer there — and none of that is worth an error toast over
+				// a page the user has just closed.
+				if (err instanceof vscode.CancellationError || cts.token.isCancellationRequested) {
 					return;
 				}
 				vscode.window.showErrorMessage(vscode.l10n.t(
@@ -477,6 +534,7 @@ async function pickAndDeliver<T>(
 			}
 		});
 	} finally {
+		watch.dispose();
 		cancel.dispose();
 		endPick(cts);
 	}

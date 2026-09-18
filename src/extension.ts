@@ -24,6 +24,7 @@ import {
 } from './proposedApi';
 import { confirm, refuse } from './notify';
 import { registerStatusBar } from './statusBar';
+import { registerUpdateCheck } from './updateCheck';
 
 declare class URL {
 	constructor(input: string, base?: string | URL);
@@ -387,6 +388,10 @@ export function activate(context: vscode.ExtensionContext) {
 	// The permanent status bar entry, plus the warning one that hides itself
 	// once the grant is in place.
 	registerStatusBar(context, browser);
+
+	// Nothing updates a hand-installed VSIX, so the only way a release is ever
+	// heard about is if the extension says so itself.
+	registerUpdateCheck(context);
 
 }
 

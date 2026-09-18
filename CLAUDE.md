@@ -83,6 +83,7 @@ Settings:
 | `aiBrowser.mcp.port` | `43110` | preferred port; each window takes the next free one |
 | `aiBrowser.searchEngine` | `google` | engine for the panel's address bar; `none` disables search |
 | `aiBrowser.focusLockIndicator.enabled` | `true` | the panel's focus indicator |
+| `aiBrowser.updateCheck.enabled` | `true` | watch the repository for a newer release |
 
 ## Architecture: two independent halves
 
@@ -124,6 +125,8 @@ Compiled with `tsc`, **no bundling**. `main: ./out/extension`.
 - [src/mcpClientState.ts](src/mcpClientState.ts) — config states (leaf, under test)
 - [src/codexToml.ts](src/codexToml.ts) — the mini TOML table parser (leaf, under test)
 - [src/mcpLifecycle.ts](src/mcpLifecycle.ts) — server lifetime and context keys
+- [src/updateVersion.ts](src/updateVersion.ts) — comparing two versions (leaf, under test)
+- [src/updateCheck.ts](src/updateCheck.ts) — the release watch and its one notification
 
 **There is only ever one panel.** `AIBrowserManager._activeView` is a single slot: a repeat
 `show()` reuses the existing panel rather than creating a second one. If multiple tabs are ever
@@ -830,6 +833,20 @@ overlay, so none of the above applies to it.
 - **`aiBrowser.cancelElementPick` is deliberately not in `contributes.commands`.** It exists for
   that button; contributing it would put a palette entry there that is inert whenever no pick is
   running.
+- **The pick has to be cancelled when its tab closes, and nothing does that for us.** A pick is a
+  wait for `Overlay.inspectNodeRequested` on that tab's CDP session, and closing a browser editor
+  does not close the session: `MainThreadBrowsers` disposes the editor input, which fires
+  `$onDidCloseBrowserTab` and leaves `_cdpSessions` alone — the session group is only destroyed by
+  `$closeCDPSession` or by the group service, so `BrowserCDPSession.onDidClose` never fires on this
+  path. Read from the outside that is a `Cancel pick` button that stays in the status bar for the
+  rest of the session with nothing behind it, and the `withProgress` title beside it. So
+  `watchTabClose` in [src/elementPicker.ts](src/elementPicker.ts) cancels the token on
+  `onDidCloseBrowserTab`, and on `onDidChangeActiveBrowserTab` re-checks membership of
+  `browserTabs` — the same lazy detector `browserController` keeps for a host that does not fire
+  the close event, and the picked tab is by construction the active one, so closing it changes
+  which tab is active. The catch in `pickAndDeliver` tests `cts.token.isCancellationRequested` as
+  well as `CancellationError`, or a pick cancelled part-way through its setup reports whatever the
+  step it was in threw, as an error toast, about a page the user has just closed.
 - **The startup nudge is gone.** A warning toast at activation could pause a browser tab that was
   restored with the window, and the pulsing status bar item says the same thing without ever
   painting over the page. Do not bring the notification back.
@@ -3013,6 +3030,11 @@ No compile error for any of these — they only surface at runtime.
     117. Bound the **wait**, not the work: a queued run waits `repairQueueWaitMs` and then
     proceeds, so the pathological case degrades to the old concurrent behaviour — where the lock
     and `stillWanted` still protect the write — instead of to no repairs at all.
+123. **Waiting on a CDP event without watching the tab it belongs to** → closing a browser tab
+    does not close its CDP session, so a pick in flight is never settled by anything: the
+    `once` promise, the `withProgress` it runs under and the `$(stop-circle) Cancel pick` button
+    all outlive the page for the rest of the session. `onDidCloseBrowserTab` is the only signal
+    there is, and `BrowserCDPSession.onDidClose` is not a substitute for it.
 
 ## Special cases and non-obvious decisions
 
@@ -3377,6 +3399,73 @@ Mechanics worth knowing:
 
 Publishing it: `cd vscode-marketplace && npm run publish` — like the root script, it packages
 first.
+
+### The real build watches for releases too
+
+A hand-installed VSIX neither arrives on its own nor ever updates itself, and the promo listing's
+watch only reaches the people who found the extension *through* the listing. Someone who
+downloaded the VSIX from the repository has had no signal at all — which is why the real build
+now carries its own watch, in [src/updateCheck.ts](src/updateCheck.ts), with the version
+comparison split into the leaf [src/updateVersion.ts](src/updateVersion.ts) so `npm test` can
+load it.
+
+**It asks the repository's root `package.json` on `main`**, not Open VSX, because that is the one
+file every release necessarily touches — the registry can lag a release, or be skipped for one.
+The promo build asks Open VSX first and falls back to the same manifest; the two therefore agree
+on what "latest" means whenever both are reachable.
+
+**The two builds must not disagree about which of two versions is newer**, so `isNewerVersion`
+is deliberately the same rule as the promo's `isNewer`: field by field as numbers, because
+`'0.5.10' > '0.5.9'` is false as strings and would hide every release between .9 and .20; a field
+that cannot be read as a number ends it with "not newer", since failing to announce a release is
+recoverable and telling someone to downgrade is not. They cannot share code — the promo is plain
+JavaScript in a folder with no build step — so the rule is written twice, like `codexOurTables`
+and `codexEntryCarriesToken` next door, and for the same reason it is stated here.
+
+**This is a notification, and it is the one kind of toast this rule allows.** A release is a
+decision for the user, with two routes and a way to stop being asked, and a toast body is not
+clickable — so the routes are buttons: `Open VSX` (the registry, which can install in place on
+the hosts that have it), `Download from GitHub` (the releases page), and `Don't show again`.
+Four precautions keep it from becoming the failure recorded under
+[A notification pauses the built-in browser](#a-notification-pauses-the-built-in-browser):
+
+- **Nothing is said unless there is a newer release.** Up to date, offline, a body that is not a
+  manifest — all answer the same way, which is silence. There is no "you are up to date" toast
+  and no error.
+- **The first look is 10s after activation**, the same delay and the same reason as the promo
+  build: a window that restores a browser tab must not be greeted with a toast as it opens.
+- **A notice is held back while a browser page is in front of the user**, and delivered from
+  `onDidChangeActiveBrowserTab` the moment they look away — so it never takes away the page they
+  are reading, and it does not wait an hour either. `activeBrowserTab` is the only visibility
+  signal there is: a browser tab visible in a split but not active cannot be seen from an
+  extension, since `window.tabGroups` reports no input for it.
+- **Once per release, not once per window** (`aiBrowser.update.offeredVersion`), and the version
+  is recorded **before** the message goes up rather than after the user answers. A notice that
+  was dismissed has still been seen; repeating it in every window until a button is pressed is
+  how a helpful notice becomes something people disable the extension over.
+
+**`Don't show again` writes the setting, globally, and that is what makes it a checkbox.** There
+is no checkbox in a VS Code notification — the API is buttons — so the durable form of the choice
+is `aiBrowser.updateCheck.enabled`, which the button sets to `false` at
+`ConfigurationTarget.Global`. That is also the only way back: a button that can only ever be
+pressed once, with nothing in Settings to undo it, is a trap. The tick re-reads the setting every
+time rather than caching it, and `onDidChangeConfiguration` runs a check as soon as it is turned
+back on, so re-enabling does not mean waiting an hour.
+
+**The throttle is stamped only by a request that reached GitHub** — six hours between requests
+(`aiBrowser.update.lastCheck`), so ten windows in a morning are one request, but a laptop whose
+first window of the day opens offline must not buy six hours of silence for every window after
+it. The same rule, and the same reasoning, as the promo build's. And the watch is driven by an
+hourly **tick** rather than one `setTimeout`, or a window left open for days would check exactly
+once ever.
+
+**Verified with a fake `vscode`**, the way [the status bar](#the-status-bar-one-permanent-button-one-that-hides-itself)
+and the promo build were: `out/updateCheck.js` loaded against a stubbed `vscode`, a stubbed
+`fetch` and a stubbed `globalState`, printing what each state does — newer release, same version,
+a repository that is *behind*, offline, already announced, inside the throttle, past it, the
+setting off, each of the three buttons, a browser page in front and then the user looking away,
+and a host with no browser proposal. Worth redoing that way after touching this file; a typecheck
+says nothing about which of those states puts a toast on screen.
 
 ### `.mcp.json` is gitignored **in this repository**, and that is not a contradiction
 
