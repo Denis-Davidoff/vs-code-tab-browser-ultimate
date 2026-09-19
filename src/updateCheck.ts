@@ -5,7 +5,7 @@
 
 import * as vscode from 'vscode';
 import { refuse } from './notify';
-import { isBrowserApiGranted } from './proposedApi';
+import { integratedBrowserCommand, isBrowserApiGranted } from './proposedApi';
 import { dueForCheck, isNewerVersion, readManifestVersion } from './updateVersion';
 
 /**
@@ -116,25 +116,49 @@ function enabled(): boolean {
  * notice to the next delivery attempt, while missing a visible browser pauses
  * somebody's page.
  */
-function browserTabVisible(): boolean {
-	try {
-		if (!isBrowserApiGranted()) {
+function browserTabVisible(hostShipsBrowser: boolean): boolean {
+	// `activeTab` is the visible one of its group, which is exactly the set that
+	// can overlap a toast, and a browser editor arrives with no modelled input.
+	const unmodelledEditorVisible = () => {
+		try {
+			return vscode.window.tabGroups.all.some(
+				group => group.activeTab !== undefined && group.activeTab.input === undefined);
+		} catch {
 			return false;
 		}
-		if (vscode.window.activeBrowserTab !== undefined) {
-			return true;
+	};
+
+	if (isBrowserApiGranted()) {
+		try {
+			if (vscode.window.activeBrowserTab !== undefined) {
+				return true;
+			}
+			if ((vscode.window.browserTabs ?? []).length === 0) {
+				// Nothing to pause, so no need to ask the weaker question below.
+				return false;
+			}
+			return unmodelledEditorVisible();
+		} catch {
+			// The read threw after all; the weaker test below still applies.
 		}
-		if ((vscode.window.browserTabs ?? []).length === 0) {
-			// Nothing to pause, so no need to ask the weaker question below.
-			return false;
-		}
-		// `activeTab` is the visible one of its group, which is exactly the set
-		// that can overlap a toast.
-		return vscode.window.tabGroups.all.some(
-			group => group.activeTab !== undefined && group.activeTab.input === undefined);
-	} catch {
-		return false;
 	}
+
+	// **Without the grant the *count* is unavailable, not the risk.** Returning
+	// `false` here was the first version of this guard, and it is wrong for three
+	// host classes at once: Kiro ships the browser editor and none of the API,
+	// VSCodium ships both and withholds the grant, and **stock VS Code before the
+	// grant is written is the default state of every fresh install**. On all of
+	// them a browser editor can be on screen, the editor pauses it geometrically,
+	// and the toast lands anyway.
+	//
+	// So the heuristic runs unbounded here — `browserTabs` cannot be read to
+	// confirm one is open — but only where the host ships the browser at all.
+	// `browserApiState()` is the wrong question for that: it answers
+	// `unsupported` for Kiro, which *has* the editor. The open command is what
+	// actually tracks the UI, and it is present on every measured host that has
+	// one. The false positive costs a deferred notice, which the next tab event
+	// or the hourly tick delivers; the false negative costs somebody their page.
+	return hostShipsBrowser && unmodelledEditorVisible();
 }
 
 /**
@@ -181,7 +205,28 @@ class UpdateWatch implements vscode.Disposable {
 	private _running = false;
 	private _disposed = false;
 
+	/**
+	 * Whether this host can put a browser editor on screen at all.
+	 *
+	 * Resolved once, because `getCommands` is asynchronous and the guard that
+	 * needs the answer is not. It stays `false` until the probe lands, which is
+	 * the safe direction — a notice held back for a moment is recoverable, and
+	 * the first check is ten seconds away in any case.
+	 */
+	private _hostShipsBrowser = false;
+
 	constructor(private readonly _context: vscode.ExtensionContext) {
+		// Asked once rather than per delivery: the answer cannot change while the
+		// window is running, and `_deliver` is called from event handlers.
+		// `Promise.resolve` because `getCommands` answers a `Thenable`, which has
+		// no `.catch` — and an unguarded rejection here is breaks-silently #93.
+		void Promise.resolve(vscode.commands.getCommands(true)).then(commands => {
+			this._hostShipsBrowser = commands.includes(integratedBrowserCommand);
+		}).catch(() => {
+			// Left `false`: without the probe the weaker guard cannot be trusted,
+			// and the granted path above does not depend on it.
+		});
+
 		this._timers.push(setTimeout(() => void this._tick(), startupDelayMs));
 		this._timers.push(setInterval(() => void this._tick(), tickIntervalMs));
 
@@ -280,7 +325,7 @@ class UpdateWatch implements vscode.Disposable {
 	 */
 	private _deliver(): void {
 		const offer = this._pending;
-		if (!offer || this._disposed || !enabled() || browserTabVisible()) {
+		if (!offer || this._disposed || !enabled() || browserTabVisible(this._hostShipsBrowser)) {
 			return;
 		}
 		this._pending = undefined;

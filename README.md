@@ -111,7 +111,7 @@ the editor: the page you are looking at is the page your agent reads and drives.
 - 🔌 **An MCP server, with nothing to install.** No package, no separate process to babysit: the
   extension starts a local server on activation, and one command configures Claude Code, Codex
   or VS Code's own chat to use it.
-- 🤖 **Then the agent drives the page itself.** Twelve tools: snapshot what is clickable, read
+- 🤖 **Then the agent drives the page itself.** Fourteen tools: snapshot what is clickable, read
   the html or the text, inspect an element, click, fill fields, wait for a render, screenshot,
   navigate — then read the console to see what its own change actually did.
 - 👀 **In your session, not a fresh one.** Same cookies, same dev server, same logged-in state,
@@ -285,11 +285,12 @@ a `file:` url would turn a browser tool into a file reader.
 2. **Run the connect command** — from the globe menu on the browser tab, or from the command
    palette: **AI Browser: Connect Claude Code** / **Connect Codex** — run from a browser tab and
    the assistant is given that tab as well.
-3. **Press the first button.** **Write .mcp.json & copy connection prompt** (Claude Code) or
-   **Write .codex/config.toml & copy connection prompt** (Codex) writes the entry and puts one
-   line on the clipboard; paste that into the assistant's chat. The entry carries this window's
-   token, so ignore the file in git if the project is shared — or take **Copy CLI command**
-   instead, which keeps the token out of the repository.
+3. **That is the whole click — there is no dialog.** The command writes the entry and puts a
+   connection prompt on the clipboard; paste that into the assistant's chat. What it wrote is
+   named in the confirmation, which goes to the **status bar** rather than a notification, so a
+   toast never covers the page you are about to hand over. Claude Code gets `.mcp.json` in the
+   project; Codex gets the global `~/.codex/config.toml` (see below for why). Both entries carry
+   this window's token, so ignore `.mcp.json` in git if the project is shared.
 4. **Let the assistant pick it up.** Both read their mcp servers **once, at startup**: restart
    Claude Code and run `/mcp`, or start a brand-new Codex conversation. An assistant that says
    it cannot see the server has not loaded it — telling it to go and read `config.toml` will not
@@ -299,14 +300,16 @@ a `file:` url would turn a browser tool into a file reader.
 **VS Code's own chat needs none of this** — the extension registers the server through the
 editor's own mcp api.
 
-**For Codex, the project file comes first, and the global one is the fix.** The primary button
-writes `.codex/config.toml` next to the project it belongs to, but Codex only loads a project
+**For Codex it is the global file, and that is deliberate.** **Connect Codex** writes
+`~/.codex/config.toml`, never the project's own `.codex/config.toml`: Codex only loads a project
 config for a project it *trusts*, and some of its surfaces
-([openai/codex#13025](https://github.com/openai/codex/issues/13025)) ignore one entirely. If the
-browser tools do not turn up, take **Write global ~/.codex/config.toml**, which is read on every
-surface. The global entry is named after the project, so a second project adds its own rather
-than replacing the first. A `.mcp.json` that does not parse is never overwritten — rewriting it
-would delete every other mcp server the project has.
+([openai/codex#13025](https://github.com/openai/codex/issues/13025)) ignore one entirely — which
+is the usual reason "Codex cannot see the server". A one-click action must not land on the option
+that sometimes silently does nothing. Writing both is not an option either: the two entries have
+different names, so Codex would load both and list every tool twice. The global entry is named
+after the project, so a second project adds its own rather than replacing the first. A
+`.mcp.json` that does not parse is never overwritten — rewriting it would delete every other mcp
+server the project has.
 
 **Check Connection** answers what the configuration files cannot. It sends one real
 `tools/list` through the loopback interface with the token, and then reads each client's config
@@ -378,14 +381,17 @@ whatever the assistant has selected.
 - **Any request carrying an `Origin` is refused with 403**, before its credentials are looked
   at. A page cannot *read* a cross-origin answer, but posting to a guessed local port would
   otherwise be enough to drive the browser blind.
-- **The token is per workspace**, not per user. Ports are handed out in the order windows open,
+- **The token is per workspace**, not per user. A window's port is its own first choice and not
+  a reservation — two workspaces can hash to the same one, and the walk then moves one of them —
   so project A's config can address the window holding project B; a workspace token makes that
   an honest 401 instead of an agent quietly editing the wrong project.
 - **One endpoint, POST only.** There is no event stream, so GET is 405.
 
 `aiBrowser.mcp.enabled` turns the server off and gives the port back without reloading the
-window; `aiBrowser.mcp.port` (43110 by default) is the preferred port, and a second window walks
-to the next free one.
+window. `aiBrowser.mcp.port` (43110 by default) is the first port to try: left unset, each window
+derives its own first choice from the workspace path within the 20 ports from there — so the port
+survives a restart, which is what stops a saved config going stale — and walks on if that one is
+taken. Setting it explicitly starts the window exactly there instead.
 
 ## The webview panel
 
@@ -453,7 +459,7 @@ All of them are in the command palette under **AI Browser**.
 | --- | --- | --- |
 | `aiBrowser.useIntegratedBrowser` | `true` | Open urls in VS Code's built-in browser. `false` brings back the webview panel. |
 | `aiBrowser.mcp.enabled` | `true` | Run the local mcp server that lets an assistant read and drive the browser. |
-| `aiBrowser.mcp.port` | `43110` | Preferred port for that server; each further window takes the next free one. |
+| `aiBrowser.mcp.port` | `43110` | First port to try. Unset, each window derives its own from the workspace path within the 20 ports from here, so it survives a restart. |
 | `aiBrowser.searchEngine` | `google` | Engine used when the *panel's* address bar gets a search term; `none` disables search. |
 | `aiBrowser.focusLockIndicator.enabled` | `true` | Show the "Focus Lock" hint while focus is inside the webview panel. |
 | `aiBrowser.updateCheck.enabled` | `true` | Watch the repository for a newer release and say so once, with a link to Open VSX or to the committed VSIX. |

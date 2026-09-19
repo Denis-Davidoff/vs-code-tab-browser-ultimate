@@ -244,3 +244,28 @@ suite('report bodies', () => {
 		assert.strictEqual(report, '# Element context of `div`\n\nAttached Element Context\n\nElement: div\n');
 	});
 });
+
+suite('a descriptor is page-controlled, so the heading wraps it safely', () => {
+
+	// `formatAncestor` builds it from the element's own tag, id and classes, and
+	// an id may legally contain a backtick. A bare pair of them closes the span
+	// early and spills the rest of the heading as prose, in a file whose reader
+	// is usually a model.
+	test('a backtick in the descriptor does not close the span early', () => {
+		const heading = formatElementReport('body', 'div#a`b').split('\n')[0];
+
+		assert.strictEqual(heading, '# Element context of ``div#a`b``');
+	});
+
+	test('a run of backticks grows the delimiter past it', () => {
+		const heading = formatPathReport('span#q``r', 'css', '#x', 'http://h/').split('\n')[0];
+
+		assert.strictEqual(heading, '# CSS selector of ```span#q``r```');
+	});
+
+	test('an ordinary descriptor still gets a single pair', () => {
+		const heading = formatElementReport('body', 'div#main.list').split('\n')[0];
+
+		assert.strictEqual(heading, '# Element context of `div#main.list`');
+	});
+});

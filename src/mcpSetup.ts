@@ -14,6 +14,7 @@ import {
 } from './mcpRepair';
 import type { McpServer } from './mcpServer';
 import { confirm } from './notify';
+import { plainInNotification } from './notifyText';
 
 /**
  * Three clients, three places to configure, and only one of them has an API.
@@ -507,8 +508,11 @@ export interface SharedPage {
  */
 function scopeNote(shared: SharedPage | undefined): string {
 	return shared
+		// The page chooses its own title, and a notification body is linked text
+		// opened with `allowCommands: true` — see {@link plainInNotification}. The
+		// label beside it is ours (`targetName`), so only this half is neutralised.
 		? vscode.l10n.t(" {0} works on {1} — use \"Stop Sharing Tab\" to let it follow you again.",
-			shared.label ?? vscode.l10n.t("It"), shared.title ?? shared.url)
+			shared.label ?? vscode.l10n.t("It"), plainInNotification(shared.title ?? shared.url))
 		// The command is named, so the title has to be the one the palette
 		// actually has: it was renamed in the same change that added this
 		// sentence, and naming a title nobody can find is worse than naming
@@ -531,7 +535,24 @@ export async function connectClaudeCode(server: McpServer, shared?: SharedPage):
 		return;
 	}
 
-	const outcome = await writeClaudeConfig(folder, server);
+	// **A write can throw, and only the three enumerated outcomes were handled.**
+	// `writeText` calls `createDirectory`/`writeFile` unguarded and `withLock` is
+	// `try`/`finally` with no `catch`, so `NoPermissions`, `ENOSPC` or a read-only
+	// folder escaped this command entirely: VS Code's generic "command failed"
+	// toast, no `claude mcp add` fallback — which every other refusal here
+	// provides — and no `scopeNote`, so a tab shared a moment earlier was left
+	// assigned and unannounced (breaks-silently #62). `connectCodex` next door has
+	// always had this shape; this one was the asymmetry.
+	let outcome: Awaited<ReturnType<typeof writeClaudeConfig>>;
+	try {
+		outcome = await writeClaudeConfig(folder, server);
+	} catch (err) {
+		await vscode.env.clipboard.writeText(claudeCliCommand(server));
+		vscode.window.showErrorMessage(vscode.l10n.t(
+			"Could not write `.mcp.json` ({0}). The `claude mcp add` command is on your clipboard instead.",
+			err instanceof Error ? err.message : String(err)) + scopeNote(shared));
+		return;
+	}
 	if (outcome === 'busy') {
 		await vscode.env.clipboard.writeText(claudeCliCommand(server));
 		vscode.window.showErrorMessage(vscode.l10n.t(

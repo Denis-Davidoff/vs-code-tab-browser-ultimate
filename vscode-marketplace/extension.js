@@ -102,9 +102,55 @@ const STARTUP_DELAY_MS = 10_000;
 
 const REQUEST_TIMEOUT_MS = 8_000;
 
-/** @param {string} url */
-function open(url) {
-	return vscode.env.openExternal(vscode.Uri.parse(url));
+/**
+ * Opens a link, and says whether it actually opened.
+ *
+ * `openExternal` resolves to *whether* the uri was opened — a host can decline,
+ * and the user can cancel the "open external website?" confirmation — so only
+ * treating a throw as failure meant the click did nothing and said nothing.
+ * Worse, both callers followed it with "then run Extensions: Install from
+ * VSIX…", an instruction about a file that was never fetched. The full build
+ * checks the same boolean in `UpdateWatch._open`; a rule enforced in one of two
+ * builds that read the same source is not a rule.
+ *
+ * The failure is reported through the status bar, never a second toast: this
+ * build cannot see whether a browser tab is visible, so it must not risk
+ * pausing one to report a link it could not open.
+ *
+ * @param {string} url
+ * @returns {Promise<boolean>} whether the link was opened
+ */
+async function open(url) {
+	try {
+		if (await vscode.env.openExternal(vscode.Uri.parse(url))) {
+			return true;
+		}
+	} catch {
+		// Same answer as a `false`: the click did nothing.
+	}
+	try {
+		await vscode.env.clipboard.writeText(url);
+		status(`Could not open the link — it is on the clipboard: ${url}`, 12_000);
+	} catch {
+		status(`Could not open the link: ${url}`, 12_000);
+	}
+	return false;
+}
+
+/**
+ * Fire-and-forget with the rejection handled.
+ *
+ * `void`-ing a promise that can reject is an unhandled rejection on exactly the
+ * paths written to be silent — a timer, an event handler — and
+ * `Memento.update` persists through the main process and *can* reject. The full
+ * build carries `_remember` and a `.catch` on its announcement for the same
+ * reason.
+ *
+ * @param {Promise<unknown>} promise
+ * @param {string} what
+ */
+function detach(promise, what) {
+	Promise.resolve(promise).catch(err => console.warn(`[ai-browser] ${what} failed:`, err));
 }
 
 /**
@@ -407,8 +453,9 @@ async function showInstallDialog(context) {
 
 	const choice = await vscode.window.showInformationMessage(title, { modal: true, detail }, download, guide);
 	if (choice === download) {
-		await open(release?.download ?? VSIX_URL);
-		status('Then run "Extensions: Install from VSIX…" from the Command Palette and pick the downloaded file.', 15_000);
+		if (await open(release?.download ?? VSIX_URL)) {
+			status('Then run "Extensions: Install from VSIX…" from the Command Palette and pick the downloaded file.', 15_000);
+		}
 	} else if (choice === guide) {
 		await open(GUIDE_URL);
 	}
@@ -459,15 +506,14 @@ async function checkForUpdates(context, item, manual) {
 	if (!manual && context.globalState.get(OFFERED_VERSION_KEY) === release.version) {
 		return;
 	}
-	void context.globalState.update(OFFERED_VERSION_KEY, release.version);
+	detach(context.globalState.update(OFFERED_VERSION_KEY, release.version), 'recording the offered version');
 
 	const download = `Download ${release.version}`;
 	const choice = await vscode.window.showInformationMessage(
 		`AI Browser ${release.version} is out — you have ${installed}. A VSIX install does not update itself, `
 		+ 'so it has to be downloaded and installed by hand.',
 		download, 'Later');
-	if (choice === download) {
-		await open(release.download);
+	if (choice === download && await open(release.download)) {
 		status('Then run "Extensions: Install from VSIX…" from the Command Palette and pick the downloaded file.', 15_000);
 	}
 }
@@ -485,7 +531,7 @@ async function showWelcome(context) {
 	if (hasFullBuild() || context.globalState.get(NOTICE_VERSION_KEY) === listing) {
 		return;
 	}
-	void context.globalState.update(NOTICE_VERSION_KEY, listing);
+	detach(context.globalState.update(NOTICE_VERSION_KEY, listing), 'recording the welcome notice');
 
 	const install = 'Download the full build';
 	const guide = 'Read the guide';
@@ -534,10 +580,11 @@ function activate(context) {
 	 * the answer — see {@link checkForUpdates}.
 	 */
 	const startup = setTimeout(() => {
-		void checkForUpdates(context, item, false);
-		void showWelcome(context);
+		detach(checkForUpdates(context, item, false), 'the startup update check');
+		detach(showWelcome(context), 'the welcome notice');
 	}, STARTUP_DELAY_MS);
-	const ticker = setInterval(() => void checkForUpdates(context, item, false), TICK_INTERVAL_MS);
+	const ticker = setInterval(
+		() => detach(checkForUpdates(context, item, false), 'the update check'), TICK_INTERVAL_MS);
 	context.subscriptions.push({
 		dispose: () => {
 			clearTimeout(startup);
@@ -550,10 +597,10 @@ function activate(context) {
 	// listing, download the VSIX, install it. Without this the footer button would still be
 	// offering the install in the very session where it had just been done.
 	context.subscriptions.push(vscode.extensions.onDidChange(() => {
-		void publishState();
+		detach(publishState(), 'publishing the context key');
 		refreshStatusItem(context, item);
 	}));
-	void publishState();
+	detach(publishState(), 'publishing the context key');
 }
 
 function deactivate() { }

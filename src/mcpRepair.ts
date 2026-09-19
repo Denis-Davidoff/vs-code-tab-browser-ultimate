@@ -646,8 +646,30 @@ export function repairCodexToml(
 		const headers = `http_headers = ${mergeAuthorization(inlineHeaders, carried, endpoint.token)}`;
 
 		if (!entry.valueLines.has('url')) {
-			// No url at all: put both lines straight after the header.
-			replace.set(entry.firstLine, [header, url, headers]);
+			// **No `url` key does not mean no credentials**, and emitting
+			// `http_headers` here unconditionally was writing the key a second
+			// time: the existing one was neither removed nor replaced, so the
+			// table defined it twice, which is TOML that does not parse. That ran
+			// unattended at window start, took every other MCP server in
+			// `~/.codex/config.toml` with it, and still reported the port as
+			// updated. The reachable shape is a hand edit — commenting the `url`
+			// line out to disable an endpoint — which the connect path happens to
+			// heal, so it stays invisible in interactive testing.
+			//
+			// The three cases are the same three the `url`-present branch below
+			// distinguishes, and for the same reasons; only where `url` goes
+			// differs, since there is no existing line to replace.
+			if (entry.valueLines.has('http_headers')) {
+				replace.set(entry.firstLine, [header, url]);
+				replaceValue(entry, 'http_headers', [headers]);
+			} else if (headerSubTable) {
+				// The credentials are in the sub-table, which is kept and updated
+				// in place. An inline table as well is the ambiguous shape the
+				// branch below avoids — and, being the same key, does not parse.
+				replace.set(entry.firstLine, [header, url]);
+			} else {
+				replace.set(entry.firstLine, [header, url, headers]);
+			}
 			continue;
 		}
 

@@ -80,7 +80,7 @@ Settings:
 |---|---|---|
 | `aiBrowser.useIntegratedBrowser` | `true` | delegate to VS Code's built-in browser; `false` brings back the webview panel |
 | `aiBrowser.mcp.enabled` | `true` | run the local MCP server for assistants |
-| `aiBrowser.mcp.port` | `43110` | preferred port; each window takes the next free one |
+| `aiBrowser.mcp.port` | `43110` | first port to try; unset, each window derives its own from the folder URI within the 20 ports from here — see [The port moves](#the-port-moves-and-the-config-remembers-the-old-one) |
 | `aiBrowser.searchEngine` | `google` | engine for the panel's address bar; `none` disables search |
 | `aiBrowser.focusLockIndicator.enabled` | `true` | the panel's focus indicator |
 | `aiBrowser.updateCheck.enabled` | `true` | watch the repository for a newer release |
@@ -104,6 +104,7 @@ Compiled with `tsc`, **no bundling**. `main: ./out/extension`.
 - [src/argvJson.ts](src/argvJson.ts) — surgical JSONC edits to `argv.json` (leaf, under test)
 - [src/statusBar.ts](src/statusBar.ts) — the two status bar items and their menu
 - [src/notify.ts](src/notify.ts) — confirmations, kept out of the notification area
+- [src/notifyText.ts](src/notifyText.ts) — neutralising a page-supplied string for a notification (leaf, under test)
 - [src/elementPicker.ts](src/elementPicker.ts) — the four element commands
 - [src/elementContext.ts](src/elementContext.ts) — pulls element data out of the page over CDP
 - [src/elementMarkdown.ts](src/elementMarkdown.ts) — renders that data as Markdown
@@ -863,6 +864,20 @@ refusal toast paused the very tab you were looking at. It now goes through `refu
 status bar, because in exactly that state the `Enable Browser API` button is already sitting
 there — the toast added nothing but the pause. The lesson generalises: a refusal that the status
 bar already offers a fix for does not need a notification at all.
+
+**And whatever does reach a notification body must not have been written by a page.** A body is
+rendered as *linked text* and its links are opened with `allowCommands: true` — the mechanism
+recorded under item 124 — so `[label](command:…)` anywhere in it is a button that runs a command
+on one click. `versionShape` guards that sink for a value with a *shape*; a page title has none,
+because the page chooses it outright, so `plainInNotification`
+([src/notifyText.ts](src/notifyText.ts), leaf module, under test) neutralises it instead. It
+drops `[` and `]` — without a label there is no link, whatever follows, so the rule does not
+depend on which target schemes the renderer happens to accept — and caps the length, which is not
+security but the fact that a notification is one line and a title can be thousands of characters.
+It is applied in `scopeNote`, which names the shared page in four refusals; the label beside it is
+ours (`targetName`) and is left alone, so the boundary stays visible. **`stripMarker` is not a
+sanitiser** — it removes our own 🔗/🤖 suffix and nothing else, and reading it as one is how the
+page's title reached the toast in the first place.
 
 ### Debugging (F5)
 
@@ -2261,11 +2276,14 @@ Everything about the implementation follows from the page being someone else's:
   later navigation, with nobody holding the identifier any more. The chain itself never rejects
   (a rejected link is inherited by everything queued behind it) while the caller of `set` still
   gets the real error.
-- **`_marker` records what is on the page, and is written after the install, never before it.**
-  Written up front it recorded the *request*: one rejected install left the indicator believing
-  the marker was there, and since the same session keeps the same indicator, the
+- **Nothing records what is on the page any more, and `_marker` is gone.** It existed, it was
+  written *before* the install, and so it recorded the *request*: one rejected install left the
+  indicator believing the marker was there, and since a session keeps its indicator, the
   `_marker === marker` short-circuit then suppressed every retry — a shared tab with no marker
-  for the rest of the session.
+  for the rest of the session. Moving the write after the install fixed that instance and left
+  the field itself a belief rather than a fact (see the bullet on caching, above), so it was
+  removed outright: an install is cheap enough to repeat unconditionally. Do not reintroduce a
+  cache here — the class of bug goes with the field.
 - **`clear()` never short-circuits on having no marker recorded.** A fresh indicator on a newly
   opened session knows nothing, while the page may still carry a marker installed by the session
   before it — which is precisely what `stopSharing` and a re-share have to clean up.
@@ -2313,7 +2331,7 @@ not something a document contains of its own.
 
 **A page-side throw is a *successful* CDP reply carrying `exceptionDetails`**, and ignoring that
 field made both callers lie. `_install` recorded a marker it had not applied, so the
-`_marker === marker` short-circuit suppressed every retry for the session; `clear()` reported it
+short-circuit that then existed suppressed every retry for the session; `clear()` reported it
 had reached the page, so `_clearIndicator` skipped the private-session route that exists for
 exactly that case. A page can cause it — freeze the object we look for, replace `endsWith`,
 break `MutationObserver` — so `evaluateInPage` inspects the field and throws.
@@ -2339,7 +2357,7 @@ the message to the host synchronously, which is what makes an attempt on a synch
 path worth anything at all.
 
 **Re-sharing the tab that is already shared is a no-op.** The toolbar entry sits in the shared
-tab's own menu, so it is one click away, and clearing `_shareUsedBy` there took the marker from
+tab's own menu, so it is one click away, and clearing `_usedBy` there took the marker from
 🤖 back to 🔗 and the tooltip back to "no assistant has used it yet" — advice for a broken setup
 — while the assistants carried on working. The context key cannot express "this tab is the
 shared one", so the menu keeps the entry (it is also how a share is *moved* from the toolbar)
@@ -2367,6 +2385,108 @@ It is bounded at four, because a session is a live channel into a page and an ag
 all day. Eviction passes over a tab somebody is assigned to while any unassigned one remains:
 throwing away the page an assistant is working on — its console buffer and its marker
 registration with it — to make room for a page nobody asked about is the wrong trade every time.
+
+**Eviction passes over a session that is *being used*, and that is counted rather than
+inferred.** "Least recently used" is really "least recently **acquired**" — `_touch` runs when a
+session is handed out, not while it works — so the longest-running call sat at the *front* of the
+queue and was the first thing dropped when a fourth tab opened a session. The caller was then
+answered with the internal `CDP client disposed`, the one error the code singles out as reading
+to a model as a broken browser rather than as something to retry. An earlier round added pins to
+`claimed` and fixed only the pinned instance: an assistant with **no** share and no selection is
+the default state, not an edge case, and it was still evicted mid-call.
+
+So every route to a session takes a hold for the length of the work (`_hold`, counted in
+`_inFlight`), and `_withSession` became a **scope** rather than a hand-out —
+`_withSession(caller, session => …)` — precisely so a new call site cannot opt out of the rule by
+forgetting to release. It is released in a `finally`, so a page-side throw cannot leave a tab
+claimed for the life of the window, and the release is idempotent, or a double `finally` would
+drive the count negative and pin a tab out of the queue for good. The three routes that do not go
+through `_withSession` take their own: `_navigateInTab` (the longest hold there is — a load event
+is waited for up to 15s), the direct `capture` path, `_borrowSession`, and `_armMarkerNow`.
+
+**`_armMarkerNow` needs one too, and the reasoning that said otherwise was wrong.** It only ever
+runs on a shared tab, and being assigned looked like protection — but `_evictableTab` treats an
+assignment as a *preference*, so once every candidate is assigned its second pass hands one back
+anyway. The marker install then had its session disposed under it, and because that throw is
+swallowed by design, the visible result was a shared tab wearing no 🔗/🤖 at all: the one thing
+the marker exists to rule out. A preference is not a guard, and anything that reads as one has to
+take the hold like everything else.
+
+**The hold is taken before the open, not after it**, and the difference is a real race rather
+than a nicety. `_sessionFor` resolves into a microtask, so another tab's open can run its own
+`_evict` between the session being put in `_sessions` and the caller recording that it is using
+it — at which point the tab reads as a spare and is dropped under the caller that just asked for
+it. Holding first covers the open as well as the work, and a tab with no session yet is simply
+never a candidate, so the early claim costs nothing.
+
+**Being used is a hard constraint; being assigned is only a preference**, and collapsing the two
+into one predicate was the same bug one step along. With one `claimed` test and a
+`?? candidates[0]` fallback, four calls in flight left no spare — so the fallback dropped the
+session of the *first* of them and the guard above it did nothing at all. The two differ in what
+eviction costs: an assigned but idle tab loses a console buffer and a marker registration and
+reopens on its next call, while a tab with work in flight loses the call itself. So the search is
+ordered — unassigned and idle, then assigned and idle — and **never** returns a tab that is
+working.
+
+**When every candidate is working, a new open queues for a slot rather than taking one.**
+`_evict` cannot help there — it will not drop a session in use — so without this the count simply
+drifted up with concurrency. `_awaitSlot` holds the open until `_hold`'s release frees a session
+(`_notifySlots`, run after the sweep so a waiter sees the slot it freed) — and from
+`_dropSession`, **whoever** freed it. Waking only from `_hold` and from an open settling missed
+every other way capacity comes back: a tab closing, `navigate`'s `CDP session closed` retry, the
+stale-cache branch. A queued open then sat there for its whole timeout with a usable slot in
+front of it. The one exception is a drop `_tryReserve` itself causes, which is making the slot it
+is about to take — `_reserving` suppresses that, or the reserver hands its own slot away and
+drops a second session to replace it.
+
+**The slot is *reserved*, not merely checked for, and that distinction is the whole mechanism.**
+Asking "is there room?" and then opening was wrong in two ways at once, both reproduced against
+the stubbed channel:
+
+- `_notifySlots` wakes every waiter, and resolving a promise does not run its continuations
+  before the next waiter is called — so all of them saw the *same* freed session and all of them
+  went on to open. One release has to admit exactly one waiter.
+- a check against `_sessions` alone is blind to opens already under way, so callers arriving
+  together at a cold start all passed while the map was still empty: **six simultaneous calls
+  opened six channels against a limit of four.**
+
+`_tryReserve` closes both by counting `_reserved` alongside `_sessions` and taking the permit
+synchronously, before anything awaits, so the second caller in the same turn already sees it.
+**The permit is given back in the same turn the session lands**, beside `_sessions.set`, never on
+a trailing `.finally` — that runs a microtask later, and for that tick the session is counted
+twice, once as a reservation and once as itself, so a `_tryReserve` landing in the gap reads the
+sum as one over and evicts a session that did not need to go. The `finally` remains only for the
+paths that never got that far: the open failed, the tab closed under it, the controller was
+disposed. `releaseSlot` is idempotent so the two cannot both fire. It
+also *makes* the room rather than promising it — dropping a session the sweep would have given up
+— so what a caller is handed is capacity that exists. `_evict` and `_tryReserve` share one
+`_evictableTab`, or capacity could be taken under a rule the sweep would not have agreed with.
+The reservation is released in a `finally` once the session is in `_sessions` (or the open
+failed), and `_awaitSlot` always resolves holding exactly one, including on the timeout and on
+teardown, so the count cannot drift.
+
+Measured: six simultaneous cold starts hold **four** sessions; four busy plus three queued admits
+**one** waiter per release; the fifth call opens the moment one finishes; nothing is left open
+after `dispose`.
+
+**The wait is bounded, and that is the half that matters.** A plain queue starves:
+`browser_wait_for` takes its timeout from the caller and may hold a session for a minute, so four
+of those would block every new tab for as long as they ran — and a tool call that hangs reads to
+a model as a dead browser while its client's own timeout fires regardless. So `_slotWaitMs` (5s)
+gives up waiting and opens anyway — but only as far as `_sessionOverflow`, one channel, which the
+next release reclaims. **Granting unconditionally there was the bound removed exactly where it is
+needed**: every waiter owns its own timer, so four busy sessions and N waiting calls opened
+`4 + N` channels, and since each new tab is immediately in `_inFlight` nothing could evict them
+until their work ended. Past the ceiling a call is refused instead, with something a model can
+act on — the calls already running will finish, and a retry then finds a slot. An honest refusal
+beats a limit that only holds while nothing is happening.
+The pathological case degrades to the previous behaviour rather than to a hang — the same shape
+as `repairQueueWaitMs` and for the same reason (item 122). Ordinary calls finish well inside it,
+so in practice the bound holds exactly. Breaking a live call to hold a number is still the wrong
+way round; waiting a moment for one is not.
+
+`dispose` releases the queue (`_notifySlots` under `_disposed`), or a pending waiter's timer
+holds the host's event loop for `_slotWaitMs` after the window is done with the controller.
 
 **A one-off read still must not take a session that is in use** — `_borrowSession`. `capture`
 with a tab named by the caller (the toolbar passes the one in front of the user) reuses that
@@ -3068,6 +3188,98 @@ No compile error for any of these — they only surface at runtime.
     ships two extensions that cannot share code, so a rule written for one leaves the other
     open on the identical input. The convention already recorded for `codexOurTables` applies to
     security rules too: write it twice, and say in both places that it is written twice.
+131. **Writing a key while also keeping the one already there** → `repairCodexToml`'s
+    "no `url`" branch emitted `http_headers` unconditionally and left any existing one exactly
+    where it was, neither removed nor replaced, so the table defined the key twice — TOML that
+    does not parse, written unattended at window start, taking every other MCP server in
+    `~/.codex/config.toml` with it while reporting the port as updated. Neither
+    `codexUnterminated` nor `codexRangeDeletable` can catch this: the input is well-formed and
+    balanced and nothing is *deleted*, so every guard in the file is looking the other way. The
+    reachable shape is an ordinary hand edit — commenting a `url` line out to disable an
+    endpoint — and the connect path heals it, which is why it never showed up interactively. A
+    branch that *adds* a line has to ask the same question the branch that replaces one does.
+132. **Interpolating a page-supplied string into a notification body** → same sink as item 124
+    and a much easier one to reach: a notification body is linked text opened with
+    `allowCommands: true`, so `[label](command:…)` in a `document.title` is a one-click command.
+    A version has a *shape* and is validated; a title has none — the page chooses it outright —
+    so it is neutralised instead (`plainInNotification`). `stripMarker` is not a sanitiser: it
+    removes our own suffix and nothing else.
+133. **Handling only the outcomes a function is declared to return** → `writeClaudeConfig`
+    answers `'written' | 'unparsable' | 'busy'`, and `connectClaudeCode` handled all three — but
+    `writeText` calls `createDirectory`/`writeFile` unguarded and `withLock` is `try`/`finally`
+    with no `catch`, so `NoPermissions` or `ENOSPC` propagated straight out of the command.
+    VS Code's generic "command failed" toast, no `claude mcp add` fallback, and no `scopeNote`,
+    so a tab shared a moment earlier was left assigned and unannounced (item 62). An enumerated
+    result type is not a promise that nothing throws.
+134. **An eviction guard that asks who *acquired* a resource rather than who is using it** →
+    `_touch` runs when a session is handed out, not while it works, so "least recently used" put
+    the longest-running call at the *front* of the queue and answered it with the internal
+    `CDP client disposed`. Adding pins to `claimed` fixed the pinned instance and left the
+    ordinary one — an assistant with no share and no selection is the default state, not an edge
+    case. Counting holds around the work is what makes it structural: `_withSession` is a scope
+    rather than a hand-out, so a new call site cannot silently opt out of the rule.
+135. **A guard whose result a fallback then discards** → the fix for item 134 added the in-flight
+    test to `claimed` and left `const target = spare ?? candidates[0]` underneath it. With four
+    calls in flight there is no spare, so the fallback dropped the first of them and the new
+    guard did nothing whatever — it read as a fix, it typechecked, and the original harness still
+    passed because it only ever had *one* call in flight. A predicate is only as strong as the
+    branch that has to honour it when the predicate excludes everything; if exhausting it has to
+    mean something, say what, rather than falling through to the unfiltered list. Here the answer
+    is to queue the new open for a slot (`_awaitSlot`), bounded so it cannot hang, and to sweep
+    again on release.
+136. **Recording a claim on the far side of an `await`** → `_sessionFor` resolves into a
+    microtask, so a hold taken *after* it leaves a window in which the session is in `_sessions`
+    with nothing saying anybody wants it, and a concurrent open's `_evict` drops it under the
+    caller that just asked for it. "Nothing runs between the `await` and the next line" is true
+    of the caller's own statements and false of the event loop. Claim before the acquisition,
+    which also makes the claim cover the acquisition.
+137. **A queue with no bound on the wait** → the fix for item 135 makes a new session wait for a
+    slot, and a slot is freed by another call finishing. `browser_wait_for` takes its timeout
+    from the model, so four of them can hold every slot for a minute — and a tool call that
+    hangs reads as a dead browser while the client's own timeout fires anyway. Bound the
+    **wait**, not the work: after `_slotWaitMs` the open goes ahead one channel over the bound,
+    which the next release reclaims, so the pathological case degrades to the previous behaviour
+    rather than to a hang. Item 122 is the same rule for the config repair. `dispose` must
+    release the queue too, or a pending timer holds the event loop after the window is done.
+138. **Checking for capacity instead of reserving it** → a check answers for the instant it runs,
+    and both ways that gap opens were reached here. Waking every waiter on one release admits all
+    of them, because resolving a promise does not run its continuations before the next waiter is
+    called — one release must admit exactly one. And counting only what has *landed* is blind to
+    what is on its way: `_sessions` is still empty while four opens are in flight, so callers
+    arriving together at a cold start all passed and six simultaneous calls opened six channels
+    against a limit of four. Count the in-flight commitments alongside the settled ones, take the
+    permit synchronously before anything awaits, and release it where the thing it stood for is
+    counted instead.
+139. **A guard that widens what it inspects without narrowing what it judges** → the readme image
+    check was extended to reference definitions, which are shared by links *and* images, so an
+    ordinary `[guide]: ./guide.md` was reported as `readme image … is not an absolute https URL`
+    and, because `prepare` gates `package` and `publish`, a good readme edit blocked the release.
+    Widening a check is only safe together with the question of which of the new matches the rule
+    actually applies to — here, the ids an `![alt][id]` / `![id][]` / `![id]` actually refers to.
+140. **Releasing a reservation on a trailing `.finally`** → it runs a microtask after the thing it
+    stood for was recorded, so for that tick the same session is counted twice and a concurrent
+    reserver reads the total as one over: it evicts a session that did not need to go, taking a
+    console buffer and a marker registration with it, or refuses a slot that genuinely exists and
+    stalls for the whole wait. Hand a reservation back in the same turn the thing it reserved
+    becomes real; keep the `finally` only for the paths that never got there, and make the
+    release idempotent so the two cannot both fire.
+141. **Waking a queue from only the routes you were thinking about** → capacity came back four
+    ways and `_notifySlots` ran from two of them, so a tab closing, `navigate`'s retry and the
+    stale-cache branch all freed a slot in silence and a queued open waited out its full timeout
+    in front of it. Notify where the resource is actually released — `_dropSession` — and
+    suppress only the case that is making the slot for itself.
+142. **A bounded give-up that each waiter evaluates on its own** → the timeout existed so a queue
+    could not hang, and every waiter had its own timer, so N waiting calls each granted
+    themselves a permit: `4 + N` channels, which is the limit removed at exactly the moment it is
+    load-bearing. The escape hatch needs its own bound (`_sessionOverflow`), and past it the
+    honest answer is a retryable error rather than a quiet overrun.
+143. **A safety guard that switches itself off on the hosts it was written for** →
+    `browserTabVisible` answered "no page to pause" whenever the `browser` proposal was not
+    granted, so the toast it exists to hold back landed on exactly the editors that pause a page
+    without giving us the API to see it: Kiro, VSCodium, and every VS Code install before the
+    grant is written. When a guard cannot read its precise signal, ask what *weaker* signal is
+    still available — here the open command, which tracks the browser UI rather than the API —
+    rather than treating the missing read as an all-clear.
 
 ## Special cases and non-obvious decisions
 
@@ -3528,6 +3740,20 @@ Four precautions keep it from becoming the failure recorded under
   treats a group whose *visible* tab has no input as a browser, but only while `browserTabs` is
   non-empty. The false positive is deliberate and cheap: another unmodelled editor merely defers
   the notice to the next delivery attempt, while a missed browser pauses somebody's page.
+- **And the guard holds without the grant, where it is needed most.** It used to return `false`
+  the moment `isBrowserApiGranted()` was false, on the reasoning that a host with no API has no
+  page to pause. That is wrong for three classes at once, and the third is the common one: Kiro
+  ships the browser editor and none of the API, VSCodium ships both and withholds the grant, and
+  **stock VS Code before `argv.json` is written is the default state of every fresh install** —
+  which is exactly when a user is most likely to be reading a page and least likely to forgive a
+  toast that freezes it. So the `tabGroups` heuristic runs there too. It cannot be bounded by
+  `browserTabs` (that read is what throws), so it is bounded by the *host* instead: only where
+  `workbench.action.browser.open` is registered. **`browserApiState()` is the wrong question**,
+  because it answers `unsupported` for Kiro, which has the editor; the open command is what
+  actually tracks the browser UI and is present on every measured host that has one. It is probed
+  once with `getCommands(true)` and cached, since the answer cannot change while the window runs
+  and `_deliver` is called from event handlers. Until the probe lands the flag is `false`, which
+  is the safe direction — the first check is ten seconds away regardless.
 - **Once per release, not once per window** (`aiBrowser.update.offeredVersion`), and the version
   is recorded **before** the message goes up rather than after the user answers. A notice that
   was dismissed has still been seen; repeating it in every window until a button is pressed is

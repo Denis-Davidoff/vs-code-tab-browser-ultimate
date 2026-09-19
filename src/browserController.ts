@@ -300,6 +300,77 @@ export class BrowserController implements vscode.Disposable {
 	/** Least recently used first, so eviction has an order to follow. */
 	private _sessionOrder: vscode.BrowserTab[] = [];
 
+	/**
+	 * Tabs whose session is being *used* right now, counted.
+	 *
+	 * "Least recently used" is really "least recently **acquired**" — `_touch`
+	 * runs when a session is handed out, not while it works — so the longest
+	 * running call sits at the *front* of the eviction queue. A
+	 * `browser_wait_for`, a slow `browser_text` or a full-page screenshot was
+	 * therefore the first thing dropped when a fourth tab opened a session, and
+	 * the caller was answered with the internal `CDP client disposed`: the one
+	 * error the docs single out as reading to a model as a broken browser rather
+	 * than as something to retry.
+	 *
+	 * An earlier fix covered the *pinned* case by adding pins to `claimed`, which
+	 * left the ordinary one open — an assistant with no share and no selection is
+	 * the default state, not an edge case. Counting the holds is what makes the
+	 * guard structural: every route to a session takes one for the length of the
+	 * work, so the rule cannot be re-entered by adding a call site.
+	 */
+	private readonly _inFlight = new Map<vscode.BrowserTab, number>();
+
+	/**
+	 * Opens waiting for a session slot to come free.
+	 *
+	 * `_evict` will not drop a session that is in use, so with every slot busy
+	 * there is nothing it can take and a new tab would otherwise open the fifth
+	 * channel. Queueing here keeps the bound exact in the case that actually
+	 * happens — calls overlapping for a moment — instead of letting the count
+	 * drift up with concurrency.
+	 */
+	private readonly _slotWaiters = new Set<() => void>();
+
+	/**
+	 * Slots promised to opens that have not produced a session yet.
+	 *
+	 * Counted alongside `_sessions`, because an open is asynchronous: between
+	 * taking the decision to open and the session landing in the map there is
+	 * nothing else recording that the capacity is spoken for, and every caller
+	 * arriving in that window reads the same free slot.
+	 */
+	private _reserved = 0;
+
+	/**
+	 * How long an open waits for a slot before going ahead anyway.
+	 *
+	 * **The wait is bounded, not the work**, which is the same shape as
+	 * `repairQueueWaitMs`: a plain queue starves. `browser_wait_for` takes a
+	 * timeout from its caller and may legitimately hold a session for a minute,
+	 * so four of those would block every new tab for as long as they ran — and a
+	 * tool call that hangs reads to a model as a dead browser, while its client's
+	 * own timeout fires regardless. So the pathological case degrades to the
+	 * previous behaviour, one channel over the bound, rather than to a hang.
+	 * Ordinary calls finish in well under this, so in practice the bound holds.
+	 */
+	private static readonly _slotWaitMs = 5_000;
+
+	/**
+	 * How far over {@link _sessionLimit} the timeout path may take the count.
+	 *
+	 * **The give-up has to be bounded too.** Each waiter owns its own timer, so
+	 * letting every one of them take a permit on expiry made the overflow the size
+	 * of the burst: four busy sessions and N waiting calls opened `4 + N` channels,
+	 * which is the bound removed exactly when it is needed. One over is what the
+	 * documentation promises and what a single slow moment costs; past that a call
+	 * is told to retry, because an honest refusal is better than a limit that only
+	 * holds while nothing is happening.
+	 */
+	private static readonly _sessionOverflow = 1;
+
+	/** Set while `_tryReserve` is making room, so a drop it causes cannot re-enter. */
+	private _reserving = false;
+
 	private static readonly _sessionLimit = 4;
 
 	/**
@@ -662,9 +733,29 @@ export class BrowserController implements vscode.Disposable {
 	 * Every tool goes through here, which is why it takes the caller: the tab
 	 * is no longer a property of the window but of whoever is asking.
 	 */
-	private async _withSession(caller: CallerIdentity): Promise<TabSession> {
+	private async _withSession<T>(
+		caller: CallerIdentity,
+		run: (session: TabSession) => Promise<T>,
+	): Promise<T> {
 		await this._settle();
-		return this._sessionFor(this._requireTab(caller));
+		const tab = this._requireTab(caller);
+		// **A scope rather than a hand-out**, so the claim covers the work instead
+		// of the acquisition, and released in a `finally`, so a page-side throw
+		// cannot leave the tab claimed for the life of the window.
+		//
+		// **Taken before the open, not after it.** `_sessionFor` resolves into a
+		// microtask, and another tab's open can run its own `_evict` in between —
+		// at which point this tab is in `_sessions` with nothing recording that
+		// somebody is about to use it, so it reads as a spare and is dropped under
+		// the caller that just asked for it. Holding first covers the open as well
+		// as the work; a tab with no session yet is simply never a candidate.
+		const release = this._hold(tab);
+		try {
+			const session = await this._sessionFor(tab);
+			return await run(session);
+		} finally {
+			release();
+		}
 	}
 
 	/**
@@ -697,7 +788,29 @@ export class BrowserController implements vscode.Disposable {
 			return pending;
 		}
 
-		const promise = TabSession.open(tab).then(session => {
+		// Queued, so an open does not push the count past the bound while every
+		// existing session is busy. Bounded, so it cannot hang behind one.
+		// **Held from the moment the permit is granted, released in the same turn
+		// the session lands.** A trailing `.finally` runs a microtask *after*
+		// `_sessions.set`, so for that tick the session was counted twice — once as
+		// a reservation and once as itself — and a `_tryReserve` landing in it read
+		// the sum as one over and evicted a session that did not need to go, taking
+		// a console buffer and a marker registration with it. The mirror is just as
+		// real: a waiter refused a slot that existed and stalled for the full wait.
+		let slotHeld = false;
+		const releaseSlot = () => {
+			if (!slotHeld) {
+				return;
+			}
+			slotHeld = false;
+			this._reserved--;
+			this._notifySlots();
+		};
+
+		const opening = this._awaitSlot().then(() => {
+			slotHeld = true;
+			return TabSession.open(tab);
+		}).then(session => {
 			const open = vscode.window.browserTabs ?? [];
 			if (this._disposed || !open.includes(tab)) {
 				// Nobody will ever read this one, so it closes itself rather
@@ -710,6 +823,8 @@ export class BrowserController implements vscode.Disposable {
 			this._sessions.set(tab, session);
 			this._touch(tab);
 			this._evict(tab);
+			// Synchronously, so the double count above never exists.
+			releaseSlot();
 			// A fresh session means a fresh page-side world: whatever marker was
 			// installed by the previous one is gone with it, along with the
 			// registration that would have survived a navigation.
@@ -720,6 +835,11 @@ export class BrowserController implements vscode.Disposable {
 			}
 			return session;
 		});
+
+		// Only for the paths that never reached the line above: the open failed, the
+		// tab closed while it was in flight, or the controller was disposed. A
+		// success has already given the slot back, and `releaseSlot` is idempotent.
+		const promise = opening.finally(releaseSlot);
 
 		this._opening.set(tab, promise);
 		// A rejection has to release the entry, or the failed attempt is cached:
@@ -732,6 +852,138 @@ export class BrowserController implements vscode.Disposable {
 			}
 		});
 		return promise;
+	}
+
+	/**
+	 * Takes one slot for an open that is about to start, making room if it can.
+	 *
+	 * **A reservation, not a question.** Asking "is there room?" and then opening
+	 * was wrong in two ways at once, and both were reproduced. `_notifySlots`
+	 * wakes every waiter, and resolving a promise does not run its continuations
+	 * before the next waiter is called — so each one saw the *same* freed session
+	 * and all of them went on to open. And a check against `_sessions` alone is
+	 * blind to opens already under way, so callers arriving together at a cold
+	 * start all passed while the map was still empty: six simultaneous calls
+	 * opened six channels against a limit of four.
+	 *
+	 * Counting `_reserved` alongside `_sessions` closes both, because the permit
+	 * is taken here — synchronously, before anything awaits — so the second
+	 * caller in the same turn already sees it.
+	 *
+	 * Room is *made* rather than merely promised: a session the sweep would give
+	 * up is dropped now, so what the caller is handed is capacity that exists.
+	 */
+	private _tryReserve(ceiling: number = BrowserController._sessionLimit): boolean {
+		// The drops below free capacity this call is about to take, so waking the
+		// queue from them would hand the slot being made to somebody else.
+		this._reserving = true;
+		try {
+			while (this._sessions.size + this._reserved >= ceiling) {
+				const spare = this._evictableTab();
+				if (!spare) {
+					return false;
+				}
+				this._dropSession(spare);
+			}
+			this._reserved++;
+			return true;
+		} finally {
+			this._reserving = false;
+		}
+	}
+
+	/**
+	 * Waits for a slot, and gives up waiting after {@link _slotWaitMs}.
+	 *
+	 * It always resolves holding exactly one reservation — on the timeout and on
+	 * teardown it simply takes one — so the release in `_sessionFor` is
+	 * unconditional and the count cannot drift.
+	 */
+	private _awaitSlot(): Promise<void> {
+		if (this._disposed) {
+			this._reserved++;
+			return Promise.resolve();
+		}
+		if (this._tryReserve()) {
+			return Promise.resolve();
+		}
+		return new Promise<void>((resolve, reject) => {
+			const waiter = () => {
+				// Each waiter competes for the permit rather than trusting the
+				// wake-up: one release frees one slot, so exactly one of them wins
+				// and the rest stay queued.
+				if (this._disposed) {
+					this._reserved++;
+				} else if (!this._tryReserve()) {
+					return;
+				}
+				clearTimeout(timer);
+				this._slotWaiters.delete(waiter);
+				resolve();
+			};
+			// Going ahead beats hanging — but only as far as `_sessionOverflow`.
+			// Granting unconditionally here gave every waiter its own permit, so the
+			// overflow was the size of the burst rather than the one channel the
+			// documentation promises. Past the ceiling the call is refused instead,
+			// with something a model can act on: the work already running will end,
+			// and a retry then finds a slot.
+			const timer = setTimeout(() => {
+				this._slotWaiters.delete(waiter);
+				if (this._tryReserve(
+					BrowserController._sessionLimit + BrowserController._sessionOverflow)) {
+					resolve();
+					return;
+				}
+				reject(new Error('Too many browser pages are in use at once. Wait for the calls already '
+					+ 'running to finish, then try again.'));
+			}, BrowserController._slotWaitMs);
+			this._slotWaiters.add(waiter);
+		});
+	}
+
+	/** Wakes everything queued for a slot; each re-checks for itself. */
+	private _notifySlots(): void {
+		// `_tryReserve` drops sessions to make the very slot it is about to take;
+		// waking the queue from inside that would hand it to another waiter and
+		// leave the reserver to drop a second one.
+		if (this._reserving) {
+			return;
+		}
+		for (const waiter of [...this._slotWaiters]) {
+			waiter();
+		}
+	}
+
+	/**
+	 * Claims a tab's session for the length of one piece of work.
+	 *
+	 * The returned release is idempotent, so a `finally` that runs twice — or a
+	 * caller that releases and then throws — cannot drive the count negative and
+	 * pin a tab out of the eviction queue for the life of the window.
+	 */
+	private _hold(tab: vscode.BrowserTab): () => void {
+		this._inFlight.set(tab, (this._inFlight.get(tab) ?? 0) + 1);
+		let released = false;
+		return () => {
+			if (released) {
+				return;
+			}
+			released = true;
+			const rest = (this._inFlight.get(tab) ?? 1) - 1;
+			if (rest > 0) {
+				this._inFlight.set(tab, rest);
+				return;
+			}
+			this._inFlight.delete(tab);
+			// `_evict` stands down rather than dropping a session that is in use, so
+			// the limit can be over by the time this call ends. This is what brings
+			// it back: without it the excess would persist until the next open. The
+			// sweep runs first, so a waiter woken below sees the slot it frees.
+			if (!this._disposed) {
+				this._evict();
+			}
+			this._notifySlots();
+		};
 	}
 
 	/** Marks a tab as the most recently used, for eviction order. */
@@ -752,31 +1004,51 @@ export class BrowserController implements vscode.Disposable {
 	 */
 	private _evict(arriving?: vscode.BrowserTab): void {
 		while (this._sessions.size > BrowserController._sessionLimit) {
-			// The arrival is never the target. It is the most recently used *and*
-			// unassigned whenever the caller has no tab of its own, so the spare
-			// search below picked it — the opener then got a session that had
-			// already been disposed, and its first send failed with "CDP session
-			// closed", the one error the docs single out as reading to a model
-			// as a broken browser rather than as something to retry.
-			const candidates = this._sessionOrder.filter(tab =>
-				tab !== arriving && this._sessions.has(tab));
-			// A tab that somebody is *using* is passed over the same way an
-			// assigned one is. "Least recently used" is really "least recently
-			// acquired" — `_touch` runs when a session is handed out, not while
-			// it works — so the longest-running call sat at the front of the
-			// queue: a `browser_wait_for` on a pinned tab was evicted by another
-			// assistant opening tabs, and answered the model with the internal
-			// `CDP client disposed`. Reproduced.
-			const claimed = (tab: vscode.BrowserTab) =>
-				this._shares.stateOf(tab) !== undefined
-				|| [...this._pins.values()].some(pin => pin.tab === tab);
-			const spare = candidates.find(tab => !claimed(tab));
-			const target = spare ?? candidates[0];
+			const target = this._evictableTab(arriving);
 			if (!target) {
+				// Every candidate is working, so the bound stays over until one of
+				// them finishes. `_hold`'s release sweeps again the moment a tab
+				// goes idle, so it is a delay rather than a leak, and breaking a
+				// live call to hold a number is the wrong way round.
 				return;
 			}
 			this._dropSession(target);
 		}
+	}
+
+	/**
+	 * The session this controller would give up next, or `undefined` while every
+	 * one of them is working.
+	 *
+	 * `exclude` is the arrival, which is never the target: it is the most
+	 * recently used *and* unassigned whenever the caller has no tab of its own,
+	 * so the search below would pick it — the opener then got a session that had
+	 * already been disposed, and its first send failed with "CDP session closed".
+	 *
+	 * **Being used is a hard constraint; being assigned is only a preference**,
+	 * and collapsing the two into one predicate with a `?? candidates[0]`
+	 * fallback dropped the session of a live call while the guard above it did
+	 * nothing at all. The two differ in what eviction costs: an assigned but idle
+	 * tab loses a console buffer and a marker registration and reopens on its
+	 * next call, while a tab with work in flight loses the call itself — the one
+	 * error the docs single out as reading to a model as a broken browser rather
+	 * than as something to retry. So an assignment is given up when there is
+	 * nothing else to take, and work in flight is never given up at all.
+	 *
+	 * One rule, used by `_evict` *and* by `_tryReserve`, so capacity can never be
+	 * taken under a rule the sweep would not have agreed with.
+	 */
+	private _evictableTab(exclude?: vscode.BrowserTab): vscode.BrowserTab | undefined {
+		const candidates = this._sessionOrder.filter(tab =>
+			tab !== exclude && this._sessions.has(tab));
+
+		const inUse = (tab: vscode.BrowserTab) => this._inFlight.has(tab);
+		const spokenFor = (tab: vscode.BrowserTab) =>
+			this._shares.stateOf(tab) !== undefined
+			|| [...this._pins.values()].some(pin => pin.tab === tab);
+
+		return candidates.find(tab => !inUse(tab) && !spokenFor(tab))
+			?? candidates.find(tab => !inUse(tab));
 	}
 
 	/** Closes the session for one tab, or for all of them. */
@@ -792,6 +1064,12 @@ export class BrowserController implements vscode.Disposable {
 		this._sessions.delete(tab);
 		this._opening.delete(tab);
 		this._sessionOrder = this._sessionOrder.filter(known => known !== tab);
+		// **A slot has just come free, whoever freed it.** The queue was woken only
+		// from `_hold`'s release and from an open settling, so capacity given back
+		// any other way — a tab closing, `navigate`'s `CDP session closed` retry,
+		// the stale-cache branch above — went unnoticed and a queued open sat there
+		// until its timeout, with a usable slot in front of it the whole time.
+		this._notifySlots();
 	}
 
 	/* ------------------------------------------------------------ sharing a tab */
@@ -897,6 +1175,7 @@ export class BrowserController implements vscode.Disposable {
 		// was last looking at, and an assignment made for one assistant is not
 		// that. Writing it here handed the assigned page to every unassigned
 		// caller as its fallback.
+		//
 		// **Every caller this assignment now answers for** loses its own
 		// selection, and nobody else does. An assignment outranks a selection,
 		// so a shadowed pin would resurrect a stale choice the moment the
@@ -915,7 +1194,6 @@ export class BrowserController implements vscode.Disposable {
 				this._pins.delete(key);
 			}
 		}
-		this._lastTab = tab;
 		this._onDidChangeShare.fire();
 
 		// The tab this target was moved *off* keeps its marker only if somebody
@@ -994,6 +1272,13 @@ export class BrowserController implements vscode.Disposable {
 		if (!state) {
 			return;
 		}
+		// **Held like any other use of a session.** Being assigned is not enough:
+		// `_evictableTab` treats an assignment as a *preference*, so once every
+		// candidate is assigned its second pass returns one anyway — and the marker
+		// install then had its session disposed under it. The throw is swallowed
+		// here by design, so the visible result was a shared tab wearing no 🔗/🤖 at
+		// all, which is the one thing the marker exists to rule out.
+		const release = this._hold(tab);
 		try {
 			const session = await this._sessionFor(tab);
 			const current = this._shares.stateOf(tab);
@@ -1005,6 +1290,8 @@ export class BrowserController implements vscode.Disposable {
 			// Best effort: a session the host dropped, a tab mid-close, a page
 			// that has not committed. None of them may turn sharing into an
 			// error the user has to read.
+		} finally {
+			release();
 		}
 	}
 
@@ -1329,40 +1616,49 @@ export class BrowserController implements vscode.Disposable {
 	private static readonly _navigationTimeoutMs = 15_000;
 
 	private async _navigateInTab(tab: vscode.BrowserTab, url: string): Promise<unknown> {
-		const session = await this._sessionFor(tab);
-		// The buffer describes the page being left.
-		session.clearConsole();
-
-		const load = waitForLoad(session, BrowserController._navigationTimeoutMs);
+		// The longest hold there is: a load event is waited for up to
+		// `_navigationTimeoutMs`, so without a claim this is the likeliest call of
+		// all to be evicted out from under itself. Taken before the open, for the
+		// reason given in `_withSession`.
+		const release = this._hold(tab);
 		try {
-			const result = await session.client.send('Page.navigate', { url }, session.sessionId);
-			if (result?.errorText) {
-				throw new Error(`Could not open ${url}: ${result.errorText}`);
+			const session = await this._sessionFor(tab);
+			// The buffer describes the page being left.
+			session.clearConsole();
+
+			const load = waitForLoad(session, BrowserController._navigationTimeoutMs);
+			try {
+				const result = await session.client.send('Page.navigate', { url }, session.sessionId);
+				if (result?.errorText) {
+					throw new Error(`Could not open ${url}: ${result.errorText}`);
+				}
+
+				// A same-document navigation — `/docs` to `/docs#intro` — loads nothing
+				// and fires no load event, and CDP says so by omitting `loaderId` from
+				// the reply ("the previously committed loaderId would not change").
+				// Waiting for an event that cannot come stalls every anchor change for
+				// the full timeout.
+				if (result?.loaderId) {
+					await load.settled;
+				}
+			} finally {
+				load.cancel();
 			}
 
-			// A same-document navigation — `/docs` to `/docs#intro` — loads nothing
-			// and fires no load event, and CDP says so by omitting `loaderId` from
-			// the reply ("the previously committed loaderId would not change").
-			// Waiting for an event that cannot come stalls every anchor change for
-			// the full timeout.
-			if (result?.loaderId) {
-				await load.settled;
+			// Read the page rather than the tab: `BrowserTab.url` catches up over an
+			// event and can still hold the previous address here. Best effort — the
+			// navigation happened either way, and reporting it as a failure because a
+			// title could not be read would be a lie.
+			let info: { url?: string; title?: string } | undefined;
+			try {
+				info = await evaluate(session, '({ url: location.href, title: document.title })');
+			} catch {
+				info = undefined;
 			}
+			return { url: info?.url ?? url, title: stripMarker(info?.title), tabId: this._idOf(tab), openedNewTab: false };
 		} finally {
-			load.cancel();
+			release();
 		}
-
-		// Read the page rather than the tab: `BrowserTab.url` catches up over an
-		// event and can still hold the previous address here. Best effort — the
-		// navigation happened either way, and reporting it as a failure because a
-		// title could not be read would be a lie.
-		let info: { url?: string; title?: string } | undefined;
-		try {
-			info = await evaluate(session, '({ url: location.href, title: document.title })');
-		} catch {
-			info = undefined;
-		}
-		return { url: info?.url ?? url, title: stripMarker(info?.title), tabId: this._idOf(tab), openedNewTab: false };
 	}
 
 	/**
@@ -1388,62 +1684,63 @@ export class BrowserController implements vscode.Disposable {
 	 * commands: utility-class frameworks make them long and unstable.
 	 */
 	public async snapshot(caller: CallerIdentity): Promise<unknown> {
-		const session = await this._withSession(caller);
-		const value = await evaluate(session, `(() => {
-			// The exact test the consumer performs, so a selector cannot pass
-			// here and pick a different element there.
-			const resolves = (sel, el) => {
-				try { return !!sel && document.querySelector(sel) === el; } catch (e) { return false; }
-			};
-			const idFor = (el) => el.id ? '#' + CSS.escape(el.id) : undefined;
-			const pathFor = (el) => {
-				const parts = [];
-				let node = el;
-				while (node && node.nodeType === 1) {
-					const byId = idFor(node);
-					// A duplicate id resolves to somebody else, so it is only an
-					// anchor when it actually points back at this node.
-					if (byId && document.querySelector(byId) === node) { parts.unshift(byId); break; }
-					const parent = node.parentElement;
-					let part = node.tagName.toLowerCase();
-					if (parent) {
-						const twins = Array.prototype.filter.call(parent.children, (c) => c.tagName === node.tagName);
-						if (twins.length > 1) { part += ':nth-of-type(' + (twins.indexOf(node) + 1) + ')'; }
+		return this._withSession(caller, async session => {
+			const value = await evaluate(session, `(() => {
+				// The exact test the consumer performs, so a selector cannot pass
+				// here and pick a different element there.
+				const resolves = (sel, el) => {
+					try { return !!sel && document.querySelector(sel) === el; } catch (e) { return false; }
+				};
+				const idFor = (el) => el.id ? '#' + CSS.escape(el.id) : undefined;
+				const pathFor = (el) => {
+					const parts = [];
+					let node = el;
+					while (node && node.nodeType === 1) {
+						const byId = idFor(node);
+						// A duplicate id resolves to somebody else, so it is only an
+						// anchor when it actually points back at this node.
+						if (byId && document.querySelector(byId) === node) { parts.unshift(byId); break; }
+						const parent = node.parentElement;
+						let part = node.tagName.toLowerCase();
+						if (parent) {
+							const twins = Array.prototype.filter.call(parent.children, (c) => c.tagName === node.tagName);
+							if (twins.length > 1) { part += ':nth-of-type(' + (twins.indexOf(node) + 1) + ')'; }
+						}
+						parts.unshift(part);
+						if (!parent) { break; }
+						node = parent;
 					}
-					parts.unshift(part);
-					if (!parent) { break; }
-					node = parent;
-				}
-				return parts.join(' > ');
-			};
-			const selectorFor = (el) => {
-				const byId = idFor(el);
-				if (resolves(byId, el)) { return byId; }
-				const name = el.getAttribute('name');
-				const byName = name ? el.tagName.toLowerCase() + '[name=' + JSON.stringify(name) + ']' : undefined;
-				if (resolves(byName, el)) { return byName; }
-				const path = pathFor(el);
-				return resolves(path, el) ? path : undefined;
-			};
+					return parts.join(' > ');
+				};
+				const selectorFor = (el) => {
+					const byId = idFor(el);
+					if (resolves(byId, el)) { return byId; }
+					const name = el.getAttribute('name');
+					const byName = name ? el.tagName.toLowerCase() + '[name=' + JSON.stringify(name) + ']' : undefined;
+					if (resolves(byName, el)) { return byName; }
+					const path = pathFor(el);
+					return resolves(path, el) ? path : undefined;
+				};
 
-			const out = [];
-			const nodes = document.querySelectorAll('a[href], button, input, select, textarea, [role="button"], [role="link"], [contenteditable="true"]');
-			for (const el of nodes) {
-				const rect = el.getBoundingClientRect();
-				if (rect.width === 0 || rect.height === 0) { continue; }
-				const label = (el.getAttribute('aria-label') || el.innerText || el.value || el.getAttribute('placeholder') || el.getAttribute('title') || '').trim().slice(0, 80);
-				const entry = { tag: el.tagName.toLowerCase(), type: el.getAttribute('type') || undefined, label };
-				const selector = selectorFor(el);
-				if (selector) { entry.selector = selector; }
-				out.push(entry);
-				if (out.length >= 150) { break; }
-			}
-			return { url: location.href, title: document.title, elements: out };
-		})()`);
-		// The title is read from the page, and while this tab is shared the page
-		// is carrying *our* suffix — so it needs the same strip as every other
-		// title that leaves the extension.
-		return value ? { ...value, title: stripMarker(value.title) } : value;
+				const out = [];
+				const nodes = document.querySelectorAll('a[href], button, input, select, textarea, [role="button"], [role="link"], [contenteditable="true"]');
+				for (const el of nodes) {
+					const rect = el.getBoundingClientRect();
+					if (rect.width === 0 || rect.height === 0) { continue; }
+					const label = (el.getAttribute('aria-label') || el.innerText || el.value || el.getAttribute('placeholder') || el.getAttribute('title') || '').trim().slice(0, 80);
+					const entry = { tag: el.tagName.toLowerCase(), type: el.getAttribute('type') || undefined, label };
+					const selector = selectorFor(el);
+					if (selector) { entry.selector = selector; }
+					out.push(entry);
+					if (out.length >= 150) { break; }
+				}
+				return { url: location.href, title: document.title, elements: out };
+			})()`);
+			// The title is read from the page, and while this tab is shared the page
+			// is carrying *our* suffix — so it needs the same strip as every other
+			// title that leaves the extension.
+			return value ? { ...value, title: stripMarker(value.title) } : value;
+		});
 	}
 
 	/**
@@ -1513,37 +1810,40 @@ export class BrowserController implements vscode.Disposable {
 	}
 
 	public async html(selector: string | undefined, caller: CallerIdentity): Promise<unknown> {
-		const session = await this._withSession(caller);
-		const value = await evaluate(session, `(() => {
-			const sel = ${literal(selector)};
-			const el = sel ? document.querySelector(sel) : document.documentElement;
-			if (!el) { throw new Error('No element matches ' + sel); }
-			return el.outerHTML;
-		})()`);
-		// The `<title>` of a shared tab carries our marker, and this is the tool
-		// a model uses to check the page against itself.
-		return typeof value === 'string' ? stripMarkerFromHtml(value) : value;
+		return this._withSession(caller, async session => {
+			const value = await evaluate(session, `(() => {
+				const sel = ${literal(selector)};
+				const el = sel ? document.querySelector(sel) : document.documentElement;
+				if (!el) { throw new Error('No element matches ' + sel); }
+				return el.outerHTML;
+			})()`);
+			// The `<title>` of a shared tab carries our marker, and this is the tool
+			// a model uses to check the page against itself.
+			return typeof value === 'string' ? stripMarkerFromHtml(value) : value;
+		});
 	}
 
 	public async text(selector: string | undefined, caller: CallerIdentity): Promise<unknown> {
-		const session = await this._withSession(caller);
-		return evaluate(session, `(() => {
-			const sel = ${literal(selector)};
-			const el = sel ? document.querySelector(sel) : document.body;
-			if (!el) { throw new Error('No element matches ' + sel); }
-			return (el.innerText || el.textContent || '').trim();
-		})()`);
+		return this._withSession(caller, async session => {
+			return evaluate(session, `(() => {
+				const sel = ${literal(selector)};
+				const el = sel ? document.querySelector(sel) : document.body;
+				if (!el) { throw new Error('No element matches ' + sel); }
+				return (el.innerText || el.textContent || '').trim();
+			})()`);
+		});
 	}
 
 	public async consoleOutput(clear: boolean, caller: CallerIdentity): Promise<unknown> {
-		const session = await this._withSession(caller);
-		const lines = session.consoleLines.map(line => `[${line.level}] ${line.text}`);
-		if (clear) {
-			session.clearConsole();
-		}
-		return lines.length
-			? lines.join('\n')
-			: 'The console is empty. Note that only messages logged since this tab was first inspected are captured.';
+		return this._withSession(caller, async session => {
+			const lines = session.consoleLines.map(line => `[${line.level}] ${line.text}`);
+			if (clear) {
+				session.clearConsole();
+			}
+			return lines.length
+				? lines.join('\n')
+				: 'The console is empty. Note that only messages logged since this tab was first inspected are captured.';
+		});
 	}
 
 	/**
@@ -1574,7 +1874,13 @@ export class BrowserController implements vscode.Disposable {
 			// for everything that happened before the next call — and console
 			// capture is the whole reason the session is cached at all.
 			const tab = this._requireTab(caller);
-			return this._capture(tab, await this._sessionFor(tab), fullPage);
+			// Held before the open, for the reason given in `_withSession`.
+			const release = this._hold(tab);
+			try {
+				return await this._capture(tab, await this._sessionFor(tab), fullPage);
+			} finally {
+				release();
+			}
 		}
 
 		// A tab named by the caller may not be the subject — the toolbar passes
@@ -1605,7 +1911,18 @@ export class BrowserController implements vscode.Disposable {
 	): Promise<T> {
 		const cached = this._sessions.get(tab);
 		if (cached && !cached.isClosed) {
-			return run(cached);
+			// Held like any other use. A borrow deliberately does not `_touch` — a
+			// one-off read should not reorder the queue — so without this the
+			// session keeps its old position and a fourth tab opening one mid
+			// capture drops it under the caller, who is a *user* here: the toolbar
+			// button answers "Could not capture the page: CDP client disposed", in
+			// an error toast, which pauses the very tab just captured.
+			const release = this._hold(tab);
+			try {
+				return await run(cached);
+			} finally {
+				release();
+			}
 		}
 		const session = await TabSession.open(tab);
 		try {
@@ -1655,32 +1972,34 @@ export class BrowserController implements vscode.Disposable {
 	}
 
 	public async click(selector: string, caller: CallerIdentity): Promise<unknown> {
-		const session = await this._withSession(caller);
-		return evaluate(session, `(() => {
-			const el = document.querySelector(${literal(selector)});
-			if (!el) { throw new Error('No element matches ' + ${literal(selector)}); }
-			el.scrollIntoView({ block: 'center' });
-			el.click();
-			return 'clicked ' + (el.tagName.toLowerCase());
-		})()`);
+		return this._withSession(caller, async session => {
+			return evaluate(session, `(() => {
+				const el = document.querySelector(${literal(selector)});
+				if (!el) { throw new Error('No element matches ' + ${literal(selector)}); }
+				el.scrollIntoView({ block: 'center' });
+				el.click();
+				return 'clicked ' + (el.tagName.toLowerCase());
+			})()`);
+		});
 	}
 
 	public async fill(selector: string, value: string, caller: CallerIdentity): Promise<unknown> {
-		const session = await this._withSession(caller);
-		return evaluate(session, `(() => {
-			const el = document.querySelector(${literal(selector)});
-			if (!el) { throw new Error('No element matches ' + ${literal(selector)}); }
-			el.focus();
-			if (el.isContentEditable) {
-				el.textContent = ${literal(value)};
-			} else {
-				el.value = ${literal(value)};
-			}
-			// Frameworks listen for these, not for the assignment.
-			el.dispatchEvent(new Event('input', { bubbles: true }));
-			el.dispatchEvent(new Event('change', { bubbles: true }));
-			return 'filled ' + el.tagName.toLowerCase();
-		})()`);
+		return this._withSession(caller, async session => {
+			return evaluate(session, `(() => {
+				const el = document.querySelector(${literal(selector)});
+				if (!el) { throw new Error('No element matches ' + ${literal(selector)}); }
+				el.focus();
+				if (el.isContentEditable) {
+					el.textContent = ${literal(value)};
+				} else {
+					el.value = ${literal(value)};
+				}
+				// Frameworks listen for these, not for the assignment.
+				el.dispatchEvent(new Event('input', { bubbles: true }));
+				el.dispatchEvent(new Event('change', { bubbles: true }));
+				return 'filled ' + el.tagName.toLowerCase();
+			})()`);
+		});
 	}
 
 	/** Polls in the page until a selector or a piece of text shows up. */
@@ -1694,22 +2013,23 @@ export class BrowserController implements vscode.Disposable {
 			throw new Error('Give either a selector or a text to wait for.');
 		}
 
-		const session = await this._withSession(caller);
-		return evaluate(session, `(async () => {
-			const sel = ${literal(selector)};
-			const needle = ${literal(text)};
-			const deadline = Date.now() + ${Math.max(0, timeoutMs)};
-			const found = () => {
-				if (sel && !document.querySelector(sel)) { return false; }
-				if (needle && !(document.body.innerText || '').includes(needle)) { return false; }
-				return true;
-			};
-			while (Date.now() < deadline) {
-				if (found()) { return 'found'; }
-				await new Promise(r => setTimeout(r, 100));
-			}
-			throw new Error('Timed out waiting for ' + (sel || '') + (sel && needle ? ' and ' : '') + (needle ? JSON.stringify(needle) : ''));
-		})()`);
+		return this._withSession(caller, async session => {
+			return evaluate(session, `(async () => {
+				const sel = ${literal(selector)};
+				const needle = ${literal(text)};
+				const deadline = Date.now() + ${Math.max(0, timeoutMs)};
+				const found = () => {
+					if (sel && !document.querySelector(sel)) { return false; }
+					if (needle && !(document.body.innerText || '').includes(needle)) { return false; }
+					return true;
+				};
+				while (Date.now() < deadline) {
+					if (found()) { return 'found'; }
+					await new Promise(r => setTimeout(r, 100));
+				}
+				throw new Error('Timed out waiting for ' + (sel || '') + (sel && needle ? ' and ' : '') + (needle ? JSON.stringify(needle) : ''));
+			})()`);
+		});
 	}
 
 	/**
@@ -1739,6 +2059,12 @@ export class BrowserController implements vscode.Disposable {
 	public dispose(): void {
 		// First, so an open still in flight sees it when it lands.
 		this._disposed = true;
+
+		// Anything queued for a session slot is released rather than left to its
+		// timeout: the open it is waiting for will refuse the moment it lands, and
+		// a pending timer would hold the host's event loop for `_slotWaitMs` after
+		// the window is done with this controller.
+		this._notifySlots();
 
 		// The extension is going; the *page* is not. The browser editor belongs
 		// to the workbench, so a disable or a reload of this extension left the

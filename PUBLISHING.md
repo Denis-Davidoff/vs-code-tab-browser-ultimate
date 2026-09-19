@@ -102,8 +102,20 @@ The root has no Marketplace publish script at all any more: this is the only rou
 2. `npm run compile && npm run typecheck && npm test && npm run check-manifest`.
 3. `npm run publish:ovsx` — it packages first, so the upload is always current. Open VSX carries
    the real build.
-4. **Commit the rebuilt `.vsix`** — it is tracked, and a stale one means VS Code users install the
-   previous version.
+4. **Verify the package, then commit the rebuilt `.vsix`** — it is tracked, and a stale one means
+   VS Code users install the previous version. Verify it by extracting it rather than by trusting
+   that the build ran; this has gone wrong once already, with the artifact and the source both
+   claiming one version while the artifact was missing a whole module:
+
+   ```sh
+   rm -rf /tmp/vsix && unzip -q tab-browser-ultimate.vsix -d /tmp/vsix
+   diff -rq /tmp/vsix/extension/out out          # must be silent
+   unzip -l tab-browser-ultimate.vsix | grep -E '\.ai-browser/|\.mcp\.json'   # must be empty
+   ```
+
+   The first catches a stale package, the second the allowlist-by-omission hazard — `.vscodeignore`
+   excludes by omission, so a file one of this extension's *own* commands writes at the repository
+   root rides along, and `git status` stays clean while it does.
 5. If the listing text or the video changed, set `vscode-marketplace/package.json` to **the same
    version** as the root and `cd vscode-marketplace && npm run publish`.
 6. Push, and tag the commit if you want the download to be findable by version.

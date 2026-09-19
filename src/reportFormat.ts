@@ -140,7 +140,11 @@ export function formatPathReport(
 	embeddedIn?: string,
 ): string {
 	const lines = [
-		`# ${pathLabel(kind)} of \`${descriptor}\``,
+		// {@link inlineCode}, not a bare pair of backticks: the descriptor is built
+		// from the page's own tag, id and classes, and an id may legally contain a
+		// backtick — which closes the span early and spills the rest of the
+		// heading, in a file whose reader is usually a model.
+		`# ${pathLabel(kind)} of ${inlineCode(descriptor)}`,
 		url
 			? `${pathLabel(kind)} of an element on ${url}`
 			: `${pathLabel(kind)} of an element in the integrated browser`,
@@ -168,7 +172,8 @@ export function formatPathReport(
 
 /** Wraps the element context so the file reads as a document, not a fragment. */
 export function formatElementReport(markdown: string, descriptor: string): string {
-	return `# Element context of \`${descriptor}\`\n\n${markdown.trimEnd()}\n`;
+	// Wrapped by {@link inlineCode} for the reason given in {@link formatPathReport}.
+	return `# Element context of ${inlineCode(descriptor)}\n\n${markdown.trimEnd()}\n`;
 }
 
 export function reportFileName(
