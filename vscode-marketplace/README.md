@@ -91,11 +91,11 @@ have.
   🎥 VIDEO SLOT — fill this in when the recording is up, then delete these comment markers.
   The Marketplace strips <iframe> and <video>, so a video is always a still image that links out:
 
-  [![Watch the tour](https://raw.githubusercontent.com/Denis-Davidoff/vs-code-tab-browser-ultimate/main/marketplace/assets/video-thumbnail.png)](https://www.youtube.com/watch?v=VIDEO_ID)
+  [![Watch the tour](https://raw.githubusercontent.com/Denis-Davidoff/vs-code-tab-browser-ultimate/main/vscode-marketplace/assets/video-thumbnail.png)](https://www.youtube.com/watch?v=VIDEO_ID)
 
   An animated GIF under ~10 MB also plays inline and needs no click:
 
-  ![AI Browser tour](https://raw.githubusercontent.com/Denis-Davidoff/vs-code-tab-browser-ultimate/main/marketplace/assets/tour.gif)
+  ![AI Browser tour](https://raw.githubusercontent.com/Denis-Davidoff/vs-code-tab-browser-ultimate/main/vscode-marketplace/assets/tour.gif)
 -->
 
 ---
@@ -168,12 +168,18 @@ button is gone; while it is behind, it reads **Update AI Browser**.
 | **AI Browser: Download the Full Build (VSIX)** | opens the download |
 | **AI Browser: Open the Guide** | opens the documentation |
 
-**The update watch** runs on its own once the full build is installed: it asks Open VSX (and
-falls back to the repository) at most once every six hours, compares the answer with the version
-you have, and only then says anything. Each release is offered once, not once per window, and
-the offer opens the `.vsix` for that exact version. Everything that is not an available update —
-"you are up to date", "could not reach the registry" — goes to the status bar rather than a
-notification.
+**The update watch** asks Open VSX (and falls back to the repository) at most once every six
+hours, compares the answer with the version you have, and only then says anything. Each release
+is offered once, not once per window, and the offer opens the `.vsix` for that exact version.
+Everything that is not an available update — "you are up to date", "could not reach the
+registry" — goes to the status bar rather than a notification.
+
+**It stands down once the full build can announce its own releases**, which it has done since
+0.5.24: two extensions announcing one release is two toasts, and the full build's is the better
+of the two because it can tell whether a browser page is on screen and hold the notice back. So
+with a current full build installed this one stops announcing by itself and keeps the status bar
+button and **Check for Updates**, which always answer. With an older full build, or none, it is
+still the only thing that will ever mention a release, and it says so unprompted.
 
 It says hello once per released version of this listing, ten seconds after startup — a
 notification would otherwise pause a browser tab restored with the window. Before the full build

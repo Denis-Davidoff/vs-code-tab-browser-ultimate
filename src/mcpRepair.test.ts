@@ -9,7 +9,7 @@ import { codexEntries, codexRangeDeletable, codexUnterminated } from './codexTom
 import { codexEntryCarriesToken } from './mcpClientState.ts';
 import {
 	codexRetiredTables, codexOurTables, mergeAuthorization, parseInlineTable, removeCodexTables,
-	repairClaudeJson, repairCodexToml,
+	repairClaudeJson, repairCodexToml, spliceCodexTables,
 } from './mcpRepair.ts';
 
 const token = 'ourtoken0000000000000000000000000000000000000000000000000000abcd';
@@ -933,5 +933,165 @@ suite('repairCodexToml refuses a range it may not delete', () => {
 		assert.strictEqual(result.changed, true);
 		assert.deepStrictEqual(result.collapsed, ['tab-browser']);
 		assert.ok(!result.text.includes('[mcp_servers.tab-browser]'));
+	});
+});
+
+suite('repairCodexToml does not write a key it is also keeping', () => {
+
+	// The `url`-absent branch emitted `http_headers` unconditionally while
+	// leaving the existing one exactly where it was — neither removed nor
+	// replaced — so the table defined the key twice, which is TOML that does not
+	// parse. That ran unattended at window start, took every other MCP server in
+	// `~/.codex/config.toml` with it, and still reported the port as updated.
+	// Reachable by commenting out a `url` line by hand to disable an endpoint;
+	// the connect path heals that shape, which is why it stayed invisible.
+	const headerLines = (text: string) =>
+		text.split('\n').filter(line => line.startsWith('http_headers'));
+
+	test('an existing inline http_headers is replaced, not written a second time', () => {
+		const text = [
+			'[mcp_servers.ai-browser]',
+			'# url = "http://127.0.0.1:43110/mcp"',
+			`http_headers = { Authorization = "Bearer ${token}", X-Org = "acme" }`,
+			'startup_timeout_sec = 30',
+			'',
+		].join('\n');
+
+		const result = repairToml(text);
+
+		assert.strictEqual(result.changed, true);
+		assert.strictEqual(headerLines(result.text).length, 1, 'exactly one http_headers key');
+		assert.ok(headerLines(result.text)[0].includes(`Bearer ${token}`));
+		assert.ok(headerLines(result.text)[0].includes('X-Org'), "the user's own header survives");
+		assert.ok(result.text.includes(`url = "${url}"`));
+		assert.ok(result.text.includes('startup_timeout_sec = 30'));
+	});
+
+	test('a header sub-table is updated in place, not duplicated inline', () => {
+		const text = [
+			'[mcp_servers.ai-browser]',
+			'startup_timeout_sec = 30',
+			'',
+			'[mcp_servers.ai-browser.http_headers]',
+			`Authorization = "Bearer ${token}"`,
+			'',
+		].join('\n');
+
+		const result = repairToml(text);
+
+		assert.strictEqual(result.changed, true);
+		assert.strictEqual(headerLines(result.text).length, 0, 'no inline table beside the sub-table');
+		assert.strictEqual(
+			result.text.split('\n').filter(line => line === '[mcp_servers.ai-browser.http_headers]').length,
+			1, 'the sub-table is declared exactly once');
+		assert.ok(result.text.includes(`url = "${url}"`));
+	});
+
+	test('a table carrying neither still gets both lines', () => {
+		const text = [
+			'[mcp_servers.ai-browser]',
+			`description = "${token}"`,
+			'',
+		].join('\n');
+
+		const result = repairToml(text);
+
+		assert.ok(result.text.includes(`url = "${url}"`));
+		assert.strictEqual(headerLines(result.text).length, 1);
+	});
+});
+
+suite('spliceCodexTables', () => {
+
+	// The interactive Connect Codex write, and the only one of the three
+	// deleters with no coverage at all. It is also the one whose refusal is
+	// `undefined` rather than a flag, which is the distinction that matters: the
+	// caller writes the file back and reports success if a refusal ever looks
+	// like "nothing to do".
+	const table = ['[mcp_servers.ai-browser]', `url = "${url}"`, 'http_headers = { }'];
+	const always = () => true;
+	const never = () => false;
+
+	test('a refusal is undefined, never the input unchanged', () => {
+		const lines = ['[mcp_servers.ai-browser]', 'url = "http://127.0.0.1:43110/mcp"', ''];
+
+		assert.strictEqual(spliceCodexTables(lines, [[0, 2]], table, never), undefined);
+	});
+
+	test('the range check is actually consulted', () => {
+		const lines = ['[mcp_servers.ai-browser]', 'url = "old"', ''];
+		const asked: [number, number][] = [];
+
+		spliceCodexTables(lines, [[0, 2]], table, (from, to) => {
+			asked.push([from, to]);
+			return true;
+		});
+
+		assert.deepStrictEqual(asked, [[0, 2]]);
+	});
+
+	test('one refused range stands off the whole splice', () => {
+		const lines = ['a', 'b', 'c', 'd'];
+
+		const result = spliceCodexTables(lines, [[0, 1], [2, 3]], table,
+			(from) => from === 0);
+
+		assert.strictEqual(result, undefined, 'not a partial splice');
+	});
+
+	test('the new table lands where the first old one was, not at the bottom', () => {
+		const lines = [
+			'[mcp_servers.ai-browser]',
+			'url = "http://127.0.0.1:43110/mcp"',
+			'',
+			'[mcp_servers.other]',
+			'command = "npx"',
+			'',
+		];
+
+		const result = spliceCodexTables(lines, [[0, 3]], table, always);
+
+		assert.ok(result);
+		assert.strictEqual(result[0], '[mcp_servers.ai-browser]');
+		assert.ok(result.indexOf('[mcp_servers.other]') > result.indexOf(`url = "${url}"`));
+	});
+
+	test('several ranges are removed and the table placed at the first of them', () => {
+		const lines = [
+			'[mcp_servers.keep]',
+			'command = "npx"',
+			'[mcp_servers.tab-browser]',
+			'url = "old"',
+			'[mcp_servers.ai-browser]',
+			'url = "older"',
+		];
+
+		const result = spliceCodexTables(lines, [[2, 4], [4, 6]], table, always);
+
+		assert.ok(result);
+		assert.ok(!result.includes('[mcp_servers.tab-browser]'));
+		assert.strictEqual(result.filter(line => line === '[mcp_servers.ai-browser]').length, 1);
+		assert.ok(result.includes('[mcp_servers.keep]'));
+		assert.strictEqual(result.indexOf('[mcp_servers.ai-browser]'), 2, 'at the first removed range');
+	});
+
+	test('with nothing to remove the table is appended, one blank line away', () => {
+		const lines = ['[mcp_servers.other]', 'command = "npx"'];
+
+		const result = spliceCodexTables(lines, [], table, always);
+
+		assert.deepStrictEqual(result, [...lines, '', ...table]);
+	});
+
+	test('an existing trailing blank is not doubled', () => {
+		const lines = ['[mcp_servers.other]', 'command = "npx"', ''];
+
+		const result = spliceCodexTables(lines, [], table, always);
+
+		assert.deepStrictEqual(result, [...lines, ...table]);
+	});
+
+	test('an empty file gets the table alone', () => {
+		assert.deepStrictEqual(spliceCodexTables([], [], table, always), [...table]);
 	});
 });

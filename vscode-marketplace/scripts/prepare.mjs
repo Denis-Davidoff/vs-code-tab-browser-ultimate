@@ -39,9 +39,17 @@ const readme = readFileSync(join(here, 'README.md'), 'utf8');
 // Html comments hold the video slot's ready-made snippets, which are inert until someone
 // uncomments them. Checking them would report the template as a mistake.
 const rendered = readme.replace(/<!--[\s\S]*?-->/g, '');
-for (const match of rendered.matchAll(/!\[[^\]]*\]\(([^)\s]+)/g)) {
-	if (!match[1].startsWith('https://')) {
-		problems.push(`readme image "${match[1]}" is not an absolute https URL`);
+// Every form an image can take, because checking one of them is the same as checking none:
+// Markdown inline, an HTML `<img>` (Markdown allows raw html, and vsce rewrites its `src` the
+// same way), and a reference definition, whose `![alt][id]` use site carries no url at all.
+const imageSources = [
+	...[...rendered.matchAll(/!\[[^\]]*\]\(\s*<?([^)>\s]+)/g)].map(m => m[1]),
+	...[...rendered.matchAll(/<img\b[^>]*?\ssrc\s*=\s*["']([^"']+)["']/gi)].map(m => m[1]),
+	...[...rendered.matchAll(/^[ \t]*\[[^\]]+\]:[ \t]*<?([^\s>]+)/gm)].map(m => m[1]),
+];
+for (const source of imageSources) {
+	if (!source.startsWith('https://')) {
+		problems.push(`readme image "${source}" is not an absolute https URL`);
 	}
 }
 

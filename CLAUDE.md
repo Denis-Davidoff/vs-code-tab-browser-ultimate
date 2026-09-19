@@ -80,7 +80,7 @@ Settings:
 |---|---|---|
 | `aiBrowser.useIntegratedBrowser` | `true` | delegate to VS Code's built-in browser; `false` brings back the webview panel |
 | `aiBrowser.mcp.enabled` | `true` | run the local MCP server for assistants |
-| `aiBrowser.mcp.port` | `43110` | preferred port; each window takes the next free one |
+| `aiBrowser.mcp.port` | `43110` | first port to try; unset, each window derives its own from the folder URI within the 20 ports from here — see [The port moves](#the-port-moves-and-the-config-remembers-the-old-one) |
 | `aiBrowser.searchEngine` | `google` | engine for the panel's address bar; `none` disables search |
 | `aiBrowser.focusLockIndicator.enabled` | `true` | the panel's focus indicator |
 | `aiBrowser.updateCheck.enabled` | `true` | watch the repository for a newer release |
@@ -104,6 +104,7 @@ Compiled with `tsc`, **no bundling**. `main: ./out/extension`.
 - [src/argvJson.ts](src/argvJson.ts) — surgical JSONC edits to `argv.json` (leaf, under test)
 - [src/statusBar.ts](src/statusBar.ts) — the two status bar items and their menu
 - [src/notify.ts](src/notify.ts) — confirmations, kept out of the notification area
+- [src/notifyText.ts](src/notifyText.ts) — neutralising a page-supplied string for a notification (leaf, under test)
 - [src/elementPicker.ts](src/elementPicker.ts) — the four element commands
 - [src/elementContext.ts](src/elementContext.ts) — pulls element data out of the page over CDP
 - [src/elementMarkdown.ts](src/elementMarkdown.ts) — renders that data as Markdown
@@ -863,6 +864,20 @@ refusal toast paused the very tab you were looking at. It now goes through `refu
 status bar, because in exactly that state the `Enable Browser API` button is already sitting
 there — the toast added nothing but the pause. The lesson generalises: a refusal that the status
 bar already offers a fix for does not need a notification at all.
+
+**And whatever does reach a notification body must not have been written by a page.** A body is
+rendered as *linked text* and its links are opened with `allowCommands: true` — the mechanism
+recorded under item 124 — so `[label](command:…)` anywhere in it is a button that runs a command
+on one click. `versionShape` guards that sink for a value with a *shape*; a page title has none,
+because the page chooses it outright, so `plainInNotification`
+([src/notifyText.ts](src/notifyText.ts), leaf module, under test) neutralises it instead. It
+drops `[` and `]` — without a label there is no link, whatever follows, so the rule does not
+depend on which target schemes the renderer happens to accept — and caps the length, which is not
+security but the fact that a notification is one line and a title can be thousands of characters.
+It is applied in `scopeNote`, which names the shared page in four refusals; the label beside it is
+ours (`targetName`) and is left alone, so the boundary stays visible. **`stripMarker` is not a
+sanitiser** — it removes our own 🔗/🤖 suffix and nothing else, and reading it as one is how the
+page's title reached the toast in the first place.
 
 ### Debugging (F5)
 
@@ -2261,11 +2276,14 @@ Everything about the implementation follows from the page being someone else's:
   later navigation, with nobody holding the identifier any more. The chain itself never rejects
   (a rejected link is inherited by everything queued behind it) while the caller of `set` still
   gets the real error.
-- **`_marker` records what is on the page, and is written after the install, never before it.**
-  Written up front it recorded the *request*: one rejected install left the indicator believing
-  the marker was there, and since the same session keeps the same indicator, the
+- **Nothing records what is on the page any more, and `_marker` is gone.** It existed, it was
+  written *before* the install, and so it recorded the *request*: one rejected install left the
+  indicator believing the marker was there, and since a session keeps its indicator, the
   `_marker === marker` short-circuit then suppressed every retry — a shared tab with no marker
-  for the rest of the session.
+  for the rest of the session. Moving the write after the install fixed that instance and left
+  the field itself a belief rather than a fact (see the bullet on caching, above), so it was
+  removed outright: an install is cheap enough to repeat unconditionally. Do not reintroduce a
+  cache here — the class of bug goes with the field.
 - **`clear()` never short-circuits on having no marker recorded.** A fresh indicator on a newly
   opened session knows nothing, while the page may still carry a marker installed by the session
   before it — which is precisely what `stopSharing` and a re-share have to clean up.
@@ -2313,7 +2331,7 @@ not something a document contains of its own.
 
 **A page-side throw is a *successful* CDP reply carrying `exceptionDetails`**, and ignoring that
 field made both callers lie. `_install` recorded a marker it had not applied, so the
-`_marker === marker` short-circuit suppressed every retry for the session; `clear()` reported it
+short-circuit that then existed suppressed every retry for the session; `clear()` reported it
 had reached the page, so `_clearIndicator` skipped the private-session route that exists for
 exactly that case. A page can cause it — freeze the object we look for, replace `endsWith`,
 break `MutationObserver` — so `evaluateInPage` inspects the field and throws.
@@ -2339,7 +2357,7 @@ the message to the host synchronously, which is what makes an attempt on a synch
 path worth anything at all.
 
 **Re-sharing the tab that is already shared is a no-op.** The toolbar entry sits in the shared
-tab's own menu, so it is one click away, and clearing `_shareUsedBy` there took the marker from
+tab's own menu, so it is one click away, and clearing `_usedBy` there took the marker from
 🤖 back to 🔗 and the tooltip back to "no assistant has used it yet" — advice for a broken setup
 — while the assistants carried on working. The context key cannot express "this tab is the
 shared one", so the menu keeps the entry (it is also how a share is *moved* from the toolbar)
@@ -2367,6 +2385,27 @@ It is bounded at four, because a session is a live channel into a page and an ag
 all day. Eviction passes over a tab somebody is assigned to while any unassigned one remains:
 throwing away the page an assistant is working on — its console buffer and its marker
 registration with it — to make room for a page nobody asked about is the wrong trade every time.
+
+**Eviction passes over a session that is *being used*, and that is counted rather than
+inferred.** "Least recently used" is really "least recently **acquired**" — `_touch` runs when a
+session is handed out, not while it works — so the longest-running call sat at the *front* of the
+queue and was the first thing dropped when a fourth tab opened a session. The caller was then
+answered with the internal `CDP client disposed`, the one error the code singles out as reading
+to a model as a broken browser rather than as something to retry. An earlier round added pins to
+`claimed` and fixed only the pinned instance: an assistant with **no** share and no selection is
+the default state, not an edge case, and it was still evicted mid-call.
+
+So every route to a session takes a hold for the length of the work (`_hold`, counted in
+`_inFlight`, consulted by `claimed`), and `_withSession` became a **scope** rather than a
+hand-out — `_withSession(caller, session => …)` — precisely so a new call site cannot opt out of
+the rule by forgetting to release. The hold is taken in the same turn the session arrives, since
+nothing runs between that `await` and the next line, and released in a `finally`, so a page-side
+throw cannot leave a tab claimed for the life of the window; the release is idempotent, or a
+double `finally` would drive the count negative and pin a tab out of the queue for good. The
+three routes that do not go through `_withSession` take their own: `_navigateInTab` (the longest
+hold there is — a load event is waited for up to 15s), the direct `capture` path, and
+`_borrowSession`. `_armMarkerNow` needs none: it only ever runs on a shared tab, which `claimed`
+already covers through `stateOf`.
 
 **A one-off read still must not take a session that is in use** — `_borrowSession`. `capture`
 with a tab named by the caller (the toolbar passes the one in front of the user) reuses that
@@ -3068,6 +3107,36 @@ No compile error for any of these — they only surface at runtime.
     ships two extensions that cannot share code, so a rule written for one leaves the other
     open on the identical input. The convention already recorded for `codexOurTables` applies to
     security rules too: write it twice, and say in both places that it is written twice.
+131. **Writing a key while also keeping the one already there** → `repairCodexToml`'s
+    "no `url`" branch emitted `http_headers` unconditionally and left any existing one exactly
+    where it was, neither removed nor replaced, so the table defined the key twice — TOML that
+    does not parse, written unattended at window start, taking every other MCP server in
+    `~/.codex/config.toml` with it while reporting the port as updated. Neither
+    `codexUnterminated` nor `codexRangeDeletable` can catch this: the input is well-formed and
+    balanced and nothing is *deleted*, so every guard in the file is looking the other way. The
+    reachable shape is an ordinary hand edit — commenting a `url` line out to disable an
+    endpoint — and the connect path heals it, which is why it never showed up interactively. A
+    branch that *adds* a line has to ask the same question the branch that replaces one does.
+132. **Interpolating a page-supplied string into a notification body** → same sink as item 124
+    and a much easier one to reach: a notification body is linked text opened with
+    `allowCommands: true`, so `[label](command:…)` in a `document.title` is a one-click command.
+    A version has a *shape* and is validated; a title has none — the page chooses it outright —
+    so it is neutralised instead (`plainInNotification`). `stripMarker` is not a sanitiser: it
+    removes our own suffix and nothing else.
+133. **Handling only the outcomes a function is declared to return** → `writeClaudeConfig`
+    answers `'written' | 'unparsable' | 'busy'`, and `connectClaudeCode` handled all three — but
+    `writeText` calls `createDirectory`/`writeFile` unguarded and `withLock` is `try`/`finally`
+    with no `catch`, so `NoPermissions` or `ENOSPC` propagated straight out of the command.
+    VS Code's generic "command failed" toast, no `claude mcp add` fallback, and no `scopeNote`,
+    so a tab shared a moment earlier was left assigned and unannounced (item 62). An enumerated
+    result type is not a promise that nothing throws.
+134. **An eviction guard that asks who *acquired* a resource rather than who is using it** →
+    `_touch` runs when a session is handed out, not while it works, so "least recently used" put
+    the longest-running call at the *front* of the queue and answered it with the internal
+    `CDP client disposed`. Adding pins to `claimed` fixed the pinned instance and left the
+    ordinary one — an assistant with no share and no selection is the default state, not an edge
+    case. Counting holds around the work is what makes it structural: `_withSession` is a scope
+    rather than a hand-out, so a new call site cannot silently opt out of the rule.
 
 ## Special cases and non-obvious decisions
 

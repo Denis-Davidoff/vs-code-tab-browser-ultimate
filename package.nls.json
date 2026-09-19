@@ -17,7 +17,7 @@
 	"command.enableBrowserApi.title": "Enable Integrated Browser API",
 	"command.statusMenu.title": "Menu",
 	"configuration.mcp.enabled.description": "Run a local MCP server so Claude Code, Codex and VS Code chat can drive the integrated browser. It listens on loopback only and requires a per-workspace token.",
-	"configuration.mcp.port.description": "Preferred port for the MCP server. Each window takes the next free port from here, so a second window uses `port + 1`. Reconnect the assistant if the port changes.",
+	"configuration.mcp.port.description": "First port to try for the MCP server. Left unset, each window derives its own first choice from the workspace path, within the 20 ports starting here, so a window keeps the same port across restarts and a saved config does not go stale. Set it explicitly and the window starts exactly here instead. Either way it walks on until it finds a free one.",
 	"command.addElementToClaudeCode.title": "Add Element to Claude Code",
 	"command.addCssPathToClaudeCode.title": "Add CSS Path to Claude Code",
 	"command.addCssLocationToClaudeCode.title": "Add CSS Path + Location to Claude Code",
