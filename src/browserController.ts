@@ -355,6 +355,22 @@ export class BrowserController implements vscode.Disposable {
 	 */
 	private static readonly _slotWaitMs = 5_000;
 
+	/**
+	 * How far over {@link _sessionLimit} the timeout path may take the count.
+	 *
+	 * **The give-up has to be bounded too.** Each waiter owns its own timer, so
+	 * letting every one of them take a permit on expiry made the overflow the size
+	 * of the burst: four busy sessions and N waiting calls opened `4 + N` channels,
+	 * which is the bound removed exactly when it is needed. One over is what the
+	 * documentation promises and what a single slow moment costs; past that a call
+	 * is told to retry, because an honest refusal is better than a limit that only
+	 * holds while nothing is happening.
+	 */
+	private static readonly _sessionOverflow = 1;
+
+	/** Set while `_tryReserve` is making room, so a drop it causes cannot re-enter. */
+	private _reserving = false;
+
 	private static readonly _sessionLimit = 4;
 
 	/**
@@ -774,7 +790,27 @@ export class BrowserController implements vscode.Disposable {
 
 		// Queued, so an open does not push the count past the bound while every
 		// existing session is busy. Bounded, so it cannot hang behind one.
-		const opening = this._awaitSlot().then(() => TabSession.open(tab)).then(session => {
+		// **Held from the moment the permit is granted, released in the same turn
+		// the session lands.** A trailing `.finally` runs a microtask *after*
+		// `_sessions.set`, so for that tick the session was counted twice — once as
+		// a reservation and once as itself — and a `_tryReserve` landing in it read
+		// the sum as one over and evicted a session that did not need to go, taking
+		// a console buffer and a marker registration with it. The mirror is just as
+		// real: a waiter refused a slot that existed and stalled for the full wait.
+		let slotHeld = false;
+		const releaseSlot = () => {
+			if (!slotHeld) {
+				return;
+			}
+			slotHeld = false;
+			this._reserved--;
+			this._notifySlots();
+		};
+
+		const opening = this._awaitSlot().then(() => {
+			slotHeld = true;
+			return TabSession.open(tab);
+		}).then(session => {
 			const open = vscode.window.browserTabs ?? [];
 			if (this._disposed || !open.includes(tab)) {
 				// Nobody will ever read this one, so it closes itself rather
@@ -787,6 +823,8 @@ export class BrowserController implements vscode.Disposable {
 			this._sessions.set(tab, session);
 			this._touch(tab);
 			this._evict(tab);
+			// Synchronously, so the double count above never exists.
+			releaseSlot();
 			// A fresh session means a fresh page-side world: whatever marker was
 			// installed by the previous one is gone with it, along with the
 			// registration that would have survived a navigation.
@@ -798,12 +836,10 @@ export class BrowserController implements vscode.Disposable {
 			return session;
 		});
 
-		// The reservation covered the open; from here the session is counted in
-		// `_sessions` instead, or the open failed and the slot goes back.
-		const promise = opening.finally(() => {
-			this._reserved--;
-			this._notifySlots();
-		});
+		// Only for the paths that never reached the line above: the open failed, the
+		// tab closed while it was in flight, or the controller was disposed. A
+		// success has already given the slot back, and `releaseSlot` is idempotent.
+		const promise = opening.finally(releaseSlot);
 
 		this._opening.set(tab, promise);
 		// A rejection has to release the entry, or the failed attempt is cached:
@@ -837,16 +873,23 @@ export class BrowserController implements vscode.Disposable {
 	 * Room is *made* rather than merely promised: a session the sweep would give
 	 * up is dropped now, so what the caller is handed is capacity that exists.
 	 */
-	private _tryReserve(): boolean {
-		while (this._sessions.size + this._reserved >= BrowserController._sessionLimit) {
-			const spare = this._evictableTab();
-			if (!spare) {
-				return false;
+	private _tryReserve(ceiling: number = BrowserController._sessionLimit): boolean {
+		// The drops below free capacity this call is about to take, so waking the
+		// queue from them would hand the slot being made to somebody else.
+		this._reserving = true;
+		try {
+			while (this._sessions.size + this._reserved >= ceiling) {
+				const spare = this._evictableTab();
+				if (!spare) {
+					return false;
+				}
+				this._dropSession(spare);
 			}
-			this._dropSession(spare);
+			this._reserved++;
+			return true;
+		} finally {
+			this._reserving = false;
 		}
-		this._reserved++;
-		return true;
 	}
 
 	/**
@@ -864,7 +907,7 @@ export class BrowserController implements vscode.Disposable {
 		if (this._tryReserve()) {
 			return Promise.resolve();
 		}
-		return new Promise<void>(resolve => {
+		return new Promise<void>((resolve, reject) => {
 			const waiter = () => {
 				// Each waiter competes for the permit rather than trusting the
 				// wake-up: one release frees one slot, so exactly one of them wins
@@ -878,12 +921,21 @@ export class BrowserController implements vscode.Disposable {
 				this._slotWaiters.delete(waiter);
 				resolve();
 			};
-			// Going ahead beats hanging. The bound is then over by one until the
-			// calls holding it end, and `_evict` sweeps again as each one does.
+			// Going ahead beats hanging — but only as far as `_sessionOverflow`.
+			// Granting unconditionally here gave every waiter its own permit, so the
+			// overflow was the size of the burst rather than the one channel the
+			// documentation promises. Past the ceiling the call is refused instead,
+			// with something a model can act on: the work already running will end,
+			// and a retry then finds a slot.
 			const timer = setTimeout(() => {
 				this._slotWaiters.delete(waiter);
-				this._reserved++;
-				resolve();
+				if (this._tryReserve(
+					BrowserController._sessionLimit + BrowserController._sessionOverflow)) {
+					resolve();
+					return;
+				}
+				reject(new Error('Too many browser pages are in use at once. Wait for the calls already '
+					+ 'running to finish, then try again.'));
 			}, BrowserController._slotWaitMs);
 			this._slotWaiters.add(waiter);
 		});
@@ -891,6 +943,12 @@ export class BrowserController implements vscode.Disposable {
 
 	/** Wakes everything queued for a slot; each re-checks for itself. */
 	private _notifySlots(): void {
+		// `_tryReserve` drops sessions to make the very slot it is about to take;
+		// waking the queue from inside that would hand it to another waiter and
+		// leave the reserver to drop a second one.
+		if (this._reserving) {
+			return;
+		}
 		for (const waiter of [...this._slotWaiters]) {
 			waiter();
 		}
@@ -1006,6 +1064,12 @@ export class BrowserController implements vscode.Disposable {
 		this._sessions.delete(tab);
 		this._opening.delete(tab);
 		this._sessionOrder = this._sessionOrder.filter(known => known !== tab);
+		// **A slot has just come free, whoever freed it.** The queue was woken only
+		// from `_hold`'s release and from an open settling, so capacity given back
+		// any other way — a tab closing, `navigate`'s `CDP session closed` retry,
+		// the stale-cache branch above — went unnoticed and a queued open sat there
+		// until its timeout, with a usable slot in front of it the whole time.
+		this._notifySlots();
 	}
 
 	/* ------------------------------------------------------------ sharing a tab */
@@ -1208,6 +1272,13 @@ export class BrowserController implements vscode.Disposable {
 		if (!state) {
 			return;
 		}
+		// **Held like any other use of a session.** Being assigned is not enough:
+		// `_evictableTab` treats an assignment as a *preference*, so once every
+		// candidate is assigned its second pass returns one anyway — and the marker
+		// install then had its session disposed under it. The throw is swallowed
+		// here by design, so the visible result was a shared tab wearing no 🔗/🤖 at
+		// all, which is the one thing the marker exists to rule out.
+		const release = this._hold(tab);
 		try {
 			const session = await this._sessionFor(tab);
 			const current = this._shares.stateOf(tab);
@@ -1219,6 +1290,8 @@ export class BrowserController implements vscode.Disposable {
 			// Best effort: a session the host dropped, a tab mid-close, a page
 			// that has not committed. None of them may turn sharing into an
 			// error the user has to read.
+		} finally {
+			release();
 		}
 	}
 

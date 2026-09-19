@@ -5,7 +5,10 @@
 
 import * as assert from 'node:assert';
 import { suite, test } from 'node:test';
-import { bestState, claudeClientState, codexClientState, codexOurEntries } from './mcpClientState.ts';
+import {
+	bestState, claudeClientState, claudeLocalScopeShadows, codexClientState, codexOurEntries,
+	codexStrangers,
+} from './mcpClientState.ts';
 import { codexEntries } from './codexToml.ts';
 
 /** The check reads files; these functions take the parsed tables. */
@@ -242,5 +245,139 @@ suite('codexClientState: credential forms', () => {
 	test('the endpoint with no credentials at all is still stale', () => {
 		const text = `[mcp_servers.ai-browser]\nurl = "${url}"\n`;
 		assert.strictEqual(codexClientState(parse(text), url, urlWithToken, token), 'staleToken');
+	});
+});
+
+suite('claudeClientState: wrongPort', () => {
+
+	// `wrongPort` exists because reporting our own moved entry as `otherServer`
+	// advises deleting a perfectly good entry of the user's own. The Codex side
+	// has had both arms tested since that fix; the Claude side had only the
+	// `otherServer` one, which is the half that was already right.
+	test('our token on a moved port is wrongPort, not otherServer', () => {
+		const text = claudeConfig({
+			type: 'http',
+			url: 'http://127.0.0.1:49999/mcp',
+			headers: { Authorization: `Bearer ${token}` },
+		});
+
+		assert.strictEqual(claudeClientState(text, url, token), 'wrongPort');
+	});
+
+	test('another token on a moved port is still otherServer', () => {
+		const text = claudeConfig({
+			type: 'http',
+			url: 'http://127.0.0.1:49999/mcp',
+			headers: { Authorization: 'Bearer someone-else' },
+		});
+
+		assert.strictEqual(claudeClientState(text, url, token), 'otherServer');
+	});
+
+	test('the token in the url path also marks a moved entry as ours', () => {
+		const text = claudeConfig({ type: 'http', url: `http://127.0.0.1:49999/mcp/${token}` });
+
+		assert.strictEqual(claudeClientState(text, url, token), 'wrongPort');
+	});
+});
+
+suite('codexStrangers', () => {
+
+	// It compares against *this window's* token only, so what it returns is
+	// several groups at once: other live windows, entries from another machine,
+	// and stale ones the prune left alone. The message must not collapse them —
+	// and the rule that decides membership is the one tested here.
+	test('a table named like ours without our token is reported', () => {
+		const entries = parse([
+			'[mcp_servers.ai-browser-other-abc123]',
+			'url = "http://127.0.0.1:43111/mcp"',
+			'http_headers = { Authorization = "Bearer someone-else" }',
+		].join('\n'));
+
+		assert.deepStrictEqual(codexStrangers(entries, token), ['ai-browser-other-abc123']);
+	});
+
+	test('a table carrying our token is not a stranger', () => {
+		const entries = parse([
+			'[mcp_servers.ai-browser-mine-abc123]',
+			'url = "http://127.0.0.1:43111/mcp"',
+			`http_headers = { Authorization = "Bearer ${token}" }`,
+		].join('\n'));
+
+		assert.deepStrictEqual(codexStrangers(entries, token), []);
+	});
+
+	test('a name that merely starts with the same letters is not ours', () => {
+		const entries = parse([
+			'[mcp_servers.ai-browserish]',
+			'url = "http://example.com/mcp"',
+		].join('\n'));
+
+		assert.deepStrictEqual(codexStrangers(entries, token), []);
+	});
+
+	test('the bare name counts, and a sub-table never does', () => {
+		const entries = parse([
+			'[mcp_servers.ai-browser]',
+			'url = "http://127.0.0.1:43111/mcp"',
+			'',
+			'[mcp_servers.ai-browser.http_headers]',
+			'Authorization = "Bearer someone-else"',
+		].join('\n'));
+
+		assert.deepStrictEqual(codexStrangers(entries, token), ['ai-browser']);
+	});
+
+	test('a name seen in two files is reported once', () => {
+		const table = [
+			'[mcp_servers.ai-browser-dup-abc123]',
+			'url = "http://127.0.0.1:43111/mcp"',
+		].join('\n');
+
+		assert.deepStrictEqual(codexStrangers(parse(table, table), token), ['ai-browser-dup-abc123']);
+	});
+});
+
+suite('claudeLocalScopeShadows', () => {
+
+	// `~/.claude.json` local scope overrides the project's `.mcp.json`, so an
+	// entry here is the one thing Connect cannot fix — it is reported, never
+	// rewritten, because that file holds Claude Code's own credentials.
+	const folder = '/Users/someone/project';
+	const localConfig = (servers: unknown) =>
+		JSON.stringify({ projects: { [folder]: { mcpServers: servers } } });
+
+	test('an entry under our name is reported', () => {
+		const text = localConfig({ 'ai-browser': { type: 'http', url } });
+
+		assert.deepStrictEqual(claudeLocalScopeShadows(text, folder, token), ['ai-browser']);
+	});
+
+	test('an entry under another name carrying our token is reported too', () => {
+		const text = localConfig({
+			'tab-browser': { type: 'http', url, headers: { Authorization: `Bearer ${token}` } },
+		});
+
+		assert.deepStrictEqual(claudeLocalScopeShadows(text, folder, token), ['tab-browser']);
+	});
+
+	test('somebody else\'s server is left alone', () => {
+		const text = localConfig({ github: { type: 'http', url: 'http://example.com/mcp' } });
+
+		assert.deepStrictEqual(claudeLocalScopeShadows(text, folder, token), []);
+	});
+
+	test('another project\'s entries are not this project\'s', () => {
+		const text = JSON.stringify({
+			projects: { '/Users/someone/elsewhere': { mcpServers: { 'ai-browser': { url } } } },
+		});
+
+		assert.deepStrictEqual(claudeLocalScopeShadows(text, folder, token), []);
+	});
+
+	test('an unparsable or shapeless file answers nothing rather than throwing', () => {
+		assert.deepStrictEqual(claudeLocalScopeShadows('{ not json', folder, token), []);
+		assert.deepStrictEqual(claudeLocalScopeShadows('{}', folder, token), []);
+		assert.deepStrictEqual(claudeLocalScopeShadows(localConfig(null), folder, token), []);
 	});
 });

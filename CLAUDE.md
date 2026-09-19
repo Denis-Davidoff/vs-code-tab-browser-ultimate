@@ -2402,8 +2402,15 @@ forgetting to release. It is released in a `finally`, so a page-side throw canno
 claimed for the life of the window, and the release is idempotent, or a double `finally` would
 drive the count negative and pin a tab out of the queue for good. The three routes that do not go
 through `_withSession` take their own: `_navigateInTab` (the longest hold there is — a load event
-is waited for up to 15s), the direct `capture` path, and `_borrowSession`. `_armMarkerNow` needs
-none: it only ever runs on a shared tab, which the assignment test already covers.
+is waited for up to 15s), the direct `capture` path, `_borrowSession`, and `_armMarkerNow`.
+
+**`_armMarkerNow` needs one too, and the reasoning that said otherwise was wrong.** It only ever
+runs on a shared tab, and being assigned looked like protection — but `_evictableTab` treats an
+assignment as a *preference*, so once every candidate is assigned its second pass hands one back
+anyway. The marker install then had its session disposed under it, and because that throw is
+swallowed by design, the visible result was a shared tab wearing no 🔗/🤖 at all: the one thing
+the marker exists to rule out. A preference is not a guard, and anything that reads as one has to
+take the hold like everything else.
 
 **The hold is taken before the open, not after it**, and the difference is a real race rather
 than a nicety. `_sessionFor` resolves into a microtask, so another tab's open can run its own
@@ -2424,7 +2431,13 @@ working.
 **When every candidate is working, a new open queues for a slot rather than taking one.**
 `_evict` cannot help there — it will not drop a session in use — so without this the count simply
 drifted up with concurrency. `_awaitSlot` holds the open until `_hold`'s release frees a session
-(`_notifySlots`, run after the sweep so a waiter sees the slot it freed).
+(`_notifySlots`, run after the sweep so a waiter sees the slot it freed) — and from
+`_dropSession`, **whoever** freed it. Waking only from `_hold` and from an open settling missed
+every other way capacity comes back: a tab closing, `navigate`'s `CDP session closed` retry, the
+stale-cache branch. A queued open then sat there for its whole timeout with a usable slot in
+front of it. The one exception is a drop `_tryReserve` itself causes, which is making the slot it
+is about to take — `_reserving` suppresses that, or the reserver hands its own slot away and
+drops a second session to replace it.
 
 **The slot is *reserved*, not merely checked for, and that distinction is the whole mechanism.**
 Asking "is there room?" and then opening was wrong in two ways at once, both reproduced against
@@ -2438,7 +2451,13 @@ the stubbed channel:
   opened six channels against a limit of four.**
 
 `_tryReserve` closes both by counting `_reserved` alongside `_sessions` and taking the permit
-synchronously, before anything awaits, so the second caller in the same turn already sees it. It
+synchronously, before anything awaits, so the second caller in the same turn already sees it.
+**The permit is given back in the same turn the session lands**, beside `_sessions.set`, never on
+a trailing `.finally` — that runs a microtask later, and for that tick the session is counted
+twice, once as a reservation and once as itself, so a `_tryReserve` landing in the gap reads the
+sum as one over and evicts a session that did not need to go. The `finally` remains only for the
+paths that never got that far: the open failed, the tab closed under it, the controller was
+disposed. `releaseSlot` is idempotent so the two cannot both fire. It
 also *makes* the room rather than promising it — dropping a session the sweep would have given up
 — so what a caller is handed is capacity that exists. `_evict` and `_tryReserve` share one
 `_evictableTab`, or capacity could be taken under a rule the sweep would not have agreed with.
@@ -2454,7 +2473,13 @@ after `dispose`.
 `browser_wait_for` takes its timeout from the caller and may hold a session for a minute, so four
 of those would block every new tab for as long as they ran — and a tool call that hangs reads to
 a model as a dead browser while its client's own timeout fires regardless. So `_slotWaitMs` (5s)
-gives up waiting and opens anyway, one channel over the bound, which the next release reclaims.
+gives up waiting and opens anyway — but only as far as `_sessionOverflow`, one channel, which the
+next release reclaims. **Granting unconditionally there was the bound removed exactly where it is
+needed**: every waiter owns its own timer, so four busy sessions and N waiting calls opened
+`4 + N` channels, and since each new tab is immediately in `_inFlight` nothing could evict them
+until their work ended. Past the ceiling a call is refused instead, with something a model can
+act on — the calls already running will finish, and a retry then finds a slot. An honest refusal
+beats a limit that only holds while nothing is happening.
 The pathological case degrades to the previous behaviour rather than to a hang — the same shape
 as `repairQueueWaitMs` and for the same reason (item 122). Ordinary calls finish well inside it,
 so in practice the bound holds exactly. Breaking a live call to hold a number is still the wrong
@@ -3231,6 +3256,30 @@ No compile error for any of these — they only surface at runtime.
     and, because `prepare` gates `package` and `publish`, a good readme edit blocked the release.
     Widening a check is only safe together with the question of which of the new matches the rule
     actually applies to — here, the ids an `![alt][id]` / `![id][]` / `![id]` actually refers to.
+140. **Releasing a reservation on a trailing `.finally`** → it runs a microtask after the thing it
+    stood for was recorded, so for that tick the same session is counted twice and a concurrent
+    reserver reads the total as one over: it evicts a session that did not need to go, taking a
+    console buffer and a marker registration with it, or refuses a slot that genuinely exists and
+    stalls for the whole wait. Hand a reservation back in the same turn the thing it reserved
+    becomes real; keep the `finally` only for the paths that never got there, and make the
+    release idempotent so the two cannot both fire.
+141. **Waking a queue from only the routes you were thinking about** → capacity came back four
+    ways and `_notifySlots` ran from two of them, so a tab closing, `navigate`'s retry and the
+    stale-cache branch all freed a slot in silence and a queued open waited out its full timeout
+    in front of it. Notify where the resource is actually released — `_dropSession` — and
+    suppress only the case that is making the slot for itself.
+142. **A bounded give-up that each waiter evaluates on its own** → the timeout existed so a queue
+    could not hang, and every waiter had its own timer, so N waiting calls each granted
+    themselves a permit: `4 + N` channels, which is the limit removed at exactly the moment it is
+    load-bearing. The escape hatch needs its own bound (`_sessionOverflow`), and past it the
+    honest answer is a retryable error rather than a quiet overrun.
+143. **A safety guard that switches itself off on the hosts it was written for** →
+    `browserTabVisible` answered "no page to pause" whenever the `browser` proposal was not
+    granted, so the toast it exists to hold back landed on exactly the editors that pause a page
+    without giving us the API to see it: Kiro, VSCodium, and every VS Code install before the
+    grant is written. When a guard cannot read its precise signal, ask what *weaker* signal is
+    still available — here the open command, which tracks the browser UI rather than the API —
+    rather than treating the missing read as an all-clear.
 
 ## Special cases and non-obvious decisions
 
@@ -3691,6 +3740,20 @@ Four precautions keep it from becoming the failure recorded under
   treats a group whose *visible* tab has no input as a browser, but only while `browserTabs` is
   non-empty. The false positive is deliberate and cheap: another unmodelled editor merely defers
   the notice to the next delivery attempt, while a missed browser pauses somebody's page.
+- **And the guard holds without the grant, where it is needed most.** It used to return `false`
+  the moment `isBrowserApiGranted()` was false, on the reasoning that a host with no API has no
+  page to pause. That is wrong for three classes at once, and the third is the common one: Kiro
+  ships the browser editor and none of the API, VSCodium ships both and withholds the grant, and
+  **stock VS Code before `argv.json` is written is the default state of every fresh install** —
+  which is exactly when a user is most likely to be reading a page and least likely to forgive a
+  toast that freezes it. So the `tabGroups` heuristic runs there too. It cannot be bounded by
+  `browserTabs` (that read is what throws), so it is bounded by the *host* instead: only where
+  `workbench.action.browser.open` is registered. **`browserApiState()` is the wrong question**,
+  because it answers `unsupported` for Kiro, which has the editor; the open command is what
+  actually tracks the browser UI and is present on every measured host that has one. It is probed
+  once with `getCommands(true)` and cached, since the answer cannot change while the window runs
+  and `_deliver` is called from event handlers. Until the probe lands the flag is `false`, which
+  is the safe direction — the first check is ten seconds away regardless.
 - **Once per release, not once per window** (`aiBrowser.update.offeredVersion`), and the version
   is recorded **before** the message goes up rather than after the user answers. A notice that
   was dismissed has still been seen; repeating it in every window until a button is pressed is
