@@ -332,6 +332,16 @@ export class BrowserController implements vscode.Disposable {
 	private readonly _slotWaiters = new Set<() => void>();
 
 	/**
+	 * Slots promised to opens that have not produced a session yet.
+	 *
+	 * Counted alongside `_sessions`, because an open is asynchronous: between
+	 * taking the decision to open and the session landing in the map there is
+	 * nothing else recording that the capacity is spoken for, and every caller
+	 * arriving in that window reads the same free slot.
+	 */
+	private _reserved = 0;
+
+	/**
 	 * How long an open waits for a slot before going ahead anyway.
 	 *
 	 * **The wait is bounded, not the work**, which is the same shape as
@@ -764,7 +774,7 @@ export class BrowserController implements vscode.Disposable {
 
 		// Queued, so an open does not push the count past the bound while every
 		// existing session is busy. Bounded, so it cannot hang behind one.
-		const promise = this._awaitSlot().then(() => TabSession.open(tab)).then(session => {
+		const opening = this._awaitSlot().then(() => TabSession.open(tab)).then(session => {
 			const open = vscode.window.browserTabs ?? [];
 			if (this._disposed || !open.includes(tab)) {
 				// Nobody will ever read this one, so it closes itself rather
@@ -788,6 +798,13 @@ export class BrowserController implements vscode.Disposable {
 			return session;
 		});
 
+		// The reservation covered the open; from here the session is counted in
+		// `_sessions` instead, or the open failed and the slot goes back.
+		const promise = opening.finally(() => {
+			this._reserved--;
+			this._notifySlots();
+		});
+
 		this._opening.set(tab, promise);
 		// A rejection has to release the entry, or the failed attempt is cached:
 		// the lookup above would hand the same rejected promise to every later
@@ -802,36 +819,70 @@ export class BrowserController implements vscode.Disposable {
 	}
 
 	/**
-	 * Whether a session may be opened without going over the bound.
+	 * Takes one slot for an open that is about to start, making room if it can.
 	 *
-	 * Room already, or room `_evict` can make — which is only true while some
-	 * session is idle, since it will not take one that is in use.
+	 * **A reservation, not a question.** Asking "is there room?" and then opening
+	 * was wrong in two ways at once, and both were reproduced. `_notifySlots`
+	 * wakes every waiter, and resolving a promise does not run its continuations
+	 * before the next waiter is called — so each one saw the *same* freed session
+	 * and all of them went on to open. And a check against `_sessions` alone is
+	 * blind to opens already under way, so callers arriving together at a cold
+	 * start all passed while the map was still empty: six simultaneous calls
+	 * opened six channels against a limit of four.
+	 *
+	 * Counting `_reserved` alongside `_sessions` closes both, because the permit
+	 * is taken here — synchronously, before anything awaits — so the second
+	 * caller in the same turn already sees it.
+	 *
+	 * Room is *made* rather than merely promised: a session the sweep would give
+	 * up is dropped now, so what the caller is handed is capacity that exists.
 	 */
-	private _roomForSession(): boolean {
-		if (this._sessions.size < BrowserController._sessionLimit) {
-			return true;
+	private _tryReserve(): boolean {
+		while (this._sessions.size + this._reserved >= BrowserController._sessionLimit) {
+			const spare = this._evictableTab();
+			if (!spare) {
+				return false;
+			}
+			this._dropSession(spare);
 		}
-		return [...this._sessions.keys()].some(tab => !this._inFlight.has(tab));
+		this._reserved++;
+		return true;
 	}
 
-	/** Waits for a slot, and gives up waiting after {@link _slotWaitMs}. */
+	/**
+	 * Waits for a slot, and gives up waiting after {@link _slotWaitMs}.
+	 *
+	 * It always resolves holding exactly one reservation — on the timeout and on
+	 * teardown it simply takes one — so the release in `_sessionFor` is
+	 * unconditional and the count cannot drift.
+	 */
 	private _awaitSlot(): Promise<void> {
-		if (this._roomForSession() || this._disposed) {
+		if (this._disposed) {
+			this._reserved++;
+			return Promise.resolve();
+		}
+		if (this._tryReserve()) {
 			return Promise.resolve();
 		}
 		return new Promise<void>(resolve => {
 			const waiter = () => {
-				if (!this._roomForSession() && !this._disposed) {
+				// Each waiter competes for the permit rather than trusting the
+				// wake-up: one release frees one slot, so exactly one of them wins
+				// and the rest stay queued.
+				if (this._disposed) {
+					this._reserved++;
+				} else if (!this._tryReserve()) {
 					return;
 				}
 				clearTimeout(timer);
 				this._slotWaiters.delete(waiter);
 				resolve();
 			};
-			// Going ahead beats hanging; `_evict` is over the bound for as long as
-			// the calls holding it run, and sweeps again as each one ends.
+			// Going ahead beats hanging. The bound is then over by one until the
+			// calls holding it end, and `_evict` sweeps again as each one does.
 			const timer = setTimeout(() => {
 				this._slotWaiters.delete(waiter);
+				this._reserved++;
 				resolve();
 			}, BrowserController._slotWaitMs);
 			this._slotWaiters.add(waiter);
@@ -895,46 +946,51 @@ export class BrowserController implements vscode.Disposable {
 	 */
 	private _evict(arriving?: vscode.BrowserTab): void {
 		while (this._sessions.size > BrowserController._sessionLimit) {
-			// The arrival is never the target. It is the most recently used *and*
-			// unassigned whenever the caller has no tab of its own, so the spare
-			// search below picked it — the opener then got a session that had
-			// already been disposed, and its first send failed with "CDP session
-			// closed", the one error the docs single out as reading to a model
-			// as a broken browser rather than as something to retry.
-			const candidates = this._sessionOrder.filter(tab =>
-				tab !== arriving && this._sessions.has(tab));
-			// **Being used is a hard constraint; being assigned is a preference**,
-			// and collapsing the two into one `claimed` predicate with a
-			// `?? candidates[0]` fallback was the same bug one step along: with four
-			// calls in flight there is no spare, so the fallback dropped the session
-			// of the *first* of them and answered a live `browser_wait_for` with the
-			// internal `CDP client disposed`. Reproduced with four concurrent calls
-			// and a fifth tab.
-			//
-			// The two differ in what eviction costs. An assigned but idle tab loses a
-			// console buffer and a marker registration and reopens on its next call;
-			// a tab with work in flight loses the call itself, which is the one error
-			// the docs single out as reading to a model as a broken browser rather
-			// than as something to retry. So an assignment is given up when there is
-			// nothing else to take — the trade this bound has always made — while
-			// work in flight is never given up at all.
-			const inUse = (tab: vscode.BrowserTab) => this._inFlight.has(tab);
-			const spokenFor = (tab: vscode.BrowserTab) =>
-				this._shares.stateOf(tab) !== undefined
-				|| [...this._pins.values()].some(pin => pin.tab === tab);
-
-			const target = candidates.find(tab => !inUse(tab) && !spokenFor(tab))
-				?? candidates.find(tab => !inUse(tab));
+			const target = this._evictableTab(arriving);
 			if (!target) {
-				// Every candidate is working, so the bound is exceeded until one of
-				// them finishes — deliberately. The excess is bounded by the number of
-				// calls a client has in flight, and `_hold`'s release runs the sweep
-				// again the moment a tab goes idle, so it is a delay rather than a
-				// leak. Breaking a live call to hold a number is the wrong way round.
+				// Every candidate is working, so the bound stays over until one of
+				// them finishes. `_hold`'s release sweeps again the moment a tab
+				// goes idle, so it is a delay rather than a leak, and breaking a
+				// live call to hold a number is the wrong way round.
 				return;
 			}
 			this._dropSession(target);
 		}
+	}
+
+	/**
+	 * The session this controller would give up next, or `undefined` while every
+	 * one of them is working.
+	 *
+	 * `exclude` is the arrival, which is never the target: it is the most
+	 * recently used *and* unassigned whenever the caller has no tab of its own,
+	 * so the search below would pick it — the opener then got a session that had
+	 * already been disposed, and its first send failed with "CDP session closed".
+	 *
+	 * **Being used is a hard constraint; being assigned is only a preference**,
+	 * and collapsing the two into one predicate with a `?? candidates[0]`
+	 * fallback dropped the session of a live call while the guard above it did
+	 * nothing at all. The two differ in what eviction costs: an assigned but idle
+	 * tab loses a console buffer and a marker registration and reopens on its
+	 * next call, while a tab with work in flight loses the call itself — the one
+	 * error the docs single out as reading to a model as a broken browser rather
+	 * than as something to retry. So an assignment is given up when there is
+	 * nothing else to take, and work in flight is never given up at all.
+	 *
+	 * One rule, used by `_evict` *and* by `_tryReserve`, so capacity can never be
+	 * taken under a rule the sweep would not have agreed with.
+	 */
+	private _evictableTab(exclude?: vscode.BrowserTab): vscode.BrowserTab | undefined {
+		const candidates = this._sessionOrder.filter(tab =>
+			tab !== exclude && this._sessions.has(tab));
+
+		const inUse = (tab: vscode.BrowserTab) => this._inFlight.has(tab);
+		const spokenFor = (tab: vscode.BrowserTab) =>
+			this._shares.stateOf(tab) !== undefined
+			|| [...this._pins.values()].some(pin => pin.tab === tab);
+
+		return candidates.find(tab => !inUse(tab) && !spokenFor(tab))
+			?? candidates.find(tab => !inUse(tab));
 	}
 
 	/** Closes the session for one tab, or for all of them. */

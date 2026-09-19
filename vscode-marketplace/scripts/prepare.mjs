@@ -42,10 +42,30 @@ const rendered = readme.replace(/<!--[\s\S]*?-->/g, '');
 // Every form an image can take, because checking one of them is the same as checking none:
 // Markdown inline, an HTML `<img>` (Markdown allows raw html, and vsce rewrites its `src` the
 // same way), and a reference definition, whose `![alt][id]` use site carries no url at all.
+//
+// **A definition is only an image's when an image uses it.** Reference definitions are shared by
+// links and images, so checking all of them turned an ordinary `[guide]: ./guide.md` into
+// `readme image "./guide.md" is not an absolute https URL` — and since `prepare` gates `package`
+// and `publish`, a perfectly good readme edit blocked the release. So the ids an image actually
+// refers to are collected first, and only those definitions are looked at.
+const imageIds = new Set();
+// `![alt][id]`, and the collapsed `![id][]` where the label is the id.
+for (const match of rendered.matchAll(/!\[([^\]]*)\]\[([^\]]*)\]/g)) {
+	imageIds.add((match[2] || match[1]).trim().toLowerCase());
+}
+// The shortcut `![id]`, which is neither inline nor a full reference.
+for (const match of rendered.matchAll(/!\[([^\]]+)\](?![[(])/g)) {
+	imageIds.add(match[1].trim().toLowerCase());
+}
+const definitions = new Map();
+for (const match of rendered.matchAll(/^[ \t]*\[([^\]]+)\]:[ \t]*<?([^\s>]+)/gm)) {
+	definitions.set(match[1].trim().toLowerCase(), match[2]);
+}
+
 const imageSources = [
 	...[...rendered.matchAll(/!\[[^\]]*\]\(\s*<?([^)>\s]+)/g)].map(m => m[1]),
 	...[...rendered.matchAll(/<img\b[^>]*?\ssrc\s*=\s*["']([^"']+)["']/gi)].map(m => m[1]),
-	...[...rendered.matchAll(/^[ \t]*\[[^\]]+\]:[ \t]*<?([^\s>]+)/gm)].map(m => m[1]),
+	...[...imageIds].map(id => definitions.get(id)).filter(source => source !== undefined),
 ];
 for (const source of imageSources) {
 	if (!source.startsWith('https://')) {

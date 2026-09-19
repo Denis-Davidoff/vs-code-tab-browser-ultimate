@@ -2424,10 +2424,31 @@ working.
 **When every candidate is working, a new open queues for a slot rather than taking one.**
 `_evict` cannot help there — it will not drop a session in use — so without this the count simply
 drifted up with concurrency. `_awaitSlot` holds the open until `_hold`'s release frees a session
-(`_notifySlots`, run after the sweep so a waiter sees the slot it freed), which keeps the bound
-exact in the case that actually happens: calls overlapping for a moment. Measured against the
-stubbed channel — five concurrent calls hold **four** sessions, the fifth opens the moment one
-finishes, and nothing is left open after `dispose`.
+(`_notifySlots`, run after the sweep so a waiter sees the slot it freed).
+
+**The slot is *reserved*, not merely checked for, and that distinction is the whole mechanism.**
+Asking "is there room?" and then opening was wrong in two ways at once, both reproduced against
+the stubbed channel:
+
+- `_notifySlots` wakes every waiter, and resolving a promise does not run its continuations
+  before the next waiter is called — so all of them saw the *same* freed session and all of them
+  went on to open. One release has to admit exactly one waiter.
+- a check against `_sessions` alone is blind to opens already under way, so callers arriving
+  together at a cold start all passed while the map was still empty: **six simultaneous calls
+  opened six channels against a limit of four.**
+
+`_tryReserve` closes both by counting `_reserved` alongside `_sessions` and taking the permit
+synchronously, before anything awaits, so the second caller in the same turn already sees it. It
+also *makes* the room rather than promising it — dropping a session the sweep would have given up
+— so what a caller is handed is capacity that exists. `_evict` and `_tryReserve` share one
+`_evictableTab`, or capacity could be taken under a rule the sweep would not have agreed with.
+The reservation is released in a `finally` once the session is in `_sessions` (or the open
+failed), and `_awaitSlot` always resolves holding exactly one, including on the timeout and on
+teardown, so the count cannot drift.
+
+Measured: six simultaneous cold starts hold **four** sessions; four busy plus three queued admits
+**one** waiter per release; the fifth call opens the moment one finishes; nothing is left open
+after `dispose`.
 
 **The wait is bounded, and that is the half that matters.** A plain queue starves:
 `browser_wait_for` takes its timeout from the caller and may hold a session for a minute, so four
@@ -3195,6 +3216,21 @@ No compile error for any of these — they only surface at runtime.
     which the next release reclaims, so the pathological case degrades to the previous behaviour
     rather than to a hang. Item 122 is the same rule for the config repair. `dispose` must
     release the queue too, or a pending timer holds the event loop after the window is done.
+138. **Checking for capacity instead of reserving it** → a check answers for the instant it runs,
+    and both ways that gap opens were reached here. Waking every waiter on one release admits all
+    of them, because resolving a promise does not run its continuations before the next waiter is
+    called — one release must admit exactly one. And counting only what has *landed* is blind to
+    what is on its way: `_sessions` is still empty while four opens are in flight, so callers
+    arriving together at a cold start all passed and six simultaneous calls opened six channels
+    against a limit of four. Count the in-flight commitments alongside the settled ones, take the
+    permit synchronously before anything awaits, and release it where the thing it stood for is
+    counted instead.
+139. **A guard that widens what it inspects without narrowing what it judges** → the readme image
+    check was extended to reference definitions, which are shared by links *and* images, so an
+    ordinary `[guide]: ./guide.md` was reported as `readme image … is not an absolute https URL`
+    and, because `prepare` gates `package` and `publish`, a good readme edit blocked the release.
+    Widening a check is only safe together with the question of which of the new matches the rule
+    actually applies to — here, the ids an `![alt][id]` / `![id][]` / `![id]` actually refers to.
 
 ## Special cases and non-obvious decisions
 
