@@ -2396,16 +2396,51 @@ to a model as a broken browser rather than as something to retry. An earlier rou
 the default state, not an edge case, and it was still evicted mid-call.
 
 So every route to a session takes a hold for the length of the work (`_hold`, counted in
-`_inFlight`, consulted by `claimed`), and `_withSession` became a **scope** rather than a
-hand-out — `_withSession(caller, session => …)` — precisely so a new call site cannot opt out of
-the rule by forgetting to release. The hold is taken in the same turn the session arrives, since
-nothing runs between that `await` and the next line, and released in a `finally`, so a page-side
-throw cannot leave a tab claimed for the life of the window; the release is idempotent, or a
-double `finally` would drive the count negative and pin a tab out of the queue for good. The
-three routes that do not go through `_withSession` take their own: `_navigateInTab` (the longest
-hold there is — a load event is waited for up to 15s), the direct `capture` path, and
-`_borrowSession`. `_armMarkerNow` needs none: it only ever runs on a shared tab, which `claimed`
-already covers through `stateOf`.
+`_inFlight`), and `_withSession` became a **scope** rather than a hand-out —
+`_withSession(caller, session => …)` — precisely so a new call site cannot opt out of the rule by
+forgetting to release. It is released in a `finally`, so a page-side throw cannot leave a tab
+claimed for the life of the window, and the release is idempotent, or a double `finally` would
+drive the count negative and pin a tab out of the queue for good. The three routes that do not go
+through `_withSession` take their own: `_navigateInTab` (the longest hold there is — a load event
+is waited for up to 15s), the direct `capture` path, and `_borrowSession`. `_armMarkerNow` needs
+none: it only ever runs on a shared tab, which the assignment test already covers.
+
+**The hold is taken before the open, not after it**, and the difference is a real race rather
+than a nicety. `_sessionFor` resolves into a microtask, so another tab's open can run its own
+`_evict` between the session being put in `_sessions` and the caller recording that it is using
+it — at which point the tab reads as a spare and is dropped under the caller that just asked for
+it. Holding first covers the open as well as the work, and a tab with no session yet is simply
+never a candidate, so the early claim costs nothing.
+
+**Being used is a hard constraint; being assigned is only a preference**, and collapsing the two
+into one predicate was the same bug one step along. With one `claimed` test and a
+`?? candidates[0]` fallback, four calls in flight left no spare — so the fallback dropped the
+session of the *first* of them and the guard above it did nothing at all. The two differ in what
+eviction costs: an assigned but idle tab loses a console buffer and a marker registration and
+reopens on its next call, while a tab with work in flight loses the call itself. So the search is
+ordered — unassigned and idle, then assigned and idle — and **never** returns a tab that is
+working.
+
+**When every candidate is working, a new open queues for a slot rather than taking one.**
+`_evict` cannot help there — it will not drop a session in use — so without this the count simply
+drifted up with concurrency. `_awaitSlot` holds the open until `_hold`'s release frees a session
+(`_notifySlots`, run after the sweep so a waiter sees the slot it freed), which keeps the bound
+exact in the case that actually happens: calls overlapping for a moment. Measured against the
+stubbed channel — five concurrent calls hold **four** sessions, the fifth opens the moment one
+finishes, and nothing is left open after `dispose`.
+
+**The wait is bounded, and that is the half that matters.** A plain queue starves:
+`browser_wait_for` takes its timeout from the caller and may hold a session for a minute, so four
+of those would block every new tab for as long as they ran — and a tool call that hangs reads to
+a model as a dead browser while its client's own timeout fires regardless. So `_slotWaitMs` (5s)
+gives up waiting and opens anyway, one channel over the bound, which the next release reclaims.
+The pathological case degrades to the previous behaviour rather than to a hang — the same shape
+as `repairQueueWaitMs` and for the same reason (item 122). Ordinary calls finish well inside it,
+so in practice the bound holds exactly. Breaking a live call to hold a number is still the wrong
+way round; waiting a moment for one is not.
+
+`dispose` releases the queue (`_notifySlots` under `_disposed`), or a pending waiter's timer
+holds the host's event loop for `_slotWaitMs` after the window is done with the controller.
 
 **A one-off read still must not take a session that is in use** — `_borrowSession`. `capture`
 with a tab named by the caller (the toolbar passes the one in front of the user) reuses that
@@ -3137,6 +3172,29 @@ No compile error for any of these — they only surface at runtime.
     ordinary one — an assistant with no share and no selection is the default state, not an edge
     case. Counting holds around the work is what makes it structural: `_withSession` is a scope
     rather than a hand-out, so a new call site cannot silently opt out of the rule.
+135. **A guard whose result a fallback then discards** → the fix for item 134 added the in-flight
+    test to `claimed` and left `const target = spare ?? candidates[0]` underneath it. With four
+    calls in flight there is no spare, so the fallback dropped the first of them and the new
+    guard did nothing whatever — it read as a fix, it typechecked, and the original harness still
+    passed because it only ever had *one* call in flight. A predicate is only as strong as the
+    branch that has to honour it when the predicate excludes everything; if exhausting it has to
+    mean something, say what, rather than falling through to the unfiltered list. Here the answer
+    is to queue the new open for a slot (`_awaitSlot`), bounded so it cannot hang, and to sweep
+    again on release.
+136. **Recording a claim on the far side of an `await`** → `_sessionFor` resolves into a
+    microtask, so a hold taken *after* it leaves a window in which the session is in `_sessions`
+    with nothing saying anybody wants it, and a concurrent open's `_evict` drops it under the
+    caller that just asked for it. "Nothing runs between the `await` and the next line" is true
+    of the caller's own statements and false of the event loop. Claim before the acquisition,
+    which also makes the claim cover the acquisition.
+137. **A queue with no bound on the wait** → the fix for item 135 makes a new session wait for a
+    slot, and a slot is freed by another call finishing. `browser_wait_for` takes its timeout
+    from the model, so four of them can hold every slot for a minute — and a tool call that
+    hangs reads as a dead browser while the client's own timeout fires anyway. Bound the
+    **wait**, not the work: after `_slotWaitMs` the open goes ahead one channel over the bound,
+    which the next release reclaims, so the pathological case degrades to the previous behaviour
+    rather than to a hang. Item 122 is the same rule for the config repair. `dispose` must
+    release the queue too, or a pending timer holds the event loop after the window is done.
 
 ## Special cases and non-obvious decisions
 

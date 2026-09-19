@@ -320,6 +320,31 @@ export class BrowserController implements vscode.Disposable {
 	 */
 	private readonly _inFlight = new Map<vscode.BrowserTab, number>();
 
+	/**
+	 * Opens waiting for a session slot to come free.
+	 *
+	 * `_evict` will not drop a session that is in use, so with every slot busy
+	 * there is nothing it can take and a new tab would otherwise open the fifth
+	 * channel. Queueing here keeps the bound exact in the case that actually
+	 * happens — calls overlapping for a moment — instead of letting the count
+	 * drift up with concurrency.
+	 */
+	private readonly _slotWaiters = new Set<() => void>();
+
+	/**
+	 * How long an open waits for a slot before going ahead anyway.
+	 *
+	 * **The wait is bounded, not the work**, which is the same shape as
+	 * `repairQueueWaitMs`: a plain queue starves. `browser_wait_for` takes a
+	 * timeout from its caller and may legitimately hold a session for a minute,
+	 * so four of those would block every new tab for as long as they ran — and a
+	 * tool call that hangs reads to a model as a dead browser, while its client's
+	 * own timeout fires regardless. So the pathological case degrades to the
+	 * previous behaviour, one channel over the bound, rather than to a hang.
+	 * Ordinary calls finish in well under this, so in practice the bound holds.
+	 */
+	private static readonly _slotWaitMs = 5_000;
+
 	private static readonly _sessionLimit = 4;
 
 	/**
@@ -688,14 +713,19 @@ export class BrowserController implements vscode.Disposable {
 	): Promise<T> {
 		await this._settle();
 		const tab = this._requireTab(caller);
-		const session = await this._sessionFor(tab);
 		// **A scope rather than a hand-out**, so the claim covers the work instead
-		// of the acquisition. It is taken in the same turn the session arrives —
-		// nothing runs between the `await` above and this line — and released in a
-		// `finally`, so a page-side throw cannot leave the tab claimed for the life
-		// of the window.
+		// of the acquisition, and released in a `finally`, so a page-side throw
+		// cannot leave the tab claimed for the life of the window.
+		//
+		// **Taken before the open, not after it.** `_sessionFor` resolves into a
+		// microtask, and another tab's open can run its own `_evict` in between —
+		// at which point this tab is in `_sessions` with nothing recording that
+		// somebody is about to use it, so it reads as a spare and is dropped under
+		// the caller that just asked for it. Holding first covers the open as well
+		// as the work; a tab with no session yet is simply never a candidate.
 		const release = this._hold(tab);
 		try {
+			const session = await this._sessionFor(tab);
 			return await run(session);
 		} finally {
 			release();
@@ -732,7 +762,9 @@ export class BrowserController implements vscode.Disposable {
 			return pending;
 		}
 
-		const promise = TabSession.open(tab).then(session => {
+		// Queued, so an open does not push the count past the bound while every
+		// existing session is busy. Bounded, so it cannot hang behind one.
+		const promise = this._awaitSlot().then(() => TabSession.open(tab)).then(session => {
 			const open = vscode.window.browserTabs ?? [];
 			if (this._disposed || !open.includes(tab)) {
 				// Nobody will ever read this one, so it closes itself rather
@@ -770,6 +802,50 @@ export class BrowserController implements vscode.Disposable {
 	}
 
 	/**
+	 * Whether a session may be opened without going over the bound.
+	 *
+	 * Room already, or room `_evict` can make — which is only true while some
+	 * session is idle, since it will not take one that is in use.
+	 */
+	private _roomForSession(): boolean {
+		if (this._sessions.size < BrowserController._sessionLimit) {
+			return true;
+		}
+		return [...this._sessions.keys()].some(tab => !this._inFlight.has(tab));
+	}
+
+	/** Waits for a slot, and gives up waiting after {@link _slotWaitMs}. */
+	private _awaitSlot(): Promise<void> {
+		if (this._roomForSession() || this._disposed) {
+			return Promise.resolve();
+		}
+		return new Promise<void>(resolve => {
+			const waiter = () => {
+				if (!this._roomForSession() && !this._disposed) {
+					return;
+				}
+				clearTimeout(timer);
+				this._slotWaiters.delete(waiter);
+				resolve();
+			};
+			// Going ahead beats hanging; `_evict` is over the bound for as long as
+			// the calls holding it run, and sweeps again as each one ends.
+			const timer = setTimeout(() => {
+				this._slotWaiters.delete(waiter);
+				resolve();
+			}, BrowserController._slotWaitMs);
+			this._slotWaiters.add(waiter);
+		});
+	}
+
+	/** Wakes everything queued for a slot; each re-checks for itself. */
+	private _notifySlots(): void {
+		for (const waiter of [...this._slotWaiters]) {
+			waiter();
+		}
+	}
+
+	/**
 	 * Claims a tab's session for the length of one piece of work.
 	 *
 	 * The returned release is idempotent, so a `finally` that runs twice — or a
@@ -787,9 +863,17 @@ export class BrowserController implements vscode.Disposable {
 			const rest = (this._inFlight.get(tab) ?? 1) - 1;
 			if (rest > 0) {
 				this._inFlight.set(tab, rest);
-			} else {
-				this._inFlight.delete(tab);
+				return;
 			}
+			this._inFlight.delete(tab);
+			// `_evict` stands down rather than dropping a session that is in use, so
+			// the limit can be over by the time this call ends. This is what brings
+			// it back: without it the excess would persist until the next open. The
+			// sweep runs first, so a waiter woken below sees the slot it frees.
+			if (!this._disposed) {
+				this._evict();
+			}
+			this._notifySlots();
 		};
 	}
 
@@ -819,20 +903,34 @@ export class BrowserController implements vscode.Disposable {
 			// as a broken browser rather than as something to retry.
 			const candidates = this._sessionOrder.filter(tab =>
 				tab !== arriving && this._sessions.has(tab));
-			// A tab that somebody is *using* is passed over the same way an
-			// assigned one is. "Least recently used" is really "least recently
-			// acquired" — `_touch` runs when a session is handed out, not while
-			// it works — so the longest-running call sat at the front of the
-			// queue: a `browser_wait_for` on a pinned tab was evicted by another
-			// assistant opening tabs, and answered the model with the internal
-			// `CDP client disposed`. Reproduced.
-			const claimed = (tab: vscode.BrowserTab) =>
-				this._inFlight.has(tab)
-				|| this._shares.stateOf(tab) !== undefined
+			// **Being used is a hard constraint; being assigned is a preference**,
+			// and collapsing the two into one `claimed` predicate with a
+			// `?? candidates[0]` fallback was the same bug one step along: with four
+			// calls in flight there is no spare, so the fallback dropped the session
+			// of the *first* of them and answered a live `browser_wait_for` with the
+			// internal `CDP client disposed`. Reproduced with four concurrent calls
+			// and a fifth tab.
+			//
+			// The two differ in what eviction costs. An assigned but idle tab loses a
+			// console buffer and a marker registration and reopens on its next call;
+			// a tab with work in flight loses the call itself, which is the one error
+			// the docs single out as reading to a model as a broken browser rather
+			// than as something to retry. So an assignment is given up when there is
+			// nothing else to take — the trade this bound has always made — while
+			// work in flight is never given up at all.
+			const inUse = (tab: vscode.BrowserTab) => this._inFlight.has(tab);
+			const spokenFor = (tab: vscode.BrowserTab) =>
+				this._shares.stateOf(tab) !== undefined
 				|| [...this._pins.values()].some(pin => pin.tab === tab);
-			const spare = candidates.find(tab => !claimed(tab));
-			const target = spare ?? candidates[0];
+
+			const target = candidates.find(tab => !inUse(tab) && !spokenFor(tab))
+				?? candidates.find(tab => !inUse(tab));
 			if (!target) {
+				// Every candidate is working, so the bound is exceeded until one of
+				// them finishes — deliberately. The excess is bounded by the number of
+				// calls a client has in flight, and `_hold`'s release runs the sweep
+				// again the moment a tab goes idle, so it is a delay rather than a
+				// leak. Breaking a live call to hold a number is the wrong way round.
 				return;
 			}
 			this._dropSession(target);
@@ -1389,12 +1487,13 @@ export class BrowserController implements vscode.Disposable {
 	private static readonly _navigationTimeoutMs = 15_000;
 
 	private async _navigateInTab(tab: vscode.BrowserTab, url: string): Promise<unknown> {
-		const session = await this._sessionFor(tab);
 		// The longest hold there is: a load event is waited for up to
 		// `_navigationTimeoutMs`, so without a claim this is the likeliest call of
-		// all to be evicted out from under itself.
+		// all to be evicted out from under itself. Taken before the open, for the
+		// reason given in `_withSession`.
 		const release = this._hold(tab);
 		try {
+			const session = await this._sessionFor(tab);
 			// The buffer describes the page being left.
 			session.clearConsole();
 
@@ -1646,10 +1745,10 @@ export class BrowserController implements vscode.Disposable {
 			// for everything that happened before the next call — and console
 			// capture is the whole reason the session is cached at all.
 			const tab = this._requireTab(caller);
-			const session = await this._sessionFor(tab);
+			// Held before the open, for the reason given in `_withSession`.
 			const release = this._hold(tab);
 			try {
-				return await this._capture(tab, session, fullPage);
+				return await this._capture(tab, await this._sessionFor(tab), fullPage);
 			} finally {
 				release();
 			}
@@ -1831,6 +1930,12 @@ export class BrowserController implements vscode.Disposable {
 	public dispose(): void {
 		// First, so an open still in flight sees it when it lands.
 		this._disposed = true;
+
+		// Anything queued for a session slot is released rather than left to its
+		// timeout: the open it is waiting for will refuse the moment it lands, and
+		// a pending timer would hold the host's event loop for `_slotWaitMs` after
+		// the window is done with this controller.
+		this._notifySlots();
 
 		// The extension is going; the *page* is not. The browser editor belongs
 		// to the workbench, so a disable or a reload of this extension left the
