@@ -1529,9 +1529,11 @@ Two fixes, and the second is the one that makes it self-correcting:
 - **Ask for one real call.** "Just check — do not use them yet" left the model nothing to check
   *with* — the tool list was the only other evidence, and that is precisely the evidence the
   naming had made unreadable. `browser_state` is the right one to spend: the server's own
-  instructions open with it, it reads extension-side state only, and — unlike every tool that
-  resolves a tab through `_requireTab` — it does **not** run `_noteTabUse`, so the check cannot
-  flip a shared tab's marker from 🔗 to 🤖 and claim work that has not happened.
+  instructions open with it, it touches no page, and it **is** counted as the caller picking the
+  tab up — `state()` runs `_noteTabUse` on purpose, so a successful check turns the status bar
+  from 🔗 to 🤖 and stops the menu advising a restart. It was first chosen for the opposite
+  reason, that it did *not* count; that reading of 🤖 belonged to the title marker and went with
+  it (breaks-silently #149).
 
 **A `.mcp.json` that cannot be read or parsed is never overwritten.** `readClaudeConfig` returns
 `{}` for absent, the object for parsed, and `undefined` for **either** unparsable **or
@@ -2223,31 +2225,27 @@ on every call after it. Gating attribution on a *recognised* client left the mar
 thing the marker exists to tell apart.
 
 **Moving a share is a transaction, and tool calls wait for it.** Sharing is several async steps
-over the fields the tools read — the marker comes off one page, the session moves, the marker
-goes on another — and a call landing in the middle interfered with it in two ways at once, both
-reproduced with a concurrent `browser_snapshot`:
+over the fields the tools read, and a call landing in the middle interfered with it in two ways
+at once, both reproduced with a concurrent `browser_snapshot`:
 
-- the call resolved the **new** tab, so `_sessionFor` dropped the session the cleanup was still
-  using. The marker stayed on the old tab, and *nothing could ever remove it*, because
-  `stopSharing` only knows the current one;
+- the call resolved the **new** tab, so `_sessionFor` dropped the session the transition was
+  still using. While the marker existed this was the worse half — it stayed on the old tab with
+  nothing able to remove it, since `stopSharing` only knows the current one. That half is gone
+  with the marker ([Where a share is visible](#where-a-share-is-visible)); the dropped session
+  still costs a console buffer;
 - the call itself failed with `The browser session was replaced while it was opening` — an
   internal sentence handed to a model.
 
-Three things fix it, and each covers a different part:
+Three things fix it, and each covers a different part. (A fourth, `_clearIndicator`'s second route
+to the page, went with the marker: it existed because a transition had page-side work to undo,
+and `ShareIndicator.clear()` returned a boolean rather than covering its failure so that route
+could be tried. Both symbols are deleted — do not go looking for them.)
 
 - **`_transact` / `_settle`.** Transitions run in call order (two clicks on "Share this tab
   instead" cannot interleave), and every path that resolves a tab — `_withSession`, `navigate`,
   `capture`, `inspectElement`, `state`, `tabs`, `selectTab` — awaits `_settle()` first. Measured
   against a stubbed CDP channel: a snapshot fired during a switch now opens **no** extra session
   (one per tab) and answers on the new tab.
-- **`_clearIndicator` has a second route to the page.** The gate orders calls that *arrive*
-  during a transition; one already past it can still be holding the session the transition
-  drops. So the cleanup tries the cached session first — it holds the registration identifier,
-  and removing that is what stops the marker coming back on the next navigation — and falls back
-  to a session of its own, which nobody else can drop. This is why `ShareIndicator.clear()`
-  **returns a boolean instead of covering its failure**: "the marker is off" and "the channel
-  died before it could be taken off" must not look the same to the caller that has another way
-  in.
 - **Eviction passes over a tab somebody is *using*, not only an assigned one.** "Least recently
   used" is really "least recently acquired" — `_touch` runs when a session is handed out, not
   while it works — so the longest-running call sat at the front of the queue: a
@@ -2330,8 +2328,12 @@ What is left in [src/shareIndicator.ts](src/shareIndicator.ts) is the reading ha
 piece has its own reason to stay:
 
 - `sharedMarker` / `inUseMarker`, because the status bar and the menu still show them;
-- `stripMarker` / `stripMarkerFromHtml`, because a page an earlier build reached can still be
-  open with its observer re-applying a suffix on every title change;
+- `stripMarkerFromHtml`, because `browser_html` serialises the page's own `<title>`, where such
+  a suffix really does appear;
+- `stripMarker` — but only usefully at the two sites that read `document.title` **in the page**.
+  It matches a suffix, and the whole point of #147 is that `BrowserTab.title` carries ` (<url>)`
+  *after* our glyphs, so on the nine sites fed that value it is a no-op wherever the host
+  composes the string. Do not read its presence as protection for the legacy case;
 - `legacyMarkerRemoval`, a one-line expression sent on every `TabSession.open`, which calls the
   old installer's `remove()` and disarms that observer. It is a **migration**: without it the
   last marker this extension ever wrote would be permanent, the code able to reach it being the
@@ -2617,12 +2619,14 @@ conversation with a prompt, but Codex has no equivalent, so reports go as files 
 
 No compile error for any of these — they only surface at runtime.
 
-**Items 32–36, 38, 40, 48, 65, 69 and 70 describe the page-side title marker, which no longer
+**Items 32–38, 40, 47, 48, 65, 69 and 70 describe the page-side title marker, which no longer
 exists** — see [Where a share is visible](#where-a-share-is-visible). They are kept because each
 one is a rule about writing into somebody else's document, and that is exactly what a future
 "just put a badge on the tab" would do again; read them as reasons the mechanism went rather than
-as invariants to uphold. Item 30 still applies to the *reading* side: a marker an older build
-wrote can still be on a page that is open.
+as invariants to uphold. Item 30 is the one with a live remnant — a marker an older build wrote
+can still be on an open page — but read it with #147: `stripMarker` catches such a marker only in
+a title read from the page, never in `BrowserTab.title`. What actually removes it is
+`legacyMarkerRemoval`, on the first session opened against that tab.
 
 1. **`format` other than `iife`** in esbuild → the panel script never runs, panel has no
    working controls.
@@ -2772,7 +2776,9 @@ wrote can still be on a page that is open.
 47. **An unbounded best-effort CDP call inside a serialised transition** → `CDPClient.send` has
     no timeout, so a page that has stopped answering never settles the transition, and
     everything queued behind the gate — every tool, every user command, the recovery command
-    included — hangs with no error. Bound it (`bounded`).
+    included — hangs with no error. It was bounded with a `bounded` helper; both that helper and
+    the page-side work inside a transition are gone, so the rule survives without a call site —
+    if a transition ever talks to a page again, bound it.
 48. **Ignoring `exceptionDetails` on `Runtime.evaluate`** → CDP answers a page-side throw with a
     *successful* reply, so a failed install is recorded as done (suppressing every retry) and a
     failed cleanup reports success (skipping the caller's second route).
@@ -3273,9 +3279,9 @@ wrote can still be on a page that is open.
 145. **Asking for a check while forbidding the only thing that could check** → "Just check — do
     not use them yet" left the tool list as the sole evidence, which is exactly the evidence the
     item above had made unreadable, so the model answered from a glance and was wrong. A check
-    needs something to spend; here it is one `browser_state`, chosen because it reads
-    extension-side state only and does not run `_noteTabUse`, so it cannot flip a shared tab's
-    marker to 🤖 and claim work nobody did.
+    needs something to spend; here it is one `browser_state`, chosen because it touches no page
+    and is the server's own opening call. It **is** counted as picking the tab up — see item 149,
+    which is the correction to the first version of this entry.
 146. **Naming a config file the connect path did not write** → `connectCodex` writes the global
     `~/.codex/config.toml`, and the VS Code Codex extension never loads a project
     `.codex/config.toml` at all. Pointing the prompt at the project file sends the model to

@@ -31,12 +31,28 @@ import type { ClientKind } from './mcpProtocol';
  * item, and the menu under it names each assignment, the page it holds and
  * whether it has been picked up. See `statusBar.ts`.
  *
- * What stays here is the *reading* half, and it stays for two different reasons:
- * the status bar still needs the two glyphs, and a page marked by an earlier
- * build can still be open — its `MutationObserver` re-applying the suffix on
- * every title change — so titles are still stripped on the way out and
- * {@link legacyMarkerRemoval} takes the old installer off whenever a session
- * reaches such a page.
+ * What stays here is the *reading* half. The status bar needs the two glyphs;
+ * the two strippers and {@link legacyMarkerRemoval} exist for a page an earlier
+ * build marked and which is still open, its `MutationObserver` re-applying the
+ * suffix on every title change.
+ *
+ * **But be exact about which of them can actually clean that up, because it is
+ * not the obvious one.** {@link stripMarker} matches a *suffix*, and the
+ * failure above is precisely that `BrowserTab.title` is not `document.title`:
+ * with ` (<url>)` appended after our glyphs the marker is mid-string and the
+ * match cannot see it. Measured:
+ *
+ * ```
+ * stripMarker('Picto ERP\u2009🔗🟦 (http://localhost:3000/x)')  → unchanged
+ * stripMarker('Picto ERP\u2009🔗🟦')                            → 'Picto ERP'
+ * ```
+ *
+ * So of the call sites, only the two that read `document.title` **in the page**
+ * are cleaned by it; every site fed `BrowserTab.title` is a no-op wherever the
+ * host composes that string, and harmless where it does not. The real cleanup
+ * for a legacy page is {@link legacyMarkerRemoval}, which removes the installer
+ * itself the first time a session opens on that tab. `stripMarkerFromHtml`
+ * is unaffected — `browser_html` serialises the page's own `<title>`.
  */
 
 

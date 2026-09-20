@@ -476,10 +476,18 @@ export function codexCliCommand(folder: vscode.WorkspaceFolder | undefined, serv
  * model nothing to check *with*: the tool list is the only other evidence
  * available, and that is exactly the evidence the naming had already made
  * unreadable. `browser_state` is the right one to spend: the server's own
- * instructions open with it, it reads extension-side state only, and — unlike
- * every tool that resolves a tab through `_requireTab` — it does not run
- * `_noteTabUse`, so the check cannot flip the shared tab's marker from 🔗 to 🤖
- * and claim work that has not happened.
+ * instructions open with it, it touches no page, and it **is** counted as the
+ * caller picking the tab up — `state()` runs `_noteTabUse` deliberately, so a
+ * check that succeeds turns the status bar from 🔗 to 🤖 and stops the menu
+ * advising a restart.
+ *
+ * That last clause is the reverse of what this comment said for one revision,
+ * and the reversal is the point. `browser_state` was originally chosen
+ * *because* it did not count, on the reading that 🤖 meant "work is happening on
+ * this page". It no longer means that — the two states live in the status bar,
+ * where they answer "has this assistant picked the tools up?" — so a check the
+ * UI cannot see leaves the user being told to restart a session that has just
+ * proved it works. See breaks-silently #149.
  *
  * **It must not tell the model to read the config file, and this was tried.**
  * An intermediate version opened with "read `~/.codex/config.toml` and find the

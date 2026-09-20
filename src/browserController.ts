@@ -694,11 +694,32 @@ export class BrowserController implements vscode.Disposable {
 	 * meant a check that succeeded still left 🔗 and a menu row telling the user
 	 * to restart a session that had just proved it works.
 	 *
-	 * Still not taken for a caller with no assignment: there is nothing to
-	 * report about a tab nobody was given.
+	 * **The test is on the caller's own assignment, not on the tab.** It used to
+	 * be `isShared(tab)`, which asks whether *anybody* holds the tab — and an
+	 * unassigned caller resolves to the focused tab, which may well be one the
+	 * user gave to somebody else. Reproduced against the registry: Claude holds
+	 * tab A, Codex holds nothing, A is focused, Codex calls `browser_state` →
+	 * `usedBy(A)` becomes `['codex']`. `usedByTarget` filters by kind, so
+	 * Claude's row was unharmed and the bug stayed invisible — until the user
+	 * later gave A to Codex as well, at which point that row read "Working on
+	 * this tab" from a call made before the assignment existed, and the
+	 * "restart it" hint the two states exist for was suppressed.
+	 *
+	 * The guard predates this rule and the old wording claimed a caller-level
+	 * test it never performed; what changed is that `state` and `tabs` are now
+	 * call sites, and `browser_state` is the call the server's instructions and
+	 * the connect prompt both tell a model to make first — so the reachable
+	 * path became the common one.
+	 *
+	 * `resolve` also settles the session-scoped case for free: one Claude
+	 * conversation cannot mark a tab assigned to another.
 	 */
 	private _noteTabUse(tab: vscode.BrowserTab, caller: CallerIdentity): void {
-		if (!this._shares.isShared(tab) || !this._shares.noteUse(tab, caller.kind)) {
+		const resolution = this._shares.resolve(caller);
+		if (resolution.kind !== 'shared' || resolution.tab !== tab) {
+			return;
+		}
+		if (!this._shares.noteUse(tab, caller.kind)) {
 			return;
 		}
 		this._onDidChangeShare.fire();
@@ -1633,9 +1654,11 @@ export class BrowserController implements vscode.Disposable {
 				}
 				return { url: location.href, title: document.title, elements: out };
 			})()`);
-			// The title is read from the page, and while this tab is shared the page
-			// is carrying *our* suffix — so it needs the same strip as every other
-			// title that leaves the extension.
+			// Nothing writes a marker into a page any more, but a page an older
+			// build reached can still be open with its observer re-applying one.
+			// This title is read from the page, so it is one of the two sites
+			// `stripMarker` can actually clean — see the note in
+			// `shareIndicator.ts` on why the `BrowserTab.title` sites cannot be.
 			return value ? { ...value, title: stripMarker(value.title) } : value;
 		});
 	}

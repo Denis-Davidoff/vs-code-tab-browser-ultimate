@@ -164,6 +164,49 @@ suite('ShareRegistry share state', () => {
 		assert.deepStrictEqual(shares.usedByTarget(forKind('claude'), tabA), ['claude']);
 	});
 
+	/*
+	 * `BrowserController._noteTabUse` composes `resolve` and `noteUse` to decide
+	 * whether a call counts as this caller picking the tab up. It cannot be
+	 * tested directly — its file imports `vscode` — so the rule it depends on is
+	 * pinned here: only a caller whose *own* assignment resolves to this tab may
+	 * mark it. The guard used to ask `isShared(tab)`, which is true whenever
+	 * anybody holds it, so an unassigned caller acting on the focused tab
+	 * recorded use against somebody else's page — and a later assignment to that
+	 * caller then read as "already working", suppressing the restart hint.
+	 */
+	const picksUp = (shares: ShareRegistry<string>, tab: string, caller: { kind: 'claude' | 'codex' | 'other'; sessionId?: string }) => {
+		const resolution = shares.resolve(caller);
+		return resolution.kind === 'shared' && resolution.tab === tab && shares.noteUse(tab, caller.kind);
+	};
+
+	test('an unassigned caller does not mark somebody else\'s tab', () => {
+		const shares = new ShareRegistry<string>();
+		shares.share(forKind('claude'), tabA);
+
+		assert.strictEqual(picksUp(shares, tabA, { kind: 'codex' }), false);
+		assert.deepStrictEqual(shares.usedBy(tabA), []);
+
+		// And the later assignment still reports honestly.
+		shares.share(forKind('codex'), tabA);
+		assert.deepStrictEqual(shares.usedByTarget(forKind('codex'), tabA), []);
+	});
+
+	test('one conversation does not mark a tab assigned to another', () => {
+		const shares = new ShareRegistry<string>();
+		shares.share(forSession('conv-1', 'claude'), tabA);
+
+		assert.strictEqual(picksUp(shares, tabA, { kind: 'claude', sessionId: 'conv-2' }), false);
+		assert.deepStrictEqual(shares.usedBy(tabA), []);
+	});
+
+	test('an everyone share is picked up by whoever calls', () => {
+		const shares = new ShareRegistry<string>();
+		shares.share(everyone, tabA);
+
+		assert.strictEqual(picksUp(shares, tabA, { kind: 'codex' }), true);
+		assert.deepStrictEqual(shares.usedBy(tabA), ['codex']);
+	});
+
 	test('a closed tab forgets who used it', () => {
 		const shares = new ShareRegistry<string>();
 		shares.share(forKind('claude'), tabA);
