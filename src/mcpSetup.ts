@@ -481,28 +481,28 @@ export function codexCliCommand(folder: vscode.WorkspaceFolder | undefined, serv
  * `_noteTabUse`, so the check cannot flip the shared tab's marker from 🔗 to 🤖
  * and claim work that has not happened.
  *
- * **It opens by naming the config file, which reverses an earlier decision, and
- * the reason the old one was right is not the reason it was written down.** The
- * line was removed because a model sent to read `config.toml` confirms the
- * server is configured and still has no tools — true, and it is why the file is
- * named as *evidence of the entry's name* rather than as somewhere to go and
- * fix things. What the read actually supplies is the exact `[mcp_servers.<name>]`
- * header, which is the one thing a model needs to build the prefix its own
- * client mangled, and reading it is what made the check succeed in practice.
- * The guard that mattered stays: the next line still forbids adding or editing
- * any MCP configuration.
+ * **It must not tell the model to read the config file, and this was tried.**
+ * An intermediate version opened with "read `~/.codex/config.toml` and find the
+ * `<name>` entry", on the reasoning that the exact `[mcp_servers.<name>]` header
+ * is what a model needs to rebuild the prefix its client mangled — and that does
+ * work. It is still wrong, for a reason the reasoning never touched: **those
+ * files hold credentials.** Every entry we write carries
+ * `Authorization = "Bearer <token>"`, the global Codex file accumulates one per
+ * project (three on the machine this was found on, two of them for *other*
+ * workspaces), and neither file is only ours — `~/.codex/config.toml` holds the
+ * user's whole personal configuration and any third-party MCP server's secrets
+ * with it. "Read this file" puts all of that into a model's context, a
+ * provider's logs and a conversation history, to learn one string.
  *
- * **The path has to be the file we actually wrote.** `connectCodex` writes the
- * *global* `~/.codex/config.toml`, never the project `.codex/config.toml` — the
- * VS Code Codex extension does not load a project file at all (measured: its
- * `mcp_server_count` excludes one that is sitting right there), so naming it
- * would send the model to a file that is either absent or a leftover from a
- * release that did write it. Hence `configPath`, passed by each connect path
- * rather than guessed here.
+ * And the string is one we already have: `entryName` is a parameter. Naming it
+ * outright gives the model exactly what the read gave it, with nothing else
+ * attached. `configPath` therefore survives only so the prompt can *locate* the
+ * entry in a sentence — never as an instruction to open it.
  */
 export function connectionPrompt(entryName: string, configPath: string, shared?: SharedPage): string {
 	const lines = [
-		`Read \`${configPath}\` and find the \`${entryName}\` MCP server entry — that is its exact name.`,
+		`The MCP server is named \`${entryName}\` (it is already configured, in \`${configPath}\` —`
+		+ ' do not open or edit that file).',
 		`Do you have that server's browser tools in this session?`
 		+ ' Their names end in `browser_state`, `browser_snapshot`, `browser_click` and so on,'
 		+ ' but your client prefixes them with the server name — so do not look for a bare'

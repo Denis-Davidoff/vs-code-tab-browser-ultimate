@@ -678,12 +678,24 @@ export class BrowserController implements vscode.Disposable {
 	}
 
 	/**
-	 * Records that an assistant really did drive the shared tab.
+	 * Records that an assistant holding this tab has actually called something.
 	 *
-	 * Deliberately not "an assistant made a call": `browser_tabs` and
-	 * `browser_state` answer without touching a page, and a marker that lit up
-	 * on those would say "in use" about a tab nothing had opened. So the note is
-	 * taken where a tab is actually handed out for work.
+	 * **This used to exclude `browser_state` and `browser_tabs`**, on the
+	 * grounds that they answer without touching a page and a marker lighting up
+	 * on them would claim work on a tab nothing had opened. That was the right
+	 * rule while the marker was a suffix written into the page title, where 🤖
+	 * sat beside the page's own name and read as "something is happening here".
+	 *
+	 * It is the wrong rule now. The two states live in the status bar and its
+	 * menu (see `statusBar.ts`), where the question they answer is *"has this
+	 * assistant picked the tools up, or does it need restarting?"* — and a
+	 * `browser_state` call settles that as conclusively as a click does. The
+	 * connect prompt prescribes exactly that call as the check, so excluding it
+	 * meant a check that succeeded still left 🔗 and a menu row telling the user
+	 * to restart a session that had just proved it works.
+	 *
+	 * Still not taken for a caller with no assignment: there is nothing to
+	 * report about a tab nobody was given.
 	 */
 	private _noteTabUse(tab: vscode.BrowserTab, caller: CallerIdentity): void {
 		if (!this._shares.isShared(tab) || !this._shares.noteUse(tab, caller.kind)) {
@@ -1148,10 +1160,35 @@ export class BrowserController implements vscode.Disposable {
 			}
 		}
 		this._onDidChangeShare.fire();
+		this._primeConsole(tab);
 
 		return {
 			id: this._idOf(tab), url: tab.url, title: stripMarker(tab.title), label: targetName(target),
 		};
+	}
+
+	/**
+	 * Opens the tab's session now, so the console is captured from the moment it
+	 * is given away rather than from the assistant's first call.
+	 *
+	 * Console messages only arrive while something is attached — that is the
+	 * whole reason a session is cached rather than opened per call — so between
+	 * "share this tab" and the first `browser_` call there was a window whose
+	 * output nothing recorded. The user spends that window reloading the page
+	 * and describing what went wrong, which is exactly the output the assistant
+	 * is about to be asked for.
+	 *
+	 * This used to happen **by accident**: `_shareTab` ended in `_armMarker`,
+	 * which called `_sessionFor` to install the title marker. Removing the
+	 * marker removed the priming with it and nothing said so, because nothing
+	 * had ever said it was load-bearing. It is explicit now.
+	 *
+	 * Best effort and unawaited: sharing must not fail, or wait, because a page
+	 * would not attach. It takes no hold — there is no work to protect, and the
+	 * session is worth exactly as much as it is worth to evict.
+	 */
+	private _primeConsole(tab: vscode.BrowserTab): void {
+		void this._sessionFor(tab).catch(() => { /* the first tool call will try again */ });
 	}
 
 	/** Releases one assignment, or every one of them, and tidies the tabs. */
@@ -1210,6 +1247,11 @@ export class BrowserController implements vscode.Disposable {
 		// The tab *this caller* will act on, which is not the same thing as the
 		// focused editor, and not the same thing as another assistant's tab.
 		const { tab: target, paused, target: assignment } = this._resolveForCaller(caller);
+		// Answering at all proves this caller has the tools — which is the whole
+		// of what the status bar's 🔗/🤖 is asking. See `_noteTabUse`.
+		if (target) {
+			this._noteTabUse(target, caller);
+		}
 		// `assignment !== undefined` is not the test — a *paused* caller has no
 		// assignment in that sense, and answering it with the window's tab count
 		// is the same mistake the sibling method was fixed for: the moment its
@@ -1251,6 +1293,9 @@ export class BrowserController implements vscode.Disposable {
 		const open = vscode.window.browserTabs ?? [];
 		this._identify(open);
 		const { tab: target, paused, target: assignment } = this._resolveForCaller(caller);
+		if (target) {
+			this._noteTabUse(target, caller);
+		}
 		const focused = vscode.window.activeBrowserTab;
 
 		// **An assigned caller sees its own tab and nothing else.** The other

@@ -1465,21 +1465,30 @@ a restart, Codex a brand-new conversation. So reading the config can never *make
 appear, and the prompt must not send the model off to fix anything there — its last line still
 forbids adding or editing any MCP configuration.
 
-**But it does open by naming the config file, and the earlier rule against that was too broad.**
-The line used to say the prompt "names the *tools* and never tells the model to go and read
-`config.toml`", on the grounds that a model sent to read the file confirms the server is
-configured and still has no tools. True, and it is why the file is named as *evidence of the
-entry's name* rather than as somewhere to go and act. What the read actually supplies is the
-exact `[mcp_servers.<name>]` header, which is the one thing a model needs in order to rebuild
-the prefix its own client mangled — see
-[Nothing is named `browser_`](#nothing-is-named-browser_-and-the-prompt-said-it-was).
+**It names the config file and forbids opening it, and an intermediate version got that
+backwards.** For one revision the prompt opened with "read `~/.codex/config.toml` and find the
+`<name>` entry", on the reasoning that the exact `[mcp_servers.<name>]` header is what a model
+needs in order to rebuild the prefix its client mangled — see
+[Nothing is named `browser_`](#nothing-is-named-browser_-and-the-prompt-said-it-was). That
+reasoning is sound and the instruction still had to go, for something it never considered:
+**those files hold credentials.** Every entry this extension writes carries
+`Authorization = "Bearer <token>"`; the global Codex file accumulates one per project — three on
+the machine where this was caught, two of them for *other* workspaces — and it is not only ours,
+holding the user's whole personal configuration and any third-party MCP server's secrets beside
+it. "Read this file" puts all of that into a model's context, a provider's logs and a
+conversation history, to learn one string.
 
-**The path must be the file that connect actually wrote.** `connectCodex` writes the *global*
+And it is a string we already hold: `entryName` is a parameter. Naming it outright gives the
+model exactly what the read gave it with nothing else attached, so the prompt says
+*"The MCP server is named `<name>` (it is already configured, in `<path>` — do not open or edit
+that file)."* The path is there to locate the entry in a sentence, never as an instruction.
+
+**And that path must be the file connect actually wrote.** `connectCodex` writes the *global*
 `~/.codex/config.toml`; the VS Code Codex extension does not load a project `.codex/config.toml`
 at all (measured: `mcp_server_count` excluded one sitting right there in the folder), so naming
-the project file points the model at something absent, or at a leftover from the release that
-did write it. Hence `configPath`, passed by each connect path — `.mcp.json` for Claude Code,
-the global fsPath for Codex — rather than guessed inside `connectionPrompt`.
+the project file would point at something absent, or at a leftover from the release that did
+write it. Hence `configPath`, passed by each connect path — `.mcp.json` for Claude Code, the
+global fsPath for Codex — rather than guessed inside `connectionPrompt`.
 
 **And it asks for a check, not for work.** The line used to end "to inspect the page in the
 integrated browser", which both assistants took as the task: they opened the browser tools on
@@ -2192,10 +2201,19 @@ next tool ignores — the "reports `tab-2`, acts on `tab-1`" shape recorded abov
 say who can change it. Navigating *inside* the shared tab stays allowed: the share is on the
 tab, not on the URL.
 
-**Use is recorded at the point a tab is handed out, not per request.** `_noteTabUse` runs when
-`_requireTab` gives a caller its tab. Deliberately not "an assistant made a call":
-`browser_tabs` and `browser_state` answer without touching a page, and a marker lighting up on
-those would claim work on a tab nothing had opened.
+**Use means "this assistant has called something while holding the tab".** `_noteTabUse` runs
+from `_requireTab`, and also from `state` and `tabs`, which resolve a tab without handing out a
+session.
+
+Those two used to be excluded, on the grounds that they answer without touching a page and a
+marker lighting up on them would claim work on a tab nothing had opened. That was right while
+the marker was a suffix in the page title, where 🤖 sat beside the site's own name and read as
+"something is happening here". It is wrong now that the two states live in the status bar and
+its menu ([Where a share is visible](#where-a-share-is-visible)), where the question they answer
+is *"has this assistant picked the tools up, or does it need restarting?"* — and a
+`browser_state` call settles that as conclusively as a click does. The connect prompt prescribes
+exactly that call as the check, so with the old rule a check that **succeeded** still left 🔗 and
+a menu row telling the user to restart a session that had just proved it works.
 
 **Every `tools/call` is attributed, `other` when the client cannot be named.** The transport
 passes `kind ?? 'other'`, and the fallback is the point: only `initialize` carries
@@ -3271,6 +3289,25 @@ wrote can still be on a page that is open.
     see it. The marker then leaked into the connect prompt, every tool result and the status bar
     tooltip, with nothing able to remove it. A value composed by the host is not the value you
     put in; if a round trip has to be exact, do not route it through one.
+148. **Telling a model to read a config file to learn one string from it** → the file is the
+    credential store. Every entry this extension writes carries `Authorization = "Bearer …"`,
+    `~/.codex/config.toml` accumulates one per project (three on the machine this was caught on,
+    two for *other* workspaces) and holds third-party MCP servers' secrets besides. The read
+    works, which is why it survived a round of review: the model gets the exact entry name and
+    the check succeeds. It also puts every token in that file into a model's context, a
+    provider's logs and a conversation history. Ask what the instruction is *for* — here, one
+    string the extension already had as a parameter — and hand over that instead of a path.
+149. **A check the UI cannot see** → the connect prompt prescribes `browser_state`, and
+    `_noteTabUse` deliberately excluded it, so a check that proved the tools were loaded left
+    the status bar on 🔗 and the menu still advising a restart. Two halves of one feature, each
+    defensible alone, contradicting each other: when one part of a feature prescribes an action,
+    the part that reports on it has to count that action.
+150. **An implicit dependency removed with the thing it hung off** → `_shareTab` ended in
+    `_armMarker`, which called `_sessionFor`, which started console capture — so sharing a tab
+    began recording its console as a side effect nobody had written down. Deleting the marker
+    deleted the priming, silently, and the console would have been empty for everything between
+    the share and the assistant's first call. `_primeConsole` does it on purpose now. Before
+    removing a call, ask what else it was doing besides its name.
 
 ## Special cases and non-obvious decisions
 

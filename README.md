@@ -341,10 +341,10 @@ given:
 - its tools act on that tab, whatever you open or focus afterwards;
 - it **sees no other tab** — `browser_tabs` returns its own and a count of the rest, and
   `browser_select_tab` is refused, so a page you did not hand over is not something it can read;
-- the tab says so itself. A 🔗 is appended to its title while nobody has driven it, 🤖 once
-  somebody has, and 🟠 / 🟦 name Claude Code / Codex — so `🤖🟠🟦` is "both of them work here,
-  and one has". The marker is stripped from every title the tools report, so an assistant never
-  reads it as part of the page;
+- the status bar says so. `$(globe) AI Browser` carries 🔗 while nobody has driven the tab and
+  🤖 once somebody has, and the **Shared tabs** section of its menu names each assistant, the
+  page it holds and which of the two states it is in. Nothing is written into the page itself —
+  the tab's own title is left exactly as the site set it;
 - if that tab is closed, **only that assistant pauses** — the others carry on. It will not fall
   back to another page on its own; the status bar says who is waiting, and one click releases it.
 

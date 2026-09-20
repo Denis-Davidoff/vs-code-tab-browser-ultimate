@@ -149,7 +149,12 @@ function applyShareState(item: vscode.StatusBarItem, shares: ShareView): void {
 				: `- ${assignment.label} → ${page} · ${vscode.l10n.t("not picked up yet")}`;
 		}).join('\n'),
 		'\n\n',
-		vscode.l10n.t("An assistant with a tab of its own acts on that tab and sees no other. If one reports no `browser_` tools, it has to be restarted to load them."),
+		// Not "no `browser_` tools": nothing is named that. A client namespaces
+		// every MCP tool under the server, so the names a model actually sees are
+		// `mcp__ai-browser__browser_state` and the like — telling somebody to look
+		// for a bare prefix is the defect this build fixed in the connect prompt,
+		// and repeating it here would have kept it alive one surface along.
+		vscode.l10n.t("An assistant with a tab of its own acts on that tab and sees no other. If one reports having no browser tools, it was started before the config was written and has to be restarted."),
 	].join(''));
 }
 
