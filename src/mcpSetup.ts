@@ -9,12 +9,13 @@ import { codexEntries, codexRangeDeletable, codexUnterminated } from './codexTom
 import { lockPath, withLock } from './fileLock';
 import { serverName } from './mcpClientState';
 import {
-	codexRetiredTables, codexTableLines, removeCodexTables, repairClaudeJson, repairCodexToml,
+	codexOurTables, codexRetiredTables, codexTableLines, removeCodexTables, repairClaudeJson,
+	repairCodexToml,
 	spliceCodexTables, type Endpoint,
 } from './mcpRepair';
 import type { McpServer } from './mcpServer';
 import { confirm } from './notify';
-import { plainInNotification } from './notifyText';
+import { plainInNotification, plainInPrompt } from './notifyText';
 
 /**
  * Three clients, three places to configure, and only one of them has an API.
@@ -402,7 +403,52 @@ export async function writeCodexProjectConfig(
 	if (!wrote) {
 		throw new Error('another window is writing .codex/config.toml');
 	}
+	await keepTokenOutOfGit(folder);
 }
+
+/**
+ * Drops a `.gitignore` next to the project Codex config, naming that one file.
+ *
+ * `.codex/config.toml` carries the workspace's bearer token — the only thing
+ * guarding a loopback server that can drive the developer's browser — and this
+ * extension is what put it inside the user's repository. CLAUDE.md records why
+ * *this* repository ignores it, and adding the rule by hand is exactly what
+ * nobody does; `assistants.ts` already drops a `.gitignore` into `.ai-browser/`
+ * on creation for the same reason.
+ *
+ * **`config.toml`, not `*`.** `.codex/` is Codex's own project directory and may
+ * hold settings a team does want to share; only the file we wrote is ours to
+ * exclude. An existing `.gitignore` is never touched — it is the user's, and a
+ * rule of theirs may already cover this.
+ *
+ * Best effort: failing to write it must not fail a connection that succeeded,
+ * and the confirmation says where the token went either way.
+ */
+async function keepTokenOutOfGit(folder: vscode.WorkspaceFolder): Promise<void> {
+	const marker = vscode.Uri.joinPath(folder.uri, '.codex', '.gitignore');
+	try {
+		await vscode.workspace.fs.stat(marker);
+		return;
+	} catch {
+		// Absent, or unreadable — either way, try to write it.
+	}
+	try {
+		await writeText(marker, 'config.toml\n');
+	} catch {
+		// A read-only folder, or a provider that cannot write. The token is
+		// still only in a file the user controls.
+	}
+}
+
+/**
+ * What became of this workspace's entry in the **global** `~/.codex/config.toml`.
+ *
+ * A boolean could not carry this, and returning one was breaks-silently #113
+ * re-entered on a new path: `false` meant "there was nothing to remove" *and*
+ * "I declined" *and* "another window holds the lock", so the caller could only
+ * report success. Only `removed` and `absent` mean the duplicate is gone.
+ */
+export type GlobalEntryOutcome = 'removed' | 'absent' | 'refused' | 'busy';
 
 /**
  * Takes this workspace's entry out of the **global** `~/.codex/config.toml`.
@@ -412,31 +458,65 @@ export async function writeCodexProjectConfig(
  * a different name — which is exactly the duplicate this project refused to
  * create when it wrote only one of the two. Every tool would be listed twice.
  *
- * Only the table named for *this* workspace, matched the way every other writer
- * here matches, and only through `codexRangeDeletable` — the guard that keeps a
- * deletion range from swallowing a neighbour's table. Best effort by design: a
- * failure leaves a duplicate, which is a degraded listing rather than a broken
- * file, and the caller reports it.
+ * **Which tables go is decided by the token, and it has to include the
+ * sub-tables.** Both halves were wrong in the first version, which passed the
+ * bare `codexEntryName(folder)`:
+ *
+ * - matching by *name* is the thing CLAUDE.md forbids in as many words (items
+ *   14 and 92) — it misses an entry still under the pre-rename
+ *   `tab-browser-<slug>-<hash>`, and it deletes one carrying a token this
+ *   machine never minted, which `codexStrangers` promises to leave alone;
+ * - and `codexEntries` names a sub-table `<root>.<suffix>`, so removing only
+ *   the root left `[mcp_servers.<name>.http_headers]` behind — from which TOML
+ *   *recreates* `mcp_servers.<name>` as a server with no `url`, with the bearer
+ *   token still in it. Item 26, reproduced: the startup repair then answers
+ *   `changed: false` for ever, so nothing in the extension could heal it.
+ *   `env_http_headers` is the reachable shape, because the repair deliberately
+ *   keeps that sub-table as the user's.
+ *
+ * `codexOurTables` answers both at once — it is the predicate the prune and the
+ * repair already share, and it returns the root *with* its sub-tables. Using it
+ * here rather than assembling a name set by hand is what stops this site
+ * drifting out of the rule again, which is how it drifted in.
+ *
+ * Best effort by design: a failure leaves a duplicate, which is a degraded
+ * listing rather than a broken file — and the caller really does report it now.
  */
-export async function removeCodexGlobalEntry(folder: vscode.WorkspaceFolder): Promise<boolean> {
+export async function removeCodexGlobalEntry(server: McpServer): Promise<GlobalEntryOutcome> {
 	const uri = codexGlobalConfigUri();
-	const name = codexEntryName(folder);
-	let removed = false;
+	// Before the first await: `token` is a getter over live server state, the
+	// same hazard as `server.url` (breaks-silently #19).
+	const token = server.token;
+
+	let outcome: GlobalEntryOutcome = 'absent';
 	const ran = await withLock(codexGlobalLock(), async () => {
 		const read = await readConfig(uri);
-		if (read.kind !== 'text' || codexUnterminated(read.text)) {
+		if (read.kind === 'absent') {
 			return;
 		}
-		const prune = removeCodexTables(
-			read.text, codexEntries(read.text), [name],
+		// Only a clean absence is "nothing to do"; an unreadable file may well
+		// hold the duplicate (items 94 and 101).
+		if (read.kind !== 'text' || codexUnterminated(read.text)) {
+			outcome = 'refused';
+			return;
+		}
+
+		const entries = codexEntries(read.text);
+		const names = codexOurTables(entries, token);
+		if (names.length === 0) {
+			return;
+		}
+
+		const prune = removeCodexTables(read.text, entries, names,
 			(from, to) => codexRangeDeletable(read.text, from, to));
-		if (!prune.changed) {
+		if (prune.refused || !prune.changed) {
+			outcome = prune.refused ? 'refused' : 'absent';
 			return;
 		}
 		await writeText(uri, prune.text);
-		removed = true;
+		outcome = 'removed';
 	});
-	return ran && removed;
+	return ran ? outcome : 'busy';
 }
 
 /*
@@ -567,7 +647,10 @@ export function connectionPrompt(entryName: string, configPath: string, shared?:
 		// it must not send the model off to inspect a page stands. This line
 		// exists so the model does not go looking for a tab to select — the user
 		// has already chosen one.
-		lines.push(`Beyond that one call: the user has given you one browser tab — ${shared.title ?? shared.url}`
+		// Neutralised, for the reason `scopeNote` neutralises the same value one
+		// sink along: the page chooses its own title, and this text is pasted
+		// into an assistant that has shell tools. See {@link plainInPrompt}.
+		lines.push(`Beyond that one call: the user has given you one browser tab — ${plainInPrompt(shared.title ?? shared.url)}`
 			+ ` (${shared.url}). Every browser tool of yours acts on that tab, and only that tab; you cannot and need`
 			+ ' not select another, and other tabs in the window are not yours to read.');
 	}
@@ -731,19 +814,34 @@ export async function connectCodex(server: McpServer, shared?: SharedPage): Prom
 	// The project file is now the definition, so a leftover entry of ours in the
 	// global file is a duplicate under a second name and Codex would list every
 	// tool twice. Reported rather than thrown: the connection itself succeeded.
+	//
+	// **Every outcome that is not "gone" has to reach the user.** Discarding this
+	// was breaks-silently #113 on a new path: a held lock — the normal shape while
+	// a sibling window runs its startup repair on this very file — a config that
+	// could not be read, and a range the deletion guard declined all leave the
+	// duplicate in place without throwing.
 	let duplicate = false;
 	try {
-		await removeCodexGlobalEntry(folder);
+		const outcome = await removeCodexGlobalEntry(server);
+		duplicate = outcome === 'refused' || outcome === 'busy';
 	} catch {
 		duplicate = true;
 	}
 
 	await vscode.env.clipboard.writeText(
 		connectionPrompt(serverName, '.codex/config.toml', shared));
+	// **The trust precondition is stated, not detected.** Codex loads a project
+	// config only for a project it trusts, which is a fact about Codex's own
+	// registry rather than about anything this extension can see — and the
+	// connect path has just removed the global entry that would otherwise have
+	// covered an untrusted project. Guessing at that registry would be a second
+	// copy of somebody else's format; saying the precondition costs one clause
+	// and is the one fact a user needs when the tools do not appear.
 	confirm(vscode.l10n.t(
-		"Wrote .codex/config.toml, prompt copied — start a NEW Codex conversation, then paste it.")
+		"Wrote .codex/config.toml, prompt copied — start a NEW Codex conversation, then paste it."
+		+ " Codex reads a project config only for a project it trusts.")
 		+ (duplicate
-			? vscode.l10n.t(" An old entry in ~/.codex/config.toml could not be removed; if tools appear twice, delete it.")
+			? vscode.l10n.t(" An old entry in ~/.codex/config.toml could not be removed — if Codex lists every tool twice, delete it or press this again.")
 			: '')
 		+ scopeNote(shared));
 }

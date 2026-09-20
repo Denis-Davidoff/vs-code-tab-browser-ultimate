@@ -419,26 +419,23 @@ export class BrowserController implements vscode.Disposable {
 	/**
 	 * A share transition in progress, and the reason one is needed at all.
 	 *
-	 * Moving a share is several async steps over the fields the tools read: the
-	 * marker comes off one page, the session moves, the marker goes on another.
-	 * A tool call landing in the middle of that used to interfere with it in two
-	 * ways at once, both reproduced — the call resolved the *new* tab, so
-	 * `_sessionFor` dropped the session the cleanup was still using, leaving the
-	 * marker on the old tab with nothing able to remove it afterwards
-	 * (`stopSharing` only knows the current tab); and the call itself failed
-	 * with `The browser session was replaced while it was opening`, an internal
-	 * sentence handed to a model.
+	 * Moving a share is several async steps over fields every tool reads — the
+	 * registry, `_pins`, `_sessions`. A call landing in the middle of one used to
+	 * resolve the **new** tab and drop the session the transition was still
+	 * using, and then fail itself with `The browser session was replaced while it
+	 * was opening`, an internal sentence handed to a model.
 	 *
-	 * So a transition is a gate. `_transact` runs the transitions in call order
-	 * — two clicks on "Share this tab instead" cannot interleave either — and
-	 * `_settle` is what every tool waits on. It is short by construction: two
-	 * CDP round-trips.
+	 * So a transition is a gate: `_transact` runs them in call order — two clicks
+	 * on "Share this tab instead" cannot interleave either — and `_settle` is
+	 * what every tool waits on.
 	 *
-	 * The gate orders calls that *arrive* during a transition. A call already
-	 * past it can still be holding a session that the transition drops, which is
-	 * why the cleanup has a second route to the page that nothing can take away
-	 * (`_clearIndicator`) — the gate narrows the window, that makes the outcome
-	 * correct regardless.
+	 * **Nothing inside a transition talks to a page any more.** It did: the
+	 * marker came off one page and went on another, which is why there was a
+	 * second route to the page for the cleanup and a `bounded` timeout so an
+	 * unresponsive page could not hang the gate. All of that went with the page
+	 * title marker — see CLAUDE.md, *Where a share is visible*. The gate stays
+	 * because the field rewrites still need ordering, and it is now short by
+	 * construction rather than by a budget: zero CDP round-trips.
 	 */
 	private _transition: Promise<void> = Promise.resolve();
 

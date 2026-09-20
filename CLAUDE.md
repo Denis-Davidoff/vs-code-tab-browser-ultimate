@@ -15,6 +15,33 @@ id and the marketplace slug) is `tab-browser-ultimate`, while everything user-vi
 "AI Browser": `displayName`, the command `category`, and the `aiBrowser.*` identifiers. Open
 VSX carries it; the VS Code Marketplace cannot, because of the API proposals.
 
+**What differs from upstream `simple-browser`**, in one list, because the README used to carry it
+and nothing else here states the delta as a whole:
+
+- **Identifiers renamed** so this installs beside the built-in one — `simpleBrowser.*` →
+  `aiBrowser.*` for commands, the webview view type and the settings. See
+  [Naming conventions](#naming-conventions).
+- **Built around the editor's own browser** rather than the panel: all three entry points
+  delegate to `workbench.action.browser.open` unless `aiBrowser.useIntegratedBrowser` is off, and
+  the element picker, the screenshots and the MCP tools drive it over CDP.
+- **Build replaced** — `tsc` for the extension host, a self-contained `esbuild.webview.mts` for
+  the webview. See [Build](#build).
+- **Removed:** `aiKey`, `@vscode/extension-telemetry`, the web-worker entry point and the
+  `isWeb`-only palette gate — see
+  [Removed on purpose](#removed-on-purpose--do-not-reintroduce). There are no runtime
+  dependencies at all.
+- **Added on top:** the element picker and its reports, the screenshots, the hand-over to Claude
+  Code and Codex, the MCP server, and the toolbar menu they live in.
+
+**The README is deliberately short and this file is the reference.** It was cut back to the
+pitch, the editor-support table and the toolbar, plus `api.open`, installing and the licence;
+everything it used to duplicate — what each command writes, the MCP server and its tools,
+sharing a tab, the settings and command reference, the `argv.json` grant, the build — lives here
+and only here. That is on purpose: the two drifted, and a README section that restates a rule is
+a second place for that rule to go stale. **Do not grow the README back**; add to this file and
+link to it. Note that the README *is* packaged into the VSIX as `extension/readme.md`, so it is
+the extension's page inside VS Code — keep it accurate, just not exhaustive.
+
 ## How we build features — the main approach
 
 **New browser functionality is built against VS Code's built-in browser, through the `browser`
@@ -1565,15 +1592,18 @@ team-shared file replaced it with our single entry and said it had succeeded. Bo
 writers go through `readConfig` for that reason; `writeCodexConfig` throws instead, which
 `connectCodex` already reports with the `codex mcp add` fallback.
 
-One shared global name would let the second project overwrite the first, hence the hash.
+One shared global name would let the second project overwrite the first, hence the hash — the
+name is still minted, because entries written by earlier releases are still out there.
 `codex mcp add` is still offered as a command for anyone who would rather not have a file
-edited. **The global write is locked**, like every other writer of that file — see
-[The port moves](#the-port-moves-and-the-config-remembers-the-old-one). It used to be
-unlocked, on the reasoning that a button press cannot race itself; that stopped being true the
-moment every window began repairing the same file at startup, and an earlier draft of this
-paragraph still said "not locked" long after `writeCodexGlobalConfig` had taken the lock. Two
-statements about one file is how breaks-silently #16 and #106 get reintroduced by somebody
-tidying up.
+edited.
+
+**Nothing writes the global file any more**, so the sentence that used to stand here — "the
+global write is locked" — describes a path that is gone with `writeCodexGlobalConfig`. What
+touches it now is `removeCodexGlobalEntry` and the startup repair, and **both take the same
+lock**, derived from the URI so the two cannot diverge — see
+[The port moves](#the-port-moves-and-the-config-remembers-the-old-one). The rule the old
+sentence existed for is unchanged and still load-bearing: two lock names for one file is the
+same as no lock (breaks-silently #16 and #106).
 
 ### The mini TOML parser
 
@@ -1703,13 +1733,16 @@ anything the user added to the table — `startup_timeout_sec`, `enabled_tools`,
 where it is. Whole-table removal is still used for *duplicates* of ours, which are not tables
 to fix.
 
-Two smaller things fall out of it. **The global `~/.codex/config.toml` write is now locked**
-([src/fileLock.ts](src/fileLock.ts)) — it used to be unlocked on the reasoning that a button
-press cannot race itself, which stopped being true the moment every window started repairing
-the same file on startup; a machine restoring a session opens them all at once. Losing the race
-is not an error, since the next start repairs it. And **`spliceCodexTables` lives in
-`mcpRepair.ts`** so the connect path and the repair path share one implementation: two copies
-would be two chances to write TOML that does not parse.
+Two smaller things fall out of it. **Every writer of `~/.codex/config.toml` is locked**
+([src/fileLock.ts](src/fileLock.ts)) — the connect path's write used to be unlocked on the
+reasoning that a button press cannot race itself, which stopped being true the moment every
+window started repairing the same file on startup; a machine restoring a session opens them all
+at once. That write is gone now (connect writes the project file), so the two that remain are
+the repair and `removeCodexGlobalEntry`, and both take `codexGlobalLock()`. Losing the race is
+not an error for the repair, since the next start repairs it — but it **is** something the
+connect path has to report, because nothing runs it again on its own: see `GlobalEntryOutcome`.
+And **`spliceCodexTables` lives in `mcpRepair.ts`** so the connect path and the repair path
+share one implementation: two copies would be two chances to write TOML that does not parse.
 
 **What is reported and deliberately not repaired.** Two things, for the same reason in both
 cases — the file is not ours and a wrong guess breaks something that works:
@@ -3342,6 +3375,38 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
     log actually held ten starts of that same bare `ai-browser` entry on the same day, from
     sessions in that project. One absence is not a rule; grep for the positive case before
     building on the negative one, especially when the conclusion moves a write to a shared file.
+152. **A new deleter that assembles its own name set instead of reusing the predicate** →
+    `removeCodexGlobalEntry` passed `[codexEntryName(folder)]`, and `codexEntries` names a
+    sub-table `<root>.<suffix>`, so the root went and `[mcp_servers.<name>.http_headers]` stayed
+    — from which TOML **recreates** `mcp_servers.<name>` as a server with no `url`, bearer token
+    included. Item 26, entered from a direction the two existing deleters had already closed:
+    `codexOurTables` returns the root *with* its sub-tables, and `codexRetiredTables` says so in
+    a comment. Reproduced, and the damage is permanent — `repairCodexToml` answers
+    `changed: false` for an urlless orphan for ever, so nothing in the extension can heal the
+    user's global config. The reachable shape is `env_http_headers`, which the repair keeps on
+    purpose. When a file already has a predicate for "which tables are ours", a third site must
+    use it rather than restate it.
+153. **Matching our own config entry by name in the one place that deletes** → the same function
+    took `codexEntryName(folder)`, which is a pure function of the folder URI. It therefore
+    missed an entry still under the pre-rename `tab-browser-<slug>-<hash>` carrying our token —
+    left as a live duplicate the repair then kept *fresh* on every start — and deleted an
+    identically named entry carrying a token this machine never minted, which `codexStrangers`
+    promises in the Check Connection report is left alone. Items 14 and 92, and the doc comment
+    claimed it matched "the way every other writer here matches" while doing neither.
+154. **A neutraliser applied to one sink and not its sharper neighbour** → `scopeNote` runs the
+    shared page's title through `plainInNotification` (item 132), and the line beside it
+    interpolated the same page-chosen `document.title` raw into the connect prompt — text the
+    user is told to paste into an assistant that has shell tools. A title carrying newlines
+    rendered as its own instruction block inside ours; reproduced. The renderer sink got a guard
+    because it was the one being thought about, and the agent sink is worse: there is no
+    renderer, and the consumer acts. `plainInPrompt` is the sibling.
+155. **Writing a credential into somebody else's repository without the ignore rule** → moving
+    Connect Codex to the project file put a bearer token in `<workspace>/.codex/config.toml`.
+    This repository added `.codex/` to its own `.gitignore`, which protects the maintainer and
+    nobody else; a consumer got a README sentence asking them to do it by hand. `assistants.ts`
+    had the answer already — it drops a `.gitignore` into `.ai-browser/` on creation precisely so
+    nobody has to. If a feature starts writing a secret into a workspace, it ships the ignore
+    rule with it.
 
 ## Special cases and non-obvious decisions
 
@@ -3888,8 +3953,15 @@ developer's browser. So `.mcp.json` is in `.gitignore` and in `.vscodeignore`, t
 because it was otherwise packaged into the VSIX as `extension/.mcp.json` and would have shipped
 the token to everyone who installed it.
 
-**`.codex/` is in both for the same reason, and it had to be added when Connect Codex moved to
-the project file.** It writes `.codex/config.toml` with the same bearer token, and that path was
+**A consumer's project gets the rule shipped to it, not written down for it.**
+`writeCodexProjectConfig` drops a `.codex/.gitignore` naming `config.toml` on first creation —
+the same move `assistants.ts` makes for `.ai-browser/`, and for the same reason: the extension
+is what put the secret there. It names that one file rather than `*`, because `.codex/` is
+Codex's own directory and may hold settings a team does want to share, and it never touches an
+existing `.gitignore`. See breaks-silently #155.
+
+**`.codex/` is in both of *this* repository's ignore files for the same reason, and it had to be
+added when Connect Codex moved to the project file.** It writes `.codex/config.toml` with the same bearer token, and that path was
 not ignored — so the move quietly created a second copy of exactly the hazard this section
 exists for, in a repository where `Connect Codex` is pressed during development. Any future
 writer that puts a token inside the workspace needs the same two lines; the rule is not about

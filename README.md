@@ -22,37 +22,6 @@ there is not the problem, the missing API is. **Measured by reading the shipped 
 
 [![Step-by-step setup: install, enable the browser API, open a page, connect Claude Code or Codex](ai-browser-instruct.jpg)](https://raw.githubusercontent.com/Denis-Davidoff/vs-code-tab-browser-ultimate/main/ai-browser-instruct.jpg)
 
-**1–2** install, then click **AI Browser** in the status bar — the menu tells you whether this
-editor supports the browser tools · **2.1–2.2** let it write `enable-proposed-api` into
-`argv.json`, then quit and reopen · **3–4** open a page and find the two buttons at the top right
-of the browser tab · **5–7** *Connect Claude Code* / *Connect Codex*, then paste the copied
-prompt into the assistant · **8** done.
-
-**The original VS Code is the awkward one, and that is why it is third.** It is the only editor
-here whose gallery is the VS Code Marketplace, and the Marketplace **cannot host this extension
-at all** — it rejects anything declaring API proposals, which is exactly what the browser 
-features need. So on VS Code there is no one-click install: download
-[**tab-browser-ultimate.vsix**](https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/raw/main/tab-browser-ultimate.vsix)
-and run **Extensions: Install from VSIX…**. What is listed on the Marketplace is a stub that
-links back here, not the extension.
-
-Every other supported editor uses Open VSX (`open-vsx.org`), where the real build
-**is** published, so there it is a normal one-click install. The `.vsix` works everywhere too,
-if you prefer it.
-
-So there are two groups, not three. **No editor grants the API on its own** — not even VSCodium,
-which is otherwise the most vanilla build there is. Every supported editor needs the extension
-named in `--enable-proposed-api` exactly once, which is what the status bar button writes; see
-[Enabling the browser API](#enabling-the-browser-api). The only editor that needs *nothing* is
-one running the extension in development mode (`F5`), which is a developer path, not an install.
-
-A fork shipping its own browser is not the same thing as supporting this extension: Cursor and
-Kiro have one and expose no API behind it, so no flag or restart helps. Trae and Antigravity are
-built on VS Code 1.107, older than the 1.112 that introduced the proposal — they may start
-working after a rebase. Theia is not a VS Code build at all, so its "no" is permanent. On all of
-them the webview panel still works: set `aiBrowser.useIntegratedBrowser` to `false` and run
-**AI Browser: Show**.
-
 **Not sure about your editor?** Run **AI Browser: Enable Integrated Browser API**, or pick it
 under *Setup* in the status bar menu, and it says which of the three answers applies. The rule is
 a VS Code 1.112 or newer base with the `browser` proposal left in — a fork's own version number
@@ -67,13 +36,13 @@ tells you nothing (Cursor reports 1.128 and still lacks it).
 > installing is not the same as the browser features working, see the table above. The
 > [**VS Code Marketplace**](https://marketplace.visualstudio.com/items?itemName=DenysDavydov.tab-browser-ultimate-promo)
 > entry is the guide and the download link, not the extension itself — the Marketplace does not
-> accept an extension that declares API proposals. See [Installing](#installing).
+> accept an extension that declares API proposals. See [Installing](#installing) below.
 >
 > On a supported editor there is **one step after installing**: the extension declares two API
 > proposals (`externalUriOpener`, `browser`) and an editor only grants those to an extension
 > named with `--enable-proposed-api`. Click the orange **Enable Browser API** button in the
 > status bar and it writes that for you — see
-> [Enabling the browser API](#enabling-the-browser-api).
+> [Enabling the browser API](CLAUDE.md#enabling-the-grant-in-one-click).
 
 Press `Cmd`/`Ctrl` + `Shift` + `P` to open the command palette, run **AI Browser: Show**, enter
 the url you want — then work with the elements on the page exactly as below.
@@ -156,8 +125,8 @@ The menu, in order:
 | Copy Screenshot (Full Page) | the whole scrollable page, truncated past 16384 px |
 | Claude Code ▸ | a submenu: the same four picks handed to the Claude Code chat, plus Connect and Share Tab |
 | Codex ▸ | the same, for Codex |
-| Check Connection | the mcp server, [below](#giving-an-assistant-the-browser-mcp) |
-| Share Tab with All Assistants / Stop Sharing Tab | [below](#giving-an-assistant-the-browser-mcp) |
+| Check Connection | the mcp server, [CLAUDE.md](CLAUDE.md#mcp-the-browser-exposed-to-claude-code-codex-and-vs-code-chat) |
+| Share Tab with All Assistants / Stop Sharing Tab | [CLAUDE.md](CLAUDE.md#mcp-the-browser-exposed-to-claude-code-codex-and-vs-code-chat) |
 
 Everything belonging to one assistant lives in that assistant's submenu, which is what keeps the
 top level at eleven rows. The four **Add** entries there appear only for an assistant whose
@@ -168,246 +137,12 @@ The menu is attached to the browser tab — from anywhere else, use the command 
 Picking is single-flight: starting a pick cancels one already waiting, so the clipboard always
 holds the action you chose last rather than one you had abandoned.
 
-### What "Copy Element" writes
+---
 
-````
-Attached Element Context from Integrated Browser
-
-Element: input#email.field-input.outlined
-
-URL: http://localhost:3000/fr/auth/login
-
-HTML Path: div.app > div.card > form.form > div.row > input#email.field-input.outlined
-
-Outer HTML:
-```html
-<input id="email" class="field-input outlined" type="text" placeholder="mail">
-```
-
-Dimensions:
-- top: 249px
-- left: 245px
-- width: 384px
-- height: 32px
-
-CSS:
-```css
-*, ::before, ::after { box-sizing: border-box; border: 0px solid; margin: 0px; padding: 0px; }
-.field-input { display: inline-block; width: 384px; padding: 4px 11px; }
-.field-input:hover { border-color: rgb(0, 0, 0); }
-
-/* Inherited */
-/* div.app */
-.app { font-family: Inter, sans-serif; font-size: 14px; color: rgb(17, 17, 17); }
-
-/* Resolved values */
-padding: 4px 11px;
-width: 384px;
-cursor: text /*UA*/;
-
-/* CSS variables */
---brand: #415aa3;
-```
-````
-
-That is byte-for-byte the report the built-in browser attaches for its own "Add Element to
-Chat" — the css assembly is the editor's own code, copied verbatim and kept under its upstream
-test suite. `/*UA*/` marks a value a bare element of the same tag also gets, i.e. one nothing on
-the page sets.
-
-The report runs to several kilobytes, mostly css, and all of it goes to the clipboard as text.
-
-### Screenshots
-
-Both entries capture through the same CDP call and put a real image on the clipboard, which the
-extension api cannot do on its own — so the png is written to a temp file and handed to the
-platform's own clipboard tool (`osascript` on macOS, PowerShell on Windows, `xclip` or
-`wl-copy` on Linux). The file is what remains when the clipboard cannot be reached, and the
-notification says where it is. In a remote or web window the attempt is skipped outright: the
-extension host's clipboard belongs to another machine.
-
-A full-page capture is clipped at 16384 px, because past roughly that Chromium returns a blank
-image rather than an error — so the capture is truthfully cut and the notification says so.
-
-Screenshots are swept after 24 hours.
-
-## Handing an element to an assistant
-
-You need the official extension for the assistant you use — **Claude Code**
-(`Anthropic.claude-code`) or **OpenAI Codex** (`openai.chatgpt`). Without it the menu shows no
-entries for that assistant. The mcp server below is the exception: it is configuration files an
-assistant reads, so its cli alone is enough.
-
-Each entry picks an element, writes a small Markdown report and hands the *file* over. Even a
-one-line selector travels as a file: neither assistant can be given content any other way —
-Codex accepts only a real path on disk, and a Claude Code mention *is* a path.
-
-- **Claude Code** gets an `@`-mention of the file in its prompt box, which lands in the
-  conversation you already have open. Because a mention is a path relative to the workspace, its
-  reports go to `.ai-browser/` in the project — which gets a `.gitignore` of its own on first
-  use — and a folder has to be open.
-- **Codex** gets the file attached to the current thread outright. It stores an absolute path,
-  so its reports go to a temporary directory and never touch the project, and no folder has to
-  be open at all.
-
-Reports are swept five hours after they were written: once when the window opens, and at most
-hourly while it runs.
-
-When a hand-over cannot happen — no folder open, the assistant's command missing from an older
-version — the report lands on the clipboard instead and the notification says why.
-
-## Giving an assistant the browser (MCP)
-
-The extension runs a small [MCP](https://modelcontextprotocol.io) server, so an assistant can
-read and drive the page itself instead of being handed reports about it:
-
-| Tool | What it does |
-| --- | --- |
-| `browser_state` | Whether a page is open, which tab the tools act on, and how that tab was chosen |
-| `browser_tabs` | Every open tab with an id, which one is in use and which one you are looking at |
-| `browser_select_tab` | Fix the tools on one tab by id — or `auto` to follow the one in front of you; refused for an assistant you have [given a tab](#giving-a-tab-to-an-assistant) |
-| `browser_navigate` | Open an http(s) url, reusing the tab in use unless asked for a new one |
-| `browser_snapshot` | The interactive elements on the page, with selectors for the tools below |
-| `browser_inspect_element` | Arm the picker and wait for you to click something, then report it |
-| `browser_selected_element` | The element you picked last, without prompting again |
-| `browser_html` / `browser_text` | The rendered html or visible text, whole page or one selector |
-| `browser_console` | What the page logged, uncaught errors included |
-| `browser_screenshot` | A png of the visible area, or of the whole page |
-| `browser_click` / `browser_fill` | Act on the page — `fill` fires `input`/`change` so frameworks notice |
-| `browser_wait_for` | Wait until a selector matches or a piece of text appears |
-
-`browser_navigate` takes http and https only. Every other tool then reads whatever it opened, so
-a `file:` url would turn a browser tool into a file reader.
-
-### Connecting
-
-1. **Open a page** in the built-in browser.
-2. **Run the connect command** — from the globe menu on the browser tab, or from the command
-   palette: **AI Browser: Connect Claude Code** / **Connect Codex** — run from a browser tab and
-   the assistant is given that tab as well.
-3. **That is the whole click — there is no dialog.** The command writes the entry and puts a
-   connection prompt on the clipboard; paste that into the assistant's chat. What it wrote is
-   named in the confirmation, which goes to the **status bar** rather than a notification, so a
-   toast never covers the page you are about to hand over. Both files live in the project —
-   `.mcp.json` for Claude Code, `.codex/config.toml` for Codex — and both carry this window's
-   token, so ignore them in git if the project is shared.
-4. **Let the assistant pick it up.** Both read their mcp servers **once, at startup**: restart
-   Claude Code and run `/mcp`, or start a brand-new Codex conversation. An assistant that says
-   it cannot see the server has not loaded it — telling it to go and read `config.toml` will not
-   help, and it will cheerfully confirm the file is correct while still having no tools.
-5. **Confirm it** with **Check Connection**, which is the part that goes wrong.
-
-**VS Code's own chat needs none of this** — the extension registers the server through the
-editor's own mcp api.
-
-**For Codex it is the project file.** **Connect Codex** writes `.codex/config.toml` inside the
-project. One caveat that is real: Codex loads a project config only for a project it *trusts*,
-and some of its surfaces ([openai/codex#13025](https://github.com/openai/codex/issues/13025))
-have been reported to ignore one — so if Codex cannot see the server, check that the project is
-trusted.
-
-Earlier releases wrote the global `~/.codex/config.toml` instead, with a per-project entry name.
-Connect now removes this workspace's entry from that file as it writes the project one, because
-Codex reads both and two entries under different names would list every tool twice. If you have
-entries there from projects that no longer exist, **Check Connection** names them. A `.mcp.json`
-that does not parse is never overwritten — rewriting it would delete every other mcp server the
-project has.
-
-**Check Connection** answers what the configuration files cannot. It sends one real
-`tools/list` through the loopback interface with the token, and then reads each client's config
-to see which of them would actually reach *this* window: pointed here, pointing at another
-server, disabled, absent — or holding a **stale token**, which is the common accident, since a
-`.mcp.json` copied from another project names the right endpoint and still gets a bare 401 that
-reads like a broken server. It also reports which assistants have actually called in the last
-ten minutes, which is the only honest answer to "is anything using this?". Duplicate Codex
-entries are reported and never repaired: removing the wrong one of a pair turns working tools
-into a 401.
-
-### Giving a tab to an assistant
-
-By default the tools follow whichever browser tab you have in front of you, which is right until
-an assistant is working while you read something else. You can hand **one tab to one assistant**
-— from the toolbar menu on the browser tab, or from the status bar menu:
-
-| Command | What it does |
-| --- | --- |
-| **Share Tab with Claude Code** | gives Claude Code the tab you are on |
-| **Share Tab with Codex** | gives Codex the tab you are on |
-| **Share Tab with All Assistants** | gives it to every assistant that has no tab of its own |
-| **Connect Claude Code / Codex** | writes the assistant's config, copies the check prompt, and — when run from a browser tab — gives it that tab |
-| **Stop Sharing Tab** | releases one assignment, or all of them |
-
-Several assistants can work on the same tab, and each one only ever works on the tab it was
-given:
-
-- its tools act on that tab, whatever you open or focus afterwards;
-- it **sees no other tab** — `browser_tabs` returns its own and a count of the rest, and
-  `browser_select_tab` is refused, so a page you did not hand over is not something it can read;
-- the status bar says so. `$(globe) AI Browser` carries 🔗 while nobody has driven the tab and
-  🤖 once somebody has, and the **Shared tabs** section of its menu names each assistant, the
-  page it holds and which of the two states it is in. Nothing is written into the page itself —
-  the tab's own title is left exactly as the site set it;
-- if that tab is closed, **only that assistant pauses** — the others carry on. It will not fall
-  back to another page on its own; the status bar says who is waiting, and one click releases it.
-
-Commands *you* press — the screenshot buttons, the element picker — always act on the tab in
-front of you, no matter what any assistant has been given.
-
-### Scope, and what it is attached to
-
-The server belongs to the **window**: the token is per workspace and the port is taken in the
-order windows open, so connecting attaches an assistant to this VS Code window.
-
-Within it, the tools act on **one tab at a time**, and which one is decided per call: the tab
-it was given (its own conversation's tab, else its assistant's, else the one every assistant
-shares), else the tab it selected with `browser_select_tab`, else the browser tab you have in
-front of you, else the last one the tools used. So an assistant can be told "work on this page" and it keeps working on it
-while you read something else — and with no selection at all it simply follows you, including
-through clicking into a file, which no longer looks to it like "no browser tab is open".
-
-`browser_navigate` **reuses that tab** rather than opening another, which is what stops an agent
-from leaving a trail of editor tabs behind; pass `newTab` when a second page is genuinely
-wanted. Two other things do still open tabs and are not ours to change: opening a url from the
-command palette or a localhost link, and the page's own `target="_blank"` popups.
-
-Tab ids (`tab-1`, `tab-2`, …) are minted by the extension, because the editor's browser api
-exposes no identity of its own. They last as long as the window, so an assistant has to list
-before it selects rather than reusing an id from an earlier conversation. A selection is dropped
-if that tab is closed, and `browser_state` then reports `selection: automatic` again. Commands
-*you* press — the screenshot buttons on the toolbar — always act on the tab you are looking at,
-whatever the assistant has selected.
-
-### Security
-
-- **Loopback only** — the server binds `127.0.0.1`.
-- **Any request carrying an `Origin` is refused with 403**, before its credentials are looked
-  at. A page cannot *read* a cross-origin answer, but posting to a guessed local port would
-  otherwise be enough to drive the browser blind.
-- **The token is per workspace**, not per user. A window's port is its own first choice and not
-  a reservation — two workspaces can hash to the same one, and the walk then moves one of them —
-  so project A's config can address the window holding project B; a workspace token makes that
-  an honest 401 instead of an agent quietly editing the wrong project.
-- **One endpoint, POST only.** There is no event stream, so GET is 405.
-
-`aiBrowser.mcp.enabled` turns the server off and gives the port back without reloading the
-window. `aiBrowser.mcp.port` (43110 by default) is the first port to try: left unset, each window
-derives its own first choice from the workspace path within the 20 ports from there — so the port
-survives a restart, which is what stops a saved config going stale — and walks on if that one is
-taken. Setting it explicitly starts the window exactly there instead.
-
-## The webview panel
-
-Set `aiBrowser.useIntegratedBrowser` to `false` and urls open in the extension's own webview
-panel instead — an iframe with an address bar, back/forward/reload, an "open externally" button
-and the focus-lock indicator, with `aiBrowser.searchEngine` deciding what a search term in the
-address bar does.
-
-It is kept for anyone who wants it, and it is not where features go. A webview hosting a
-cross-origin iframe cannot have — by construction, with no workaround — clipboard and undo
-shortcuts inside the page, keyboard shortcuts while the page has focus, find in page, site
-permissions, real per-page DevTools, page zoom, or history beyond what was typed in the address
-bar. Every one of those is a CDP call away in the built-in browser, which is why the element
-picker, the screenshots and the mcp tools all attach there.
+Everything below this point — what each command writes, the mcp server and its tools, sharing a
+tab, the settings and command reference, installing, the `argv.json` grant, and the build — is
+in **[CLAUDE.md](CLAUDE.md)**, which is the project's working reference and is kept current with
+the code.
 
 ## Use from another extension
 
@@ -424,199 +159,13 @@ The extension also registers an external uri opener for `http` and `https`, but 
 localhost-like hosts (`localhost`, `127.0.0.1`, `0.0.0.0` and the IPv6 equivalents) — so a
 forwarded port offers to open here, and every other url still goes to your system browser.
 
-## Commands
-
-All of them are in the command palette under **AI Browser**.
-
-| Command | Id |
-| --- | --- |
-| Copy Element | `aiBrowser.copyElement` |
-| Copy CSS Path | `aiBrowser.copyElementCssPath` |
-| Copy CSS Path + Location | `aiBrowser.copyElementCssLocation` |
-| Copy Element XPath | `aiBrowser.copyElementXPath` |
-| Copy Screenshot (Visible Area) | `aiBrowser.copyScreenshot` |
-| Copy Screenshot (Full Page) | `aiBrowser.copyFullScreenshot` |
-| Add Element to Claude Code | `aiBrowser.addElementToClaudeCode` |
-| Add CSS Path to Claude Code | `aiBrowser.addCssPathToClaudeCode` |
-| Add CSS Path + Location to Claude Code | `aiBrowser.addCssLocationToClaudeCode` |
-| Add XPath to Claude Code | `aiBrowser.addXPathToClaudeCode` |
-| Add Element to Codex | `aiBrowser.addElementToCodex` |
-| Add CSS Path to Codex | `aiBrowser.addCssPathToCodex` |
-| Add CSS Path + Location to Codex | `aiBrowser.addCssLocationToCodex` |
-| Add XPath to Codex | `aiBrowser.addXPathToCodex` |
-| Share Tab with Claude Code | `aiBrowser.shareTabWithClaudeCode` |
-| Share Tab with Codex | `aiBrowser.shareTabWithCodex` |
-| Share Tab with All Assistants | `aiBrowser.shareTab` |
-| Stop Sharing Tab | `aiBrowser.stopSharingTab` |
-| Connect Claude Code | `aiBrowser.connectClaudeCode` |
-| Connect Codex | `aiBrowser.connectCodex` |
-| Check Connection | `aiBrowser.checkMcpConnection` |
-| Show | `aiBrowser.show` |
-| Enable Integrated Browser API | `aiBrowser.enableBrowserApi` |
-| Menu | `aiBrowser.statusMenu` |
-
-## Settings
-
-| Setting | Default | What it decides |
-| --- | --- | --- |
-| `aiBrowser.useIntegratedBrowser` | `true` | Open urls in VS Code's built-in browser. `false` brings back the webview panel. |
-| `aiBrowser.mcp.enabled` | `true` | Run the local mcp server that lets an assistant read and drive the browser. |
-| `aiBrowser.mcp.port` | `43110` | First port to try. Unset, each window derives its own from the workspace path within the 20 ports from here, so it survives a restart. |
-| `aiBrowser.searchEngine` | `google` | Engine used when the *panel's* address bar gets a search term; `none` disables search. |
-| `aiBrowser.focusLockIndicator.enabled` | `true` | Show the "Focus Lock" hint while focus is inside the webview panel. |
-| `aiBrowser.updateCheck.enabled` | `true` | Watch the repository for a newer release and say so once, with a link to Open VSX or to the committed VSIX. |
-
 ## Installing
 
-**The VSIX is the current build, and it works everywhere.** It is committed, so this is one
-download and one command — nothing to build:
-
-1. Download
-   [**tab-browser-ultimate.vsix**](https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/raw/main/tab-browser-ultimate.vsix)
-   ([or view it in the repository](https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/blob/main/tab-browser-ultimate.vsix)).
-2. Run **Extensions: Install from VSIX…** from the command palette and pick it — or from a
-   terminal:
-
-   ```sh
-   code --install-extension ~/Downloads/tab-browser-ultimate.vsix
-   ```
-
-To build it yourself instead:
-
-```sh
-npm install
-npm run package          # -> tab-browser-ultimate.vsix
-```
-
-**From a marketplace:**
-[Open VSX](https://open-vsx.org/extension/DenysDavydov/tab-browser-ultimate) carries the full
-build, and is the one-click route on VSCodium, Cursor, Windsurf and Theia — though installing is
-not the same as the browser features working there, see
-[Which editors this works on](#which-editors-this-works-on).
-
-The [VS Code Marketplace entry](https://marketplace.visualstudio.com/items?itemName=DenysDavydov.tab-browser-ultimate-promo)
-is deliberately **not** the extension: an extension declaring API proposals cannot be published
-there, so what is listed is the guide, the video and the download — two commands and nothing else.
-It publishes under its own id, `tab-browser-ultimate-promo`, and once the real build is installed
-it goes quiet: no messages, and its commands hide themselves. Uninstall it whenever you like. Its
-source is in [vscode-marketplace/](vscode-marketplace/); see [PUBLISHING.md](PUBLISHING.md).
-
-`engines.vscode` is `^1.85.0`, so the extension installs on almost anything — but the
-`browser` proposal, and with it every element tool, screenshot and MCP browser tool, only exists
-from **VS Code 1.112**. On an older editor the extension still loads and falls back to the
-webview panel.
-
-### Enabling the browser API
-
-VS Code only hands a proposed API to an extension that was named on the command line, so on a
-fresh install the extension loads but the browser features stay unavailable. The log says so, in
-one of two wordings depending on the version — `CANNOT use API proposal: browser`, or
-`CANNOT USE these API proposals 'externalUriOpener, browser'. You MUST start in extension
-development mode or use the --enable-proposed-api command line flag`.
-
-That message means the grant is missing and is fixable. It is **not** the same as
-`wants API proposal 'browser' but that proposal DOES NOT EXIST`, which means the editor has no
-such API and nothing can be done — that is Cursor.
-
-**Click the orange `Enable Browser API` button in the status bar** — or run
-**AI Browser: Enable Integrated Browser API** from the Command Palette. It adds this extension to
-`enable-proposed-api` in your editor's `argv.json`, keeping the file's comments and any other
-extension already listed, and then offers to quit the editor. Once the API is on, the button
-disappears; while a restart is still pending it reads **Restart to finish**. Any element command
-run before then says so in the status bar and points at the same button.
-
-**A full quit is required, not Reload Window** — `argv.json` is read when the process starts.
-
-To do it by hand instead: run **Preferences: Configure Runtime Arguments** from the Command
-Palette and add this property inside the existing JSON object in `argv.json` (not
-`settings.json`), appending to the array if the property is already there:
-
-```json
-"enable-proposed-api": ["DenysDavydov.tab-browser-ultimate"]
-```
-
-The file lives under your editor's own folder — `~/.vscode/argv.json` for VS Code,
-`~/.devin/argv.json` for Devin — which is why the Command Palette route is more reliable than
-typing a path.
-
-### The status bar
-
-A permanent **AI Browser** button sits in the status bar. **Open URL** takes a bare address —
-type `localhost:3000` and it opens `http://localhost:3000`, type `example.com` and it opens
-`https://example.com`; `http` for localhost-like hosts because a dev server there does not speak
-https, `https` for everything else. An address that already carries a scheme is left exactly as
-you typed it, whatever that scheme is. Anything that is not an address — a file path, a relative
-path — is refused in the box rather than opened as a broken tab; **Open File** is the route
-for those, where the built-in browser is in use.
-
-Clicking the button opens a menu with
-Open URL, Open File, the tab assignments (give the tab you are on to Claude Code, to Codex or to
-every assistant, and stop sharing one or all of them), the three assistant commands (Connect
-Claude Code / Codex and share this tab, Check Connection) and Settings — the assistant commands
-are otherwise only reachable from a browser tab or the Command Palette. The button also carries
-the assignments: 🔗 while a tab is given out and nobody has driven it, 🤖 once somebody has, a
-count when there is more than one, and a pause icon when an assigned tab was closed. To hide
-either button, right-click the status bar.
-
-### Where `argv.json` lives
-
-The grant is per editor, and so is the file — which is why the button reads the path from the
-editor itself rather than assuming `~/.vscode`:
-
-| Editor | File |
-|---|---|
-| VSCodium | `~/.vscode-oss/argv.json` |
-| Devin | `~/.devin/argv.json` |
-| VS Code | `~/.vscode/argv.json` |
-
-Any other editor: **Preferences: Configure Runtime Arguments** opens the right file wherever it
-is. Which editors have the API at all is in
-[Which editors this works on](#which-editors-this-works-on).
-
-## Development
-
-Requires Node.js 24 or newer.
-
-```sh
-npm install
-npm run compile          # extension host (tsc) + webview (esbuild)
-npm run watch            # incremental rebuild of both
-npm run typecheck        # both projects plus the tests, no emit
-npm test                 # node --test, no VS Code instance needed
-npm run check-manifest   # menus, icons, keybindings, activation events
-```
-
-Press <kbd>F5</kbd> to launch an Extension Development Host; `npm run watch` can run in a
-terminal at the same time, and F5 only has to be pressed again to reload the host. The proposed
-api declaration files are checked in so the build works offline — refresh them with
-`npm run download-api`.
-
-`npm run check-manifest` is worth running after touching `package.json` or `media/icons`: none
-of what it checks produces a compile error. A menu item pointing at a missing command, a command
-with no activation event, an icon path with a typo, two toolbar buttons claiming the same repeat
-action, or a keybinding whose `when` has drifted from its button all fail silently — as a button
-that never appears, or a key that fires nothing.
-
-See [CLAUDE.md](CLAUDE.md) for the architecture notes, the build details, and the log of
-everything in here that looks wrong but is deliberate, and
-[PUBLISHING.md](PUBLISHING.md) for how a release reaches Open VSX.
-
-## Differences from upstream Simple Browser
-
-- **Identifiers renamed** so this installs next to the built-in one: `simpleBrowser.*` →
-  `aiBrowser.*` (commands, webview view type, settings).
-- **Built around the editor's own browser.** All three entry points delegate to
-  `workbench.action.browser.open` unless `aiBrowser.useIntegratedBrowser` is off, and the
-  element picker, screenshots and mcp tools drive it over CDP.
-- **Build replaced.** Upstream builds through the vscode monorepo (gulp plus shared esbuild
-  helpers). Here `tsc` compiles the extension host and a self-contained `esbuild.webview.mts`
-  bundles the webview, inlining `codicon.ttf` into `codicon.css` as a data uri (the webview csp
-  only allows `font-src data:`).
-- **Removed:** `aiKey`, the unused `@vscode/extension-telemetry` dependency, the web-worker
-  entry point, and the `isWeb`-only command palette gate. There are no runtime dependencies at
-  all.
-- **Added on top of it:** the element picker and its reports, the screenshots, the hand-over to
-  Claude Code and Codex, the mcp server, and the toolbar menu they all live in.
+It is not on the VS Code Marketplace: the Marketplace does not accept an extension that declares
+API proposals. Install [`tab-browser-ultimate.vsix`](tab-browser-ultimate.vsix) from this
+repository with **Extensions: Install from VSIX…**, then run **AI Browser: Enable Integrated
+Browser API** and quit the editor completely. [CLAUDE.md](CLAUDE.md) has the detail, including
+which editors can work at all.
 
 ## License
 
