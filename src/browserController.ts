@@ -7,7 +7,7 @@ import * as vscode from 'vscode';
 import { CDPClient } from './cdp';
 import { extractElementData, renderElementMarkdown } from './elementContext';
 import { isBrowserApiGranted } from './proposedApi';
-import { markerSuffix, ShareIndicator, stripMarker, stripMarkerFromHtml } from './shareIndicator';
+import { legacyMarkerRemoval, stripMarker, stripMarkerFromHtml } from './shareIndicator';
 import {
 	callerKey, everyone, ShareRegistry, targetName,
 	type CallerIdentity, type ShareTarget,
@@ -76,7 +76,6 @@ class TabSession {
 
 	private readonly _console: ConsoleLine[] = [];
 	private readonly _subscriptions: vscode.Disposable[] = [];
-	private _indicator: ShareIndicator | undefined;
 
 	private constructor(
 		public readonly client: CDPClient,
@@ -89,11 +88,36 @@ class TabSession {
 			const sessionId = await client.attachToPage();
 			const session = new TabSession(client, sessionId);
 			await session._enableDomains();
+			session._removeLegacyMarker();
 			return session;
 		} catch (err) {
 			client.dispose();
 			throw err;
 		}
+	}
+
+	/**
+	 * Takes an older build's title marker off, once, when a session reaches the page.
+	 *
+	 * This extension used to append 🔗/🤖 to `document.title` over CDP. It no
+	 * longer does, and the installer it left behind on any page still open from
+	 * that build holds a `MutationObserver` that re-applies the suffix on every
+	 * title change — so without this the last marker ever written would be
+	 * permanent, the code able to reach it having been deleted.
+	 *
+	 * Fire-and-forget and unawaited on purpose: it is a tidy-up, not a step in
+	 * opening a session, and `open()` is on the path every tool call waits for.
+	 * On a page that never carried one the expression is a property read that
+	 * answers `undefined`. The old `addScriptToEvaluateOnNewDocument`
+	 * registration needs no undoing — it belonged to a CDP session that has
+	 * since closed, and such a registration dies with its session.
+	 *
+	 * Delete this together with {@link legacyMarkerRemoval} once no build that
+	 * installed a marker is plausibly still running.
+	 */
+	private _removeLegacyMarker(): void {
+		void this.client.send('Runtime.evaluate', { expression: legacyMarkerRemoval }, this.sessionId)
+			.catch(() => { /* a page we cannot reach cannot be carrying one of ours either */ });
 	}
 
 	private async _enableDomains(): Promise<void> {
@@ -138,20 +162,6 @@ class TabSession {
 	 */
 	public get isClosed(): boolean {
 		return this.client.isClosed;
-	}
-
-	/**
-	 * The share marker for this tab, bound to this session.
-	 *
-	 * It hangs off the session rather than off the controller because a
-	 * registered `addScriptToEvaluateOnNewDocument` identifier belongs to the
-	 * session it was registered on. Held on the controller, it outlived a
-	 * dropped session and "stop sharing" then removed a script id that no
-	 * longer existed — so the marker reappeared on the next page load in a tab
-	 * nobody was sharing.
-	 */
-	public get indicator(): ShareIndicator {
-		return this._indicator ??= new ShareIndicator(this.client, this.sessionId);
 	}
 
 	public get consoleLines(): readonly ConsoleLine[] {
@@ -204,50 +214,6 @@ function waitForLoad(session: TabSession, timeoutMs: number): { settled: Promise
 	// Callable so a navigation that will never fire the event does not leave the
 	// timer armed for the full timeout behind it.
 	return { settled, cancel: () => source.cancel() };
-}
-
-/**
- * How long the marker work inside a share transition may take before it is
- * abandoned — **one budget for the whole of it**, not one per route.
- *
- * A budget per route added up: the cleanup tries the cached session and then a
- * private one, so an unresponsive page cost two of them, and the transition —
- * which the user is waiting on, and which every tool is queued behind — took
- * that long twice over. The fallback route exists for a session that was
- * *dropped*, not for a page that has stopped answering, and in the second case
- * it can only fail the same way.
- */
-const indicatorTimeoutMs = 1500;
-
-/**
- * Bounds a best-effort CDP round trip, and absorbs its failure.
- *
- * `CDPClient.send` has no timeout of its own: it settles on a reply or on the
- * channel closing, and a page that has stopped servicing its main thread — an
- * infinite loop in a dev build, a paused renderer, a modal dialog handed to the
- * debugger client — answers neither. For one tool call that is survivable. For
- * the marker work inside a share transition it was not: `_transact` never
- * settled, and because every tool *and* every user command awaits `_settle()`,
- * the entire surface hung silently, `stopSharing` — the only documented escape
- * — included. Reproduced against a stubbed channel that drops
- * `Runtime.evaluate`.
- *
- * Returns `undefined` when the work times out or fails, which every caller here
- * already treats as "the marker did not happen", because none of them may turn
- * a tidy-up into an error the user has to read.
- */
-function bounded<T>(work: Promise<T>, ms: number): Promise<T | undefined> {
-	// Attached first, so a rejection arriving after the race is already handled.
-	const settled = work.then(value => value, () => undefined);
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	const expiry = new Promise<undefined>(resolve => {
-		timer = setTimeout(() => resolve(undefined), ms);
-	});
-	return Promise.race([settled, expiry]).finally(() => {
-		if (timer) {
-			clearTimeout(timer);
-		}
-	});
 }
 
 /**
@@ -720,10 +686,9 @@ export class BrowserController implements vscode.Disposable {
 	 * taken where a tab is actually handed out for work.
 	 */
 	private _noteTabUse(tab: vscode.BrowserTab, caller: CallerIdentity): void {
-		if (!this._shares.stateOf(tab) || !this._shares.noteUse(tab, caller.kind)) {
+		if (!this._shares.isShared(tab) || !this._shares.noteUse(tab, caller.kind)) {
 			return;
 		}
-		void this._armMarker(tab);
 		this._onDidChangeShare.fire();
 	}
 
@@ -795,8 +760,8 @@ export class BrowserController implements vscode.Disposable {
 		// `_sessions.set`, so for that tick the session was counted twice — once as
 		// a reservation and once as itself — and a `_tryReserve` landing in it read
 		// the sum as one over and evicted a session that did not need to go, taking
-		// a console buffer and a marker registration with it. The mirror is just as
-		// real: a waiter refused a slot that existed and stalled for the full wait.
+		// a console buffer with it. The mirror is just as real: a waiter refused a
+		// slot that existed and stalled for the full wait.
 		let slotHeld = false;
 		const releaseSlot = () => {
 			if (!slotHeld) {
@@ -825,14 +790,6 @@ export class BrowserController implements vscode.Disposable {
 			this._evict(tab);
 			// Synchronously, so the double count above never exists.
 			releaseSlot();
-			// A fresh session means a fresh page-side world: whatever marker was
-			// installed by the previous one is gone with it, along with the
-			// registration that would have survived a navigation.
-			const state = this._shares.stateOf(tab);
-			if (state) {
-				void session.indicator.set(markerSuffix(state))
-					.catch(() => { /* the marker is a hint, never a failure */ });
-			}
 			return session;
 		});
 
@@ -996,9 +953,9 @@ export class BrowserController implements vscode.Disposable {
 	 * Keeps the number of live channels bounded.
 	 *
 	 * A tab somebody is assigned to is passed over while any unassigned one
-	 * remains: evicting the page an assistant is working on — losing its
-	 * console buffer and its marker registration — to make room for a page
-	 * nobody asked about is the wrong trade every time. When every session
+	 * remains: evicting the page an assistant is working on — losing the console
+	 * buffer that is the whole reason a session is cached — to make room for a
+	 * page nobody asked about is the wrong trade every time. When every session
 	 * belongs to an assignment, the least recently used goes anyway; the
 	 * alternative is an unbounded number of open channels.
 	 */
@@ -1029,8 +986,8 @@ export class BrowserController implements vscode.Disposable {
 	 * and collapsing the two into one predicate with a `?? candidates[0]`
 	 * fallback dropped the session of a live call while the guard above it did
 	 * nothing at all. The two differ in what eviction costs: an assigned but idle
-	 * tab loses a console buffer and a marker registration and reopens on its
-	 * next call, while a tab with work in flight loses the call itself — the one
+	 * tab loses its console buffer and reopens on its next call, while a tab with
+	 * work in flight loses the call itself — the one
 	 * error the docs single out as reading to a model as a broken browser rather
 	 * than as something to retry. So an assignment is given up when there is
 	 * nothing else to take, and work in flight is never given up at all.
@@ -1044,7 +1001,7 @@ export class BrowserController implements vscode.Disposable {
 
 		const inUse = (tab: vscode.BrowserTab) => this._inFlight.has(tab);
 		const spokenFor = (tab: vscode.BrowserTab) =>
-			this._shares.stateOf(tab) !== undefined
+			this._shares.isShared(tab)
 			|| [...this._pins.values()].some(pin => pin.tab === tab);
 
 		return candidates.find(tab => !inUse(tab) && !spokenFor(tab))
@@ -1119,7 +1076,7 @@ export class BrowserController implements vscode.Disposable {
 
 	/** Whether this tab is assigned to anyone, for the menu that offers to move it. */
 	public isShared(tab: vscode.BrowserTab): boolean {
-		return this._shares.stateOf(tab) !== undefined;
+		return this._shares.isShared(tab);
 	}
 
 	/**
@@ -1149,26 +1106,22 @@ export class BrowserController implements vscode.Disposable {
 			throw new Error('That browser tab is no longer open.');
 		}
 
-		// Asked of the target itself: building a caller from it and resolving
-		// that answered with a *different* assignment for `everyone` (it became
-		// `{ kind: 'other' }`, which resolves `kind:other` first), so the tab
-		// this target was moving off could keep its marker with nothing able to
-		// clean it.
-		const heldBefore = this._shares.tabOf(target);
-		const alreadyThere = heldBefore === tab;
+		// Asked of the target itself rather than of a caller built from it:
+		// resolving that answered with a *different* assignment for `everyone`
+		// (it became `{ kind: 'other' }`, which resolves `kind:other` first).
+		const alreadyThere = this._shares.tabOf(target) === tab;
 
 		// Re-giving the tab that this target already holds is a no-op, and has
 		// to be: the entry sits in the shared tab's own menu, so it is one click
-		// away, and re-running it took the marker from 🤖 back to 🔗 and the
-		// tooltip back to "no assistant has used it yet" — advice for a broken
-		// setup — while the assistants carried on working.
+		// away, and re-running it reset `usedBy` — taking the status bar from 🤖
+		// back to 🔗 and the menu row back to "has not picked it up yet", which
+		// is advice for a broken setup — while the assistants carried on
+		// working.
 		if (alreadyThere) {
 			return {
 				id: this._idOf(tab), url: tab.url, title: stripMarker(tab.title), label: targetName(target),
 			};
 		}
-
-		const releasedTab = heldBefore;
 
 		this._shares.share(target, tab);
 		// Deliberately *not* `_lastTab = tab`: that field is the tab the user
@@ -1196,13 +1149,6 @@ export class BrowserController implements vscode.Disposable {
 		}
 		this._onDidChangeShare.fire();
 
-		// The tab this target was moved *off* keeps its marker only if somebody
-		// else still holds it. Before this, "give it to Codex instead" left both
-		// tabs looking shared, permanently.
-		if (releasedTab && releasedTab !== tab) {
-			await this._refreshMarker(releasedTab);
-		}
-		await this._armMarker(tab);
 		return {
 			id: this._idOf(tab), url: tab.url, title: stripMarker(tab.title), label: targetName(target),
 		};
@@ -1214,13 +1160,12 @@ export class BrowserController implements vscode.Disposable {
 	}
 
 	private async _stopSharing(target?: ShareTarget): Promise<void> {
-		const tabs = target ? [this._shares.stop(target)] : this._shares.stopAll();
-		this._onDidChangeShare.fire();
-		for (const tab of tabs) {
-			if (tab) {
-				await this._refreshMarker(tab);
-			}
+		if (target) {
+			this._shares.stop(target);
+		} else {
+			this._shares.stopAll();
 		}
+		this._onDidChangeShare.fire();
 	}
 
 	/**
@@ -1247,98 +1192,6 @@ export class BrowserController implements vscode.Disposable {
 			return;
 		}
 		this._onDidChangeShare.fire();
-	}
-
-	/**
-	 * Puts the right marker on a tab, or takes it off if nobody holds it now.
-	 *
-	 * Bounded, because this runs inside a transaction the user is waiting on and
-	 * a page that has stopped answering must not hold it open — see `bounded`.
-	 */
-	private async _refreshMarker(tab: vscode.BrowserTab): Promise<void> {
-		if (this._shares.stateOf(tab)) {
-			await this._armMarker(tab);
-			return;
-		}
-		await this._clearIndicator(tab);
-	}
-
-	private async _armMarker(tab: vscode.BrowserTab): Promise<void> {
-		await bounded(this._armMarkerNow(tab), indicatorTimeoutMs);
-	}
-
-	private async _armMarkerNow(tab: vscode.BrowserTab): Promise<void> {
-		const state = this._shares.stateOf(tab);
-		if (!state) {
-			return;
-		}
-		// **Held like any other use of a session.** Being assigned is not enough:
-		// `_evictableTab` treats an assignment as a *preference*, so once every
-		// candidate is assigned its second pass returns one anyway — and the marker
-		// install then had its session disposed under it. The throw is swallowed
-		// here by design, so the visible result was a shared tab wearing no 🔗/🤖 at
-		// all, which is the one thing the marker exists to rule out.
-		const release = this._hold(tab);
-		try {
-			const session = await this._sessionFor(tab);
-			const current = this._shares.stateOf(tab);
-			if (!current) {
-				return;
-			}
-			await session.indicator.set(markerSuffix(current));
-		} catch {
-			// Best effort: a session the host dropped, a tab mid-close, a page
-			// that has not committed. None of them may turn sharing into an
-			// error the user has to read.
-		} finally {
-			release();
-		}
-	}
-
-	/**
-	 * Takes the marker off one tab, and does not depend on the shared cache to
-	 * do it.
-	 *
-	 * The cached session is tried first when there is one, because it holds the
-	 * registration identifier and removing that is what stops the marker coming
-	 * back on the tab's next navigation. If that fails, a session of our own
-	 * finishes the job: a page can stop answering, and a tool call can drop the
-	 * cached session mid-clear.
-	 *
-	 * Never for a tab that has closed — there is nothing left to mark, and
-	 * `startCDPSession` on it would only throw.
-	 */
-	private async _clearIndicator(tab: vscode.BrowserTab): Promise<void> {
-		if (!(vscode.window.browserTabs ?? []).includes(tab)) {
-			return;
-		}
-		await bounded(this._clearMarker(tab), indicatorTimeoutMs);
-	}
-
-	private async _clearMarker(tab: vscode.BrowserTab): Promise<void> {
-		const cached = this._sessions.get(tab);
-		if (cached && !cached.isClosed && await cached.indicator.clear().catch(() => false)) {
-			return;
-		}
-		await this._clearWithOwnSession(tab);
-	}
-
-	/**
-	 * The second cleanup route: a session nobody else can drop.
-	 *
-	 * Split out so {@link bounded} can stop *waiting* for it without leaking it
-	 * — the session still disposes itself whenever it finishes opening.
-	 */
-	private async _clearWithOwnSession(tab: vscode.BrowserTab): Promise<void> {
-		let own: TabSession | undefined;
-		try {
-			own = await TabSession.open(tab);
-			await own.indicator.clear();
-		} catch {
-			// The page cannot be reached at all, and the marker goes with it.
-		} finally {
-			own?.dispose();
-		}
 	}
 
 
@@ -1425,7 +1278,7 @@ export class BrowserController implements vscode.Disposable {
 				url: tab.url,
 				title: stripMarker(tab.title),
 				inUse: tab === target,
-				sharedByUser: this._shares.stateOf(tab) !== undefined,
+				sharedByUser: this._shares.isShared(tab),
 				focusedInEditor: tab === focused,
 			})),
 		};
@@ -1574,8 +1427,7 @@ export class BrowserController implements vscode.Disposable {
 		if (!target) {
 			// Nothing to drive, and nothing of this caller's to drop: sessions
 			// belong to tabs now, so the no-argument form would have closed
-			// every one of them — another assistant's console buffer and its
-			// marker registration with it.
+			// every one of them — another assistant's console buffer with it.
 			const tab = await vscode.window.openBrowserTab(url, { preserveFocus: true });
 			// An explicit `newTab` selects the tab it just created, and it has
 			// to: the tab is opened with `preserveFocus`, so the *old* tab
@@ -1817,8 +1669,10 @@ export class BrowserController implements vscode.Disposable {
 				if (!el) { throw new Error('No element matches ' + sel); }
 				return el.outerHTML;
 			})()`);
-			// The `<title>` of a shared tab carries our marker, and this is the tool
-			// a model uses to check the page against itself.
+			// Nothing writes a marker into a page any more, but a page an older
+			// build reached can still be open with its observer re-applying one —
+			// and this is the tool a model uses to check a page against itself, so
+			// it is the last place a stray suffix may appear.
 			return typeof value === 'string' ? stripMarkerFromHtml(value) : value;
 		});
 	}
@@ -1884,8 +1738,8 @@ export class BrowserController implements vscode.Disposable {
 		}
 
 		// A tab named by the caller may not be the subject — the toolbar passes
-		// the one in front of the user — and moving the cache to it would take
-		// the shared tab's marker registration and console buffer with it.
+		// the one in front of the user — and moving the cache to it would take the
+		// subject tab's console buffer with it.
 		return this._borrowSession(preferred, session => this._capture(preferred, session, fullPage));
 	}
 
@@ -1895,12 +1749,11 @@ export class BrowserController implements vscode.Disposable {
 	 * The cached session is reused when it already belongs to this tab;
 	 * otherwise a throwaway one is opened rather than the cache being *moved*.
 	 * `_sessionFor` drops whatever it was holding, and for a screenshot that is
-	 * destructive in a way it is not for the tools: the dropped session takes
-	 * the shared tab's `addScriptToEvaluateOnNewDocument` registration with it,
-	 * so a screenshot of another tab silently disarmed the marker on the shared
-	 * one — with the symptom appearing on that tab's next reload, long after the
-	 * screenshot that caused it. It also threw away the console buffer the
-	 * assistant was collecting, for a picture of a different page.
+	 * destructive in a way it is not for the tools: it threw away the console
+	 * buffer the assistant was collecting, for a picture of a different page.
+	 * (It also disarmed the shared tab's title marker, whose registration went
+	 * with the session — that half is gone with the marker itself, and the
+	 * console half is reason enough on its own.)
 	 *
 	 * The throwaway session is the same shape as the picker's: opened, used,
 	 * disposed, and never cached.
@@ -2032,30 +1885,6 @@ export class BrowserController implements vscode.Disposable {
 		});
 	}
 
-	/**
-	 * One last attempt to take every marker off, on a path that cannot await.
-	 *
-	 * Sent **directly**, not through `indicator.clear()`: that goes onto the
-	 * indicator's serialising queue, whose first `await` defers the work past
-	 * the `_dropSession()` below — the channel was already torn down by the
-	 * time anything was written, so nothing reached the page.
-	 * `CDPClient.send` hands the message to the host inside its own
-	 * constructor, synchronously, which is what makes this worth attempting at
-	 * all here. The browser editor belongs to the workbench, so a disable or a
-	 * reload of this extension leaves those pages alive.
-	 */
-	private _unmarkAllOnDispose(): void {
-		for (const tab of this._shares.tabs()) {
-			const session = this._sessions.get(tab);
-			if (!session || session.isClosed) {
-				continue;
-			}
-			void session.client.send('Runtime.evaluate', {
-				expression: 'window.__aiBrowserShareMarker && window.__aiBrowserShareMarker.remove()',
-			}, session.sessionId).catch(() => { /* the window is closing anyway */ });
-		}
-	}
-
 	public dispose(): void {
 		// First, so an open still in flight sees it when it lands.
 		this._disposed = true;
@@ -2066,14 +1895,6 @@ export class BrowserController implements vscode.Disposable {
 		// the window is done with this controller.
 		this._notifySlots();
 
-		// The extension is going; the *page* is not. The browser editor belongs
-		// to the workbench, so a disable or a reload of this extension left the
-		// title suffix and the observer that re-applies it in a live document
-		// with nothing able to call `remove()` — clearing only on the next
-		// navigation. `send` hands the message to the host synchronously, which
-		// is why this can still be worth doing on a synchronous teardown path;
-		// it is best effort and nothing waits for it.
-		this._unmarkAllOnDispose();
 		this._tabWatch?.dispose();
 		this._onDidChangeShare.dispose();
 		this._dropSession();

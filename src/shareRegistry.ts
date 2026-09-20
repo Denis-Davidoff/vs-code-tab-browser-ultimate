@@ -51,16 +51,6 @@ export interface CallerIdentity {
 	readonly sessionId?: string;
 }
 
-/** What a tab's marker has to say. */
-export interface TabShareState {
-	/** An assistant has driven this tab at least once. */
-	readonly used: boolean;
-	/** Assistant-specific owners, in a stable order. */
-	readonly kinds: readonly ClientKind[];
-	/** Whether the tab is also the one every other assistant follows. */
-	readonly everyone: boolean;
-}
-
 /** One assignment, for the UI to render and for the user to undo. */
 export interface ShareAssignment<T> {
 	readonly target: ShareTarget;
@@ -267,31 +257,20 @@ export class ShareRegistry<T> {
 		return [...this._shares.values()].filter(share => share.tab === tab).map(share => share.target);
 	}
 
-	/** What the marker on one tab has to show. */
-	public stateOf(tab: T): TabShareState | undefined {
-		const targets = this.targetsFor(tab);
-		if (targets.length === 0) {
-			return undefined;
-		}
-		const kinds = new Set<ClientKind>();
-		let all = false;
-		for (const target of targets) {
-			if (target.scope === 'everyone') {
-				all = true;
-			} else {
-				kinds.add(target.kind);
-			}
-		}
-		return {
-			// Whether anyone who holds the tab **now** has driven it, not
-			// whether anyone ever did. The tab's whole history made a
-			// re-assigned tab read as 🤖 — "somebody is working here" — while
-			// the menu correctly said the new owner had not picked it up, which
-			// is the one hint the two marker states exist for.
-			used: targets.some(target => this.usedByTarget(target, tab).length > 0),
-			kinds: kindOrder.filter(kind => kinds.has(kind)),
-			everyone: all,
-		};
+	/**
+	 * Whether anyone at all holds this tab.
+	 *
+	 * It used to answer a `TabShareState` — `used`, the assistant-specific
+	 * owners, whether it was given to everyone — because a suffix composed from
+	 * exactly those facts was written into the page title. Nothing writes into
+	 * a page any more, and the status bar builds its own richer view from
+	 * `targetsFor` / `usedByTarget`, so every remaining caller asked only
+	 * whether the result was `undefined`. Returning a struct nobody destructures
+	 * is the `Tool.slowMs` mistake: a field with no consumer reads as a contract
+	 * and is not one.
+	 */
+	public isShared(tab: T): boolean {
+		return this.targetsFor(tab).length > 0;
 	}
 }
 

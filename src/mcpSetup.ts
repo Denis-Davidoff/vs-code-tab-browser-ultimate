@@ -453,10 +453,60 @@ export function codexCliCommand(folder: vscode.WorkspaceFolder | undefined, serv
  * extension maintains and pinned the assistant to a port that would later go
  * stale. Every subsequent Connect fixed a file nothing read. The CLI command is
  * still offered — but only on the path where writing the file actually failed.
+ *
+ * **It must not describe the tools by a prefix they do not have, and asking for
+ * a check it then forbids is not a check.** Both halves were wrong, and
+ * together they produced the report this prompt exists to prevent: Codex
+ * answering "the tools were not loaded, restart your session" while the server
+ * was connected and its tools were in that very turn's tool list, so every
+ * restart said the same thing.
+ *
+ * Neither assistant exposes an MCP tool under its bare name. The client
+ * namespaces it under the server, and the two spell that differently — Claude
+ * Code keeps the server name as written (`mcp__ai-browser__browser_state`),
+ * Codex replaces the hyphens (`mcp__ai_browser_picto_2a3f1f__browser_state`)
+ * and then declares the lot inside its `exec` sandbox rather than as separate
+ * tools. So *nothing* starts with `browser_`, and a model told to look for that
+ * prefix among ~200 tools correctly reports finding none. The prompt therefore
+ * names the **suffix**, which is ours and is stable, and says explicitly that a
+ * prefix is expected — rather than guessing at a spelling that is the client's
+ * to choose and would go stale the moment either changed it.
+ *
+ * And it asks for one real call. "Just check — do not use them yet" left the
+ * model nothing to check *with*: the tool list is the only other evidence
+ * available, and that is exactly the evidence the naming had already made
+ * unreadable. `browser_state` is the right one to spend: the server's own
+ * instructions open with it, it reads extension-side state only, and — unlike
+ * every tool that resolves a tab through `_requireTab` — it does not run
+ * `_noteTabUse`, so the check cannot flip the shared tab's marker from 🔗 to 🤖
+ * and claim work that has not happened.
+ *
+ * **It opens by naming the config file, which reverses an earlier decision, and
+ * the reason the old one was right is not the reason it was written down.** The
+ * line was removed because a model sent to read `config.toml` confirms the
+ * server is configured and still has no tools — true, and it is why the file is
+ * named as *evidence of the entry's name* rather than as somewhere to go and
+ * fix things. What the read actually supplies is the exact `[mcp_servers.<name>]`
+ * header, which is the one thing a model needs to build the prefix its own
+ * client mangled, and reading it is what made the check succeed in practice.
+ * The guard that mattered stays: the next line still forbids adding or editing
+ * any MCP configuration.
+ *
+ * **The path has to be the file we actually wrote.** `connectCodex` writes the
+ * *global* `~/.codex/config.toml`, never the project `.codex/config.toml` — the
+ * VS Code Codex extension does not load a project file at all (measured: its
+ * `mcp_server_count` excludes one that is sitting right there), so naming it
+ * would send the model to a file that is either absent or a leftover from a
+ * release that did write it. Hence `configPath`, passed by each connect path
+ * rather than guessed here.
  */
-export function connectionPrompt(entryName: string, shared?: SharedPage): string {
+export function connectionPrompt(entryName: string, configPath: string, shared?: SharedPage): string {
 	const lines = [
-		`Do you have the \`${entryName}\` MCP tools (they start with \`browser_\`)? Just check — do not use them yet.`,
+		`Read \`${configPath}\` and find the \`${entryName}\` MCP server entry — that is its exact name.`,
+		`Do you have that server's browser tools in this session?`
+		+ ' Their names end in `browser_state`, `browser_snapshot`, `browser_click` and so on,'
+		+ ' but your client prefixes them with the server name — so do not look for a bare'
+		+ ' `browser_` prefix. Call `browser_state` once to check; nothing else yet.',
 		`If you have none, they were simply not loaded at startup. The config is already written and correct, so just restart your session — do not add or edit any MCP configuration yourself.`,
 	];
 	if (shared) {
@@ -464,7 +514,7 @@ export function connectionPrompt(entryName: string, shared?: SharedPage): string
 		// it must not send the model off to inspect a page stands. This line
 		// exists so the model does not go looking for a tab to select — the user
 		// has already chosen one.
-		lines.push(`For when you do use them: the user has given you one browser tab — ${shared.title ?? shared.url}`
+		lines.push(`Beyond that one call: the user has given you one browser tab — ${shared.title ?? shared.url}`
 			+ ` (${shared.url}). Every browser tool of yours acts on that tab, and only that tab; you cannot and need`
 			+ ' not select another, and other tabs in the window are not yours to read.');
 	}
@@ -568,7 +618,10 @@ export async function connectClaudeCode(server: McpServer, shared?: SharedPage):
 		return;
 	}
 
-	await vscode.env.clipboard.writeText(connectionPrompt(serverName, shared));
+	// `.mcp.json` sits in the project root, which is the model's own working
+	// directory, so the relative name is the one it can act on — and it is the
+	// file this path just wrote.
+	await vscode.env.clipboard.writeText(connectionPrompt(serverName, '.mcp.json', shared));
 	confirm(vscode.l10n.t(
 		"Wrote .mcp.json, prompt copied — restart Claude Code, then paste it.") + scopeNote(shared));
 }
@@ -592,7 +645,11 @@ export async function connectCodex(server: McpServer, shared?: SharedPage): Prom
 	const folder = workspaceFolder();
 	try {
 		const name = await writeCodexGlobalConfig(folder, server);
-		await vscode.env.clipboard.writeText(connectionPrompt(name, shared));
+		// The *global* file, because that is the one written above. Naming the
+		// project `.codex/config.toml` would point the model at a file the
+		// VS Code Codex extension never loads.
+		await vscode.env.clipboard.writeText(
+			connectionPrompt(name, codexGlobalConfigUri().fsPath, shared));
 		confirm(vscode.l10n.t(
 			"Wrote ~/.codex/config.toml, prompt copied — start a NEW Codex conversation, then paste it.")
 			+ scopeNote(shared));

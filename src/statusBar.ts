@@ -290,13 +290,30 @@ async function showMenu(controller: BrowserController): Promise<void> {
 		items.push({ label: vscode.l10n.t("Shared tabs"), kind: vscode.QuickPickItemKind.Separator });
 	}
 
+	// **This row is now the only place either fact is stated.** The two states
+	// used to be a 🔗/🤖 suffix on the page title, visible on the editor tab;
+	// writing into someone else's document to say something about our own state
+	// is gone (see `shareIndicator.ts`), so the distinction it carried has to be
+	// carried here instead — the same glyphs, so this and the status bar item
+	// read as one indicator rather than two that happen to agree.
+	//
+	// The unused state is the one that needs words. Neither assistant re-reads
+	// its MCP config, so one that was never restarted has no browser tools at
+	// all — and from the outside that is indistinguishable from an assistant
+	// that simply has not got round to the page yet. The detail says which it
+	// is and what to do, because the alternative is the report this whole
+	// feature keeps producing: "I gave it a tab and nothing happened."
 	for (const assignment of shares.assignments) {
+		const pickedUp = assignment.usedBy.length > 0;
 		items.push({
 			label: vscode.l10n.t("$(circle-slash) Stop sharing with {0}", assignment.label),
 			description: assignment.title || assignment.url,
-			detail: assignment.usedBy.length > 0
-				? vscode.l10n.t("Working on this tab and no other")
-				: vscode.l10n.t("Has this tab and has not picked it up yet — if it reports no `browser_` tools, restart it"),
+			detail: pickedUp
+				? vscode.l10n.t("{0} Working on this tab and no other", inUseMarker)
+				: vscode.l10n.t(
+					"{0} Has this tab but has not called yet. It does not re-read its MCP config,"
+					+ " so if it reports no browser tools, restart its session — the config is"
+					+ " already correct.", sharedMarker),
 			run: () => vscode.commands.executeCommand('aiBrowser.stopSharingTab', assignment.target),
 		});
 	}
@@ -310,9 +327,9 @@ async function showMenu(controller: BrowserController): Promise<void> {
 	}
 
 	if (focused) {
-		// Stripped like every other title we show: a tab that was shared a
-		// moment ago can still be carrying the suffix if the page could not be
-		// reached when sharing stopped.
+		// Stripped defensively: nothing writes a marker into a page any more,
+		// but a page an earlier build reached can still be open with the
+		// observer that re-applies one.
 		const page = stripMarker(focused.title) || focused.url;
 		const alreadyShared = controller.isShared(focused);
 		items.push({

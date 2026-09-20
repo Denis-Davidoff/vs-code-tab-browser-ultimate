@@ -126,33 +126,42 @@ suite('ShareRegistry when a tab closes', () => {
 	});
 });
 
-suite('ShareRegistry marker state', () => {
+suite('ShareRegistry share state', () => {
 
 	test('reports nothing for a tab nobody was given', () => {
 		const shares = new ShareRegistry<string>();
-		assert.strictEqual(shares.stateOf(tabA), undefined);
+		assert.strictEqual(shares.isShared(tabA), false);
 	});
 
-	test('names the assistant-specific owners and the everyone case apart', () => {
+	test('a tab held by anyone reads as shared', () => {
 		const shares = new ShareRegistry<string>();
 		shares.share(everyone, tabA);
-		assert.deepStrictEqual(shares.stateOf(tabA), { used: false, kinds: [], everyone: true });
+		assert.strictEqual(shares.isShared(tabA), true);
 
 		shares.share(forKind('codex'), tabA);
 		shares.share(forKind('claude'), tabA);
-		assert.deepStrictEqual(shares.stateOf(tabA), {
-			used: false, kinds: ['claude', 'codex'], everyone: true,
-		});
+		assert.strictEqual(shares.isShared(tabA), true);
 	});
 
-	test('use is recorded once per assistant and shows on the tab', () => {
+	test('use is recorded once per assistant', () => {
 		const shares = new ShareRegistry<string>();
 		shares.share(forKind('claude'), tabA);
 
 		assert.strictEqual(shares.noteUse(tabA, 'claude'), true);
 		assert.strictEqual(shares.noteUse(tabA, 'claude'), false, 'no news the second time');
-		assert.deepStrictEqual(shares.stateOf(tabA)?.used, true);
 		assert.deepStrictEqual(shares.usedBy(tabA), ['claude']);
+	});
+
+	// Usage is reported per *assignment*, not per tab: giving a tab Claude has
+	// worked on to Codex must not show Codex as already working, which is what
+	// hides the "restart it, it never picked the tools up" hint.
+	test('a fresh assignment on a used tab has not been picked up', () => {
+		const shares = new ShareRegistry<string>();
+		shares.share(forKind('claude'), tabA);
+		shares.noteUse(tabA, 'claude');
+		shares.share(forKind('codex'), tabA);
+		assert.deepStrictEqual(shares.usedByTarget(forKind('codex'), tabA), []);
+		assert.deepStrictEqual(shares.usedByTarget(forKind('claude'), tabA), ['claude']);
 	});
 
 	test('a closed tab forgets who used it', () => {
