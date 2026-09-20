@@ -288,9 +288,9 @@ a `file:` url would turn a browser tool into a file reader.
 3. **That is the whole click — there is no dialog.** The command writes the entry and puts a
    connection prompt on the clipboard; paste that into the assistant's chat. What it wrote is
    named in the confirmation, which goes to the **status bar** rather than a notification, so a
-   toast never covers the page you are about to hand over. Claude Code gets `.mcp.json` in the
-   project; Codex gets the global `~/.codex/config.toml` (see below for why). Both entries carry
-   this window's token, so ignore `.mcp.json` in git if the project is shared.
+   toast never covers the page you are about to hand over. Both files live in the project —
+   `.mcp.json` for Claude Code, `.codex/config.toml` for Codex — and both carry this window's
+   token, so ignore them in git if the project is shared.
 4. **Let the assistant pick it up.** Both read their mcp servers **once, at startup**: restart
    Claude Code and run `/mcp`, or start a brand-new Codex conversation. An assistant that says
    it cannot see the server has not loaded it — telling it to go and read `config.toml` will not
@@ -300,16 +300,18 @@ a `file:` url would turn a browser tool into a file reader.
 **VS Code's own chat needs none of this** — the extension registers the server through the
 editor's own mcp api.
 
-**For Codex it is the global file, and that is deliberate.** **Connect Codex** writes
-`~/.codex/config.toml`, never the project's own `.codex/config.toml`: Codex only loads a project
-config for a project it *trusts*, and some of its surfaces
-([openai/codex#13025](https://github.com/openai/codex/issues/13025)) ignore one entirely — which
-is the usual reason "Codex cannot see the server". A one-click action must not land on the option
-that sometimes silently does nothing. Writing both is not an option either: the two entries have
-different names, so Codex would load both and list every tool twice. The global entry is named
-after the project, so a second project adds its own rather than replacing the first. A
-`.mcp.json` that does not parse is never overwritten — rewriting it would delete every other mcp
-server the project has.
+**For Codex it is the project file.** **Connect Codex** writes `.codex/config.toml` inside the
+project. One caveat that is real: Codex loads a project config only for a project it *trusts*,
+and some of its surfaces ([openai/codex#13025](https://github.com/openai/codex/issues/13025))
+have been reported to ignore one — so if Codex cannot see the server, check that the project is
+trusted.
+
+Earlier releases wrote the global `~/.codex/config.toml` instead, with a per-project entry name.
+Connect now removes this workspace's entry from that file as it writes the project one, because
+Codex reads both and two entries under different names would list every tool twice. If you have
+entries there from projects that no longer exist, **Check Connection** names them. A `.mcp.json`
+that does not parse is never overwritten — rewriting it would delete every other mcp server the
+project has.
 
 **Check Connection** answers what the configuration files cannot. It sends one real
 `tools/list` through the loopback interface with the token, and then reads each client's config

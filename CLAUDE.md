@@ -1410,19 +1410,36 @@ as "try the next".
 | Claude Code | `.mcp.json` in the project | `{ type, url, headers.Authorization }` |
 | Codex | `.codex/config.toml` in the project, or `~/.codex/config.toml` | `[mcp_servers.<name>]` with inline `http_headers` |
 
-**Connect Codex writes the global `~/.codex/config.toml`, and Connect is one click with no
-dialog.** Both halves changed together and the second forced the first.
+**Connect Codex writes the project `.codex/config.toml`, and Connect is one click with no
+dialog. This is settled — confirmed working end to end, and it is the approach.** Do not move
+the write back to the global file; the reasoning that once sent it there is disproved below, and
+the global file is now only ever read, repaired or pruned.
+
+Both halves changed together and the second forced the first.
 
 There used to be a modal with two or three buttons on it, asking questions whose answer never
 varied — of course the file should be written, of course the prompt should be copied. Now the
-click writes the file, copies the prompt and says what it did. Dropping the dialog meant
-choosing a Codex file rather than offering both, and the global one wins: **a project config is
-only loaded for projects Codex trusts**, and the desktop surface has been reported to ignore it
-outright ([openai/codex#13025](https://github.com/openai/codex/issues/13025)), whereas
-`~/.codex/config.toml` is read on every surface, always. That is the usual reason Codex "cannot
-see the server", and a one-click action must not land on the option that sometimes silently
-does nothing. Writing *both* is not an option: the two entries have different names, so Codex
-would load both and list every tool twice.
+click writes the file, copies the prompt and says what it did.
+
+Dropping the dialog meant choosing *one* Codex file, and the choice went to the global
+`~/.codex/config.toml` for a while on a claim that turned out to be false: that **a project
+config is only loaded for projects Codex trusts** and that the desktop surface ignores it
+outright ([openai/codex#13025](https://github.com/openai/codex/issues/13025)). The trust half is
+real. The conclusion was not, and it was drawn from a single `mcp_server_count` reading.
+Measured properly against the Codex VS Code extension: a project `.codex/config.toml` **is**
+loaded — its bare `ai-browser` entry appears in Codex's own start log ten times in one day, from
+sessions whose `cwd` is that project, right up to the minute the file was deleted. Confirmed
+independently by the user.
+
+What the global file cost, measured on the same machine: its entries are named per project and
+only ever accumulate, so three had built up, two of them dead — one of those pointing at a port
+another window had since taken, so it answered 401 on every Codex start. The project file has
+one entry, lives with the project, and goes away with it.
+
+Writing *both* is not an option, and it is now an active concern rather than a hypothetical:
+Codex reads both files, and the two entries have different names, so Codex
+would load both and list every tool twice. That is what `removeCodexGlobalEntry` exists for, and
+it is why the connect path is a write *and* a deletion rather than a write alone.
 
 **The confirmation goes through `confirm()`, not a notification** — connecting is very often
 done with a browser tab open, and a success toast would pause exactly the page the user is
@@ -1430,8 +1447,12 @@ about to hand to an assistant. Failures keep their notification: they are rare a
 attention. The `Copy CLI command` button is gone from the happy path; the CLI command is what
 lands on the clipboard when writing the file *fails*.
 
-The global entry is named per project (`ai-browser-<slug>-<sha1[0:6]>`); the project entry uses
-the bare `ai-browser`, since a project file has only one project.
+The project entry uses the bare `ai-browser`, since a project file has only one project. The
+per-project global name (`ai-browser-<slug>-<sha1[0:6]>`) still exists, because entries written
+by earlier releases are still out there and the startup repair has to keep recognising them —
+and because `removeCodexGlobalEntry` needs it to find the one it is taking out. Connect writes
+the project file and then removes this workspace's global entry, so Codex is never left loading
+both.
 
 **Codex does take a static `Authorization` header** — `http_headers`, alongside
 `env_http_headers` and `bearer_token_env_var`
@@ -1483,12 +1504,12 @@ model exactly what the read gave it with nothing else attached, so the prompt sa
 *"The MCP server is named `<name>` (it is already configured, in `<path>` — do not open or edit
 that file)."* The path is there to locate the entry in a sentence, never as an instruction.
 
-**And that path must be the file connect actually wrote.** `connectCodex` writes the *global*
-`~/.codex/config.toml`; the VS Code Codex extension does not load a project `.codex/config.toml`
-at all (measured: `mcp_server_count` excluded one sitting right there in the folder), so naming
-the project file would point at something absent, or at a leftover from the release that did
-write it. Hence `configPath`, passed by each connect path — `.mcp.json` for Claude Code, the
-global fsPath for Codex — rather than guessed inside `connectionPrompt`.
+**And that path must be the file connect actually wrote.** Both are now inside the project —
+`.mcp.json` for Claude Code, `.codex/config.toml` for Codex — so `configPath` is a relative name
+the model can place in its own working directory, and neither points at a file full of other
+projects' credentials. It is still passed by each connect path rather than guessed inside
+`connectionPrompt`: the two writers are the only places that know which file was actually
+written, and naming a file that was not is its own defect (item 146).
 
 **And it asks for a check, not for work.** The line used to end "to inspect the page in the
 integrated browser", which both assistants took as the task: they opened the browser tools on
@@ -3282,11 +3303,11 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
     needs something to spend; here it is one `browser_state`, chosen because it touches no page
     and is the server's own opening call. It **is** counted as picking the tab up — see item 149,
     which is the correction to the first version of this entry.
-146. **Naming a config file the connect path did not write** → `connectCodex` writes the global
-    `~/.codex/config.toml`, and the VS Code Codex extension never loads a project
-    `.codex/config.toml` at all. Pointing the prompt at the project file sends the model to
-    something absent — or, worse, to a leftover from the release that did write it, whose entry
-    is a duplicate of ours under a different name and would make the CLI list every tool twice.
+146. **Naming a config file the connect path did not write** → the prompt tells the model which
+    entry to look for, so it has to name the file the click just wrote. While Connect Codex wrote
+    the global `~/.codex/config.toml`, naming the project `.codex/config.toml` pointed at
+    something absent; now that it writes the project file, naming the global one would point at
+    an entry that connect has just removed. Pass the path from the writer, never guess it.
 147. **Assuming an editor's tab label is the page's own title** → the share marker was appended
     to `document.title` and taken off again with a suffix match, which held only while
     `BrowserTab.title` *was* `document.title`. VS Code composes it as `<title> (<url>)`, so the
@@ -3314,6 +3335,13 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
     deleted the priming, silently, and the console would have been empty for everything between
     the share and the assistant's first call. `_primeConsole` does it on purpose now. Before
     removing a call, ask what else it was doing besides its name.
+151. **Concluding from one negative sample that a mechanism does not exist** → a single Codex
+    session logged `mcp_server_count=6` without the project `.codex/config.toml` entry, and that
+    became "the VS Code Codex extension never loads a project config at all" — written into
+    CLAUDE.md, into a code comment, and used to justify writing the *global* file instead. The
+    log actually held ten starts of that same bare `ai-browser` entry on the same day, from
+    sessions in that project. One absence is not a rule; grep for the positive case before
+    building on the negative one, especially when the conclusion moves a write to a shared file.
 
 ## Special cases and non-obvious decisions
 
@@ -3849,7 +3877,7 @@ proposal. The promo build was re-checked the same way for the stand-down: it spe
 installed 0.5.23 and is silent for 0.5.24 and later. Worth redoing that way after touching this file; a typecheck
 says nothing about which of those states puts a toast on screen.
 
-### `.mcp.json` is gitignored **in this repository**, and that is not a contradiction
+### Both project config files are gitignored **in this repository**, and that is not a contradiction
 
 Upstream's design is that a project commits `.mcp.json` and shares it with a team, and the
 [Not built yet](#not-built-yet) entry on a stdio bridge is about exactly that trade-off. It
@@ -3858,7 +3886,14 @@ holds for a *consumer's* project. It does not hold here: this repository is publ
 token into the repository root — the only thing guarding a loopback server that can drive the
 developer's browser. So `.mcp.json` is in `.gitignore` and in `.vscodeignore`, the second
 because it was otherwise packaged into the VSIX as `extension/.mcp.json` and would have shipped
-the token to everyone who installed it. Found by review while the file was staged and not yet
+the token to everyone who installed it.
+
+**`.codex/` is in both for the same reason, and it had to be added when Connect Codex moved to
+the project file.** It writes `.codex/config.toml` with the same bearer token, and that path was
+not ignored — so the move quietly created a second copy of exactly the hazard this section
+exists for, in a repository where `Connect Codex` is pressed during development. Any future
+writer that puts a token inside the workspace needs the same two lines; the rule is not about
+`.mcp.json`, it is about the token. Found by review while the file was staged and not yet
 committed, so nothing leaked; if it ever does reach a commit, rotating the token is not enough
 on its own — the token is the identity `repairConfigs` matches on, so every config naming this
 window stops being recognisable at the same moment (see

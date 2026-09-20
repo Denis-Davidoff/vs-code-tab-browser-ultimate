@@ -384,25 +384,70 @@ export function codexGlobalLock(): string {
 	return lockPath(configLockName(codexGlobalConfigUri()));
 }
 
-export async function writeCodexGlobalConfig(
-	folder: vscode.WorkspaceFolder | undefined,
+/**
+ * Writes the **project** `.codex/config.toml`, which is what Connect Codex uses.
+ *
+ * It uses the bare `ai-browser` name: a project file serves one project, so the
+ * per-project suffix the global file needs would be noise here — and it is the
+ * name the startup repair already looks for in this file
+ * ({@link repairConfigs}).
+ */
+export async function writeCodexProjectConfig(
+	folder: vscode.WorkspaceFolder,
 	server: McpServer,
-): Promise<string> {
-	const name = folder ? codexEntryName(folder) : `${serverName}-window`;
-	const wrote = await withLock(codexGlobalLock(), () =>
-		writeCodexConfig(codexGlobalConfigUri(), name, server));
+): Promise<void> {
+	const uri = codexProjectConfigUri(folder);
+	const wrote = await withLock(lockPath(configLockName(uri)), () =>
+		writeCodexConfig(uri, serverName, server));
 	if (!wrote) {
-		throw new Error('another window is writing ~/.codex/config.toml');
+		throw new Error('another window is writing .codex/config.toml');
 	}
-	return name;
+}
+
+/**
+ * Takes this workspace's entry out of the **global** `~/.codex/config.toml`.
+ *
+ * Connecting writes the project file now, and Codex loads both files, so an
+ * entry left in the global one is a second definition of the same server under
+ * a different name — which is exactly the duplicate this project refused to
+ * create when it wrote only one of the two. Every tool would be listed twice.
+ *
+ * Only the table named for *this* workspace, matched the way every other writer
+ * here matches, and only through `codexRangeDeletable` — the guard that keeps a
+ * deletion range from swallowing a neighbour's table. Best effort by design: a
+ * failure leaves a duplicate, which is a degraded listing rather than a broken
+ * file, and the caller reports it.
+ */
+export async function removeCodexGlobalEntry(folder: vscode.WorkspaceFolder): Promise<boolean> {
+	const uri = codexGlobalConfigUri();
+	const name = codexEntryName(folder);
+	let removed = false;
+	const ran = await withLock(codexGlobalLock(), async () => {
+		const read = await readConfig(uri);
+		if (read.kind !== 'text' || codexUnterminated(read.text)) {
+			return;
+		}
+		const prune = removeCodexTables(
+			read.text, codexEntries(read.text), [name],
+			(from, to) => codexRangeDeletable(read.text, from, to));
+		if (!prune.changed) {
+			return;
+		}
+		await writeText(uri, prune.text);
+		removed = true;
+	});
+	return ran && removed;
 }
 
 /*
- * There is deliberately no `writeCodexProjectConfig` any more. Connect Codex
- * writes the global file, for the reasons in the doc comment above it, and a
- * writer nothing calls is a writer that drifts out of step with the one that
- * is used. Project `.codex/config.toml` files written by earlier releases are
- * still *read* — by the check and by the repair — so they keep working.
+ * There is deliberately no `writeCodexGlobalConfig` any more.
+ *
+ * Connect writes the project `.codex/config.toml`; the global file is only ever
+ * *read* now (the check, the repair) or *pruned* ({@link removeCodexGlobalEntry},
+ * and the stale-workspace prune in `repairConfigs`). A writer nothing calls is a
+ * writer that drifts out of step with the one that is used — the `Tool.slowMs`
+ * rule — so it went with the path that needed it. `codexEntryName` and
+ * `codexGlobalLock` stay, because finding and locking that file is still done.
  */
 
 /**
@@ -635,38 +680,72 @@ export async function connectClaudeCode(server: McpServer, shared?: SharedPage):
 }
 
 /**
- * Connects Codex by writing the **global** `~/.codex/config.toml`.
+ * Connects Codex by writing the **project** `.codex/config.toml`.
  *
- * The project file used to lead, on the reasoning that a server belongs with
- * the project it serves. Dropping the dialog forced the question, and the
- * global file wins it: a project `.codex/config.toml` is only loaded for
- * projects Codex *trusts*, and the desktop surface has been reported to ignore
- * it outright (openai/codex#13025). That is the usual reason "Codex cannot see
- * the server", and a one-click action must not land on the option that
- * sometimes silently does nothing.
+ * It wrote the global `~/.codex/config.toml` for a while, and the reasoning was
+ * wrong on its central claim. The stated ground was that a project config "is
+ * only loaded for projects Codex trusts" and that the desktop surface ignores
+ * it (openai/codex#13025) — so the global file was the safe one-click target.
+ * Measured on this machine, against the Codex VS Code extension: a project
+ * `.codex/config.toml` **is** loaded. Its bare `ai-browser` server appears in
+ * Codex's own start log ten times in one day, from sessions whose `cwd` is that
+ * project, up to the minute the file was deleted. The trust caveat is real —
+ * the project has to be trusted — but "sometimes silently does nothing" was an
+ * over-reading of one sample, and it cost the feature the file that belongs
+ * with the project it serves.
  *
- * Writing both was considered and is wrong: the two entries have different
+ * What the global file did cost, measured on the same machine: its entries are
+ * named per project and only ever accumulate, so three had built up, two of
+ * them dead — one pointing at a port another window had taken, answering 401 on
+ * every Codex start.
+ *
+ * Writing both is still wrong, and now it is an active concern rather than a
+ * hypothetical: Codex reads both files, and the two entries have different
  * names — the project file uses the bare `ai-browser`, the global one a
- * per-project name — so Codex would load both and list every tool twice.
+ * per-project name — so every tool would be listed twice. Hence
+ * {@link removeCodexGlobalEntry} on this path.
  */
 export async function connectCodex(server: McpServer, shared?: SharedPage): Promise<void> {
 	const folder = workspaceFolder();
-	try {
-		const name = await writeCodexGlobalConfig(folder, server);
-		// The *global* file, because that is the one written above. Naming the
-		// project `.codex/config.toml` would point the model at a file the
-		// VS Code Codex extension never loads.
-		await vscode.env.clipboard.writeText(
-			connectionPrompt(name, codexGlobalConfigUri().fsPath, shared));
-		confirm(vscode.l10n.t(
-			"Wrote ~/.codex/config.toml, prompt copied — start a NEW Codex conversation, then paste it.")
+	if (!folder) {
+		// A project config needs a project. Same shape as `connectClaudeCode`
+		// with no folder: say so, and hand over the command that does not need
+		// one. The tab given away a moment ago is still named (#62).
+		await vscode.env.clipboard.writeText(codexCliCommand(folder, server));
+		vscode.window.showWarningMessage(vscode.l10n.t(
+			"No folder is open, so there is no `.codex/config.toml` to write. The `codex mcp add` command is on your clipboard instead.")
 			+ scopeNote(shared));
+		return;
+	}
+
+	try {
+		await writeCodexProjectConfig(folder, server);
 	} catch (err) {
 		await vscode.env.clipboard.writeText(codexCliCommand(folder, server));
 		vscode.window.showErrorMessage(vscode.l10n.t(
-			"Could not write ~/.codex/config.toml ({0}). The `codex mcp add` command is on your clipboard instead.",
+			"Could not write .codex/config.toml ({0}). The `codex mcp add` command is on your clipboard instead.",
 			err instanceof Error ? err.message : String(err)) + scopeNote(shared));
+		return;
 	}
+
+	// The project file is now the definition, so a leftover entry of ours in the
+	// global file is a duplicate under a second name and Codex would list every
+	// tool twice. Reported rather than thrown: the connection itself succeeded.
+	let duplicate = false;
+	try {
+		await removeCodexGlobalEntry(folder);
+	} catch {
+		duplicate = true;
+	}
+
+	await vscode.env.clipboard.writeText(
+		connectionPrompt(serverName, '.codex/config.toml', shared));
+	confirm(vscode.l10n.t(
+		"Wrote .codex/config.toml, prompt copied — start a NEW Codex conversation, then paste it.")
+		+ (duplicate
+			? vscode.l10n.t(" An old entry in ~/.codex/config.toml could not be removed; if tools appear twice, delete it.")
+			: '')
+		+ scopeNote(shared));
 }
 
 /* ----------------------------------------------------------------------- prune */
