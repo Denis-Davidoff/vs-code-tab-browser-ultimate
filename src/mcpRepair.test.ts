@@ -1095,3 +1095,94 @@ suite('spliceCodexTables', () => {
 		assert.deepStrictEqual(spliceCodexTables([], [], table, always), [...table]);
 	});
 });
+
+/*
+ * `removeCodexGlobalEntry` (in `mcpSetup.ts`, which imports `vscode` and so
+ * cannot be loaded here) selects what to delete with `codexOurTables`. The
+ * first version assembled the name set by hand as `[codexEntryName(folder)]`,
+ * which was wrong in two independent ways at once. Both are pinned here,
+ * against the predicate that function now uses.
+ */
+suite('selecting a global Codex entry for removal', () => {
+
+	const TOKEN = 'ef291b9ff8464b32bb90116769dd20d533a8275e85a048df9777f23176ae440e';
+	const name = 'ai-browser-picto-2a3f1f';
+
+	const select = (text: string, token = TOKEN) => codexOurTables(codexEntries(text), token);
+
+	const removeWith = (text: string, names: readonly string[]) =>
+		removeCodexTables(text, codexEntries(text), names,
+			(from, to) => codexRangeDeletable(text, from, to));
+
+	test('a sub-table comes with its root, or TOML recreates an urlless server', () => {
+		// Item 26. Removing only the root left `[mcp_servers.<name>.http_headers]`
+		// behind, from which TOML recreates `mcp_servers.<name>` with no `url` —
+		// and the startup repair answers `changed: false` for it for ever, so
+		// nothing could heal it. The bearer token survived in it too.
+		const text = [
+			'[mcp_servers.someone-else]',
+			'command = "npx"',
+			'',
+			`[mcp_servers.${name}]`,
+			'url = "http://127.0.0.1:43117/mcp"',
+			'',
+			`[mcp_servers.${name}.http_headers]`,
+			`Authorization = "Bearer ${TOKEN}"`,
+			'',
+		].join('\n');
+
+		assert.deepStrictEqual(select(text), [name, `${name}.http_headers`]);
+
+		const pruned = removeWith(text, select(text));
+		assert.strictEqual(pruned.changed, true);
+		assert.ok(!pruned.text.includes(name), 'no table of ours may survive');
+		assert.ok(!pruned.text.includes(TOKEN), 'the token must not be left behind');
+		assert.ok(pruned.text.includes('[mcp_servers.someone-else]'), "the neighbour's table stays");
+	});
+
+	test("the user's own sub-table goes with it as well", () => {
+		// `env_http_headers` is the reachable shape: the repair deliberately
+		// keeps it, so it is the one most likely to be sitting there.
+		const text = [
+			`[mcp_servers.${name}]`,
+			'url = "http://127.0.0.1:43117/mcp"',
+			`http_headers = { Authorization = "Bearer ${TOKEN}" }`,
+			'',
+			`[mcp_servers.${name}.env_http_headers]`,
+			'X_ORG = "ACME"',
+			'',
+		].join('\n');
+
+		assert.deepStrictEqual(select(text), [name, `${name}.env_http_headers`]);
+		assert.strictEqual(removeWith(text, select(text)).text.trim(), '');
+	});
+
+	test('an entry under the pre-rename name is still ours', () => {
+		// Items 14 and 92: the name changed between releases, the token did not.
+		// Name-matching missed this one, so it stayed as a live duplicate that
+		// the repair then kept fresh on every start.
+		const text = [
+			'[mcp_servers.tab-browser-picto-2a3f1f]',
+			'url = "http://127.0.0.1:43110/mcp"',
+			`http_headers = { Authorization = "Bearer ${TOKEN}" }`,
+			'',
+		].join('\n');
+
+		assert.deepStrictEqual(select(text), ['tab-browser-picto-2a3f1f']);
+	});
+
+	test("an entry with somebody else's token is not ours to delete", () => {
+		// The mirror direction. `codexEntryName` is a pure function of the folder
+		// URI, so a `~/.codex/config.toml` synced from another machine carries
+		// this exact name with a token we never minted — and `codexStrangers`
+		// promises in the Check Connection report that those are left alone.
+		const text = [
+			`[mcp_servers.${name}]`,
+			'url = "http://127.0.0.1:43117/mcp"',
+			'http_headers = { Authorization = "Bearer 0000000000000000000000000000000000000000000000000000000000000000" }',
+			'',
+		].join('\n');
+
+		assert.deepStrictEqual(select(text), []);
+	});
+});

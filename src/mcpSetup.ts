@@ -9,12 +9,13 @@ import { codexEntries, codexRangeDeletable, codexUnterminated } from './codexTom
 import { lockPath, withLock } from './fileLock';
 import { serverName } from './mcpClientState';
 import {
-	codexRetiredTables, codexTableLines, removeCodexTables, repairClaudeJson, repairCodexToml,
+	codexOurTables, codexRetiredTables, codexTableLines, removeCodexTables, repairClaudeJson,
+	repairCodexToml,
 	spliceCodexTables, type Endpoint,
 } from './mcpRepair';
 import type { McpServer } from './mcpServer';
 import { confirm } from './notify';
-import { plainInNotification } from './notifyText';
+import { plainInNotification, plainInPrompt } from './notifyText';
 
 /**
  * Three clients, three places to configure, and only one of them has an API.
@@ -384,25 +385,149 @@ export function codexGlobalLock(): string {
 	return lockPath(configLockName(codexGlobalConfigUri()));
 }
 
-export async function writeCodexGlobalConfig(
-	folder: vscode.WorkspaceFolder | undefined,
+/**
+ * Writes the **project** `.codex/config.toml`, which is what Connect Codex uses.
+ *
+ * It uses the bare `ai-browser` name: a project file serves one project, so the
+ * per-project suffix the global file needs would be noise here — and it is the
+ * name the startup repair already looks for in this file
+ * ({@link repairConfigs}).
+ */
+export async function writeCodexProjectConfig(
+	folder: vscode.WorkspaceFolder,
 	server: McpServer,
-): Promise<string> {
-	const name = folder ? codexEntryName(folder) : `${serverName}-window`;
-	const wrote = await withLock(codexGlobalLock(), () =>
-		writeCodexConfig(codexGlobalConfigUri(), name, server));
+): Promise<void> {
+	const uri = codexProjectConfigUri(folder);
+	const wrote = await withLock(lockPath(configLockName(uri)), () =>
+		writeCodexConfig(uri, serverName, server));
 	if (!wrote) {
-		throw new Error('another window is writing ~/.codex/config.toml');
+		throw new Error('another window is writing .codex/config.toml');
 	}
-	return name;
+	await keepTokenOutOfGit(folder);
+}
+
+/**
+ * Drops a `.gitignore` next to the project Codex config, naming that one file.
+ *
+ * `.codex/config.toml` carries the workspace's bearer token — the only thing
+ * guarding a loopback server that can drive the developer's browser — and this
+ * extension is what put it inside the user's repository. CLAUDE.md records why
+ * *this* repository ignores it, and adding the rule by hand is exactly what
+ * nobody does; `assistants.ts` already drops a `.gitignore` into `.ai-browser/`
+ * on creation for the same reason.
+ *
+ * **`config.toml`, not `*`.** `.codex/` is Codex's own project directory and may
+ * hold settings a team does want to share; only the file we wrote is ours to
+ * exclude. An existing `.gitignore` is never touched — it is the user's, and a
+ * rule of theirs may already cover this.
+ *
+ * Best effort: failing to write it must not fail a connection that succeeded,
+ * and the confirmation says where the token went either way.
+ */
+async function keepTokenOutOfGit(folder: vscode.WorkspaceFolder): Promise<void> {
+	const marker = vscode.Uri.joinPath(folder.uri, '.codex', '.gitignore');
+	try {
+		await vscode.workspace.fs.stat(marker);
+		return;
+	} catch {
+		// Absent, or unreadable — either way, try to write it.
+	}
+	try {
+		await writeText(marker, 'config.toml\n');
+	} catch {
+		// A read-only folder, or a provider that cannot write. The token is
+		// still only in a file the user controls.
+	}
+}
+
+/**
+ * What became of this workspace's entry in the **global** `~/.codex/config.toml`.
+ *
+ * A boolean could not carry this, and returning one was breaks-silently #113
+ * re-entered on a new path: `false` meant "there was nothing to remove" *and*
+ * "I declined" *and* "another window holds the lock", so the caller could only
+ * report success. Only `removed` and `absent` mean the duplicate is gone.
+ */
+export type GlobalEntryOutcome = 'removed' | 'absent' | 'refused' | 'busy';
+
+/**
+ * Takes this workspace's entry out of the **global** `~/.codex/config.toml`.
+ *
+ * Connecting writes the project file now, and Codex loads both files, so an
+ * entry left in the global one is a second definition of the same server under
+ * a different name — which is exactly the duplicate this project refused to
+ * create when it wrote only one of the two. Every tool would be listed twice.
+ *
+ * **Which tables go is decided by the token, and it has to include the
+ * sub-tables.** Both halves were wrong in the first version, which passed the
+ * bare `codexEntryName(folder)`:
+ *
+ * - matching by *name* is the thing CLAUDE.md forbids in as many words (items
+ *   14 and 92) — it misses an entry still under the pre-rename
+ *   `tab-browser-<slug>-<hash>`, and it deletes one carrying a token this
+ *   machine never minted, which `codexStrangers` promises to leave alone;
+ * - and `codexEntries` names a sub-table `<root>.<suffix>`, so removing only
+ *   the root left `[mcp_servers.<name>.http_headers]` behind — from which TOML
+ *   *recreates* `mcp_servers.<name>` as a server with no `url`, with the bearer
+ *   token still in it. Item 26, reproduced: the startup repair then answers
+ *   `changed: false` for ever, so nothing in the extension could heal it.
+ *   `env_http_headers` is the reachable shape, because the repair deliberately
+ *   keeps that sub-table as the user's.
+ *
+ * `codexOurTables` answers both at once — it is the predicate the prune and the
+ * repair already share, and it returns the root *with* its sub-tables. Using it
+ * here rather than assembling a name set by hand is what stops this site
+ * drifting out of the rule again, which is how it drifted in.
+ *
+ * Best effort by design: a failure leaves a duplicate, which is a degraded
+ * listing rather than a broken file — and the caller really does report it now.
+ */
+export async function removeCodexGlobalEntry(server: McpServer): Promise<GlobalEntryOutcome> {
+	const uri = codexGlobalConfigUri();
+	// Before the first await: `token` is a getter over live server state, the
+	// same hazard as `server.url` (breaks-silently #19).
+	const token = server.token;
+
+	let outcome: GlobalEntryOutcome = 'absent';
+	const ran = await withLock(codexGlobalLock(), async () => {
+		const read = await readConfig(uri);
+		if (read.kind === 'absent') {
+			return;
+		}
+		// Only a clean absence is "nothing to do"; an unreadable file may well
+		// hold the duplicate (items 94 and 101).
+		if (read.kind !== 'text' || codexUnterminated(read.text)) {
+			outcome = 'refused';
+			return;
+		}
+
+		const entries = codexEntries(read.text);
+		const names = codexOurTables(entries, token);
+		if (names.length === 0) {
+			return;
+		}
+
+		const prune = removeCodexTables(read.text, entries, names,
+			(from, to) => codexRangeDeletable(read.text, from, to));
+		if (prune.refused || !prune.changed) {
+			outcome = prune.refused ? 'refused' : 'absent';
+			return;
+		}
+		await writeText(uri, prune.text);
+		outcome = 'removed';
+	});
+	return ran ? outcome : 'busy';
 }
 
 /*
- * There is deliberately no `writeCodexProjectConfig` any more. Connect Codex
- * writes the global file, for the reasons in the doc comment above it, and a
- * writer nothing calls is a writer that drifts out of step with the one that
- * is used. Project `.codex/config.toml` files written by earlier releases are
- * still *read* — by the check and by the repair — so they keep working.
+ * There is deliberately no `writeCodexGlobalConfig` any more.
+ *
+ * Connect writes the project `.codex/config.toml`; the global file is only ever
+ * *read* now (the check, the repair) or *pruned* ({@link removeCodexGlobalEntry},
+ * and the stale-workspace prune in `repairConfigs`). A writer nothing calls is a
+ * writer that drifts out of step with the one that is used — the `Tool.slowMs`
+ * rule — so it went with the path that needed it. `codexEntryName` and
+ * `codexGlobalLock` stay, because finding and locking that file is still done.
  */
 
 /**
@@ -453,10 +578,68 @@ export function codexCliCommand(folder: vscode.WorkspaceFolder | undefined, serv
  * extension maintains and pinned the assistant to a port that would later go
  * stale. Every subsequent Connect fixed a file nothing read. The CLI command is
  * still offered — but only on the path where writing the file actually failed.
+ *
+ * **It must not describe the tools by a prefix they do not have, and asking for
+ * a check it then forbids is not a check.** Both halves were wrong, and
+ * together they produced the report this prompt exists to prevent: Codex
+ * answering "the tools were not loaded, restart your session" while the server
+ * was connected and its tools were in that very turn's tool list, so every
+ * restart said the same thing.
+ *
+ * Neither assistant exposes an MCP tool under its bare name. The client
+ * namespaces it under the server, and the two spell that differently — Claude
+ * Code keeps the server name as written (`mcp__ai-browser__browser_state`),
+ * Codex replaces the hyphens (`mcp__ai_browser_picto_2a3f1f__browser_state`)
+ * and then declares the lot inside its `exec` sandbox rather than as separate
+ * tools. So *nothing* starts with `browser_`, and a model told to look for that
+ * prefix among ~200 tools correctly reports finding none. The prompt therefore
+ * names the **suffix**, which is ours and is stable, and says explicitly that a
+ * prefix is expected — rather than guessing at a spelling that is the client's
+ * to choose and would go stale the moment either changed it.
+ *
+ * And it asks for one real call. "Just check — do not use them yet" left the
+ * model nothing to check *with*: the tool list is the only other evidence
+ * available, and that is exactly the evidence the naming had already made
+ * unreadable. `browser_state` is the right one to spend: the server's own
+ * instructions open with it, it touches no page, and it **is** counted as the
+ * caller picking the tab up — `state()` runs `_noteTabUse` deliberately, so a
+ * check that succeeds turns the status bar from 🔗 to 🤖 and stops the menu
+ * advising a restart.
+ *
+ * That last clause is the reverse of what this comment said for one revision,
+ * and the reversal is the point. `browser_state` was originally chosen
+ * *because* it did not count, on the reading that 🤖 meant "work is happening on
+ * this page". It no longer means that — the two states live in the status bar,
+ * where they answer "has this assistant picked the tools up?" — so a check the
+ * UI cannot see leaves the user being told to restart a session that has just
+ * proved it works. See breaks-silently #149.
+ *
+ * **It must not tell the model to read the config file, and this was tried.**
+ * An intermediate version opened with "read `~/.codex/config.toml` and find the
+ * `<name>` entry", on the reasoning that the exact `[mcp_servers.<name>]` header
+ * is what a model needs to rebuild the prefix its client mangled — and that does
+ * work. It is still wrong, for a reason the reasoning never touched: **those
+ * files hold credentials.** Every entry we write carries
+ * `Authorization = "Bearer <token>"`, the global Codex file accumulates one per
+ * project (three on the machine this was found on, two of them for *other*
+ * workspaces), and neither file is only ours — `~/.codex/config.toml` holds the
+ * user's whole personal configuration and any third-party MCP server's secrets
+ * with it. "Read this file" puts all of that into a model's context, a
+ * provider's logs and a conversation history, to learn one string.
+ *
+ * And the string is one we already have: `entryName` is a parameter. Naming it
+ * outright gives the model exactly what the read gave it, with nothing else
+ * attached. `configPath` therefore survives only so the prompt can *locate* the
+ * entry in a sentence — never as an instruction to open it.
  */
-export function connectionPrompt(entryName: string, shared?: SharedPage): string {
+export function connectionPrompt(entryName: string, configPath: string, shared?: SharedPage): string {
 	const lines = [
-		`Do you have the \`${entryName}\` MCP tools (they start with \`browser_\`)? Just check — do not use them yet.`,
+		`The MCP server is named \`${entryName}\` (it is already configured, in \`${configPath}\` —`
+		+ ' do not open or edit that file).',
+		`Do you have that server's browser tools in this session?`
+		+ ' Their names end in `browser_state`, `browser_snapshot`, `browser_click` and so on,'
+		+ ' but your client prefixes them with the server name — so do not look for a bare'
+		+ ' `browser_` prefix. Call `browser_state` once to check; nothing else yet.',
 		`If you have none, they were simply not loaded at startup. The config is already written and correct, so just restart your session — do not add or edit any MCP configuration yourself.`,
 	];
 	if (shared) {
@@ -464,7 +647,10 @@ export function connectionPrompt(entryName: string, shared?: SharedPage): string
 		// it must not send the model off to inspect a page stands. This line
 		// exists so the model does not go looking for a tab to select — the user
 		// has already chosen one.
-		lines.push(`For when you do use them: the user has given you one browser tab — ${shared.title ?? shared.url}`
+		// Neutralised, for the reason `scopeNote` neutralises the same value one
+		// sink along: the page chooses its own title, and this text is pasted
+		// into an assistant that has shell tools. See {@link plainInPrompt}.
+		lines.push(`Beyond that one call: the user has given you one browser tab — ${plainInPrompt(shared.title ?? shared.url)}`
 			+ ` (${shared.url}). Every browser tool of yours acts on that tab, and only that tab; you cannot and need`
 			+ ' not select another, and other tabs in the window are not yours to read.');
 	}
@@ -568,40 +754,96 @@ export async function connectClaudeCode(server: McpServer, shared?: SharedPage):
 		return;
 	}
 
-	await vscode.env.clipboard.writeText(connectionPrompt(serverName, shared));
+	// `.mcp.json` sits in the project root, which is the model's own working
+	// directory, so the relative name is the one it can act on — and it is the
+	// file this path just wrote.
+	await vscode.env.clipboard.writeText(connectionPrompt(serverName, '.mcp.json', shared));
 	confirm(vscode.l10n.t(
 		"Wrote .mcp.json, prompt copied — restart Claude Code, then paste it.") + scopeNote(shared));
 }
 
 /**
- * Connects Codex by writing the **global** `~/.codex/config.toml`.
+ * Connects Codex by writing the **project** `.codex/config.toml`.
  *
- * The project file used to lead, on the reasoning that a server belongs with
- * the project it serves. Dropping the dialog forced the question, and the
- * global file wins it: a project `.codex/config.toml` is only loaded for
- * projects Codex *trusts*, and the desktop surface has been reported to ignore
- * it outright (openai/codex#13025). That is the usual reason "Codex cannot see
- * the server", and a one-click action must not land on the option that
- * sometimes silently does nothing.
+ * It wrote the global `~/.codex/config.toml` for a while, and the reasoning was
+ * wrong on its central claim. The stated ground was that a project config "is
+ * only loaded for projects Codex trusts" and that the desktop surface ignores
+ * it (openai/codex#13025) — so the global file was the safe one-click target.
+ * Measured on this machine, against the Codex VS Code extension: a project
+ * `.codex/config.toml` **is** loaded. Its bare `ai-browser` server appears in
+ * Codex's own start log ten times in one day, from sessions whose `cwd` is that
+ * project, up to the minute the file was deleted. The trust caveat is real —
+ * the project has to be trusted — but "sometimes silently does nothing" was an
+ * over-reading of one sample, and it cost the feature the file that belongs
+ * with the project it serves.
  *
- * Writing both was considered and is wrong: the two entries have different
+ * What the global file did cost, measured on the same machine: its entries are
+ * named per project and only ever accumulate, so three had built up, two of
+ * them dead — one pointing at a port another window had taken, answering 401 on
+ * every Codex start.
+ *
+ * Writing both is still wrong, and now it is an active concern rather than a
+ * hypothetical: Codex reads both files, and the two entries have different
  * names — the project file uses the bare `ai-browser`, the global one a
- * per-project name — so Codex would load both and list every tool twice.
+ * per-project name — so every tool would be listed twice. Hence
+ * {@link removeCodexGlobalEntry} on this path.
  */
 export async function connectCodex(server: McpServer, shared?: SharedPage): Promise<void> {
 	const folder = workspaceFolder();
-	try {
-		const name = await writeCodexGlobalConfig(folder, server);
-		await vscode.env.clipboard.writeText(connectionPrompt(name, shared));
-		confirm(vscode.l10n.t(
-			"Wrote ~/.codex/config.toml, prompt copied — start a NEW Codex conversation, then paste it.")
+	if (!folder) {
+		// A project config needs a project. Same shape as `connectClaudeCode`
+		// with no folder: say so, and hand over the command that does not need
+		// one. The tab given away a moment ago is still named (#62).
+		await vscode.env.clipboard.writeText(codexCliCommand(folder, server));
+		vscode.window.showWarningMessage(vscode.l10n.t(
+			"No folder is open, so there is no `.codex/config.toml` to write. The `codex mcp add` command is on your clipboard instead.")
 			+ scopeNote(shared));
+		return;
+	}
+
+	try {
+		await writeCodexProjectConfig(folder, server);
 	} catch (err) {
 		await vscode.env.clipboard.writeText(codexCliCommand(folder, server));
 		vscode.window.showErrorMessage(vscode.l10n.t(
-			"Could not write ~/.codex/config.toml ({0}). The `codex mcp add` command is on your clipboard instead.",
+			"Could not write .codex/config.toml ({0}). The `codex mcp add` command is on your clipboard instead.",
 			err instanceof Error ? err.message : String(err)) + scopeNote(shared));
+		return;
 	}
+
+	// The project file is now the definition, so a leftover entry of ours in the
+	// global file is a duplicate under a second name and Codex would list every
+	// tool twice. Reported rather than thrown: the connection itself succeeded.
+	//
+	// **Every outcome that is not "gone" has to reach the user.** Discarding this
+	// was breaks-silently #113 on a new path: a held lock — the normal shape while
+	// a sibling window runs its startup repair on this very file — a config that
+	// could not be read, and a range the deletion guard declined all leave the
+	// duplicate in place without throwing.
+	let duplicate = false;
+	try {
+		const outcome = await removeCodexGlobalEntry(server);
+		duplicate = outcome === 'refused' || outcome === 'busy';
+	} catch {
+		duplicate = true;
+	}
+
+	await vscode.env.clipboard.writeText(
+		connectionPrompt(serverName, '.codex/config.toml', shared));
+	// **The trust precondition is stated, not detected.** Codex loads a project
+	// config only for a project it trusts, which is a fact about Codex's own
+	// registry rather than about anything this extension can see — and the
+	// connect path has just removed the global entry that would otherwise have
+	// covered an untrusted project. Guessing at that registry would be a second
+	// copy of somebody else's format; saying the precondition costs one clause
+	// and is the one fact a user needs when the tools do not appear.
+	confirm(vscode.l10n.t(
+		"Wrote .codex/config.toml, prompt copied — start a NEW Codex conversation, then paste it."
+		+ " Codex reads a project config only for a project it trusts.")
+		+ (duplicate
+			? vscode.l10n.t(" An old entry in ~/.codex/config.toml could not be removed — if Codex lists every tool twice, delete it or press this again.")
+			: '')
+		+ scopeNote(shared));
 }
 
 /* ----------------------------------------------------------------------- prune */
