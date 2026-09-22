@@ -110,10 +110,12 @@ export class McpServer implements vscode.Disposable {
 	/**
 	 * The endpoint with the token baked into the path.
 	 *
-	 * Codex can only *name* a bearer token in its config
-	 * (`bearer_token_env_var = "FOO"`), and the extension does not control the
-	 * environment Codex is launched in — so for Codex the token has to travel in
-	 * the URL.
+	 * No longer what Connect writes: Codex does take a static header
+	 * (`http_headers = { Authorization = "Bearer …" }`), and that is the form
+	 * both config writers use. The path form remains for two readers — the
+	 * `codex mcp add` fallback, which is handed over exactly when writing a
+	 * config failed and has to carry its credentials on its own, and the check,
+	 * which still recognises entries written this way by earlier releases.
 	 */
 	public get urlWithToken(): string | undefined {
 		return this._port ? `${this.url}/${this._token}` : undefined;
@@ -435,7 +437,8 @@ export class McpServer implements vscode.Disposable {
 			},
 			{
 				name: 'browser_fill', title: 'Fill a field',
-				description: 'Sets the value of an input, textarea or contenteditable and fires input/change so frameworks notice.',
+				description: 'Sets the value of an input, textarea, select or contenteditable the way typing would, so frameworks such as React notice. '
+					+ 'For a select, pass an option value. Checkboxes and radios are toggled with browser_click, not filled.',
 				inputSchema: schema({
 					selector: string('CSS selector of the field'),
 					value: string('Value to set'),

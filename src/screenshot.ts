@@ -5,7 +5,7 @@
 
 import * as vscode from 'vscode';
 import { BrowserController } from './browserController';
-import { confirm } from './notify';
+import { confirm, refuse } from './notify';
 import { copyImage, screenshotFileName } from './clipboardImage';
 
 /**
@@ -36,7 +36,9 @@ export async function copyScreenshot(
 			// caller, which is what tells the controller the same thing.
 			({ png, clipped, url } = await browser.capture(fullPage, browser.focusedTab));
 		} catch (err) {
-			vscode.window.showErrorMessage(vscode.l10n.t(
+			// The status bar, never a toast: the page just captured is on screen,
+			// and a notification over it pauses it (breaks-silently #10).
+			refuse(vscode.l10n.t(
 				"Could not capture the page: {0}", err instanceof Error ? err.message : String(err)));
 			return;
 		}
@@ -50,12 +52,29 @@ export async function copyScreenshot(
 			return;
 		}
 
-		const reveal = vscode.l10n.t("Open");
-		const choice = await vscode.window.showWarningMessage(
-			vscode.l10n.t("Screenshot saved — it could not reach the clipboard ({0}).", delivery.reason),
-			reveal);
-		if (choice === reveal) {
-			await vscode.commands.executeCommand('vscode.open', delivery.file);
+		// Not a toast either, and this is the common fallback rather than a rare
+		// one — every copy on a Linux box without xclip or wl-copy lands here —
+		// so a notification would pause the page on every press.
+		if (vscode.env.remoteName || vscode.env.uiKind !== vscode.UIKind.Desktop) {
+			// **A path is useless here**: the file is on the remote host and the
+			// text clipboard is the user's local one, so putting the path there
+			// overwrote whatever they had copied with something nothing local
+			// can open. This is also the case that *always* falls back. So the
+			// image is shown instead, through the remote file system — what the
+			// old "Open" button did — beside the page rather than over it, and
+			// without taking focus from it.
+			await vscode.commands.executeCommand('vscode.open', delivery.file,
+				{ viewColumn: vscode.ViewColumn.Beside, preserveFocus: true, preview: true });
+			refuse(vscode.l10n.t(
+				"Screenshot opened beside the page — the clipboard belongs to another machine in a remote or web window."));
+			return;
 		}
+
+		// Locally the text clipboard still works when the image one does not,
+		// so the file's path goes there in place of the "Open" button.
+		await vscode.env.clipboard.writeText(delivery.file.fsPath);
+		refuse(vscode.l10n.t(
+			"Screenshot saved to {0} (path copied) — it could not reach the clipboard as an image: {1}",
+			delivery.file.fsPath, delivery.reason));
 	});
 }

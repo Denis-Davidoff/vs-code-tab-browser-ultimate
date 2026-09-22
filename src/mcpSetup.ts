@@ -3,7 +3,9 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { execFile } from 'child_process';
 import * as crypto from 'crypto';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { codexEntries, codexRangeDeletable, codexUnterminated } from './codexToml';
 import { lockPath, withLock } from './fileLock';
@@ -16,6 +18,8 @@ import {
 import type { McpServer } from './mcpServer';
 import { confirm } from './notify';
 import { plainInNotification, plainInPrompt } from './notifyText';
+import { withConfigTomlRule } from './gitignoreRule';
+import { writeFileAtomic } from './safeFiles';
 
 /**
  * Three clients, three places to configure, and only one of them has an API.
@@ -114,9 +118,27 @@ async function readConfig(uri: vscode.Uri): Promise<ConfigRead> {
 	}
 }
 
-async function writeText(uri: vscode.Uri, text: string): Promise<void> {
+/**
+ * Writes a config file whole, or not at all.
+ *
+ * **Atomic for a `file` URI**, which is every config this extension writes:
+ * `workspace.fs.writeFile` truncates and rewrites in place, so a crash, a full
+ * disk or a power cut during the startup repair left a cut-off
+ * `~/.codex/config.toml` or `.mcp.json` — a file that does not parse, taking
+ * every MCP server in it along. The lock orders windows; it does nothing for
+ * the write itself. See `writeFileAtomic`, which also writes through a
+ * symlinked config rather than replacing the link, and creates a new file
+ * `0600` because these files carry the bearer token.
+ *
+ * Any other scheme keeps the provider's own write.
+ */
+async function writeText(uri: vscode.Uri, text: string, newFileMode = 0o600): Promise<void> {
 	const parent = uri.with({ path: uri.path.replace(/\/[^/]+$/, '') });
 	await vscode.workspace.fs.createDirectory(parent);
+	if (uri.scheme === 'file') {
+		await writeFileAtomic(uri.fsPath, text, newFileMode);
+		return;
+	}
 	await vscode.workspace.fs.writeFile(uri, Buffer.from(text, 'utf8'));
 }
 
@@ -143,6 +165,35 @@ export function codexProjectConfigUri(folder: vscode.WorkspaceFolder): vscode.Ur
 export function codexGlobalConfigUri(): vscode.Uri {
 	const home = process.env.HOME ?? process.env.USERPROFILE ?? '';
 	return vscode.Uri.file(`${home}/.codex/config.toml`);
+}
+
+/**
+ * Is this folder's project config the global one — is the workspace the home
+ * directory itself?
+ *
+ * Opening `~` as the workspace is an ordinary dotfiles setup, and then
+ * `<folder>/.codex/config.toml` and `~/.codex/config.toml` are one file. Every
+ * path that treats the two as separate goes wrong on it: Connect Codex wrote
+ * the project entry and then {@link removeCodexGlobalEntry} took it straight
+ * out again as a duplicate, confirming "Wrote .codex/config.toml" over a file
+ * with no entry in it; the startup repair renamed the entry to the global
+ * per-project name and back on every start, reporting a port fix each time; and
+ * `Check Connection` read the one file twice and called it a duplicate.
+ *
+ * Compared as filesystem paths, case-insensitively where the filesystem
+ * usually is. A symlinked home is not resolved — it only makes this answer
+ * `false`, which is the behaviour it had before the check existed.
+ */
+export function codexProjectIsGlobal(folder: vscode.WorkspaceFolder): boolean {
+	if (folder.uri.scheme !== 'file') {
+		return false;
+	}
+	const fold = (p: string) => {
+		const resolved = path.resolve(p);
+		return process.platform === 'darwin' || process.platform === 'win32'
+			? resolved.toLowerCase() : resolved;
+	};
+	return fold(codexProjectConfigUri(folder).fsPath) === fold(codexGlobalConfigUri().fsPath);
 }
 
 /**
@@ -198,8 +249,8 @@ export async function writeClaudeConfig(
 
 	const uri = claudeConfigUri(folder);
 	// **Under the same lock as the repair**, which writes this very file.
-	// `writeCodexGlobalConfig` was given the lock for exactly this reason and
-	// this one was left without: a Connect pressed while any window's startup
+	// The Codex writers were given the lock for exactly this reason and this
+	// one was left without: a Connect pressed while any window's startup
 	// repair — or the `claude mcp add --scope project` fallback this extension
 	// hands the user — is mid-write on a team-shared `.mcp.json` loses whichever
 	// edit lands first. One locked writer and one unlocked is the same as no
@@ -354,23 +405,6 @@ async function writeCodexConfig(
 }
 
 /**
- * Writes the **global** `~/.codex/config.toml`.
- *
- * This is the one Codex always reads, on every surface. A project
- * `.codex/config.toml` is only loaded for *trusted* projects, and the desktop
- * app has been reported to ignore it entirely — which is exactly the "Codex
- * cannot see the server" symptom.
- *
- * The entry is named per project, so two projects do not overwrite each other.
- *
- * **Locked.** This used to be unlocked, on the reasoning that a button press
- * cannot race itself. That stopped being true when the startup repair started
- * writing the same file: a machine restoring a session opens every window at
- * once, each repairing its own entry, and a Connect click can land in the
- * middle of that. Two interleaved read-modify-writes of one TOML file lose an
- * entry at best and corrupt every MCP server the user has at worst.
- */
-/**
  * The lock name for one config file.
  *
  * Derived from the URI so that the connect path and the startup repair, which
@@ -397,13 +431,30 @@ export async function writeCodexProjectConfig(
 	folder: vscode.WorkspaceFolder,
 	server: McpServer,
 ): Promise<void> {
-	const uri = codexProjectConfigUri(folder);
+	// The global URI when the two are one file, so the lock name is the one
+	// the startup repair takes for it: the two URIs can spell one path
+	// differently, and two lock names for one file is no lock (#16).
+	const uri = codexProjectIsGlobal(folder) ? codexGlobalConfigUri() : codexProjectConfigUri(folder);
+	// **A tracked file is refused, not written.** The `.gitignore` below only
+	// keeps an *untracked* file out of git; a team that commits
+	// `.codex/config.toml` for its shared settings would get our bearer token
+	// in a tracked file, one `git commit -a` from the remote — and that token
+	// is the identity the startup repair matches on, so rotating it afterwards
+	// is costly. The throw lands in `connectCodex`'s catch, which says why and
+	// hands over `codex mcp add`, which does not touch the repository.
+	if (await isTrackedByGit(folder, '.codex/config.toml')) {
+		throw new Error(vscode.l10n.t(
+			"it is tracked by git, and the entry would put this workspace's bearer token in a committed file"));
+	}
+	// The ignore rule goes in **first**. Written after the config, a crash or
+	// a failed write between the two left a token-bearing file with nothing
+	// keeping it out of `git add`.
+	await keepTokenOutOfGit(folder);
 	const wrote = await withLock(lockPath(configLockName(uri)), () =>
 		writeCodexConfig(uri, serverName, server));
 	if (!wrote) {
 		throw new Error('another window is writing .codex/config.toml');
 	}
-	await keepTokenOutOfGit(folder);
 }
 
 /**
@@ -418,26 +469,108 @@ export async function writeCodexProjectConfig(
  *
  * **`config.toml`, not `*`.** `.codex/` is Codex's own project directory and may
  * hold settings a team does want to share; only the file we wrote is ours to
- * exclude. An existing `.gitignore` is never touched — it is the user's, and a
- * rule of theirs may already cover this.
+ * exclude.
  *
- * Best effort: failing to write it must not fail a connection that succeeded,
- * and the confirmation says where the token went either way.
+ * **An existing `.gitignore` is read, not trusted.** Its mere presence used to
+ * end this function, whatever it said — `cache/` alone left the token-bearing
+ * file free for `git add`. Now it is asked whether it ignores `config.toml`
+ * (`ignoresConfigToml`, the last matching line winning as in git), and if not
+ * one line is appended; nothing already in it is changed.
+ *
+ * Best effort: failing to write it must not fail a connection. A folder where
+ * this cannot be written is one where the config cannot be written either.
  */
 async function keepTokenOutOfGit(folder: vscode.WorkspaceFolder): Promise<void> {
 	const marker = vscode.Uri.joinPath(folder.uri, '.codex', '.gitignore');
-	try {
-		await vscode.workspace.fs.stat(marker);
+	const read = await readConfig(marker);
+	if (read.kind === 'unreadable') {
 		return;
-	} catch {
-		// Absent, or unreadable — either way, try to write it.
+	}
+	const next = read.kind === 'absent' ? 'config.toml\n' : withConfigTomlRule(read.text);
+	if (next === undefined) {
+		return;
 	}
 	try {
-		await writeText(marker, 'config.toml\n');
+		// An ordinary file for everyone who shares the checkout, not a secret.
+		await writeText(marker, next, 0o644);
 	} catch {
-		// A read-only folder, or a provider that cannot write. The token is
-		// still only in a file the user controls.
+		// A read-only folder, or a provider that cannot write.
 	}
+}
+
+/**
+ * Does git track this path in the folder's repository?
+ *
+ * `false` for everything that is not a clean "yes" — git missing, not a
+ * repository, a non-`file` folder, a timeout — because the question only
+ * decides whether to refuse, and refusing a connection on a guess would be the
+ * wrong direction for a check that is itself a precaution.
+ */
+async function isTrackedByGit(folder: vscode.WorkspaceFolder, relative: string): Promise<boolean> {
+	if (folder.uri.scheme !== 'file') {
+		return false;
+	}
+	const git = await gitBinary();
+	if (!git) {
+		return false;
+	}
+	return new Promise(resolve => {
+		execFile(git, ['-C', folder.uri.fsPath, 'ls-files', '--error-unmatch', '--', relative],
+			{ timeout: 5_000 }, error => resolve(!error));
+	});
+}
+
+/**
+ * A `git` that can be run without side effects, or `undefined`.
+ *
+ * **A bare `git` is not safe to run on macOS.** Without the Command Line Tools,
+ * `/usr/bin/git` is a shim that opens the "install developer tools" dialog —
+ * on every Connect Codex, for a check that then reads as "untracked" anyway.
+ * VS Code's own Git extension guards the same shim with `xcode-select -p`.
+ *
+ * So, in order: the path the Git extension already resolved, when it is
+ * active (it has done this dance, honouring `git.path`); on macOS, a git
+ * outside `/usr/bin` on `PATH` (Homebrew and the like need no tools), then
+ * `/usr/bin/git` only once `xcode-select -p` confirms the tools are there;
+ * anywhere else, `git` from `PATH`. Answered once per window.
+ */
+let gitBinaryAnswer: Promise<string | undefined> | undefined;
+
+function gitBinary(): Promise<string | undefined> {
+	return gitBinaryAnswer ??= findGit();
+}
+
+async function findGit(): Promise<string | undefined> {
+	const fromExtension = vscode.extensions.getExtension<{ getAPI(v: 1): { git: { path: string } } }>('vscode.git');
+	if (fromExtension?.isActive) {
+		try {
+			const resolved = fromExtension.exports.getAPI(1).git.path;
+			if (resolved) {
+				return resolved;
+			}
+		} catch {
+			// The extension is up but its API is not; fall through.
+		}
+	}
+	if (process.platform !== 'darwin') {
+		return 'git';
+	}
+	for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
+		if (!dir || path.resolve(dir) === '/usr/bin') {
+			continue;
+		}
+		const candidate = path.join(dir, 'git');
+		try {
+			await vscode.workspace.fs.stat(vscode.Uri.file(candidate));
+			return candidate;
+		} catch {
+			// Not here.
+		}
+	}
+	const tools = await new Promise<boolean>(resolve => {
+		execFile('xcode-select', ['-p'], { timeout: 5_000 }, error => resolve(!error));
+	});
+	return tools ? '/usr/bin/git' : undefined;
 }
 
 /**
@@ -820,12 +953,18 @@ export async function connectCodex(server: McpServer, shared?: SharedPage): Prom
 	// a sibling window runs its startup repair on this very file — a config that
 	// could not be read, and a range the deletion guard declined all leave the
 	// duplicate in place without throwing.
+	//
+	// **Unless the two are one file** — a workspace opened at `~`. The entry
+	// just written *is* the global one, and removing "the duplicate" there
+	// deleted it (see `codexProjectIsGlobal`).
 	let duplicate = false;
-	try {
-		const outcome = await removeCodexGlobalEntry(server);
-		duplicate = outcome === 'refused' || outcome === 'busy';
-	} catch {
-		duplicate = true;
+	if (!codexProjectIsGlobal(folder)) {
+		try {
+			const outcome = await removeCodexGlobalEntry(server);
+			duplicate = outcome === 'refused' || outcome === 'busy';
+		} catch {
+			duplicate = true;
+		}
 	}
 
 	await vscode.env.clipboard.writeText(
@@ -1599,8 +1738,15 @@ export async function repairConfigs(
 		// `staleToken` in `Check Connection` is for — the disposition CLAUDE.md
 		// already records as deliberate. The sibling `.mcp.json` is left alone
 		// in exactly the same situation, and now these two agree.
-		await apply(codexProjectConfigUri(folder), '.codex/config.toml',
-			rewriteCodex(serverName, new Set()));
+		//
+		// Skipped when the project file *is* the global one (a workspace opened
+		// at `~`): the global pass below covers that file, under the bare name,
+		// and two passes with two names renamed the entry back and forth on
+		// every start — see `codexProjectIsGlobal`.
+		if (!codexProjectIsGlobal(folder)) {
+			await apply(codexProjectConfigUri(folder), '.codex/config.toml',
+				rewriteCodex(serverName, new Set()));
+		}
 	}
 
 	// The global config is the only file the prune touches, so it is also the
@@ -1610,7 +1756,11 @@ export async function repairConfigs(
 	// can be slow. Only its confirmation happens under the lock, below.
 	const surveyed = await scan.scan();
 	let confirmed: MissingWorkspaces = emptyScan();
-	const globalName = folder ? codexEntryName(folder) : `${serverName}-window`;
+	// The bare name when this file is also the project's own, because that is
+	// the name Connect Codex writes there.
+	const globalName = !folder ? `${serverName}-window`
+		: codexProjectIsGlobal(folder) ? serverName
+		: codexEntryName(folder);
 	await apply(
 		codexGlobalConfigUri(),
 		'~/.codex/config.toml',

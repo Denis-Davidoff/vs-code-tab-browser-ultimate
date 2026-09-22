@@ -696,7 +696,7 @@ export class BrowserController implements vscode.Disposable {
 	 * unassigned caller resolves to the focused tab, which may well be one the
 	 * user gave to somebody else. Reproduced against the registry: Claude holds
 	 * tab A, Codex holds nothing, A is focused, Codex calls `browser_state` →
-	 * `usedBy(A)` becomes `['codex']`. `usedByTarget` filters by kind, so
+	 * A's usage (then kept per tab) became `['codex']`. `usedByTarget` filters by kind, so
 	 * Claude's row was unharmed and the bug stayed invisible — until the user
 	 * later gave A to Codex as well, at which point that row read "Working on
 	 * this tab" from a call made before the assignment existed, and the
@@ -716,7 +716,7 @@ export class BrowserController implements vscode.Disposable {
 		if (resolution.kind !== 'shared' || resolution.tab !== tab) {
 			return;
 		}
-		if (!this._shares.noteUse(tab, caller.kind)) {
+		if (!this._shares.noteUse(tab, caller.kind, resolution.target)) {
 			return;
 		}
 		this._onDidChangeShare.fire();
@@ -1901,21 +1901,99 @@ export class BrowserController implements vscode.Disposable {
 		});
 	}
 
+	/**
+	 * Sets a field the way typing would, so the page's framework sees it.
+	 *
+	 * **A plain `el.value = …` does not reach React**, and it reported success
+	 * anyway. React installs its own `value` setter on each controlled input
+	 * and keeps a tracker of the last value it saw; assigning through that
+	 * setter updates the tracker, so the `input` event that follows looks like
+	 * no change, `onChange` never runs, and the next render puts the old value
+	 * back — while the tool answered `filled input`. The setter on the element's
+	 * *prototype* is the browser's own and leaves the tracker behind, which is
+	 * what makes the event count. Same for `textarea` and `select`.
+	 *
+	 * The other shapes each need their own answer rather than the same one:
+	 *
+	 * - a `select` is refused unless an option has that value, or the field is
+	 *   silently left empty;
+	 * - a checkbox or radio is refused — `value` there is the submitted string,
+	 *   not whether it is ticked, and `browser_click` is what toggles it;
+	 * - a contenteditable gets `insertText`, which fires `beforeinput`/`input`
+	 *   the way editors built on them expect, falling back to `textContent`;
+	 * - a form-associated custom element (`sl-input`, `ion-input`) goes through
+	 *   its own `value` setter, which is its contract — its inner input is in a
+	 *   shadow root no selector can reach, so refusing it made such forms
+	 *   unfillable;
+	 * - and the result is read back. A field that kept its old value (a `number`
+	 *   input given text, a `maxlength`) is a failure; one that *reshaped* the
+	 *   value (a mask, a trimmed email, a lowercased colour) took it, and says
+	 *   what it now reads rather than being reported as a failure.
+	 */
 	public async fill(selector: string, value: string, caller: CallerIdentity): Promise<unknown> {
 		return this._withSession(caller, async session => {
 			return evaluate(session, `(() => {
 				const el = document.querySelector(${literal(selector)});
 				if (!el) { throw new Error('No element matches ' + ${literal(selector)}); }
+				const value = ${literal(value)};
+				const tag = el.tagName.toLowerCase();
 				el.focus();
 				if (el.isContentEditable) {
-					el.textContent = ${literal(value)};
-				} else {
-					el.value = ${literal(value)};
+					const range = document.createRange();
+					range.selectNodeContents(el);
+					const selection = window.getSelection();
+					selection.removeAllRanges();
+					selection.addRange(range);
+					if (!document.execCommand('insertText', false, value)) {
+						el.textContent = value;
+						el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
+					}
+					return 'filled ' + tag;
 				}
+				const type = (el.getAttribute('type') || '').toLowerCase();
+				if (tag === 'input' && (type === 'checkbox' || type === 'radio')) {
+					throw new Error('This is a ' + type + ': its value is not whether it is checked. Use browser_click to toggle it.');
+				}
+				const proto = tag === 'textarea' ? HTMLTextAreaElement.prototype
+					: tag === 'select' ? HTMLSelectElement.prototype
+					: tag === 'input' ? HTMLInputElement.prototype
+					: undefined;
+				if (!proto) {
+					// A form-associated custom element — sl-input, ion-input,
+					// md-outlined-text-field — exposes its own value setter,
+					// and its inner input sits in a shadow root no selector can
+					// reach. Its setter is the host's contract, so it is the
+					// one to call; nothing else here has a value at all.
+					if (!('value' in el)) {
+						throw new Error('A <' + tag + '> is not a field. Give the selector of an input, textarea, select or contenteditable.');
+					}
+					el.value = value;
+					el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+					el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+					return 'filled ' + tag;
+				}
+				if (tag === 'select' && ![...el.options].some(option => option.value === value)) {
+					throw new Error('No option has the value ' + JSON.stringify(value) + '. Options: '
+						+ [...el.options].map(option => JSON.stringify(option.value)).join(', '));
+				}
+				const before = el.value;
+				Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, value);
 				// Frameworks listen for these, not for the assignment.
 				el.dispatchEvent(new Event('input', { bubbles: true }));
 				el.dispatchEvent(new Event('change', { bubbles: true }));
-				return 'filled ' + el.tagName.toLowerCase();
+				if (el.value === value) {
+					return 'filled ' + tag;
+				}
+				// Refused only when nothing changed. A field that *reshapes* what
+				// it is given — a phone or card mask, an email input trimming
+				// spaces, a colour input lowercasing — has taken it, and calling
+				// that a failure sent a model back to fill a finished form,
+				// firing its handlers twice.
+				if (el.value === before) {
+					throw new Error('The field did not take the value: it still reads ' + JSON.stringify(el.value)
+						+ (el.maxLength > 0 ? ' (maxlength ' + el.maxLength + ')' : '') + '.');
+				}
+				return 'filled ' + tag + '; the field reformatted it and now reads ' + JSON.stringify(el.value);
 			})()`);
 		});
 	}

@@ -5,6 +5,7 @@
 
 import * as assert from 'node:assert';
 import { suite, test } from 'node:test';
+import type { ClientKind } from './mcpProtocol.ts';
 import {
 	everyone, forKind, forSession, isShareTarget, ShareRegistry, targetName,
 } from './shareRegistry.ts';
@@ -13,6 +14,18 @@ import {
 const tabA = 'tab-A';
 const tabB = 'tab-B';
 const tabC = 'tab-C';
+
+/**
+ * Who has driven a tab under any of its current assignments.
+ *
+ * A test helper rather than a registry method: nothing in the extension asks
+ * this — the UI reads usage per assignment — and a public query with no
+ * consumer reads as a contract that is not one.
+ */
+function usedOn(shares: ShareRegistry<string>, tab: string): ClientKind[] {
+	const used = new Set(shares.assignments().filter(a => a.tab === tab).flatMap(a => a.usedBy));
+	return (['claude', 'codex', 'other'] as const).filter(kind => used.has(kind));
+}
 
 const claude = { kind: 'claude' as const };
 const codex = { kind: 'codex' as const };
@@ -147,9 +160,9 @@ suite('ShareRegistry share state', () => {
 		const shares = new ShareRegistry<string>();
 		shares.share(forKind('claude'), tabA);
 
-		assert.strictEqual(shares.noteUse(tabA, 'claude'), true);
-		assert.strictEqual(shares.noteUse(tabA, 'claude'), false, 'no news the second time');
-		assert.deepStrictEqual(shares.usedBy(tabA), ['claude']);
+		assert.strictEqual(shares.noteUse(tabA, 'claude', forKind('claude')), true);
+		assert.strictEqual(shares.noteUse(tabA, 'claude', forKind('claude')), false, 'no news the second time');
+		assert.deepStrictEqual(usedOn(shares, tabA), ['claude']);
 	});
 
 	// Usage is reported per *assignment*, not per tab: giving a tab Claude has
@@ -158,7 +171,7 @@ suite('ShareRegistry share state', () => {
 	test('a fresh assignment on a used tab has not been picked up', () => {
 		const shares = new ShareRegistry<string>();
 		shares.share(forKind('claude'), tabA);
-		shares.noteUse(tabA, 'claude');
+		shares.noteUse(tabA, 'claude', forKind('claude'));
 		shares.share(forKind('codex'), tabA);
 		assert.deepStrictEqual(shares.usedByTarget(forKind('codex'), tabA), []);
 		assert.deepStrictEqual(shares.usedByTarget(forKind('claude'), tabA), ['claude']);
@@ -176,7 +189,7 @@ suite('ShareRegistry share state', () => {
 	 */
 	const picksUp = (shares: ShareRegistry<string>, tab: string, caller: { kind: 'claude' | 'codex' | 'other'; sessionId?: string }) => {
 		const resolution = shares.resolve(caller);
-		return resolution.kind === 'shared' && resolution.tab === tab && shares.noteUse(tab, caller.kind);
+		return resolution.kind === 'shared' && resolution.tab === tab && shares.noteUse(tab, caller.kind, resolution.target);
 	};
 
 	test('an unassigned caller does not mark somebody else\'s tab', () => {
@@ -184,7 +197,7 @@ suite('ShareRegistry share state', () => {
 		shares.share(forKind('claude'), tabA);
 
 		assert.strictEqual(picksUp(shares, tabA, { kind: 'codex' }), false);
-		assert.deepStrictEqual(shares.usedBy(tabA), []);
+		assert.deepStrictEqual(usedOn(shares, tabA), []);
 
 		// And the later assignment still reports honestly.
 		shares.share(forKind('codex'), tabA);
@@ -196,7 +209,7 @@ suite('ShareRegistry share state', () => {
 		shares.share(forSession('conv-1', 'claude'), tabA);
 
 		assert.strictEqual(picksUp(shares, tabA, { kind: 'claude', sessionId: 'conv-2' }), false);
-		assert.deepStrictEqual(shares.usedBy(tabA), []);
+		assert.deepStrictEqual(usedOn(shares, tabA), []);
 	});
 
 	test('an everyone share is picked up by whoever calls', () => {
@@ -204,15 +217,48 @@ suite('ShareRegistry share state', () => {
 		shares.share(everyone, tabA);
 
 		assert.strictEqual(picksUp(shares, tabA, { kind: 'codex' }), true);
-		assert.deepStrictEqual(shares.usedBy(tabA), ['codex']);
+		assert.deepStrictEqual(usedOn(shares, tabA), ['codex']);
+	});
+
+	// Usage is per assignment, so taking one away and giving it back starts
+	// over — the re-share is often *because* the session lost its tools, and
+	// showing it as working would hide the restart hint (#61).
+	test('a stopped and re-made assignment has not been picked up', () => {
+		const shares = new ShareRegistry<string>();
+		shares.share(forKind('claude'), tabA);
+		shares.noteUse(tabA, 'claude', forKind('claude'));
+		shares.stop(forKind('claude'));
+		shares.share(forKind('claude'), tabA);
+		assert.deepStrictEqual(shares.usedByTarget(forKind('claude'), tabA), []);
+
+		shares.noteUse(tabA, 'claude', forKind('claude'));
+		shares.stopAll();
+		shares.share(forKind('claude'), tabA);
+		assert.deepStrictEqual(shares.usedByTarget(forKind('claude'), tabA), []);
+	});
+
+	test('re-sharing the tab already held keeps its usage', () => {
+		const shares = new ShareRegistry<string>();
+		shares.share(forKind('claude'), tabA);
+		shares.noteUse(tabA, 'claude', forKind('claude'));
+		shares.share(forKind('claude'), tabA);
+		assert.deepStrictEqual(shares.usedByTarget(forKind('claude'), tabA), ['claude']);
+	});
+
+	test('moving an assignment to another tab starts over', () => {
+		const shares = new ShareRegistry<string>();
+		shares.share(forKind('claude'), tabA);
+		shares.noteUse(tabA, 'claude', forKind('claude'));
+		shares.share(forKind('claude'), tabB);
+		assert.deepStrictEqual(shares.usedByTarget(forKind('claude'), tabB), []);
 	});
 
 	test('a closed tab forgets who used it', () => {
 		const shares = new ShareRegistry<string>();
 		shares.share(forKind('claude'), tabA);
-		shares.noteUse(tabA, 'claude');
+		shares.noteUse(tabA, 'claude', forKind('claude'));
 		shares.forget(tabA);
-		assert.deepStrictEqual(shares.usedBy(tabA), []);
+		assert.deepStrictEqual(usedOn(shares, tabA), []);
 	});
 });
 
@@ -246,7 +292,7 @@ suite('ShareRegistry usage per assignment', () => {
 		// yet, so restart it if it reports no tools".
 		const shares = new ShareRegistry<string>();
 		shares.share(forKind('claude'), tabA);
-		shares.noteUse(tabA, 'claude');
+		shares.noteUse(tabA, 'claude', forKind('claude'));
 		shares.share(forKind('codex'), tabA);
 
 		const byTarget = new Map(shares.assignments().map(a => [targetName(a.target), a.usedBy]));
@@ -257,8 +303,8 @@ suite('ShareRegistry usage per assignment', () => {
 	test('the everyone assignment still reports everyone who has driven it', () => {
 		const shares = new ShareRegistry<string>();
 		shares.share(everyone, tabA);
-		shares.noteUse(tabA, 'claude');
-		shares.noteUse(tabA, 'codex');
+		shares.noteUse(tabA, 'claude', everyone);
+		shares.noteUse(tabA, 'codex', everyone);
 		assert.deepStrictEqual(shares.assignments()[0].usedBy, ['claude', 'codex']);
 	});
 });

@@ -131,7 +131,7 @@ Compiled with `tsc`, **no bundling**. `main: ./out/extension`.
 - [src/argvJson.ts](src/argvJson.ts) — surgical JSONC edits to `argv.json` (leaf, under test)
 - [src/statusBar.ts](src/statusBar.ts) — the two status bar items and their menu
 - [src/notify.ts](src/notify.ts) — confirmations, kept out of the notification area
-- [src/notifyText.ts](src/notifyText.ts) — neutralising a page-supplied string for a notification (leaf, under test)
+- [src/notifyText.ts](src/notifyText.ts) — neutralising a page-supplied string for a notification, a prompt or a tooltip (leaf, under test)
 - [src/elementPicker.ts](src/elementPicker.ts) — the four element commands
 - [src/elementContext.ts](src/elementContext.ts) — pulls element data out of the page over CDP
 - [src/elementMarkdown.ts](src/elementMarkdown.ts) — renders that data as Markdown
@@ -146,7 +146,9 @@ Compiled with `tsc`, **no bundling**. `main: ./out/extension`.
 - [src/mcpProtocol.ts](src/mcpProtocol.ts) — JSON-RPC dispatch and the auth decision (leaf, under test)
 - [src/mcpPort.ts](src/mcpPort.ts) — which port a window tries first (leaf, under test)
 - [src/mcpRepair.ts](src/mcpRepair.ts) — correcting a stale entry in a client config (leaf, under test)
-- [src/fileLock.ts](src/fileLock.ts) — the cross-process lock on the global Codex config
+- [src/fileLock.ts](src/fileLock.ts) — the cross-process lock on the shared config files (leaf, under test)
+- [src/safeFiles.ts](src/safeFiles.ts) — the private temp directory, exclusive creates and atomic config writes (leaf, under test)
+- [src/gitignoreRule.ts](src/gitignoreRule.ts) — whether `.codex/.gitignore` keeps the token file out of git (leaf, under test)
 - [src/mcpServer.ts](src/mcpServer.ts) — HTTP transport, tools, client attribution
 - [src/mcpSetup.ts](src/mcpSetup.ts) — client config writing and the connect dialogs
 - [src/mcpCheck.ts](src/mcpCheck.ts) — the Check Connection report
@@ -554,6 +556,11 @@ Also worth knowing:
 
 - **The old file is copied to `argv.json.bak` before writing.** This file decides how the editor
   launches and the user did not ask for it to be edited byte by byte.
+- **Only a clean `FileNotFound` is "no file yet".** `readArgv` answers `''` for that and
+  `undefined` for any other failure, and on `undefined` the command refuses rather than writes.
+  It used to answer `''` for everything, so one `EBUSY` from a virus scanner replaced the user's
+  whole `argv.json` with our one key — and skipped the `.bak` too, since the backup is only taken
+  of a non-empty source. Breaks-silently #156.
 - **`workbench.action.configureRuntimeArguments` is preferred over opening the path.** It creates
   the file from the editor's own template when it does not exist yet, and it exists on all three
   hosts. Opening the URI is the fallback.
@@ -893,6 +900,21 @@ refusal toast paused the very tab you were looking at. It now goes through `refu
 status bar, because in exactly that state the `Enable Browser API` button is already sitting
 there — the toast added nothing but the pause. The lesson generalises: a refusal that the status
 bar already offers a fix for does not need a notification at all.
+
+**Nor are "No integrated browser tab is active" and the screenshot fall-backs.** The first is
+reached with a browser tab visible in a split beside a focused file — `activeBrowserTab` is
+`undefined` there, and the pause is geometric — so the toast paused the very page it told the
+user to focus. The screenshot's "saved, but could not reach the clipboard" is not rare at all:
+every press on a Linux box without `xclip`/`wl-copy` lands on it. Both go through `refuse()`, and
+the screenshot's lost "Open" button is replaced by putting the file's path on the (text)
+clipboard and in the message, since the text clipboard works when the image one does not.
+
+**Except in a remote or web window, where the path is worse than nothing.** The file is on the
+remote host and the text clipboard is the user's local one, so the path overwrote whatever they
+had copied with something no local program can open — and that is the case that *always* falls
+back. There the image is opened beside the page (`ViewColumn.Beside`, `preserveFocus`) through
+the remote file system, which is what the old button did, and the clipboard is left alone.
+Breaks-silently #169.
 
 **And whatever does reach a notification body must not have been written by a page.** A body is
 rendered as *linked text* and its links are opened with `allowCommands: true` — the mechanism
@@ -2034,6 +2056,34 @@ already existing, and the symptom of that is worth recognising — the call repo
 every following tool acts on `tab-1`. The other way into the same branch, "no tab was open at
 all", deliberately does *not* select: nothing was chosen, so the user's focus should still lead.
 
+**`browser_fill` goes through the prototype's `value` setter, and a plain assignment is not
+equivalent.** React replaces `value` on each controlled input with a setter that also updates its
+own tracker of the last value; `el.value = x` goes through that, so the `input` event that
+follows compares equal, `onChange` never runs, the next render restores the old value — and the
+tool answered `filled input`. `HTMLInputElement.prototype`'s setter (and the `textarea` /
+`select` ones) is the browser's own and leaves the tracker behind. Measured against React 19.2 in
+the integrated browser: the old script left the state `[]` while reporting success, the new one
+set it. The same change made the other shapes honest: a `select` with no such option and a
+checkbox or radio (whose `value` is not whether it is ticked — `browser_click` is) are refused,
+a contenteditable is filled with `insertText` so editors built on `beforeinput` see it, and a
+value the field did not keep (`maxlength`, a `number` input) is reported rather than claimed.
+
+**"Did not keep" means *unchanged*, not *different*.** The first version of that read-back
+compared strictly and threw on any difference — after the events had fired — so a field that
+*reshapes* its input (a phone mask turning `5551234` into `(555) 123-4`, an email input trimming
+spaces, a colour input lowercasing) was reported as a failure on a form that was already filled,
+and a model retrying it fired the handlers twice. It now fails only when the value is still what
+it was before; a reshaped value is a success that says what the field now reads. And a
+form-associated **custom element** (`sl-input`, `ion-input`, `md-outlined-text-field`) goes
+through its own `value` setter, which is its contract: refusing anything that was not a native
+field made those forms unfillable, since their inner input sits in a shadow root no selector can
+reach. Both measured in the integrated browser, including a React-controlled masked input.
+Breaks-silently #170.
+
+One trap when testing it by hand: once anything has assigned through React's setter, its tracker
+holds that value, so a correct fill of the *same* value afterwards reads as no change. Test on a
+fresh page.
+
 **`browser_snapshot` only ever hands out a selector that resolves back to the element it
 describes**, checked in the page with the same `document.querySelector` call that `click` and
 `fill` will make. Without that check the builder fell back to the bare tag name, so two
@@ -2410,8 +2460,15 @@ every tool reads, so ordering the transitions is still doing work. `bounded` and
 `indicatorTimeoutMs` went with the marker: they existed only to keep an unresponsive page from
 hanging the gate, and nothing inside a transition talks to a page any more.
 
+**Usage belongs to the assignment, not to the tab.** It was a per-tab `_usedBy` cleared only
+when the tab closed, so `stop` followed by a new `share` of the same tab to the same assistant —
+typically done *because* its session lost the tools — read 🤖 "working" at once and hid the
+restart hint. Each assignment now carries its own set, started empty by `share` and kept only
+when the target is re-shared the tab it already holds (the no-op below). `noteUse` takes the
+target the call resolved through, so only that assignment is marked. Breaks-silently #159.
+
 **Re-sharing the tab that is already shared is still a no-op.** The toolbar entry sits in the
-shared tab's own menu, so it is one click away, and clearing `_usedBy` there took the status bar
+shared tab's own menu, so it is one click away, and clearing its usage there took the status bar
 from 🤖 back to 🔗 and the menu row back to "has not picked it up yet" — advice for a broken
 setup — while the assistants carried on working. The context key cannot express "this tab is the
 shared one", so the menu keeps the entry (it is also how a share is *moved* from the toolbar)
@@ -2584,6 +2641,31 @@ entries that could not work; they are re-published on `vscode.extensions.onDidCh
 conversation. Reports are swept after 5 hours, at most hourly from the write path plus once on
 activation.
 
+**Reports and screenshots are written exclusively, into a directory only this user can enter**
+([src/safeFiles.ts](src/safeFiles.ts)). Two things were wrong with a plain `writeFile` into
+`os.tmpdir()/ai-browser/…`, and both were reproduced:
+
+- **`/tmp` is shared on Linux.** Another local user could create that predictable tree first and
+  plant a symlink under an expected name, so the write followed it and overwrote any file the
+  victim could write; and under `umask 022` each capture of a logged-in page was `0644`, readable
+  by everybody. The temp root is now `ai-browser-<uid>`, created `0700` and accepted only as a
+  real directory owned by this user with no group or other bits — otherwise a `mkdtemp`
+  directory is used rather than a directory somebody else may own, **made once per process**: a
+  fresh one per call put every file in a directory of its own, so the sweep never found anything
+  to retire. The activation sweep looks the directory up with `existingPrivateTempDirectory`,
+  which creates nothing and cannot reject — `cleanUpReports` is not awaited, and a throw from it
+  was an unhandled rejection (#93). macOS and Windows already give each user a
+  private temp directory, so this changes nothing there beyond the path. Old files under the
+  previous `ai-browser/` path are no longer swept; they are in the OS temp directory and go with
+  it.
+- **Names carry `HHMMSS` and nothing finer**, so two reports on one element in the same second
+  shared a path and the second replaced the file an assistant had already been handed.
+  `writeExclusive` keeps the readable name and adds `-2`, `-3`, … on a collision; its `wx` open
+  also refuses to follow a symlink at the name, and the file is `0600`.
+
+The workspace `.ai-browser/` keeps its location — it is the user's own folder — but gets the
+exclusive create for the collision half.
+
 **Page content is always fenced with a fence longer than the longest backtick run inside it**
 (`fenced` in `reportFormat.ts`). A page routinely contains backticks — a template literal in an
 inline script, Markdown in a CMS preview — and a plain three-backtick fence closes early, after
@@ -2625,9 +2707,16 @@ The macOS `«class PNGf»` coercion is not optional: without it the bytes land a
 nothing pastes them as a picture. Verified on this machine — afterwards `clipboard info` lists
 `«class PNGf»`, with TIFF/JPEG/GIF conversions offered for free.
 
-`execFile` with an argument array, never `exec`, so the path never reaches a shell. In a remote
+`execFile` with an argument array, never `exec`, so no shell is involved — **and the path is
+never spliced into script text either**, because `osascript` and `powershell` are interpreters
+of their own. It used to be pasted into a string literal of each, so a temp directory under a
+Windows user called `O'Brien` made every copy a PowerShell parse error. AppleScript now receives
+it as `argv` through `on run`, PowerShell as `$env:AI_BROWSER_PNG`; escaping is not a fix for
+PowerShell, which also treats `‘` `’` as string delimiters. Verified on macOS with a path holding
+both `'` and `"`. Breaks-silently #158. In a remote
 or web window the attempt is skipped: the extension host's clipboard belongs to another machine.
-Screenshots are swept after 24 hours.
+Screenshots are swept after 24 hours. Where they are written, and why it is not the shared
+`/tmp/ai-browser/`, is under [Handing reports to Claude Code and Codex](#handing-reports-to-claude-code-and-codex).
 
 The same capture is the `browser_screenshot` MCP tool, with a `fullPage` flag — one tool rather
 than two, since the only difference is that argument.
@@ -3407,6 +3496,88 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
     had the answer already — it drops a `.gitignore` into `.ai-browser/` on creation precisely so
     nobody has to. If a feature starts writing a secret into a workspace, it ships the ignore
     rule with it.
+156. **A reader that rebuilds a file answering "empty" for every read failure** → `readArgv`
+    returned `''` on `EBUSY` as well as on `FileNotFound`, and `enableBrowserApi` builds the new
+    `argv.json` from what it read, so one transient error replaced the user's whole file with our
+    key — with no `.bak`, because the backup is only taken of a non-empty source. Items 94 and
+    101 had already written the rule for the MCP configs; a third destructive reader in another
+    file did not inherit it.
+157. **Two paths that are the same file under two names** → with the workspace at `~`,
+    `<folder>/.codex/config.toml` *is* `~/.codex/config.toml`, so Connect wrote the entry and its
+    own duplicate-removal took it straight out again while the confirmation said "Wrote", and the
+    two repair passes renamed it back and forth on every start. Ask whether two "different"
+    files are one before writing to one and deleting from the other.
+158. **Splicing a path into an interpreter's source** → `execFile` keeps a shell out and nothing
+    else; `osascript -e` and `powershell -Command` parse their argument as code, so a quote in
+    the temp path (`C:\Users\O'Brien\…`) broke every screenshot copy. Pass data as data — `argv`,
+    or the environment.
+159. **Recording "has used it" on the resource instead of on the grant** → per-tab usage outlived
+    `stop`, so re-giving a tab to the assistant that had it before showed 🤖 at once and hid the
+    restart hint (#61) on exactly the occasion it exists for. State about an assignment belongs to
+    the assignment.
+160. **Relying on `.gitignore` for a file that may already be tracked** → an ignore rule applies
+    only to untracked paths, so a team that commits `.codex/config.toml` got the bearer token in
+    a tracked file with nothing saying so. Ask git, and refuse rather than warn afterwards.
+161. **Page-chosen text in a `MarkdownString`** → untrusted Markdown blocks `command:` links and
+    nothing else, so a page title in the status bar tooltip could load a remote image on hover
+    and put a clickable link in our UI. Third sink beside #132 and #154; `plainInMarkdown`
+    escapes every ASCII punctuation character rather than dropping a chosen few, because a
+    backslash *is* an escape in Markdown, unlike in notification linked text.
+162. **A stale-lock takeover judged from an earlier read** → two waiters stat the same abandoned
+    lock; the first removes it and takes a fresh one, the second removes *that* on the strength
+    of its old stat, and both hold the lock. Nothing in `fileLock.ts` removes a file by path
+    any more: `takeAsideIfAbandoned` `rename`s it aside (atomic — one racer moves any given
+    file), judges **the moved file** by its own mtime and owner, and links a live one straight
+    back. `<lock>.break` keeps removers from running side by side, and an abandoned breaker is
+    cleared the same way — the first fix cleared it by path, which was this race one level down
+    (#167). The residual window, between moving a *live* file and linking it back, is narrowed
+    rather than closed: that needs a compare-and-delete POSIX does not have. A lock whose mtime
+    never moves also goes stale under a live holder whose write merely stalled, so `withLock`
+    refreshes it while the work runs and removes it on release only if the owner token in it is
+    still its own. `src/fileLock.test.ts` fails on the old implementation.
+163. **A predictable path under a shared temp directory** → on Linux `/tmp` belongs to everybody,
+    so `/tmp/ai-browser/reports/…` could be created in advance by another user with a symlink at
+    the next name, and `writeFile` followed it; the files themselves came out world-readable.
+    Write under a directory created `0700` and verified as ours, with `O_EXCL`.
+164. **A file name that is unique only to the second** → the second write of the same name
+    replaced the first, silently, after the first had been handed to an assistant. Create
+    exclusively and pick another name on `EEXIST`.
+165. **Rewriting a config in place** → `workspace.fs.writeFile` truncates and writes, so a crash,
+    `ENOSPC` or power loss mid-write left a cut-off `~/.codex/config.toml` or `.mcp.json` that no
+    MCP client can parse. The lock orders writers and does nothing for this. `writeText` goes
+    through `writeFileAtomic` for `file` URIs — a flushed sibling `rename`d over the target —
+    and resolves a symlinked config first, because renaming onto the link would replace a
+    dotfiles user's link with a regular file.
+166. **Assigning `el.value` to a React-controlled input** → it updates React's own value tracker,
+    so the event that follows is ignored and the state never changes, while the page shows the
+    new text until the next render. Call the prototype's setter. The tool reported success on
+    exactly the forms most sites are built with.
+167. **A spin where a wait was meant, inside a retry budget** → a waiter that found the breaker
+    busy retried at once, so all 20 attempts went by in the milliseconds another window spent
+    removing the stale lock and `withLock` reported busy — on the session restore the lock exists
+    for. A retry that did not make progress sleeps `retryMs`. And a breaker left by a crashed
+    process blocked every acquisition for its whole 30s age, so a lock or breaker whose owning
+    pid no longer exists (`process.kill(pid, 0)` → `ESRCH`) counts as abandoned at once.
+168. **`rename` over a file, as a write** → it asks the *directory's* permission, not the
+    file's, so a config made read-only on purpose (`chmod 444`, root-owned after `sudo`) was
+    rewritten by the unattended repair on every start, the preserved mode hiding it. Ask
+    `access(W_OK)` first and fail the way a plain write would. The same function turned a
+    *dangling* symlink — a dotfiles link to a config not created yet — into a regular file,
+    because `realpath` fails on it; the link chain is now followed by hand.
+169. **Handing a remote path to the local clipboard** → in a remote window the extension host's
+    files are not the user's, so a path on the clipboard is an overwrite of what they had copied
+    with nothing they can open. Show the file through the workbench instead.
+170. **A read-back stricter than the operation** → a fill compared the result with `===` after
+    the events had fired, so every field that reformats its input was reported as failed on a
+    completed form. Fail when nothing changed; report what a changed field now reads.
+171. **Trusting a `.gitignore` by its existence** → `keepTokenOutOfGit` returned as soon as
+    `.codex/.gitignore` existed, whatever it said, and ran *after* the config was written, so
+    both a `cache/`-only file and a crash between the two writes left the token free for
+    `git add`. The rule now goes in first and an existing file is read (`ignoresConfigToml`).
+172. **Running a bare `git` on macOS** → without the Command Line Tools `/usr/bin/git` is a shim
+    that opens the "install developer tools" dialog, on every Connect Codex. Use the Git
+    extension's resolved path, a non-`/usr/bin` git on `PATH`, or `/usr/bin/git` only once
+    `xcode-select -p` succeeds.
 
 ## Special cases and non-obvious decisions
 
@@ -3957,8 +4128,38 @@ the token to everyone who installed it.
 `writeCodexProjectConfig` drops a `.codex/.gitignore` naming `config.toml` on first creation —
 the same move `assistants.ts` makes for `.ai-browser/`, and for the same reason: the extension
 is what put the secret there. It names that one file rather than `*`, because `.codex/` is
-Codex's own directory and may hold settings a team does want to share, and it never touches an
-existing `.gitignore`. See breaks-silently #155.
+Codex's own directory and may hold settings a team does want to share. See breaks-silently #155.
+
+**The rule goes in before the token, and an existing `.gitignore` is read rather than trusted.**
+Written after the config, a crash between the two left the token with nothing keeping it out of
+`git add`; and an existing `.codex/.gitignore` ended the function whatever it said. Now
+`keepTokenOutOfGit` runs first, and a file that does not ignore `config.toml` —
+`ignoresConfigToml` in [src/gitignoreRule.ts](src/gitignoreRule.ts) (leaf, under test), read in
+order with the last matching line winning, as git does — gets one line appended and nothing else
+changed. A pattern it does not model reads as "not covered", which costs a redundant line rather
+than a token in a commit. Breaks-silently #171.
+
+**A `.gitignore` does nothing for a file git already tracks**, and teams do commit
+`.codex/config.toml` for shared settings. So `writeCodexProjectConfig` asks
+`git ls-files --error-unmatch` first and **refuses** a tracked file — `connectCodex` then reports
+why and hands over `codex mcp add`, which does not touch the repository. Warning after the write
+would be too late: the token is already in the working tree of a tracked file. Anything short of
+a clean "tracked" (git missing, not a repository, a timeout) reads as untracked, since this is a
+precaution and refusing a connection on a guess is the wrong direction. Breaks-silently #160.
+
+**Which `git` runs matters on macOS**, where `/usr/bin/git` without the Command Line Tools opens
+a system dialog offering to install them. `gitBinary` takes the path VS Code's Git extension
+already resolved when it is active, then a `git` on `PATH` outside `/usr/bin`, then `/usr/bin/git`
+only if `xcode-select -p` succeeds — the guard the Git extension itself uses — and otherwise skips
+the check. Breaks-silently #172.
+
+**A workspace opened at `~` makes the project and global Codex configs one file**
+(`codexProjectIsGlobal`), and every path that treated them as two went wrong: Connect wrote the
+entry and `removeCodexGlobalEntry` removed it again as a "duplicate"; the repair renamed it to
+the per-project global name and back on every start; `Check Connection` read the file twice. On
+that shape Connect skips the removal, the repair makes one pass over the global file under the
+bare `ai-browser` name, the check reads it once, and the writer locks it under the global URI so
+it takes the repair's lock. Breaks-silently #157.
 
 **`.codex/` is in both of *this* repository's ignore files for the same reason, and it had to be
 added when Connect Codex moved to the project file.** It writes `.codex/config.toml` with the same bearer token, and that path was

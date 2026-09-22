@@ -7,6 +7,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { grantProposedApi } from './argvJson';
+import { writeFileAtomic } from './safeFiles';
 import { confirm } from './notify';
 
 /*
@@ -261,14 +262,26 @@ function canWriteArgv(): boolean {
 	return vscode.env.remoteName === undefined && vscode.env.uiKind === vscode.UIKind.Desktop;
 }
 
-/** The file's text, or '' when it does not exist yet. */
-async function readArgv(uri: vscode.Uri): Promise<string> {
+/**
+ * The file's text, `''` when it does not exist yet, and `undefined` when it
+ * exists but could not be read.
+ *
+ * **Only a clean `FileNotFound` is absence** — the rule `readConfig` in
+ * `mcpSetup.ts` follows, for the same reason (breaks-silently #94 and #101).
+ * This used to answer `''` for every failure, and `enableBrowserApi` rebuilds
+ * the file from what it reads: one `EBUSY` from a virus scanner on Windows, or
+ * an `EMFILE`, and the user's whole `argv.json` — other grants,
+ * `crash-reporter-id`, every flag — was replaced by our one key. With no
+ * `.bak` either, since the backup is only taken of a non-empty source.
+ */
+async function readArgv(uri: vscode.Uri): Promise<string | undefined> {
 	try {
 		return Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
-	} catch {
+	} catch (err) {
 		// Not created yet: the editor writes it the first time anyone opens
 		// Configure Runtime Arguments, which most users never have.
-		return '';
+		const code = (err as { code?: unknown } | undefined)?.code;
+		return code === 'FileNotFound' || code === 'ENOENT' ? '' : undefined;
 	}
 }
 
@@ -355,7 +368,7 @@ export async function enableBrowserApi(): Promise<void> {
 		// and is entitled to know it was not their mistake.
 		// Only worth mentioning when the path is actually this editor's; see
 		// `HostInfo.resolved`.
-		const stale = host.resolved && (await readArgv(argvUri(host))).includes(id);
+		const stale = host.resolved && ((await readArgv(argvUri(host))) ?? '').includes(id);
 		const usePanel = vscode.l10n.t("Use the webview panel");
 		const choice = await vscode.window.showWarningMessage(
 			vscode.l10n.t("{0} does not support the integrated browser API", host.name),
@@ -399,6 +412,13 @@ export async function enableBrowserApi(): Promise<void> {
 	}
 
 	const source = await readArgv(uri);
+	if (source === undefined) {
+		// It exists and could not be read. Building a fresh file from nothing
+		// would overwrite it — see `readArgv`.
+		await failedToWrite(uri, id, new Error(vscode.l10n.t(
+			"the existing file could not be read, so it was left untouched")));
+		return;
+	}
 
 	let result;
 	try {
@@ -423,7 +443,10 @@ export async function enableBrowserApi(): Promise<void> {
 			}
 			await vscode.workspace.fs.createDirectory(
 				vscode.Uri.file(path.dirname(uri.fsPath)));
-			await vscode.workspace.fs.writeFile(uri, Buffer.from(result.text, 'utf8'));
+			// Atomic, as the MCP configs are: this file decides how the editor
+			// starts, and a half-written one is worse than the grant missing.
+			// Not a secret, so a new one is created with ordinary permissions.
+			await writeFileAtomic(uri.fsPath, result.text, 0o644);
 		} catch (err) {
 			await failedToWrite(uri, id, err);
 			return;

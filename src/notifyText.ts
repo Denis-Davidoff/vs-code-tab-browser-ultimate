@@ -72,3 +72,27 @@ export function plainInPrompt(value: string, limit = 120): string {
 	const plain = collapsed.replace(/[[\]`]/g, '');
 	return plain.length > limit ? `${plain.slice(0, limit - 1)}…` : plain;
 }
+
+/**
+ * The same page-supplied string, made safe to put in a `vscode.MarkdownString`.
+ *
+ * The third sink for a page title, beside the notification and the prompt: the
+ * status bar item's tooltip names each shared page, and it is Markdown. A
+ * `MarkdownString` is untrusted by default, so a `command:` link does not run —
+ * but an image still loads and a link still opens, so a title of
+ * `x ![](https://tracker.example/p.png) [Docs](https://evil.example)` made a
+ * remote request on hover and put a clickable link inside our own UI.
+ *
+ * **Escaped, not dropped**, which is the difference from the notification rule:
+ * Markdown honours a backslash before any ASCII punctuation, so the title reads
+ * exactly as the page wrote it and none of it is syntax. Every such character is
+ * escaped rather than a chosen few, because which ones are significant depends
+ * on position (`1.` starts a list, `#` a heading, `|` a table cell) and a list
+ * that is complete cannot miss one. Whitespace collapses so the value stays on
+ * its list item, and the cap is the prompt's.
+ */
+export function plainInMarkdown(value: string, limit = 120): string {
+	const collapsed = value.replace(/\s+/g, ' ').trim();
+	const capped = collapsed.length > limit ? `${collapsed.slice(0, limit - 1)}…` : collapsed;
+	return capped.replace(/[!-/:-@[-`{-~]/g, char => `\\${char}`);
+}

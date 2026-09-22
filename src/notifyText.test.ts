@@ -5,7 +5,7 @@
 
 import * as assert from 'node:assert';
 import { suite, test } from 'node:test';
-import { plainInNotification, plainInPrompt } from './notifyText.ts';
+import { plainInMarkdown, plainInNotification, plainInPrompt } from './notifyText.ts';
 
 suite('plainInNotification', () => {
 
@@ -81,5 +81,33 @@ suite('plainInPrompt', () => {
 	test('the cap is looser than a notification line, because this is not one line', () => {
 		const value = 'y'.repeat(200);
 		assert.ok(plainInPrompt(value).length > plainInNotification(value).length);
+	});
+});
+
+suite('plainInMarkdown', () => {
+
+	// The status bar tooltip is Markdown: untrusted, so `command:` cannot run,
+	// but an image still loads on hover and a link still opens.
+	test('an image and a link become text', () => {
+		const out = plainInMarkdown('x ![](https://tracker.example/p.png) [Docs](https://evil.example)');
+		assert.strictEqual(out, 'x \\!\\[\\]\\(https\\:\\/\\/tracker\\.example\\/p\\.png\\) \\[Docs\\]\\(https\\:\\/\\/evil\\.example\\)');
+		assert.ok(!/(^|[^\\])[[\]()!]/.test(out), 'no unescaped link or image syntax is left');
+	});
+
+	test('letters, digits and spaces are left alone', () => {
+		assert.strictEqual(plainInMarkdown('Picto ERP 2026'), 'Picto ERP 2026');
+	});
+
+	test('position-dependent syntax is escaped too', () => {
+		assert.strictEqual(plainInMarkdown('# 1. *a* | b'), '\\# 1\\. \\*a\\* \\| b');
+	});
+
+	test('a title cannot leave its list item', () => {
+		assert.strictEqual(plainInMarkdown('one\n\n- two'), 'one \\- two');
+	});
+
+	test('the cap is applied before escaping, so an escape is never cut in half', () => {
+		const out = plainInMarkdown('a'.repeat(118) + '[[[', 120);
+		assert.strictEqual(out, 'a'.repeat(118) + '\\[…');
 	});
 });

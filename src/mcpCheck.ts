@@ -11,7 +11,7 @@ import {
 	codexStrangers, serverName, type ClientState,
 } from './mcpClientState';
 import {
-	claudeConfigUri, claudeLocalConfigUri, codexGlobalConfigUri, codexProjectConfigUri,
+	claudeConfigUri, claudeLocalConfigUri, codexGlobalConfigUri, codexProjectConfigUri, codexProjectIsGlobal,
 	workspaceFolder,
 } from './mcpSetup';
 import type { BrowserController } from './browserController';
@@ -106,7 +106,10 @@ export async function checkConnection(server: McpServer, browser: BrowserControl
 	const folder = workspaceFolder();
 	const claudeText = folder ? await readText(claudeConfigUri(folder)) : '';
 	const claudeLocal = await readText(claudeLocalConfigUri());
-	const codexProject = folder ? await readText(codexProjectConfigUri(folder)) : '';
+	// One file, not two, when the workspace is the home directory — reading it
+	// twice reports our own entry as its own duplicate.
+	const codexProject = folder && !codexProjectIsGlobal(folder)
+		? await readText(codexProjectConfigUri(folder)) : '';
 	const codexGlobal = await readText(codexGlobalConfigUri());
 
 	// Codex's own precedence: project first, then global.
