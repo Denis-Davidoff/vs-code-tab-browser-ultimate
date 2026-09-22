@@ -107,7 +107,17 @@ function keysFor(caller: CallerIdentity): string[] {
 
 export class ShareRegistry<T> {
 
-	private readonly _shares = new Map<string, { target: ShareTarget; tab: T }>();
+	/**
+	 * Every assignment, with who has driven its tab **since it was made**.
+	 *
+	 * Usage lives on the assignment rather than on the tab, and that is the
+	 * fix for a real report path: kept per tab and cleared only when the tab
+	 * closed, it survived `stop` and a later `share`, so giving Claude back a
+	 * tab it had worked on before — typically after its session had lost the
+	 * tools, which is *why* the user was re-sharing — showed 🤖 "working" at
+	 * once and hid the "has not called yet, restart it" hint (#61).
+	 */
+	private readonly _shares = new Map<string, { target: ShareTarget; tab: T; usedBy: Set<ClientKind> }>();
 
 	/**
 	 * Keys whose tab has closed.
@@ -122,13 +132,21 @@ export class ShareRegistry<T> {
 	 */
 	private readonly _lost = new Map<string, ShareTarget>();
 
-	private readonly _usedBy = new Map<T, Set<ClientKind>>();
-
-	/** Gives a tab to one target, replacing whatever that target had. */
+	/**
+	 * Gives a tab to one target, replacing whatever that target had.
+	 *
+	 * Re-sharing the tab the target already holds keeps its usage: that entry
+	 * sits in the shared tab's own menu, and resetting it there took the status
+	 * bar from 🤖 back to 🔗 while the assistant carried on working.
+	 */
 	public share(target: ShareTarget, tab: T): void {
 		const key = keyOf(target);
+		const existing = this._shares.get(key);
 		this._lost.delete(key);
-		this._shares.set(key, { target, tab });
+		this._shares.set(key, {
+			target, tab,
+			usedBy: existing?.tab === tab ? existing.usedBy : new Set<ClientKind>(),
+		});
 	}
 
 	/**
@@ -198,23 +216,25 @@ export class ShareRegistry<T> {
 				lost.push(share.target);
 			}
 		}
-		this._usedBy.delete(tab);
 		return lost;
 	}
 
-	/** Records that an assistant drove a tab. Answers whether that is news. */
-	public noteUse(tab: T, kind: ClientKind): boolean {
-		const kinds = this._usedBy.get(tab) ?? new Set<ClientKind>();
-		if (kinds.has(kind)) {
+	/**
+	 * Records that an assistant drove a tab through `target`, the assignment
+	 * its call resolved to. Answers whether that is news.
+	 *
+	 * The target is required. Marking "every assignment on the tab covering
+	 * this kind" instead would mark another *conversation's* session-scoped
+	 * share of the same assistant as picked up — the cross-assignment report
+	 * this per-assignment usage exists to prevent (#61, #159).
+	 */
+	public noteUse(tab: T, kind: ClientKind, target: ShareTarget): boolean {
+		const share = this._shares.get(keyOf(target));
+		if (!share || share.tab !== tab || share.usedBy.has(kind)) {
 			return false;
 		}
-		kinds.add(kind);
-		this._usedBy.set(tab, kinds);
+		share.usedBy.add(kind);
 		return true;
-	}
-
-	public usedBy(tab: T): ClientKind[] {
-		return kindOrder.filter(kind => this._usedBy.get(tab)?.has(kind));
 	}
 
 	/**
@@ -240,8 +260,8 @@ export class ShareRegistry<T> {
 
 	/** Who, among the assistants this assignment covers, has driven the tab. */
 	public usedByTarget(target: ShareTarget, tab: T): ClientKind[] {
-		const used = this.usedBy(tab);
-		return target.scope === 'everyone' ? used : used.filter(kind => kind === target.kind);
+		const share = this._shares.get(keyOf(target));
+		return share?.tab === tab ? kindOrder.filter(kind => share.usedBy.has(kind)) : [];
 	}
 
 	/** Assignments whose tab is gone, so the UI can offer to move or release them. */

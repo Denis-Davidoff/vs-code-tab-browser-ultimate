@@ -6,6 +6,7 @@
 import * as vscode from 'vscode';
 import type { BrowserController, ShareView } from './browserController';
 import { inUseMarker, sharedMarker, stripMarker } from './shareIndicator';
+import { plainInMarkdown } from './notifyText';
 import { normalizeAddress } from './webUrl';
 import {
 	browserApiState, integratedBrowserCommand, onDidChangeGrantState,
@@ -143,7 +144,8 @@ function applyShareState(item: vscode.StatusBarItem, shares: ShareView): void {
 		vscode.l10n.t("**Shared tabs**"),
 		'\n\n',
 		assignments.map(assignment => {
-			const page = assignment.title || assignment.url;
+			// Page-chosen, into Markdown — see `plainInMarkdown`.
+			const page = plainInMarkdown(assignment.title || assignment.url || '');
 			return assignment.usedBy.length > 0
 				? `- ${assignment.label} → ${page} · ${vscode.l10n.t("working")}`
 				: `- ${assignment.label} → ${page} · ${vscode.l10n.t("not picked up yet")}`;

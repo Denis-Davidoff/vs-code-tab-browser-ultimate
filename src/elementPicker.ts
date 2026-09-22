@@ -424,7 +424,11 @@ function requireBrowserTab(): vscode.BrowserTab | undefined {
 
 	const tab = vscode.window.activeBrowserTab;
 	if (!tab) {
-		vscode.window.showWarningMessage(vscode.l10n.t(
+		// The status bar as well. `activeBrowserTab` is undefined whenever a file
+		// has focus, including with a browser tab visible in a split beside it —
+		// and the pause is decided geometrically, so a toast would pause exactly
+		// the page this message tells the user to go and focus.
+		refuse(vscode.l10n.t(
 			"No integrated browser tab is active. Open a page with \"AI Browser: Show\", focus that tab, then try again."));
 	}
 	return tab;

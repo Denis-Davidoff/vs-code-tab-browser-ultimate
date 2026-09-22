@@ -297,7 +297,7 @@ export function activate(context: vscode.ExtensionContext) {
 	// extension can be installed while this window is open.
 	publishAssistantContext();
 	context.subscriptions.push(vscode.extensions.onDidChange(publishAssistantContext));
-	cleanUpReports();
+	void cleanUpReports();
 
 	// These record themselves too, so the toolbar button repeats "Add XPath to
 	// Codex" just as readily as "Copy XPath".

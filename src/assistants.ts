@@ -4,9 +4,9 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as fs from 'fs/promises';
-import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { existingPrivateTempDirectory, privateTempDirectory, writeExclusive } from './safeFiles';
 
 /**
  * Handing a report to Claude Code or Codex.
@@ -93,10 +93,17 @@ const pruneInterval = 60 * 60 * 1000;
 
 let lastPrune = 0;
 
-function reportDirectory(reportsIn: Assistant['reportsIn'], folder: vscode.WorkspaceFolder | undefined): string {
+/**
+ * The workspace's `.ai-browser/`, or a temp directory only this user can enter.
+ *
+ * Not the shared `/tmp/ai-browser/reports`: on Linux any local user could
+ * create that first and plant symlinks in it, and a report carries the
+ * content of whatever page was open — see `privateTempDirectory`.
+ */
+async function reportDirectory(reportsIn: Assistant['reportsIn'], folder: vscode.WorkspaceFolder | undefined): Promise<string> {
 	return reportsIn === 'workspace'
 		? path.join(folder!.uri.fsPath, '.ai-browser')
-		: path.join(os.tmpdir(), 'ai-browser', 'reports');
+		: privateTempDirectory('reports');
 }
 
 /**
@@ -148,27 +155,46 @@ async function writeReport(
 	folder: vscode.WorkspaceFolder | undefined,
 ): Promise<vscode.Uri> {
 
-	const directory = reportDirectory(reportsIn, folder);
+	const directory = await reportDirectory(reportsIn, folder);
 	await fs.mkdir(directory, { recursive: true });
 	if (reportsIn === 'workspace') {
 		await keepOutOfGit(directory);
 	}
 	await prune(directory);
 
-	const file = path.join(directory, fileName);
-	await fs.writeFile(file, text, 'utf8');
+	// Exclusive: the name carries `HHMMSS`, so two reports on one element in a
+	// second collided and the second silently replaced the file an assistant
+	// had already been handed.
+	const file = await writeExclusive(directory, fileName, text);
 	return vscode.Uri.file(file);
 }
 
-/** Sweeps old reports on activation, independently of any write. */
+/**
+ * Sweeps old reports on activation, independently of any write.
+ *
+ * **Never rejects, and creates nothing.** Activation calls this without
+ * awaiting it, and `prune` swallowing its own errors used to be what made that
+ * safe; resolving the private temp directory can throw (`EACCES`, `ENOSPC`,
+ * `EROFS` on the temp root), and a throw here escaped as an unhandled rejection
+ * (breaks-silently #93). Looking the directory up with
+ * `existingPrivateTempDirectory` also keeps activation from making directories
+ * just to find them empty.
+ */
 export async function cleanUpReports(): Promise<void> {
 	lastPrune = 0;
-	await prune(reportDirectory('tempDirectory', undefined));
+	try {
+		const temp = await existingPrivateTempDirectory('reports');
+		if (temp) {
+			await prune(temp);
+		}
+	} catch {
+		// The temp root cannot be looked at; there is nothing of ours to sweep.
+	}
 
 	const folder = vscode.workspace.workspaceFolders?.[0];
 	if (folder?.uri.scheme === 'file') {
 		lastPrune = 0;
-		await prune(reportDirectory('workspace', folder));
+		await prune(await reportDirectory('workspace', folder));
 	}
 }
 
