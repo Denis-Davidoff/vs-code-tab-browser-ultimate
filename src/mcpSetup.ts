@@ -798,11 +798,12 @@ export function connectionPrompt(entryName: string, configPath: string, shared?:
  * the prompt should be copied — and it stood between the user and the one
  * thing they wanted. Now the click does the work and says what it did.
  *
- * The confirmation goes through {@link confirm}, not `showInformationMessage`,
- * and that is not a style choice: a notification paints over the built-in
- * browser and pauses the live page behind it. Connecting is very often done
- * with a browser tab open, so a success toast here would freeze exactly the
- * page the user is about to ask an assistant to work on. Failures still get a
+ * The confirmation goes through {@link confirm}, not a toast, and that is not a
+ * style choice: a notification paints over the built-in browser and pauses the
+ * live page behind it. Connecting is very often done with a browser tab open,
+ * so a success toast here would freeze exactly the page the user is about to
+ * ask an assistant to work on. The one exception is the modal asking for the
+ * paste ({@link askToPaste}), which one click dismisses. Failures still get a
  * real notification — they need attention, and they are rare.
  */
 /** The page a connect pinned the assistants to, if there was one. */
@@ -892,7 +893,28 @@ export async function connectClaudeCode(server: McpServer, shared?: SharedPage):
 	// file this path just wrote.
 	await vscode.env.clipboard.writeText(connectionPrompt(serverName, '.mcp.json', shared));
 	confirm(vscode.l10n.t(
-		"Wrote .mcp.json, prompt copied — restart Claude Code, then paste it.") + scopeNote(shared));
+		"Wrote .mcp.json, prompt copied — paste it into the Claude Code chat.") + scopeNote(shared));
+	await askToPaste(
+		vscode.l10n.t("Paste into the Claude Code chat to finish connecting to the browser."),
+		vscode.l10n.t("The prompt is on your clipboard."));
+}
+
+/**
+ * The one step connect cannot do for the user: pasting the prompt.
+ *
+ * Asked for explicitly, after the status bar confirmation proved too easy to
+ * miss — the file is written and the prompt copied, and without the paste the
+ * setup looks finished while nothing has been checked.
+ *
+ * **Modal, never a toast.** Both paint over the built-in browser, but a toast
+ * stays up — and keeps the page paused behind "Paused due to Notification" —
+ * until someone finds it and dismisses it, while a modal is answered with one
+ * click that the user is making anyway. The status bar confirmation stays
+ * beside it: it carries the details (the share, a leftover duplicate) that
+ * would make this dialog long.
+ */
+async function askToPaste(message: string, detail: string): Promise<void> {
+	await vscode.window.showInformationMessage(message, { modal: true, detail });
 }
 
 /**
@@ -983,6 +1005,9 @@ export async function connectCodex(server: McpServer, shared?: SharedPage): Prom
 			? vscode.l10n.t(" An old entry in ~/.codex/config.toml could not be removed — if Codex lists every tool twice, delete it or press this again.")
 			: '')
 		+ scopeNote(shared));
+	await askToPaste(
+		vscode.l10n.t("Paste into the Codex chat to finish connecting to the browser."),
+		vscode.l10n.t("The prompt is on your clipboard. Paste it into a new Codex conversation."));
 }
 
 /* ----------------------------------------------------------------------- prune */

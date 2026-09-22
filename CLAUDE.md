@@ -894,6 +894,15 @@ so the report went to the clipboard"). Each reports that the thing the user aske
 happen, and each is rare; a paused page is an acceptable price for not losing that. The modal in
 `enableBrowserApi` is the same call — it asks a question, and blocking is the point.
 
+**The paste modal after Connect is the one success that interrupts, and it is modal on purpose.**
+Asked for explicitly: once the file is written and the prompt copied, the paste is the one step
+left, and a status bar line was too easy to miss — the setup looked finished with nothing
+checked. `askToPaste` in [src/mcpSetup.ts](src/mcpSetup.ts) shows "Paste into the Claude Code /
+Codex chat to finish connecting to the browser." as `{ modal: true }`. A toast would stay up,
+and keep the page behind it paused, until someone found and dismissed it; the modal goes with
+the one click the user is making anyway. Keep it short: the details (the share, a leftover
+duplicate, the Codex trust clause) stay in the status bar confirmation that goes up beside it.
+
 **"Browser API not enabled" is not among them.** It was, and it kept the bug alive after the
 progress notification was fixed: press an element command in an editor without the grant and the
 refusal toast paused the very tab you were looking at. It now goes through `refuse()` to the
@@ -1492,8 +1501,10 @@ it is why the connect path is a write *and* a deletion rather than a write alone
 
 **The confirmation goes through `confirm()`, not a notification** — connecting is very often
 done with a browser tab open, and a success toast would pause exactly the page the user is
-about to hand to an assistant. Failures keep their notification: they are rare and they need
-attention. The `Copy CLI command` button is gone from the happy path; the CLI command is what
+about to hand to an assistant. After it comes one short modal asking the user to paste
+(`askToPaste`, see
+[A notification pauses the built-in browser](#a-notification-pauses-the-built-in-browser)),
+never a toast. Failures keep their notification: they are rare and they need attention. The `Copy CLI command` button is gone from the happy path; the CLI command is what
 lands on the clipboard when writing the file *fails*.
 
 The project entry uses the bare `ai-browser`, since a project file has only one project. The
