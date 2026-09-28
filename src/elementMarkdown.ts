@@ -37,6 +37,25 @@ export function formatAncestor(ancestor: ElementAncestor): string {
 	return `${ancestor.tagName}${id}${classes}`;
 }
 
+/**
+ * A fence longer than the longest backtick run inside `content`.
+ *
+ * The same rule as `fenced` in `reportFormat.ts`, **written twice on purpose**:
+ * this module may not take a relative value import (see the header). Outer
+ * HTML and matched CSS are the page's own text, and a fixed three-backtick
+ * fence closed early on any page that contains one — a `<pre>` of Markdown, a
+ * template literal, `content: "```"` — after which the rest of the page was
+ * read as Markdown in the report an assistant is handed (item 176).
+ */
+function fence(content: string, language: string): string {
+	let longest = 0;
+	for (const run of content.match(/`+/g) ?? []) {
+		longest = Math.max(longest, run.length);
+	}
+	const marks = '`'.repeat(Math.max(3, longest + 1));
+	return `${marks}${language}\n${content}\n${marks}`;
+}
+
 export function renderElementMarkdown(data: ElementData, url: string | undefined): string {
 	const sections: string[] = [];
 	sections.push('Attached Element Context from Integrated Browser');
@@ -55,7 +74,7 @@ export function renderElementMarkdown(data: ElementData, url: string | undefined
 		sections.push(`HTML Path: ${data.ancestors.map(formatAncestor).join(' > ')}`);
 	}
 
-	sections.push(`Outer HTML:\n\`\`\`html\n${data.outerHTML}\n\`\`\``);
+	sections.push(`Outer HTML:\n${fence(data.outerHTML, 'html')}`);
 
 	const { top, left, width, height } = data.dimensions;
 	sections.push(
@@ -63,7 +82,7 @@ export function renderElementMarkdown(data: ElementData, url: string | undefined
 		`\n- width: ${Math.round(width)}px\n- height: ${Math.round(height)}px`
 	);
 
-	sections.push(`CSS:\n\`\`\`css\n${data.computedStyle}\n\`\`\``);
+	sections.push(`CSS:\n${fence(data.computedStyle, 'css')}`);
 
 	return sections.join('\n\n');
 }

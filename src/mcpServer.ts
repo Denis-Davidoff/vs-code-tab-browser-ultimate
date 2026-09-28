@@ -23,6 +23,8 @@ import {
  */
 
 const maxRequestBytes = 1024 * 1024;
+/** How much of an oversized body is drained for its 413 before the socket is simply closed. */
+const drainLimitBytes = 16 * 1024 * 1024;
 
 /** How long after its last call an assistant still counts as active. Read on demand. */
 const clientIdleMs = 10 * 60 * 1000;
@@ -246,6 +248,10 @@ export class McpServer implements vscode.Disposable {
 		try {
 			raw = await this._readBody(req);
 		} catch (err) {
+			// `connection: close` ends the socket once the answer is out, which
+			// is what `req.destroy()` inside `_readBody` used to do *before* it —
+			// so the client saw a reset instead of the 413.
+			res.setHeader('connection', 'close');
 			this._respond(res, 413, { error: err instanceof Error ? err.message : 'Request too large' });
 			return;
 		}
@@ -271,6 +277,24 @@ export class McpServer implements vscode.Disposable {
 		const clientName = initializeClientName(request);
 		let sessionId = stringOrUndefined(req.headers['mcp-session-id'] as string | undefined);
 		let kind = sessionId ? this._sessionKinds.get(sessionId) : undefined;
+
+		// **A session id we never handed out is refused with 404**, which is what
+		// the MCP spec prescribes for a session the server no longer knows, and
+		// what makes the client start a new one. Accepting it as `other` was
+		// silent and wrong: after a window reload the map is empty while a
+		// Claude Code in a persistent terminal keeps sending its old id, so every
+		// call was attributed to nobody — a tab shared with Claude never applied,
+		// and Claude followed the focused tab and saw every other one (#52, #58).
+		// The map belongs to `McpLifecycle`, so a restart from a setting change
+		// does not trigger this; only a new extension host does.
+		if (clientName === undefined && sessionId !== undefined && !this._sessionKinds.has(sessionId)) {
+			this._respond(res, 404, {
+				jsonrpc: '2.0',
+				id: request.id ?? null,
+				error: { code: -32001, message: 'Unknown session; send initialize to start a new one' },
+			});
+			return;
+		}
 
 		if (clientName !== undefined) {
 			kind = classifyClient(clientName);
@@ -310,16 +334,31 @@ export class McpServer implements vscode.Disposable {
 		return new Promise((resolve, reject) => {
 			const chunks: Buffer[] = [];
 			let size = 0;
+			let tooLarge = false;
 			req.on('data', (chunk: Buffer) => {
 				size += chunk.length;
+				if (tooLarge) {
+					// Drained and dropped, so nothing more is held — up to a
+					// ceiling, past which the socket goes after all.
+					if (size > drainLimitBytes) {
+						req.destroy();
+					}
+					return;
+				}
 				if (size > maxRequestBytes) {
-					reject(new Error('Request body exceeds 1 MB'));
-					req.destroy();
+					// Not `req.destroy()` here: that tore down the socket the 413
+					// had to be written to, and answering before the upload ends
+					// resets it just the same. So the rest of the body is read and
+					// thrown away, and the 413 goes out once it has arrived.
+					tooLarge = true;
+					chunks.length = 0;
 					return;
 				}
 				chunks.push(chunk);
 			});
-			req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+			req.on('end', () => tooLarge
+				? reject(new Error('Request body exceeds 1 MB'))
+				: resolve(Buffer.concat(chunks).toString('utf8')));
 			req.on('error', reject);
 		});
 	}

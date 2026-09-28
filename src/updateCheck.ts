@@ -329,6 +329,13 @@ class UpdateWatch implements vscode.Disposable {
 			return;
 		}
 		this._pending = undefined;
+		// Asked again at delivery, not only when the check ran: a notice held
+		// back behind a visible page can wait a long time, and another window
+		// may have announced this very release meanwhile — `globalState` is
+		// shared — which made "once per release" once per window instead.
+		if (this._context.globalState.get(offeredVersionKey) === offer.version) {
+			return;
+		}
 		// The rejection handler is the point of the `void`, not an afterthought:
 		// `_announce` awaits `openExternal` and a settings write, either of
 		// which can fail, and an unhandled rejection here is breaks-silently

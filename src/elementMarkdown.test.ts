@@ -83,3 +83,24 @@ suite('renderElementMarkdown', () => {
 		assert.ok(md.includes('Outer HTML:'));
 	});
 });
+
+suite('renderElementMarkdown fences page content', () => {
+
+	test('a fence outgrows the backticks inside the page text', () => {
+		// Item 176: a fixed ``` closed early and the rest of the page read as Markdown.
+		const md = renderElementMarkdown({
+			...fixture,
+			outerHTML: '<pre>```js\nalert(1)\n```\n# not a heading</pre>',
+			computedStyle: 'pre::after { content: "````"; }',
+		}, undefined);
+		assert.ok(md.includes('Outer HTML:\n````html\n<pre>```js'));
+		assert.ok(md.includes('# not a heading</pre>\n````'));
+		assert.ok(md.includes('CSS:\n`````css\n'));
+	});
+
+	test('ordinary content keeps the three-backtick fence', () => {
+		const md = renderElementMarkdown(fixture, undefined);
+		assert.ok(md.includes('Outer HTML:\n```html\n'));
+		assert.ok(md.includes('CSS:\n```css\n'));
+	});
+});

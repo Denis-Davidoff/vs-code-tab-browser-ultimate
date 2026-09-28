@@ -1001,6 +1001,73 @@ suite('repairCodexToml does not write a key it is also keeping', () => {
 	});
 });
 
+suite('repairCodexToml reads every spelling of http_headers', () => {
+
+	// Item 175: both inputs are TOML Codex loads; both came out unparsable.
+
+	test('a multi-line inline table is replaced whole, keeping the other headers', () => {
+		const text = [
+			'[mcp_servers.ai-browser]',
+			'url = "http://127.0.0.1:43110/mcp"',
+			'http_headers = {',
+			`  Authorization = "Bearer ${token}",`,
+			'  X-Org = "acme",',
+			'}',
+			'',
+			'[mcp_servers.other]',
+			'url = "http://x/mcp"',
+			'',
+		].join('\n');
+
+		const result = repairToml(text);
+		assert.ok(result.changed);
+		assert.strictEqual(result.text, [
+			'[mcp_servers.ai-browser]',
+			`url = "${url}"`,
+			`http_headers = { Authorization = "Bearer ${token}", X-Org = "acme" }`,
+			'',
+			'[mcp_servers.other]',
+			'url = "http://x/mcp"',
+			'',
+		].join('\n'));
+		assert.ok(!codexUnterminated(result.text));
+	});
+
+	test('the table ends after the closing brace, so the check reads the credentials', () => {
+		const text = [
+			'[mcp_servers.ai-browser]',
+			'http_headers = {',
+			`  Authorization = "Bearer ${token}",`,
+			'}',
+			'',
+		].join('\n');
+		const entries = codexEntries(text);
+		assert.strictEqual(entries[0].endLine, 4);
+		assert.ok(!entries[0].values.has('Authorization'));
+		assert.ok(codexEntryCarriesToken(entries[0], entries, token));
+	});
+
+	test('a dotted Authorization is edited in place, never joined by an inline table', () => {
+		const text = [
+			'[mcp_servers.ai-browser]',
+			'url = "http://127.0.0.1:43110/mcp"',
+			`http_headers.Authorization = "Bearer ${token}"`,
+			'http_headers.X-Org = "acme"',
+			'',
+		].join('\n');
+
+		const result = repairToml(text);
+		assert.ok(result.changed);
+		assert.strictEqual(result.text, [
+			'[mcp_servers.ai-browser]',
+			`url = "${url}"`,
+			`http_headers.Authorization = "Bearer ${token}"`,
+			'http_headers.X-Org = "acme"',
+			'',
+		].join('\n'));
+	});
+});
+
 suite('spliceCodexTables', () => {
 
 	// The interactive Connect Codex write, and the only one of the three

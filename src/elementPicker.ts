@@ -544,17 +544,43 @@ async function pickAndDeliver<T>(
 	}
 }
 
+/**
+ * One button for every pick, shown while any pick holds it.
+ *
+ * It used to be a fresh item per pick under the same id, and the workbench
+ * keys a status bar entry by that id, not by the item object — so when a pick
+ * was superseded, the *old* pick's `finally` disposed the entry the new pick
+ * had just shown, and the new pick ran with no way to cancel it. Counting the
+ * holders means the button goes only when the last pick lets go of it.
+ */
+let cancelItem: vscode.StatusBarItem | undefined;
+let cancelHolders = 0;
+
 /** The cancel affordance for a pick, for as long as one is running. */
 function cancelButton(): vscode.Disposable {
-	const item = vscode.window.createStatusBarItem(
-		'aiBrowser.cancelPick', vscode.StatusBarAlignment.Left, 1001);
-	item.name = vscode.l10n.t("AI Browser: cancel element pick");
-	item.text = vscode.l10n.t("$(stop-circle) Cancel pick");
-	item.tooltip = vscode.l10n.t("Stop picking an element");
-	item.command = cancelPickCommand;
-	item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
-	item.show();
-	return item;
+	if (!cancelItem) {
+		cancelItem = vscode.window.createStatusBarItem(
+			'aiBrowser.cancelPick', vscode.StatusBarAlignment.Left, 1001);
+		cancelItem.name = vscode.l10n.t("AI Browser: cancel element pick");
+		cancelItem.text = vscode.l10n.t("$(stop-circle) Cancel pick");
+		cancelItem.tooltip = vscode.l10n.t("Stop picking an element");
+		cancelItem.command = cancelPickCommand;
+		cancelItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+	}
+	cancelHolders++;
+	cancelItem.show();
+
+	let released = false;
+	return new vscode.Disposable(() => {
+		if (released) {
+			return;
+		}
+		released = true;
+		cancelHolders--;
+		if (cancelHolders === 0) {
+			cancelItem?.hide();
+		}
+	});
 }
 
 export const cancelPickCommand = 'aiBrowser.cancelElementPick';

@@ -88,6 +88,16 @@ function getSettings(): AIBrowserSettings {
 		const data = element.getAttribute('data-settings');
 		if (data) {
 			const settings: unknown = JSON.parse(data);
+			// An engine outside the list is coerced to the default rather than
+			// rejecting every setting: VS Code only *warns* about an enum
+			// violation and hands the value over anyway, so a hand edit such as
+			// `"Google"` or a synced value from another version blanked the whole
+			// panel with `Could not load settings`. `searchFor` already falls back
+			// the same way.
+			if (typeof settings === 'object' && settings !== null && 'searchEngine' in settings
+				&& !isBrowserSearchEngineValue(settings.searchEngine)) {
+				(settings as { searchEngine: unknown }).searchEngine = BROWSER_SEARCH_ENGINES[0].id;
+			}
 			if (isAIBrowserSettings(settings)) {
 				return settings;
 			}
@@ -140,6 +150,11 @@ onceDocumentLoaded(() => {
 	input.addEventListener('change', e => {
 		const target = resolveAddressBarInput((e.target as HTMLInputElement).value);
 		if (target !== undefined) {
+			// Written back, because Reload and "Open in browser" read the box:
+			// left as typed, `localhost:3000` parsed as scheme `localhost:`, so
+			// Reload blanked the page (and saved that as the restored state) and
+			// the external open handed the OS an address it cannot open.
+			input.value = target;
 			navigateTo(target);
 		}
 	});

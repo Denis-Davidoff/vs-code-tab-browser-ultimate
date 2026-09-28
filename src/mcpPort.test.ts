@@ -49,4 +49,10 @@ suite('portOrder', () => {
 		// What an explicitly configured aiBrowser.mcp.port must still get.
 		assert.deepStrictEqual(portOrder(43110, 0, 3), [43110, 43111, 43112]);
 	});
+
+	test('never hands out a port that cannot be listened on', () => {
+		// Past 65535, or a fraction, is ERR_SOCKET_BAD_PORT, which ends the walk.
+		assert.deepStrictEqual(portOrder(65533, 0, 5), [65533, 65534, 65535]);
+		assert.deepStrictEqual(portOrder(43110.5, 0, 2), [43110, 43111]);
+	});
 });

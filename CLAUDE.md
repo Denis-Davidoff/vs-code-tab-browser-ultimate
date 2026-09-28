@@ -1482,6 +1482,10 @@ as "try the next".
 - **A tool's failure is a result, not a protocol error.** `{ isError: true }` is something the
   model reads and can recover from; a `-32603` never reaches it.
 - Batches and bare arrays are refused rather than half-supported.
+- **An `Mcp-Session-Id` the server never issued is 404**, per the spec, so a client carrying an
+  id from before a window reload starts a new session instead of being silently treated as
+  `other` (breaks-silently #178). The map survives a server restart from a setting change,
+  because `McpLifecycle` owns it, so only a new extension host triggers this.
 - **There is no per-tool timeout, and `Tool.slowMs` was removed rather than kept as decoration.**
   It was declared and set on the three slow tools, and read by nothing at all, so the comments
   claiming a bigger budget for them were simply false — the client's own timeout is the only one
@@ -2689,7 +2693,10 @@ entries that could not work; they are re-published on `vscode.extensions.onDidCh
 
 `.ai-browser/` gets a `.gitignore` of `*` on first creation — these are drafts for one
 conversation. Reports are swept after 5 hours, at most hourly from the write path plus once on
-activation.
+activation. **The sweep only touches a real directory and only our own file names**
+(`element-*.md`, regular files, `lstat`): the directory is inside somebody else's repository,
+which can commit it as a symlink, and following one deleted files outside the workspace
+(breaks-silently #174).
 
 **Reports and screenshots are written exclusively, into a directory only this user can enter**
 ([src/safeFiles.ts](src/safeFiles.ts)). Two things were wrong with a plain `writeFile` into
@@ -3632,6 +3639,67 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
     right while other pages are open and meaningless once none are: the status bar stayed
     yellow with `$(debug-pause)` in a window with no browser tab, and only Stop Sharing Tab
     cleared it. Release the pauses when the last tab closes (`releasePaused`).
+174. **Sweeping a directory inside somebody else's repository through a symlink** → a repo can
+    commit `.ai-browser` as `-> ../..`, and `readdir`/`stat` follow it, so the activation sweep
+    deleted every file older than five hours in the user's home — no action needed, Restricted
+    Mode included. `prune` now requires a real directory (`lstat`) and deletes only regular files
+    named like a report (`element-*.md`); `writeReport` refuses a symlinked directory too.
+175. **Reading TOML's other spellings of a table as absent** → `http_headers.Authorization = …`
+    (dotted keys, TOML 1.0) and a multi-line `http_headers = { … }` (TOML 1.1, which Codex
+    accepts) were read as "no headers" and "a value of `{`", so the unattended repair added a
+    second `http_headers` or stranded the old continuation lines — unparsable either way, every
+    MCP server in the file with it. `codexEntries` counts `braces` for continuation and reads an
+    inline table whole; the repair edits a dotted `Authorization` in place.
+176. **A fixed three-backtick fence around page content** → `elementMarkdown.ts` fenced outer HTML
+    and matched CSS with a literal ` ``` `, so a page containing one closed the block early and
+    the rest of the page read as Markdown in the report an assistant is handed. It carries its
+    own copy of the `fenced` rule, since that leaf may not import `reportFormat.ts`.
+177. **An in-flight open nobody can cancel** → the `CDPClient` inside `TabSession.open` was local,
+    and a page that stopped answering during the handshake held its session slot and channel for
+    the life of the window; four of them refused every healthy tab. Closing the tab (or
+    disposing the controller) now fires an `AbortSignal` that disposes the client, which rejects
+    what it waits on. Only those two abort — `navigate`'s retry drops a tab it is reopening.
+178. **Accepting a session id the server never issued** → after a window reload the
+    `Mcp-Session-Id` map is empty while a Claude Code in a persistent terminal keeps its old id,
+    so every call was attributed to `other`: a tab shared with Claude never applied, and it saw
+    every tab. An unknown id now answers 404, which the MCP spec prescribes and which makes the
+    client initialize again.
+179. **`req.destroy()` before an error response** → the 413 for an oversized body was written to
+    a socket already torn down, and answering before the upload ended reset it just the same.
+    The rest of the body is drained (up to 16 MB) and the 413 goes out after it.
+180. **Writing per-caller state after an await without asking again** → `navigate(newTab)` set its
+    pin after `openBrowserTab` resolved, underneath a share the user made in between, so the
+    stale choice came back on Stop Sharing — the shadowed pin #57 forbids.
+181. **Arming a close watch after the setup it should cover** → `browser_inspect_element` had none,
+    then one armed only for the wait, so a tab closed during setup still ran out the model's
+    whole timeout. It is armed first and disposes the client, and the `setInspectMode: none`
+    cleanup is skipped on a closed tab, whose session may never answer.
+182. **A port walk that trusts a `number` setting** → a value near 65535 walked past it and a
+    fraction was never a port; `ERR_SOCKET_BAD_PORT` is fatal to the walk. `portOrder` only
+    yields integers in range, and the setting is declared `integer`.
+183. **Reading back the text the user typed instead of the address it became** → the panel
+    resolved `localhost:3000` to `http://localhost:3000` for the load but left the box as typed,
+    so Reload parsed `localhost:` as a scheme and blanked the page (saving that as its restored
+    state) and "Open in browser" handed the OS nonsense. The box is updated with the result.
+184. **Rejecting every setting over one enum value** → VS Code warns about an out-of-list
+    `aiBrowser.searchEngine` and passes it through, and the panel's validator threw
+    `Could not load settings` on it. The engine is coerced to the default instead.
+185. **Several status bar items under one id** → the workbench keys an entry by id, so a
+    superseded pick's cleanup removed the entry the new pick had just shown and the new pick had
+    no Cancel button. One shared item, shown while any pick holds it.
+186. **Opening a scratch file as a preview editor** → it takes the group's preview slot, so the
+    report sent to Claude Code replaced a file the user had single-clicked open, and closing the
+    report then left that file gone. Opened pinned; still closed by URI.
+187. **Checking "already announced" only when the check ran** → a notice held behind a visible
+    page can wait for hours while another window announces the same release. `_deliver` asks
+    `globalState` again before showing it.
+188. **A safety step that is "best effort" in front of the write it protects** →
+    `keepTokenOutOfGit` swallowed a `.codex/.gitignore` it could not read or write, on the
+    reasoning that the config could not be written either — false for a read-only `.gitignore`
+    beside a writable `config.toml` — so the bearer token went into an unignored file one
+    `git add` from a commit. The rule being in place is now a condition of the write; failing
+    that, `git check-ignore` must say "ignored" or "no repository", or Connect Codex falls back
+    to `codex mcp add`.
 
 ## Special cases and non-obvious decisions
 
@@ -4193,6 +4261,12 @@ order with the last matching line winning, as git does — gets one line appende
 changed. A pattern it does not model reads as "not covered", which costs a redundant line rather
 than a token in a commit. Breaks-silently #171.
 
+**And the rule being in place is a condition of writing the token, not a courtesy.** When
+`.codex/.gitignore` cannot be read or written, `git check-ignore` is asked whether something
+else — a root `.gitignore`, `info/exclude` — already ignores `.codex/config.toml`. Only
+"ignored" or "not a repository" lets the write go ahead; anything else, git missing included,
+refuses and hands over `codex mcp add`. Breaks-silently #188.
+
 **A `.gitignore` does nothing for a file git already tracks**, and teams do commit
 `.codex/config.toml` for shared settings. So `writeCodexProjectConfig` asks
 `git ls-files --error-unmatch` first and **refuses** a tracked file — `connectCodex` then reports
@@ -4227,6 +4301,13 @@ window stops being recognisable at the same moment (see
 [The port moves](#the-port-moves-and-the-config-remembers-the-old-one)).
 
 ## Known issues, not yet fixed
+
+- **Lock files sit at a predictable path in `os.tmpdir()`** (`fileLock.ts`), so on a
+  multi-user Linux machine another local user can pre-create one and block every config write
+  there until it is removed — denial of service, not corruption. Not moved yet because the
+  obvious homes each cost something: the per-user `0700` directory falls back to a *per-process*
+  `mkdtemp` when it cannot be trusted, which would silently give each window its own lock, and
+  a lock beside the config puts a transient file inside the user's project.
 
 - **No linter.** It was covered by shared infrastructure in the monorepo. There are tests:
   `npm test` runs Node's own runner over `preview-src/*.test.ts`, no VS Code needed.

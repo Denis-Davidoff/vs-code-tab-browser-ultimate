@@ -82,17 +82,38 @@ class TabSession {
 		public readonly sessionId: string,
 	) { }
 
-	public static async open(tab: vscode.BrowserTab): Promise<TabSession> {
-		const client = new CDPClient(await tab.startCDPSession());
+	/**
+	 * `signal` ends an open that is still in flight: the controller fires it when
+	 * the tab closes. `CDPClient.send` has no timeout and closing a browser tab
+	 * does not close its CDP session, so a page that stopped answering during
+	 * the handshake left the open pending for ever — its session slot reserved
+	 * and its channel open for the life of the window, until enough of them
+	 * refused every healthy tab (item 177). Disposing the client rejects what it
+	 * is waiting on, and the open unwinds through the normal failure path.
+	 */
+	public static async open(tab: vscode.BrowserTab, signal?: AbortSignal): Promise<TabSession> {
+		const closed = () => new Error('The browser tab was closed while its session was opening.');
+		const channel = await whenNotAborted(Promise.resolve(tab.startCDPSession()), signal, closed);
+		const client = new CDPClient(channel);
+		const onAbort = () => client.dispose();
+		signal?.addEventListener('abort', onAbort, { once: true });
 		try {
+			if (signal?.aborted) {
+				throw closed();
+			}
 			const sessionId = await client.attachToPage();
 			const session = new TabSession(client, sessionId);
 			await session._enableDomains();
+			if (signal?.aborted) {
+				throw closed();
+			}
 			session._removeLegacyMarker();
 			return session;
 		} catch (err) {
 			client.dispose();
-			throw err;
+			throw signal?.aborted ? closed() : err;
+		} finally {
+			signal?.removeEventListener('abort', onAbort);
 		}
 	}
 
@@ -178,6 +199,42 @@ class TabSession {
 		}
 		this.client.dispose();
 	}
+}
+
+/**
+ * `pending`, unless `signal` fires first. A session that arrives after the
+ * abort is closed rather than left open with nobody holding it.
+ */
+function whenNotAborted(
+	pending: Promise<vscode.BrowserCDPSession>,
+	signal: AbortSignal | undefined,
+	error: () => Error,
+): Promise<vscode.BrowserCDPSession> {
+	if (!signal) {
+		return pending;
+	}
+	if (signal.aborted) {
+		pending.then(session => session.close(), () => { /* never opened */ });
+		return Promise.reject(error());
+	}
+	return new Promise((resolve, reject) => {
+		const onAbort = () => {
+			reject(error());
+			pending.then(session => session.close(), () => { /* never opened */ });
+		};
+		signal.addEventListener('abort', onAbort, { once: true });
+		pending.then(session => {
+			signal.removeEventListener('abort', onAbort);
+			if (signal.aborted) {
+				session.close();
+				return;
+			}
+			resolve(session);
+		}, err => {
+			signal.removeEventListener('abort', onAbort);
+			reject(err);
+		});
+	});
 }
 
 /** Result of a page-side evaluation, already unwrapped. */
@@ -354,6 +411,14 @@ export class BrowserController implements vscode.Disposable {
 	 * somebody else asked for a different tab.
 	 */
 	private readonly _opening = new Map<vscode.BrowserTab, Promise<TabSession>>();
+
+	/**
+	 * How to end each open in `_opening`, fired when its tab closes or the
+	 * controller is disposed — and only then. `_dropSession` alone does not
+	 * abort, because `navigate`'s retry drops a tab it is about to reopen and a
+	 * concurrent caller may still be waiting on the open under way.
+	 */
+	private readonly _openAborts = new Map<vscode.BrowserTab, AbortController>();
 
 	/**
 	 * The tab the tools last acted on.
@@ -807,9 +872,11 @@ export class BrowserController implements vscode.Disposable {
 			this._notifySlots();
 		};
 
+		const abort = new AbortController();
+		this._openAborts.set(tab, abort);
 		const opening = this._awaitSlot().then(() => {
 			slotHeld = true;
-			return TabSession.open(tab);
+			return TabSession.open(tab, abort.signal);
 		}).then(session => {
 			const open = vscode.window.browserTabs ?? [];
 			if (this._disposed || !open.includes(tab)) {
@@ -831,7 +898,12 @@ export class BrowserController implements vscode.Disposable {
 		// Only for the paths that never reached the line above: the open failed, the
 		// tab closed while it was in flight, or the controller was disposed. A
 		// success has already given the slot back, and `releaseSlot` is idempotent.
-		const promise = opening.finally(releaseSlot);
+		const promise = opening.finally(() => {
+			releaseSlot();
+			if (this._openAborts.get(tab) === abort) {
+				this._openAborts.delete(tab);
+			}
+		});
 
 		this._opening.set(tab, promise);
 		// A rejection has to release the entry, or the failed attempt is cached:
@@ -1241,6 +1313,9 @@ export class BrowserController implements vscode.Disposable {
 		// and kept the element markdown picked on it for the life of the
 		// window, keyed by a tab that no longer exists.
 		this._selectedElements.delete(tab);
+		// An open still in flight for this tab is ended, not abandoned: if the
+		// page had stopped answering, nothing else would ever settle it.
+		this._openAborts.get(tab)?.abort();
 		this._dropSession(tab);
 		for (const [key, pin] of [...this._pins]) {
 			if (pin.tab === tab) {
@@ -1518,7 +1593,15 @@ export class BrowserController implements vscode.Disposable {
 			// the user's focus should still lead. An existing selection is
 			// carried over either way, or the next tool would go back to the
 			// page the caller chose to leave.
-			if (newTab || this._pins.has(callerKey(caller))) {
+			//
+			// Asked again **after** the await: the user can give this caller a
+			// tab while `openBrowserTab` is still opening, and that share clears
+			// the caller's pins. A pin written underneath it anyway is exactly
+			// the shadowed pin the share rules forbid — it comes back the moment
+			// the share is stopped, and the assistant returns to a tab it chose
+			// before the user overruled it.
+			const stillUnassigned = this._shares.resolve(caller).kind === 'unassigned';
+			if (stillUnassigned && (newTab || this._pins.has(callerKey(caller)))) {
 				this._pins.set(callerKey(caller), { tab, caller });
 			}
 			return { url: tab.url, title: stripMarker(tab.title), tabId: this._idOf(tab), openedNewTab: true };
@@ -1683,10 +1766,36 @@ export class BrowserController implements vscode.Disposable {
 	public async inspectElement(timeoutMs: number, caller: CallerIdentity): Promise<unknown> {
 		await this._settle();
 		const tab = this._requireTab(caller);
-		const client = new CDPClient(await tab.startCDPSession());
-		let sessionId: string | undefined;
 
+		// **Watched from the start, not from the wait.** Closing a browser tab
+		// does not close its CDP session, so without a watch of our own the wait
+		// ran out the model's whole `timeoutMs` and then blamed the user for not
+		// clicking a page that no longer existed — breaks-silently #123, fixed in
+		// `elementPicker.ts` and not here. Armed only once the setup was done, it
+		// also missed a tab closed *during* setup, whose sends may never be
+		// answered at all; disposing the client rejects them.
+		const cts = new vscode.CancellationTokenSource();
+		let client: CDPClient | undefined;
+		let tabClosed = false;
+		const closeWatch = vscode.window.onDidCloseBrowserTab(gone => {
+			if (gone === tab) {
+				tabClosed = true;
+				cts.cancel();
+				client?.dispose();
+			}
+		});
+		const closedMessage = 'The browser tab was closed before an element was picked. '
+			+ 'Call `browser_tabs` to see what is open.';
+
+		let sessionId: string | undefined;
+		const timer = setTimeout(() => cts.cancel(), timeoutMs);
 		try {
+			const channel = await tab.startCDPSession();
+			if (tabClosed) {
+				channel.close().then(undefined, () => { /* already gone */ });
+				throw new Error(closedMessage);
+			}
+			client = new CDPClient(channel);
 			sessionId = await client.attachToPage();
 			await client.send('DOM.enable', {}, sessionId);
 			await client.send('CSS.enable', {}, sessionId);
@@ -1696,30 +1805,31 @@ export class BrowserController implements vscode.Disposable {
 				highlightConfig: { showInfo: true, contentColor: { r: 111, g: 168, b: 220, a: 0.45 } },
 			}, sessionId);
 
-			const cts = new vscode.CancellationTokenSource();
-			const timer = setTimeout(() => cts.cancel(), timeoutMs);
-			try {
-				const { backendNodeId } = await client.once('Overlay.inspectNodeRequested', cts.token);
-				const data = await extractElementData(client, sessionId, backendNodeId);
-				const rendered = renderElementMarkdown(data, tab.url);
-				this._selectedElements.set(tab, rendered);
-				return rendered;
-			} catch (err) {
-				if (err instanceof vscode.CancellationError) {
-					throw new Error(
-						'The user did not pick an element in time. Ask them to click one, then call this again.');
-				}
-				throw err;
-			} finally {
-				clearTimeout(timer);
-				cts.dispose();
+			const { backendNodeId } = await client.once('Overlay.inspectNodeRequested', cts.token);
+			const data = await extractElementData(client, sessionId, backendNodeId);
+			const rendered = renderElementMarkdown(data, tab.url);
+			this._selectedElements.set(tab, rendered);
+			return rendered;
+		} catch (err) {
+			if (tabClosed) {
+				throw new Error(closedMessage);
 			}
+			if (err instanceof vscode.CancellationError) {
+				throw new Error(
+					'The user did not pick an element in time. Ask them to click one, then call this again.');
+			}
+			throw err;
 		} finally {
-			if (sessionId !== undefined) {
+			closeWatch.dispose();
+			clearTimeout(timer);
+			cts.dispose();
+			// Not on a closed tab: its session is still open and nothing may
+			// ever answer, and `send` has no timeout of its own.
+			if (client && sessionId !== undefined && !tabClosed) {
 				await client.send('Overlay.setInspectMode', { mode: 'none', highlightConfig: {} }, sessionId)
 					.catch(() => { /* navigated away or detached */ });
 			}
-			client.dispose();
+			client?.dispose();
 		}
 	}
 
@@ -2053,6 +2163,9 @@ export class BrowserController implements vscode.Disposable {
 
 		this._tabWatch?.dispose();
 		this._onDidChangeShare.dispose();
+		for (const abort of this._openAborts.values()) {
+			abort.abort();
+		}
 		this._dropSession();
 	}
 }

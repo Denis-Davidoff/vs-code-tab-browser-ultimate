@@ -638,6 +638,30 @@ export function repairCodexToml(
 		const url = `url = "${endpoint.url}"`;
 		const header = `[mcp_servers.${canonical}]`;
 
+		// **Dotted keys are `http_headers` too.** `http_headers.Authorization =
+		// "Bearer …"` is plain TOML for the same table, and the branches below
+		// only know the inline and sub-table spellings: they read it as "no
+		// credentials" and added `http_headers = { … }` beside it — the same key
+		// defined twice, TOML that does not parse, written unattended at window
+		// start (item 175). Edited in place instead, the way the sub-table is.
+		const dottedHeaders = [...entry.valueLines.keys()].filter(key => key.startsWith('http_headers.'));
+		if (dottedHeaders.length > 0 && !entry.valueLines.has('http_headers')) {
+			const authorization = dottedHeaders.find(key =>
+				stripQuotes(key.slice('http_headers.'.length)).toLowerCase() === 'authorization');
+			const line = `${authorization ?? 'http_headers.Authorization'} = "Bearer ${endpoint.token}"`;
+			const added = authorization ? [] : [line];
+			if (authorization) {
+				replaceValue(entry, authorization, [line]);
+			}
+			if (entry.valueLines.has('url')) {
+				replace.set(entry.firstLine, [header]);
+				replaceValue(entry, 'url', [url, ...added]);
+			} else {
+				replace.set(entry.firstLine, [header, url, ...added]);
+			}
+			continue;
+		}
+
 		// Merged, never replaced: an `X-Org` the user added to `http_headers`
 		// survives, and so do the keys of a header sub-table being folded in.
 		const carried = entry === rootEntry && headerSubTable && inlineHeaders !== undefined

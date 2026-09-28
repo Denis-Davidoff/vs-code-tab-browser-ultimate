@@ -177,6 +177,14 @@ function credentialsOf(entry: CodexEntry, siblings: readonly CodexEntry[], token
 		return judgeAuthorization(inline, token);
 	}
 
+	// `http_headers.Authorization = "…"` — the dotted spelling of the same
+	// table. Unread, it fell through to `foreign`, and Check Connection advised
+	// reconnecting a working entry.
+	const dotted = [...entry.values].find(([key]) => key.toLowerCase() === 'http_headers.authorization');
+	if (dotted) {
+		return dotted[1].includes(token) ? 'ours' : 'foreign';
+	}
+
 	const subTable = siblings.find(other => other.name === `${entry.name}.http_headers`);
 	if (subTable) {
 		const header = [...subTable.values].find(([key]) => key.toLowerCase() === 'authorization');

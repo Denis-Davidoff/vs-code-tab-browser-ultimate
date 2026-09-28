@@ -57,9 +57,18 @@ export function portOffset(folderUri: string, span: number = portSpan): number {
  * surprise.
  */
 export function portOrder(base: number, offset: number, span: number = portSpan): number[] {
+	// Only real ports. The setting is a `number` up to 65535, so a value near
+	// the top walked straight past it and a fraction was never a port at all —
+	// both answered `ERR_SOCKET_BAD_PORT`, which the walk treats as fatal, so the
+	// server failed to start instead of trying what was left. Truncated rather
+	// than moved, since an explicit port means that port.
+	const start = Number.isFinite(base) ? Math.trunc(base) : 43110;
 	const ports: number[] = [];
 	for (let i = 0; i < span; i++) {
-		ports.push(base + ((offset + i) % span));
+		const port = start + ((offset + i) % span);
+		if (port >= 1 && port <= 65535) {
+			ports.push(port);
+		}
 	}
 	return ports;
 }

@@ -359,6 +359,12 @@ export function codexEntries(text: string): CodexEntry[] {
 
 	let quote: string | undefined;
 	let depth = 0;
+	// Counted apart from `depth`, as everywhere else in this file (item 120).
+	// Left out here, a multi-line inline table — `http_headers = {` on one line,
+	// its keys on the next ones, TOML 1.1 and accepted by Codex — had its keys
+	// read as the table's own and its range end before the closing `}`, so the
+	// repair replaced the first line and stranded the rest (item 175).
+	let braces = 0;
 
 	const flush = () => {
 		if (current) {
@@ -369,10 +375,11 @@ export function codexEntries(text: string): CodexEntry[] {
 
 	for (let index = 0; index < lines.length; index++) {
 		const line = lines[index];
-		const inContinuation = quote !== undefined || depth > 0;
+		const inContinuation = quote !== undefined || depth > 0 || braces > 0;
 		const scan = scanLine(line, quote);
 		const nextQuote = scan.multiline;
 		const nextDepth = Math.max(0, depth + scan.depth);
+		const nextBraces = Math.max(0, braces + scan.braces);
 
 		if (inContinuation) {
 			// Part of a value that started earlier; never structural.
@@ -380,10 +387,20 @@ export function codexEntries(text: string): CodexEntry[] {
 				current.endLine = index + 1;
 				if (openKey !== undefined) {
 					current.valueEndLines.set(openKey, index + 1);
+					// An inline table is read whole, so every reader sees all of
+					// its keys: the credentials check, the ownership test and the
+					// merge that keeps a user's `X-Org`. Only for `{`, because a
+					// multi-line string or array is read from its first line
+					// everywhere else and changing that is not this fix.
+					const sofar = current.values.get(openKey);
+					if (sofar !== undefined && sofar.trimStart().startsWith('{')) {
+						current.values.set(openKey, `${sofar} ${scan.text.trim()}`);
+					}
 				}
 			}
 			quote = nextQuote;
 			depth = nextDepth;
+			braces = nextBraces;
 			continue;
 		}
 		openKey = undefined;
@@ -425,6 +442,7 @@ export function codexEntries(text: string): CodexEntry[] {
 
 		quote = nextQuote;
 		depth = nextDepth;
+		braces = nextBraces;
 	}
 
 	flush();

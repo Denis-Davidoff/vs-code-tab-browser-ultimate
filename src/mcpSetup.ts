@@ -449,7 +449,23 @@ export async function writeCodexProjectConfig(
 	// The ignore rule goes in **first**. Written after the config, a crash or
 	// a failed write between the two left a token-bearing file with nothing
 	// keeping it out of `git add`.
-	await keepTokenOutOfGit(folder);
+	//
+	// **And it is a condition, not a courtesy.** It used to be best effort, on
+	// the reasoning that a folder where the rule cannot be written is one where
+	// the config cannot be written either — false for a read-only `.gitignore`
+	// beside a writable `config.toml`, or one that cannot be read at all, which
+	// wrote the token with nothing keeping it out of the next `git add`. When the
+	// rule is not in place, git is asked whether something else ignores the file
+	// (a root `.gitignore`, `info/exclude`); only "ignored" or "not a repository"
+	// lets the write go ahead. The throw lands in `connectCodex`, which hands
+	// over `codex mcp add`. Breaks-silently #188.
+	if (!await keepTokenOutOfGit(folder)) {
+		const verdict = await gitIgnoreVerdict(folder, '.codex/config.toml');
+		if (verdict !== 'ignored' && verdict !== 'noRepository') {
+			throw new Error(vscode.l10n.t(
+				"its .gitignore rule could not be written, and without it this workspace's bearer token could be committed"));
+		}
+	}
 	const wrote = await withLock(lockPath(configLockName(uri)), () =>
 		writeCodexConfig(uri, serverName, server));
 	if (!wrote) {
@@ -477,25 +493,56 @@ export async function writeCodexProjectConfig(
  * (`ignoresConfigToml`, the last matching line winning as in git), and if not
  * one line is appended; nothing already in it is changed.
  *
- * Best effort: failing to write it must not fail a connection. A folder where
- * this cannot be written is one where the config cannot be written either.
+ * Answers whether the rule is **in place** afterwards — already there, or
+ * written now. `false` means it could not be read or written, and the caller
+ * decides whether the token may still go in (see `writeCodexProjectConfig`).
  */
-async function keepTokenOutOfGit(folder: vscode.WorkspaceFolder): Promise<void> {
+async function keepTokenOutOfGit(folder: vscode.WorkspaceFolder): Promise<boolean> {
 	const marker = vscode.Uri.joinPath(folder.uri, '.codex', '.gitignore');
 	const read = await readConfig(marker);
 	if (read.kind === 'unreadable') {
-		return;
+		return false;
 	}
 	const next = read.kind === 'absent' ? 'config.toml\n' : withConfigTomlRule(read.text);
 	if (next === undefined) {
-		return;
+		return true; // already ignored by this file
 	}
 	try {
 		// An ordinary file for everyone who shares the checkout, not a secret.
 		await writeText(marker, next, 0o644);
+		return true;
 	} catch {
-		// A read-only folder, or a provider that cannot write.
+		// A read-only file or folder, or a provider that cannot write.
+		return false;
 	}
+}
+
+/**
+ * What git makes of a path: ignored, not ignored, no repository here, or no
+ * answer at all (git missing, a non-`file` folder, a timeout).
+ *
+ * `git check-ignore -q` exits 0 for ignored, 1 for not ignored and 128 outside
+ * a repository. Only consulted when our own `.gitignore` rule could not be put
+ * in place, so `unknown` is read as "cannot promise it is safe".
+ */
+async function gitIgnoreVerdict(
+	folder: vscode.WorkspaceFolder,
+	relative: string,
+): Promise<'ignored' | 'notIgnored' | 'noRepository' | 'unknown'> {
+	if (folder.uri.scheme !== 'file') {
+		return 'unknown';
+	}
+	const git = await gitBinary();
+	if (!git) {
+		return 'unknown';
+	}
+	return new Promise(resolve => {
+		execFile(git, ['-C', folder.uri.fsPath, 'check-ignore', '-q', '--', relative],
+			{ timeout: 5_000 }, error => {
+				const code = (error as { code?: unknown } | null)?.code;
+				resolve(!error ? 'ignored' : code === 1 ? 'notIgnored' : code === 128 ? 'noRepository' : 'unknown');
+			});
+	});
 }
 
 /**

@@ -452,7 +452,7 @@
 					"markdownDescription": "%configuration.updateCheck.enabled.description%"
 				},
 				"aiBrowser.mcp.port": {
-						"type": "number",
+						"type": "integer",
 						"default": 43110,
 						"minimum": 1024,
 						"maximum": 65535,

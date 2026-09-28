@@ -121,6 +121,31 @@ async function keepOutOfGit(directory: string): Promise<void> {
 	}
 }
 
+/**
+ * The names this extension writes: `reportFileName`, plus the `-2`, `-3` …
+ * suffix `writeExclusive` adds on a collision. The sweep deletes nothing else.
+ */
+const reportNamePattern = /^element-[a-z0-9-]+\.md$/;
+
+/**
+ * Whether `directory` is a real directory, not a symlink to one.
+ *
+ * The workspace `.ai-browser/` is a path inside somebody else's repository,
+ * and a repository can commit it as a symlink. `readdir` and `stat` follow the
+ * link, so a sweep through `.ai-browser -> ../..` deleted every file older
+ * than five hours in the user's home — at activation, with no action taken,
+ * in Restricted Mode too, since the extension supports untrusted workspaces.
+ * Breaks-silently #174.
+ */
+async function isRealDirectory(directory: string): Promise<boolean> {
+	try {
+		const stat = await fs.lstat(directory);
+		return stat.isDirectory() && !stat.isSymbolicLink();
+	} catch {
+		return false;
+	}
+}
+
 async function prune(directory: string): Promise<void> {
 	const now = Date.now();
 	if (now - lastPrune < pruneInterval) {
@@ -128,15 +153,21 @@ async function prune(directory: string): Promise<void> {
 	}
 	lastPrune = now;
 
+	if (!await isRealDirectory(directory)) {
+		// Absent, or not ours to look inside.
+		return;
+	}
 	try {
 		for (const name of await fs.readdir(directory)) {
-			if (name === '.gitignore') {
+			// Only our own report names, and only regular files: `lstat`, so a
+			// symlink planted *inside* the directory is never followed either.
+			if (!reportNamePattern.test(name)) {
 				continue;
 			}
 			const file = path.join(directory, name);
 			try {
-				const stat = await fs.stat(file);
-				if (now - stat.mtimeMs > keepReportsFor) {
+				const stat = await fs.lstat(file);
+				if (stat.isFile() && now - stat.mtimeMs > keepReportsFor) {
 					await fs.unlink(file);
 				}
 			} catch {
@@ -144,7 +175,7 @@ async function prune(directory: string): Promise<void> {
 			}
 		}
 	} catch {
-		// No directory yet.
+		// Vanished between the check and the read.
 	}
 }
 
@@ -157,6 +188,12 @@ async function writeReport(
 
 	const directory = await reportDirectory(reportsIn, folder);
 	await fs.mkdir(directory, { recursive: true });
+	// The write follows a symlinked `.ai-browser/` just as the sweep did, which
+	// would put the `.gitignore` and the report wherever the link points. The
+	// throw lands in `deliverToAssistant`, which falls back to the clipboard.
+	if (!await isRealDirectory(directory)) {
+		throw new Error(`${directory} is not a real directory; refusing to write a report through it`);
+	}
 	if (reportsIn === 'workspace') {
 		await keepOutOfGit(directory);
 	}
@@ -226,7 +263,11 @@ async function closeTab(uri: vscode.Uri): Promise<void> {
  */
 async function handOverToClaude(file: vscode.Uri, command: string): Promise<void> {
 	const document = await vscode.workspace.openTextDocument(file);
-	await vscode.window.showTextDocument(document, { preview: true, preserveFocus: false });
+	// Pinned, not preview: a preview editor takes the group's preview slot,
+	// so opening the report replaced whatever file the user had single-clicked
+	// open there — and the `closeTab` below then closed the report, leaving
+	// that file gone. The report is closed by URI either way.
+	await vscode.window.showTextDocument(document, { preview: false, preserveFocus: false });
 	await vscode.commands.executeCommand(command);
 	await closeTab(file);
 }
