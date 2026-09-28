@@ -33,6 +33,7 @@ declare class URL {
 
 const openApiCommand = 'aiBrowser.api.open';
 const showCommand = 'aiBrowser.show';
+const newTabCommand = 'aiBrowser.newTab';
 
 /**
  * Hosts the external URI opener claims.
@@ -150,6 +151,29 @@ export function activate(context: vscode.ExtensionContext) {
 		if (address) {
 			manager.show(address);
 		}
+	}));
+
+	// The first row of the browser tab's dropdown. A command of its own rather
+	// than `aiBrowser.show` in the menu: an `editor/title` entry is handed the
+	// editor's resource as its first argument, so `show` would receive the
+	// current page's Uri and open a second copy of it instead of a blank tab.
+	//
+	// It asks for the open command and the setting, **not for the grant**,
+	// unlike `shouldUseIntegratedBrowser`. The entry is only reachable from a
+	// built-in browser tab, so the browser is there by construction; an empty
+	// tab needs no API; and requiring the grant sent every fresh install —
+	// the ungranted default — to a URL prompt and the webview panel from a
+	// button that says "New Browser Tab". The setting is still honoured: a user
+	// who chose the panel gets the panel, which prompts for an address.
+	context.subscriptions.push(vscode.commands.registerCommand(newTabCommand, async () => {
+		const preferIntegrated = vscode.workspace
+			.getConfiguration('aiBrowser')
+			.get<boolean>('useIntegratedBrowser', true);
+		const commands = await vscode.commands.getCommands(true);
+		if (preferIntegrated && commands.includes(integratedBrowserCommand)) {
+			return openInIntegratedBrowser(undefined);
+		}
+		return vscode.commands.executeCommand(showCommand);
 	}));
 
 	// The toolbar's primary button repeats whichever of these ran last, so every

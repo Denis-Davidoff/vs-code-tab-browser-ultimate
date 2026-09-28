@@ -111,12 +111,15 @@ Open a page — `Cmd`/`Ctrl` + click a localhost url a dev server printed, or ru
   ring around it when the destination is Claude Code or Codex rather than the clipboard.
 
 `Cmd`/`Ctrl` + `Alt` + `C` runs whatever that second button shows, and is inert outside a
-browser tab. Every entry is also in the command palette under **AI Browser**.
+browser tab. Every entry except Open New Browser Tab is also in the command palette under
+**AI Browser**.
 
 The menu, in order:
 
 | Entry | Result |
 | --- | --- |
+| Open New Browser Tab | an empty browser tab |
+| Connect Claude Code / Connect Codex | writes the assistant's config and shares this tab with it — the same entries as in the submenus below |
 | Copy Element | the full context as Markdown — element, url, html path, outer html, dimensions, matched css |
 | Copy CSS Path | `#main > div > li:nth-of-type(2)` |
 | Copy CSS Path + Location | the page and the selector on one line, wrapped as inline code: `http://localhost:3000/a/b → #main > div > li:nth-of-type(2)` |
@@ -129,7 +132,7 @@ The menu, in order:
 | Share Tab with All Assistants / Stop Sharing Tab | [CLAUDE.md](CLAUDE.md#mcp-the-browser-exposed-to-claude-code-codex-and-vs-code-chat) |
 
 Everything belonging to one assistant lives in that assistant's submenu, which is what keeps the
-top level at eleven rows. The four **Add** entries there appear only for an assistant whose
+top level at fourteen rows. The four **Add** entries there appear only for an assistant whose
 extension is actually installed; **Connect** and **Share Tab** are always there, because an
 assistant driven from a terminal through `.mcp.json` needs them and has no extension to detect.
 The menu is attached to the browser tab — from anywhere else, use the command palette.

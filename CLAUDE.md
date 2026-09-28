@@ -987,6 +987,10 @@ does**. It is two levels: what acts on the page stays at the top, and everything
 one assistant is folded into that assistant's own submenu.
 
 ```
+Open New Browser Tab                                            0_start@1
+Connect Claude Code                                             0_start@2
+Connect Codex                                                   0_start@3
+─────
 Copy Element / CSS Path / CSS Path + Location / Element XPath   1_copy@1..4
 ─────
 Copy Screenshot (Visible Area) / (Full Page)                    2_shot@1..2
@@ -1003,7 +1007,7 @@ Share Tab with All Assistants                                   4_share@1
 Stop Sharing Tab                                                4_share@2   when tabShared
 ```
 
-That is eleven rows. The menu had eighteen before this change, and a flat one would have
+That is fourteen rows. The menu had eighteen before the submenus, and a flat one would have
 had twenty-one once the fourth element kind was added. The `group` prefixes put the
 separators in; ordering comes from the `@n` suffix, not from the position in the
 `contributes.menus` array —
@@ -1011,6 +1015,31 @@ the array is kept in the same order anyway, because a file that reads in a diffe
 the menu renders is a trap for the next edit. `Stop Sharing Tab` is gated on the
 `aiBrowser.tabShared` context key, republished from `extension.ts` on every share change, so it
 is only there while there is something to stop.
+
+**The `0_start` group duplicates the two Connect entries on purpose** — asked for, so that
+connecting is one click from the tab rather than two levels deep. A command may sit in several
+menus; the submenu copies stay because each submenu is the complete list for its assistant.
+The dropdown only renders on a browser tab, so with the grant in place Connect from here always
+shares that tab with the assistant being connected; without it `focusedTab` is `undefined`, the
+connect goes ahead sharing nothing, and its confirmation says so — see
+[Giving a tab to an assistant](#giving-a-tab-to-an-assistant).
+
+**`Open New Browser Tab` is its own command (`aiBrowser.newTab`), not `aiBrowser.show` in the
+menu.** An `editor/title` entry is handed the editor's resource as its first argument, so `show`
+would receive the current page's Uri and open a second copy of it. `newTab` drops the argument
+and runs `workbench.action.browser.open` with no URL — an empty tab with the browser's own address bar, the same thing its built-in
+`workbench.action.browser.newTab` does.
+
+**It asks for the open command and the setting, not for the grant**, and that is the one
+deliberate departure from `shouldUseIntegratedBrowser()`. The entry is only reachable from a
+built-in browser tab, so the browser is there by construction, and an empty tab needs no API.
+Going through `aiBrowser.show` — which does require the grant — sent every fresh install, the
+ungranted default, to a URL prompt and the webview panel from a row that says "New Browser Tab".
+`aiBrowser.useIntegratedBrowser: false` is still honoured: whoever chose the panel gets the
+panel. For the same reason the command is **hidden from the palette** (`commandPalette`,
+`when: false`): on a panel host such as Cursor a palette title promising a new browser tab would
+load the address into the one existing panel instead (breaks-silently #74). The status bar
+menu's `Open URL…` is the palette-independent route to a page.
 
 **Nesting is possible, and the rule that permits it is worth knowing before adding a third
 level.** `menusExtensionPoint` looks the target menu up in the built-in table first and falls
@@ -2686,7 +2715,7 @@ which the rest of the report is read as Markdown.
 
 Two dropdown entries — visible area and full page — in a group of their own (`2_shot`), which
 is what puts a separator around them. Group names sort alphabetically, so the numeric prefixes
-(`1_copy`, `2_shot`, `3_assistant`, `4_share` at the top level, `1_add` and `2_mcp` inside each
+(`0_start`, `1_copy`, `2_shot`, `3_assistant`, `4_share` at the top level, `1_add` and `2_mcp` inside each
 assistant's submenu) are the running order of the menu — see
 [the dropdown](#the-dropdown-on-the-browser-tab) for the whole tree.
 
