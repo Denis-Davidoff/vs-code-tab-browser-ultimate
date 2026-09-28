@@ -2335,6 +2335,16 @@ every other assignment in the window carries on. **A paused caller does not fall
 broader assignment either**: resuming Claude on the page everybody else follows is undoing the
 instruction just as thoroughly as resuming it on the focused tab.
 
+**The pause ends when the last browser tab closes.** It exists so an assistant does not drift
+onto *another* page nobody chose for it, and with no page open there is nothing to drift onto —
+so `_loseTab` calls `releasePaused()` once no tab is left, and the assistant follows whatever
+tab is opened next. Without that, closing the only tab after a Connect (which shares it) left
+`AI Browser $(debug-pause)` yellow in a window with no browser at all, until somebody found
+Stop Sharing Tab. The closing tab is filtered out of `browserTabs` explicitly rather than
+trusting the host to have dropped it before the event fires, and the lazy detector in
+`_resolveForCaller` asks the registry again after `_loseTab` rather than assuming "paused".
+Breaks-silently #173.
+
 **A command the user pressed carries no caller, and that is now the whole of the distinction.**
 It used to be a `user` flag threaded through `_resolveTab` and `capture`, and forgetting it in
 one branch was enough to answer a toolbar screenshot with "No browser tab is open" while another
@@ -3618,6 +3628,10 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
     that opens the "install developer tools" dialog, on every Connect Codex. Use the Git
     extension's resolved path, a non-`/usr/bin` git on `PATH`, or `/usr/bin/git` only once
     `xcode-select -p` succeeds.
+173. **A pause that outlives every tab** → a closed shared tab pauses its assistant, which is
+    right while other pages are open and meaningless once none are: the status bar stayed
+    yellow with `$(debug-pause)` in a window with no browser tab, and only Stop Sharing Tab
+    cleared it. Release the pauses when the last tab closes (`releasePaused`).
 
 ## Special cases and non-obvious decisions
 

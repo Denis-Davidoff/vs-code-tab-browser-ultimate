@@ -220,6 +220,23 @@ export class ShareRegistry<T> {
 	}
 
 	/**
+	 * Releases every paused assignment, and reports the targets it released.
+	 *
+	 * For when the last browser tab has closed. A pause exists so an assistant
+	 * does not drift onto *another* page the user did not choose for it; with
+	 * no page open at all there is nothing to drift onto, and keeping the pause
+	 * left the status bar warning about a share with no tab anywhere in the
+	 * window until somebody found Stop Sharing Tab. Released, the assistant
+	 * follows whichever tab the user opens next, which is what opening one
+	 * means.
+	 */
+	public releasePaused(): ShareTarget[] {
+		const released = [...this._lost.values()];
+		this._lost.clear();
+		return released;
+	}
+
+	/**
 	 * Records that an assistant drove a tab through `target`, the assignment
 	 * its call resolved to. Answers whether that is news.
 	 *

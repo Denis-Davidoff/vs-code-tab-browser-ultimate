@@ -567,7 +567,12 @@ export class BrowserController implements vscode.Disposable {
 			// `onDidCloseBrowserTab` beats it to this, but on a host that does
 			// not fire the event it is the only detector there is.
 			this._loseTab(resolution.tab);
-			return { paused: resolution.target };
+			// Asked again rather than assumed paused: closing the last tab
+			// releases the pause, and then this caller is simply unassigned.
+			const after = this._shares.resolve(caller);
+			if (after.kind === 'paused') {
+				return { paused: after.target };
+			}
 		}
 
 		return { tab: this._resolveTab(caller) };
@@ -1243,7 +1248,15 @@ export class BrowserController implements vscode.Disposable {
 			}
 		}
 
-		if (this._shares.forget(tab).length === 0) {
+		const lost = this._shares.forget(tab);
+		// The last tab gone releases every pause, not only this tab's: with no
+		// page open there is nothing an assistant could drift onto, and the
+		// paused item would otherwise stay yellow in a window with no browser
+		// at all. The closing tab is filtered out explicitly rather than
+		// trusting `browserTabs` to have dropped it before the event fires.
+		const remaining = (vscode.window.browserTabs ?? []).filter(open => open !== tab);
+		const released = remaining.length === 0 ? this._shares.releasePaused() : [];
+		if (lost.length === 0 && released.length === 0) {
 			return;
 		}
 		this._onDidChangeShare.fire();

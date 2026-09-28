@@ -128,6 +128,22 @@ suite('ShareRegistry when a tab closes', () => {
 		assert.ok(shares.isEmpty);
 	});
 
+	test('releasing the pauses frees every paused assistant and keeps the live ones', () => {
+		// What the controller does when the last browser tab closes: with no
+		// page open there is nothing to drift onto, so nothing stays paused.
+		const shares = new ShareRegistry<string>();
+		shares.share(forKind('claude'), tabA);
+		shares.share(forKind('codex'), tabB);
+		shares.forget(tabA);
+
+		const released = shares.releasePaused();
+		assert.deepStrictEqual(released.map(targetName), ['Claude Code']);
+		assert.deepStrictEqual(shares.resolve(claude), { kind: 'unassigned' });
+		assert.strictEqual(shares.resolve(codex).kind, 'shared');
+		assert.deepStrictEqual(shares.pausedTargets(), []);
+		assert.deepStrictEqual(shares.releasePaused(), []);
+	});
+
 	test('a tab closing while two assistants share it pauses both', () => {
 		const shares = new ShareRegistry<string>();
 		shares.share(forKind('claude'), tabA);
