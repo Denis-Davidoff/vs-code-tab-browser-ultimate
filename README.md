@@ -158,6 +158,9 @@ await vscode.commands.executeCommand('aiBrowser.api.open', vscode.Uri.parse('htt
 });
 ```
 
+A plain string works too, and is relayed exactly as given — prefer it for an address whose query
+carries encoded characters such as `%26`, which a `vscode.Uri` decodes.
+
 The extension also registers an external uri opener for `http` and `https`, but only for
 localhost-like hosts (`localhost`, `127.0.0.1`, `0.0.0.0` and the IPv6 equivalents) — so a
 forwarded port offers to open here, and every other url still goes to your system browser.

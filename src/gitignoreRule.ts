@@ -25,10 +25,18 @@ const negating = new Set(['!config.toml', '!/config.toml', '!*.toml', '!/*.toml'
 export function ignoresConfigToml(gitignore: string): boolean {
 	let ignored = false;
 	for (const raw of gitignore.split(/\r?\n/)) {
-		const line = raw.trim();
+		// Trailing whitespace only. Git ignores unescaped trailing spaces but
+		// keeps leading ones as part of the pattern, so ` config.toml` names a
+		// file called " config.toml" — reading it trimmed called a file covered
+		// that git leaves free for `git add`.
+		const line = raw.replace(/[ \t]+$/, '');
 		if (covering.has(line)) {
 			ignored = true;
-		} else if (negating.has(line)) {
+		} else if (negating.has(line) || line.startsWith('!')) {
+			// **Any negation we cannot read counts as one that re-includes the
+			// file.** `!config.*`, `!*`, `!c*` all do, and only the literal four
+			// were modelled, so the rule above them was trusted. The cost of the
+			// conservative reading is one redundant line appended after it.
 			ignored = false;
 		}
 	}

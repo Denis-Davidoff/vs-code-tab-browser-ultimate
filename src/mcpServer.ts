@@ -28,6 +28,8 @@ const drainLimitBytes = 16 * 1024 * 1024;
 
 /** How long after its last call an assistant still counts as active. Read on demand. */
 const clientIdleMs = 10 * 60 * 1000;
+/** How many `Mcp-Session-Id`s are remembered before the oldest is forgotten. */
+const sessionLimit = 256;
 
 /** Which assistants are currently calling the server. */
 export interface ClientSet {
@@ -300,6 +302,17 @@ export class McpServer implements vscode.Disposable {
 			kind = classifyClient(clientName);
 			sessionId = generateUuid();
 			this._sessionKinds.set(sessionId, kind);
+			// Bounded. The map lives as long as the window and every restart,
+			// new conversation or reconnect of an assistant adds an id that is
+			// never removed. A `Map` iterates in insertion order, so the first
+			// key is the oldest `initialize` — the one least likely to still be
+			// in use, and a client that is gets a 404 and initializes again.
+			if (this._sessionKinds.size > sessionLimit) {
+				const oldest = this._sessionKinds.keys().next().value;
+				if (oldest !== undefined) {
+					this._sessionKinds.delete(oldest);
+				}
+			}
 			res.setHeader('mcp-session-id', sessionId);
 		}
 

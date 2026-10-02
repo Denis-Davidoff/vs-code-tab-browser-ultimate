@@ -248,8 +248,9 @@ onceDocumentLoaded(() => {
 
 			// Try to bust the cache for the iframe
 			// There does not appear to be any way to reliably do this except modifying the url
-			const existing = new URLSearchParams(location.search);
-			url.searchParams.append('id', existing.get('id')!);
+			// Only a parameter of our own: upstream also appended the webview's
+			// `id`, which collides with the page's own — `/product?id=42` reached
+			// a last-value-wins server as `id=<webview uuid>`.
 			url.searchParams.append('vscodeBrowserReqId', Date.now().toString());
 
 			iframe.src = url.toString();

@@ -256,9 +256,18 @@ export async function writeClaudeConfig(
 	// edit lands first. One locked writer and one unlocked is the same as no
 	// lock (breaks-silently #16). Losing the race reports as `unparsable`, which
 	// is the existing refusal path and leaves the file untouched.
+	// **The endpoint is captured before the first await**, and the write is
+	// refused if the server it names is no longer the one serving. `server.url`
+	// is a getter over the live port: an MCP setting toggled while this waited on
+	// the lock or the read disposed the server, and the entry was written with
+	// no `url` at all (breaks-silently #19, on the click path this time).
+	const url = server.url;
+	if (!url) {
+		throw new Error(serverStoppedMessage);
+	}
 	let outcome: 'written' | 'unparsable' = 'unparsable';
 	const took = await withLock(lockPath(configLockName(uri)), async () => {
-		outcome = await writeClaudeConfigLocked(uri, server);
+		outcome = await writeClaudeConfigLocked(uri, server, url);
 	});
 	// **A lost lock is its own answer, not `unparsable`.** Folding it into the
 	// existing refusal was safe for the *file* — nothing is written either way —
@@ -274,6 +283,7 @@ export async function writeClaudeConfig(
 async function writeClaudeConfigLocked(
 	uri: vscode.Uri,
 	server: McpServer,
+	url: string,
 ): Promise<'written' | 'unparsable'> {
 	const config = await readClaudeConfig(uri);
 	if (config === undefined) {
@@ -283,13 +293,20 @@ async function writeClaudeConfigLocked(
 	config.mcpServers = { ...(config.mcpServers ?? {}) };
 	config.mcpServers[serverName] = {
 		type: 'http',
-		url: server.url,
+		url,
 		headers: { Authorization: `Bearer ${server.token}` },
 	};
 
+	// Asked again with the bytes ready: a restart in the meantime moved the port.
+	if (server.url !== url) {
+		throw new Error(serverStoppedMessage);
+	}
 	await writeText(uri, `${JSON.stringify(config, null, 2)}\n`);
 	return 'written';
 }
+
+/** Why a connect was abandoned because the server stopped or restarted under it. */
+const serverStoppedMessage = 'the MCP server stopped or restarted while the file was being written — press Connect again';
 
 /**
  * The command that adds us to Claude Code, for when writing the file failed.
@@ -355,6 +372,7 @@ async function writeCodexConfig(
 	uri: vscode.Uri,
 	name: string,
 	server: McpServer,
+	url: string,
 ): Promise<void> {
 
 	// Same rule as `readClaudeConfig`: this rebuilds the file from what it reads,
@@ -385,7 +403,7 @@ async function writeCodexConfig(
 		.map(entry => [entry.firstLine, entry.endLine] as const);
 
 	const next = spliceCodexTables(
-		lines, ranges, codexTableLines(name, endpoint(server, name)),
+		lines, ranges, codexTableLines(name, endpoint(server, name, url)),
 		(from, to) => codexRangeDeletable(existing, from, to));
 	if (!next) {
 		// A range we would replace holds something that is not our table. The
@@ -400,6 +418,11 @@ async function writeCodexConfig(
 	let text = next.join(newline);
 	if (!text.endsWith(newline)) {
 		text += newline;
+	}
+	// The same check as the Claude writer: a restart since the endpoint was
+	// captured means the port in `text` is no longer the one serving.
+	if (server.url !== url) {
+		throw new Error(serverStoppedMessage);
 	}
 	await writeText(uri, text);
 }
@@ -435,6 +458,11 @@ export async function writeCodexProjectConfig(
 	// the startup repair takes for it: the two URIs can spell one path
 	// differently, and two lock names for one file is no lock (#16).
 	const uri = codexProjectIsGlobal(folder) ? codexGlobalConfigUri() : codexProjectConfigUri(folder);
+	// Captured before the first await, for the reason given in `writeClaudeConfig`.
+	const url = server.url;
+	if (!url) {
+		throw new Error(serverStoppedMessage);
+	}
 	// **A tracked file is refused, not written.** The `.gitignore` below only
 	// keeps an *untracked* file out of git; a team that commits
 	// `.codex/config.toml` for its shared settings would get our bearer token
@@ -459,15 +487,22 @@ export async function writeCodexProjectConfig(
 	// (a root `.gitignore`, `info/exclude`); only "ignored" or "not a repository"
 	// lets the write go ahead. The throw lands in `connectCodex`, which hands
 	// over `codex mcp add`. Breaks-silently #188.
-	if (!await keepTokenOutOfGit(folder)) {
-		const verdict = await gitIgnoreVerdict(folder, '.codex/config.toml');
-		if (verdict !== 'ignored' && verdict !== 'noRepository') {
-			throw new Error(vscode.l10n.t(
-				"its .gitignore rule could not be written, and without it this workspace's bearer token could be committed"));
-		}
+	//
+	// **And git has the last word whenever it can be asked.** Our reading of
+	// `.codex/.gitignore` is a model of git's, and a model can be wrong in the
+	// direction that leaks — a negation it did not know about, a leading space
+	// — so a clean "not ignored" from `git check-ignore` refuses even when the
+	// rule reads as in place. Only an answer git could not give falls back to
+	// trusting the rule.
+	const ruleInPlace = await keepTokenOutOfGit(folder);
+	const verdict = await gitIgnoreVerdict(folder, '.codex/config.toml');
+	if (ruleInPlace ? verdict === 'notIgnored' : verdict !== 'ignored' && verdict !== 'noRepository') {
+		throw new Error(ruleInPlace
+			? vscode.l10n.t("git does not ignore it despite .codex/.gitignore, and this workspace's bearer token could be committed")
+			: vscode.l10n.t("its .gitignore rule could not be written, and without it this workspace's bearer token could be committed"));
 	}
 	const wrote = await withLock(lockPath(configLockName(uri)), () =>
-		writeCodexConfig(uri, serverName, server));
+		writeCodexConfig(uri, serverName, server, url));
 	if (!wrote) {
 		throw new Error('another window is writing .codex/config.toml');
 	}
@@ -1358,6 +1393,7 @@ export async function missingWorkspaceTokens(
 	now = Date.now(),
 ): Promise<MissingWorkspaces> {
 	const candidates: { raw: string; token: string; uri: vscode.Uri }[] = [];
+	const seeding: string[] = [];
 
 	for (const key of store.keys()) {
 		if (!key.startsWith(tokenKeyPrefix)) {
@@ -1395,7 +1431,12 @@ export async function missingWorkspaceTokens(
 			// evidence either way, and "no evidence" must not read as "missing"
 			// — a window running an older build is exactly the live one we
 			// cannot see. Start its grace period now and leave it alone.
-			await store.update(seenKey, now);
+			//
+			// Collected rather than awaited here: each `update` persists the
+			// whole memento through the main process, and the first run after an
+			// upgrade seeds every historical workspace on the machine, one
+			// round trip after another, before a single `stat` had started.
+			seeding.push(seenKey);
 			continue;
 		}
 		if (now - seen < seenGraceMs) {
@@ -1404,6 +1445,7 @@ export async function missingWorkspaceTokens(
 
 		candidates.push({ raw, token, uri });
 	}
+	await Promise.all(seeding.map(key => store.update(key, now)));
 
 	// In parallel, because this is a list of every folder ever opened and the
 	// checks are independent. Each one is bounded by `statTimeoutMs`, so a

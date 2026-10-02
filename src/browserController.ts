@@ -142,14 +142,12 @@ class TabSession {
 	}
 
 	private async _enableDomains(): Promise<void> {
-		await this.client.send('DOM.enable', {}, this.sessionId);
-		await this.client.send('CSS.enable', {}, this.sessionId);
-		await this.client.send('Runtime.enable', {}, this.sessionId);
-		await this.client.send('Log.enable', {}, this.sessionId);
-		// Page is enabled here rather than per call because `navigate` waits for
-		// `Page.loadEventFired` on this session.
-		await this.client.send('Page.enable', {}, this.sessionId);
-
+		// **Subscribed before the enables, not after.** `Log.enable` replays every
+		// entry collected so far as `Log.entryAdded`, and `Runtime.enable` replays
+		// the stored `consoleAPICalled` messages — and those events arrive *before*
+		// the command's reply. Listening only once the enables had resolved
+		// dropped exactly the output `_primeConsole` exists to keep: a page that
+		// threw on load before anything attached answered "The console is empty".
 		this._subscriptions.push(this.client.on('Runtime.consoleAPICalled', (params: any) => {
 			const text = (params.args ?? [])
 				.map((arg: any) => arg.value ?? arg.description ?? arg.unserializableValue ?? '')
@@ -165,6 +163,13 @@ class TabSession {
 			const details = params.exceptionDetails;
 			this._record('error', details?.exception?.description ?? details?.text ?? 'Uncaught exception');
 		}));
+
+		// Independent of one another, so in parallel: this is on the path every
+		// tool call waits for when a tab has no session yet. Page is enabled here
+		// rather than per call because `navigate` waits for `Page.loadEventFired`
+		// on this session.
+		await Promise.all(['DOM', 'CSS', 'Runtime', 'Log', 'Page'].map(domain =>
+			this.client.send(`${domain}.enable`, {}, this.sessionId)));
 	}
 
 	private _record(level: string, text: string): void {
@@ -235,6 +240,20 @@ function whenNotAborted(
 			reject(err);
 		});
 	});
+}
+
+/**
+ * Refuses, in words a model can act on, when the `browser` proposal is not
+ * ours to use. Every tool path reads `vscode.window.browserTabs` sooner or
+ * later, and on a host that carries the proposal without granting it that
+ * read throws a raw "CANNOT use API proposal" instead.
+ */
+function requireGrant(): void {
+	if (!isBrowserApiGranted()) {
+		throw new Error(
+			'The integrated browser is unavailable in this editor. It needs the `browser` API proposal; ' +
+			'the user can enable it with the "AI Browser: Enable Integrated Browser API" command.');
+	}
 }
 
 /** Result of a page-side evaluation, already unwrapped. */
@@ -714,11 +733,7 @@ export class BrowserController implements vscode.Disposable {
 	 * text the assistant sees when there is nothing to drive.
 	 */
 	private _requireTab(caller?: CallerIdentity): vscode.BrowserTab {
-		if (!isBrowserApiGranted()) {
-			throw new Error(
-				'The integrated browser is unavailable in this editor. It needs the `browser` API proposal; ' +
-				'the user can enable it with the "AI Browser: Enable Integrated Browser API" command.');
-		}
+		requireGrant();
 
 		// No caller means a command the user pressed. It never pauses: a lost
 		// assignment is an assistant's problem, and blocking a button would be
@@ -874,6 +889,9 @@ export class BrowserController implements vscode.Disposable {
 
 		const abort = new AbortController();
 		this._openAborts.set(tab, abort);
+		// Assigned below, before anything can land; read by the landing open to
+		// ask whether it is still the current one for this tab.
+		let promise: Promise<TabSession> | undefined;
 		const opening = this._awaitSlot().then(() => {
 			slotHeld = true;
 			return TabSession.open(tab, abort.signal);
@@ -886,7 +904,27 @@ export class BrowserController implements vscode.Disposable {
 				session.dispose();
 				throw new Error('The integrated browser connection has been closed.');
 			}
-			this._opening.delete(tab);
+			// **Only the current open may adopt the slot.** `navigate`'s retry
+			// drops an open without aborting it and starts another, so two can be
+			// in flight for one tab. The older one used to delete the newer one's
+			// `_opening` entry on landing, and whichever landed second overwrote
+			// `_sessions` without disposing what it replaced — a leaked channel
+			// and its console listeners for the life of the window (item 29's
+			// shape). A live session already cached for the tab wins; the
+			// newcomer closes itself and hands that one out instead.
+			if (this._opening.get(tab) === promise) {
+				this._opening.delete(tab);
+			}
+			const current = this._sessions.get(tab);
+			if (current && current !== session && !current.isClosed) {
+				session.dispose();
+				releaseSlot();
+				this._touch(tab);
+				return current;
+			}
+			if (current && current !== session) {
+				current.dispose();
+			}
 			this._sessions.set(tab, session);
 			this._touch(tab);
 			this._evict(tab);
@@ -898,7 +936,7 @@ export class BrowserController implements vscode.Disposable {
 		// Only for the paths that never reached the line above: the open failed, the
 		// tab closed while it was in flight, or the controller was disposed. A
 		// success has already given the slot back, and `releaseSlot` is idempotent.
-		const promise = opening.finally(() => {
+		promise = opening.finally(() => {
 			releaseSlot();
 			if (this._openAborts.get(tab) === abort) {
 				this._openAborts.delete(tab);
@@ -1834,6 +1872,12 @@ export class BrowserController implements vscode.Disposable {
 	}
 
 	public async selectedElement(caller: CallerIdentity): Promise<unknown> {
+		// Settled and guarded like every other tool. Without the guard the read
+		// of `browserTabs` below threw the getter's raw "CANNOT use API
+		// proposal" at the model instead of the refusal written for it; without
+		// the settle it could read a share halfway through a transition.
+		await this._settle();
+		requireGrant();
 		// Resolved through the caller, so this can only ever return what was
 		// picked on the tab that caller works on.
 		const { tab, paused } = this._resolveForCaller(caller);
@@ -1965,11 +2009,36 @@ export class BrowserController implements vscode.Disposable {
 				release();
 			}
 		}
-		const session = await TabSession.open(tab);
+		// **Watched for the tab closing, from the open to the end of the work.**
+		// Closing a tab does not close its CDP session, and `send` has no timeout,
+		// so a toolbar screenshot of a tab closed mid-handshake or mid-capture
+		// waited for an answer that was never coming — the progress item and the
+		// channel both stayed up for good. Aborting ends the open; disposing the
+		// session rejects whatever the capture is waiting on.
+		const abort = new AbortController();
+		let session: TabSession | undefined;
+		let watch: vscode.Disposable | undefined;
 		try {
+			watch = vscode.window.onDidCloseBrowserTab(gone => {
+				if (gone === tab) {
+					abort.abort();
+					session?.dispose();
+				}
+			});
+		} catch {
+			// Proposal-gated; a host without the grant has no tab to borrow.
+		}
+		try {
+			session = await TabSession.open(tab, abort.signal);
+			if (abort.signal.aborted) {
+				throw new Error('The browser tab was closed.');
+			}
 			return await run(session);
+		} catch (err) {
+			throw abort.signal.aborted ? new Error('The browser tab was closed.') : err;
 		} finally {
-			session.dispose();
+			watch?.dispose();
+			session?.dispose();
 		}
 	}
 

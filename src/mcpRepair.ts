@@ -148,10 +148,41 @@ export function repairClaudeJson(text: string, endpoint: Endpoint): Repair {
 	}
 
 	const collapsed = ours.filter(name => name !== canonical);
-	const next = `${JSON.stringify(parsed, null, 2)}\n`;
-	return next === text
-		? unchanged
-		: { text: next, changed: true, collapsed };
+	// **Compared by meaning, not by bytes.** Comparing the re-serialised text
+	// with the original called a correct entry "repaired" whenever the file was
+	// formatted differently from `JSON.stringify(…, 2)` — 4-space indentation,
+	// CRLF, no trailing newline — so the unattended repair reformatted a
+	// committed, team-shared `.mcp.json` and announced a port update that never
+	// happened; on Windows with `core.autocrlf` it did so on every start.
+	if (jsonEqual(parsed, JSON.parse(text.trim() === '' ? '{}' : text))) {
+		return unchanged;
+	}
+	// And when it does change, it keeps the file's own indentation and newlines,
+	// so the diff a team sees is the entry and nothing else.
+	const newline = /\r\n/.test(text) ? '\r\n' : '\n';
+	const indent = /^[ \t]+(?=")/m.exec(text)?.[0] ?? 2;
+	const next = `${JSON.stringify(parsed, null, indent).replace(/\n/g, newline)}${newline}`;
+	return { text: next, changed: true, collapsed };
+}
+
+/** Deep equality of two parsed JSON values, ignoring key order. */
+function jsonEqual(a: unknown, b: unknown): boolean {
+	if (a === b) {
+		return true;
+	}
+	if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) {
+		return false;
+	}
+	if (Array.isArray(a) !== Array.isArray(b)) {
+		return false;
+	}
+	const left = a as Record<string, unknown>;
+	const right = b as Record<string, unknown>;
+	const keys = Object.keys(left);
+	if (keys.length !== Object.keys(right).length) {
+		return false;
+	}
+	return keys.every(key => Object.prototype.hasOwnProperty.call(right, key) && jsonEqual(left[key], right[key]));
 }
 
 /** Whether one `.mcp.json` entry carries our token, in either supported place. */
@@ -544,6 +575,13 @@ export function repairCodexToml(
 	const foreign = new Set(entries.map(entry => rootTable(entry.name)).filter(name => !roots.includes(name)));
 	const canonical = foreign.has(endpoint.name) ? source : endpoint.name;
 
+	// Same rule as the `.mcp.json` side: an entry that already says the right
+	// thing in another spelling — `url = '…'`, `{Authorization="…"}`, the dotted
+	// or sub-table form — is not rewritten into ours and reported as a port fix.
+	if (codexAlreadyCorrect(entries, roots, source, canonical, endpoint)) {
+		return unchanged;
+	}
+
 	const newline = /\r\n/.test(text) ? '\r\n' : '\n';
 	const lines = text.split(/\r?\n/);
 
@@ -738,6 +776,51 @@ export function repairCodexToml(
 	return next === text
 		? unchanged
 		: { text: next, changed: true, collapsed };
+}
+
+/**
+ * Whether our one table already carries the right `url` and authorization,
+ * under the right name, with nothing for the repair to fold or collapse.
+ *
+ * Every condition is one the rewrite below would act on, so answering `true`
+ * only skips edits that change no meaning. A credential it cannot read
+ * answers `false`, which leaves the decision to the rewrite as before.
+ */
+function codexAlreadyCorrect(
+	entries: readonly CodexEntry[],
+	roots: readonly string[],
+	source: string,
+	canonical: string,
+	endpoint: Endpoint,
+): boolean {
+	if (roots.length !== 1 || source !== canonical) {
+		return false;
+	}
+	const root = entries.find(entry => entry.name === source);
+	if (!root || root.values.get('url') !== endpoint.url) {
+		return false;
+	}
+	const wanted = `Bearer ${endpoint.token}`;
+	const isAuthorization = (key: string) => stripQuotes(key).toLowerCase() === 'authorization';
+	const subTable = entries.find(entry => entry.name === `${source}.http_headers`);
+	const inline = root.values.get('http_headers');
+	if (inline !== undefined) {
+		if (subTable) {
+			return false; // the ambiguous shape, which the rewrite folds
+		}
+		const pair = parseInlineTable(inline).find(have => isAuthorization(have.key));
+		return pair !== undefined && stripQuotes(pair.value) === wanted;
+	}
+	const dotted = [...root.values].find(([key]) =>
+		key.startsWith('http_headers.') && isAuthorization(key.slice('http_headers.'.length)));
+	if (dotted) {
+		return dotted[1] === wanted;
+	}
+	if (subTable) {
+		const value = [...subTable.values].find(([key]) => isAuthorization(key));
+		return value !== undefined && value[1] === wanted;
+	}
+	return false;
 }
 
 /* ------------------------------------------------ inline tables, minimally */

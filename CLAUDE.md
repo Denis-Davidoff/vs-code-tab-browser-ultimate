@@ -228,9 +228,11 @@ What that implies for new functionality:
   `postMessage` to the extension host.
 - The iframe is created with `sandbox="allow-scripts allow-forms allow-same-origin allow-downloads"`.
 
-`navigateTo()` in the webview appends `id` and `vscodeBrowserReqId` query parameters to the
-URL. That is a cache-busting hack — it was the only reliable way found to force the iframe to
-reload.
+`navigateTo()` in the webview appends a `vscodeBrowserReqId` query parameter to the URL. That
+is a cache-busting hack — it was the only reliable way found to force the iframe to reload.
+Upstream also appended the webview's own `id`, and that one is gone on purpose: it collides with
+the page's parameter of the same name, so `/product?id=42` reached a last-value-wins server as
+`id=<webview uuid>` (breaks-silently #198). Only a name of our own is safe to add.
 
 ## Build
 
@@ -3700,6 +3702,59 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
     `git add` from a commit. The rule being in place is now a condition of the write; failing
     that, `git check-ignore` must say "ignored" or "no repository", or Connect Codex falls back
     to `codex mcp add`.
+189. **Cancelling a wait without cancelling the sends around it** → the element picker's token
+    settled `once` and nothing else, so a pick cancelled during setup — or whose tab closed,
+    which does not close its CDP session (#123) — sat on a `send` nothing would answer, and its
+    `finally` then awaited the inspect-mode cleanup with no bound. `withProgress` and the Cancel
+    pick button stayed up for the session. The tab watch now disposes the client, cancellation
+    before the click does too, the session open is raced against the token, and the cleanup is
+    bounded and skipped on a closed tab — the shape `inspectElement` already had (#181).
+190. **Subscribing to CDP events after the command that replays them** → `Log.enable` and
+    `Runtime.enable` send what was collected before attaching as events, and those arrive
+    *before* the reply. `_enableDomains` listened only afterwards, so a page that logged or threw
+    on load answered `browser_console` with "The console is empty". Subscribe first, then enable.
+191. **An async open that adopts a slot it no longer owns** → `navigate`'s retry drops an open
+    without aborting it and starts another, so two can be in flight for one tab. The older one
+    deleted the newer one's `_opening` entry, and whichever landed second overwrote `_sessions`
+    without disposing what it replaced — item 29's leak, entered through the retry. A landing
+    open now clears `_opening` only if it is still the current one, and yields to a live session
+    already cached.
+192. **A tool path that reads the proposal without the shared guard** → `selectedElement` went
+    straight to `_resolveForCaller`, so on a host with the proposal but not the grant the model
+    got the getter's raw "CANNOT use API proposal" instead of the refusal naming the command
+    (#11). Every tool takes `requireGrant()` and `_settle()`.
+193. **Checking a name with `access` and then creating it with `writeFile`** → `writeFile`
+    follows a dangling symlink, so a repository committing `.ai-browser/.gitignore` as one chose
+    where our file was created, outside the workspace — #174 closed for the directory and left
+    open for the file inside it. Create with `wx`, and read `EEXIST` as "already there".
+194. **The second half of a command left outside its `try`** → the screenshot caught a failed
+    capture and not a failed save, so `ENOSPC` or an unusable temp root became VS Code's generic
+    "command failed" toast over the page just captured (#10).
+195. **Deciding "changed" by comparing re-serialised text with the original** → a correct
+    `.mcp.json` with 4-space indentation, CRLF or no trailing newline came back `changed`, so the
+    unattended repair reformatted a committed file and announced a port update that never
+    happened — on every start under `core.autocrlf`. The Codex side did the same for `url = '…'`
+    and `{Authorization="…"}`. Compare by meaning (`jsonEqual`, `codexAlreadyCorrect`), and when
+    a write is due, keep the file's indentation and newlines.
+196. **Modelling git's ignore rules and trusting the model** → see the `.gitignore` paragraphs
+    under [Both project config files are gitignored](#both-project-config-files-are-gitignored-in-this-repository-and-that-is-not-a-contradiction):
+    a leading space and an unmodelled negation both read as protective while git left the
+    token-bearing file free to add. Ask git whenever it can answer.
+197. **Reading `server.url` after an await on the click path** → #19 was fixed for the repair and
+    not for Connect: an MCP setting toggled while `writeClaudeConfig` or the Codex writer waited
+    on the lock disposed the server, and the entry went out with no `url` (or `url = ""`). Both
+    capture the endpoint first and refuse if `server.url` has moved by the time the bytes are
+    ready.
+198. **A cache-busting parameter under a name the page may use** → the webview appended its own
+    `id`, so every page with an `id` query parameter got the webview's UUID as its last value.
+199. **Expecting a `vscode.Uri` to round-trip an address** → it stores the query decoded, so
+    `toString(true)` turns `?q=a%26b` into `?q=a&b`, and `toString()` is worse — it encodes every
+    `=` and `&`, so `?x=1&y=2` becomes `?x%3D1%26y%3D2` (measured with `vscode-uri`). There is no
+    faithful spelling once the Uri exists; `aiBrowser.api.open` therefore also accepts a string
+    and relays it unchanged, and keeps `toString(true)` for a Uri as the lesser loss.
+200. **A per-window map with no eviction** → every `initialize` added an `Mcp-Session-Id` to the
+    window-lifetime `_sessionKinds` and nothing removed one. It is capped at 256, dropping the
+    oldest; a client still using a dropped id gets the 404 of #178 and initializes again.
 
 ## Special cases and non-obvious decisions
 
@@ -4266,6 +4321,14 @@ than a token in a commit. Breaks-silently #171.
 else — a root `.gitignore`, `info/exclude` — already ignores `.codex/config.toml`. Only
 "ignored" or "not a repository" lets the write go ahead; anything else, git missing included,
 refuses and hands over `codex mcp add`. Breaks-silently #188.
+
+**And git is asked even when the rule reads as in place.** `ignoresConfigToml` is a model of
+git's matching, and it was wrong in the leaking direction twice: it trimmed leading spaces, which
+git keeps as part of the pattern, and it treated only four literal negations as negations, so
+`config.toml` followed by `!config.*` read as protective. It now reads every `!` line it cannot
+model as re-including the file and strips trailing whitespace only — and a clean "not ignored"
+from `git check-ignore` refuses the write regardless of what the model says. Breaks-silently
+#196.
 
 **A `.gitignore` does nothing for a file git already tracks**, and teams do commit
 `.codex/config.toml` for shared settings. So `writeCodexProjectConfig` asks

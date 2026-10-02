@@ -1253,3 +1253,54 @@ suite('selecting a global Codex entry for removal', () => {
 		assert.deepStrictEqual(select(text), []);
 	});
 });
+
+suite('a correct entry in another spelling is not "repaired"', () => {
+
+	const entry = {
+		mcpServers: {
+			'ai-browser': { type: 'http', url, headers: { Authorization: `Bearer ${token}` } },
+		},
+	};
+
+	// Each of these used to come back `changed: true`, so the startup repair
+	// reformatted a committed `.mcp.json` and announced a port that never moved.
+	test('.mcp.json formatted differently is left alone', () => {
+		for (const text of [
+			JSON.stringify(entry, null, 4) + '\n',
+			JSON.stringify(entry, null, 2).replace(/\n/g, '\r\n') + '\r\n',
+			JSON.stringify(entry, null, 2),
+			JSON.stringify({ mcpServers: { 'ai-browser': { headers: { Authorization: `Bearer ${token}` }, url, type: 'http' } } }),
+		]) {
+			const result = repairClaudeJson(text, endpoint);
+			assert.strictEqual(result.changed, false, JSON.stringify(text));
+			assert.strictEqual(result.text, text);
+		}
+	});
+
+	test('a real fix keeps the file\'s indentation and newlines', () => {
+		const stale = { mcpServers: { 'ai-browser': { ...entry.mcpServers['ai-browser'], url: 'http://127.0.0.1:43110/mcp' } } };
+		const text = JSON.stringify(stale, null, 4).replace(/\n/g, '\r\n') + '\r\n';
+		const result = repairClaudeJson(text, endpoint);
+		assert.ok(result.changed);
+		assert.strictEqual(result.text, JSON.stringify(entry, null, 4).replace(/\n/g, '\r\n') + '\r\n');
+	});
+
+	test('config.toml in another spelling is left alone', () => {
+		for (const text of [
+			`[mcp_servers.ai-browser]\nurl = '${url}'\nhttp_headers = { Authorization = "Bearer ${token}" }\n`,
+			`[mcp_servers.ai-browser]\nurl = "${url}"\nhttp_headers = {Authorization='Bearer ${token}', X-Org = "acme"}\n`,
+			`[mcp_servers.ai-browser]\nurl = "${url}"\nhttp_headers.Authorization = "Bearer ${token}"\n`,
+			`[mcp_servers.ai-browser]\nurl = "${url}"\n\n[mcp_servers.ai-browser.http_headers]\nAuthorization = 'Bearer ${token}'\n`,
+		]) {
+			const result = repairToml(text);
+			assert.strictEqual(result.changed, false, text);
+		}
+	});
+
+	test('a stale port in another spelling is still corrected', () => {
+		const text = `[mcp_servers.ai-browser]\nurl = 'http://127.0.0.1:43110/mcp'\nhttp_headers = {Authorization='Bearer ${token}'}\n`;
+		const result = repairToml(text);
+		assert.ok(result.changed);
+		assert.strictEqual(codexEntries(result.text)[0].values.get('url'), url);
+	});
+});

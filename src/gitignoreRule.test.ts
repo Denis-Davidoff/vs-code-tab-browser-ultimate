@@ -10,7 +10,7 @@ import { ignoresConfigToml, withConfigTomlRule } from './gitignoreRule.ts';
 suite('ignoresConfigToml', () => {
 
 	test('recognises the shapes that name the file from its own directory', () => {
-		for (const line of ['config.toml', '/config.toml', '*', '*.toml', '  config.toml  ']) {
+		for (const line of ['config.toml', '/config.toml', '*', '*.toml', 'config.toml  ']) {
 			assert.strictEqual(ignoresConfigToml(`${line}\n`), true, line);
 		}
 	});
@@ -21,6 +21,19 @@ suite('ignoresConfigToml', () => {
 		assert.strictEqual(ignoresConfigToml('cache/\nlogs/\n'), false);
 		assert.strictEqual(ignoresConfigToml(''), false);
 		assert.strictEqual(ignoresConfigToml('# config.toml\n'), false);
+	});
+
+	// Both read as protective while git leaves the file unignored.
+	test('a leading space is part of the pattern, as in git', () => {
+		assert.strictEqual(ignoresConfigToml(' config.toml\n'), false);
+		assert.strictEqual(ignoresConfigToml('config.toml  \n'), true);
+	});
+
+	test('a negation it does not model is read as re-including the file', () => {
+		for (const line of ['!config.*', '!*', '!c*', '!**/config.toml']) {
+			assert.strictEqual(ignoresConfigToml(`config.toml\n${line}\n`), false, line);
+		}
+		assert.strictEqual(withConfigTomlRule('config.toml\n!config.*\n'), 'config.toml\n!config.*\nconfig.toml\n');
 	});
 
 	test('the last matching line wins, as in git', () => {

@@ -43,7 +43,18 @@ export async function copyScreenshot(
 			return;
 		}
 
-		const delivery = await copyImage(png, screenshotFileName(url, fullPage));
+		// Guarded like the capture above. Writing the temp file can fail —
+		// `ENOSPC`, a temp root we may not use, the collision limit — and an
+		// escaped rejection became VS Code's generic "command failed" toast over
+		// the page just captured, pausing it (breaks-silently #10).
+		let delivery: Awaited<ReturnType<typeof copyImage>>;
+		try {
+			delivery = await copyImage(png, screenshotFileName(url, fullPage));
+		} catch (err) {
+			refuse(vscode.l10n.t(
+				"Could not save the screenshot: {0}", err instanceof Error ? err.message : String(err)));
+			return;
+		}
 
 		if (delivery.kind === 'clipboard') {
 			confirm(clipped

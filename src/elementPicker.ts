@@ -284,8 +284,33 @@ async function withPickedElement<T>(
 	// that is no longer live until the next pick reclaimed it.
 	let client: CDPClient | undefined;
 	let sessionId: string | undefined;
+	// **Cancelling has to reach the sends, not only the wait.** Cancelling the
+	// token used to settle `once` and nothing else, so a pick cancelled during
+	// its setup — or whose tab closed, which does not close the CDP session —
+	// sat on a `send` that nothing would ever answer, and the `finally` then
+	// awaited one more, unbounded. `withProgress` and the Cancel pick button
+	// stayed up for the rest of the session (breaks-silently #123, #189).
+	// Disposing the client rejects everything it is waiting on.
+	let tabClosed = false;
+	let waiting = false;
+	const watch = watchTabClose(tab, () => {
+		tabClosed = true;
+		cts.cancel();
+		client?.dispose();
+	});
+	const onCancel = cts.token.onCancellationRequested(() => {
+		// While waiting for the click, `once` settles itself and the cleanup
+		// below still has a live session to send through.
+		if (!waiting) {
+			client?.dispose();
+		}
+	});
 	try {
-		client = new CDPClient(await tab.startCDPSession());
+		const channel = await untilCancelled(Promise.resolve(tab.startCDPSession()), cts.token);
+		client = new CDPClient(channel);
+		if (cts.token.isCancellationRequested) {
+			throw new vscode.CancellationError();
+		}
 		sessionId = await client.attachToPage();
 
 		await client.send('DOM.enable', {}, sessionId);
@@ -302,17 +327,77 @@ async function withPickedElement<T>(
 			},
 		}, sessionId);
 
+		waiting = true;
 		const { backendNodeId } = await client.once('Overlay.inspectNodeRequested', cts.token);
+		waiting = false;
 		return await use(client, sessionId, backendNodeId);
 	} finally {
+		onCancel.dispose();
+		watch.dispose();
 		// Has to be in `finally`: on cancellation the await above throws, and
 		// leaving inspect mode on strands the page in "pick an element" state.
-		if (client && sessionId !== undefined) {
-			await client.send('Overlay.setInspectMode', { mode: 'none', highlightConfig: {} }, sessionId)
+		// Not on a closed tab, whose session may never answer, and bounded
+		// everywhere else for the same reason — `send` has no timeout.
+		if (client && !client.isClosed && sessionId !== undefined && !tabClosed) {
+			await bounded(client.send('Overlay.setInspectMode', { mode: 'none', highlightConfig: {} }, sessionId),
+				cleanupTimeoutMs)
 				.catch(() => { /* cancelled, navigated away, or already detached */ });
 		}
 		client?.dispose();
 	}
+}
+
+/** How long the inspect-mode cleanup may take before the pick gives up on it. */
+const cleanupTimeoutMs = 2000;
+
+/** `pending`, or a rejection after `ms`. */
+function bounded<T>(pending: Promise<T>, ms: number): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const timer = setTimeout(() => reject(new Error('timed out')), ms);
+		pending.then(value => {
+			clearTimeout(timer);
+			resolve(value);
+		}, err => {
+			clearTimeout(timer);
+			reject(err);
+		});
+	});
+}
+
+/**
+ * The session once it opens, unless the pick is cancelled first. A session
+ * that arrives after the cancellation is closed rather than left open with
+ * nobody holding it.
+ */
+function untilCancelled(
+	pending: Promise<vscode.BrowserCDPSession>,
+	token: vscode.CancellationToken,
+): Promise<vscode.BrowserCDPSession> {
+	const closeLate = () => pending.then(
+		session => session.close().then(undefined, () => { /* already gone */ }),
+		() => { /* never opened */ });
+	if (token.isCancellationRequested) {
+		closeLate();
+		return Promise.reject(new vscode.CancellationError());
+	}
+	return new Promise((resolve, reject) => {
+		const sub = token.onCancellationRequested(() => {
+			sub.dispose();
+			closeLate();
+			reject(new vscode.CancellationError());
+		});
+		pending.then(session => {
+			sub.dispose();
+			if (token.isCancellationRequested) {
+				session.close().then(undefined, () => { /* already gone */ });
+				return;
+			}
+			resolve(session);
+		}, err => {
+			sub.dispose();
+			reject(err);
+		});
+	});
 }
 
 /** Runs a page-side function against the picked node and returns its string result. */
@@ -455,19 +540,19 @@ function requireBrowserTab(): vscode.BrowserTab | undefined {
  */
 function watchTabClose(
 	tab: vscode.BrowserTab,
-	cts: vscode.CancellationTokenSource,
+	onGone: () => void,
 ): vscode.Disposable {
 
 	const subs: vscode.Disposable[] = [];
 	try {
 		subs.push(vscode.window.onDidCloseBrowserTab(gone => {
 			if (gone === tab) {
-				cts.cancel();
+				onGone();
 			}
 		}));
 		subs.push(vscode.window.onDidChangeActiveBrowserTab(() => {
 			if (!(vscode.window.browserTabs ?? []).includes(tab)) {
-				cts.cancel();
+				onGone();
 			}
 		}));
 	} catch {
@@ -500,10 +585,9 @@ async function pickAndDeliver<T>(
 	// before there is something for it to cancel.
 	const cts = beginPick();
 	const cancel = cancelButton();
-	// Armed with the button, and for the same reason: both exist only for as
-	// long as there is a pick, and the tab closing is the one way a pick ends
-	// that nothing else notices.
-	const watch = watchTabClose(tab, cts);
+	// The tab closing is the one way a pick ends that nothing else notices; it
+	// is watched inside `withPickedElement`, which also owns the client the
+	// close has to dispose.
 	try {
 		await vscode.window.withProgress({
 			location: vscode.ProgressLocation.Window,
@@ -538,7 +622,6 @@ async function pickAndDeliver<T>(
 			}
 		});
 	} finally {
-		watch.dispose();
 		cancel.dispose();
 		endPick(cts);
 	}

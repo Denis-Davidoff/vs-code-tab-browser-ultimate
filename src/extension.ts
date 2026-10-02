@@ -366,12 +366,19 @@ export function activate(context: vscode.ExtensionContext) {
 		registerElementCommand(`aiBrowser.repeat.${action.replace(':', '.')}`, action, run);
 	}
 
-	context.subscriptions.push(vscode.commands.registerCommand(openApiCommand, async (url: vscode.Uri, showOptions?: {
+	context.subscriptions.push(vscode.commands.registerCommand(openApiCommand, async (url: vscode.Uri | string, showOptions?: {
 		preserveFocus?: boolean;
 		viewColumn: vscode.ViewColumn;
 	}) => {
 		if (await shouldUseIntegratedBrowser()) {
-			await openInIntegratedBrowser(url.toString(true));
+			// **A string is relayed as given.** A `vscode.Uri` cannot round-trip
+			// every address: it stores the query decoded, so `?q=a%26b` comes back
+			// from `toString(true)` as `?q=a&b` — two parameters where the caller
+			// sent one. `toString()` is no way out either: it re-encodes `=` and
+			// `&` as well, turning every ordinary query into a single opaque key.
+			// So the Uri keeps `toString(true)`, the better of the two, and a
+			// caller that needs an exact address passes the string.
+			await openInIntegratedBrowser(typeof url === 'string' ? url : url.toString(true));
 		} else {
 			manager.show(url, showOptions);
 		}

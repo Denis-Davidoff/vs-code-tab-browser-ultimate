@@ -114,10 +114,19 @@ async function reportDirectory(reportsIn: Assistant['reportsIn'], folder: vscode
  */
 async function keepOutOfGit(directory: string): Promise<void> {
 	const marker = path.join(directory, '.gitignore');
+	// **Created exclusively, never through a link.** `access` then `writeFile`
+	// followed a symlink at the name: a repository committing `.ai-browser/`
+	// with `.gitignore` as a dangling link chose where the file was created,
+	// outside the workspace — the threat of breaks-silently #174, closed for the
+	// directory and left open for the file in it. `wx` refuses anything already
+	// at the name, a dangling link included, and `EEXIST` is the "already there"
+	// answer the check used to give.
 	try {
-		await fs.access(marker);
-	} catch {
-		await fs.writeFile(marker, '*\n', 'utf8');
+		await fs.writeFile(marker, '*\n', { encoding: 'utf8', flag: 'wx', mode: 0o644 });
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== 'EEXIST') {
+			throw err;
+		}
 	}
 }
 
