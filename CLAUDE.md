@@ -150,6 +150,7 @@ Compiled with `tsc`, **no bundling**. `main: ./out/extension`.
 - [src/safeFiles.ts](src/safeFiles.ts) — the private temp directory, exclusive creates and atomic config writes (leaf, under test)
 - [src/gitignoreRule.ts](src/gitignoreRule.ts) — whether `.codex/.gitignore` keeps the token file out of git (leaf, under test)
 - [src/mcpServer.ts](src/mcpServer.ts) — HTTP transport, tools, client attribution
+- [src/screenshotFrames.ts](src/screenshotFrames.ts) — how `browser_screenshot` is cut into frames for a model (leaf, under test)
 - [src/mcpSetup.ts](src/mcpSetup.ts) — client config writing and the connect dialogs
 - [src/mcpCheck.ts](src/mcpCheck.ts) — the Check Connection report
 - [src/mcpClientState.ts](src/mcpClientState.ts) — config states (leaf, under test)
@@ -2777,8 +2778,58 @@ or web window the attempt is skipped: the extension host's clipboard belongs to 
 Screenshots are swept after 24 hours. Where they are written, and why it is not the shared
 `/tmp/ai-browser/`, is under [Handing reports to Claude Code and Codex](#handing-reports-to-claude-code-and-codex).
 
-The same capture is the `browser_screenshot` MCP tool, with a `fullPage` flag — one tool rather
-than two, since the only difference is that argument.
+**`browser_screenshot` is *not* the same capture, and returning it as one was a real bug.** The
+MCP tool used to hand over this PNG as `{ mimeType, base64 }` inside a **text** block, because
+`dispatch` serialised every result that way. Claude Code counts a text result as tokens and
+refuses anything past 25 000 (`MAX_MCP_OUTPUT_TOKENS`), so every full page and most retina
+viewports failed with `result (2,454,717 characters across 4 lines) exceeds maximum allowed
+tokens` — the four lines being our own pretty-printed JSON. And when one did fit, the model read
+a string of base64, not a picture. So for the model it is three changes:
+
+- **An `image` content block.** A tool returns `toolContent([...])` from
+  [src/mcpProtocol.ts](src/mcpProtocol.ts) and `dispatch` hands the blocks over as they are;
+  everything else still becomes one text block. Images are counted by the client in pixels,
+  not by the length of their base64.
+- **JPEG at quality 100, sized to what the model takes in unchanged**: about 1568 px on the long
+  edge and 1.15 megapixels ([src/screenshotFrames.ts](src/screenshotFrames.ts), leaf module,
+  under test). Tokens follow pixels (≈ w×h/750), so the quality only decides bytes and the
+  5 MB per-image ceiling — measured at 1440×798 on 14 px text, 100 is about 750 KB a frame
+  against 480 KB at 90. **100 was chosen knowingly, and the cost is the conversation, not the
+  call:** every image stays in the history and the Messages API refuses a request over 32 MB, so
+  at about 4.5 MB of base64 per full page, roughly seven full-page captures in one conversation
+  stop it sending (about ten at 90). Lower `modelJpegQuality` or `maxFrames` if that bites.
+- **Two coordinate conversions, both measured in Chrome, and both silent when wrong.** The clip
+  is in **DIP**, not CSS pixels (`Page.Viewport` in the protocol), and DIP is CSS ×
+  `cssVisualViewport.zoom` — so at 200% browser zoom a CSS rectangle passed as it is covered half
+  the area at half the offset, and a scrolled viewport came back as the wrong part of the page.
+  And `clip.scale` **multiplies with the device scale factor**: a 1280×800 clip at scale 1 is
+  2560×1600 on a retina screen, and a capture with no `clip` at all comes back at device
+  resolution. Output is CSS × scale × (DSF × zoom), so the scale is the wanted factor divided by
+  that product.
+- **That product is read from `Page.getLayoutMetrics`, never from `window.devicePixelRatio`**
+  (`pixelRatios`). The page owns that property: a getter answering 0.001 asked for frames a
+  thousand times too large, and one returning a promise that never settles held the capture —
+  and its session hold — for good. The deprecated `visualViewport` is in device pixels and
+  `cssVisualViewport` in CSS pixels, so their widths give it with no page script involved;
+  without the deprecated half the DSF is taken as 1, which can only make a frame smaller.
+- **A full page is cut into frames from the top**, at most six (about 9 000 tokens), each as
+  tall as the pixel budget allows at the page's width — 798 px for a 1440 px page. One image of
+  the whole page would arrive as a strip the API scaled down too far to read. A trailing text
+  block gives each frame's `y` and height in CSS pixels and `clipped: true` when the page goes on
+  past the last frame. Each frame is its own small clip, so the 16 384 px texture ceiling below
+  does not bind it: measured with colour bands that encode the offset, frames 31 000 device px
+  down (DSF 2, 200% zoom) came back with the right content, not blank.
+- **The page is measured again after the frames**, because they are captured one after another
+  and a lazily loading page can grow in between. A change is reported as a `note` and `clipped`
+  is judged against the larger height, rather than the frames being presented as an exact tiling
+  of a page that no longer has that shape.
+
+Measured end to end on a 1440×11 975 page at DPR 2: the old full-page PNG was 10 million base64
+characters; the new set is six 1440×798 frames of about 750 KB each, every planned size matching
+the image Chrome returned. The toolbar's Copy Screenshot keeps the full-resolution PNG in one
+piece — `capture` for the user, `captureFrames` for the model, which goes through
+`_withSession` like every other tool and hands CDP's base64 on as it is rather than decoding it
+into a `Buffer` only to encode it again.
 
 **Not part of the repeat button.** The twelve `navigation@2` candidates are element actions; a
 screenshot picks nothing, so folding it in would mean a button with no crosshair and a hole in
@@ -3755,6 +3806,16 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
 200. **A per-window map with no eviction** → every `initialize` added an `Mcp-Session-Id` to the
     window-lifetime `_sessionKinds` and nothing removed one. It is capped at 256, dropping the
     oldest; a client still using a dropped id gets the 404 of #178 and initializes again.
+201. **Binary data in a text content block** → `dispatch` serialised every tool result into one
+    `text` block, so `browser_screenshot`'s base64 was counted as tokens: a small capture passed,
+    a full page or a retina viewport failed with "exceeds maximum allowed tokens", and when it
+    passed the model read base64 instead of seeing the image. Return `toolContent` with an
+    `image` block, sized for the model — see [Copy Screenshot](#copy-screenshot).
+202. **A CSS rectangle passed as a screenshot `clip`** → the clip is in DIP, so under browser
+    zoom it covers the wrong part of the page at the wrong size, with no error — and at zoom 1
+    the two units are equal, so nothing shows it in testing. Multiply by
+    `cssVisualViewport.zoom`, and take the device ratio from the layout metrics rather than from
+    `window.devicePixelRatio`, which the page can redefine.
 
 ## Special cases and non-obvious decisions
 

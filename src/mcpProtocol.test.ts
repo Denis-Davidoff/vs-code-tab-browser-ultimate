@@ -8,7 +8,7 @@ import { suite, test } from 'node:test';
 import {
 	dispatch, errorCodes, invalidRequestReason, isNotification, schema, string,
 	stringOrUndefined, numberOrUndefined, authorizeRequest, normalisePath,
-	classifyClient, initializeClientName,
+	classifyClient, initializeClientName, toolContent,
 	type DispatchContext, type Tool, type RequestFacts,
 } from './mcpProtocol.ts';
 
@@ -27,6 +27,14 @@ const tools: Tool[] = [
 		name: 'browser_boom', title: 'Boom', description: 'Always fails.',
 		inputSchema: schema({}),
 		run: async () => { throw new Error('No browser tab is open'); },
+	},
+	{
+		name: 'browser_picture', title: 'Picture', description: 'Returns an image.',
+		inputSchema: schema({}),
+		run: async () => toolContent([
+			{ type: 'image', data: 'AAAA', mimeType: 'image/jpeg' },
+			{ type: 'text', text: 'one frame' },
+		]),
 	},
 ];
 
@@ -80,7 +88,7 @@ suite('dispatch', () => {
 	test('tools/list omits the run function', async () => {
 		const listed = (await call('tools/list'))!.result as any;
 		assert.deepStrictEqual(listed.tools.map((t: any) => t.name),
-			['browser_state', 'browser_text', 'browser_boom']);
+			['browser_state', 'browser_text', 'browser_boom', 'browser_picture']);
 		assert.ok(!('run' in listed.tools[0]));
 		assert.strictEqual(listed.tools[0].inputSchema.additionalProperties, false);
 	});
@@ -93,6 +101,14 @@ suite('dispatch', () => {
 	test('a non-string result is pretty-printed JSON', async () => {
 		const result = (await call('tools/call', { name: 'browser_state' }))!.result as any;
 		assert.strictEqual(result.content[0].text, '{\n  "url": "http://localhost:3000"\n}');
+	});
+
+	test('content blocks are handed over as they are, an image never as text', async () => {
+		const result = (await call('tools/call', { name: 'browser_picture' }))!.result as any;
+		assert.deepStrictEqual(result.content, [
+			{ type: 'image', data: 'AAAA', mimeType: 'image/jpeg' },
+			{ type: 'text', text: 'one frame' },
+		]);
 	});
 
 	test('a tool failure is a result with isError, not a protocol error', async () => {

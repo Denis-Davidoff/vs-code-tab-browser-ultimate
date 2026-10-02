@@ -8,6 +8,7 @@ import { CDPClient } from './cdp';
 import { extractElementData, renderElementMarkdown } from './elementContext';
 import { isBrowserApiGranted } from './proposedApi';
 import { legacyMarkerRemoval, stripMarker, stripMarkerFromHtml } from './shareIndicator';
+import { modelJpegQuality, pixelRatios, planFullPage, planViewport, type Frame } from './screenshotFrames';
 import {
 	callerKey, everyone, ShareRegistry, targetName,
 	type CallerIdentity, type ShareTarget,
@@ -815,7 +816,7 @@ export class BrowserController implements vscode.Disposable {
 	 */
 	private async _withSession<T>(
 		caller: CallerIdentity,
-		run: (session: TabSession) => Promise<T>,
+		run: (session: TabSession, tab: vscode.BrowserTab) => Promise<T>,
 	): Promise<T> {
 		await this._settle();
 		const tab = this._requireTab(caller);
@@ -832,7 +833,7 @@ export class BrowserController implements vscode.Disposable {
 		const release = this._hold(tab);
 		try {
 			const session = await this._sessionFor(tab);
-			return await run(session);
+			return await run(session, tab);
 		} finally {
 			release();
 		}
@@ -1933,7 +1934,7 @@ export class BrowserController implements vscode.Disposable {
 	}
 
 	/**
-	 * PNG of the page.
+	 * PNG of the page, for the user — Copy Screenshot. The model's capture is {@link captureFrames}.
 	 *
 	 * `captureBeyondViewport` is stated rather than left to the default, which
 	 * has moved between Chromium versions — `false` is the visible area, `true`
@@ -1947,19 +1948,17 @@ export class BrowserController implements vscode.Disposable {
 	public async capture(
 		fullPage: boolean,
 		preferred?: vscode.BrowserTab,
-		caller?: CallerIdentity,
 	): Promise<{ png: Buffer; clipped: boolean; url: string | undefined }> {
 		await this._settle();
 
 		if (!preferred) {
-			// The tools' own subject, so its session is *cached* rather than
-			// borrowed. Borrowing here quietly cost the console its priming:
-			// before this, a screenshot left an attached session behind, so a
-			// following `browser_console` had the page's log from the moment of
-			// the capture. With a throwaway it answers "The console is empty"
-			// for everything that happened before the next call — and console
-			// capture is the whole reason the session is cached at all.
-			const tab = this._requireTab(caller);
+			// A toolbar press with no browser tab focused: resolved the way any
+			// user command is — no caller, so never paused. The session is the
+			// cached one rather than a borrowed throwaway, since the tab resolved
+			// here is the tools' own subject and a throwaway would cost its
+			// console buffer the priming. Assistants never come through here:
+			// `browser_screenshot` is `captureFrames`, which requires a caller.
+			const tab = this._requireTab();
 			// Held before the open, for the reason given in `_withSession`.
 			const release = this._hold(tab);
 			try {
@@ -1973,6 +1972,76 @@ export class BrowserController implements vscode.Disposable {
 		// the one in front of the user — and moving the cache to it would take the
 		// subject tab's console buffer with it.
 		return this._borrowSession(preferred, session => this._capture(preferred, session, fullPage));
+	}
+
+	/**
+	 * The page as JPEG frames sized for a model — `browser_screenshot`.
+	 *
+	 * Not {@link capture}: that one is the user's PNG, at device resolution and
+	 * in one piece, for the clipboard. A model takes an image in unchanged only
+	 * up to about 1568 px and 1.15 megapixels, so here the visible area is one
+	 * frame scaled into that budget and a full page is cut into frames from the
+	 * top (see `screenshotFrames.ts`). Through `_withSession`, so the cached
+	 * session primes the console and the hold covers the open.
+	 *
+	 * The frames are captured one after another, and a page can grow or shrink
+	 * between them — lazy loading, an infinite list. So the size is measured
+	 * again afterwards, and a change is reported rather than the frames being
+	 * presented as an exact tiling of a page that no longer has that shape.
+	 */
+	public async captureFrames(fullPage: boolean, caller: CallerIdentity): Promise<{
+		frames: { base64: string; frame: Frame }[];
+		/** CSS height of the page before and after, when it changed while being captured. */
+		heightChanged?: { before: number; after: number };
+		clipped: boolean;
+		url: string | undefined;
+	}> {
+		return this._withSession(caller, async (session, tab) => {
+			const metrics = await session.client.send('Page.getLayoutMetrics', {}, session.sessionId);
+			const ratios = pixelRatios(metrics);
+			const viewport = metrics.cssVisualViewport ?? metrics.cssLayoutViewport;
+			const page = metrics.cssContentSize;
+
+			const full = fullPage && page?.width > 0 && page?.height > 0 ? planFullPage(page, ratios) : undefined;
+			const frames = full?.frames
+				?? (viewport?.clientWidth > 0 && viewport?.clientHeight > 0
+					? [planViewport({
+						x: viewport.pageX ?? 0, y: viewport.pageY ?? 0,
+						width: viewport.clientWidth, height: viewport.clientHeight,
+					}, ratios)]
+					: undefined);
+			if (!frames) {
+				throw new Error('The browser reported no page size to capture');
+			}
+
+			const captured: { base64: string; frame: Frame }[] = [];
+			for (const frame of frames) {
+				const { data } = await session.client.send('Page.captureScreenshot', {
+					format: 'jpeg',
+					quality: modelJpegQuality,
+					captureBeyondViewport: full !== undefined,
+					clip: frame.clip,
+				}, session.sessionId);
+				if (typeof data !== 'string' || data.length === 0) {
+					throw new Error('The browser returned an empty screenshot');
+				}
+				captured.push({ base64: data, frame });
+			}
+
+			if (!full) {
+				return { frames: captured, clipped: false, url: tab.url };
+			}
+			const after = (await session.client.send('Page.getLayoutMetrics', {}, session.sessionId))
+				.cssContentSize?.height;
+			const before = Math.ceil(page.height);
+			const now = typeof after === 'number' && after > 0 ? Math.ceil(after) : before;
+			return {
+				frames: captured,
+				heightChanged: now !== before ? { before, after: now } : undefined,
+				clipped: full.covered < Math.max(before, now),
+				url: tab.url,
+			};
+		});
 	}
 
 	/**

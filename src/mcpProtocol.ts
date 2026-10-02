@@ -64,6 +64,32 @@ export interface Tool {
 	run(args: Record<string, unknown>, caller: Caller): Promise<unknown>;
 }
 
+/** An MCP content block — `text` or `image`, the two this server produces. */
+export type ContentBlock =
+	| { type: 'text'; text: string }
+	| { type: 'image'; data: string; mimeType: string };
+
+const contentMarker = Symbol('toolContent');
+
+/**
+ * A tool result handed to the client as these blocks, rather than serialised
+ * into one text block.
+ *
+ * An image has to travel this way. Serialised, its base64 is *text*: the client
+ * counts it as tokens (Claude Code refuses anything past 25 000, which one
+ * full-page PNG passed a hundred times over) and, when it does fit, the model
+ * reads a string of base64 instead of seeing a picture.
+ */
+export function toolContent(blocks: ContentBlock[]): { readonly [contentMarker]: ContentBlock[] } {
+	return { [contentMarker]: blocks };
+}
+
+function contentOf(value: unknown): ContentBlock[] | undefined {
+	return typeof value === 'object' && value !== null && contentMarker in value
+		? (value as { [contentMarker]: ContentBlock[] })[contentMarker]
+		: undefined;
+}
+
 export function schema(
 	properties: Record<string, unknown>,
 	required: string[] = [],
@@ -191,7 +217,7 @@ export async function dispatch(
 			const args = (request.params?.arguments ?? {}) as Record<string, unknown>;
 			try {
 				const value = await tool.run(args, caller);
-				return result(id, { content: [{ type: 'text', text: asText(value) }] });
+				return result(id, { content: contentOf(value) ?? [{ type: 'text', text: asText(value) }] });
 			} catch (err) {
 				return result(id, toolFailure(err instanceof Error ? err.message : String(err)));
 			}

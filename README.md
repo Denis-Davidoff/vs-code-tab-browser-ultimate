@@ -1,5 +1,15 @@
 # 🚀 First integrated browser for VS Code editor with Claude Code and Codex support 🎆
 
+- **VS Code's built-in browser**, not a webview: every tab is a real Chromium page in its own
+  isolated Electron process.
+- **A built-in MCP server** that connects the browser to Claude Code, Codex or any other
+  assistant that speaks MCP.
+- **Pick an element on the page** and send its address or metadata straight to Claude Code or
+  Codex.
+- **Full DevTools for every tab.**
+- **Per-assistant tab access:** share a tab with one assistant and it sees and drives that tab
+  only, while the others stay hidden from it.
+
 ## Which editors this works on
 
 The browser features are built on VS Code's own browser tab, reached through the `browser` API
@@ -21,6 +31,13 @@ there is not the problem, the missing API is. **Measured by reading the shipped 
 **Setup at a glance** — the whole path in eight numbered steps; click the picture for full size:
 
 [![Step-by-step setup: install, enable the browser API, open a page, connect Claude Code or Codex](ai-browser-instruct.jpg)](https://raw.githubusercontent.com/Denis-Davidoff/vs-code-tab-browser-ultimate/main/ai-browser-instruct.jpg)
+
+## Changelog
+**0.5.30** — Screenshots for Claude Code fixed: `browser_screenshot` now returns real images
+instead of base64 text, which overflowed the tool output limit, and a full page arrives as a
+sequence of frames sized for the model to read.
+
+## How to install
 
 **Not sure about your editor?** Run **AI Browser: Enable Integrated Browser API**, or pick it
 under *Setup* in the status bar menu, and it says which of the three answers applies. The rule is
