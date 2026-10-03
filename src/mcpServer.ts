@@ -465,8 +465,8 @@ export class McpServer implements vscode.Disposable {
 			},
 			{
 				name: 'browser_screenshot', title: 'Screenshot',
-				description: 'JPEG image of the visible area, or with fullPage the whole page as up to '
-					+ `${modelFrameLimits.maxFrames} frames from the top, in order. `
+				description: 'Image of the visible area, or with fullPage the whole page captured once from the top and cut into up to '
+					+ `${modelFrameLimits.maxFrames} frames, in order. `
 					+ 'A trailing text block gives each frame\'s position on the page in CSS pixels, and clipped: true when the page goes on past the last frame.',
 				inputSchema: schema({
 					fullPage: { type: 'boolean', description: 'Capture the whole scrollable page' },
@@ -476,21 +476,18 @@ export class McpServer implements vscode.Disposable {
 					// and captures the tab they are focused on — an assistant
 					// with a tab of its own would get a picture of a page it was
 					// never given, and a paused one would get a picture at all.
-					const { frames, clipped, heightChanged, url } = await browser.captureFrames(args.fullPage === true, caller);
+					const { frames, clipped, notes, url } = await browser.captureFrames(args.fullPage === true, caller);
 					// Images as image blocks, never as base64 in text: see `toolContent`.
-					const blocks: ContentBlock[] = frames.map(({ base64 }) =>
-						({ type: 'image', data: base64, mimeType: 'image/jpeg' }));
+					const blocks: ContentBlock[] = frames.map(({ base64, mimeType }) =>
+						({ type: 'image', data: base64, mimeType }));
 					blocks.push({
 						type: 'text',
 						text: JSON.stringify({
 							url,
-							frames: frames.map(({ frame: { rect, pixels } }) =>
+							frames: frames.map(({ rect, pixels }) =>
 								({ y: rect.y, height: rect.height, width: rect.width, pixels })),
 							clipped: clipped || undefined,
-							note: heightChanged
-								? `The page changed height while it was captured (${heightChanged.before} → ${heightChanged.after} CSS px), `
-									+ 'so the frames may skip or repeat content.'
-								: undefined,
+							notes: notes.length ? notes : undefined,
 						}, null, 2),
 					});
 					return toolContent(blocks);

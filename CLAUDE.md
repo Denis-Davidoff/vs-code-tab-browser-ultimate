@@ -151,6 +151,8 @@ Compiled with `tsc`, **no bundling**. `main: ./out/extension`.
 - [src/gitignoreRule.ts](src/gitignoreRule.ts) — whether `.codex/.gitignore` keeps the token file out of git (leaf, under test)
 - [src/mcpServer.ts](src/mcpServer.ts) — HTTP transport, tools, client attribution
 - [src/screenshotFrames.ts](src/screenshotFrames.ts) — how `browser_screenshot` is cut into frames for a model (leaf, under test)
+- [src/pngDecode.ts](src/pngDecode.ts) — the screenshot PNG into raw rows (leaf, under test)
+- [src/jpegEncode.ts](src/jpegEncode.ts) — a baseline JPEG encoder for those frames (leaf, under test)
 - [src/mcpSetup.ts](src/mcpSetup.ts) — client config writing and the connect dialogs
 - [src/mcpCheck.ts](src/mcpCheck.ts) — the Check Connection report
 - [src/mcpClientState.ts](src/mcpClientState.ts) — config states (leaf, under test)
@@ -2814,22 +2816,93 @@ a string of base64, not a picture. So for the model it is three changes:
   without the deprecated half the DSF is taken as 1, which can only make a frame smaller.
 - **A full page is cut into frames from the top**, at most six (about 9 000 tokens), each as
   tall as the pixel budget allows at the page's width — 798 px for a 1440 px page. One image of
-  the whole page would arrive as a strip the API scaled down too far to read. A trailing text
-  block gives each frame's `y` and height in CSS pixels and `clipped: true` when the page goes on
-  past the last frame. Each frame is its own small clip, so the 16 384 px texture ceiling below
-  does not bind it: measured with colour bands that encode the offset, frames 31 000 device px
-  down (DSF 2, 200% zoom) came back with the right content, not blank.
-- **The page is measured again after the frames**, because they are captured one after another
-  and a lazily loading page can grow in between. A change is reported as a `note` and `clipped`
-  is judged against the larger height, rather than the frames being presented as an exact tiling
-  of a page that no longer has that shape.
+  the whole page would arrive as a strip the API scaled down too far to read, and past 8000 px a
+  side the API refuses it outright. A trailing text block gives each frame's `y` and height in
+  CSS pixels and `clipped: true` when the page goes on past the last frame.
+- **It is captured once and cut here, not captured frame by frame**, and the first version did
+  the latter. Every `captureBeyondViewport` capture makes the page lay itself out again —
+  measured as one `resize` event per frame, seven for six frames — so a page that moves between
+  captures came back as frames from different moments: reported as a slideshow whose canvas
+  (drawn on `requestAnimationFrame`, which the editor all but stops while its window is in the
+  background) still showed the previous slide under the next slide's text. One capture is one
+  `resize` and one moment. The capture is PNG because PNG is the only format that can be
+  decoded without a dependency — `zlib` is in Node — so [src/pngDecode.ts](src/pngDecode.ts)
+  decodes it, each band is a slice of its rows (`rowsOf`, no copy), and
+  [src/jpegEncode.ts](src/jpegEncode.ts) encodes each one. Both are leaf modules under test.
+- **The JPEG encoder is written out, and matches Chromium's on purpose.** Handed on as PNG the
+  frames were tiny for an interface and enormous for photographs (about 3.2 MB a frame on noise,
+  25 MB of base64 for one full page), so they have to be JPEG. A first encoder with 4:4:4 and the
+  Annex K example Huffman tables came out 1.4–2.7 times the size of Chromium's own JPEG at the
+  same quality; the one that stayed does what libjpeg-turbo does — **4:2:0 chroma** and
+  **Huffman tables built for each image** in a second pass (`jpeg_gen_optimal_table`). Measured
+  against Chromium's JPEG 100 of the same frame: 494 vs 496 KB on text, 720 vs 733 KB on a
+  photograph, 1353 vs 1355 KB on noise. Its pixels were checked by having Chrome decode every
+  frame and comparing with the source PNG (PSNR 38–52 dB, 20 on noise, where 4:2:0 costs the
+  same as it does in Chrome's own encoder). There is no decoder under `npm test`, so the unit
+  tests pin the container — markers, byte stuffing, determinism — and the pixels are an end-to-end
+  check: redo it after touching the encoder. Encoding is synchronous, tens of milliseconds a
+  frame, so the controller yields between frames.
+- **The page is scrolled to the top for the capture and back afterwards** (`_atTopOfPage`), for
+  this tool and for the toolbar's Copy Screenshot (Full Page) alike. `captureBeyondViewport`
+  renders the document from where it is scrolled to: measured on a page scrolled to 2500 px, a
+  `position: sticky` header came back 2500 px down the image and a `position: fixed` badge at the
+  bottom of that view — over the footer, in the case that was reported. From the top both sit
+  where the page puts them when it opens. Each part of how it does that was a review finding:
+  - **Serialised per tab** (`_scrollGates`). Two overlapping captures — an assistant's and a
+    toolbar press — each read the scroll, and whichever restored first moved the page under the
+    other's capture, or the second took the top for "where the user was" and left them there.
+    Sessions and holds order nothing here. The wait for a previous capture is bounded
+    (`scrollGateWaitMs`), so a page that stopped answering cannot queue every later capture.
+  - **The scroll is checked, not assumed.** It goes through `evaluate`, which reads
+    `exceptionDetails` (breaks-silently #48), and is bounded, since `send` has no timeout. A
+    replaced `window.scrollTo` falls back to `Element.prototype.scrollTo` on the document
+    scroller; whether the page is at the top is then read from the layout metrics, and if it is
+    not the capture goes ahead with a `note` saying sticky elements may be misplaced.
+  - **`behavior: 'instant'`**, or a page with `scroll-behavior: smooth` animates and the
+    capture lands mid-scroll.
+  - **Put back as soon as the PNG is in hand**, before decoding and encoding, which take longer
+    than the capture: measured, the restore lands about 140 ms before the tool answers.
+  - **Put back only on the same document** — the main frame's `loaderId`, read before and
+    after. A navigation that raced the capture should open at its own top. **Known and not
+    handled:** a page that loads content *above* when scrolled to the top (a chat history) is
+    restored to the same offset, which is then a different place.
+  - A page already at the top is not touched, and the metrics read to find that out are the ones
+    the capture uses.
+  Verified against the compiled controller driving a real Chrome over CDP, with a stubbed
+  `vscode`: concurrent agent and toolbar captures both had the header at the top and the page
+  ended at 2500; a page whose `window.scrollTo` throws was captured from the top too.
+- **The bands are laid onto the image Chromium returned, not onto the plan** (`fitBands`).
+  Under a fractional zoom or device ratio its output can round a pixel the other way, which made
+  a band drift, report a width the JPEG did not have, or ask for rows past the end. **A band
+  that rounds to no rows is folded into the one before**: a 1920 × 898 page scales into frames of
+  897 CSS px and the 898th rounds to nothing, which failed the whole screenshot.
+- **Decoding yields.** `inflate` runs on the threadpool and unfiltering hands the extension host
+  back every 4 MB, so a capture tens of megabytes deep does not stall every other tool call and
+  extension in that host. Encoding yields between frames.
+- **No page size, no full page**: where the metrics carry no `cssContentSize` the tool returns
+  the visible area with a `note`, rather than failing; the toolbar capture keeps its old
+  `contentSize` fallback.
+- **The single capture is not bound by the 16 384 px texture ceiling** the toolbar capture
+  below is clipped at: a 9 408 px tall capture at DSF 3 — 28 000 device pixels — came back with
+  the right content in every band, checked by colour bands that encode the offset. The output is
+  at most six frames tall, and its scale is already the model's, not the device's.
+- **The page is measured again after the capture**, because scrolling to the top can make a
+  lazily built page load more. A change is reported as a `note`, and `clipped` is judged against
+  the larger height.
 
-Measured end to end on a 1440×11 975 page at DPR 2: the old full-page PNG was 10 million base64
-characters; the new set is six 1440×798 frames of about 750 KB each, every planned size matching
-the image Chrome returned. The toolbar's Copy Screenshot keeps the full-resolution PNG in one
-piece — `capture` for the user, `captureFrames` for the model, which goes through
-`_withSession` like every other tool and hands CDP's base64 on as it is rather than decoding it
-into a `Buffer` only to encode it again.
+Measured end to end on a 1440 × 14 060 page at DSF 2: the old full-page PNG was 10 million
+base64 characters; now one capture of ~290 ms and six frames encoded in ~200 ms, text at about
+500 KB a frame. The toolbar's Copy Screenshot keeps the full-resolution PNG in one piece —
+`capture` for the user, `captureFrames` for the model, which goes through `_withSession` like
+every other tool. The toolbar capture's clip had the zoom bug too (#202) and now multiplies by
+`cssVisualViewport.zoom` as well.
+
+**Not decided here: what the page shows in the background.** A canvas animated on
+`requestAnimationFrame` paints next to nothing while the editor window is behind another one, so
+the capture shows whatever it painted last; text driven by timers moves on regardless. One
+capture keeps the frames consistent with *each other*, not with a page that is not drawing.
+Bringing the tab to the front (`Page.bringToFront`) would take focus from the user, so it is not
+done.
 
 **Not part of the repeat button.** The twelve `navigation@2` candidates are element actions; a
 screenshot picks nothing, so folding it in would mean a button with no crosshair and a hole in
@@ -3816,6 +3889,20 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
     the two units are equal, so nothing shows it in testing. Multiply by
     `cssVisualViewport.zoom`, and take the device ratio from the layout metrics rather than from
     `window.devicePixelRatio`, which the page can redefine.
+203. **One `captureBeyondViewport` capture per frame** → each one makes the page lay itself out
+    again (a `resize` event per frame), so a page that moves while the set is taken comes back
+    as frames from different moments — a canvas a slide behind its own text. Capture once and
+    cut.
+204. **A full-page capture from wherever the page is scrolled** → `captureBeyondViewport`
+    renders from the current scroll offset, so a sticky header lands mid-image at that offset
+    and a fixed element at the bottom of that view. Scroll to the top instantly, capture, put
+    the scroll back.
+205. **A scroll-and-restore that is not serialised** → two full-page captures on one tab each
+    saved the scroll, and the first to restore moved the page under the other's capture (the
+    sticky header back mid-image) or left the user at the top. Order the whole
+    scroll-capture-restore per tab, with a bounded wait.
+206. **A band that rounds to zero rows** → asking for it threw and failed the entire
+    screenshot, on an ordinary 1920 × 898 page. Fold it into the band before.
 
 ## Special cases and non-obvious decisions
 

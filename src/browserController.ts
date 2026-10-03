@@ -8,7 +8,9 @@ import { CDPClient } from './cdp';
 import { extractElementData, renderElementMarkdown } from './elementContext';
 import { isBrowserApiGranted } from './proposedApi';
 import { legacyMarkerRemoval, stripMarker, stripMarkerFromHtml } from './shareIndicator';
-import { modelJpegQuality, pixelRatios, planFullPage, planViewport, type Frame } from './screenshotFrames';
+import { encodeJpeg } from './jpegEncode';
+import { decodePng, rowsOf } from './pngDecode';
+import { fitBands, modelJpegQuality, pixelRatios, planFullPage, planViewport, type Rect } from './screenshotFrames';
 import {
 	callerKey, everyone, ShareRegistry, targetName,
 	type CallerIdentity, type ShareTarget,
@@ -271,6 +273,41 @@ async function evaluate(session: TabSession, expression: string): Promise<any> {
 	return result?.value;
 }
 
+/** One `Page.captureScreenshot`, refusing the empty answer CDP sometimes gives instead of failing. */
+async function screenshot(session: TabSession, params: Record<string, unknown>): Promise<string> {
+	const { data } = await session.client.send('Page.captureScreenshot', params, session.sessionId);
+	if (typeof data !== 'string' || data.length === 0) {
+		throw new Error('The browser returned an empty screenshot');
+	}
+	return data;
+}
+
+/** `work`, or `message` as an error once `ms` have passed. `CDPClient.send` has no timeout of its own. */
+function withTimeout<T>(work: Promise<T>, ms: number, message: string): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	return Promise.race([
+		work,
+		new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(message)), ms); }),
+	]).finally(() => clearTimeout(timer));
+}
+
+/** The loader of the tab's main document: it changes when the document does. */
+async function documentLoader(session: TabSession): Promise<string | undefined> {
+	try {
+		const { frameTree } = await withTimeout(
+			session.client.send('Page.getFrameTree', {}, session.sessionId), pageScrollTimeoutMs, 'frame tree');
+		return typeof frameTree?.frame?.loaderId === 'string' ? frameTree.frame.loaderId : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** How long a page gets to scroll before a capture goes ahead without it. */
+const pageScrollTimeoutMs = 2_000;
+
+/** How long a full-page capture waits for one already running on the same tab. */
+const scrollGateWaitMs = 15_000;
+
 /**
  * Waits for a navigation to finish, and gives up rather than blocking a tool.
  *
@@ -339,6 +376,8 @@ export class BrowserController implements vscode.Disposable {
 	 * nobody asked about is the wrong trade every time.
 	 */
 	private readonly _sessions = new Map<vscode.BrowserTab, TabSession>();
+	/** The last full-page capture queued on each tab — see `_atTopOfPage`. */
+	private readonly _scrollGates = new WeakMap<vscode.BrowserTab, Promise<unknown>>();
 
 	/** Least recently used first, so eviction has an order to follow. */
 	private _sessionOrder: vscode.BrowserTab[] = [];
@@ -1975,73 +2014,169 @@ export class BrowserController implements vscode.Disposable {
 	}
 
 	/**
-	 * The page as JPEG frames sized for a model — `browser_screenshot`.
+	 * The page as frames sized for a model — `browser_screenshot`.
 	 *
 	 * Not {@link capture}: that one is the user's PNG, at device resolution and
 	 * in one piece, for the clipboard. A model takes an image in unchanged only
-	 * up to about 1568 px and 1.15 megapixels, so here the visible area is one
-	 * frame scaled into that budget and a full page is cut into frames from the
-	 * top (see `screenshotFrames.ts`). Through `_withSession`, so the cached
-	 * session primes the console and the hold covers the open.
+	 * up to about 1568 px and 1.15 megapixels, so the visible area is one JPEG
+	 * scaled into that budget, and a full page is **one** PNG capture from the
+	 * top, cut into frames here and each encoded as JPEG (`screenshotFrames.ts`,
+	 * `pngDecode.ts`, `jpegEncode.ts`).
+	 * Through `_withSession`, so the cached session primes the console and the
+	 * hold covers the open.
 	 *
-	 * The frames are captured one after another, and a page can grow or shrink
-	 * between them — lazy loading, an infinite list. So the size is measured
-	 * again afterwards, and a change is reported rather than the frames being
-	 * presented as an exact tiling of a page that no longer has that shape.
+	 * The page is measured again after the capture: it is taken from the top, and
+	 * scrolling there can load more of a lazily built page. A change is reported
+	 * rather than the frames being presented as covering a page that has since
+	 * changed shape.
 	 */
 	public async captureFrames(fullPage: boolean, caller: CallerIdentity): Promise<{
-		frames: { base64: string; frame: Frame }[];
-		/** CSS height of the page before and after, when it changed while being captured. */
-		heightChanged?: { before: number; after: number };
+		frames: { base64: string; mimeType: string; rect: Rect; pixels: { width: number; height: number } }[];
+		/** Something the model should know about how faithful the frames are. */
+		notes: string[];
 		clipped: boolean;
 		url: string | undefined;
 	}> {
 		return this._withSession(caller, async (session, tab) => {
-			const metrics = await session.client.send('Page.getLayoutMetrics', {}, session.sessionId);
-			const ratios = pixelRatios(metrics);
-			const viewport = metrics.cssVisualViewport ?? metrics.cssLayoutViewport;
-			const page = metrics.cssContentSize;
+			const notes: string[] = [];
+			const shot = fullPage
+				? await this._atTopOfPage(tab, session, async metrics => {
+					const page = metrics.cssContentSize;
+					if (!(page?.width > 0 && page?.height > 0)) {
+						return undefined;
+					}
+					const plan = planFullPage(page, pixelRatios(metrics));
+					const png = await screenshot(session, { format: 'png', captureBeyondViewport: true, clip: plan.clip });
+					return { plan, png, height: Math.ceil(page.height) };
+				})
+				: undefined;
 
-			const full = fullPage && page?.width > 0 && page?.height > 0 ? planFullPage(page, ratios) : undefined;
-			const frames = full?.frames
-				?? (viewport?.clientWidth > 0 && viewport?.clientHeight > 0
-					? [planViewport({
-						x: viewport.pageX ?? 0, y: viewport.pageY ?? 0,
-						width: viewport.clientWidth, height: viewport.clientHeight,
-					}, ratios)]
-					: undefined);
-			if (!frames) {
-				throw new Error('The browser reported no page size to capture');
-			}
-
-			const captured: { base64: string; frame: Frame }[] = [];
-			for (const frame of frames) {
-				const { data } = await session.client.send('Page.captureScreenshot', {
-					format: 'jpeg',
-					quality: modelJpegQuality,
-					captureBeyondViewport: full !== undefined,
-					clip: frame.clip,
-				}, session.sessionId);
-				if (typeof data !== 'string' || data.length === 0) {
-					throw new Error('The browser returned an empty screenshot');
+			if (!shot?.value) {
+				// The visible area: no scroll, no resize, one JPEG straight from Chromium.
+				if (fullPage) {
+					notes.push('The browser reported no page size, so this is the visible area rather than the whole page.');
 				}
-				captured.push({ base64: data, frame });
+				const metrics = await session.client.send('Page.getLayoutMetrics', {}, session.sessionId);
+				const viewport = metrics.cssVisualViewport ?? metrics.cssLayoutViewport;
+				if (!(viewport?.clientWidth > 0 && viewport?.clientHeight > 0)) {
+					throw new Error('The browser reported no page size to capture');
+				}
+				const frame = planViewport({
+					x: viewport.pageX ?? 0, y: viewport.pageY ?? 0,
+					width: viewport.clientWidth, height: viewport.clientHeight,
+				}, pixelRatios(metrics));
+				const base64 = await screenshot(session, { format: 'jpeg', quality: modelJpegQuality, captureBeyondViewport: false, clip: frame.clip });
+				return { frames: [{ base64, mimeType: 'image/jpeg', rect: frame.rect, pixels: frame.pixels }], notes, clipped: false, url: tab.url };
 			}
 
-			if (!full) {
-				return { frames: captured, clipped: false, url: tab.url };
+			// Everything below runs after the scroll is back: decoding and encoding
+			// take longer than the capture, and the user should not watch the page
+			// sit at the top for them.
+			const { plan, png, height: before } = shot.value;
+			if (!shot.atTop) {
+				notes.push('The page could not be scrolled to the top for the capture, so sticky or fixed elements may sit '
+					+ 'where the page was scrolled to rather than where it opens.');
 			}
+			const image = await decodePng(Buffer.from(png, 'base64'));
+			// The bands come from the image Chromium actually returned, which can
+			// differ from the plan by a rounding pixel under fractional ratios.
+			const bands = fitBands(plan.bands, plan.covered, image);
+			const frames: { base64: string; mimeType: string; rect: Rect; pixels: { width: number; height: number } }[] = [];
+			for (const band of bands) {
+				const jpeg = encodeJpeg(rowsOf(image, band.top, band.pixels.height), modelJpegQuality);
+				frames.push({ base64: jpeg.toString('base64'), mimeType: 'image/jpeg', rect: band.rect, pixels: band.pixels });
+				// Encoding is synchronous and a frame takes tens of milliseconds;
+				// yield between them so the extension host is not held for the set.
+				await new Promise(resolve => setImmediate(resolve));
+			}
+
 			const after = (await session.client.send('Page.getLayoutMetrics', {}, session.sessionId))
 				.cssContentSize?.height;
-			const before = Math.ceil(page.height);
 			const now = typeof after === 'number' && after > 0 ? Math.ceil(after) : before;
-			return {
-				frames: captured,
-				heightChanged: now !== before ? { before, after: now } : undefined,
-				clipped: full.covered < Math.max(before, now),
-				url: tab.url,
-			};
+			if (now !== before) {
+				notes.push(`The page changed height while it was captured (${before} → ${now} CSS px), `
+					+ 'so the frames show it as it was measured before.');
+			}
+			return { frames, notes, clipped: plan.covered < Math.max(before, now), url: tab.url };
 		});
+	}
+
+	/**
+	 * Runs a full-page capture with the page scrolled to the top, then puts the
+	 * scroll back. `run` gets the layout metrics as they are at the top.
+	 *
+	 * `captureBeyondViewport` renders the document from where it is scrolled to:
+	 * measured in Chrome on a page scrolled to 2500 px, a `position: sticky`
+	 * header came back 2500 px down the image and a `position: fixed` badge at
+	 * the bottom of that view — over the footer, in the case that was reported.
+	 * From the top both are where the page itself puts them when it opens.
+	 *
+	 * - **Serialised per tab.** Two captures overlapping on one tab — an
+	 *   assistant's and a toolbar press — each read the scroll, and whichever
+	 *   restored first moved the page under the other's capture, or the second
+	 *   read the top as "where the user was" and left them there. Sessions and
+	 *   holds do not order this; the gate does. A wait for a previous capture is
+	 *   bounded, the shape of `repairQueueWaitMs`: a page that stopped answering
+	 *   must not queue every later capture behind it.
+	 * - **The page is asked, and its answer checked.** `scrollTo` is the page's
+	 *   to replace, so a throw comes back as a *successful* CDP reply with
+	 *   `exceptionDetails` (breaks-silently #48) — `evaluate` reads that — and a
+	 *   call that never answers is bounded. A replaced `window.scrollTo` falls
+	 *   back to the document scroller's own. Where the scroll still did not take
+	 *   effect, judged from the metrics rather than from the call, the capture
+	 *   goes ahead and `atTop` says so.
+	 * - **`behavior: 'instant'`**, or a page with `scroll-behavior: smooth`
+	 *   animates and the capture lands mid-scroll.
+	 * - **Restored only on the same document.** Back to the same offsets, which
+	 *   is right for an ordinary page and wrong for one that loads content above
+	 *   when scrolled to the top (a chat history), where it lands elsewhere —
+	 *   known, not handled. A document that changed in between (a navigation
+	 *   racing the capture) is not scrolled at all: it should open at its top.
+	 * - A page already at the top is not touched.
+	 */
+	private async _atTopOfPage<T>(
+		tab: vscode.BrowserTab,
+		session: TabSession,
+		run: (metrics: any) => Promise<T>,
+	): Promise<{ value: T; atTop: boolean }> {
+		const previous = this._scrollGates.get(tab);
+		const turn = (async () => {
+			if (previous) {
+				await withTimeout(previous, scrollGateWaitMs, 'gate').catch(() => undefined);
+			}
+			const metrics = await session.client.send('Page.getLayoutMetrics', {}, session.sessionId);
+			const x = Number(metrics.cssLayoutViewport?.pageX) || 0;
+			const y = Number(metrics.cssLayoutViewport?.pageY) || 0;
+			if (x === 0 && y === 0) {
+				return { value: await run(metrics), atTop: true };
+			}
+
+			// `window.scrollTo` first, and the document's own scroller where the
+			// page replaced that with something that throws or ignores the call.
+			// Either is the page's to break; the metrics below are what decide.
+			const scrollTo = (left: number, top: number) => withTimeout(
+				evaluate(session, `(() => {
+					const to = { left: ${left}, top: ${top}, behavior: 'instant' };
+					try { window.scrollTo(to); } catch { }
+					if (scrollX !== ${left} || scrollY !== ${top}) {
+						Element.prototype.scrollTo.call(document.scrollingElement || document.documentElement, to);
+					}
+				})()`),
+				pageScrollTimeoutMs, 'The page did not answer a scroll');
+			const loader = await documentLoader(session);
+			await scrollTo(0, 0).catch(() => undefined);
+			try {
+				const top = await session.client.send('Page.getLayoutMetrics', {}, session.sessionId);
+				const atTop = !(Number(top.cssLayoutViewport?.pageX) || 0) && !(Number(top.cssLayoutViewport?.pageY) || 0);
+				return { value: await run(top), atTop };
+			} finally {
+				if (loader !== undefined && loader === await documentLoader(session)) {
+					await scrollTo(x, y).catch(() => undefined);
+				}
+			}
+		})();
+		this._scrollGates.set(tab, turn.catch(() => undefined));
+		return turn;
 	}
 
 	/**
@@ -2117,22 +2252,36 @@ export class BrowserController implements vscode.Disposable {
 		session: TabSession,
 		fullPage: boolean,
 	): Promise<{ png: Buffer; clipped: boolean; url: string | undefined }> {
+		// From the top, for the sticky-header reason given at `_atTopOfPage`.
+		return fullPage
+			? (await this._atTopOfPage(tab, session, metrics => this._captureFrom(tab, session, metrics))).value
+			: this._captureFrom(tab, session, undefined);
+	}
+
+	/** `metrics` for a full page, as `_atTopOfPage` read them; `undefined` for the visible area. */
+	private async _captureFrom(
+		tab: vscode.BrowserTab,
+		session: TabSession,
+		metrics: any,
+	): Promise<{ png: Buffer; clipped: boolean; url: string | undefined }> {
+		const fullPage = metrics !== undefined;
 		let clip: object | undefined;
 		let clipped = false;
 
 		if (fullPage) {
-			const metrics = await session.client.send('Page.getLayoutMetrics', {}, session.sessionId);
 			const size = metrics.cssContentSize ?? metrics.contentSize;
 			const width = Math.ceil(size?.width ?? 0);
 			const height = Math.ceil(size?.height ?? 0);
+			// The clip is in DIP, which is CSS × browser zoom (breaks-silently #202).
+			const { zoom } = pixelRatios(metrics);
 
 			if (width > 0 && height > 0) {
 				// Chromium cannot allocate a texture beyond roughly this, and past
 				// it the capture comes back blank rather than failing. Better a
 				// truthfully clipped image than an empty one.
 				const limit = 16384;
-				clipped = height > limit;
-				clip = { x: 0, y: 0, width, height: Math.min(height, limit), scale: 1 };
+				clipped = height * zoom > limit;
+				clip = { x: 0, y: 0, width: width * zoom, height: Math.min(height * zoom, limit), scale: 1 };
 			}
 		}
 

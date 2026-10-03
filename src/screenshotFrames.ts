@@ -105,28 +105,99 @@ export function planViewport(viewport: Rect, ratios: PixelRatios, limits = model
 	return frame(viewport, factor, ratios);
 }
 
+/** One frame of a full page: a band of the single capture, not a capture of its own. */
+export interface Band {
+	/** What the frame covers on the page, in CSS pixels. */
+	rect: Rect;
+	/** Its rows in the captured image. */
+	top: number;
+	pixels: { width: number; height: number };
+}
+
 /**
- * The whole page as frames from the top, each within the limits at full width.
+ * The whole page as one capture from the top, to be cut into frames that each
+ * fit the limits at full width.
+ *
+ * One capture rather than one per frame, because each `captureBeyondViewport`
+ * capture makes the page lay itself out again — measured as one `resize` event
+ * per frame — and a page that moves between them (a slideshow, a canvas drawn
+ * on `requestAnimationFrame`) comes back as frames from different moments.
  *
  * The width is scaled to the long-edge limit at most, and each frame is then as
  * tall as the pixel budget allows at that width — 898 px for a 1280 px page, so
- * nothing in it is scaled again on arrival.
+ * nothing in it is scaled again on arrival. Bands are rounded edge to edge, so
+ * they tile the image with no gap and no overlap.
  */
 export function planFullPage(
 	page: { width: number; height: number },
 	ratios: PixelRatios,
 	limits = modelFrameLimits,
-): { frames: Frame[]; covered: number } {
+): { clip: Rect & { scale: number }; bands: Band[]; covered: number } {
 	const width = Math.ceil(page.width);
 	const height = Math.ceil(page.height);
 	const factor = Math.min(1, limits.maxEdge / width);
 	const frameHeight = Math.min(limits.maxEdge, Math.floor(limits.maxPixels / (width * factor)));
 	const step = Math.max(1, Math.floor(frameHeight / factor));
+	const pixelWidth = Math.round(width * factor);
 
-	const frames: Frame[] = [];
-	for (let y = 0; y < height && frames.length < limits.maxFrames; y += step) {
-		frames.push(frame({ x: 0, y, width, height: Math.min(step, height - y) }, factor, ratios));
+	const bands: Band[] = [];
+	for (let y = 0; y < height && bands.length < limits.maxFrames; y += step) {
+		const bottom = Math.min(y + step, height);
+		const top = Math.round(y * factor);
+		bands.push({
+			rect: { x: 0, y, width, height: bottom - y },
+			top,
+			pixels: { width: pixelWidth, height: Math.round(bottom * factor) - top },
+		});
 	}
-	const last = frames[frames.length - 1];
-	return { frames, covered: last ? last.rect.y + last.rect.height : 0 };
+	const covered = bands.length ? bands[bands.length - 1].rect.y + bands[bands.length - 1].rect.height : 0;
+	return { clip: frame({ x: 0, y: 0, width, height: covered }, factor, ratios).clip, bands: withoutEmpty(bands), covered };
+}
+
+/**
+ * The bands laid onto the image Chromium actually returned.
+ *
+ * The plan rounds `covered × factor` itself, and under a fractional zoom or
+ * device ratio Chromium can round the output a pixel the other way. Cutting by
+ * the plan then drifts a row per band, reports a width the JPEG does not have,
+ * or asks for a band past the last row. So each band's edges are scaled from
+ * its CSS edges onto the real height, and the real width is reported.
+ */
+export function fitBands(bands: readonly Band[], covered: number, image: { width: number; height: number }): Band[] {
+	const last = bands[bands.length - 1];
+	if (!last || covered <= 0) {
+		return [];
+	}
+	if (last.top + last.pixels.height === image.height && last.pixels.width === image.width) {
+		return [...bands];
+	}
+	const edge = (y: number) => Math.round((y / covered) * image.height);
+	return withoutEmpty(bands.map(band => {
+		const top = edge(band.rect.y);
+		return { rect: band.rect, top, pixels: { width: image.width, height: edge(band.rect.y + band.rect.height) - top } };
+	}));
+}
+
+/**
+ * Folds a band with no rows into the one before it.
+ *
+ * Rounding can leave one: a 1920 × 898 page scales by 0.8167 into frames of
+ * 897 CSS px, and the last CSS pixel rounds to no image row at all — and asking
+ * for a band of zero rows failed the whole screenshot. The CSS edge moves to the
+ * band before, which loses nothing, since there was no row to lose.
+ */
+function withoutEmpty(bands: Band[]): Band[] {
+	const out: Band[] = [];
+	for (const band of bands) {
+		const previous = out[out.length - 1];
+		if (band.pixels.height > 0 || !previous) {
+			out.push(band);
+		} else {
+			out[out.length - 1] = {
+				...previous,
+				rect: { ...previous.rect, height: band.rect.y + band.rect.height - previous.rect.y },
+			};
+		}
+	}
+	return out;
 }
