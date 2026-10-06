@@ -30,11 +30,29 @@ export interface ElementData {
 	readonly dimensions: { top: number; left: number; width: number; height: number };
 }
 
+/**
+ * A page-supplied value made safe to sit on one line of Markdown.
+ *
+ * **An `id` may contain a line break** — `&#10;` in the attribute is all it
+ * takes, no script needed — and this notation goes unfenced into the
+ * `Element:` and `HTML Path:` lines and into every report heading. A page
+ * could therefore add its own headings and paragraphs to the report an
+ * assistant is handed, outside every fence and framed as the extension's
+ * text. Control characters and the two Unicode line separators are written as
+ * `\uXXXX` instead. The same rule as `oneLine` in `reportFormat.ts`, **written
+ * twice on purpose**: this module may not take a relative value import.
+ * Breaks-silently #219.
+ */
+export function oneLine(value: string): string {
+	return value.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g,
+		ch => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`);
+}
+
 /** `tag#id.class.class`, the notation used for both the path and the title. */
 export function formatAncestor(ancestor: ElementAncestor): string {
 	const id = ancestor.id ? `#${ancestor.id}` : '';
 	const classes = ancestor.classNames?.length ? `.${ancestor.classNames.join('.')}` : '';
-	return `${ancestor.tagName}${id}${classes}`;
+	return oneLine(`${ancestor.tagName}${id}${classes}`);
 }
 
 /**
@@ -67,7 +85,7 @@ export function renderElementMarkdown(data: ElementData, url: string | undefined
 	}
 
 	if (url) {
-		sections.push(`URL: ${url}`);
+		sections.push(`URL: ${oneLine(url)}`);
 	}
 
 	if (data.ancestors.length) {

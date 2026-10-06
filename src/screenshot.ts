@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
+import { hostIsRemote } from './proposedApi';
 import { BrowserController } from './browserController';
 import { confirm, refuse } from './notify';
 import { copyImage, screenshotFileName } from './clipboardImage';
@@ -58,7 +59,7 @@ export async function copyScreenshot(
 
 		if (delivery.kind === 'clipboard') {
 			confirm(clipped
-				? vscode.l10n.t("Screenshot copied, cut off at 16384 px — the page is taller than one image can hold.")
+				? vscode.l10n.t("Screenshot copied, cut off at 16384 device pixels — the page is larger than one image can hold.")
 				: vscode.l10n.t("Screenshot copied to the clipboard."));
 			return;
 		}
@@ -66,7 +67,7 @@ export async function copyScreenshot(
 		// Not a toast either, and this is the common fallback rather than a rare
 		// one — every copy on a Linux box without xclip or wl-copy lands here —
 		// so a notification would pause the page on every press.
-		if (vscode.env.remoteName || vscode.env.uiKind !== vscode.UIKind.Desktop) {
+		if (hostIsRemote()) {
 			// **A path is useless here**: the file is on the remote host and the
 			// text clipboard is the user's local one, so putting the path there
 			// overwrote whatever they had copied with something nothing local

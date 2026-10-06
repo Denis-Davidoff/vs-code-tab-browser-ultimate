@@ -556,6 +556,47 @@ suite('codexRetiredTables / removeCodexTables', () => {
 			(from, to) => codexRangeDeletable(text, from, to));
 	};
 
+	test('a trailing dotted key with a quoted segment goes with its table', () => {
+		// Item 207: the line was not recognised as a key, so the range stopped
+		// before it and the prune left it to attach to the table above, beside
+		// an inline `http_headers` — TOML that does not parse.
+		const before = [
+			'[mcp_servers.github]',
+			'url = "https://example/mcp"',
+			'http_headers = { Authorization = "Bearer ghp" }',
+			'',
+			'[mcp_servers.ai-browser-old-abc123]',
+			'url = "http://127.0.0.1:43110/mcp"',
+			`http_headers.Authorization = "Bearer ${retired}"`,
+			'http_headers."X-Trace.Id" = "team-7"',
+			'',
+		].join('\n');
+
+		const result = prune(before, [retired]);
+		assert.deepStrictEqual(result.removed, ['ai-browser-old-abc123']);
+		assert.ok(!result.text.includes('X-Trace.Id'), result.text);
+	});
+
+	test('an array of tables under a retired server goes with it', () => {
+		// Left behind, `[[mcp_servers.<name>.extra]]` makes TOML recreate the
+		// server it hangs off, with no url.
+		const before = [
+			'[mcp_servers.other]',
+			'url = "http://example/mcp"',
+			'',
+			'[mcp_servers.ai-browser-old-abc123]',
+			`url = "http://127.0.0.1:43110/mcp/${retired}"`,
+			'',
+			'[[mcp_servers.ai-browser-old-abc123.extra]]',
+			'x = 1',
+			'',
+		].join('\n');
+
+		const result = prune(before, [retired]);
+		assert.ok(!result.text.includes('ai-browser-old-abc123'), result.text);
+		assert.ok(result.text.includes('[mcp_servers.other]'));
+	});
+
 	test('removes a retired entry whole, sub-table and all', () => {
 		const before = [
 			'[mcp_servers.other]',

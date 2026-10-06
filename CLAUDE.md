@@ -1157,8 +1157,14 @@ schema accepts only `submenu` / `when` / `group`.
 So instead: **twelve** primary buttons in `navigation@2` — the four copies plus the same four
 for each assistant — each with a `when` on the `aiBrowser.lastElementAction` context key, so
 exactly one is ever visible. The dropdown sits *before* them in `navigation@1`. The Add buttons
-carry the extra condition `aiBrowser.claudeInstalled` / `codexInstalled`, or a remembered action
-would leave the toolbar with no primary button at all once the assistant is uninstalled.
+carry the extra condition `aiBrowser.claudeInstalled` / `codexInstalled`, so a button never runs
+into an assistant that is not there — **and the context key falls back to the Copy twin** while
+the remembered action's assistant is absent (`claude:xpath` → `xpath`). The condition alone was
+half of it: a remembered Add action with its assistant uninstalled, disabled, or simply not on
+this machine (the memento is global) matched no button at all, so the toolbar showed a lone
+chevron and the chord did nothing. The memento keeps the real choice, so reinstalling brings the
+Add button back; `LastElementAction.refresh` runs on `extensions.onDidChange` (breaks-silently
+#223).
 
 The twelve action ids (`element`, `cssPath`, `cssLocation`, `xpath` and `<assistant>:<kind>`)
 are compared
@@ -1260,11 +1266,14 @@ it an argument for `document.querySelector`.
 - It must carry **direction**. ` @ ` was the form before this one and it only works with the
   selector first — "input @ that page" — so putting the page first while keeping `@` would have
   said the opposite of what is meant. An arrow reads the same way the pair is consumed.
-- **The spaces are part of the separator, and that is not cosmetic.** `CSS.escape` emits code
-  points at or above U+0080 unchanged, so an id containing an arrow survives into the selector
-  half *unescaped* — but it escapes every non-alphanumeric ASCII character, the space included,
-  so ` → ` with its spaces cannot occur there. A bare `→` is not a separator; the padded one is.
-  Tested with both shapes of hostile id.
+- **The spaces are part of the separator, and they keep it out of the *page* half only.** A URL
+  carries no raw space, so the first ` → ` always falls between the two halves. They do **not**
+  keep it out of the selector half, which this note claimed until review measured otherwise:
+  `CSS.escape` writes a hex escape followed by a literal space — `\31 ` for a leading digit,
+  `\a ` for a line break — and emits code points at or above U+0080 unchanged, so an id `1→`
+  yields `#\31 →`, an arrow with a space on each side. The pair is split at the **first**
+  separator, and the report's `Format:` line now says so; a split at the last one, or into more
+  than two parts, is wrong. Tested in `reportFormat.test.ts`.
 
 The cost, stated plainly: `→` is not ASCII, so it is not typeable on a plain keyboard and a
 shell splitting on it needs the literal. That was judged acceptable because the consumer is a
@@ -1332,10 +1341,35 @@ find" contract silently, and both read as precise:
   that built it (`isNavigable`).
 
 `locatorRefusal` turns either into a refusal through `refuse()` — the status bar, never a toast,
-since a notification would pause the very tab being picked in. Only `cssLocation` refuses: `css`
-and `xpath` travel with prose that does not claim their URL is a navigation target. This is the
-rule already written down for `browser_snapshot` — never hand out a selector that does not
-resolve with the call its consumer will make.
+since a notification would pause the very tab being picked in. Only `cssLocation` refuses an
+address-less frame: `css` and `xpath` travel with prose that does not claim their URL is a
+navigation target. This is the rule already written down for `browser_snapshot` — never hand out
+a selector that does not resolve with the call its consumer will make.
+
+**And all three kinds refuse a path that does not resolve back to the element**, because the
+builders now check it in the page — `querySelector` for CSS, `document.evaluate` for XPath — and
+answer empty when neither the short path nor a strict positional one comes back to the picked
+element; `buildPath` turns the empty answer into a refusal. The check is what caught three shapes
+that went out wrong while reading as precise (breaks-silently #218):
+
+- **Inline SVG and MathML.** An unprefixed XPath name test matches HTML elements only in an HTML
+  document, so a step written `svg` or `path` matched nothing — every icon inside a button. Steps
+  outside the XHTML namespace are written `*[local-name()=… and namespace-uri()=…]`; the CSS
+  builder emits `CSS.escape(localName)`, which keeps the case a type selector compares against
+  outside HTML (`foreignObject`) and escapes a dot in a custom element name (`my-el.v2`).
+- **Shadow DOM with a colliding id.** Uniqueness was tested against the document, which a shadow
+  tree is not part of, so a shadow `<input id="input">` got `#input` — and that selected the
+  *light-DOM* input of the same id. "Resolves to nothing" was the accepted trade-off; "resolves to
+  something else" is #21. A shadow element now gets no path at all, for every kind.
+- **Quirks mode.** `#foo` is case-insensitive there and `[id="foo"]` is not, so the uniqueness
+  test passed for an id that `#foo` shared with an earlier `id="Foo"`. Uniqueness is tested with
+  the selector that is emitted.
+
+**The page-side sources run in the page's own JavaScript world**, so a page that replaces
+`JSON.stringify` chooses what they return. The document URL is therefore accepted only when it
+serialises to itself and holds no control character (`isPlainAddress`); anything else falls back
+to `tab.url`. An isolated world (`Page.createIsolatedWorld`) would close the forgery itself and
+is not built: a page forging its own locator only misleads about itself.
 
 The kind is `cssLocation` in `PathKind` and in `ElementActionId`, camelCase because it is
 compared verbatim in `when` clauses. File names go through `fileToken`, which hyphenates it to
@@ -1495,6 +1529,18 @@ as "try the next".
   It was declared and set on the three slow tools, and read by nothing at all, so the comments
   claiming a bigger budget for them were simply false — the client's own timeout is the only one
   in play. Do not reintroduce the field without a consumer.
+- **A cancelled call is cancelled here too.** `notifications/cancelled` names a request by its
+  JSON-RPC id, and it used to be acknowledged with 202 and dropped — so after Esc in the
+  assistant `browser_inspect_element` left the page in picking mode until its timeout, and the
+  user's next click became a pick nobody was waiting for. `McpServer._calls` maps
+  session and id to an `AbortController`, aborted by the notification or by the connection
+  closing before the answer, and `Tool.run` gets the signal as its third argument. Only the two
+  tools that wait on something outside the server take it: `inspectElement` and `waitFor`
+  (breaks-silently #212).
+- **A model's text argument of the wrong type is refused, not read as absent** — `textArgument`.
+  `stringOrUndefined` is right for an optional filter and was wrong for `browser_fill`'s `value`:
+  `5` reached the page as `''`, cleared the field and answered "filled input". A finite number is
+  converted, since that is what the model meant (breaks-silently #210).
 - `browser_navigate` refuses anything but http/https. Otherwise an agent points the browser at
   a local file and reads it back with `browser_text` — a browser tool turned into a file reader.
 
@@ -1719,6 +1765,24 @@ it. The same family as the rename collision below. `keyValue` now accepts a quot
 spellings answer. The local variable in `codexEntries` that holds `scan.text` is named `text`
 for the same reason the distinction exists — it used to be called `code`, shadowing the very
 rule the comment above it draws.
+
+**And a dotted key may quote any segment or space its dots** — `http_headers."X-Trace.Id"`,
+`"http_headers".Authorization`, `http_headers . Authorization` — which is how TOML spells a header
+whose name is not a bare key. The pattern knew only the wholly quoted and the bare dotted forms,
+so such a line was not a key of its table at all; a table *ending* in one had its range stop a
+line early, and deleting or replacing the table left the line behind, attached to whatever table
+came before it. Beside an inline `http_headers` that is TOML that does not parse, and the prune
+runs unattended at window start against `~/.codex/config.toml`. `keyValue` and `tableHeader` now
+take the full key-path grammar, and `canonicalPath` records one spelling: segments unquoted,
+re-quoted only where a bare key cannot hold them (breaks-silently #207).
+
+**`[[mcp_servers.<server>.x]]` belongs to its server too.** An array of tables under a server was
+skipped as "some other table", so no deleter and no rename saw it; pruning the server left it,
+and TOML *recreates* the parent from it — a urlless server, the shape items 26 and 152 removed
+for ordinary sub-tables. Such blocks are entries with `arrayTable: true`, and a rename keeps
+their double brackets. A fuzz of 11 304 valid configs through all three writers, checked with
+Python's `tomllib`, found no output that fails to parse and no foreign server changed, where the
+parser before this found 2 624 unparsable outputs.
 
 **`code` versus `text`.** `scanLine` returns both, and the distinction is not cosmetic: `code`
 has string contents removed and answers structural questions; `text` is the line minus a real
@@ -2129,6 +2193,13 @@ field made those forms unfillable, since their inner input sits in a shadow root
 reach. Both measured in the integrated browser, including a React-controlled masked input.
 Breaks-silently #170.
 
+**Only a custom element takes the custom-element branch** — a tag with a hyphen. The branch
+used to admit anything with a `value` property, and `<button>`, `<li>`, `<option>`, `<meter>`,
+`<progress>`, `<data>` and `<output>` all have one, so a selector that missed the field by one
+element answered "filled button" with nothing changed on screen. Measured in Chromium
+(breaks-silently #210). And a **password** is never read back in the result or the refusal: the
+field's value is the user's, not the page's.
+
 One trap when testing it by hand: once anything has assigned through React's setter, its tracker
 holds that value, so a correct fill of the *same* value afterwards reads as no change. Test on a
 fresh page.
@@ -2141,6 +2212,12 @@ returns the first match, an agent told to press Delete pressed Save, successfull
 silently. The order is unique `id`, then `tag[name=…]`, then a positional `:nth-of-type` path;
 an element that cannot be addressed from `document` at all, such as one inside a shadow root,
 is listed with no selector rather than with a wrong one.
+
+**A field's value is never its label.** An input has no `innerText`, so the label chain used to
+fall through to `el.value` and hand the model whatever the user had typed — a password included,
+right beside `type: "password"`, measured in Chromium. Only a button-like input (`submit`,
+`button`, `reset`) shows its value as its caption; any other field is listed with `filled: true`
+and nothing of what it holds (breaks-silently #211).
 
 **`vscode.window.activeBrowserTab` alone is not usable for this, and that was a real bug.** The
 extension host sets it from `activeEditorPane?.input instanceof BrowserEditorInput` and nothing
@@ -2697,8 +2774,10 @@ refusal falls back to the clipboard with a message saying why. The same facts ar
 entries that could not work; they are re-published on `vscode.extensions.onDidChange`.
 
 `.ai-browser/` gets a `.gitignore` of `*` on first creation — these are drafts for one
-conversation. Reports are swept after 5 hours, at most hourly from the write path plus once on
-activation. **The sweep only touches a real directory and only our own file names**
+conversation. Reports are swept after 5 hours, at most hourly **per directory** from the write
+path plus once on activation — one shared timestamp let a Codex report's sweep of the temp
+directory skip the next Claude report's sweep of `.ai-browser/`, so alternating left page content
+there well past five hours (breaks-silently #220). **The sweep only touches a real directory and only our own file names**
 (`element-*.md`, regular files, `lstat`): the directory is inside somebody else's repository,
 which can commit it as a symlink, and following one deleted files outside the workspace
 (breaks-silently #174).
@@ -2750,9 +2829,13 @@ Capturing is one CDP call, but two arguments matter:
   half-captured screenshot — the capture stays bounded by the viewport unless the region is
   spelled out.
 
-The clip height is capped at **16384 px**: past roughly that Chromium cannot allocate the
-texture and returns a *blank* image rather than an error, so the capture is truthfully clipped
-and the notification says so.
+The clip is capped at **16384 device pixels** a side: past roughly that Chromium cannot allocate
+the texture and returns a wrong image rather than an error, so the capture is truthfully clipped
+and the confirmation says so. **Device pixels, not DIP** — the output is the clip times the
+device scale factor, since `scale` is 1. The cap was applied in DIP, so on a retina screen every
+page taller than 8192 CSS px came back with each row past 16384 repeating the *top of the page*,
+`clipped: false`, and "copied" in the status bar; measured in Chrome 153 with GPU compositing.
+Width is capped the same way (breaks-silently #215).
 
 **The clipboard is the hard half.** `vscode.env.clipboard` is text only; there is no image
 clipboard in the extension API. [src/clipboardImage.ts](src/clipboardImage.ts) shells out, and
@@ -2813,7 +2896,9 @@ a string of base64, not a picture. So for the model it is three changes:
   thousand times too large, and one returning a promise that never settles held the capture —
   and its session hold — for good. The deprecated `visualViewport` is in device pixels and
   `cssVisualViewport` in CSS pixels, so their widths give it with no page script involved;
-  without the deprecated half the DSF is taken as 1, which can only make a frame smaller.
+  without the deprecated half the DSF is taken as 1, which on a HiDPI screen makes a frame
+  *larger* than planned — not smaller, as this note used to say — so it is a fallback to watch,
+  unreached while Chrome reports both halves.
 - **A full page is cut into frames from the top**, at most six (about 9 000 tokens), each as
   tall as the pixel budget allows at the page's width — 798 px for a 1440 px page. One image of
   the whole page would arrive as a strip the API scaled down too far to read, and past 8000 px a
@@ -2853,6 +2938,16 @@ a string of base64, not a picture. So for the model it is three changes:
     other's capture, or the second took the top for "where the user was" and left them there.
     Sessions and holds order nothing here. The wait for a previous capture is bounded
     (`scrollGateWaitMs`), so a page that stopped answering cannot queue every later capture.
+    **A visible-area capture takes the gate too** (`_onScrollGate`): run during a full-page one
+    it read the metrics with the page at the top, and returned the top of the page as "what the
+    user sees" (breaks-silently #214).
+  - **The scroll is read in the coordinates `scrollTo` takes** (`scrollPosition`).
+    `cssLayoutViewport.pageX` counts from the document's left edge, while `scrollTo` counts from
+    the scroll origin — the *right* edge on a right-to-left page, negative going left. So an RTL
+    page wider than the window read as scrolled when it was at its start, every full-page capture
+    carried a false "could not be scrolled to the top" note, and a user at `scrollX -1000` was put
+    back at 0. `cssVisualViewport.pageX` minus its pinch-zoom `offsetX` is in scroll-origin
+    coordinates; measured in Chrome 153 for both directions (breaks-silently #214).
   - **The scroll is checked, not assumed.** It goes through `evaluate`, which reads
     `exceptionDetails` (breaks-silently #48), and is bounded, since `send` has no timeout. A
     replaced `window.scrollTo` falls back to `Element.prototype.scrollTo` on the document
@@ -3903,8 +3998,94 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
     scroll-capture-restore per tab, with a bounded wait.
 206. **A band that rounds to zero rows** → asking for it threw and failed the entire
     screenshot, on an ordinary 1920 × 898 page. Fold it into the band before.
+207. **A TOML key pattern that knows some spellings of a dotted key** → `http_headers."X-Trace.Id"`
+    and `http_headers . X` were not keys at all, so a table ending in one had its range stop a
+    line early; the prune deleted the table and left the line attached to the table above, which
+    with an inline `http_headers` is TOML that does not parse — the user's whole
+    `~/.codex/config.toml`, unattended, at window start. Parse the full key-path grammar and
+    record one canonical spelling. `[[mcp_servers.<server>.x]]` is the same omission one shape
+    along: invisible, so left behind, and TOML recreated the server from it without a `url`.
+208. **Running git in a workspace the user has not trusted** → reading the index runs the
+    repository's `core.fsmonitor` command, so Connect Codex executed code from an untrusted
+    folder's `.git/config`. Check `workspace.isTrusted` before any `git` call and declare the
+    limitation in the manifest.
+209. **Writing through a symlink that a repository can commit** → the repository decides where
+    the write lands. `.codex/.gitignore` pointing at `~/.ssh/config` got `config.toml` appended
+    on Connect Codex. Refuse a link inside the workspace; follow one only where the user made it.
+210. **Reading a wrong-typed argument as absent when absence means "do something"** →
+    `browser_fill` with `"value": 5` cleared the field and reported success. Refuse it, or
+    convert what the model plainly meant. The same false success came from admitting any element
+    with a `value` property into the custom-element branch: `<button>` and `<li>` were "filled".
+211. **A label chain that falls through to a field's value** → `browser_snapshot` sent a typed
+    password to the model. A value is a caption only on a button-like input.
+212. **A timeout or a cancellation that reaches only the wait** → `browser_inspect_element`
+    bounded the click and nothing around it, so a busy page held it past `timeoutMs`;
+    `browser_wait_for` kept its deadline on the page's own clock, which a page with fake timers
+    stops; and `notifications/cancelled` was dropped, leaving the page in picking mode after Esc.
+    Bound the setup and the cleanup, keep a host-side deadline, and carry the client's
+    cancellation to the tool.
+213. **One abort slot for something that can be in flight twice** → `navigate`'s retry starts a
+    second open while the first is still out, and the second overwrote the first's abort, so a
+    stuck first open could be ended by nothing and kept its slot for the life of the window. And
+    the abort never reached the slot queue, so an open for a closed tab waited out `_slotWaitMs`
+    and then evicted a live session to make room for itself.
+214. **Reading a scroll in one coordinate system and writing it in another** → on a right-to-left
+    page `cssLayoutViewport.pageX` is not what `scrollTo` takes, so every full-page capture
+    carried a false note and the user's horizontal scroll was lost. In the same code, a
+    visible-area capture outside the scroll gate captured the top of the page while a full-page
+    capture had it scrolled there.
+215. **A limit applied in the wrong unit** → the 16384 texture cap was compared with the clip in
+    DIP, not with the image in device pixels, so on HiDPI a tall page came back with its rows
+    repeating the top and was reported as copied whole.
+216. **Clearing a buffer whose source replays into it** → `Runtime.enable` and `Log.enable` send
+    what was logged before a session attached, so `browser_console` with `clear` was undone by the
+    next session opened on the tab. Clear the browser's store as well
+    (`Runtime.discardConsoleEntries`, `Log.clear`).
+217. **`destroy()` on a stream whose promise waits for `end` or `error`** → neither fires after
+    `destroy()`, so the request handler for a body over the drain limit never settled. Reject
+    first.
+218. **Handing out a selector without resolving it** → the element-picker paths were never
+    checked, and three shapes went out wrong while reading as precise: XPath steps for SVG and
+    MathML that match nothing, a shadow element's `#id` that selects a different element in the
+    page, and a quirks-mode `#id` shared with another case. The builders now check the path with
+    the call its consumer makes and answer empty when it does not come back.
+219. **Page-chosen text outside a fence in a report** → an element `id` may contain a line break,
+    so `Element:`, `HTML Path:` and every report heading could carry the page's own headings and
+    instructions, framed as the extension's text; and a page replacing `JSON.stringify` chose the
+    "page address". Keep page text on one line (`oneLine`, written twice) and accept only an
+    address that serialises to itself.
+220. **One throttle for two resources** → a single `lastPrune` served both report directories, so
+    alternating assistants kept one of them from ever being swept on writes.
+221. **Folding every failure into the one refusal message** → a report that could not be written
+    and a command that threw were both "Claude Code is not available", and the report tab stayed
+    open after a failed mention. Item 110 again; distinct outcomes, and the tab closed in
+    `finally`.
+222. **A fallback to "the first entry" where the default was meant** → the webview coerced an
+    out-of-list search engine to `BROWSER_SEARCH_ENGINES[0]`, which is Bing, while the setting's
+    default is Google.
+223. **A `when` clause that hides the only button a context value selects** → a remembered Add
+    action with its assistant absent left the toolbar with no primary button. Publish the
+    fallback the clause needs, not just the clause.
+224. **A rule written twice that drifted in one copy** → the promo build treated a throttle stamp
+    in the future as fresh, the full build as due. Same rule, both builds.
+225. **`vscode.env.remoteName` as "this host is remote"** → it is set in the local extension host
+    of a remote window too, and this extension runs locally there (`extensionKind` puts `ui`
+    first). The argv.json grant and the image clipboard were refused on a machine where both
+    work, and Connect wrote a `127.0.0.1` config into the remote folder for an assistant on the
+    remote, where nothing listens. Ask `Extension.extensionKind`; refuse what cannot work.
 
 ## Special cases and non-obvious decisions
+
+- **In a remote window this extension runs on the local machine, and the MCP features are
+  refused there.** `extensionKind` is `["ui", "workspace"]`, inherited from upstream
+  simple-browser, so a Remote-SSH, WSL or Dev Container window runs it in the local extension
+  host — where the built-in browser is. Claude Code and Codex declare no `extensionKind` and run
+  next to the workspace, on the remote, so the MCP server's `127.0.0.1` is unreachable for them.
+  `hostIsRemote` / `workspaceIsRemoteFromHost` in [src/proposedApi.ts](src/proposedApi.ts) decide
+  from `extension.extensionKind`, recorded at activation; Connect refuses with an explanation and
+  Check Connection says why. Moving the extension to the remote (`workspace` first) would put the
+  server beside the assistants, but whether the `browser` proposal and CDP work from a remote
+  extension host is unmeasured — decide that on a real remote before changing the order.
 
 The running log of quirks. **Append to this section whenever something turns out to be
 non-obvious** — see [Conventions](#conventions). One entry per item: what it is, and why it is
@@ -4217,7 +4398,9 @@ Decisions worth keeping:
   throttle on the request itself (`aiBrowser.promo.lastCheck`). A manual check ignores both.
 - **The throttle is stamped only by a request that reached a registry.** Stamping before the
   fetch means a laptop whose first window of the day opens offline buys six hours of silence for
-  every window after it.
+  every window after it. **A stamp in the future is due**, as the full build's `dueForCheck` has
+  always said: a clock that moved back left the promo announcing a cached release for as long as
+  the stamp stayed ahead (breaks-silently #224).
 - **A timer, not a single `setTimeout`.** The startup look is one-shot, so on its own it left a
   window that stays open for days checking exactly once ever, while the readme promised "every
   six hours". An hourly tick drives it now; the tick only has to be finer than the throttle,
@@ -4486,6 +4669,34 @@ would be too late: the token is already in the working tree of a tracked file. A
 a clean "tracked" (git missing, not a repository, a timeout) reads as untracked, since this is a
 precaution and refusing a connection on a guess is the wrong direction. Breaks-silently #160.
 
+**Connect Codex refuses in Restricted Mode, because everything above runs git.** `git ls-files`
+and `git check-ignore` both read the index, and reading the index runs the repository's own
+`core.fsmonitor` command — so a folder opened untrusted, carrying its own `.git/config` (an
+extracted archive, a shared folder; a clone does not carry one), ran arbitrary code on one click.
+Reproduced with git 2.54. VS Code's own Git extension is disabled in Restricted Mode for this
+reason; the manifest now declares `untrustedWorkspaces: "limited"` with a description, and
+`writeCodexProjectConfig` throws before any git call, which hands over `codex mcp add`. A trusted
+workspace runs git as before: trusting a folder is the consent this asks for (breaks-silently
+#208).
+
+**And a symlink inside the workspace refuses the write.** `writeFileAtomic` follows links on
+purpose, for a dotfiles user's linked `~/.codex/config.toml` — and every connect writer goes
+through it, so a repository committing `.codex/.gitignore -> ../../../.ssh/config` had
+`config.toml` appended to the user's ssh config on Connect Codex, before any check could refuse
+the token write. Reproduced against `~/.zshrc`, `~/.gitconfig` and a dangling target. A linked
+`.mcp.json` merged our entry into whatever JSON file it named, `~/.claude.json` included, and a
+linked `.codex/config.toml` sent the bearer token there. `refuseWorkspaceLink` checks `.mcp.json`,
+`.codex`, `.codex/config.toml` and `.codex/.gitignore` with `lstat` before either connect
+writes; the global config, outside any repository, is still followed (breaks-silently #209).
+The unattended repair is left following links: it changes only entries that already carry this
+workspace's token, which a repository cannot know.
+
+**Exit code 128 is not "no repository" by itself.** It is git's code for every fatal error —
+"detected dubious ownership", a path "beyond a symbolic link" — and reading all of them as
+"nothing here can commit the file" let the token write go ahead where git had merely declined
+to answer. `gitIgnoreVerdict` reads `noRepository` only from the "not a git repository" message,
+with `LC_ALL=C` so a translated git says it in English.
+
 **Which `git` runs matters on macOS**, where `/usr/bin/git` without the Command Line Tools opens
 a system dialog offering to install them. `gitBinary` takes the path VS Code's Git extension
 already resolved when it is active, then a `git` on `PATH` outside `/usr/bin`, then `/usr/bin/git`
@@ -4512,6 +4723,17 @@ window stops being recognisable at the same moment (see
 [The port moves](#the-port-moves-and-the-config-remembers-the-old-one)).
 
 ## Known issues, not yet fixed
+
+- **A process squatting on a configured port receives the bearer token.** Clients send
+  `Authorization: Bearer <token>` to whatever listens on the port in `.mcp.json` /
+  `.codex/config.toml`, and the token never rotates. Another local user who holds that port while
+  the window is closed (a terminal `claude` started before VS Code, a window reloading) captures
+  it, and can then drive the real server on its own port — loopback is reachable by every local
+  user. Reproduced by review: captured on the configured port, replayed with `200` on the next
+  one. Rotating the token is not the fix: it is the identity the startup repair matches on (rule
+  3 of the security model). The fix is the stdio bridge under [Not built yet](#not-built-yet),
+  which takes the token out of the config and the port out of the client, or a Unix socket in a
+  `0700` directory. Multi-user machines only; the same threat model as the lock-file entry below.
 
 - **Lock files sit at a predictable path in `os.tmpdir()`** (`fileLock.ts`), so on a
   multi-user Linux machine another local user can pre-create one and block every config write

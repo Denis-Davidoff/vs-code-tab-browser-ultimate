@@ -656,7 +656,12 @@ export function repairCodexToml(
 			// Both must follow the rename, or the sub-table is left pointing at
 			// a server name that no longer exists and TOML resurrects it as a
 			// second, urlless server.
-			replace.set(entry.firstLine, [`[mcp_servers.${canonical}.${suffix}]`]);
+			// An array-of-tables block keeps its double brackets, or the rename
+			// turns one element of an array into a table of its own.
+			const renamed = entry.arrayTable
+				? `[[mcp_servers.${canonical}.${suffix}]]`
+				: `[mcp_servers.${canonical}.${suffix}]`;
+			replace.set(entry.firstLine, [renamed]);
 
 			if (entry === headerSubTable) {
 				// Only the authorization is ours to set; every other header the

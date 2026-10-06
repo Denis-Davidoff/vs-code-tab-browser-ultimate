@@ -12,7 +12,7 @@ import { generateUuid } from './uuid';
 import {
 	authorizeRequest, classifyClient, dispatch, initializeClientName, invalidRequest,
 	invalidRequestReason, isNotification, normalisePath, number, parseError, schema, string,
-	stringOrUndefined, numberOrUndefined, toolContent,
+	stringOrUndefined, numberOrUndefined, textArgument, toolContent,
 	type Caller, type ClientKind, type ContentBlock, type DispatchContext, type Tool,
 } from './mcpProtocol';
 
@@ -50,6 +50,9 @@ export class McpServer implements vscode.Disposable {
 	 * setting off leaves nothing listening but the port still taken.
 	 */
 	private readonly _sockets = new Set<net.Socket>();
+
+	/** Calls in flight, by session and JSON-RPC id, so a cancellation can find them. */
+	private readonly _calls = new Map<string, AbortController>();
 
 	private readonly _tools: readonly Tool[];
 
@@ -332,7 +335,41 @@ export class McpServer implements vscode.Disposable {
 		// page, which is the one thing the marker exists to tell apart. An
 		// unrecognised assistant is `other` everywhere else here too.
 		const caller: Caller = { kind: kind ?? 'other', sessionId };
-		const response = await dispatch(request, this._context(), caller);
+
+		// **A call the client gave up on is cancelled here too.** The MCP
+		// client sends `notifications/cancelled` when its user presses Esc, and
+		// it was acknowledged and dropped — so `browser_inspect_element` left
+		// the page in picking mode until its timeout, taking the user's next
+		// click as a pick nobody was waiting for, and `browser_wait_for` went on
+		// polling and holding its session. The connection closing before the
+		// answer is the same fact from a client that never says so.
+		// Breaks-silently #212.
+		const callKey = (id: unknown) => `${sessionId ?? ''}\u0000${JSON.stringify(id)}`;
+		if (request.method === 'notifications/cancelled') {
+			this._calls.get(callKey(request.params?.requestId))?.abort();
+		}
+		const abort = isNotification(request) ? undefined : new AbortController();
+		const key = callKey(request.id);
+		const onClose = () => {
+			if (!res.writableEnded) {
+				abort?.abort();
+			}
+		};
+		if (abort) {
+			this._calls.set(key, abort);
+			res.on('close', onClose);
+		}
+		let response: Awaited<ReturnType<typeof dispatch>>;
+		try {
+			response = await dispatch(request, this._context(), caller, abort?.signal);
+		} finally {
+			if (abort) {
+				res.off('close', onClose);
+				if (this._calls.get(key) === abort) {
+					this._calls.delete(key);
+				}
+			}
+		}
 
 		if (response === undefined) {
 			// A notification. Answering one breaks the handshake, so 202 with no body.
@@ -355,6 +392,10 @@ export class McpServer implements vscode.Disposable {
 					// Drained and dropped, so nothing more is held — up to a
 					// ceiling, past which the socket goes after all.
 					if (size > drainLimitBytes) {
+						// Settled first: after `destroy()` neither `end` nor
+						// `error` fires, so the handler waited for ever and every
+						// such request leaked its closure (#217).
+						reject(new Error('Request body exceeds 1 MB'));
 						req.destroy();
 					}
 					return;
@@ -437,7 +478,7 @@ export class McpServer implements vscode.Disposable {
 				description: 'Turns on the element picker and waits for the user to click an element, then returns its full context. '
 					+ 'This blocks on a person, so only call it right after asking the user to pick something.',
 				inputSchema: schema({ timeoutMs: number('How long to wait for the click, default 30000') }),
-				run: (args, caller) => browser.inspectElement(numberOrUndefined(args.timeoutMs) ?? 30_000, caller),
+				run: (args, caller, signal) => browser.inspectElement(numberOrUndefined(args.timeoutMs) ?? 30_000, caller, signal),
 			},
 			{
 				name: 'browser_selected_element', title: 'Last selected element',
@@ -507,7 +548,7 @@ export class McpServer implements vscode.Disposable {
 					selector: string('CSS selector of the field'),
 					value: string('Value to set'),
 				}, ['selector', 'value']),
-				run: (args, caller) => browser.fill(stringOrUndefined(args.selector) ?? '', stringOrUndefined(args.value) ?? '', caller),
+				run: (args, caller) => browser.fill(stringOrUndefined(args.selector) ?? '', textArgument(args.value, 'value') ?? '', caller),
 			},
 			{
 				name: 'browser_wait_for', title: 'Wait for',
@@ -518,11 +559,12 @@ export class McpServer implements vscode.Disposable {
 					timeoutMs: number('How long to wait, default 10000'),
 				}),
 				// The tool itself waits up to 10s, so its own budget must exceed that.
-				run: (args, caller) => browser.waitFor(
+				run: (args, caller, signal) => browser.waitFor(
 					stringOrUndefined(args.selector),
-					stringOrUndefined(args.text),
+					textArgument(args.text, 'text') || undefined,
 					numberOrUndefined(args.timeoutMs) ?? 10_000,
-					caller),
+					caller,
+					signal),
 			},
 		];
 	}

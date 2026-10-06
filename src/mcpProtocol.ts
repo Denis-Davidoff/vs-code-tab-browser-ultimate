@@ -61,7 +61,12 @@ export interface Tool {
 	readonly title: string;
 	readonly description: string;
 	readonly inputSchema: ToolSchema;
-	run(args: Record<string, unknown>, caller: Caller): Promise<unknown>;
+	/**
+	 * `signal` fires when the client gives up on the call — a
+	 * `notifications/cancelled` naming it, or the connection closing first.
+	 * Only tools that wait on something outside the server need it.
+	 */
+	run(args: Record<string, unknown>, caller: Caller, signal?: AbortSignal): Promise<unknown>;
 }
 
 /** An MCP content block — `text` or `image`, the two this server produces. */
@@ -108,6 +113,31 @@ export function number(description: string): Record<string, unknown> {
 /** Model arguments are untrusted: anything may arrive under any key. */
 export function stringOrUndefined(value: unknown): string | undefined {
 	return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+/**
+ * A text argument that changes what a tool *does*, so a wrong type is refused
+ * rather than read as absent.
+ *
+ * {@link stringOrUndefined} answers `undefined` for anything that is not a
+ * non-empty string, which is right for an optional filter and wrong here:
+ * `browser_fill` with `"value": 5` reached the page as `''`, cleared the field
+ * and answered "filled input", and `browser_wait_for` with `"text": 404` dropped
+ * its condition. A finite number is what the model meant as text, so it is
+ * converted; absence stays absence; anything else is an error the model reads.
+ * Breaks-silently #210.
+ */
+export function textArgument(value: unknown, name: string): string | undefined {
+	if (value === undefined || value === null) {
+		return undefined;
+	}
+	if (typeof value === 'string') {
+		return value;
+	}
+	if (typeof value === 'number' && Number.isFinite(value)) {
+		return String(value);
+	}
+	throw new Error(`\`${name}\` must be a string, not ${Array.isArray(value) ? 'an array' : typeof value}.`);
 }
 
 export function numberOrUndefined(value: unknown): number | undefined {
@@ -176,6 +206,7 @@ export async function dispatch(
 	request: JsonRpcRequest,
 	ctx: DispatchContext,
 	caller: Caller = { kind: 'other' },
+	signal?: AbortSignal,
 ): Promise<JsonRpcResponse | undefined> {
 
 	if (isNotification(request)) {
@@ -216,7 +247,7 @@ export async function dispatch(
 
 			const args = (request.params?.arguments ?? {}) as Record<string, unknown>;
 			try {
-				const value = await tool.run(args, caller);
+				const value = await tool.run(args, caller, signal);
 				return result(id, { content: contentOf(value) ?? [{ type: 'text', text: asText(value) }] });
 			} catch (err) {
 				return result(id, toolFailure(err instanceof Error ? err.message : String(err)));

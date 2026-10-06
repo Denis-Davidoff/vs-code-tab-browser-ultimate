@@ -47,7 +47,25 @@ function isElementActionId(value: unknown): value is ElementActionId {
  */
 export class LastElementAction {
 
+	private _installed: (assistant: string) => boolean = () => true;
+
 	constructor(private readonly memento: vscode.Memento) { }
+
+	/**
+	 * What the toolbar shows for the remembered action: the action itself, or
+	 * its Copy twin when the assistant it hands to is not installed.
+	 *
+	 * **The Add buttons are gated on `aiBrowser.<assistant>Installed`**, so a
+	 * remembered "Add XPath to Claude Code" with Claude Code uninstalled,
+	 * disabled for the workspace, or simply absent on this machine — the
+	 * memento is global — matched no button at all: the toolbar showed a lone
+	 * chevron and the repeat chord did nothing. The memento keeps the real
+	 * choice, so reinstalling brings the Add button back. Breaks-silently #223.
+	 */
+	private _shown(id: ElementActionId): ElementActionId {
+		const [assistant, kind] = id.split(':');
+		return kind !== undefined && !this._installed(assistant) && isElementActionId(kind) ? kind : id;
+	}
 
 	public get value(): ElementActionId {
 		const stored = this.memento.get<string>(mementoKey);
@@ -62,12 +80,20 @@ export class LastElementAction {
 	 * toolbar shows only the dropdown. That is why the manifest carries
 	 * `onStartupFinished`.
 	 */
-	public async initialize(): Promise<void> {
-		await vscode.commands.executeCommand('setContext', contextKey, this.value);
+	public async initialize(installed?: (assistant: string) => boolean): Promise<void> {
+		if (installed) {
+			this._installed = installed;
+		}
+		await this.refresh();
+	}
+
+	/** Re-publishes the key, for when the set of installed assistants changes. */
+	public async refresh(): Promise<void> {
+		await vscode.commands.executeCommand('setContext', contextKey, this._shown(this.value));
 	}
 
 	public async record(id: ElementActionId): Promise<void> {
 		await this.memento.update(mementoKey, id);
-		await vscode.commands.executeCommand('setContext', contextKey, id);
+		await vscode.commands.executeCommand('setContext', contextKey, this._shown(id));
 	}
 }

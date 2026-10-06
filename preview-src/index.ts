@@ -7,11 +7,21 @@ import { onceDocumentLoaded } from './events';
 import {
 	BROWSER_SEARCH_ENGINES,
 	BROWSER_SEARCH_NONE,
+	BrowserSearchEngineId,
 	BrowserSearchEngineValue,
 	buildSearchUrl,
 	hasKnownScheme,
 	resolveAddressBarInputType,
 } from './browserSearch';
+
+/**
+ * The `aiBrowser.searchEngine` default from the manifest, which is what an
+ * out-of-list value falls back to. Not `BROWSER_SEARCH_ENGINES[0]`: that is
+ * Bing, the upstream list's first entry, so a hand-edited `"Google"` sent every
+ * address bar search to a different provider than the one the setting names
+ * as its default (breaks-silently #184, completed as #222).
+ */
+const defaultSearchEngine = BrowserSearchEngineId.Google;
 
 interface AIBrowserSettings {
 	readonly url: string;
@@ -96,7 +106,7 @@ function getSettings(): AIBrowserSettings {
 			// the same way.
 			if (typeof settings === 'object' && settings !== null && 'searchEngine' in settings
 				&& !isBrowserSearchEngineValue(settings.searchEngine)) {
-				(settings as { searchEngine: unknown }).searchEngine = BROWSER_SEARCH_ENGINES[0].id;
+				(settings as { searchEngine: unknown }).searchEngine = defaultSearchEngine;
 			}
 			if (isAIBrowserSettings(settings)) {
 				return settings;
@@ -238,7 +248,7 @@ onceDocumentLoaded(() => {
 		}
 
 		const engine = BROWSER_SEARCH_ENGINES.find(e => e.id === settings.searchEngine)
-			?? BROWSER_SEARCH_ENGINES[0];
+			?? BROWSER_SEARCH_ENGINES.find(e => e.id === defaultSearchEngine)!;
 		return buildSearchUrl(query, engine.id);
 	}
 

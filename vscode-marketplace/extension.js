@@ -311,7 +311,12 @@ function cachedRelease(context) {
 async function refreshRelease(context, force) {
 	if (!force) {
 		const last = Number(context.globalState.get(LAST_CHECK_KEY) ?? 0);
-		if (Number.isFinite(last) && Date.now() - last < CHECK_INTERVAL_MS) {
+		const now = Date.now();
+		// A stamp in the future — a clock that moved back, a machine restored
+		// from a backup — is due, not six hours of silence that could last
+		// indefinitely. The full build's `dueForCheck` has always said so; the
+		// two builds must apply one rule (breaks-silently #224).
+		if (Number.isFinite(last) && last <= now && now - last < CHECK_INTERVAL_MS) {
 			return cachedRelease(context);
 		}
 	}

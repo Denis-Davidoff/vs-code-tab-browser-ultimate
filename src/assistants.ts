@@ -91,7 +91,17 @@ export function publishAssistantContext(): void {
 const keepReportsFor = 5 * 60 * 60 * 1000;
 const pruneInterval = 60 * 60 * 1000;
 
-let lastPrune = 0;
+/**
+ * When each report directory was last swept, **one entry per directory**.
+ *
+ * A single timestamp served both — the workspace `.ai-browser/` for Claude Code
+ * and the temp directory for Codex — so a Codex report swept the temp
+ * directory and stamped the throttle, and a Claude report within the hour then
+ * skipped the workspace sweep. Alternating between the two left reports of
+ * page content in `.ai-browser/` well past the five hours, until the next
+ * activation. Breaks-silently #220.
+ */
+const lastPrune = new Map<string, number>();
 
 /**
  * The workspace's `.ai-browser/`, or a temp directory only this user can enter.
@@ -157,10 +167,10 @@ async function isRealDirectory(directory: string): Promise<boolean> {
 
 async function prune(directory: string): Promise<void> {
 	const now = Date.now();
-	if (now - lastPrune < pruneInterval) {
+	if (now - (lastPrune.get(directory) ?? 0) < pruneInterval) {
 		return;
 	}
-	lastPrune = now;
+	lastPrune.set(directory, now);
 
 	if (!await isRealDirectory(directory)) {
 		// Absent, or not ours to look inside.
@@ -227,7 +237,7 @@ async function writeReport(
  * just to find them empty.
  */
 export async function cleanUpReports(): Promise<void> {
-	lastPrune = 0;
+	lastPrune.clear();
 	try {
 		const temp = await existingPrivateTempDirectory('reports');
 		if (temp) {
@@ -239,14 +249,23 @@ export async function cleanUpReports(): Promise<void> {
 
 	const folder = vscode.workspace.workspaceFolders?.[0];
 	if (folder?.uri.scheme === 'file') {
-		lastPrune = 0;
 		await prune(await reportDirectory('workspace', folder));
 	}
 }
 
 /* --------------------------------------------------------------- delivery */
 
-export type HandOverResult = 'delivered' | 'unavailable' | 'noWorkspace';
+/**
+ * What became of a hand-over. `unavailable` means the assistant's extension or
+ * command is not there; the two failures after it are this extension's own,
+ * and reporting them as "not available" sent the user off to reinstall an
+ * assistant that was fine (breaks-silently #110, entered again as #221).
+ */
+export type HandOverResult =
+	| 'delivered'
+	| 'unavailable'
+	| 'noWorkspace'
+	| { readonly failed: 'write' | 'command'; readonly reason: string };
 
 /** Closes a tab by URI rather than by "active". */
 async function closeTab(uri: vscode.Uri): Promise<void> {
@@ -276,9 +295,15 @@ async function handOverToClaude(file: vscode.Uri, command: string): Promise<void
 	// so opening the report replaced whatever file the user had single-clicked
 	// open there — and the `closeTab` below then closed the report, leaving
 	// that file gone. The report is closed by URI either way.
-	await vscode.window.showTextDocument(document, { preview: false, preserveFocus: false });
-	await vscode.commands.executeCommand(command);
-	await closeTab(file);
+	//
+	// **Closed in `finally`.** When the mention command threw, the report stayed
+	// open in the editor, focused, over the page the user had picked in.
+	try {
+		await vscode.window.showTextDocument(document, { preview: false, preserveFocus: false });
+		await vscode.commands.executeCommand(command);
+	} finally {
+		await closeTab(file);
+	}
 }
 
 /**
@@ -306,14 +331,23 @@ export async function handOver(
 		return 'noWorkspace';
 	}
 
-	const file = await writeReport(text, fileName, assistant.reportsIn, folder);
+	let file: vscode.Uri;
+	try {
+		file = await writeReport(text, fileName, assistant.reportsIn, folder);
+	} catch (err) {
+		return { failed: 'write', reason: err instanceof Error ? err.message : String(err) };
+	}
 
-	if (id === 'claude') {
-		await handOverToClaude(file, assistant.command);
-	} else {
-		// Codex takes the URI directly, attaches it to the current thread and
-		// reveals its own sidebar.
-		await vscode.commands.executeCommand(assistant.command, file);
+	try {
+		if (id === 'claude') {
+			await handOverToClaude(file, assistant.command);
+		} else {
+			// Codex takes the URI directly, attaches it to the current thread and
+			// reveals its own sidebar.
+			await vscode.commands.executeCommand(assistant.command, file);
+		}
+	} catch (err) {
+		return { failed: 'command', reason: err instanceof Error ? err.message : String(err) };
 	}
 
 	return 'delivered';

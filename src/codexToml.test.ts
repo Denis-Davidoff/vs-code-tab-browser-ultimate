@@ -342,3 +342,39 @@ suite('a deletion range never covers another table', () => {
 		assert.strictEqual(codexRangeDeletable(text, 0, 5), true);
 	});
 });
+
+suite('dotted keys in every spelling belong to their table', () => {
+
+	const table = (line: string) => codexEntries([
+		'[mcp_servers.a]',
+		'url = "http://example/mcp"',
+		line,
+		'',
+		'[mcp_servers.b]',
+		'url = "http://other/mcp"',
+		'',
+	].join('\n'))[0];
+
+	for (const line of [
+		'http_headers."X-Trace.Id" = "team-7"',
+		'http_headers."X Org" = "x"',
+		'"http_headers".Authorization = "x"',
+		'http_headers . Authorization = "x"',
+		'\'http_headers\'.\'X-Api-Key\' = "x"',
+	]) {
+		test(`covers ${line}`, () => {
+			assert.strictEqual(table(line).endLine, 3, 'a trailing dotted key is inside the range');
+		});
+	}
+
+	test('records one spelling for every form of a key', () => {
+		assert.ok(table('"http_headers" . Authorization = "x"').values.has('http_headers.Authorization'));
+		assert.ok(table('http_headers."X-Trace.Id" = "x"').values.has('http_headers."X-Trace.Id"'));
+		assert.ok(table('"url2" = "x"').values.has('url2'));
+	});
+
+	test('a quoted segment in a table header names the same table', () => {
+		const entries = codexEntries('[mcp_servers."ai-browser".http_headers]\nAuthorization = "x"\n');
+		assert.strictEqual(entries[0].name, 'ai-browser.http_headers');
+	});
+});

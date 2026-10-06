@@ -5,6 +5,7 @@
 
 import { execFile } from 'child_process';
 import * as crypto from 'crypto';
+import { promises as fs } from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { codexEntries, codexRangeDeletable, codexUnterminated } from './codexToml';
@@ -19,6 +20,7 @@ import type { McpServer } from './mcpServer';
 import { confirm } from './notify';
 import { plainInNotification, plainInPrompt } from './notifyText';
 import { withConfigTomlRule } from './gitignoreRule';
+import { workspaceIsRemoteFromHost } from './proposedApi';
 import { writeFileAtomic } from './safeFiles';
 
 /**
@@ -265,6 +267,7 @@ export async function writeClaudeConfig(
 	if (!url) {
 		throw new Error(serverStoppedMessage);
 	}
+	await refuseWorkspaceLink(folder, ['.mcp.json']);
 	let outcome: 'written' | 'unparsable' = 'unparsable';
 	const took = await withLock(lockPath(configLockName(uri)), async () => {
 		outcome = await writeClaudeConfigLocked(uri, server, url);
@@ -463,6 +466,24 @@ export async function writeCodexProjectConfig(
 	if (!url) {
 		throw new Error(serverStoppedMessage);
 	}
+	// **Not in Restricted Mode, because everything below runs git.** Both
+	// `git ls-files` and `git check-ignore` read the index, and reading the
+	// index runs the repository's own `core.fsmonitor` command — so a folder
+	// opened untrusted, carrying its own `.git/config`, ran arbitrary code on
+	// this one click. VS Code's Git extension is disabled in Restricted Mode for
+	// exactly this reason, and the manifest declares the limitation. Without
+	// git there is no way to know the token stays out of a commit, so the
+	// write is refused and `connectCodex` hands over `codex mcp add`, which
+	// does not touch the repository. Breaks-silently #208.
+	if (!vscode.workspace.isTrusted) {
+		throw new Error(vscode.l10n.t(
+			"the workspace is not trusted, and checking that git will not commit the token means running git here, which runs the repository's own hooks"));
+	}
+	// The global file is followed through a link on purpose (dotfiles setups);
+	// a link *inside the workspace* is the repository's choice, not the user's.
+	if (!codexProjectIsGlobal(folder)) {
+		await refuseWorkspaceLink(folder, ['.codex', '.codex/config.toml', '.codex/.gitignore']);
+	}
 	// **A tracked file is refused, not written.** The `.gitignore` below only
 	// keeps an *untracked* file out of git; a team that commits
 	// `.codex/config.toml` for its shared settings would get our bearer token
@@ -553,12 +574,55 @@ async function keepTokenOutOfGit(folder: vscode.WorkspaceFolder): Promise<boolea
 }
 
 /**
+ * Refuses a connect when any of `relatives` (paths inside the workspace, each
+ * checked as it stands) is a symbolic link.
+ *
+ * **A repository can commit a symlink, and then it chooses where our writes
+ * land.** `writeFileAtomic` follows links on purpose — a dotfiles user links
+ * `~/.codex/config.toml` into a repository — and every connect writer goes
+ * through it, so a cloned `.codex/.gitignore -> ../../../.ssh/config` had
+ * `config.toml` appended to the user's ssh config on Connect Codex, before any
+ * check could refuse the token write; a linked `.mcp.json` merged our entry
+ * into whatever JSON file it named, and a linked `.codex/config.toml` sent the
+ * bearer token there. `.ai-browser/` was hardened against exactly this (#174,
+ * #193); the config paths were not. Breaks-silently #209.
+ *
+ * Only a clean "this is a link" refuses. A path that does not exist yet is
+ * the normal case, and any other `lstat` failure is left to the write itself,
+ * which fails the same way.
+ */
+async function refuseWorkspaceLink(folder: vscode.WorkspaceFolder, relatives: readonly string[]): Promise<void> {
+	if (folder.uri.scheme !== 'file') {
+		return;
+	}
+	for (const relative of relatives) {
+		let link = false;
+		try {
+			link = (await fs.lstat(path.join(folder.uri.fsPath, relative))).isSymbolicLink();
+		} catch {
+			continue;
+		}
+		if (link) {
+			throw new Error(vscode.l10n.t(
+				"{0} is a symbolic link, and writing through it would write outside the workspace", relative));
+		}
+	}
+}
+
+/**
  * What git makes of a path: ignored, not ignored, no repository here, or no
  * answer at all (git missing, a non-`file` folder, a timeout).
  *
- * `git check-ignore -q` exits 0 for ignored, 1 for not ignored and 128 outside
- * a repository. Only consulted when our own `.gitignore` rule could not be put
+ * `git check-ignore -q` exits 0 for ignored, 1 for not ignored and 128 for a
+ * fatal error. Only consulted when our own `.gitignore` rule could not be put
  * in place, so `unknown` is read as "cannot promise it is safe".
+ *
+ * **128 is not "no repository" by itself.** It is git's code for every fatal
+ * error — "detected dubious ownership", a path "beyond a symbolic link" — and
+ * reading all of them as "nothing here can commit the file" let the token
+ * write go ahead in a repository git had simply declined to answer for. Only
+ * the "not a git repository" message counts, read with the locale pinned so a
+ * translated git still says it in English.
  */
 async function gitIgnoreVerdict(
 	folder: vscode.WorkspaceFolder,
@@ -573,9 +637,12 @@ async function gitIgnoreVerdict(
 	}
 	return new Promise(resolve => {
 		execFile(git, ['-C', folder.uri.fsPath, 'check-ignore', '-q', '--', relative],
-			{ timeout: 5_000 }, error => {
+			{ timeout: 5_000, env: { ...process.env, LC_ALL: 'C', LANGUAGE: 'C' } }, (error, _stdout, stderr) => {
 				const code = (error as { code?: unknown } | null)?.code;
-				resolve(!error ? 'ignored' : code === 1 ? 'notIgnored' : code === 128 ? 'noRepository' : 'unknown');
+				resolve(!error ? 'ignored'
+					: code === 1 ? 'notIgnored'
+					: code === 128 && /not a git repository/i.test(String(stderr)) ? 'noRepository'
+					: 'unknown');
 			});
 	});
 }
@@ -924,6 +991,9 @@ function scopeNote(shared: SharedPage | undefined): string {
 }
 
 export async function connectClaudeCode(server: McpServer, shared?: SharedPage): Promise<void> {
+	if (refuseRemoteWorkspace(shared)) {
+		return;
+	}
 	const folder = workspaceFolder();
 	if (!folder) {
 		await vscode.env.clipboard.writeText(claudeCliCommand(server));
@@ -982,6 +1052,26 @@ export async function connectClaudeCode(server: McpServer, shared?: SharedPage):
 }
 
 /**
+ * Refuses a connect in a window whose workspace is on another machine than
+ * this extension (see `workspaceIsRemoteFromHost`), and says so.
+ *
+ * The config would be written into the remote folder naming `127.0.0.1`, and
+ * the assistant that reads it runs on the remote, where nothing listens — so
+ * it reported no tools while Check Connection, probing from here, reported the
+ * server reachable. No CLI command is offered: it would add the same
+ * unreachable address. Breaks-silently #225.
+ */
+function refuseRemoteWorkspace(shared: SharedPage | undefined): boolean {
+	if (!workspaceIsRemoteFromHost()) {
+		return false;
+	}
+	vscode.window.showWarningMessage(vscode.l10n.t(
+		"This window's folder is on a remote machine ({0}), while AI Browser and its MCP server run on this one — an assistant running next to that folder cannot reach this machine's loopback. Open the folder locally, or run the assistant on this machine.",
+		vscode.env.remoteName ?? 'remote') + scopeNote(shared));
+	return true;
+}
+
+/**
  * The one step connect cannot do for the user: pasting the prompt.
  *
  * Asked for explicitly, after the status bar confirmation proved too easy to
@@ -1026,6 +1116,9 @@ async function askToPaste(message: string, detail: string): Promise<void> {
  * {@link removeCodexGlobalEntry} on this path.
  */
 export async function connectCodex(server: McpServer, shared?: SharedPage): Promise<void> {
+	if (refuseRemoteWorkspace(shared)) {
+		return;
+	}
 	const folder = workspaceFolder();
 	if (!folder) {
 		// A project config needs a project. Same shape as `connectClaudeCode`

@@ -142,7 +142,7 @@ The menu, in order:
 | Copy CSS Path + Location | the page and the selector on one line, wrapped as inline code: `http://localhost:3000/a/b → #main > div > li:nth-of-type(2)` |
 | Copy Element XPath | `//*[@id="main"]/span`, or `/html/body/ul/li[2]` when nothing stable can anchor it |
 | Copy Screenshot (Visible Area) | a PNG of what is on screen, on the clipboard |
-| Copy Screenshot (Full Page) | the whole scrollable page, truncated past 16384 px |
+| Copy Screenshot (Full Page) | the whole scrollable page, truncated past 16384 device pixels |
 | Claude Code ▸ | a submenu: the same four picks handed to the Claude Code chat, plus Connect and Share Tab |
 | Codex ▸ | the same, for Codex |
 | Check Connection | the mcp server, [CLAUDE.md](CLAUDE.md#mcp-the-browser-exposed-to-claude-code-codex-and-vs-code-chat) |

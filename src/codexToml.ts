@@ -40,6 +40,18 @@ export interface CodexEntry {
 	 * someone else's note on every rewrite.
 	 */
 	readonly endLine: number;
+	/**
+	 * Written `[[mcp_servers.<name>]]`: one element of an array of tables
+	 * under a server, never a server itself.
+	 *
+	 * **Recorded rather than skipped, because a server's tables have to leave
+	 * together.** Skipped, a `[[mcp_servers.<ours>.extra]]` block was invisible
+	 * to every deleter and every rename, so pruning the server left it behind,
+	 * and TOML *recreates* the parent from it — the server came back with no
+	 * `url`, the shape item 26 and item 152 already removed for sub-tables.
+	 * Anything that rewrites the header must keep the double brackets.
+	 */
+	readonly arrayTable?: boolean;
 }
 
 interface ScanResult {
@@ -179,7 +191,25 @@ export function scanLine(line: string, initialQuote?: string): ScanResult {
 	};
 }
 
-const tableHeader = /^\s*\[\s*mcp_servers\s*\.\s*([^\]\s]+)\s*\]\s*$/;
+/** One segment of a TOML key: bare, basic-quoted or literal-quoted. */
+const keyPart = String.raw`(?:[A-Za-z0-9_-]+|"(?:[^"\\]|\\.)*"|'[^']*')`;
+
+/**
+ * A whole TOML key: segments joined by dots, with whitespace allowed around
+ * each dot. `http_headers."X-Trace.Id"`, `"http_headers".Authorization` and
+ * `http_headers . Authorization` are all one key path.
+ */
+const keyPath = String.raw`${keyPart}(?:\s*\.\s*${keyPart})*`;
+
+const tableHeader = new RegExp(String.raw`^\s*\[\s*mcp_servers\s*\.\s*(${keyPath})\s*\]\s*$`);
+
+/**
+ * `[[mcp_servers.<server>.<more>]]`, an array of tables *under* a server. At
+ * least two segments: an array of whole servers is not something Codex
+ * accepts, and treating one as an entry would give a server two shapes.
+ */
+const arrayTableHeader =
+	new RegExp(String.raw`^\s*\[\[\s*mcp_servers\s*\.\s*(${keyPart}(?:\s*\.\s*${keyPart})+)\s*\]\]\s*$`);
 
 /**
  * A key and the rest of its line.
@@ -193,10 +223,41 @@ const tableHeader = /^\s*\[\s*mcp_servers\s*\.\s*([^\]\s]+)\s*\]\s*$/;
  * user had with it. Same family as the rename collision in
  * `Things that break silently`.
  *
- * The quotes are stripped by {@link unquote} before the key is recorded, so
- * every reader asks for the bare name and both spellings answer.
+ * **And a dotted key may quote any segment, or space its dots** — which is the
+ * same bug one shape along (item 207). `http_headers."X-Trace.Id" = "…"` is how
+ * TOML spells a header whose name is not a bare key, and a pattern that knew
+ * only the wholly quoted and the bare dotted forms did not see the line at all.
+ * Unseen, it was not a key of its table, so a table ending in it had its range
+ * stop one line early; deleting or replacing the table left the line behind,
+ * where it attached itself to whatever table came before — and next to an
+ * inline `http_headers` that is TOML that does not parse. The prune runs
+ * unattended at window start against `~/.codex/config.toml`.
+ *
+ * The key is recorded in one spelling, {@link canonicalPath}, so every reader
+ * asks for the bare name and every spelling answers.
  */
-const keyValue = /^\s*("(?:[^"\\]|\\.)*"|'[^']*'|[A-Za-z0-9_.-]+)\s*=\s*(.*)$/;
+const keyValue = new RegExp(String.raw`^\s*(${keyPath})\s*=\s*(.*)$`);
+
+/**
+ * One spelling for a key path: each segment unquoted, re-quoted only where a
+ * bare key cannot hold it, joined by plain dots.
+ *
+ * So `"url"` reads `url`, `"http_headers" . Authorization` reads
+ * `http_headers.Authorization`, and `http_headers."X-Trace.Id"` keeps the
+ * quotes its dot needs — readers compare names, and two spellings of one key
+ * must compare equal. A single segment is simply unquoted, as it always was:
+ * there is no dot for its contents to be confused with.
+ */
+function canonicalPath(raw: string): string {
+	const parts = raw.match(new RegExp(keyPart, 'g')) ?? [raw];
+	if (parts.length === 1) {
+		return unquote(parts[0]);
+	}
+	return parts.map(part => {
+		const value = unquote(part);
+		return /^[A-Za-z0-9_-]+$/.test(value) ? value : JSON.stringify(value);
+	}).join('.');
+}
 
 /**
  * Strips the quoting from a value.
@@ -220,7 +281,7 @@ function unquote(raw: string): string {
 
 function tableName(header: string): string {
 	const raw = tableHeader.exec(header)?.[1] ?? '';
-	return unquote(raw);
+	return canonicalPath(raw);
 }
 
 /**
@@ -412,15 +473,17 @@ export function codexEntries(text: string): CodexEntry[] {
 		// the very distinction the comment above draws.
 		const text = scan.text;
 
-		if (tableHeader.test(text)) {
+		const arrayHeader = arrayTableHeader.exec(text);
+		if (tableHeader.test(text) || arrayHeader) {
 			flush();
 			current = {
-				name: tableName(text),
+				name: arrayHeader ? canonicalPath(arrayHeader[1]) : tableName(text),
 				values: new Map(),
 				valueLines: new Map(),
 				valueEndLines: new Map(),
 				firstLine: index,
 				endLine: index + 1,
+				...(arrayHeader ? { arrayTable: true } : {}),
 			};
 		} else if (/^\s*\[/.test(text)) {
 			// Some other table: ours ended at its last key, not here.
@@ -431,7 +494,7 @@ export function codexEntries(text: string): CodexEntry[] {
 				// The bare name, so a reader asking for `url` finds it whether
 				// the file wrote `url` or `"url"`. Recording the quoted spelling
 				// verbatim is what made the repair believe the key was absent.
-				const key = unquote(kv[1]);
+				const key = canonicalPath(kv[1]);
 				current.values.set(key, unquote(kv[2]));
 				current.valueLines.set(key, index);
 				current.valueEndLines.set(key, index + 1);

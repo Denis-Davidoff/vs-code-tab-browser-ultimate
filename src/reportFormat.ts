@@ -27,11 +27,14 @@ export type PathKind = 'css' | 'cssLocation' | 'xpath';
  * @ that page"), and putting the page first while keeping it says the opposite
  * of what is meant.
  *
- * And the **spaces are part of it**. `CSS.escape` emits code points at or above
- * U+0080 unchanged, so an id containing an arrow survives into the selector
- * unescaped — but it escapes every non-alphanumeric ASCII character, the space
- * included, so ` → ` with its spaces cannot occur inside the selector half. A
- * bare `→` is not a separator; the padded one is.
+ * And the **spaces are part of it**, which keeps it out of the *page* half: a
+ * URL carries no raw space. It does **not** keep it out of the selector half,
+ * which an earlier version of this comment claimed. `CSS.escape` writes a hex
+ * escape followed by a literal space — `\31 ` for a leading digit, `\a ` for a
+ * line break — and emits code points at or above U+0080 unchanged, so an id
+ * `1→` yields `#\31 →`, an arrow with a space on each side. The pair is
+ * therefore split at the **first** separator, which always falls between the
+ * two halves; a split at the last one, or into more than two parts, is wrong.
  */
 export const locationSeparator = ' → ';
 
@@ -61,6 +64,9 @@ export function withLocation(path: string, url: string | undefined): string {
  * one.
  */
 export function inlineCode(value: string): string {
+	// One line, or a blank line inside the value ends the span and the rest is
+	// prose (#219).
+	value = oneLine(value);
 	let longest = 0;
 	for (const run of value.match(/`+/g) ?? []) {
 		longest = Math.max(longest, run.length);
@@ -68,6 +74,21 @@ export function inlineCode(value: string): string {
 	const delimiter = '`'.repeat(longest + 1);
 	const pad = value.startsWith('`') || value.endsWith('`') ? ' ' : '';
 	return `${delimiter}${pad}${value}${pad}${delimiter}`;
+}
+
+/**
+ * A page-supplied value made safe to sit on one line of Markdown: control
+ * characters and the Unicode line separators written as `\uXXXX`.
+ *
+ * An element `id` may contain a line break, and so may anything else a page
+ * chooses; outside a fence, one is enough to add headings and instructions of
+ * the page's own to a report handed to an assistant. Written twice on purpose
+ * — `elementMarkdown.ts` carries the same rule, since neither leaf may import
+ * the other. Breaks-silently #219.
+ */
+export function oneLine(value: string): string {
+	return value.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g,
+		ch => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`);
 }
 
 /**
@@ -146,7 +167,7 @@ export function formatPathReport(
 		// heading, in a file whose reader is usually a model.
 		`# ${pathLabel(kind)} of ${inlineCode(descriptor)}`,
 		url
-			? `${pathLabel(kind)} of an element on ${url}`
+			? `${pathLabel(kind)} of an element on ${oneLine(url)}`
 			: `${pathLabel(kind)} of an element in the integrated browser`,
 	];
 	// Asked of the body, not of the kind. `withLocation` yields the bare selector
@@ -157,14 +178,14 @@ export function formatPathReport(
 		// Spelled out because the reader is usually a model: without it the
 		// combined line invites a paste of the whole string into
 		// `querySelector`, separator and address included.
-		lines.push(`Format: \`<page url>${locationSeparator}<css selector>\``);
+		lines.push(`Format: \`<page url>${locationSeparator}<css selector>\`, split at the first \`${locationSeparator.trim()}\`.`);
 	}
 	if (embeddedIn) {
 		// The pair above addresses the frame's own document, which is the only
 		// way it resolves with one `querySelector`. Where it came from is still
 		// worth saying, and the report has room for it where the one-liner does
 		// not.
-		lines.push(`Picked inside a frame embedded in ${embeddedIn}.`);
+		lines.push(`Picked inside a frame embedded in ${oneLine(embeddedIn)}.`);
 	}
 	lines.push(fenced(path, fenceLanguage(kind)));
 	return `${lines.join('\n\n')}\n`;

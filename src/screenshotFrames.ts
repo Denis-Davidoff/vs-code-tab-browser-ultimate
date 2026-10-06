@@ -51,8 +51,11 @@ export interface PixelRatios {
  * a promise that never settles holds the capture for good. The deprecated
  * `visualViewport` is in device pixels and `cssVisualViewport` in CSS pixels,
  * so their widths give the device ratio with no page script involved. Without
- * the deprecated half the device scale factor is taken as 1, which can only make
- * a frame smaller than planned, never larger.
+ * the deprecated half the device scale factor is taken as 1 — and that makes a
+ * frame *larger* than planned on a HiDPI screen, not smaller, since Chromium
+ * still multiplies by the real factor. An earlier version of this comment had
+ * the direction backwards. Chrome 153 always reports both halves, so the
+ * fallback is not reached today; if it ever is, check the decoded size.
  */
 export function pixelRatios(metrics: {
 	cssVisualViewport?: { clientWidth?: number; zoom?: number };

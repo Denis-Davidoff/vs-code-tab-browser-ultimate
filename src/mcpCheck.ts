@@ -6,6 +6,7 @@
 import * as http from 'http';
 import * as vscode from 'vscode';
 import { codexEntries } from './codexToml';
+import { workspaceIsRemoteFromHost } from './proposedApi';
 import {
 	claudeClientState, claudeLocalScopeShadows, codexClientState, codexOurEntries,
 	codexStrangers, serverName, type ClientState,
@@ -144,6 +145,14 @@ export async function checkConnection(server: McpServer, browser: BrowserControl
 		vscode.l10n.t("Codex: {0}", describe(codex)),
 		vscode.l10n.t("VS Code chat: registered automatically, no config file"),
 	];
+
+	if (workspaceIsRemoteFromHost()) {
+		// "Reachable" above is true from here and false from where the
+		// assistants run, which is the whole failure (#225).
+		lines.push('', vscode.l10n.t(
+			"This window's folder is on a remote machine ({0}), but the server runs on this one. An assistant running on the remote cannot reach it, so Connect is refused here.",
+			vscode.env.remoteName ?? 'remote'));
+	}
 
 	if (shadows.length) {
 		// The one stale entry that pressing Connect cannot fix, because it wins

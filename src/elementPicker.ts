@@ -21,6 +21,17 @@ import {
  * stays short and survives layout changes; falls back to a positional path from
  * the document root. Sent to `Runtime.callFunctionOn`, so it has to be a
  * self-contained function expression.
+ *
+ * **Every path is checked to resolve back to the element before it is handed
+ * out** — `document.evaluate` here, `querySelector` in the CSS builder — and
+ * an element no path from the page reaches gets an empty answer, which
+ * {@link buildPath} refuses. Without the check three shapes went out wrong
+ * while reading as precise: every element inside an inline SVG or MathML
+ * (an unprefixed name test matches HTML elements only, so the XPath matched
+ * nothing — that is every icon in a button), an element inside a shadow root
+ * whose id also existed in the page (both builders tested uniqueness against
+ * the document, so the path selected the *other* element), and a quirks-mode
+ * page with ids differing only in case. Breaks-silently #218.
  */
 const xpathFunctionDeclaration = `function () {
 	// XPath 1.0 string literals have **no escape mechanism at all**, so a value
@@ -50,55 +61,87 @@ const xpathFunctionDeclaration = `function () {
 		return 'concat(' + pieces.join(', ') + ')';
 	}
 
-	function uniqueById(el) {
+	var XHTML = 'http://www.w3.org/1999/xhtml';
+
+	function sameKind(a, b) {
+		return a.localName === b.localName && a.namespaceURI === b.namespaceURI;
+	}
+
+	// An unprefixed name test in an HTML document matches HTML elements only,
+	// so a step written as svg or path never matches anything: every icon
+	// inside a button came back as a path to nothing. Anything outside the
+	// HTML namespace is therefore named by local-name() and namespace-uri();
+	// strict mode names every step that way, for names no name test can hold.
+	function step(el, strict) {
+		var name = !strict && el.namespaceURI === XHTML
+			? el.localName
+			: '*[local-name()=' + xpathLiteral(el.localName)
+				+ ' and namespace-uri()=' + xpathLiteral(el.namespaceURI || '') + ']';
+		var index = 1;
+		var more = false;
+		var sibling = el.previousElementSibling;
+		while (sibling) {
+			if (sameKind(sibling, el)) {
+				index++;
+			}
+			sibling = sibling.previousElementSibling;
+		}
+		sibling = el.nextElementSibling;
+		while (sibling && !more) {
+			more = sameKind(sibling, el);
+			sibling = sibling.nextElementSibling;
+		}
+		return index > 1 || more ? name + '[' + index + ']' : name;
+	}
+
+	function uniqueById(el, doc) {
 		if (!el.id) {
 			return null;
 		}
 		try {
-			var matches = el.ownerDocument.querySelectorAll('[id="' + CSS.escape(el.id) + '"]');
-			return matches.length === 1 ? '//*[@id=' + xpathLiteral(el.id) + ']' : null;
+			var anchor = '//*[@id=' + xpathLiteral(el.id) + ']';
+			return doc.evaluate('count(' + anchor + ')', doc, null, 1, null).numberValue === 1 ? anchor : null;
 		} catch (e) {
 			return null;
 		}
 	}
 
-	function indexAmongSiblings(el) {
-		var index = 1;
-		var sibling = el.previousElementSibling;
-		while (sibling) {
-			if (sibling.tagName === el.tagName) {
-				index++;
+	function build(target, doc, strict) {
+		var segments = [];
+		var node = target;
+		while (node && node.nodeType === 1) {
+			var anchor = strict ? null : uniqueById(node, doc);
+			if (anchor) {
+				return segments.length ? anchor + '/' + segments.join('/') : anchor;
 			}
-			sibling = sibling.previousElementSibling;
+			segments.unshift(step(node, strict));
+			node = node.parentElement;
 		}
-		var following = el.nextElementSibling;
-		while (following) {
-			if (following.tagName === el.tagName) {
-				return index;
-			}
-			following = following.nextElementSibling;
-		}
-		return index === 1 ? 0 : index;
+		return '/' + segments.join('/');
 	}
 
-	var node = this.nodeType === 1 ? this : this.parentElement;
-	if (!node) {
+	// Checked with the very call a consumer makes. A path that does not come
+	// back to this element is not handed out: an element inside a shadow root
+	// has none, and an empty answer is refused rather than copied.
+	function resolves(path, target, doc) {
+		try {
+			return doc.evaluate(path, doc, null, 9, null).singleNodeValue === target;
+		} catch (e) {
+			return false;
+		}
+	}
+
+	var target = this.nodeType === 1 ? this : this.parentElement;
+	if (!target) {
 		return '';
 	}
-
-	var segments = [];
-	while (node && node.nodeType === 1) {
-		var anchor = uniqueById(node);
-		if (anchor) {
-			return segments.length ? anchor + '/' + segments.join('/') : anchor;
-		}
-		var tag = node.tagName.toLowerCase();
-		var index = indexAmongSiblings(node);
-		segments.unshift(index ? tag + '[' + index + ']' : tag);
-		node = node.parentElement;
+	var doc = target.ownerDocument;
+	var path = build(target, doc, false);
+	if (resolves(path, target, doc)) {
+		return path;
 	}
-
-	return '/' + segments.join('/');
+	path = build(target, doc, true);
+	return resolves(path, target, doc) ? path : '';
 }`;
 
 /**
@@ -112,14 +155,21 @@ const xpathFunctionDeclaration = `function () {
  * is in "Copy Element" for anyone who wants it.
  */
 const cssPathFunctionDeclaration = `function () {
-	function uniqueById(el) {
+	function sameKind(a, b) {
+		return a.localName === b.localName && a.namespaceURI === b.namespaceURI;
+	}
+
+	// Tested with the selector that is emitted, not with an attribute selector:
+	// an id selector is case-insensitive in quirks mode, where an attribute
+	// selector is not, so an id that read as unique could match an earlier
+	// element with the same id in another case.
+	function uniqueById(el, doc) {
 		if (!el.id) {
 			return null;
 		}
 		try {
-			return el.ownerDocument.querySelectorAll('[id="' + CSS.escape(el.id) + '"]').length === 1
-				? '#' + CSS.escape(el.id)
-				: null;
+			var selector = '#' + CSS.escape(el.id);
+			return doc.querySelectorAll(selector).length === 1 ? selector : null;
 		} catch (e) {
 			return null;
 		}
@@ -129,14 +179,14 @@ const cssPathFunctionDeclaration = `function () {
 		var index = 1;
 		var sibling = el.previousElementSibling;
 		while (sibling) {
-			if (sibling.tagName === el.tagName) {
+			if (sameKind(sibling, el)) {
 				index++;
 			}
 			sibling = sibling.previousElementSibling;
 		}
 		var following = el.nextElementSibling;
 		while (following) {
-			if (following.tagName === el.tagName) {
+			if (sameKind(following, el)) {
 				return index;
 			}
 			following = following.nextElementSibling;
@@ -144,25 +194,48 @@ const cssPathFunctionDeclaration = `function () {
 		return index === 1 ? 0 : index;
 	}
 
-	var node = this.nodeType === 1 ? this : this.parentElement;
-	if (!node) {
+	// Escaped, because a custom element name may hold a dot, which an
+	// unescaped type selector reads as a class. The local name keeps its case,
+	// which is what a type selector compares against outside HTML.
+	function build(target, doc, useIds) {
+		var segments = [];
+		var node = target;
+		while (node && node.nodeType === 1) {
+			var anchor = useIds ? uniqueById(node, doc) : null;
+			if (anchor) {
+				segments.unshift(anchor);
+				return segments.join(' > ');
+			}
+			var tag = CSS.escape(node.localName);
+			var index = nthOfType(node);
+			segments.unshift(index ? tag + ':nth-of-type(' + index + ')' : tag);
+			node = node.parentElement;
+		}
+		return segments.join(' > ');
+	}
+
+	// Checked with the call a consumer makes, as browser_snapshot does. An
+	// element inside a shadow root used to get a path that resolved to a
+	// different element of the same id in the page itself; it gets none now.
+	function resolves(path, target, doc) {
+		try {
+			return doc.querySelector(path) === target;
+		} catch (e) {
+			return false;
+		}
+	}
+
+	var target = this.nodeType === 1 ? this : this.parentElement;
+	if (!target) {
 		return '';
 	}
-
-	var segments = [];
-	while (node && node.nodeType === 1) {
-		var anchor = uniqueById(node);
-		if (anchor) {
-			segments.unshift(anchor);
-			return segments.join(' > ');
-		}
-		var tag = node.tagName.toLowerCase();
-		var index = nthOfType(node);
-		segments.unshift(index ? tag + ':nth-of-type(' + index + ')' : tag);
-		node = node.parentElement;
+	var doc = target.ownerDocument;
+	var path = build(target, doc, true);
+	if (resolves(path, target, doc)) {
+		return path;
 	}
-
-	return segments.join(' > ');
+	path = build(target, doc, false);
+	return resolves(path, target, doc) ? path : '';
 }`;
 
 /**
@@ -437,6 +510,28 @@ function isNavigable(url: string | undefined): boolean {
 	return url !== undefined && /^(https?|file):/i.test(url);
 }
 
+/**
+ * Whether a document address read from the page can be trusted as text.
+ *
+ * **The page-side helpers run in the page's own JavaScript world**, so a page
+ * that replaces `JSON.stringify` or `String` chooses what "its address" is —
+ * and an address carrying newlines landed as top-level lines of a report
+ * handed to Claude Code or Codex, headings and instructions included, framed
+ * as the extension's own statement (#219). A real address is a URL that
+ * serialises to itself, with nothing a line break could hide in; anything else
+ * falls back to the tab's own URL, which the page does not write.
+ */
+function isPlainAddress(url: string): boolean {
+	if (/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(url)) {
+		return false;
+	}
+	try {
+		return new URL(url).href === url;
+	} catch {
+		return false;
+	}
+}
+
 /** Where the picked element's own document lives, and whether it is the top one. */
 async function documentLocation(
 	client: CDPClient,
@@ -462,7 +557,7 @@ async function documentLocation(
 		// Fall back to the tab's own URL rather than lose the pick.
 	}
 	const shadow = parsed.shadow === true;
-	if (!parsed.known || !parsed.url) {
+	if (!parsed.known || !parsed.url || !isPlainAddress(parsed.url)) {
 		return { url: tab.url, shadow };
 	}
 	return parsed.top
@@ -674,6 +769,28 @@ function short(value: string): string {
 	return firstLine.length > 80 ? `${firstLine.slice(0, 79)}…` : firstLine;
 }
 
+/**
+ * Runs a path builder, and refuses through the status bar when it found no
+ * path that resolves back to the element — the builders answer empty rather
+ * than hand out one that does not (#218).
+ */
+async function buildPath(
+	client: CDPClient,
+	sessionId: string,
+	backendNodeId: number,
+	declaration: string,
+	label: string,
+): Promise<string | undefined> {
+	const path = await evaluateOnNode(client, sessionId, backendNodeId, declaration);
+	if (!path) {
+		refuse(vscode.l10n.t(
+			"No {0} from the page leads back to that element — it is inside a shadow root, or somewhere a path cannot address. Use \"Copy Element\" instead.",
+			label));
+		return undefined;
+	}
+	return path;
+}
+
 async function copyToClipboard(value: string, label: string): Promise<void> {
 	await vscode.env.clipboard.writeText(value);
 	confirm(vscode.l10n.t("{0} copied: {1}", label, short(value)));
@@ -683,7 +800,7 @@ export function copyElementXPath(): Promise<void> {
 	return pickAndDeliver(
 		vscode.l10n.t("Click an element in the browser to copy its XPath"),
 		(client, sessionId, backendNodeId) =>
-			evaluateOnNode(client, sessionId, backendNodeId, xpathFunctionDeclaration),
+			buildPath(client, sessionId, backendNodeId, xpathFunctionDeclaration, vscode.l10n.t("XPath")),
 		value => copyToClipboard(value, vscode.l10n.t("XPath")),
 	);
 }
@@ -692,7 +809,7 @@ export function copyElementCssPath(): Promise<void> {
 	return pickAndDeliver(
 		vscode.l10n.t("Click an element in the browser to copy its CSS path"),
 		(client, sessionId, backendNodeId) =>
-			evaluateOnNode(client, sessionId, backendNodeId, cssPathFunctionDeclaration),
+			buildPath(client, sessionId, backendNodeId, cssPathFunctionDeclaration, vscode.l10n.t("CSS path")),
 		value => copyToClipboard(value, vscode.l10n.t("CSS path")),
 	);
 }
@@ -710,8 +827,8 @@ export function copyElementCssLocation(): Promise<void> {
 	return pickAndDeliver(
 		vscode.l10n.t("Click an element in the browser to copy its CSS path and page address"),
 		async (client, sessionId, backendNodeId, tab) => {
-			const path = await evaluateOnNode(
-				client, sessionId, backendNodeId, cssPathFunctionDeclaration);
+			const path = await buildPath(
+				client, sessionId, backendNodeId, cssPathFunctionDeclaration, vscode.l10n.t("CSS path"));
 			if (!path) {
 				return undefined;
 			}
@@ -775,8 +892,19 @@ async function deliverToAssistant(
 	try {
 		outcome = await handOver(assistant, report, fileName);
 	} catch (err) {
-		outcome = 'unavailable';
-		console.warn('[ai-browser] hand-over failed:', err);
+		outcome = { failed: 'command', reason: err instanceof Error ? err.message : String(err) };
+	}
+
+	if (typeof outcome === 'object') {
+		await vscode.env.clipboard.writeText(report);
+		vscode.window.showWarningMessage(outcome.failed === 'write'
+			? vscode.l10n.t(
+				"The report could not be written ({0}), so it was copied to the clipboard instead.",
+				outcome.reason)
+			: vscode.l10n.t(
+				"{0} did not take the report ({1}), so it was copied to the clipboard instead.",
+				assistantName(assistant), outcome.reason));
+		return;
 	}
 
 	switch (outcome) {
@@ -787,7 +915,7 @@ async function deliverToAssistant(
 		case 'noWorkspace':
 			await vscode.env.clipboard.writeText(report);
 			vscode.window.showWarningMessage(vscode.l10n.t(
-				"{0} addresses files by their path inside the workspace, and no folder is open — the report was copied to the clipboard instead.",
+				"{0} addresses files by their path inside the workspace, and no local folder is open — the report was copied to the clipboard instead.",
 				assistantName(assistant)));
 			return;
 
@@ -839,7 +967,8 @@ export function addPathToAssistant(assistant: AssistantId, kind: PathKind): Prom
 	return pickAndDeliver(
 		pathPickTitle(kind, assistant),
 		async (client, sessionId, backendNodeId, tab) => {
-			const built = await evaluateOnNode(client, sessionId, backendNodeId, declaration);
+			const built = await buildPath(client, sessionId, backendNodeId, declaration,
+				kind === 'xpath' ? vscode.l10n.t("XPath") : vscode.l10n.t("CSS path"));
 			if (!built) {
 				return undefined;
 			}

@@ -205,7 +205,7 @@ suite('report bodies', () => {
 
 	test('a css+location report spells the format out for its reader', () => {
 		const report = formatPathReport('div', 'cssLocation', 'http://h/x → #a', 'http://h/x');
-		assert.ok(report.includes('Format: `<page url> → <css selector>`'), report);
+		assert.ok(report.includes('Format: `<page url> → <css selector>`, split at the first `→`.'), report);
 	});
 
 	test('no format line when the body has no separator to describe', () => {
@@ -267,5 +267,26 @@ suite('a descriptor is page-controlled, so the heading wraps it safely', () => {
 		const heading = formatElementReport('body', 'div#main.list').split('\n')[0];
 
 		assert.strictEqual(heading, '# Element context of `div#main.list`');
+	});
+});
+
+suite('report text from the page stays on one line', () => {
+
+	test('a descriptor with a line break does not end the heading', () => {
+		const report = formatElementReport('body', 'button#go\n# Instructions');
+		assert.ok(!/^# Instructions/m.test(report), report);
+	});
+
+	test('the one-liner stays one code span', () => {
+		const value = inlineCode(withLocation('#a\n\nb', 'http://h/'));
+		assert.ok(!value.includes('\n'), value);
+	});
+
+	test('the pair splits at its first separator, whatever the selector holds', () => {
+		// CSS.escape('1→') is '\\31 →': an arrow with a space on each side.
+		const pair = withLocation('#\\31 → > span', 'http://localhost:3000/a');
+		const at = pair.indexOf(locationSeparator);
+		assert.strictEqual(pair.slice(0, at), 'http://localhost:3000/a');
+		assert.strictEqual(pair.slice(at + locationSeparator.length), '#\\31 → > span');
 	});
 });

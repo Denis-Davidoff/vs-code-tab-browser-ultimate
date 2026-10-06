@@ -96,6 +96,11 @@ class TabSession {
 	 */
 	public static async open(tab: vscode.BrowserTab, signal?: AbortSignal): Promise<TabSession> {
 		const closed = () => new Error('The browser tab was closed while its session was opening.');
+		// Before asking the host for a channel, not after: an open whose tab has
+		// already gone must not start a handshake at all (#213).
+		if (signal?.aborted) {
+			throw closed();
+		}
 		const channel = await whenNotAborted(Promise.resolve(tab.startCDPSession()), signal, closed);
 		const client = new CDPClient(channel);
 		const onAbort = () => client.dispose();
@@ -308,6 +313,40 @@ const pageScrollTimeoutMs = 2_000;
 /** How long a full-page capture waits for one already running on the same tab. */
 const scrollGateWaitMs = 15_000;
 
+/** The largest image side Chromium can render a capture into, in device pixels. */
+const textureLimitPx = 16384;
+
+/**
+ * Where the page is scrolled to, in the coordinates `window.scrollTo` takes.
+ *
+ * **Not `cssLayoutViewport.pageX`**, which counts from the document's left
+ * edge. `scrollTo` counts from the scroll *origin*, and on a right-to-left page
+ * that is the right edge, with negative values going left — so an RTL page
+ * wider than the window read as scrolled when it was at its start, every
+ * full-page capture carried a false "could not be scrolled to the top" note,
+ * and the restore put a user scrolled to -1000 back at 0. The visual
+ * viewport's `pageX` is in scroll-origin coordinates; its `offsetX` is the
+ * pinch-zoom offset inside the layout viewport, taken off to get the layout
+ * viewport's own position. Vertical scroll has no origin question.
+ * Breaks-silently #214.
+ */
+function scrollPosition(metrics: any): { x: number; y: number } {
+	const visual = metrics?.cssVisualViewport;
+	const x = typeof visual?.pageX === 'number' && Number.isFinite(visual.pageX)
+		? visual.pageX - (Number(visual.offsetX) || 0)
+		: Number(metrics?.cssLayoutViewport?.pageX) || 0;
+	return { x: Math.round(x), y: Number(metrics?.cssLayoutViewport?.pageY) || 0 };
+}
+
+/** How long switching inspect mode off may take before the call gives up on it. */
+const inspectCleanupTimeoutMs = 2_000;
+
+/** How much longer than its page-side deadline `waitFor` waits on the host side. */
+const waitForGraceMs = 1_000;
+
+/** The longest delay `setTimeout` honours; past it Node fires after 1 ms. */
+const maxTimerMs = 2 ** 31 - 1;
+
 /**
  * Waits for a navigation to finish, and gives up rather than blocking a tool.
  *
@@ -476,8 +515,16 @@ export class BrowserController implements vscode.Disposable {
 	 * controller is disposed — and only then. `_dropSession` alone does not
 	 * abort, because `navigate`'s retry drops a tab it is about to reopen and a
 	 * concurrent caller may still be waiting on the open under way.
+	 *
+	 * **A set per tab, because two opens can be in flight for one tab** — the
+	 * retry above starts the second while the first is still out. One slot per
+	 * tab let the second overwrite the first's abort, so a first open stuck in
+	 * a handshake on a page that had stopped answering could no longer be
+	 * ended by anything: closing the tab and disposing the controller both
+	 * reached only the newer one, and the stuck open kept its slot permit for
+	 * the life of the window. Breaks-silently #213.
 	 */
-	private readonly _openAborts = new Map<vscode.BrowserTab, AbortController>();
+	private readonly _openAborts = new Map<vscode.BrowserTab, Set<AbortController>>();
 
 	/**
 	 * The tab the tools last acted on.
@@ -928,11 +975,13 @@ export class BrowserController implements vscode.Disposable {
 		};
 
 		const abort = new AbortController();
-		this._openAborts.set(tab, abort);
+		const aborts = this._openAborts.get(tab) ?? new Set<AbortController>();
+		aborts.add(abort);
+		this._openAborts.set(tab, aborts);
 		// Assigned below, before anything can land; read by the landing open to
 		// ask whether it is still the current one for this tab.
 		let promise: Promise<TabSession> | undefined;
-		const opening = this._awaitSlot().then(() => {
+		const opening = this._awaitSlot(abort.signal).then(() => {
 			slotHeld = true;
 			return TabSession.open(tab, abort.signal);
 		}).then(session => {
@@ -978,7 +1027,9 @@ export class BrowserController implements vscode.Disposable {
 		// success has already given the slot back, and `releaseSlot` is idempotent.
 		promise = opening.finally(() => {
 			releaseSlot();
-			if (this._openAborts.get(tab) === abort) {
+			const mine = this._openAborts.get(tab);
+			mine?.delete(abort);
+			if (mine?.size === 0) {
 				this._openAborts.delete(tab);
 			}
 		});
@@ -1039,9 +1090,21 @@ export class BrowserController implements vscode.Disposable {
 	 *
 	 * It always resolves holding exactly one reservation — on the timeout and on
 	 * teardown it simply takes one — so the release in `_sessionFor` is
-	 * unconditional and the count cannot drift.
+	 * unconditional and the count cannot drift. It *rejects* holding none, and
+	 * that is the one other way out: `signal`, fired when the tab closes.
+	 *
+	 * **A closed tab leaves the queue at once, without a permit.** The signal
+	 * used to reach only `TabSession.open`, after the wait, so an open queued
+	 * for a tab that had closed sat out the whole `_slotWaitMs` before saying
+	 * so — and when a busy call finished first, the dead open won the slot and
+	 * `_tryReserve` evicted the session that had just gone idle to make room
+	 * for an open that could not succeed. Breaks-silently #213.
 	 */
-	private _awaitSlot(): Promise<void> {
+	private _awaitSlot(signal?: AbortSignal): Promise<void> {
+		const closed = () => new Error('The browser tab was closed while its session was opening.');
+		if (signal?.aborted) {
+			return Promise.reject(closed());
+		}
 		if (this._disposed) {
 			this._reserved++;
 			return Promise.resolve();
@@ -1050,6 +1113,15 @@ export class BrowserController implements vscode.Disposable {
 			return Promise.resolve();
 		}
 		return new Promise<void>((resolve, reject) => {
+			const leave = () => {
+				clearTimeout(timer);
+				this._slotWaiters.delete(waiter);
+				signal?.removeEventListener('abort', onAbort);
+			};
+			const onAbort = () => {
+				leave();
+				reject(closed());
+			};
 			const waiter = () => {
 				// Each waiter competes for the permit rather than trusting the
 				// wake-up: one release frees one slot, so exactly one of them wins
@@ -1059,8 +1131,7 @@ export class BrowserController implements vscode.Disposable {
 				} else if (!this._tryReserve()) {
 					return;
 				}
-				clearTimeout(timer);
-				this._slotWaiters.delete(waiter);
+				leave();
 				resolve();
 			};
 			// Going ahead beats hanging — but only as far as `_sessionOverflow`.
@@ -1071,6 +1142,7 @@ export class BrowserController implements vscode.Disposable {
 			// and a retry then finds a slot.
 			const timer = setTimeout(() => {
 				this._slotWaiters.delete(waiter);
+				signal?.removeEventListener('abort', onAbort);
 				if (this._tryReserve(
 					BrowserController._sessionLimit + BrowserController._sessionOverflow)) {
 					resolve();
@@ -1080,6 +1152,7 @@ export class BrowserController implements vscode.Disposable {
 					+ 'running to finish, then try again.'));
 			}, BrowserController._slotWaitMs);
 			this._slotWaiters.add(waiter);
+			signal?.addEventListener('abort', onAbort, { once: true });
 		});
 	}
 
@@ -1393,7 +1466,9 @@ export class BrowserController implements vscode.Disposable {
 		this._selectedElements.delete(tab);
 		// An open still in flight for this tab is ended, not abandoned: if the
 		// page had stopped answering, nothing else would ever settle it.
-		this._openAborts.get(tab)?.abort();
+		for (const abort of this._openAborts.get(tab) ?? []) {
+			abort.abort();
+		}
 		this._dropSession(tab);
 		for (const [key, pin] of [...this._pins]) {
 			if (pin.tab === tab) {
@@ -1816,8 +1891,16 @@ export class BrowserController implements vscode.Disposable {
 				for (const el of nodes) {
 					const rect = el.getBoundingClientRect();
 					if (rect.width === 0 || rect.height === 0) { continue; }
-					const label = (el.getAttribute('aria-label') || el.innerText || el.value || el.getAttribute('placeholder') || el.getAttribute('title') || '').trim().slice(0, 80);
+					// **A field's value is never its label.** An input has no
+					// innerText, so the chain used to fall through to value and
+					// hand the model whatever the user had typed — a password
+					// included, next to type "password". Only a button-like
+					// input shows its value as its caption; any other field says
+					// only that it holds something. Breaks-silently #211.
+					const buttonLike = el.tagName === 'INPUT' && /^(submit|button|reset)$/i.test(el.type);
+					const label = (el.getAttribute('aria-label') || el.innerText || (buttonLike ? el.value : '') || el.getAttribute('placeholder') || el.getAttribute('title') || '').trim().slice(0, 80);
 					const entry = { tag: el.tagName.toLowerCase(), type: el.getAttribute('type') || undefined, label };
+					if (!buttonLike && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && el.value) { entry.filled = true; }
 					const selector = selectorFor(el);
 					if (selector) { entry.selector = selector; }
 					out.push(entry);
@@ -1841,7 +1924,7 @@ export class BrowserController implements vscode.Disposable {
 	 * call it after asking. The result is remembered for
 	 * {@link selectedElement}.
 	 */
-	public async inspectElement(timeoutMs: number, caller: CallerIdentity): Promise<unknown> {
+	public async inspectElement(timeoutMs: number, caller: CallerIdentity, signal?: AbortSignal): Promise<unknown> {
 		await this._settle();
 		const tab = this._requireTab(caller);
 
@@ -1853,11 +1936,15 @@ export class BrowserController implements vscode.Disposable {
 		// also missed a tab closed *during* setup, whose sends may never be
 		// answered at all; disposing the client rejects them.
 		const cts = new vscode.CancellationTokenSource();
+		const stop = new AbortController();
 		let client: CDPClient | undefined;
 		let tabClosed = false;
+		let waiting = false;
+		let cancelled = false;
 		const closeWatch = vscode.window.onDidCloseBrowserTab(gone => {
 			if (gone === tab) {
 				tabClosed = true;
+				stop.abort();
 				cts.cancel();
 				client?.dispose();
 			}
@@ -1865,15 +1952,42 @@ export class BrowserController implements vscode.Disposable {
 		const closedMessage = 'The browser tab was closed before an element was picked. '
 			+ 'Call `browser_tabs` to see what is open.';
 
-		let sessionId: string | undefined;
-		const timer = setTimeout(() => cts.cancel(), timeoutMs);
-		try {
-			const channel = await tab.startCDPSession();
-			if (tabClosed) {
-				channel.close().then(undefined, () => { /* already gone */ });
-				throw new Error(closedMessage);
+		// **The timeout and a cancellation reach the setup, not only the wait.**
+		// Both used to cancel a token that only `once` observed, so a page whose
+		// renderer was busy kept `startCDPSession`, the enables and the cleanup
+		// waiting with no bound, well past `timeoutMs` — the shape the element
+		// picker had before #189, which CLAUDE.md then credited this method with
+		// having. While the click is awaited `once` settles on its own and the
+		// cleanup still has a live session to switch inspect mode off through;
+		// before that, disposing the client is what releases a send nobody will
+		// answer. Breaks-silently #212.
+		const giveUp = () => {
+			stop.abort();
+			cts.cancel();
+			if (!waiting) {
+				client?.dispose();
 			}
+		};
+		const onCancel = () => {
+			cancelled = true;
+			giveUp();
+		};
+		signal?.addEventListener('abort', onCancel, { once: true });
+		// `setTimeout` treats anything past 2^31 - 1 ms as 1 ms, which answered
+		// "did not pick in time" at once.
+		const timer = setTimeout(giveUp, Math.min(Math.max(0, timeoutMs), maxTimerMs));
+
+		let sessionId: string | undefined;
+		try {
+			if (signal?.aborted) {
+				onCancel();
+			}
+			const channel = await whenNotAborted(
+				Promise.resolve(tab.startCDPSession()), stop.signal, () => new vscode.CancellationError());
 			client = new CDPClient(channel);
+			if (cts.token.isCancellationRequested) {
+				throw new vscode.CancellationError();
+			}
 			sessionId = await client.attachToPage();
 			await client.send('DOM.enable', {}, sessionId);
 			await client.send('CSS.enable', {}, sessionId);
@@ -1883,7 +1997,9 @@ export class BrowserController implements vscode.Disposable {
 				highlightConfig: { showInfo: true, contentColor: { r: 111, g: 168, b: 220, a: 0.45 } },
 			}, sessionId);
 
+			waiting = true;
 			const { backendNodeId } = await client.once('Overlay.inspectNodeRequested', cts.token);
+			waiting = false;
 			const data = await extractElementData(client, sessionId, backendNodeId);
 			const rendered = renderElementMarkdown(data, tab.url);
 			this._selectedElements.set(tab, rendered);
@@ -1892,20 +2008,27 @@ export class BrowserController implements vscode.Disposable {
 			if (tabClosed) {
 				throw new Error(closedMessage);
 			}
-			if (err instanceof vscode.CancellationError) {
+			if (cancelled) {
+				throw new Error('The call was cancelled before an element was picked.');
+			}
+			if (err instanceof vscode.CancellationError || cts.token.isCancellationRequested) {
 				throw new Error(
 					'The user did not pick an element in time. Ask them to click one, then call this again.');
 			}
 			throw err;
 		} finally {
+			signal?.removeEventListener('abort', onCancel);
 			closeWatch.dispose();
 			clearTimeout(timer);
 			cts.dispose();
 			// Not on a closed tab: its session is still open and nothing may
-			// ever answer, and `send` has no timeout of its own.
-			if (client && sessionId !== undefined && !tabClosed) {
-				await client.send('Overlay.setInspectMode', { mode: 'none', highlightConfig: {} }, sessionId)
-					.catch(() => { /* navigated away or detached */ });
+			// ever answer. Bounded everywhere else for the same reason — `send`
+			// has no timeout of its own.
+			if (client && !client.isClosed && sessionId !== undefined && !tabClosed) {
+				await withTimeout(
+					client.send('Overlay.setInspectMode', { mode: 'none', highlightConfig: {} }, sessionId),
+					inspectCleanupTimeoutMs, 'inspect cleanup')
+					.catch(() => { /* navigated away, detached, or not answering */ });
 			}
 			client?.dispose();
 		}
@@ -1965,6 +2088,17 @@ export class BrowserController implements vscode.Disposable {
 			const lines = session.consoleLines.map(line => `[${line.level}] ${line.text}`);
 			if (clear) {
 				session.clearConsole();
+				// **The browser's copy too, not only ours.** `Runtime.enable` and
+				// `Log.enable` replay what the page logged before a session attached
+				// — `_enableDomains` relies on it — so clearing our buffer alone was
+				// undone by the next session that opened on this tab (an eviction,
+				// a dropped session, `navigate`'s retry), and the cleared errors came
+				// back reading as new. Best effort and bounded: the buffer above is
+				// already empty either way. Breaks-silently #216.
+				await Promise.all([
+					session.client.send('Runtime.discardConsoleEntries', {}, session.sessionId),
+					session.client.send('Log.clear', {}, session.sessionId),
+				].map(sent => withTimeout(sent, pageScrollTimeoutMs, 'console clear').catch(() => undefined)));
 			}
 			return lines.length
 				? lines.join('\n')
@@ -2056,17 +2190,22 @@ export class BrowserController implements vscode.Disposable {
 				if (fullPage) {
 					notes.push('The browser reported no page size, so this is the visible area rather than the whole page.');
 				}
-				const metrics = await session.client.send('Page.getLayoutMetrics', {}, session.sessionId);
-				const viewport = metrics.cssVisualViewport ?? metrics.cssLayoutViewport;
-				if (!(viewport?.clientWidth > 0 && viewport?.clientHeight > 0)) {
-					throw new Error('The browser reported no page size to capture');
-				}
-				const frame = planViewport({
-					x: viewport.pageX ?? 0, y: viewport.pageY ?? 0,
-					width: viewport.clientWidth, height: viewport.clientHeight,
-				}, pixelRatios(metrics));
-				const base64 = await screenshot(session, { format: 'jpeg', quality: modelJpegQuality, captureBeyondViewport: false, clip: frame.clip });
-				return { frames: [{ base64, mimeType: 'image/jpeg', rect: frame.rect, pixels: frame.pixels }], notes, clipped: false, url: tab.url };
+				// On the scroll gate too: a full-page capture running on this tab
+				// has it at the top, and reading the metrics then captured the top
+				// of the page as "the visible area" (#214).
+				return this._onScrollGate(tab, async () => {
+					const metrics = await session.client.send('Page.getLayoutMetrics', {}, session.sessionId);
+					const viewport = metrics.cssVisualViewport ?? metrics.cssLayoutViewport;
+					if (!(viewport?.clientWidth > 0 && viewport?.clientHeight > 0)) {
+						throw new Error('The browser reported no page size to capture');
+					}
+					const frame = planViewport({
+						x: viewport.pageX ?? 0, y: viewport.pageY ?? 0,
+						width: viewport.clientWidth, height: viewport.clientHeight,
+					}, pixelRatios(metrics));
+					const base64 = await screenshot(session, { format: 'jpeg', quality: modelJpegQuality, captureBeyondViewport: false, clip: frame.clip });
+					return { frames: [{ base64, mimeType: 'image/jpeg', rect: frame.rect, pixels: frame.pixels }], notes, clipped: false, url: tab.url };
+				});
 			}
 
 			// Everything below runs after the scroll is back: decoding and encoding
@@ -2139,14 +2278,9 @@ export class BrowserController implements vscode.Disposable {
 		session: TabSession,
 		run: (metrics: any) => Promise<T>,
 	): Promise<{ value: T; atTop: boolean }> {
-		const previous = this._scrollGates.get(tab);
-		const turn = (async () => {
-			if (previous) {
-				await withTimeout(previous, scrollGateWaitMs, 'gate').catch(() => undefined);
-			}
+		return this._onScrollGate(tab, async () => {
 			const metrics = await session.client.send('Page.getLayoutMetrics', {}, session.sessionId);
-			const x = Number(metrics.cssLayoutViewport?.pageX) || 0;
-			const y = Number(metrics.cssLayoutViewport?.pageY) || 0;
+			const { x, y } = scrollPosition(metrics);
 			if (x === 0 && y === 0) {
 				return { value: await run(metrics), atTop: true };
 			}
@@ -2167,13 +2301,32 @@ export class BrowserController implements vscode.Disposable {
 			await scrollTo(0, 0).catch(() => undefined);
 			try {
 				const top = await session.client.send('Page.getLayoutMetrics', {}, session.sessionId);
-				const atTop = !(Number(top.cssLayoutViewport?.pageX) || 0) && !(Number(top.cssLayoutViewport?.pageY) || 0);
-				return { value: await run(top), atTop };
+				const at = scrollPosition(top);
+				return { value: await run(top), atTop: at.x === 0 && at.y === 0 };
 			} finally {
 				if (loader !== undefined && loader === await documentLoader(session)) {
 					await scrollTo(x, y).catch(() => undefined);
 				}
 			}
+		});
+	}
+
+	/**
+	 * Runs `work` in turn with every other capture on this tab.
+	 *
+	 * A full-page capture scrolls the page to the top and back, so anything else
+	 * that reads the scroll — another full-page capture, and a visible-area one,
+	 * which captures "what the user sees" — has to wait for it. The wait for the
+	 * previous turn is bounded (`scrollGateWaitMs`): a page that stopped
+	 * answering must not queue every later capture behind it.
+	 */
+	private _onScrollGate<T>(tab: vscode.BrowserTab, work: () => Promise<T>): Promise<T> {
+		const previous = this._scrollGates.get(tab);
+		const turn = (async () => {
+			if (previous) {
+				await withTimeout(previous, scrollGateWaitMs, 'gate').catch(() => undefined);
+			}
+			return work();
 		})();
 		this._scrollGates.set(tab, turn.catch(() => undefined));
 		return turn;
@@ -2255,7 +2408,7 @@ export class BrowserController implements vscode.Disposable {
 		// From the top, for the sticky-header reason given at `_atTopOfPage`.
 		return fullPage
 			? (await this._atTopOfPage(tab, session, metrics => this._captureFrom(tab, session, metrics))).value
-			: this._captureFrom(tab, session, undefined);
+			: this._onScrollGate(tab, () => this._captureFrom(tab, session, undefined));
 	}
 
 	/** `metrics` for a full page, as `_atTopOfPage` read them; `undefined` for the visible area. */
@@ -2273,15 +2426,29 @@ export class BrowserController implements vscode.Disposable {
 			const width = Math.ceil(size?.width ?? 0);
 			const height = Math.ceil(size?.height ?? 0);
 			// The clip is in DIP, which is CSS × browser zoom (breaks-silently #202).
-			const { zoom } = pixelRatios(metrics);
+			const { zoom, device } = pixelRatios(metrics);
 
 			if (width > 0 && height > 0) {
 				// Chromium cannot allocate a texture beyond roughly this, and past
-				// it the capture comes back blank rather than failing. Better a
-				// truthfully clipped image than an empty one.
-				const limit = 16384;
-				clipped = height * zoom > limit;
-				clip = { x: 0, y: 0, width: width * zoom, height: Math.min(height * zoom, limit), scale: 1 };
+				// it the capture comes back wrong rather than failing. Better a
+				// truthfully clipped image than a broken one.
+				//
+				// **The limit is on the image Chromium produces, which is in device
+				// pixels** — the clip times the device scale factor, since `scale` is
+				// 1. It used to be applied to the clip, in DIP, so on a retina screen
+				// every page taller than 8192 CSS px came back with each row past
+				// 16384 repeating the top of the page, `clipped: false`, and "copied"
+				// in the status bar. Width is bounded the same way. Breaks-silently
+				// #215.
+				const limit = textureLimitPx;
+				const perCss = device;
+				clipped = height * perCss > limit || width * perCss > limit;
+				clip = {
+					x: 0, y: 0,
+					width: Math.min(width * zoom, limit * zoom / perCss),
+					height: Math.min(height * zoom, limit * zoom / perCss),
+					scale: 1,
+				};
 			}
 		}
 
@@ -2373,8 +2540,15 @@ export class BrowserController implements vscode.Disposable {
 					// md-outlined-text-field — exposes its own value setter,
 					// and its inner input sits in a shadow root no selector can
 					// reach. Its setter is the host's contract, so it is the
-					// one to call; nothing else here has a value at all.
-					if (!('value' in el)) {
+					// one to call.
+					//
+					// **Only a custom element**, whose tag always has a hyphen.
+					// 'value' in el alone also admits <button>, <li>,
+					// <option>, <meter>, <progress>, <data> and <output>, so a
+					// selector that missed the field by one element was
+					// "filled button" with nothing on screen changed — a false
+					// success the model moved on from (breaks-silently #210).
+					if (!tag.includes('-') || !('value' in el)) {
 						throw new Error('A <' + tag + '> is not a field. Give the selector of an input, textarea, select or contenteditable.');
 					}
 					el.value = value;
@@ -2399,11 +2573,14 @@ export class BrowserController implements vscode.Disposable {
 				// spaces, a colour input lowercasing — has taken it, and calling
 				// that a failure sent a model back to fill a finished form,
 				// firing its handlers twice.
+				// A password is not read back to the model, here or in the
+				// snapshot (#211): what it holds is the user's, not the page's.
+				const shown = type === 'password' ? '(a hidden value)' : JSON.stringify(el.value);
 				if (el.value === before) {
-					throw new Error('The field did not take the value: it still reads ' + JSON.stringify(el.value)
+					throw new Error('The field did not take the value: it still reads ' + shown
 						+ (el.maxLength > 0 ? ' (maxlength ' + el.maxLength + ')' : '') + '.');
 				}
-				return 'filled ' + tag + '; the field reformatted it and now reads ' + JSON.stringify(el.value);
+				return 'filled ' + tag + '; the field reformatted it and now reads ' + shown;
 			})()`);
 		});
 	}
@@ -2414,13 +2591,16 @@ export class BrowserController implements vscode.Disposable {
 		text: string | undefined,
 		timeoutMs: number,
 		caller: CallerIdentity,
+		signal?: AbortSignal,
 	): Promise<unknown> {
 		if (!selector && !text) {
 			throw new Error('Give either a selector or a text to wait for.');
 		}
+		const timedOut = 'Timed out waiting for ' + (selector ?? '') + (selector && text ? ' and ' : '')
+			+ (text ? JSON.stringify(text) : '');
 
 		return this._withSession(caller, async session => {
-			return evaluate(session, `(async () => {
+			const inPage = evaluate(session, `(async () => {
 				const sel = ${literal(selector)};
 				const needle = ${literal(text)};
 				const deadline = Date.now() + ${Math.max(0, timeoutMs)};
@@ -2435,6 +2615,39 @@ export class BrowserController implements vscode.Disposable {
 				}
 				throw new Error('Timed out waiting for ' + (sel || '') + (sel && needle ? ' and ' : '') + (needle ? JSON.stringify(needle) : ''));
 			})()`);
+			// **The deadline is kept here as well as in the page.** The loop above
+			// reads `Date.now` and sleeps on `setTimeout`, and both belong to the
+			// page: one with frozen or fake timers — mockdate, sinon, a Storybook
+			// date mock — never reached its deadline, the call never answered, and
+			// its hold kept the tab's session marked busy. A cancellation from the
+			// client ends the wait too. Breaks-silently #212.
+			inPage.catch(() => { /* answered below, or abandoned */ });
+			return new Promise<unknown>((resolve, reject) => {
+				const finish = () => {
+					clearTimeout(timer);
+					signal?.removeEventListener('abort', onAbort);
+				};
+				const onAbort = () => {
+					finish();
+					reject(new Error('The wait was cancelled.'));
+				};
+				const timer = setTimeout(() => {
+					finish();
+					reject(new Error(timedOut));
+				}, Math.min(Math.max(0, timeoutMs) + waitForGraceMs, maxTimerMs));
+				if (signal?.aborted) {
+					onAbort();
+					return;
+				}
+				signal?.addEventListener('abort', onAbort, { once: true });
+				inPage.then(value => {
+					finish();
+					resolve(value);
+				}, err => {
+					finish();
+					reject(err);
+				});
+			});
 		});
 	}
 
@@ -2450,8 +2663,10 @@ export class BrowserController implements vscode.Disposable {
 
 		this._tabWatch?.dispose();
 		this._onDidChangeShare.dispose();
-		for (const abort of this._openAborts.values()) {
-			abort.abort();
+		for (const aborts of this._openAborts.values()) {
+			for (const abort of aborts) {
+				abort.abort();
+			}
 		}
 		this._dropSession();
 	}

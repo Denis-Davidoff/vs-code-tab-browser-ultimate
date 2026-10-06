@@ -7,6 +7,7 @@ import { execFile, spawn } from 'child_process';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { hostIsRemote } from './proposedApi';
 import { privateTempDirectory, writeExclusive } from './safeFiles';
 
 /**
@@ -146,7 +147,7 @@ export async function copyImage(png: Buffer, baseName: string): Promise<ImageDel
 
 	// In a remote workspace the extension host — and therefore any command it
 	// runs — lives on the other machine, whose clipboard is not the user's.
-	if (vscode.env.remoteName || vscode.env.uiKind !== vscode.UIKind.Desktop) {
+	if (hostIsRemote()) {
 		return {
 			kind: 'file', file: uri,
 			reason: vscode.l10n.t("the clipboard belongs to a different machine in a remote or web window"),

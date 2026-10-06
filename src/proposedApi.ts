@@ -259,7 +259,48 @@ function argvUri(host: HostInfo): vscode.Uri {
  * that instead of writing.
  */
 function canWriteArgv(): boolean {
-	return vscode.env.remoteName === undefined && vscode.env.uiKind === vscode.UIKind.Desktop;
+	return !hostIsRemote();
+}
+
+/** This extension's own `extensionKind`, set at activation. */
+let ownKind: vscode.ExtensionKind | undefined;
+
+export function setOwnExtensionKind(kind: vscode.ExtensionKind): void {
+	ownKind = kind;
+}
+
+/**
+ * Is this extension host on another machine than the editor window?
+ *
+ * **Not `vscode.env.remoteName !== undefined`.** That is set in *every*
+ * extension host of a window that has a remote, the local one included — the
+ * `.d.ts` says so and points at `Extension.extensionKind` — and the manifest's
+ * `extensionKind` is `["ui", "workspace"]`, so in a Remote-SSH, WSL or Dev
+ * Container window this extension runs on the *local* machine. Read as
+ * "remote", Enable Browser API refused to write the local `argv.json` it could
+ * write, and Copy Screenshot never reached a clipboard that was right there.
+ * A web window has no local machine at all. Breaks-silently #225.
+ */
+export function hostIsRemote(): boolean {
+	if (vscode.env.uiKind !== vscode.UIKind.Desktop) {
+		return true;
+	}
+	return vscode.env.remoteName !== undefined && ownKind !== vscode.ExtensionKind.UI;
+}
+
+/**
+ * Is the workspace on a remote machine while this extension runs locally?
+ *
+ * Then the MCP server listens on *this* machine's loopback, and the assistants
+ * — Claude Code and Codex declare no `extensionKind`, so they run next to the
+ * workspace — cannot reach it: a config written into the remote folder names
+ * `127.0.0.1` on a machine where nothing listens. The connect paths refuse
+ * instead of writing it, and Check Connection says why (#225).
+ */
+export function workspaceIsRemoteFromHost(): boolean {
+	return vscode.env.uiKind === vscode.UIKind.Desktop
+		&& vscode.env.remoteName !== undefined
+		&& ownKind === vscode.ExtensionKind.UI;
 }
 
 /**

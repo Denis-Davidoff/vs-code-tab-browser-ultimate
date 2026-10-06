@@ -10,7 +10,7 @@ import {
 	addElementToAssistant, addPathToAssistant, cancelPendingPick, cancelPickCommand,
 	copyElement, copyElementCssLocation, copyElementCssPath, copyElementXPath,
 } from './elementPicker';
-import { cleanUpReports, publishAssistantContext, type AssistantId } from './assistants';
+import { cleanUpReports, isInstalled, publishAssistantContext, type AssistantId } from './assistants';
 import { LastElementAction, type ElementActionId } from './lastAction';
 import { localHosts, normalizeAddress } from './webUrl';
 import { BrowserController } from './browserController';
@@ -20,7 +20,7 @@ import { everyone, forKind, isShareTarget, targetName, type ShareTarget } from '
 import { checkConnection } from './mcpCheck';
 import { copyScreenshot } from './screenshot';
 import {
-	enableBrowserApi, integratedBrowserCommand, isBrowserApiGranted, shouldUseIntegratedBrowser,
+	enableBrowserApi, integratedBrowserCommand, isBrowserApiGranted, shouldUseIntegratedBrowser, setOwnExtensionKind,
 } from './proposedApi';
 import { confirm, refuse } from './notify';
 import { registerStatusBar } from './statusBar';
@@ -76,6 +76,8 @@ async function openInIntegratedBrowser(url?: string): Promise<void> {
 }
 
 export function activate(context: vscode.ExtensionContext) {
+	// First, so every check of where this host runs sees it (#225).
+	setOwnExtensionKind(context.extension.extensionKind);
 
 	const manager = new AIBrowserManager(context.extensionUri);
 	context.subscriptions.push(manager);
@@ -179,7 +181,8 @@ export function activate(context: vscode.ExtensionContext) {
 	// The toolbar's primary button repeats whichever of these ran last, so every
 	// one of them records itself.
 	const lastAction = new LastElementAction(context.globalState);
-	lastAction.initialize();
+	lastAction.initialize(assistant => isInstalled(assistant as AssistantId));
+	context.subscriptions.push(vscode.extensions.onDidChange(() => lastAction.refresh()));
 
 	const registerElementCommand = (id: string, remembered: ElementActionId, run: () => Promise<void>) =>
 		context.subscriptions.push(vscode.commands.registerCommand(id, async () => {
