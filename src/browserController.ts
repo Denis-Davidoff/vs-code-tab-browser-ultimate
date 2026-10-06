@@ -8,6 +8,7 @@ import { CDPClient } from './cdp';
 import { extractElementData, renderElementMarkdown } from './elementContext';
 import { isBrowserApiGranted } from './proposedApi';
 import { legacyMarkerRemoval, stripMarker, stripMarkerFromHtml } from './shareIndicator';
+import { comparesFieldValue, isSecretField, redactSecretValues } from './secretGuards';
 import { encodeJpeg } from './jpegEncode';
 import { decodePng, rowsOf } from './pngDecode';
 import { fitBands, modelJpegQuality, pixelRatios, planFullPage, planViewport, type Rect } from './screenshotFrames';
@@ -261,6 +262,21 @@ function requireGrant(): void {
 		throw new Error(
 			'The integrated browser is unavailable in this editor. It needs the `browser` API proposal; ' +
 			'the user can enable it with the "AI Browser: Enable Integrated Browser API" command.');
+	}
+}
+
+/**
+ * Refuses a selector that compares an element's `value` attribute.
+ *
+ * React mirrors a password into that attribute, so `input[type=password][value^="a"]`
+ * matching or not was a way to read a password one character at a time with
+ * any tool that takes a selector — the saved one included, once it is filled.
+ * The message says what to use instead, since the model has to act on it.
+ */
+function refuseValueProbe(selector: string | undefined): void {
+	if (selector && comparesFieldValue(selector)) {
+		throw new Error('Selectors that compare an element\'s value attribute are not accepted: they can read what a '
+			+ 'field holds, passwords included. Select the element by id, name, type, text or position instead.');
 	}
 }
 
@@ -2056,7 +2072,25 @@ export class BrowserController implements vscode.Disposable {
 		return picked;
 	}
 
+	/**
+	 * The page's markup, with the value of every password field left out.
+	 *
+	 * **React writes a controlled input's value into its `value` attribute**, so
+	 * on a React sign-in page the password the user typed — or the one a saved
+	 * login filled — is in `outerHTML` in clear. Measured with React 19.2. This
+	 * tool hands that markup to a model, which must not get a password by
+	 * reading a page, any more than `browser_snapshot` gives it one (#211).
+	 *
+	 * **Redacted here, in the extension, after the markup leaves the page** —
+	 * `redactSecretValues` reads it as HTML. The first version cloned the element
+	 * in the page and stripped the clone, which ran the page's own code (a deep
+	 * clone upgrades custom elements, so their constructors run) from a tool that
+	 * had been a pure read, and kept a second copy of the field rule in page
+	 * script. A field is secret by type, `autocomplete` token or name, so a "show
+	 * password" toggle that turned it into a text field does not reveal it.
+	 */
 	public async html(selector: string | undefined, caller: CallerIdentity): Promise<unknown> {
+		refuseValueProbe(selector);
 		return this._withSession(caller, async session => {
 			const value = await evaluate(session, `(() => {
 				const sel = ${literal(selector)};
@@ -2068,11 +2102,12 @@ export class BrowserController implements vscode.Disposable {
 			// build reached can still be open with its observer re-applying one —
 			// and this is the tool a model uses to check a page against itself, so
 			// it is the last place a stray suffix may appear.
-			return typeof value === 'string' ? stripMarkerFromHtml(value) : value;
+			return typeof value === 'string' ? redactSecretValues(stripMarkerFromHtml(value)) : value;
 		});
 	}
 
 	public async text(selector: string | undefined, caller: CallerIdentity): Promise<unknown> {
+		refuseValueProbe(selector);
 		return this._withSession(caller, async session => {
 			return evaluate(session, `(() => {
 				const sel = ${literal(selector)};
@@ -2467,6 +2502,7 @@ export class BrowserController implements vscode.Disposable {
 	}
 
 	public async click(selector: string, caller: CallerIdentity): Promise<unknown> {
+		refuseValueProbe(selector);
 		return this._withSession(caller, async session => {
 			return evaluate(session, `(() => {
 				const el = document.querySelector(${literal(selector)});
@@ -2508,8 +2544,9 @@ export class BrowserController implements vscode.Disposable {
 	 *   what it now reads rather than being reported as a failure.
 	 */
 	public async fill(selector: string, value: string, caller: CallerIdentity): Promise<unknown> {
+		refuseValueProbe(selector);
 		return this._withSession(caller, async session => {
-			return evaluate(session, `(() => {
+			const result = await evaluate(session, `(() => {
 				const el = document.querySelector(${literal(selector)});
 				if (!el) { throw new Error('No element matches ' + ${literal(selector)}); }
 				const value = ${literal(value)};
@@ -2568,20 +2605,30 @@ export class BrowserController implements vscode.Disposable {
 				if (el.value === value) {
 					return 'filled ' + tag;
 				}
-				// Refused only when nothing changed. A field that *reshapes* what
-				// it is given — a phone or card mask, an email input trimming
-				// spaces, a colour input lowercasing — has taken it, and calling
-				// that a failure sent a model back to fill a finished form,
-				// firing its handlers twice.
-				// A password is not read back to the model, here or in the
-				// snapshot (#211): what it holds is the user's, not the page's.
-				const shown = type === 'password' ? '(a hidden value)' : JSON.stringify(el.value);
-				if (el.value === before) {
-					throw new Error('The field did not take the value: it still reads ' + shown
-						+ (el.maxLength > 0 ? ' (maxlength ' + el.maxLength + ')' : '') + '.');
-				}
-				return 'filled ' + tag + '; the field reformatted it and now reads ' + shown;
+				// The rest is worded in the extension, which knows which fields are
+				// secret: the attributes travel, and the value with them.
+				return {
+					tag, now: el.value, unchanged: el.value === before, maxLength: el.maxLength,
+					attributes: { type: el.getAttribute('type') ?? '', name: el.getAttribute('name') ?? '',
+						id: el.getAttribute('id') ?? '', autocomplete: el.getAttribute('autocomplete') ?? '' },
+				};
 			})()`);
+			if (typeof result === 'string') {
+				return result;
+			}
+			// Refused only when nothing changed. A field that *reshapes* what it is
+			// given — a phone or card mask, an email input trimming spaces, a
+			// colour input lowercasing — has taken it, and calling that a failure
+			// sent a model back to fill a finished form, firing its handlers twice.
+			// **A secret is not read back to the model** (#211), by the same rule as
+			// the markup: by type alone, a toggled password field or a one-time
+			// code that rejected the value was echoed in the error.
+			const shown = isSecretField(result.attributes) ? '(a hidden value)' : JSON.stringify(result.now);
+			if (result.unchanged) {
+				throw new Error('The field did not take the value: it still reads ' + shown
+					+ (result.maxLength > 0 ? ' (maxlength ' + result.maxLength + ')' : '') + '.');
+			}
+			return 'filled ' + result.tag + '; the field reformatted it and now reads ' + shown;
 		});
 	}
 
@@ -2596,6 +2643,7 @@ export class BrowserController implements vscode.Disposable {
 		if (!selector && !text) {
 			throw new Error('Give either a selector or a text to wait for.');
 		}
+		refuseValueProbe(selector);
 		const timedOut = 'Timed out waiting for ' + (selector ?? '') + (selector && text ? ' and ' : '')
 			+ (text ? JSON.stringify(text) : '');
 

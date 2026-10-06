@@ -31,7 +31,7 @@ and nothing else here states the delta as a whole:
   [Removed on purpose](#removed-on-purpose--do-not-reintroduce). There are no runtime
   dependencies at all.
 - **Added on top:** the element picker and its reports, the screenshots, the hand-over to Claude
-  Code and Codex, the MCP server, and the toolbar menu they live in.
+  Code and Codex, the MCP server, saved logins and passkeys, and the toolbar menu they live in.
 
 **The README is deliberately short and this file is the reference.** It was cut back to the
 pitch, the editor-support table and the toolbar, plus `api.open`, installing and the licence;
@@ -111,6 +111,14 @@ Settings:
 | `aiBrowser.searchEngine` | `google` | engine for the panel's address bar; `none` disables search |
 | `aiBrowser.focusLockIndicator.enabled` | `true` | the panel's focus indicator |
 | `aiBrowser.updateCheck.enabled` | `true` | watch the repository for a newer release |
+| `aiBrowser.logins.enabled` | `true` | saved logins and passkeys in pages; off, nothing is injected — the vault stays manageable |
+| `aiBrowser.logins.offerToSave` | `true` | offer to save or update after a sign-in that worked |
+| `aiBrowser.logins.showSuggestions` | `true` | the `$(key) Fill login` status bar item on a sign-in form |
+| `aiBrowser.logins.autofillOnPageLoad` | `false` | fill on load when exactly one login is saved for that exact origin |
+| `aiBrowser.passkeys.enabled` | `true` | the gated virtual authenticator — see [Passkeys](#passkeys-a-virtual-authenticator-that-holds-nothing) |
+
+The five `logins`/`passkeys` settings are `application`-scoped: a workspace cannot set them, or a
+cloned repository could switch autofill on for its own dev server (breaks-silently #248).
 
 ## Architecture: two independent halves
 
@@ -160,6 +168,16 @@ Compiled with `tsc`, **no bundling**. `main: ./out/extension`.
 - [src/mcpLifecycle.ts](src/mcpLifecycle.ts) — server lifetime and context keys
 - [src/updateVersion.ts](src/updateVersion.ts) — comparing two versions (leaf, under test)
 - [src/updateCheck.ts](src/updateCheck.ts) — the release watch and its one notification
+- [src/logins.ts](src/logins.ts) — saved logins and passkeys: commands, the status bar item, the pickers, export and import
+- [src/loginWatcher.ts](src/loginWatcher.ts) — the CDP half: one session per recent tab, sign-in outcomes, the passkey ceremony
+- [src/loginVault.ts](src/loginVault.ts) — the vault in SecretStorage, written under a cross-process lock
+- [src/loginFormScript.ts](src/loginFormScript.ts) — the page-side script, ported from Firefox — **MPL-2.0, the one non-MIT file**
+- [src/passkeyGate.ts](src/passkeyGate.ts) — the page-side wrapper that asks before a WebAuthn ceremony
+- [src/loginMessages.ts](src/loginMessages.ts) — what the page script reports, validated (leaf, under test)
+- [src/secretGuards.ts](src/secretGuards.ts) — password values kept from the MCP tools: redaction, value-probing selectors (leaf, under test)
+- [src/vaultData.ts](src/vaultData.ts) — the vault's shape, origin matching, save-or-update, merging (leaf, under test)
+- [src/vaultSeal.ts](src/vaultSeal.ts) — the encrypted export: scrypt and AES-256-GCM (leaf, under test)
+- [src/loginCsv.ts](src/loginCsv.ts) — CSV from and to Chrome, Firefox, Safari, Bitwarden, 1Password (leaf, under test)
 
 **There is only ever one panel.** `AIBrowserManager._activeView` is a single slot: a repeat
 `show()` reuses the existing panel rather than creating a second one. If multiple tabs are ever
@@ -1008,11 +1026,16 @@ Claude Code ▸                                                   3_assistant@1
 Codex ▸                                                         3_assistant@2
 Check Connection                                                3_assistant@3
 ─────
+Logins and Passkeys ▸                                           3_logins@1
+    Fill Saved Login (Cmd+Shift+L) / Save Login from Page        1_page@1..2
+    ─────
+    Manage Saved Logins and Passkeys / Import / Export          2_vault@1..3
+─────
 Share Tab with All Assistants                                   4_share@1
 Stop Sharing Tab                                                4_share@2   when tabShared
 ```
 
-That is fourteen rows. The menu had eighteen before the submenus, and a flat one would have
+That is fifteen rows. The menu had eighteen before the submenus, and a flat one would have
 had twenty-one once the fourth element kind was added. The `group` prefixes put the
 separators in; ordering comes from the `@n` suffix, not from the position in the
 `contributes.menus` array —
@@ -1082,7 +1105,10 @@ nothing. Same rule as breaks-silently #74.
 Connecting is done once per project; an assignment is what changes from page to page, and it
 reads better at the foot of a list than at the head of one. The status bar menu is ordered in
 code (`showMenu`) and the dropdown by that group prefix, so moving one means moving both — they
-are the same list to a user.
+are the same list to a user. **Anything added later goes above them**, which is why the logins
+submenu is `3_logins` and its status bar section sits before *Shared tabs*: it first went in
+after them, as `5_logins`, in both menus at once — consistent with each other and against this
+rule (breaks-silently #273).
 
 There is no activity bar panel any more. It was a `TreeDataProvider` in `src/toolsView.ts`, and
 it went away when the same commands landed in this dropdown; `media/activity-icon.svg` went
@@ -1191,8 +1217,11 @@ title, is the one contributed to `editor/title`, and is hidden from the command 
 `commandPalette` + `when: false` so the same twelve actions do not appear twice there.
 
 `check-manifest` holds this together: one chord across the twelve, conditions matching the
-buttons exactly, no dropdown command carrying a keybinding, and every delegate mirroring its
-twin's icon. A drifted `when` would otherwise leave the key firing nothing, or two tools at
+buttons exactly, no dropdown command carrying *that* chord, no other command taking it on any
+platform (compared per platform, not as a `key|mac` pair — #257), and every delegate mirroring its
+twin's icon. The chord rules are scoped to the `repeat.*` bindings —
+`Fill Saved Login` has a chord of its own (`Cmd+Shift+L`), and *wants* it printed beside its menu
+row, since that is where people learn it. A drifted `when` would otherwise leave the key firing nothing, or two tools at
 once — verified by temporarily adding a bad binding and watching it fail.
 
 Why this chord, after checking the VS Code sources for what is actually taken: `Cmd+Shift+C` is
@@ -3036,6 +3065,541 @@ together, so it is recorded rather than done.
 **Plain-text hand-over** — `claude-vscode.editor.open(undefined, prompt)` opens a new Claude Code
 conversation with a prompt, but Codex has no equivalent, so reports go as files for both.
 
+## Saved logins and passkeys
+
+The browser saves usernames and passwords, fills them back, and holds passkeys. Everything is in
+VS Code's SecretStorage; nothing is drawn into a page; no MCP tool returns a password value — see
+[Keeping password values from the assistants](#keeping-password-values-from-the-assistants) for
+exactly what that covers and what it cannot.
+
+**An independent review of the first version found sixteen defects, one of them the failure this
+feature exists to prevent** (a wrong password offered as an update). The rules below are the
+corrected ones; breaks-silently #237–#258 record each mistake.
+
+**A second round — five review passes and an outside review — found about thirty more, and that
+same failure came back through four new doors:** a link clicked after typing a password, a
+sign-in POST that ended on the browser's network error page, a sign-up form the server rejected
+and drew again, and an offer the extension had already withdrawn whose open picker still wrote.
+#259–#289 record that round. Read the outcome table below as a list of things that *also happen
+on failure*; every row was once taken for success.
+
+```
+page (isolated world)            loginFormScript.ts — finds fields, captures submissions, fills
+page (main world)                passkeyGate.ts — asks before navigator.credentials runs
+   │  Runtime.bindingCalled          ▲ Runtime.callFunctionOn
+   ▼                                 │
+LoginWatcher / WatchedTab        loginWatcher.ts — one CDP session per recent tab, a virtual authenticator
+   ▼
+LoginsFeature                    logins.ts — status bar item, pickers, offers, export/import
+   ▼
+LoginVault → SecretStorage       loginVault.ts, rules in vaultData.ts
+```
+
+### Where the code came from, and the one MPL file
+
+Asked for: "find a Chrome extension that does this, read its source, use it". The obvious ones
+cannot be used, because **this project is MIT and they are GPL** — Bitwarden (GPL-3.0),
+KeePassXC-Browser and Proton Pass (GPL-3.0), Kee and Passbolt (AGPL). Copying any of their code
+would relicense the extension. So two sources were split by what their licence allows:
+
+- **Bitwarden was studied for behaviour only**, at `bitwarden/clients@a6ffbe65`: when it offers to
+  save, when to update, how it fills, how it gates passkeys. Its rules are reimplemented in
+  prose-to-code, and none of its code is here. What was taken: compare usernames
+  case-insensitively, skip a field that already holds the value, fill only `current-password` on a
+  form that also has new-password fields, never fill a frame of another origin, "Never for this
+  site" by exact origin, autofill on load off by default, save/update offers on by default.
+- **Firefox's password manager was ported**, at `mozilla-firefox/firefox@4b5e436b`: field selection
+  (`_getFormFields`), the username-only first step, the three-password-field change-form
+  classification, the user-input guard (`userInputRequiredToCapture`), and de-duplication of a
+  submission seen twice. MPL-2.0 is **file-level** copyleft, so it is fine inside an MIT
+  extension *as its own file with its notice* — [src/loginFormScript.ts](src/loginFormScript.ts),
+  listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). Anything added to that file is MPL
+  too, which is why the extension-side logic lives in MIT files. **The source file itself ships in
+  the VSIX** (`!src/loginFormScript.ts` in `.vscodeignore`), so the MPL §3.2(a) source form travels
+  with the compiled one rather than behind a link to a moving branch; `package.json` says
+  `MIT AND MPL-2.0`. One upstream rule was dropped on purpose — see the capture paragraph below.
+- **Browserpass (ISC) was read and not copied.** Its fill does `setAttribute("value", password)`,
+  which puts the password into `outerHTML` — where `browser_html` hands it to a model. Our fill
+  never touches the attribute.
+
+### Measured facts the design rests on
+
+All measured in Chrome 153 with a CDP harness, then the compiled watcher run against Chrome
+through a stubbed `vscode`. Electron 43 (Chromium 150, VS Code 1.140) carries every method and
+event below — checked in the framework binary — and the VS Code CDP proxy forwards page-session
+commands to Electron's debugger unfiltered (only browser-level `Target.*` / `Browser.*` go through
+its allowlist).
+
+- **`Runtime.bindingCalled` needs `Runtime.enable` on the session**, and calls made before it are
+  lost, not queued. So `WatchedTab._install` enables first, injects second.
+- **A binding added with `executionContextName` exists only in that isolated world**; the page's
+  own scripts cannot see or call it. The context's `origin` (from `executionContextCreated`) is
+  the browser's word for which site a frame is, and is the only thing an origin is judged by.
+- **An empty virtual authenticator refuses `get()` at once — but only with presence simulation
+  on** (~35 ms, `NotAllowedError`). With presence off, which is how the watcher keeps it, a
+  request it cannot answer waits out its timeout instead. Either way it fails; only the latency
+  differs.
+- **A credential added after a request started is not picked up**, and switching presence
+  simulation on mid-request does not release it. So the credential has to be in place *before*
+  the page's call reaches the authenticator — which is what the gate is for.
+- **`WebAuthn.credentialAdded` carries the PKCS#8 private key**, plus `userName` and
+  `userDisplayName`; `credentialAsserted` carries the new signature counter.
+- **`WebAuthn.clearCredentials` fires `credentialDeleted`** for our own removal — never read that
+  event as "the site deleted its passkey".
+- **React mirrors a controlled input's value into its `value` attribute**, passwords included
+  (React 19.2) — so `outerHTML` holds what the user typed. See `browser_html` below.
+- **An isolated world is shared by every CDP session that names it.** A second session's
+  `addScriptToEvaluateOnNewDocument` with the same `worldName` runs in the *same* world as the
+  first — same globals, same context id — so whatever an earlier install left there is what the
+  next one finds. See [Installing into the page](#installing-into-the-page).
+- **`self.origin` and `location.origin` disagree, in both directions.** In a `srcdoc` frame
+  `location.origin` is `"null"` while `self.origin` and CDP both give the page's origin; in a frame
+  sandboxed without `allow-same-origin` it is the reverse — the site's address, and an opaque
+  `self.origin`. Chrome runs that sandboxed frame out of process, as a target of its own whose
+  CDP origin is `://`.
+- **A network error page reports nothing.** A form POST that fails commits
+  `chrome-error://chromewebdata/`, whose contexts have the origin `://`; the watcher ignores
+  those, so that document never sends a single report.
+
+### Capturing a sign-in, and deciding it worked
+
+The page script reports a submission on `submit`, on a trusted click on a sign-in-looking button,
+on Enter in a login field, and when a password field is removed from a form the user *acted on* —
+submitted, clicked a button in, pressed Enter in. The last is Firefox's "form removal" capture
+without its fetch-success precondition, which is how a single-page app's login is seen at all;
+the acted-on condition is ours, because without it a form that merely went away — a route change,
+a closed dialog — counted as sent. Firefox's guards then decide it is real: a trusted gesture
+since the last capture, and the same values never reported twice.
+
+**There is no capture on navigation**, which Firefox has (`pagehide`, the `navigate` event) and
+this port had. Typing a password and then clicking any ordinary link — Home, "Reset your
+password", Back — fired `pagehide`, the click passed the gesture guard, and the next document,
+having no sign-in form, read as a successful sign-in: the typo became "Update password?".
+Firefox turns that capture into a dismissible prompt; here it went through a decision that reads
+"left the page" as "signed in". A sign-in that navigates still submits a form or is clicked, and
+both of those are captured.
+
+**Every captured value must be one the user's own input left in its field** — provenance per
+value, not per form. `trustedValues` keeps, for each field, the value it held after its last
+*trusted* `input` event. A password whose value has changed since — `browser_fill`, the page's
+own script, our fill — is not captured at all; a username that fails the same test goes out as no
+username, never as the page's choice. Firefox tracks modification per form root, and every
+formless field shares the document's root, so one trusted keystroke anywhere — the username, a
+search box — made a script-set password look typed. Reproduced: a typed username followed by a
+script-filled password was offered for saving.
+
+**Firefox's `value !== defaultValue` fallback is dropped**, the one deliberate departure from the
+port. It counts a field as the user's when its value differs from its default — and `browser_fill`
+(or the page's own script) sets `.value` without any trusted input, so one click anywhere in the
+page made an assistant's values look typed. Reproduced: an assistant's fill and click, after one
+earlier user click, produced an offer to save the assistant's password. The username of a
+two-step sign-in is remembered under the same rule — only if typed — on one document as well as
+across two: the single-document path set Firefox's `mockUsernameOnlyField` before asking.
+
+**An offer is made only once the sign-in visibly worked**, and this is the most important rule
+in the feature. Offering on submit means a mistyped password produces "Update saved password?",
+and one click on it replaces the right password with the wrong one. Bitwarden avoids that with
+the request's HTTP status; an extension has no `webRequest` here, so the evidence is the page:
+
+| What happened after the submit | Read as |
+|---|---|
+| the field left the page (removed, `display:none`, invisible) and no password field appeared in its place for 1.5 s | worked |
+| the field left, and a password field — new-password ones included — came back within 1.5 s | failed — the form re-rendered itself with an error |
+| the field was **disabled** while the request ran | nothing yet — a busy form is not a gone one |
+| the field was emptied or changed, on any kind of form | nothing — a page empties the box after a failure as readily as after a success |
+| the frame navigated, and the new document's **settled** report (load + 1.5 s) shows no password field | worked |
+| the frame navigated, and the settled report shows **any** password field, on any origin | failed |
+| the frame navigated, and the new document reported but never settled (10 s) | its last report decides, by the same rule |
+| the frame navigated, and the new document **never reported at all** | failed — a network error page, a PDF, a download |
+| nothing of the above within 12 s (page) / 15 s (watcher) | failed |
+| judged a success, and a password field shows again on that site within 15 s | **withdrawn** — see below |
+
+Every row was a review finding first, and the shape is the same each time: something that looked
+like success also happens on failure. A form disables its inputs while it waits, and the old
+`isVisible` test read that as "gone" — so every wrong password typed into such a form was a
+success. A navigation was judged by the new document's *first* report, sent 300 ms in, before a
+parser-blocking script or an app shell had drawn the error form. "Cleared" was success for a
+change form, and a server rejecting the current password clears it too. A miss costs an offer —
+the next sign-in offers again, with the password that worked. The opposite error costs a password.
+
+The second round added three rows of the same kind. **"Any password field", not "a sign-in
+field"**: a sign-up or reset form the server rejected and drew again is all new-password fields,
+so it never looked like the form coming back — in the page's own check as well as after a
+navigation, the first of which the reviews missed and was found while documenting the second.
+**"On any origin"**: a failed sign-in sent back to its form on another host (`localhost` to
+`127.0.0.1`) was a success. And **silence is not evidence**: a POST that fails on the network lands
+on the error page, which never reports (see the measured facts above), and "no report, so no
+sign-in form" offered a password no server had seen. A success that happens to land on a page
+with a password field loses its offer; Save Login from Page is one click.
+
+**A withdrawal reaches everything the offer started.** The offer goes from the status bar, an
+answer given to its still-open picker or its username box afterwards is refused
+(`_stillValid`), and a save or update already written from it within 20 s (`revertWindowMs`) is
+put back as it was. Taking down only the status bar item was the first version: the picker the
+user had already opened stayed live, and choosing Update wrote the rejected password — the
+feature's one forbidden outcome, reached through its own safeguard. An offer the user answered
+within the 15 s window, before the site redrew its form, was written and never revisited.
+
+**A two-step sign-in carries its username across.** The username-only first step is reported on
+its own (`kind: 'username'`) and remembered per origin for ten minutes, so a password-only second
+page — usually a different document, where Firefox's own memory (`mockUsernameOnlyField`) is gone —
+still saves the right account. Bitwarden's own code flags this case as lost.
+
+**Save or update** (`decideSave` in `vaultData.ts`, under test): the never list says nothing; the
+same username with the same password only bumps `lastUsed`; the same username with another
+password is an update; a change form whose old password matches exactly one saved login updates
+that one; a password-only submission updates the single login saved for the origin; anything
+else saves anew.
+
+**Assistant-driven sign-ins are not offered**, because every captured value has to be the user's
+own input — `browser_fill` produces none. An earlier version of this sentence said "by
+construction" while the `defaultValue` fallback quietly let them through, and a later one while
+provenance was still per form; the per-value guard is what makes it true, not the untrusted click
+(a form submission from `el.click()` fires a trusted `submit` event).
+
+### Filling
+
+**Matching is exact origin, then the same host on another port or scheme — nothing wider.** The
+matching rule *is* the phishing protection: subdomain matching would need the Public Suffix List
+to be safe (`a.github.io` and `b.github.io` are different parties), and approximating it is how
+it goes wrong. An https login is never offered on an http page except on a local host. A login of
+another site can still be used deliberately ("Use a login saved for another site…"), behind a
+modal that names both addresses side by side.
+
+**The fill is written into the frames of the page's origin and of the login's own, never a
+third.** Frames with an opaque origin (sandboxed, `about:blank`, `data:`) have no origin to match
+and are never filled. Cross-origin iframes are separate targets (OOPIFs) and are out of reach.
+
+**The values travel as `Runtime.callFunctionOn` arguments, never in source text** — an evaluated
+expression containing the password is a script DevTools lists among the page's sources.
+
+**And the page checks where it is before it uses them.** A context id is renumbered after a
+cross-site navigation — the new document's worlds start from 1 again — so an id listed a moment
+before the call can already name the *next* site's world. The watcher re-checks each context
+before calling, and the fill compares `self.origin` in its isolated world with the origins it was
+given. **`self.origin`, not `location.origin`** — the URL's origin is the wrong one in both
+directions (see the measured facts): it refused every fill in a `srcdoc` frame, whose URL origin
+is `"null"`, and would hand a site's password to a sandboxed frame at the site's own address. The
+isolated world's globals are its own, so the page can redefine neither.
+
+**How a value is written:** focus, `keydown`, this world's native `value` setter, an `input` event
+(`insertReplacementText`), `keyup`, `change`. The native setter from the isolated world is what
+React needs: its tracker is an own property on the *page* world's wrapper, so the event that
+follows counts as a change. Measured with React 19.2: the component state updated. The `value`
+attribute is never set.
+
+**Autofill on load is off by default**, and when on it fills only an exact-origin match, only when
+exactly one login is saved, only empty fields, and only a masked password field.
+
+**Fill acts on the tab the user is looking at, which is not always `activeBrowserTab`** — the
+first bug report this feature had. The extension host sets that property from the globally active
+editor pane and nothing else, so it is `undefined` whenever the last click went to a file, a diff
+or the terminal, with the browser on screen in a split beside it, and also when Fill is picked
+from the dropdown of a browser tab in a group that is not the active one. "Fill Saved Login" then
+answered "no browser tab is active" about a page in plain sight. Two questions, two answers in
+`LoginWatcher`:
+
+- `userTab()` — what a command the user ran is about: the active tab, else the one last seen
+  active while it is still open, else the only tab. Fill and Save Login from Page use it; the
+  picker that follows names the site, so the choice is never a silent guess.
+- `tabInFront()` — what is on screen: the active tab, or the last active one while some editor
+  group's visible tab has no `input` — the browser-editor heuristic of
+  [the update check](#the-real-build-watches-for-releases-too). The suggestion item, the passkey
+  prompt ("only the page in front of the user may ask") and the loss warning's placement use it,
+  since each is about a page being looked at rather than merely the last one touched.
+
+The MCP side met the same property earlier and answered it the same way (`_lastTab`, in
+[The server is per window](#the-server-is-per-window-the-tools-act-on-one-tab-chosen-per-call)).
+
+### Installing into the page
+
+Both page scripts are installed per CDP session, and **a session that goes takes its
+registrations with it but not the scripts already running** — so each install has to find, and
+retire, whatever an earlier one left.
+
+**The form script's world is shared with every earlier install.** It lives in the isolated world
+`aiBrowserLogins`, and Chrome hands a second session the same world (measured: the same context id
+from both). The first version guarded against double installs with a global set once and frozen,
+and a graceful `close()` stopped the old script while leaving that global behind — so after any
+re-attach (a settings change restarting the watcher, a fourth browser tab evicting the oldest)
+the new install saw the global, returned at once, and the document reported nothing until it
+navigated. No suggestion, no capture; on a single-page app, for hours. Now every install has an
+**owner** (a UUID per `WatchedTab`): it uninstalls whatever the shared registry
+(`__aiBrowserLoginsRegistry`) lists, publishes its API under `__aiBrowserLogins_<owner>`, and
+`uninstall(owner)` only acts for that owner, so a late goodbye from a retired session cannot
+switch off its successor. The pre-owner global of an older build is uninstalled too.
+
+**The passkey gate lives in the page's main world**, where a session-scoped name is impossible —
+the page owns that world — so the gate is one object (`Symbol.for(...)`) that a new install takes
+over with `handOver(notify, owner)`, and the same owner rule applies to `uninstall`.
+
+**Both scripts are `String.raw` template literals returned by a function of the owner**, which
+makes three rules load-bearing: no backtick anywhere inside, comments included (it closes the
+literal, and the compiler reports a cascade elsewhere); no `${` other than the intended
+interpolations; and regular expressions written as they would be in a `.js` file.
+
+### Passkeys: a virtual authenticator that holds nothing
+
+VS Code's browser has no usable platform authenticator, and VS Code itself has no biometric API —
+the OS keychain behind SecretStorage does not prompt. So "biometric sign-in" here means
+**passkeys**: a CDP virtual authenticator, whose credentials live in the vault, with **a VS Code
+confirmation standing in for user verification**.
+
+**An extension *can* reach Touch ID, though, and an earlier version of this paragraph said it
+could not.** `osascript -l JavaScript` with `ObjC.import('LocalAuthentication')` reports
+`canEvaluatePolicy` true and `biometryType` 1 (Touch ID) on a Mac that has it — the same
+child-process route `clipboardImage.ts` already takes — and Windows Hello is reachable through
+PowerShell's `UserConsentVerifier` (not run). Neither is built; see [Not built](#not-built). It
+matters for honesty as much as for the feature: the authenticator is created with
+`isUserVerified: true`, so every assertion tells the relying party that user verification
+happened, when it was a click in a QuickPick.
+
+The lock and the doorbell are separate, and only the lock is a security boundary:
+
+- **The lock is the authenticator.** It holds no credential and has presence simulation off,
+  except during a ceremony the user approved. Presence off is what stops a page from *creating* a
+  credential silently — creating needs no stored key, only a presence check. Measured: a page
+  calling the browser's own `create`/`get` around the wrapper gets `NotAllowedError`.
+- **The doorbell is `passkeyGate.ts`**, a wrapper around `navigator.credentials` in the page's
+  own world, since there is no CDP event for "a WebAuthn request started". It reports, waits for
+  a verdict, and only then calls the browser's function. A page can bypass it — and then meets
+  the empty authenticator.
+
+A `get` with nothing saved for that RP goes to the browser's own authenticators without asking
+(`WebAuthn.disable` for that one request); one with saved passkeys shows a picker of accounts
+plus "Use a security key or another device". A `create` asks. Conditional mediation (passkey
+autofill on load) passes straight through and simply never resolves. A page aborting closes the
+picker. **Only the page in front of the user may ask, and a refusal silences that tab for 5 s** —
+without it a page calling `get()` in a loop would put the picker back the instant it closes, and
+the picker takes the keyboard. **A page that aborts its own request while the picker is up counts
+as a refusal too**: the cool-down was started only by a refusal, so a loop of `create()` aborted
+after 100 ms reopened the picker for ever. While the virtual environment is on, the tab's real authenticators are only
+reachable through that "security key" choice; `aiBrowser.passkeys.enabled: false` gives them back.
+
+**A `create` naming a passkey already saved is refused like any other refusal**, never with
+`InvalidStateError` — and **only after the user has chosen Save in the picker**. Answered without
+asking anyone, "already registered" let a site test which of its credential ids this browser
+holds and recognise a signed-out user; the spec reveals it only after a user gesture. Changing the
+error to `NotAllowedError` was not enough on its own: answered at once, it still told the page
+apart from the picker it gets otherwise, by timing — `create({ excludeCredentials, signal })`
+aborted after a moment answered `NotAllowedError` for a held id and `AbortError` for any other.
+The user is told in the status bar; the page learns nothing it could not learn from a refusal.
+
+**The ceremony's end is ours, not the page's.** It ends on the first `credentialAsserted` or
+approved `credentialAdded` — one approval, one signature — on the page's `abort` or `done`, and
+when the requesting document's context is destroyed. After the user decides, it has 60 s, not 5
+minutes. Reproduced before the fix: a page that withheld `done`, or simply navigated while the
+picker was open, kept the approved key loaded with presence on, and any page of that RP signed
+silently until a five-minute timer ran out, while every legitimate request was refused. And a
+ceremony that ends *while* `addCredential` is in flight gets the authenticator emptied again
+after it lands.
+
+**A created passkey is disarmed before it is saved.** `credentialAdded` ends the ceremony, removes
+the credential from the authenticator, and only then awaits the vault write. In the other order
+the new key sat loaded with presence on for as long as the write took — a lock, a 3 s catch-up —
+and a reproduction got a second signature out of it in that time, with no second approval.
+
+**A session that goes uninstalls what it put in the page** (`WatchedTab.close`): a setting
+switched off, the tab dropped from the watched set, the extension restarting. The registrations
+die with the session; the running scripts do not, and a gate whose session was gone parked every
+passkey request for ever. The gate's `uninstall` gives back the browser's own `get`/`create` and
+hands a waiting request to them; the form script's disconnects its observer and listeners. As a
+backstop for a session lost without a goodbye (a crashed extension host), every wait in the gate
+also ends at the page's own WebAuthn timeout, floored at Chromium's 10 s, or 5 minutes.
+
+**The authenticator is created before the gate is installed.** The other order, with
+`WebAuthn.enable` failing, left a gate that refused every request on a tab whose own
+authenticators would have worked. And a half-success is undone: when `WebAuthn.enable` succeeds
+and `addVirtualAuthenticator` throws, `WebAuthn.disable` follows, or the virtual environment stays
+on with no authenticator in it and hides the tab's real ones just the same.
+
+**A cross-site frame's ceremony fails while passkeys are on, and nothing here fixes it.** The
+virtual authenticator belongs to the page target and answers requests from out-of-process frames
+too (measured: 39 ms, with a credential in it); the gate is installed through the page session's
+`addScriptToEvaluateOnNewDocument`, which does not reach those frames. So an embedded payment
+confirmation or identity-provider widget calls the browser directly, meets the empty
+authenticator with presence off, and fails after its own timeout — no picker, no "security key"
+choice. The setting's description says so, and turning passkeys off hands such frames back to the
+browser. Fixing it means attaching to each OOPIF (`Target.setAutoAttach`) and running the gate
+there, with the ceremony routed by session — see [Not built](#not-built).
+
+### Storage, export, import
+
+**SecretStorage is the encryption.** On desktop it is Electron's `safeStorage`, keyed by the OS
+(Keychain, DPAPI, Secret Service), so a copied profile is ciphertext. Nothing adds a second layer:
+a key the extension held would have to be stored somewhere weaker. One key holds the whole vault
+as JSON, because SecretStorage cannot list keys on the 1.85 floor.
+
+**On Linux without a keyring there is no persistence at all.** VS Code 1.140 logs "Encryption is
+not available, falling back to in-memory storage" and keeps secrets in memory, **per window**,
+until the user opts into its weaker encryption. Nothing in the API says so, so the extension
+cannot tell: the vault lasts as long as the window, and the next window — or the next start —
+finds the count saying something was saved and nothing there, which reads exactly like a vault
+VS Code could not decrypt. The loss warning names both causes on Linux, and the `logins.enabled`
+description says it up front.
+
+**A lock does not make a read fresh, and a revision does.** Writes are read-modify-write under
+`withLock`, but each window reads SecretStorage through its own renderer's cache, and a write
+reaches the others only after a 100 ms flush and an IPC hop. The lock was released when `store`
+resolved, so the next window could read a stale vault inside the lock and write it back without
+the first window's entry. Every write now stamps a `revision` — its time, then a UUID — recorded
+in a file beside the lock, and the next writer waits until its own read is at least that new: the
+same revision, or one stamped no earlier. A harness with a 300 ms lag between two windows lost the
+first entry on the old code and keeps both now.
+
+**When freshness cannot be had, the write is refused.** The first version waited 3 s and then
+went ahead with the read it had — the stale vault the wait existed to avoid, written back over
+the other window's entry. Now the update throws "another window has just changed the saved
+logins… try again", and the stored vault is untouched (measured: a reader lagging 5 s is refused
+after 3 s and the other window's login survives). The one exception is a recorded write more
+than 30 s old that has still not arrived: its window stored it and went away before the change
+was flushed to anyone, and waiting for it would lock the vault for good.
+
+**Once `store` resolves, the update has succeeded.** The revision file and the count are
+bookkeeping written after it, and a failure there — a rename an antivirus holds on Windows — used
+to throw out of an update that had worked: "Saved logins were not changed" about a change that
+was saved, and, after a passkey was created, advice to delete at the site a key that was in fact
+stored. They are best-effort now; the worst a lost revision file costs is the next writer's wait.
+
+**A read that a change notice overtook is returned, not cached.** `onDidChange` clears the cache,
+and a `read()` already waiting on `get` could then cache the answer computed before the change —
+holding a deleted login in the picker until the next change. A generation counter, bumped by the
+notice, decides whether the answer may be kept.
+
+**The lock and the revision file live in the extension's global storage**, per user — not in
+`os.tmpdir()` like the MCP config locks, where on a shared Linux machine another user could hold
+the lock and stop every save.
+
+**VS Code deletes a secret it cannot decrypt** (a reset keychain, a changed keyring) and then
+answers `undefined`. A non-secret count in `globalState` tells that apart from "never saved"; an
+absent vault with a non-zero count is given a second look a second later (another window's first
+write may not have arrived), and is then reported once. **The vault fires `onDidLose` and says
+nothing itself** — it used to show the warning from inside `read()`, which runs when the active
+browser tab changes, so the toast landed on a visible page and paused it (#10). `logins.ts`
+decides: the status bar while a browser page is in front, the warning once it is not. The count
+is per profile while the vault is not, so in a second profile the check is merely weaker.
+
+**An unreadable vault is an error, never an empty one** (#101's rule, higher stakes). A newer
+format is unreadable too, and so is a vault whose `logins`, `passkeys` or `neverSave` is present
+but not an array — reading that as an empty list meant the next write replaced it with one. A
+single malformed entry is set aside and **written back untouched**, so a write never drops it,
+and **counts as content for export**: a vault holding only entries this build cannot read used to
+answer "nothing to export", which is precisely the vault that needs carrying to a build that can.
+
+**The export is scrypt (N = 2^17, r = 8) + AES-256-GCM**, with every parameter in the
+authenticated data, so an edited cost or salt fails as a wrong passphrase rather than decrypting
+under parameters nobody chose. An imported file's cost is bounded (≤ 256 MiB) *before* any work,
+since it is read before anything is authenticated. Passphrases are NFC-normalised. Written `0600`
+and atomically — `0600` **even over an existing file**: `writeFileAtomic` keeps an existing file's
+mode for configs, and an export written over an old `0644` file in the save dialog kept it, every
+password readable by every local user (`keepExistingMode: false`). The export carries the
+entries this build could not read, so they reach a build that can. **Nothing from the file is ever
+echoed into a message**: a crafted `version` of `1 [Update](command:…)` reached an error
+notification, whose body runs command links (#124).
+
+**CSV** reads Chrome, Firefox (with timestamps), Safari, Bitwarden (logins only) and 1Password;
+columns are matched by name, alias order before position. **Bitwarden joins a login's URIs with
+commas** in one cell; read whole, `https://a.com,https://b.com` became the origin
+`https://a.com,https` — valid to every check, matching no page. The cell is split on commas and
+line breaks, and the first web address wins, so an app URI listed first is skipped. Export writes
+Chrome's layout, unescaped — a formula guard would change the password — behind a modal that
+says the file is readable, that passkeys are not in it, **and that a cell starting with `=`,
+`+`, `-` or `@` can run as a formula in a spreadsheet** (usernames and titles come from pages; the code comment
+promised that sentence long before the modal had it). It refuses when there are no logins, and
+refuses a target that is not a local file, whose mode `0600` cannot be set — a remote window's
+save dialog would otherwise leave every password readable on that host.
+
+A conflict on import (same origin and username, **compared without case** as everywhere else,
+other password) asks once which side wins, counted on the same de-duplicated rows the merge
+applies. **Duplicate rows keep the newest** (`updated`), not the first, and are counted in the
+summary: Chrome stores a login per URL path, so an old and a new row for one account are an
+ordinary export, and the first-wins version installed the stale password while the counters no
+longer summed to the file. Logins are indexed by origin and username in a `Map`; the linear
+searches they replaced took 18 s for 60 000 rows, inside the lock, blocking every extension in the
+host (now under 50 ms, conflict count included). Passkeys merge by RP and credential id, keeping the higher counter — going
+backwards reads to a relying party as a cloned authenticator.
+
+**Saving never replaces a saved password without asking.** A login is one origin and one
+username, so "Save as a separate login…" with the prefilled name, or "Save Login from Page" on a
+saved account, could only mean "replace" — and did it silently, the first one right after the
+user had declined to update. A replacement is now a modal question; the same password is "already
+saved". **The question is asked again under the lock**: two windows can both see no entry, and the
+second write then replaced the first window's password without a word — so `_saveNew` re-checks
+inside the update and, finding a conflict that was not there when it asked, comes back out to ask
+(three rounds at most). A rename in Manage checks the same rule, since renaming onto a saved
+username made two logins with one key. An edit to a login another window deleted meanwhile says
+so rather than doing nothing. An offer answered after a newer one replaced it, or after it
+expired, still acts on the answer given — expiry is not evidence the password is wrong; a
+withdrawal is, and refuses it. Turning `offerToSave` off takes a pending offer down.
+
+**The five settings are `application`-scoped.** A workspace's `.vscode/settings.json` could
+otherwise switch `autofillOnPageLoad` on — and a cloned repository's dev server on
+`localhost:3000` would receive a login saved for that origin by another project, without a click.
+
+### Keeping password values from the assistants
+
+React mirrors a controlled input's value into its `value` attribute — after our fill as well as
+after typing (measured, React 19.2) — so a filled password sits in the markup, and markup reaches
+models by three routes. Each is closed separately ([src/secretGuards.ts](src/secretGuards.ts),
+leaf, under test):
+
+- **`browser_html`** takes the element's `outerHTML` and redacts it **in the extension**, with
+  `redactSecretValues`. It used to redact a `cloneNode(true)` in the page, which ran code: a deep
+  clone upgrades custom elements, so their constructors ran in the page's world on a read-only
+  tool (measured: the count went from 1 to 2).
+- **`browser_inspect_element`, `browser_selected_element` and the Copy/Add Element reports** take
+  their markup from CDP (`DOM.getOuterHTML`), and the same function strips it there.
+- **`redactSecretValues` reads the markup as HTML**, not as text with tags in it. Looking for
+  `<input` anywhere, the first version let a script containing `const x = '<input data-x="';`
+  open a quote that swallowed the next real input — whose password then went out unredacted.
+  Comments, CDATA and raw-text elements (`script`, `style`, `xmp`, `iframe`, `noembed`,
+  `noframes`, `noscript`, `plaintext`) are copied through unscanned, and a tag is read with its
+  quotes honoured rather than cut at the first `>`.
+- **Every tool that takes a selector refuses one that compares `value`** (`comparesFieldValue`):
+  `input[type=password][value^="a"]` matching or not is a one-character oracle, and an exact
+  `[value="…"]` a dictionary attack. The selector is **tokenised first**: comments removed — CSS
+  drops a comment between tokens, so `[value/**/^="a"]` is the same selector, and it walked past
+  the first version — but only outside strings, or `[title="/*"][value^=a][title="*/"]` would
+  hide the comparison inside a "comment"; escapes undone (`[val\75 e^=a]`); case folded.
+  `[value]` alone, which reveals nothing, still works, and so does a comparison on an element that
+  never holds a typed secret — `option[value="us"]`, `input[type=radio][value=pro]`,
+  `button[value=delete]`, which is how models pick choices, and which the first version refused.
+  What decides is the compound the comparison sits in: a custom element (`sl-input`) and an
+  `input` of no stated or of a text-like type are refused, so `form:has(input[value^="a"])` is
+  still caught.
+- **`browser_fill` never reads back a secret field's value**, by the same rule rather than by
+  `type === 'password'` alone: a toggled field that rejected the new value had its contents echoed
+  in the refusal. The page returns the field's attributes and the extension decides.
+
+A field is secret by type, by `autocomplete` token, **or by name** (`password`, `pwd`, `passcode`,
+`pin`, …) — a "show password" button turns the field into `type=text`, and it still holds the
+password. **The name is matched as a word**, camelCase split first: unanchored, `pass` caught
+`passenger_count`, `passport_number`, `compass_heading` and `bypass_cache`, and `browser_html`
+reported those filled fields as empty. The rule now exists once, in `secretGuards.ts`, since no
+page script applies it any more.
+
+**What this cannot cover, stated plainly:** an assistant that clicks a page's own "show password"
+button and takes a `browser_screenshot` sees the password on screen. Sharing a tab with an
+assistant is sharing what that tab can show.
+
+### Not built
+
+- **No MCP tool fills a saved login.** An assistant signing in to a dev app without seeing the
+  password is a real use; it needs a tool that names a login without revealing it, and a decision
+  about which logins an assistant may use. Recorded rather than done.
+- **Shadow-DOM and OOPIF login forms are not seen.** Firefox's form lists do not descend into
+  shadow roots, and a cross-origin iframe is another CDP target.
+- **Passkeys in cross-site frames.** Attaching to each out-of-process frame
+  (`Target.setAutoAttach` on the page session), installing the gate there and routing its
+  ceremony by session would serve them; until then they fail while passkeys are on — see
+  [Passkeys](#passkeys-a-virtual-authenticator-that-holds-nothing).
+- **Touch ID and Windows Hello as the confirmation.** Reachable — `osascript -l JavaScript` with
+  `LocalAuthentication` on macOS, PowerShell's `UserConsentVerifier` on Windows — and not built:
+  the QuickPick is the confirmation everywhere, and `isUserVerified: true` overstates it. Built,
+  it would make that flag honest on the two platforms that have a sensor and leave Linux on the
+  picker. Waiting on the user's decision.
+- **No password generator**, and no TOTP.
+
 ## Things that break silently
 
 No compile error for any of these — they only surface at runtime.
@@ -4074,6 +4638,207 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
     work, and Connect wrote a `127.0.0.1` config into the remote folder for an assistant on the
     remote, where nothing listens. Ask `Extension.extensionKind`; refuse what cannot work.
 
+226. **Injecting before `Runtime.enable`** → a binding call made before the domain is enabled is
+    never delivered — not queued — so the first report from a page is lost and the extension
+    believes it has no login form. Enable, then inject.
+227. **A virtual authenticator with `automaticPresenceSimulation: true`** → any page can create a
+    passkey silently by calling the browser's own `create` around our wrapper, since creating
+    needs no stored key. Presence goes on only for an approved ceremony.
+228. **Adding the credential after the page's request started** → the request does not pick it
+    up and fails or times out; presence toggled mid-request does not help either. The gate exists
+    to put the credential in place first.
+229. **`setAttribute("value", password)` in a fill** (Browserpass does) → the password lands in
+    `outerHTML`, and `browser_html` hands it to a model. React does the same on its own, which is
+    why `browser_html` now removes password values from a clone.
+230. **Regular expressions in a plain template literal** → `\b` becomes a backspace and `\s` the
+    letter s, so every pattern silently differs from the one written. The page script is
+    `String.raw`; it may still not contain a backtick.
+231. **Prefixing `https://` to an address that already has a scheme** → an app login
+    `android://com.app` imported from a CSV became the website `https://android`. Only a value
+    without `://` is given a scheme.
+232. **A password in `Runtime.evaluate` source text** → it becomes a script the page's DevTools
+    lists among its sources. Pass it as a `callFunctionOn` argument.
+233. **Offering to save on submit** → a mistyped password becomes "Update saved password?", and
+    one click replaces the right password with the wrong one. Offer only once the sign-in
+    visibly worked.
+234. **A page-triggered picker with no cool-down** → a page calling `navigator.credentials.get()`
+    in a loop re-opens a QuickPick that takes the keyboard every time it closes. Refuse that tab
+    for a few seconds after a refusal, and ask only for the active tab.
+235. **Reading `WebAuthn.credentialDeleted` as the site's doing** → it fires for our own
+    `clearCredentials` after every ceremony. The vault is changed only by the user.
+236. **Reading `form.elements` / `form.id` as properties, even in an isolated world** → a control
+    named `elements`, `id` or `form` shadows them (`[LegacyOverrideBuiltIns]`). The page script
+    reads controls through the prototype getter and form attributes with `getAttribute`.
+237. **Reading "disabled" as "gone"** → a fill-usability test (`isVisible`, which rejects a
+    disabled field) was reused to decide whether a submitted form had left the page. Forms
+    disable their inputs while the request runs, so every wrong password typed into one was a
+    successful sign-in and became "Update password?". Presence and usability are two tests.
+238. **Judging a new document by its first report** → it goes out 300 ms in, before a
+    parser-blocking script or an app shell has drawn the error form, so a failed sign-in that
+    navigated back to its form read as "no form, it worked". Decide on the settled report, and
+    withdraw an offer if the form comes back.
+239. **Counting an emptied password box as success** → a server rejecting the current password
+    empties it as readily as one accepting the new one. Nothing that also happens on failure is
+    evidence of success.
+240. **Firefox's `value !== defaultValue` modification fallback** → script-set values (an
+    assistant's `browser_fill`, the page's own code) passed as the user's after one trusted click
+    anywhere, staging an offer to save a password the user never typed. Trusted input only.
+241. **Hiding a secret from one tool that returns markup and not the others** → `browser_html` was
+    fixed and the element reports were not; and any tool that takes a selector answers "does
+    `[value^=a]` match", which reads a password one character at a time. Redact every markup
+    route and refuse value-comparing selectors (`secretGuards.ts`).
+242. **Addressing a frame by execution-context id alone** → ids restart after a cross-site
+    navigation, so a call meant for site A's world can land in site B's. Re-check before each
+    call and have the page compare its own origin.
+243. **Letting the page decide when a passkey ceremony ends** → a page that withheld `done`, or
+    navigated with the picker open, kept an approved key loaded with presence on for five
+    minutes — silent signatures for any page of that RP. End on the first assertion or creation,
+    on abort, and when the requesting context is destroyed.
+244. **Page-side code that outlives its session** → the passkey gate waited for answers nobody
+    would give after a setting was switched off, a tab was evicted or the extension restarted;
+    every passkey sign-in on that page hung. Uninstall on the way out, and give every wait a
+    deadline for the exit that has no goodbye. Item #33's rule, for a new installer.
+245. **Installing a gate before the thing it gates** → with `WebAuthn.enable` failing after the
+    gate was in, every passkey request was refused on a tab whose own authenticators worked.
+246. **Answering "already registered" without asking** → a site could test which of its credential
+    ids the browser holds and recognise a signed-out user. Refuse the way any refusal looks; tell
+    the user, not the page.
+247. **Echoing a file's own field into an error message** → an export's `version` of
+    `1 [Update](command:…)` reached a notification, which runs command links (#124). Fixed
+    wording at the boundary, and `plainInNotification` on paths and error text.
+248. **A security-relevant setting a workspace can set** → without `"scope": "application"`, a
+    cloned repository's `.vscode/settings.json` could switch on autofill-on-load and have its own
+    dev server receive another project's login for the same localhost origin.
+249. **Trusting a lock to make a read fresh** → SecretStorage is read through each window's
+    renderer cache, which catches up ~100 ms after another window's write; the next lock holder
+    read a stale vault and wrote it back without the first window's entry. Stamp a revision and
+    wait for it.
+250. **Treating an absent secret as "never saved"** → VS Code deletes a secret it cannot decrypt
+    and answers `undefined`, so a changed keychain emptied the vault in silence. Keep a
+    non-secret count and say so when the two disagree.
+251. **Keeping an existing file's mode for a file whose contents set its sensitivity** → an export
+    of passwords written over an old `0644` file stayed `0644`. The right default for a config is
+    the wrong one for an export.
+252. **"Save" that silently replaces** → a login is one origin and one username, so saving a name
+    that exists overwrote its password — including right after the user declined "Update". Ask.
+253. **Comparing usernames exactly in one place and without case in the rest** → an import made
+    `Me@x` and `me@x` two logins and never asked which password wins.
+254. **Reading a multi-value CSV cell as one value** → Bitwarden's comma-joined URIs parsed into an
+    origin `https://a.com,https` that is valid to every check and matches no page.
+255. **Confirming after a write whose result was dropped** → "Never for this site" put a success
+    line over the refusal of a write that failed. #113's rule, entered from the UI.
+256. **An attach with deadlines on its first two steps only** → a page busy in a long task held
+    `Page.enable` unanswered, so the open never settled and "Fill Saved Login" waited in silence.
+    Bound the whole attach, close a session that arrives late, abort on tab close.
+257. **Comparing keybindings as `key|mac` pairs** → a binding with the repeat chord on Windows and
+    Linux and another on macOS was a different pair and passed `check-manifest`. Compare per
+    platform.
+258. **Page text in a QuickPick `description`** → it renders `$(icon)` syntax, so a title drew our
+    icons in our menu. `plainInLabel`, on every page-derived description.
+259. **`activeBrowserTab` as "the tab the user means"** → it is set from the globally active editor
+    pane only, so with focus in a file beside the page, or Fill picked from the dropdown of a tab
+    in another group, "Fill Saved Login" answered "no browser tab is active" about a page in plain
+    sight. Fall back to the tab last seen active (`userTab`), and ask `tabInFront` for what is
+    on screen. The MCP side had met this already (`_lastTab`); the second feature did not inherit
+    the answer.
+260. **A freshness wait that falls back to the stale read** → the vault writer waited 3 s for the
+    other window's revision and then wrote back the read it had — the very read the wait existed
+    to reject, deleting that window's entry. Refuse instead; proceed only when the recorded write
+    is old enough that its window cannot still flush it.
+261. **Matching a selector with a regular expression** → CSS drops a comment between tokens, so
+    `[value/**/^="a"]` selects exactly what `[value^="a"]` does and the guard did not see it. A
+    selector check has to tokenise: comments out (only outside strings), escapes decoded, case
+    folded — and then judge the compound, not the whole string.
+262. **Scanning markup for `<input` as text** → a script containing `'<input data-x="'` opened a
+    quote that swallowed the next real input, whose password went out unredacted. Skip comments,
+    CDATA and raw-text elements, and honour quotes inside a tag.
+263. **Awaiting persistence with a key armed** → a created passkey stayed loaded, presence on, for
+    the length of the vault write, and gave a second signature with no second approval. End the
+    ceremony and empty the authenticator first; save afterwards.
+264. **Withdrawing the visible half of an offer** → the status bar item went, the picker the user
+    had already opened did not, and Update wrote the rejected password. A withdrawal has to reach
+    every place the offer can still be acted on — an open picker, an input box, a write made
+    moments before (`_stillValid`, `revertWindowMs`).
+265. **Reading silence as success** → a sign-in POST that fails on the network commits Chrome's
+    error page, whose `://` origin the watcher ignores, so nothing ever reported and "no sign-in
+    form seen" offered a password no server had checked. Absence of a report is not a report.
+266. **Asking before the lock and writing inside it** → two windows both saw no entry, both asked
+    nothing, and the second write replaced the first window's password. Re-check under the lock
+    and come back out to ask. Renaming a username had the same gap with no check at all.
+267. **An install guard on state a shared world keeps** → isolated worlds of one name are shared by
+    every CDP session, so the frozen global a stopped script left behind made every later install
+    return at once, and the document reported nothing until it navigated. Give each install an
+    owner and let it retire its predecessors.
+268. **Tracking provenance per form when the decision is per value** → Firefox's per-root
+    modification flag covers every formless field at once, so a typed username (or a keystroke in
+    a search box) vouched for a script-filled password. Record the value each trusted input left,
+    per field, and require it to still be there.
+269. **Reading a collection of the wrong type as empty** → a vault whose `logins` was not an array
+    parsed as no logins, and the next write made that true. Wrong type is unreadable, like a
+    newer format.
+270. **An emptiness check that counts only what this build understands** → a vault holding only
+    unreadable entries answered "nothing to export", and those are exactly the entries an export
+    exists to carry to a build that can read them.
+271. **Capturing on `pagehide`** → typing a password and clicking any link counted as submitting
+    it, and the next page, having no form, counted as signing in. A navigation is not a
+    submission; only a submit, a submit-like click or Enter is.
+272. **"The form came back" judged by sign-in fields on the same origin** → a sign-up or reset
+    form redrawn after a rejection is all new-password fields, and a failure can be sent to its
+    form on another host. Any password field, any origin — in the page's own check as well as
+    the watcher's; the page's was missed by every review and found while this round was being written up.
+273. **Adding a menu section after the one a rule pins to the end** → the logins submenu went in
+    after the assignments in both menus, consistently, against "the assignments sit at the end
+    of every menu". A new section goes above them.
+274. **Throwing after the write has landed** → a failed revision-file rename turned a saved vault
+    into "not changed" and, after a passkey was created, into advice to delete a stored key at
+    the site. After `store` resolves, everything else is best-effort.
+275. **Keeping the first of two duplicate import rows** → Chrome exports a login per URL path, so
+    an old and a new password for one account are normal; first-wins installed the old one and
+    the summary no longer added up. Keep the newest and count the rest.
+276. **A linear search per imported row** → 60 000 rows took 18 s inside the vault lock, freezing
+    every extension in the host past the point other windows read the lock as abandoned. Index.
+277. **Caching an answer that a change notice overtook** → a read in flight when another window's
+    change arrived cached the old vault until the next change. Cache only if no notice came in
+    between.
+278. **Writing a secret export through `workspace.fs` to a non-file target** → its mode cannot be
+    set, so a remote save dialog left every password readable on that host. Refuse it. Its
+    sibling: the CSV's formula risk was "stated in the warning" according to a comment, and
+    absent from the warning.
+279. **Redacting a clone made in the page** → `cloneNode(true)` upgrades custom elements, so a
+    read-only tool ran page constructors. Take the markup out and redact it in the extension.
+280. **An unanchored name pattern for "secret"** → `pass` matched `passenger_count` and
+    `compass_heading`, and `browser_html` reported those filled fields as empty — on the tool a
+    model uses to check a page. Match words.
+281. **Widening a rule in one tool and not its neighbour** → the secret-field rule grew a name
+    test for `browser_html` while `browser_fill`'s refusal still hid only `type=password`, and
+    echoed a toggled field's contents. One predicate, every caller.
+282. **A refusal wider than the leak** → refusing every `[value…]` broke `option[value="us"]` and
+    `input[type=radio][value=pro]`, which reveal nothing and are how models pick choices. Judge the
+    element the comparison is on.
+283. **A cool-down that only one ending starts** → only a refusal silenced a tab, so a page
+    aborting its own request after 100 ms reopened the picker for ever. Every ending the page
+    causes starts it.
+284. **Answering an existence question before the user acts** → "already saved" became
+    `NotAllowedError`, but answered at once it still differed in timing from the picker anyone
+    else got, so `excludeCredentials` plus a short abort told a site which ids this browser
+    holds. Ask first.
+285. **Undoing only the step that failed** → `WebAuthn.enable` succeeded, `addVirtualAuthenticator`
+    threw, and the empty virtual environment stayed on, hiding the tab's real authenticators.
+    Undo the steps that succeeded.
+286. **`location.origin` as a frame's origin** → it is the URL's: `"null"` in a `srcdoc` frame
+    that really has the page's origin (every fill there refused), the site's in a sandboxed frame
+    that really has none. `self.origin` is the document's.
+287. **A toast from a path that runs on tab changes** → the vault warned about a lost store from
+    inside `read()`, which runs when the active browser tab changes, so the toast paused the page
+    being switched to (#10). Report through an event and let the UI layer choose the surface.
+288. **Assuming SecretStorage persists** → on Linux without a keyring it is in memory, per window,
+    and nothing in the API says so; the vault vanished with the window and the loss check blamed a
+    changed keyring. Say both causes where only one can be true.
+289. **A page-level authenticator with a top-frame-only gate** → the virtual authenticator answers
+    out-of-process frames too, the gate never reaches them, so a cross-site frame's ceremony
+    meets the empty authenticator and times out. Not fixed — documented in the setting and under
+    [Passkeys](#passkeys-a-virtual-authenticator-that-holds-nothing); attaching to OOPIFs is the fix.
+
 ## Special cases and non-obvious decisions
 
 - **In a remote window this extension runs on the local machine, and the MCP features are
@@ -4256,6 +5021,14 @@ dependencies.
 
 The release steps live in [PUBLISHING.md](PUBLISHING.md); what is non-obvious about them is
 below.
+
+**One file in the package is MPL-2.0** — `out/loginFormScript.js`, compiled from the Firefox port.
+Its source form ships beside it as `src/loginFormScript.ts` (a `!` exception in `.vscodeignore`,
+which otherwise drops `src/**`), which is what MPL §3.2(a) asks for, and
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) ships too. `package.json` declares
+`MIT AND MPL-2.0`. Do not add `removeComments` to the tsconfig, and do not drop either file from
+the package — `unzip -l tab-browser-ultimate.vsix | grep -E 'loginFormScript|THIRD'` should list
+three entries.
 
 **Verify the package by extracting it, never by trusting that the build ran.** The committed
 `.vsix` went out of date once in this repository's history and nothing caught it: a commit

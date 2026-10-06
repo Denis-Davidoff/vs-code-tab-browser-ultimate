@@ -1,4 +1,6 @@
 src/**
+# The MPL-2.0 file ships in source form beside its compiled copy (MPL §3.2(a)).
+!src/loginFormScript.ts
 preview-src/**
 tsconfig*.json
 **/*.tsbuildinfo

@@ -197,13 +197,21 @@ async function resolveLinks(target: string): Promise<string> {
  * - **An existing file keeps its mode**; a new one gets `newFileMode`. The
  *   callers default that to `0600`, because these files carry a bearer token
  *   and loopback is reachable by every local user.
+ *
+ * `keepExistingMode: false` is for a file whose contents decide its mode
+ * rather than its history — an export of saved passwords. Written over an old
+ * `0644` file in the save dialog, it kept `0644`, readable by every local user,
+ * while its caller promised `0600`.
  */
-export async function writeFileAtomic(target: string, data: string | Uint8Array, newFileMode = 0o600): Promise<void> {
+export async function writeFileAtomic(target: string, data: string | Uint8Array, newFileMode = 0o600, keepExistingMode = true): Promise<void> {
 	const real = await resolveLinks(target);
 	let mode = newFileMode;
 	let exists = false;
 	try {
-		mode = (await fs.stat(real)).mode & 0o7777;
+		const existingMode = (await fs.stat(real)).mode & 0o7777;
+		if (keepExistingMode) {
+			mode = existingMode;
+		}
 		exists = true;
 	} catch {
 		// New file.

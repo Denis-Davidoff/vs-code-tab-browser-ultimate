@@ -9,6 +9,8 @@
 - **Full DevTools for every tab.**
 - **Per-assistant tab access:** share a tab with one assistant and it sees and drives that tab
   only, while the others stay hidden from it.
+- **A password manager for sites:** it offers to save a login after a sign-in that worked and
+  fills it back, with passkeys too, all kept in VS Code's secret storage.
 
 ## Which editors this works on
 
@@ -33,6 +35,11 @@ there is not the problem, the missing API is. **Measured by reading the shipped 
 [![Step-by-step setup: install, enable the browser API, open a page, connect Claude Code or Codex](ai-browser-instruct.jpg)](https://raw.githubusercontent.com/Denis-Davidoff/vs-code-tab-browser-ultimate/main/ai-browser-instruct.jpg)
 
 ## Changelog
+**0.6.0** — Saved logins and passkeys: the browser offers to save a password after a sign-in
+that worked, fills it back with `Cmd`/`Ctrl` + `Shift` + `L`, and stores passkeys — all in VS
+Code's secret storage, with encrypted export and import from Chrome, Firefox, Safari, Bitwarden
+and 1Password.
+
 **0.5.30** — Screenshots for Claude Code fixed: `browser_screenshot` now returns real images
 instead of base64 text, which overflowed the tool output limit, and a full page arrives as a
 sequence of frames sized for the model to read.
@@ -105,6 +112,16 @@ the editor: the page you are looking at is the page your agent reads and drives.
   can take the mouse back at any point.
 - 🔒 **Local by construction.** Loopback only, a bearer token per workspace, and any request
   carrying an `Origin` header refused before its credentials are looked at.
+- 🔑 **Saved logins and passkeys.** After a sign-in that worked, the status bar offers to save the
+  password — or to update one that changed; a sign-in form gets one-click filling, and
+  `Cmd`/`Ctrl` + `Shift` + `L` fills from anywhere on the page. Sites can create and use passkeys,
+  each one confirmed in VS Code first — a VS Code prompt for now, not Touch ID or Windows Hello;
+  a passkey request from an embedded frame of another site is not served while passkeys are on.
+  Everything lives in VS Code's secret storage, encrypted by the operating system (on Linux, only
+  when a keyring is available), exports to a passphrase-protected file, and imports from Chrome,
+  Firefox, Safari, Bitwarden or 1Password. Nothing is drawn into the page, and no MCP tool returns a
+  password value — though an assistant you share a tab with can still click a page's own
+  "show password" button and take a screenshot.
 
 It started as a standalone copy of the Simple Browser extension that ships with VS Code,
 repackaged so it can be built, installed and extended on its own. That panel is still in here
@@ -146,10 +163,11 @@ The menu, in order:
 | Claude Code ▸ | a submenu: the same four picks handed to the Claude Code chat, plus Connect and Share Tab |
 | Codex ▸ | the same, for Codex |
 | Check Connection | the mcp server, [CLAUDE.md](CLAUDE.md#mcp-the-browser-exposed-to-claude-code-codex-and-vs-code-chat) |
+| Logins and Passkeys ▸ | fill a saved login, save the one on the page, manage, import, export — [CLAUDE.md](CLAUDE.md#saved-logins-and-passkeys) |
 | Share Tab with All Assistants / Stop Sharing Tab | [CLAUDE.md](CLAUDE.md#mcp-the-browser-exposed-to-claude-code-codex-and-vs-code-chat) |
 
 Everything belonging to one assistant lives in that assistant's submenu, which is what keeps the
-top level at fourteen rows. The four **Add** entries there appear only for an assistant whose
+top level at fifteen rows. The four **Add** entries there appear only for an assistant whose
 extension is actually installed; **Connect** and **Share Tab** are always there, because an
 assistant driven from a terminal through `.mcp.json` needs them and has no extension to detect.
 The menu is attached to the browser tab — from anywhere else, use the command palette.
@@ -194,3 +212,5 @@ which editors can work at all.
 
 MIT, with both copyright lines — Microsoft's, for the forked and copied code, and this
 project's. The per-file MIT headers on everything copied from vscode stay where they are.
+One file, `src/loginFormScript.ts`, is ported from Firefox's password manager and stays under
+the Mozilla Public License 2.0 — see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

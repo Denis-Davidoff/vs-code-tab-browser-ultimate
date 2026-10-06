@@ -18,6 +18,7 @@
 import type { CDPClient } from './cdp';
 import { collapseToShorthands, formatMatchedStyles, type IMatchedStyles } from './cssHelpers';
 import type { ElementAncestor, ElementData } from './elementMarkdown';
+import { redactSecretValues } from './secretGuards';
 
 export { formatAncestor, renderElementMarkdown } from './elementMarkdown';
 export type { ElementAncestor, ElementData } from './elementMarkdown';
@@ -153,7 +154,10 @@ export async function extractElementData(
 			// Computed styles are a bonus; the matched rules are already useful.
 		}
 
-		return { outerHTML, computedStyle, ancestors, dimensions: { top, left, width, height } };
+		// Not upstream: the markup goes to an assistant — `browser_inspect_element`,
+		// `browser_selected_element`, the Copy and Add Element reports — and on a
+		// React page a password field carries its value as an attribute.
+		return { outerHTML: redactSecretValues(outerHTML), computedStyle, ancestors, dimensions: { top, left, width, height } };
 	} finally {
 		subscription.dispose();
 	}

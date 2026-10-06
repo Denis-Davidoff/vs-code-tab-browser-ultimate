@@ -6,7 +6,7 @@
 import * as vscode from 'vscode';
 import type { BrowserController, ShareView } from './browserController';
 import { inUseMarker, sharedMarker, stripMarker } from './shareIndicator';
-import { plainInMarkdown } from './notifyText';
+import { plainInLabel, plainInMarkdown } from './notifyText';
 import { normalizeAddress } from './webUrl';
 import {
 	browserApiState, integratedBrowserCommand, onDidChangeGrantState,
@@ -161,7 +161,9 @@ function applyShareState(item: vscode.StatusBarItem, shares: ShareView): void {
 }
 
 /**
- * Blinks the item a few times, then leaves it steady, and never again.
+ * Blinks the item a few times, then leaves it steady — one burst per call. The
+ * callers decide how often that is: once per window for the API grant, once per
+ * offer or page for the logins item.
  *
  * The API supports exactly two backgrounds — `statusBarItem.errorBackground`
  * and `statusBarItem.warningBackground`, per the `.d.ts` — and no animation at
@@ -174,17 +176,25 @@ function applyShareState(item: vscode.StatusBarItem, shares: ShareView): void {
  * peripheral vision and anything faster is a flashing-content problem rather
  * than a hint. It stops on its own; a permanently blinking button is the kind
  * of thing people disable the extension over.
+ *
+ * `landOn` says where it settles. A request — enable the API, save this login —
+ * stays on the warning background until it is answered. A hint (`false`: a
+ * login is saved for this page) settles with no background: it has caught the
+ * eye and has nothing left to ask, and a page-by-page hint that stayed yellow
+ * would read as something being wrong.
  */
-function pulse(item: vscode.StatusBarItem): vscode.Disposable {
+export function pulse(item: vscode.StatusBarItem, landOn = true): vscode.Disposable {
 	const warning = new vscode.ThemeColor('statusBarItem.warningBackground');
 	const phases = 6;
 	let phase = 0;
 	const timer = setInterval(() => {
 		if (++phase >= phases) {
 			// Land on, in one assignment: setting it off and then straight back
-			// on within a tick is a flicker the renderer is free to show.
+			// on within a tick is a flicker the renderer is free to show. A hint
+			// rather than a request (`landOn: false`) lands off: it caught the eye
+			// and has nothing left to ask.
 			clearInterval(timer);
-			item.backgroundColor = warning;
+			item.backgroundColor = landOn ? warning : undefined;
 			return;
 		}
 		item.backgroundColor = phase % 2 === 0 ? warning : undefined;
@@ -286,6 +296,22 @@ async function showMenu(controller: BrowserController): Promise<void> {
 		run: () => vscode.commands.executeCommand('aiBrowser.checkMcpConnection'),
 	});
 
+	// Saved logins sit between the assistants and the shared tabs. The
+	// assignments stay last in both menus — that order was asked for, see below.
+	items.push({ label: vscode.l10n.t("Logins and passkeys"), kind: vscode.QuickPickItemKind.Separator });
+	if (focused) {
+		items.push({
+			label: vscode.l10n.t("$(key) Fill a saved login"),
+			description: plainInLabel(stripMarker(focused.title) || focused.url),
+			run: () => vscode.commands.executeCommand('aiBrowser.logins.fill'),
+		});
+	}
+	items.push({
+		label: vscode.l10n.t("$(lock) Manage saved logins and passkeys…"),
+		detail: vscode.l10n.t("Kept in VS Code's secret storage — import, export, edit, delete"),
+		run: () => vscode.commands.executeCommand('aiBrowser.logins.manage'),
+	});
+
 	// The assignments come *after* the connect entries, in both menus, and the
 	// order is asked for rather than derived: connecting is the thing done once
 	// per project, while an assignment is what changes from page to page, so it
@@ -314,7 +340,7 @@ async function showMenu(controller: BrowserController): Promise<void> {
 		const pickedUp = assignment.usedBy.length > 0;
 		items.push({
 			label: vscode.l10n.t("$(circle-slash) Stop sharing with {0}", assignment.label),
-			description: assignment.title || assignment.url,
+			description: plainInLabel(assignment.title || assignment.url),
 			detail: pickedUp
 				? vscode.l10n.t("{0} Working on this tab and no other", inUseMarker)
 				: vscode.l10n.t(
@@ -337,7 +363,8 @@ async function showMenu(controller: BrowserController): Promise<void> {
 		// Stripped defensively: nothing writes a marker into a page any more,
 		// but a page an earlier build reached can still be open with the
 		// observer that re-applies one.
-		const page = stripMarker(focused.title) || focused.url;
+		// Page-chosen: a description renders `$(icon)` syntax, see `plainInLabel`.
+		const page = plainInLabel(stripMarker(focused.title) || focused.url);
 		const alreadyShared = controller.isShared(focused);
 		items.push({
 			label: vscode.l10n.t("$(link) Give this tab to Claude Code"),

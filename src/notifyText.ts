@@ -96,3 +96,19 @@ export function plainInMarkdown(value: string, limit = 120): string {
 	const capped = collapsed.length > limit ? `${collapsed.slice(0, limit - 1)}…` : collapsed;
 	return capped.replace(/[!-/:-@[-`{-~]/g, char => `\\${char}`);
 }
+
+/**
+ * A page- or user-supplied string, made safe for a QuickPick label or the
+ * status bar.
+ *
+ * Neither renders Markdown, but both render `$(name)` as a codicon — so a
+ * username typed into a page as `$(check) Verified` would draw our own check
+ * mark beside it, in our own UI. A zero-width space after the `$` keeps the
+ * text as written and stops it being syntax. Whitespace collapses, since a
+ * label is one line, and the cap is the prompt's.
+ */
+export function plainInLabel(value: string, limit = 120): string {
+	const collapsed = value.replace(/\s+/g, ' ').trim();
+	const capped = collapsed.length > limit ? `${collapsed.slice(0, limit - 1)}…` : collapsed;
+	return capped.replace(/\$\(/g, '$​(');
+}

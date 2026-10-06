@@ -2,14 +2,14 @@
 	"name": "tab-browser-ultimate",
 	"displayName": "AI Browser🏆 Claude + Codex",
 	"description": "Embedded browser tab with AI capabilities, Claude and Codex integration",
-	"version": "0.5.32",
+	"version": "0.6.0",
 	"enabledApiProposals": [
 		"externalUriOpener",
 		"browser"
 	],
 	"icon": "media/icon.png",
 	"publisher": "DenysDavydov",
-	"license": "MIT",
+	"license": "MIT AND MPL-2.0",
 	"repository": {
 		"type": "git",
 		"url": "https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate.git"
@@ -27,7 +27,12 @@
 		"Other"
 	],
 	"keywords": [
+		"ai",
+		"si",
 		"browser",
+		"super intelligence",
+		"artificial intelligence",
+		"superintelligence",
 		"embedded browser",
 		"copilot browser",
 		"ai claude",
@@ -62,7 +67,14 @@
 		"assistant",
 		"devtools",
 		"localhost",
-		"inspect element"
+		"inspect element",
+		"mcp server",
+		"browser mcp server",
+		"ai browser mcp server",
+		"ai mcp server",
+		"frontend mcp server",
+		"backend mcp server",
+		"password manager"
 	],
 	"extensionKind": [
 		"ui",
@@ -110,7 +122,12 @@
 		"onCommand:aiBrowser.addCssLocationToCodex",
 		"onCommand:aiBrowser.repeat.cssLocation",
 		"onCommand:aiBrowser.repeat.claude.cssLocation",
-		"onCommand:aiBrowser.repeat.codex.cssLocation"
+		"onCommand:aiBrowser.repeat.codex.cssLocation",
+		"onCommand:aiBrowser.logins.fill",
+		"onCommand:aiBrowser.logins.saveFromPage",
+		"onCommand:aiBrowser.logins.manage",
+		"onCommand:aiBrowser.logins.import",
+		"onCommand:aiBrowser.logins.export"
 	],
 	"capabilities": {
 		"virtualWorkspaces": true,
@@ -409,6 +426,36 @@
 				"command": "aiBrowser.shareTabWithCodex",
 				"title": "%command.shareTabWithCodex.title%",
 				"category": "%displayName%"
+			},
+			{
+				"command": "aiBrowser.logins.fill",
+				"title": "%command.logins.fill.title%",
+				"category": "%displayName%",
+				"icon": "$(key)"
+			},
+			{
+				"command": "aiBrowser.logins.saveFromPage",
+				"title": "%command.logins.saveFromPage.title%",
+				"category": "%displayName%",
+				"icon": "$(save)"
+			},
+			{
+				"command": "aiBrowser.logins.manage",
+				"title": "%command.logins.manage.title%",
+				"category": "%displayName%",
+				"icon": "$(lock)"
+			},
+			{
+				"command": "aiBrowser.logins.import",
+				"title": "%command.logins.import.title%",
+				"category": "%displayName%",
+				"icon": "$(cloud-download)"
+			},
+			{
+				"command": "aiBrowser.logins.export",
+				"title": "%command.logins.export.title%",
+				"category": "%displayName%",
+				"icon": "$(cloud-upload)"
 			}
 		],
 		"configuration": [
@@ -459,6 +506,41 @@
 						"maximum": 65535,
 						"title": "MCP Server Port",
 						"markdownDescription": "%configuration.mcp.port.description%"
+					},
+					"aiBrowser.logins.enabled": {
+						"type": "boolean",
+						"default": true,
+						"scope": "application",
+						"title": "Saved Logins",
+						"markdownDescription": "%configuration.logins.enabled.description%"
+					},
+					"aiBrowser.logins.offerToSave": {
+						"type": "boolean",
+						"default": true,
+						"scope": "application",
+						"title": "Offer to Save Logins",
+						"markdownDescription": "%configuration.logins.offerToSave.description%"
+					},
+					"aiBrowser.logins.showSuggestions": {
+						"type": "boolean",
+						"default": true,
+						"scope": "application",
+						"title": "Suggest Saved Logins",
+						"markdownDescription": "%configuration.logins.showSuggestions.description%"
+					},
+					"aiBrowser.logins.autofillOnPageLoad": {
+						"type": "boolean",
+						"default": false,
+						"scope": "application",
+						"title": "Fill Logins on Page Load",
+						"markdownDescription": "%configuration.logins.autofillOnPageLoad.description%"
+					},
+					"aiBrowser.passkeys.enabled": {
+						"type": "boolean",
+						"default": true,
+						"scope": "application",
+						"title": "Passkeys",
+						"markdownDescription": "%configuration.passkeys.enabled.description%"
 					}
 				}
 			}
@@ -588,6 +670,10 @@
 					"command": "aiBrowser.stopSharingTab",
 					"group": "4_share@2",
 					"when": "aiBrowser.tabShared"
+				},
+				{
+					"submenu": "aiBrowser.loginsMenu",
+					"group": "3_logins@1"
 				}
 			],
 			"commandPalette": [
@@ -703,6 +789,28 @@
 					"command": "aiBrowser.shareTabWithCodex",
 					"group": "2_mcp@2"
 				}
+			],
+			"aiBrowser.loginsMenu": [
+				{
+					"command": "aiBrowser.logins.fill",
+					"group": "1_page@1"
+				},
+				{
+					"command": "aiBrowser.logins.saveFromPage",
+					"group": "1_page@2"
+				},
+				{
+					"command": "aiBrowser.logins.manage",
+					"group": "2_vault@1"
+				},
+				{
+					"command": "aiBrowser.logins.import",
+					"group": "2_vault@2"
+				},
+				{
+					"command": "aiBrowser.logins.export",
+					"group": "2_vault@3"
+				}
 			]
 		},
 		"submenus": [
@@ -721,6 +829,10 @@
 			{
 				"id": "aiBrowser.codexMenu",
 				"label": "%submenu.codexMenu.label%"
+			},
+			{
+				"id": "aiBrowser.loginsMenu",
+				"label": "%submenu.loginsMenu.label%"
 			}
 		],
 		"mcpServerDefinitionProviders": [
@@ -801,6 +913,12 @@
 				"key": "ctrl+alt+c",
 				"mac": "cmd+alt+c",
 				"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'codex:xpath' && aiBrowser.codexInstalled"
+			},
+			{
+				"command": "aiBrowser.logins.fill",
+				"key": "ctrl+shift+l",
+				"mac": "cmd+shift+l",
+				"when": "activeEditor == 'workbench.editor.browser'"
 			}
 		]
 	},

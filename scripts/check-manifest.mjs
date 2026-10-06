@@ -134,22 +134,50 @@ if (new Set(actions).size !== actions.length) {
  * One chord drives the right-hand icon: one binding per action, same key, and
  * the same mutually exclusive `when` set as the buttons. If a `when` drifted,
  * the key would either fire nothing or fire two tools at once.
+ *
+ * Scoped to the `repeat.*` delegates: other commands may have chords of their
+ * own (Fill Saved Login does), and those must simply not reuse this one.
  */
 const keybindings = contributes.keybindings ?? [];
-if (keybindings.length) {
-	const keys = new Set(keybindings.map(k => `${k.key}|${k.mac ?? ''}`));
+/*
+ * A binding's chord on each platform, modifiers in a fixed order.
+ *
+ * Compared per platform, not as the `key|mac` pair: a binding of `ctrl+alt+c`
+ * with a different `mac` is a different pair and the same chord on Windows and
+ * Linux, where it would fire alongside the repeat button's.
+ */
+const normalise = chord => {
+	const parts = String(chord ?? '').toLowerCase().split('+').map(part => part.trim()).filter(Boolean);
+	const key = parts.pop() ?? '';
+	return [...parts.sort(), key].join('+');
+};
+const platformChords = k => ({
+	win: normalise(k.win ?? k.key),
+	linux: normalise(k.linux ?? k.key),
+	mac: normalise(k.mac ?? k.key),
+});
+const chordOf = k => JSON.stringify(platformChords(k));
+const sharesChord = (k, chords) => Object.entries(platformChords(k)).some(([os, chord]) => chord && chords?.[os] === chord);
+const repeatBindings = keybindings.filter(k => k.command.startsWith('aiBrowser.repeat.'));
+let repeatChord;
+if (repeatBindings.length) {
+	const keys = new Set(repeatBindings.map(chordOf));
 	if (keys.size !== 1) {
-		problems.push(`keybindings use ${keys.size} different chords; expected one`);
+		problems.push(`repeat keybindings use ${keys.size} different chords; expected one`);
 	}
-	const boundWhens = keybindings.map(k => k.when).sort();
+	repeatChord = platformChords(repeatBindings[0]);
+	const boundWhens = repeatBindings.map(k => k.when).sort();
 	const buttonWhens = primaries.map(m => m.when).sort();
 	if (JSON.stringify(boundWhens) !== JSON.stringify(buttonWhens)) {
 		problems.push('keybinding conditions do not match the navigation@2 buttons');
 	}
-	for (const binding of keybindings) {
-		if (!commands.has(binding.command)) {
-			problems.push(`keybinding for unknown command ${binding.command}`);
-		}
+}
+for (const binding of keybindings) {
+	if (!commands.has(binding.command)) {
+		problems.push(`keybinding for unknown command ${binding.command}`);
+	}
+	if (!binding.command.startsWith('aiBrowser.repeat.') && sharesChord(binding, repeatChord)) {
+		problems.push(`${binding.command} takes the repeat chord on some platform, which belongs to the toolbar's primary button`);
 	}
 }
 
@@ -164,11 +192,16 @@ if (keybindings.length) {
  * entries moved down into `aiBrowser.claudeMenu` / `codexMenu` that guard went
  * blind to eight of the twelve commands it exists for — silently, because a
  * check that inspects nothing still passes.
+ *
+ * Only the repeat chord is meant: a command with a chord of its own — Fill
+ * Saved Login — *wants* it printed beside its menu row, since that is where
+ * people learn it.
  */
-const bound = new Set(keybindings.map(k => k.command));
+const bound = new Set(repeatBindings.map(k => k.command));
+const repeatChordCommands = new Set(keybindings.filter(k => sharesChord(k, repeatChord)).map(k => k.command));
 for (const id of submenus.keys()) {
 	for (const item of contributes.menus[id] ?? []) {
-		if (bound.has(item.command)) {
+		if (repeatChordCommands.has(item.command)) {
 			problems.push(`${item.command} is in submenu ${id} and has a keybinding; the chord belongs on its repeat.* twin`);
 		}
 	}

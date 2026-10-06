@@ -5,7 +5,7 @@
 
 import * as assert from 'node:assert';
 import { suite, test } from 'node:test';
-import { plainInMarkdown, plainInNotification, plainInPrompt } from './notifyText.ts';
+import { plainInLabel, plainInMarkdown, plainInNotification, plainInPrompt } from './notifyText.ts';
 
 suite('plainInNotification', () => {
 
@@ -109,5 +109,19 @@ suite('plainInMarkdown', () => {
 	test('the cap is applied before escaping, so an escape is never cut in half', () => {
 		const out = plainInMarkdown('a'.repeat(118) + '[[[', 120);
 		assert.strictEqual(out, 'a'.repeat(118) + '\\[…');
+	});
+});
+
+suite('plainInLabel', () => {
+
+	test('icon syntax is shown, not drawn', () => {
+		const out = plainInLabel('$(check) Verified');
+		assert.ok(!out.includes('$('));
+		assert.strictEqual(out.replace(/​/g, ''), '$(check) Verified');
+	});
+
+	test('one line, capped', () => {
+		assert.strictEqual(plainInLabel('a\n\tb  c'), 'a b c');
+		assert.strictEqual(plainInLabel('x'.repeat(10), 5), 'xxxx…');
 	});
 });

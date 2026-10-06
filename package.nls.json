@@ -34,5 +34,16 @@
 	"command.stopSharingTab.title": "Stop Sharing Tab",
 	"command.shareTabWithClaudeCode.title": "Share Tab with Claude Code",
 	"command.shareTabWithCodex.title": "Share Tab with Codex",
-	"configuration.updateCheck.enabled.description": "Look for new releases of AI Browser in the [repository](https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate) and show a notification when one is out. This extension is installed from a VSIX, so nothing else updates it. Once it has reached GitHub it waits six hours before asking again; it announces each release once, and says nothing when there is no update."
+	"configuration.updateCheck.enabled.description": "Look for new releases of AI Browser in the [repository](https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate) and show a notification when one is out. This extension is installed from a VSIX, so nothing else updates it. Once it has reached GitHub it waits six hours before asking again; it announces each release once, and says nothing when there is no update.",
+	"command.logins.fill.title": "Fill Saved Login",
+	"command.logins.saveFromPage.title": "Save Login from Page",
+	"command.logins.manage.title": "Manage Saved Logins and Passkeys",
+	"command.logins.import.title": "Import Logins and Passkeys",
+	"command.logins.export.title": "Export Logins and Passkeys",
+	"submenu.loginsMenu.label": "Logins and Passkeys",
+	"configuration.logins.enabled.description": "Save logins and passkeys for pages in the integrated browser, in VS Code's secret storage (encrypted by the operating system: Keychain, DPAPI or the Secret Service). On Linux with no keyring available, VS Code keeps secrets in memory only, per window, so they are gone when the window closes. Turned off, nothing is injected into pages, nothing is offered or filled, and passkeys are off — saved logins can still be managed, exported and imported.",
+	"configuration.logins.offerToSave.description": "After a sign-in that went through, offer to save the login, or to update a saved password that changed. The offer is a status bar item; nothing covers the page.",
+	"configuration.logins.showSuggestions.description": "Show a status bar item while the page in front of you has a sign-in form and a login is saved for it. `Cmd+Shift+L` / `Ctrl+Shift+L` fills either way.",
+	"configuration.logins.autofillOnPageLoad.description": "Fill a sign-in form as soon as it appears, when exactly one login is saved for that exact address and the fields are empty. Off by default: a page then receives your password without you asking.",
+	"configuration.passkeys.enabled.description": "Sign in with passkeys stored in AI Browser, and save new ones a site creates. Every passkey ceremony in the page asks you first, and the tab's own authenticators (a security key, a phone) are reached by choosing \"Use a security key or another device\" in that prompt. A frame from another site, such as an embedded payment confirmation or sign-in widget, is not reached: its ceremony gets no prompt and fails after its own timeout while this is on. Turning this off hands those back to the browser."
 }

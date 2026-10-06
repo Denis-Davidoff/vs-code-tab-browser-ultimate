@@ -137,6 +137,16 @@ suite('writeFileAtomic', () => {
 		assert.strictEqual(await modeOf(fresh), 0o600);
 	});
 
+	test('a file written for its contents gets the new mode even over an existing one', { skip: !posix }, async () => {
+		const dir = await scratch();
+		const existing = path.join(dir, 'passwords.csv');
+		await fs.writeFile(existing, 'old');
+		await fs.chmod(existing, 0o644);
+		await writeFileAtomic(existing, 'secret', 0o600, false);
+		assert.strictEqual(await modeOf(existing), 0o600);
+		assert.strictEqual(await fs.readFile(existing, 'utf8'), 'secret');
+	});
+
 	// A link to a config that does not exist yet is how a dotfiles repo is
 	// wired in before first use; `realpath` fails on it, and the fallback
 	// replaced the link with a regular file.

@@ -25,6 +25,7 @@ import {
 import { confirm, refuse } from './notify';
 import { registerStatusBar } from './statusBar';
 import { registerUpdateCheck } from './updateCheck';
+import { registerLogins } from './logins';
 
 declare class URL {
 	constructor(input: string, base?: string | URL);
@@ -426,6 +427,11 @@ export function activate(context: vscode.ExtensionContext) {
 	// Nothing updates a hand-installed VSIX, so the only way a release is ever
 	// heard about is if the extension says so itself.
 	registerUpdateCheck(context);
+
+	// Saved logins and passkeys. Independent of the MCP controller on purpose:
+	// it holds CDP sessions of its own, and nothing an assistant can call
+	// reaches the vault.
+	registerLogins(context);
 
 }
 
