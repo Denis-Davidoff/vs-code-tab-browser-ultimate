@@ -11,6 +11,9 @@
   only, while the others stay hidden from it.
 - **A password manager for sites:** it offers to save a login after a sign-in that worked and
   fills it back, with passkeys too, all kept in VS Code's secret storage.
+- **Translate, modify and restore content on the page:** your assistant rewrites all of its
+  text in place — translate it, stress-test the layout with long labels, try new copy, or mask
+  personal data before a screenshot. Only the open page changes; a reload restores it.
 
 ## Which editors this works on
 
@@ -104,9 +107,13 @@ the editor: the page you are looking at is the page your agent reads and drives.
 - 🔌 **An MCP server, with nothing to install.** No package, no separate process to babysit: the
   extension starts a local server on activation, and one command configures Claude Code, Codex
   or VS Code's own chat to use it.
-- 🤖 **Then the agent drives the page itself.** Fourteen tools: snapshot what is clickable, read
+- 🤖 **Then the agent drives the page itself.** Seventeen tools: snapshot what is clickable, read
   the html or the text, inspect an element, click, fill fields, wait for a render, screenshot,
   navigate — then read the console to see what its own change actually did.
+- 🌐 **Translate a page with your own assistant.** Pick a language, paste the prompt it copies into
+  Claude Code, Codex or any agent connected to the MCP server, and the page's text is replaced in
+  place — no translation service, and text the page re-renders keeps its translation; new text
+  needs another run.
 - 👀 **In your session, not a fresh one.** Same cookies, same dev server, same logged-in state,
   already past the auth wall you passed this morning. You watch every step happen in the tab and
   can take the mouse back at any point.
@@ -160,6 +167,7 @@ The menu, in order:
 | Copy Element XPath | `//*[@id="main"]/span`, or `/html/body/ul/li[2]` when nothing stable can anchor it |
 | Copy Screenshot (Visible Area) | a PNG of what is on screen, on the clipboard |
 | Copy Screenshot (Full Page) | the whole scrollable page, truncated past 16384 device pixels |
+| Translate Page… | asks for a language and copies a prompt to paste into your assistant, which translates the page in place — [CLAUDE.md](CLAUDE.md#translating-a-page-through-an-assistant) |
 | Claude Code ▸ | a submenu: the same four picks handed to the Claude Code chat, plus Connect and Share Tab |
 | Codex ▸ | the same, for Codex |
 | Check Connection | the mcp server, [CLAUDE.md](CLAUDE.md#mcp-the-browser-exposed-to-claude-code-codex-and-vs-code-chat) |
@@ -167,7 +175,7 @@ The menu, in order:
 | Share Tab with All Assistants / Stop Sharing Tab | [CLAUDE.md](CLAUDE.md#mcp-the-browser-exposed-to-claude-code-codex-and-vs-code-chat) |
 
 Everything belonging to one assistant lives in that assistant's submenu, which is what keeps the
-top level at fifteen rows. The four **Add** entries there appear only for an assistant whose
+top level at sixteen rows. The four **Add** entries there appear only for an assistant whose
 extension is actually installed; **Connect** and **Share Tab** are always there, because an
 assistant driven from a terminal through `.mcp.json` needs them and has no extension to detect.
 The menu is attached to the browser tab — from anywhere else, use the command palette.

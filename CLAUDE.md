@@ -178,6 +178,9 @@ Compiled with `tsc`, **no bundling**. `main: ./out/extension`.
 - [src/vaultData.ts](src/vaultData.ts) — the vault's shape, origin matching, save-or-update, merging (leaf, under test)
 - [src/vaultSeal.ts](src/vaultSeal.ts) — the encrypted export: scrypt and AES-256-GCM (leaf, under test)
 - [src/loginCsv.ts](src/loginCsv.ts) — CSV from and to Chrome, Firefox, Safari, Bitwarden, 1Password (leaf, under test)
+- [src/translate.ts](src/translate.ts) — Translate Page: the tab, the language picker, the prompt on the clipboard
+- [src/translateText.ts](src/translateText.ts) — languages, the prompt, checks on what the assistant writes back (leaf, under test)
+- [src/translateScript.ts](src/translateScript.ts) — the page-side translator behind `browser_text_segments` / `browser_replace_text`
 
 **There is only ever one panel.** `AIBrowserManager._activeView` is a single slot: a repeat
 `show()` reuses the existing panel rather than creating a second one. If multiple tabs are ever
@@ -694,8 +697,13 @@ Every case above is in [src/argvJson.test.ts](src/argvJson.test.ts).
 **`$(globe) AI Browser` is permanent and opens a QuickPick.** It is not decoration: the dropdown
 on the browser tab is gated on `activeEditor == 'workbench.editor.browser'`, so before this the
 MCP commands had no home outside the command palette — the limitation recorded under
-[The dropdown on the browser tab](#the-dropdown-on-the-browser-tab). The menu holds Open URL /
-Open File, the three assistant commands, Settings, and the enable entry while it is relevant.
+[The dropdown on the browser tab](#the-dropdown-on-the-browser-tab). The menu holds, in order:
+*Open* (Open URL / Open File), *Page* (Translate page…, only while any browser tab is open — not
+gated on focus: the row names the tab the command will take, and the command asks only when none
+can be told apart), *Setup* (the enable entry
+while it is relevant), *Assistants*, *Logins and passkeys*, *Shared tabs*, then Settings. The
+dropdown carries the same Translate entry as `2_translate`; the two are one list to a user, so a
+change to one is a change to both.
 
 It deliberately **does not mirror the tab's dropdown.** The element and screenshot commands are
 already one click away whenever a tab is focused, and a second copy here would be a longer menu
@@ -917,7 +925,8 @@ so the report went to the clipboard"). Each reports that the thing the user aske
 happen, and each is rare; a paused page is an acceptable price for not losing that. The modal in
 `enableBrowserApi` is the same call — it asks a question, and blocking is the point.
 
-**The paste modal after Connect is the one success that interrupts, and it is modal on purpose.**
+**The paste modal after Connect is a success that interrupts, and it is modal on purpose.** Translate
+Page's "the prompt is on your clipboard" is the other, for the same reason.
 Asked for explicitly: once the file is written and the prompt copied, the paste is the one step
 left, and a status bar line was too easy to miss — the setup looked finished with nothing
 checked. `askToPaste` in [src/mcpSetup.ts](src/mcpSetup.ts) shows "Paste into the Claude Code /
@@ -1018,6 +1027,8 @@ Copy Element / CSS Path / CSS Path + Location / Element XPath   1_copy@1..4
 ─────
 Copy Screenshot (Visible Area) / (Full Page)                    2_shot@1..2
 ─────
+Translate Page…                                                 2_translate@1
+─────
 Claude Code ▸                                                   3_assistant@1
     Add Element / CSS Path / CSS Path + Location / XPath        1_add@1..4   when <a>Installed
     ─────
@@ -1035,7 +1046,7 @@ Share Tab with All Assistants                                   4_share@1
 Stop Sharing Tab                                                4_share@2   when tabShared
 ```
 
-That is fifteen rows. The menu had eighteen before the submenus, and a flat one would have
+That is sixteen rows. The menu had eighteen before the submenus, and a flat one would have
 had twenty-one once the fourth element kind was added. The `group` prefixes put the
 separators in; ordering comes from the `@n` suffix, not from the position in the
 `contributes.menus` array —
@@ -2172,7 +2183,8 @@ the one last used, else the most recently opened.**
 **`browser_tabs` and `browser_select_tab` are what make more than one tab workable**, and the
 first thing to know is that **the ids are ours.** `BrowserTab` in the proposal carries `url`,
 `title`, `icon`, `startCDPSession()` and `close()` — no identity at all, and the extension host
-keeps its own id private. So `_tabIds` mints `tab-1`, `tab-2`, … keyed on the tab *object*,
+keeps its own id private. So `_tabIds` mints `tab-<rnd>-1`, `tab-<rnd>-2`, … (a few random
+characters per window, see #298; examples below drop them) keyed on the tab *object*,
 which works only because that object is stable for the life of the tab (the host builds `value`
 once and `update()` mutates fields in place). They are per window and per session, hence the
 tool description telling a model to list before it selects: an id from an earlier conversation
@@ -2845,7 +2857,7 @@ which the rest of the report is read as Markdown.
 
 Two dropdown entries — visible area and full page — in a group of their own (`2_shot`), which
 is what puts a separator around them. Group names sort alphabetically, so the numeric prefixes
-(`0_start`, `1_copy`, `2_shot`, `3_assistant`, `4_share` at the top level, `1_add` and `2_mcp` inside each
+(`0_start`, `1_copy`, `2_shot`, `2_translate`, `3_assistant`, `4_share` at the top level, `1_add` and `2_mcp` inside each
 assistant's submenu) are the running order of the menu — see
 [the dropdown](#the-dropdown-on-the-browser-tab) for the whole tree.
 
@@ -3064,6 +3076,186 @@ together, so it is recorded rather than done.
 
 **Plain-text hand-over** — `claude-vscode.editor.open(undefined, prompt)` opens a new Claude Code
 conversation with a prompt, but Codex has no equivalent, so reports go as files for both.
+
+## Translating a page through an assistant
+
+`Translate Page…` sits in the browser tab's dropdown (`2_translate`) and in the status bar menu
+under *Page* while any browser tab is open. It asks for a language, puts a prompt on the
+clipboard, and says so in a modal; the user pastes the prompt into whichever assistant has the
+MCP server, and the assistant translates through three tools — `browser_text_segments`,
+`browser_replace_text`, `browser_restore_text`. The assistant *is* the translator: there is no
+translation service and nothing to configure. The same three tools serve any other bulk rewrite
+an assistant is asked for — new copy, long labels for a layout check, masked data before a
+screenshot — and the README says so; only translation has a ready-made prompt.
+
+**It runs inside `McpLifecycle.withServer` and refuses a remote window**, the same two gates as
+Connect: with the server off, failed or starting, and in a window whose folder is remote from this
+extension host (#225), the prompt could only produce "I have no ai-browser tools".
+
+**Why a prompt on the clipboard, and not a button that just translates.** An MCP server cannot
+start work in a client: tools are called by the model. The one server-to-client request that asks
+a model for text, `sampling/createMessage`, needs a stream back to the client, and this server is
+POST-only with no SSE (see [Why there is no SDK](#why-there-is-no-sdk)); nor does every assistant
+answer it. The paste is the step a user takes anyway to talk to an assistant. Electron also ships
+no browser translator of its own to fall back on.
+
+**The confirmation is a modal, like `askToPaste` after Connect, and asked for the same way** — a
+toast would stay up over the page and pause it
+([A notification pauses the built-in browser](#a-notification-pauses-the-built-in-browser)),
+while a modal goes with the one click the user makes anyway. It names the page and the language.
+
+**Which tab.** `BrowserController.userTab`: the focused tab, else the one the user last had in
+front of them while it is still open, else the only one; only with several open and none ever
+focused does a picker ask. "Last had in front" is `_userFocus`, kept by
+`onDidChangeActiveBrowserTab` — **not `_lastTab`**, which is written only when a tool resolves a tab
+and so can name a page the user left long ago, or one its last-resort branch picked with nobody
+looking. The same rule as `LoginWatcher.userTab` (#259), and on the same condition that made it
+acceptable there: **the choice is named before anything happens** — in the status bar row, in the
+language picker's title and in the modal — so it is never a silent guess.
+
+**The prompt names the tab by our id, and the tools take it per call** (`tabId` on all three).
+By the time the prompt is pasted focus is in the assistant's chat, so "whichever tab is in front
+of the user" may be another page. The first version told the model to `browser_select_tab` it,
+and that pin outlives the request: the assistant stopped following the user for the rest of its
+session because of one translation. `_withNamedTab` acts on the named tab for that call only. A
+share still outranks it — an assistant given one tab is refused another, in words that say so —
+and the prompt says to report a tab refusal and stop rather than carry on with whatever tab the
+tools would otherwise use. **Tab ids carry a few random characters per window** (`tab-k3f-2`):
+counted from 1 alone, `tab-1` meant another page after a reload and in every other window, so a
+prompt pasted late or into another window's assistant translated some other open tab, and the
+"closed or reloaded" refusal could not fire. `tabId` and `language` are read with
+`textArgument`, so a wrong type is refused rather than read as absent (#210) — absent means "the
+usual tab", which is exactly the wrong page.
+
+**Which language.** A QuickPick ordered by `orderLanguages`: the last three choices
+(`aiBrowser.translate.recentLanguages` in `globalState`), then VS Code's own display language, then
+two dozen common ones, then *Other language…*. **The last choice comes before the editor
+language on purpose** — many people run VS Code in English whatever they read in, so the editor
+language first proposes translating an English page into English. *Other* is free text, since the
+model understands any spelling of a language name; it has `ignoreFocusOut` and refuses an empty
+value (breaks-silently #79, #80), and refuses line breaks, backticks and brackets, because the
+name is written into the prompt. A listed language carries its BCP 47 code into the prompt; a
+typed one asks the model for the code. **`language` is required on every
+`browser_text_segments` call**, and a different one from the page's current translation puts the
+page back first — otherwise the old dictionary answers for every string and a second language
+finds nothing to do. It was optional once, and a run made without it could never notice the
+language changing.
+
+**The prompt** (`translationPrompt`) is one short paragraph of setup and three numbered steps,
+and every clause answers a failure recorded elsewhere: tools named by suffix with a prefix
+expected (#144); the page title through `plainInPrompt` (#154) and `pageTitle`, which drops the
+` (<url>)` the host appends to `BrowserTab.title` (#147) — without it the address was printed
+twice; `segments: []` for a batch with nothing to translate (see below); page text declared data,
+not instructions; "do not add or edit any MCP configuration" (#13); and a one-line reply, so the
+chat is not filled with the translation the page already shows.
+
+### The page side
+
+[src/translateScript.ts](src/translateScript.ts) is an expression that installs the translator on
+`window[Symbol.for('aiBrowser.translate.v4')]` on first use and returns it; every tool call is
+one `Runtime.evaluate` of `<source>.segments(…)` / `.replace(…)` / `.restore()`. The version in
+the key moves whenever the page API changes shape, so a page still holding an older build's
+translator gets a fresh one rather than a call it does not understand. It runs in the page's own
+world, like every other tool: the page can see and break it — spoil its own translation, or, like
+any page against any tool here, stall the evaluation.
+
+- **A segment is a distinct string, not a node.** Twenty "Cancel" buttons are one segment,
+  translated once and written into all twenty, and into the twenty-first a list renders later.
+  Whitespace inside is collapsed for the key and the node's own leading and trailing whitespace
+  is kept around the translation — **except where the page lays text out with `white-space: pre`,
+  `pre-wrap`, `pre-line` or `break-spaces`**, where line breaks stay in the key, so the model sees
+  them and the page keeps them.
+- **Only `Text.data` and attribute values are written, never the DOM's shape.** Google Translate
+  wraps text in `<font>` elements, and React apps then fail with `Failed to execute
+  'removeChild'`, because React holds references to its own text nodes. Writing `data` leaves
+  every node where React put it (#290).
+- **The observer re-applies the dictionary, and gives up on a node the page keeps reverting.** A
+  page with its own MutationObserver that undoes outside edits — tamper protection, a typography
+  fixer — and ours rewrote each other in microtasks for ever, freezing the tab and every later
+  tool call to it (#300). A node rewritten more than three times in a second is left as the page
+  wants it (`givenUp`). And a change equal to our text once whitespace is collapsed — a page that
+  turns spaces into nbsp after us — is adopted as ours rather than read as a revert.
+- **Every write re-checks that the node may be written, at the moment of writing, and every
+  control of that is observed.** What was eligible when a batch was handed out can stop being so
+  before its answer arrives (#296). The observer watches `contenteditable`, `translate`, a
+  `notranslate` class (by its old value, so ordinary class churn costs nothing) and an option's
+  `value`: a subtree that stops being writable is **put back on the spot** — a heading made
+  editable must not hand our translation to the editor's save — and one that becomes writable
+  gets the existing dictionary at once and its new strings in the next batch (#301). Watching
+  only the four translated attributes left both directions unnoticed.
+- **The index is rebuilt, never appended to.** The first batch walks the page and indexes every
+  string with the nodes carrying it (`WeakRef`s); later batches read it, and a write touches only
+  the nodes of the strings it accepted. For a string with no translation the observer only raises
+  a flag, and the next batch walks again (#297). Exclusion facts (`verbatim`, `refused`, `editor`,
+  line-keeping) are cached for every element on the way up, for one operation at a time.
+  **`observedRoots` is a `WeakSet`**: as a `Set` it held every shadow root a component page ever
+  discarded, 12 009 DOM nodes against 9 after five rounds of 400 rows (#302).
+- **A batch is settled by the write that answers it, not by being handed out.** The loop is "ask,
+  translate, write, ask again". A batch nobody answered is offered again; once a write answers any
+  id of the batch, the ids it left out count as deliberately untranslated (`skipped`) (#292).
+  **An empty `segments` answers a batch too** — a page already in the target language, a batch of
+  brand names (#295). The default budget is 8 000 characters — Claude Code refuses a tool result
+  past 25 000 tokens, and a CJK character is a token or more.
+- **Text that keeps changing is not offered.** An element the observer has seen show a third
+  untranslated string — "Updated 4 seconds ago", a ticker, a chat — is live text, counted as
+  `changing` and left alone. Offering each new value made the prompt's "until nothing is left"
+  loop endless on any page with a clock on it, and grew every map by one entry a round (#303).
+- **One string longer than `maxSingleSegment` (12 000) is not offered** and is counted as
+  `tooLong`; `maxReplacementLength` is 30 000, room for its translation to grow.
+- **A correction is applied.** Sending a new translation for a segment already translated walks
+  the page, so every node showing the old translation takes the new one.
+- **A translation is recognised wherever it turns up** (`reverse`, translation → source): a
+  carousel's clone of a translated slide carries our text without our record, and is ours rather
+  than new source text. **Unless that text is itself a source string of the page** (`isSource`:
+  handed out, translated or indexed). Masking "Alice Smith" as "Bob Jones" on a page that also
+  shows "Bob Jones" left the real one recognised as ours: answered, never written, never offered
+  again, and `restore` turned it into "Alice Smith" (#304). A copy of our text that equals a
+  source string is read as that source — the cheap direction.
+- **Each start-over is a new document id.** A different target language, or `restore`, puts the
+  page back and bumps the generation in `documentId`, so an answer still on its way for the
+  previous run is refused (#299); an answer naming a different language from the current run is
+  refused too. A reload or navigation makes a new translator altogether.
+- **What is never translated**: `script`/`style`/`template`/iframes/canvas/math subtrees; text in
+  `code`, `pre`, `kbd`, `samp`, `var` and `textarea`; **anything inside an editing host, text and
+  attributes alike** — found by walking up for `contenteditable` other than `false`, so the
+  `contenteditable="false"` islands editors use for mentions and embeds are inside it too
+  (`isContentEditable` is false there, and checking it alone translated a mention chip into the
+  HTML the editor saves, #305), and everything while `document.designMode` is on; anything under
+  `translate="no"` or `.notranslate`, the keyword compared without case (the nearest `translate`
+  attribute wins, so `yes` inside `no` is translated); strings with no letter in them; comments.
+  **Tags are compared by `localName`, upper-cased** (#293). **And nothing a form submits**: input
+  values are never read, and text anywhere inside an `<option>` with no `value` is skipped (#291).
+  Attributes translated are `placeholder`, `title`, `alt` and `aria-label`.
+- **`<html lang>` is set to the target language** and put back by `restore`; `pageLanguage` in
+  the segments result reports the page's own, not ours.
+- **`restore` puts back every node carrying our record, whatever it is now** — an option that lost
+  its value, an element made editable or put under `designMode` without a mutation to tell us —
+  since the record proves we wrote it. Checking eligibility first skipped exactly those, and the
+  translation stayed in what the form or editor submits (#306). Copies of our text with no record
+  are recognised only where we may write. It walks the page rather than keeping a list of what it
+  wrote.
+
+Measured against Chrome 153 headless over CDP with fixture pages: every inclusion and exclusion
+above (mention chips in an editor among them); an unanswered batch offered again; a left-out
+segment and an empty answer both settling; a delayed write refused for an option that lost its
+value and a heading made editable; those two put back on the spot, and translated again when the
+attribute goes; `translate="no"` removed bringing existing translations and new segments; a
+correction; a pre-wrap block keeping its break; a cloned slide; a reinserted node; no index growth
+over 5 000 page updates; discarded shadow roots collected; a page reverting our edits settling
+after 4 reverts with the tab responsive, an nbsp normaliser after 1; a live clock ending the loop;
+masking with a translation equal to another source string; a second language putting the page
+back; late and wrong-language answers refused; `restore` after `designMode` putting every node and
+`lang` back. Worth redoing that way after touching the script; there is no DOM under `npm test`.
+
+**Known limits, not handled:** inline markup splits a sentence into segments
+(`Sign in to your <b>account</b> now.` is three), so the model translates fragments in document
+order rather than whole sentences — placeholders for inline tags, as CAT tools do, would fix it
+and need the translation split back across nodes. A node detached while `restore` runs and put
+back afterwards keeps its translation, since the observer is gone by then. A shadow root a custom
+element attaches after the first walk is not seen until something under it changes. A node the
+page legitimately rewrites more than three times a second with strings we have translations for
+is given up on too. Same-origin iframes, cross-origin iframes (another CDP target) and closed
+shadow roots are not reached. Text in images and canvas is not text.
 
 ## Saved logins and passkeys
 
@@ -4838,6 +5030,58 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
     out-of-process frames too, the gate never reaches them, so a cross-site frame's ceremony
     meets the empty authenticator and times out. Not fixed — documented in the setting and under
     [Passkeys](#passkeys-a-virtual-authenticator-that-holds-nothing); attaching to OOPIFs is the fix.
+290. **Translating a page by restructuring its DOM** → wrapping text in elements, as Google
+    Translate does with `<font>`, makes React fail with `Failed to execute 'removeChild'`, since
+    React holds its own text nodes. Write `Text.data` and attribute values only.
+291. **Translating text a form submits** → a submit button's `value` and an `<option>` with no
+    `value` attribute (whose text is its value) are what the server receives; translating them
+    changes the request. The translator never reads input values and skips text anywhere inside
+    such an option — checking only the text's immediate parent let `<option><span>` through.
+292. **Marking work done when it is handed out** → a tool result can be lost on the way (refused
+    for size, timed out, the turn ended), and every string in it was then never offered again,
+    with `remaining: 0` on a half-translated page. Settle a batch when a write answers it.
+293. **Comparing `tagName` with upper-case HTML names** → SVG and MathML elements report it in
+    lower case, so `<svg><style>` passed as text. Compare `localName.toUpperCase()`.
+294. **Pinning a tab for a one-off request** → `browser_select_tab` outlives the request, so a
+    translation prompt left the assistant off the user's tab for the rest of its session. Name
+    the tab per call (`tabId`) instead.
+295. **A loop whose exit needs an answer the API refuses** → the prompt said to leave out what
+    needs no translation and to repeat until no segments came back, and an empty answer was
+    refused — so a batch with nothing to translate was offered for ever. Accept `segments: []`.
+296. **Checking eligibility when a batch is handed out and not when it is written** → the answer
+    arrives later, and in between an option can lose its `value` or an element become editable.
+    Ask at the moment of writing.
+297. **An index the observer appends to** → it grows for as long as the page renders untranslated
+    text, and de-duplication markers that outlive their entries hide a node put back into the
+    page. Rebuild from a walk when the observer flags a change.
+298. **Ids that are unique per window session only** → `tab-1` after a reload, or in another
+    window, names a different page, so a prompt pasted late acts on the wrong tab instead of being
+    refused. Put something random in the id.
+299. **One document id across start-overs** → an answer for the previous language, still on its
+    way, was written over the page after it had been put back for a new one, and the new run then
+    found nothing to do. Renumber the document on every restore.
+300. **Two observers that each undo the other's edits** → a page reverting outside changes and a
+     translator re-applying its own wrote back and forth in microtasks for ever, freezing the tab
+     and every tool call to it. Bound how often one node is re-applied, and treat a change equal
+     to our text modulo whitespace as ours.
+301. **Observing the attributes you write and not the ones that decide whether you may** →
+     `contenteditable`, `translate`, a `notranslate` class and an option's `value` changed with no
+     record, so a node that became editable kept our text for its editor to save, and one that
+     became translatable was never offered.
+302. **A strong `Set` of observed shadow roots** → every root a component page discarded stayed
+     alive with its subtree. Use a `WeakSet`.
+303. **Offering text that changes every second** → a clock or a ticker produced a new segment each
+     round, so "repeat until nothing is left" never ended. Count an element that keeps changing as
+     live text and leave it.
+304. **A reverse map that overrides the page's own strings** → a translation equal to another
+     source string hid that string: accepted, never written, never offered, and restored into the
+     wrong text. A known source string is a source.
+305. **`isContentEditable` as "inside an editor"** → it is false inside the `contenteditable="false"`
+     islands editors render mentions in, which are still part of the saved HTML. Walk up for the
+     editing host.
+306. **Restoring only what is still eligible** → the nodes that stopped being eligible are exactly
+     the ones whose translation now sits in what a form or an editor submits. A record of our write
+     is reason enough to put it back.
 
 ## Special cases and non-obvious decisions
 

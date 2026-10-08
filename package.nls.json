@@ -30,6 +30,7 @@
 	"command.addXPathToCodex.title": "Add XPath to Codex",
 	"command.copyScreenshot.title": "Copy Screenshot (Visible Area)",
 	"command.copyFullScreenshot.title": "Copy Screenshot (Full Page)",
+	"command.translatePage.title": "Translate Page…",
 	"command.shareTab.title": "Share Tab with All Assistants",
 	"command.stopSharingTab.title": "Stop Sharing Tab",
 	"command.shareTabWithClaudeCode.title": "Share Tab with Claude Code",

@@ -17,6 +17,8 @@ import {
 	type CallerIdentity, type ShareTarget,
 } from './shareRegistry';
 import type { ClientKind } from './mcpProtocol';
+import { translatorSource } from './translateScript';
+import { isLanguageCode, maxSingleSegment, type Replacement } from './translateText';
 
 /**
  * What the browser can do, expressed without transport or CDP detail.
@@ -277,6 +279,13 @@ function refuseValueProbe(selector: string | undefined): void {
 	if (selector && comparesFieldValue(selector)) {
 		throw new Error('Selectors that compare an element\'s value attribute are not accepted: they can read what a '
 			+ 'field holds, passwords included. Select the element by id, name, type, text or position instead.');
+	}
+}
+
+/** Refuses a `language` argument that is not a BCP 47 tag, before it reaches the page. */
+function requireLanguageCode(language: string | undefined): void {
+	if (language !== undefined && !isLanguageCode(language)) {
+		throw new Error(`\`language\` must be a BCP 47 code such as "ru" or "pt-BR", not ${JSON.stringify(language)}.`);
 	}
 }
 
@@ -634,6 +643,16 @@ export class BrowserController implements vscode.Disposable {
 	private readonly _tabWatch: vscode.Disposable | undefined;
 
 	/**
+	 * The browser tab the user last had in front of them — {@link userTab}.
+	 *
+	 * Not `_lastTab`: that one is written only when a tool resolves a tab, so
+	 * it can name a page the user left long ago, or one its last-resort branch
+	 * picked without anybody looking at it. This follows the focus itself.
+	 */
+	private _userFocus: vscode.BrowserTab | undefined;
+	private readonly _focusWatch: vscode.Disposable | undefined;
+
+	/**
 	 * Set by {@link dispose}, and checked by everything that could still be in
 	 * flight at that moment.
 	 *
@@ -652,6 +671,12 @@ export class BrowserController implements vscode.Disposable {
 		try {
 			if (isBrowserApiGranted()) {
 				this._tabWatch = vscode.window.onDidCloseBrowserTab(tab => this._loseTab(tab));
+				this._userFocus = vscode.window.activeBrowserTab;
+				this._focusWatch = vscode.window.onDidChangeActiveBrowserTab(tab => {
+					if (tab) {
+						this._userFocus = tab;
+					}
+				});
 			}
 		} catch {
 			// No browser API here; there is nothing to share in the first place.
@@ -667,6 +692,14 @@ export class BrowserController implements vscode.Disposable {
 	 */
 	private readonly _tabIds = new Map<vscode.BrowserTab, string>();
 	private _nextTabId = 1;
+	/**
+	 * A few random characters in every id this window hands out (`tab-k3f-2`).
+	 * Counting from 1 alone made `tab-1` mean a different page after a window
+	 * reload, and in every other window — so an id written into a prompt and
+	 * pasted later, or into another window's assistant, named some other open
+	 * tab rather than none, and the refusal for a closed tab could not fire.
+	 */
+	private readonly _tabIdPrefix = Math.random().toString(36).slice(2, 5);
 
 	/**
 	 * The element last picked, **per tab**.
@@ -788,11 +821,42 @@ export class BrowserController implements vscode.Disposable {
 		return isBrowserApiGranted() && (vscode.window.browserTabs ?? []).length > 0;
 	}
 
+	/**
+	 * The tab a command the *user* ran is about, when one is not necessarily
+	 * focused — the status bar menu is clicked with focus wherever it was.
+	 *
+	 * The focused tab, else the one the user last had in front of them while it
+	 * is still open, else the only one — the rule `LoginWatcher.userTab` follows
+	 * for the same reason (#259). Never an assistant's pin or share: this is the
+	 * person's own gesture. `undefined` when more than one tab is open and none
+	 * can be told apart, so the caller asks rather than guesses.
+	 */
+	public get userTab(): vscode.BrowserTab | undefined {
+		if (!isBrowserApiGranted()) {
+			return undefined;
+		}
+		const open = vscode.window.browserTabs ?? [];
+		const focused = vscode.window.activeBrowserTab;
+		if (focused) {
+			this._userFocus = focused;
+			return focused;
+		}
+		if (this._userFocus && open.includes(this._userFocus)) {
+			return this._userFocus;
+		}
+		return open.length === 1 ? open[0] : undefined;
+	}
+
+	/** Our id for a tab, the one `browser_tabs` lists and `browser_select_tab` takes. */
+	public tabIdOf(tab: vscode.BrowserTab): string {
+		return this._idOf(tab);
+	}
+
 	/** Gives every open tab an id and forgets the ones that have closed. */
 	private _identify(open: readonly vscode.BrowserTab[]): void {
 		for (const tab of open) {
 			if (!this._tabIds.has(tab)) {
-				this._tabIds.set(tab, `tab-${this._nextTabId++}`);
+				this._tabIds.set(tab, `tab-${this._tabIdPrefix}-${this._nextTabId++}`);
 			}
 		}
 		for (const known of [...this._tabIds.keys()]) {
@@ -2118,6 +2182,118 @@ export class BrowserController implements vscode.Disposable {
 		});
 	}
 
+	/**
+	 * The next batch of the page's text to translate — `browser_text_segments`.
+	 *
+	 * The page half is `translateScript.ts`, which says why a segment is a
+	 * distinct string rather than a node, and how a batch is settled.
+	 */
+	public async textSegments(
+		maxChars: number,
+		language: string | undefined,
+		tabId: string | undefined,
+		caller: CallerIdentity,
+	): Promise<unknown> {
+		// Required: it is what tells a new run from the one before, and a page
+		// translated without it could never notice the language changing.
+		if (!language) {
+			throw new Error('`language` is required: the BCP 47 code of the language you translate into, such as "ru".');
+		}
+		requireLanguageCode(language);
+		return this._withNamedTab(caller, tabId, session => evaluate(session,
+			`${translatorSource}.segments(${literal(maxChars)}, ${literal(maxSingleSegment)}, ${literal(language)})`));
+	}
+
+	/**
+	 * Writes translations into the page — `browser_replace_text`.
+	 *
+	 * `segments` is checked before anything reaches the page, so a refusal is a
+	 * sentence the model reads rather than a page-side exception. The text goes
+	 * in as `Text.data` and attribute values only, never as markup, so a
+	 * translation cannot add an element or a script to the page.
+	 */
+	public async replaceText(
+		documentId: string,
+		language: string | undefined,
+		segments: readonly Replacement[],
+		tabId: string | undefined,
+		caller: CallerIdentity,
+	): Promise<unknown> {
+		if (!documentId) {
+			throw new Error('`documentId` is required: pass the one browser_text_segments returned.');
+		}
+		requireLanguageCode(language);
+		return this._withNamedTab(caller, tabId, async session => {
+			const result = await evaluate(session,
+				`${translatorSource}.replace(${literal(documentId)}, ${literal(language)}, ${literal(segments)})`);
+			const unknownIds: string[] = Array.isArray(result?.unknownIds) ? result.unknownIds : [];
+			return {
+				accepted: result?.accepted,
+				applied: result?.applied,
+				unknownIds: unknownIds.length > 0 ? unknownIds : undefined,
+				note: unknownIds.length > 0
+					? 'Some ids were never handed out on this page; only ids from browser_text_segments on the current document are accepted.'
+					: undefined,
+			};
+		});
+	}
+
+	/** Puts the page's own text back — `browser_restore_text`. A reload does the same. */
+	public async restoreText(tabId: string | undefined, caller: CallerIdentity): Promise<unknown> {
+		return this._withNamedTab(caller, tabId, session =>
+			evaluate(session, `${translatorSource}.restore()`));
+	}
+
+	/**
+	 * {@link _withSession} on a tab the call names, for this call only.
+	 *
+	 * The translation prompt names the tab the user pressed the button on, and
+	 * `browser_select_tab` would have done the same at a price: the pin outlives
+	 * the request, so the assistant stopped following the user for the rest of
+	 * its session because of one translation. A share still outranks the name —
+	 * an assistant given one tab may not act on another — and is refused in
+	 * words that say so, so the prompt's "stop when refused" has something to
+	 * stop on.
+	 */
+	private async _withNamedTab<T>(
+		caller: CallerIdentity,
+		tabId: string | undefined,
+		run: (session: TabSession, tab: vscode.BrowserTab) => Promise<T>,
+	): Promise<T> {
+		if (tabId === undefined) {
+			return this._withSession(caller, run);
+		}
+		if (!tabId) {
+			throw new Error('`tabId` is empty. Pass the tab id you were given, or leave the argument out.');
+		}
+		await this._settle();
+		requireGrant();
+		const { tab: own, paused, target } = this._resolveForCaller(caller);
+		if (paused) {
+			throw new Error(shareLostMessage(paused));
+		}
+		const open = vscode.window.browserTabs ?? [];
+		this._identify(open);
+		const tab = open.find(candidate => this._tabIds.get(candidate) === tabId);
+		if (!tab) {
+			throw new Error(`No open browser tab has the id ${tabId} — it has been closed, or the window was reloaded. `
+				+ 'Tell the user, and do not act on another tab instead.');
+		}
+		if (target && own && own !== tab) {
+			throw new Error(`The user has given you browser tab ${this._idOf(own)}, and your tools act on that tab only, `
+				+ `not on ${tabId}. Tell the user: they can give you ${tabId}, or stop sharing, from the AI Browser `
+				+ 'status bar menu.');
+		}
+		this._noteTabUse(tab, caller);
+		// Held before the open, for the reason given in `_withSession`.
+		const release = this._hold(tab);
+		try {
+			return await run(await this._sessionFor(tab), tab);
+		} finally {
+			release();
+		}
+	}
+
 	public async consoleOutput(clear: boolean, caller: CallerIdentity): Promise<unknown> {
 		return this._withSession(caller, async session => {
 			const lines = session.consoleLines.map(line => `[${line.level}] ${line.text}`);
@@ -2710,6 +2886,7 @@ export class BrowserController implements vscode.Disposable {
 		this._notifySlots();
 
 		this._tabWatch?.dispose();
+		this._focusWatch?.dispose();
 		this._onDidChangeShare.dispose();
 		for (const aborts of this._openAborts.values()) {
 			for (const abort of aborts) {

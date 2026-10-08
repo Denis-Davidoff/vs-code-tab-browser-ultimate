@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate",
 	"displayName": "AI Browser🏆 Claude + Codex",
 	"description": "Embedded browser tab with AI capabilities, Claude and Codex integration",
-	"version": "0.6.0",
+	"version": "0.6.1",
 	"enabledApiProposals": [
 		"externalUriOpener",
 		"browser"
@@ -127,7 +127,8 @@
 		"onCommand:aiBrowser.logins.saveFromPage",
 		"onCommand:aiBrowser.logins.manage",
 		"onCommand:aiBrowser.logins.import",
-		"onCommand:aiBrowser.logins.export"
+		"onCommand:aiBrowser.logins.export",
+		"onCommand:aiBrowser.translatePage"
 	],
 	"capabilities": {
 		"virtualWorkspaces": true,
@@ -298,6 +299,12 @@
 				"title": "%command.copyFullScreenshot.title%",
 				"category": "%displayName%",
 				"icon": "$(device-camera)"
+			},
+			{
+				"command": "aiBrowser.translatePage",
+				"title": "%command.translatePage.title%",
+				"category": "%displayName%",
+				"icon": "$(whole-word)"
 			},
 			{
 				"command": "aiBrowser.repeat.element",
@@ -649,6 +656,10 @@
 				{
 					"command": "aiBrowser.copyFullScreenshot",
 					"group": "2_shot@2"
+				},
+				{
+					"command": "aiBrowser.translatePage",
+					"group": "2_translate@1"
 				},
 				{
 					"submenu": "aiBrowser.claudeMenu",

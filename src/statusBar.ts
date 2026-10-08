@@ -8,6 +8,7 @@ import type { BrowserController, ShareView } from './browserController';
 import { inUseMarker, sharedMarker, stripMarker } from './shareIndicator';
 import { plainInLabel, plainInMarkdown } from './notifyText';
 import { normalizeAddress } from './webUrl';
+import { pageTitle } from './translateText';
 import {
 	browserApiState, integratedBrowserCommand, onDidChangeGrantState,
 	shouldUseIntegratedBrowser, type BrowserApiState,
@@ -246,6 +247,20 @@ async function showMenu(controller: BrowserController): Promise<void> {
 			label: vscode.l10n.t("$(file) Open File…"),
 			detail: vscode.l10n.t("Preview a local HTML file"),
 			run: () => openFile(),
+		});
+	}
+
+	// Only while a page exists to translate. Not gated on focus: the command
+	// takes the tab last in front of the user, and asks only when none can be
+	// told apart — so the row names the page it will take, when there is one.
+	if (anyTab) {
+		const tab = controller.userTab;
+		items.push({ label: vscode.l10n.t("Page"), kind: vscode.QuickPickItemKind.Separator });
+		items.push({
+			label: vscode.l10n.t("$(whole-word) Translate page…"),
+			description: tab ? plainInLabel(pageTitle(tab.title, tab.url) || tab.url) : undefined,
+			detail: vscode.l10n.t("Pick a language, then paste the copied prompt into your assistant"),
+			run: () => vscode.commands.executeCommand('aiBrowser.translatePage'),
 		});
 	}
 
