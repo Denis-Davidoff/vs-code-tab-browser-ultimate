@@ -13,6 +13,19 @@ export interface ShowOptions {
 	readonly viewColumn?: vscode.ViewColumn;
 }
 
+/**
+ * The focus indicator setting as a boolean, whatever settings.json holds.
+ *
+ * VS Code passes a wrong-typed value through with only a warning, and the
+ * webview refused a non-boolean: at load it blanked the panel, and in the
+ * change message it was dropped, leaving the panel in its old state. Anything
+ * but a boolean is the default, on — the same answer at load and on change.
+ */
+function focusLockSetting(configuration: vscode.WorkspaceConfiguration): boolean {
+	const value = configuration.get<unknown>('focusLockIndicator.enabled', true);
+	return typeof value === 'boolean' ? value : true;
+}
+
 export class AIBrowserView extends Disposable {
 
 	public static readonly viewType = 'aiBrowser.view';
@@ -96,7 +109,7 @@ export class AIBrowserView extends Disposable {
 				const configuration = vscode.workspace.getConfiguration('aiBrowser');
 				this._webviewPanel.webview.postMessage({
 					type: 'didChangeFocusLockIndicatorEnabled',
-					focusLockEnabled: configuration.get<boolean>('focusLockIndicator.enabled', true)
+					focusLockEnabled: focusLockSetting(configuration)
 				});
 			}
 		}));
@@ -143,7 +156,7 @@ export class AIBrowserView extends Disposable {
 
 				<meta id="ai-browser-settings" data-settings="${escapeAttribute(JSON.stringify({
 			url: url,
-			focusLockEnabled: configuration.get<boolean>('focusLockIndicator.enabled', true),
+			focusLockEnabled: focusLockSetting(configuration),
 			searchEngine: configuration.get<string>('searchEngine', 'google')
 		}))}">
 

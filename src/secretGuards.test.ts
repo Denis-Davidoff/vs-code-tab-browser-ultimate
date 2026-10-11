@@ -47,6 +47,27 @@ suite('comparesFieldValue', () => {
 		}
 	});
 
+	test('a type inside a functional pseudo-class pins nothing', () => {
+		// `:not([type=radio])` matches a password field; read as "a radio", these
+		// were a one-character oracle on its value.
+		for (const selector of ['input:not([type=radio])[value^="h"]', ':not([type=radio])[value^="a"]',
+			'input:is([type=radio],[type=password])[value^="a"]', 'input:where(:not([type=checkbox]))[value^=a]',
+			'input:is(:not([type=radio]))[value^=a]', 'form :not([type=radio])[value^="a"]',
+			'input:has(+ [type=radio])[value^=a]', ':is(option)[value^=a]']) {
+			assert.ok(comparesFieldValue(selector), selector);
+		}
+		// An escaped parenthesis is part of a name, not the end of the argument.
+		for (const selector of ['input:not(.a\\)[type=radio])[value^="h"]', 'input:not(.a\\29 [type=radio])[value^="h"]',
+			':not(.a\\)[type=checkbox])[value^=h]', 'input:is(.x\\,[type=radio])[value^=h]']) {
+			assert.ok(comparesFieldValue(selector), selector);
+		}
+		// What the compound itself pins still counts.
+		for (const selector of ['input[type=radio]:not(.x)[value=pro]', 'option:not([disabled])[value=us]',
+			'input:checked[type=checkbox][value=yes]']) {
+			assert.ok(!comparesFieldValue(selector), selector);
+		}
+	});
+
 	test('an input of no stated type, or a text-like type, is still refused', () => {
 		for (const selector of ['input[name=plan][value=pro]', 'input[type=text][value^=a]', '[value=x]']) {
 			assert.ok(comparesFieldValue(selector), selector);

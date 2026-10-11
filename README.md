@@ -38,6 +38,16 @@ there is not the problem, the missing API is. **Measured by reading the shipped 
 [![Step-by-step setup: install, enable the browser API, open a page, connect Claude Code or Codex](ai-browser-instruct.jpg)](https://raw.githubusercontent.com/Denis-Davidoff/vs-code-tab-browser-ultimate/main/ai-browser-instruct.jpg)
 
 ## Changelog
+
+**0.6.2** — Fixes across the board: the password manager no longer offers to save a password after
+a link or a rejected sign-in, while catching sign-in buttons in any language; `browser_wait_for`
+survives the navigation it waits for; screenshots of right-to-left pages are no longer blank; and
+Codex config repairs leave hand-written entries alone.
+
+**0.6.1** — Translate Page: pick a language and paste the prompt into Claude Code or Codex, and the
+assistant rewrites the page's text in place through three new MCP tools — which also serve any
+other bulk rewrite, from new copy to masked data before a screenshot.
+
 **0.6.0** — Saved logins and passkeys: the browser offers to save a password after a sign-in
 that worked, fills it back with `Cmd`/`Ctrl` + `Shift` + `L`, and stores passkeys — all in VS
 Code's secret storage, with encrypted export and import from Chrome, Firefox, Safari, Bitwarden

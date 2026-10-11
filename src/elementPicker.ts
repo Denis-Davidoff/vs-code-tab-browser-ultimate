@@ -6,6 +6,7 @@
 import * as vscode from 'vscode';
 import { CDPClient } from './cdp';
 import { confirm, refuse } from './notify';
+import { plainInLabel } from './notifyText';
 import { extractElementData, formatAncestor, renderElementMarkdown } from './elementContext';
 import { assistantName, handOver, type AssistantId } from './assistants';
 import { isBrowserApiGranted } from './proposedApi';
@@ -582,7 +583,9 @@ function locatorRefusal(location: { url: string | undefined; shadow: boolean }):
 	if (!isNavigable(location.url)) {
 		return vscode.l10n.t(
 			"That element is in a frame with no address of its own ({0}), so the page cannot be reopened at it. Use \"Copy Element\" instead.",
-			location.url ?? 'unknown');
+			// The frame's own address, so the page's: `about:blank#$(warning)`
+			// would draw our icon in the status bar (#258).
+			plainInLabel(location.url ?? 'unknown'));
 	}
 	return undefined;
 }
@@ -793,7 +796,11 @@ async function buildPath(
 
 async function copyToClipboard(value: string, label: string): Promise<void> {
 	await vscode.env.clipboard.writeText(value);
-	confirm(vscode.l10n.t("{0} copied: {1}", label, short(value)));
+	// The value is the page's: an XPath carries an id verbatim, and a page
+	// address keeps `$(…)` in its path. The status bar renders `$(name)` as one
+	// of our icons, so `id="$(warning) Update required"` drew our own warning
+	// sign in our own confirmation (#258).
+	confirm(vscode.l10n.t("{0} copied: {1}", label, plainInLabel(short(value))));
 }
 
 export function copyElementXPath(): Promise<void> {
@@ -916,6 +923,17 @@ async function deliverToAssistant(
 			await vscode.env.clipboard.writeText(report);
 			vscode.window.showWarningMessage(vscode.l10n.t(
 				"{0} addresses files by their path inside the workspace, and no local folder is open — the report was copied to the clipboard instead.",
+				assistantName(assistant)));
+			return;
+
+		case 'remote':
+			// The status bar, not a toast: in a remote window this is every press,
+			// not a rare fall-back, and a toast pauses the page just picked in.
+			// The Add entries are hidden there, so this is reached only through a
+			// keybinding or the palette.
+			await vscode.env.clipboard.writeText(report);
+			refuse(vscode.l10n.t(
+				"{0} runs on the remote machine and cannot open a report written on this one — it was copied to the clipboard instead.",
 				assistantName(assistant)));
 			return;
 

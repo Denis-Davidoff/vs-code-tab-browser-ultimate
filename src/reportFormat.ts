@@ -48,9 +48,20 @@ export const locationSeparator = ' → ';
  *
  * A URL-less tab (nothing has committed yet) yields the bare selector rather
  * than a dangling separator — half an answer beats a malformed one.
+ *
+ * **The selector's line-breaking characters are written as CSS escapes.**
+ * `CSS.escape` turns C0 controls into hex escapes but emits U+0080–U+009F,
+ * U+2028 and U+2029 as they are, and the clipboard copy then goes through
+ * {@link inlineCode}, whose {@link oneLine} rewrote them as the text `\u2028`.
+ * CSS does not read `\u` as an escape — it is a plain `u` — so the copied pair
+ * named another selector and resolved to nothing. `\2028 ` is the same
+ * character to `querySelector`, inside an identifier or a string alike, and
+ * leaves nothing for `oneLine` to change.
  */
 export function withLocation(path: string, url: string | undefined): string {
-	return url ? `${url}${locationSeparator}${path}` : path;
+	const selector = path.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g,
+		ch => `\\${ch.charCodeAt(0).toString(16)} `);
+	return url ? `${url}${locationSeparator}${selector}` : selector;
 }
 
 /**

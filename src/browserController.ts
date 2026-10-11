@@ -7,6 +7,7 @@ import * as vscode from 'vscode';
 import { CDPClient } from './cdp';
 import { extractElementData, renderElementMarkdown } from './elementContext';
 import { isBrowserApiGranted } from './proposedApi';
+import { generateUuid } from './uuid';
 import { legacyMarkerRemoval, stripMarker, stripMarkerFromHtml } from './shareIndicator';
 import { comparesFieldValue, isSecretField, redactSecretValues } from './secretGuards';
 import { encodeJpeg } from './jpegEncode';
@@ -363,11 +364,52 @@ function scrollPosition(metrics: any): { x: number; y: number } {
 	return { x: Math.round(x), y: Number(metrics?.cssLayoutViewport?.pageY) || 0 };
 }
 
+/**
+ * Where the visible area starts, in the coordinates a screenshot `clip` takes:
+ * from the document's top-left corner.
+ *
+ * **Not `cssVisualViewport.pageX`**, which `scrollPosition` uses because it is
+ * what `scrollTo` takes — it counts from the scroll origin, and on a
+ * right-to-left page that is the right edge. Measured in Chrome 153 on a 4000 px
+ * RTL page opened at its start: visual `pageX` 0, layout `pageX` 2720, and a
+ * clip at x 0 came back white while the page was at 2720. The model was handed
+ * a blank frame as the visible area. Layout plus the pinch-zoom offset is the
+ * document position in both directions, and equals visual `pageX` on a
+ * left-to-right page.
+ */
+function visibleOrigin(metrics: any): { x: number; y: number } {
+	const layout = metrics?.cssLayoutViewport;
+	const visual = metrics?.cssVisualViewport;
+	const at = (base: unknown, offset: unknown, fallback: unknown) =>
+		typeof base === 'number' && Number.isFinite(base)
+			? base + (Number(offset) || 0)
+			: Number(fallback) || 0;
+	return {
+		x: at(layout?.pageX, visual?.offsetX, visual?.pageX),
+		y: at(layout?.pageY, visual?.offsetY, visual?.pageY),
+	};
+}
+
 /** How long switching inspect mode off may take before the call gives up on it. */
 const inspectCleanupTimeoutMs = 2_000;
 
 /** How much longer than its page-side deadline `waitFor` waits on the host side. */
 const waitForGraceMs = 1_000;
+
+/** The page global where `waitFor` leaves the tokens of the calls that have ended. */
+const waitForCancelKey = 'aiBrowser.waitFor.cancelled';
+
+/**
+ * Whether an evaluation failed because its document went away — a navigation
+ * — rather than because of anything the page did. Measured in Chrome 153: a
+ * pending `awaitPromise` evaluate is answered "Inspected target navigated or
+ * closed" when the page navigates; the other two are what an evaluate sent
+ * while the next document is still being created can meet.
+ */
+function documentReplaced(err: unknown): boolean {
+	const message = err instanceof Error ? err.message : String(err);
+	return /Inspected target navigated or closed|Execution context was destroyed|Cannot find default execution context/i.test(message);
+}
 
 /** The longest delay `setTimeout` honours; past it Node fires after 1 ms. */
 const maxTimerMs = 2 ** 31 - 1;
@@ -2411,7 +2453,7 @@ export class BrowserController implements vscode.Disposable {
 						throw new Error('The browser reported no page size to capture');
 					}
 					const frame = planViewport({
-						x: viewport.pageX ?? 0, y: viewport.pageY ?? 0,
+						...visibleOrigin(metrics),
 						width: viewport.clientWidth, height: viewport.clientHeight,
 					}, pixelRatios(metrics));
 					const base64 = await screenshot(session, { format: 'jpeg', quality: modelJpegQuality, captureBeyondViewport: false, clip: frame.clip });
@@ -2781,10 +2823,25 @@ export class BrowserController implements vscode.Disposable {
 				if (el.value === value) {
 					return 'filled ' + tag;
 				}
+				// Emptied by a value it would not take: a number input given text,
+				// a date input given 12/31/2024. Whatever the field held before is
+				// gone, so it is put back — and the call is a refusal, not the
+				// "reformatted" success it read as when the field had held something.
+				// **Only the types the browser itself sanitises to ''.** A text box
+				// that empties itself has usually *taken* the value — a tag input
+				// turning "tag1," into a chip — and putting the old text back there
+				// undid a fill the page had accepted.
+				const sanitising = ['number', 'date', 'datetime-local', 'month', 'week', 'time'];
+				const rejected = tag === 'input' && sanitising.includes(type) && el.value === '' && value !== '';
+				if (rejected && before !== '') {
+					Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, before);
+					el.dispatchEvent(new Event('input', { bubbles: true }));
+					el.dispatchEvent(new Event('change', { bubbles: true }));
+				}
 				// The rest is worded in the extension, which knows which fields are
 				// secret: the attributes travel, and the value with them.
 				return {
-					tag, now: el.value, unchanged: el.value === before, maxLength: el.maxLength,
+					tag, now: el.value, unchanged: el.value === before, rejected, restored: rejected && before !== '', maxLength: el.maxLength,
 					attributes: { type: el.getAttribute('type') ?? '', name: el.getAttribute('name') ?? '',
 						id: el.getAttribute('id') ?? '', autocomplete: el.getAttribute('autocomplete') ?? '' },
 				};
@@ -2800,6 +2857,16 @@ export class BrowserController implements vscode.Disposable {
 			// the markup: by type alone, a toggled password field or a one-time
 			// code that rejected the value was echoed in the error.
 			const shown = isSecretField(result.attributes) ? '(a hidden value)' : JSON.stringify(result.now);
+			if (result.rejected) {
+				const type = String(result.attributes?.type ?? '').toLowerCase();
+				const format = type === 'date' ? ' A date input takes YYYY-MM-DD.'
+					: type === 'datetime-local' ? ' A datetime-local input takes YYYY-MM-DDTHH:MM.'
+						: type === 'time' ? ' A time input takes HH:MM.'
+							: type === 'number' || type === 'range' ? ' A number input takes digits only.'
+								: '';
+				throw new Error('The field rejected the value and emptied itself'
+					+ (result.restored ? '; what it held before was put back.' : '.') + format);
+			}
 			if (result.unchanged) {
 				throw new Error('The field did not take the value: it still reads ' + shown
 					+ (result.maxLength > 0 ? ' (maxlength ' + result.maxLength + ')' : '') + '.');
@@ -2824,21 +2891,57 @@ export class BrowserController implements vscode.Disposable {
 			+ (text ? JSON.stringify(text) : '');
 
 		return this._withSession(caller, async session => {
-			const inPage = evaluate(session, `(async () => {
+			const hostDeadline = Date.now() + Math.max(0, timeoutMs);
+			// Each call has a token the page loop checks between polls, so a call
+			// that is cancelled or times out here stops polling there too. Settling
+			// only the host side left the loop reading `innerText` every 100 ms for
+			// the rest of a deadline the model chose.
+			const token = generateUuid();
+			const cancelled = `(globalThis[Symbol.for(${literal(waitForCancelKey)})] ??= new Set())`;
+			const loop = (remainingMs: number) => `(async () => {
+				const cancelled = ${cancelled};
 				const sel = ${literal(selector)};
 				const needle = ${literal(text)};
-				const deadline = Date.now() + ${Math.max(0, timeoutMs)};
+				const token = ${literal(token)};
+				const deadline = Date.now() + ${remainingMs};
 				const found = () => {
 					if (sel && !document.querySelector(sel)) { return false; }
-					if (needle && !(document.body.innerText || '').includes(needle)) { return false; }
+					// No body yet is "not yet": the retry below lands in a new
+					// document as soon as it exists, often before its body is parsed.
+					if (needle && !(document.body?.innerText ?? '').includes(needle)) { return false; }
 					return true;
 				};
 				while (Date.now() < deadline) {
+					if (cancelled.delete(token)) { return 'cancelled'; }
 					if (found()) { return 'found'; }
 					await new Promise(r => setTimeout(r, 100));
 				}
 				throw new Error('Timed out waiting for ' + (sel || '') + (sel && needle ? ' and ' : '') + (needle ? JSON.stringify(needle) : ''));
-			})()`);
+			})()`;
+			let stopped = false;
+			// **A navigation during the wait is not a failure.** The loop runs in a
+			// document, and a click that navigates — the commonest reason to wait
+			// at all — destroys that document's context, which CDP answers with a
+			// protocol error ("Inspected target navigated or closed"). That went to
+			// the model as the tool's result. The loop is started again in the new
+			// document for what is left of the deadline.
+			const inPage = (async () => {
+				for (;;) {
+					try {
+						return await evaluate(session, loop(Math.max(0, hostDeadline - Date.now())));
+					} catch (err) {
+						if (stopped || !documentReplaced(err) || Date.now() >= hostDeadline) {
+							throw err;
+						}
+						await new Promise(r => setTimeout(r, 100));
+						// Asked again after the pause: a call settled during it must not
+						// start a loop nobody will stop — its stop went to the old page.
+						if (stopped) {
+							throw err;
+						}
+					}
+				}
+			})();
 			// **The deadline is kept here as well as in the page.** The loop above
 			// reads `Date.now` and sleeps on `setTimeout`, and both belong to the
 			// page: one with frozen or fake timers — mockdate, sinon, a Storybook
@@ -2846,6 +2949,12 @@ export class BrowserController implements vscode.Disposable {
 			// its hold kept the tab's session marked busy. A cancellation from the
 			// client ends the wait too. Breaks-silently #212.
 			inPage.catch(() => { /* answered below, or abandoned */ });
+			const stopInPage = () => {
+				stopped = true;
+				withTimeout(session.client.send('Runtime.evaluate', {
+					expression: `${cancelled}.add(${literal(token)}), undefined`,
+				}, session.sessionId), inspectCleanupTimeoutMs, 'stop waiting').catch(() => { /* the page is gone, or busy */ });
+			};
 			return new Promise<unknown>((resolve, reject) => {
 				const finish = () => {
 					clearTimeout(timer);
@@ -2853,10 +2962,12 @@ export class BrowserController implements vscode.Disposable {
 				};
 				const onAbort = () => {
 					finish();
+					stopInPage();
 					reject(new Error('The wait was cancelled.'));
 				};
 				const timer = setTimeout(() => {
 					finish();
+					stopInPage();
 					reject(new Error(timedOut));
 				}, Math.min(Math.max(0, timeoutMs) + waitForGraceMs, maxTimerMs));
 				if (signal?.aborted) {

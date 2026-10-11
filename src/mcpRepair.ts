@@ -233,10 +233,32 @@ export function codexOurTables(entries: readonly CodexEntry[], token: string): s
 	return entries.map(entry => entry.name).filter(name => owners.has(rootTable(name)));
 }
 
-/** `ai-browser.http_headers` -> `ai-browser`; anything else unchanged. */
+/**
+ * `ai-browser.http_headers` -> `ai-browser`; anything else unchanged.
+ *
+ * The first dot *outside quotes*: a name keeps the quotes a bare key cannot do
+ * without, so `"ai-browser.bak"` is one server, not a part of `ai-browser`.
+ *
+ * Written twice, here and in `mcpClientState.ts`, like the ownership rule it
+ * serves (see `codexOurTables`).
+ */
 function rootTable(name: string): string {
-	const dot = name.indexOf('.');
-	return dot === -1 ? name : name.slice(0, dot);
+	let quote: string | undefined;
+	for (let i = 0; i < name.length; i++) {
+		const ch = name[i];
+		if (quote) {
+			if (ch === '\\' && quote === '"') {
+				i++;
+			} else if (ch === quote) {
+				quote = undefined;
+			}
+		} else if (ch === '"' || ch === '\'') {
+			quote = ch;
+		} else if (ch === '.') {
+			return name.slice(0, i);
+		}
+	}
+	return name;
 }
 
 /* ------------------------------------------------------------- pruning the missing */
@@ -640,7 +662,9 @@ export function repairCodexToml(
 			continue;
 		}
 
-		if (entry.name.includes('.')) {
+		// A sub-table of ours, not merely a name with a dot: a quoted name such
+		// as `"ai-browser.bak"` carries one inside its quotes.
+		if (entry.name !== source) {
 			const suffix = entry.name.slice(source.length + 1);
 
 			// A header sub-table alongside an inline `http_headers` is the one
@@ -880,7 +904,11 @@ export function parseInlineTable(raw: string): Pair[] {
 	for (let i = 0; i < body.length; i++) {
 		const ch = body[i];
 		if (quote) {
-			if (ch === '\\') { i++; } else if (ch === quote) { quote = undefined; }
+			// A backslash escapes only in a basic string. In a literal one (`'C:\'`)
+			// it is just the last character, and skipping the closing quote read the
+			// rest of the table as one value: no Authorization was found, and the
+			// repair added a second one — TOML that does not parse.
+			if (ch === '\\' && quote === '"') { i++; } else if (ch === quote) { quote = undefined; }
 			continue;
 		}
 		if (ch === '"' || ch === '\'') { quote = ch; } else if (ch === '{' || ch === '[') { depth++; } else if (ch === '}' || ch === ']') { depth--; } else if (ch === ',' && depth === 0) {
@@ -898,7 +926,8 @@ function splitPair(chunk: string): Pair | undefined {
 	for (let i = 0; i < chunk.length; i++) {
 		const ch = chunk[i];
 		if (quote) {
-			if (ch === '\\') { i++; } else if (ch === quote) { quote = undefined; }
+			// Basic strings only, as in parseInlineTable.
+			if (ch === '\\' && quote === '"') { i++; } else if (ch === quote) { quote = undefined; }
 			continue;
 		}
 		if (ch === '"' || ch === '\'') {

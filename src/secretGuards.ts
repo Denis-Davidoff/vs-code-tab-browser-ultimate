@@ -83,7 +83,12 @@ export function normalizeSelector(selector: string): string {
 		}
 		if (char === '\\' && i + 1 < selector.length) {
 			const [decoded, length] = decodeEscape(selector, i);
-			out += decoded.toLowerCase();
+			// An escaped character is part of a name, never syntax: `\)` in
+			// `:not(.a\)[type=radio])` is a class named `a)`. Decoded to a real
+			// `)` it closed the `:not(` early, and the `[type=radio]` still inside
+			// it read as pinning the compound — the value oracle again. Letters
+			// decode, so `[val\75 e^=a]` is still `value`; punctuation does not.
+			out += /[\s()[\],>+~:.#*|^$="'\\/]/.test(decoded) ? '_' : decoded.toLowerCase();
 			i += length;
 			continue;
 		}
@@ -161,7 +166,33 @@ function compoundAround(text: string, start: number, end: number): string {
 	return text.slice(from, to);
 }
 
-function pinsPlainElement(compound: string): boolean {
+/**
+ * The compound without the arguments of its functional pseudo-classes.
+ *
+ * Whatever sits inside `:not(…)`, `:is(…)`, `:where(…)` or `:has(…)` says
+ * nothing about which element the compound itself selects — `:not([type=radio])`
+ * is the opposite of pinning a radio — and reading a `[type=…]` from in there
+ * let `input:not([type=radio])[value^="a"]` through to a password field.
+ * Quoted text is already masked by `normalizeSelector`, so a bracket inside a
+ * string cannot unbalance this.
+ */
+function topLevel(compound: string): string {
+	let out = '';
+	let depth = 0;
+	for (const char of compound) {
+		if (char === '(') {
+			depth++;
+		} else if (char === ')') {
+			depth = Math.max(0, depth - 1);
+		} else if (depth === 0) {
+			out += char;
+		}
+	}
+	return out;
+}
+
+function pinsPlainElement(whole: string): boolean {
+	const compound = topLevel(whole);
 	const tag = /^([a-z][\w-]*)/.exec(compound)?.[1];
 	if (tag && plainTags.has(tag)) {
 		return true;

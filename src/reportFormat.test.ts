@@ -171,6 +171,15 @@ suite('withLocation', () => {
 		}
 	});
 
+	test('a line separator in the selector survives the inline-code wrapper as a CSS escape', () => {
+		// `CSS.escape` leaves U+2028 as it is; `oneLine` used to turn it into the
+		// text `\u2028`, which CSS reads as a plain `u`.
+		const pair = withLocation('#\\31 \u20282 > i', 'http://localhost:3000/');
+		assert.strictEqual(pair, 'http://localhost:3000/ → #\\31 \\2028 2 > i');
+		assert.strictEqual(inlineCode(pair), '`http://localhost:3000/ → #\\31 \\2028 2 > i`');
+		assert.strictEqual(withLocation('#a\u0085b', undefined), '#a\\85 b');
+	});
+
 	test('no URL yields the bare selector, never a dangling separator', () => {
 		assert.strictEqual(withLocation('#main', undefined), '#main');
 		assert.strictEqual(withLocation('#main', ''), '#main');

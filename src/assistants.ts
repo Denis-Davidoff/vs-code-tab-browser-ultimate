@@ -6,6 +6,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { workspaceIsRemoteFromHost } from './proposedApi';
 import { existingPrivateTempDirectory, privateTempDirectory, writeExclusive } from './safeFiles';
 
 /**
@@ -62,6 +63,19 @@ export function isInstalled(id: AssistantId): boolean {
 }
 
 /**
+ * Whether a report can reach the assistant from this window at all.
+ *
+ * Not in a remote window: there this extension runs on the local machine and
+ * the assistants on the remote, so no report file is on the machine that reads
+ * it (`handOver` refuses with `'remote'`). Publishing that as "not installed"
+ * hides the Add entries and lets the repeat button fall back to its Copy twin
+ * (#223), rather than offering an action that is refused after every pick.
+ */
+export function canHandOver(id: AssistantId): boolean {
+	return isInstalled(id) && !workspaceIsRemoteFromHost();
+}
+
+/**
  * Installed *and* the command exists.
  *
  * An older version of either extension may not register the command we use, and
@@ -81,7 +95,7 @@ async function isAvailable(id: AssistantId): Promise<boolean> {
  */
 export function publishAssistantContext(): void {
 	for (const id of Object.keys(assistants) as AssistantId[]) {
-		vscode.commands.executeCommand('setContext', `aiBrowser.${id}Installed`, isInstalled(id));
+		vscode.commands.executeCommand('setContext', `aiBrowser.${id}Installed`, canHandOver(id));
 	}
 }
 
@@ -265,6 +279,7 @@ export type HandOverResult =
 	| 'delivered'
 	| 'unavailable'
 	| 'noWorkspace'
+	| 'remote'
 	| { readonly failed: 'write' | 'command'; readonly reason: string };
 
 /** Closes a tab by URI rather than by "active". */
@@ -322,6 +337,15 @@ export async function handOver(
 	const assistant = assistants[id];
 	if (!await isAvailable(id)) {
 		return 'unavailable';
+	}
+
+	// In a remote window this extension runs on the local machine and both
+	// assistants run on the remote, so the report would be a file on the wrong
+	// machine. Codex answered that with a resolved promise — its handler drops a
+	// URI that does not arrive as `file:` — so the user read "Sent to Codex"
+	// while nothing reached it and the clipboard fallback never ran.
+	if (workspaceIsRemoteFromHost()) {
+		return 'remote';
 	}
 
 	const folder = vscode.workspace.workspaceFolders?.[0];

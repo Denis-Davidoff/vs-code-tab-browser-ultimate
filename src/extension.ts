@@ -10,7 +10,7 @@ import {
 	addElementToAssistant, addPathToAssistant, cancelPendingPick, cancelPickCommand,
 	copyElement, copyElementCssLocation, copyElementCssPath, copyElementXPath,
 } from './elementPicker';
-import { cleanUpReports, isInstalled, publishAssistantContext, type AssistantId } from './assistants';
+import { canHandOver, cleanUpReports, publishAssistantContext, type AssistantId } from './assistants';
 import { LastElementAction, type ElementActionId } from './lastAction';
 import { localHosts, normalizeAddress } from './webUrl';
 import { BrowserController } from './browserController';
@@ -183,7 +183,7 @@ export function activate(context: vscode.ExtensionContext) {
 	// The toolbar's primary button repeats whichever of these ran last, so every
 	// one of them records itself.
 	const lastAction = new LastElementAction(context.globalState);
-	lastAction.initialize(assistant => isInstalled(assistant as AssistantId));
+	lastAction.initialize(assistant => canHandOver(assistant as AssistantId));
 	context.subscriptions.push(vscode.extensions.onDidChange(() => lastAction.refresh()));
 
 	const registerElementCommand = (id: string, remembered: ElementActionId, run: () => Promise<void>) =>

@@ -205,6 +205,20 @@ suite('codexOurEntries', () => {
 		const project = `[mcp_servers.ai-browser]\nurl = "${urlWithToken}"\n`;
 		assert.deepStrictEqual(codexOurEntries(parse(project, project), url), ['ai-browser']);
 	});
+
+	test('a quoted name with a dot in it is a server, not a sub-table', () => {
+		// The repair treats `"ai-browser.bak"` as a server of its own; the check
+		// skipping it hid a duplicate Codex really loads.
+		const text = [
+			`[mcp_servers."ai-browser.bak"]`, `url = "${urlWithToken}"`, ``,
+			`[mcp_servers.ai-browser]`, `url = "${urlWithToken}"`, ``,
+			`[mcp_servers.ai-browser.env_http_headers]`, `X = "1"`,
+		].join('\n');
+		assert.deepStrictEqual(codexOurEntries(parse(text), url), ['"ai-browser.bak"', 'ai-browser']);
+		assert.strictEqual(
+			codexClientState(parse(`[mcp_servers."ai-browser.bak"]\nurl = "${urlWithToken}"\n`), url, urlWithToken, token),
+			'thisServer');
+	});
 });
 
 suite('codexClientState: credential forms', () => {

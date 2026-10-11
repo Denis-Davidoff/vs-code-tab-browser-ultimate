@@ -142,8 +142,10 @@ const state = { // LoginFormState, one per document
   // input into it. A capture uses a field only if it still holds that value.
   trustedValues: new WeakMap(),
   // Not upstream: roots the user acted to submit — Enter in a field, a click on
-  // a button. A form removed from the page counts as submitted only then.
-  intent: new WeakSet(),
+  // a button — with the moment they did (performance.now). A form removed from
+  // the page counts as submitted only then, only if a request went out after
+  // that moment, and only if the user has not typed into it since.
+  intent: new WeakMap(),
 };
 const trusted = el => el instanceof HTMLInputElement && state.trustedValues.get(el) === el.value;
 
@@ -377,6 +379,16 @@ function onInput(aEvent) { // observer.handleInput, capture phase
   state.trustedValues.set(field, field.value); // PORT: see trusted()
   const formLike = createFromField(field);
   const formLikeRoot = formLike.rootElement;
+  // Not upstream: typing again after a submit — the page rejected it and kept
+  // the form — means the values now in it were never sent. Left armed, the
+  // intent turned the next route change into a capture of the retyped,
+  // unsubmitted password, and the page's "gone" into a successful sign-in.
+  state.intent.delete(formLikeRoot);
+  // And a submission of this form still being watched has failed: its field is
+  // there to type into. Left running, that watch read the form going away later
+  // — a route change after the retyped password — as its own success, offering
+  // the first, rejected guess as an update.
+  if (watching && watching.root === formLikeRoot) endWatch();
   const alreadyModified = state.fieldModificationsByRootElement.get(formLikeRoot);
   const { login: filledLogin, userTriggered: fillWasUserTriggered } = state.fillsByRootElement.get(formLikeRoot) || {};
   // don't flag as user-modified if the form was autofilled and doesn't appear to have changed
@@ -529,6 +541,14 @@ const reportSettled = () => {
 
 // ---- capturing ----
 let watchGeneration = 0;
+// The submission being watched, while one is: its field and its form's root.
+let watching = null;
+/** Ends the watch as failed: the user moved on while its form was still there. */
+function endWatch() {
+  watching = null;
+  watchGeneration++;
+  send({ type: 'outcome', result: 'remained' });
+}
 /**
  * What became of a submission, judged in the page.
  *
@@ -540,19 +560,21 @@ let watchGeneration = 0;
  * after 12 s — ends as "remained", and remained is never an offer. A missed
  * offer costs the user one later sign-in; a wrong one costs their password.
  */
-function watchOutcome(field, removed) {
+function watchOutcome(field, root, removed) {
   const generation = ++watchGeneration;
+  watching = { field, root };
   const started = Date.now();
   let goneSince = removed ? Date.now() : 0;
+  const outcome = result => { watching = null; send({ type: 'outcome', result }); };
   const tick = () => {
     if (stopped || generation !== watchGeneration) return;
     if (goneSince) {
-      if (passwordFieldShown()) { send({ type: 'outcome', result: 'remained' }); return; }
-      if (Date.now() - goneSince >= 1500) { send({ type: 'outcome', result: 'gone' }); return; }
+      if (passwordFieldShown()) { outcome('remained'); return; }
+      if (Date.now() - goneSince >= 1500) { outcome('gone'); return; }
     } else if (!field.isConnected || !isRendered(field)) {
       goneSince = Date.now();
     } else if (Date.now() - started > 12000) {
-      send({ type: 'outcome', result: 'remained' }); return;
+      outcome('remained'); return;
     }
     setTimeout(tick, 250);
   };
@@ -585,30 +607,82 @@ function capture(form, options = {}) {
     return;
   }
   send({ type: 'submit', ...describe(form, fields, options.ignoreConnect) });
-  watchOutcome(fields.newPasswordField, !!options.ignoreConnect);
+  watchOutcome(fields.newPasswordField, form.rootElement, !!options.ignoreConnect);
 }
 /** A form the user acted to submit, now gone from the page: Firefox's form-removal capture. */
+//
+// Not upstream: **a request has to have gone out since the user acted.**
+// Firefox captures a removed form only after a fetch succeeded; an isolated
+// world cannot see the page's fetch calls, but it can see their resource
+// timing entries — a PerformanceObserver here is told about the page's fetch
+// and XHR requests even with the timing buffer full (measured, Chrome 153).
+// Without this, a "show password" toggle or any other button armed the capture
+// and the next route change of a single-page app read as the form being sent.
+// The decision waits a second, because an entry is recorded when its response
+// has fully arrived, which can be after the page has already removed the form.
+let lastRequestAt = -1;
+const sentKinds = new Set(['fetch', 'xmlhttprequest', 'beacon']);
+const noteRequests = entries => {
+  for (const entry of entries) {
+    if (sentKinds.has(entry.initiatorType)) lastRequestAt = Math.max(lastRequestAt, entry.startTime);
+  }
+};
+let requests;
+try {
+  requests = new PerformanceObserver(list => noteRequests(list.getEntries()));
+  requests.observe({ type: 'resource', buffered: true });
+  teardown.push(() => requests.disconnect());
+} catch (err) { /* no resource timing: the removal capture never fires */ }
 function captureRemoved() {
   for (const [root, elements] of [...state.snapshots]) {
     if (!state.intent.has(root)) continue;
     const passwords = elements.filter(el => hasBeenTypePassword(el));
     if (!passwords.length || !passwords.some(el => !el.isConnected)) continue;
+    const armedAt = state.intent.get(root);
     state.snapshots.delete(root);
     state.intent.delete(root);
-    capture({ elements, rootElement: root }, { ignoreConnect: true });
+    const timer = setTimeout(() => {
+      if (stopped) return;
+      if (requests) noteRequests(requests.takeRecords());
+      if (lastRequestAt < armedAt) return;
+      capture({ elements, rootElement: root }, { ignoreConnect: true });
+    }, 1000);
+    teardown.push(() => clearTimeout(timer));
   }
 }
 
-const submitWords = /log ?in|log ?on|sign ?in|sign ?on|submit|continue|next|verify|change|save|update|reset|войти|вход|далее|продолжить|сохранить|изменить|anmelden|weiter|connexion|entrar|acceder/i;
+// Whole words only. As substrings, "reset" was found in "Reset your password"
+// and "sign ?in" in "Trouble signing in?", so a link to a help page counted as
+// a sign-in and the guess typed before it was offered as an update. The
+// boundaries are Unicode letters, since \b knows only ASCII and never matches
+// beside Cyrillic. Identifiers are split first, so loginButton, btn-sign-in
+// and log_in still read as words.
+// No "reset" or "change": both label a way *to* a form ("Reset password",
+// "Change account") far more often than they submit one, and a reset or
+// change form submits through its own submit button anyway.
+const submitWords = /(?<![\p{L}\p{N}])(?:log ?in|log ?on|sign ?in|sign ?on|submit|continue|next|verify|save|update|войти|вход|далее|продолжить|сохранить|anmelden|weiter|connexion|entrar|acceder)(?![\p{L}\p{N}])/iu;
+// A button that leads somewhere else in the app rather than sending the form:
+// it arms nothing. Substrings, deliberately — wrongly matching one costs an
+// offer, never a password.
+const leadsAway = /forgot|reset|recover|trouble|help|regist|sign ?up|create|back|cancel|show|hide|забыл|восстанов|регистр|назад|отмен|показ|скры|vergessen|registrier|oubli|inscri|olvid|regístr/iu;
 const labelOf = el => [el.textContent, attr(el, 'value'), attr(el, 'aria-label'), attr(el, 'title'),
-  attr(el, 'id'), attr(el, 'name')].join(' ').slice(0, 300);
+  attr(el, 'id'), attr(el, 'name')].join(' ').slice(0, 300)
+  .replace(/(\p{Ll})(\p{Lu})/gu, '$1 $2').replace(/[_-]+/g, ' ');
+/**
+ * A link that goes somewhere when followed, rather than one a script handles
+ * in place. A hash route (#/reset, #!/help) goes somewhere too.
+ */
+const navigates = a => {
+  const href = attr(a, 'href').trim();
+  return href !== '' && !/^javascript:/i.test(href) && (!href.startsWith('#') || /^#[!/]/.test(href));
+};
 
 listen(globalThis, 'input', e => { try { onInput(e); } catch (err) { /* never break the page's typing */ } }, true);
 listen(globalThis, 'submit', e => {
   const form = e.target;
   if (!(form instanceof HTMLFormElement)) return;
   const root = outermostForm(form);
-  state.intent.add(root);
+  state.intent.set(root, performance.now());
   capture(formLikeFor(root));
 }, true);
 listen(globalThis, 'click', e => {
@@ -616,14 +690,29 @@ listen(globalThis, 'click', e => {
   const target = e.composedPath()[0];
   const button = target instanceof Element
     ? target.closest('button, input[type=submit], input[type=button], input[type=image], [role=button], a') : null;
-  if (!button) return;
-  const submits = button.type === 'submit' || submitWords.test(labelOf(button));
-  // A link is not a way to submit unless it says so: following "Home" with a
-  // password typed is leaving, not signing in.
-  if (button.localName === 'a' && !submits) return;
+  if (!button || button.type === 'reset') return;
   const form = button.form || closestFormIgnoringShadowRoots(button);
   const root = form ? outermostForm(form) : document.documentElement;
-  state.intent.add(root);
+  const label = labelOf(button);
+  // A link that goes somewhere is leaving, whatever it says: "Reset your
+  // password" or "Trouble signing in?" followed with a guess typed is not a
+  // sign-in, and the next page having no form then read as one. A link whose
+  // href only a script acts on (#, javascript:, none) can still be a submit.
+  const leaving = button.localName === 'a' && navigates(button);
+  const submits = !leaving && (button.type === 'submit' || submitWords.test(label));
+  // Moving on from a submission whose form is still showing — a link, a
+  // toggle, anything but submitting again — means it did not work: the page
+  // kept the form and drew an error. Left running, the watch read the form
+  // going away under the next route ("Forgot password?") as its success.
+  if (!submits && watching && watching.field.isConnected && isRendered(watching.field)) {
+    endWatch();
+    state.intent.delete(root);
+  }
+  if (leaving || (!submits && leadsAway.test(label))) return;
+  // Any other button arms the removal capture — a single-page app's "Log in"
+  // is as often a type=button labelled in any language, or an arrow icon —
+  // and the request it has to be followed by is what tells it from a toggle.
+  state.intent.set(root, performance.now());
   if (submits) capture(formLikeFor(root));
 }, true);
 listen(globalThis, 'keydown', e => {
@@ -631,7 +720,7 @@ listen(globalThis, 'keydown', e => {
   const field = e.composedPath()[0];
   if (!isPasswordFieldType(field) && !isUsernameFieldType(field)) return;
   const formLike = createFromField(field);
-  state.intent.add(formLike.rootElement);
+  state.intent.set(formLike.rootElement, performance.now());
   capture(formLike);
 }, true);
 

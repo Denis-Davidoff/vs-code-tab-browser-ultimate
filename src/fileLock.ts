@@ -87,6 +87,15 @@ function abandoned(mtimeMs: number, content: string | undefined): boolean {
 	}
 }
 
+/** {@link abandoned}, read from the path now; `false` when it cannot be read. */
+async function looksAbandoned(file: string): Promise<boolean> {
+	try {
+		return abandoned((await fs.stat(file)).mtimeMs, await readOwner(file));
+	} catch {
+		return false;
+	}
+}
+
 /**
  * Removes the file at `file` if — judged on the file itself — it is abandoned.
  * Answers whether it did.
@@ -150,16 +159,23 @@ async function removeAbandoned(file: string): Promise<boolean> {
 			await handle.close();
 		}
 	} catch (err: any) {
-		if (err?.code === 'EEXIST') {
-			// A remover is at work, or one died holding it. Either way wait a
-			// beat: retrying at once spent every attempt in a tight loop while
-			// the other remover was still busy, and `withLock` gave up.
+		if (err?.code === 'EEXIST' && await looksAbandoned(breaker)) {
+			// A remover stopped without releasing it. Only then is it moved: taking a *live*
+			// breaker aside, even to link it straight back, let a third remover
+			// create its own in the gap, so two ran side by side and the
+			// rename-and-link-back window below was open to both — measured as
+			// two holders of one lock in 6 rounds of 120 after a crash.
 			await takeAsideIfAbandoned(breaker);
 		}
+		// Either way wait a beat: retrying at once spent every attempt in a tight
+		// loop while the other remover was still busy, and `withLock` gave up.
 		return false;
 	}
 	try {
-		return await takeAsideIfAbandoned(file);
+		// Judged again under the breaker: the verdict that brought us here was
+		// taken before it, possibly on a lock that has since been replaced by a
+		// live one, and moving a live lock aside is what opens the window.
+		return await looksAbandoned(file) && await takeAsideIfAbandoned(file);
 	} finally {
 		await fs.rm(breaker, { force: true }).catch(() => { });
 	}

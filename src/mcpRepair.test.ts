@@ -334,6 +334,48 @@ suite('repair leaves other people\'s entries alone under a name clash', () => {
 		assert.ok(after.includes(`Bearer ${foreign}`), after);
 	});
 
+	test('Codex: a quoted name with a dot in it is a server of its own', () => {
+		// `"ai-browser.bak"` is one server. Read without its quotes it was a
+		// sub-table of ours — renamed with it, and deleted as ours.
+		const before = [
+			`[mcp_servers."ai-browser.bak"]`,
+			`url = "https://example.test/mcp"`,
+			``,
+			`[mcp_servers.ai-browser]`,
+			`url = "http://127.0.0.1:43110/mcp"`,
+			`http_headers = { Authorization = "Bearer ${token}" }`,
+			``,
+		].join('\n');
+		const entries = codexEntries(before);
+		assert.deepStrictEqual(entries.map(e => e.name), ['"ai-browser.bak"', 'ai-browser']);
+		assert.deepStrictEqual(codexOurTables(entries, token), ['ai-browser']);
+
+		const repaired = repairToml(before).text;
+		assert.ok(repaired.includes('[mcp_servers."ai-browser.bak"]'), repaired);
+		assert.ok(repaired.includes('url = "https://example.test/mcp"'), repaired);
+
+		const removed = removeCodexTables(before, entries, codexOurTables(entries, token),
+			(from, to) => codexRangeDeletable(before, from, to));
+		assert.deepStrictEqual(removed.removed, ['ai-browser']);
+		assert.ok(removed.text.includes('[mcp_servers."ai-browser.bak"]'), removed.text);
+	});
+
+	test('Codex: our own entry under a quoted, dotted name is renamed whole', () => {
+		const before = [
+			`[mcp_servers."ai-browser.old"]`,
+			`url = "http://127.0.0.1:43110/mcp"`,
+			`http_headers = { Authorization = "Bearer ${token}" }`,
+			``,
+			`[mcp_servers."ai-browser.old".env_http_headers]`,
+			`X-Org = "ORG"`,
+			``,
+		].join('\n');
+		const after = repairToml(before).text;
+		assert.ok(after.includes('[mcp_servers.ai-browser]'), after);
+		assert.ok(after.includes('[mcp_servers.ai-browser.env_http_headers]'), after);
+		assert.ok(!after.includes('ai-browser.old'), after);
+	});
+
 	test('Claude: a foreign entry under our name is not overwritten', () => {
 		const before = JSON.stringify({
 			mcpServers: {
@@ -527,6 +569,25 @@ suite('parseInlineTable and mergeAuthorization', () => {
 		assert.ok(out.includes(`authorization = "Bearer ${token}"`), out);
 		assert.ok(out.includes('X-Org = "acme"'), out);
 		assert.ok(!out.includes('Bearer old'), out);
+	});
+
+	test('a backslash ends a literal string rather than escaping its quote', () => {
+		// `'C:\'` is a complete TOML literal string. Read as an escaped quote, the
+		// rest of the table became one value and the Authorization vanished from
+		// view — so the repair added a second, and the file stopped parsing.
+		const pairs = parseInlineTable(`{ X-Path = 'C:\\', Authorization = "Bearer ${token}" }`);
+		assert.deepStrictEqual(pairs.map(p => p.key), ['X-Path', 'Authorization']);
+
+		const text = [
+			'[mcp_servers.ai-browser]',
+			'url = "http://127.0.0.1:43110/mcp"',
+			`http_headers = { X-Path = 'C:\\', Authorization = "Bearer ${token}" }`,
+			'',
+		].join('\n');
+		const result = repairToml(text);
+		assert.strictEqual(result.changed, true);
+		assert.strictEqual(result.text.match(/Authorization =/g)?.length, 1, result.text);
+		assert.ok(result.text.includes(`X-Path = 'C:\\'`), result.text);
 	});
 
 	test('an absent authorization is added, and carried keys do not overwrite', () => {

@@ -245,12 +245,19 @@ const keyValue = new RegExp(String.raw`^\s*(${keyPath})\s*=\s*(.*)$`);
  * So `"url"` reads `url`, `"http_headers" . Authorization` reads
  * `http_headers.Authorization`, and `http_headers."X-Trace.Id"` keeps the
  * quotes its dot needs — readers compare names, and two spellings of one key
- * must compare equal. A single segment is simply unquoted, as it always was:
- * there is no dot for its contents to be confused with.
+ * must compare equal. A single-segment *key* is simply unquoted, as it always
+ * was: every reader asks for the bare name.
+ *
+ * **A single-segment table name keeps its quotes**, when it needs them
+ * (`table`). Unquoted, `[mcp_servers."ai-browser.bak"]` — a backup the user
+ * kept by hand — read as `ai-browser.bak`, a sub-table of our server: the repair
+ * renamed its header along with ours, turning the user's server into a part of
+ * ours, and Connect and the global prune deleted it as ours. A name that needs
+ * no quotes reads as it always did.
  */
-function canonicalPath(raw: string): string {
+function canonicalPath(raw: string, table = false): string {
 	const parts = raw.match(new RegExp(keyPart, 'g')) ?? [raw];
-	if (parts.length === 1) {
+	if (parts.length === 1 && !table) {
 		return unquote(parts[0]);
 	}
 	return parts.map(part => {
@@ -281,7 +288,7 @@ function unquote(raw: string): string {
 
 function tableName(header: string): string {
 	const raw = tableHeader.exec(header)?.[1] ?? '';
-	return canonicalPath(raw);
+	return canonicalPath(raw, true);
 }
 
 /**
@@ -477,7 +484,7 @@ export function codexEntries(text: string): CodexEntry[] {
 		if (tableHeader.test(text) || arrayHeader) {
 			flush();
 			current = {
-				name: arrayHeader ? canonicalPath(arrayHeader[1]) : tableName(text),
+				name: arrayHeader ? canonicalPath(arrayHeader[1], true) : tableName(text),
 				values: new Map(),
 				valueLines: new Map(),
 				valueEndLines: new Map(),

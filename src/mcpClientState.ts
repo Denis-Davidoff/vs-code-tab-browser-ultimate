@@ -124,7 +124,7 @@ export function codexClientState(
 			}
 			seen.add(entry.name);
 
-			if (entry.name.includes('.')) {
+			if (isSubTable(entry.name)) {
 				continue; // a sub-table such as `<name>.http_headers`, not a server
 			}
 
@@ -246,7 +246,7 @@ export function codexOurEntries(
 				continue;
 			}
 			seen.add(entry.name);
-			if (entry.values.get('enabled') === 'false' || entry.name.includes('.')) {
+			if (entry.values.get('enabled') === 'false' || isSubTable(entry.name)) {
 				continue;
 			}
 			if (isSameServer(entry.values.get('url') ?? '', url)) {
@@ -309,10 +309,42 @@ export function codexEntryCarriesToken(
 		&& [...other.values.values()].some(value => value.includes(token)));
 }
 
-/** `ai-browser.http_headers` -> `ai-browser`; anything else unchanged. */
+/**
+ * A table under a server rather than a server. Not "has a dot": a quoted name
+ * keeps its quotes, and `"ai-browser.bak"` is a server the repair treats as
+ * one — the check skipping it as a sub-table reported a duplicate as absent and
+ * an entry the repair claims as ours as `none`.
+ */
+function isSubTable(name: string): boolean {
+	return rootTable(name) !== name;
+}
+
+/**
+ * `ai-browser.http_headers` -> `ai-browser`; anything else unchanged.
+ *
+ * The first dot *outside quotes*: a name keeps the quotes a bare key cannot do
+ * without, so `"ai-browser.bak"` is one server, not a part of `ai-browser`.
+ *
+ * Written twice, here and in `mcpRepair.ts`, like the ownership rule it
+ * serves.
+ */
 function rootTable(name: string): string {
-	const dot = name.indexOf('.');
-	return dot === -1 ? name : name.slice(0, dot);
+	let quote: string | undefined;
+	for (let i = 0; i < name.length; i++) {
+		const ch = name[i];
+		if (quote) {
+			if (ch === '\\' && quote === '"') {
+				i++;
+			} else if (ch === quote) {
+				quote = undefined;
+			}
+		} else if (ch === '"' || ch === '\'') {
+			quote = ch;
+		} else if (ch === '.') {
+			return name.slice(0, i);
+		}
+	}
+	return name;
 }
 
 /**
@@ -332,11 +364,14 @@ export function codexStrangers(
 
 	for (const entries of files) {
 		for (const entry of entries) {
-			if (seen.has(entry.name) || entry.name.includes('.')) {
+			if (seen.has(entry.name) || isSubTable(entry.name)) {
 				continue;
 			}
 			seen.add(entry.name);
-			const looksLikeOurs = entry.name === serverName || entry.name.startsWith(`${serverName}-`);
+			// By the name as Codex reads it: a hand-written `"ai-browser-my proj"`
+			// keeps its quotes in `entry.name`.
+			const bare = entry.name.replace(/^"(.*)"$/, '$1');
+			const looksLikeOurs = bare === serverName || bare.startsWith(`${serverName}-`);
 			if (looksLikeOurs && !codexEntryCarriesToken(entry, entries, token)) {
 				names.push(entry.name);
 			}

@@ -922,7 +922,9 @@ overlay, so none of the above applies to it.
 **What is still allowed to be a notification, and why.** Three paths keep theirs, knowingly:
 the pick failing with an error, and the two assistant fall-backs ("Claude Code is not available,
 so the report went to the clipboard"). Each reports that the thing the user asked for did **not**
-happen, and each is rare; a paused page is an acceptable price for not losing that. The modal in
+happen, and each is rare; a paused page is an acceptable price for not losing that. The refusal
+in a **remote** window is not among them: there it is every press, so it goes through `refuse()`,
+and the Add entries are hidden in the first place (`canHandOver`). The modal in
 `enableBrowserApi` is the same call — it asks a question, and blocking is the point.
 
 **The paste modal after Connect is a success that interrupts, and it is modal on purpose.** Translate
@@ -1320,7 +1322,7 @@ shell splitting on it needs the literal. That was judged acceptable because the 
 chat message read by a model, not a pipeline — but ` -> ` is the same design in ASCII if that
 ever stops being true.
 
-Four consequences in the code:
+Five consequences in the code:
 
 - **The report is fenced as `text`, never as `css`** (`fenceLanguage`). The body is a selector
   *and* a URL, so calling it CSS invites a highlighter or a model to parse it as a rule and
@@ -1335,6 +1337,11 @@ Four consequences in the code:
   any backtick run in the value and pads a value that begins or ends with one, for the reason
   `fenced` next door exists — a backtick is legal in a URL query string, and a single-backtick
   wrapper around one closes early, leaving the tail of the address as prose.
+- **The selector half carries its line-breaking characters as CSS escapes** (`withLocation`).
+  `CSS.escape` leaves U+0080–U+009F, U+2028 and U+2029 as they are, and `inlineCode`'s `oneLine`
+  then wrote them as the text `\uXXXX`, which CSS reads as a plain `u` — the copied pair stopped
+  resolving. `\2028 ` is the same character to `querySelector` and leaves `oneLine` nothing to
+  change (breaks-silently #316).
 - **`tab.url` is read when the element is delivered, not when the pick starts.** A page can
   navigate while the user is choosing, and the address that belongs with the selector is the one
   the element was actually picked on.
@@ -1577,6 +1584,18 @@ as "try the next".
   closing before the answer, and `Tool.run` gets the signal as its third argument. Only the two
   tools that wait on something outside the server take it: `inspectElement` and `waitFor`
   (breaks-silently #212).
+- **`browser_wait_for` survives the navigation it is usually waiting for.** Its loop is one
+  `Runtime.evaluate` in one document, and a click that navigates destroys that document's
+  context: CDP answers the pending evaluate with `Inspected target navigated or closed` (measured,
+  Chrome 153), which went to the model as the result. `documentReplaced` recognises that and the
+  two errors an evaluate sent mid-load can meet, and the loop is started again in the new
+  document for what is left of the host-side deadline — where `document.body` can still be
+  `null`, which counts as "not yet" rather than a `TypeError` (#322). **And a call that ends here
+  ends there too**: each call has a token, the page loop checks a set of finished tokens between polls, and a
+  cancellation or host-side timeout adds its token with one bounded evaluate. Settling only the
+  host side left the loop reading `innerText` every 100 ms for the rest of a deadline the model
+  chose (breaks-silently #311). `stopped` is asked again after the retry's pause, or a call
+  settled during it starts a loop whose stop went to the old document.
 - **A model's text argument of the wrong type is refused, not read as absent** — `textArgument`.
   `stringOrUndefined` is right for an optional filter and was wrong for `browser_fill`'s `value`:
   `5` reached the page as `''`, cleared the field and answered "filled input". A finite number is
@@ -1823,6 +1842,23 @@ for ordinary sub-tables. Such blocks are entries with `arrayTable: true`, and a 
 their double brackets. A fuzz of 11 304 valid configs through all three writers, checked with
 Python's `tomllib`, found no output that fails to parse and no foreign server changed, where the
 parser before this found 2 624 unparsable outputs.
+
+**A backslash escapes only inside a basic string**, in `parseInlineTable` and `splitPair` as in
+`scanLine`. `X-Path = 'C:\'` is a complete literal string; read as an escaped quote, the rest of
+the inline table became one value, no `Authorization` was found, and the unattended repair added
+a second one — TOML that does not parse, at every window start (breaks-silently #314).
+
+**A single-segment table name keeps the quotes it needs** (`canonicalPath(raw, true)`), and
+`rootTable` splits at the first dot *outside* quotes. Unquoted, `[mcp_servers."ai-browser.bak"]` —
+a backup kept by hand — read as `ai-browser.bak`, a sub-table of our server: the repair renamed it
+along with ours and Connect and the global prune deleted it. A single-segment *key* is still
+unquoted, because every reader asks for the bare name (`"url"` is `url`). Rerun after this: the
+fuzz harness from the review, 20 000 generated configs through repair, Connect and removal, still
+found no output that fails to parse and no foreign server changed (breaks-silently #315). **The
+check asks the same question** — `isSubTable` in `mcpClientState.ts`, `rootTable(name) !== name` —
+or `Check Connection` skipped `"ai-browser.bak"` as a sub-table while the repair treated it as a
+server: a duplicate Codex really loads went unreported, and an entry the repair claims as ours read
+`none`.
 
 **`code` versus `text`.** `scanLine` returns both, and the distinction is not cosmetic: `code`
 has string contents removed and answers structural questions; `text` is the line minus a real
@@ -2233,6 +2269,16 @@ through its own `value` setter, which is its contract: refusing anything that wa
 field made those forms unfillable, since their inner input sits in a shadow root no selector can
 reach. Both measured in the integrated browser, including a React-controlled masked input.
 Breaks-silently #170.
+
+**A field that emptied itself did not reshape anything.** A `number` input given `abc`, or a
+`date` input given `12/31/2024`, sanitises its value to `''` — and when it had held something,
+`''` was not "unchanged", so the tool answered "the field reformatted it and now reads "" over a
+value the user had lost. A non-empty value that leaves the field empty is now a refusal that
+names the format the input takes, and what the field held before is put back through the same
+setter, with `input` and `change`. **Only for the types the browser sanitises to `''`** —
+`number`, `date`, `datetime-local`, `month`, `week`, `time`. A text box that empties itself has
+usually *taken* the value (a tag input turning `tag1,` into a chip), and refusing there put the
+old text back over a fill the page had accepted. Measured in Chrome 153 (breaks-silently #312).
 
 **Only a custom element takes the custom-element branch** — a tag with a hyphen. The branch
 used to admit anything with a `value` property, and `<button>`, `<li>`, `<option>`, `<meter>`,
@@ -2814,6 +2860,18 @@ refusal falls back to the clipboard with a message saying why. The same facts ar
 `aiBrowser.claudeInstalled` / `aiBrowser.codexInstalled` context keys, so the menu hides
 entries that could not work; they are re-published on `vscode.extensions.onDidChange`.
 
+**In a remote window the hand-over is refused before anything is written** (`'remote'`, through
+`workspaceIsRemoteFromHost()`), and the report goes to the clipboard with a message saying why.
+This extension runs on the local machine there and both assistants on the remote (see
+[Special cases](#special-cases-and-non-obvious-decisions)), so a report file is on the wrong
+machine either way. The availability check cannot see that — `getExtension` and `getCommands`
+answer for every host — and Codex's `chatgpt.addFileToThread` resolves without a word for a URI
+that does not arrive as `file:`, so the user read "Sent to Codex" while nothing arrived and the
+clipboard fallback never ran (breaks-silently #313). **The Add entries are hidden there too**:
+`aiBrowser.<id>Installed` is published from `canHandOver`, which is false in such a window, so the
+menu drops them and the repeat button falls back to its Copy twin (#223). The refusal itself goes
+to the status bar — it would otherwise be a toast after every pick (#323).
+
 `.ai-browser/` gets a `.gitignore` of `*` on first creation — these are drafts for one
 conversation. Reports are swept after 5 hours, at most hourly **per directory** from the write
 path plus once on activation — one shared timestamp let a Codex report's sweep of the temp
@@ -3007,6 +3065,14 @@ a string of base64, not a picture. So for the model it is three changes:
   Verified against the compiled controller driving a real Chrome over CDP, with a stubbed
   `vscode`: concurrent agent and toolbar captures both had the header at the top and the page
   ended at 2500; a page whose `window.scrollTo` throws was captured from the top too.
+- **The visible area's clip starts where the document says, not where `scrollTo` would**
+  (`visibleOrigin`). The clip is in document coordinates; `cssVisualViewport.pageX` is in
+  scroll-origin coordinates, which is right for `scrollTo` and wrong here. On a right-to-left page
+  wider than the window, opened at its start, visual `pageX` reads 0 and layout `pageX` 2720
+  (Chrome 153, 4000 px page), and a clip at 0 came back white — handed to the model as the visible
+  area. Layout `pageX` plus the pinch-zoom `offsetX` is the document position in both directions,
+  and equals visual `pageX` left to right; checked with striped pages in both. Breaks-silently
+  #310.
 - **The bands are laid onto the image Chromium returned, not onto the plan** (`fitBands`).
   Under a fractional zoom or device ratio its output can round a pixel the other way, which made
   a band drift, report a width the JPEG did not have, or ask for rows past the end. **A band
@@ -3357,7 +3423,8 @@ its allowlist).
 
 The page script reports a submission on `submit`, on a trusted click on a sign-in-looking button,
 on Enter in a login field, and when a password field is removed from a form the user *acted on* —
-submitted, clicked a button in, pressed Enter in. The last is Firefox's "form removal" capture
+submitted, clicked a button in, pressed Enter in — has not typed into since, **and a request went
+out after that action**. The last is Firefox's "form removal" capture
 without its fetch-success precondition, which is how a single-page app's login is seen at all;
 the acted-on condition is ours, because without it a form that merely went away — a route change,
 a closed dialog — counted as sent. Firefox's guards then decide it is real: a trusted gesture
@@ -3370,6 +3437,47 @@ having no sign-in form, read as a successful sign-in: the typo became "Update pa
 Firefox turns that capture into a dismissible prompt; here it went through a decision that reads
 "left the page" as "signed in". A sign-in that navigates still submits a form or is clicked, and
 both of those are captured.
+
+**And a click on a link that goes somewhere is not one of those clicks**, which the paragraph above
+claimed and the click handler did not deliver: it let a link through whenever its text "said so",
+matched as a substring — `reset` in "Reset your password", `sign ?in` in "Trouble signing in?" — so
+the same typo reached "Update password?" through the click capture instead of `pagehide`. What
+holds now, and each rule has a failure behind it:
+
+- **A link with an `href` that navigates is never a submit**, whatever it says — a hash route
+  (`#/reset`, `#!/…`) included. One whose `href` is empty, a plain `#` or `javascript:` is handled
+  in place by a script and may still be one.
+- **The submit words are whole words**, bounded by Unicode letters and digits (`\b` is ASCII-only
+  and never matches beside Cyrillic), with identifiers split first so `loginButton`, `btn-sign-in`
+  and `log_in` still read. `reset` and `change` are not among them: they label the way *to* a form
+  far more often than they submit one, and such forms submit through their own submit button. A
+  `type=reset` button is never a submit.
+- **Any other button still arms the removal capture**, unless its label leads elsewhere
+  (`leadsAway`: forgot, reset, help, sign up, back, show, hide, in a few languages). Arming only on
+  the submit words was tried and cost every single-page app whose "Log in" is a `type=button` —
+  the default in MUI, Ant Design and Vuetify — labelled in another language or with an arrow icon.
+- **The removal capture needs a request after the arming click** — Firefox's fetch-success
+  precondition, approximated. The isolated world cannot see the page's `fetch`, but a
+  `PerformanceObserver` there is told of its fetch, XHR and beacon resource entries, even with the
+  resource timing buffer full (measured, Chrome 153). That is what tells a sign-in from a "show
+  password" toggle or a route change: both remove the form, only one sent anything. The decision
+  waits a second, since an entry is recorded once its response has fully arrived, which can be
+  after the page removed the form. A route change that fetches data can still pass; the arming
+  rules above are what keep that rare.
+- **Moving on while a watched submission's form is still showing ends the watch** as `remained`:
+  a trusted keystroke into that form, or a click on anything but a submit. A submit the page
+  rejected — form kept, error shown — otherwise read the form going away under the next route
+  ("Forgot password?") as its own success, and offered the rejected guess as an update.
+
+Measured end to end — the compiled script in its isolated world, headless Chrome 153, trusted input
+events, pages that POST before they swap the form out — against HEAD before this change: ten
+sign-in shapes (`type=button` labelled in seven languages, an arrow icon, `div role=button`,
+`a href=#`) are captured by both; a hash link "Reset password", a routing button "Reset password",
+a toggle then "Forgot password?", and a rejected submit followed by "Forgot password?" with or
+without retyping each gave `outcome: gone` — an update offer — on HEAD in at least one form, and
+give no submission or `remained` now. **One shape is lost**: an `<a href="/login">` that a script
+intercepts with `preventDefault` is a navigating link here, so it is not captured. Breaks-silently
+#307, #308, #320.
 
 **Every captured value must be one the user's own input left in its field** — provenance per
 value, not per form. `trustedValues` keeps, for each field, the value it held after its last
@@ -3758,7 +3866,13 @@ leaf, under test):
   `button[value=delete]`, which is how models pick choices, and which the first version refused.
   What decides is the compound the comparison sits in: a custom element (`sl-input`) and an
   `input` of no stated or of a text-like type are refused, so `form:has(input[value^="a"])` is
-  still caught.
+  still caught. **Only the compound's own top level pins it**: whatever sits inside `:not(…)`,
+  `:is(…)`, `:where(…)` or `:has(…)` is dropped before the tag and `[type=…]` are read, since
+  `input:not([type=radio])[value^="a"]` is the opposite of pinning a radio and matched a password
+  field (breaks-silently #309). **And an escaped character is part of a name, never syntax**:
+  `normalizeSelector` decodes escapes, and a decoded `\)` closed the `:not(` early, so
+  `input:not(.a\)[type=radio])[value^="h"]` read as a radio again. Escaped punctuation decodes to
+  an inert `_`; escaped letters still decode, so `[val\75 e^=a]` is still caught (#321).
 - **`browser_fill` never reads back a secret field's value**, by the same rule rather than by
   `type === 'password'` alone: a toggled field that rejected the new value had its contents echoed
   in the refusal. The page returns the field's attributes and the extension decides.
@@ -5082,6 +5196,74 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
 306. **Restoring only what is still eligible** → the nodes that stopped being eligible are exactly
      the ones whose translation now sits in what a form or an editor submits. A record of our write
      is reason enough to put it back.
+307. **Matching submit words as substrings, and letting a link through when it matches** → "Reset
+     your password" contains `reset` and "Trouble signing in?" contains `sign ?in`, so following
+     either with a guess typed counted as a submission, the help page with no form as a sign-in,
+     and the guess became "Update password?" — the failure #271 closed for `pagehide`, entered
+     through the click capture. A navigating link is never a submit; words are whole words.
+308. **Arming a capture on any interaction and never disarming it** → a "show password" toggle
+     armed the form-removal capture, and so did a submit the page had rejected; the next route
+     change of a single-page app then sent the retyped or untyped password as signed in. Only a
+     submitting click arms it, a keystroke into the form disarms it, and a watch still running for
+     a rejected submit ends as `remained` rather than reading the later removal as its success.
+     The removal capture also needs a request after the arming click; see #320 for why the arming
+     itself was not narrowed instead.
+309. **Reading a selector's pinned type from inside a pseudo-class argument** →
+     `input:not([type=radio])[value^="a"]` read as "a radio" and passed the value guard while
+     matching a password field: the oracle #241 closed, reopened by a negation. Judge only the
+     compound's top level.
+310. **A screenshot clip in scroll coordinates** → `cssVisualViewport.pageX` is what `scrollTo`
+     takes and not what a clip takes; on a right-to-left page the visible-area capture was white
+     and reported as the page. The clip starts at layout `pageX` plus the pinch-zoom offset.
+311. **A page-side wait that is one evaluate in one document** → the navigation being waited for
+     destroys its context and the call fails with CDP's internal sentence; and settling only the
+     host side on cancel or timeout leaves the page loop polling. Restart in the new document,
+     and stop the old loop by token.
+312. **Taking an emptied field for a reshaped one** → a sanitising input (`number`, `date`) given a
+     value it rejects becomes `''`, which differs from what it held, so the read-back reported
+     success over lost data. Empty after a non-empty value is a refusal, and the old value goes
+     back.
+313. **Trusting an assistant's command to report a hand-over it could not take** → in a remote
+     window Codex dropped the local URI and resolved, so "Sent to Codex" covered a report nothing
+     received and the clipboard fallback never ran. Refuse what the window's layout makes
+     impossible before writing anything.
+314. **A backslash escape honoured inside a TOML literal string** → `'C:\'` consumed its closing
+     quote, the rest of the inline table read as one value, and the repair added a second
+     `Authorization` beside the one it could not see. Escapes belong to basic strings only — the
+     rule `scanLine` already followed, missed in the inline-table reader.
+315. **Unquoting a single-segment table name** → `[mcp_servers."ai-browser.bak"]` read as a
+     sub-table of `ai-browser`, so the user's own server was renamed into ours by the repair and
+     deleted as ours by Connect and the prune. A name keeps the quotes it needs, and the root is
+     split at the first dot outside them.
+316. **A one-line rewrite applied to a selector after it was checked** → `oneLine` wrote U+2028 as
+     the text `\u2028`, which CSS reads as `u`, so the "CSS Path + Location" clipboard copy named
+     another selector. Escape such characters the way CSS does, before anything wraps the line.
+317. **Taking a lock's breaker aside without judging it first** → every second remover moved a
+     *live* breaker out and back, so a third could create its own in the gap and two removers
+     ran the rename-and-link-back of #162 at once; after a crash, two windows held the config
+     lock together in 5–6 rounds of 120. Only an abandoned breaker is moved, and the lock is
+     judged again under the breaker before it is moved; 0 of 120 since.
+318. **Page text in a status bar confirmation** → "XPath copied: …" carried the page's id verbatim,
+     and the status bar renders `$(name)` as our icons. `plainInLabel`, as #258 says for every
+     page-derived label — and the frame-address refusal of `locatorRefusal`, the same sink.
+319. **Validating one setting's type and rejecting the panel over another's** → #184 coerced a bad
+     `searchEngine`, and a non-boolean `focusLockIndicator.enabled` still threw `Could not load
+     settings` and left the panel blank. Coerce every setting the webview reads to its default —
+     at load in the webview, and on both paths in the extension (`focusLockSetting`), since the
+     change message is validated too and a non-boolean there was dropped.
+320. **Narrowing a capture trigger to a word list** → arming the removal capture only on the submit
+     words fixed the toggle false positive and lost every `type=button` sign-in labelled in another
+     language or with an icon — whole sites, on every sign-in. Keep the broad trigger and require
+     the evidence that separates the cases: a request after the click.
+321. **Decoding escapes before asking structural questions** → `\)` became a real `)` and closed a
+     `:not(` early, putting a type that sat inside it at the top level. Decode punctuation to
+     something inert; only names and values need the real character.
+322. **A retry that lands where its assumptions do not hold** → restarted in a document that exists
+     but has no `<body>` yet, the text wait threw a `TypeError` that was not a navigation error and
+     went to the model. A missing body is "not found yet".
+323. **A fall-back that is rare elsewhere and constant in one layout** → the remote refusal fired
+     after every pick, as a toast over the page just picked in. Hide what cannot work, and refuse
+     through the status bar what is still reachable.
 
 ## Special cases and non-obvious decisions
 

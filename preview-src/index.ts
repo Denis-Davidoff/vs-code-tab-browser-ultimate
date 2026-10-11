@@ -108,6 +108,13 @@ function getSettings(): AIBrowserSettings {
 				&& !isBrowserSearchEngineValue(settings.searchEngine)) {
 				(settings as { searchEngine: unknown }).searchEngine = defaultSearchEngine;
 			}
+			// The same for the focus indicator: a hand-edited `"false"` or a
+			// `null` is passed through with only a warning, and rejecting it
+			// blanked the panel just as a bad engine did. Its default is on.
+			if (typeof settings === 'object' && settings !== null
+				&& typeof (settings as { focusLockEnabled?: unknown }).focusLockEnabled !== 'boolean') {
+				(settings as { focusLockEnabled: unknown }).focusLockEnabled = true;
+			}
 			if (isAIBrowserSettings(settings)) {
 				return settings;
 			}
