@@ -1584,22 +1584,29 @@ as "try the next".
   closing before the answer, and `Tool.run` gets the signal as its third argument. Only the two
   tools that wait on something outside the server take it: `inspectElement` and `waitFor`
   (breaks-silently #212).
-- **`browser_wait_for` survives the navigation it is usually waiting for.** Its loop is one
-  `Runtime.evaluate` in one document, and a click that navigates destroys that document's
-  context: CDP answers the pending evaluate with `Inspected target navigated or closed` (measured,
-  Chrome 153), which went to the model as the result. `documentReplaced` recognises that and the
-  two errors an evaluate sent mid-load can meet, and the loop is started again in the new
-  document for what is left of the host-side deadline — where `document.body` can still be
-  `null`, which counts as "not yet" rather than a `TypeError` (#322). **And a call that ends here
-  ends there too**: each call has a token, the page loop checks a set of finished tokens between polls, and a
-  cancellation or host-side timeout adds its token with one bounded evaluate. Settling only the
-  host side left the loop reading `innerText` every 100 ms for the rest of a deadline the model
-  chose (breaks-silently #311). `stopped` is asked again after the retry's pause, or a call
-  settled during it starts a loop whose stop went to the old document.
+- **`browser_wait_for` is polled from the host, one synchronous check per round, and survives the
+  navigation it is usually waiting for.** It used to be one `Runtime.evaluate` running a loop in
+  the page, and each problem that design had has its own number. A click that navigates destroyed
+  the loop's document, and CDP's `Inspected target navigated or closed` went to the model (#311).
+  A cancelled or timed-out call left the loop reading `innerText` every 100 ms, which needed a
+  token to stop it (#311 again). Its deadline lived on the page's clock, which fake timers stop
+  (#212). And it **slept on the page's own `setTimeout`**, which a document that runs no timers
+  never fires. A frame sandboxed without `allow-scripts`, such as an HTML mail or document
+  preview its parent writes into, answers an evaluate and resolves promises, yet ran the check
+  once and never again: a false timeout over text on screen, and an evaluate left pending for
+  the life of the frame (measured, Chrome 153; breaks-silently #331). Now each round is a short
+  check, the pause between rounds is the host's `waitForPollMs`, and a round that meets a
+  replaced document (`documentReplaced`: a navigation, a frame between documents or whose
+  session ended) counts as "not yet". There, `document.body` can still be `null`, which also
+  counts as "not yet" (#322). The deadline and the client's cancellation end the call even while
+  a round is unanswered, so a page busy in a long task cannot keep the session hold. Nothing runs
+  in the page between rounds, so there is nothing left to stop.
 - **A model's text argument of the wrong type is refused, not read as absent** — `textArgument`.
   `stringOrUndefined` is right for an optional filter and was wrong for `browser_fill`'s `value`:
   `5` reached the page as `''`, cleared the field and answered "filled input". A finite number is
-  converted, since that is what the model meant (breaks-silently #210).
+  converted, since that is what the model meant (breaks-silently #210). `numberArgument` is the
+  same rule for a number whose absence *acts*: `browser_scroll`'s `by`. `numberOrUndefined` stays
+  right only where absence means a harmless default, such as a timeout.
 - `browser_navigate` refuses anything but http/https. Otherwise an agent points the browser at
   a local file and reads it back with `browser_text` — a browser tool turned into a file reader.
 
@@ -2811,6 +2818,131 @@ tab's session if there is one and otherwise opens a throwaway, the same shape th
 uses; `capture` with no named tab is acting on the tools' own subject, so that one is cached —
 routing every capture through the throwaway path quietly cost the console its priming.
 
+
+### Frames: reading inside an iframe
+
+Every page tool used to read **the page document and nothing else**, and the document stops at
+each `<iframe>`. The report that led here was Claude Code on a SharePoint page holding a OneNote
+notebook: `browser_text` and `browser_snapshot` returned SharePoint's scripts and no interface,
+`browser_text_segments` found only the notebook's title, and the assistant concluded — correctly,
+for the tools it had — that the content was out of reach. OneNote renders inside a frame from
+`*.officeapps.live.com`, loaded by a form POST, so the frame has no address that could be opened
+on its own either.
+
+`browser_frames` lists the frames, and `browser_text`, `browser_html`, `browser_snapshot`,
+`browser_click`, `browser_fill`, `browser_wait_for` and the new `browser_scroll` take a `frameId`.
+**Absent means the page itself**, and a call without it reads exactly what it read before. Two
+results do change shape on a page that has frames: `browser_text` (whole page) and
+`browser_snapshot` add `frames` and `framesNote`, see below.
+
+**A frame from another site is a target of its own, and the editor serves it.** Site isolation
+puts such a frame in its own renderer. Nothing sent to the page's session reaches it, and the
+page's `Page.getFrameTree` does not even list it. It shows up in `Target.getTargets` as type
+`iframe`, with `parentFrameId` naming its parent. The editor's CDP proxy registers every target
+it discovers for a view and answers `Target.getTargets` and `Target.attachToTarget` for them; its
+own element picker attaches to `iframe` targets the same way (read in the shipped `mainImpl.js`,
+VS Code 1.141). So `TabSession._attachFrame` attaches on the tab's existing channel and enables
+Runtime there, and that session's own frame tree supplies the frame and anything nested in it.
+
+**A frame is addressed as a session plus a context, never as a context id alone.** Context ids
+are numbered per session: the page and a frame in another process both start at 1 (measured,
+Chrome 153). `_frameContexts` maps a frame id to `{ sessionId, contextId }` from
+`Runtime.executionContextCreated` (default world only) on every session of the tab. It is
+subscribed before `Runtime.enable` for the reason the console is: the enable replays the
+contexts that already exist.
+
+**The frame id is CDP's**, and it is the right id to hand out. It stays the same across a frame's
+navigations, including a move between processes. Measured: a cross-site frame navigated to the
+page's own site kept its id, its target went away, and the next call found it in the page's
+tree. A stale context (`Cannot find context with specified id`) is looked up once more before a
+call fails. A dead frame session is dropped as well, or `_attachFrame` would keep handing it
+back.
+
+**What happens while a frame moves on is where every defect in the first version was.** A
+review found five, and four of them sat in this window:
+
+- **Forget the record that failed, never whatever is there now** (`forgetFrame(frameId, stale)`).
+  A call sent just before a navigation fails with the old context id. By the time the failure
+  arrives, the new document's context has usually been recorded in its place. Deleting by frame
+  id threw that one away, and nothing reports an existing context twice. Measured: a click on a
+  link inside a frame followed by `browser_wait_for` timed out on a page that had finished
+  loading long before.
+- **A frame in the tree with no context is between documents, not gone.** `frameScope` waits up
+  to `frameContextWaitMs` for the context. Failing that, it says "still loading" in words
+  `documentReplaced` recognises, so the wait's retry keeps going. "No frame has the id" is
+  reserved for a frame no longer listed at all.
+- **An ended frame session settles what was sent to it** (`CDPClient.failSession`, from
+  `Target.detachedFromTarget`). The browser drops commands bound for a session that detaches,
+  and only the channel closing settled them. Measured: a frame from another site navigating back
+  to the page's own site (a 3-D Secure redirect, an OAuth return) left `browser_wait_for`
+  waiting out its whole timeout over text that was already there. Every other frame-scoped tool
+  has no host-side deadline, so it would have hung with its session hold kept. The editor's
+  proxy forwards to Electron's debugger and rejects nothing on detach either.
+- **An attach that does not complete is detached** (`_detachFrame`). That covers an enable that
+  times out and an attach reply that lands after its own timeout. A busy frame answers the attach
+  and not the enable, so each listing attached again: three `browser_frames` calls left three
+  live sessions on the frame, each carrying its console.
+
+The editor's proxy answers a send to a frame session it has already dropped with `Session not
+found: <id>`, so `frameContextGone` matches that too.
+
+Smaller decisions:
+
+- **The console stays the page's.** An attached frame has Runtime enabled and its messages
+  arrive on the same channel, so `TabSession` compares the event's session id (`_fromPage`). An
+  embedded widget's chatter would otherwise fill the 200-line buffer. Frames in the page's own
+  process were already captured before this change and still are. `CDPClient.on` passes the
+  session id for exactly this.
+- **Discoverability is half the fix.** `browser_text` (whole page, no selector) and
+  `browser_snapshot` without a `frameId` add `frames` and `framesNote` when the page has any.
+  `frameHint` makes two calls and attaches to nothing. With no frames the result keeps its old
+  shape, a plain string for `browser_text`. The server instructions carry one sentence too.
+- **Attaching is bounded:** a listing connects at most `maxFrameSessions` (24) frames from other
+  processes per tab, and each CDP step gets `frameAttachTimeoutMs`. A frame that could not be
+  reached is still listed, with `readable: false`, and the note names the three reasons: still
+  loading, not answering, or past the limit. **A frame named by id is connected even past the
+  limit** (`frames(wanted)`). Otherwise the 25th frame of an ad-heavy page was reported as
+  removed while `browser_frames` was listing it. So the limit bounds what one *listing* connects
+  to, not what a tab holds: a frame named by id stays attached until its target goes. **Every
+  listing walks the tree of every attached frame**, not only the ones it reached itself, or a
+  frame nested inside a named frame past the limit was readable by an id no listing handed out
+  (#332). `readable` is read from the recorded contexts, never assumed.
+- **`browser_scroll`'s `by` and `to` are refused when malformed, and so is both at once.**
+  Absent means "scroll by the default", so reading `"by": "-500"` or `"to": "end"` as absent
+  scrolled *down* and answered success: #210 in a new tool. `numberArgument` (a leaf, tested) does
+  for numbers what `textArgument` does for text: a plainly numeric string is converted, anything
+  else refused. `scrollEdge` takes only an edge.
+- **`browser_scroll` exists because a frame's first screen is all a screenshot shows.** With no
+  selector it scrolls the document if the document scrolls, and otherwise the largest scrolling
+  element: an application shell keeps its body fixed and scrolls a panel. It runs on
+  `_onScrollGate`, or a full-page capture's scroll-to-top-and-back would undo it.
+- **Every guard applies inside a frame unchanged:** `refuseValueProbe` on every selector,
+  `redactSecretValues` on the markup, the secret-field rules in `browser_fill`. A frame is part
+  of the tab the user shared. The rule already written for screenshots holds: sharing a tab is
+  sharing what that tab can show.
+
+Verified by loading the compiled controller against a stubbed `vscode` whose tab bridges to
+headless Chrome 153, with `Target.getTargets` narrowed to that tab the way the proxy narrows it.
+Tested this way: a same-origin `srcdoc` frame, a cross-site frame and a frame nested inside it;
+`snapshot`, `click`, `fill` and redacted `html` in the cross-site frame; the value-probe refusal;
+`scroll` finding an inner panel and reporting `atBottom`; `waitFor` for text inserted later; the
+console without the frame's messages; a frame navigating within its site; and one moving into
+the page's process. After the review, also: a click on a link in the frame followed at once by
+`browser_wait_for`, which resolved when the slow next page arrived (about 800 ms, three runs); a
+wait surviving the frame's move back to the page's site (469 ms, previously the full timeout); a
+busy frame listed three times, leaving one live session instead of three; and 26 frames from
+another site, 24 connected by the listing and the 25th read by its id. After the second review: a wait in a frame sandboxed without
+`allow-scripts` found text its parent wrote in (about 1 s, previously a timeout); the deadline
+held at deadline plus grace in a frame whose main thread was blocked; a cancellation ended a
+wait in 402 ms; and a frame nested inside the 26th was listed and read once its parent had been
+named. **Not measured inside VS Code itself.** The proxy reading above is from the
+bundle, so check on a real OneNote or payment-form page after changing this.
+
+**Not built:** `browser_inspect_element` and the Copy/Add Element commands still pick in the
+page's own process only (`Overlay.setInspectMode` is per target). The translation tools do not
+reach frames either, as their known limits say. There is no way to navigate a frame, on
+purpose: `browser_navigate` refuses anything but http/https for the top page, and a frame
+navigation would be a second door around that rule.
 
 ### Lifecycle
 
@@ -5217,8 +5349,9 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
      and reported as the page. The clip starts at layout `pageX` plus the pinch-zoom offset.
 311. **A page-side wait that is one evaluate in one document** → the navigation being waited for
      destroys its context and the call fails with CDP's internal sentence; and settling only the
-     host side on cancel or timeout leaves the page loop polling. Restart in the new document,
-     and stop the old loop by token.
+     host side on cancel or timeout leaves the page loop polling. Fixed first by restarting the
+     loop in the new document and stopping the old one by token. Since #331 there is no page loop
+     at all: each round is one short check polled from the host.
 312. **Taking an emptied field for a reshaped one** → a sanitising input (`number`, `date`) given a
      value it rejects becomes `''`, which differs from what it held, so the read-back reported
      success over lost data. Empty after a non-empty value is a refusal, and the old value goes
@@ -5264,6 +5397,38 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
 323. **A fall-back that is rare elsewhere and constant in one layout** → the remote refusal fired
      after every pick, as a toast over the page just picked in. Hide what cannot work, and refuse
      through the status bar what is still reachable.
+324. **Reading a page as one document** → every tool stopped at each `<iframe>`, and nothing in
+     the result said so, so an application rendering its content in a frame (OneNote in
+     SharePoint) read as an empty shell and the assistant gave up. A frame from another site is
+     a separate CDP target that the page's session cannot reach at all. Attach to it, and name
+     the page's frames in the page-level results.
+325. **Keying frame contexts by context id without the session** → ids are numbered per session, and the
+     page and a frame in another process both have a context 1, so a bare id runs in whichever
+     session it is sent to. Keep `{ sessionId, contextId }`.
+326. **A page-only listener on a channel that also carries frames** → once a frame session has
+     Runtime enabled, its `consoleAPICalled` arrives on the same `onDidReceiveMessage`. Compare
+     the event's session id.
+327. **Invalidating a cache entry by key after an await** → the entry under that key may already
+     be the replacement. `forgetFrame` deleted the frame's new context, recorded while the old
+     one's failure was on its way, and the frame read as "between documents" from then on.
+     Delete only if the entry is still the one that failed.
+328. **A child session ending without settling what was sent to it** → the browser drops those
+     commands, and `CDPClient` settled pending work only when the whole channel closed, so a
+     frame-scoped call on a frame that navigated to another process hung. `failSession` on
+     `Target.detachedFromTarget`.
+329. **A multi-step attach that rolls back only its bookkeeping** → the session the first step
+     created stayed attached, and every retry made another. Undo the steps that succeeded, a late
+     reply to a step that timed out included (#285's rule, for CDP sessions).
+330. **A resource limit applied to an explicit request** → a cap meant to bound what a listing
+     connects to also refused the one frame the model named, with a "removed" message that
+     contradicted the listing beside it. Bound the sweep, and serve the named item.
+331. **A page-side loop that sleeps on the page's timers** → a document that runs no timers (a frame
+     sandboxed without `allow-scripts`) answers evaluates but never fires a `setTimeout` scheduled
+     from one. `browser_wait_for` checked once and timed out over text on screen. Poll from the
+     host.
+332. **A listing that walks only what it connected itself** → a frame past the limit that a caller
+     named stayed attached, and its nested frames were never listed again. Walk every attached
+     session.
 
 ## Special cases and non-obvious decisions
 

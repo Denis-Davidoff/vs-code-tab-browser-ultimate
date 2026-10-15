@@ -7,7 +7,6 @@ import * as vscode from 'vscode';
 import { CDPClient } from './cdp';
 import { extractElementData, renderElementMarkdown } from './elementContext';
 import { isBrowserApiGranted } from './proposedApi';
-import { generateUuid } from './uuid';
 import { legacyMarkerRemoval, stripMarker, stripMarkerFromHtml } from './shareIndicator';
 import { comparesFieldValue, isSecretField, redactSecretValues } from './secretGuards';
 import { encodeJpeg } from './jpegEncode';
@@ -37,6 +36,47 @@ interface ConsoleLine {
 
 /** How many console lines to keep. Enough to be useful, bounded so it cannot grow without limit. */
 const consoleLimit = 200;
+
+/** Where a frame's scripts run: the session that reaches it, and its default context there. */
+interface FrameScope {
+	readonly sessionId: string;
+	readonly contextId: number;
+}
+
+/** One frame of a tab, as `browser_frames` reports it. */
+interface FrameInfo {
+	readonly id: string;
+	readonly parentId?: string;
+	readonly url: string;
+	readonly name?: string;
+	readonly origin?: string;
+	/** In another renderer process from the page — a frame from another site. */
+	readonly outOfProcess?: boolean;
+	/** Whether a frame id passed to the tools will reach it now. */
+	readonly readable: boolean;
+}
+
+/**
+ * How many frames in other processes one tab attaches to. Each is a session on
+ * the tab's channel; a page of ads can carry dozens, and none of them is worth
+ * an unbounded number of handshakes.
+ */
+const maxFrameSessions = 24;
+
+/** Per step of attaching to, or reading the tree of, one frame. `send` has no timeout of its own. */
+const frameAttachTimeoutMs = 3_000;
+
+/** How long a listed frame with no document yet is waited for before the call says it is loading. */
+const frameContextWaitMs = 3_000;
+
+/**
+ * Why a frame-scoped call failed when the frame moved on under it. Both are
+ * matched by `documentReplaced`, so `browser_wait_for` follows the frame into
+ * its next document, and the first by `frameContextGone`, so a single call
+ * looks the frame up again.
+ */
+const frameSessionEnded = 'The frame\'s session ended: it navigated to another process or was removed';
+const frameBetweenDocuments = 'is between documents — it is still loading';
 
 /** One assignment, as the UI shows it. */
 export interface ShareEntry {
@@ -83,6 +123,17 @@ class TabSession {
 
 	private readonly _console: ConsoleLine[] = [];
 	private readonly _subscriptions: vscode.Disposable[] = [];
+	/**
+	 * Where each frame's own scripts run: frame id → the session and the id of its
+	 * default execution context. Context ids are numbered per session (a page and
+	 * a frame in another process both start at 1), so the pair is the address.
+	 * Kept from `Runtime.executionContext*` events on every session of this tab.
+	 */
+	private readonly _frameContexts = new Map<string, FrameScope>();
+	/** Frames in another process that have been attached: target id → session id. */
+	private readonly _frameSessions = new Map<string, Promise<string>>();
+	/** The same attachments by session id, so a detach event can find its frame. */
+	private readonly _frameSessionTargets = new Map<string, string>();
 
 	private constructor(
 		public readonly client: CDPClient,
@@ -160,20 +211,63 @@ class TabSession {
 		// the command's reply. Listening only once the enables had resolved
 		// dropped exactly the output `_primeConsole` exists to keep: a page that
 		// threw on load before anything attached answered "The console is empty".
-		this._subscriptions.push(this.client.on('Runtime.consoleAPICalled', (params: any) => {
+		// The console is the page's own. A frame attached for `browser_frames` has
+		// Runtime enabled too, and its messages arrive on this same channel — so
+		// without the check an embedded widget's chatter would fill the buffer.
+		this._subscriptions.push(this.client.on('Runtime.consoleAPICalled', (params: any, from) => {
+			if (!this._fromPage(from)) {
+				return;
+			}
 			const text = (params.args ?? [])
 				.map((arg: any) => arg.value ?? arg.description ?? arg.unserializableValue ?? '')
 				.join(' ');
 			this._record(params.type ?? 'log', text);
 		}));
 
-		this._subscriptions.push(this.client.on('Log.entryAdded', (params: any) => {
-			this._record(params.entry?.level ?? 'log', params.entry?.text ?? '');
+		this._subscriptions.push(this.client.on('Log.entryAdded', (params: any, from) => {
+			if (this._fromPage(from)) {
+				this._record(params.entry?.level ?? 'log', params.entry?.text ?? '');
+			}
 		}));
 
-		this._subscriptions.push(this.client.on('Runtime.exceptionThrown', (params: any) => {
+		this._subscriptions.push(this.client.on('Runtime.exceptionThrown', (params: any, from) => {
+			if (!this._fromPage(from)) {
+				return;
+			}
 			const details = params.exceptionDetails;
 			this._record('error', details?.exception?.description ?? details?.text ?? 'Uncaught exception');
+		}));
+
+		// Frame contexts, before `Runtime.enable` for the same reason as the
+		// console: the enable replays the contexts that already exist.
+		this._subscriptions.push(this.client.on('Runtime.executionContextCreated', (params: any, from) => {
+			const context = params.context;
+			const frameId = context?.auxData?.frameId;
+			if (context?.auxData?.isDefault === true && typeof frameId === 'string' && typeof context.id === 'number') {
+				this._frameContexts.set(frameId, { sessionId: from ?? this.sessionId, contextId: context.id });
+			}
+		}));
+		this._subscriptions.push(this.client.on('Runtime.executionContextDestroyed', (params: any, from) => {
+			const sessionId = from ?? this.sessionId;
+			for (const [frameId, scope] of this._frameContexts) {
+				if (scope.sessionId === sessionId && scope.contextId === params.executionContextId) {
+					this._frameContexts.delete(frameId);
+				}
+			}
+		}));
+		this._subscriptions.push(this.client.on('Runtime.executionContextsCleared', (_params: any, from) => {
+			this._forgetContexts(from ?? this.sessionId);
+		}));
+		// The browser drops whatever was still on its way to a session that ends,
+		// so this is what settles it — a frame-scoped call otherwise hung for ever.
+		this._subscriptions.push(this.client.on('Target.detachedFromTarget', (params: any) => {
+			if (typeof params?.sessionId === 'string') {
+				// The page's own session ending is not a frame moving on: it gets the
+				// words the rest of the controller already treats as a dead session.
+				this.client.failSession(params.sessionId,
+					params.sessionId === this.sessionId ? 'CDP session closed' : frameSessionEnded);
+				this._forgetSession(params.sessionId);
+			}
 		}));
 
 		// Independent of one another, so in parallel: this is on the path every
@@ -188,6 +282,280 @@ class TabSession {
 		this._console.push({ level, text });
 		if (this._console.length > consoleLimit) {
 			this._console.splice(0, this._console.length - consoleLimit);
+		}
+	}
+
+	/** An event from the page itself rather than from a frame attached through it. */
+	private _fromPage(sessionId: string | undefined): boolean {
+		return sessionId === undefined || sessionId === this.sessionId;
+	}
+
+	private _forgetContexts(sessionId: string): void {
+		for (const [frameId, scope] of this._frameContexts) {
+			if (scope.sessionId === sessionId) {
+				this._frameContexts.delete(frameId);
+			}
+		}
+	}
+
+	/** A frame session that has gone: its contexts, and the attachment itself. */
+	private _forgetSession(sessionId: string): void {
+		this._forgetContexts(sessionId);
+		const targetId = this._frameSessionTargets.get(sessionId);
+		if (targetId !== undefined) {
+			this._frameSessionTargets.delete(sessionId);
+			this._frameSessions.delete(targetId);
+		}
+	}
+
+	/** Ends a frame session of ours: what waits on it, our records of it, and the attachment. */
+	private _detachFrame(sessionId: string): void {
+		this.client.failSession(sessionId, frameSessionEnded);
+		this._forgetSession(sessionId);
+		void this.client.send('Target.detachFromTarget', { sessionId }).catch(() => { /* already gone */ });
+	}
+
+	/**
+	 * A session on a frame that runs in another process, attached once and kept.
+	 *
+	 * **Such a frame is a target of its own.** Site isolation puts a frame from
+	 * another site — OneNote inside SharePoint, a payment form, an embedded
+	 * editor — in its own renderer, and nothing sent to the page's session
+	 * reaches it: `Runtime.evaluate` there sees an empty `<iframe>`, and
+	 * `Page.getFrameTree` does not even list it. It is listed by
+	 * `Target.getTargets` as type `iframe`, with `parentFrameId` naming its
+	 * parent, and the editor's CDP proxy serves those targets to an extension
+	 * exactly as it does the page (its own element picker attaches to them the
+	 * same way). `Runtime.enable` on the new session reports its contexts, which
+	 * is what {@link frameScope} reads. Measured in Chrome 153.
+	 */
+	private _attachFrame(targetId: string): Promise<string> {
+		const cached = this._frameSessions.get(targetId);
+		if (cached) {
+			return cached;
+		}
+		// **Whatever the attach created is detached if it does not complete.** A
+		// busy frame answers the attach and not the enable, and the next listing
+		// attached again: every `browser_frames` the "ask again" note invited left
+		// one more live session on the frame. A reply arriving after its timeout
+		// is detached as it lands, for the same reason.
+		const pending = (async () => {
+			const attach = this.client.send('Target.attachToTarget', { targetId, flatten: true });
+			let sessionId: string;
+			try {
+				({ sessionId } = await withTimeout(attach, frameAttachTimeoutMs, 'The frame did not accept a connection in time.'));
+			} catch (err) {
+				attach.then(late => typeof late?.sessionId === 'string' && this._detachFrame(late.sessionId), () => undefined);
+				throw err;
+			}
+			this._frameSessionTargets.set(sessionId, targetId);
+			try {
+				await withTimeout(this.client.send('Runtime.enable', {}, sessionId),
+					frameAttachTimeoutMs, 'The frame did not answer in time.');
+			} catch (err) {
+				this._detachFrame(sessionId);
+				throw err;
+			}
+			return sessionId;
+		})();
+		this._frameSessions.set(targetId, pending);
+		pending.catch(() => {
+			if (this._frameSessions.get(targetId) === pending) {
+				this._frameSessions.delete(targetId);
+			}
+		});
+		return pending;
+	}
+
+	/**
+	 * Every frame in the tab, the page itself left out, in document order.
+	 *
+	 * Frames in the page's own process come from its frame tree; each frame in
+	 * another process is attached and contributes its own tree, which holds it
+	 * (with its parent) and whatever is nested inside it. A frame that could not
+	 * be attached is still listed, as unreadable, so a model is told it is there.
+	 *
+	 * `wanted` is a frame a caller named: it is attached even when it falls past
+	 * `maxFrameSessions`. The limit bounds what a *listing* connects to; a frame
+	 * the model asked for by id is one it can see in the list, and refusing it
+	 * there sent it off to list the frames again for the same answer.
+	 */
+	public async frames(wanted?: string): Promise<FrameInfo[]> {
+		const { targetInfos } = await withTimeout(this.client.send('Target.getTargets'),
+			frameAttachTimeoutMs, 'The browser did not list the page\'s frames in time.');
+		const remote = (Array.isArray(targetInfos) ? targetInfos : [])
+			.filter((t: any) => t?.type === 'iframe' && typeof t.targetId === 'string');
+		const live = new Set(remote.map((t: any) => t.targetId as string));
+		// A frame target that went without a detach event is not reused — and
+		// its session is ended properly, so a call still waiting on it settles.
+		for (const [sessionId, targetId] of [...this._frameSessionTargets]) {
+			if (!live.has(targetId)) {
+				this._detachFrame(sessionId);
+			}
+		}
+
+		const reached = remote.slice(0, maxFrameSessions);
+		const named = remote.find((t: any) => t.targetId === wanted);
+		if (named && !reached.includes(named)) {
+			reached.push(named);
+		}
+		const sessions = await Promise.all(reached.map(async (target: any) => {
+			try {
+				return await this._attachFrame(target.targetId);
+			} catch {
+				return undefined;
+			}
+		}));
+
+		// **Every attached frame's tree, not only this listing's.** A frame past the
+		// limit that a caller named stays attached, and walking only the sessions
+		// reached above left whatever is nested inside it out of every later
+		// listing — content readable by an id nothing would ever hand out.
+		const attached = [...this._frameSessionTargets.keys()].filter(id => !sessions.includes(id));
+		const trees = await Promise.all([this.sessionId, ...sessions, ...attached].map(async sessionId => {
+			if (sessionId === undefined) {
+				return undefined;
+			}
+			try {
+				const { frameTree } = await withTimeout(this.client.send('Page.getFrameTree', {}, sessionId),
+					frameAttachTimeoutMs, 'frame tree');
+				return frameTree;
+			} catch {
+				return undefined;
+			}
+		}));
+
+		const out: FrameInfo[] = [];
+		const seen = new Set<string>();
+		const add = (frame: any, outOfProcess: boolean) => {
+			if (typeof frame?.id !== 'string' || seen.has(frame.id)) {
+				return;
+			}
+			seen.add(frame.id);
+			out.push({
+				id: frame.id,
+				parentId: typeof frame.parentId === 'string' ? frame.parentId : undefined,
+				url: String(frame.url ?? '') + String(frame.urlFragment ?? ''),
+				name: frame.name || undefined,
+				origin: frame.securityOrigin && frame.securityOrigin !== '://' ? frame.securityOrigin : undefined,
+				outOfProcess: outOfProcess || undefined,
+				readable: this._frameContexts.has(frame.id),
+			});
+		};
+		// Every frame of a tree after the first is in another process from the
+		// page, the frames nested inside an attached frame included.
+		const walk = (node: any, outOfProcess: boolean) => {
+			// The root of the page's own tree is the page, which every tool
+			// already reads without a frame id.
+			if (node?.frame?.parentId !== undefined) {
+				add(node.frame, outOfProcess);
+			}
+			for (const child of node?.childFrames ?? []) {
+				walk(child, outOfProcess);
+			}
+		};
+		trees.forEach((tree, index) => {
+			if (tree) {
+				walk(tree, index > 0);
+			}
+		});
+		// Attached or not, every frame target is named, so an unreachable one is
+		// reported rather than silently missing.
+		for (const target of remote) {
+			if (!seen.has(target.targetId)) {
+				seen.add(target.targetId);
+				out.push({
+					id: target.targetId,
+					parentId: typeof target.parentFrameId === 'string' ? target.parentFrameId : undefined,
+					url: String(target.url ?? ''),
+					outOfProcess: true,
+					readable: this._frameContexts.has(target.targetId),
+				});
+			}
+		}
+		return out;
+	}
+
+	/**
+	 * The frames directly visible from the page, without attaching to anything.
+	 *
+	 * For the hint `browser_text` and `browser_snapshot` add: those read the page
+	 * document only, and a model shown an application shell has no way to tell
+	 * that the content it wants is in a frame — the report that led here read
+	 * "I only see the SharePoint shell". Cheap on purpose: two calls, no attach.
+	 */
+	public async frameHint(): Promise<{ id: string; url: string }[]> {
+		try {
+			const [{ frameTree }, { targetInfos }] = await withTimeout(Promise.all([
+				this.client.send('Page.getFrameTree', {}, this.sessionId),
+				this.client.send('Target.getTargets'),
+			]), frameAttachTimeoutMs, 'frames');
+			const local = (frameTree?.childFrames ?? []).map((child: any) => child.frame);
+			const remote = (Array.isArray(targetInfos) ? targetInfos : []).filter((t: any) => t?.type === 'iframe')
+				.map((t: any) => ({ id: t.targetId, url: t.url }));
+			return [...local, ...remote]
+				.filter((frame: any) => typeof frame?.id === 'string')
+				.map((frame: any) => ({ id: frame.id as string, url: String(frame.url ?? '') }))
+				.slice(0, 20);
+		} catch {
+			return [];
+		}
+	}
+
+	/**
+	 * Where to evaluate in a frame named by a model.
+	 *
+	 * The cached context answers at once; otherwise the frames are listed, which
+	 * attaches any frame in another process and so reports its contexts.
+	 */
+	public async frameScope(frameId: string): Promise<FrameScope> {
+		const known = this._frameContexts.get(frameId);
+		if (known) {
+			return known;
+		}
+		const listed = await this.frames(frameId);
+		if (!listed.some(frame => frame.id === frameId)) {
+			throw new Error(`No frame on this page has the id ${frameId}: it was removed, or the page navigated. `
+				+ 'Call browser_frames for the current ids.');
+		}
+		// **A frame that is there with no context is between documents.** A click
+		// on a link inside it ends the old document at once and the new one gets
+		// its context only when it commits — so `browser_wait_for` straight after
+		// the click, the commonest use of a wait, failed before it began. It
+		// waits a little for the context to arrive, and says "still loading"
+		// (which the wait's retry recognises) rather than "removed" if it does not.
+		const deadline = Date.now() + frameContextWaitMs;
+		while (Date.now() < deadline && !this.isClosed) {
+			await new Promise(resolve => setTimeout(resolve, 50));
+			const found = this._frameContexts.get(frameId);
+			if (found) {
+				return found;
+			}
+		}
+		throw new Error(`The frame ${frameId} ${frameBetweenDocuments}. Try again in a moment.`);
+	}
+
+	/**
+	 * Drops a frame context that turned out to be stale, so the next lookup asks
+	 * again — and the whole frame session when it is the session that has gone,
+	 * or `_attachFrame` would keep handing back the dead one.
+	 *
+	 * **Only the record that failed, never whatever is there now.** A call sent
+	 * just before a navigation fails with the old context id, and by the time the
+	 * failure arrives the new document's context has usually been recorded in its
+	 * place. Deleting by frame id threw *that* away, and since nothing reports an
+	 * existing context twice, the frame then read as "between documents" for good
+	 * — a click on a link inside a frame followed by `browser_wait_for` timed out
+	 * on a page that had long finished loading.
+	 */
+	public forgetFrame(frameId: string, stale: FrameScope, err: unknown): void {
+		const current = this._frameContexts.get(frameId);
+		if (current?.sessionId === stale.sessionId && current.contextId === stale.contextId) {
+			this._frameContexts.delete(frameId);
+		}
+		const message = err instanceof Error ? err.message : String(err);
+		if (stale.sessionId !== this.sessionId && /session|Target closed/i.test(message)) {
+			this._forgetSession(stale.sessionId);
 		}
 	}
 
@@ -283,6 +651,34 @@ function refuseValueProbe(selector: string | undefined): void {
 	}
 }
 
+/** Refuses an empty frame id: absent means "the page", and an empty one is neither. */
+function requireFrameId(frameId: string | undefined): void {
+	if (frameId !== undefined && !frameId) {
+		throw new Error('`frameId` is empty. Pass an id from browser_frames, or leave the argument out to read the page itself.');
+	}
+}
+
+/**
+ * `value` with the page's frames named beside it, when there are any.
+ *
+ * The page document's text and elements stop at every `<iframe>`, and nothing
+ * in a result read that way says so — so an application that renders its
+ * content in a frame looked like a bare shell. With no frames the result keeps
+ * its usual shape: `plain` when given, `value` otherwise.
+ */
+function withFrameHint(value: object, frames: readonly { id: string; url: string }[], plain?: unknown): unknown {
+	if (frames.length === 0) {
+		return plain !== undefined ? plain : value;
+	}
+	return {
+		...value,
+		frames,
+		framesNote: 'This page embeds frames, and their content is not included above. Pass a frame id as frameId to '
+			+ 'browser_text, browser_snapshot, browser_html, browser_click, browser_fill, browser_scroll or browser_wait_for '
+			+ 'to work inside one; browser_frames lists every frame, nested ones included.',
+	};
+}
+
 /** Refuses a `language` argument that is not a BCP 47 tag, before it reaches the page. */
 function requireLanguageCode(language: string | undefined): void {
 	if (language !== undefined && !isLanguageCode(language)) {
@@ -290,18 +686,52 @@ function requireLanguageCode(language: string | undefined): void {
 	}
 }
 
-/** Result of a page-side evaluation, already unwrapped. */
-async function evaluate(session: TabSession, expression: string): Promise<any> {
-	const { result, exceptionDetails } = await session.client.send('Runtime.evaluate', {
+/**
+ * Result of a page-side evaluation, already unwrapped.
+ *
+ * With `frameId` it runs in that frame's document instead of the page's — the
+ * frame's own default context, in whichever session reaches it. A context that
+ * has gone since it was recorded (the frame navigated, or its process was
+ * swapped) is looked up once more before the call fails.
+ */
+async function evaluate(session: TabSession, expression: string, frameId?: string): Promise<any> {
+	if (frameId === undefined) {
+		return evaluateAt(session.client, session.sessionId, undefined, expression);
+	}
+	for (let attempt = 0; ; attempt++) {
+		const scope = await session.frameScope(frameId);
+		try {
+			return await evaluateAt(session.client, scope.sessionId, scope.contextId, expression);
+		} catch (err) {
+			if (attempt > 0 || !frameContextGone(err)) {
+				throw err;
+			}
+			session.forgetFrame(frameId, scope, err);
+		}
+	}
+}
+
+async function evaluateAt(client: CDPClient, sessionId: string, contextId: number | undefined, expression: string): Promise<any> {
+	const { result, exceptionDetails } = await client.send('Runtime.evaluate', {
 		expression,
 		returnByValue: true,
 		awaitPromise: true,
-	}, session.sessionId);
+		contextId,
+	}, sessionId);
 
 	if (exceptionDetails) {
 		throw new Error(exceptionDetails.exception?.description ?? exceptionDetails.text ?? 'Evaluation failed');
 	}
 	return result?.value;
+}
+
+/** CDP's ways of saying a recorded frame context or frame session is no longer there. */
+function frameContextGone(err: unknown): boolean {
+	const message = err instanceof Error ? err.message : String(err);
+	// "Session not found" is the editor's proxy answering a send to a frame
+	// session it has already dropped.
+	return /Cannot find context with specified id|Session with given id not found|No session with given id|Session not found|Target closed/i
+		.test(message) || message.includes(frameSessionEnded);
 }
 
 /** One `Page.captureScreenshot`, refusing the empty answer CDP sometimes gives instead of failing. */
@@ -393,11 +823,11 @@ function visibleOrigin(metrics: any): { x: number; y: number } {
 /** How long switching inspect mode off may take before the call gives up on it. */
 const inspectCleanupTimeoutMs = 2_000;
 
-/** How much longer than its page-side deadline `waitFor` waits on the host side. */
+/** How long past its deadline `waitFor` lets a round already sent to the page answer. */
 const waitForGraceMs = 1_000;
 
-/** The page global where `waitFor` leaves the tokens of the calls that have ended. */
-const waitForCancelKey = 'aiBrowser.waitFor.cancelled';
+/** The pause between two checks of `waitFor`, kept on the host's clock, never the page's. */
+const waitForPollMs = 100;
 
 /**
  * Whether an evaluation failed because its document went away — a navigation
@@ -408,7 +838,8 @@ const waitForCancelKey = 'aiBrowser.waitFor.cancelled';
  */
 function documentReplaced(err: unknown): boolean {
 	const message = err instanceof Error ? err.message : String(err);
-	return /Inspected target navigated or closed|Execution context was destroyed|Cannot find default execution context/i.test(message);
+	return /Inspected target navigated or closed|Execution context was destroyed|Cannot find default execution context/i.test(message)
+		|| message.includes(frameSessionEnded) || message.includes(frameBetweenDocuments);
 }
 
 /** The longest delay `setTimeout` honours; past it Node fires after 1 ms. */
@@ -1969,7 +2400,8 @@ export class BrowserController implements vscode.Disposable {
 	 * Classes are deliberately not used, for the reason given under the element
 	 * commands: utility-class frameworks make them long and unstable.
 	 */
-	public async snapshot(caller: CallerIdentity): Promise<unknown> {
+	public async snapshot(frameId: string | undefined, caller: CallerIdentity): Promise<unknown> {
+		requireFrameId(frameId);
 		return this._withSession(caller, async session => {
 			const value = await evaluate(session, `(() => {
 				// The exact test the consumer performs, so a selector cannot pass
@@ -2029,13 +2461,17 @@ export class BrowserController implements vscode.Disposable {
 					if (out.length >= 150) { break; }
 				}
 				return { url: location.href, title: document.title, elements: out };
-			})()`);
+			})()`, frameId);
 			// Nothing writes a marker into a page any more, but a page an older
 			// build reached can still be open with its observer re-applying one.
 			// This title is read from the page, so it is one of the two sites
 			// `stripMarker` can actually clean — see the note in
 			// `shareIndicator.ts` on why the `BrowserTab.title` sites cannot be.
-			return value ? { ...value, title: stripMarker(value.title) } : value;
+			if (!value) {
+				return value;
+			}
+			const snapshot = { ...value, title: stripMarker(value.title) };
+			return frameId === undefined ? withFrameHint(snapshot, await session.frameHint()) : snapshot;
 		});
 	}
 
@@ -2195,15 +2631,16 @@ export class BrowserController implements vscode.Disposable {
 	 * script. A field is secret by type, `autocomplete` token or name, so a "show
 	 * password" toggle that turned it into a text field does not reveal it.
 	 */
-	public async html(selector: string | undefined, caller: CallerIdentity): Promise<unknown> {
+	public async html(selector: string | undefined, frameId: string | undefined, caller: CallerIdentity): Promise<unknown> {
 		refuseValueProbe(selector);
+		requireFrameId(frameId);
 		return this._withSession(caller, async session => {
 			const value = await evaluate(session, `(() => {
 				const sel = ${literal(selector)};
 				const el = sel ? document.querySelector(sel) : document.documentElement;
 				if (!el) { throw new Error('No element matches ' + sel); }
 				return el.outerHTML;
-			})()`);
+			})()`, frameId);
 			// Nothing writes a marker into a page any more, but a page an older
 			// build reached can still be open with its observer re-applying one —
 			// and this is the tool a model uses to check a page against itself, so
@@ -2212,16 +2649,114 @@ export class BrowserController implements vscode.Disposable {
 		});
 	}
 
-	public async text(selector: string | undefined, caller: CallerIdentity): Promise<unknown> {
+	public async text(selector: string | undefined, frameId: string | undefined, caller: CallerIdentity): Promise<unknown> {
 		refuseValueProbe(selector);
+		requireFrameId(frameId);
 		return this._withSession(caller, async session => {
-			return evaluate(session, `(() => {
+			const text = await evaluate(session, `(() => {
 				const sel = ${literal(selector)};
 				const el = sel ? document.querySelector(sel) : document.body;
 				if (!el) { throw new Error('No element matches ' + sel); }
 				return (el.innerText || el.textContent || '').trim();
-			})()`);
+			})()`, frameId);
+			// The whole page and no frame named: say what the text leaves out.
+			// With a selector the caller asked for one element and gets just that.
+			return frameId === undefined && selector === undefined
+				? withFrameHint({ text }, await session.frameHint(), text)
+				: text;
 		});
+	}
+
+	/**
+	 * The tab's frames with the ids the other tools take — `browser_frames`.
+	 *
+	 * Listing attaches to every frame in another process (up to
+	 * `maxFrameSessions`), so a frame reported `readable` will take a frame id
+	 * at once. See `TabSession._attachFrame` for why such a frame needs it.
+	 */
+	public async frames(caller: CallerIdentity): Promise<unknown> {
+		return this._withSession(caller, async (session, tab) => {
+			const frames = await session.frames();
+			return {
+				url: tab.url,
+				frames,
+				note: frames.length === 0 ? 'This page has no frames.'
+					: frames.some(frame => !frame.readable)
+						? 'A frame with readable: false is not connected: it is still loading, it is not answering, or it is past the '
+							+ `first ${maxFrameSessions} frames from other sites that a listing connects to. Passing its id as frameId `
+							+ 'connects it for that call.'
+						: undefined,
+			};
+		});
+	}
+
+	/**
+	 * Scrolls the page, a frame or one element — `browser_scroll`.
+	 *
+	 * With no selector it scrolls what a person would: the document when the
+	 * document scrolls, and otherwise the largest scrolling element in it. An
+	 * application shell — OneNote, a mail client, a chat — keeps the document
+	 * fixed and scrolls an inner panel, and "scroll the window" moved nothing
+	 * there. The result names what moved and whether it reached the end, so a
+	 * model reading a long page in screenshots knows when to stop.
+	 *
+	 * In turn with full-page captures (`_onScrollGate`): those scroll the page to
+	 * the top and back, and a scroll landing in between would be undone.
+	 */
+	public async scroll(
+		selector: string | undefined,
+		by: number | undefined,
+		to: 'top' | 'bottom' | undefined,
+		frameId: string | undefined,
+		caller: CallerIdentity,
+	): Promise<unknown> {
+		refuseValueProbe(selector);
+		requireFrameId(frameId);
+		// Both at once has no single meaning; taking one silently is the false
+		// success #210 is about. The types themselves are checked at the boundary.
+		if (by !== undefined && to !== undefined) {
+			throw new Error('Pass either `by` or `to`, not both.');
+		}
+		return this._withSession(caller, (session, tab) => this._onScrollGate(tab, () => evaluate(session, `(() => {
+			const sel = ${literal(selector)};
+			const by = ${literal(by)};
+			const to = ${literal(to)};
+			const root = document.scrollingElement || document.documentElement;
+			const hidden = (el) => el && getComputedStyle(el).overflowY === 'hidden';
+			const scrolls = (el) => el.scrollHeight > el.clientHeight + 1 && (el === root
+				? !hidden(document.documentElement) && !hidden(document.body)
+				: /(auto|scroll|overlay)/.test(getComputedStyle(el).overflowY));
+			let el;
+			if (sel) {
+				el = document.querySelector(sel);
+				if (!el) { throw new Error('No element matches ' + sel); }
+			} else if (scrolls(root)) {
+				el = root;
+			} else {
+				let area = 0;
+				for (const candidate of document.querySelectorAll('*')) {
+					if (!scrolls(candidate)) { continue; }
+					const rect = candidate.getBoundingClientRect();
+					if (rect.width * rect.height > area) { area = rect.width * rect.height; el = candidate; }
+				}
+				if (!el) { return { moved: 0, note: 'Nothing in this document scrolls.' }; }
+			}
+			const before = el.scrollTop;
+			if (to === 'top') { el.scrollTo({ top: 0, behavior: 'instant' }); }
+			else if (to === 'bottom') { el.scrollTo({ top: el.scrollHeight, behavior: 'instant' }); }
+			else { el.scrollBy({ top: by ?? Math.round(el.clientHeight * 0.8), behavior: 'instant' }); }
+			const name = el === root ? 'document'
+				: el.tagName.toLowerCase() + (el.id ? '#' + el.id : '');
+			return {
+				scrolled: name,
+				moved: Math.round(el.scrollTop - before),
+				scrollTop: Math.round(el.scrollTop),
+				scrollHeight: el.scrollHeight,
+				clientHeight: el.clientHeight,
+				atTop: el.scrollTop <= 0,
+				atBottom: el.scrollTop + el.clientHeight >= el.scrollHeight - 1,
+			};
+		})()`, frameId)));
 	}
 
 	/**
@@ -2719,8 +3254,9 @@ export class BrowserController implements vscode.Disposable {
 		return { png: Buffer.from(data, 'base64'), clipped, url: tab.url };
 	}
 
-	public async click(selector: string, caller: CallerIdentity): Promise<unknown> {
+	public async click(selector: string, frameId: string | undefined, caller: CallerIdentity): Promise<unknown> {
 		refuseValueProbe(selector);
+		requireFrameId(frameId);
 		return this._withSession(caller, async session => {
 			return evaluate(session, `(() => {
 				const el = document.querySelector(${literal(selector)});
@@ -2728,7 +3264,7 @@ export class BrowserController implements vscode.Disposable {
 				el.scrollIntoView({ block: 'center' });
 				el.click();
 				return 'clicked ' + (el.tagName.toLowerCase());
-			})()`);
+			})()`, frameId);
 		});
 	}
 
@@ -2761,8 +3297,9 @@ export class BrowserController implements vscode.Disposable {
 	 *   value (a mask, a trimmed email, a lowercased colour) took it, and says
 	 *   what it now reads rather than being reported as a failure.
 	 */
-	public async fill(selector: string, value: string, caller: CallerIdentity): Promise<unknown> {
+	public async fill(selector: string, value: string, frameId: string | undefined, caller: CallerIdentity): Promise<unknown> {
 		refuseValueProbe(selector);
+		requireFrameId(frameId);
 		return this._withSession(caller, async session => {
 			const result = await evaluate(session, `(() => {
 				const el = document.querySelector(${literal(selector)});
@@ -2845,7 +3382,7 @@ export class BrowserController implements vscode.Disposable {
 					attributes: { type: el.getAttribute('type') ?? '', name: el.getAttribute('name') ?? '',
 						id: el.getAttribute('id') ?? '', autocomplete: el.getAttribute('autocomplete') ?? '' },
 				};
-			})()`);
+			})()`, frameId);
 			if (typeof result === 'string') {
 				return result;
 			}
@@ -2875,11 +3412,34 @@ export class BrowserController implements vscode.Disposable {
 		});
 	}
 
-	/** Polls in the page until a selector or a piece of text shows up. */
+	/**
+	 * Waits until a selector or a piece of text shows up — `browser_wait_for`.
+	 *
+	 * **Polled from here, one synchronous check per round, never by a loop in
+	 * the page.** The loop it replaced slept on the page's own `setTimeout`, and
+	 * a document that runs no timers ran its check once and never again: a frame
+	 * sandboxed without `allow-scripts` — an HTML mail or document preview that
+	 * its parent writes into — answers `Runtime.evaluate` and resolves promises,
+	 * but a timer scheduled from an evaluate never fires (measured, Chrome 153).
+	 * The call then timed out over text on screen, and left its evaluate pending
+	 * for the life of the frame. Frames made that a normal target. Polling from
+	 * the host also retires what the page loop needed to be stopped: a page with
+	 * frozen or fake timers (#212) and a loop left reading `innerText` after the
+	 * call had ended (#311) no longer have anything to act on.
+	 *
+	 * **A navigation during the wait is not a failure.** A round that meets a
+	 * replaced document (`documentReplaced`, which also covers a frame between
+	 * documents or whose session ended) counts as "not yet", and the next round
+	 * looks the document up again — the frame's too, when one was named. The
+	 * deadline and a cancellation from the client end the wait even while a
+	 * round is unanswered: a page busy in a long task holds an evaluate for as
+	 * long as it likes, and the hold in `_withSession` must not be kept with it.
+	 */
 	public async waitFor(
 		selector: string | undefined,
 		text: string | undefined,
 		timeoutMs: number,
+		frameId: string | undefined,
 		caller: CallerIdentity,
 		signal?: AbortSignal,
 	): Promise<unknown> {
@@ -2887,102 +3447,72 @@ export class BrowserController implements vscode.Disposable {
 			throw new Error('Give either a selector or a text to wait for.');
 		}
 		refuseValueProbe(selector);
+		requireFrameId(frameId);
 		const timedOut = 'Timed out waiting for ' + (selector ?? '') + (selector && text ? ' and ' : '')
 			+ (text ? JSON.stringify(text) : '');
+		const check = `(() => {
+			const sel = ${literal(selector)};
+			const needle = ${literal(text)};
+			if (sel && !document.querySelector(sel)) { return false; }
+			// No body yet is "not yet": a round after a navigation can land in the
+			// new document before its body is parsed (#322).
+			if (needle && !(document.body?.innerText ?? '').includes(needle)) { return false; }
+			return true;
+		})()`;
 
 		return this._withSession(caller, async session => {
-			const hostDeadline = Date.now() + Math.max(0, timeoutMs);
-			// Each call has a token the page loop checks between polls, so a call
-			// that is cancelled or times out here stops polling there too. Settling
-			// only the host side left the loop reading `innerText` every 100 ms for
-			// the rest of a deadline the model chose.
-			const token = generateUuid();
-			const cancelled = `(globalThis[Symbol.for(${literal(waitForCancelKey)})] ??= new Set())`;
-			const loop = (remainingMs: number) => `(async () => {
-				const cancelled = ${cancelled};
-				const sel = ${literal(selector)};
-				const needle = ${literal(text)};
-				const token = ${literal(token)};
-				const deadline = Date.now() + ${remainingMs};
-				const found = () => {
-					if (sel && !document.querySelector(sel)) { return false; }
-					// No body yet is "not yet": the retry below lands in a new
-					// document as soon as it exists, often before its body is parsed.
-					if (needle && !(document.body?.innerText ?? '').includes(needle)) { return false; }
-					return true;
-				};
-				while (Date.now() < deadline) {
-					if (cancelled.delete(token)) { return 'cancelled'; }
-					if (found()) { return 'found'; }
-					await new Promise(r => setTimeout(r, 100));
-				}
-				throw new Error('Timed out waiting for ' + (sel || '') + (sel && needle ? ' and ' : '') + (needle ? JSON.stringify(needle) : ''));
-			})()`;
-			let stopped = false;
-			// **A navigation during the wait is not a failure.** The loop runs in a
-			// document, and a click that navigates — the commonest reason to wait
-			// at all — destroys that document's context, which CDP answers with a
-			// protocol error ("Inspected target navigated or closed"). That went to
-			// the model as the tool's result. The loop is started again in the new
-			// document for what is left of the deadline.
-			const inPage = (async () => {
-				for (;;) {
-					try {
-						return await evaluate(session, loop(Math.max(0, hostDeadline - Date.now())));
-					} catch (err) {
-						if (stopped || !documentReplaced(err) || Date.now() >= hostDeadline) {
-							throw err;
-						}
-						await new Promise(r => setTimeout(r, 100));
-						// Asked again after the pause: a call settled during it must not
-						// start a loop nobody will stop — its stop went to the old page.
-						if (stopped) {
-							throw err;
-						}
-					}
-				}
-			})();
-			// **The deadline is kept here as well as in the page.** The loop above
-			// reads `Date.now` and sleeps on `setTimeout`, and both belong to the
-			// page: one with frozen or fake timers — mockdate, sinon, a Storybook
-			// date mock — never reached its deadline, the call never answered, and
-			// its hold kept the tab's session marked busy. A cancellation from the
-			// client ends the wait too. Breaks-silently #212.
-			inPage.catch(() => { /* answered below, or abandoned */ });
-			const stopInPage = () => {
-				stopped = true;
-				withTimeout(session.client.send('Runtime.evaluate', {
-					expression: `${cancelled}.add(${literal(token)}), undefined`,
-				}, session.sessionId), inspectCleanupTimeoutMs, 'stop waiting').catch(() => { /* the page is gone, or busy */ });
-			};
-			return new Promise<unknown>((resolve, reject) => {
-				const finish = () => {
+			const deadline = Date.now() + Math.max(0, timeoutMs);
+			let release: () => void = () => undefined;
+			// Settles when the call is over regardless of the page: past the
+			// deadline (with a little grace for the round in flight) or cancelled.
+			const ended = new Promise<'timeout' | 'cancelled'>(resolve => {
+				const timer = setTimeout(() => resolve('timeout'),
+					Math.min(Math.max(0, timeoutMs) + waitForGraceMs, maxTimerMs));
+				const onAbort = () => resolve('cancelled');
+				signal?.addEventListener('abort', onAbort, { once: true });
+				release = () => {
 					clearTimeout(timer);
 					signal?.removeEventListener('abort', onAbort);
 				};
-				const onAbort = () => {
-					finish();
-					stopInPage();
-					reject(new Error('The wait was cancelled.'));
-				};
-				const timer = setTimeout(() => {
-					finish();
-					stopInPage();
-					reject(new Error(timedOut));
-				}, Math.min(Math.max(0, timeoutMs) + waitForGraceMs, maxTimerMs));
-				if (signal?.aborted) {
-					onAbort();
-					return;
-				}
-				signal?.addEventListener('abort', onAbort, { once: true });
-				inPage.then(value => {
-					finish();
-					resolve(value);
-				}, err => {
-					finish();
-					reject(err);
-				});
 			});
+			const settle = (outcome: 'timeout' | 'cancelled'): never => {
+				throw new Error(outcome === 'cancelled' ? 'The wait was cancelled.' : timedOut);
+			};
+			try {
+				for (;;) {
+					if (signal?.aborted) {
+						settle('cancelled');
+					}
+					const round = evaluate(session, check, frameId).then(
+						found => found === true,
+						err => {
+							if (documentReplaced(err)) {
+								return false;
+							}
+							throw err;
+						});
+					round.catch(() => { /* answered below, or abandoned with the call */ });
+					const outcome = await Promise.race([round, ended]);
+					if (outcome === true) {
+						return 'found';
+					}
+					if (outcome === 'timeout' || outcome === 'cancelled') {
+						settle(outcome);
+					}
+					if (Date.now() >= deadline) {
+						settle('timeout');
+					}
+					const paused = await Promise.race([
+						new Promise<undefined>(resolve => setTimeout(() => resolve(undefined), waitForPollMs)),
+						ended,
+					]);
+					if (paused) {
+						settle(paused);
+					}
+				}
+			} finally {
+				release();
+			}
 		});
 	}
 

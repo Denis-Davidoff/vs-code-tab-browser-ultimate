@@ -29,7 +29,7 @@ interface CDPEvent {
 export class CDPClient implements vscode.Disposable {
 
 	private _nextId = 1;
-	private readonly _pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
+	private readonly _pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void; sessionId?: string }>();
 	private readonly _listeners = new Set<(event: CDPEvent) => void>();
 	/**
 	 * How to abandon each outstanding {@link once} waiter.
@@ -81,7 +81,7 @@ export class CDPClient implements vscode.Disposable {
 
 		const id = this._nextId++;
 		return new Promise<any>((resolve, reject) => {
-			this._pending.set(id, { resolve, reject });
+			this._pending.set(id, { resolve, reject, sessionId });
 			this.session.sendMessage({ id, method, params, sessionId }).then(undefined, err => {
 				this._pending.delete(id);
 				reject(err instanceof Error ? err : new Error(String(err)));
@@ -89,11 +89,17 @@ export class CDPClient implements vscode.Disposable {
 		});
 	}
 
-	/** Subscribes to every event matching `method` until disposed. */
-	public on(method: string, handler: (params: any) => void): vscode.Disposable {
+	/**
+	 * Subscribes to every event matching `method` until disposed.
+	 *
+	 * `sessionId` is the session the event came from. One channel carries the
+	 * page and every frame attached through it, so a listener that only cares
+	 * about the page has to compare it — see `TabSession._fromPage`.
+	 */
+	public on(method: string, handler: (params: any, sessionId: string | undefined) => void): vscode.Disposable {
 		const listener = (event: CDPEvent) => {
 			if (event.method === method) {
-				handler(event.params);
+				handler(event.params, event.sessionId);
 			}
 		};
 		this._listeners.add(listener);
@@ -155,6 +161,24 @@ export class CDPClient implements vscode.Disposable {
 			flatten: true,
 		});
 		return sessionId;
+	}
+
+	/**
+	 * Rejects every command still waiting on one session of this channel.
+	 *
+	 * A frame session can end while the channel lives on — the frame navigated
+	 * to another process or was removed — and the browser then drops what was
+	 * sent to it without answering. Only the channel closing settles commands
+	 * here, so without this a call on a frame that just left waited for ever.
+	 * The caller says why, in words its own retry logic recognises.
+	 */
+	public failSession(sessionId: string, reason: string): void {
+		for (const [id, pending] of [...this._pending]) {
+			if (pending.sessionId === sessionId) {
+				this._pending.delete(id);
+				pending.reject(new Error(reason));
+			}
+		}
 	}
 
 	/**

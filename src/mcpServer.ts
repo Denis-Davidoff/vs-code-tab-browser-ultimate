@@ -13,7 +13,7 @@ import { generateUuid } from './uuid';
 import {
 	authorizeRequest, classifyClient, dispatch, initializeClientName, invalidRequest,
 	invalidRequestReason, isNotification, normalisePath, number, parseError, schema, string,
-	stringOrUndefined, numberOrUndefined, textArgument, toolContent,
+	stringOrUndefined, numberOrUndefined, numberArgument, textArgument, toolContent,
 	type Caller, type ClientKind, type ContentBlock, type DispatchContext, type Tool,
 } from './mcpProtocol';
 
@@ -32,6 +32,25 @@ const drainLimitBytes = 16 * 1024 * 1024;
 const clientIdleMs = 10 * 60 * 1000;
 /** How many `Mcp-Session-Id`s are remembered before the oldest is forgotten. */
 const sessionLimit = 256;
+
+/**
+ * `browser_scroll`'s `to`, refused when it is anything but an edge. Read as
+ * absent, a misspelt `"end"` scrolled down by the default amount and answered
+ * as if it had jumped (#210).
+ */
+function scrollEdge(value: unknown): 'top' | 'bottom' | undefined {
+	if (value === undefined || value === null) {
+		return undefined;
+	}
+	const edge = typeof value === 'string' ? value.trim().toLowerCase() : undefined;
+	if (edge === 'top' || edge === 'bottom') {
+		return edge;
+	}
+	throw new Error(`\`to\` must be "top" or "bottom", not ${JSON.stringify(value) ?? typeof value}. Use \`by\` to scroll by an amount.`);
+}
+
+/** The `frameId` argument the page tools share: absent means the page itself. */
+const frameIdArgument = string('Optional frame id from browser_frames, to act inside that frame instead of the page');
 
 /** Which assistants are currently calling the server. */
 export interface ClientSet {
@@ -469,10 +488,20 @@ export class McpServer implements vscode.Disposable {
 				run: (args, caller) => browser.navigate(stringOrUndefined(args.url) ?? '', args.newTab === true, caller),
 			},
 			{
-				name: 'browser_snapshot', title: 'Snapshot',
-				description: 'Lists the interactive elements on the page with selectors you can pass to browser_click or browser_fill.',
+				name: 'browser_frames', title: 'List frames',
+				description: 'Lists the frames (iframes) embedded in the page, nested ones included, with ids to pass as frameId '
+					+ 'to the other tools. Content inside a frame — an embedded document viewer, editor, form or widget — is not '
+					+ 'part of the page\'s own text or elements, and frames from other sites are reached through this. '
+					+ 'Ids last as long as the frame; a frame that is removed or reloaded may need listing again.',
 				inputSchema: schema({}),
-				run: (_args, caller) => browser.snapshot(caller),
+				run: (_args, caller) => browser.frames(caller),
+			},
+			{
+				name: 'browser_snapshot', title: 'Snapshot',
+				description: 'Lists the interactive elements on the page with selectors you can pass to browser_click or browser_fill. '
+					+ 'Pass frameId to list a frame\'s elements instead; the selectors then belong to that frame.',
+				inputSchema: schema({ frameId: frameIdArgument }),
+				run: (args, caller) => browser.snapshot(textArgument(args.frameId, 'frameId'), caller),
 			},
 			{
 				name: 'browser_inspect_element', title: 'Inspect an element',
@@ -490,14 +519,15 @@ export class McpServer implements vscode.Disposable {
 			{
 				name: 'browser_html', title: 'Read HTML',
 				description: 'Outer HTML of the whole document, or of the first element matching a CSS selector.',
-				inputSchema: schema({ selector: string('Optional CSS selector') }),
-				run: (args, caller) => browser.html(stringOrUndefined(args.selector), caller),
+				inputSchema: schema({ selector: string('Optional CSS selector'), frameId: frameIdArgument }),
+				run: (args, caller) => browser.html(stringOrUndefined(args.selector), textArgument(args.frameId, 'frameId'), caller),
 			},
 			{
 				name: 'browser_text', title: 'Read text',
-				description: 'Visible text of the page body, or of the first element matching a CSS selector.',
-				inputSchema: schema({ selector: string('Optional CSS selector') }),
-				run: (args, caller) => browser.text(stringOrUndefined(args.selector), caller),
+				description: 'Visible text of the page body, or of the first element matching a CSS selector. '
+					+ 'Text inside frames is not included: when the page has frames the result lists them, and frameId reads one.',
+				inputSchema: schema({ selector: string('Optional CSS selector'), frameId: frameIdArgument }),
+				run: (args, caller) => browser.text(stringOrUndefined(args.selector), textArgument(args.frameId, 'frameId'), caller),
 			},
 			{
 				name: 'browser_text_segments', title: 'Text to translate',
@@ -593,8 +623,8 @@ export class McpServer implements vscode.Disposable {
 			{
 				name: 'browser_click', title: 'Click',
 				description: 'Clicks the first element matching a CSS selector.',
-				inputSchema: schema({ selector: string('CSS selector of the element to click') }, ['selector']),
-				run: (args, caller) => browser.click(stringOrUndefined(args.selector) ?? '', caller),
+				inputSchema: schema({ selector: string('CSS selector of the element to click'), frameId: frameIdArgument }, ['selector']),
+				run: (args, caller) => browser.click(stringOrUndefined(args.selector) ?? '', textArgument(args.frameId, 'frameId'), caller),
 			},
 			{
 				name: 'browser_fill', title: 'Fill a field',
@@ -603,8 +633,10 @@ export class McpServer implements vscode.Disposable {
 				inputSchema: schema({
 					selector: string('CSS selector of the field'),
 					value: string('Value to set'),
+					frameId: frameIdArgument,
 				}, ['selector', 'value']),
-				run: (args, caller) => browser.fill(stringOrUndefined(args.selector) ?? '', textArgument(args.value, 'value') ?? '', caller),
+				run: (args, caller) => browser.fill(stringOrUndefined(args.selector) ?? '', textArgument(args.value, 'value') ?? '',
+					textArgument(args.frameId, 'frameId'), caller),
 			},
 			{
 				name: 'browser_wait_for', title: 'Wait for',
@@ -613,14 +645,38 @@ export class McpServer implements vscode.Disposable {
 					selector: string('CSS selector to wait for'),
 					text: string('Text to wait for'),
 					timeoutMs: number('How long to wait, default 10000'),
+					frameId: frameIdArgument,
 				}),
 				// The tool itself waits up to 10s, so its own budget must exceed that.
 				run: (args, caller, signal) => browser.waitFor(
 					stringOrUndefined(args.selector),
 					textArgument(args.text, 'text') || undefined,
 					numberOrUndefined(args.timeoutMs) ?? 10_000,
+					textArgument(args.frameId, 'frameId'),
 					caller,
 					signal),
+			},
+			{
+				name: 'browser_scroll', title: 'Scroll',
+				description: 'Scrolls the page, a frame, or one element, and reports where it ended up. With no selector it scrolls '
+					+ 'what a person would: the document, or when the document does not scroll — an application that keeps its '
+					+ 'content in an inner panel — the largest scrolling element. Use it before browser_screenshot to see '
+					+ 'further down; atBottom says when there is nothing more.',
+				inputSchema: schema({
+					selector: string('Optional CSS selector of the element to scroll'),
+					by: number('Pixels to scroll, positive down and negative up; default most of one screen'),
+					to: { type: 'string', enum: ['top', 'bottom'], description: 'Jump to the top or the bottom instead of scrolling by an amount' },
+					frameId: frameIdArgument,
+				}),
+				// `textArgument` for the selector too: absent means "pick the scrolling
+				// element yourself", so a wrong-typed one read as absent scrolled
+				// something else and answered success (#210).
+				run: (args, caller) => browser.scroll(
+					textArgument(args.selector, 'selector') || undefined,
+					numberArgument(args.by, 'by'),
+					scrollEdge(args.to),
+					textArgument(args.frameId, 'frameId'),
+					caller),
 			},
 		];
 	}

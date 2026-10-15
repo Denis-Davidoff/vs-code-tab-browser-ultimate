@@ -39,6 +39,11 @@ there is not the problem, the missing API is. **Measured by reading the shipped 
 
 ## Changelog
 
+**0.6.3** — Assistants can now read and work inside embedded frames, including ones from other
+sites — a OneNote notebook in SharePoint, a document viewer, a payment form. A new
+`browser_frames` tool lists them, the reading, clicking, filling and waiting tools take a frame,
+and a new `browser_scroll` scrolls a page, a frame or an inner panel.
+
 **0.6.2** — Fixes across the board: the password manager no longer offers to save a password after
 a link or a rejected sign-in, while catching sign-in buttons in any language; `browser_wait_for`
 survives the navigation it waits for; screenshots of right-to-left pages are no longer blank; and
@@ -117,9 +122,11 @@ the editor: the page you are looking at is the page your agent reads and drives.
 - 🔌 **An MCP server, with nothing to install.** No package, no separate process to babysit: the
   extension starts a local server on activation, and one command configures Claude Code, Codex
   or VS Code's own chat to use it.
-- 🤖 **Then the agent drives the page itself.** Seventeen tools: snapshot what is clickable, read
-  the html or the text, inspect an element, click, fill fields, wait for a render, screenshot,
-  navigate — then read the console to see what its own change actually did.
+- 🤖 **Then the agent drives the page itself.** Nineteen tools: snapshot what is clickable, read
+  the html or the text, inspect an element, click, fill fields, scroll, wait for a render,
+  screenshot, navigate — then read the console to see what its own change actually did. Reading,
+  clicking, filling, scrolling and waiting work inside embedded frames too, frames from other
+  sites included.
 - 🌐 **Translate a page with your own assistant.** Pick a language, paste the prompt it copies into
   Claude Code, Codex or any agent connected to the MCP server, and the page's text is replaced in
   place — no translation service, and text the page re-renders keeps its translation; new text

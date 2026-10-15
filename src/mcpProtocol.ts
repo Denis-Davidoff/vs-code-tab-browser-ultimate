@@ -140,6 +140,28 @@ export function textArgument(value: unknown, name: string): string | undefined {
 	throw new Error(`\`${name}\` must be a string, not ${Array.isArray(value) ? 'an array' : typeof value}.`);
 }
 
+/**
+ * A number argument where absence means "do the default thing".
+ *
+ * `numberOrUndefined` reads a wrong-typed value as absent, which is right for a
+ * timeout and wrong wherever the default *acts*: `browser_scroll` given
+ * `"by": "-500"` scrolled down by its default instead of up (#210). A string
+ * that is plainly a number is converted, as `textArgument` converts the other
+ * way; anything else is refused.
+ */
+export function numberArgument(value: unknown, name: string): number | undefined {
+	if (value === undefined || value === null) {
+		return undefined;
+	}
+	if (typeof value === 'number' && Number.isFinite(value)) {
+		return value;
+	}
+	if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) {
+		return Number(value);
+	}
+	throw new Error(`\`${name}\` must be a number, not ${JSON.stringify(value) ?? typeof value}.`);
+}
+
 export function numberOrUndefined(value: unknown): number | undefined {
 	return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
@@ -180,6 +202,8 @@ function instructions(workspaceName: string | undefined): string {
 		'The user can also **share** one tab, and that outranks everything: the tools then act on that tab only, they'
 		+ ' cannot be moved off it, and if it is closed they pause until another is shared. `browser_state` says so.',
 		'`browser_inspect_element` waits for the user to click an element, so only call it when you have asked them to.',
+		'Content inside an iframe is not part of the page\'s own text: `browser_frames` lists the frames, and the reading'
+		+ ' and clicking tools take a `frameId` to work inside one.',
 	].join(' ');
 }
 

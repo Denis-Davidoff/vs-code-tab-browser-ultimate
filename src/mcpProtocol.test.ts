@@ -7,7 +7,7 @@ import * as assert from 'node:assert';
 import { suite, test } from 'node:test';
 import {
 	dispatch, errorCodes, invalidRequestReason, isNotification, schema, string,
-	stringOrUndefined, numberOrUndefined, authorizeRequest, normalisePath,
+	stringOrUndefined, numberOrUndefined, numberArgument, authorizeRequest, normalisePath,
 	classifyClient, initializeClientName, toolContent,
 	type DispatchContext, type Tool, type RequestFacts,
 } from './mcpProtocol.ts';
@@ -249,5 +249,24 @@ suite('initializeClientName', () => {
 		assert.strictEqual(initializeClientName({ method: 'initialize' }), undefined);
 		assert.strictEqual(initializeClientName({ method: 'initialize', params: {} }), undefined);
 		assert.strictEqual(initializeClientName({ method: 'initialize', params: { clientInfo: { name: 7 } } }), undefined);
+	});
+});
+
+suite('numberArgument', () => {
+	test('absent is absent', () => {
+		assert.strictEqual(numberArgument(undefined, 'by'), undefined);
+		assert.strictEqual(numberArgument(null, 'by'), undefined);
+	});
+
+	test('a number, or a string that is plainly one, is taken', () => {
+		assert.strictEqual(numberArgument(-500, 'by'), -500);
+		assert.strictEqual(numberArgument('-500', 'by'), -500);
+		assert.strictEqual(numberArgument(' 12.5 ', 'by'), 12.5);
+	});
+
+	test('anything else is refused rather than read as absent (#210)', () => {
+		for (const value of ['', 'up', 'NaN', Infinity, NaN, true, [1], { by: 1 }]) {
+			assert.throws(() => numberArgument(value, 'by'), /`by` must be a number/, String(value));
+		}
 	});
 });
