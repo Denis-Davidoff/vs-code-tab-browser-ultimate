@@ -7,7 +7,7 @@ import * as assert from 'node:assert';
 import { suite, test } from 'node:test';
 import {
 	LineSplitter, chatTitle, claudeEvents, claudeModels, claudeRateLimitWindows, claudeUsage,
-	claudeTool, codexEvents, codexModels, codexUsage, compareCliVersions, parseCliVersion, parseLine, toolDetail, unwrapShell, windowLabel,
+	claudeTool, codexAgentThreadEvents, codexEvents, codexModels, codexUsage, compareCliVersions, parseCliVersion, parseLine, toolDetail, unwrapShell, windowLabel,
 } from './agentProtocol.ts';
 
 // The samples below are trimmed copies of what Claude Code 2.1.301 and
@@ -213,9 +213,63 @@ suite('claudeEvents', () => {
 			[{ type: 'textBreak' }]);
 	});
 
-	test("a sub-agent's text and tools are not the reply", () => {
+	test("a sub-agent's text is not the reply, and its tools go on the agent's row", () => {
 		assert.deepStrictEqual(claudeEvents({ type: 'stream_event', parent_tool_use_id: 't1', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'x' } } }), []);
-		assert.deepStrictEqual(claudeEvents({ type: 'assistant', parent_tool_use_id: 't1', message: { content: [{ type: 'tool_use', name: 'Read' }] } }), []);
+		assert.deepStrictEqual(
+			claudeEvents({ type: 'assistant', parent_tool_use_id: 't1', message: { content: [{ type: 'text', text: 'x' }, { type: 'tool_use', id: 's1', name: 'Read', input: { file_path: '/a/b.ts' } }] } }),
+			[{ type: 'agentCall', parentId: 't1', name: 'Read', detail: '/a/b.ts' }]);
+		assert.deepStrictEqual(claudeEvents({ type: 'user', parent_tool_use_id: 't1', message: { content: [{ type: 'tool_result', tool_use_id: 's1', content: 'x' }] } }), []);
+	});
+
+	test('an Agent call is an agent row with its type and its prompt', () => {
+		const [event] = claudeEvents({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'a1', name: 'Agent', input: { description: 'Count files', prompt: 'Count the files\nin src', subagent_type: 'general-purpose', run_in_background: true } }] } });
+		assert.strictEqual(event.type, 'tool');
+		assert.ok(event.type === 'tool');
+		assert.strictEqual(event.tool.kind, 'agent');
+		assert.strictEqual(event.tool.detail, 'Count files');
+		assert.strictEqual(event.tool.input, 'Count the files\nin src');
+		assert.deepStrictEqual(event.tool.agent, { type: 'general-purpose', background: true });
+	});
+
+	test('a background launch keeps the row running and records the model', () => {
+		assert.deepStrictEqual(
+			claudeEvents({ type: 'user', tool_use_result: { status: 'async_launched', resolvedModel: 'claude-haiku-5-5' }, message: { content: [{ type: 'tool_result', tool_use_id: 'a1', content: 'Async agent launched' }] } }),
+			[{ type: 'toolUpdate', id: 'a1', update: { agent: { background: true, model: 'claude-haiku-5-5' } } }]);
+	});
+
+	test('task events: started, progress, and the notification that ends the row', () => {
+		assert.deepStrictEqual(
+			claudeEvents({ type: 'system', subtype: 'task_started', tool_use_id: 'a1', subagent_type: 'Explore', is_backgrounded: true }),
+			[{ type: 'toolUpdate', id: 'a1', update: { agent: { type: 'Explore', background: true } } }]);
+		assert.deepStrictEqual(
+			claudeEvents({ type: 'system', subtype: 'task_progress', tool_use_id: 'a1', last_tool_name: 'Grep', usage: { total_tokens: 1200, tool_uses: 3, duration_ms: 4000 } }),
+			[{ type: 'toolUpdate', id: 'a1', update: { agent: { tokens: 1200, toolUses: 3, durationMs: 4000, lastTool: 'Grep' } } }]);
+		assert.deepStrictEqual(
+			claudeEvents({ type: 'system', subtype: 'task_notification', tool_use_id: 'a1', status: 'completed', summary: '12 files', usage: { total_tokens: 2000, tool_uses: 4, duration_ms: 9000 } }),
+			[{ type: 'toolUpdate', id: 'a1', update: { status: 'done', output: '12 files', agent: { tokens: 2000, toolUses: 4, durationMs: 9000, summary: '12 files' } } }]);
+		const stopped = claudeEvents({ type: 'system', subtype: 'task_notification', tool_use_id: 'a2', status: 'killed' });
+		assert.ok(stopped[0].type === 'toolUpdate' && stopped[0].update.status === 'stopped');
+		const failed = claudeEvents({ type: 'system', subtype: 'task_notification', tool_use_id: 'a3', status: 'failed' });
+		assert.ok(failed[0].type === 'toolUpdate' && failed[0].update.status === 'failed');
+		assert.deepStrictEqual(claudeEvents({ type: 'system', subtype: 'task_progress' }), []);
+	});
+
+	test('a task that is not an agent is not read, and task_updated finds its row through the task map', () => {
+		const tasks = new Map<string, string>();
+		assert.deepStrictEqual(claudeEvents({ type: 'system', subtype: 'task_started', task_id: 'b1', tool_use_id: 'sh', task_type: 'local_bash', is_backgrounded: true }, tasks), []);
+		assert.strictEqual(tasks.size, 0);
+		assert.deepStrictEqual(
+			claudeEvents({ type: 'system', subtype: 'task_started', task_id: 'k1', tool_use_id: 'a1', task_type: 'local_agent', subagent_type: 'Explore', is_backgrounded: false }, tasks),
+			[{ type: 'toolUpdate', id: 'a1', update: { agent: { type: 'Explore', background: undefined } } }]);
+		assert.deepStrictEqual(
+			claudeEvents({ type: 'system', subtype: 'task_updated', task_id: 'k1', patch: { is_backgrounded: true } }, tasks),
+			[{ type: 'toolUpdate', id: 'a1', update: { agent: { background: true } } }]);
+		assert.deepStrictEqual(claudeEvents({ type: 'system', subtype: 'task_updated', task_id: 'k1', patch: { status: 'running' } }, tasks), []);
+		assert.deepStrictEqual(claudeEvents({ type: 'system', subtype: 'task_updated', task_id: 'unknown', patch: { is_backgrounded: true } }, tasks), []);
+	});
+
+	test('the CLI requesting on its own is an automatic turn', () => {
+		assert.deepStrictEqual(claudeEvents({ type: 'system', subtype: 'status', status: 'requesting' }), [{ type: 'autoTurn' }]);
 	});
 
 	test('result reports the turn\'s tokens and the process\'s cost, then ends the turn', () => {
@@ -287,6 +341,52 @@ suite('codexEvents', () => {
 		assert.deepStrictEqual(
 			codexEvents('thread/tokenUsage/updated', { tokenUsage: { total: { inputTokens: 14267, cachedInputTokens: 10, outputTokens: 5 }, last: {} } }),
 			[{ type: 'tokens', input: 14267, output: 5, cached: 10, cumulative: true }]);
+	});
+
+	test('a spawned agent is a row; a wait is not, and its states end the agent', () => {
+		const [spawn] = codexEvents('item/started', { item: { type: 'collabAgentToolCall', id: 'c1', tool: 'spawnAgent', prompt: 'Read the docs\nand report', model: 'gpt-6', receiverThreadIds: ['th1'] } });
+		assert.ok(spawn.type === 'tool');
+		assert.strictEqual(spawn.tool.kind, 'agent');
+		assert.strictEqual(spawn.tool.detail, 'Read the docs');
+		assert.deepStrictEqual(spawn.tool.agent, { type: 'spawnAgent', model: 'gpt-6', threadId: 'th1' });
+		assert.deepStrictEqual(
+			codexEvents('item/completed', { item: { type: 'collabAgentToolCall', id: 'c1', tool: 'spawnAgent', status: 'completed', receiverThreadIds: ['th1'] } }),
+			[{ type: 'toolUpdate', id: 'c1', update: { agent: { threadId: 'th1' } } }]);
+		assert.deepStrictEqual(codexEvents('item/started', { item: { type: 'collabAgentToolCall', id: 'w1', tool: 'wait' } }), []);
+		assert.deepStrictEqual(
+			codexEvents('item/completed', { item: { type: 'collabAgentToolCall', id: 'w1', tool: 'wait', agentsStates: { th1: { status: 'completed', message: 'done reading' }, th2: { status: 'interrupted' } } } }),
+			[{ type: 'agentStates', states: [{ threadId: 'th1', status: 'done', message: 'done reading' }, { threadId: 'th2', status: 'stopped', message: undefined }] }]);
+	});
+
+	test('subAgentActivity: started is a row keyed by the agent thread, completed and interrupted end it', () => {
+		const started = { type: 'subAgentActivity', id: 'call_1', kind: 'started', agentThreadId: 'th-a', agentPath: '/root/read_a' };
+		assert.deepStrictEqual(codexEvents('item/started', { item: started }), [
+			{ type: 'tool', id: 'th-a', tool: { kind: 'agent', name: 'Agent', detail: 'read a', agent: { type: '/root/read_a', threadId: 'th-a' } } },
+		]);
+		assert.deepStrictEqual(codexEvents('item/completed', { item: started }), []);
+		assert.deepStrictEqual(codexEvents('item/started', { item: { ...started, id: 'x', kind: 'completed' } }), [{ type: 'toolUpdate', id: 'th-a', update: { status: 'done' } }]);
+		assert.deepStrictEqual(codexEvents('item/started', { item: { ...started, id: 'y', kind: 'interrupted' } }), [{ type: 'toolUpdate', id: 'th-a', update: { status: 'stopped' } }]);
+		assert.deepStrictEqual(codexEvents('item/started', { item: { ...started, kind: 'interacted' } }), []);
+	});
+
+	test("an agent's own thread fills its card: calls, tokens, report", () => {
+		assert.deepStrictEqual(
+			codexAgentThreadEvents('th-a', 'item/started', { threadId: 'th-a', item: { type: 'commandExecution', id: 'e', command: "/bin/zsh -lc 'cat a.txt'" } }),
+			[{ type: 'agentCall', parentId: 'th-a', name: 'Terminal', detail: 'cat a.txt' }]);
+		assert.deepStrictEqual(
+			codexAgentThreadEvents('th-a', 'thread/tokenUsage/updated', { tokenUsage: { total: { totalTokens: 18390, inputTokens: 18306, outputTokens: 84 } } }),
+			[{ type: 'toolUpdate', id: 'th-a', update: { agent: { tokens: 18390 } } }]);
+		assert.deepStrictEqual(
+			codexAgentThreadEvents('th-a', 'item/completed', { item: { type: 'agentMessage', id: 'm', text: 'a.txt holds hello' } }),
+			[{ type: 'toolUpdate', id: 'th-a', update: { agent: { summary: 'a.txt holds hello' } } }]);
+		assert.deepStrictEqual(codexAgentThreadEvents('th-a', 'item/agentMessage/delta', { delta: 'x' }), []);
+		assert.deepStrictEqual(codexAgentThreadEvents('th-a', 'turn/completed', { turn: { status: 'completed' } }), []);
+		const [nested] = codexAgentThreadEvents('th-a', 'item/started', { item: { type: 'subAgentActivity', id: 'c', kind: 'started', agentThreadId: 'th-b', agentPath: '/root/read_a/check' } });
+		assert.ok(nested.type === 'tool' && nested.id === 'th-b');
+	});
+
+	test('a web search and an image view still finish', () => {
+		assert.deepStrictEqual(codexEvents('item/completed', { item: { type: 'webSearch', id: 'w', status: 'completed' } }), [{ type: 'toolUpdate', id: 'w', update: { status: 'done' } }]);
 	});
 
 	test('an error Codex is retrying is not reported', () => {

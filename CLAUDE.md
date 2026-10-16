@@ -231,7 +231,9 @@ difference, in `browserController.js`, was a doc comment whose link had been upd
 - [src/translate/translate.ts](src/translate/translate.ts) — Translate Page: the tab, the language picker, the prompt on the clipboard
 - [src/translate/translateText.ts](src/translate/translateText.ts) — languages, the prompt, checks on what the assistant writes back (leaf, under test)
 - [src/translate/translateScript.ts](src/translate/translateScript.ts) — the page-side translator behind `browser_text_segments` / `browser_replace_text`
-- [src/chat/chatView.ts](src/chat/chatView.ts) — the AI Browser chat: the webview view, its state, history, attachments, usage
+- [src/chat/chatView.ts](src/chat/chatView.ts) — the AI Browser chat: the webview view, its tabs, history, attachments, usage, switching agents
+- [src/chat/chatTab.ts](src/chat/chatTab.ts) — one conversation of the chat: its session, its turns, its agents
+- [src/chat/transcript.ts](src/chat/transcript.ts) — a conversation as Markdown, for handing it to the other agent (leaf, under test)
 - [src/chat/news.ts](src/chat/news.ts) — NEWS.md into the empty chat's introduction and "What's new" (leaf, under test)
 - [src/chat/chatProtocol.ts](src/chat/chatProtocol.ts) — the messages between the chat's webview and the host (types only, read by both builds)
 - [src/chat/agents.ts](src/chat/agents.ts) — the agent interface, and detecting which agents are installed
@@ -3076,7 +3078,7 @@ conversation. Reports are swept after 5 hours, at most hourly **per directory** 
 path plus once on activation — one shared timestamp let a Codex report's sweep of the temp
 directory skip the next Claude report's sweep of `.ai-browser/`, so alternating left page content
 there well past five hours (breaks-silently #220). **The sweep only touches a real directory and only our own file names**
-(`element-*.md`, regular files, `lstat`): the directory is inside somebody else's repository,
+(`element-*.md` and `chat-*.md`, regular files, `lstat`): the directory is inside somebody else's repository,
 which can commit it as a symlink, and following one deleted files outside the workspace
 (breaks-silently #174).
 
@@ -4135,7 +4137,8 @@ What is built, and what is not yet:
 - **Built:** agent detection; agent / model / effort selectors from the CLIs themselves; a
   streaming conversation with stop; messages sent during a turn; the `+` menu (screenshot of the
   page, element from the page, page address, file); the `U` usage popup (plan limits per agent,
-  plus this chat's tokens and cost); history with resume; new chat; refresh.
+  plus this chat's tokens and cost); history with resume; new chat; refresh; several
+  conversations at once, as tabs; the agents an agent starts, listed, each stoppable on its own.
 - **Not built yet, and the reason the chat exists:** browser tools given to the agent *in
   process*, with no MCP server, port or token — Codex's `dynamicTools` (see below) and the
   equivalent for Claude. Today the agents have only their own tools in the chat.
@@ -4145,10 +4148,28 @@ What is built, and what is not yet:
 ### The layout, as asked for
 
 Bottom to top: a toolbar row — `+`, the browser button, the agent pill, the model pill, the effort
-slider and, pushed right, `U` and Send / Stop — then the message box, then the conversation. The
-browser button (icon only, asked for) opens a new browser tab and does nothing else: it runs
+slider and, pushed right, the agents button (only while the chat has agents — see
+[Agents the agent starts](#agents-the-agent-starts)), `U` and Send / Stop — then the message box, then the conversation. The
+browser button (icon only, a globe — `codicon-globe`, the same mark as the extension's own
+status bar item and toolbar dropdown; `codicon-browser` reads as a window) opens a new browser
+tab and does nothing else: it runs
 `aiBrowser.newTab`, the dropdown's own "Open New Browser Tab", so the integrated browser or the
 panel is chosen by the same rule as everywhere else.
+
+**↑ / ↓ in the message box walk through the messages sent before**, as in a terminal: ↑ older,
+↓ newer, and past the newest the text typed before walking comes back. **↑ starts a walk only
+from an empty box or with the caret at the very start**; once a recalled message is on show, ↑
+goes on from its first line and ↓ from its last. "No line break before the caret" was the first
+rule and it was wrong in the narrow side bar: a long paragraph wraps onto several lines there, ↑
+means the line above, and it swapped the draft for the last message — and typing into that then
+lost the draft for good (#364). The draft from before a walk is kept while an edited recalled
+message is walked away from. A recalled message is entered at its end. Kept per workspace in
+`workspaceState` (`aiBrowser.chat.inputHistory`, the last 100, a repeat of the newest not stored
+twice, nothing over 20 000 characters — a pasted log is not worth recalling, and the list is
+rewritten and posted on every send) — per
+workspace like the chat history, since a prompt is usually about its project. A message is
+remembered before the agent check, so one refused for want of an agent is the first thing ↑
+brings back.
 
 **An empty chat shows NEWS.md.** The root `NEWS.md` holds an introduction — the paragraph before
 the first entry — and entries, each a `## <version> — <date>` heading over a bullet list, newest
@@ -4166,9 +4187,11 @@ small print, asked for. The choice is kept in `globalState` (`aiBrowser.chat.new
 holds in every window, and it is stored as **the newest entry's title at the moment of hiding**:
 when a release adds an entry, the list shows itself again. Hiding the changelog once must not mean
 never hearing of a new feature, which a plain boolean would have made permanent. The title bar carries
-icon buttons: New Chat, Chat History, Refresh Agents (`view/title`, `navigation@1..3`). `U` and
-Send are one group with `margin-left: auto`, so a narrow side bar wraps them *together* onto the
-next line at the right: one row at 420 px, the pair wraps at 380 px.
+icon buttons: New Chat, Chat History, Refresh Agents (`view/title`, `navigation@1..3`). The agents
+button, `U` and Send are one group with `margin-left: auto`, so a narrow side bar wraps them
+*together* onto the next line at the right. Where it wraps depends on the font: measured at
+420 px / 380 px in VS Code before the agents button existed, and at 440 px in headless Chrome
+with and without it — the button did not move the wrap point there.
 
 ### The design, and where each part came from
 
@@ -4181,7 +4204,7 @@ from their shipped webviews — Claude Code 2.1.301 (`webview/index.css`, CSS mo
 | tokens | Codex | borders and soft surfaces are `--vscode-foreground` at 5–14 % (`color-mix`), so every theme works with no light/dark branches |
 | bottom anchoring | Codex (`flex-col-reverse`) | a `flex: 1 0 0` spacer above the first turn — a short chat sits by the composer |
 | sticky prompt | Claude Code (`.message.stickyHeader`) | each turn's prompt is `position: sticky; top: 0` **inside its turn**, so the prompt being answered stays on top and the next one pushes it away; a gradient lets rows fade under it |
-| timeline | Claude Code (`.timelineMessage`) | a dot per row and a 1 px line between rows; green done, red failed, blinking accent running |
+| timeline | Claude Code (`.timelineMessage`) | a dot per row and a 1 px line between rows; green done, red failed, warning-coloured stopped, blinking accent running |
 | activity rows | Codex | "Ran `cmd`", "Read a.txt", "Edited app.ts +3 −1", chevron on hover |
 | terminal card | Codex shell block | `$ command`, output at most 9rem and scrolled to its newest line, footer "✓ Success" / "Exit code N" / "Running…", copy buttons on hover |
 | diff card | Codex | file header with +N −N, lines on `diffEditor.inserted/removedLineBackground` |
@@ -4397,8 +4420,10 @@ from a Claude Code terminal inherits it, and the CLI then refuses to start, taki
 nested session. A kill of ours is never reported as a failure, whatever exit code the platform
 gives it.
 
-Lifetimes: a Claude process lives as long as its conversation (new chat, opening another from
-the history, or switching agent ends it). The Codex app-server lives while a Codex conversation
+Lifetimes: a Claude process lives as long as its conversation's tab (closing the tab, replacing
+it with another agent ends it; a chat from the history only ever goes into a tab with nothing
+running) — so five Claude
+tabs are five `claude` processes. The Codex app-server lives while a Codex conversation
 holds a session, or a detection or usage read is under way, and **shuts down 30 s after the last
 of them lets go** (`idleShutdownMs`); it is restarted on demand, and a thread loaded in an earlier
 app-server is resumed with `thread/resume` (`CodexSession._loadedIn` against
@@ -4412,9 +4437,11 @@ process that is still there — a CLI busy in a tool call, or one that traps the
 **With the chat open, the extension does start processes** — the user's own CLIs, and
 only while a conversation needs them; nothing else in the extension does.
 
-**Every path that lets go of a session mid-turn ends the turn in the chat first** (`_endTurnHere`):
-New Chat, another chat from the history, an agent switch, deleting the chat, a replaced backend,
-the window closing. The session being disposed reports nothing, so without it the chat was saved
+**Every path that lets go of a session mid-turn ends the turn in the chat first** (`_endTurnHere`,
+in `ChatTab`): closing a tab, the other agent taking a tab's place ("Close this chat, start …"), a
+replaced backend, the view or the window closing. Deleting a chat a tab holds lets the session go
+without saving (`discard`). New Chat and a chat from the history no longer end anything: they open
+a tab, or use one with nothing running. The session being disposed reports nothing, so without it the chat was saved
 with its tool rows "Running…" and its thinking shimmering, and showed them so for good when
 reopened. The turn's state is read from the chat (`_pending`), not from the session, whose
 `running` a dispose may already have cleared — which is exactly what happened when the registry
@@ -4438,7 +4465,7 @@ second thread: a message sent before the first turn had an id took the start bra
 before the thread existed it called `thread/start` a second time — two turns streaming into one
 chat, Stop reaching one of them, only one thread saved. Queued behind the first, the second finds
 the turn and steers it. **And every await of a start is a point where the chat may have moved
-on**: New Chat, another chat from the history and an agent switch all dispose the session, and
+on**: closing the tab and the other agent taking its place dispose the session, and
 Stop can arrive before the turn has an id. Each step checks, nothing starts after that, and a
 turn that began while its request was on its way is interrupted rather than left to run to the
 end, unseen, on the user's quota. A send's failure is reported only into the chat it came from.
@@ -4486,11 +4513,81 @@ the browser), and that UI is the next step.
   not `ephemeral`, so they also appear in Codex's own history.
 - **Selection**: `globalState` `aiBrowser.chat.selection` — the last agent, a model per agent and
   an effort per `<agent>:<model>`, made valid against what was detected on every read.
-- **The draft** in the webview's `setState`.
+- **Open tabs**: `workspaceState` `aiBrowser.chat.openTabs` — every tab's chat id in order, which
+  of them have not started (`fresh`), and the one in front, written when they change. A started
+  tab comes back from the history; a fresh one comes back empty **with the same chat id**, which is
+  what its draft is kept under — without it a first message being written was lost on reload.
+- **The drafts**, one per open conversation by chat id, in the webview's `setState`; a draft from
+  before tabs is read once into the first conversation shown.
 
-A conversation belongs to one agent: switching agents in a started chat opens a new one. "Started"
-means *the user has sent something* (`_started`), not "has entries" — a notice is an entry too,
-and counting it made the new chat belong to the agent just switched away from (#335).
+A conversation belongs to one agent: another agent picked in a started chat is a question, not a
+switch — see [Tabs](#tabs-several-conversations-at-once). "Started" means *the user has sent
+something* (`started`), not "has entries" — a notice is an entry too, and counting it made the new
+chat belong to the agent just switched away from (#335).
+
+### Tabs: several conversations at once
+
+Asked for: "сразу в 2-3-4-5 окнах". The view holds up to `tabLimit` (5) conversations as tabs in
+a strip above the thread; one is in front and **the others go on working** — a reply streams, a
+background agent finishes, in a tab nobody is looking at. A tab shows a blinking dot while it
+answers and the number of its agents still working. Each tab is a `ChatTab`
+([src/chat/chatTab.ts](src/chat/chatTab.ts)) with everything a conversation had before tabs — its
+chat, its CLI session, `_pending`, the token offset, `_endTurnHere` — moved there unchanged; the
+provider holds what all tabs share: the view, the agents, the selection, the limits, the history.
+The limit is five because each Claude tab is a `claude` process and tabs working at once spend
+the plan's limits at once; a sixth is refused through the status bar and the strip's "+" is
+disabled.
+
+- **Closing a tab stops what it runs** — its turn and its agents — and keeps the chat in the
+  history. A tab that is working asks first, inside the strip ("… is still working. Closing it
+  stops its reply and 1 agent."), never in a modal.
+- **New Chat** (title bar, and the strip's "+") opens a tab beside the one in front.
+- **A chat from the history** is brought to the front if a tab has it, shown in the tab in front
+  if that one is empty, and otherwise opened in a new tab — opening one must not end a
+  conversation that is working.
+- **Deleting a chat** that a tab holds closes the tab without saving, or the tab writes the
+  deleted chat back (`ChatTab._discarded`; #348's rule again).
+- **Open tabs come back with the window**, their sessions opened on the next message and resumed
+  by `ref`, as a chat from the history always was. The tab ids are minted per extension host, so
+  the webview keeps drafts by **chat id** — and carries a draft across when the tab in front gets
+  another chat (one opened into it from the history, the other agent taking its place), which is
+  why "Close this chat, start …" keeps the tab (`ChatTab.start`) rather than making a new one. A
+  draft is saved as the text from before a ↑ walk, never as the message recalled.
+- **Each tab keeps its scroll position and its opened rows**; a tab that was following its end
+  comes back following it — a reply streaming there is not left behind the previous tab's scroll.
+- **A message is sent to the tab it was typed in** (`send` carries `tabId`: the state post that
+  shows a newly chosen tab is up to 40 ms behind the click), and **only if that tab still holds the
+  chat it was typed for** once detection, which can take seconds, has ended. Otherwise it is kept
+  as a "Not sent" notice: going ahead put a fresh chat's message into an old conversation from the
+  history, or started a CLI for a tab that had closed, which nothing could show or stop (#368).
+- **A closed tab's send still on its way saves its chat only if the history still has it**
+  (`_closed`): close, delete from the history, and the late save wrote the chat back.
+- **A send that fails before any turn begins gives its place in the queue back**, or the tab read
+  as working — a confirmation to close it, a switch card warning of a reply to stop, a "Stopped."
+  written on the way out.
+- Escape answers the innermost question first: a close being confirmed, then the switch card, then
+  any popup.
+- **A message belongs to the tab it was typed in**: `_send` takes the tab before it waits for
+  detection, so moving to another tab meanwhile does not send it there.
+- The strip and the switch card are rebuilt only when what they show changes, the rule #365 set
+  for the agents panel.
+
+**Another agent for a conversation that has started is a question**, asked in a card above the
+composer (`switchTo` in the state; the remembered agent waits for the answer):
+
+| choice | what happens |
+|---|---|
+| New tab with Codex | a new tab; this one stays open and keeps working, agents included |
+| Continue in Codex | this conversation is written out as Markdown (`chatTranscript`) to `.ai-browser/chat-<title>-<time>.md` — the report directory, ignored by git, refused through a symlink — and attached to the new tab's first message, telling the agent to read it and carry on. **With no local folder it goes in the message itself**, its newest 60 000 characters: the agents then work in the home directory, a temp file is outside it, and Claude Code asks before reading there — a question the chat answers no. This tab stays open. |
+| Close this chat, start Codex | this tab closes, its turn and its agents stopped, and a new one takes its place; the card says what will be stopped |
+| Cancel | nothing changes; the pill shows this tab's agent again |
+
+It used to open a new chat silently, with a notice; that hid that the old conversation's agents
+were still working, or had just been stopped. The transcript carries what the next agent needs
+and nothing it can find itself: prompts, replies, and one line per tool — the command and its
+exit code, the file read or edited, an agent with its report fenced. Thinking and notices stay
+out. The two options that open a tab are disabled at the limit. The files are swept with the
+reports (`chat-*.md` is in the sweep's name pattern); by then the agent has read the file.
 
 ### Attachments
 
@@ -4518,6 +4615,145 @@ condition for using `userTab` at all. The page address is attached from any tab,
 **The tab is `browser.userTab`, never `activeBrowserTab`** — focus is in the chat view when `+` is
 pressed, which is exactly the state where `activeBrowserTab` is `undefined` (#259, #334). That is
 why `pickAndDeliver` grew a `preferred` tab.
+
+### Agents the agent starts
+
+The composer's `$(hubot) N` button counts the sub-agents running in this chat (with none
+running it shows the total, muted, and with none at all it is hidden). It opens a list over the
+chat — status dot, the agent's description, "Running · Grep · 3m 28s · 230k tokens" — and a row
+opens its card: status · type · model · background, "Spawned by the main agent", time, tokens and
+tool uses, the agent's report as Markdown, then its prompt and its tool calls folded. The layout
+follows the Claude Code panel's own agent map, as asked for; it is **in the chat, not a file**,
+which was the first idea and was changed on request. Everything is read from the chat's own
+rows: nothing is asked of the CLI, and a chat reopened from the history shows its agents too.
+
+**Claude Code, measured on 2.1.301** (the samples are in `agentProtocol.test.ts`):
+
+| event | what it means here |
+|---|---|
+| `tool_use` `Agent` (`description`, `prompt`, `subagent_type`, `run_in_background`) | the row, with its prompt as `input` |
+| `system` `task_started` (`tool_use_id`, `is_backgrounded`) | type and background |
+| `user` `tool_result` with `tool_use_result.status: 'async_launched'` | a background agent has *started* — the row stays running; `resolvedModel` is its model |
+| messages with `parent_tool_use_id` | the agent's own work: its `tool_use` blocks become the card's tool calls, never rows of the chat (capped at 100) |
+| `system` `task_progress` | `usage.total_tokens` / `tool_uses` / `duration_ms`, `last_tool_name` |
+| `system` `task_notification` | the end: `status` (`completed` → done; `killed`, `stopped`, … → stopped; anything else failed), `summary` as the report |
+| `system` `status: 'requesting'` | the CLI starting a turn **of its own** |
+
+**A background agent outlives the turn that started it**, and that is the shape everything
+follows from. The main turn's `result` arrives while the agent is still working, so the turn-end
+sweep that marks every running tool as done — right for every other tool, which will never be
+told otherwise — must pass over a background agent row (`agent.background`), or it reads
+"Finished" while the agent works on. The agent ends on its own `task_notification`, and then
+**the CLI answers it unprompted**: a fresh turn with text and a second `result`. With no prompt
+waiting, `_pendingTurns` was 0, so that turn ran with the chat showing nothing at work and its
+`result` went to a prompt queue that was empty. `status: 'requesting'` is the signal — emitted
+for the main agent only, and only with `--include-partial-messages` — and `autoTurn` sets
+`_pendingTurns` to 1 (ignored while a user turn is already counted) and breaks the text, so the
+reply is a block of its own.
+
+**Two more consequences, both in `claudeAgent.ts`.** The process is not restarted for a model or
+effort change while a background agent runs (`_agents`), since a restart ends it. And when the
+process exits or is stopped, every agent it still had is reported `stopped` (`_endAgents`), since
+no notification will ever come; the chat's own `_endTurnHere` does the same for a closed tab and the
+rest — and with no turn in progress, only agents in the background, it ends them without a
+"Stopped." notice, since no turn was stopped.
+
+**A model or effort change waits for the background agents, and says so** — once, as a notice:
+"The new model or effort applies once the background agents have finished." Skipping the restart
+in silence left the pill showing a model the next message did not use.
+
+**The automatic turn takes a place in the chat's queue** (`_pending`, an entry with no prompt).
+Without it a message sent while that turn ran was queued behind nothing: the automatic turn's
+`result` was written onto that message, and the message's own turn found no prompt — #345 again,
+from a new direction (#362).
+
+**Not every task is an agent.** `task_started` is sent for every task type, and a background shell
+or a Bash call running past two seconds is one (`task_type: local_bash`): read as an agent, a Bash
+row took agent fields, had its output replaced by the task's summary, reopened as `stopped`, and
+a dev server that never ends would have held the model for good. So `task_started` is read only
+for `local_agent` / `remote_agent`, the chat applies a report carrying agent fields to an agent
+row only, and `_agents` counts only calls that are agents (`_agentTools`) — including one asked
+for in the background, from the call itself, so a process that goes before the launch is
+confirmed still reports it ended (#363).
+
+**A foreground agent moved to the background** arrives as `task_updated` with
+`patch.is_backgrounded` — the CLI's own schema says so; an earlier comment here claimed
+`task_updated` carried nothing useful. It names the task, not the call, so `claudeEvents` is given
+a map from `task_started` (task id → call id) to find the row. Without it such an agent read
+"Finished" at the end of the turn while it worked on.
+
+**The panel is rebuilt only when what it shows changes** (`agentsShape`); time, tokens, the tool an
+agent is on and the tool-use count are rewritten in place (`data-live`), and every second while
+the panel is open. Rebuilt on every state post, as the first version was, it swallowed clicks
+whose press and release straddled a post — rows, Back, Close, the folds — cleared any selection in
+the report and threw focus to the body (#365). A rebuild that is due waits while a button is held
+or a selection lies in the panel. A panel left open across New Chat closes. An agent's report is
+cut for the history like any tool body; it was stored whole beside a cut copy in `output`.
+
+**Codex, measured on codex-cli 0.162.0-alpha.17.2** (the copy the Codex extension ships, with
+`multi_agent` on, as it is by default). The first version followed the app-server schema —
+`collabAgentToolCall` with `tool: 'spawnAgent'` as the row, `agentsStates` to end it — and showed
+nothing at all, reported as "Codex shows no agents": a live turn that starts a sub-agent sends
+**no** `spawnAgent` item, and the `wait` item it does send carries an empty `agentsStates`. What
+arrives instead:
+
+| event | what it means here |
+|---|---|
+| `subAgentActivity` on the parent's thread, `kind: started` | the row, keyed by `agentThreadId`; `agentPath` (`/root/read_a`, a name the model chose) is its title and its type |
+| `kind: completed` / `interrupted` | the row ends done / stopped; `interacted` changes nothing |
+| every notification under the agent's **own** `threadId` | its work: tool items become the card's calls, `thread/tokenUsage/updated.total.totalTokens` its tokens, its last `agentMessage` its report |
+
+Each `subAgentActivity` arrives twice, as `item/started` and `item/completed`, so only the first is
+read; a second `started` for the same agent (Codex giving it more work) runs the existing row
+again rather than adding one. **The agent's thread has no session of its own**, so its
+notifications were dropped by the routing that sends each `threadId` to its conversation:
+`CodexSession._watchAgent` binds that thread to the conversation whose turn started it
+(`CodexBackend.bindAgent`), and `notifyAgent` reads it with `codexAgentThreadEvents` — never as the
+reply. An approval request from an agent's thread is declined with the notice in that chat. An
+agent an agent starts is bound the same way and gets a row of its own; its card says which agent
+started it, read from the path. **The prompt is not sent anywhere**, so a Codex card has no Prompt
+section. The `spawnAgent` / `agentsStates` reading stays, for a Codex that does send them
+(`multi_agent_v2` is off here).
+
+A Codex agent is deliberately **not** `background`: the parent `wait`s inside its turn (measured),
+so `completed` arrives before the turn ends, and the turn's end settles anything left like any
+other row — a row blinking for ever is the worse error.
+
+**Each running agent can be stopped on its own**, from the agents panel — a Stop button on its
+row and in its card — while the turn and the other agents go on:
+
+- **Claude Code**: the `stop_task` control request with the task id (`task_started` gave it beside
+  the call's id; `ClaudeSession._tasks`). Measured on 2.1.301 with an agent in a loop of `sleep`s:
+  answered at once with success, then `task_updated` (`status: killed`) and `task_notification`
+  `status: stopped`, which ends the row; the CLI then answers the stop in a turn of its own (an
+  automatic turn, as above). That notification's `summary` is only the task's description ("Run
+  timed step loop"), so it is not shown as a report. (A standalone `sleep 40` is refused by Claude
+  Code itself, which ends the agent before any stop — worth knowing when measuring this again.)
+- **Codex**: `turn/interrupt` on the agent's own thread, with the turn its `turn/started` named
+  (`CodexSession._agentTurns`); an interrupted turn on that thread ends the row as stopped, as
+  `subAgentActivity` `interrupted` does. Read from the protocol and the code path above, not
+  measured with a real stop.
+
+A row reopened from the history has no live session, and is shown stopped already. The button
+says "Stopping…" until the row ends, or until the host answers that the stop was refused
+(`agentStopFailed`) — Codex between two of an agent's turns, an agent Claude Code has not reported
+as a task yet — when it comes back, with the reason in the chat. It used to stay "Stopping…" and
+disabled for good. **Closing a Codex tab interrupts its agents' turns as well** as its own: their
+threads live in the app-server the other tabs share, and once the session is gone nothing would
+show or stop them. An agent's `turn/started` that arrives before the parent's `subAgentActivity`
+binds its thread is kept (`_unclaimedTurns`, bounded) and handed over at the binding, or that
+agent could not be stopped.
+
+**`stopped` is a fourth tool status**, drawn in the warning colour. The turn-end sweep uses it for
+a turn that ended with `Stopped.` too, where it used to say `failed`.
+
+Verified with a fake Claude CLI behind the compiled `chatView.js`: a foreground agent finishing in
+its turn, a background one surviving the turn's `result` and ended by its notification, the
+automatic turn showing as its own reply with no prompt waiting, and closing the tab stopping an
+agent still running; after the review, a message sent during the automatic turn keeping its own time
+and tokens. The panel was checked in headless Chrome: hidden with no agents, a click and a fold
+landing with a state post between press and release, a 3 006-character selection and the scroll
+surviving posts, ↑ in a wrapped draft moving the caret.
 
 ### Verified how
 
@@ -5987,6 +6223,46 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
      click on a page a file had covered. Check, and name the page before acting.
 356. **A view that goes away while its process works** → the CLI ran on, unseen, on the user's
      quota. A disposed view ends the turn and drops the session.
+357. **Ending every running tool at the end of the turn** → a background agent outlives the turn
+     that started it, so the sweep marked it Finished while it worked on, and its later
+     notification found a row that was already over. Pass over `agent.background`.
+358. **A turn nobody asked for** → after a background agent finishes, Claude Code starts a turn of
+     its own; with no prompt counted the chat showed nothing at work and the reply ran into the
+     previous one. `system status: requesting` is the signal (`autoTurn`).
+359. **Fall-through into a new `case`** → adding a block to the `collabAgentToolCall` case below
+     `webSearch` and `imageView` made those two fall into it, and Codex's web searches never
+     finished. Give a shared `return` back to the cases that had it.
+360. **Background-clipped text inside an ellipsis parent** → the shimmer (`background-clip: text`)
+     rendered nothing in the agent list's `overflow: hidden` row. Plain colour there.
+361. **Building a reader from a protocol schema the CLI does not use** → Codex's schema documents
+     `spawnAgent` items and `agentsStates`, and a real turn sends neither: its sub-agents arrive as
+     `subAgentActivity` plus the agent's own thread, which had no session and was dropped. The
+     Codex agent list stayed empty. Measure a live turn before building on a schema.
+362. **A turn nobody sent that holds no place in the queue** → the prompt sent while it ran was
+     next in line, so the automatic turn's end was written onto it and the prompt's own turn found
+     nothing. Give such a turn a place of its own.
+363. **Reading every task as an agent** → Claude Code's task events cover background shells and
+     long Bash calls too; a Bash row took agent fields and a dev server could hold the model for
+     ever. Read the agent task types only, and apply agent fields to agent rows only.
+364. **"No line break before the caret" as "the caret is on the first line"** → a soft-wrapped
+     paragraph is several lines to the user, and ↑ there swapped the draft for history. Start a
+     walk only from an empty box or the very start.
+365. **Rebuilding a popup on every state post** → a click whose press and release straddle a
+     rebuild never fires, and a selection in it is cleared. Rebuild on change and update the
+     moving parts in place. (A `[hidden]` that a class's `display` overrides is the same file's
+     other trap: the agents button showed "0" in every chat.)
+366. **A stopped task's summary read as its report** → Claude Code's `task_notification` for a
+     stopped agent carries the task's description in `summary`, and the card showed "Run timed
+     step loop" as what the agent had found. Read a summary only from an ending that has one.
+367. **A view that holds one conversation turned into one that holds several** → every path that
+     let go of "the" session — New Chat, the history, an agent switch, a deleted chat, the view
+     closing, a replaced backend — had to become per tab, and the state the webview keeps per
+     conversation (the draft) had to be keyed by something that survives a reload. Move the
+     conversation into its own object first, then add tabs.
+368. **Resuming a send after a wait without asking whether its tab is still the one** → detection
+     can take seconds; meanwhile the tab closed, was replaced, or got another chat from the history,
+     and the message went into an old conversation or started a CLI for a tab nothing showed. #339
+     one level up: check after the wait, and keep the text when the answer is no.
 
 ## Special cases and non-obvious decisions
 

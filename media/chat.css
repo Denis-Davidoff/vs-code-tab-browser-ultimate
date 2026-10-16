@@ -227,6 +227,10 @@ button {
 	animation: blink 1s linear infinite;
 }
 
+.row.tool.stopped::before {
+	background: var(--warn);
+}
+
 .row.notice,
 .row.error {
 	display: flex;
@@ -617,7 +621,9 @@ button {
 		color: var(--fg-3);
 		background: none;
 	}
-	.row.tool.running::before {
+	.row.tool.running::before,
+	.agents-button.live .codicon,
+	.agent-dot.running {
 		animation: none;
 	}
 }
@@ -1462,4 +1468,439 @@ button {
 
 .history-row:hover .history-delete {
 	visibility: visible;
+}
+
+/* ---------------------------------------------------------------- agents */
+
+.agents-button[hidden] {
+	display: none;
+}
+
+.agents-button {
+	gap: 4px;
+	color: var(--fg-3);
+}
+
+.agents-button.live {
+	color: var(--fg);
+}
+
+.agents-button.live .codicon {
+	color: var(--accent);
+	animation: blink 1.4s ease-in-out infinite;
+}
+
+.agents-sub {
+	padding: 2px 10px 8px;
+	color: var(--fg-3);
+	font-size: 0.92em;
+}
+
+.agent-row {
+	display: flex;
+	align-items: center;
+	gap: 9px;
+	width: 100%;
+	padding: 7px 10px;
+	border: none;
+	border-radius: 8px;
+	background: transparent;
+	color: inherit;
+	text-align: left;
+	cursor: pointer;
+}
+
+.agent-row:hover {
+	background: var(--vscode-list-hoverBackground, var(--soft));
+}
+
+.agent-dot {
+	flex: none;
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: var(--fg-3);
+}
+
+.agent-dot.done { background: var(--ok); }
+.agent-dot.failed { background: var(--bad); }
+.agent-dot.stopped { background: var(--warn); }
+
+.agent-dot.running {
+	background: var(--accent);
+	animation: blink 1s linear infinite;
+}
+
+.agent-text {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+}
+
+.agent-title {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.agent-meta {
+	color: var(--fg-3);
+	font-size: 0.92em;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.agent-live {
+	color: var(--accent);
+}
+
+.agent-chevron {
+	flex: none;
+	color: var(--fg-3);
+}
+
+.agent-head-title {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+}
+
+.agent-card {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	padding: 10px 14px;
+}
+
+.agent-line {
+	color: var(--fg-3);
+	font-size: 0.92em;
+}
+
+.agent-report {
+	margin: 8px 0 4px;
+	padding: 10px 12px;
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	overflow-wrap: anywhere;
+}
+
+.agent-fold {
+	margin-top: 4px;
+}
+
+.agent-fold > summary {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	padding: 4px 0;
+	color: var(--fg-2);
+	cursor: pointer;
+	list-style: none;
+}
+
+.agent-fold > summary::-webkit-details-marker {
+	display: none;
+}
+
+.agent-fold[open] > summary .chevron {
+	transform: rotate(90deg);
+}
+
+.agent-prompt {
+	padding: 8px 10px;
+	border-radius: 6px;
+	background: var(--soft);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	font-size: 0.92em;
+}
+
+.agent-calls {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.agent-call {
+	display: flex;
+	gap: 8px;
+	min-width: 0;
+	font-size: 0.92em;
+}
+
+.agent-call-name {
+	flex: none;
+	font-family: var(--vscode-editor-font-family);
+	color: var(--fg-2);
+}
+
+.agent-call-detail {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--fg-3);
+}
+
+.exit.stopped {
+	color: var(--warn);
+}
+
+/* ---------------------------------------------------------------- tabs */
+
+.tab-strip {
+	flex: none;
+	border-bottom: 1px solid var(--border);
+}
+
+.tab-row {
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	padding: 4px 6px 0;
+	overflow-x: auto;
+	scrollbar-width: none;
+}
+
+.tab-row::-webkit-scrollbar {
+	display: none;
+}
+
+.tab {
+	flex: 0 1 auto;
+	min-width: 56px;
+	max-width: 180px;
+	display: flex;
+	align-items: center;
+	border-radius: 6px 6px 0 0;
+	color: var(--fg-3);
+	border-bottom: 2px solid transparent;
+}
+
+.tab:hover {
+	background: var(--vscode-list-hoverBackground, var(--soft));
+}
+
+.tab.active {
+	color: var(--fg);
+	border-bottom-color: var(--accent);
+}
+
+.tab-label {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	padding: 5px 2px 5px 8px;
+	border: none;
+	background: transparent;
+	color: inherit;
+	cursor: pointer;
+	text-align: left;
+}
+
+.tab-title {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.tab-dot {
+	flex: none;
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: var(--accent);
+	animation: blink 1s linear infinite;
+}
+
+.tab-agents {
+	flex: none;
+	min-width: 14px;
+	padding: 0 4px;
+	border-radius: 7px;
+	background: var(--soft-2);
+	font-size: 0.85em;
+	text-align: center;
+}
+
+.tab-close {
+	flex: none;
+	display: flex;
+	padding: 2px;
+	margin-right: 3px;
+	border: none;
+	border-radius: 4px;
+	background: transparent;
+	color: inherit;
+	cursor: pointer;
+	opacity: 0;
+}
+
+.tab:hover .tab-close,
+.tab.active .tab-close,
+.tab-close:focus {
+	opacity: 1;
+}
+
+.tab-close:hover {
+	background: var(--soft-2);
+}
+
+.tab-add {
+	flex: none;
+	margin-left: 2px;
+}
+
+.tab-confirm {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 10px;
+	color: var(--fg-2);
+	font-size: 0.92em;
+}
+
+.tab-confirm > span {
+	flex: 1 1 100%;
+}
+
+.confirm-danger,
+.confirm-cancel,
+.switch-cancel {
+	padding: 3px 10px;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	background: transparent;
+	color: inherit;
+	cursor: pointer;
+}
+
+.confirm-danger {
+	border-color: color-mix(in srgb, var(--bad) 60%, transparent);
+	color: var(--bad);
+}
+
+.confirm-danger:hover,
+.confirm-cancel:hover,
+.switch-cancel:hover {
+	background: var(--soft);
+}
+
+/* ---------------------------------------------------------------- switching agents */
+
+.switch-card[hidden] {
+	display: none;
+}
+
+.switch-card {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	margin-bottom: 8px;
+	padding: 10px;
+	border: 1px solid var(--border);
+	border-radius: 12px;
+	background: var(--bg);
+	animation: fade-in .15s ease;
+}
+
+.switch-head {
+	margin-bottom: 4px;
+	font-weight: 600;
+}
+
+.switch-option {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 1px;
+	padding: 7px 10px;
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	background: transparent;
+	color: inherit;
+	text-align: left;
+	cursor: pointer;
+}
+
+.switch-option:hover:not(:disabled) {
+	background: var(--vscode-list-hoverBackground, var(--soft));
+}
+
+.switch-option:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+.switch-detail {
+	color: var(--fg-3);
+	font-size: 0.92em;
+}
+
+.switch-cancel {
+	align-self: flex-end;
+	margin-top: 2px;
+}
+
+/* ---------------------------------------------------------------- stopping one agent */
+
+.agent-item {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}
+
+.agent-item > .agent-row {
+	flex: 1;
+	min-width: 0;
+}
+
+.agent-stop {
+	flex: none;
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 3px 8px;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	background: transparent;
+	color: var(--fg-2);
+	font-size: 0.92em;
+	cursor: pointer;
+}
+
+.agent-stop:hover:not(:disabled) {
+	color: var(--bad);
+	border-color: color-mix(in srgb, var(--bad) 60%, transparent);
+}
+
+.agent-stop:disabled {
+	opacity: 0.6;
+	cursor: default;
+}
+
+.agent-head-end {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+#app.is-blocked .tab-strip {
+	display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.tab-dot {
+		animation: none;
+	}
 }

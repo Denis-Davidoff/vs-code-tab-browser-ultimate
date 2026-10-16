@@ -5,7 +5,7 @@
 
 import * as vscode from 'vscode';
 import { JsonLineProcess, withTimeout } from './agentProcess';
-import { codexEvents, codexModels, codexUsage, type AgentEvent } from './agentProtocol';
+import { codexAgentThreadEvents, codexEvents, codexModels, codexUsage, type AgentEvent } from './agentProtocol';
 import type { AgentBackend, AgentSession, TurnInput } from './agents';
 import type { AgentUsage, ChatModel } from './chatProtocol';
 
@@ -61,6 +61,15 @@ export class CodexBackend implements AgentBackend {
 	private _nextId = 0;
 	private readonly _pending = new Map<number, Pending>();
 	private readonly _sessions = new Map<string, CodexSession>();
+	/** Threads of agents a conversation's turn started, to the session they belong to. */
+	private readonly _agentThreads = new Map<string, CodexSession>();
+	/**
+	 * The running turn of threads nobody has claimed yet. An agent's thread can
+	 * report its `turn/started` before the parent's `subAgentActivity` binds it,
+	 * and without the turn id that agent could not be stopped on its own.
+	 * Bounded: a thread that is never claimed is not ours to keep.
+	 */
+	private readonly _unclaimedTurns = new Map<string, string>();
 	private readonly _all = new Set<CodexSession>();
 	private _plan: string | undefined;
 	private _disposed = false;
@@ -211,11 +220,28 @@ export class CodexBackend implements AgentBackend {
 		this._sessions.set(threadId, session);
 	}
 
+	/** An agent `session`'s thread started: its own thread's events go to that session as the agent's. */
+	public bindAgent(threadId: string, session: CodexSession): void {
+		if (!this._sessions.has(threadId)) {
+			this._agentThreads.set(threadId, session);
+			const turn = this._unclaimedTurns.get(threadId);
+			if (turn) {
+				this._unclaimedTurns.delete(threadId);
+				session.notifyAgent(threadId, 'turn/started', { threadId, turn: { id: turn } });
+			}
+		}
+	}
+
 	private _forget(session: CodexSession): void {
 		this._all.delete(session);
 		for (const [id, s] of this._sessions) {
 			if (s === session) {
 				this._sessions.delete(id);
+			}
+		}
+		for (const [id, s] of this._agentThreads) {
+			if (s === session) {
+				this._agentThreads.delete(id);
 			}
 		}
 		this._releaseIfIdle();
@@ -242,12 +268,15 @@ export class CodexBackend implements AgentBackend {
 			return;
 		}
 		const params = (message.params ?? {}) as Record<string, unknown>;
-		const session = typeof params.threadId === 'string' ? this._sessions.get(params.threadId) : undefined;
+		const threadId = typeof params.threadId === 'string' ? params.threadId : undefined;
+		const session = threadId ? this._sessions.get(threadId) : undefined;
+		const agentOf = threadId && !session ? this._agentThreads.get(threadId) : undefined;
 
 		// A request from Codex to us — every one of them needs an answer, or the
-		// turn waits on it for ever.
+		// turn waits on it for ever. One from an agent's thread is told to the
+		// chat that agent belongs to.
 		if (id !== undefined && id !== null) {
-			this._answer(id, method, params, session);
+			this._answer(id, method, params, session ?? agentOf);
 			return;
 		}
 
@@ -257,6 +286,21 @@ export class CodexBackend implements AgentBackend {
 				s.emit({ type: 'limits', windows: usage.windows });
 			}
 			return;
+		}
+		if (agentOf && threadId) {
+			agentOf.notifyAgent(threadId, method, params);
+			return;
+		}
+		if (!session && threadId && (method === 'turn/started' || method === 'turn/completed')) {
+			const turn = params.turn as { id?: unknown } | undefined;
+			if (method === 'turn/started' && typeof turn?.id === 'string') {
+				this._unclaimedTurns.set(threadId, turn.id);
+				if (this._unclaimedTurns.size > 32) {
+					this._unclaimedTurns.delete(this._unclaimedTurns.keys().next().value!);
+				}
+			} else {
+				this._unclaimedTurns.delete(threadId);
+			}
 		}
 		session?.notify(method, params);
 	}
@@ -463,7 +507,48 @@ class CodexSession implements AgentSession {
 		this._backend.request('turn/interrupt', { threadId: this._threadId, turnId: this._turnId }).catch(() => { /* turn/completed reports it */ });
 	}
 
+	/** Binds the thread of an agent this conversation's turn started, so its events reach the chat. */
+	private _watchAgent(method: string, params: Record<string, unknown>): void {
+		const item = params.item as Record<string, unknown> | undefined;
+		if (method === 'item/started' && item?.type === 'subAgentActivity' && item.kind === 'started' && typeof item.agentThreadId === 'string') {
+			this._backend.bindAgent(item.agentThreadId, this);
+		}
+	}
+
+	/** The running turn of each agent thread of this conversation, for `stopAgent`. */
+	private readonly _agentTurns = new Map<string, string>();
+
+	/**
+	 * An agent's thread runs turns of its own; interrupting the one running stops
+	 * that agent and nothing else. Its `subAgentActivity` then reports it
+	 * `interrupted` on the parent's thread.
+	 */
+	public async stopAgent(_rowId: string, threadId: string | undefined): Promise<void> {
+		const turnId = threadId ? this._agentTurns.get(threadId) : undefined;
+		if (!threadId || !turnId) {
+			throw new Error(vscode.l10n.t("The agent is not running a turn right now."));
+		}
+		await this._backend.request('turn/interrupt', { threadId, turnId });
+	}
+
+	/** An event of an agent's own thread: the agent's row, never the reply. */
+	public notifyAgent(threadId: string, method: string, params: Record<string, unknown>): void {
+		if (method === 'turn/started' || method === 'turn/completed') {
+			const turn = params.turn as { id?: unknown } | undefined;
+			if (method === 'turn/started' && typeof turn?.id === 'string') {
+				this._agentTurns.set(threadId, turn.id);
+			} else {
+				this._agentTurns.delete(threadId);
+			}
+		}
+		this._watchAgent(method, params);
+		for (const event of codexAgentThreadEvents(threadId, method, params)) {
+			this.emit(event);
+		}
+	}
+
 	public notify(method: string, params: Record<string, unknown>): void {
+		this._watchAgent(method, params);
 		if (method === 'turn/started') {
 			const turn = params.turn as { id?: unknown } | undefined;
 			if (typeof turn?.id === 'string') {
@@ -517,6 +602,12 @@ class CodexSession implements AgentSession {
 			return;
 		}
 		this.stop();
+		// Its agents too: their threads live in the app-server the other tabs
+		// share, and once this session is gone nothing shows or stops them.
+		for (const [threadId, turnId] of this._agentTurns) {
+			this._backend.request('turn/interrupt', { threadId, turnId }).catch(() => { /* already over */ });
+		}
+		this._agentTurns.clear();
 		this._disposed = true;
 		this._releaseTurnWaiters();
 		this._onEvent.dispose();

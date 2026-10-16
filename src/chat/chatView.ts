@@ -6,12 +6,14 @@
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { chatTitle, toolOutputLimit, type AgentEvent } from './agentProtocol';
-import { AgentRegistry, agentNames, type AgentBackend, type AgentSession, type TurnImage } from './agents';
+import { AgentRegistry, agentNames } from './agents';
+import { ChatTab, newChat, reopened, started, storedEntries, storedTextLimit, type Attachment, type StoredChat, type TabHost } from './chatTab';
+import { chatTranscript, transcriptFileName } from './transcript';
+import { writeChatTranscript } from '../elements/assistants';
 import type { BrowserController } from '../browser/browserController';
 import type {
-	AgentId, AgentUsage, AttachmentChip, AttachmentKind, ChatEntry, ChatStats, ChatSummary,
-	ChatNews, ChatViewState, HostToView, Selection, ToolEntry, UsageWindow, ViewToHost,
+	AgentId, AgentUsage, AttachmentKind, ChatSummary,
+	ChatNews, ChatTabSummary, ChatViewState, HostToView, Selection, UsageWindow, ViewToHost,
 } from './chatProtocol';
 import { pickElementContext } from '../elements/elementPicker';
 import { parseNews } from './news';
@@ -65,24 +67,20 @@ export function supportsSecondarySidebar(version: string): boolean {
 const historyKey = 'aiBrowser.chat.history';
 const selectionKey = 'aiBrowser.chat.selection';
 const newsHiddenKey = 'aiBrowser.chat.newsHiddenAt';
+const inputHistoryKey = 'aiBrowser.chat.inputHistory';
+const inputHistoryLimit = 100;
+/** The chats open as tabs, by chat id, and the one in front; restored with the window. */
+const openTabsKey = 'aiBrowser.chat.openTabs';
+/**
+ * At most this many tabs. Each Claude Code tab is a `claude` process of its own
+ * (a Codex tab is only a thread of the one app-server), and tabs working at
+ * once spend the plan's limits at once.
+ */
+export const tabLimit = 5;
 const historyLimit = 50;
-const entryLimit = 400;
-const storedTextLimit = 20_000;
-const storedToolLimit = 4_000;
+/** A conversation handed over in the message itself, with no folder to write it to: its newest part. */
+const transcriptInlineLimit = 60_000;
 const postDelayMs = 40;
-
-interface StoredChat {
-	id: string;
-	title: string;
-	/** Whose conversation this is. Fixed by the first message; see `_started`. */
-	agent: AgentId;
-	owned?: boolean;
-	ref?: string;
-	createdAt: number;
-	updatedAt: number;
-	entries: ChatEntry[];
-	stats: ChatStats;
-}
 
 interface RememberedSelection {
 	agent?: AgentId;
@@ -91,42 +89,26 @@ interface RememberedSelection {
 	efforts: Record<string, string>;
 }
 
-interface Attachment {
-	readonly chip: AttachmentChip;
-	readonly text?: string;
-	readonly image?: TurnImage;
-}
-
 export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
 	private _view: vscode.WebviewView | undefined;
 	private _viewReady = false;
 	private _queued: HostToView[] = [];
 	private readonly _registry: AgentRegistry;
-	private _chat: StoredChat;
-	private _session: AgentSession | undefined;
-	private _sessionEvents: vscode.Disposable | undefined;
-	private _attachments: Attachment[] = [];
+	/** The open conversations, in the order of their tabs; `_active` is the one shown. */
+	private _tabs: ChatTab[] = [];
+	private _active!: ChatTab;
+	/** The agent picked for a conversation that has started with another: asked about in the view. */
+	private _switchTo: AgentId | undefined;
+	private _tabsSaved = '';
 	/** NEWS.md from the installed extension, read once; see `news.ts`. */
 	private _news: ChatNews | undefined;
-	/** Set between two messages of one turn, so the next text starts a new block. */
-	private _textBreak = false;
-	/**
-	 * The prompts whose turns have not ended, oldest first, each with the chat's
-	 * token totals at the moment its turn began. A turn's tokens are the
-	 * difference at its end, which is right for both agents: Claude Code adds
-	 * each turn's usage to the totals, Codex replaces them with the thread's
-	 * running total.
-	 *
-	 * **A queue, because Claude Code answers a message sent mid-turn with a turn
-	 * of its own.** With one baseline the first `result` was written onto the
-	 * *latest* prompt — the queued one — and the second turn showed nothing.
-	 * A queued prompt's turn begins when the one before it ends, so that is
-	 * when its baseline and start time are taken. A Codex message sent mid-turn
-	 * steers the running turn instead and is not queued.
-	 */
-	private _pending: { entry: UserEntry; base?: TokenBase; startedAt?: number }[] = [];
-	/** Added to a cumulative token report; see the `tokens` case. Per session. */
-	private _tokenOffset: TokenBase = { input: 0, output: 0, cached: 0 };
+	private readonly _tabHost: TabHost = {
+		cwd: () => this._cwd(),
+		changed: () => this._post(),
+		limits: (agent, windows) => { this._limits.set(agent, windows); },
+		save: chat => this._save(chat),
+		inHistory: id => this._history().some(c => c.id === id),
+	};
 	private _remembered: RememberedSelection;
 	private readonly _limits = new Map<AgentId, readonly UsageWindow[]>();
 	private _postTimer: ReturnType<typeof setTimeout> | undefined;
@@ -139,7 +121,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		this._registry = new AgentRegistry(() => this._cwd());
 		this._subscriptions.push(this._registry, this._registry.onDidChange(() => this._post()));
 		this._remembered = _context.globalState.get<RememberedSelection>(selectionKey) ?? { models: {}, efforts: {} };
-		this._chat = this._newChat(this._remembered.agent ?? 'claude');
+		this._restoreTabs();
 		void this._readNews();
 
 		this._subscriptions.push(this._registry.onDidReplace(e => this._onBackendReplaced(e.agent, e.gone)));
@@ -207,9 +189,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				// so its CLI is not left working unseen on the user's quota. The
 				// chat is saved and resumes from the history; Codex's app-server
 				// then goes idle and shuts down on its own.
-				this._endTurnHere();
-				void this._save();
-				this._dropSession();
+				for (const tab of this._tabs) {
+					tab.close();
+				}
 			}
 		}, undefined, this._subscriptions);
 	}
@@ -263,6 +245,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		this._postTimer = setTimeout(() => {
 			this._postTimer = undefined;
 			this._postMessage({ type: 'state', state: this._state() });
+			this._saveTabs();
 		}, postDelayMs);
 	}
 
@@ -272,10 +255,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			detecting: this._registry.detecting,
 			agents: this._registry.agents,
 			selection: this._selection(),
-			chatId: this._chat.id,
-			entries: this._chat.entries,
-			running: this._session?.running ?? false,
-			attachments: this._attachments.map(a => a.chip),
+			chatId: this._active.chat.id,
+			entries: this._active.chat.entries,
+			running: this._active.running,
+			attachments: this._active.attachments.map(a => a.chip),
+			tabs: this._tabs.map((tab): ChatTabSummary => ({
+				id: tab.id,
+				chatId: tab.chat.id,
+				title: tab.started ? tab.chat.title : vscode.l10n.t("New chat"),
+				agent: tab.started ? tab.chat.agent : undefined,
+				running: tab.running,
+				agents: tab.agentsRunning,
+				busy: tab.busy,
+			})),
+			activeTab: this._active.id,
+			tabLimit,
+			switchTo: this._switchTo,
 			hasBrowserTab: this._browser.hasOpenTabs,
 			browserApi: isBrowserApiGranted(),
 			news: this._news,
@@ -321,6 +316,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				const queued = this._queued;
 				this._queued = [];
 				queued.forEach(m => this._postMessage(m));
+				this._postMessage({ type: 'inputHistory', items: this._inputHistory() });
 				if (!this._blocked() && !this._registry.detecting && !this._registry.agents.some(a => a.available || a.problem)) {
 					await this._registry.detect();
 				}
@@ -335,16 +331,33 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				this._select(message.selection);
 				return;
 			case 'send':
-				await this._send(message.text);
+				await this._send(message.text, message.tabId);
 				return;
 			case 'stop':
-				this._session?.stop();
+				this._active.stop();
+				return;
+			case 'stopAgent':
+				if (!await this._active.stopAgent(message.id)) {
+					this._postMessage({ type: 'agentStopFailed', id: message.id });
+				}
+				return;
+			case 'newTab':
+				this.newChat();
+				return;
+			case 'selectTab':
+				this._selectTab(message.id);
+				return;
+			case 'closeTab':
+				this._closeTab(message.id);
+				return;
+			case 'switchAgent':
+				await this._switchAgent(message.choice);
 				return;
 			case 'attach':
 				await this._attach(message.kind);
 				return;
 			case 'removeAttachment':
-				this._attachments = this._attachments.filter(a => a.chip.id !== message.id);
+				this._active.attachments = this._active.attachments.filter(a => a.chip.id !== message.id);
 				this._post();
 				return;
 			case 'usage':
@@ -384,7 +397,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	private _fail(err: unknown): void {
-		this._push({ kind: 'error', text: err instanceof Error ? err.message : String(err) });
+		this._active.push({ kind: 'error', text: err instanceof Error ? err.message : String(err) });
 	}
 
 	/* ------------------------------------------------------------ selection */
@@ -395,11 +408,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 * lists or an effort the model does not take falls back rather than being
 	 * sent to a CLI that would refuse it.
 	 */
-	private _selection(): Selection {
+	private _selection(tab = this._active): Selection {
 		const agents = this._registry.agents;
 		const available = agents.filter(a => a.available);
-		const agent = this._started()
-			? agents.find(a => a.id === this._chat.agent)
+		const agent = tab.started
+			? agents.find(a => a.id === tab.chat.agent)
 			: available.find(a => a.id === this._remembered.agent) ?? available[0];
 		if (!agent) {
 			return {};
@@ -417,8 +430,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 	private _select(selection: Selection): void {
 		const before = this._selection();
+		// A conversation belongs to one agent: another agent picked for one that
+		// has started is a question — a new tab beside it, in its place, or
+		// carrying it on — asked in the view, and the remembered agent waits for
+		// the answer.
+		const switching = !!selection.agent && selection.agent !== before.agent && this._active.started;
 		const next: RememberedSelection = {
-			agent: selection.agent ?? this._remembered.agent,
+			agent: switching ? this._remembered.agent : selection.agent ?? this._remembered.agent,
 			models: { ...this._remembered.models },
 			efforts: { ...this._remembered.efforts },
 		};
@@ -431,277 +449,105 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		this._remembered = next;
 		void this._context.globalState.update(selectionKey, next).then(undefined, () => { /* best effort */ });
 
-		// A conversation belongs to one agent, so switching agents mid-chat
-		// starts a new one; the old one stays in the history.
-		if (selection.agent && selection.agent !== before.agent && this._started()) {
-			this.newChat(selection.agent);
-			this._push({ kind: 'notice', text: vscode.l10n.t("Started a new chat with {0}. The previous one is in the history.", agentNames[selection.agent]) });
-			return;
-		}
+		this._switchTo = switching ? selection.agent : undefined;
 		this._post();
 	}
 
 	/* ------------------------------------------------------------ turns */
 
-	private async _send(text: string): Promise<void> {
+	private async _send(text: string, tabId?: string): Promise<void> {
 		if (this._blocked()) {
 			return;
 		}
+		// The tab it was typed in, whatever is in front by now: the state post
+		// that shows another tab is up to 40 ms behind the click that chose it.
+		const tab = tabId ? this._tabs.find(t => t.id === tabId) : this._active;
+		if (!tab) {
+			this._notSent(text);
+			return;
+		}
+		const chat = tab.chat;
 		// Sent while the agents were still being looked for: wait for the answer
 		// rather than refuse. Refusing lost the message — the webview clears its
 		// draft on send — and told the user to install an agent that was there.
 		if (this._registry.detecting) {
 			await this._registry.detect();
+			// Detection can take seconds, and meanwhile the tab may have closed,
+			// been replaced, or been given another chat from the history. Sent
+			// anyway, the message went into a conversation it was not written for,
+			// or started a CLI for a tab nothing showed or could stop (#339).
+			if (!this._tabs.includes(tab) || tab.chat !== chat) {
+				this._notSent(text);
+				return;
+			}
 		}
-		const { agent, model, effort } = this._selection();
+		// Remembered for ↑ even when it is refused below: that is when getting
+		// the text back matters most.
+		void this._rememberInput(text);
+		const { agent, model, effort } = this._selection(tab);
 		const backend = agent && this._registry.backend(agent);
 		if (!agent || !model || !backend) {
 			const problems = this._registry.agents.map(a => a.problem).filter(Boolean);
-			this._push({ kind: 'error', text: problems.length ? problems.join('\n') : vscode.l10n.t("No agent is available. Install Claude Code or Codex, then press Refresh.") });
+			tab.push({ kind: 'error', text: problems.length ? problems.join('\n') : vscode.l10n.t("No agent is available. Install Claude Code or Codex, then press Refresh.") });
 			// Kept in the chat rather than lost, so it can be copied and sent again.
 			if (text.trim()) {
-				this._push({ kind: 'notice', text: vscode.l10n.t("Not sent: {0}", text) });
+				tab.push({ kind: 'notice', text: vscode.l10n.t("Not sent: {0}", text) });
 			}
 			return;
 		}
-		const attachments = this._attachments;
+		const attachments = tab.attachments;
 		if (!text.trim() && !attachments.length) {
 			return;
 		}
-		this._attachments = [];
+		tab.attachments = [];
+		this._switchTo = undefined;
+		await tab.send(text, attachments, agent, model, effort, backend);
+		this._saveTabs();
+	}
 
-		if (!this._started()) {
-			this._chat.agent = agent;
-			this._chat.owned = true;
-			this._chat.title = chatTitle(text || attachments[0]?.chip.label || '');
-			this._chat.createdAt = Date.now();
+	/** A message whose tab went away before it could be sent: kept in the chat in front, to send again. */
+	private _notSent(text: string): void {
+		if (text.trim()) {
+			this._active.push({ kind: 'notice', text: vscode.l10n.t("Not sent, its chat was closed or changed: {0}", text) });
 		}
-		this._textBreak = false;
-		const entry: UserEntry = { kind: 'user', text, attachments: attachments.map(a => a.chip.label), at: Date.now() };
-		const running = this._session?.running ?? false;
-		if (!running) {
-			this._pending = [{ entry, base: this._tokenBase(), startedAt: entry.at }];
-		} else if (agent === 'claude') {
-			this._pending.push({ entry });
+	}
+
+	/**
+	 * What the composer's ↑ / ↓ walk through: the messages sent from this
+	 * workspace, oldest first, the newest last. Per workspace rather than per
+	 * user, like the chat history itself — a prompt is usually about the project
+	 * it was written in. A repeat of the newest is not stored twice.
+	 */
+	private _inputHistory(): string[] {
+		return this._context.workspaceState.get<string[]>(inputHistoryKey) ?? [];
+	}
+
+	private async _rememberInput(text: string): Promise<void> {
+		// A pasted log is not worth recalling, and 100 of them would be rewritten
+		// on every send.
+		if (!text.trim() || text.length > storedTextLimit) {
+			return;
 		}
-		this._push(entry);
-
-		const prompt = [text, ...attachments.map(a => a.text).filter((t): t is string => !!t)].filter(Boolean).join('\n\n');
-		const images = attachments.map(a => a.image).filter((i): i is TurnImage => !!i);
-
-		const chat = this._chat;
-		const session = this._ensureSession(backend);
-		chat.stats.turns++;
+		const items = this._inputHistory();
+		if (items[items.length - 1] !== text) {
+			items.push(text);
+		}
+		const kept = items.slice(-inputHistoryLimit);
 		try {
-			await session.send({ text: prompt, images }, model, effort);
-		} catch (err) {
-			// Only into the chat it was sent from: by now the user may have moved
-			// to another one, which this failure is nothing to do with.
-			if (this._session === session && this._chat === chat) {
-				this._push({ kind: 'error', text: err instanceof Error ? err.message : String(err) });
-			}
+			await this._context.workspaceState.update(inputHistoryKey, kept);
+		} catch {
+			// A convenience; the message itself is sent regardless.
 		}
-		this._post();
-		// Not a chat the user has deleted in the meantime: the send can take
-		// seconds on a cold app-server, and saving here wrote the deleted chat —
-		// its prompt included — back into the history.
-		if (chat === this._chat || this._history().some(c => c.id === chat.id)) {
-			await this._save(chat);
-		}
-	}
-
-	private _tokenBase(): TokenBase {
-		const st = this._chat.stats;
-		return { input: st.inputTokens, output: st.outputTokens, cached: st.cachedTokens };
-	}
-
-	private _ensureSession(backend: AgentBackend): AgentSession {
-		if (this._session) {
-			return this._session;
-		}
-		const session = backend.openSession(this._cwd(), this._chat.ref, this._chat.stats.costUsd);
-		this._tokenOffset = { input: 0, output: 0, cached: 0 };
-		const chatId = this._chat.id;
-		this._session = session;
-		this._sessionEvents = session.onEvent(event => {
-			if (this._session === session && this._chat.id === chatId) {
-				this._onAgentEvent(event);
-			}
-		});
-		return session;
-	}
-
-	private _onAgentEvent(event: AgentEvent): void {
-		const chat = this._chat;
-		const last = chat.entries[chat.entries.length - 1];
-		switch (event.type) {
-			case 'textBreak':
-				this._textBreak = true;
-				return;
-			case 'text':
-				this._endThinking();
-				if (last?.kind === 'assistant' && !this._textBreak) {
-					last.text += event.text;
-				} else {
-					chat.entries.push({ kind: 'assistant', text: event.text });
-				}
-				this._textBreak = false;
-				break;
-			case 'thinking':
-				if (last?.kind === 'thinking' && last.endedAt === undefined) {
-					last.text += event.text;
-				} else {
-					chat.entries.push({ kind: 'thinking', text: event.text, startedAt: Date.now() });
-				}
-				break;
-			case 'tool':
-				this._endThinking();
-				this._textBreak = true;
-				chat.entries.push({ kind: 'tool', id: event.id, tool: event.tool.kind, name: event.tool.name, detail: event.tool.detail, input: event.tool.input, added: event.tool.added, removed: event.tool.removed, status: 'running', startedAt: Date.now() });
-				break;
-			case 'toolUpdate': {
-				const entry = this._tool(event.id);
-				if (!entry) {
-					return;
-				}
-				const u = event.update;
-				if (u.output !== undefined) {
-					entry.output = clipText(u.append ? (entry.output ?? '') + u.output : u.output);
-				}
-				if (u.input !== undefined) {
-					entry.input = u.input;
-				}
-				if (u.added !== undefined) {
-					entry.added = u.added;
-				}
-				if (u.removed !== undefined) {
-					entry.removed = u.removed;
-				}
-				if (u.exitCode !== undefined) {
-					entry.exitCode = u.exitCode;
-				}
-				if (u.status) {
-					entry.status = u.status;
-					entry.endedAt = Date.now();
-				}
-				break;
-			}
-			case 'notice':
-				chat.entries.push({ kind: 'notice', text: event.text });
-				break;
-			case 'session':
-				chat.ref = event.id;
-				void this._save();
-				break;
-			case 'tokens':
-				if (event.cumulative) {
-					// Codex's figure is the thread's running total, and it survives a
-					// restart: measured, a thread resumed in a new app-server reported
-					// 39 496 after a second turn, the first having ended at 19 740. A
-					// total that ever comes back *lower* than what is already counted
-					// is a counter that started again, so it is added on top rather
-					// than allowed to take the chat's totals backwards.
-					const off = this._tokenOffset;
-					if (event.input + off.input < chat.stats.inputTokens) {
-						this._tokenOffset = { input: chat.stats.inputTokens, output: chat.stats.outputTokens, cached: chat.stats.cachedTokens };
-					}
-					chat.stats.inputTokens = this._tokenOffset.input + event.input;
-					chat.stats.outputTokens = this._tokenOffset.output + event.output;
-					chat.stats.cachedTokens = this._tokenOffset.cached + event.cached;
-				} else {
-					chat.stats.inputTokens += event.input;
-					chat.stats.outputTokens += event.output;
-					chat.stats.cachedTokens += event.cached;
-				}
-				if (event.costUsd !== undefined) {
-					chat.stats.costUsd = (chat.stats.costUsd ?? 0) + event.costUsd;
-				}
-				break;
-			case 'limits':
-				this._limits.set(chat.agent, event.windows);
-				break;
-			case 'turnEnd': {
-				this._endThinking();
-				this._textBreak = false;
-				const now = Date.now();
-				// A tool still marked running when its turn is over will never be
-				// told otherwise; leaving it blinking would say work is going on.
-				for (const entry of chat.entries) {
-					if (entry.kind === 'tool' && entry.status === 'running') {
-						entry.status = event.error ? 'failed' : 'done';
-						entry.endedAt = now;
-					}
-				}
-				// The oldest prompt still waiting is the one this turn answered.
-				const done = this._pending.shift();
-				if (done && done.entry.at !== undefined) {
-					done.entry.workedMs = now - (done.startedAt ?? done.entry.at);
-					const base = done.base;
-					const st = chat.stats;
-					// Shown only when the agent reported anything: a turn that
-					// failed before reaching the model has no tokens to show.
-					if (base && (st.inputTokens > base.input || st.outputTokens > base.output)) {
-						done.entry.tokensIn = st.inputTokens - base.input;
-						done.entry.tokensOut = st.outputTokens - base.output;
-						done.entry.tokensCached = Math.max(0, st.cachedTokens - base.cached);
-					}
-				}
-				// The next queued prompt's turn starts now — or, when the session
-				// has stopped, none of them will get one.
-				if (this._session?.running && this._pending.length) {
-					this._pending[0].base = this._tokenBase();
-					this._pending[0].startedAt = now;
-				} else {
-					this._pending = [];
-				}
-				if (event.error) {
-					chat.entries.push(event.error === 'Stopped.'
-						? { kind: 'notice', text: vscode.l10n.t("Stopped.") }
-						: { kind: 'error', text: event.error });
-				}
-				chat.updatedAt = now;
-				void this._save();
-				break;
-			}
-		}
-		this._post();
-	}
-
-	/** The tool entry a result belongs to, looked up from the end: results follow their calls. */
-	private _tool(id: string): ToolEntry | undefined {
-		for (let i = this._chat.entries.length - 1; i >= 0; i--) {
-			const entry = this._chat.entries[i];
-			if (entry.kind === 'tool' && entry.id === id) {
-				return entry;
-			}
-		}
-		return undefined;
-	}
-
-	private _endThinking(): void {
-		for (let i = this._chat.entries.length - 1; i >= 0; i--) {
-			const entry = this._chat.entries[i];
-			if (entry.kind === 'thinking' && entry.endedAt === undefined) {
-				entry.endedAt = Date.now();
-			}
-			if (entry.kind === 'user') {
-				return;
-			}
-		}
-	}
-
-	private _push(entry: ChatEntry): void {
-		this._chat.entries.push(entry);
-		this._chat.updatedAt = Date.now();
-		this._post();
+		this._postMessage({ type: 'inputHistory', items: kept });
 	}
 
 	/* ------------------------------------------------------------ attachments */
 
 	private async _attach(kind: AttachmentKind): Promise<void> {
+		const tab = this._active;
 		const attachment = await this._makeAttachment(kind);
 		if (attachment) {
-			this._attachments.push(attachment);
+			tab.attachments.push(attachment);
 			this._post();
 			this._postMessage({ type: 'focusInput' });
 		}
@@ -782,7 +628,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 	private async _usage(): Promise<void> {
 		const agents = this._registry.agents.filter(a => a.available);
-		const stats = this._started() ? { ...this._chat.stats } : undefined;
+		const stats = this._active.started ? { ...this._active.chat.stats } : undefined;
 		this._postMessage({ type: 'usage', usage: [], stats, loading: true });
 		const usage = await Promise.all(agents.map(async a => {
 			const backend = this._registry.backend(a.id);
@@ -802,7 +648,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		return this._context.workspaceState.get<StoredChat[]>(historyKey) ?? [];
 	}
 
-	private async _save(chat = this._chat): Promise<void> {
+	private async _save(chat: StoredChat): Promise<void> {
 		if (!started(chat)) {
 			return;
 		}
@@ -822,16 +668,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		this._postMessage({ type: 'history', chats, refresh });
 	}
 
+	/**
+	 * A chat from the history: brought to the front if a tab has it already,
+	 * shown in the tab in front if that one is empty, and otherwise in a new tab
+	 * beside it — opening one must not end a conversation that is working.
+	 */
 	private _openChat(id: string): void {
-		const stored = this._history().find(c => c.id === id);
-		if (!stored || stored.id === this._chat.id) {
+		const open = this._tabs.find(t => t.chat.id === id);
+		if (open) {
+			this._selectTab(open.id);
 			return;
 		}
-		this._endTurnHere();
-		void this._save();
-		this._dropSession();
-		this._attachments = [];
-		this._chat = { ...stored, entries: stored.entries.map(settled), stats: { ...stored.stats } };
+		const stored = this._history().find(c => c.id === id);
+		if (!stored) {
+			return;
+		}
+		let tab = this._active;
+		if (tab.started || tab.busy) {
+			const added = this._addTab(stored.agent);
+			if (!added) {
+				return;
+			}
+			tab = added;
+		}
+		tab.open(stored);
+		this._switchTo = undefined;
 		this._post();
 	}
 
@@ -841,23 +702,184 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		} catch {
 			// Best effort, as above.
 		}
-		if (id === this._chat.id) {
-			this._pending = [];
-			this._dropSession();
-			this._chat = this._newChat(this._chat.agent);
-			this._post();
+		const tab = this._tabs.find(t => t.chat.id === id);
+		if (tab) {
+			// Not saved on the way out: that would write the deleted chat back.
+			tab.discard();
+			this._removeTab(tab);
 		}
 		this.showHistory(true);
 	}
 
-	public newChat(agent?: AgentId): void {
-		this._endTurnHere();
-		void this._save();
-		this._dropSession();
-		this._attachments = [];
-		this._chat = this._newChat(agent ?? this._selection().agent ?? 'claude');
+	/* ------------------------------------------------------------ tabs */
+
+	/** The open tabs as they were when the window closed; at least one, empty if nothing was open. */
+	private _restoreTabs(): void {
+		const saved = this._context.workspaceState.get<{ ids?: unknown; fresh?: unknown; active?: unknown }>(openTabsKey);
+		const strings = (value: unknown) => Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : [];
+		const fresh = new Set(strings(saved?.fresh));
+		const history = this._history();
+		for (const id of strings(saved?.ids)) {
+			const stored = history.find(c => c.id === id);
+			if (this._tabs.length >= tabLimit) {
+				break;
+			}
+			if (stored) {
+				this._tabs.push(new ChatTab(this._tabHost, reopened(stored)));
+			} else if (fresh.has(id)) {
+				// A tab nothing was sent from: it has no history to come back from,
+				// but it comes back with its chat id, which its draft is kept under.
+				this._tabs.push(new ChatTab(this._tabHost, newChat(this._remembered.agent ?? 'claude', id)));
+			}
+		}
+		if (!this._tabs.length) {
+			this._tabs.push(new ChatTab(this._tabHost, newChat(this._remembered.agent ?? 'claude')));
+		}
+		this._active = this._tabs.find(t => t.chat.id === saved?.active) ?? this._tabs[0];
+	}
+
+	/**
+	 * Remembers the open tabs, when they changed. A started chat comes back from
+	 * the history; a tab nothing was sent from comes back empty with the same
+	 * chat id (`fresh`), so a draft written in it survives a reload.
+	 */
+	private _saveTabs(): void {
+		const value = {
+			ids: this._tabs.map(t => t.chat.id),
+			fresh: this._tabs.filter(t => !t.started).map(t => t.chat.id),
+			active: this._active.chat.id,
+		};
+		const json = JSON.stringify(value);
+		if (json === this._tabsSaved) {
+			return;
+		}
+		this._tabsSaved = json;
+		this._context.workspaceState.update(openTabsKey, value).then(undefined, () => { /* a convenience */ });
+	}
+
+	/** A new tab beside the one in front, and in front; refused past `tabLimit`. */
+	private _addTab(agent: AgentId): ChatTab | undefined {
+		if (this._tabs.length >= tabLimit) {
+			refuse(vscode.l10n.t("{0} chats are open — close one to open another.", tabLimit));
+			return undefined;
+		}
+		const tab = new ChatTab(this._tabHost, newChat(agent));
+		this._tabs.splice(this._tabs.indexOf(this._active) + 1, 0, tab);
+		this._active = tab;
+		this._switchTo = undefined;
 		this._post();
 		this._postMessage({ type: 'focusInput' });
+		return tab;
+	}
+
+	private _selectTab(id: string): void {
+		const tab = this._tabs.find(t => t.id === id);
+		if (!tab || tab === this._active) {
+			return;
+		}
+		this._active = tab;
+		this._switchTo = undefined;
+		this._post();
+		this._postMessage({ type: 'focusInput' });
+	}
+
+	/** Closing a tab stops what it runs — its turn and its agents — and keeps the chat in the history. */
+	private _closeTab(id: string): void {
+		const tab = this._tabs.find(t => t.id === id);
+		if (!tab) {
+			return;
+		}
+		tab.close();
+		this._removeTab(tab);
+	}
+
+	private _removeTab(tab: ChatTab): void {
+		const at = this._tabs.indexOf(tab);
+		if (at < 0) {
+			return;
+		}
+		this._tabs.splice(at, 1);
+		if (!this._tabs.length) {
+			this._tabs.push(new ChatTab(this._tabHost, newChat(this._remembered.agent ?? 'claude')));
+		}
+		if (this._active === tab) {
+			this._active = this._tabs[Math.min(at, this._tabs.length - 1)];
+			this._switchTo = undefined;
+		}
+		this._post();
+	}
+
+	private _rememberAgent(agent: AgentId): void {
+		this._remembered = { ...this._remembered, agent };
+		this._context.globalState.update(selectionKey, this._remembered).then(undefined, () => { /* best effort */ });
+	}
+
+	/**
+	 * The answer to "another agent for a conversation that has started":
+	 *
+	 * - `newTab` — a new tab with the other agent; this one goes on working.
+	 * - `replace` — this one closes, its turn and its agents stopped, and the
+	 *   other agent takes its place.
+	 * - `continue` — this conversation is written out as Markdown and handed to
+	 *   the other agent in a new tab, attached to its first message; this tab
+	 *   stays open.
+	 * - `cancel` — nothing changes, and the pill shows this tab's agent again.
+	 */
+	private async _switchAgent(choice: 'newTab' | 'replace' | 'continue' | 'cancel'): Promise<void> {
+		const to = this._switchTo;
+		this._switchTo = undefined;
+		const from = this._active;
+		if (!to || choice === 'cancel' || !from.started) {
+			this._post();
+			return;
+		}
+		this._rememberAgent(to);
+		switch (choice) {
+			case 'newTab':
+				this._addTab(to);
+				return;
+			case 'replace':
+				// The same tab, another conversation: its draft goes with it.
+				from.start(newChat(to));
+				this._postMessage({ type: 'focusInput' });
+				return;
+			case 'continue': {
+				if (this._tabs.length >= tabLimit) {
+					refuse(vscode.l10n.t("{0} chats are open — close one to open another.", tabLimit));
+					this._post();
+					return;
+				}
+				const chat = from.chat;
+				const now = new Date();
+				const markdown = chatTranscript(chat.title, agentNames[chat.agent], chat.entries, now);
+				let file: string | undefined;
+				try {
+					file = await writeChatTranscript(markdown, transcriptFileName(chat.title, now));
+				} catch (err) {
+					from.push({ kind: 'error', text: vscode.l10n.t("Could not write the conversation out for {0}: {1}", agentNames[to], err instanceof Error ? err.message : String(err)) });
+					return;
+				}
+				const tab = this._addTab(to);
+				if (!tab) {
+					return;
+				}
+				const attachment: Attachment = {
+					chip: { id: generateUuid(), kind: 'file', label: vscode.l10n.t("Conversation with {0}", agentNames[chat.agent]) },
+					text: file
+						? `The user is moving a conversation they had with ${agentNames[chat.agent]} over to you. It is in ${file}: read it first, then carry on from where it left off.`
+						// No folder to put a file in: the conversation itself, capped.
+						: `The user is moving a conversation they had with ${agentNames[chat.agent]} over to you; it follows. Carry on from where it left off.\n\n${markdown.length > transcriptInlineLimit ? `${markdown.slice(-transcriptInlineLimit)}\n\n(Earlier parts left out.)` : markdown}`,
+				};
+				tab.attachments.push(attachment);
+				this._post();
+				return;
+			}
+		}
+	}
+
+	/** The title bar's New Chat, and the tab strip's "+": a new tab. */
+	public newChat(): void {
+		this._addTab(this._remembered.agent ?? this._selection().agent ?? 'claude');
 	}
 
 	public refreshAgents(): void {
@@ -867,69 +889,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	/**
-	 * Whether the user has said anything yet. Not `entries.length`: a notice
-	 * ("Started a new chat with Codex") is an entry too, and counting it made the
-	 * fresh chat belong to the agent the user had just switched away from.
-	 */
-	private _started(): boolean {
-		return started(this._chat);
-	}
-
-	private _newChat(agent: AgentId): StoredChat {
-		const now = Date.now();
-		return {
-			id: generateUuid(), title: 'New chat', agent, createdAt: now, updatedAt: now, entries: [],
-			stats: { inputTokens: 0, outputTokens: 0, cachedTokens: 0, turns: 0 },
-		};
-	}
-
-	private _dropSession(): void {
-		this._sessionEvents?.dispose();
-		this._sessionEvents = undefined;
-		this._session?.dispose();
-		this._session = undefined;
-		this._pending = [];
-	}
-
-	/**
 	 * A Refresh found another copy of an agent and replaced its backend, which
-	 * disposed every session it held — this chat's included. The chat lets go of
-	 * it, so the next message opens a session on the new backend and resumes the
-	 * same conversation by its `ref`. A turn that was running is ended here,
-	 * since the session that would have ended it is gone.
+	 * disposed every session it held. Every tab on that agent lets go of its
+	 * session and resumes its conversation on the new backend at its next message.
 	 */
 	private _onBackendReplaced(agent: AgentId, gone: boolean): void {
-		if (!this._session || this._chat.agent !== agent) {
-			return;
+		for (const tab of this._tabs) {
+			tab.backendReplaced(agent, gone);
 		}
-		this._endTurnHere();
-		this._sessionEvents?.dispose();
-		this._sessionEvents = undefined;
-		this._session = undefined;
-		this._pending = [];
-		this._push({
-			kind: 'notice',
-			text: gone
-				? vscode.l10n.t("{0} is no longer installed. Install it again, then press Refresh to continue this conversation.", agentNames[agent])
-				: vscode.l10n.t("{0} was replaced by another installed copy; the conversation continues with it.", agentNames[agent]),
-		});
-	}
-
-	/**
-	 * Ends the running turn in the chat itself, for every path that lets go of a
-	 * session mid-turn: New Chat, another chat from the history, an agent
-	 * switch, deleting it, a replaced backend, the window closing. The session
-	 * that would have reported the end is being disposed and says nothing, so
-	 * without this the chat was saved with its tool rows "Running…" and its
-	 * thinking still shimmering — and showed them so for good when reopened.
-	 * The turn's state is read from the chat (`_pending`), not from the
-	 * session, whose `running` a dispose may already have cleared.
-	 */
-	private _endTurnHere(): void {
-		if (this._session?.running || this._pending.length) {
-			this._onAgentEvent({ type: 'turnEnd', error: 'Stopped.' });
-		}
-		this._pending = [];
 	}
 
 	/** Where the agents work: the first local folder, else the home directory. */
@@ -939,84 +906,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	public dispose(): void {
-		this._endTurnHere();
-		void this._save();
+		for (const tab of this._tabs) {
+			tab.close();
+		}
+		// After the tabs: closing one posts, and a timer set then would fire on a
+		// view that is gone.
 		clearTimeout(this._postTimer);
-		this._dropSession();
+		this._postTimer = undefined;
 		this._subscriptions.forEach(s => s.dispose());
 	}
-}
-
-function clipText(text: string): string {
-	return text.length > toolOutputLimit ? `${text.slice(-toolOutputLimit)}` : text;
-}
-
-type UserEntry = Extract<ChatEntry, { kind: 'user' }>;
-
-interface TokenBase {
-	readonly input: number;
-	readonly output: number;
-	readonly cached: number;
-}
-
-/**
- * Whether the user has started this conversation — which fixes its agent.
- *
- * Not `entries.length`: a notice ("Started a new chat with Codex") is an entry
- * too, and counting it made the fresh chat belong to the agent the user had just
- * switched away from. And not "has a user entry" alone either: the history keeps
- * only the newest entries, so a long turn could push every prompt out, and a
- * chat reopened that way read as unstarted — taking the globally remembered
- * agent and handing it the other agent's session id. `owned` and `ref` survive
- * any truncation.
- */
-function started(chat: StoredChat): boolean {
-	return chat.owned === true || chat.ref !== undefined || chat.entries.some(e => e.kind === 'user');
-}
-
-/**
- * The entries as stored in the history: the newest `entryLimit`, long texts and
- * tool bodies cut, and **the latest prompt kept even when the window would
- * drop it**, so a reopened chat never opens on rows that answer nothing.
- */
-function storedEntries(entries: readonly ChatEntry[]): ChatEntry[] {
-	let kept = entries.slice(-entryLimit);
-	if (!kept.some(e => e.kind === 'user')) {
-		const prompt = [...entries].reverse().find(e => e.kind === 'user');
-		if (prompt) {
-			kept = [prompt, ...kept.slice(1)];
-		}
-	}
-	return kept.map(entry => {
-		if ((entry.kind === 'assistant' || entry.kind === 'user' || entry.kind === 'thinking') && entry.text.length > storedTextLimit) {
-			return { ...entry, text: `${entry.text.slice(0, storedTextLimit)}\n\n[…]` };
-		}
-		if (entry.kind === 'tool') {
-			// The history is rewritten whole on every save; a full 20 000-character
-			// body per tool row made each save tens of megabytes.
-			return { ...entry, input: cut(entry.input), output: cut(entry.output) };
-		}
-		return entry;
-	});
-}
-
-function cut(text: string | undefined): string | undefined {
-	return text !== undefined && text.length > storedToolLimit ? `${text.slice(0, storedToolLimit)}\n…` : text;
-}
-
-/**
- * An entry as a chat reopened from the history should show it: nothing in a
- * stored chat is still running. Chats saved mid-turn by an earlier build kept
- * their rows "Running…" and their thinking open for good.
- */
-function settled(entry: ChatEntry): ChatEntry {
-	if (entry.kind === 'tool' && entry.status === 'running') {
-		return { ...entry, status: 'failed', endedAt: entry.endedAt ?? entry.startedAt };
-	}
-	if (entry.kind === 'thinking' && entry.endedAt === undefined) {
-		return { ...entry, endedAt: entry.startedAt };
-	}
-	return entry;
 }
 
 /**

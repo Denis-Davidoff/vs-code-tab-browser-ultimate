@@ -24,7 +24,7 @@
  * because the next CLI release may well rename it.
  */
 
-import type { AgentUsage, ChatModel, ToolKind, UsageWindow } from './chatProtocol';
+import type { AgentInfo, AgentUsage, ChatModel, ToolKind, UsageWindow } from './chatProtocol';
 
 /* --------------------------------------------------------------- framing */
 
@@ -305,17 +305,20 @@ export interface ToolStart {
 	readonly input?: string;
 	readonly added?: number;
 	readonly removed?: number;
+	readonly agent?: Partial<AgentInfo>;
 }
 
 export interface ToolUpdate {
 	readonly output?: string;
 	/** `output` continues what is there rather than replacing it — a streamed command. */
 	readonly append?: boolean;
-	readonly status?: 'done' | 'failed';
+	readonly status?: 'done' | 'failed' | 'stopped';
 	readonly exitCode?: number;
 	readonly input?: string;
 	readonly added?: number;
 	readonly removed?: number;
+	/** Merged into the row's `agent`. */
+	readonly agent?: Partial<Omit<AgentInfo, 'calls'>>;
 }
 
 /** What a turn produced, in a form the chat view renders without knowing which agent spoke. */
@@ -326,6 +329,12 @@ export type AgentEvent =
 	| { readonly type: 'thinking'; readonly text: string }
 	| { readonly type: 'tool'; readonly id: string; readonly tool: ToolStart }
 	| { readonly type: 'toolUpdate'; readonly id: string; readonly update: ToolUpdate }
+	/** A tool call made by an agent the chat's agent started, under the row `parentId`. */
+	| { readonly type: 'agentCall'; readonly parentId: string; readonly name: string; readonly detail?: string }
+	/** Codex: the agents' own states, by the thread each runs in. */
+	| { readonly type: 'agentStates'; readonly states: readonly { readonly threadId: string; readonly status: 'running' | 'done' | 'failed' | 'stopped'; readonly message?: string }[] }
+	/** Claude Code began a turn of its own — an agent it started has finished, and it is answering that. */
+	| { readonly type: 'autoTurn' }
 	| { readonly type: 'session'; readonly id: string }
 	| { readonly type: 'turnEnd'; readonly error?: string }
 	| { readonly type: 'tokens'; readonly input: number; readonly output: number; readonly cached: number; readonly costUsd?: number; readonly cumulative: boolean }
@@ -348,13 +357,13 @@ export const toolOutputLimit = 20_000;
  * equal turns), which is why the cost is reported as cumulative and the tokens
  * are not.
  */
-export function claudeEvents(message: Record<string, unknown>): AgentEvent[] {
+export function claudeEvents(message: Record<string, unknown>, tasks?: Map<string, string>): AgentEvent[] {
 	switch (message.type) {
 		case 'system':
 			if (message.subtype === 'init' && typeof message.session_id === 'string') {
 				return [{ type: 'session', id: message.session_id }];
 			}
-			return [];
+			return claudeTaskEvents(message, tasks);
 
 		case 'stream_event': {
 			const event = isRecord(message.event) ? message.event : undefined;
@@ -376,12 +385,18 @@ export function claudeEvents(message: Record<string, unknown>): AgentEvent[] {
 		}
 
 		case 'assistant': {
-			if (message.parent_tool_use_id) {
-				return [];
-			}
 			const content = isRecord(message.message) ? message.message.content : undefined;
 			if (!Array.isArray(content)) {
 				return [];
+			}
+			// An agent's own calls carry its parent's tool id: they belong on that
+			// agent's row, not in the conversation.
+			if (typeof message.parent_tool_use_id === 'string') {
+				const parentId = message.parent_tool_use_id;
+				return content
+					.filter(isRecord)
+					.filter(block => block.type === 'tool_use' && typeof block.name === 'string')
+					.map(block => ({ type: 'agentCall' as const, parentId, name: block.name as string, detail: toolDetail(block.input) }));
 			}
 			return content
 				.filter(isRecord)
@@ -401,6 +416,18 @@ export function claudeEvents(message: Record<string, unknown>): AgentEvent[] {
 				.filter(isRecord)
 				.filter(block => block.type === 'tool_result' && typeof block.tool_use_id === 'string')
 				.map(block => {
+					// A background agent's call answers at once with "Async agent
+					// launched": the agent is only starting, so the row stays running
+					// and its end comes from `task_notification`.
+					const launched = isRecord(message.tool_use_result) && message.tool_use_result.status === 'async_launched';
+					if (launched) {
+						const r = message.tool_use_result as Record<string, unknown>;
+						return {
+							type: 'toolUpdate' as const,
+							id: block.tool_use_id as string,
+							update: { agent: { background: true, model: typeof r.resolvedModel === 'string' ? r.resolvedModel : undefined } },
+						};
+					}
 					const failed = block.is_error === true;
 					const text = resultText(block.content);
 					// A failed Bash result starts with Claude Code's own "Exit code N"
@@ -487,9 +514,96 @@ export function claudeTool(name: string, input: unknown): ToolStart {
 			return { kind: 'web', name, detail: str('query') };
 		case 'Task':
 		case 'Agent':
-			return { kind: 'agent', name, detail: str('description'), input: str('prompt') };
+			return {
+				kind: 'agent', name, detail: str('description'), input: str('prompt'),
+				agent: { type: str('subagent_type'), background: i.run_in_background === true ? true : undefined },
+			};
 		default:
 			return { kind: 'other', name, detail: toolDetail(input), input: jsonBody(input) };
+	}
+}
+
+/**
+ * Claude Code's reports on the agents its agent starts, measured on 2.1.301:
+ * `task_started` (the call's `tool_use_id`, `subagent_type`, `is_backgrounded`,
+ * the prompt), `task_progress` (`usage.total_tokens`, `tool_uses`,
+ * `duration_ms`, `last_tool_name`) and `task_notification` (the final
+ * `status`, a `summary`, the same usage). `task_updated` names only the task
+ * id, with what changed in `patch`; a foreground agent moved to the background
+ * arrives there as `patch.is_backgrounded` (the CLI's own schema says so), and
+ * `tasks` — task id to the call's id, kept from `task_started` by the caller —
+ * is how it finds the row. Tasks are not only agents: a background shell and
+ * a Bash call running past two seconds are tasks too (`task_type`
+ * `local_bash`), so `task_started` reads only the agent types, and the chat
+ * applies agent fields to agent rows only. A background agent outlives the turn that started it:
+ * its turn's `result` arrives first, and when the agent finishes the CLI
+ * begins a turn of its own — `status: requesting` with nothing sent — to
+ * answer it.
+ */
+/** The task types that are agents; anything else (`local_bash`, …) is not shown as one. */
+const agentTaskTypes = new Set(['local_agent', 'remote_agent']);
+
+function claudeTaskEvents(message: Record<string, unknown>, tasks?: Map<string, string>): AgentEvent[] {
+	const id = typeof message.tool_use_id === 'string' ? message.tool_use_id : undefined;
+	const taskId = typeof message.task_id === 'string' ? message.task_id : undefined;
+	const usage = isRecord(message.usage) ? message.usage : undefined;
+	const counts = usage ? {
+		tokens: typeof usage.total_tokens === 'number' ? usage.total_tokens : undefined,
+		toolUses: typeof usage.tool_uses === 'number' ? usage.tool_uses : undefined,
+		durationMs: typeof usage.duration_ms === 'number' ? usage.duration_ms : undefined,
+	} : {};
+	switch (message.subtype) {
+		case 'status':
+			return message.status === 'requesting' ? [{ type: 'autoTurn' }] : [];
+		case 'task_started':
+			if (typeof message.task_type === 'string' && !agentTaskTypes.has(message.task_type)) {
+				return [];
+			}
+			if (id && taskId) {
+				tasks?.set(taskId, id);
+			}
+			return id ? [{ type: 'toolUpdate', id, update: { agent: {
+				type: typeof message.subagent_type === 'string' ? message.subagent_type : undefined,
+				background: message.is_backgrounded === true ? true : undefined,
+			} } }] : [];
+		case 'task_updated': {
+			const row = taskId ? tasks?.get(taskId) : undefined;
+			return row && isRecord(message.patch) && message.patch.is_backgrounded === true
+				? [{ type: 'toolUpdate', id: row, update: { agent: { background: true } } }]
+				: [];
+		}
+		case 'task_progress':
+			return id ? [{ type: 'toolUpdate', id, update: { agent: {
+				...counts, lastTool: typeof message.last_tool_name === 'string' ? message.last_tool_name : undefined,
+			} } }] : [];
+		case 'task_notification': {
+			if (!id) {
+				return [];
+			}
+			const status = taskStatus(message.status);
+			// A stopped task's `summary` is only its description (measured: "Run
+			// timed step loop" for an agent stopped mid-loop), not a report.
+			const summary = status !== 'stopped' && typeof message.summary === 'string' ? clip(message.summary) : undefined;
+			return [{ type: 'toolUpdate', id, update: { status, output: summary, agent: { ...counts, summary } } }];
+		}
+		default:
+			return [];
+	}
+}
+
+/** A task's or a Codex agent's end state, in the row's terms. */
+function taskStatus(status: unknown): 'done' | 'failed' | 'stopped' {
+	switch (status) {
+		case 'completed':
+			return 'done';
+		case 'killed':
+		case 'stopped':
+		case 'cancelled':
+		case 'interrupted':
+		case 'shutdown':
+			return 'stopped';
+		default:
+			return 'failed';
 	}
 }
 
@@ -551,6 +665,9 @@ export function codexEvents(method: string, params: unknown): AgentEvent[] {
 			if (item?.type === 'agentMessage') {
 				return [{ type: 'textBreak' }];
 			}
+			if (item?.type === 'subAgentActivity') {
+				return codexSubAgentEvents(item);
+			}
 			const tool = item && typeof item.id === 'string' ? codexTool(item) : undefined;
 			return tool ? [{ type: 'tool', id: item!.id as string, tool }] : [];
 		}
@@ -558,7 +675,9 @@ export function codexEvents(method: string, params: unknown): AgentEvent[] {
 		case 'item/completed': {
 			const item = isRecord(p.item) ? p.item : undefined;
 			const update = item ? codexToolResult(item) : undefined;
-			return update && typeof item!.id === 'string' ? [{ type: 'toolUpdate', id: item!.id as string, update }] : [];
+			const events: AgentEvent[] = update && typeof item!.id === 'string' ? [{ type: 'toolUpdate', id: item!.id as string, update }] : [];
+			const states = item?.type === 'collabAgentToolCall' ? codexAgentStates(item.agentsStates) : [];
+			return states.length ? [...events, { type: 'agentStates', states }] : events;
 		}
 
 		case 'turn/completed': {
@@ -583,6 +702,75 @@ export function codexEvents(method: string, params: unknown): AgentEvent[] {
 			return error && p.willRetry !== true ? [{ type: 'notice', text: error }] : [];
 		}
 
+		default:
+			return [];
+	}
+}
+
+/**
+ * An agent Codex started, as Codex reports it — measured on codex-cli
+ * 0.162.0-alpha.17.2, where no `collabAgentToolCall` `spawnAgent` item is sent
+ * at all: a `subAgentActivity` item on the parent's thread with `kind`
+ * `started` / `interacted` / `interrupted` / `completed`, the agent's own
+ * thread id and its `agentPath` (`/root/read_a`, a name the model chose). It
+ * carries no prompt. The row is keyed by the agent's thread id, which is how
+ * the agent's own events (`codexAgentThreadEvents`) find it, and each report
+ * arrives as both `item/started` and `item/completed`, so only the first is
+ * read.
+ */
+export function codexSubAgentEvents(item: Record<string, unknown>): AgentEvent[] {
+	const id = typeof item.agentThreadId === 'string' ? item.agentThreadId : undefined;
+	if (!id) {
+		return [];
+	}
+	switch (item.kind) {
+		case 'started': {
+			const path = typeof item.agentPath === 'string' ? item.agentPath : undefined;
+			const name = path?.split('/').filter(Boolean).pop()?.replace(/[_-]+/g, ' ').trim();
+			return [{ type: 'tool', id, tool: { kind: 'agent', name: 'Agent', detail: name ? oneLine(name) : undefined, agent: { type: path, threadId: id } } }];
+		}
+		case 'completed':
+			return [{ type: 'toolUpdate', id, update: { status: 'done' } }];
+		case 'interrupted':
+			return [{ type: 'toolUpdate', id, update: { status: 'stopped' } }];
+		default:
+			return [];
+	}
+}
+
+/**
+ * What an agent Codex started does, read from its own thread: every
+ * notification of that thread arrives on the same app-server, under the
+ * agent's thread id. Its tool items become the card's tool calls, its total
+ * tokens the card's, its last message the report, and an agent it starts in
+ * turn a row of its own. None of it is the reply.
+ */
+export function codexAgentThreadEvents(threadId: string, method: string, params: unknown): AgentEvent[] {
+	const p = isRecord(params) ? params : {};
+	const item = isRecord(p.item) ? p.item : undefined;
+	switch (method) {
+		case 'item/started': {
+			if (item?.type === 'subAgentActivity') {
+				return codexSubAgentEvents(item);
+			}
+			const tool = item ? codexTool(item) : undefined;
+			const detail = tool?.kind === 'command' ? tool.input || tool.detail : tool?.detail;
+			return tool ? [{ type: 'agentCall', parentId: threadId, name: tool.name, detail: detail ? oneLine(detail) : undefined }] : [];
+		}
+		case 'item/completed':
+			return item?.type === 'agentMessage' && typeof item.text === 'string' && item.text.trim()
+				? [{ type: 'toolUpdate', id: threadId, update: { agent: { summary: clip(item.text) } } }]
+				: [];
+		case 'turn/completed':
+			// An agent stopped on its own (`stopAgent`) ends here; the parent's
+			// `subAgentActivity` may say `interrupted` as well, and either ends the row.
+			return isRecord(p.turn) && p.turn.status === 'interrupted' ? [{ type: 'toolUpdate', id: threadId, update: { status: 'stopped' } }] : [];
+		case 'thread/tokenUsage/updated': {
+			const total = isRecord(p.tokenUsage) && isRecord(p.tokenUsage.total) ? p.tokenUsage.total : undefined;
+			return total && typeof total.totalTokens === 'number'
+				? [{ type: 'toolUpdate', id: threadId, update: { agent: { tokens: total.totalTokens } } }]
+				: [];
+		}
 		default:
 			return [];
 	}
@@ -620,9 +808,22 @@ function codexTool(item: Record<string, unknown>): ToolStart | undefined {
 			return { kind: 'web', name: 'Web search', detail: typeof item.query === 'string' ? oneLine(item.query) : undefined };
 		case 'imageView':
 			return { kind: 'read', name: 'View image', detail: typeof item.path === 'string' ? item.path : undefined };
-		case 'collabAgentToolCall':
-		case 'subAgentActivity':
-			return { kind: 'agent', name: 'Sub-agent', detail: typeof item.prompt === 'string' ? oneLine(item.prompt) : undefined };
+		case 'collabAgentToolCall': {
+			// Only a spawn is an agent; `wait`, `sendInput`, `resumeAgent` and
+			// `closeAgent` talk to one, and their news is in `agentsStates`.
+			if (item.tool !== 'spawnAgent') {
+				return undefined;
+			}
+			const prompt = typeof item.prompt === 'string' ? item.prompt : undefined;
+			const threads = Array.isArray(item.receiverThreadIds) ? item.receiverThreadIds.filter((t): t is string => typeof t === 'string') : [];
+			return {
+				kind: 'agent', name: 'Agent', detail: prompt ? oneLine(prompt.split('\n')[0]) : undefined, input: prompt,
+				// Not `background`: Codex's parent normally `wait`s for its agents
+				// inside the turn, and nothing measured says a state arrives after
+				// it — so the turn's end settles the row like any other tool's.
+				agent: { type: 'spawnAgent', model: typeof item.model === 'string' ? item.model : undefined, threadId: threads[0] },
+			};
+		}
 		default:
 			return undefined;
 	}
@@ -649,12 +850,35 @@ function codexToolResult(item: Record<string, unknown>): ToolUpdate | undefined 
 		}
 		case 'webSearch':
 		case 'imageView':
-		case 'collabAgentToolCall':
-		case 'subAgentActivity':
 			return { status };
+		case 'collabAgentToolCall': {
+			if (item.tool !== 'spawnAgent') {
+				return undefined;
+			}
+			// A completed spawn is an agent that has started, not one that has
+			// finished: only a failed spawn ends the row here.
+			const threads = Array.isArray(item.receiverThreadIds) ? item.receiverThreadIds.filter((t): t is string => typeof t === 'string') : [];
+			return item.status === 'failed' ? { status: 'failed' } : { agent: { threadId: threads[0] } };
+		}
 		default:
 			return undefined;
 	}
+}
+
+/**
+ * Codex's `agentsStates`: thread id → `{ status, message }`, where status is
+ * `pendingInit`, `running`, `interrupted`, `completed`, `errored`, `shutdown`
+ * or `notFound`. Read from the app-server schema; not measured live.
+ */
+function codexAgentStates(value: unknown): { threadId: string; status: 'running' | 'done' | 'failed' | 'stopped'; message?: string }[] {
+	if (!isRecord(value)) {
+		return [];
+	}
+	return Object.entries(value).filter(([, v]) => isRecord(v)).map(([threadId, v]) => {
+		const state = v as Record<string, unknown>;
+		const status = state.status === 'running' || state.status === 'pendingInit' ? 'running' as const : taskStatus(state.status);
+		return { threadId, status, message: typeof state.message === 'string' ? clip(state.message) : undefined };
+	});
 }
 
 /** "Read a.txt, listed files" — from the actions Codex parsed out of a command. */

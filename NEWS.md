@@ -19,6 +19,8 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 - Pick the agent, the model and its effort; **U** shows your plan limits and this chat's tokens.
 - **+** attaches a screenshot, an element from the page, the page address or a file.
 - Commands, file edits and thinking appear as cards you can open.
+- Several chats at once, as tabs; switching a chat to the other agent asks whether to open a new tab, hand the conversation over, or close this one.
+- The agents your agent starts: how many are running, what each one did and found, and a Stop for each.
 
 ## 0.6.3 — 2026-10-15
 - The browser tools read and act inside iframes, cross-origin frames included.

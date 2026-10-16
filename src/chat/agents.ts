@@ -41,6 +41,12 @@ export interface AgentSession extends vscode.Disposable {
 	 */
 	send(input: TurnInput, model: string, effort: string | undefined): Promise<void>;
 	stop(): void;
+	/**
+	 * Stops one agent this conversation started — by its row id, and the
+	 * agent's own thread where it has one — leaving the turn and the other
+	 * agents running. Rejects when the CLI refuses.
+	 */
+	stopAgent?(rowId: string, threadId: string | undefined): Promise<void>;
 }
 
 export interface AgentBackend extends vscode.Disposable {

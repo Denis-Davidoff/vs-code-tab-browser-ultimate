@@ -60,6 +60,29 @@ export interface ChatStats {
 
 export type ToolKind = 'command' | 'read' | 'edit' | 'search' | 'web' | 'agent' | 'mcp' | 'other';
 
+/**
+ * What is known about an agent the chat's agent started — a Claude Code
+ * `Agent` / `Task` call, or a Codex `spawnAgent`. Filled in as the CLI reports
+ * it: some of it at the call, the rest from its progress and its end.
+ */
+export interface AgentInfo {
+	/** `general-purpose`, `Explore`, … for Claude; the collab tool for Codex. */
+	type?: string;
+	model?: string;
+	/** Runs on after the turn that started it has ended. */
+	background?: boolean;
+	tokens?: number;
+	toolUses?: number;
+	durationMs?: number;
+	lastTool?: string;
+	/** Its final report, short. */
+	summary?: string;
+	/** Codex: the thread the agent runs in, which later status reports name. */
+	threadId?: string;
+	/** Its own tool calls, oldest first, capped. */
+	calls: { name: string; detail?: string }[];
+}
+
 export interface ToolEntry {
 	readonly kind: 'tool';
 	readonly id: string;
@@ -69,12 +92,14 @@ export interface ToolEntry {
 	/** The command, the diff, the arguments. */
 	input?: string;
 	output?: string;
-	status: 'running' | 'done' | 'failed';
+	status: 'running' | 'done' | 'failed' | 'stopped';
 	exitCode?: number;
 	added?: number;
 	removed?: number;
 	readonly startedAt: number;
 	endedAt?: number;
+	/** Present on agent rows (`tool: 'agent'`). */
+	agent?: AgentInfo;
 }
 
 export type ChatEntry =
@@ -136,6 +161,25 @@ export interface ChatViewState {
 	readonly news?: ChatNews;
 	/** The user hid "What's new", and no entry has been added since. */
 	readonly newsHidden: boolean;
+	/** The open conversations, in tab order; `chatId`, `entries` and the rest are the active one's. */
+	readonly tabs: readonly ChatTabSummary[];
+	readonly activeTab: string;
+	readonly tabLimit: number;
+	/** Another agent was picked for a conversation that has started: the view asks what to do. */
+	readonly switchTo?: AgentId;
+}
+
+export interface ChatTabSummary {
+	readonly id: string;
+	readonly chatId: string;
+	readonly title: string;
+	/** Absent while the conversation has not started, and so belongs to no agent yet. */
+	readonly agent?: AgentId;
+	readonly running: boolean;
+	/** Agents of this conversation still working. */
+	readonly agents: number;
+	/** A turn or an agent is running: closing the tab stops it. */
+	readonly busy: boolean;
 }
 
 export type HostToView =
@@ -143,12 +187,17 @@ export type HostToView =
 	/** `refresh`: update an open panel in place; never open or close it. */
 	| { readonly type: 'history'; readonly chats: readonly ChatSummary[]; readonly refresh?: boolean }
 	| { readonly type: 'usage'; readonly usage: readonly AgentUsage[]; readonly stats?: ChatStats; readonly loading: boolean }
-	| { readonly type: 'focusInput' };
+	| { readonly type: 'focusInput' }
+	/** Messages sent from this workspace, oldest first, for the composer's ↑ / ↓. */
+	| { readonly type: 'inputHistory'; readonly items: readonly string[] }
+	/** A Stop for one agent was refused; its button comes back. */
+	| { readonly type: 'agentStopFailed'; readonly id: string };
 
 export type ViewToHost =
 	| { readonly type: 'ready' }
 	| { readonly type: 'select'; readonly selection: Selection }
-	| { readonly type: 'send'; readonly text: string }
+	/** `tabId`: the tab it was typed in, which may no longer be the one in front when it arrives. */
+	| { readonly type: 'send'; readonly text: string; readonly tabId?: string }
 	| { readonly type: 'stop' }
 	| { readonly type: 'attach'; readonly kind: AttachmentKind }
 	| { readonly type: 'removeAttachment'; readonly id: string }
@@ -156,6 +205,13 @@ export type ViewToHost =
 	| { readonly type: 'openChat'; readonly id: string }
 	| { readonly type: 'deleteChat'; readonly id: string }
 	| { readonly type: 'newChat' }
+	| { readonly type: 'newTab' }
+	| { readonly type: 'selectTab'; readonly id: string }
+	| { readonly type: 'closeTab'; readonly id: string }
+	/** The answer to `switchTo`. */
+	| { readonly type: 'switchAgent'; readonly choice: 'newTab' | 'replace' | 'continue' | 'cancel' }
+	/** One agent of the conversation in front, by its row id. */
+	| { readonly type: 'stopAgent'; readonly id: string }
 	/** Through the host: `navigator.clipboard` in a webview depends on the host granting it. */
 	| { readonly type: 'copy'; readonly text: string }
 	/** The composer's browser button: a new browser tab, nothing else. */

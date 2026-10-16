@@ -144,8 +144,19 @@ class ClaudeSession implements AgentSession {
 	private _control: ControlChannel | undefined;
 	private _launched: { model: string; effort: string | undefined } | undefined;
 	private _sessionId: string | undefined;
+	/** Task id to the call it belongs to, from `task_started`; read for `task_updated`. */
+	private readonly _tasks = new Map<string, string>();
+	/** Calls that are agents, the only ones whose background state holds the process. */
+	private readonly _agentTools = new Set<string>();
+	private _toldWaiting = false;
 	/** Messages sent whose `result` has not arrived; the CLI queues them in order. */
 	private _pendingTurns = 0;
+	/**
+	 * Background agents still running, by their call's id. They outlive the turn
+	 * that started them, so the process must not be restarted for a model or
+	 * effort change while any is alive — the restart would end them.
+	 */
+	private readonly _agents = new Set<string>();
 	private _stopping = false;
 	/**
 	 * `total_cost_usd` is cumulative, so each turn is the difference from the
@@ -192,8 +203,14 @@ class ClaudeSession implements AgentSession {
 		}
 		// A different model or effort needs a new process — but never in the
 		// middle of a turn, where the message joins the running one instead.
-		if (this._process && !this.running && (this._launched?.model !== model || this._launched?.effort !== effort)) {
+		const changed = this._launched?.model !== model || this._launched?.effort !== effort;
+		if (this._process && !this.running && !this._agents.size && changed) {
 			this._stopProcess();
+		} else if (this._process && changed && this._agents.size && !this._toldWaiting) {
+			// A restart would end the agents still working; the change waits for
+			// them, and the user is told rather than left to wonder.
+			this._toldWaiting = true;
+			this._onEvent.fire({ type: 'notice', text: vscode.l10n.t("The new model or effort applies once the background agents have finished.") });
 		}
 		if (!this._process || this._process.exited) {
 			this._start(model, effort);
@@ -213,6 +230,19 @@ class ClaudeSession implements AgentSession {
 			parent_tool_use_id: null,
 			session_id: this._sessionId ?? '',
 		});
+	}
+
+	/**
+	 * Claude Code's own `stop_task` control request, which takes the task id —
+	 * `task_started` gave it beside the call's id, kept in `_tasks`. The task's
+	 * `task_notification` then ends the row like any other ending.
+	 */
+	public async stopAgent(rowId: string): Promise<void> {
+		const taskId = [...this._tasks].find(([, call]) => call === rowId)?.[0];
+		if (!taskId || !this._control) {
+			throw new Error(vscode.l10n.t("Claude Code has not reported this agent as a task."));
+		}
+		await this._control.request('stop_task', { task_id: taskId });
 	}
 
 	public stop(): void {
@@ -252,7 +282,7 @@ class ClaudeSession implements AgentSession {
 			if (process !== this._process) {
 				return;
 			}
-			for (const event of claudeEvents(message)) {
+			for (const event of claudeEvents(message, this._tasks)) {
 				this._handle(event);
 			}
 		});
@@ -263,6 +293,7 @@ class ClaudeSession implements AgentSession {
 			this._process = undefined;
 			this._control?.dispose();
 			this._control = undefined;
+			this._endAgents();
 			if (this._pendingTurns > 0) {
 				this._pendingTurns = 0;
 				this._onEvent.fire({ type: 'turnEnd', error: this._stopping ? 'Stopped.' : reason ?? 'Claude Code exited.' });
@@ -276,6 +307,36 @@ class ClaudeSession implements AgentSession {
 			case 'session':
 				this._sessionId = event.id;
 				break;
+			case 'autoTurn':
+				// `status: requesting` comes at the start of every request of the
+				// main agent; it is a turn of its own only when nothing was sent.
+				if (this._pendingTurns > 0) {
+					return;
+				}
+				this._pendingTurns = 1;
+				break;
+			case 'tool':
+				if (event.tool.kind === 'agent') {
+					this._agentTools.add(event.id);
+					// Asked for in the background: counted from the call, so a process
+					// that goes before the launch is confirmed still reports it ended.
+					if (event.tool.agent?.background) {
+						this._agents.add(event.id);
+					}
+				}
+				break;
+			case 'toolUpdate': {
+				const agent = event.update.agent;
+				if (event.update.status) {
+					this._agents.delete(event.id);
+					this._toldWaiting &&= this._agents.size > 0;
+				} else if (agent?.background && this._agentTools.has(event.id)) {
+					// Only an agent call: a background shell is a task too, and a dev
+					// server that never ends would hold the model for good.
+					this._agents.add(event.id);
+				}
+				break;
+			}
 			case 'tokens':
 				if (event.costUsd !== undefined) {
 					const turnCost = event.costUsd >= this._processCost ? event.costUsd - this._processCost : event.costUsd;
@@ -302,7 +363,20 @@ class ClaudeSession implements AgentSession {
 		this._onEvent.fire(event);
 	}
 
+	/** Background agents end with the process that runs them; their rows are told so. */
+	private _endAgents(): void {
+		const agents = [...this._agents];
+		this._agents.clear();
+		if (!this._disposed) {
+			for (const id of agents) {
+				this._onEvent.fire({ type: 'toolUpdate', id, update: { status: 'stopped' } });
+			}
+		}
+	}
+
 	private _stopProcess(): void {
+		this._endAgents();
+		this._toldWaiting = false;
 		const process = this._process;
 		this._process = undefined;
 		this._control?.dispose();

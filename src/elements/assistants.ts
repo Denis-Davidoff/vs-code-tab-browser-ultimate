@@ -158,7 +158,7 @@ async function keepOutOfGit(directory: string): Promise<void> {
  * The names this extension writes: `reportFileName`, plus the `-2`, `-3` …
  * suffix `writeExclusive` adds on a collision. The sweep deletes nothing else.
  */
-const reportNamePattern = /^element-[a-z0-9-]+\.md$/;
+const reportNamePattern = /^(element|chat)-[a-z0-9-]+\.md$/;
 
 /**
  * Whether `directory` is a real directory, not a symlink to one.
@@ -237,6 +237,26 @@ async function writeReport(
 	// had already been handed.
 	const file = await writeExclusive(directory, fileName, text);
 	return vscode.Uri.file(file);
+}
+
+/**
+ * A chat conversation written out for another agent to carry on (the chat's
+ * "Continue in …"): beside the reports, by the same rules — the workspace's
+ * `.ai-browser/`, ignored by git and refused through a symlink — and swept
+ * with them, by then read. Returns the file's path, or `undefined` with no
+ * local folder to put it in.
+ */
+export async function writeChatTranscript(text: string, fileName: string): Promise<string | undefined> {
+	// Without a local folder the agents work in the home directory, and a file
+	// in the temp directory is outside it: Claude Code asks before reading
+	// there, and the chat answers every such question no. The caller then hands
+	// the text over itself.
+	const folder = vscode.workspace.workspaceFolders?.find(f => f.uri.scheme === 'file');
+	if (!folder) {
+		return undefined;
+	}
+	const file = await writeReport(text, fileName, 'workspace', folder);
+	return file.fsPath;
 }
 
 /**

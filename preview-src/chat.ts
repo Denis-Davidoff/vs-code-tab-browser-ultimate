@@ -7,9 +7,9 @@
  * The AI Browser chat view, inside its webview.
  *
  * The extension host owns every bit of state and sends it whole; this script
- * renders it and reports what the user did. Kept here: the unsent draft (through
- * `setState`, so a reload does not lose a sentence) and which rows the user
- * opened or closed.
+ * renders it and reports what the user did. Kept here: the unsent draft of each
+ * conversation (through `setState`, so a reload does not lose a sentence) and
+ * which rows the user opened or closed.
  *
  * The look follows the Claude Code and Codex panels, read from their shipped
  * stylesheets — see "The AI Browser chat" in CLAUDE.md for which part came from
@@ -27,10 +27,17 @@ import type {
 	AgentUsage, AttachmentKind, ChatEntry, ChatStats, ChatSummary, ChatViewState, HostToView, ToolEntry, ViewToHost,
 } from '../src/chat/chatProtocol';
 
+interface ViewState {
+	/** Before tabs: the one draft there was. Read once, into the first conversation shown. */
+	draft?: string;
+	/** The unsent draft of each open conversation, by chat id. */
+	drafts?: Record<string, string>;
+}
+
 interface VsCodeApi {
 	postMessage(message: ViewToHost): void;
-	getState(): { draft?: string } | undefined;
-	setState(state: { draft?: string }): void;
+	getState(): ViewState | undefined;
+	setState(state: ViewState): void;
 }
 
 declare function acquireVsCodeApi(): VsCodeApi;
@@ -104,7 +111,7 @@ input.rows = 1;
 input.placeholder = 'Ask about this page, or anything…';
 
 const plusButton = button([icon('add')], { class: 'ghost round', title: 'Attach…' });
-const browserButton = button([icon('browser')], { class: 'ghost round', title: 'Open a new browser tab' });
+const browserButton = button([icon('globe')], { class: 'ghost round', title: 'Open a new browser tab' });
 const agentPill = button([], { class: 'pill', title: 'Agent' });
 const modelPill = button([], { class: 'pill', title: 'Model' });
 const effortRange = el('input', { class: 'effort-range' });
@@ -114,29 +121,95 @@ effortRange.step = '1';
 const effortLabel = el('span', { class: 'effort-label' });
 const effortBox = el('label', { class: 'effort', title: 'Effort' }, effortRange, effortLabel);
 const usageButton = button([el('span', { text: 'U' })], { class: 'ghost round usage-button', title: 'Usage' });
+const agentsButton = button([], { class: 'pill agents-button', title: 'Agents' });
 const sendButton = button([icon('arrow-up')], { class: 'send', title: 'Send' });
 
-// The two right-hand buttons are one group pushed to the end, so a narrow side
-// bar wraps them together onto the next line, still at the right.
+// The right-hand buttons (agents, usage, send) are one group pushed to the end,
+// so a narrow side bar wraps them together onto the next line, still at the right.
 const toolbar = el('div', { class: 'toolbar' },
-	plusButton, browserButton, agentPill, modelPill, effortBox, el('span', { class: 'toolbar-end' }, usageButton, sendButton));
+	plusButton, browserButton, agentPill, modelPill, effortBox, el('span', { class: 'toolbar-end' }, agentsButton, usageButton, sendButton));
 const composer = el('div', { class: 'composer' }, attachmentsRow, input, toolbar);
-const footer = el('div', { class: 'footer' }, composer);
+/** Asked when another agent is picked for a conversation that has started. */
+const switchCard = el('div', { class: 'switch-card' });
+const footer = el('div', { class: 'footer' }, switchCard, composer);
+/** One tab per open conversation, above the thread. */
+const tabStrip = el('div', { class: 'tab-strip' });
 
 const menu = el('div', { class: 'popup menu' });
 const usagePopup = el('div', { class: 'popup usage-popup' });
 const historyPanel = el('div', { class: 'history-panel' });
+const agentsPanel = el('div', { class: 'history-panel agents-panel' });
 
-app.append(thread, blocked, footer, menu, usagePopup, historyPanel);
+app.append(tabStrip, thread, blocked, footer, menu, usagePopup, historyPanel, agentsPanel);
 
 /* ---------------------------------------------------------------- state */
 
 let state: ChatViewState | undefined;
 
-/** Rows the user opened or closed by hand, by key; everything else uses its default. */
-const toggled = new Map<string, boolean>();
+/** Rows the user opened or closed by hand, by key; everything else uses its default. The shown chat's. */
+let toggled = new Map<string, boolean>();
+/**
+ * Per open conversation: which rows were opened or closed, and where it was
+ * scrolled to ('bottom' when following its end). Moving between tabs is
+ * routine, and coming back to a tab used to find it on the previous tab's
+ * scroll position, not following a reply that was streaming, with every row
+ * the user had opened closed again.
+ */
+const toggledByChat = new Map<string, Map<string, boolean>>();
+const scrollByChat = new Map<string, number | 'bottom'>();
 
-input.value = vscode.getState()?.draft ?? '';
+const savedView = vscode.getState();
+const drafts: Record<string, string> = { ...(savedView?.drafts ?? {}) };
+/** The conversation whose draft the box holds, and the tab it is in. */
+let draftChat: string | undefined;
+let draftTab: string | undefined;
+
+/** What the box holds as a draft: during a ↑ walk, the text from before the walk, not the message recalled. */
+function currentDraft(): string {
+	return fromHistory ? historyDraft : input.value;
+}
+
+function saveDraft(): void {
+	if (draftChat) {
+		drafts[draftChat] = currentDraft();
+	}
+	vscode.setState({ drafts });
+}
+
+/**
+ * Each conversation keeps its own draft: moving to another tab puts this one's
+ * away and brings that one's back. Drafts of conversations no longer open are
+ * dropped, or the view state would grow with every chat ever started.
+ */
+function followDraft(s: ChatViewState): void {
+	if (s.chatId === draftChat) {
+		draftTab = s.activeTab;
+		return;
+	}
+	if (draftChat) {
+		drafts[draftChat] = currentDraft();
+		// The same tab with another chat — one opened into it from the history,
+		// or the other agent taking its place: the text was written to go there.
+		if (s.activeTab === draftTab && !drafts[s.chatId]) {
+			drafts[s.chatId] = drafts[draftChat];
+			delete drafts[draftChat];
+		}
+	}
+	const first = draftChat === undefined;
+	draftChat = s.chatId;
+	draftTab = s.activeTab;
+	input.value = drafts[s.chatId] ?? (first ? savedView?.draft ?? '' : '');
+	historyAt = inputHistory.length;
+	fromHistory = false;
+	const open = new Set(s.tabs.map(t => t.chatId));
+	for (const id of Object.keys(drafts)) {
+		if (!open.has(id) || !drafts[id]) {
+			delete drafts[id];
+		}
+	}
+	vscode.setState({ drafts });
+	autosize();
+}
 
 window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 	const message = event.data;
@@ -162,6 +235,20 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 		case 'focusInput':
 			input.focus();
 			return;
+		case 'agentStopFailed':
+			stoppingAgents.delete(message.id);
+			if (agentsView) {
+				fillAgents(currentAgents(), true);
+			}
+			return;
+		case 'inputHistory': {
+			// It arrives after a send, which may be after the user has started
+			// walking again; a walk in progress keeps its place.
+			const atEnd = historyAt >= inputHistory.length;
+			inputHistory = [...message.items];
+			historyAt = atEnd ? inputHistory.length : Math.min(historyAt, inputHistory.length);
+			return;
+		}
 	}
 });
 
@@ -171,10 +258,128 @@ function render(): void {
 	}
 	app.classList.toggle('is-blocked', !!state.blocked);
 	blocked.textContent = state.blocked ?? '';
+	followDraft(state);
+	renderTabs(state);
+	renderSwitch(state);
 	renderThread(state);
 	renderAttachments(state);
 	renderSelectors(state);
 	renderSend();
+	renderAgents(state);
+}
+
+/* ---------------------------------------------------------------- tabs */
+
+/**
+ * One tab per open conversation. A tab that is not in front goes on working —
+ * its dot blinks while it answers, and it counts its agents — and closing one
+ * that is working stops it, so that asks first, here in the strip. Rebuilt only
+ * when what it shows changes: a rebuild between a press and its release loses
+ * the click.
+ */
+let tabsShown = '';
+/** The tab whose close is being confirmed. */
+let closingTab: string | undefined;
+
+function renderTabs(s: ChatViewState): void {
+	if (closingTab && !s.tabs.some(t => t.id === closingTab && t.busy)) {
+		closingTab = undefined;
+	}
+	const shown = JSON.stringify([s.tabs, s.activeTab, s.tabLimit, closingTab]);
+	if (shown === tabsShown) {
+		return;
+	}
+	tabsShown = shown;
+	const full = s.tabs.length >= s.tabLimit;
+	const tabs = s.tabs.map(t => {
+		const agent = t.agent ? s.agents.find(a => a.id === t.agent)?.name ?? t.agent : undefined;
+		const label = button([
+			t.running ? el('span', { class: 'tab-dot' }) : undefined,
+			el('span', { class: 'tab-title', text: t.title }),
+			t.agents ? el('span', { class: 'tab-agents', text: String(t.agents), title: `${t.agents} agent${t.agents === 1 ? '' : 's'} working` }) : undefined,
+		], { class: 'tab-label', title: agent ? `${t.title} — ${agent}` : t.title });
+		label.addEventListener('click', () => post({ type: 'selectTab', id: t.id }));
+		const close = button([icon('close')], { class: 'tab-close', title: t.busy ? 'Close (stops what it is doing)' : 'Close' });
+		close.addEventListener('click', () => {
+			if (t.busy) {
+				closingTab = t.id;
+				renderTabs(s);
+				tabStrip.querySelector<HTMLButtonElement>('.confirm-cancel')?.focus();
+			} else {
+				post({ type: 'closeTab', id: t.id });
+			}
+		});
+		return el('div', { class: `tab${t.id === s.activeTab ? ' active' : ''}${t.running ? ' running' : ''}` }, label, close);
+	});
+	const add = button([icon('add')], { class: 'ghost round tab-add', title: full ? `${s.tabLimit} chats are open — close one to open another` : 'New chat' });
+	add.disabled = full;
+	add.addEventListener('click', () => post({ type: 'newTab' }));
+	const row = el('div', { class: 'tab-row' }, ...tabs, add);
+	const nodes: HTMLElement[] = [row];
+	const closing = closingTab ? s.tabs.find(t => t.id === closingTab) : undefined;
+	if (closing) {
+		const yes = button([el('span', { text: 'Stop and close' })], { class: 'confirm-danger' });
+		yes.addEventListener('click', () => {
+			closingTab = undefined;
+			post({ type: 'closeTab', id: closing.id });
+		});
+		const no = button([el('span', { text: 'Cancel' })], { class: 'confirm-cancel' });
+		no.addEventListener('click', () => {
+			closingTab = undefined;
+			renderTabs(s);
+		});
+		const what = closing.agents ? `its reply and ${closing.agents} agent${closing.agents === 1 ? '' : 's'}` : 'its reply';
+		nodes.push(el('div', { class: 'tab-confirm' },
+			el('span', { text: `"${closing.title}" is still working. Closing it stops ${what}.` }), yes, no));
+	}
+	tabStrip.replaceChildren(...nodes);
+	row.querySelector('.tab.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}
+
+/* ---------------------------------------------------------------- switching agents */
+
+let switchShown = '';
+
+/**
+ * Another agent was picked for a conversation that has started. A conversation
+ * belongs to one agent, so the question is what happens to this one: a new tab
+ * beside it, this one closed in favour of the other agent, or this one handed
+ * over to it as a file.
+ */
+function renderSwitch(s: ChatViewState): void {
+	const tab = s.tabs.find(t => t.id === s.activeTab);
+	const to = s.switchTo ? s.agents.find(a => a.id === s.switchTo) : undefined;
+	const from = tab?.agent ? s.agents.find(a => a.id === tab.agent) : undefined;
+	const shown = JSON.stringify([to?.id, from?.id, tab?.busy, tab?.agents, s.tabs.length, s.tabLimit]);
+	if (shown === switchShown) {
+		return;
+	}
+	switchShown = shown;
+	if (!to || !tab) {
+		switchCard.hidden = true;
+		switchCard.replaceChildren();
+		return;
+	}
+	const full = s.tabs.length >= s.tabLimit;
+	const option = (choice: 'newTab' | 'replace' | 'continue', title: string, detail: string, disabled = false) => {
+		const b = button([el('span', { class: 'switch-title', text: title }), el('span', { class: 'switch-detail', text: detail })], { class: 'switch-option' });
+		b.disabled = disabled;
+		b.addEventListener('click', () => post({ type: 'switchAgent', choice }));
+		return b;
+	};
+	const fullNote = `${s.tabLimit} chats are open — close one first.`;
+	const stops = tab.busy
+		? `This chat is still working; its reply${tab.agents ? ` and ${tab.agents} agent${tab.agents === 1 ? '' : 's'}` : ''} will be stopped.`
+		: 'This chat closes and stays in the history.';
+	const cancel = button([el('span', { text: 'Cancel' })], { class: 'switch-cancel' });
+	cancel.addEventListener('click', () => post({ type: 'switchAgent', choice: 'cancel' }));
+	switchCard.hidden = false;
+	switchCard.replaceChildren(
+		el('div', { class: 'switch-head', text: `This chat is with ${from?.name ?? 'another agent'}. Switch to ${to.name}?` }),
+		option('newTab', `New tab with ${to.name}`, full ? fullNote : 'This chat stays open and keeps working.', full),
+		option('continue', `Continue in ${to.name}`, full ? fullNote : `This conversation is saved to a file and handed to ${to.name} in a new tab.`, full),
+		option('replace', `Close this chat, start ${to.name}`, stops),
+		cancel);
 }
 
 /* ---------------------------------------------------------------- thread */
@@ -216,13 +421,29 @@ const spacer = el('div', { class: 'spacer' });
 let workingNode: HTMLElement | undefined;
 
 function renderThread(s: ChatViewState): void {
-	const stick = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 60;
+	const atBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 60;
+	let stick = atBottom;
+	let restore: number | undefined;
 
 	if (s.chatId !== renderedChat || s.entries.length < rendered.length) {
 		// Open/closed choices are keyed by position, so they belong to one chat:
 		// carried over, the next chat opened its own rows at the same indices.
 		if (s.chatId !== renderedChat) {
-			toggled.clear();
+			if (renderedChat) {
+				scrollByChat.set(renderedChat, atBottom ? 'bottom' : thread.scrollTop);
+			}
+			const saved = scrollByChat.get(s.chatId);
+			stick = saved === undefined || saved === 'bottom';
+			restore = typeof saved === 'number' ? saved : undefined;
+			toggled = toggledByChat.get(s.chatId) ?? new Map<string, boolean>();
+			toggledByChat.set(s.chatId, toggled);
+			const open = new Set(s.tabs.map(t => t.chatId));
+			for (const id of [...toggledByChat.keys(), ...scrollByChat.keys()]) {
+				if (!open.has(id)) {
+					toggledByChat.delete(id);
+					scrollByChat.delete(id);
+				}
+			}
 		}
 		renderedChat = s.chatId;
 		rendered = [];
@@ -275,6 +496,8 @@ function renderThread(s: ChatViewState): void {
 
 	if (stick) {
 		thread.scrollTop = thread.scrollHeight;
+	} else if (restore !== undefined) {
+		thread.scrollTop = restore;
 	}
 }
 
@@ -566,7 +789,7 @@ function toolNode(t: ToolEntry): HTMLElement {
 	const key = `tool:${t.id}`;
 	const hasBody = !!(t.input || t.output) && t.tool !== 'read';
 	const open = hasBody && (toggled.get(key) ?? openByDefault(t));
-	const status = t.status === 'failed' ? 'failed' : t.status === 'running' ? 'running' : 'done';
+	const status = t.status === 'failed' || t.status === 'running' || t.status === 'stopped' ? t.status : 'done';
 
 	const head = button([
 		el('span', { class: `status-dot ${status}` }),
@@ -600,7 +823,9 @@ function execCard(t: ToolEntry): HTMLElement {
 	}
 	const footerText = t.status === 'running'
 		? el('span', { class: 'shimmer', text: 'Running…' })
-		: t.status === 'failed'
+		: t.status === 'stopped'
+			? el('span', { class: 'exit stopped', text: 'Stopped' })
+			: t.status === 'failed'
 			? el('span', { class: 'exit failed', text: t.exitCode !== undefined ? `Exit code ${t.exitCode}` : 'Failed' })
 			: el('span', { class: 'exit ok' }, icon('check'), el('span', { text: t.output ? 'Success' : 'No output' }));
 	card.append(el('div', { class: 'exec-footer' },
@@ -1000,8 +1225,51 @@ function autosize(): void {
 	input.style.height = `${Math.min(input.scrollHeight, 200)}px`;
 }
 
+/*
+ * ↑ / ↓ walk through the messages sent before, as in a terminal: ↑ is older,
+ * ↓ newer, and past the newest the text typed before walking comes back.
+ * ↑ starts a walk only from an empty box or with the caret at the very start —
+ * a long paragraph wraps onto several lines in a narrow side bar, and ↑ there
+ * means "the line above", so "no line break before the caret" was not enough:
+ * it swapped a draft for the last message. Once walking, ↑ goes on from the
+ * first line of the message shown and ↓ from its last. A recalled message is
+ * entered at its end, so ↑ first climbs through one of several lines.
+ * Typing makes the current text the new starting point, but the draft from
+ * before the walk is kept: an edited recalled message is history, not a draft.
+ */
+let inputHistory: string[] = [];
+let historyAt = 0;
+let historyDraft = '';
+/** The box shows, or was edited from, a recalled message. */
+let fromHistory = false;
+
+/** An unedited recalled message is on show. */
+function walking(): boolean {
+	return historyAt < inputHistory.length && input.value === inputHistory[historyAt];
+}
+
+function recall(step: -1 | 1): boolean {
+	const next = historyAt + step;
+	if (next < 0 || next > inputHistory.length) {
+		return false;
+	}
+	if (historyAt === inputHistory.length && !fromHistory) {
+		historyDraft = input.value;
+	}
+	historyAt = next;
+	fromHistory = next < inputHistory.length;
+	input.value = fromHistory ? inputHistory[next] : historyDraft;
+	input.setSelectionRange(input.value.length, input.value.length);
+	saveDraft();
+	autosize();
+	renderSend();
+	return true;
+}
+
 input.addEventListener('input', () => {
-	vscode.setState({ draft: input.value });
+	historyAt = inputHistory.length;
+	fromHistory &&= input.value !== '';
+	saveDraft();
 	autosize();
 	renderSend();
 });
@@ -1010,6 +1278,19 @@ input.addEventListener('keydown', event => {
 	if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
 		event.preventDefault();
 		send();
+		return;
+	}
+	if ((event.key === 'ArrowUp' || event.key === 'ArrowDown') && !event.isComposing
+		&& !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey
+		&& input.selectionStart === input.selectionEnd) {
+		const caret = input.selectionStart;
+		const onFirstLine = !input.value.slice(0, caret).includes('\n');
+		const onLastLine = !input.value.slice(caret).includes('\n');
+		const up = !input.value || caret === 0 || (walking() && onFirstLine);
+		const down = walking() && onLastLine;
+		if ((event.key === 'ArrowUp' && up && recall(-1)) || (event.key === 'ArrowDown' && down && recall(1))) {
+			event.preventDefault();
+		}
 	}
 });
 
@@ -1026,9 +1307,12 @@ function send(): void {
 	if ((!text.trim() && !state?.attachments.length) || !canSend()) {
 		return;
 	}
-	post({ type: 'send', text });
+	post({ type: 'send', text, tabId: state?.activeTab });
+	historyAt = inputHistory.length;
+	historyDraft = '';
+	fromHistory = false;
 	input.value = '';
-	vscode.setState({ draft: '' });
+	saveDraft();
 	autosize();
 	renderSend();
 	// A sent message always brings the thread down to it.
@@ -1045,7 +1329,10 @@ composer.addEventListener('mousedown', event => {
 /* ---------------------------------------------------------------- popups */
 
 function closePopups(except?: HTMLElement): void {
-	for (const popup of [menu, usagePopup, historyPanel]) {
+	if (except !== agentsPanel) {
+		agentsView = undefined;
+	}
+	for (const popup of [menu, usagePopup, historyPanel, agentsPanel]) {
 		if (popup !== except) {
 			popup.classList.remove('open');
 		}
@@ -1075,15 +1362,26 @@ function openAbove(popup: HTMLElement, anchor: HTMLElement, align: 'left' | 'rig
 
 document.addEventListener('mousedown', event => {
 	const target = event.target as Node;
-	if (![menu, usagePopup, historyPanel, plusButton, usageButton, agentPill, modelPill].some(n => n.contains(target))) {
+	if (![menu, usagePopup, historyPanel, agentsPanel, plusButton, usageButton, agentsButton, agentPill, modelPill].some(n => n.contains(target))) {
 		closePopups();
 	}
 });
 
 document.addEventListener('keydown', event => {
-	if (event.key === 'Escape') {
-		closePopups();
+	if (event.key !== 'Escape') {
+		return;
 	}
+	// The innermost question first: a close being confirmed, then the switch card.
+	if (closingTab && state) {
+		closingTab = undefined;
+		renderTabs(state);
+		return;
+	}
+	if (state?.switchTo) {
+		post({ type: 'switchAgent', choice: 'cancel' });
+		return;
+	}
+	closePopups();
 });
 
 interface MenuItem {
@@ -1253,6 +1551,281 @@ function resetText(at: number): string {
 		return `in ${hours} h ${minutes % 60} min`;
 	}
 	return `on ${new Date(at).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })}`;
+}
+
+/* agents */
+
+/**
+ * The agents the chat's agent started — Claude Code's `Agent` calls, Codex's
+ * `spawnAgent` — read from the chat's own rows, so nothing is asked of the CLI.
+ * The toolbar button counts the running ones (or, with none running, shows the
+ * total, muted) and is hidden while the chat has none. It opens a list; a row
+ * opens the agent's card, laid out after the Claude Code panel's: status, type,
+ * model, time, tokens, its report, then its prompt and its tool calls folded.
+ */
+let agentsView: { selected?: string } | undefined;
+
+function agentRows(s: ChatViewState): ToolEntry[] {
+	return s.entries.filter((e): e is ToolEntry => e.kind === 'tool' && e.tool === 'agent');
+}
+
+function renderAgents(s: ChatViewState): void {
+	const agents = agentRows(s);
+	const running = agents.filter(a => a.status === 'running').length;
+	agentsButton.hidden = !agents.length;
+	agentsButton.classList.toggle('live', running > 0);
+	const count = String(running || agents.length);
+	if (agentsButton.textContent !== count) {
+		agentsButton.replaceChildren(icon('hubot'), el('span', { text: count }));
+	}
+	agentsButton.title = `${running} running · ${agents.length} agent${agents.length === 1 ? '' : 's'} in this chat`;
+	if (agentsView && !agents.length) {
+		// New Chat, or another chat from the history, with the panel open: its
+		// button is gone, so the panel goes too rather than reading "0 agents".
+		closePopups();
+	} else if (agentsView) {
+		fillAgents(agents);
+	}
+}
+
+agentsButton.addEventListener('click', () => {
+	if (agentsPanel.classList.contains('open')) {
+		closePopups();
+		return;
+	}
+	agentsView = {};
+	closePopups(agentsPanel);
+	fillAgents(currentAgents(), true);
+	agentsPanel.classList.add('open');
+});
+
+function statusLabel(a: ToolEntry): string {
+	return a.status === 'running' ? 'Running' : a.status === 'done' ? 'Finished' : a.status === 'stopped' ? 'Stopped' : 'Failed';
+}
+
+/** `claude-haiku-5-5` → `Haiku 5.5`; other ids as they are. */
+function modelName(id: string | undefined): string | undefined {
+	const m = id ? /^claude-([a-z]+)-(\d+)(?:-(\d+))?/.exec(id) : undefined;
+	return m ? `${m[1].charAt(0).toUpperCase()}${m[1].slice(1)} ${m[2]}${m[3] ? '.' + m[3] : ''}` : id;
+}
+
+function agentTitle(a: ToolEntry): string {
+	return a.detail || (a.input ?? '').split('\n')[0] || a.name;
+}
+
+function agentNumbers(a: ToolEntry): string {
+	const ms = a.agent?.durationMs ?? ((a.endedAt ?? Date.now()) - a.startedAt);
+	return [duration(ms), a.agent?.tokens !== undefined ? `${compact(a.agent.tokens)} tokens` : undefined].filter(Boolean).join(' · ');
+}
+
+/**
+ * The parts of an agent's row and card that change while it works — time,
+ * tokens, the tool it is on — keyed by `data-live`. They are rewritten in
+ * place; everything else is rebuilt only when it changes (`agentsShape`).
+ * Rebuilding on every state post (every 40 ms while a reply streams) swallowed
+ * clicks whose press and release straddled a post, cleared any selection in the
+ * report and threw focus to the body — while agents run, which is when the
+ * panel is used.
+ */
+function agentLive(a: ToolEntry, part: string): string {
+	switch (part) {
+		case 'status':
+			return a.status === 'running' && a.agent?.lastTool ? `Running · ${a.agent.lastTool}` : statusLabel(a);
+		case 'numbers':
+			return ` · ${agentNumbers(a)}`;
+		default: {
+			const uses = a.agent?.toolUses;
+			return [agentNumbers(a), uses !== undefined ? `${uses} tool use${uses === 1 ? '' : 's'}` : undefined].filter(Boolean).join(' · ');
+		}
+	}
+}
+
+function liveSpan(tag: 'span' | 'div', a: ToolEntry, part: string, cls: string): HTMLElement {
+	const node = el(tag, { class: cls, text: agentLive(a, part) });
+	node.dataset.live = `${a.id}\n${part}`;
+	return node;
+}
+
+/** Agents the user asked to stop, until their row says they have. */
+const stoppingAgents = new Set<string>();
+
+/**
+ * Stops one agent: the turn and the other agents go on. Only a running agent
+ * has the button, and it says so while the CLI takes it.
+ */
+function stopButton(a: ToolEntry): HTMLButtonElement {
+	const stopping = stoppingAgents.has(a.id);
+	const b = button([icon('debug-stop'), el('span', { text: stopping ? 'Stopping…' : 'Stop' })], { class: 'agent-stop', title: 'Stop this agent' });
+	b.disabled = stopping;
+	b.addEventListener('click', event => {
+		event.stopPropagation();
+		stoppingAgents.add(a.id);
+		post({ type: 'stopAgent', id: a.id });
+		fillAgents(currentAgents(), true);
+	});
+	return b;
+}
+
+/** What the panel shows, minus the parts `agentLive` keeps current. */
+function agentsShape(agents: ToolEntry[]): string {
+	// Only the agents shown can say they have stopped: a stop still pending in
+	// another tab is not this list's to clear.
+	for (const id of stoppingAgents) {
+		if (agents.some(a => a.id === id && a.status !== 'running')) {
+			stoppingAgents.delete(id);
+		}
+	}
+	return JSON.stringify([agentsView?.selected ?? '', [...stoppingAgents], agents.map(a => {
+		const { tokens: _t, durationMs: _d, toolUses: _u, lastTool: _l, ...rest } = a.agent ?? { calls: [] };
+		return [a.id, a.status, a.detail, a.input, a.agent?.summary ? '' : a.output, rest];
+	})]);
+}
+
+let agentsShown = '';
+let agentsPending = false;
+let agentsPointer = false;
+let agentsTimer: ReturnType<typeof setInterval> | undefined;
+
+function selectionInAgents(): boolean {
+	const sel = document.getSelection();
+	return !!sel && !sel.isCollapsed && !!sel.anchorNode && agentsPanel.contains(sel.anchorNode);
+}
+
+function refreshAgentsLive(agents: ToolEntry[]): void {
+	const byId = new Map(agents.map(a => [a.id, a]));
+	for (const node of agentsPanel.querySelectorAll<HTMLElement>('[data-live]')) {
+		const [id, part] = (node.dataset.live ?? '').split('\n');
+		const a = byId.get(id);
+		const text = a ? agentLive(a, part) : undefined;
+		if (text !== undefined && node.textContent !== text) {
+			node.textContent = text;
+		}
+	}
+}
+
+function currentAgents(): ToolEntry[] {
+	return state ? agentRows(state) : [];
+}
+
+agentsPanel.addEventListener('pointerdown', () => { agentsPointer = true; });
+window.addEventListener('pointerup', () => {
+	agentsPointer = false;
+	// After the click this press belongs to has been dispatched.
+	if (agentsPending) {
+		setTimeout(() => fillAgents(currentAgents()), 0);
+	}
+});
+document.addEventListener('selectionchange', () => {
+	if (agentsPending && !agentsPointer && !selectionInAgents()) {
+		fillAgents(currentAgents());
+	}
+});
+
+function fillAgents(agents: ToolEntry[], force = false): void {
+	if (!agentsView) {
+		return;
+	}
+	agentsTimer ??= setInterval(() => {
+		if (!agentsView) {
+			clearInterval(agentsTimer);
+			agentsTimer = undefined;
+			return;
+		}
+		refreshAgentsLive(currentAgents());
+	}, 1000);
+	const shape = agentsShape(agents);
+	if (!force && shape === agentsShown) {
+		refreshAgentsLive(agents);
+		return;
+	}
+	if (!force && (agentsPointer || selectionInAgents())) {
+		agentsPending = true;
+		refreshAgentsLive(agents);
+		return;
+	}
+	agentsPending = false;
+	agentsShown = shape;
+	// Keep the reader where they were unless they moved between the list and a card.
+	const view = agentsView.selected ?? '';
+	const scroll = agentsPanel.dataset.view === view ? agentsPanel.querySelector('.history-list')?.scrollTop ?? 0 : 0;
+	agentsPanel.dataset.view = view;
+	const restore = () => {
+		const list = agentsPanel.querySelector('.history-list');
+		if (list) {
+			list.scrollTop = scroll;
+		}
+	};
+	const close = button([icon('close')], { class: 'ghost round', title: 'Close' });
+	close.addEventListener('click', () => closePopups());
+	const selected = agentsView.selected ? agents.find(a => a.id === agentsView!.selected) : undefined;
+
+	if (!selected) {
+		const head = el('div', { class: 'history-head' }, el('span', { text: 'Agents' }), close);
+		const running = agents.filter(a => a.status === 'running').length;
+		const list = el('div', { class: 'history-list' },
+			el('div', { class: 'agents-sub', text: `${agents.length} agent${agents.length === 1 ? '' : 's'}${running ? ` · ${running} running` : ''} · click an agent for details` }));
+		for (const a of [...agents].reverse()) {
+			const row = button([
+				el('span', { class: `agent-dot ${a.status}` }),
+				el('span', { class: 'agent-text' },
+					el('span', { class: 'agent-title', text: agentTitle(a) }),
+					el('span', { class: 'agent-meta' },
+						liveSpan('span', a, 'status', a.status === 'running' ? 'agent-live' : ''),
+						liveSpan('span', a, 'numbers', ''))),
+				icon('chevron-right', 'agent-chevron'),
+			], { class: 'agent-row', title: agentTitle(a) });
+			row.addEventListener('click', () => {
+				agentsView = { selected: a.id };
+				fillAgents(currentAgents(), true);
+			});
+			list.append(a.status === 'running' ? el('div', { class: 'agent-item' }, row, stopButton(a)) : row);
+		}
+		agentsPanel.replaceChildren(head, list);
+		restore();
+		return;
+	}
+
+	const back = button([icon('arrow-left')], { class: 'ghost round', title: 'All agents' });
+	back.addEventListener('click', () => {
+		agentsView = {};
+		fillAgents(currentAgents(), true);
+	});
+	const head = el('div', { class: 'history-head agent-head' },
+		el('span', { class: 'agent-head-title' }, back, el('span', { class: `agent-dot ${selected.status}` }), el('span', { class: 'agent-title', text: agentTitle(selected), title: agentTitle(selected) })),
+		el('span', { class: 'agent-head-end' }, selected.status === 'running' ? stopButton(selected) : undefined, close));
+	const info = selected.agent;
+	const body = el('div', { class: 'history-list agent-card' },
+		el('div', { class: 'agent-line', text: [statusLabel(selected), info?.type, modelName(info?.model), info?.background ? 'background' : undefined].filter(Boolean).join(' · ') }),
+		el('div', { class: 'agent-line', text: spawnedBy(info?.type) }),
+		liveSpan('div', selected, 'card', 'agent-line'));
+	const report = info?.summary ?? (selected.status !== 'running' ? selected.output : undefined);
+	body.append(report
+		? el('div', { class: 'agent-report markdown' }, renderMarkdown(report))
+		: el('div', { class: 'agent-report' }, el('span', { class: selected.status === 'running' ? 'shimmer' : 'faint', text: selected.status === 'running' ? 'Working…' : 'No report.' })));
+	if (selected.input) {
+		body.append(fold(`agent-prompt:${selected.id}`, 'Prompt', el('div', { class: 'agent-prompt', text: selected.input })));
+	}
+	const calls = info?.calls ?? [];
+	body.append(fold(`agent-calls:${selected.id}`, `Tool calls (${calls.length})`,
+		el('div', { class: 'agent-calls' }, ...calls.map(c => el('div', { class: 'agent-call' },
+			el('span', { class: 'agent-call-name', text: c.name }),
+			c.detail ? el('span', { class: 'agent-call-detail', text: c.detail, title: c.detail }) : undefined)))));
+	agentsPanel.replaceChildren(head, body);
+	restore();
+}
+
+/** Codex names an agent by its path, `/root/<parent>/<agent>`; the one before it started it. */
+function spawnedBy(type: string | undefined): string {
+	const path = type?.startsWith('/') ? type.split('/').filter(Boolean) : [];
+	return path.length > 2 ? `Spawned by ${path[path.length - 2].replace(/[_-]+/g, ' ')}` : 'Spawned by the main agent';
+}
+
+/** A folded section that stays as the user left it across re-renders. */
+function fold(key: string, label: string, content: HTMLElement): HTMLElement {
+	const details = el('details', { class: 'agent-fold' }, el('summary', {}, icon('chevron-right', 'chevron'), el('span', { text: label })), content);
+	details.open = toggled.get(key) ?? false;
+	details.addEventListener('toggle', () => toggled.set(key, details.open));
+	return details;
 }
 
 /* history */
