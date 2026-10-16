@@ -11,12 +11,13 @@ import { sweepBrowserConfigs } from './claudeAgent';
 import { bundledPin } from './agentBinary';
 import { ChatTab, newChat, reopened, started, storedEntries, storedTextLimit, type Attachment, type StoredChat, type TabHost } from './chatTab';
 import { chatTranscript, transcriptFileName } from './transcript';
+import { diffSides } from './diffSides';
 import { writeChatTranscript } from '../elements/assistants';
 import { savePng } from '../browser/clipboardImage';
 import type { BrowserController } from '../browser/browserController';
 import type {
 	AgentId, AgentUsage, ApprovalMode, AttachmentKind, ChatSummary,
-	ChatNews, ChatTabSummary, ChatViewState, HostToView, Selection, UsageWindow, ViewToHost,
+	ChatNews, ChatTabSummary, ChatViewState, HostToView, Selection, ToolbarRun, ToolbarSkill, UsageWindow, ViewToHost,
 } from './chatProtocol';
 import { pickElementContext, pickForChat } from '../elements/elementPicker';
 import { parseNews } from './news';
@@ -25,6 +26,8 @@ import { capAt, plainInLabel, plainInPrompt } from '../core/notifyText';
 import { isBrowserApiGranted, workspaceIsRemoteFromHost } from '../setup/proposedApi';
 import { pageTitle } from '../translate/translateText';
 import { generateUuid } from '../core/uuid';
+import { ToolbarRuns } from './toolbarRun';
+import { adaptSigils, fillPrompt, toolbarLimits, validToolbarSkill, withResultMarkers } from './toolbarText';
 
 /**
  * The AI Browser chat: a webview view in its own container in the secondary (right) side bar.
@@ -105,6 +108,8 @@ export function supportsSecondarySidebar(version: string): boolean {
 
 const historyKey = 'aiBrowser.chat.history';
 const selectionKey = 'aiBrowser.chat.selection';
+/** The toolbar's skills, in order; global, so every project has the same toolbar. */
+const toolbarKey = 'aiBrowser.chat.toolbar';
 const newsHiddenKey = 'aiBrowser.chat.newsHiddenAt';
 const inputHistoryKey = 'aiBrowser.chat.inputHistory';
 const inputHistoryLimit = 100;
@@ -138,6 +143,9 @@ const openTabsKey = 'aiBrowser.chat.openTabs';
 export const defaultTabLimit = 10;
 export const maxTabLimit = 30;
 const tabLimitSetting = 'aiBrowser.chat.tabLimit';
+const collapseToolsSetting = 'aiBrowser.chat.collapseToolCalls';
+/** The most of a tool's input or output opened in a tab; past it the text is cut with a line saying so. */
+const openTextLimit = 2_000_000;
 
 /** The setting as a whole number in range; anything else is the default (#184's rule). */
 export function tabLimit(): number {
@@ -193,6 +201,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		noteServer: server => this._noteServer(server),
 	};
 	private _remembered: RememberedSelection;
+	private readonly _runs = new ToolbarRuns({
+		approvalMode: key => this._approvalPolicy()[key] ?? 'ask',
+		noteServer: server => this._noteServer(server),
+		changed: () => this._post(),
+	});
 	private readonly _limits = new Map<AgentId, readonly UsageWindow[]>();
 	private _postTimer: ReturnType<typeof setTimeout> | undefined;
 	private readonly _subscriptions: vscode.Disposable[] = [];
@@ -217,7 +230,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		// A lower limit closes nothing: the tabs open stay, and "+" comes back
 		// once enough of them are closed.
 		this._subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
-			if (e.affectsConfiguration(tabLimitSetting)) {
+			if (e.affectsConfiguration(tabLimitSetting) || e.affectsConfiguration(collapseToolsSetting)) {
 				this._post();
 			}
 		}));
@@ -322,6 +335,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				for (const tab of this._tabs) {
 					tab.close();
 				}
+				// The toolbar's background runs too: their button and its question
+				// went with the view.
+				this._runs.viewClosed();
 			}
 		}, undefined, this._subscriptions);
 	}
@@ -412,6 +428,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			approvals: { policy: this._approvalPolicy(), servers: this._approvalServers() },
 			switchTo: this._switchTo,
 			commands: this._registry.commands,
+			toolbar: this._toolbar(),
+			toolbarRuns: this._toolbarRunsState(),
+			collapseTools: vscode.workspace.getConfiguration().get<unknown>(collapseToolsSetting) === true,
 			hasBrowserTab: this._browser.hasOpenTabs,
 			browserApi: isBrowserApiGranted(),
 			news: this._news,
@@ -458,6 +477,44 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 					await this._registry.detect();
 				}
 				return;
+			case 'saveToolbarSkill':
+				await this._saveToolbarSkill(message.skill);
+				return;
+			case 'deleteToolbarSkill':
+				this._runs.forget(message.id);
+				await this._storeToolbar(this._toolbar().filter(s => s.id !== message.id));
+				return;
+			case 'moveToolbarSkill': {
+				const list = [...this._toolbar()];
+				const at = list.findIndex(s => s.id === message.id);
+				const to = at + (message.by === -1 ? -1 : 1);
+				if (at < 0 || to < 0 || to >= list.length) {
+					return;
+				}
+				[list[at], list[to]] = [list[to], list[at]];
+				await this._storeToolbar(list);
+				return;
+			}
+			case 'runToolbarSkill':
+				await this._runToolbarSkill(message.id, message.values, message.tabId, message.again === true);
+				return;
+			case 'toolbarApprove':
+				if (typeof message.approvalId === 'string') {
+					this._runs.answer(message.id, message.approvalId, message.allow === true);
+				}
+				return;
+			case 'stopToolbarSkill': {
+				this._runs.stop(message.id);
+				// Into the chat: Stop is the tab's own Stop, as the composer's is.
+				const tab = this._chatSkillTabs.get(message.id)?.tab;
+				if (tab && this._tabs.includes(tab) && tab.busy) {
+					this._giveBackQueue(tab);
+					tab.stop();
+				}
+				this._chatSkillTabs.delete(message.id);
+				this._post();
+				return;
+			}
 			case 'listCommands':
 				if (!this._blocked() && (message.agent === 'claude' || message.agent === 'codex') && !this._registry.detecting) {
 					await this._registry.refreshCommands(message.agent);
@@ -494,6 +551,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				this._post();
 				return;
 			}
+			case 'openDiff':
+				await this._openDiff(message.name, message.diff);
+				return;
+			case 'openText':
+				await this._openText(message.name, message.text);
+				return;
 			case 'openAttachment':
 				await this._openAttachment(message.id);
 				return;
@@ -524,6 +587,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				for (const tab of this._tabs) {
 					tab.approvalModesChanged();
 				}
+				this._runs.approvalModesChanged();
 				this._post();
 				return;
 			}
@@ -599,6 +663,163 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				await vscode.commands.executeCommand('aiBrowser.newTab');
 				return;
 		}
+	}
+
+	/* ------------------------------------------------------------ toolbar */
+
+	/** The toolbar's skills as stored, each checked again: `globalState` is not ours alone to write. */
+	private _toolbar(): ToolbarSkill[] {
+		const raw = this._context.globalState.get<unknown[]>(toolbarKey);
+		const out: ToolbarSkill[] = [];
+		for (const item of Array.isArray(raw) ? raw : []) {
+			const skill = validToolbarSkill(item);
+			if (typeof skill !== 'string' && !out.some(s => s.id === skill.id || s.name.toLowerCase() === skill.name.toLowerCase())) {
+				out.push(skill);
+			}
+		}
+		return out.slice(0, toolbarLimits.skills);
+	}
+
+	/**
+	 * Writes the toolbar; false when the write failed, which the caller says
+	 * (#255). Swallowed, the editor closed as if a skill were saved that was not.
+	 */
+	private async _storeToolbar(list: readonly ToolbarSkill[]): Promise<boolean> {
+		const stored = await this._context.globalState.update(toolbarKey, list).then(() => true, () => false);
+		this._post();
+		if (!stored) {
+			refuse(vscode.l10n.t("The toolbar could not be saved."));
+		}
+		return stored;
+	}
+
+	/**
+	 * A skill from the editor: added when its id is new, replaced otherwise.
+	 * Refused — the editor stays open with the reason — when it does not hold
+	 * together, when another toolbar skill has its name, or past the limit.
+	 */
+	private async _saveToolbarSkill(raw: unknown): Promise<void> {
+		const skill = validToolbarSkill(raw);
+		if (typeof skill === 'string') {
+			this._postMessage({ type: 'toolbarError', message: skill });
+			return;
+		}
+		const list = this._toolbar();
+		const at = list.findIndex(s => s.id === skill.id);
+		if (list.some(s => s.id !== skill.id && s.name.toLowerCase() === skill.name.toLowerCase())) {
+			this._postMessage({ type: 'toolbarError', message: vscode.l10n.t("Another toolbar skill is named {0}.", skill.name) });
+			return;
+		}
+		if (at < 0 && list.length >= toolbarLimits.skills) {
+			this._postMessage({ type: 'toolbarError', message: vscode.l10n.t("The toolbar holds at most {0} skills.", toolbarLimits.skills) });
+			return;
+		}
+		const next = [...list];
+		if (at < 0) {
+			next.push(skill);
+		} else {
+			next[at] = skill;
+		}
+		if (await this._storeToolbar(next)) {
+			this._postMessage({ type: 'toolbarSaved', id: skill.id });
+		} else {
+			this._postMessage({ type: 'toolbarError', message: vscode.l10n.t("The skill could not be saved. Try again.") });
+		}
+	}
+
+	/**
+	 * A toolbar skill pressed, or sent as `/name`. Into the chat it is a message
+	 * of the tab it was pressed in; to the clipboard or silently it is a run of
+	 * its own (`ToolbarRuns`), on the same agent, model and effort as that tab.
+	 * The skills it names are written the way that agent reads them, so one
+	 * offered to every agent works on either.
+	 */
+	/**
+	 * The background runs, and each skill sent into the chat whose turn is still
+	 * running there — so its button too says it is running, and asks before a
+	 * second press runs it again.
+	 */
+	private _toolbarRunsState(): Record<string, ToolbarRun> {
+		const out = this._runs.state;
+		for (const [id, { tab, sending }] of [...this._chatSkillTabs]) {
+			if (!this._tabs.includes(tab) || (!sending && !tab.busy)) {
+				this._chatSkillTabs.delete(id);
+			} else if (!out[id]) {
+				out[id] = { status: 'running', inChat: true };
+			}
+		}
+		return out;
+	}
+
+	/** `sending` until the send settles: before that the tab may not be busy yet (detection can take seconds). */
+	private readonly _chatSkillTabs = new Map<string, { tab: ChatTab; sending: boolean }>();
+
+	private async _runToolbarSkill(id: string, values: Readonly<Record<string, string>>, tabId?: string, again = false): Promise<void> {
+		const skill = this._toolbar().find(s => s.id === id);
+		const tab = tabId ? this._tabs.find(t => t.id === tabId) : this._active;
+		if (skill && !tab) {
+			// The tab it was pressed in closed while its popover was open.
+			refuse(vscode.l10n.t("{0} was not run: the chat tab it was pressed in is closed.", skill.name));
+			return;
+		}
+		if (!skill || !tab || this._blocked()) {
+			return;
+		}
+		if (this._registry.detecting) {
+			// `_send` asks this after its own wait, and finds nothing to wait for
+			// once this one has run — so it is asked here: a tab that closed, or
+			// was given another chat from the history, meanwhile is not the one
+			// the skill was pressed for (#368).
+			const chat = tab.chat;
+			await this._registry.detect();
+			if (!this._tabs.includes(tab) || tab.chat !== chat) {
+				refuse(vscode.l10n.t("{0} was not run: its chat tab changed while the agents were being found.", skill.name));
+				return;
+			}
+		}
+		const { agent, model, effort } = this._selection(tab);
+		if (!agent || !model) {
+			refuse(vscode.l10n.t("No agent is available to run {0}.", skill.name));
+			return;
+		}
+		if (skill.agents !== 'all' && skill.agents !== agent) {
+			refuse(vscode.l10n.t("{0} is for {1} only.", skill.name, agentNames[skill.agents]));
+			return;
+		}
+		const filled = fillPrompt(skill, values);
+		if ('error' in filled) {
+			refuse(filled.error);
+			return;
+		}
+		const prompt = adaptSigils(filled.text, this._registry.commands[agent] ?? []);
+		// The button asks before running a skill again; a press that did not ask
+		// (two clicks inside one post) is not taken as a yes.
+		const inChat = this._chatSkillTabs.get(skill.id);
+		if (!again && (this._runs.isRunning(skill.id) || (inChat && (inChat.sending || inChat.tab.busy)))) {
+			refuse(vscode.l10n.t("{0} is still running.", skill.name));
+			return;
+		}
+		if (skill.result === 'chat') {
+			// Its own attachments — none — not the chips in the box, which are
+			// the user's next message.
+			const entry = { tab, sending: true };
+			this._chatSkillTabs.set(skill.id, entry);
+			this._post();
+			try {
+				await this._send(prompt, tab.id, []);
+			} finally {
+				entry.sending = false;
+				this._post();
+			}
+			return;
+		}
+		const backend = this._registry.backend(agent);
+		if (!backend) {
+			refuse(vscode.l10n.t("No agent is available to run {0}.", skill.name));
+			return;
+		}
+		const root = vscode.workspace.workspaceFolders?.find(f => f.uri.scheme === 'file')?.uri.fsPath;
+		this._runs.start(skill, skill.result === 'clipboard' ? withResultMarkers(prompt) : prompt, backend, model, effort, this._cwd(), root);
 	}
 
 	private _fail(err: unknown): void {
@@ -1086,6 +1307,56 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}
 	}
 
+	/**
+	 * A tool call's input or output in an editor tab — read-only and plain text,
+	 * for the reason a chip's text is: a command's output or a page's markup can
+	 * hold `[x](command:…)`, which a Markdown editor makes a link that runs a
+	 * command (#371). A preview, so the next one opened reuses the tab.
+	 */
+	private async _openText(name: unknown, text: unknown): Promise<void> {
+		if (typeof text !== 'string' || typeof name !== 'string') {
+			return;
+		}
+		const body = text.length > openTextLimit
+			? `${capAt(text, openTextLimit)}\n\n${vscode.l10n.t("[Cut here: the text goes on for {0} more characters.]", text.length - openTextLimit)}`
+			: text;
+		const id = `text-${generateUuid()}`;
+		remember(this._attachmentTexts, id, body);
+		const uri = vscode.Uri.from({ scheme: attachmentScheme, path: `/${fileSafe(name)}.txt`, query: id });
+		try {
+			await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri), { preview: true, viewColumn: vscode.ViewColumn.Active });
+		} catch (err) {
+			refuse(vscode.l10n.t("Could not open the text: {0}", err instanceof Error ? err.message : String(err)));
+		}
+	}
+
+	/**
+	 * A diff card in VS Code's diff editor, as a tab of the active group (asked
+	 * for): the two sides built from the card's own text (`diffSides`), each a
+	 * read-only plain-text document like `_openText`'s, for the same reason. Not
+	 * the file on disk: it may have changed since, and the card is what the
+	 * agent did. A preview, so the next one reuses the tab.
+	 */
+	private async _openDiff(name: unknown, diff: unknown): Promise<void> {
+		if (typeof diff !== 'string' || typeof name !== 'string') {
+			return;
+		}
+		const { before, after } = diffSides(capAt(diff, openTextLimit));
+		const base = fileSafe(name.split(/[\\/]/).pop() || name);
+		const side = (label: string, text: string) => {
+			const id = `text-${generateUuid()}`;
+			remember(this._attachmentTexts, id, text);
+			return vscode.Uri.from({ scheme: attachmentScheme, path: `/${base} (${label}).txt`, query: id });
+		};
+		const left = side('before', before);
+		const right = side('after', after);
+		try {
+			await vscode.commands.executeCommand('vscode.diff', left, right, vscode.l10n.t("{0} (changes)", plainInLabel(name)), { preview: true, viewColumn: vscode.ViewColumn.Active });
+		} catch (err) {
+			refuse(vscode.l10n.t("Could not open the changes: {0}", err instanceof Error ? err.message : String(err)));
+		}
+	}
+
 	/* ------------------------------------------------------------ usage */
 
 	private async _usage(): Promise<void> {
@@ -1414,6 +1685,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		for (const tab of this._tabs) {
 			tab.backendReplaced(agent, gone);
 		}
+		this._runs.backendReplaced(agent, gone);
 	}
 
 	/** Where the agents work: the first local folder, else the home directory. */
@@ -1424,6 +1696,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 	public dispose(): void {
 		this._disposed = true;
+		this._runs.dispose();
 		for (const timer of this._draining.values()) {
 			clearTimeout(timer);
 		}

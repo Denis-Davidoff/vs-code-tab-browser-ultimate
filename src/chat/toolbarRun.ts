@@ -1,0 +1,336 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+import * as vscode from 'vscode';
+import { confirm } from '../core/notify';
+import type { AgentBackend, AgentSession } from './agents';
+import type { ApprovalRequest } from './agentProtocol';
+import type { AgentId, ApprovalMode, ToolbarRun, ToolbarSkill } from './chatProtocol';
+import { approvalKey } from './chatTab';
+import { extractResult } from './toolbarText';
+
+/** What a run needs from the view that started it. */
+export interface ToolbarRunHost {
+	/** The approval menu's mode for a category key; see `approvalKey`. */
+	approvalMode(key: string): ApprovalMode;
+	noteServer(server: string): void;
+	/** Something a button shows changed. */
+	changed(): void;
+}
+
+interface Running {
+	skillId: string;
+	/** The agent whose backend holds the session: a Refresh replacing it ends the run. */
+	agent: AgentId;
+	run: ToolbarRun;
+	session?: AgentSession;
+	/**
+	 * The questions the run is stopped on, oldest first; the button shows the
+	 * first. A list, not one slot: a turn that runs tools side by side — parallel
+	 * sub-agents, each with a command — asks several at once, and a second
+	 * question that replaced the first left that one unanswerable while the CLI
+	 * still waited on it, the button reading "running" for good.
+	 */
+	asked: ApprovalRequest[];
+	clear?: ReturnType<typeof setTimeout>;
+}
+
+/** How long a finished run keeps its done or failed look on the button. */
+const shownForMs = 2500;
+/** How long a failed run keeps its look, so its reason can be read on hover. */
+const failedShownForMs = 8000;
+
+/** Which of a skill's runs its button shows: one waiting on the user, else one running, else the last to end. */
+function rank(run: ToolbarRun): number {
+	return run.status === 'waiting' ? 3 : run.status === 'running' ? 2 : 1;
+}
+
+/**
+ * Toolbar skills whose result goes to the clipboard or nowhere: each run is a
+ * conversation of its own, never shown in a tab — a session opened on the
+ * agent's backend, sent the prompt, and let go when its turn ends.
+ *
+ * Its questions are answered by the approval menu like a tab's; one the menu
+ * leaves to the user stops the run and turns its button to "waiting", and the
+ * answer comes from the button's own popover, since there is no conversation
+ * to show a card in. A skill may run more than once at a time — the button
+ * asks first (`again`) — and its button shows the run that most needs the
+ * user: one waiting, else one running, else the last to end.
+ */
+export class ToolbarRuns implements vscode.Disposable {
+	private readonly _runs = new Map<number, Running>();
+	private _next = 0;
+	private _disposed = false;
+
+	constructor(private readonly _host: ToolbarRunHost) { }
+
+	public get state(): Record<string, ToolbarRun> {
+		const out: Record<string, ToolbarRun> = {};
+		for (const r of this._runs.values()) {
+			const shown = out[r.skillId];
+			if (!shown || rank(r.run) > rank(shown) || (rank(r.run) === rank(shown) && (r.run.endedAt ?? 0) >= (shown.endedAt ?? 0))) {
+				out[r.skillId] = r.run;
+			}
+		}
+		for (const id of Object.keys(out)) {
+			const count = this._running(id).length;
+			if (count > 1) {
+				out[id] = { ...out[id], count };
+			}
+		}
+		return out;
+	}
+
+	private _running(skillId: string): Running[] {
+		return [...this._runs.values()].filter(r => r.skillId === skillId && (r.run.status === 'running' || r.run.status === 'waiting'));
+	}
+
+	public isRunning(id: string): boolean {
+		return this._running(id).length > 0;
+	}
+
+	public start(skill: ToolbarSkill, prompt: string, backend: AgentBackend, model: string, effort: string | undefined, cwd: string, root: string | undefined): void {
+		if (this._disposed) {
+			return;
+		}
+		// A finished run of the same skill stops showing: the new one is what the button is about.
+		for (const [key, r] of this._runs) {
+			if (r.skillId === skill.id && !this._running(skill.id).includes(r)) {
+				if (r.clear) {
+					clearTimeout(r.clear);
+				}
+				this._runs.delete(key);
+			}
+		}
+		const key = ++this._next;
+		const session = backend.openSession(cwd, undefined, 0, root);
+		const entry: Running = { skillId: skill.id, agent: backend.id, run: { status: 'running' }, session, asked: [] };
+		this._runs.set(key, entry);
+		let reply = '';
+		const current = () => this._runs.get(key) === entry && entry.session === session;
+		session.onEvent(event => {
+			if (!current()) {
+				return;
+			}
+			switch (event.type) {
+				case 'text':
+					reply += event.text;
+					return;
+				case 'textBreak':
+					reply += reply ? '\n\n' : '';
+					return;
+				case 'approval': {
+					const request = event.request;
+					if (request.what === 'mcp' && request.server) {
+						this._host.noteServer(request.server);
+					}
+					const mode = this._host.approvalMode(approvalKey(request));
+					if (mode !== 'ask') {
+						session.answer(request.id, mode === 'auto');
+						return;
+					}
+					entry.asked.push(request);
+					this._showAsked(entry);
+					return;
+				}
+				case 'approvalDone':
+					if (entry.asked.some(q => q.id === event.id)) {
+						entry.asked = entry.asked.filter(q => q.id !== event.id);
+						this._showAsked(entry);
+					}
+					return;
+				case 'turnEnd':
+					void this._finish(skill, key, entry, event.error, reply);
+					return;
+			}
+		});
+		this._host.changed();
+		session.send({ text: prompt, images: [] }, model, effort).catch(err => {
+			if (current()) {
+				void this._finish(skill, key, entry, err instanceof Error ? err.message : String(err), reply);
+			}
+		});
+	}
+
+	/**
+	 * The answer to the question the user was shown, named by its id. With two
+	 * runs of the skill waiting, the button shows the newer one's question, and
+	 * answering "the skill's" — the first found — approved a command nobody had
+	 * seen. A question that is no longer open is not answered at all.
+	 */
+	public answer(skillId: string, approvalId: string, allow: boolean): void {
+		const entry = this._running(skillId).find(r => r.session && r.asked.some(q => q.id === approvalId));
+		if (!entry?.session) {
+			return;
+		}
+		entry.session.answer(approvalId, allow);
+		entry.asked = entry.asked.filter(q => q.id !== approvalId);
+		this._showAsked(entry);
+	}
+
+	/**
+	 * The approval menu changed: a question whose category is no longer on Ask
+	 * is answered now, as a tab's waiting cards are (`approvalModesChanged`).
+	 */
+	public approvalModesChanged(): void {
+		for (const entry of this._runs.values()) {
+			const session = entry.session;
+			if (!session || !entry.asked.length) {
+				continue;
+			}
+			const left: ApprovalRequest[] = [];
+			for (const q of entry.asked) {
+				const mode = this._host.approvalMode(approvalKey(q));
+				if (mode === 'ask') {
+					left.push(q);
+				} else {
+					session.answer(q.id, mode === 'auto');
+				}
+			}
+			if (left.length !== entry.asked.length) {
+				entry.asked = left;
+				this._showAsked(entry);
+			}
+		}
+	}
+
+	/** The run's look: waiting on its oldest open question, else running. */
+	private _showAsked(entry: Running): void {
+		const q = entry.asked[0];
+		entry.run = q ? { status: 'waiting', approval: { id: q.id, title: q.title, detail: q.detail } } : { status: 'running' };
+		this._host.changed();
+	}
+
+	/**
+	 * The view closed: nothing can show a run or answer its question any more,
+	 * so every run still going ends, as the tabs' conversations do — a CLI is
+	 * not left working unseen on the user's quota (#356). The view is kept
+	 * while hidden (`retainContextWhenHidden`), so this is a real close.
+	 */
+	public viewClosed(): void {
+		for (const [key, entry] of this._runs) {
+			if (entry.run.status === 'running' || entry.run.status === 'waiting') {
+				this._end(key, entry, { status: 'failed', message: vscode.l10n.t("The chat view was closed."), endedAt: Date.now() }, failedShownForMs);
+			}
+		}
+	}
+
+	/** Every run of the skill still going. */
+	public stop(skillId: string): void {
+		for (const [key, entry] of this._runs) {
+			if (entry.skillId === skillId && (entry.run.status === 'running' || entry.run.status === 'waiting')) {
+				this._end(key, entry, { status: 'failed', message: vscode.l10n.t("Stopped."), endedAt: Date.now() }, failedShownForMs);
+			}
+		}
+	}
+
+	private async _finish(skill: ToolbarSkill, key: number, entry: Running, error: string | undefined, reply: string): Promise<void> {
+		if (this._runs.get(key) !== entry || !entry.session) {
+			return;
+		}
+		const name = skill.label ?? skill.name;
+		if (error) {
+			this._end(key, entry, { status: 'failed', message: error, endedAt: Date.now() }, failedShownForMs);
+			return;
+		}
+		if (skill.result !== 'clipboard') {
+			this._end(key, entry, { status: 'done', message: vscode.l10n.t("Done."), endedAt: Date.now() }, shownForMs);
+			confirm(vscode.l10n.t("{0} is done.", name));
+			return;
+		}
+		// No markers: the model ignored the instruction. Its last code block is
+		// the next best thing, then the whole reply; the button says which.
+		const found = extractResult(reply);
+		const copied = found?.text ?? reply.trim();
+		if (!copied) {
+			this._end(key, entry, { status: 'failed', message: vscode.l10n.t("The reply was empty; nothing was copied."), endedAt: Date.now() }, failedShownForMs);
+			return;
+		}
+		try {
+			await vscode.env.clipboard.writeText(copied);
+		} catch (err) {
+			if (this._runs.get(key) === entry && entry.session) {
+				this._end(key, entry, { status: 'failed', message: err instanceof Error ? err.message : String(err), endedAt: Date.now() }, failedShownForMs);
+			}
+			return;
+		}
+		// Stopped, forgotten or disposed while the clipboard was written: that
+		// ending stands, rather than being overwritten with "Copied".
+		if (this._runs.get(key) !== entry || !entry.session) {
+			return;
+		}
+		const message = found?.source === 'markers'
+			? vscode.l10n.t("Copied to the clipboard.")
+			: found?.source === 'fence'
+				? vscode.l10n.t("The reply had no result markers; its last code block was copied.")
+				: vscode.l10n.t("The reply had no result markers; the whole reply was copied.");
+		this._end(key, entry, { status: 'done', message, endedAt: Date.now() }, shownForMs);
+		confirm(vscode.l10n.t("{0}: {1}", name, message));
+	}
+
+	/** The session is let go here, every way a run ends: a Claude process ends with it. */
+	private _end(key: number, entry: Running, run: ToolbarRun, shownFor: number): void {
+		const session = entry.session;
+		entry.session = undefined;
+		entry.asked = [];
+		entry.run = run;
+		session?.dispose();
+		if (this._disposed) {
+			return;
+		}
+		this._host.changed();
+		entry.clear = setTimeout(() => {
+			if (this._runs.get(key) === entry) {
+				this._runs.delete(key);
+				this._host.changed();
+			}
+		}, shownFor);
+	}
+
+	/**
+	 * A Refresh replaced the agent's backend, which disposes every session it
+	 * held — and a disposed session reports no end of its turn (Claude's is
+	 * suppressed once disposed, Codex's emitter is gone), so without this the
+	 * run read "running" for the life of the view, and a question it was
+	 * stopped on offered an Allow that reached nothing. The registry announces
+	 * the replacement before disposing, so the session is let go here first.
+	 */
+	public backendReplaced(agent: AgentId, gone: boolean): void {
+		for (const [key, entry] of this._runs) {
+			if (entry.agent === agent && entry.session && (entry.run.status === 'running' || entry.run.status === 'waiting')) {
+				const message = gone
+					? vscode.l10n.t("The agent is no longer installed; the run ended.")
+					: vscode.l10n.t("The agent was replaced by another installed copy; the run ended. Run it again.");
+				this._end(key, entry, { status: 'failed', message, endedAt: Date.now() }, failedShownForMs);
+			}
+		}
+	}
+
+	/** A skill deleted while it runs: stopped, and nothing left to show. */
+	public forget(skillId: string): void {
+		for (const [key, entry] of this._runs) {
+			if (entry.skillId !== skillId) {
+				continue;
+			}
+			if (entry.clear) {
+				clearTimeout(entry.clear);
+			}
+			entry.session?.dispose();
+			this._runs.delete(key);
+		}
+	}
+
+	public dispose(): void {
+		this._disposed = true;
+		for (const entry of this._runs.values()) {
+			if (entry.clear) {
+				clearTimeout(entry.clear);
+			}
+			entry.session?.dispose();
+			entry.session = undefined;
+		}
+		this._runs.clear();
+	}
+}

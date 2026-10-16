@@ -126,6 +126,7 @@ cloned repository could switch autofill on for its own dev server (breaks-silent
 | `aiBrowser.chat.tabLimit` | `10` | how many conversations stay open as tabs, 1 to 30 — see [Tabs](#tabs-several-conversations-at-once) |
 | `aiBrowser.chat.claudePath` | `""` | the `claude` executable; empty searches — see [Finding the CLIs](#finding-the-clis) |
 | `aiBrowser.chat.codexPath` | `""` | the `codex` executable, the same way |
+| `aiBrowser.chat.collapseToolCalls` | `false` | tool calls in the chat start folded — see [The design](#the-design-and-where-each-part-came-from) |
 
 The two paths are `application`-scoped for a sharper reason than the logins ones: each names a program
 to run, so a workspace that could set it would be code execution from a cloned repository the
@@ -234,7 +235,10 @@ difference, in `browserController.js`, was a doc comment whose link had been upd
 - [src/translate/translateScript.ts](src/translate/translateScript.ts) — the page-side translator behind `browser_text_segments` / `browser_replace_text`
 - [src/chat/chatView.ts](src/chat/chatView.ts) — the AI Browser chat: the webview view, its tabs, history, attachments, usage, switching agents
 - [src/chat/chatTab.ts](src/chat/chatTab.ts) — one conversation of the chat: its session, its turns, its agents
+- [src/chat/toolbarText.ts](src/chat/toolbarText.ts) — toolbar skills as text: what may be stored, parameters filled in, the agent's own sigils, the clipboard result markers (leaf, under test)
+- [src/chat/toolbarRun.ts](src/chat/toolbarRun.ts) — a toolbar skill run in the background, its approvals, its clipboard result
 - [src/chat/transcript.ts](src/chat/transcript.ts) — a conversation as Markdown, for handing it to the other agent (leaf, under test)
+- [src/chat/diffSides.ts](src/chat/diffSides.ts) — a diff card's text as the before and after VS Code's diff editor compares (leaf, under test)
 - [src/chat/news.ts](src/chat/news.ts) — NEWS.md into the empty chat's introduction and "What's new" (leaf, under test)
 - [src/chat/chatProtocol.ts](src/chat/chatProtocol.ts) — the messages between the chat's webview and the host (types only, read by both builds)
 - [src/chat/agents.ts](src/chat/agents.ts) — the agent interface, and detecting which agents are installed
@@ -377,6 +381,10 @@ npm run compile && npm run typecheck
 `.mts` natively, no transpile step). Two of its options are mandatory and both are
 non-obvious:
 
+- `loader: { '.csv': 'text' }` — the chat imports `@vscode/codicons/dist/codicon.csv` as a string
+  for its icon picker (declared in `preview-src/assets.d.ts`), so the picker lists exactly the
+  icons the bundled font can draw. Not mandatory like the two below; without it the build fails
+  loudly rather than silently.
 - `format: 'iife'` — the script is loaded by a plain `<script src>` **without**
   `type="module"`. An ESM bundle simply will not execute in the panel.
 - `loader: { '.ttf': 'dataurl' }` — otherwise the icons do not render, because the CSP only
@@ -4254,15 +4262,16 @@ from their shipped webviews — Claude Code 2.1.301 (`webview/index.css`, CSS mo
 | sticky prompt | Claude Code (`.message.stickyHeader`) | each turn's prompt is `position: sticky; top: 0` **inside its turn**, so the prompt being answered stays on top and the next one pushes it away; a gradient lets rows fade under it |
 | timeline | Claude Code (`.timelineMessage`) | a dot per row and a 1 px line between rows; green done, red failed, warning-coloured stopped, blinking accent running |
 | activity rows | Codex | "Ran `cmd`", "Read a.txt", "Edited app.ts +3 −1", chevron on hover |
-| terminal card | Codex shell block | `$ command`, output at most 9rem and scrolled to its newest line, footer "✓ Success" / "Exit code N" / "Running…", copy buttons on hover |
-| diff card | Codex | file header with +N −N, lines on `diffEditor.inserted/removedLineBackground` |
+| terminal card | Codex shell block | `$ command`, its first three lines, then the output's last three, no scroll down (asked for); footer "✓ Success" / "Exit code N" / "Running…", copy buttons on hover |
+| diff card | Codex | file header with +N −N, then the first three removed and the first three added lines on `diffEditor.inserted/removedLineBackground` and how many more — no context, no hunks, no scroll down (asked for); a click opens the whole change in the diff editor |
 | thinking | both | "Thinking" with a shimmer while it streams, "Thought for 4s" after; collapsed, body at most 140 px |
 | working line | Claude Code's spinner row, Codex's shimmer | a star changing shape every 120 ms (`· ✢ ✳ ✶ ✻ ✽` and back, in the accent colour, still under reduced motion), then "Browsing… 12s"; when the turn ends a small square takes the star's slot, so the line does not shift, before "Browsed for 42s" and, right-aligned, the turn's tokens "↑ 35k ↓ 812" — all asked for |
 | composer | Codex surface, Claude Code focus ring | 12 px radius, soft shadow, accent ring on focus, round send button in the foreground colour |
 | pills and menus | both | agent and model are ghost pills opening in-view menus (label, description, check), not native `<select>`s |
 | code blocks | both | header with the language and a copy button; tables, quotes, rules |
 | copying a message | asked for | a copy button at the bottom right of every prompt and reply, on hover (`.message-copy`); a reply copies as its Markdown; the prompt's copy does not fold the prompt |
-| spacing | asked for | rows 6px apart above and below (the timeline's dot and line are placed from the same number), and 10px between turns |
+| spacing | asked for | rows `--row-pad` (10px) apart above and below — 6px at first, widened on request twice; the timeline's dot and line are placed from the same variable, so change only it — and 20px between turns; in a reply, paragraphs, lists, quotes, code blocks and tables 0.9em apart |
+| lists | asked for | a bullet is an em dash (`list-style-type: "— "`), items 0.4em apart; numbered items 0.7em apart, their number bold in the theme's chart yellow |
 | sending | asked for | the message's text lifts out of the box and flies to its prompt in the thread (`launchFlight` / `landFlight`): the prompt's text is hidden until the flight lands, so the words are on screen once; the target is the first new prompt **with this text** (two sends inside one post round trip put both prompts in at once, and "the last prompt" was the wrong one), hidden again if it is rebuilt in flight; a chat switch stops the flight; a send with no prompt appearing within 1.5 s (still waiting for detection, refused) fades in place; nothing flies under reduced motion |
 
 **The Markdown reader** handles what replies use: fenced code, headings, quotes, rules, tables
@@ -4302,8 +4311,29 @@ thread's running total and replaces the figure — measured: two short Codex tur
   (`_tokenOffset`) instead of taking the chat's totals backwards. An *equal* total is a repeat,
   not a reset, or one duplicated event would double the count.
 
-Commands and edits open by default (the command and its answer are the point of the row); reads
-never have a body; everything else opens on click. What the user opened or closed is remembered
+**Every tool call with something to show opens by default** — a command, an edit, an MCP tool's
+IN / OUT — unless `aiBrowser.chat.collapseToolCalls` folds them all (asked for); reads never have
+a body. **A click on an IN or OUT block, or on a command or its output, opens that text in an
+editor tab** (`openText`): read-only, plain text under the `ai-browser-attachment:` scheme, as a
+chip's text is (#371 — a command's output or a page's markup can hold `[x](command:…)`), a
+preview so the next one reuses the tab, cut at 2 000 000 characters with a line saying so. **A
+diff card shows the change's counts and its first three removed and first three added lines,
+nothing more** (`diffCard`, `ioLines`, asked for): no context lines, no hunk headers, each line cut
+at 1 000 characters, and "5 more removed · 9 more added" under them, outside the part that scrolls
+sideways. The card is as tall as those lines — **no scroll down inside it**, only sideways for a
+long line of code (`.diff .card-body`). **A click on it opens the whole change in VS Code's diff
+editor** (`openDiff` → `vscode.diff`, asked for):
+the two sides are built from the card's own text by `diffSides` (leaf, under test) — `-` lines
+before, `+` lines after, context in both, a `⋯` line in both where one hunk ends and the next
+begins — and opened like `openText`'s, read-only plain text. Not the file on disk: it may have
+changed since, and the card is what the agent did. `---` / `+++` count as a file header only as a
+pair outside a hunk: Claude Code's Edit has no hunk, and a removed SQL comment `-- x` arrives as
+`--- x`. **Neither opens on a click that ends a selection, on the copy button, or on the first
+click of a double or triple click** (`onPlainClick`): that click arrives before the word or line
+is selected, so testing the selection then opened a tab — taking focus — under someone selecting
+a word to copy (#408). The open waits 300 ms and is dropped if another click or a selection comes.
+Those blocks are darker than a
+code block, the IN / OUT label in a column of its own, after Claude Code's panel. What the user opened or closed is remembered
 per row until the chat changes (#346). Clicking a prompt folds or unfolds it — but not a click
 that ends a text selection, and the prompt is not rebuilt for it, or the next post (every 40 ms
 while a reply streams) took the selection away.
@@ -4312,6 +4342,26 @@ while a reply streams) took the selection away.
 changes; a streaming reply rewrites one row many times a second, and rebuilding the thread each
 time lost the reader's selection and scroll position. Rows belong to turns, a turn being a user
 entry and what follows it; entries before the first prompt (a notice) form a turn of their own.
+**A row a pointer is pressed in is not rebuilt until the press ends** (`pressedRow`): a running
+command's row changes with every chunk of output, and a rebuild between press and release lost
+the click — 0 of 10 landed at a post every 40 ms (#410). It keeps its old signature, so it is
+rebuilt right after the click (`pressEnded`). **The signature carries "Fold Tool Calls" too**, or
+the rows already on screen kept the old setting until another chat was shown (#411).
+
+**An MCP call's IN and OUT show three lines and nothing more** (asked for — "if they need it they
+click and look in the file"): `ioLines` in `chat.ts` and `--io-lines` in `chat.css`, which must
+say the same. Only those lines are put in the page, each cut at 1 000 characters (`capLine`) —
+a tool's output can run to megabytes — and the block is that tall with no scroll; a cut block
+fades at its foot and says "N more lines" (`cutHint`, `.io-more`), and a click opens the whole
+text in a tab, as copying copies it. Two details cost a measurement: the `pre` is `content-box`,
+so the height is three lines *without* the padding (with it, almost a fourth line showed), and it
+is cut with `overflow: clip` at the content box, or the next wrapped line peeked into the bottom
+padding. **A command card shows three lines of each half too** (asked for, after it went on
+showing the whole of both): the command's first three, cut and faded the same way, with "N more
+lines"; the output's **last** three — its newest, where a run's result is — one line each,
+scrolled sideways rather than wrapped, since a wrapped last line would be the part cut off, with
+"N earlier lines" at its top right and a fade at its top (`.cut-above`). A click opens either
+whole in a tab, as before.
 
 **Copy goes through the host** (`{ type: 'copy' }` → `env.clipboard`): `navigator.clipboard` in
 a webview depends on the host granting it.
@@ -4402,6 +4452,12 @@ Each of these cost a measurement and each would be wrong if guessed:
   Code's own `Exit code N` line, which is taken off into the exit code. Codex: `item/started`,
   then `item/commandExecution/outputDelta` while it runs, then `item/completed` with
   `aggregatedOutput`, `exitCode` and `status` (`completed` / `failed` / `declined`).
+- **A Codex `fileChange` of kind `add` or `delete` may carry the file's content, not a patch.**
+  Codex's own session log keeps an added file as `content`; read as a diff, unmarked lines are
+  context, so the card showed a new file as unchanged (`+0`) and its diff tab as two equal sides.
+  `changeDiff` marks every line `+` (add) or `-` (delete) — but only when the text does not
+  already read as a unified diff (`@@`, `diff --git`, `---`), so a patch is left alone. **Not
+  measured against the app-server's own `add` yet**; re-measure with a turn that creates a file.
 - **Codex reports a command wrapped in its shell** — `/bin/zsh -lc 'echo hi && cat a.txt'` — and
   `unwrapShell` takes the wrapper off. It also sends `commandActions` (`read` with a name,
   `listFiles`, `search`), which become the row's summary ("Listed files, Read a.txt").
@@ -4449,6 +4505,16 @@ reply's text from the stream deltas only, because the complete `assistant` messa
 `/agents`, `/context`, `/mcp`, `/config`, `/extra-usage`, `/reload-skills`). A model's complete
 message is still read for its tool calls only, or every reply would show twice.
 
+**An API error comes the same way, and is not read there.** A request over the context ("Prompt is
+too long") arrives as a `<synthetic>` message flagged `is_api_error_message: true`, then a
+`result` with `is_error` and the same text (measured on 2.1.301), so taking the message's text
+said it twice, once as a reply and once as the error (#415). The result alone reports it, and
+with `terminal_reason: 'prompt_too_long'` it adds what to do: send `/compact`, which the CLI
+lists in stream-json mode too, or start a new chat. It is reached by a long conversation resumed
+in a tab — a toolbar skill sent into the chat goes to the tab it was pressed in, whatever that
+tab holds — and not by a fresh one: a new session in this repository starts at about 229k
+tokens, CLAUDE.md being most of it, and every model the CLI offers here has a 1M window.
+
 **It opens two ways.** From the button it has its own search box. **Typed in the message box** —
 `/` or `$` at the start of the box or after white space, anywhere in the text and for either
 agent (asked for) — the box is the search, the palette follows the query, and ↑ / ↓, Enter and
@@ -4475,7 +4541,11 @@ never. **And no chat command is ever the row chosen by default without a query**
 in the box, Enter took the first row — Clear conversation — and cleared the tab without a question
 (#397). With nothing else to offer, no row is chosen until an arrow picks one, and Enter, typed,
 goes back to the box. Where the skills would be, a line says why there are none: still being
-looked for, none listed, or a listing that failed.
+looked for, none listed, or a listing that failed. **A row whose name is exactly what was typed is
+chosen over the one kept** from earlier keystrokes: `/review` typed letter by letter kept
+`/review-pr`, chosen at `/r`, and Enter inserted that while the toolbar's own `/review` — listed
+first, since it takes precedence — sat above it (#412). A row picked with an arrow stays while it
+is exact too.
 
 **The inline palette closes whenever the box is rewritten under it** — a send, another chat, a
 recalled message, queued messages given back — and `renderPalette` checks that the typed `/…` is
@@ -4534,6 +4604,127 @@ Verified with the compiled registry against both real CLIs in a project with tes
 57 listed, a skill added afterwards found on the next refresh, a Codex `$echo-test` turn carrying
 its `skill` item and answering from it), and the palette in headless Chrome: focus on the search
 box, grouping, ranking, ↓ Enter, the inline query for both agents, Escape, `/clear`.
+
+### The toolbar of skills
+
+Asked for: skills of the chat's own, as buttons above the message box (`.skill-bar`). A toolbar
+skill is a **name** (one word, lower case, no spaces, as the CLIs' skills are — asked for; the
+editor lowers capitals as they are typed, and a stored name with capitals is read back lowered,
+not refused), a **prompt** that may name the
+agents' skills (the editor's prompt has the same `/` / `$` palette as the box) and take
+parameters as `{{name}}`, **where it is offered** (every agent, Claude Code or Codex), **what
+becomes of the result**, an **icon** from the codicon set, an optional **colour**, **label** and **tooltip**,
+and **parameters** — name, type (text, number or a choice of values), maximum length, preset;
+each is required. Kept in `globalState` (`aiBrowser.chat.toolbar`), so every project has the same
+toolbar; at most 30, prompts up to 20 000 characters.
+
+- **Made in an editor drawn over the chat** (`openSkillEditor`, a `history-panel`), opened from
+  the "/" palette's *Toolbar* group — Add skill to toolbar…, Edit toolbar skill…, Delete toolbar
+  skill… — or from a button's right-click menu, which also moves it left or right. The editor is
+  built once per opening and never on a state post, so typing in it is never rebuilt away. The
+  host checks what it saves (`validToolbarSkill` in `toolbarText.ts`) and answers `toolbarSaved`
+  (the editor closes) or `toolbarError` (it stays, with the reason): a name taken by another
+  toolbar skill, a malformed parameter, a preset that does not fit its type.
+- **The icon list is the font's own**: `@vscode/codicons/dist/codicon.csv` bundled as text
+  (esbuild's `text` loader), searchable, so nothing offered fails to draw.
+- **Three colours** (asked for, one at first, then one each for the label, the border and the
+  icon — `colors: { text, border, icon }`), each the theme's own, one of the theme's chart
+  colours by name (`red`, `orange`, `yellow`, `green`, `blue`, `purple` →
+  `var(--vscode-charts-<name>)`, so every theme has them), or any `#rrggbb` from a native colour
+  input. A run's status colour (waiting, done, failed, and running's border) wins over each: the
+  status rules come after the tint rules and reset the label and icon with a selector at least
+  as specific. The host keeps nothing else (`toolbarColors` and a hex pattern), so no stored
+  string reaches CSS but those; a skill saved with the one `color` of the first version is read
+  as its label and icon colour. **Each colour row is built once and only marked afterwards**
+  (`colorChoice`): rebuilding it on the colour input's `input` event took that input out of the
+  page, which closes its picker in the middle of a drag.
+- **The palette works on two fields.** `paletteTarget` is the box or the editor's prompt; only the
+  box offers the chat's own commands and the toolbar skills, the editor lists the skills of the
+  agent the skill is for (the tab's when it is for all). Over the editor it is drawn under the
+  field when there is no room above (`z-index` 50, above the panel's 40), and a click inside the
+  editor closes only the palette, never the editor.
+- **The button's background is hover and press only** (`:hover`, `:active`), asked for after it
+  stayed shaded once a right-click menu or a popover had opened from it: `openAbove` marks its
+  anchor `active` so a second press closes what the first opened, and that mark is not drawn on a
+  skill button (`closePopups` clears it as well). Focus after a click is not drawn either; only
+  `:focus-visible` is.
+- **Pressing a button**: with parameters, a popover asks for them (the type rules again in the
+  view for the form, `valueProblem`; the host checks again in `fillPrompt`), Enter runs. A skill
+  also runs from the palette's *Toolbar* group, and **a message sent as `/name args` or
+  `$name args` naming a toolbar skill runs it instead of being sent**: one parameter takes all
+  the arguments, several take a word each and the last the rest, and what is missing or invalid
+  is asked for. It takes precedence over a CLI command of the same name. Toolbar skill names are
+  marked in the text like the agents' commands. **The tab it runs for is taken at the press**
+  (`requestSkill`), not when a popover's Run or "run again" Yes is clicked: New Chat in the title
+  bar is a click outside the view, so nothing closes the popover, and Run then went to the new tab
+  (#413). A tab closed in between is refused through the status bar, not dropped in silence. **A
+  toolbar write that fails says so** — the editor stays open with the reason — where it used to
+  close as if the skill were saved (#255's rule).
+- **Where it runs.** The skill runs on the agent of the tab it was pressed in, and the bar shows
+  only the skills that agent is offered. Before it is sent, every skill it names is written the
+  way that agent reads one (`adaptSigils`: `/name` for Claude Code, `$name` for Codex), so a skill
+  for every agent works on either.
+  - **In the chat**: sent to that tab as a message, through `_send` with its own empty attachment
+    list, so it does not take the chips in the box.
+  - **To the clipboard / silently**: a background run (`ToolbarRuns`), a session of its own on the
+    tab's agent, model and effort, never shown in a tab, let go when its turn ends. A clipboard
+    run's prompt gets `withResultMarkers`: put the result, and nothing else, between `<<<RESULT`
+    and `RESULT>>>`, each on a line of its own, no fence inside. **The instruction stands before
+    the prompt and again after it**: once, at the end, it lost to the prompt's own wording — a
+    skill the prompt names brings its own output format — and the model wrote no markers, so a
+    generated commit message reached the clipboard with the reply's preamble and closing remarks
+    around it. **Markers, not a code fence or JSON**: a fence closes on any code block inside the
+    result, and JSON makes the model escape every line break and quote of a multi-line text,
+    where one slip leaves nothing to copy. `extractResult` takes the **last** pair (a model quoting
+    the instruction writes them twice), **each marker a line of its own** — a commit message
+    about this very feature named `<<<RESULT / RESULT>>>` in a sentence, and searching the text
+    for the markers started the copy there, the preamble's last words with it (#414); a pair
+    written inline is still read when no line is a marker — and drops a fence wrapping all of it; failing markers, the
+    reply's **last fenced block** (a shorter fence inside a longer one is content); failing both,
+    the whole reply — the button saying which. Measured on Claude Code: "explain why the sky is
+    blue, then give the letters in 'browser'" copied `7`, and a commit message asked for *with* an
+    introduction, a code block and a closing remark copied the message alone.
+- **A background run's questions** are answered by the approval menu like a tab's; one the menu
+  leaves to the user stops the run and turns the button to *waiting* (warning colour), and a click
+  shows the question with Allow / Deny / Stop — there is no conversation to show a card in.
+  Measured on Claude Code: a `touch` asked, Allow created the file, the run ended done. A button
+  of a run shows running (accent, breathing), waiting, done (green, a flash, 2.5 s) and failed
+  (red, 8 s, the reason in its tooltip). **A run keeps every open question, oldest first**
+  (`Running.asked`, a list): a turn that runs tools side by side asks several at once, and one
+  slot let the second hide the first — unanswerable while the CLI waited on it, the button back
+  to "running" for good (#405). The button shows the oldest; each answer or withdrawal shows the
+  next. **A change in the approval menu answers them** as it does a tab's cards
+  (`ToolbarRuns.approvalModesChanged`, #407). Deleting a skill stops its runs; **closing the view
+  ends them all** (`viewClosed`, failed, "The chat view was closed."), as it ends the tabs'
+  turns — it did not, and a run went on unseen, or sat on a question nobody could answer (#406).
+  The view is kept while hidden, so this is a real close. **A Refresh that replaces the agent's backend ends its runs too** (`backendReplaced`,
+  failed, "run it again"): the replacement disposes every session, and a disposed session reports
+  no end of its turn, so the button read "running" for good (#403). A Stop that lands while a
+  clipboard result is being written stays "Stopped.".
+- **A skill already running asks before it runs again** (`openAgainPopup`, asked for): "… is still
+  running. Run it again?" with Stop, Yes and **No — the default**: focused and drawn as the
+  primary button, so Enter answers No, as do Escape and a click elsewhere. Every way of starting
+  a skill goes through `requestSkill` — its button, the palette, `/name` typed — and a run stopped
+  on a question shows that question instead. Yes sends `runToolbarSkill` with `again: true`; the
+  host refuses a second run without it ("still running"), so two quick clicks inside one state
+  post do not count as a yes. **A skill may therefore run several times at once**: `ToolbarRuns`
+  keys runs by a number of its own, and the button shows the one that most needs the user —
+  waiting, else running (with `count` when more than one), else the newest to end, a tie in the
+  same millisecond going to the newer run, or Stop read "Done." from the run before it. **An
+  answer names the question shown** (`toolbarApprove` carries `approvalId`), and reaches only the
+  run asking it — with two runs waiting, the skill's id alone answered the first found while the
+  popup showed the newer one's question, approving a command nobody had seen (#402). Stop stops
+  every run of the skill. **A skill sent into the
+  chat counts as running too**, while the tab it was sent to is busy (`_chatSkillTabs`,
+  `inChat`), and from the start of the send — detection can hold it for seconds before the tab is
+  busy, and a post in between would otherwise have dropped it. Its Stop is that tab's own Stop.
+- **The buttons are kept and updated in place** (`skillButtons`), #365's rule: a run's state
+  changes them often.
+- **Their tooltip is drawn by the view** (`hoverTip`, reading `data-tip`), not a native `title`:
+  reported as no tooltip at all on these buttons in VS Code, while the DOM checked out in
+  Chrome — the button under the pointer, its `title` set. The cause was not pinned down; the
+  drawn one appears after 450 ms, above the button inside `#app`, goes on leave, press and
+  scroll, and is redrawn in place when a run changes its text.
 
 ### Finding the CLIs
 
@@ -4881,6 +5072,8 @@ against a fake session and in headless Chrome.
 - **The approval menu**: `workspaceState` `aiBrowser.chat.approvalPolicy` (a mode per category)
   and `aiBrowser.chat.approvalServers` (the MCP servers seen) — per workspace, since a project is
   what a user trusts with commands; one menu for every tab.
+- **The toolbar's skills**: `globalState` `aiBrowser.chat.toolbar`, in order, each checked again
+  on every read (`validToolbarSkill`).
 - **Selection**: `globalState` `aiBrowser.chat.selection` — the last agent, a model per agent and
   an effort per `<agent>:<model>`, made valid against what was detected on every read.
 - **Open tabs**: `workspaceState` `aiBrowser.chat.openTabs` — every tab's chat id in order, which
@@ -5109,14 +5302,26 @@ why `pickAndDeliver` grew a `preferred` tab.
 
 ### Agents the agent starts
 
-The composer's `$(hubot) N` button counts the sub-agents running in this chat (with none
-running it shows the total, muted, and with none at all it is hidden). It opens a list over the
+The composer's `$(hubot) N` button counts the sub-agents running in this chat, and only those
+(asked for): with none running it stays, muted and **without a number** — not a 0, and not the
+total it used to show, which read as agents at work — so the list and the reports can still be
+opened once they finish; with no agents at all it is hidden. It opens a list over the
 chat — status dot, the agent's description, "Running · Grep · 3m 28s · 230k tokens" — and a row
 opens its card: status · type · model · background, "Spawned by the main agent", time, tokens and
 tool uses, the agent's report as Markdown, then its prompt and its tool calls folded. The layout
 follows the Claude Code panel's own agent map, as asked for; it is **in the chat, not a file**,
 which was the first idea and was changed on request. Everything is read from the chat's own
 rows: nothing is asked of the CLI, and a chat reopened from the history shows its agents too.
+
+**Once the turn has ended and agents are still running, the foot of the chat says so** — asked
+for: "✱ 2 agents running" under the last turn's "Worked for …" (`agentsRunningLine`, in that
+turn's tail), the working star in front and turning on the same timer, the text shimmering.
+Only then: while the turn runs, the working line is the one at the bottom, and once no agent is
+`running` the line goes. It counts the chat's running agent rows, whichever turn started them —
+a background agent from an earlier turn included. A click opens the agents list
+(`openAgentsPanel`, shared with the button). The tail is rebuilt only when the count changes,
+#365's rule, or a click straddling a post would be lost; checked in headless Chrome against the
+bundle — same element across a post with the same count, gone when the last agent ends.
 
 **Claude Code, measured on 2.1.301** (the samples are in `agentProtocol.test.ts`):
 
@@ -6846,6 +7051,45 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
 401. **Reading a reply's text from the stream deltas only** → a command the CLI answers itself
      (`/usage`, `/agents`) sends no deltas, only a complete message from `<synthetic>`, and showed
      nothing at all.
+402. **An answer addressed to "the skill" rather than to the question** → with two runs of one
+     toolbar skill waiting, the popup showed the newer run's command and Allow approved the older
+     one's. Carry the approval id the user saw, and answer only the run asking it.
+403. **A second consumer of agent sessions that does not hear `onDidReplace`** → the tabs end their
+     turn when a Refresh replaces the backend; the toolbar's background runs did not, and a
+     disposed session never reports the end of its turn, so the runs stayed "running" for good.
+     #341 again: every holder of a session has to subscribe.
+404. **Waiting for detection before calling a function that re-checks only after its own wait** →
+     `_runToolbarSkill` awaited detection, so `_send` found nothing to wait for and skipped its
+     "is the tab still the one" check (#368). Whoever waits asks the question.
+405. **One slot for "the question it is waiting on"** → a turn that runs tools side by side asks
+     several at once; the second replaced the first, which could then never be answered while
+     the CLI still waited on it. Keep every open question, the way the tab keeps a card each.
+406. **A second holder of sessions left out of the view's teardown** → closing the view ended the
+     tabs' conversations and not the toolbar's background runs, which went on unseen. #356, for
+     the next thing that holds a session.
+407. **Wiring a menu change to one consumer of a shared policy** → the approval menu answered the
+     tabs' waiting cards and not a background run's question. Every place that waits on the policy
+     hears its change.
+408. **Testing for a selection on the first click of a double click** → that click arrives before
+     the word is selected, so a double-click to copy a word opened an editor tab and took focus.
+     Wait out the double-click window, and drop the open if another click or a selection comes.
+409. **Reading a file's content as a diff** → unmarked lines are context, so a Codex `add` given as
+     plain content showed a new file as unchanged. Mark the lines by the change's kind, unless the
+     text is already a patch.
+410. **Rebuilding a row under a press** → a running command's output changes every few dozen
+     milliseconds, and a click whose press and release straddle a rebuild never fires (#365 again,
+     for the thread). Hold the pressed row as it is until the press ends.
+411. **A setting that decides how a row looks, left out of the row's signature** → keyed rendering
+     never rebuilt the rows on screen, so "Fold Tool Calls" reached only new ones.
+412. **Keeping a list's chosen row while it still matches** → typed letter by letter, the row
+     chosen at the first letter outlived an exact match further up. An exact name wins.
+413. **Reading "which tab" when a popover is answered instead of when it was opened** → the tab in
+     front can change in between, outside the view, and the skill ran in the other conversation.
+414. **Searching a reply for a marker the reply may also mention** → a commit message describing
+     the result markers named them mid-sentence, and the copy began there. A marker the prompt asks
+     for on a line of its own is read only as a line of its own.
+415. **Reading the text of every `<synthetic>` message** → an API error is one too, and the turn's
+     result repeats it as the error, so "Prompt is too long" was said twice. Skip the flagged one.
 
 ## Special cases and non-obvious decisions
 

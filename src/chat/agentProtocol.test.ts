@@ -328,6 +328,18 @@ suite('codexEvents', () => {
 		assert.deepStrictEqual(event, { type: 'tool', id: 'f', tool: { kind: 'edit', name: 'Edit', detail: 'src/a.ts', input: '@@ -1 +1 @@\n-old\n+new\n+more', added: 2, removed: 1 } });
 	});
 
+	test('a new or deleted file given as plain content has its lines marked', () => {
+		const added = codexEvents('item/started', { item: { type: 'fileChange', id: 'f', changes: [{ path: 'a.yml', kind: { type: 'add' }, diff: 'services:\n  - app\n' }] } })[0];
+		assert.deepStrictEqual(added, { type: 'tool', id: 'f', tool: { kind: 'edit', name: 'Edit', detail: 'a.yml', input: '+services:\n+  - app', added: 2, removed: 0 } });
+		const gone = codexEvents('item/started', { item: { type: 'fileChange', id: 'g', changes: [{ path: 'b.txt', kind: { type: 'delete' }, diff: 'x' }] } })[0];
+		assert.deepStrictEqual(gone, { type: 'tool', id: 'g', tool: { kind: 'edit', name: 'Edit', detail: 'b.txt', input: '-x', added: 0, removed: 1 } });
+	});
+
+	test('an add that already is a patch is left as it is', () => {
+		const [event] = codexEvents('item/started', { item: { type: 'fileChange', id: 'f', changes: [{ path: 'a', kind: { type: 'add' }, diff: '@@ -0,0 +1 @@\n+a' }] } });
+		assert.deepStrictEqual(event, { type: 'tool', id: 'f', tool: { kind: 'edit', name: 'Edit', detail: 'a', input: '@@ -0,0 +1 @@\n+a', added: 1, removed: 0 } });
+	});
+
 	test('reasoning summaries are thinking, a new summary part is a paragraph', () => {
 		assert.deepStrictEqual(codexEvents('item/reasoning/summaryTextDelta', { delta: 'Calculating' }), [{ type: 'thinking', text: 'Calculating' }]);
 		assert.deepStrictEqual(codexEvents('item/reasoning/summaryPartAdded', { summaryIndex: 0 }), []);
@@ -658,6 +670,16 @@ suite('skills and commands', () => {
 		// A model's complete message repeats its deltas, and is still read for tool calls only.
 		const real = { type: 'assistant', message: { model: 'claude-haiku-4-5', content: [{ type: 'text', text: 'hi' }] } };
 		assert.deepStrictEqual(claudeEvents(real), []);
+	});
+
+	test('Claude Code: an API error is said once, and a full conversation says what to do', () => {
+		// 2.1.301, a request over the context: a flagged `<synthetic>` message, then a result with the same text.
+		const text = 'Prompt is too long · the request is ~281988 tokens (limit 200000)';
+		const message = { type: 'assistant', message: { model: '<synthetic>', content: [{ type: 'text', text }] }, parent_tool_use_id: null, error: 'invalid_request', is_api_error_message: true, api_error_status: 400 };
+		assert.deepStrictEqual(claudeEvents(message), []);
+		const result = { type: 'result', subtype: 'success', is_error: true, result: text, terminal_reason: 'prompt_too_long' };
+		const end = claudeEvents(result).find(e => e.type === 'turnEnd');
+		assert.ok(end && end.type === 'turnEnd' && end.error?.startsWith(text) && end.error.includes('/compact'));
 	});
 
 	test('Claude Code: a built-in keeps its own parentheses', () => {

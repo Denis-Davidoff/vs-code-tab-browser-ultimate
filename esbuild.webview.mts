@@ -30,7 +30,8 @@ const options = {
 	platform: 'browser' as const,
 	target: 'es2022',
 	outdir: outDir,
-	loader: { '.ttf': 'dataurl' as const },
+	// `.csv` as text: the chat's icon picker reads the codicon list (codicon.csv).
+	loader: { '.ttf': 'dataurl' as const, '.csv': 'text' as const },
 	minify: !isWatch,
 	sourcemap: true,
 	logLevel: 'info' as const,

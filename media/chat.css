@@ -39,6 +39,12 @@
 	--radius: 8px;
 	--radius-lg: 12px;
 	--line: 1.55;
+	/* Above and below each row of a turn's timeline; its dot and line are placed from it. */
+	--row-pad: 10px;
+	/* The lines a command, its output, an IN or an OUT block shows (the
+	   script's ioLines says the same); the rest is not shown at all, and a
+	   click opens the whole text. */
+	--io-lines: 3;
 	--ease: cubic-bezier(.23, 1, .32, 1);
 }
 
@@ -120,7 +126,7 @@ button {
 }
 
 .turn + .turn {
-	margin-top: 10px;
+	margin-top: 20px;
 }
 
 /* The prompt being answered stays at the top while its reply scrolls under it;
@@ -172,11 +178,11 @@ button {
 	flex-direction: column;
 }
 
-/* A little more air between rows than the first version had — asked for. The
-   timeline's dot and line are placed from the same 6px, below. */
+/* More air between rows than the first version had — asked for twice. The
+   timeline's dot and line are placed from the same --row-pad, below. */
 .row {
 	position: relative;
-	padding: 6px 0 6px 18px;
+	padding: var(--row-pad) 0 var(--row-pad) 18px;
 	line-height: var(--line);
 	overflow-wrap: anywhere;
 	min-width: 0;
@@ -186,7 +192,7 @@ button {
 	content: '';
 	position: absolute;
 	left: 4px;
-	top: calc(6px + 0.775em - 3px);
+	top: calc(var(--row-pad) + 0.775em - 3px);
 	width: 6px;
 	height: 6px;
 	border-radius: 50%;
@@ -204,12 +210,12 @@ button {
 }
 
 .rows > .row:first-child::after {
-	top: calc(6px + 0.775em);
+	top: calc(var(--row-pad) + 0.775em);
 }
 
 .rows > .row:last-child::after {
 	bottom: auto;
-	height: calc(6px + 0.775em);
+	height: calc(var(--row-pad) + 0.775em);
 }
 
 .rows > .row:only-child::after {
@@ -306,6 +312,36 @@ button {
 .working-glyph.done {
 	font-size: 9px;
 	color: var(--fg-faint);
+}
+
+/* "2 agents running" under a finished turn: laid out like the working line,
+   a button only in that a click opens the agents list. */
+.agents-running {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin-top: 4px;
+	padding: 2px 0;
+	border: none;
+	background: transparent;
+	font: inherit;
+	font-size: 0.92em;
+	color: var(--fg-3);
+	cursor: pointer;
+	text-align: left;
+}
+
+.agents-running:hover {
+	color: var(--fg-2);
+}
+
+.agents-running:focus {
+	outline: none;
+}
+
+.agents-running:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: 2px;
 }
 
 /* ---------------------------------------------------------------- activity rows */
@@ -451,6 +487,17 @@ button {
 	color: var(--fg);
 }
 
+/* The command is the call's input: its first lines, wrapped, cut at the
+   text with no scroll (see .io-row pre). */
+.exec-text {
+	flex: 1;
+	min-width: 0;
+	line-height: 1.5;
+	max-height: calc(var(--io-lines) * 1.5em);
+	overflow: clip;
+	overflow-clip-margin: content-box;
+}
+
 .exec-prompt {
 	color: var(--fg-faint);
 	user-select: none;
@@ -462,9 +509,10 @@ button {
 	border-top: 1px solid var(--border);
 }
 
+/* The output's last lines, one line each: no scroll down, only sideways. */
 .exec-output pre {
-	max-height: 9rem;
-	overflow: auto;
+	overflow-x: auto;
+	overflow-y: hidden;
 	padding: 6px 32px 6px 10px;
 	white-space: pre;
 	color: var(--fg-2);
@@ -495,8 +543,14 @@ button {
 	color: var(--bad);
 }
 
+/* As wide as the longest line, and never narrower than the card: each line is a
+   block, so its background spans the pre — which otherwise stops at the card's
+   width and leaves the scrolled-to part of a long line bare. */
 .diff pre {
 	padding: 4px 0;
+	width: max-content;
+	min-width: 100%;
+	box-sizing: border-box;
 }
 
 .diff .line {
@@ -513,13 +567,77 @@ button {
 	background: var(--removed-bg);
 }
 
+/* A file change shows its first lines and is as tall as they are: no scroll
+   down inside it (asked for), only sideways for a long line of code. */
+.diff .card-body {
+	max-height: none;
+	overflow-x: auto;
+	overflow-y: hidden;
+}
+
+/* Under a file change cut to its first lines: how many more were removed and added. */
+.diff-more {
+	padding: 2px 10px 6px;
+	font-size: 0.85em;
+	color: var(--fg-3);
+}
+
 .diff .line.hunk {
 	color: var(--fg-3);
+}
+
+/* A tool call's input and output: darker than a code block, the IN / OUT
+   label in a column of its own (asked for, after Claude Code's panel). */
+.io,
+.exec {
+	--io-bg: color-mix(in srgb, var(--code-bg), #000 22%);
+	background: var(--io-bg);
+}
+
+body.vscode-light .io,
+body.vscode-light .exec,
+body.vscode-high-contrast-light .io,
+body.vscode-high-contrast-light .exec {
+	--io-bg: color-mix(in srgb, var(--code-bg), #000 5%);
+}
+
+/* A block with more text than it shows fades out at the foot (`cutHint`);
+   without it the text just stopped mid-line and nothing said there was more.
+   An output showing its last lines has the rest above, and fades at the top. */
+.scroll-more::after {
+	content: '';
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	height: 1.8em;
+	background: linear-gradient(to bottom, transparent, var(--io-bg));
+	pointer-events: none;
+}
+
+.cut-above::before {
+	content: '';
+	position: absolute;
+	left: 0;
+	right: 0;
+	top: 0;
+	height: 1.8em;
+	background: linear-gradient(to top, transparent, var(--io-bg));
+	pointer-events: none;
 }
 
 .io {
 	display: grid;
 	grid-template-columns: max-content 1fr;
+}
+
+/* A block that opens in an editor tab on a click. */
+.opens {
+	cursor: pointer;
+}
+
+.opens:hover {
+	background: color-mix(in srgb, var(--vscode-foreground) 4%, transparent);
 }
 
 .io-row {
@@ -534,17 +652,43 @@ button {
 	border-top: none;
 }
 
+.io-more {
+	position: absolute;
+	right: 10px;
+	bottom: 4px;
+	z-index: 1;
+	/* The interface font, not the block's: inside a command it would be the
+	   editor font at its size, and the two notes of one card read apart. */
+	font-family: var(--vscode-chat-font-family, var(--vscode-font-family));
+	font-size: calc(var(--vscode-chat-font-size, var(--vscode-font-size, 13px)) * 0.85);
+	color: var(--fg-3);
+	pointer-events: none;
+}
+
+/* Clear of the copy button, which sits at the top right on hover. */
+.io-more.above {
+	top: 4px;
+	bottom: auto;
+	right: 32px;
+}
+
 .io-label {
-	padding: 6px 8px 6px 10px;
+	min-width: 2.6em;
+	padding: 6px 10px 6px 10px;
+	border-right: 1px solid var(--border);
 	font-family: var(--mono);
 	font-size: 0.8em;
 	color: var(--fg-faint);
 }
 
 .io-row pre {
-	padding: 6px 32px 6px 4px;
-	max-height: 9rem;
-	overflow: auto;
+	padding: 6px 32px 6px 10px;
+	/* No scroll: three lines (line-height 1.5 from .card pre). The box is
+	   content-box, so the padding comes on top and is not counted here. */
+	max-height: calc(var(--io-lines) * 1.5em);
+	/* Cut at the text, not at the padding, or a fourth line peeks into it. */
+	overflow: clip;
+	overflow-clip-margin: content-box;
 	white-space: pre-wrap;
 	overflow-wrap: anywhere;
 	color: var(--fg-2);
@@ -664,7 +808,7 @@ button {
 }
 
 .markdown p {
-	margin: 0 0 0.6em;
+	margin: 0 0 0.9em;
 }
 
 .markdown .heading {
@@ -679,12 +823,12 @@ button {
 
 .markdown ul,
 .markdown ol {
-	margin: 0 0 0.6em;
+	margin: 0 0 0.9em;
 	padding-left: 1.4em;
 }
 
 .markdown li {
-	margin: 0.15em 0;
+	margin: 0.4em 0;
 }
 
 .markdown li.nested {
@@ -695,8 +839,25 @@ button {
 	color: var(--fg-3);
 }
 
+/* Bullets are an em dash (asked for); a string marker is drawn with the same
+   colour rule as the bullet it replaces. */
+.markdown ul > li {
+	list-style-type: "\2014\00a0 ";
+}
+
+/* Numbered items further apart still, their number in yellow (asked for): the
+   theme's chart yellow, which every theme defines for its own background. */
+.markdown ol > li {
+	margin: 0.7em 0;
+}
+
+.markdown ol > li::marker {
+	color: var(--vscode-charts-yellow, #cca700);
+	font-weight: 600;
+}
+
 .markdown blockquote {
-	margin: 0 0 0.6em;
+	margin: 0 0 0.9em;
 	padding-left: 10px;
 	border-left: 2px solid var(--border-strong);
 	color: var(--fg-2);
@@ -730,7 +891,7 @@ button {
 
 .code-block {
 	position: relative;
-	margin: 0.4em 0 0.7em;
+	margin: 0.5em 0 0.9em;
 	border: 1px solid var(--border-strong);
 	border-radius: var(--radius);
 	overflow: hidden;
@@ -762,7 +923,7 @@ button {
 
 .table-wrap {
 	overflow-x: auto;
-	margin: 0.4em 0 0.7em;
+	margin: 0.5em 0 0.9em;
 }
 
 .markdown table {
@@ -2176,8 +2337,8 @@ button {
 }
 
 .row.approval.pending {
-	padding-top: 6px;
-	padding-bottom: 6px;
+	padding-top: var(--row-pad);
+	padding-bottom: var(--row-pad);
 }
 
 .approval-head {
@@ -2648,4 +2809,421 @@ button {
 .palette-empty {
 	padding: 10px 8px;
 	color: var(--fg-3);
+}
+
+/* ---------------------------------------------------------------- the toolbar of skills */
+
+.skill-bar {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+	padding: 0 2px 6px;
+}
+
+.skill-bar[hidden] {
+	display: none;
+}
+
+.skill-button {
+	position: relative;
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	height: 26px;
+	min-width: 26px;
+	box-sizing: border-box;
+	padding: 0 8px;
+	border-radius: 7px;
+	border: 1px solid var(--border);
+	background: var(--surface);
+	color: var(--fg-2);
+	cursor: pointer;
+	transition: background .15s, color .15s, border-color .15s;
+}
+
+/* Hover, and a darker shade while pressed — nothing that stays once the
+   button is let go: the `active` class an open popover leaves on its anchor
+   is not drawn, nor is focus after a click (asked for). */
+.skill-button:hover {
+	background: var(--vscode-toolbar-hoverBackground, var(--soft-2));
+	color: var(--fg);
+}
+
+.skill-button:active {
+	background: var(--vscode-toolbar-activeBackground, color-mix(in srgb, var(--fg) 16%, transparent));
+}
+
+.skill-button:focus {
+	outline: none;
+}
+
+.skill-button:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder, var(--accent));
+	outline-offset: 1px;
+}
+
+/* The skill's own colours, for the label, the border and the icon; a run's
+   status colour wins over each (the status rules come after these). */
+.skill-button.tint-text .skill-label {
+	color: var(--skill-text);
+}
+
+.skill-button.tint-icon .codicon {
+	color: var(--skill-icon);
+}
+
+.skill-button.tint-border {
+	border-color: var(--skill-border);
+}
+
+.skill-button:is(.waiting, .done, .failed) :is(.skill-label, .codicon) {
+	color: inherit;
+}
+
+.skill-button .codicon {
+	font-size: 15px;
+}
+
+.skill-label {
+	max-width: 140px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 0.92em;
+}
+
+/* Running in the background: the border breathes in the accent colour. */
+.skill-button.running {
+	border-color: var(--accent);
+	animation: skill-breathe 1.2s ease-in-out infinite;
+}
+
+/* Stopped on a question: the warning colour, as the tab's waiting mark. */
+.skill-button.waiting {
+	border-color: var(--warn);
+	color: var(--warn);
+	animation: skill-breathe 0.9s ease-in-out infinite;
+}
+
+.skill-button.done {
+	border-color: var(--ok);
+	color: var(--ok);
+	animation: skill-flash .9s ease-out 2;
+}
+
+.skill-button.failed {
+	border-color: var(--bad);
+	color: var(--bad);
+}
+
+@keyframes skill-breathe {
+	50% { box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 22%, transparent); }
+}
+
+@keyframes skill-flash {
+	0% { background: color-mix(in srgb, var(--ok) 30%, transparent); }
+	100% { background: var(--surface); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.skill-button.running,
+	.skill-button.waiting,
+	.skill-button.done {
+		animation: none;
+	}
+}
+
+/* The editor's colour choices: a label column and a row of swatches each. */
+.color-parts {
+	display: grid;
+	grid-template-columns: max-content 1fr;
+	align-items: center;
+	gap: 6px 10px;
+}
+
+/* The editor's colour choice. */
+.color-choices {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+}
+
+.color-swatch {
+	position: relative;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	padding: 0;
+	border-radius: 50%;
+	border: 1px solid var(--border);
+	background: var(--swatch, transparent);
+	color: var(--fg-2);
+	cursor: pointer;
+}
+
+.color-swatch.on {
+	box-shadow: 0 0 0 2px var(--vscode-sideBar-background, var(--bg)), 0 0 0 3px var(--vscode-focusBorder, var(--accent));
+}
+
+.color-swatch .codicon {
+	font-size: 13px;
+}
+
+.color-custom {
+	position: absolute;
+	inset: 0;
+	opacity: 0;
+	width: 100%;
+	height: 100%;
+	cursor: pointer;
+}
+
+.run-stop {
+	margin-right: auto;
+}
+
+/* Parameters, and a run's question. */
+.params-popup {
+	width: 280px;
+	padding: 6px 8px 8px;
+}
+
+.run-question {
+	padding: 4px 2px;
+}
+
+.run-detail {
+	margin: 0 0 6px;
+	max-height: 9rem;
+	overflow: auto;
+	padding: 6px 8px;
+	border-radius: 6px;
+	background: var(--code-bg);
+	font-family: var(--mono);
+	font-size: var(--mono-size);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+/* Forms: the parameters popover and the skill editor. */
+.form-row {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	padding: 5px 0;
+}
+
+.form-label {
+	font-size: 0.85em;
+	color: var(--fg-3);
+}
+
+.form-hint {
+	font-size: 0.82em;
+	color: var(--fg-3);
+}
+
+.form-input {
+	box-sizing: border-box;
+	width: 100%;
+	padding: 5px 8px;
+	border-radius: 6px;
+	border: 1px solid var(--vscode-input-border, var(--border-strong));
+	background: var(--vscode-input-background, var(--surface));
+	color: var(--vscode-input-foreground, var(--fg));
+	font: inherit;
+	outline: none;
+}
+
+.form-input:focus {
+	border-color: var(--vscode-focusBorder, var(--accent));
+}
+
+.form-prompt {
+	resize: vertical;
+	min-height: 6em;
+	font-family: var(--mono);
+	font-size: var(--mono-size);
+	line-height: var(--line);
+}
+
+.form-error {
+	min-height: 1em;
+	padding: 2px 0;
+	color: var(--bad);
+	font-size: 0.9em;
+}
+
+.form-error:empty {
+	display: none;
+}
+
+.form-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 6px;
+	padding-top: 6px;
+}
+
+.form-actions button,
+.param-list + button {
+	padding: 4px 12px;
+	border-radius: 6px;
+	border: 1px solid var(--border);
+	background: transparent;
+	cursor: pointer;
+}
+
+.form-actions button.primary {
+	border-color: transparent;
+	background: var(--vscode-button-background, var(--accent));
+	color: var(--vscode-button-foreground, #fff);
+}
+
+.form-actions button.primary:hover {
+	background: var(--vscode-button-hoverBackground, var(--vscode-button-background, var(--accent)));
+}
+
+.form-actions .ghost {
+	height: auto;
+	color: inherit;
+}
+
+.form-choices {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.form-choice {
+	display: flex;
+	align-items: flex-start;
+	gap: 7px;
+	cursor: pointer;
+}
+
+.form-choice input {
+	margin-top: 3px;
+}
+
+.form-choice-text {
+	display: flex;
+	flex-direction: column;
+}
+
+/* The editor, over the chat. */
+.skill-form {
+	flex: 1;
+	overflow-y: auto;
+	padding: 6px 14px 14px;
+}
+
+.icon-pick {
+	align-self: flex-start;
+	gap: 6px;
+	border: 1px solid var(--border);
+	color: var(--fg);
+}
+
+.icon-preview {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.icon-panel {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding: 6px;
+	border: 1px solid var(--border);
+	border-radius: 8px;
+}
+
+.icon-panel[hidden] {
+	display: none;
+}
+
+.icon-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, 30px);
+	gap: 2px;
+	max-height: 180px;
+	overflow-y: auto;
+}
+
+.icon-cell {
+	width: 30px;
+	height: 30px;
+	min-width: 0;
+	padding: 0;
+	color: var(--fg-2);
+}
+
+.icon-cell.on {
+	background: var(--vscode-list-activeSelectionBackground, var(--soft-2));
+	color: var(--vscode-list-activeSelectionForeground, var(--fg));
+}
+
+.param-list {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.param-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px;
+	padding: 6px;
+	border: 1px solid var(--border);
+	border-radius: 8px;
+}
+
+.param-row .form-input {
+	flex: 1 1 90px;
+	width: auto;
+	min-width: 0;
+}
+
+.param-list + button {
+	align-self: flex-start;
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	height: auto;
+	color: inherit;
+}
+
+/* The palette over the editor panel. */
+.palette {
+	z-index: 50;
+}
+
+/* The view's own tooltip (`hoverTip`), for buttons whose native one did not show. */
+.hover-tip {
+	position: absolute;
+	z-index: 60;
+	max-width: min(320px, calc(100% - 8px));
+	padding: 4px 8px;
+	border: 1px solid var(--vscode-editorHoverWidget-border, var(--border-strong));
+	border-radius: 4px;
+	background: var(--vscode-editorHoverWidget-background, var(--elevated));
+	color: var(--vscode-editorHoverWidget-foreground, var(--fg));
+	font-size: 0.92em;
+	line-height: 1.4;
+	white-space: pre-line;
+	overflow-wrap: anywhere;
+	pointer-events: none;
+	box-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, .3));
+	opacity: 0;
+	visibility: hidden;
+}
+
+.hover-tip.open {
+	opacity: 1;
+	visibility: visible;
 }

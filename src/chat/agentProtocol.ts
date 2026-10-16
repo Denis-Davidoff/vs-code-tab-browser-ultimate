@@ -581,6 +581,12 @@ export function claudeEvents(message: Record<string, unknown>, tasks?: Map<strin
 			// the model `<synthetic>` (measured, 2.1.301). Text is otherwise read
 			// from the deltas only, so without this the chat showed no answer at all.
 			if (isRecord(message.message) && message.message.model === '<synthetic>') {
+				// An API error ("Prompt is too long") comes the same way, flagged, and
+				// the turn's `result` then carries the same text as its error — read
+				// both and the chat said it twice.
+				if (message.is_api_error_message === true) {
+					return [];
+				}
 				const texts = content.filter(isRecord)
 					.filter(block => block.type === 'text' && typeof block.text === 'string' && block.text !== '')
 					.map(block => block.text as string);
@@ -809,8 +815,13 @@ function resultText(content: unknown): string {
 }
 
 function resultError(message: Record<string, unknown>): string {
+	// A conversation past the model's context: the CLI says so and stops, and
+	// every later message in it fails the same way until it is shortened.
+	const tooLong = message.terminal_reason === 'prompt_too_long'
+		? ' Send /compact to have the agent shorten this conversation, or start a new chat.'
+		: '';
 	if (typeof message.result === 'string' && message.result) {
-		return message.result;
+		return message.result + tooLong;
 	}
 	if (Array.isArray(message.errors) && message.errors.length) {
 		return message.errors.map(String).join('\n');
@@ -1087,7 +1098,7 @@ function commandSummary(actions: unknown): string | undefined {
 }
 
 function diffOf(changes: Record<string, unknown>[]): { input?: string; added?: number; removed?: number } {
-	const diffs = changes.map(c => typeof c.diff === 'string' ? c.diff : '').filter(Boolean);
+	const diffs = changes.map(changeDiff).filter(Boolean);
 	if (!diffs.length) {
 		return {};
 	}
@@ -1101,6 +1112,25 @@ function diffOf(changes: Record<string, unknown>[]): { input?: string; added?: n
 		}
 	}
 	return { input: clip(diffs.join('\n')), added, removed };
+}
+
+/**
+ * One change's `diff`, its lines marked when Codex gives a new or deleted file
+ * as plain content: Codex's own log keeps an added file as `content`, not as
+ * a patch, and a card (and its diff tab, `diffSides`) read unmarked lines as
+ * unchanged — a new file showed nothing added. Only an `add` or `delete` that
+ * does not already read as a unified diff is marked, so a patch Codex does
+ * send for one is left as it is. Not measured against the app-server's own
+ * `add` yet.
+ */
+function changeDiff(change: Record<string, unknown>): string {
+	const diff = typeof change.diff === 'string' ? change.diff : '';
+	const kind = isRecord(change.kind) ? change.kind.type : change.kind;
+	if (!diff || (kind !== 'add' && kind !== 'delete') || /^(@@|diff --git |--- )/.test(diff)) {
+		return diff;
+	}
+	const mark = kind === 'add' ? '+' : '-';
+	return diff.replace(/\r?\n$/, '').split(/\r?\n/).map(line => mark + line).join('\n');
 }
 
 function jsonBody(value: unknown): string | undefined {

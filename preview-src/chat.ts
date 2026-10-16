@@ -24,8 +24,11 @@
  */
 
 import type {
-	AgentId, AgentUsage, ApprovalEntry, ApprovalKind, ApprovalMode, AttachmentKind, ChatCommand, ChatEntry, ChatStats, ChatSummary, ChatTabStatus, ChatTabSummary, ChatViewState, HostToView, ToolEntry, ViewToHost,
+	AgentId, AgentUsage, ApprovalEntry, ToolbarParam, ToolbarResult, ToolbarRun, ToolbarSkill, ApprovalKind, ApprovalMode, AttachmentKind, ChatCommand, ChatEntry, ChatStats, ChatSummary, ChatTabStatus, ChatTabSummary, ChatViewState, HostToView, ToolEntry, ViewToHost,
 } from '../src/chat/chatProtocol';
+// Every codicon the bundled font has, one per line (`name,char,code`); bundled
+// as text by esbuild, so the icon picker lists exactly what can be drawn.
+import codiconCsv from '@vscode/codicons/dist/codicon.csv';
 
 interface ViewState {
 	/** Before tabs: the one draft there was. Read once, into the first conversation shown. */
@@ -150,7 +153,10 @@ const inputWrap = el('div', { class: 'input-wrap' }, inputMirror, input);
 const composer = el('div', { class: 'composer' }, attachmentsRow, inputWrap, toolbar);
 /** Asked when another agent is picked for a conversation that has started. */
 const switchCard = el('div', { class: 'switch-card' });
-const footer = el('div', { class: 'footer' }, switchCard, composer);
+/** The toolbar skills the tab's agent offers, above the message box. */
+const skillBar = el('div', { class: 'skill-bar' });
+skillBar.hidden = true;
+const footer = el('div', { class: 'footer' }, switchCard, skillBar, composer);
 /** One tab per open conversation, above the thread. */
 const tabStrip = el('div', { class: 'tab-strip' });
 
@@ -159,12 +165,16 @@ const usagePopup = el('div', { class: 'popup usage-popup' });
 const approvalPopup = el('div', { class: 'popup approval-popup' });
 /** The "/" palette: a search box over the chat's commands and the agent's skills. */
 const palette = el('div', { class: 'popup palette' });
+/** Adding or editing a toolbar skill: a panel over the chat. */
+const skillEditor = el('div', { class: 'history-panel skill-editor' });
+/** A toolbar skill's parameters, asked for when it runs; or its run, while it runs. */
+const paramsPopup = el('div', { class: 'popup params-popup' });
 const historyPanel = el('div', { class: 'history-panel' });
 const agentsPanel = el('div', { class: 'history-panel agents-panel' });
 /** Which copy of each agent's CLI this project uses: opened from the gear in the agent menu. */
 const agentAppsPanel = el('div', { class: 'history-panel agent-apps' });
 
-app.append(tabStrip, thread, blocked, footer, menu, usagePopup, approvalPopup, palette, historyPanel, agentsPanel, agentAppsPanel);
+app.append(tabStrip, thread, blocked, footer, menu, usagePopup, approvalPopup, palette, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel);
 
 /* ---------------------------------------------------------------- state */
 
@@ -259,6 +269,15 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 		case 'usage':
 			renderUsage(message.usage, message.stats, message.loading);
 			return;
+		case 'toolbarSaved':
+			if (skillEditor.classList.contains('open')) {
+				closePopups();
+				input.focus();
+			}
+			return;
+		case 'toolbarError':
+			showEditorError(message.message);
+			return;
 		case 'restoreDraft':
 			// Stop gave the queue back: added to what is in the box, never sent.
 			if (message.chatId === state?.chatId) {
@@ -321,6 +340,7 @@ function render(): void {
 	renderApproveToggle(state);
 	renderSend();
 	renderAgents(state);
+	renderSkillBar(state);
 	renderPalette(state);
 	if (agentAppsPanel.classList.contains('open')) {
 		fillAgentApps(state);
@@ -701,6 +721,29 @@ let turnNodes: { root: HTMLElement; rows: HTMLElement; tail: HTMLElement }[] = [
 const spacer = el('div', { class: 'spacer' });
 let workingNode: HTMLElement | undefined;
 
+/** The row a pointer is pressed in, kept as it is until the press ends; see `renderThread`. */
+let pressedRow: Element | undefined;
+/** A rebuild of the pressed row was held back, and is due when the press ends. */
+let pressedPending = false;
+
+threadInner.addEventListener('pointerdown', event => {
+	pressedRow = (event.target as Element).closest('.row') ?? undefined;
+});
+function pressEnded(): void {
+	if (!pressedRow) {
+		return;
+	}
+	pressedRow = undefined;
+	if (pressedPending) {
+		pressedPending = false;
+		// After the click this press belongs to has been dispatched.
+		setTimeout(render, 0);
+	}
+}
+window.addEventListener('pointerup', pressEnded);
+window.addEventListener('pointercancel', pressEnded);
+window.addEventListener('blur', pressEnded);
+
 /** What the welcome was built from; see the empty-chat branch of `renderThread`. */
 let welcomeShown = '';
 
@@ -773,6 +816,14 @@ function renderThread(s: ChatViewState): void {
 			if (rendered[i]?.sig === sig) {
 				continue;
 			}
+			// Not under a press: a running command's row changes with every
+			// chunk of output, and a rebuild between press and release lost the
+			// click on it (#365). Its old signature stays, so it is rebuilt once
+			// the press ends.
+			if (rendered[i] && pressedRow && rendered[i].node.contains(pressedRow)) {
+				pressedPending = true;
+				continue;
+			}
 			const node = entryNode(entry, i);
 			if (rendered[i]) {
 				rendered[i].node.replaceWith(node);
@@ -839,8 +890,11 @@ function renderPendingSends(s: ChatViewState): void {
  */
 function signature(entry: ChatEntry, i: number): string {
 	// A prompt is rebuilt when the agent's commands change too, so they are
-	// marked once they have been listed.
-	return entry.kind === 'user' ? `${JSON.stringify(entry)}|${commandsSignature}` : `${JSON.stringify(entry)}|${toggled.get(keyOf(entry, i)) ?? ''}`;
+	// marked once they have been listed. A row, when "Fold Tool Calls" changes:
+	// without it the rows already on screen kept the old setting until another
+	// chat was shown. A row the user opened or closed keeps that either way.
+	return entry.kind === 'user' ? `${JSON.stringify(entry)}|${commandsSignature}`
+		: `${JSON.stringify(entry)}|${toggled.get(keyOf(entry, i)) ?? ''}|${openByDefault()}`;
 }
 
 /** The commands the marks are drawn from, as one string; set at the top of every render. */
@@ -872,21 +926,41 @@ function renderTail(tail: HTMLElement, s: ChatViewState, turn: Turn, last: boole
 	const text = worked !== undefined ? `${workedPhrase(p?.at)} for ${duration(worked)}` : '';
 	// Tokens only when the agent reported them for this turn: ↑ sent, ↓ received.
 	const tokens = p?.tokensIn !== undefined ? `↑ ${compact(p.tokensIn)}  ↓ ${compact(p.tokensOut ?? 0)}` : '';
-	const sig = `${text}|${tokens}`;
+	// The turn is over and agents it (or an earlier one) started still work:
+	// said at the very bottom, under "Worked for …" (asked for).
+	const agents = last ? agentRows(s).filter(a => a.status === 'running').length : 0;
+	const sig = `${text}|${tokens}|${agents}`;
 	if (tail.dataset.sig !== sig) {
 		tail.dataset.sig = sig;
 		// A square where the working star was: the same slot, so the line does
 		// not shift when the turn ends.
-		tail.replaceChildren(text
-			? el('div', { class: 'worked' },
-				el('span', { class: 'working-glyph done', text: '■' }),
-				el('span', { class: 'worked-text', text }),
-				tokens ? el('span', {
-					class: 'worked-tokens', text: tokens,
-					title: `${(p?.tokensIn ?? 0).toLocaleString()} tokens sent${p?.tokensCached ? `, ${p.tokensCached.toLocaleString()} of them from the cache` : ''}; ${(p?.tokensOut ?? 0).toLocaleString()} received`,
-				}) : undefined)
-			: '');
+		tail.replaceChildren(
+			text
+				? el('div', { class: 'worked' },
+					el('span', { class: 'working-glyph done', text: '■' }),
+					el('span', { class: 'worked-text', text }),
+					tokens ? el('span', {
+						class: 'worked-tokens', text: tokens,
+						title: `${(p?.tokensIn ?? 0).toLocaleString()} tokens sent${p?.tokensCached ? `, ${p.tokensCached.toLocaleString()} of them from the cache` : ''}; ${(p?.tokensOut ?? 0).toLocaleString()} received`,
+					}) : undefined)
+				: '',
+			agents ? agentsRunningLine(agents) : '');
 	}
+}
+
+/**
+ * "2 agents running", under a finished turn while agents the chat started are
+ * still at work: the working star in front, so it reads as alive, and a click
+ * opens the agents list. Built only when the count changes (#365).
+ */
+function agentsRunningLine(count: number): HTMLElement {
+	const label = `${count} agent${count === 1 ? '' : 's'} running`;
+	const line = button([
+		el('span', { class: 'working-glyph', text: glyphs[glyphAt] }),
+		el('span', { class: 'shimmer', text: label }),
+	], { class: 'agents-running', title: `${label} — show them` });
+	line.addEventListener('click', () => openAgentsPanel());
+	return line;
 }
 
 /**
@@ -949,13 +1023,15 @@ const glyphs = ['·', '✢', '✳', '✶', '✻', '✽', '✻', '✶', '✳', '�
 let glyphAt = 0;
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 setInterval(() => {
-	if (reducedMotion.matches || (!workingNode && !tabStrip.querySelector('.tab-mark.working'))) {
+	const agentsLine = threadInner.querySelector('.agents-running .working-glyph');
+	if (reducedMotion.matches || (!workingNode && !agentsLine && !tabStrip.querySelector('.tab-mark.working'))) {
 		return;
 	}
 	glyphAt = (glyphAt + 1) % glyphs.length;
-	const glyph = workingNode?.querySelector('.working-glyph');
-	if (glyph) {
-		glyph.textContent = glyphs[glyphAt];
+	for (const glyph of [workingNode?.querySelector('.working-glyph'), agentsLine]) {
+		if (glyph) {
+			glyph.textContent = glyphs[glyphAt];
+		}
 	}
 	for (const mark of tabStrip.querySelectorAll('.tab-mark.working')) {
 		mark.textContent = glyphs[glyphAt];
@@ -1318,15 +1394,78 @@ function toolTitle(t: ToolEntry): Child[] {
 	}
 }
 
-/** Commands and edits open by default — the command and its answer are the point of the row. */
-function openByDefault(t: ToolEntry): boolean {
-	return t.tool === 'command' || (t.tool === 'edit' && !!t.input);
+/**
+ * Every call with something to show opens by default — its input and output
+ * are the point of the row — unless `aiBrowser.chat.collapseToolCalls` folds
+ * them all (asked for). A row the user opened or closed keeps that.
+ */
+function openByDefault(): boolean {
+	return !state?.collapseTools;
+}
+
+/**
+ * A tool call's input or output opens in an editor tab on a click (asked
+ * for) — but not a click that ends a text selection, which is someone copying
+ * a line (#353), nor one on the block's own copy button.
+ */
+function opensInTab(block: HTMLElement, name: string, text: () => string): HTMLElement {
+	return onPlainClick(block, 'Click to open in an editor tab', () => post({ type: 'openText', name, text: text() }));
+}
+
+/** How long a click waits to be sure it is not the first of a double or triple click. */
+const multiClickMs = 300;
+
+/**
+ * Runs `open` on a plain single click of `block` — not one that ends a text
+ * selection (#353), not one on its copy button, and not the first click of a
+ * double or triple click: that click arrives before the word or line is
+ * selected, so testing the selection then opened a tab under someone selecting
+ * a word to copy. The open waits out the double-click window and is dropped
+ * if another click comes, or a selection appears, meanwhile.
+ */
+function onPlainClick(block: HTMLElement, title: string, open: () => void): HTMLElement {
+	block.classList.add('opens');
+	block.title = title;
+	block.addEventListener('click', event => {
+		clearTimeout(pendingOpen);
+		pendingOpen = undefined;
+		if ((event.target as Element).closest('.copy-button') || event.detail > 1 || hasSelection()) {
+			return;
+		}
+		// Not `isConnected` at the end of the wait: a running row is rebuilt
+		// within it as a matter of course, and the click was still on this block.
+		pendingOpen = setTimeout(() => {
+			pendingOpen = undefined;
+			if (!hasSelection()) {
+				open();
+			}
+		}, multiClickMs);
+	});
+	return block;
+}
+
+/**
+ * The one open waiting out the double-click window — one for the whole view,
+ * not one per block: a row rebuilt between the two clicks of a double click
+ * puts the second on a new block, which a per-block timer never heard of.
+ */
+let pendingOpen: ReturnType<typeof setTimeout> | undefined;
+document.addEventListener('click', event => {
+	if (event.detail > 1) {
+		clearTimeout(pendingOpen);
+		pendingOpen = undefined;
+	}
+}, true);
+
+function hasSelection(): boolean {
+	const selection = window.getSelection();
+	return !!selection && !selection.isCollapsed;
 }
 
 function toolNode(t: ToolEntry): HTMLElement {
 	const key = `tool:${t.id}`;
 	const hasBody = !!(t.input || t.output) && t.tool !== 'read';
-	const open = hasBody && (toggled.get(key) ?? openByDefault(t));
+	const open = hasBody && (toggled.get(key) ?? openByDefault());
 	const status = t.status === 'failed' || t.status === 'running' || t.status === 'stopped' ? t.status : 'done';
 
 	const head = button([
@@ -1349,15 +1488,32 @@ function toolNode(t: ToolEntry): HTMLElement {
 }
 
 /** The command and its output — the Codex panel's shell block: `$ command`, output pinned to its newest line, a status footer. */
+/**
+ * A command and its output, `ioLines` lines each and nothing more (asked for,
+ * as for IN / OUT): the command's first lines, the output's last — its newest,
+ * where a run's result is — and a click opens the whole of either in a tab.
+ */
 function execCard(t: ToolEntry): HTMLElement {
-	const command = el('div', { class: 'exec-command' },
-		el('span', { class: 'exec-prompt', text: '$' }), el('span', { text: t.input ?? '' }),
-		copyButton(() => t.input ?? '', 'Copy command'));
+	const input = (t.input ?? '').replace(/\n+$/, '').split('\n');
+	const moreIn = input.length - ioLines;
+	const text = el('span', { class: 'exec-text', text: input.slice(0, ioLines).map(line => capLine(line)).join('\n') });
+	const command = opensInTab(el('div', { class: 'exec-command' },
+		el('span', { class: 'exec-prompt', text: '$' }), text,
+		moreIn > 0 ? el('span', { class: 'io-more', text: `${moreIn} more line${moreIn === 1 ? '' : 's'}` }) : undefined,
+		copyButton(() => t.input ?? '', 'Copy command')), `${t.name}-in`, () => t.input ?? '');
+	cutHint(command, text, moreIn > 0 || input.some(line => line.length > ioLineChars));
 	const card = el('div', { class: 'card exec' }, command);
 	if (t.output) {
-		const pre = el('pre', { text: t.output.replace(/\n+$/, '') });
-		card.append(el('div', { class: 'exec-output' }, pre, copyButton(() => t.output ?? '', 'Copy output')));
-		requestAnimationFrame(() => { pre.scrollTop = pre.scrollHeight; });
+		const lines = t.output.replace(/\n+$/, '').split('\n');
+		const earlier = lines.length - ioLines;
+		// One line each, scrolled sideways when long: wrapped, the newest line
+		// could be the part cut off.
+		const pre = el('pre', { text: lines.slice(-ioLines).map(line => capLine(line)).join('\n') });
+		const output = opensInTab(el('div', { class: `exec-output${earlier > 0 ? ' cut-above' : ''}` },
+			earlier > 0 ? el('span', { class: 'io-more above', text: `${earlier} earlier line${earlier === 1 ? '' : 's'}` }) : undefined,
+			pre, copyButton(() => t.output ?? '', 'Copy output')),
+		`${t.name}-out`, () => t.output ?? '');
+		card.append(output);
 	}
 	const footerText = t.status === 'running'
 		? el('span', { class: 'shimmer', text: 'Running…' })
@@ -1372,32 +1528,87 @@ function execCard(t: ToolEntry): HTMLElement {
 	return card;
 }
 
+/**
+ * A file change: the counts in its head, then the first `ioLines` removed
+ * lines and the first `ioLines` added ones and nothing more (asked for) —
+ * no context, no hunk headers — and a line saying how many more there are. A
+ * click opens the whole change in VS Code's diff editor; the host builds its
+ * two sides from the full text.
+ */
 function diffCard(t: ToolEntry): HTMLElement {
-	const lines = (t.input ?? '').split('\n');
-	const pre = el('pre', {}, ...lines.map(line => {
-		const cls = line.startsWith('+') && !line.startsWith('+++') ? 'line add'
-			: line.startsWith('-') && !line.startsWith('---') ? 'line del'
-				: line.startsWith('@@') ? 'line hunk' : 'line';
-		return el('span', { class: cls, text: line + '\n' });
-	}));
+	const removed: string[] = [];
+	const added: string[] = [];
+	for (const line of (t.input ?? '').split('\n')) {
+		if (line.startsWith('+') && !line.startsWith('+++')) {
+			added.push(line);
+		} else if (line.startsWith('-') && !line.startsWith('---')) {
+			removed.push(line);
+		}
+	}
+	const shown = (lines: string[], cls: string) => lines.slice(0, ioLines).map(line => el('span', { class: `line ${cls}`, text: capLine(line) + '\n' }));
+	const pre = el('pre', {}, ...shown(removed, 'del'), ...shown(added, 'add'));
+	const moreRemoved = removed.length - ioLines;
+	const moreAdded = added.length - ioLines;
+	const more = [moreRemoved > 0 ? `${moreRemoved} more removed` : '', moreAdded > 0 ? `${moreAdded} more added` : ''].filter(Boolean).join(' · ');
 	const head = el('div', { class: 'card-head' },
 		el('span', { class: 'ellipsis', text: t.detail ?? 'Changes', title: t.detail }),
 		el('span', { class: 'end' },
 			t.added !== undefined && el('span', { class: 'added', text: `+${t.added}` }),
 			t.removed !== undefined && el('span', { class: 'removed', text: `−${t.removed}` })));
-	return el('div', { class: 'card diff' }, head, el('div', { class: 'card-body' }, pre));
+	// The "more" line sits outside the part that scrolls sideways, or it went
+	// with a long line out of sight; the click covers both.
+	const body = onPlainClick(el('div', {},
+		el('div', { class: 'card-body' }, pre),
+		more ? el('div', { class: 'diff-more', text: `${more} · click to open` }) : undefined),
+	'Click to open in the diff editor',
+	() => post({ type: 'openDiff', name: t.detail ?? 'Changes', diff: t.input ?? '' }));
+	return el('div', { class: 'card diff' }, head, body);
 }
 
 function outputCard(t: ToolEntry): HTMLElement {
 	const card = el('div', { class: 'card io' });
+	// IN and OUT show their first `ioLines` lines and nothing more (asked for):
+	// the block is that tall, with no scroll, and a click opens the whole text
+	// in a tab. Only those lines are put in the page — a tool's output can run
+	// to megabytes — each cut at `ioLineChars`; copying takes the whole text.
+	const row = (kind: 'in' | 'out', label: string, text: string, copy: string) => {
+		const lines = text.replace(/\n+$/, '').split('\n');
+		const shown = lines.slice(0, ioLines).map(line => capLine(line)).join('\n');
+		const more = lines.length - ioLines;
+		const pre = el('pre', { text: shown });
+		const block = opensInTab(el('div', { class: `io-row ${kind}` }, el('span', { class: 'io-label', text: label }), pre,
+			more > 0 ? el('span', { class: 'io-more', text: `${more} more line${more === 1 ? '' : 's'}` }) : undefined,
+			copyButton(() => text, copy)), `${t.name}-${kind}`, () => text);
+		cutHint(block, pre, more > 0 || lines.some(line => line.length > ioLineChars));
+		return block;
+	};
 	if (t.input) {
-		card.append(el('div', { class: 'io-row' }, el('span', { class: 'io-label', text: 'IN' }), el('pre', { text: t.input })));
+		card.append(row('in', 'IN', t.input, 'Copy input'));
 	}
 	if (t.output) {
-		card.append(el('div', { class: 'io-row' }, el('span', { class: 'io-label', text: 'OUT' }), el('pre', { text: t.output }),
-			copyButton(() => t.output ?? '')));
+		card.append(row('out', 'OUT', t.output, 'Copy output'));
 	}
 	return card;
+}
+
+/** How many lines of a tool call's IN and OUT are shown; the CSS height (`--io-lines`) says the same. */
+const ioLines = 3;
+/** The longest a shown line is kept in the page; a click opens the whole of it. */
+const ioLineChars = 1000;
+
+function capLine(line: string): string {
+	return line.length > ioLineChars ? `${Array.from(line.slice(0, ioLineChars + 1)).slice(0, ioLineChars).join('')}…` : line;
+}
+
+/**
+ * Fades an IN or OUT block at its foot when there is more than it shows — lines
+ * left out, or the three shown wrapping past the block's height.
+ */
+function cutHint(block: HTMLElement, pre: HTMLElement, cut: boolean): void {
+	block.classList.toggle('scroll-more', cut);
+	if (!cut) {
+		requestAnimationFrame(() => block.classList.toggle('scroll-more', pre.scrollHeight - pre.clientHeight > 2));
+	}
 }
 
 /** 812, 34.6k, 1.2M */
@@ -1787,7 +1998,12 @@ function autosize(): void {
 /** The commands an agent offers, as typed — `/name` for Claude Code, `$name` for Codex. */
 function knownCommands(s: ChatViewState | undefined): ReadonlySet<string> {
 	const agent = s ? paletteAgent(s) : undefined;
-	return new Set((agent && s?.commands[agent] || []).map(c => c.insert));
+	const known = new Set((agent && s?.commands[agent] || []).map(c => c.insert));
+	for (const skill of s ? visibleToolbar(s) : []) {
+		known.add(`/${skill.name}`);
+		known.add(`$${skill.name}`);
+	}
+	return known;
 }
 
 /**
@@ -1884,7 +2100,7 @@ input.addEventListener('input', () => {
 
 input.addEventListener('keydown', event => {
 	// The inline palette takes the keys that move through it and choose from it.
-	if (paletteMode === 'inline' && paletteKey(event)) {
+	if (paletteMode === 'inline' && paletteTarget === input && paletteKey(event)) {
 		event.preventDefault();
 		event.stopPropagation();
 		return;
@@ -1922,6 +2138,18 @@ sendButton.addEventListener('click', () => {
 function send(mode?: 'queue'): void {
 	const text = input.value;
 	if ((!text.trim() && !state?.attachments.length) || !canSend()) {
+		return;
+	}
+	// "/name args" naming a toolbar skill runs it: the arguments fill its
+	// parameters in order, and what is still missing is asked for.
+	const invoked = toolbarInvocation(text);
+	if (invoked) {
+		closePalette();
+		input.value = '';
+		saveDraft();
+		autosize();
+		renderSend();
+		requestSkill(invoked.skill, skillAnchor(invoked.skill), invoked.values);
 		return;
 	}
 	launchFlight(text);
@@ -2110,13 +2338,18 @@ function closePopups(except?: HTMLElement): void {
 	if (except !== palette) {
 		paletteMode = undefined;
 	}
-	for (const popup of [menu, usagePopup, approvalPopup, palette, historyPanel, agentsPanel, agentAppsPanel]) {
+	for (const popup of [menu, usagePopup, approvalPopup, palette, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel]) {
 		if (popup !== except) {
 			popup.classList.remove('open');
 		}
 	}
 	for (const pill of [agentPill, modelPill, plusButton, usageButton, approveToggle, slashButton]) {
 		pill.classList.remove('active');
+	}
+	// A skill button is a popup's anchor too; the mark only tells a second
+	// press of it to close what it opened, and is not drawn (see chat.css).
+	for (const { button } of skillButtons.values()) {
+		button.classList.remove('active');
 	}
 }
 
@@ -2148,10 +2381,18 @@ function openAbove(popup: HTMLElement, anchor: HTMLElement, align: 'left' | 'rig
 document.addEventListener('mousedown', event => {
 	const target = event.target as Node;
 	// A click in the box moves the caret the inline palette follows, so it is not a click outside it.
-	if (paletteMode === 'inline' && input.contains(target)) {
+	if (paletteMode === 'inline' && paletteTarget.contains(target)) {
 		return;
 	}
-	if (![menu, usagePopup, approvalPopup, palette, historyPanel, agentsPanel, agentAppsPanel, plusButton, usageButton, agentsButton, agentPill, modelPill, approveToggle, slashButton].some(n => n.contains(target))) {
+	// A click inside the editor closes only what is open over it.
+	if (skillEditor.classList.contains('open') && skillEditor.contains(target)) {
+		if (!palette.contains(target) && !menu.contains(target)) {
+			palette.classList.remove('open');
+			paletteMode = undefined;
+		}
+		return;
+	}
+	if (![menu, usagePopup, approvalPopup, palette, paramsPopup, skillBar, historyPanel, agentsPanel, agentAppsPanel, plusButton, usageButton, agentsButton, agentPill, modelPill, approveToggle, slashButton].some(n => n.contains(target))) {
 		closePopups();
 	}
 });
@@ -2396,6 +2637,12 @@ interface PaletteItem {
 type PaletteMode = 'button' | 'inline';
 
 let paletteMode: PaletteMode | undefined;
+/**
+ * The text field the palette writes into: the message box, or the toolbar
+ * skill editor's prompt. Only the box offers the chat's own commands and the
+ * toolbar's skills.
+ */
+let paletteTarget: HTMLTextAreaElement = input;
 /** Where the inline query starts in the box, its sigil included. */
 let inlineStart = 0;
 /** The box's text when the user closed the inline palette with Escape: not reopened until it changes. */
@@ -2417,6 +2664,11 @@ palette.append(paletteSearch, paletteList);
 function paletteAgent(s: ChatViewState): AgentId | undefined {
 	const tab = s.tabs.find(t => t.id === s.activeTab);
 	return tab?.agent ?? s.selection.agent;
+}
+
+/** Whose skills the palette lists: the editor's agent while it writes a toolbar skill's prompt, else the tab's. */
+function paletteSkillsAgent(s: ChatViewState): AgentId | undefined {
+	return paletteTarget === input ? paletteAgent(s) : editorAgent(s);
 }
 
 const groupNames: Record<ChatCommand['group'], string> = {
@@ -2471,11 +2723,28 @@ function chatActions(s: ChatViewState): PaletteItem[] {
 			], 'Export conversation'),
 		});
 	}
+	const editable = s.toolbar;
+	items.push({
+		key: 'chat:toolbar-add', group: 'Toolbar', name: 'add-skill', label: 'Add skill to toolbar…', icon: 'add',
+		detail: 'A prompt with parameters, as a button above the message box and as /name',
+		haystack: 'add skill toolbar button new',
+		run: () => openSkillEditor(),
+	}, {
+		key: 'chat:toolbar-edit', group: 'Toolbar', name: 'edit-skill', label: 'Edit toolbar skill…', icon: 'edit',
+		detail: editable.length ? 'Choose one to change' : 'No toolbar skills yet', disabled: !editable.length,
+		haystack: 'edit toolbar skill change',
+		run: () => chooseToolbarSkill('Edit toolbar skill', skill => openSkillEditor(skill)),
+	}, {
+		key: 'chat:toolbar-delete', group: 'Toolbar', name: 'delete-skill', label: 'Delete toolbar skill…', icon: 'trash',
+		detail: editable.length ? 'Choose one to remove' : 'No toolbar skills yet', disabled: !editable.length,
+		haystack: 'delete remove toolbar skill',
+		run: () => chooseToolbarSkill('Delete toolbar skill', skill => confirmDeleteSkill(skill, slashButton)),
+	});
 	return items;
 }
 
 function skillItems(s: ChatViewState): PaletteItem[] {
-	const agent = paletteAgent(s);
+	const agent = paletteSkillsAgent(s);
 	return (agent ? s.commands[agent] ?? [] : []).map(c => ({
 		key: `${agent}:${c.insert}`,
 		group: commandGroup(c),
@@ -2492,8 +2761,8 @@ function paletteQuery(): string {
 	if (paletteMode === 'button') {
 		return paletteSearch.value.trim().toLowerCase();
 	}
-	const caret = input.selectionStart ?? input.value.length;
-	return input.value.slice(inlineStart + 1, caret).toLowerCase();
+	const caret = paletteTarget.selectionStart ?? paletteTarget.value.length;
+	return paletteTarget.value.slice(inlineStart + 1, caret).toLowerCase();
 }
 
 /**
@@ -2521,9 +2790,11 @@ function buildPalette(s: ChatViewState): void {
 	// they come after the skills and only once something is typed after the
 	// "/": with "/" alone, Enter chose Clear conversation — the first row — and
 	// cleared the tab without a question.
-	const sigil = inline ? input.value[inlineStart] : '/';
-	const actions = sigil === '/' && (!inline || query) ? chatActions(s) : [];
-	const all = inline ? [...skillItems(s), ...actions] : [...actions, ...skillItems(s)];
+	const sigil = inline ? paletteTarget.value[inlineStart] : '/';
+	const box = paletteTarget === input;
+	const actions = box && sigil === '/' && (!inline || query) ? chatActions(s) : [];
+	const own = box ? toolbarItems(s) : [];
+	const all = inline ? [...own, ...skillItems(s), ...actions] : [...actions, ...own, ...skillItems(s)];
 	const ranked = all.map((item, i) => ({ item, i, r: rank(item, query) }))
 		.filter((x): x is { item: PaletteItem; i: number; r: number } => x.r !== undefined);
 	if (query) {
@@ -2535,9 +2806,16 @@ function buildPalette(s: ChatViewState): void {
 	// Never a chat command by default without a query: Enter on a fresh "/"
 	// must not clear the conversation. With nothing else to offer, no row is
 	// chosen until an arrow key picks one.
-	paletteActive = kept >= 0 ? kept
-		: query ? stepActive(-1, 1)
-			: paletteItems.findIndex(i => !i.disabled && !i.key.startsWith('chat:'));
+	// A row whose name is exactly what was typed wins over the one kept: typing
+	// "/review" letter by letter kept "/review-pr", chosen at "/r", and Enter
+	// inserted that while the toolbar's own "/review" — listed first, as it
+	// takes precedence — sat right above it. An arrow key choice is kept while
+	// it is exact too.
+	const exact = query ? paletteItems.findIndex(i => !i.disabled && i.name === query) : -1;
+	paletteActive = exact >= 0 && paletteItems[kept]?.name !== query ? exact
+		: kept >= 0 ? kept
+			: query ? stepActive(-1, 1)
+				: paletteItems.findIndex(i => !i.disabled && !i.key.startsWith('chat:') && !i.key.startsWith('toolbar:'));
 
 	const nodes: Node[] = [];
 	let group: string | undefined;
@@ -2580,7 +2858,7 @@ function buildPalette(s: ChatViewState): void {
 	// Where the agent's skills would be, a line saying why they are not: still
 	// being looked for, none, or a listing that failed — the Chat rows alone
 	// otherwise read as "this agent has no skills" in all three cases.
-	const agent = paletteAgent(s);
+	const agent = paletteSkillsAgent(s);
 	const listed = agent ? s.commands[agent] : undefined;
 	const name = s.agents.find(a => a.id === agent)?.name ?? 'The agent';
 	const status = query ? (paletteItems.length ? undefined : 'Nothing matches.')
@@ -2625,7 +2903,7 @@ function choosePalette(index: number): void {
 	}
 	const typed = paletteMode === 'inline';
 	closePalette();
-	if (typed && item.key.startsWith('chat:')) {
+	if (typed && (item.key.startsWith('chat:') || item.key.startsWith('toolbar:'))) {
 		// "/clear" typed to reach Clear: the text was the way there, not a message.
 		removeInlineToken();
 	}
@@ -2634,13 +2912,17 @@ function choosePalette(index: number): void {
 
 /** The "/query" or "$query" being typed, taken out of the box. */
 function removeInlineToken(): void {
-	const caret = input.selectionStart ?? input.value.length;
-	input.value = input.value.slice(0, inlineStart) + input.value.slice(caret);
-	input.setSelectionRange(inlineStart, inlineStart);
+	const caret = paletteTarget.selectionStart ?? paletteTarget.value.length;
+	paletteTarget.value = paletteTarget.value.slice(0, inlineStart) + paletteTarget.value.slice(caret);
+	paletteTarget.setSelectionRange(inlineStart, inlineStart);
 	afterBoxEdit();
 }
 
 function afterBoxEdit(): void {
+	if (paletteTarget !== input) {
+		paletteTarget.dispatchEvent(new Event('change'));
+		return;
+	}
 	saveDraft();
 	autosize();
 	renderSend();
@@ -2654,13 +2936,13 @@ function afterBoxEdit(): void {
  */
 function insertCommand(c: ChatCommand): void {
 	const text = `${c.insert} `;
-	let value = input.value;
+	let value = paletteTarget.value;
 	let caret: number;
 	if (paletteWasInline) {
 		const end = inlineEnd;
 		value = value.slice(0, inlineStart) + text + value.slice(end).replace(/^ /, '');
 		caret = inlineStart + text.length;
-	} else if (c.insert.startsWith('/')) {
+	} else if (c.insert.startsWith('/') && paletteTarget === input) {
 		// Over a "/command" already at the start — a bare "/" or one the agent
 		// lists — never over a path the message begins with ("/etc/hosts …").
 		const lead = /^\/\S*/.exec(value)?.[0];
@@ -2669,16 +2951,16 @@ function insertCommand(c: ChatCommand): void {
 		value = text + rest;
 		caret = text.length;
 	} else {
-		const at = input.selectionStart ?? value.length;
+		const at = paletteTarget.selectionStart ?? value.length;
 		const before = value.slice(0, at);
 		const pad = before && !/\s$/.test(before) ? ' ' : '';
-		value = before + pad + text + value.slice(input.selectionEnd ?? at).replace(/^ /, '');
+		value = before + pad + text + value.slice(paletteTarget.selectionEnd ?? at).replace(/^ /, '');
 		caret = at + pad.length + text.length;
 	}
-	input.value = value;
-	input.focus();
-	input.setSelectionRange(caret, caret);
-	paletteDismissed = input.value;
+	paletteTarget.value = value;
+	paletteTarget.focus();
+	paletteTarget.setSelectionRange(caret, caret);
+	paletteDismissed = paletteTarget.value;
 	afterBoxEdit();
 }
 
@@ -2688,7 +2970,7 @@ let inlineEnd = 0;
 
 function closePalette(): void {
 	paletteWasInline = paletteMode === 'inline';
-	inlineEnd = input.selectionStart ?? input.value.length;
+	inlineEnd = paletteTarget.selectionStart ?? paletteTarget.value.length;
 	paletteMode = undefined;
 	palette.classList.remove('open');
 	slashButton.classList.remove('active');
@@ -2705,13 +2987,24 @@ function openPalette(mode: PaletteMode): void {
 	paletteSearch.hidden = mode === 'inline';
 	palette.classList.toggle('inline', mode === 'inline');
 	if (mode === 'button') {
+		paletteTarget = input;
 		paletteSearch.value = '';
+		palette.style.top = '';
 		openAbove(palette, slashButton, 'left');
 	} else {
-		closePopups(palette);
+		// In the editor nothing else is open but the editor itself, which stays.
+		if (paletteTarget === input) {
+			closePopups(palette);
+		}
 		const box = app.getBoundingClientRect();
-		const rect = composer.getBoundingClientRect();
+		const rect = (paletteTarget === input ? composer : paletteTarget).getBoundingClientRect();
+		palette.style.top = '';
 		palette.style.bottom = `${box.bottom - rect.top + 6}px`;
+		// The editor's prompt sits near the top of the view: under it, then.
+		if (paletteTarget !== input && rect.top - box.top < 220) {
+			palette.style.bottom = '';
+			palette.style.top = `${rect.bottom - box.top + 6}px`;
+		}
 		palette.style.left = `${Math.max(8, rect.left - box.left)}px`;
 		palette.style.right = '';
 		palette.classList.add('open');
@@ -2720,7 +3013,7 @@ function openPalette(mode: PaletteMode): void {
 	if (mode === 'button') {
 		paletteSearch.focus();
 	}
-	const agent = paletteAgent(s);
+	const agent = paletteSkillsAgent(s);
 	if (agent) {
 		post({ type: 'listCommands', agent });
 	}
@@ -2742,8 +3035,8 @@ function renderPalette(s: ChatViewState): void {
 		closePalette();
 		return;
 	}
-	const agent = paletteAgent(s);
-	const shape = JSON.stringify([agent, paletteMode === 'inline' ? input.value.slice(inlineStart, input.selectionStart ?? undefined) : paletteSearch.value,
+	const agent = paletteSkillsAgent(s);
+	const shape = JSON.stringify([agent, paletteTarget === input, s.toolbar, paletteMode === 'inline' ? paletteTarget.value.slice(inlineStart, paletteTarget.selectionStart ?? undefined) : paletteSearch.value,
 		s.detecting, agent ? s.commands[agent] : undefined, s.entries.length > 0,
 		s.entries.some(e => e.kind === 'user' || e.kind === 'assistant'), s.tabs.find(t => t.id === s.activeTab)?.busy]);
 	if (shape === paletteShape) {
@@ -2781,10 +3074,10 @@ function paletteKey(event: KeyboardEvent): boolean {
 			return true;
 		case 'Escape':
 			if (paletteMode === 'inline') {
-				paletteDismissed = input.value;
+				paletteDismissed = paletteTarget.value;
 			}
 			closePalette();
-			input.focus();
+			paletteTarget.focus();
 			return true;
 	}
 	return false;
@@ -2797,12 +3090,12 @@ function paletteKey(event: KeyboardEvent): boolean {
  * own (`/name` for Claude Code, `$name` for Codex) in its place.
  */
 function inlineToken(): number | undefined {
-	if (input.selectionStart !== input.selectionEnd) {
+	if (paletteTarget.selectionStart !== paletteTarget.selectionEnd) {
 		return undefined;
 	}
-	const caret = input.selectionStart ?? 0;
-	const before = input.value.slice(0, caret);
-	const after = input.value.slice(caret);
+	const caret = paletteTarget.selectionStart ?? 0;
+	const before = paletteTarget.value.slice(0, caret);
+	const after = paletteTarget.value.slice(caret);
 	if (after && !/^\s/.test(after)) {
 		return undefined;
 	}
@@ -2810,12 +3103,16 @@ function inlineToken(): number | undefined {
 	return m ? m.index + m[1].length : undefined;
 }
 
-/** After every edit and caret move in the box: opens, follows or closes the inline palette. */
-function followInlineToken(): void {
+/** After every edit and caret move in a text field: opens, follows or closes the inline palette. */
+function followInlineToken(target: HTMLTextAreaElement = input): void {
 	if (paletteMode === 'button') {
 		return;
 	}
-	if (input.value !== paletteDismissed) {
+	if (paletteMode === 'inline' && paletteTarget !== target) {
+		closePalette();
+	}
+	paletteTarget = target;
+	if (paletteTarget.value !== paletteDismissed) {
 		paletteDismissed = undefined;
 	}
 	const start = paletteDismissed === undefined ? inlineToken() : undefined;
@@ -2854,6 +3151,720 @@ slashButton.addEventListener('click', () => {
 	}
 	openPalette('button');
 });
+
+/* ---------------------------------------------------------------- the toolbar of skills */
+
+/**
+ * Skills of the chat's own, as buttons above the message box — asked for. A
+ * skill is a prompt that may name the agents' skills and take parameters
+ * (`{{name}}`); pressed, it asks for the parameters it has and runs: into the
+ * chat as a message, or in the background with the result on the clipboard,
+ * or silently, the button saying when it is done. It is also a command:
+ * `/name` or `$name` in the palette, or sent as a message with its arguments.
+ *
+ * The bar shows the skills the tab's agent is offered (`agents`). Right-click
+ * a button for Edit, Delete and moving it; the "/" menu has the same.
+ */
+
+const codiconNames: readonly string[] = codiconCsv.split('\n').slice(1)
+	.map(line => line.split(',')[0].trim())
+	.filter(name => /^[a-z0-9-]+$/.test(name));
+
+function visibleToolbar(s: ChatViewState): ToolbarSkill[] {
+	const agent = paletteAgent(s);
+	return s.toolbar.filter(skill => skill.agents === 'all' || skill.agents === agent);
+}
+
+/** Each skill's button, kept across posts and updated in place (#365): a run's state changes it often. */
+const skillButtons = new Map<string, { button: HTMLButtonElement; shape: string }>();
+
+function renderSkillBar(s: ChatViewState): void {
+	const skills = visibleToolbar(s);
+	skillBar.hidden = !skills.length;
+	const keep = new Set(skills.map(k => k.id));
+	for (const [id, entry] of skillButtons) {
+		if (!keep.has(id)) {
+			entry.button.remove();
+			skillButtons.delete(id);
+		}
+	}
+	skills.forEach((skill, index) => {
+		let entry = skillButtons.get(skill.id);
+		if (!entry) {
+			const button = el('button', { class: 'skill-button' });
+			button.type = 'button';
+			const id = skill.id;
+			button.addEventListener('click', () => pressSkill(id, button));
+			hoverTip.attach(button);
+			button.addEventListener('contextmenu', event => {
+				event.preventDefault();
+				skillMenu(id, button);
+			});
+			entry = { button, shape: '' };
+			skillButtons.set(skill.id, entry);
+		}
+		const run = s.toolbarRuns[skill.id];
+		const shape = JSON.stringify([skill.icon, skill.label]);
+		if (shape !== entry.shape) {
+			entry.shape = shape;
+			entry.button.replaceChildren(icon(skill.icon), skill.label ? el('span', { class: 'skill-label', text: skill.label }) : '');
+		}
+		for (const part of ['text', 'border', 'icon'] as const) {
+			const tint = skillColor(skill.colors?.[part]);
+			entry.button.classList.toggle(`tint-${part}`, !!tint);
+			if (tint) {
+				entry.button.style.setProperty(`--skill-${part}`, tint);
+			} else {
+				entry.button.style.removeProperty(`--skill-${part}`);
+			}
+		}
+		for (const status of ['running', 'waiting', 'done', 'failed'] as const) {
+			entry.button.classList.toggle(status, run?.status === status);
+		}
+		const sigil = paletteAgent(s) === 'codex' ? '$' : '/';
+		const base = skill.tooltip ?? `${sigil}${skill.name}`;
+		const runs = run?.count ? `${run.count} runs` : 'running';
+		const note = run?.status === 'running' ? ` — ${run.inChat ? 'running in the chat' : runs}; click to run again or stop`
+			: run?.status === 'waiting' ? ' — waiting for your answer, click to answer'
+				: run?.message ? ` — ${run.message}` : '';
+		// Drawn by the view (`hoverTip`), not a native `title`, which did not show
+		// on these buttons in VS Code; set only when it changes.
+		const tip = `${base}${note}`;
+		if (entry.button.dataset.tip !== tip) {
+			entry.button.dataset.tip = tip;
+			entry.button.setAttribute('aria-label', tip);
+			if (hoverTip.anchor === entry.button) {
+				hoverTip.show(entry.button);
+			}
+		}
+		if (skillBar.children[index] !== entry.button) {
+			skillBar.insertBefore(entry.button, skillBar.children[index] ?? null);
+		}
+	});
+}
+
+/**
+ * A tooltip drawn in the view, for buttons whose native `title` did not show:
+ * after a short rest of the pointer, above the button (below it when there is
+ * no room), kept inside `#app`, gone on leave, on a press and on scroll.
+ * Reads the button's `data-tip`, so a text that changes while it is up is
+ * redrawn in place.
+ */
+const hoverTip = (() => {
+	const node = el('div', { class: 'hover-tip' });
+	node.setAttribute('role', 'tooltip');
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const api = {
+		anchor: undefined as HTMLElement | undefined,
+		show(anchor: HTMLElement): void {
+			const text = anchor.dataset.tip;
+			if (!text || !anchor.isConnected) {
+				api.hide();
+				return;
+			}
+			api.anchor = anchor;
+			node.textContent = text;
+			if (!node.isConnected) {
+				app.append(node);
+			}
+			node.classList.add('open');
+			const box = app.getBoundingClientRect();
+			const r = anchor.getBoundingClientRect();
+			const w = node.offsetWidth;
+			const h = node.offsetHeight;
+			const left = Math.min(Math.max(4, r.left - box.left + r.width / 2 - w / 2), box.width - w - 4);
+			const above = r.top - box.top - h - 6;
+			node.style.left = `${Math.max(4, left)}px`;
+			node.style.top = `${above >= 4 ? above : r.bottom - box.top + 6}px`;
+		},
+		hide(): void {
+			clearTimeout(timer);
+			timer = undefined;
+			api.anchor = undefined;
+			node.classList.remove('open');
+		},
+		attach(anchor: HTMLElement): void {
+			anchor.addEventListener('mouseenter', () => {
+				clearTimeout(timer);
+				timer = setTimeout(() => api.show(anchor), api.anchor ? 0 : 450);
+			});
+			anchor.addEventListener('mouseleave', () => api.hide());
+			anchor.addEventListener('mousedown', () => api.hide());
+			anchor.addEventListener('focus', () => { if (anchor.matches(':focus-visible')) { api.show(anchor); } });
+			anchor.addEventListener('blur', () => api.hide());
+		},
+	};
+	window.addEventListener('scroll', () => api.hide(), true);
+	return api;
+})();
+
+function toolbarSkill(id: string): ToolbarSkill | undefined {
+	return state?.toolbar.find(s => s.id === id);
+}
+
+/** A press: answer or stop a run in the background, else run — asking for parameters first. */
+function pressSkill(id: string, anchor: HTMLElement): void {
+	const skill = toolbarSkill(id);
+	if (!skill) {
+		return;
+	}
+	if (paramsPopup.classList.contains('open') && anchor.classList.contains('active')) {
+		closePopups();
+		return;
+	}
+	requestSkill(skill, anchor, {});
+}
+
+/** The skill's own button when the bar shows it, else the "/" button: where its popovers open. */
+function skillAnchor(skill: ToolbarSkill): HTMLElement {
+	const entry = skillButtons.get(skill.id);
+	return entry?.button.isConnected && !skillBar.hidden ? entry.button : slashButton;
+}
+
+/**
+ * Every way of starting a skill — its button, the palette, `/name` typed —
+ * comes here: one stopped on a question is answered first, and one already
+ * running asks before it is run again, "No" being the default (asked for).
+ */
+function requestSkill(skill: ToolbarSkill, anchor: HTMLElement, given: Readonly<Record<string, string>>): void {
+	// The tab it was pressed in, taken now: a popover in between can be answered
+	// after another tab came to the front — New Chat in the title bar is a click
+	// outside the view, so nothing closes it — and Run then went to that tab.
+	const tabId = state?.activeTab;
+	const run = state?.toolbarRuns[skill.id];
+	if (run?.status === 'waiting' && run.approval) {
+		openRunPopup(skill, run, anchor);
+		return;
+	}
+	if (run?.status === 'running' || run?.status === 'waiting') {
+		openAgainPopup(skill, run, anchor, given, tabId);
+		return;
+	}
+	invokeSkill(skill, anchor, given, false, tabId);
+}
+
+/** Runs a skill whose every parameter has a valid value; otherwise asks for them, `given` filled in. */
+function invokeSkill(skill: ToolbarSkill, anchor: HTMLElement, given: Readonly<Record<string, string>>, again: boolean, tabId: string | undefined): void {
+	const values: Record<string, string> = {};
+	for (const p of skill.params) {
+		values[p.name] = given[p.name] ?? p.preset ?? '';
+	}
+	const complete = skill.params.every(p => !valueProblem(p, values[p.name]));
+	if (complete && (Object.keys(given).length || !skill.params.length)) {
+		postRun(skill, values, again, tabId);
+		return;
+	}
+	openParams(skill, anchor, values, again, tabId);
+}
+
+function postRun(skill: ToolbarSkill, values: Record<string, string>, again: boolean, tabId: string | undefined): void {
+	post({ type: 'runToolbarSkill', id: skill.id, values, tabId, again: again || undefined });
+}
+
+/**
+ * "Already running — run it again?" No is the default: it is focused and
+ * drawn as the primary button, so Enter answers it, and Escape or a click
+ * elsewhere does the same. Stop is offered beside it, since this is the one
+ * place a running skill is stopped from.
+ */
+function openAgainPopup(skill: ToolbarSkill, run: ToolbarRun, anchor: HTMLElement, given: Readonly<Record<string, string>>, tabId: string | undefined): void {
+	const name = skill.label ?? skill.name;
+	const stop = button([icon('debug-stop'), el('span', { text: 'Stop' })], { class: 'ghost run-stop', title: run.inChat ? 'Stop the tab it runs in' : 'Stop it' });
+	const yes = button([el('span', { text: 'Yes' })], { class: 'ghost', title: 'Run it once more' });
+	const no = button([el('span', { text: 'No' })], { class: 'primary', title: 'Leave it running (Enter)' });
+	stop.addEventListener('click', () => { closePopups(); post({ type: 'stopToolbarSkill', id: skill.id }); });
+	no.addEventListener('click', () => closePopups());
+	yes.addEventListener('click', () => {
+		closePopups();
+		invokeSkill(skill, anchor, given, true, tabId);
+	});
+	const what = run.inChat ? `${name} is still running in the chat.` : run.count ? `${run.count} runs of ${name} are still going.` : `${name} is still running.`;
+	paramsPopup.replaceChildren(
+		el('div', { class: 'menu-heading', text: name }),
+		el('div', { class: 'run-question', text: `${what} Run it again?` }),
+		el('div', { class: 'form-actions' }, stop, yes, no));
+	paramsPopup.onkeydown = event => {
+		// Enter is No whichever button it lands on, unless the user moved to
+		// another one with the keyboard on purpose: then that button's own.
+		if (event.key === 'Enter' && !event.isComposing && document.activeElement === no) {
+			event.preventDefault();
+			closePopups();
+		}
+	};
+	openAbove(paramsPopup, anchor, 'left');
+	no.focus();
+}
+
+/** A theme chart colour by name, or `#rrggbb`; anything else is the theme's own. */
+function skillColor(color: string | undefined): string | undefined {
+	if (!color) {
+		return undefined;
+	}
+	if ((skillColorNames as readonly string[]).includes(color)) {
+		return `var(--vscode-charts-${color})`;
+	}
+	return /^#[0-9a-f]{6}$/i.test(color) ? color : undefined;
+}
+
+const skillColorNames = ['red', 'orange', 'yellow', 'green', 'blue', 'purple'] as const;
+
+/**
+ * One colour choice of the skill editor: the theme's own, one of its chart
+ * colours, or any other from a native colour input. Built once and only
+ * marked afterwards: rebuilding would take the colour input out of the page,
+ * which closes its picker in the middle of a drag.
+ */
+function colorChoice(initial: string | undefined): { node: HTMLElement; value(): string | undefined } {
+	let chosen = initial;
+	const custom = el('input', { class: 'color-custom' });
+	custom.type = 'color';
+	custom.setAttribute('aria-label', 'Another colour');
+	const customIcon = icon('symbol-color');
+	const customWrap = el('label', { class: 'color-swatch color-custom-wrap', title: 'Another colour' }, customIcon, custom);
+	const swatches = [undefined, ...skillColorNames].map(c => {
+		const b = button([c ? '' : icon('circle-slash')], { class: 'color-swatch', title: c ? c[0].toUpperCase() + c.slice(1) : "The theme's own" });
+		if (c) {
+			b.style.setProperty('--swatch', `var(--vscode-charts-${c})`);
+		}
+		b.addEventListener('click', () => { chosen = c; mark(); });
+		return { c, b };
+	});
+	const mark = () => {
+		for (const { c, b } of swatches) {
+			b.classList.toggle('on', chosen === c);
+			b.setAttribute('aria-pressed', String(chosen === c));
+		}
+		const isCustom = !!chosen?.startsWith('#');
+		customWrap.classList.toggle('on', isCustom);
+		customIcon.style.display = isCustom ? 'none' : '';
+		if (isCustom) {
+			customWrap.style.setProperty('--swatch', chosen!);
+			custom.value = chosen!;
+		} else {
+			customWrap.style.removeProperty('--swatch');
+		}
+	};
+	custom.addEventListener('input', () => { chosen = custom.value.toLowerCase(); mark(); });
+	mark();
+	return { node: el('div', { class: 'color-choices' }, ...swatches.map(x => x.b), customWrap), value: () => chosen };
+}
+
+/** Why a value does not fit its parameter — the host's rule (`toolbarText.ts`), written again for the form. */
+function valueProblem(param: ToolbarParam, value: string): string | undefined {
+	const v = value.trim();
+	if (!v) {
+		return 'A value is needed.';
+	}
+	if (param.type === 'number' && !/^-?\d+(\.\d+)?$/.test(v)) {
+		return 'A number is needed.';
+	}
+	if (param.type === 'choice' && !param.options?.includes(v)) {
+		return `One of ${(param.options ?? []).join(', ')}.`;
+	}
+	if (param.maxLength !== undefined && Array.from(v).length > param.maxLength) {
+		return `At most ${param.maxLength} characters.`;
+	}
+	return undefined;
+}
+
+function openParams(skill: ToolbarSkill, anchor: HTMLElement, values: Record<string, string>, again: boolean, tabId: string | undefined): void {
+	const fields = skill.params.map(param => {
+		let field: HTMLInputElement | HTMLSelectElement;
+		if (param.type === 'choice') {
+			const select = el('select', { class: 'form-input' });
+			for (const option of param.options ?? []) {
+				const o = el('option', { text: option });
+				o.value = option;
+				select.append(o);
+			}
+			select.value = (param.options ?? []).includes(values[param.name]) ? values[param.name] : (param.options ?? [])[0] ?? '';
+			field = select;
+		} else {
+			const inp = el('input', { class: 'form-input' });
+			inp.type = 'text';
+			inp.value = values[param.name];
+			if (param.type === 'number') {
+				inp.inputMode = 'decimal';
+			}
+			if (param.maxLength) {
+				inp.maxLength = param.maxLength;
+			}
+			field = inp;
+		}
+		field.setAttribute('aria-label', param.name);
+		return { param, field };
+	});
+	const error = el('div', { class: 'form-error' });
+	const run = button([el('span', { text: 'Run' })], { class: 'primary', title: 'Run (Enter)' });
+	const submit = () => {
+		const out: Record<string, string> = {};
+		for (const { param, field } of fields) {
+			const problem = valueProblem(param, field.value);
+			if (problem) {
+				error.textContent = `${param.name}: ${problem}`;
+				field.focus();
+				return;
+			}
+			out[param.name] = field.value.trim();
+		}
+		closePopups();
+		postRun(skill, out, again, tabId);
+	};
+	run.addEventListener('click', submit);
+	paramsPopup.replaceChildren(
+		el('div', { class: 'menu-heading', text: skill.label ?? skill.name }),
+		...fields.map(({ param, field }) => el('label', { class: 'form-row' },
+			el('span', { class: 'form-label', text: param.name }), field)),
+		error,
+		el('div', { class: 'form-actions' }, run));
+	paramsPopup.onkeydown = event => {
+		if (event.key === 'Enter' && !event.isComposing) {
+			event.preventDefault();
+			submit();
+		}
+	};
+	openAbove(paramsPopup, anchor, 'left');
+	fields[0]?.field.focus();
+}
+
+/** A run in the background: the question it waits on, and Stop. */
+function openRunPopup(skill: ToolbarSkill, run: ToolbarRun, anchor: HTMLElement): void {
+	const stop = button([icon('debug-stop'), el('span', { text: 'Stop' })], { class: 'ghost' });
+	stop.addEventListener('click', () => {
+		closePopups();
+		post({ type: 'stopToolbarSkill', id: skill.id });
+	});
+	const nodes: Node[] = [el('div', { class: 'menu-heading', text: skill.label ?? skill.name })];
+	if (run.status === 'waiting' && run.approval) {
+		const allow = button([el('span', { text: 'Allow' })], { class: 'primary' });
+		const deny = button([el('span', { text: 'Deny' })], { class: 'ghost' });
+		// The question shown, by its id: with two runs of the skill waiting, the
+		// skill's id alone answered whichever the host found first.
+		const approvalId = run.approval.id;
+		allow.addEventListener('click', () => { closePopups(); post({ type: 'toolbarApprove', id: skill.id, approvalId, allow: true }); });
+		deny.addEventListener('click', () => { closePopups(); post({ type: 'toolbarApprove', id: skill.id, approvalId, allow: false }); });
+		nodes.push(
+			el('div', { class: 'run-question', text: run.approval.title }),
+			...(run.approval.detail ? [el('pre', { class: 'run-detail', text: run.approval.detail })] : []),
+			el('div', { class: 'form-actions' }, stop, deny, allow));
+	} else {
+		nodes.push(el('div', { class: 'run-question', text: 'Running in the background…' }), el('div', { class: 'form-actions' }, stop));
+	}
+	paramsPopup.replaceChildren(...nodes);
+	paramsPopup.onkeydown = null;
+	openAbove(paramsPopup, anchor, 'left');
+}
+
+function skillMenu(id: string, anchor: HTMLElement): void {
+	const skill = toolbarSkill(id);
+	const list = state?.toolbar ?? [];
+	const at = list.findIndex(s => s.id === id);
+	if (!skill) {
+		return;
+	}
+	openMenu(anchor, [
+		{ icon: 'edit', label: 'Edit toolbar skill…', run: () => openSkillEditor(skill) },
+		{ icon: 'trash', label: 'Delete toolbar skill', run: () => confirmDeleteSkill(skill, anchor) },
+		{ icon: 'arrow-left', label: 'Move left', disabled: at <= 0, run: () => post({ type: 'moveToolbarSkill', id, by: -1 }) },
+		{ icon: 'arrow-right', label: 'Move right', disabled: at < 0 || at >= list.length - 1, run: () => post({ type: 'moveToolbarSkill', id, by: 1 }) },
+	], skill.label ?? skill.name);
+}
+
+function chooseToolbarSkill(heading: string, then: (skill: ToolbarSkill) => void): void {
+	openMenu(slashButton, (state?.toolbar ?? []).map(skill => ({
+		icon: skill.icon,
+		label: skill.label ? `${skill.label} — ${skill.name}` : skill.name,
+		description: skill.tooltip ?? skill.prompt.split('\n')[0],
+		run: () => then(skill),
+	})), heading);
+}
+
+function confirmDeleteSkill(skill: ToolbarSkill, anchor: HTMLElement): void {
+	openMenu(anchor, [
+		{ icon: 'trash', label: `Delete ${skill.name}`, description: 'It leaves the toolbar and the "/" menu', run: () => post({ type: 'deleteToolbarSkill', id: skill.id }) },
+		{ icon: 'close', label: 'Cancel', run: () => undefined },
+	], 'Delete toolbar skill?');
+}
+
+/** The toolbar skills in the "/" palette, as commands: choosing one runs it. */
+function toolbarItems(s: ChatViewState): PaletteItem[] {
+	const sigil = paletteAgent(s) === 'codex' ? '$' : '/';
+	return visibleToolbar(s).map(skill => ({
+		key: `toolbar:${skill.id}`,
+		group: 'Toolbar',
+		name: skill.name.toLowerCase(),
+		label: `${sigil}${skill.name}`,
+		icon: skill.icon,
+		hint: skill.params.map(p => `<${p.name}>`).join(' ') || undefined,
+		detail: skill.label ?? skill.tooltip ?? skill.prompt.split('\n')[0],
+		haystack: [skill.name, skill.label, skill.tooltip, skill.prompt].filter(Boolean).join(' ').toLowerCase(),
+		run: () => requestSkill(skill, skillAnchor(skill), {}),
+	}));
+}
+
+/**
+ * A message that is a toolbar skill: `/name` or `$name` first, then the
+ * arguments — one parameter takes them all, several take one word each and
+ * the last the rest.
+ */
+function toolbarInvocation(text: string): { skill: ToolbarSkill; values: Record<string, string> } | undefined {
+	const s = state;
+	const m = /^\s*[/$](\S+)(?:\s+([\s\S]*))?$/.exec(text);
+	const skill = s && m ? visibleToolbar(s).find(k => k.name === m[1]) : undefined;
+	if (!skill || !m) {
+		return undefined;
+	}
+	const args = (m[2] ?? '').trim();
+	const values: Record<string, string> = {};
+	if (skill.params.length === 1) {
+		if (args) {
+			values[skill.params[0].name] = args;
+		}
+	} else if (skill.params.length > 1 && args) {
+		const words = args.split(/\s+/);
+		skill.params.forEach((p, i) => {
+			const value = i === skill.params.length - 1 ? words.slice(i).join(' ') : words[i];
+			if (value) {
+				values[p.name] = value;
+			}
+		});
+	}
+	return { skill, values };
+}
+
+/* the editor */
+
+interface DraftParam { name: string; type: ToolbarParam['type']; maxLength: string; preset: string; options: string }
+
+let editorAgents: ToolbarSkill['agents'] = 'all';
+let showEditorError: (message: string) => void = () => undefined;
+
+/** Whose skills the editor's prompt offers: the one it is for, or the tab's agent when it is for all. */
+function editorAgent(s: ChatViewState): AgentId | undefined {
+	return editorAgents === 'all' ? paletteAgent(s) : editorAgents;
+}
+
+function formRow(label: string, field: Node, hint?: string): HTMLElement {
+	return el('label', { class: 'form-row' },
+		el('span', { class: 'form-label', text: label }), field,
+		hint ? el('span', { class: 'form-hint', text: hint }) : undefined);
+}
+
+function textField(value: string, placeholder = ''): HTMLInputElement {
+	const field = el('input', { class: 'form-input' });
+	field.type = 'text';
+	field.value = value;
+	field.placeholder = placeholder;
+	field.spellcheck = false;
+	return field;
+}
+
+function selectField<T extends string>(options: readonly (readonly [T, string])[], value: T): HTMLSelectElement {
+	const select = el('select', { class: 'form-input' });
+	for (const [v, label] of options) {
+		const o = el('option', { text: label });
+		o.value = v;
+		select.append(o);
+	}
+	select.value = value;
+	return select;
+}
+
+/**
+ * The editor, over the chat. Built once per opening and never on a state post,
+ * so what is typed in it is never rebuilt away. The host checks the skill
+ * (`validToolbarSkill`) and answers `toolbarSaved` or `toolbarError`.
+ */
+function openSkillEditor(skill?: ToolbarSkill): void {
+	closePopups();
+	const id = skill?.id ?? newId();
+	editorAgents = skill?.agents ?? 'all';
+	let chosenIcon = skill?.icon ?? 'sparkle';
+
+	const name = textField(skill?.name ?? '', 'pr-review');
+	// Lower case only, as the CLIs' own skills are: typed capitals become small
+	// ones where they are typed, the caret kept where it was.
+	name.autocapitalize = 'off';
+	name.spellcheck = false;
+	name.addEventListener('input', () => {
+		const lower = name.value.toLowerCase();
+		if (lower !== name.value) {
+			const at = name.selectionStart;
+			name.value = lower;
+			name.setSelectionRange(at, at);
+		}
+	});
+	const prompt = el('textarea', { class: 'form-input form-prompt' });
+	prompt.value = skill?.prompt ?? '';
+	prompt.rows = 6;
+	prompt.placeholder = 'Review PR {{pr}} with /one-more-review…';
+	prompt.addEventListener('input', () => followInlineToken(prompt));
+	prompt.addEventListener('keydown', event => {
+		if (paletteMode === 'inline' && paletteTarget === prompt && paletteKey(event)) {
+			event.preventDefault();
+			event.stopPropagation();
+		}
+	});
+	prompt.addEventListener('keyup', event => {
+		if (!['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(event.key)) {
+			followInlineToken(prompt);
+		}
+	});
+	prompt.addEventListener('click', () => followInlineToken(prompt));
+
+	const agents = selectField<ToolbarSkill['agents']>([['all', 'All agents'], ['claude', 'Claude Code only'], ['codex', 'Codex only']], editorAgents);
+	agents.addEventListener('change', () => { editorAgents = agents.value as ToolbarSkill['agents']; });
+
+	const results: readonly (readonly [ToolbarResult, string, string])[] = [
+		['chat', 'In the chat', 'Sent as a message of the tab it is pressed in'],
+		['clipboard', 'To the clipboard', 'Runs in the background; only the marked result is copied'],
+		['silent', 'Silently', 'Runs in the background; the button says when it is done'],
+	];
+	let chosenResult: ToolbarResult = skill?.result ?? 'chat';
+	const resultGroup = el('div', { class: 'form-choices' }, ...results.map(([value, label, hint]) => {
+		const radio = el('input');
+		radio.type = 'radio';
+		radio.name = `result-${id}`;
+		radio.checked = value === chosenResult;
+		radio.addEventListener('change', () => { chosenResult = value; });
+		return el('label', { class: 'form-choice' }, radio, el('span', { class: 'form-choice-text' },
+			el('span', { text: label }), el('span', { class: 'form-hint', text: hint })));
+	}));
+
+	// The icon: a button showing it, opening a searchable grid of every codicon.
+	const iconPreview = el('span', { class: 'icon-preview' });
+	const paintIcon = () => iconPreview.replaceChildren(icon(chosenIcon), el('span', { text: chosenIcon }));
+	paintIcon();
+	const iconButton = button([iconPreview, icon('chevron-down')], { class: 'ghost icon-pick', title: 'Choose an icon' });
+	const iconSearch = textField('', 'Search icons…');
+	const iconGrid = el('div', { class: 'icon-grid' });
+	const iconPanel = el('div', { class: 'icon-panel' }, iconSearch, iconGrid);
+	iconPanel.hidden = true;
+	const paintGrid = () => {
+		const q = iconSearch.value.trim().toLowerCase();
+		const names = codiconNames.filter(n => !q || n.includes(q));
+		iconGrid.replaceChildren(...names.map(n => {
+			const b = button([icon(n)], { class: 'ghost icon-cell', title: n });
+			b.classList.toggle('on', n === chosenIcon);
+			b.addEventListener('click', () => {
+				chosenIcon = n;
+				paintIcon();
+				iconPanel.hidden = true;
+			});
+			return b;
+		}), names.length ? '' : el('div', { class: 'form-hint', text: 'No icon by that name.' }));
+	};
+	iconSearch.addEventListener('input', paintGrid);
+	iconButton.addEventListener('click', () => {
+		iconPanel.hidden = !iconPanel.hidden;
+		if (!iconPanel.hidden) {
+			paintGrid();
+			iconSearch.focus();
+		}
+	});
+	// Three colours, for the label, the border and the icon (asked for).
+	const colors = {
+		text: colorChoice(skill?.colors?.text),
+		border: colorChoice(skill?.colors?.border),
+		icon: colorChoice(skill?.colors?.icon),
+	};
+	const label = textField(skill?.label ?? '', 'Optional');
+	const tooltip = textField(skill?.tooltip ?? '', 'Shown on hover; the name when empty');
+
+	// Parameters.
+	const drafts: DraftParam[] = (skill?.params ?? []).map(p => ({
+		name: p.name, type: p.type, maxLength: p.maxLength ? String(p.maxLength) : '', preset: p.preset ?? '', options: (p.options ?? []).join(', '),
+	}));
+	const paramList = el('div', { class: 'param-list' });
+	const paintParams = () => {
+		paramList.replaceChildren(...drafts.map((d, i) => {
+			const pName = textField(d.name, 'name');
+			pName.addEventListener('input', () => { d.name = pName.value; });
+			const pType = selectField<ToolbarParam['type']>([['text', 'Text'], ['number', 'Number'], ['choice', 'Choice']], d.type);
+			pType.addEventListener('change', () => { d.type = pType.value as ToolbarParam['type']; paintParams(); });
+			const pMax = textField(d.maxLength, 'max length');
+			pMax.inputMode = 'numeric';
+			pMax.addEventListener('input', () => { d.maxLength = pMax.value; });
+			const pPreset = textField(d.preset, 'preset');
+			pPreset.addEventListener('input', () => { d.preset = pPreset.value; });
+			const pOptions = textField(d.options, 'values, comma-separated');
+			pOptions.addEventListener('input', () => { d.options = pOptions.value; });
+			const remove = button([icon('close')], { class: 'ghost round', title: 'Remove parameter' });
+			remove.addEventListener('click', () => { drafts.splice(i, 1); paintParams(); });
+			return el('div', { class: 'param-row' },
+				pName, pType, d.type === 'text' ? pMax : undefined, d.type === 'choice' ? pOptions : undefined, pPreset, remove);
+		}));
+	};
+	paintParams();
+	const addParam = button([icon('add'), el('span', { text: 'Add parameter' })], { class: 'ghost' });
+	addParam.addEventListener('click', () => {
+		drafts.push({ name: '', type: 'text', maxLength: '', preset: '', options: '' });
+		paintParams();
+		(paramList.lastElementChild?.querySelector('input') as HTMLInputElement | null)?.focus();
+	});
+
+	const error = el('div', { class: 'form-error' });
+	showEditorError = message => { error.textContent = message; };
+	const save = button([el('span', { text: skill ? 'Save' : 'Add to toolbar' })], { class: 'primary' });
+	const cancel = button([el('span', { text: 'Cancel' })], { class: 'ghost' });
+	cancel.addEventListener('click', () => closePopups());
+	save.addEventListener('click', () => {
+		error.textContent = '';
+		const n = name.value.trim();
+		if (!/^[a-z0-9][a-z0-9:._-]{0,63}$/.test(n)) {
+			error.textContent = 'The name is one word of lower-case letters, digits, "-", "_", ":" or "." — no spaces.';
+			name.focus();
+			return;
+		}
+		if (!prompt.value.trim()) {
+			error.textContent = 'The prompt is empty.';
+			prompt.focus();
+			return;
+		}
+		post({
+			type: 'saveToolbarSkill', skill: {
+				id, name: n, prompt: prompt.value, result: chosenResult, agents: editorAgents, icon: chosenIcon,
+				colors: { text: colors.text.value(), border: colors.border.value(), icon: colors.icon.value() },
+				label: label.value || undefined, tooltip: tooltip.value || undefined,
+				params: drafts.map(d => ({
+					name: d.name.trim(), type: d.type,
+					maxLength: d.type === 'text' && /^\d+$/.test(d.maxLength.trim()) ? Number(d.maxLength.trim()) : undefined,
+					preset: d.preset.trim() || undefined,
+					options: d.type === 'choice' ? d.options.split(',').map(o => o.trim()).filter(Boolean) : undefined,
+				})),
+			},
+		});
+	});
+
+	skillEditor.replaceChildren(
+		panelHead(skill ? 'Edit toolbar skill' : 'Add skill to toolbar'),
+		el('div', { class: 'skill-form' },
+			formRow('Name', name, 'Called as /name or $name; lower case, no spaces.'),
+			formRow('Prompt', prompt, 'Type / or $ for a skill, and {{parameter}} where a value goes.'),
+			formRow('Available in', agents),
+			el('div', { class: 'form-row' }, el('span', { class: 'form-label', text: 'Result' }), resultGroup),
+			el('div', { class: 'form-row' }, el('span', { class: 'form-label', text: 'Icon' }), iconButton, iconPanel),
+			el('div', { class: 'form-row' }, el('span', { class: 'form-label', text: 'Colours' }),
+				el('div', { class: 'color-parts' },
+					el('span', { class: 'form-hint', text: 'Text' }), colors.text.node,
+					el('span', { class: 'form-hint', text: 'Border' }), colors.border.node,
+					el('span', { class: 'form-hint', text: 'Icon' }), colors.icon.node)),
+			formRow('Label', label, 'Shown beside the icon.'),
+			formRow('Tooltip', tooltip),
+			el('div', { class: 'form-row' },
+				el('span', { class: 'form-label', text: 'Parameters' }),
+				el('span', { class: 'form-hint', text: 'Asked for when the skill runs; each is required. Use {{name}} in the prompt.' }),
+				paramList, addParam),
+			error,
+			el('div', { class: 'form-actions' }, cancel, save)));
+	closePopups(skillEditor);
+	skillEditor.classList.add('open');
+	name.focus();
+}
+
+function newId(): string {
+	return Array.from(crypto.getRandomValues(new Uint8Array(8)), b => b.toString(16).padStart(2, '0')).join('');
+}
 
 /* "+" */
 
@@ -2976,13 +3987,20 @@ function agentRows(s: ChatViewState): ToolEntry[] {
 function renderAgents(s: ChatViewState): void {
 	const agents = agentRows(s);
 	const running = agents.filter(a => a.status === 'running').length;
+	// The button stays while the chat has agents, so their list and reports can
+	// be opened after they finish; the number beside it counts only those still
+	// running (asked for), and with none it is the icon alone — not a 0, and not
+	// the total, which read as agents at work.
 	agentsButton.hidden = !agents.length;
 	agentsButton.classList.toggle('live', running > 0);
-	const count = String(running || agents.length);
-	if (agentsButton.textContent !== count) {
-		agentsButton.replaceChildren(icon('hubot'), el('span', { text: count }));
+	const count = running ? String(running) : '';
+	if (agentsButton.dataset.count !== count || !agentsButton.firstChild) {
+		agentsButton.dataset.count = count;
+		agentsButton.replaceChildren(icon('hubot'), ...(count ? [el('span', { text: count })] : []));
 	}
-	agentsButton.title = `${running} running · ${agents.length} agent${agents.length === 1 ? '' : 's'} in this chat`;
+	const total = `${agents.length} agent${agents.length === 1 ? '' : 's'} in this chat`;
+	agentsButton.title = running ? `${running} running · ${total}` : `${total}, none running — show them`;
+	agentsButton.setAttribute('aria-label', agentsButton.title);
 	if (agentsView && !agents.length) {
 		// New Chat, or another chat from the history, with the panel open: its
 		// button is gone, so the panel goes too rather than reading "0 agents".
@@ -2997,11 +4015,16 @@ agentsButton.addEventListener('click', () => {
 		closePopups();
 		return;
 	}
+	openAgentsPanel();
+});
+
+/** The agents list over the chat; also opened from "N agents running" under a turn. */
+function openAgentsPanel(): void {
 	agentsView = {};
 	closePopups(agentsPanel);
 	fillAgents(currentAgents(), true);
 	agentsPanel.classList.add('open');
-});
+}
 
 function statusLabel(a: ToolEntry): string {
 	return a.status === 'running' ? 'Running' : a.status === 'done' ? 'Finished' : a.status === 'stopped' ? 'Stopped' : 'Failed';

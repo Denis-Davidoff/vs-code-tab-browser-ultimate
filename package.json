@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate",
 	"displayName": "AI Browser🏆 Claude + Codex",
 	"description": "Embedded browser tab with AI capabilities, Claude and Codex integration",
-	"version": "0.7.0",
+	"version": "0.7.1",
 	"enabledApiProposals": [
 		"externalUriOpener",
 		"browser"
@@ -703,6 +703,12 @@
 						"scope": "application",
 						"title": "Codex Executable",
 						"markdownDescription": "%configuration.chat.codexPath.description%"
+					},
+					"aiBrowser.chat.collapseToolCalls": {
+						"type": "boolean",
+						"default": false,
+						"title": "Fold Tool Calls",
+						"markdownDescription": "%configuration.chat.collapseToolCalls.description%"
 					}
 				}
 			}

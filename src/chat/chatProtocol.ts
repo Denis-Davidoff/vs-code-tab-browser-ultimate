@@ -66,6 +66,68 @@ export interface ChatCommand {
 }
 
 /**
+ * A skill of the chat's own, on the toolbar above the message box: a prompt
+ * with parameters, run on a click or as `/name` / `$name`. Kept in
+ * `globalState`, so every project has the same toolbar.
+ */
+/** A toolbar button's own colours, each set apart (asked for). */
+export interface ToolbarColors {
+	readonly text?: string;
+	readonly border?: string;
+	readonly icon?: string;
+}
+
+export interface ToolbarSkill {
+	readonly id: string;
+	/** As typed after `/` or `$`: lower case, no spaces, like a CLI's own skills. */
+	readonly name: string;
+	/** What is sent; `{{param}}` is replaced by the value given. */
+	readonly prompt: string;
+	/** In the chat, as a message; to the clipboard, the marked result only; or silently, the button saying it is done. */
+	readonly result: ToolbarResult;
+	/** Which agents offer it: every one, or one. */
+	readonly agents: 'all' | AgentId;
+	/** A codicon name, without `codicon-`. */
+	readonly icon: string;
+	/** Shown beside the icon; absent shows the icon alone. */
+	readonly label?: string;
+	/** The button's hover text; the name when absent. */
+	readonly tooltip?: string;
+	/** Colours of the label, the border and the icon, each one of `toolbarColors` or `#rrggbb`; the theme's own where absent. */
+	readonly colors?: ToolbarColors;
+	readonly params: readonly ToolbarParam[];
+}
+
+export type ToolbarResult = 'chat' | 'clipboard' | 'silent';
+
+/** A value asked for when the skill runs, and written into the prompt as `{{name}}`. Every one is required. */
+export interface ToolbarParam {
+	readonly name: string;
+	readonly type: 'text' | 'number' | 'choice';
+	/** The longest value taken, in characters; text only. */
+	readonly maxLength?: number;
+	/** The value the field starts with. */
+	readonly preset?: string;
+	/** The values a `choice` offers. */
+	readonly options?: readonly string[];
+}
+
+/** A toolbar skill running in the background (clipboard or silent), as its button shows it. */
+export interface ToolbarRun {
+	readonly status: 'running' | 'waiting' | 'done' | 'failed';
+	/** Why it failed, or what the done state should say ("Copied", "No result markers…"). */
+	readonly message?: string;
+	/** The question it is stopped on, while `waiting`. */
+	readonly approval?: { readonly id: string; readonly title: string; readonly detail?: string };
+	/** When it ended, epoch ms: the button flashes for a moment after. */
+	readonly endedAt?: number;
+	/** How many runs of the skill are going, when more than one. */
+	readonly count?: number;
+	/** A skill whose result goes into the chat: running while the tab's turn it started runs. Stop stops that tab. */
+	readonly inChat?: boolean;
+}
+
+/**
  * Where a command comes from, which is how the palette groups them:
  * the project's own, the user's, a plugin's, synced from claude.ai, shipped
  * with the CLI as a skill (`system`, Codex), or one of the CLI's built-in
@@ -262,6 +324,11 @@ export interface ChatViewState {
 	readonly switchTo?: AgentId;
 	/** Each agent's skills and commands, for the "/" palette; absent until listed once. */
 	readonly commands: Partial<Record<AgentId, readonly ChatCommand[]>>;
+	/** The chat's own skills, in toolbar order, and the background runs of them by skill id. */
+	readonly toolbar: readonly ToolbarSkill[];
+	readonly toolbarRuns: Readonly<Record<string, ToolbarRun>>;
+	/** `aiBrowser.chat.collapseToolCalls`: tool calls start folded. */
+	readonly collapseTools: boolean;
 }
 
 export interface PendingSend {
@@ -310,7 +377,11 @@ export type HostToView =
 	/** Messages sent from this workspace, oldest first, for the composer's ↑ / ↓. */
 	| { readonly type: 'inputHistory'; readonly items: readonly string[] }
 	/** A Stop for one agent was refused; its button comes back. */
-	| { readonly type: 'agentStopFailed'; readonly id: string };
+	| { readonly type: 'agentStopFailed'; readonly id: string }
+	/** A toolbar skill saved, by its id: the editor closes. */
+	| { readonly type: 'toolbarSaved'; readonly id: string }
+	/** A toolbar skill refused, with the reason: the editor stays open and shows it. */
+	| { readonly type: 'toolbarError'; readonly message: string };
 
 export type ViewToHost =
 	| { readonly type: 'ready' }
@@ -348,6 +419,10 @@ export type ViewToHost =
 	| { readonly type: 'setApprovalMode'; readonly key: string; readonly mode: ApprovalMode }
 	/** A chip in the composer clicked: its file, its image or its text, in an editor tab. */
 	| { readonly type: 'openAttachment'; readonly id: string }
+	/** A tool call's input or output, opened as a read-only text in an editor tab. */
+	| { readonly type: 'openText'; readonly name: string; readonly text: string }
+	/** A diff card clicked: its before and after in VS Code's diff editor. `name` is the file it changes. */
+	| { readonly type: 'openDiff'; readonly name: string; readonly diff: string }
 	/** The copy of an agent's CLI this project uses; no `path` is Auto, the newest. */
 	| { readonly type: 'setAgentBinary'; readonly agent: AgentId; readonly path?: string }
 	/** VS Code's own setting for an agent's executable. */
@@ -359,4 +434,18 @@ export type ViewToHost =
 	| { readonly type: 'setNewsHidden'; readonly hidden: boolean }
 	| { readonly type: 'refreshAgents' }
 	/** The "/" palette opened: list the agent's skills again, in case one was added. */
-	| { readonly type: 'listCommands'; readonly agent: AgentId };
+	| { readonly type: 'listCommands'; readonly agent: AgentId }
+	/** A toolbar skill added (no such id yet) or edited. */
+	| { readonly type: 'saveToolbarSkill'; readonly skill: ToolbarSkill }
+	| { readonly type: 'deleteToolbarSkill'; readonly id: string }
+	/** Moved one place left (-1) or right (1). */
+	| { readonly type: 'moveToolbarSkill'; readonly id: string; readonly by: -1 | 1 }
+	/** Run with these parameter values, for the tab it was pressed in. */
+	/** `again`: run it although a run of it is going — the user said so when asked. */
+	| { readonly type: 'runToolbarSkill'; readonly id: string; readonly values: Readonly<Record<string, string>>; readonly tabId?: string; readonly again?: boolean }
+	/**
+	 * The answer to the question a background run is waiting on: `approvalId` is
+	 * the question shown, so the answer reaches that run and no other of the skill.
+	 */
+	| { readonly type: 'toolbarApprove'; readonly id: string; readonly approvalId: string; readonly allow: boolean }
+	| { readonly type: 'stopToolbarSkill'; readonly id: string };
