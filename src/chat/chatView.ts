@@ -11,9 +11,10 @@ import { AgentRegistry, agentNames, type AgentBackend, type AgentSession, type T
 import type { BrowserController } from '../browser/browserController';
 import type {
 	AgentId, AgentUsage, AttachmentChip, AttachmentKind, ChatEntry, ChatStats, ChatSummary,
-	ChatViewState, HostToView, Selection, ToolEntry, UsageWindow, ViewToHost,
+	ChatNews, ChatViewState, HostToView, Selection, ToolEntry, UsageWindow, ViewToHost,
 } from './chatProtocol';
 import { pickElementContext } from '../elements/elementPicker';
+import { parseNews } from './news';
 import { refuse } from '../core/notify';
 import { plainInLabel, plainInPrompt } from '../core/notifyText';
 import { isBrowserApiGranted, workspaceIsRemoteFromHost } from '../setup/proposedApi';
@@ -63,6 +64,7 @@ export function supportsSecondarySidebar(version: string): boolean {
 
 const historyKey = 'aiBrowser.chat.history';
 const selectionKey = 'aiBrowser.chat.selection';
+const newsHiddenKey = 'aiBrowser.chat.newsHiddenAt';
 const historyLimit = 50;
 const entryLimit = 400;
 const storedTextLimit = 20_000;
@@ -104,6 +106,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private _session: AgentSession | undefined;
 	private _sessionEvents: vscode.Disposable | undefined;
 	private _attachments: Attachment[] = [];
+	/** NEWS.md from the installed extension, read once; see `news.ts`. */
+	private _news: ChatNews | undefined;
 	/** Set between two messages of one turn, so the next text starts a new block. */
 	private _textBreak = false;
 	/**
@@ -136,6 +140,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		this._subscriptions.push(this._registry, this._registry.onDidChange(() => this._post()));
 		this._remembered = _context.globalState.get<RememberedSelection>(selectionKey) ?? { models: {}, efforts: {} };
 		this._chat = this._newChat(this._remembered.agent ?? 'claude');
+		void this._readNews();
 
 		this._subscriptions.push(this._registry.onDidReplace(e => this._onBackendReplaced(e.agent, e.gone)));
 		// Trust granted while the view was showing its Restricted Mode notice:
@@ -160,6 +165,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				// The menu then only learns of tabs on the next state change.
 			}
 		}
+	}
+
+	/**
+	 * The news shown in an empty chat comes from the installed extension's own
+	 * NEWS.md — not the repository, which a user does not have — so it always
+	 * describes the build that is running. Read once: it cannot change without
+	 * an update, and an update restarts the extension host.
+	 */
+	private async _readNews(): Promise<void> {
+		try {
+			const bytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(this._context.extensionUri, 'NEWS.md'));
+			this._news = parseNews(new TextDecoder().decode(bytes));
+			this._post();
+		} catch {
+			// No news is not an error: the welcome falls back to its own line.
+		}
+	}
+
+	private _newsHidden(): boolean {
+		const hiddenAt = this._context.globalState.get<string>(newsHiddenKey);
+		return hiddenAt !== undefined && hiddenAt === (this._news?.entries[0]?.title ?? '');
 	}
 
 	/* ------------------------------------------------------------ webview */
@@ -252,6 +278,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			attachments: this._attachments.map(a => a.chip),
 			hasBrowserTab: this._browser.hasOpenTabs,
 			browserApi: isBrowserApiGranted(),
+			news: this._news,
+			newsHidden: this._newsHidden(),
 		};
 	}
 
@@ -333,6 +361,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				return;
 			case 'copy':
 				await vscode.env.clipboard.writeText(message.text);
+				return;
+			case 'setNewsHidden':
+				// Remembered as the newest entry at the moment of hiding, in
+				// `globalState`: hidden in every window, and shown again by itself
+				// once a release adds an entry — hiding the changelog once must not
+				// mean never hearing of a new feature.
+				try {
+					await this._context.globalState.update(newsHiddenKey, message.hidden ? this._news?.entries[0]?.title ?? '' : undefined);
+				} catch {
+					// Best effort: the choice is a convenience.
+				}
+				this._post();
+				return;
+			case 'openBrowser':
+				// The toolbar's own "Open New Browser Tab": an empty tab of the
+				// built-in browser, or the panel when the user chose it — the
+				// command already decides that (see "The dropdown on the browser tab").
+				await vscode.commands.executeCommand('aiBrowser.newTab');
 				return;
 		}
 	}

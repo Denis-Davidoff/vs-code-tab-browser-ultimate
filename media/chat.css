@@ -754,7 +754,7 @@ button {
 /* ---------------------------------------------------------------- empty and blocked */
 
 .welcome {
-	margin: auto 0 24px;
+	margin: auto 0;
 	padding: 16px 8px;
 	text-align: center;
 	color: var(--fg-3);
@@ -778,6 +778,97 @@ button {
 	max-width: 300px;
 	margin: 0 auto;
 	line-height: var(--line);
+}
+
+.welcome-hint {
+	max-width: 300px;
+	margin: 8px auto 0;
+	font-size: 0.9em;
+	line-height: var(--line);
+	color: var(--fg-faint);
+}
+
+/* "What's new", from NEWS.md: small print under the welcome, newest first */
+.news {
+	max-width: 320px;
+	margin: 22px auto 0;
+	padding-top: 12px;
+	border-top: 1px solid var(--border);
+	text-align: left;
+	font-size: 0.85em;
+	line-height: 1.5;
+	color: var(--fg-3);
+}
+
+.news-heading {
+	margin-bottom: 8px;
+	font-size: 0.85em;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	color: var(--fg-faint);
+}
+
+.news-entry + .news-entry {
+	margin-top: 8px;
+}
+
+.news-title {
+	font-weight: 600;
+	color: var(--fg-2);
+}
+
+.news-items {
+	margin: 2px 0 0;
+	padding-left: 1.2em;
+}
+
+.news-items li::marker {
+	color: var(--fg-faint);
+}
+
+.news code {
+	font-family: var(--mono);
+	font-size: 0.95em;
+	padding: 0 4px;
+	border-radius: 4px;
+	background: var(--soft-2);
+}
+
+.news strong {
+	font-weight: 600;
+	color: var(--fg-2);
+}
+
+.news .link {
+	color: var(--vscode-textLink-foreground);
+}
+
+/* "Hide changelog" / "Show changelog": a link, not a button, in the small print */
+.news-toggle {
+	display: block;
+	margin: 10px auto 0;
+	padding: 0;
+	border: none;
+	background: transparent;
+	font-size: 0.95em;
+	color: var(--vscode-textLink-foreground);
+	cursor: pointer;
+}
+
+.news-toggle:hover {
+	text-decoration: underline;
+}
+
+.news-toggle:focus-visible {
+	outline: 1px solid var(--accent);
+	outline-offset: 2px;
+}
+
+.news-collapsed {
+	border-top: none;
+	padding-top: 0;
+	margin-top: 14px;
+	text-align: center;
 }
 
 .welcome-problem {

@@ -104,6 +104,7 @@ input.rows = 1;
 input.placeholder = 'Ask about this page, or anything…';
 
 const plusButton = button([icon('add')], { class: 'ghost round', title: 'Attach…' });
+const browserButton = button([icon('browser')], { class: 'ghost round', title: 'Open a new browser tab' });
 const agentPill = button([], { class: 'pill', title: 'Agent' });
 const modelPill = button([], { class: 'pill', title: 'Model' });
 const effortRange = el('input', { class: 'effort-range' });
@@ -118,7 +119,7 @@ const sendButton = button([icon('arrow-up')], { class: 'send', title: 'Send' });
 // The two right-hand buttons are one group pushed to the end, so a narrow side
 // bar wraps them together onto the next line, still at the right.
 const toolbar = el('div', { class: 'toolbar' },
-	plusButton, agentPill, modelPill, effortBox, el('span', { class: 'toolbar-end' }, usageButton, sendButton));
+	plusButton, browserButton, agentPill, modelPill, effortBox, el('span', { class: 'toolbar-end' }, usageButton, sendButton));
 const composer = el('div', { class: 'composer' }, attachmentsRow, input, toolbar);
 const footer = el('div', { class: 'footer' }, composer);
 
@@ -231,7 +232,9 @@ function renderThread(s: ChatViewState): void {
 	}
 
 	if (!s.entries.length) {
-		threadInner.replaceChildren(spacer, welcome(s));
+		// No spacer here: an empty chat centres its welcome in the panel rather
+		// than anchoring it to the bottom like a conversation.
+		threadInner.replaceChildren(welcome(s));
 		rendered = [];
 		turnNodes = [];
 		return;
@@ -397,16 +400,49 @@ setInterval(() => {
 	}
 }, 120);
 
+/**
+ * The empty chat: what AI Browser is, and what is new. Both come from NEWS.md
+ * in the installed extension (`news` in the state) — the introduction as the
+ * lead, the newest entries below it in small print — so the text is edited in
+ * that file, not here. Until it has been read, or if it cannot be, the welcome
+ * says what the agents can do with what is available.
+ */
 function welcome(s: ChatViewState): HTMLElement {
 	const available = s.agents.filter(a => a.available);
 	const box = el('div', { class: 'welcome' },
 		icon('globe', 'welcome-icon'),
-		el('div', { class: 'welcome-title', text: 'AI Browser' }),
-		el('div', { class: 'welcome-text', text: available.length
-			? `Chat with ${available.map(a => a.name).join(' or ')} about the pages you have open. Use + to attach a screenshot, an element or the page address.`
-			: s.detecting ? 'Looking for Claude Code and Codex…' : 'No agent is available yet.' }));
+		el('div', { class: 'welcome-title', text: 'AI Browser' }));
+	const lead = el('div', { class: 'welcome-text' });
+	inline(lead, s.news?.intro || 'Work with the pages you have open, right inside VS Code.');
+	box.append(lead);
+	box.append(el('div', { class: 'welcome-hint', text: available.length
+		? `Ask ${available.map(a => a.name).join(' or ')} below. Use + to attach a screenshot, an element or the page address.`
+		: s.detecting ? 'Looking for Claude Code and Codex…' : 'No agent is available yet.' }));
 	for (const agent of s.agents.filter(a => !a.available && a.problem)) {
 		box.append(el('div', { class: 'welcome-problem', text: `${agent.name}: ${agent.problem}` }));
+	}
+	if (s.news?.entries.length) {
+		const toggle = (hidden: boolean, label: string) => {
+			const b = button([el('span', { text: label })], { class: 'news-toggle', title: label });
+			b.addEventListener('click', () => post({ type: 'setNewsHidden', hidden }));
+			return b;
+		};
+		if (s.newsHidden) {
+			box.append(el('div', { class: 'news news-collapsed' }, toggle(false, 'Show changelog')));
+		} else {
+			const news = el('div', { class: 'news' }, el('div', { class: 'news-heading', text: "What's new" }));
+			for (const entry of s.news.entries) {
+				const items = el('ul', { class: 'news-items' });
+				for (const item of entry.items) {
+					const li = el('li');
+					inline(li, item);
+					items.append(li);
+				}
+				news.append(el('div', { class: 'news-entry' }, el('div', { class: 'news-title', text: entry.title }), items));
+			}
+			news.append(toggle(true, 'Hide changelog'));
+			box.append(news);
+		}
 	}
 	return box;
 }
@@ -1112,6 +1148,10 @@ modelPill.addEventListener('click', () => {
 		run: () => post({ type: 'select', selection: { agent: agent.id, model: m.id } }),
 	})), `${agent.name} models`);
 });
+
+/* the browser button */
+
+browserButton.addEventListener('click', () => post({ type: 'openBrowser' }));
 
 /* "+" */
 

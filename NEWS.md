@@ -1,0 +1,40 @@
+# AI Browser news
+
+<!--
+This file is shown in the AI Browser chat whenever a chat is empty: the first
+paragraph below as the introduction, then the newest six entries as "What's
+new", smallest print. Keep the introduction to one or two sentences.
+
+An entry is a level-two heading — `## <version> — <date>` — followed by a
+bullet list; inline `code`, **bold**, *italics* and [links](https://…) work.
+Newest first. Older entries can stay; only six are shown. This file ships in
+the VSIX, so an edit reaches users with the next release. The format is read by
+src/chat/news.ts — see "The AI Browser chat" in CLAUDE.md.
+-->
+
+Browse, debug and test your pages in VS Code's own browser — and let Claude Code or Codex see them, click through them and take screenshots, right inside the editor.
+
+## 0.7.0 — 2026-10-16
+- **AI Browser chat** in the secondary side bar: talk to Claude Code or Codex with the CLI you already have.
+- Pick the agent, the model and its effort; **U** shows your plan limits and this chat's tokens.
+- **+** attaches a screenshot, an element from the page, the page address or a file.
+- Commands, file edits and thinking appear as cards you can open.
+
+## 0.6.3 — 2026-10-15
+- The browser tools read and act inside iframes, cross-origin frames included.
+
+## 0.6.2 — 2026-10-12
+- Saved logins: fewer false "update password" offers after a failed sign-in.
+- Safer handling of hand-edited Codex configs.
+
+## 0.6.1 — 2026-10-08
+- **Translate Page**: an assistant translates the open page in place, and puts it back on request.
+
+## 0.6.0 — 2026-10-06
+- **Saved logins and passkeys**: fill sign-in forms, save new logins, import from Chrome, Firefox, Safari, Bitwarden or 1Password, and export encrypted.
+
+## 0.5.32 — 2026-10-06
+- Clearer behaviour in remote windows, where the assistants run on the other machine.
+
+## 0.5.30 — 2026-10-02
+- Screenshots for assistants arrive as images sized for the model, full pages in frames.

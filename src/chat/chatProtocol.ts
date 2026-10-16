@@ -113,6 +113,12 @@ export interface Selection {
 	readonly effort?: string;
 }
 
+/** NEWS.md, as the empty chat shows it: the introduction and the newest entries. */
+export interface ChatNews {
+	readonly intro: string;
+	readonly entries: readonly { readonly title: string; readonly items: readonly string[] }[];
+}
+
 export interface ChatViewState {
 	/** Set when the chat cannot run in this window at all. */
 	readonly blocked?: string;
@@ -126,6 +132,10 @@ export interface ChatViewState {
 	readonly hasBrowserTab: boolean;
 	/** The `browser` proposal is granted; without it no tab can be attached, open or not. */
 	readonly browserApi: boolean;
+	/** Absent until NEWS.md has been read, or when it could not be. */
+	readonly news?: ChatNews;
+	/** The user hid "What's new", and no entry has been added since. */
+	readonly newsHidden: boolean;
 }
 
 export type HostToView =
@@ -148,4 +158,7 @@ export type ViewToHost =
 	| { readonly type: 'newChat' }
 	/** Through the host: `navigator.clipboard` in a webview depends on the host granting it. */
 	| { readonly type: 'copy'; readonly text: string }
+	/** The composer's browser button: a new browser tab, nothing else. */
+	| { readonly type: 'openBrowser' }
+	| { readonly type: 'setNewsHidden'; readonly hidden: boolean }
 	| { readonly type: 'refreshAgents' };

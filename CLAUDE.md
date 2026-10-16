@@ -232,6 +232,7 @@ difference, in `browserController.js`, was a doc comment whose link had been upd
 - [src/translate/translateText.ts](src/translate/translateText.ts) — languages, the prompt, checks on what the assistant writes back (leaf, under test)
 - [src/translate/translateScript.ts](src/translate/translateScript.ts) — the page-side translator behind `browser_text_segments` / `browser_replace_text`
 - [src/chat/chatView.ts](src/chat/chatView.ts) — the AI Browser chat: the webview view, its state, history, attachments, usage
+- [src/chat/news.ts](src/chat/news.ts) — NEWS.md into the empty chat's introduction and "What's new" (leaf, under test)
 - [src/chat/chatProtocol.ts](src/chat/chatProtocol.ts) — the messages between the chat's webview and the host (types only, read by both builds)
 - [src/chat/agents.ts](src/chat/agents.ts) — the agent interface, and detecting which agents are installed
 - [src/chat/agentBinary.ts](src/chat/agentBinary.ts) — where `claude` and `codex` are
@@ -4143,8 +4144,28 @@ What is built, and what is not yet:
 
 ### The layout, as asked for
 
-Bottom to top: a toolbar row — `+`, the agent pill, the model pill, the effort slider and, pushed
-right, `U` and Send / Stop — then the message box, then the conversation. The title bar carries
+Bottom to top: a toolbar row — `+`, the browser button, the agent pill, the model pill, the effort
+slider and, pushed right, `U` and Send / Stop — then the message box, then the conversation. The
+browser button (icon only, asked for) opens a new browser tab and does nothing else: it runs
+`aiBrowser.newTab`, the dropdown's own "Open New Browser Tab", so the integrated browser or the
+panel is chosen by the same rule as everywhere else.
+
+**An empty chat shows NEWS.md.** The root `NEWS.md` holds an introduction — the paragraph before
+the first entry — and entries, each a `## <version> — <date>` heading over a bullet list, newest
+first. The welcome shows the introduction under the title, centred in the panel, and the newest
+six entries below it in small print as "What's new". The file is read once from the installed
+extension (`extensionUri`), not from a workspace, so it always describes the build that is
+running; it ships in the VSIX like README.md, and a change reaches users with the next release.
+[src/chat/news.ts](src/chat/news.ts) reads it (leaf, under test, including a test that the shipped
+file parses), forgivingly: comments are skipped, entries without items are dropped, and a file
+that cannot be read leaves the welcome its own one-line text. **Add an entry with every release
+that ships something a user would notice**; the authoring notes are in the file's own comment.
+
+**"Hide changelog" folds "What's new" away, and "Show changelog" brings it back** — links in the
+small print, asked for. The choice is kept in `globalState` (`aiBrowser.chat.newsHiddenAt`), so it
+holds in every window, and it is stored as **the newest entry's title at the moment of hiding**:
+when a release adds an entry, the list shows itself again. Hiding the changelog once must not mean
+never hearing of a new feature, which a plain boolean would have made permanent. The title bar carries
 icon buttons: New Chat, Chat History, Refresh Agents (`view/title`, `navigation@1..3`). `U` and
 Send are one group with `margin-left: auto`, so a narrow side bar wraps them *together* onto the
 next line at the right: one row at 420 px, the pair wraps at 380 px.
