@@ -669,9 +669,12 @@ async function pickAndDeliver<T>(
 	title: string,
 	produce: (client: CDPClient, sessionId: string, backendNodeId: number, tab: vscode.BrowserTab) => Promise<T | undefined>,
 	deliver: (value: T) => Promise<void>,
+	preferred?: vscode.BrowserTab,
 ): Promise<void> {
 
-	const tab = requireBrowserTab();
+	// `preferred` is for a caller that already knows the tab — the chat view,
+	// whose own focus is exactly what leaves `activeBrowserTab` undefined.
+	const tab = preferred ?? requireBrowserTab();
 	if (!tab) {
 		return;
 	}
@@ -878,6 +881,29 @@ export function copyElement(): Promise<void> {
 				"Element context copied as Markdown ({0} characters).", String(markdown.length)));
 		},
 	);
+}
+
+/**
+ * Picks an element on `tab` and answers its full context as Markdown — the
+ * same text Copy Element puts on the clipboard — for the chat view's "+" menu.
+ * `undefined` when the pick was cancelled or failed; a failure has already been
+ * reported by then.
+ */
+export async function pickElementContext(tab: vscode.BrowserTab): Promise<string | undefined> {
+	let markdown: string | undefined;
+	// The page is named: the tab need not be the focused one, and the choice is
+	// stated before anything happens (#259's condition for using `userTab`).
+	const title = plainInLabel(tab.title.replace(` (${tab.url})`, '').trim(), 60);
+	await pickAndDeliver(
+		title
+			? vscode.l10n.t("Click an element in \"{0}\" to attach it to the chat", title)
+			: vscode.l10n.t("Click an element in the browser to attach it to the chat"),
+		async (client, sessionId, backendNodeId, picked) =>
+			renderElementMarkdown(await extractElementData(client, sessionId, backendNodeId), picked.url),
+		async value => { markdown = value; },
+		tab,
+	);
+	return markdown;
 }
 
 /* ------------------------------------------------ handing a report to a chat */

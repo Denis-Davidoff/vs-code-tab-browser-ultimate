@@ -74,6 +74,25 @@ for (const command of commands.values()) {
 for (const submenu of submenus.values()) {
 	collectIcon(submenu.icon, submenu.id);
 }
+/* a view container's icon is a plain path, which `collectIcon` skips as a codicon */
+for (const [location, containers] of Object.entries(contributes.viewsContainers ?? {})) {
+	for (const container of containers) {
+		if (typeof container.icon === 'string' && !container.icon.startsWith('$(') && !existsSync(join(root, container.icon))) {
+			problems.push(`viewsContainers.${location}.${container.id}: icon not found — ${container.icon}`);
+		}
+		if (!contributes.views?.[container.id]?.length) {
+			problems.push(`viewsContainers.${location}.${container.id} has no views`);
+		}
+	}
+}
+for (const [container, views] of Object.entries(contributes.views ?? {})) {
+	for (const view of views) {
+		if (!activation.has(`onView:${view.id}`)) {
+			problems.push(`view ${view.id} (${container}) has no onView activation event`);
+		}
+	}
+}
+
 for (const file of readdirSync(join(root, 'media', 'icons'))) {
 	const path = `media/icons/${file}`;
 	if (!referenced.has(path)) {

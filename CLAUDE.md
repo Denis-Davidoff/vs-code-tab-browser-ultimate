@@ -31,7 +31,8 @@ and nothing else here states the delta as a whole:
   [Removed on purpose](#removed-on-purpose--do-not-reintroduce). There are no runtime
   dependencies at all.
 - **Added on top:** the element picker and its reports, the screenshots, the hand-over to Claude
-  Code and Codex, the MCP server, saved logins and passkeys, and the toolbar menu they live in.
+  Code and Codex, the MCP server, saved logins and passkeys, and the toolbar menu they live in —
+  and, from 0.7, [a chat of our own](#the-ai-browser-chat) driving the Claude Code and Codex CLIs.
 
 **The README is deliberately short and this file is the reference.** It was cut back to the
 pitch, the editor-support table and the toolbar, plus `api.open`, installing and the licence;
@@ -120,6 +121,15 @@ Settings:
 The five `logins`/`passkeys` settings are `application`-scoped: a workspace cannot set them, or a
 cloned repository could switch autofill on for its own dev server (breaks-silently #248).
 
+| Chat setting | Default | |
+|---|---|---|
+| `aiBrowser.chat.claudePath` | `""` | the `claude` executable; empty searches — see [Finding the CLIs](#finding-the-clis) |
+| `aiBrowser.chat.codexPath` | `""` | the `codex` executable, the same way |
+
+Both are `application`-scoped for a sharper reason than the logins ones: each names a program
+to run, so a workspace that could set it would be code execution from a cloned repository the
+moment the chat view opens.
+
 ## Architecture: two independent halves
 
 This is the key thing to understand about the build. The code lives in two isolated runtimes,
@@ -181,6 +191,14 @@ Compiled with `tsc`, **no bundling**. `main: ./out/extension`.
 - [src/translate.ts](src/translate.ts) — Translate Page: the tab, the language picker, the prompt on the clipboard
 - [src/translateText.ts](src/translateText.ts) — languages, the prompt, checks on what the assistant writes back (leaf, under test)
 - [src/translateScript.ts](src/translateScript.ts) — the page-side translator behind `browser_text_segments` / `browser_replace_text`
+- [src/chatView.ts](src/chatView.ts) — the AI Browser chat: the webview view, its state, history, attachments, usage
+- [src/chatProtocol.ts](src/chatProtocol.ts) — the messages between the chat's webview and the host (types only, read by both builds)
+- [src/agents.ts](src/agents.ts) — the agent interface, and detecting which agents are installed
+- [src/agentBinary.ts](src/agentBinary.ts) — where `claude` and `codex` are
+- [src/agentProcess.ts](src/agentProcess.ts) — a CLI speaking one JSON object per line
+- [src/agentProtocol.ts](src/agentProtocol.ts) — reading what the two CLIs say: models, efforts, usage, turn events (leaf, under test)
+- [src/claudeAgent.ts](src/claudeAgent.ts) — Claude Code over `stream-json` and its control channel
+- [src/codexAgent.ts](src/codexAgent.ts) — Codex over `codex app-server` JSON-RPC
 
 **There is only ever one panel.** `AIBrowserManager._activeView` is a single slot: a repeat
 `show()` reuses the existing panel rather than creating a second one. If multiple tabs are ever
@@ -197,11 +215,13 @@ back/forward/reload, "open externally" button, focus lock indicator.
 
 - [preview-src/index.ts](preview-src/index.ts) → `media/index.js`
 - [preview-src/events.ts](preview-src/events.ts) — `onceDocumentLoaded`
+- [preview-src/chat.ts](preview-src/chat.ts) → `media/chat.js` — the chat view's script, a second webview with its own CSP (see [The AI Browser chat](#the-ai-browser-chat))
 - `@vscode/codicons/dist/codicon.css` → `media/codicon.css`
 
-`media/main.css` and `media/icon.png` are checked-in static assets and are not built.
-`media/index.js`, `media/codicon.css` and their `.map` files are **build artifacts and are
-gitignored**. After a fresh clone the panel stays blank until `npm run compile` has run.
+`media/main.css`, `media/chat.css`, `media/chat-activity.svg` and `media/icon.png` are
+checked-in static assets and are not built.
+`media/index.js`, `media/chat.js`, `media/codicon.css` and their `.map` files are **build
+artifacts and are gitignored**. After a fresh clone the panel stays blank until `npm run compile` has run.
 
 CSS classes the webview script depends on: `.header`, `.controls`, `.url-input`,
 `.back-button`, `.forward-button`, `.reload-button`, `.open-external-button`, `.content`,
@@ -301,7 +321,10 @@ npm run compile && npm run typecheck
   than through `typeRoots`. `vscode.proposed.externalUriOpener.d.ts` is included the same way.
 - [preview-src/tsconfig.json](preview-src/tsconfig.json) — webview, `DOM` lib. **esbuild picks
   this tsconfig up automatically** based on the entry point's location; it does not need to be
-  passed as a flag.
+  passed as a flag. Its `rootDir` is `..`, not `.`, because `chat.ts` reads the chat's message
+  types from `../src/chatProtocol.ts` with `import type` — the one file both runtimes share, and
+  only as types, so esbuild erases it. Nothing is emitted from this project, so the wider root
+  changes no output; with `.` the typecheck fails on the import.
 
 ### esbuild
 
@@ -1123,9 +1146,11 @@ submenu is `3_logins` and its status bar section sits before *Shared tabs*: it f
 after them, as `5_logins`, in both menus at once — consistent with each other and against this
 rule (breaks-silently #273).
 
-There is no activity bar panel any more. It was a `TreeDataProvider` in `src/toolsView.ts`, and
-it went away when the same commands landed in this dropdown; `media/activity-icon.svg` went
-with it. One consequence worth knowing: the dropdown is gated on
+The activity bar container that held these commands is gone. It was a `TreeDataProvider` in
+`src/toolsView.ts`, and it went away when the same commands landed in this dropdown;
+`media/activity-icon.svg` went with it. (The chat's container, `aiBrowserChat`, is in the *secondary* side bar and holds the chat
+and nothing else — see [The AI Browser chat](#the-ai-browser-chat). Do not move these commands
+into it.) One consequence worth knowing: the dropdown is gated on
 `activeEditor == 'workbench.editor.browser'`, so from here **Connect Claude Code / Connect Codex
 / Check Connection are only reachable from a browser tab**. They are also in the command
 palette, where every command still appears, and in the status bar menu — which is the surface
@@ -4038,6 +4063,409 @@ assistant is sharing what that tab can show.
   picker. Waiting on the user's decision.
 - **No password generator**, and no TOTP.
 
+## The AI Browser chat
+
+The 0.7 headline: a chat of our own, beside Claude Code's and Codex's, **in the secondary (right)
+side bar and only there** — container `aiBrowserChat` under `viewsContainers.secondarySidebar`,
+view `aiBrowser.chat`.
+
+**That contribution point exists only from VS Code 1.106**, and below it there is no chat at
+all — but not because the host ignores the contribution. **A view whose container the host does
+not know is moved into Explorer** ("View container '…' does not exist and all views registered
+to it will be added to 'Explorer'"), so without a guard an older VS Code showed the chat on the
+left after all. The view therefore carries `when: !aiBrowser.chatUnsupported`, set at activation
+below 1.106 (`supportsSecondarySidebar` in `chatView.ts`), and the same key hides the three chat
+commands from the palette, since `aiBrowser.chat.focus` does not exist there. A key is set at
+activation and the view can resolve first, so `_blocked()` refuses below 1.106 as well — no CLI
+starts there whichever lands first. Both assistants'
+own extensions add a left activity bar copy for those versions, gated on a context key of the
+same kind (`claude-code:doesNotSupportSecondarySidebar`, `chatgpt.doesNotSupportSecondarySidebar`,
+both set below 1.106). That fallback was built here and **removed on request — the chat is
+right-hand only.** The first version had the opposite
+mistake, an activity bar container only, reported as "the chat did not appear in the right
+panel": that is where people look, because that is where the other two are. It does **not** reimplement an agent — it
+drives the user's own installed Claude Code and Codex CLIs, the way their VS Code extensions do,
+so it runs on the user's existing subscription and sign-in, and the model list, the efforts and
+the usage are whatever that CLI reports.
+
+What is built, and what is not yet:
+
+- **Built:** agent detection; agent / model / effort selectors from the CLIs themselves; a
+  streaming conversation with stop; messages sent during a turn; the `+` menu (screenshot of the
+  page, element from the page, page address, file); the `U` usage popup (plan limits per agent,
+  plus this chat's tokens and cost); history with resume; new chat; refresh.
+- **Not built yet, and the reason the chat exists:** browser tools given to the agent *in
+  process*, with no MCP server, port or token — Codex's `dynamicTools` (see below) and the
+  equivalent for Claude. Today the agents have only their own tools in the chat.
+- **Not built yet:** approvals. Both agents run with every approval refused — see
+  [Permissions](#permissions-none-are-granted-yet).
+
+### The layout, as asked for
+
+Bottom to top: a toolbar row — `+`, the agent pill, the model pill, the effort slider and, pushed
+right, `U` and Send / Stop — then the message box, then the conversation. The title bar carries
+icon buttons: New Chat, Chat History, Refresh Agents (`view/title`, `navigation@1..3`). `U` and
+Send are one group with `margin-left: auto`, so a narrow side bar wraps them *together* onto the
+next line at the right: one row at 420 px, the pair wraps at 380 px.
+
+### The design, and where each part came from
+
+Asked for as "look at the Claude Code and Codex panels and do something similar". Both were read
+from their shipped webviews — Claude Code 2.1.301 (`webview/index.css`, CSS modules), Codex
+26.1007 (`webview/assets/*.css`, Tailwind v4) — and the parts were taken, not the code:
+
+| Part | From | What it is here |
+|---|---|---|
+| tokens | Codex | borders and soft surfaces are `--vscode-foreground` at 5–14 % (`color-mix`), so every theme works with no light/dark branches |
+| bottom anchoring | Codex (`flex-col-reverse`) | a `flex: 1 0 0` spacer above the first turn — a short chat sits by the composer |
+| sticky prompt | Claude Code (`.message.stickyHeader`) | each turn's prompt is `position: sticky; top: 0` **inside its turn**, so the prompt being answered stays on top and the next one pushes it away; a gradient lets rows fade under it |
+| timeline | Claude Code (`.timelineMessage`) | a dot per row and a 1 px line between rows; green done, red failed, blinking accent running |
+| activity rows | Codex | "Ran `cmd`", "Read a.txt", "Edited app.ts +3 −1", chevron on hover |
+| terminal card | Codex shell block | `$ command`, output at most 9rem and scrolled to its newest line, footer "✓ Success" / "Exit code N" / "Running…", copy buttons on hover |
+| diff card | Codex | file header with +N −N, lines on `diffEditor.inserted/removedLineBackground` |
+| thinking | both | "Thinking" with a shimmer while it streams, "Thought for 4s" after; collapsed, body at most 140 px |
+| working line | Claude Code's spinner row, Codex's shimmer | a star changing shape every 120 ms (`· ✢ ✳ ✶ ✻ ✽` and back, in the accent colour, still under reduced motion), then "Browsing… 12s"; when the turn ends a small square takes the star's slot, so the line does not shift, before "Browsed for 42s" and, right-aligned, the turn's tokens "↑ 35k ↓ 812" — all asked for |
+| composer | Codex surface, Claude Code focus ring | 12 px radius, soft shadow, accent ring on focus, round send button in the foreground colour |
+| pills and menus | both | agent and model are ghost pills opening in-view menus (label, description, check), not native `<select>`s |
+| code blocks | both | header with the language and a copy button; tables, quotes, rules |
+
+**The Markdown reader** handles what replies use: fenced code, headings, quotes, rules, tables
+(outer pipes optional, one column allowed, a `|` inside inline code or escaped `\|` kept as text),
+bullet and numbered lists — **an indented item is a list of its own inside the item above**, and a
+list starts at the number the model wrote — and inline code, bold, italics and links, formatted
+recursively so `` **`npm test`** `` shows no backticks. A line over 4 000 characters is shown as
+plain text: the inline pattern backtracks on long runs of backticks or `[` (0.5–0.9 s for 40 000
+of them), and a streaming reply is re-rendered every 40 ms.
+
+**The phrase is one of thirty pairs** ("Browsing…" / "Browsed for"). While a turn runs a random
+one is shown and replaced every 8 s; the past form is picked from the turn's start time, so it
+does not change on a re-render or after a reload.
+
+**A turn's tokens are the difference in the chat's totals across the turn**, shown only when the
+agent reported any. That one rule is right for both agents although they report differently —
+Claude Code's `result.usage` is per turn and is added up, Codex's `tokenUsage.total` is the
+thread's running total and replaces the figure — measured: two short Codex turns read 17 811 and
+17 828, not 17 811 and 35 639. "Sent" includes cached input, which the tooltip breaks out.
+
+- **Turns waiting are a queue (`_pending`), not one baseline.** Claude Code answers a message
+  sent mid-turn with a turn of its own, and with one baseline the first `result` was written onto
+  the *latest* prompt — the queued one — while the second showed nothing. A queued prompt's
+  baseline and start time are taken when the turn before it ends. A Codex message sent mid-turn
+  steers the running turn and is not queued.
+- **Codex's running total survives a restart.** Measured: a thread resumed in a new app-server
+  reported 39 496 after its second turn, the first having ended at 19 740. A total that ever
+  comes back *lower* than what is counted is a counter that started again, and is added on top
+  (`_tokenOffset`) instead of taking the chat's totals backwards. An *equal* total is a repeat,
+  not a reset, or one duplicated event would double the count.
+
+Commands and edits open by default (the command and its answer are the point of the row); reads
+never have a body; everything else opens on click. What the user opened or closed is remembered
+per row until the chat changes (#346). Clicking a prompt folds or unfolds it — but not a click
+that ends a text selection, and the prompt is not rebuilt for it, or the next post (every 40 ms
+while a reply streams) took the selection away.
+
+**Rendering is keyed.** Each entry's DOM is rebuilt only when its JSON (or its open state)
+changes; a streaming reply rewrites one row many times a second, and rebuilding the thread each
+time lost the reader's selection and scroll position. Rows belong to turns, a turn being a user
+entry and what follows it; entries before the first prompt (a notice) form a turn of their own.
+
+**Copy goes through the host** (`{ type: 'copy' }` → `env.clipboard`): `navigator.clipboard` in
+a webview depends on the host granting it.
+
+**Testing the look in headless Chrome has two traps**, both of which look exactly like real bugs:
+it will not make a window narrower than 500 px (`--window-size` silently crops the screenshot, so
+set `html { width: 340px }` instead), and **`--virtual-time-budget` freezes CSS transitions and
+animations** at their first frame — the Stop button rendered as a blank light disc and the model
+menu at half opacity until `* { transition: none !important; animation: none !important }` was
+added to the harness. Measure with `getComputedStyle` before believing a colour.
+
+**History, usage and the menus are drawn inside the view**, never as a QuickPick or a modal:
+anything that overlays the workbench can pause a browser tab
+([A notification pauses the built-in browser](#a-notification-pauses-the-built-in-browser)).
+The file picker is the one exception — a native OS dialog, which the overlay manager does not
+see. Popups are positioned relative to `#app`, not the window.
+
+**Nothing from a model or a page is parsed as HTML.** `preview-src/chat.ts` has its own small
+Markdown reader (fences, headings, lists, quotes, tables, rules, paragraphs, inline code, bold,
+italics, links) that builds nodes and sets `textContent`. Links show their address as a tooltip
+and are not followed: a click in a webview would navigate the view itself. The CSP is the panel's
+minus `frame-src`, plus `img-src data:` for screenshot thumbnails.
+
+**The host owns the state; the webview renders it.** Every change posts a whole
+`ChatViewState`, coalesced to one post per 40 ms while text streams. **A post sent before the
+webview's script says `ready` is lost**, not queued by VS Code, so `_postMessage` holds
+non-state messages until then — a title-bar command reveals a view that was never opened and
+posts in the same breath.
+
+### The two protocols — measured, not documented
+
+Neither protocol is public. Everything below was read from live CLIs — Claude Code 2.1.301 and
+codex-cli 0.145.0, on 2026-10-16 — and everything that interprets their output is in
+[src/agentProtocol.ts](src/agentProtocol.ts), a leaf module under test. **The tests run on recorded
+samples of those answers, so they guard the readers against our own edits, not against a CLI
+release** — a field a new CLI renames still passes `npm test` and shows up as an empty dropdown.
+After an update of either CLI, re-measure (the probes under "Verified how" are the recipe) and
+refresh the samples.
+
+| | Claude Code | Codex |
+|---|---|---|
+| launch | `claude -p --input-format stream-json --output-format stream-json --verbose --include-partial-messages` | `codex app-server` |
+| shape | one process per conversation; a turn is `{type:'user', message}` on stdin | one process per window, a `thread` per conversation, JSON-RPC 2.0 |
+| side channel | `control_request` / `control_response`, correlated by `request_id` | ordinary requests |
+| models | `initialize` → `models[]`: `value`, `displayName`, `supportsEffort`, `supportedEffortLevels` | `model/list` → `supportedReasoningEfforts[]`, `defaultReasoningEffort`, `isDefault`, `hidden` |
+| plan usage | `get_usage` → `rate_limits.limits[]` (`percent` 0–100, `resets_at` ISO), `subscription_type` | `account/rateLimits/read` → `primary` / `secondary` (`usedPercent`, `windowDurationMins`, `resetsAt` in seconds) |
+| live usage | a `rate_limit_event` before each turn | `account/rateLimits/updated` |
+| text | `stream_event` / `content_block_delta` / `text_delta` | `item/agentMessage/delta` |
+| tokens | `result.usage`, **per turn** | `thread/tokenUsage/updated.total`, **for the thread** |
+| model / effort | launch flags `--model`, `--effort` | parameters of each `turn/start` |
+| more input mid-turn | another user line (the CLI queues it) | `turn/steer` with `expectedTurnId` |
+| stop | `control_request` `interrupt` | `turn/interrupt` |
+| resume | `--resume <session_id>` | `thread/resume` |
+
+Each of these cost a measurement and each would be wrong if guessed:
+
+- **`result.total_cost_usd` is for the whole process, the tokens are for the turn.** Two equal
+  turns in one process reported cost 0.0018 then 0.0037, and the same token counts each time.
+  `ClaudeSession` turns the cost into a per-turn difference. **A process started with
+  `--resume` does not count from zero**: it restores the session's cost ledger from the
+  transcript (measured: its first turn reported 0.0039 where the turn cost about 0.0018, even
+  after the previous process was ended with SIGTERM). So a resumed process's baseline is the
+  session's cost so far — passed in as `priorCostUsd` for a chat reopened from the history — and a
+  figure below the baseline, a ledger that was not restored, is taken as the turn's own.
+- **`rate_limit_event` reports `utilization` as a fraction, `get_usage` as a percentage** — 0.06
+  against 6 for the same window. Read with one scale for both and every bar is 0% or 600%.
+- **Text comes from the deltas only.** With `--include-partial-messages` the complete
+  `assistant` message repeats the same text; it is read only for its `tool_use` blocks.
+  A sub-agent's stream carries `parent_tool_use_id` and is not the reply.
+- **`initialize` is not needed before a turn**, but it is how the model list is had without
+  spending one, so detection runs a short-lived process that sends `initialize` and exits.
+- **A model or effort change restarts Claude with `--resume`, and the conversation survives.**
+  Measured: a session told to remember a word on Haiku answered it after a switch to Sonnet 5,
+  under the same session id. The restart waits for the turn to end; a change made mid-turn takes
+  effect at the next message.
+- **Codex's `turn/start` answers before the turn ends**; the end is `turn/completed` with
+  `status` `completed` / `failed` / `interrupted`. Stop took about 15 ms on both agents.
+- **Codex's own schema can be generated from the installed binary:**
+  `codex app-server generate-json-schema --out <dir>`. Read it before guessing a field — it is
+  how the shapes above were found, including `item/tool/call` and `dynamicTools`, which are how
+  our browser tools will reach Codex without MCP.
+- **Tool calls and their results are separate messages, matched by id.** Claude: a `tool_use`
+  block in an `assistant` message, then a `tool_result` block with the same `tool_use_id` in a
+  `user` message (`is_error` for a failure). A failed Bash result's text starts with Claude
+  Code's own `Exit code N` line, which is taken off into the exit code. Codex: `item/started`,
+  then `item/commandExecution/outputDelta` while it runs, then `item/completed` with
+  `aggregatedOutput`, `exitCode` and `status` (`completed` / `failed` / `declined`).
+- **Codex reports a command wrapped in its shell** — `/bin/zsh -lc 'echo hi && cat a.txt'` — and
+  `unwrapShell` takes the wrapper off. It also sends `commandActions` (`read` with a name,
+  `listFiles`, `search`), which become the row's summary ("Listed files, Read a.txt").
+- **Each Codex `agentMessage` item is its own block.** A turn sends a short commentary ("I'll run
+  both commands…") and then the final answer as two items; run together they read as one
+  sentence. `item/started` for an agent message is a `textBreak`; for Claude a new `text`
+  content block is.
+- **Reasoning is off unless asked for, on both.** Claude streams no `thinking` block at all
+  without `--thinking-display summarized` (measured on Sonnet 5.5, and on Haiku 4.5, which has
+  no adaptive thinking and still takes the flag); then it arrives as `thinking_delta`. Codex sends
+  an empty `reasoning` item unless `turn/start` carries `summary: 'auto'`; then it streams
+  `item/reasoning/summaryTextDelta`, a new `summaryPartAdded` index being a new paragraph.
+- **Claude's usage method is marked as unstable by Claude Code itself** — its SDK names it
+  `usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET`. `claudeUsage` reads two shapes and
+  reports an error rather than throwing on a third.
+
+### Finding the CLIs
+
+`findAgentBinary` ([src/agentBinary.ts](src/agentBinary.ts)) collects every copy it can find —
+`PATH`, then `~/.local/bin`, `~/.claude/local`, `/opt/homebrew/bin`, `/usr/local/bin`, then **the
+copy the assistant's own VS Code extension ships**, `anthropic.claude-code/resources/native-binary/claude`
+and `openai.chatgpt/bin/<platform>/codex` — asks each one `--version`, and **uses the newest**.
+The setting, when set, overrides all of it. A tie keeps the search order, so `PATH` wins between
+equal versions. The agent dropdown's tooltip names the version, the source and the path.
+
+**Newest, not first, and the reason is visible in the model list.** The first version took the
+first match on `PATH`. On the machine it was written on that was a standalone `codex` 0.145.0
+left in `~/.local/bin`, while the Codex extension carried 0.162.0-alpha.17.2 — and `model/list`
+is the server's answer *to the client's version*: the old binary was offered only GPT-5.6-Sol /
+Terra / Luna, each described as "Older generation…", while the extension's copy got GPT-6.1-Sol
+(default), GPT-6-Astra, GPT-6-Sol and GPT-6-Luna. Reported as "Codex shows old models". A
+pre-release therefore counts as newer than any lower release (`compareCliVersions`, under test):
+the alpha *is* what the user chats with in Codex. Claude Code had the same exposure and simply
+did not show it, the `PATH` copy and the extension's being the same 2.1.301.
+
+The extension's copy is still why someone with only an assistant's VS Code extension, and no CLI
+on `PATH`, gets a working chat. `getExtension` gives the active version's directory, so an
+extension update moves the path and the next detection follows it.
+
+**Only absolute `PATH` entries are searched.** A relative one (`.`, `node_modules/.bin`) is
+probed against the extension host's working directory and spawned against the workspace's — two
+different files, and the second is one a repository can plant. **And the copy already in use is
+kept when a Refresh cannot prove another newer**: its `--version` timed out on a busy machine, or
+the versions are equal. Switching replaces the backend, which ends a running conversation for
+nothing.
+
+On Windows only `.exe` is accepted. An npm-installed CLI is a `.cmd` shim, which Node refuses to
+spawn without a shell since the CVE-2024-27980 fix, and a shell would put the arguments through
+`cmd.exe` quoting.
+
+**Detection is a real call, not a file check**: a binary that is present but signed out, or too
+old to answer `initialize` / `model/list`, is listed as unavailable with the reason. Codex says
+so outright (`account/read` → no account, `requiresOpenaiAuth: true`). It runs when the view's
+webview first says `ready`, when trust is granted to a folder the view was refusing, and on
+Refresh Agents, which reveals the view first — **no CLI starts before the chat is opened**.
+Claude's probe exits as soon as it has answered. Codex's answer comes from the app-server
+itself, which then shuts down 30 s after nothing needs it (see below) — it used to stay up for
+the rest of the window, a signed-out Codex included, for a user who might only ever chat with
+Claude. A path set in `aiBrowser.chat.<id>Path` that is not an executable says so, rather than
+"not found, set the path".
+
+**A Refresh that finds another copy replaces the backend, and the chat follows.** Replacing it
+disposes every session it held, the open chat's included; `AgentRegistry.onDidReplace` makes the
+chat end a turn it was running, drop that session, and say so — "replaced by another installed
+copy", or "no longer installed" when Refresh found none, so the next message opens a session
+on the new copy and resumes the same conversation by its `ref`. Before, Claude ignored every later
+message in silence and Codex answered each with "Closed.". **A message sent while detection is
+still running waits for it** instead of being refused: the webview clears its draft on send, so a
+refusal lost the text and told the user to install an agent that was there. Once detection has
+found nothing, the send button is disabled and the draft stays in the box.
+
+### Processes
+
+[src/agentProcess.ts](src/agentProcess.ts) is the one piece both share. `spawn` with an argument
+array and no shell; an `error` listener on `stdin` (#24); stderr's tail kept, since it is the only
+place an early exit says why; and **`CLAUDECODE` removed from the environment** — VS Code started
+from a Claude Code terminal inherits it, and the CLI then refuses to start, taking itself for a
+nested session. A kill of ours is never reported as a failure, whatever exit code the platform
+gives it.
+
+Lifetimes: a Claude process lives as long as its conversation (new chat, opening another from
+the history, or switching agent ends it). The Codex app-server lives while a Codex conversation
+holds a session, or a detection or usage read is under way, and **shuts down 30 s after the last
+of them lets go** (`idleShutdownMs`); it is restarted on demand, and a thread loaded in an earlier
+app-server is resumed with `thread/resume` (`CodexSession._loadedIn` against
+`CodexBackend.generation`). An app-server whose `initialize` fails or times out is ended there
+and then — clearing only the handshake promise left it running, and each retry added another
+process that lived until the extension host exited. Everything is disposed with the view
+provider, and **a disposed view lets go of its conversation too**: nothing can show what the CLI
+does once the view is gone, so the turn is ended, the chat saved and the session dropped rather
+than left working unseen on the user's quota. A kill is SIGTERM, then SIGKILL after 3 s for a
+process that is still there — a CLI busy in a tool call, or one that traps the signal.
+**With the chat open, the extension does start processes** — the user's own CLIs, and
+only while a conversation needs them; nothing else in the extension does.
+
+**Every path that lets go of a session mid-turn ends the turn in the chat first** (`_endTurnHere`):
+New Chat, another chat from the history, an agent switch, deleting the chat, a replaced backend,
+the window closing. The session being disposed reports nothing, so without it the chat was saved
+with its tool rows "Running…" and its thinking shimmering, and showed them so for good when
+reopened. The turn's state is read from the chat (`_pending`), not from the session, whose
+`running` a dispose may already have cleared — which is exactly what happened when the registry
+disposed a Claude backend *before* announcing it; it now announces first. A chat opened from the
+history is `settled` as well, so one saved mid-turn by an earlier build opens with nothing
+running. And a send that settles after its chat was **deleted** does not save it back: the send can
+take seconds on a cold app-server, and the save wrote the deleted prompt into the history again.
+
+**Stop applies to the turn it was pressed during, not to the queue behind it.** Measured on
+Claude Code: the interrupt is acknowledged at once, the interrupted turn ends
+`error_during_execution`, and a message queued behind it still runs and ends `success` — which the
+flag, carried on, reported as "Stopped.". The fallback for an interrupt that is never acknowledged
+ends the process only if it is still the same process with a turn pending; the rejection can come
+20 s later, or from a model change closing the channel, by when a new process is running. On
+Codex a message sent after Stop waits for the stopped turn to end and starts its own turn, since
+steering it into the turn being interrupted is refused; and a `turn/completed` naming another turn
+than the running one is ignored.
+
+**A Codex session's sends run one at a time** (`CodexSession._queue`). Two at once started a
+second thread: a message sent before the first turn had an id took the start branch again, and
+before the thread existed it called `thread/start` a second time — two turns streaming into one
+chat, Stop reaching one of them, only one thread saved. Queued behind the first, the second finds
+the turn and steers it. **And every await of a start is a point where the chat may have moved
+on**: New Chat, another chat from the history and an agent switch all dispose the session, and
+Stop can arrive before the turn has an id. Each step checks, nothing starts after that, and a
+turn that began while its request was on its way is interrupted rather than left to run to the
+end, unseen, on the user's quota. A send's failure is reported only into the chat it came from.
+
+Requests the CLIs send *us* must be answered or the turn waits for ever: Claude's
+`control_request`s (permission prompts, SDK MCP calls, hooks) get an error response; Codex's
+server requests get a decline or a JSON-RPC `-32601`.
+
+### Permissions: none are granted yet
+
+**Nothing is granted *by the chat* — but each CLI still applies its own configuration.** Both
+start in the workspace folder and load the user's and the project's settings: Claude Code's
+`permissions.allow` rules and hooks, and the MCP servers either CLI has configured (the
+`ai-browser` server included, once Connect has written it). So a tool the user's own config
+pre-allows runs from the chat without asking, exactly as it would in the CLI; the chat adds no
+grant of its own and removes none. Workspace trust gates the whole chat for that reason.
+
+Claude runs with `--permission-mode default` and no `--permission-prompt-tool`, so in `-p` mode
+every tool call that needs approval is refused and the model is told so. Codex threads run
+`sandbox: 'read-only'`, `approvalPolicy: 'on-request'`, and every approval request — the
+`item/*/requestApproval` methods and the older `execCommandApproval` / `applyPatchApproval` — is
+declined, with a notice in the chat of the thread that asked. Both
+are deliberate for a first version: approvals belong inside the chat view (a modal would pause
+the browser), and that UI is the next step.
+
+### Where it refuses to run
+
+- **Restricted Mode.** Both CLIs load the project's own configuration, and Claude Code runs
+  `.claude/settings.json` hooks, which are shell commands — starting one in an untrusted folder
+  runs that folder's code. Same reasoning as Connect Codex and git (breaks-silently #208).
+- **A remote window.** This extension runs locally there (`extensionKind` puts `ui` first) while
+  the project and the CLIs are on the remote — see
+  [Special cases](#special-cases-and-non-obvious-decisions).
+
+### State that is kept
+
+- **History**: `workspaceState` `aiBrowser.chat.history`, at most 50 chats, 400 entries each, long
+  texts cut at 20 000 characters and tool bodies at 4 000 (the whole history is rewritten on every
+  save, and full bodies made that tens of megabytes). **The latest prompt is kept even when the
+  400-entry window would drop it**, and a chat records that it is owned (`owned`, and its `ref`),
+  because a long turn could otherwise push every prompt out — and a chat reopened that way read as
+  unstarted, took the globally remembered agent and handed it the other agent's session id. A chat stores what resumes it (`ref`: Claude's session id,
+  Codex's thread id), so opening it from the history continues the real conversation — measured
+  for both. Images are not stored; the user entry keeps the attachment labels. Codex threads are
+  not `ephemeral`, so they also appear in Codex's own history.
+- **Selection**: `globalState` `aiBrowser.chat.selection` — the last agent, a model per agent and
+  an effort per `<agent>:<model>`, made valid against what was detected on every read.
+- **The draft** in the webview's `setState`.
+
+A conversation belongs to one agent: switching agents in a started chat opens a new one. "Started"
+means *the user has sent something* (`_started`), not "has entries" — a notice is an entry too,
+and counting it made the new chat belong to the agent just switched away from (#335).
+
+### Attachments
+
+From the `+` menu, all held in the host until the message is sent: **Screenshot** is
+`BrowserController.capture(false, userTab)` (the visible area, as the toolbar's Copy Screenshot
+takes it) and goes to the agent as an image block — base64 for Claude, a `data:` URL for Codex;
+**Element** is the Copy Element Markdown, through `pickElementContext`, which hands the picker
+the tab explicitly; **Page address** is the URL and title (`pageTitle` + `plainInPrompt`, since
+the title is page-chosen text going into a prompt); **File** is the path only, since both agents
+read files themselves.
+
+**Without the `browser` grant the page entries say so** — "Browser API not enabled — use Enable
+Browser API in the status bar" — rather than "open a page first", which is what they said while
+`userTab` and `hasOpenTabs`, both empty without the grant, were the only test: Recipe step 3's two
+guards with two messages, for a state that is every fresh install's.
+
+**A screenshot or an element pick needs the page on screen.** `userTab` can name a tab a file
+has since covered (it remembers the last one focused), and acting on a page the user cannot see
+is a pick waiting for a click they cannot make. The test is `LoginWatcher.tabInFront`'s: the
+focused tab, or a browser editor visible in some group (`window.tabGroups` models no browser
+input, so a visible tab with `input: undefined`), erring towards "visible". The page is named
+before anything happens, in the pick's status bar title and in the screenshot's chip — #259's
+condition for using `userTab` at all. The page address is attached from any tab, named on its chip.
+
+**The tab is `browser.userTab`, never `activeBrowserTab`** — focus is in the chat view when `+` is
+pressed, which is exactly the state where `activeBrowserTab` is `undefined` (#259, #334). That is
+why `pickAndDeliver` grew a `preferred` tab.
+
+### Verified how
+
+`out/agents.js` and `out/chatView.js` loaded against a stubbed `vscode` with the real CLIs behind
+them: detection (about 0.8 s for both), models and efforts, usage for both, a two-turn
+conversation on each agent, the Claude restart on a model change keeping the conversation,
+switching agents, the history, reopening a chat and continuing it, and Stop mid-reply on both.
+Rendering checked in headless Chrome as described above. Worth redoing both after touching these
+files; the protocol halves have unit tests, the process halves do not.
+
 ## Things that break silently
 
 No compile error for any of these — they only surface at runtime.
@@ -5429,6 +5857,71 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
 332. **A listing that walks only what it connected itself** → a frame past the limit that a caller
      named stayed attached, and its nested frames were never listed again. Walk every attached
      session.
+333. **Spawning a CLI with the environment as inherited** → VS Code started from a Claude Code
+     terminal carries `CLAUDECODE`, and `claude` then refuses to start, taking itself for a nested
+     session; every chat message fails while the same binary works from any other terminal.
+     `JsonLineProcess` removes it.
+334. **`activeBrowserTab` from a side bar view** → focus is in the view whenever its own button is
+     pressed, so the property is always `undefined` there; the chat's "attach from the page" would
+     refuse with a page in plain sight. Use `browser.userTab`, and pass the tab to the picker.
+335. **"Has entries" as "the conversation has started"** → a notice is an entry, so the chat
+     created by switching agents was taken as already started and kept the old agent. Ask
+     whether the user has sent anything.
+336. **One scale for two usage reports from the same CLI** → Claude Code's `rate_limit_event`
+     gives a fraction where `get_usage` gives a percentage for the same window. And its
+     `total_cost_usd` is per process while its `usage` is per turn — add the cost up and a
+     two-turn chat costs three turns.
+337. **Taking the first CLI on `PATH`** → an old standalone copy shadows the current one inside the
+     assistant's extension, and since the model list is answered per client version, the chat
+     offers last generation's models while the assistant's own UI offers the current ones. Ask
+     every copy its version and use the newest.
+338. **Two sends of one conversation at once** → a Codex message sent before the first turn had
+     an id started a second thread, and both streamed into one chat with only one saved. Serialize
+     a session's sends.
+339. **An async start that never asks whether it is still wanted** → New Chat or Stop during
+     `thread/start` still sent `turn/start`, and the turn ran unseen to the end on the user's
+     quota. Check after every await, and interrupt a turn that began meanwhile.
+340. **Abandoning a child process whose handshake failed** → only the promise was cleared, and
+     every retry started another process that outlived the window's use of it. End it.
+341. **A view holding a session its registry has replaced** → a Refresh that picked another copy
+     disposed the session under the chat, and Claude ignored every later message in silence.
+     Announce the replacement and drop the session.
+342. **Deriving "who owns this conversation" from entries a history window can cut** → a long turn
+     pushed every prompt out, and the reopened chat took another agent and handed it the wrong
+     session id. Store ownership on its own.
+343. **A resumed CLI process counting cost from zero** → Claude Code restores the session's cost
+     ledger on `--resume`, so the first turn after a model change, or of a chat reopened from the
+     history, counted the whole earlier session again. Baseline on the known session cost.
+344. **A view in a container the host does not know** → it is not dropped, it is moved into
+     Explorer, so the right-only chat appeared on the left below VS Code 1.106. Guard the view
+     with a `when`.
+345. **One token baseline for a turn and the message queued behind it** → the first turn's figures
+     landed on the second prompt and the second turn showed none. Queue the baselines.
+346. **Per-row UI state keyed by position, kept across chats** → a row opened in one chat opened
+     itself in the next at the same index. Clear it when the chat changes.
+347. **Announcing a replacement after disposing what was replaced** → disposing a Claude session
+     zeroed its turn count in silence, so the listener read `running` as false and never ended the
+     turn. Announce first, and read a turn's state from the chat, not from a session being torn down.
+348. **A save at the end of an async send** → the chat it saves may have been deleted while the send
+     waited, and the save wrote it, prompt and all, back into the history. Check it still exists.
+349. **A stop flag carried to the next turn** → measured: a queued Claude message runs after an
+     interrupt and succeeds, and the flag reported it "Stopped.". A stop belongs to one turn.
+350. **A delayed fallback that acts on whatever is current** → a failed `interrupt` killed the
+     process 20 s later, by when it could be a new one with a new turn. Capture what it was for.
+351. **Steering into a turn that is being interrupted** → the message is refused or lost with that
+     turn. Wait for the stopped turn to end, then start a new one.
+352. **A refresh message read as a toggle** → the list refreshed after a delete reopened a history
+     panel the user had just closed. Refresh and toggle are different messages.
+353. **A click handler on text people select** → a drag-select ends in a click, so selecting a
+     prompt folded it, and the rebuild the toggle caused took the selection away.
+354. **A probe that hits the timeout of a child it cannot see** → `execFile`'s timeout kills the
+     process it started; a script's own children keep the pipe open, and the version comes back
+     anyway or not at all. A Refresh must not replace a working backend on such an answer. (Also a
+     harness trap: a fake CLI run with a reduced `PATH` cannot find `sleep`, and "times out" at once.)
+355. **Acting on the last-focused tab without checking it is on screen** → a pick waited for a
+     click on a page a file had covered. Check, and name the page before acting.
+356. **A view that goes away while its process works** → the CLI ran on, unseen, on the user's
+     quota. A disposed view ends the turn and drops the session.
 
 ## Special cases and non-obvious decisions
 
@@ -5532,6 +6025,11 @@ interaction under [TypeScript configuration](#typescript-configuration).
   which checks the prefix against the schemes the parser actually recognizes.
 
 ## Removed on purpose — do not reintroduce
+
+- **A left-hand (activity bar) copy of the chat for VS Code before 1.106.** Built, as Claude Code
+  and Codex do, and removed on request: the chat lives in the secondary side bar only, and below
+  1.106 there is none — the view is hidden by `aiBrowser.chatUnsupported` rather than left to fall
+  into Explorer. See [The AI Browser chat](#the-ai-browser-chat).
 
 - **The share marker written into the page title.** 🔗/🤖 appended to `document.title` over CDP,
   kept there by a `MutationObserver` and re-registered with

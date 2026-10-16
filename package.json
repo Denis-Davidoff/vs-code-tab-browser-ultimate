@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate",
 	"displayName": "AI Browser🏆 Claude + Codex",
 	"description": "Embedded browser tab with AI capabilities, Claude and Codex integration",
-	"version": "0.6.3",
+	"version": "0.7.0",
 	"enabledApiProposals": [
 		"externalUriOpener",
 		"browser"
@@ -128,7 +128,11 @@
 		"onCommand:aiBrowser.logins.manage",
 		"onCommand:aiBrowser.logins.import",
 		"onCommand:aiBrowser.logins.export",
-		"onCommand:aiBrowser.translatePage"
+		"onCommand:aiBrowser.translatePage",
+		"onView:aiBrowser.chat",
+		"onCommand:aiBrowser.chat.newChat",
+		"onCommand:aiBrowser.chat.history",
+		"onCommand:aiBrowser.chat.refreshAgents"
 	],
 	"capabilities": {
 		"virtualWorkspaces": true,
@@ -463,8 +467,45 @@
 				"title": "%command.logins.export.title%",
 				"category": "%displayName%",
 				"icon": "$(cloud-upload)"
+			},
+			{
+				"command": "aiBrowser.chat.newChat",
+				"title": "%command.chat.newChat.title%",
+				"category": "%displayName%",
+				"icon": "$(add)"
+			},
+			{
+				"command": "aiBrowser.chat.history",
+				"title": "%command.chat.history.title%",
+				"category": "%displayName%",
+				"icon": "$(history)"
+			},
+			{
+				"command": "aiBrowser.chat.refreshAgents",
+				"title": "%command.chat.refreshAgents.title%",
+				"category": "%displayName%",
+				"icon": "$(refresh)"
 			}
 		],
+		"viewsContainers": {
+			"secondarySidebar": [
+				{
+					"id": "aiBrowserChat",
+					"title": "%viewsContainer.chat.title%",
+					"icon": "media/chat-activity.svg"
+				}
+			]
+		},
+		"views": {
+			"aiBrowserChat": [
+				{
+					"type": "webview",
+					"id": "aiBrowser.chat",
+					"name": "%view.chat.name%",
+					"when": "!aiBrowser.chatUnsupported"
+				}
+			]
+		},
 		"configuration": [
 			{
 				"title": "AI Browser",
@@ -548,6 +589,20 @@
 						"scope": "application",
 						"title": "Passkeys",
 						"markdownDescription": "%configuration.passkeys.enabled.description%"
+					},
+					"aiBrowser.chat.claudePath": {
+						"type": "string",
+						"default": "",
+						"scope": "application",
+						"title": "Claude Code Executable",
+						"markdownDescription": "%configuration.chat.claudePath.description%"
+					},
+					"aiBrowser.chat.codexPath": {
+						"type": "string",
+						"default": "",
+						"scope": "application",
+						"title": "Codex Executable",
+						"markdownDescription": "%configuration.chat.codexPath.description%"
 					}
 				}
 			}
@@ -739,6 +794,18 @@
 				{
 					"command": "aiBrowser.repeat.codex.xpath",
 					"when": "false"
+				},
+				{
+					"command": "aiBrowser.chat.newChat",
+					"when": "!aiBrowser.chatUnsupported"
+				},
+				{
+					"command": "aiBrowser.chat.history",
+					"when": "!aiBrowser.chatUnsupported"
+				},
+				{
+					"command": "aiBrowser.chat.refreshAgents",
+					"when": "!aiBrowser.chatUnsupported"
 				}
 			],
 			"aiBrowser.claudeMenu": [
@@ -821,6 +888,23 @@
 				{
 					"command": "aiBrowser.logins.export",
 					"group": "2_vault@3"
+				}
+			],
+			"view/title": [
+				{
+					"command": "aiBrowser.chat.newChat",
+					"when": "view == aiBrowser.chat",
+					"group": "navigation@1"
+				},
+				{
+					"command": "aiBrowser.chat.history",
+					"when": "view == aiBrowser.chat",
+					"group": "navigation@2"
+				},
+				{
+					"command": "aiBrowser.chat.refreshAgents",
+					"when": "view == aiBrowser.chat",
+					"group": "navigation@3"
 				}
 			]
 		},

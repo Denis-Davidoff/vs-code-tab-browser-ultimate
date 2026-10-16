@@ -1,7 +1,7 @@
 {
 	"displayName": "AI Browser",
 	"description": "Displays web content in an editor panel using an embedded iframe.",
-	"capabilities.untrustedWorkspaces.description": "In Restricted Mode, Connect Codex does not write the project config: checking that git will not commit the token means running git in the workspace, which runs the repository's own hooks. The `codex mcp add` command is offered instead.",
+	"capabilities.untrustedWorkspaces.description": "In Restricted Mode, Connect Codex does not write the project config: checking that git will not commit the token means running git in the workspace, which runs the repository's own hooks. The `codex mcp add` command is offered instead. The chat is unavailable: Claude Code and Codex load the project's own configuration, which can run commands.",
 	"configuration.focusLockIndicator.enabled.description": "Enable/disable the floating indicator that shows when focused in the AI browser.",
 	"configuration.useIntegratedBrowser.description": "Open URLs in VS Code's built-in browser rather than the AI Browser webview panel. The built-in browser is what the element-picker commands attach to, and it supports clipboard shortcuts, find in page and DevTools that the panel cannot. Turn it off only if you specifically want the panel.",
 	"configuration.searchEngine.description": "Search engine used when the address bar input is a search term rather than a URL. Set to 'none' to disable address bar search.",
@@ -46,5 +46,12 @@
 	"configuration.logins.offerToSave.description": "After a sign-in that went through, offer to save the login, or to update a saved password that changed. The offer is a status bar item; nothing covers the page.",
 	"configuration.logins.showSuggestions.description": "Show a status bar item while the page in front of you has a sign-in form and a login is saved for it. `Cmd+Shift+L` / `Ctrl+Shift+L` fills either way.",
 	"configuration.logins.autofillOnPageLoad.description": "Fill a sign-in form as soon as it appears, when exactly one login is saved for that exact address and the fields are empty. Off by default: a page then receives your password without you asking.",
-	"configuration.passkeys.enabled.description": "Sign in with passkeys stored in AI Browser, and save new ones a site creates. Every passkey ceremony in the page asks you first, and the tab's own authenticators (a security key, a phone) are reached by choosing \"Use a security key or another device\" in that prompt. A frame from another site, such as an embedded payment confirmation or sign-in widget, is not reached: its ceremony gets no prompt and fails after its own timeout while this is on. Turning this off hands those back to the browser."
+	"configuration.passkeys.enabled.description": "Sign in with passkeys stored in AI Browser, and save new ones a site creates. Every passkey ceremony in the page asks you first, and the tab's own authenticators (a security key, a phone) are reached by choosing \"Use a security key or another device\" in that prompt. A frame from another site, such as an embedded payment confirmation or sign-in widget, is not reached: its ceremony gets no prompt and fails after its own timeout while this is on. Turning this off hands those back to the browser.",
+	"viewsContainer.chat.title": "AI Browser",
+	"view.chat.name": "Chat",
+	"command.chat.newChat.title": "New Chat",
+	"command.chat.history.title": "Chat History",
+	"command.chat.refreshAgents.title": "Refresh Agents",
+	"configuration.chat.claudePath.description": "Path to the `claude` executable the chat uses. Empty finds it on `PATH`, in the usual install locations, or inside the Claude Code extension. Machine-wide only: a workspace cannot set it, since it names a program to run.",
+	"configuration.chat.codexPath.description": "Path to the `codex` executable the chat uses. Empty finds it on `PATH`, in the usual install locations, or inside the Codex extension. Machine-wide only: a workspace cannot set it, since it names a program to run."
 }

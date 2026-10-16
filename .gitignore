@@ -19,3 +19,7 @@ vscode-marketplace/*.vsix
 # server that can drive the developer's browser.
 .mcp.json
 .codex/
+
+# The chat view's bundle, built like index.js
+media/chat.js
+media/chat.js.map

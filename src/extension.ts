@@ -14,6 +14,7 @@ import { canHandOver, cleanUpReports, publishAssistantContext, type AssistantId 
 import { LastElementAction, type ElementActionId } from './lastAction';
 import { localHosts, normalizeAddress } from './webUrl';
 import { BrowserController } from './browserController';
+import { ChatViewProvider, chatUnsupportedContextKey, chatViewId, supportsSecondarySidebar } from './chatView';
 import { McpLifecycle } from './mcpLifecycle';
 import { connectClaudeCode, connectCodex, type SharedPage } from './mcpSetup';
 import { everyone, forKind, isShareTarget, targetName, type ShareTarget } from './shareRegistry';
@@ -435,6 +436,33 @@ export function activate(context: vscode.ExtensionContext) {
 	// it holds CDP sessions of its own, and nothing an assistant can call
 	// reaches the vault.
 	registerLogins(context);
+
+	// The AI Browser chat, beside Claude Code's and Codex's own. No CLI starts
+	// until the view is first shown: detection runs when its webview says it is
+	// ready, and a conversation's process when its first message is sent.
+	const chat = new ChatViewProvider(context, browser);
+	if (!supportsSecondarySidebar(vscode.version)) {
+		void vscode.commands.executeCommand('setContext', chatUnsupportedContextKey, true);
+	}
+	context.subscriptions.push(chat, vscode.window.registerWebviewViewProvider(chatViewId, chat, {
+		webviewOptions: { retainContextWhenHidden: true },
+	}));
+	const revealChat = () => vscode.commands.executeCommand(`${chatViewId}.focus`);
+	context.subscriptions.push(
+		vscode.commands.registerCommand('aiBrowser.chat.newChat', async () => {
+			await revealChat();
+			chat.newChat();
+		}),
+		vscode.commands.registerCommand('aiBrowser.chat.history', async () => {
+			await revealChat();
+			chat.showHistory();
+		}),
+		// Revealed first, so the agents' CLIs still start only with the chat open.
+		vscode.commands.registerCommand('aiBrowser.chat.refreshAgents', async () => {
+			await revealChat();
+			chat.refreshAgents();
+		}),
+	);
 
 }
 
