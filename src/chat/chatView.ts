@@ -130,12 +130,12 @@ const approvalServerLimit = 30;
 /** The chats open as tabs, by chat id, and the one in front; restored with the window. */
 const openTabsKey = 'aiBrowser.chat.openTabs';
 /**
- * At most this many tabs, `aiBrowser.chat.tabLimit`: 5 unless set, 30 at most.
+ * At most this many tabs, `aiBrowser.chat.tabLimit`: 10 unless set, 30 at most.
  * Each Claude Code tab is a `claude` process of its own (a Codex tab is only a
  * thread of the one app-server), and tabs working at once spend the plan's
  * limits at once — which is why there is a ceiling at all.
  */
-export const defaultTabLimit = 5;
+export const defaultTabLimit = 10;
 export const maxTabLimit = 30;
 const tabLimitSetting = 'aiBrowser.chat.tabLimit';
 

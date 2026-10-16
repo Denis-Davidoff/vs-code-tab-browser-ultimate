@@ -684,7 +684,7 @@
 					},
 					"aiBrowser.chat.tabLimit": {
 						"type": "integer",
-						"default": 5,
+						"default": 10,
 						"minimum": 1,
 						"maximum": 30,
 						"title": "Chat Tabs",

@@ -2,6 +2,9 @@
 
 - **VS Code's built-in browser**, not a webview: every tab is a real Chromium page in its own
   isolated Electron process.
+- **Your assistants, your way:** keep the Claude Code and Codex extensions you already use, or
+  switch to the **AI Browser chat** — both agents in one panel, up to 10 chats at once, more
+  deeply wired into the browser.
 - **A built-in MCP server** that connects the browser to Claude Code, Codex or any other
   assistant that speaks MCP.
 - **Pick an element on the page** and send its address or metadata straight to Claude Code or

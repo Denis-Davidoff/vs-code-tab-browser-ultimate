@@ -123,7 +123,7 @@ cloned repository could switch autofill on for its own dev server (breaks-silent
 
 | Chat setting | Default | |
 |---|---|---|
-| `aiBrowser.chat.tabLimit` | `5` | how many conversations stay open as tabs, 1 to 30 — see [Tabs](#tabs-several-conversations-at-once) |
+| `aiBrowser.chat.tabLimit` | `10` | how many conversations stay open as tabs, 1 to 30 — see [Tabs](#tabs-several-conversations-at-once) |
 | `aiBrowser.chat.claudePath` | `""` | the `claude` executable; empty searches — see [Finding the CLIs](#finding-the-clis) |
 | `aiBrowser.chat.codexPath` | `""` | the `codex` executable, the same way |
 
@@ -4776,15 +4776,16 @@ chat belong to the agent just switched away from (#335).
 
 ### Tabs: several conversations at once
 
-Asked for: "сразу в 2-3-4-5 окнах". The view holds up to `aiBrowser.chat.tabLimit` (5 unless
+Asked for: "сразу в 2-3-4-5 окнах". The view holds up to `aiBrowser.chat.tabLimit` (10 unless
 set) conversations as tabs in a strip above the thread; one is in front and **the others go on
 working** — a reply streams, a background agent finishes, in a tab nobody is looking at. A tab
 shows a mark of how it is doing (below) and the number of its agents still working. Each tab is a `ChatTab`
 ([src/chat/chatTab.ts](src/chat/chatTab.ts)) with everything a conversation had before tabs — its
 chat, its CLI session, `_pending`, the token offset, `_endTurnHere` — moved there unchanged; the
 provider holds what all tabs share: the view, the agents, the selection, the limits, the history.
-The default is five because each Claude tab is a `claude` process and tabs working at once spend
-the plan's limits at once; the setting goes up to 30, asked for. One past the limit is refused
+The default is ten — it was five, raised on request — and there is a ceiling at all because each
+Claude tab is a `claude` process and tabs working at once spend the plan's limits at once; the
+setting goes up to 30, asked for. One past the limit is refused
 through the status bar, and the strip's "+" is **not shown at all** — asked for; a disabled
 button read as broken. `tabLimit()` reads the setting every time and takes anything that is not
 a whole number from 1 up as the default, and 30 for anything above it (#184's rule: a bad value
