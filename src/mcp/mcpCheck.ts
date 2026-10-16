@@ -6,7 +6,7 @@
 import * as http from 'http';
 import * as vscode from 'vscode';
 import { codexEntries } from './codexToml';
-import { workspaceIsRemoteFromHost } from './proposedApi';
+import { workspaceIsRemoteFromHost } from '../setup/proposedApi';
 import {
 	claudeClientState, claudeLocalScopeShadows, codexClientState, codexOurEntries,
 	codexStrangers, serverName, type ClientState,
@@ -15,7 +15,7 @@ import {
 	claudeConfigUri, claudeLocalConfigUri, codexGlobalConfigUri, codexProjectConfigUri, codexProjectIsGlobal,
 	workspaceFolder,
 } from './mcpSetup';
-import type { BrowserController } from './browserController';
+import type { BrowserController } from '../browser/browserController';
 import type { McpServer } from './mcpServer';
 
 /**

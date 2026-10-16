@@ -1020,7 +1020,7 @@
 	"scripts": {
 		"compile": "npm run build-ext && npm run build-webview",
 		"watch": "run-p -l watch-ext watch-webview watch-typecheck-webview",
-		"build-ext": "tsc --project ./tsconfig.json",
+		"build-ext": "npm run clean-ext && tsc --project ./tsconfig.json",
 		"build-webview": "node ./esbuild.webview.mts",
 		"watch-ext": "tsc --project ./tsconfig.json --watch",
 		"watch-webview": "node ./esbuild.webview.mts --watch",
@@ -1029,13 +1029,14 @@
 		"typecheck-ext": "tsc --project ./tsconfig.json --noEmit",
 		"typecheck-webview": "tsc --project ./preview-src/tsconfig.json --noEmit",
 		"typecheck-tests": "tsc --project ./tsconfig.test.json",
-		"test": "node --test preview-src/*.test.ts src/*.test.ts",
+		"test": "node --test \"preview-src/**/*.test.ts\" \"src/**/*.test.ts\"",
 		"check-manifest": "node ./scripts/check-manifest.mjs",
 		"package": "vsce package --no-dependencies --out tab-browser-ultimate.vsix",
 		"publish:ovsx": "npm run package && ovsx publish tab-browser-ultimate.vsix",
 		"verify-pat": "ovsx verify-pat DenysDavydov",
 		"download-api": "dts dev",
-		"vscode:prepublish": "npm run compile"
+		"vscode:prepublish": "npm run compile",
+		"clean-ext": "node -e \"require('fs').rmSync('out', { recursive: true, force: true })\""
 	},
 	"devDependencies": {
 		"@types/node": "24.x",

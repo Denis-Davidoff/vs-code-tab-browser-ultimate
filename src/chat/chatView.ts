@@ -8,17 +8,17 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { chatTitle, toolOutputLimit, type AgentEvent } from './agentProtocol';
 import { AgentRegistry, agentNames, type AgentBackend, type AgentSession, type TurnImage } from './agents';
-import type { BrowserController } from './browserController';
+import type { BrowserController } from '../browser/browserController';
 import type {
 	AgentId, AgentUsage, AttachmentChip, AttachmentKind, ChatEntry, ChatStats, ChatSummary,
 	ChatViewState, HostToView, Selection, ToolEntry, UsageWindow, ViewToHost,
 } from './chatProtocol';
-import { pickElementContext } from './elementPicker';
-import { refuse } from './notify';
-import { plainInLabel, plainInPrompt } from './notifyText';
-import { isBrowserApiGranted, workspaceIsRemoteFromHost } from './proposedApi';
-import { pageTitle } from './translateText';
-import { generateUuid } from './uuid';
+import { pickElementContext } from '../elements/elementPicker';
+import { refuse } from '../core/notify';
+import { plainInLabel, plainInPrompt } from '../core/notifyText';
+import { isBrowserApiGranted, workspaceIsRemoteFromHost } from '../setup/proposedApi';
+import { pageTitle } from '../translate/translateText';
+import { generateUuid } from '../core/uuid';
 
 /**
  * The AI Browser chat: a webview view in its own container in the secondary (right) side bar.

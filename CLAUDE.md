@@ -48,7 +48,7 @@ the extension's page inside VS Code — keep it accurate, just not exhaustive.
 **New browser functionality is built against VS Code's built-in browser, through the `browser`
 API proposal and CDP. This is the default and it is settled** — the recipe is in
 [The `browser` proposed API](#the-browser-proposed-api--the-main-way-to-add-features). It is
-proven, not theoretical: the element picker ([src/elementPicker.ts](src/elementPicker.ts))
+proven, not theoretical: the element picker ([src/elements/elementPicker.ts](src/elements/elementPicker.ts))
 works this way end to end.
 
 **Do not add features to the webview panel.** It remains available
@@ -139,66 +139,106 @@ each with its own compilation step.
 
 Compiled with `tsc`, **no bundling**. `main: ./out/extension`.
 
+**`src/` is split into feature folders, and `out/` mirrors it.** `extension.ts` stays at the
+root, which is what keeps `main` unchanged. The folders follow the features this file documents,
+not kinds of code:
+
+| Folder | Holds |
+|---|---|
+| `core/` | shared plumbing: `dispose`, `uuid`, `notify`, `notifyText`, `safeFiles`, `fileLock`, `webUrl`, `cdp` |
+| `setup/` | the `browser` grant, the status bar, the release watch: `proposedApi`, `argvJson`, `statusBar`, `updateCheck`, `updateVersion` |
+| `panel/` | the old webview panel: `aiBrowserManager`, `aiBrowserView` |
+| `browser/` | the built-in browser for the tools: `browserController`, sharing, screenshots and their encoders, `clipboardImage` |
+| `elements/` | the element picker and its reports, and the hand-over to the assistants |
+| `mcp/` | the MCP server, client configs, the repair, `codexToml`, `gitignoreRule` |
+| `logins/` | saved logins and passkeys, including the MPL-2.0 `loginFormScript.ts` |
+| `translate/` | Translate Page |
+| `chat/` | the AI Browser chat and the agents behind it |
+
+Rules that come with it:
+
+- **Tests sit beside their module** (`mcp/mcpRepair.test.ts`), so their explicit `./x.ts`
+  imports stay short and a leaf module's tests never reach across folders by accident. `npm test`
+  passes `"src/**/*.test.ts"` quoted, so Node expands it rather than the shell: an unquoted `**`
+  without globstar is a single `*`, which happens to match today's one level of folders and would
+  miss a test at the root or two levels down. **A pattern that matches nothing passes**:
+  `node --test` reports `tests 0` and exits 0, so a mistyped glob, or the old `src/*.test.ts`
+  against this layout, is green with nothing run. After touching the script, check the count —
+  632 tests at the move.
+- **No barrel files** (`index.ts` re-exporting a folder). A re-export is a relative value import,
+  which a module `npm test` loads may not have, and barrels are how import cycles start.
+- **`build-ext` empties `out/` first** (`clean-ext`). `tsc` never deletes outputs, so after any
+  move or rename the old `.js` stays in `out/` — and `out/**` is packaged, so a VSIX would carry
+  both layouts, and nothing would fail.
+- A new module goes in the folder of the feature it serves; something two features share goes in
+  `core/` only when it holds no feature's logic.
+
+The move itself (2026-10-16) was mechanical and checked that way: every module's compiled
+JavaScript was compared with the build before it, equal apart from import paths — the one
+difference, in `browserController.js`, was a doc comment whose link had been updated.
+
 - [src/extension.ts](src/extension.ts) — `activate`, command and opener registration
-- [src/aiBrowserManager.ts](src/aiBrowserManager.ts) — singleton holder for the active panel
-- [src/aiBrowserView.ts](src/aiBrowserView.ts) — the panel: HTML generation, message bridge
-- [src/dispose.ts](src/dispose.ts) — base `Disposable` with `_register`
-- [src/uuid.ts](src/uuid.ts) — nonce generator, copied from `vs/base/common/uuid`
-- [src/cdp.ts](src/cdp.ts) — CDP client for the built-in browser (not used by the panel)
-- [src/proposedApi.ts](src/proposedApi.ts) — the one-click `browser` grant, and host detection
-- [src/argvJson.ts](src/argvJson.ts) — surgical JSONC edits to `argv.json` (leaf, under test)
-- [src/statusBar.ts](src/statusBar.ts) — the two status bar items and their menu
-- [src/notify.ts](src/notify.ts) — confirmations, kept out of the notification area
-- [src/notifyText.ts](src/notifyText.ts) — neutralising a page-supplied string for a notification, a prompt or a tooltip (leaf, under test)
-- [src/elementPicker.ts](src/elementPicker.ts) — the four element commands
-- [src/elementContext.ts](src/elementContext.ts) — pulls element data out of the page over CDP
-- [src/elementMarkdown.ts](src/elementMarkdown.ts) — renders that data as Markdown
-- [src/cssHelpers.ts](src/cssHelpers.ts) — copied verbatim from vscode, builds the CSS section
-- [src/reportFormat.ts](src/reportFormat.ts) — report text and file names (leaf, under test)
-- [src/webUrl.ts](src/webUrl.ts) — turning typed input into an address (leaf, under test)
-- [src/assistants.ts](src/assistants.ts) — handing reports to Claude Code and Codex
-- [src/lastAction.ts](src/lastAction.ts) — which element command the toolbar button repeats
-- [src/browserController.ts](src/browserController.ts) — what the browser can do, for MCP
-- [src/shareRegistry.ts](src/shareRegistry.ts) — who works on which tab (leaf, under test)
-- [src/shareIndicator.ts](src/shareIndicator.ts) — the share glyphs, and reading a marker an older build wrote (leaf, under test)
-- [src/mcpProtocol.ts](src/mcpProtocol.ts) — JSON-RPC dispatch and the auth decision (leaf, under test)
-- [src/mcpPort.ts](src/mcpPort.ts) — which port a window tries first (leaf, under test)
-- [src/mcpRepair.ts](src/mcpRepair.ts) — correcting a stale entry in a client config (leaf, under test)
-- [src/fileLock.ts](src/fileLock.ts) — the cross-process lock on the shared config files (leaf, under test)
-- [src/safeFiles.ts](src/safeFiles.ts) — the private temp directory, exclusive creates and atomic config writes (leaf, under test)
-- [src/gitignoreRule.ts](src/gitignoreRule.ts) — whether `.codex/.gitignore` keeps the token file out of git (leaf, under test)
-- [src/mcpServer.ts](src/mcpServer.ts) — HTTP transport, tools, client attribution
-- [src/screenshotFrames.ts](src/screenshotFrames.ts) — how `browser_screenshot` is cut into frames for a model (leaf, under test)
-- [src/pngDecode.ts](src/pngDecode.ts) — the screenshot PNG into raw rows (leaf, under test)
-- [src/jpegEncode.ts](src/jpegEncode.ts) — a baseline JPEG encoder for those frames (leaf, under test)
-- [src/mcpSetup.ts](src/mcpSetup.ts) — client config writing and the connect dialogs
-- [src/mcpCheck.ts](src/mcpCheck.ts) — the Check Connection report
-- [src/mcpClientState.ts](src/mcpClientState.ts) — config states (leaf, under test)
-- [src/codexToml.ts](src/codexToml.ts) — the mini TOML table parser (leaf, under test)
-- [src/mcpLifecycle.ts](src/mcpLifecycle.ts) — server lifetime and context keys
-- [src/updateVersion.ts](src/updateVersion.ts) — comparing two versions (leaf, under test)
-- [src/updateCheck.ts](src/updateCheck.ts) — the release watch and its one notification
-- [src/logins.ts](src/logins.ts) — saved logins and passkeys: commands, the status bar item, the pickers, export and import
-- [src/loginWatcher.ts](src/loginWatcher.ts) — the CDP half: one session per recent tab, sign-in outcomes, the passkey ceremony
-- [src/loginVault.ts](src/loginVault.ts) — the vault in SecretStorage, written under a cross-process lock
-- [src/loginFormScript.ts](src/loginFormScript.ts) — the page-side script, ported from Firefox — **MPL-2.0, the one non-MIT file**
-- [src/passkeyGate.ts](src/passkeyGate.ts) — the page-side wrapper that asks before a WebAuthn ceremony
-- [src/loginMessages.ts](src/loginMessages.ts) — what the page script reports, validated (leaf, under test)
-- [src/secretGuards.ts](src/secretGuards.ts) — password values kept from the MCP tools: redaction, value-probing selectors (leaf, under test)
-- [src/vaultData.ts](src/vaultData.ts) — the vault's shape, origin matching, save-or-update, merging (leaf, under test)
-- [src/vaultSeal.ts](src/vaultSeal.ts) — the encrypted export: scrypt and AES-256-GCM (leaf, under test)
-- [src/loginCsv.ts](src/loginCsv.ts) — CSV from and to Chrome, Firefox, Safari, Bitwarden, 1Password (leaf, under test)
-- [src/translate.ts](src/translate.ts) — Translate Page: the tab, the language picker, the prompt on the clipboard
-- [src/translateText.ts](src/translateText.ts) — languages, the prompt, checks on what the assistant writes back (leaf, under test)
-- [src/translateScript.ts](src/translateScript.ts) — the page-side translator behind `browser_text_segments` / `browser_replace_text`
-- [src/chatView.ts](src/chatView.ts) — the AI Browser chat: the webview view, its state, history, attachments, usage
-- [src/chatProtocol.ts](src/chatProtocol.ts) — the messages between the chat's webview and the host (types only, read by both builds)
-- [src/agents.ts](src/agents.ts) — the agent interface, and detecting which agents are installed
-- [src/agentBinary.ts](src/agentBinary.ts) — where `claude` and `codex` are
-- [src/agentProcess.ts](src/agentProcess.ts) — a CLI speaking one JSON object per line
-- [src/agentProtocol.ts](src/agentProtocol.ts) — reading what the two CLIs say: models, efforts, usage, turn events (leaf, under test)
-- [src/claudeAgent.ts](src/claudeAgent.ts) — Claude Code over `stream-json` and its control channel
-- [src/codexAgent.ts](src/codexAgent.ts) — Codex over `codex app-server` JSON-RPC
+- [src/panel/aiBrowserManager.ts](src/panel/aiBrowserManager.ts) — singleton holder for the active panel
+- [src/panel/aiBrowserView.ts](src/panel/aiBrowserView.ts) — the panel: HTML generation, message bridge
+- [src/core/dispose.ts](src/core/dispose.ts) — base `Disposable` with `_register`
+- [src/core/uuid.ts](src/core/uuid.ts) — nonce generator, copied from `vs/base/common/uuid`
+- [src/core/cdp.ts](src/core/cdp.ts) — CDP client for the built-in browser (not used by the panel)
+- [src/setup/proposedApi.ts](src/setup/proposedApi.ts) — the one-click `browser` grant, and host detection
+- [src/setup/argvJson.ts](src/setup/argvJson.ts) — surgical JSONC edits to `argv.json` (leaf, under test)
+- [src/setup/statusBar.ts](src/setup/statusBar.ts) — the two status bar items and their menu
+- [src/core/notify.ts](src/core/notify.ts) — confirmations, kept out of the notification area
+- [src/core/notifyText.ts](src/core/notifyText.ts) — neutralising a page-supplied string for a notification, a prompt or a tooltip (leaf, under test)
+- [src/elements/elementPicker.ts](src/elements/elementPicker.ts) — the four element commands
+- [src/elements/elementContext.ts](src/elements/elementContext.ts) — pulls element data out of the page over CDP
+- [src/elements/elementMarkdown.ts](src/elements/elementMarkdown.ts) — renders that data as Markdown
+- [src/elements/cssHelpers.ts](src/elements/cssHelpers.ts) — copied verbatim from vscode, builds the CSS section
+- [src/elements/reportFormat.ts](src/elements/reportFormat.ts) — report text and file names (leaf, under test)
+- [src/core/webUrl.ts](src/core/webUrl.ts) — turning typed input into an address (leaf, under test)
+- [src/elements/assistants.ts](src/elements/assistants.ts) — handing reports to Claude Code and Codex
+- [src/elements/lastAction.ts](src/elements/lastAction.ts) — which element command the toolbar button repeats
+- [src/browser/browserController.ts](src/browser/browserController.ts) — what the browser can do, for MCP
+- [src/browser/shareRegistry.ts](src/browser/shareRegistry.ts) — who works on which tab (leaf, under test)
+- [src/browser/shareIndicator.ts](src/browser/shareIndicator.ts) — the share glyphs, and reading a marker an older build wrote (leaf, under test)
+- [src/mcp/mcpProtocol.ts](src/mcp/mcpProtocol.ts) — JSON-RPC dispatch and the auth decision (leaf, under test)
+- [src/mcp/mcpPort.ts](src/mcp/mcpPort.ts) — which port a window tries first (leaf, under test)
+- [src/mcp/mcpRepair.ts](src/mcp/mcpRepair.ts) — correcting a stale entry in a client config (leaf, under test)
+- [src/core/fileLock.ts](src/core/fileLock.ts) — the cross-process lock on the shared config files (leaf, under test)
+- [src/core/safeFiles.ts](src/core/safeFiles.ts) — the private temp directory, exclusive creates and atomic config writes (leaf, under test)
+- [src/mcp/gitignoreRule.ts](src/mcp/gitignoreRule.ts) — whether `.codex/.gitignore` keeps the token file out of git (leaf, under test)
+- [src/mcp/mcpServer.ts](src/mcp/mcpServer.ts) — HTTP transport, tools, client attribution
+- [src/browser/screenshot.ts](src/browser/screenshot.ts) — Copy Screenshot (Visible Area / Full Page), the toolbar's capture
+- [src/browser/clipboardImage.ts](src/browser/clipboardImage.ts) — a PNG onto the system clipboard, per platform
+- [src/browser/screenshotFrames.ts](src/browser/screenshotFrames.ts) — how `browser_screenshot` is cut into frames for a model (leaf, under test)
+- [src/browser/pngDecode.ts](src/browser/pngDecode.ts) — the screenshot PNG into raw rows (leaf, under test)
+- [src/browser/jpegEncode.ts](src/browser/jpegEncode.ts) — a baseline JPEG encoder for those frames (leaf, under test)
+- [src/mcp/mcpSetup.ts](src/mcp/mcpSetup.ts) — client config writing and the connect dialogs
+- [src/mcp/mcpCheck.ts](src/mcp/mcpCheck.ts) — the Check Connection report
+- [src/mcp/mcpClientState.ts](src/mcp/mcpClientState.ts) — config states (leaf, under test)
+- [src/mcp/codexToml.ts](src/mcp/codexToml.ts) — the mini TOML table parser (leaf, under test)
+- [src/mcp/mcpLifecycle.ts](src/mcp/mcpLifecycle.ts) — server lifetime and context keys
+- [src/setup/updateVersion.ts](src/setup/updateVersion.ts) — comparing two versions (leaf, under test)
+- [src/setup/updateCheck.ts](src/setup/updateCheck.ts) — the release watch and its one notification
+- [src/logins/logins.ts](src/logins/logins.ts) — saved logins and passkeys: commands, the status bar item, the pickers, export and import
+- [src/logins/loginWatcher.ts](src/logins/loginWatcher.ts) — the CDP half: one session per recent tab, sign-in outcomes, the passkey ceremony
+- [src/logins/loginVault.ts](src/logins/loginVault.ts) — the vault in SecretStorage, written under a cross-process lock
+- [src/logins/loginFormScript.ts](src/logins/loginFormScript.ts) — the page-side script, ported from Firefox — **MPL-2.0, the one non-MIT file**
+- [src/logins/passkeyGate.ts](src/logins/passkeyGate.ts) — the page-side wrapper that asks before a WebAuthn ceremony
+- [src/logins/loginMessages.ts](src/logins/loginMessages.ts) — what the page script reports, validated (leaf, under test)
+- [src/logins/secretGuards.ts](src/logins/secretGuards.ts) — password values kept from the MCP tools: redaction, value-probing selectors (leaf, under test)
+- [src/logins/vaultData.ts](src/logins/vaultData.ts) — the vault's shape, origin matching, save-or-update, merging (leaf, under test)
+- [src/logins/vaultSeal.ts](src/logins/vaultSeal.ts) — the encrypted export: scrypt and AES-256-GCM (leaf, under test)
+- [src/logins/loginCsv.ts](src/logins/loginCsv.ts) — CSV from and to Chrome, Firefox, Safari, Bitwarden, 1Password (leaf, under test)
+- [src/translate/translate.ts](src/translate/translate.ts) — Translate Page: the tab, the language picker, the prompt on the clipboard
+- [src/translate/translateText.ts](src/translate/translateText.ts) — languages, the prompt, checks on what the assistant writes back (leaf, under test)
+- [src/translate/translateScript.ts](src/translate/translateScript.ts) — the page-side translator behind `browser_text_segments` / `browser_replace_text`
+- [src/chat/chatView.ts](src/chat/chatView.ts) — the AI Browser chat: the webview view, its state, history, attachments, usage
+- [src/chat/chatProtocol.ts](src/chat/chatProtocol.ts) — the messages between the chat's webview and the host (types only, read by both builds)
+- [src/chat/agents.ts](src/chat/agents.ts) — the agent interface, and detecting which agents are installed
+- [src/chat/agentBinary.ts](src/chat/agentBinary.ts) — where `claude` and `codex` are
+- [src/chat/agentProcess.ts](src/chat/agentProcess.ts) — a CLI speaking one JSON object per line
+- [src/chat/agentProtocol.ts](src/chat/agentProtocol.ts) — reading what the two CLIs say: models, efforts, usage, turn events (leaf, under test)
+- [src/chat/claudeAgent.ts](src/chat/claudeAgent.ts) — Claude Code over `stream-json` and its control channel
+- [src/chat/codexAgent.ts](src/chat/codexAgent.ts) — Codex over `codex app-server` JSON-RPC
 
 **There is only ever one panel.** `AIBrowserManager._activeView` is a single slot: a repeat
 `show()` reuses the existing panel rather than creating a second one. If multiple tabs are ever
@@ -286,7 +326,8 @@ verified by removing each one from `node_modules` and watching what broke.
 ```
 compile                  build-ext && build-webview            ← full build
 watch                    run-p -l watch-ext watch-webview watch-typecheck-webview
-build-ext                tsc --project ./tsconfig.json         ← src/ → out/
+build-ext                clean-ext && tsc --project ./tsconfig.json  ← src/ → out/
+clean-ext                removes out/: tsc never deletes stale outputs
 build-webview            node ./esbuild.webview.mts            ← preview-src/ → media/
 watch-ext                tsc ... --watch
 watch-webview            node ./esbuild.webview.mts --watch
@@ -295,7 +336,7 @@ typecheck                run-p -l typecheck-ext typecheck-webview typecheck-test
 typecheck-ext            tsc --project ./tsconfig.json --noEmit
 typecheck-webview        tsc --project ./preview-src/tsconfig.json --noEmit
 typecheck-tests          tsc --project ./tsconfig.test.json    ← test files, no emit
-test                     node --test preview-src/*.test.ts src/*.test.ts
+test                     node --test "preview-src/**/*.test.ts" "src/**/*.test.ts"
 check-manifest           node ./scripts/check-manifest.mjs      ← menus, icons, activation
 package                  vsce package … --out tab-browser-ultimate.vsix  ← see Packaging a VSIX
 publish:ovsx             package && ovsx publish …                ← Open VSX, needs OVSX_PAT
@@ -322,7 +363,7 @@ npm run compile && npm run typecheck
 - [preview-src/tsconfig.json](preview-src/tsconfig.json) — webview, `DOM` lib. **esbuild picks
   this tsconfig up automatically** based on the entry point's location; it does not need to be
   passed as a flag. Its `rootDir` is `..`, not `.`, because `chat.ts` reads the chat's message
-  types from `../src/chatProtocol.ts` with `import type` — the one file both runtimes share, and
+  types from `../src/chat/chatProtocol.ts` with `import type` — the one file both runtimes share, and
   only as types, so esbuild erases it. Nothing is emitted from this project, so the wider root
   changes no output; with `.` the typecheck fails on the import.
 
@@ -449,7 +490,7 @@ pre-rewrite proxy build with none of these features — the log gave it away, ac
 Devin still needs the grant, exactly as VS Code does, and **from its own
 `~/.devin/argv.json`** — it is not in the host's `product.json`
 `extensionEnabledApiProposals`, so `argv.json` is the only route. That per-fork path is the
-reason [src/proposedApi.ts](src/proposedApi.ts) reads `dataFolderName` instead of hard-coding
+reason [src/setup/proposedApi.ts](src/setup/proposedApi.ts) reads `dataFolderName` instead of hard-coding
 `.vscode`.
 
 **VSCodium works, but not by itself** — measured on 1.135.06055: the proposal, the extHost API,
@@ -534,8 +575,8 @@ fork, unfixable) from "CANNOT use API proposal" (the grant, fixable) in one line
 
 `aiBrowser.enableBrowserApi` ("AI Browser: Enable Integrated Browser API") writes the grant
 itself, because the manual instructions were the single most common reason the headline
-features looked broken. [src/proposedApi.ts](src/proposedApi.ts) decides and drives it,
-[src/argvJson.ts](src/argvJson.ts) does the editing (leaf module, under test).
+features looked broken. [src/setup/proposedApi.ts](src/setup/proposedApi.ts) decides and drives it,
+[src/setup/argvJson.ts](src/setup/argvJson.ts) does the editing (leaf module, under test).
 
 **Three states, and only the middle one is fixable** — `browserApiState()`:
 
@@ -623,7 +664,7 @@ Also worth knowing:
 ### Presence is not permission: `in` lies about the grant
 
 **Never ask whether a proposed-API member exists. Read it.** `isBrowserApiGranted()` in
-[src/proposedApi.ts](src/proposedApi.ts) is the only correct test, and every guard goes through
+[src/setup/proposedApi.ts](src/setup/proposedApi.ts) is the only correct test, and every guard goes through
 it.
 
 VS Code builds the `window` namespace per extension and defines proposal-gated members
@@ -711,11 +752,11 @@ closing bracket lands after a trailing comma (making a second one) or *inside* a
 before both. Non-string contents are refused rather than rewritten, for the same reason a
 non-array value is.
 
-Every case above is in [src/argvJson.test.ts](src/argvJson.test.ts).
+Every case above is in [src/setup/argvJson.test.ts](src/setup/argvJson.test.ts).
 
 ### The status bar: one permanent button, one that hides itself
 
-[src/statusBar.ts](src/statusBar.ts) puts two items on the left, and they have different jobs.
+[src/setup/statusBar.ts](src/setup/statusBar.ts) puts two items on the left, and they have different jobs.
 
 **`$(globe) AI Browser` is permanent and opens a QuickPick.** It is not decoration: the dropdown
 on the browser tab is gated on `activeEditor == 'workbench.editor.browser'`, so before this the
@@ -743,7 +784,7 @@ grant states hide it:
 | `unsupported` | hidden |
 
 **A scheme-less address gets one, and it is not always `https`.**
-`normalizeAddress` in [src/webUrl.ts](src/webUrl.ts) (leaf module, under test) supplies
+`normalizeAddress` in [src/core/webUrl.ts](src/core/webUrl.ts) (leaf module, under test) supplies
 `https://` for an ordinary host and **`http://` for localhost-like ones**. Always-https was the
 request and it is the wrong default for this extension specifically: a dev server on
 `localhost:3000` does not speak https, the external URI opener only ever fires for those hosts,
@@ -824,7 +865,7 @@ which is also the surface that re-renders itself under `pulse` and on every shar
 
 **`Open File` is in the menu only when the built-in browser will take it.** It is gated on
 `shouldUseIntegratedBrowser()`, which is why that helper lives in
-[src/proposedApi.ts](src/proposedApi.ts) rather than in `extension.ts` — three callers need the
+[src/setup/proposedApi.ts](src/setup/proposedApi.ts) rather than in `extension.ts` — three callers need the
 same answer, and the second copy drifted: Open File reached for
 `workbench.action.browser.openFile` whenever the command was registered, ignoring both the
 setting and the grant, so on a host where the user had just chosen the webview panel it still
@@ -877,7 +918,7 @@ context menu lists.
 **Verified with a fake `vscode`.** `statusBar.ts` imports `proposedApi.ts`, which imports
 `vscode`, so it can never be an `npm test` file (see the leaf-module rule under
 [Recipe for the next feature](#recipe-for-the-next-feature)). It was checked instead by loading
-the compiled `out/statusBar.js` against a stubbed `vscode` module and printing what each grant
+the compiled `out/setup/statusBar.js` against a stubbed `vscode` module and printing what each grant
 state renders — all four states, plus the menu contents, plus the pulse settling on. Worth
 redoing that way after changing this file; a typecheck says nothing about which item is visible.
 
@@ -910,7 +951,7 @@ it. So every pick froze the page behind a "Paused" overlay that had to be dismis
 click could land. It read as a broken picker; it was our own progress notification.
 
 **The rule now: a notification is for a refusal or a decision, never a confirmation.** Successes
-go through `confirm()` in [src/notify.ts](src/notify.ts), which is
+go through `confirm()` in [src/core/notify.ts](src/core/notify.ts), which is
 `window.setStatusBarMessage`. The status bar is part of the workbench layout rather than an
 overlay, so none of the above applies to it.
 
@@ -931,7 +972,7 @@ overlay, so none of the above applies to it.
   `$closeCDPSession` or by the group service, so `BrowserCDPSession.onDidClose` never fires on this
   path. Read from the outside that is a `Cancel pick` button that stays in the status bar for the
   rest of the session with nothing behind it, and the `withProgress` title beside it. So
-  `watchTabClose` in [src/elementPicker.ts](src/elementPicker.ts) cancels the token on
+  `watchTabClose` in [src/elements/elementPicker.ts](src/elements/elementPicker.ts) cancels the token on
   `onDidCloseBrowserTab`, and on `onDidChangeActiveBrowserTab` re-checks membership of
   `browserTabs` — the same lazy detector `browserController` keeps for a host that does not fire
   the close event, and the picked tab is by construction the active one, so closing it changes
@@ -954,7 +995,7 @@ and the Add entries are hidden in the first place (`canHandOver`). The modal in
 Page's "the prompt is on your clipboard" is the other, for the same reason.
 Asked for explicitly: once the file is written and the prompt copied, the paste is the one step
 left, and a status bar line was too easy to miss — the setup looked finished with nothing
-checked. `askToPaste` in [src/mcpSetup.ts](src/mcpSetup.ts) shows "Paste into the Claude Code /
+checked. `askToPaste` in [src/mcp/mcpSetup.ts](src/mcp/mcpSetup.ts) shows "Paste into the Claude Code /
 Codex chat to finish connecting to the browser." as `{ modal: true }`. A toast would stay up,
 and keep the page behind it paused, until someone found and dismissed it; the modal goes with
 the one click the user is making anyway. Keep it short: the details (the share, a leftover
@@ -987,7 +1028,7 @@ rendered as *linked text* and its links are opened with `allowCommands: true` �
 recorded under item 124 — so `[label](command:…)` anywhere in it is a button that runs a command
 on one click. `versionShape` guards that sink for a value with a *shape*; a page title has none,
 because the page chooses it outright, so `plainInNotification`
-([src/notifyText.ts](src/notifyText.ts), leaf module, under test) neutralises it instead. It
+([src/core/notifyText.ts](src/core/notifyText.ts), leaf module, under test) neutralises it instead. It
 drops `[` and `]` — without a label there is no link, whatever follows, so the rule does not
 depend on which target schemes the renderer happens to accept — and caps the length, which is not
 security but the fact that a notification is one line and a title can be thousands of characters.
@@ -1024,7 +1065,7 @@ the page, element inspection — all of it is a CDP call, because that is exactl
 built-in browser implements its own features.
 
 Two things to know before writing against it, both handled by
-[src/cdp.ts](src/cdp.ts):
+[src/core/cdp.ts](src/core/cdp.ts):
 
 - **The channel is browser-level**, the same shape as attaching to Chrome's browser websocket.
   Commands aimed at the page do nothing until you `Target.attachToTarget` (`flatten: true`)
@@ -1234,7 +1275,7 @@ The twelve action ids (`element`, `cssPath`, `cssLocation`, `xpath` and `<assist
 are compared
 verbatim in `when` clauses, which makes them **part of the manifest's contract** — renaming one
 in `lastAction.ts` alone silently removes a button. Add commands reuse the crosshair colour of
-the matching Copy command, so the button looks the same whichever destination it repeats. [src/lastAction.ts](src/lastAction.ts)
+the matching Copy command, so the button looks the same whichever destination it repeats. [src/elements/lastAction.ts](src/elements/lastAction.ts)
 keeps the context key and a memento in step — the memento because a context key does not
 survive a restart. Each command records itself before running, in `extension.ts`.
 
@@ -1281,7 +1322,7 @@ with no error anywhere.
 
 ### The four element commands
 
-All in [src/elementPicker.ts](src/elementPicker.ts), all sharing `withPickedElement`:
+All in [src/elements/elementPicker.ts](src/elements/elementPicker.ts), all sharing `withPickedElement`:
 
 | Command | Output |
 |---|---|
@@ -1322,7 +1363,7 @@ reads. Everything before the separator is an argument for `browser_navigate`, ev
 it an argument for `document.querySelector`.
 
 **The separator went through three forms, and each was eliminated by a different rule**
-(`locationSeparator` in [src/reportFormat.ts](src/reportFormat.ts)):
+(`locationSeparator` in [src/elements/reportFormat.ts](src/elements/reportFormat.ts)):
 
 - It must not be legal inside either half, or the string cannot be split back apart. That stopped
   the bracketed suffix this started as — `… > input [page: http://localhost/a/b]` is *valid CSS
@@ -1461,7 +1502,7 @@ retired token until the next pick reclaimed it. The client is now constructed in
 turns on inspect mode. Two at once means a single click delivers
 `Overlay.inspectNodeRequested` to *both* sessions, both commands run to completion, and the
 later one overwrites the clipboard — which the user sees as "sometimes it copies an action I did
-not choose". `pendingPick` in [src/elementPicker.ts](src/elementPicker.ts) cancels any pick
+not choose". `pendingPick` in [src/elements/elementPicker.ts](src/elements/elementPicker.ts) cancels any pick
 already in flight, so the latest choice wins. Related: clearing inspect mode belongs in
 `finally`, because on cancellation the `await` throws and a statement placed after it never
 runs — leaving the page stranded in picking state.
@@ -1470,9 +1511,9 @@ runs — leaving the page stranded in picking state.
 `createElementContextValue` / `formatElementPath` from `browserEditorChatFeatures.ts`, and
 `extractElementData` follows `extractNodeData` from `browserViewFrameInspector.ts`. The CSS
 section — matched rules, `/* Inherited */`, `/* Resolved values */`, `/* CSS variables */`, the
-`/*UA*/` marker — is produced by [src/cssHelpers.ts](src/cssHelpers.ts), which is upstream code
+`/*UA*/` marker — is produced by [src/elements/cssHelpers.ts](src/elements/cssHelpers.ts), which is upstream code
 copied **verbatim** (616 lines, zero imports). That is what keeps our output identical to the
-built-in browser's. Its upstream test suite came along as `src/cssHelpers.test.ts` and is its
+built-in browser's. Its upstream test suite came along as `src/elements/cssHelpers.test.ts` and is its
 specification; re-sync the two together rather than editing either in place.
 
 The element itself is the **last** entry of `ancestors`, which is why `Element:` and the tail of
@@ -1480,7 +1521,7 @@ The element itself is the **last** entry of `ancestors`, which is why `Element:`
 
 ### Element picker
 
-`aiBrowser.copyElementXPath` ([src/elementPicker.ts](src/elementPicker.ts)) turns on
+`aiBrowser.copyElementXPath` ([src/elements/elementPicker.ts](src/elements/elementPicker.ts)) turns on
 `Overlay.setInspectMode` — the same mechanism behind the built-in "Add Element to Chat", so
 hover highlighting comes free — waits for `Overlay.inspectNodeRequested`, resolves the backend
 node, and runs an XPath builder through `Runtime.callFunctionOn`. Inspect mode is switched off
@@ -1500,7 +1541,7 @@ element.
    [The dropdown on the browser tab](#the-dropdown-on-the-browser-tab)) rather than adding
    another `editor/title` entry — one dropdown beats a row of icons.
 3. Guard twice, with different messages: `isBrowserApiGranted()` from
-   [src/proposedApi.ts](src/proposedApi.ts) (proposal missing, or launched without the flag)
+   [src/setup/proposedApi.ts](src/setup/proposedApi.ts) (proposal missing, or launched without the flag)
    and `vscode.window.activeBrowserTab` (nothing open). The fixes are unrelated, so one message
    would send people the wrong way. **Never test the API with `in`** —
    [presence is not permission](#presence-is-not-permission-in-lies-about-the-grant).
@@ -1530,7 +1571,7 @@ of `elementContext.ts` — the renderer is testable precisely because it imports
 
 The dropdown's three assistant entries (Connect Claude Code, Connect Codex, Check Connection)
 sit on top of a local MCP server. Server name, everywhere: **`ai-browser`**
-([src/mcpClientState.ts](src/mcpClientState.ts) owns the constant).
+([src/mcp/mcpClientState.ts](src/mcp/mcpClientState.ts) owns the constant).
 
 ### Layers
 
@@ -1538,10 +1579,10 @@ sit on top of a local MCP server. Server name, everywhere: **`ai-browser`**
 MCP client (Claude Code / Codex / VS Code chat)
    │  HTTP POST, JSON-RPC 2.0, Bearer
    ▼
-McpServer          src/mcpServer.ts       transport, auth, tool registry
-   │  ▲ src/mcpProtocol.ts — dispatch and the auth decision, no vscode, under test
+McpServer          src/mcp/mcpServer.ts       transport, auth, tool registry
+   │  ▲ src/mcp/mcpProtocol.ts — dispatch and the auth decision, no vscode, under test
    ▼
-BrowserController  src/browserController.ts   what the browser can do
+BrowserController  src/browser/browserController.ts   what the browser can do
    ▼
 CDPClient → the integrated browser
 ```
@@ -1573,7 +1614,7 @@ would be more surface area than the feature.
    by anything here — Codex turned out to accept a static header after all — but it stays
    accepted, because configs written before that discovery still use it.
 
-All four live in `authorizeRequest` in [src/mcpProtocol.ts](src/mcpProtocol.ts), away from
+All four live in `authorizeRequest` in [src/mcp/mcpProtocol.ts](src/mcp/mcpProtocol.ts), away from
 `http`, so they are covered by tests rather than by inspection.
 
 Other transport details that are load-bearing: the body is capped at 1 MB; the handler is
@@ -1815,7 +1856,7 @@ same as no lock (breaks-silently #16 and #106).
 
 ### The mini TOML parser
 
-[src/codexToml.ts](src/codexToml.ts) is not a TOML parser — it is exactly as much of one as the
+[src/mcp/codexToml.ts](src/mcp/codexToml.ts) is not a TOML parser — it is exactly as much of one as the
 two readers (checking, and replacing our table) need, and **they must agree on where a table
 starts and ends**. `endLine` stops after the last key rather than at the next header, so a
 comment above the neighbouring table is not covered into ours.
@@ -1899,7 +1940,7 @@ reads every setting as empty.
 
 ### Checking
 
-[src/mcpCheck.ts](src/mcpCheck.ts) does both halves, because a listening server proves nothing:
+[src/mcp/mcpCheck.ts](src/mcp/mcpCheck.ts) does both halves, because a listening server proves nothing:
 a real `tools/list` over loopback with the token, plus each client's config state. States are
 ordered worst-last — `thisServer`, `staleToken`, `otherServer`, `disabled`, `none` — and a file
 with several entries is judged by its best one. `staleToken` earns its own state because it is
@@ -1944,7 +1985,7 @@ extension edit the same `.mcp.json` and cannot disagree. And the prompt no longe
 command at all on the success path: it ends with *do not add or edit any MCP configuration
 yourself*. The command is still offered, but only where writing the file actually failed.
 
-**A window's first-choice port is derived from the folder URI** ([src/mcpPort.ts](src/mcpPort.ts)),
+**A window's first-choice port is derived from the folder URI** ([src/mcp/mcpPort.ts](src/mcp/mcpPort.ts)),
 so it is the same after every restart. `McpServer.start` now takes the whole list of ports to
 try rather than a starting number, because the interesting decision is which one comes first.
 It is a preference and not a reservation — two folders can hash to the same offset — so the
@@ -1977,7 +2018,7 @@ where it is. Whole-table removal is still used for *duplicates* of ours, which a
 to fix.
 
 Two smaller things fall out of it. **Every writer of `~/.codex/config.toml` is locked**
-([src/fileLock.ts](src/fileLock.ts)) — the connect path's write used to be unlocked on the
+([src/core/fileLock.ts](src/core/fileLock.ts)) — the connect path's write used to be unlocked on the
 reasoning that a button press cannot race itself, which stopped being true the moment every
 window started repairing the same file on startup; a machine restoring a session opens them all
 at once. That write is gone now (connect writes the project file), so the two that remain are
@@ -2010,7 +2051,7 @@ this extension, and `_workspaceToken` stores each token under `mcp.token:<folder
 `Memento.keys()` yields every folder this extension has ever served on this machine, with its
 token. That turns "looks like ours" into two provable facts at once: *this entry carries a token
 we minted* and *the folder it was minted for is gone*. Only then is a deletion safe, and
-`missingWorkspaceTokens` in [src/mcpSetup.ts](src/mcpSetup.ts) is where the proof is assembled.
+`missingWorkspaceTokens` in [src/mcp/mcpSetup.ts](src/mcp/mcpSetup.ts) is where the proof is assembled.
 
 **When it runs, precisely** — and this paragraph has now been wrong twice, in opposite
 directions, so read it against the code rather than trusting it. The verdict has **two halves
@@ -2066,7 +2107,7 @@ follows from that:
   sibling `.mcp.json` is left alone in the same situation, and the two now agree.
 
 - **The file surgery and the filesystem question are separate, deliberately.**
-  `codexRetiredTables` / `removeCodexTables` in [src/mcpRepair.ts](src/mcpRepair.ts) only ask which
+  `codexRetiredTables` / `removeCodexTables` in [src/mcp/mcpRepair.ts](src/mcp/mcpRepair.ts) only ask which
   tables carry which token, through `codexOurTables` — the *same* predicate the repair uses, so
   a table can never be pruned by one ownership rule and rewritten by another. That keeps them in
   the leaf module `npm test` loads directly, which is why the surgery is tested and the stat
@@ -2206,7 +2247,7 @@ take a relative value import of the other — the constraint under
 [Recipe for the next feature](#recipe-for-the-next-feature). Duplication here is a real hazard:
 the two versions had drifted, so the same entry could be silently rewritten by the repair and
 reported by the check as a stranger to delete. A test in
-[src/mcpRepair.test.ts](src/mcpRepair.test.ts) asserts the two agree on a table of cases; add
+[src/mcp/mcpRepair.test.ts](src/mcp/mcpRepair.test.ts) asserts the two agree on a table of cases; add
 to it rather than trusting that they still match.
 
 **`server.url` must be captured before the first await.** It is a getter over the live port, so
@@ -2388,7 +2429,7 @@ editor tab in the main process (`setWindowOpenHandler` → child view with `pinn
 ### Giving a tab to an assistant
 
 The user hands **one tab to one assistant**, and several assistants can be on the same tab.
-`src/shareRegistry.ts` owns the rules — a leaf with tests, no `vscode`, no CDP — and the
+`src/browser/shareRegistry.ts` owns the rules — a leaf with tests, no `vscode`, no CDP — and the
 controller above it only resolves CDP sessions and drives the browser.
 
 **The map runs assistant → tab, and the direction is the design.** Keyed the other way it would
@@ -2683,7 +2724,7 @@ a related reason: it lands in every screenshot the agent takes and shows up in `
 `browser_text` as page content that is not the page's. Both rejections are the same rule — the
 page is not ours to annotate.
 
-What is left in [src/shareIndicator.ts](src/shareIndicator.ts) is the reading half, and each
+What is left in [src/browser/shareIndicator.ts](src/browser/shareIndicator.ts) is the reading half, and each
 piece has its own reason to stay:
 
 - `sharedMarker` / `inUseMarker`, because the status bar and the menu still show them;
@@ -2971,7 +3012,7 @@ navigation would be a second door around that rule.
 
 ### Lifecycle
 
-[src/mcpLifecycle.ts](src/mcpLifecycle.ts) keeps the server's disposables **apart from
+[src/mcp/mcpLifecycle.ts](src/mcp/mcpLifecycle.ts) keeps the server's disposables **apart from
 `context.subscriptions`**: switching the setting off must give the port back without tearing
 down the extension. Restarts are serialised through a promise chain, or two setting changes in
 a row race for the same port. Commands are registered unconditionally and go through
@@ -2988,8 +3029,8 @@ makes the newest always write last. See item 117.
 ## Handing reports to Claude Code and Codex
 
 Six dropdown entries — element / CSS path / XPath, to each assistant — write a Markdown report
-and hand it over. [src/assistants.ts](src/assistants.ts) owns the mechanics,
-[src/reportFormat.ts](src/reportFormat.ts) the text (leaf module, under test).
+and hand it over. [src/elements/assistants.ts](src/elements/assistants.ts) owns the mechanics,
+[src/elements/reportFormat.ts](src/elements/reportFormat.ts) the text (leaf module, under test).
 
 **Neither extension has an API.** Both are driven through commands they register, and the two
 are shaped differently enough that there is no shared path:
@@ -3039,7 +3080,7 @@ which can commit it as a symlink, and following one deleted files outside the wo
 (breaks-silently #174).
 
 **Reports and screenshots are written exclusively, into a directory only this user can enter**
-([src/safeFiles.ts](src/safeFiles.ts)). Two things were wrong with a plain `writeFile` into
+([src/core/safeFiles.ts](src/core/safeFiles.ts)). Two things were wrong with a plain `writeFile` into
 `os.tmpdir()/ai-browser/…`, and both were reproduced:
 
 - **`/tmp` is shared on Linux.** Another local user could create that predictable tree first and
@@ -3094,7 +3135,7 @@ page taller than 8192 CSS px came back with each row past 16384 repeating the *t
 Width is capped the same way (breaks-silently #215).
 
 **The clipboard is the hard half.** `vscode.env.clipboard` is text only; there is no image
-clipboard in the extension API. [src/clipboardImage.ts](src/clipboardImage.ts) shells out, and
+clipboard in the extension API. [src/browser/clipboardImage.ts](src/browser/clipboardImage.ts) shells out, and
 the PNG is written to a temp file first — every platform tool wants a path, and the file is what
 remains when the clipboard cannot be reached:
 
@@ -3128,11 +3169,11 @@ tokens` — the four lines being our own pretty-printed JSON. And when one did f
 a string of base64, not a picture. So for the model it is three changes:
 
 - **An `image` content block.** A tool returns `toolContent([...])` from
-  [src/mcpProtocol.ts](src/mcpProtocol.ts) and `dispatch` hands the blocks over as they are;
+  [src/mcp/mcpProtocol.ts](src/mcp/mcpProtocol.ts) and `dispatch` hands the blocks over as they are;
   everything else still becomes one text block. Images are counted by the client in pixels,
   not by the length of their base64.
 - **JPEG at quality 100, sized to what the model takes in unchanged**: about 1568 px on the long
-  edge and 1.15 megapixels ([src/screenshotFrames.ts](src/screenshotFrames.ts), leaf module,
+  edge and 1.15 megapixels ([src/browser/screenshotFrames.ts](src/browser/screenshotFrames.ts), leaf module,
   under test). Tokens follow pixels (≈ w×h/750), so the quality only decides bytes and the
   5 MB per-image ceiling — measured at 1440×798 on 14 px text, 100 is about 750 KB a frame
   against 480 KB at 90. **100 was chosen knowingly, and the cost is the conversation, not the
@@ -3167,9 +3208,9 @@ a string of base64, not a picture. So for the model it is three changes:
   (drawn on `requestAnimationFrame`, which the editor all but stops while its window is in the
   background) still showed the previous slide under the next slide's text. One capture is one
   `resize` and one moment. The capture is PNG because PNG is the only format that can be
-  decoded without a dependency — `zlib` is in Node — so [src/pngDecode.ts](src/pngDecode.ts)
+  decoded without a dependency — `zlib` is in Node — so [src/browser/pngDecode.ts](src/browser/pngDecode.ts)
   decodes it, each band is a slice of its rows (`rowsOf`, no copy), and
-  [src/jpegEncode.ts](src/jpegEncode.ts) encodes each one. Both are leaf modules under test.
+  [src/browser/jpegEncode.ts](src/browser/jpegEncode.ts) encodes each one. Both are leaf modules under test.
 - **The JPEG encoder is written out, and matches Chromium's on purpose.** Handed on as PNG the
   frames were tiny for an interface and enormous for photographs (about 3.2 MB a frame on noise,
   25 MB of base64 for one full page), so they have to be JPEG. A first encoder with 4:4:4 and the
@@ -3374,7 +3415,7 @@ chat is not filled with the translation the page already shows.
 
 ### The page side
 
-[src/translateScript.ts](src/translateScript.ts) is an expression that installs the translator on
+[src/translate/translateScript.ts](src/translate/translateScript.ts) is an expression that installs the translator on
 `window[Symbol.for('aiBrowser.translate.v4')]` on first use and returns it; every tool call is
 one `Runtime.evaluate` of `<source>.segments(…)` / `.replace(…)` / `.restore()`. The version in
 the key moves whenever the page API changes shape, so a page still holding an older build's
@@ -3527,10 +3568,10 @@ would relicense the extension. So two sources were split by what their licence a
   (`_getFormFields`), the username-only first step, the three-password-field change-form
   classification, the user-input guard (`userInputRequiredToCapture`), and de-duplication of a
   submission seen twice. MPL-2.0 is **file-level** copyleft, so it is fine inside an MIT
-  extension *as its own file with its notice* — [src/loginFormScript.ts](src/loginFormScript.ts),
+  extension *as its own file with its notice* — [src/logins/loginFormScript.ts](src/logins/loginFormScript.ts),
   listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). Anything added to that file is MPL
   too, which is why the extension-side logic lives in MIT files. **The source file itself ships in
-  the VSIX** (`!src/loginFormScript.ts` in `.vscodeignore`), so the MPL §3.2(a) source form travels
+  the VSIX** (`!src/logins/loginFormScript.ts` in `.vscodeignore`), so the MPL §3.2(a) source form travels
   with the compiled one rather than behind a link to a moving branch; `package.json` says
   `MIT AND MPL-2.0`. One upstream rule was dropped on purpose — see the capture paragraph below.
 - **Browserpass (ISC) was read and not copied.** Its fill does `setAttribute("value", password)`,
@@ -3997,7 +4038,7 @@ otherwise switch `autofillOnPageLoad` on — and a cloned repository's dev serve
 
 React mirrors a controlled input's value into its `value` attribute — after our fill as well as
 after typing (measured, React 19.2) — so a filled password sits in the markup, and markup reaches
-models by three routes. Each is closed separately ([src/secretGuards.ts](src/secretGuards.ts),
+models by three routes. Each is closed separately ([src/logins/secretGuards.ts](src/logins/secretGuards.ts),
 leaf, under test):
 
 - **`browser_html`** takes the element's `outerHTML` and redacts it **in the extension**, with
@@ -4201,7 +4242,7 @@ posts in the same breath.
 
 Neither protocol is public. Everything below was read from live CLIs — Claude Code 2.1.301 and
 codex-cli 0.145.0, on 2026-10-16 — and everything that interprets their output is in
-[src/agentProtocol.ts](src/agentProtocol.ts), a leaf module under test. **The tests run on recorded
+[src/chat/agentProtocol.ts](src/chat/agentProtocol.ts), a leaf module under test. **The tests run on recorded
 samples of those answers, so they guard the readers against our own edits, not against a CLI
 release** — a field a new CLI renames still passes `npm test` and shows up as an empty dropdown.
 After an update of either CLI, re-measure (the probes under "Verified how" are the recipe) and
@@ -4273,7 +4314,7 @@ Each of these cost a measurement and each would be wrong if guessed:
 
 ### Finding the CLIs
 
-`findAgentBinary` ([src/agentBinary.ts](src/agentBinary.ts)) collects every copy it can find —
+`findAgentBinary` ([src/chat/agentBinary.ts](src/chat/agentBinary.ts)) collects every copy it can find —
 `PATH`, then `~/.local/bin`, `~/.claude/local`, `/opt/homebrew/bin`, `/usr/local/bin`, then **the
 copy the assistant's own VS Code extension ships**, `anthropic.claude-code/resources/native-binary/claude`
 and `openai.chatgpt/bin/<platform>/codex` — asks each one `--version`, and **uses the newest**.
@@ -4328,7 +4369,7 @@ found nothing, the send button is disabled and the draft stays in the box.
 
 ### Processes
 
-[src/agentProcess.ts](src/agentProcess.ts) is the one piece both share. `spawn` with an argument
+[src/chat/agentProcess.ts](src/chat/agentProcess.ts) is the one piece both share. `spawn` with an argument
 array and no shell; an `error` listener on `stdin` (#24); stderr's tail kept, since it is the only
 place an early exit says why; and **`CLAUDECODE` removed from the environment** — VS Code started
 from a Claude Code terminal inherits it, and the CLI then refuses to start, taking itself for a
@@ -4459,7 +4500,7 @@ why `pickAndDeliver` grew a `preferred` tab.
 
 ### Verified how
 
-`out/agents.js` and `out/chatView.js` loaded against a stubbed `vscode` with the real CLIs behind
+`out/chat/agents.js` and `out/chat/chatView.js` loaded against a stubbed `vscode` with the real CLIs behind
 them: detection (about 0.8 s for both), models and efforts, usage for both, a two-turn
 conversation on each agent, the Claude restart on a model change keeping the conversation,
 switching agents, the history, reopening a chat and continuing it, and Stop mid-reply on both.
@@ -4505,7 +4546,7 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
     visible** → the page is replaced by a screenshot and a "Paused due to Notification" overlay,
     and clicks do not reach the page until it is dismissed. See
     [A notification pauses the built-in browser](#a-notification-pauses-the-built-in-browser).
-    Confirmations must go through `confirm()` in [src/notify.ts](src/notify.ts).
+    Confirmations must go through `confirm()` in [src/core/notify.ts](src/core/notify.ts).
 11. **Testing a proposed API with `in`** (`'browserTabs' in vscode.window`) → true whether or
     not the proposal is granted, because the getter is always defined and throws only when read.
     Reports the API as available on exactly the hosts where it is not. Use
@@ -4728,7 +4769,10 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
     `.ai-browser/`, the report directory `assistants.ts` creates when handing an element to
     Claude Code — and git hid it, because that directory gets its own `.gitignore` of `*` on
     creation, so `git status` is clean while `vsce` packs it anyway. A clean working tree is not
-    evidence that the package is clean; only `unzip -l` is.
+    evidence that the package is clean; only `unzip -l` is. **And a third time** with `.claude/settings.local.json`,
+    Claude Code's per-machine permission rules, written into the repository root during a session
+    and ignored by the user's *global* git ignore — so no file in this repository mentions it,
+    and `vsce` packed it. `.vscodeignore` now lists `.claude/**`.
 76. **Two element kinds sharing a centre dot** → the icon is the only label a primary button
     has, so the toolbar shows the same picture for two different actions and the `Cmd+Alt+C`
     chord looks like it fires at random. The old grid check only compared dots *within* a kind;
@@ -5242,7 +5286,7 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
     rather than closed: that needs a compare-and-delete POSIX does not have. A lock whose mtime
     never moves also goes stale under a live holder whose write merely stalled, so `withLock`
     refreshes it while the work runs and removes it on release only if the owner token in it is
-    still its own. `src/fileLock.test.ts` fails on the old implementation.
+    still its own. `src/core/fileLock.test.ts` fails on the old implementation.
 163. **A predictable path under a shared temp directory** → on Linux `/tmp` belongs to everybody,
     so `/tmp/ai-browser/reports/…` could be created in advance by another user with a symlink at
     the next name, and `writeFile` followed it; the files themselves came out world-readable.
@@ -5930,7 +5974,7 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
   simple-browser, so a Remote-SSH, WSL or Dev Container window runs it in the local extension
   host — where the built-in browser is. Claude Code and Codex declare no `extensionKind` and run
   next to the workspace, on the remote, so the MCP server's `127.0.0.1` is unreachable for them.
-  `hostIsRemote` / `workspaceIsRemoteFromHost` in [src/proposedApi.ts](src/proposedApi.ts) decide
+  `hostIsRemote` / `workspaceIsRemoteFromHost` in [src/setup/proposedApi.ts](src/setup/proposedApi.ts) decide
   from `extension.extensionKind`, recorded at activation; Connect refuses with an explanation and
   Check Connection says why. Moving the extension to the remote (`workspace` first) would put the
   server beside the assistants, but whether the `browser` proposal and CDP work from a remote
@@ -6003,8 +6047,8 @@ interaction under [TypeScript configuration](#typescript-configuration).
   in the header, *is the specification* — do not "fix" the parser to match Chromium more
   closely without updating it.
 
-- **The copied enum had to go, because Node runs the tests.** `npm test` is
-  `node --test preview-src/*.test.ts`, relying on Node 24's native type stripping — the same
+- **The copied enum had to go, because Node runs the tests.** `npm test` runs
+  `node --test` over every `*.test.ts`, relying on Node 24's native type stripping — the same
   mechanism as `esbuild.webview.mts`. It only accepts erasable TypeScript, so an `enum` fails at
   runtime with `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`. Anything reachable from a `*.test.ts` is
   under the same restriction as the build script: no `enum`, no `namespace`, `import type` for
@@ -6111,13 +6155,13 @@ dependencies.
 The release steps live in [PUBLISHING.md](PUBLISHING.md); what is non-obvious about them is
 below.
 
-**One file in the package is MPL-2.0** — `out/loginFormScript.js`, compiled from the Firefox port.
-Its source form ships beside it as `src/loginFormScript.ts` (a `!` exception in `.vscodeignore`,
+**One file in the package is MPL-2.0** — `out/logins/loginFormScript.js`, compiled from the Firefox port.
+Its source form ships beside it as `src/logins/loginFormScript.ts` (a `!` exception in `.vscodeignore`,
 which otherwise drops `src/**`), which is what MPL §3.2(a) asks for, and
 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) ships too. `package.json` declares
 `MIT AND MPL-2.0`. Do not add `removeComments` to the tsconfig, and do not drop either file from
 the package — `unzip -l tab-browser-ultimate.vsix | grep -E 'loginFormScript|THIRD'` should list
-three entries.
+four entries (the source, the compiled file and its map, and the notices).
 
 **Verify the package by extracting it, never by trusting that the build ran.** The committed
 `.vsix` went out of date once in this repository's history and nothing caught it: a commit
@@ -6255,7 +6299,7 @@ Decisions worth keeping:
   name in every window, including the nine that open inside those six hours.
 - **A toast is only for an available update.** "You are up to date" and "could not reach the
   registry" go to `setStatusBarMessage`, the same rule the real build follows through
-  [src/notify.ts](src/notify.ts).
+  [src/core/notify.ts](src/core/notify.ts).
 - **Once per version, not once per window** (`aiBrowser.promo.offeredVersion`), plus a six-hour
   throttle on the request itself (`aiBrowser.promo.lastCheck`). A manual check ignores both.
 - **The throttle is stamped only by a request that reached a registry.** Stamping before the
@@ -6339,8 +6383,8 @@ first.
 A hand-installed VSIX neither arrives on its own nor ever updates itself, and the promo listing's
 watch only reaches the people who found the extension *through* the listing. Someone who
 downloaded the VSIX from the repository has had no signal at all — which is why the real build
-now carries its own watch, in [src/updateCheck.ts](src/updateCheck.ts), with the version
-comparison split into the leaf [src/updateVersion.ts](src/updateVersion.ts) so `npm test` can
+now carries its own watch, in [src/setup/updateCheck.ts](src/setup/updateCheck.ts), with the version
+comparison split into the leaf [src/setup/updateVersion.ts](src/setup/updateVersion.ts) so `npm test` can
 load it.
 
 **It asks the repository's root `package.json` on `main`**, not Open VSX, because that is the one
@@ -6473,7 +6517,7 @@ restored session of ten windows is ten requests. Both are accepted, and the sett
 now says "once it has reached GitHub" instead of promising a rate.
 
 **Verified with a fake `vscode`**, the way [the status bar](#the-status-bar-one-permanent-button-one-that-hides-itself)
-and the promo build were: `out/updateCheck.js` loaded against a stubbed `vscode`, a stubbed
+and the promo build were: `out/setup/updateCheck.js` loaded against a stubbed `vscode`, a stubbed
 `fetch` and a stubbed `globalState`, printing what each state does — newer release, same version,
 a repository that is *behind*, offline, already announced, inside the throttle, past it, the
 setting off, each of the three buttons, a browser page in front and then the user looking away, a
@@ -6504,7 +6548,7 @@ Codex's own directory and may hold settings a team does want to share. See break
 Written after the config, a crash between the two left the token with nothing keeping it out of
 `git add`; and an existing `.codex/.gitignore` ended the function whatever it said. Now
 `keepTokenOutOfGit` runs first, and a file that does not ignore `config.toml` —
-`ignoresConfigToml` in [src/gitignoreRule.ts](src/gitignoreRule.ts) (leaf, under test), read in
+`ignoresConfigToml` in [src/mcp/gitignoreRule.ts](src/mcp/gitignoreRule.ts) (leaf, under test), read in
 order with the last matching line winning, as git does — gets one line appended and nothing else
 changed. A pattern it does not model reads as "not covered", which costs a redundant line rather
 than a token in a commit. Breaks-silently #171.
@@ -6605,7 +6649,8 @@ window stops being recognisable at the same moment (see
   a lock beside the config puts a transient file inside the user's project.
 
 - **No linter.** It was covered by shared infrastructure in the monorepo. There are tests:
-  `npm test` runs Node's own runner over `preview-src/*.test.ts`, no VS Code needed.
+  `npm test` runs Node's own runner over every `*.test.ts` in `preview-src/` and `src/`, no VS
+  Code needed.
 - **Zero production dependencies, and it is worth keeping it that way.** `build-ext` is `tsc`
   without bundling, so `out/` contains no dependencies. `vsce` will pack `dependencies` into
   the VSIX automatically, but once heavy runtime dependencies appear, the right move is to

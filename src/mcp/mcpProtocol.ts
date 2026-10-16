@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import type { CallerIdentity } from './shareRegistry';
+import type { CallerIdentity } from '../browser/shareRegistry';
 
 /*
  * JSON-RPC dispatch for the MCP server, with no transport and no vscode import

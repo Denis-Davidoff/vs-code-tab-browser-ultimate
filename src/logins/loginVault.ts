@@ -6,8 +6,8 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { withLock } from './fileLock';
-import { writeFileAtomic } from './safeFiles';
+import { withLock } from '../core/fileLock';
+import { writeFileAtomic } from '../core/safeFiles';
 import { emptyVault, newRevision, parseVault, revisionTime, serializeVault, type Vault } from './vaultData';
 
 /** How long a writer waits for the last write, from whichever window made it, to reach its own read. */

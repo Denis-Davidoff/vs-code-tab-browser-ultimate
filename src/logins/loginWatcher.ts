@@ -5,7 +5,7 @@
 
 import * as crypto from 'crypto';
 import * as vscode from 'vscode';
-import { CDPClient } from './cdp';
+import { CDPClient } from '../core/cdp';
 import { loginFormSource, loginsApiName, loginsBinding, loginsWorld } from './loginFormScript';
 import {
 	readFormMessage, type FieldsMessage, type FillResult, type FormMessage, type PageLogin, type SubmitMessage,
@@ -14,7 +14,7 @@ import {
 	passkeyBinding, passkeyGateSource, passkeyStateKey,
 	type PasskeyMessage, type PasskeyRequestMessage, type PasskeyVerdictWord,
 } from './passkeyGate';
-import { isBrowserApiGranted } from './proposedApi';
+import { isBrowserApiGranted } from '../setup/proposedApi';
 import { originOf, type PasskeyEntry } from './vaultData';
 
 /*

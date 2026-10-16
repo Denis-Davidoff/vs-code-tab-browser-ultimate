@@ -4,8 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import { Disposable } from './dispose';
-import { generateUuid } from './uuid';
+import { Disposable } from '../core/dispose';
+import { generateUuid } from '../core/uuid';
 
 
 export interface ShowOptions {

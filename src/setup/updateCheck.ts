@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import { refuse } from './notify';
+import { refuse } from '../core/notify';
 import { integratedBrowserCommand, isBrowserApiGranted } from './proposedApi';
 import { dueForCheck, isNewerVersion, readManifestVersion } from './updateVersion';
 

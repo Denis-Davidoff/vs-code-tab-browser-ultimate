@@ -131,7 +131,7 @@ together. See
 **There is no GitHub Release, deliberately, and the update button knows it.** Nothing in these
 steps creates one, so the notification's `Download from GitHub` opens
 `raw/main/tab-browser-ultimate.vsix` — the URL the README documents and the promo build uses. If
-releases ever do get cut, that constant in `src/updateCheck.ts` is what has to move with them.
+releases ever do get cut, that constant in `src/setup/updateCheck.ts` is what has to move with them.
 
 ## What an update actually does to existing users
 

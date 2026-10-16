@@ -8,7 +8,7 @@ import { JsonLineProcess, withTimeout } from './agentProcess';
 import { claudeEvents, claudeModels, claudeUsage, type AgentEvent } from './agentProtocol';
 import type { AgentBackend, AgentSession, TurnInput } from './agents';
 import type { AgentUsage, ChatModel } from './chatProtocol';
-import { generateUuid } from './uuid';
+import { generateUuid } from '../core/uuid';
 
 /**
  * Claude Code, driven as its own VS Code extension drives it:

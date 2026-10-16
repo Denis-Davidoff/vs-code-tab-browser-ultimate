@@ -15,10 +15,10 @@
  * elementMarkdown.ts.
  */
 
-import type { CDPClient } from './cdp';
+import type { CDPClient } from '../core/cdp';
 import { collapseToShorthands, formatMatchedStyles, type IMatchedStyles } from './cssHelpers';
 import type { ElementAncestor, ElementData } from './elementMarkdown';
-import { redactSecretValues } from './secretGuards';
+import { redactSecretValues } from '../logins/secretGuards';
 
 export { formatAncestor, renderElementMarkdown } from './elementMarkdown';
 export type { ElementAncestor, ElementData } from './elementMarkdown';

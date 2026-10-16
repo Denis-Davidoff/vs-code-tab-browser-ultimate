@@ -4,9 +4,9 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import { hostIsRemote } from './proposedApi';
+import { hostIsRemote } from '../setup/proposedApi';
 import { BrowserController } from './browserController';
-import { confirm, refuse } from './notify';
+import { confirm, refuse } from '../core/notify';
 import { copyImage, screenshotFileName } from './clipboardImage';
 
 /**

@@ -6,8 +6,8 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { workspaceIsRemoteFromHost } from './proposedApi';
-import { existingPrivateTempDirectory, privateTempDirectory, writeExclusive } from './safeFiles';
+import { workspaceIsRemoteFromHost } from '../setup/proposedApi';
+import { existingPrivateTempDirectory, privateTempDirectory, writeExclusive } from '../core/safeFiles';
 
 /**
  * Handing a report to Claude Code or Codex.

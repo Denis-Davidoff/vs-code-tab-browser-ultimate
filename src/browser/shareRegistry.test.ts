@@ -5,7 +5,7 @@
 
 import * as assert from 'node:assert';
 import { suite, test } from 'node:test';
-import type { ClientKind } from './mcpProtocol.ts';
+import type { ClientKind } from '../mcp/mcpProtocol.ts';
 import {
 	everyone, forKind, forSession, isShareTarget, ShareRegistry, targetName,
 } from './shareRegistry.ts';

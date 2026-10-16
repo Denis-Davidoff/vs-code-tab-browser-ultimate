@@ -9,7 +9,7 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { codexEntries, codexRangeDeletable, codexUnterminated } from './codexToml';
-import { lockPath, withLock } from './fileLock';
+import { lockPath, withLock } from '../core/fileLock';
 import { serverName } from './mcpClientState';
 import {
 	codexOurTables, codexRetiredTables, codexTableLines, removeCodexTables, repairClaudeJson,
@@ -17,11 +17,11 @@ import {
 	spliceCodexTables, type Endpoint,
 } from './mcpRepair';
 import type { McpServer } from './mcpServer';
-import { confirm } from './notify';
-import { plainInNotification, plainInPrompt } from './notifyText';
+import { confirm } from '../core/notify';
+import { plainInNotification, plainInPrompt } from '../core/notifyText';
 import { withConfigTomlRule } from './gitignoreRule';
-import { workspaceIsRemoteFromHost } from './proposedApi';
-import { writeFileAtomic } from './safeFiles';
+import { workspaceIsRemoteFromHost } from '../setup/proposedApi';
+import { writeFileAtomic } from '../core/safeFiles';
 
 /**
  * Three clients, three places to configure, and only one of them has an API.
