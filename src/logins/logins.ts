@@ -10,11 +10,11 @@ import {
 	LoginWatcher, type FrameFields, type PasskeyDecision, type PasskeyRequest, type SuccessfulSubmit,
 	type WatchedTab, type WatcherHandlers,
 } from './loginWatcher';
-import { confirm, refuse } from './notify';
-import { plainInLabel, plainInMarkdown, plainInNotification } from './notifyText';
-import { isBrowserApiGranted } from './proposedApi';
-import { writeFileAtomic } from './safeFiles';
-import { pulse } from './statusBar';
+import { confirm, refuse } from '../core/notify';
+import { plainInLabel, plainInMarkdown, plainInNotification } from '../core/notifyText';
+import { isBrowserApiGranted } from '../setup/proposedApi';
+import { writeFileAtomic } from '../core/safeFiles';
+import { pulse } from '../setup/statusBar';
 import {
 	countConflicts, decideSave, hostOf, matchLogins, mergeVault, newId, originOf, parseVault, passkeysFor,
 	putLogin, putPasskey, removeLogin, removePasskey, rpIdMatchesHost, sameUsername, serializeVault,

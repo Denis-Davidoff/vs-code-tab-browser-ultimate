@@ -4,30 +4,30 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import { AIBrowserManager } from './aiBrowserManager';
-import { AIBrowserView } from './aiBrowserView';
+import { AIBrowserManager } from './panel/aiBrowserManager';
+import { AIBrowserView } from './panel/aiBrowserView';
 import {
 	addElementToAssistant, addPathToAssistant, cancelPendingPick, cancelPickCommand,
 	copyElement, copyElementCssLocation, copyElementCssPath, copyElementXPath,
-} from './elementPicker';
-import { canHandOver, cleanUpReports, publishAssistantContext, type AssistantId } from './assistants';
-import { LastElementAction, type ElementActionId } from './lastAction';
-import { localHosts, normalizeAddress } from './webUrl';
-import { BrowserController } from './browserController';
-import { ChatViewProvider, chatUnsupportedContextKey, chatViewId, supportsSecondarySidebar } from './chatView';
-import { McpLifecycle } from './mcpLifecycle';
-import { connectClaudeCode, connectCodex, type SharedPage } from './mcpSetup';
-import { everyone, forKind, isShareTarget, targetName, type ShareTarget } from './shareRegistry';
-import { checkConnection } from './mcpCheck';
-import { copyScreenshot } from './screenshot';
+} from './elements/elementPicker';
+import { canHandOver, cleanUpReports, publishAssistantContext, type AssistantId } from './elements/assistants';
+import { LastElementAction, type ElementActionId } from './elements/lastAction';
+import { localHosts, normalizeAddress } from './core/webUrl';
+import { BrowserController } from './browser/browserController';
+import { ChatViewProvider, chatUnsupportedContextKey, chatViewId, supportsSecondarySidebar } from './chat/chatView';
+import { McpLifecycle } from './mcp/mcpLifecycle';
+import { connectClaudeCode, connectCodex, type SharedPage } from './mcp/mcpSetup';
+import { everyone, forKind, isShareTarget, targetName, type ShareTarget } from './browser/shareRegistry';
+import { checkConnection } from './mcp/mcpCheck';
+import { copyScreenshot } from './browser/screenshot';
 import {
 	enableBrowserApi, integratedBrowserCommand, isBrowserApiGranted, shouldUseIntegratedBrowser, setOwnExtensionKind,
-} from './proposedApi';
-import { confirm, refuse } from './notify';
-import { registerStatusBar } from './statusBar';
-import { registerUpdateCheck } from './updateCheck';
-import { registerLogins } from './logins';
-import { translatePage, translatePageCommand } from './translate';
+} from './setup/proposedApi';
+import { confirm, refuse } from './core/notify';
+import { registerStatusBar } from './setup/statusBar';
+import { registerUpdateCheck } from './setup/updateCheck';
+import { registerLogins } from './logins/logins';
+import { translatePage, translatePageCommand } from './translate/translate';
 
 declare class URL {
 	constructor(input: string, base?: string | URL);

@@ -237,5 +237,5 @@ which editors can work at all.
 
 MIT, with both copyright lines — Microsoft's, for the forked and copied code, and this
 project's. The per-file MIT headers on everything copied from vscode stay where they are.
-One file, `src/loginFormScript.ts`, is ported from Firefox's password manager and stays under
+One file, `src/logins/loginFormScript.ts`, is ported from Firefox's password manager and stays under
 the Mozilla Public License 2.0 — see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

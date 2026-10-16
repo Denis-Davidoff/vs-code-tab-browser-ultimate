@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import type { ClientKind } from './mcpProtocol';
+import type { ClientKind } from '../mcp/mcpProtocol';
 
 /*
  * What is left of marking a shared tab *on the tab itself*: the reader.

@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import { BrowserController } from './browserController';
+import { BrowserController } from '../browser/browserController';
 import type { ClientKind } from './mcpProtocol';
 import { portOffset, portOrder } from './mcpPort';
 import { McpServer } from './mcpServer';
@@ -12,8 +12,8 @@ import {
 	missingWorkspaceTokens, emptyScan, markWorkspaceAlive, markWorkspaceHandled, registerWithVsCode,
 	repairConfigs, stillMissing, tokenKeyPrefix, workspaceFolder, type RepairReport,
 } from './mcpSetup';
-import { confirm } from './notify';
-import { generateUuid } from './uuid';
+import { confirm } from '../core/notify';
+import { generateUuid } from '../core/uuid';
 
 /**
  * How long a queued repair waits for the one before it before going anyway.

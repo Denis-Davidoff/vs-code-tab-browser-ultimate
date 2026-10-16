@@ -1,6 +1,6 @@
 src/**
 # The MPL-2.0 file ships in source form beside its compiled copy (MPL §3.2(a)).
-!src/loginFormScript.ts
+!src/logins/loginFormScript.ts
 preview-src/**
 tsconfig*.json
 **/*.tsbuildinfo
@@ -10,6 +10,9 @@ vscode.proposed.*.d.ts
 .mcp.json
 .codex/**
 .ai-browser/**
+# Claude Code's own per-machine settings (permission rules among them); git ignores
+# them, vsce does not.
+.claude/**
 package-lock.json
 .vscode/**
 CLAUDE.md

@@ -6,10 +6,10 @@
 import * as http from 'http';
 import * as net from 'net';
 import * as vscode from 'vscode';
-import { BrowserController } from './browserController';
-import { modelFrameLimits } from './screenshotFrames';
-import { defaultSegmentChars, maxSegmentChars, parseReplacements, segmentBudget } from './translateText';
-import { generateUuid } from './uuid';
+import { BrowserController } from '../browser/browserController';
+import { modelFrameLimits } from '../browser/screenshotFrames';
+import { defaultSegmentChars, maxSegmentChars, parseReplacements, segmentBudget } from '../translate/translateText';
+import { generateUuid } from '../core/uuid';
 import {
 	authorizeRequest, classifyClient, dispatch, initializeClientName, invalidRequest,
 	invalidRequestReason, isNotification, normalisePath, number, parseError, schema, string,

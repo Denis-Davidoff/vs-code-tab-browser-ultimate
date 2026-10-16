@@ -7,8 +7,8 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { grantProposedApi } from './argvJson';
-import { writeFileAtomic } from './safeFiles';
-import { confirm } from './notify';
+import { writeFileAtomic } from '../core/safeFiles';
+import { confirm } from '../core/notify';
 
 /*
  * Turning the `browser` proposal on for the user, in one click.

@@ -4,11 +4,11 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import { CDPClient } from './cdp';
-import { extractElementData, renderElementMarkdown } from './elementContext';
-import { isBrowserApiGranted } from './proposedApi';
+import { CDPClient } from '../core/cdp';
+import { extractElementData, renderElementMarkdown } from '../elements/elementContext';
+import { isBrowserApiGranted } from '../setup/proposedApi';
 import { legacyMarkerRemoval, stripMarker, stripMarkerFromHtml } from './shareIndicator';
-import { comparesFieldValue, isSecretField, redactSecretValues } from './secretGuards';
+import { comparesFieldValue, isSecretField, redactSecretValues } from '../logins/secretGuards';
 import { encodeJpeg } from './jpegEncode';
 import { decodePng, rowsOf } from './pngDecode';
 import { fitBands, modelJpegQuality, pixelRatios, planFullPage, planViewport, type Rect } from './screenshotFrames';
@@ -16,9 +16,9 @@ import {
 	callerKey, everyone, ShareRegistry, targetName,
 	type CallerIdentity, type ShareTarget,
 } from './shareRegistry';
-import type { ClientKind } from './mcpProtocol';
-import { translatorSource } from './translateScript';
-import { isLanguageCode, maxSingleSegment, type Replacement } from './translateText';
+import type { ClientKind } from '../mcp/mcpProtocol';
+import { translatorSource } from '../translate/translateScript';
+import { isLanguageCode, maxSingleSegment, type Replacement } from '../translate/translateText';
 
 /**
  * What the browser can do, expressed without transport or CDP detail.
@@ -1076,7 +1076,7 @@ export class BrowserController implements vscode.Disposable {
 	 *
 	 * The rules themselves — precedence between a conversation, an assistant
 	 * and everybody, what a closed tab does to each of them, who has driven
-	 * what — live in [src/shareRegistry.ts](src/shareRegistry.ts), which is a
+	 * what — live in [shareRegistry.ts](shareRegistry.ts), which is a
 	 * leaf with tests. This class only resolves sessions and drives CDP.
 	 *
 	 * The user's own commands still do not come through here — the toolbar's

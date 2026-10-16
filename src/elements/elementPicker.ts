@@ -4,12 +4,12 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import { CDPClient } from './cdp';
-import { confirm, refuse } from './notify';
-import { plainInLabel } from './notifyText';
+import { CDPClient } from '../core/cdp';
+import { confirm, refuse } from '../core/notify';
+import { plainInLabel } from '../core/notifyText';
 import { extractElementData, formatAncestor, renderElementMarkdown } from './elementContext';
 import { assistantName, handOver, type AssistantId } from './assistants';
-import { isBrowserApiGranted } from './proposedApi';
+import { isBrowserApiGranted } from '../setup/proposedApi';
 import {
 	formatElementReport, formatPathReport, inlineCode, reportFileName, withLocation,
 	type PathKind,
@@ -313,7 +313,7 @@ let pendingPick: vscode.CancellationTokenSource | undefined;
  *
  * The cancel affordance is a status bar button rather than the cancel button on
  * a progress notification, because that notification is what froze the page —
- * see [notify.ts](notify.ts). It reuses the same token a superseding pick
+ * see [notify.ts](../core/notify.ts). It reuses the same token a superseding pick
  * cancels, so there is one cancellation path, already proven.
  */
 export function cancelPendingPick(): void {

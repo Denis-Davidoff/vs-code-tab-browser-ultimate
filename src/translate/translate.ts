@@ -4,10 +4,10 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import type { BrowserController } from './browserController';
-import { isBrowserApiGranted, workspaceIsRemoteFromHost } from './proposedApi';
-import { refuse } from './notify';
-import { plainInLabel, plainInPrompt } from './notifyText';
+import type { BrowserController } from '../browser/browserController';
+import { isBrowserApiGranted, workspaceIsRemoteFromHost } from '../setup/proposedApi';
+import { refuse } from '../core/notify';
+import { plainInLabel, plainInPrompt } from '../core/notifyText';
 import {
 	languageNameProblem, orderLanguages, pageTitle, readRecentLanguages, rememberLanguage, resolveLanguage,
 	translationPrompt,

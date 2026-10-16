@@ -7,8 +7,8 @@ import { execFile, spawn } from 'child_process';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { hostIsRemote } from './proposedApi';
-import { privateTempDirectory, writeExclusive } from './safeFiles';
+import { hostIsRemote } from '../setup/proposedApi';
+import { privateTempDirectory, writeExclusive } from '../core/safeFiles';
 
 /**
  * Putting an image on the clipboard.

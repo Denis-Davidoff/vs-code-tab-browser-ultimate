@@ -184,7 +184,7 @@ function installedVersion() {
  * What a version may look like, and nothing else.
  *
  * **A security boundary, not tidiness**, and the same one the full build applies in
- * `src/updateVersion.ts` — written twice because these two extensions cannot share code, exactly
+ * `src/setup/updateVersion.ts` — written twice because these two extensions cannot share code, exactly
  * like `isNewer` below. The value arrives from the network and is interpolated into a
  * notification body, and VS Code renders a notification body as *linked text* whose links are
  * opened with `allowCommands: true`. So a `version` of

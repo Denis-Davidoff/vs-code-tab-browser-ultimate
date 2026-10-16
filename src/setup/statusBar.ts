@@ -4,11 +4,11 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import type { BrowserController, ShareView } from './browserController';
-import { inUseMarker, sharedMarker, stripMarker } from './shareIndicator';
-import { plainInLabel, plainInMarkdown } from './notifyText';
-import { normalizeAddress } from './webUrl';
-import { pageTitle } from './translateText';
+import type { BrowserController, ShareView } from '../browser/browserController';
+import { inUseMarker, sharedMarker, stripMarker } from '../browser/shareIndicator';
+import { plainInLabel, plainInMarkdown } from '../core/notifyText';
+import { normalizeAddress } from '../core/webUrl';
+import { pageTitle } from '../translate/translateText';
 import {
 	browserApiState, integratedBrowserCommand, onDidChangeGrantState,
 	shouldUseIntegratedBrowser, type BrowserApiState,

@@ -25,7 +25,7 @@
 
 import type {
 	AgentUsage, AttachmentKind, ChatEntry, ChatStats, ChatSummary, ChatViewState, HostToView, ToolEntry, ViewToHost,
-} from '../src/chatProtocol';
+} from '../src/chat/chatProtocol';
 
 interface VsCodeApi {
 	postMessage(message: ViewToHost): void;
