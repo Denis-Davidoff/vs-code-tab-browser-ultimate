@@ -392,7 +392,7 @@ let confirmShown = '';
 let frontTab: string | undefined;
 
 function renderTabs(s: ChatViewState): void {
-	if (closingTab && !s.tabs.some(t => t.id === closingTab && (t.busy || t.queued))) {
+	if (closingTab && !s.tabs.some(t => t.id === closingTab && (t.busy || t.queued || t.skillRuns))) {
 		closingTab = undefined;
 	}
 	if (editingTab && !s.tabs.some(t => t.id === editingTab)) {
@@ -443,7 +443,17 @@ function renderTabs(s: ChatViewState): void {
 }
 
 function tabShown(t: ChatTabSummary, agent: string | undefined): string {
-	return JSON.stringify([t.title, t.status, t.agents, t.busy, agent]);
+	return JSON.stringify([t.title, t.status, t.agents, t.skillRuns, t.busy, agent]);
+}
+
+/**
+ * What closing, clearing or replacing a tab's chat stops: its reply, and its
+ * agents — the toolbar skills run in the background from it among them, which
+ * stop when the tab lets go of the chat.
+ */
+function stoppedParts(t: ChatTabSummary): string[] {
+	const agents = t.agents + (t.skillRuns ?? 0);
+	return [t.busy ? 'its reply' : '', agents ? `${agents} agent${agents === 1 ? '' : 's'}` : ''].filter(Boolean);
 }
 
 function tabNode(t: ChatTabSummary): TabNode {
@@ -475,7 +485,7 @@ function tabNode(t: ChatTabSummary): TabNode {
 		}
 	});
 	close.addEventListener('click', () => {
-		if (node.tab.busy || node.tab.queued) {
+		if (node.tab.busy || node.tab.queued || node.tab.skillRuns) {
 			closingTab = node.tab.id;
 			if (state) {
 				renderTabs(state);
@@ -489,12 +499,17 @@ function tabNode(t: ChatTabSummary): TabNode {
 	return node;
 }
 
+/** A tab's agents still working, its background toolbar runs included. */
+function agentsOf(t: ChatTabSummary): number {
+	return t.agents + (t.skillRuns ?? 0);
+}
+
 function fillTab(node: TabNode, agent: string | undefined): void {
 	const t = node.tab;
 	const parts: (HTMLElement | undefined)[] = [
 		tabMark(t.status),
 		el('span', { class: 'tab-title', text: t.title }),
-		t.agents ? el('span', { class: 'tab-agents', text: String(t.agents), title: `${t.agents} agent${t.agents === 1 ? '' : 's'} working` }) : undefined,
+		agentsOf(t) ? el('span', { class: 'tab-agents', text: String(agentsOf(t)), title: `${agentsOf(t)} agent${agentsOf(t) === 1 ? '' : 's'} working` }) : undefined,
 	];
 	node.label.replaceChildren(...parts.filter((p): p is HTMLElement => !!p));
 	node.label.title = `${agent ? `${t.title} — ${agent}` : t.title}\nDouble-click to rename`;
@@ -577,7 +592,7 @@ function cancelClosing(): void {
 
 function renderTabConfirm(s: ChatViewState): void {
 	const closing = closingTab ? s.tabs.find(t => t.id === closingTab) : undefined;
-	const shown = closing ? JSON.stringify([closing.id, closing.title, closing.agents, closing.busy, closing.queued]) : '';
+	const shown = closing ? JSON.stringify([closing.id, closing.title, closing.agents, closing.skillRuns, closing.busy, closing.queued]) : '';
 	if (shown === confirmShown) {
 		return;
 	}
@@ -597,10 +612,7 @@ function renderTabConfirm(s: ChatViewState): void {
 	});
 	const no = button([el('span', { text: 'Cancel' })], { class: 'confirm-cancel' });
 	no.addEventListener('click', () => cancelClosing());
-	const parts = [
-		closing.busy ? 'its reply' : '',
-		closing.agents ? `${closing.agents} agent${closing.agents === 1 ? '' : 's'}` : '',
-	].filter(Boolean);
+	const parts = stoppedParts(closing);
 	const queued = closing.queued ? `${closing.queued} queued message${closing.queued === 1 ? '' : 's'} will not be sent.` : '';
 	const text = parts.length
 		? `"${closing.title}" is still working. Closing it stops ${parts.join(' and ')}.${queued ? ` ${queued}` : ''}`
@@ -651,7 +663,7 @@ function renderSwitch(s: ChatViewState): void {
 	const tab = s.tabs.find(t => t.id === s.activeTab);
 	const to = s.switchTo ? s.agents.find(a => a.id === s.switchTo) : undefined;
 	const from = tab?.agent ? s.agents.find(a => a.id === tab.agent) : undefined;
-	const shown = JSON.stringify([to?.id, from?.id, tab?.busy, tab?.agents, s.tabs.length, s.tabLimit]);
+	const shown = JSON.stringify([to?.id, from?.id, tab?.busy, tab?.agents, tab?.skillRuns, s.tabs.length, s.tabLimit]);
 	if (shown === switchShown) {
 		return;
 	}
@@ -669,8 +681,9 @@ function renderSwitch(s: ChatViewState): void {
 		return b;
 	};
 	const fullNote = `${s.tabs.length} chats are open — close one first.`;
-	const stops = tab.busy
-		? `This chat is still working; its reply${tab.agents ? ` and ${tab.agents} agent${tab.agents === 1 ? '' : 's'}` : ''} will be stopped.`
+	const stopping = stoppedParts(tab);
+	const stops = stopping.length
+		? `This chat is still working; ${stopping.join(' and ')} will be stopped.`
 		: 'This chat closes and stays in the history.';
 	const cancel = button([el('span', { text: 'Cancel' })], { class: 'switch-cancel' });
 	cancel.addEventListener('click', () => post({ type: 'switchAgent', choice: 'cancel' }));
@@ -928,8 +941,11 @@ function renderTail(tail: HTMLElement, s: ChatViewState, turn: Turn, last: boole
 	const tokens = p?.tokensIn !== undefined ? `↑ ${compact(p.tokensIn)}  ↓ ${compact(p.tokensOut ?? 0)}` : '';
 	// The turn is over and agents it (or an earlier one) started still work:
 	// said at the very bottom, under "Worked for …" (asked for).
-	const agents = last ? agentRows(s).filter(a => a.status === 'running').length : 0;
-	const sig = `${text}|${tokens}|${agents}`;
+	const runningAgents = last ? agentRows(s).filter(a => a.status === 'running') : [];
+	const agents = runningAgents.length;
+	// How long the background work has gone on: since the first of them started.
+	const agentsSince = agents ? Math.min(...runningAgents.map(a => a.startedAt)) : 0;
+	const sig = `${text}|${tokens}|${agents}|${agentsSince}`;
 	if (tail.dataset.sig !== sig) {
 		tail.dataset.sig = sig;
 		// A square where the working star was: the same slot, so the line does
@@ -944,23 +960,32 @@ function renderTail(tail: HTMLElement, s: ChatViewState, turn: Turn, last: boole
 						title: `${(p?.tokensIn ?? 0).toLocaleString()} tokens sent${p?.tokensCached ? `, ${p.tokensCached.toLocaleString()} of them from the cache` : ''}; ${(p?.tokensOut ?? 0).toLocaleString()} received`,
 					}) : undefined)
 				: '',
-			agents ? agentsRunningLine(agents) : '');
+			agents ? agentsRunningLine(agents, agentsSince) : '');
 	}
 }
 
 /**
- * "2 agents running", under a finished turn while agents the chat started are
- * still at work: the working star in front, so it reads as alive, and a click
- * opens the agents list. Built only when the count changes (#365).
+ * "2 agents running · 3m 12s", under a finished turn while agents the chat
+ * started are still at work: the working star in front, so it reads as alive,
+ * and a click opens the agents list. The time is since the first of them
+ * started — how long the background work has gone on; a sum of their times
+ * would run ahead of the clock. Built only when the count or that start
+ * changes (#365); the time is rewritten in place every second.
  */
-function agentsRunningLine(count: number): HTMLElement {
+function agentsRunningLine(count: number, since: number): HTMLElement {
 	const label = `${count} agent${count === 1 ? '' : 's'} running`;
 	const line = button([
 		el('span', { class: 'working-glyph', text: glyphs[glyphAt] }),
-		el('span', { class: 'shimmer', text: label }),
+		el('span', { class: 'shimmer agents-running-text', text: agentsRunningText(label, since) }),
 	], { class: 'agents-running', title: `${label} — show them` });
+	line.dataset.label = label;
+	line.dataset.since = String(since);
 	line.addEventListener('click', () => openAgentsPanel());
 	return line;
+}
+
+function agentsRunningText(label: string, since: number): string {
+	return since ? `${label} · ${duration(Date.now() - since)}` : label;
 }
 
 /**
@@ -1012,6 +1037,18 @@ function tickWorking(): void {
 	}
 }
 setInterval(tickWorking, 1000);
+
+/** The time on "N agents running", in place. */
+setInterval(() => {
+	const line = threadInner.querySelector<HTMLElement>('.agents-running');
+	const text = line?.querySelector('.agents-running-text');
+	if (line && text) {
+		const next = agentsRunningText(line.dataset.label ?? '', Number(line.dataset.since));
+		if (text.textContent !== next) {
+			text.textContent = next;
+		}
+	}
+}, 1000);
 
 /**
  * The mark in front of "Working…": a star that changes shape, there and back,
@@ -2690,7 +2727,7 @@ function chatActions(s: ChatViewState): PaletteItem[] {
 	const items: PaletteItem[] = [];
 	// Always listed, disabled while there is nothing to act on — hidden, they
 	// read as gone in a new tab, the first place a palette is opened.
-	const canClear = s.entries.length > 0 || !!tab?.busy;
+	const canClear = s.entries.length > 0 || !!tab?.busy || !!tab?.skillRuns;
 	const canExport = s.entries.some(e => e.kind === 'user' || e.kind === 'assistant');
 	{
 		items.push({
@@ -2699,7 +2736,7 @@ function chatActions(s: ChatViewState): PaletteItem[] {
 			disabled: !canClear,
 			haystack: 'clear conversation start over',
 			run: () => {
-				if (!tab?.busy && !tab?.queued) {
+				if (!tab?.busy && !tab?.queued && !tab?.skillRuns) {
 					post({ type: 'clearChat' });
 					return;
 				}
@@ -3980,8 +4017,14 @@ function resetText(at: number): string {
  */
 let agentsView: { selected?: string } | undefined;
 
+/**
+ * The agents the chat's agent started, and the toolbar skills run in the
+ * background from this chat (asked for: a run is an agent at work, and nothing
+ * showed what it was doing) — in the order they started.
+ */
 function agentRows(s: ChatViewState): ToolEntry[] {
-	return s.entries.filter((e): e is ToolEntry => e.kind === 'tool' && e.tool === 'agent');
+	const own = s.entries.filter((e): e is ToolEntry => e.kind === 'tool' && e.tool === 'agent');
+	return s.skillAgents?.length ? [...own, ...s.skillAgents].sort((a, b) => a.startedAt - b.startedAt) : own;
 }
 
 function renderAgents(s: ChatViewState): void {
@@ -4057,7 +4100,7 @@ function agentNumbers(a: ToolEntry): string {
 function agentLive(a: ToolEntry, part: string): string {
 	switch (part) {
 		case 'status':
-			return a.status === 'running' && a.agent?.lastTool ? `Running · ${a.agent.lastTool}` : statusLabel(a);
+			return a.agent?.waiting ? 'Waiting for your answer' : a.status === 'running' && a.agent?.lastTool ? `Running · ${a.agent.lastTool}` : statusLabel(a);
 		case 'numbers':
 			return ` · ${agentNumbers(a)}`;
 		default: {
@@ -4223,9 +4266,22 @@ function fillAgents(agents: ToolEntry[], force = false): void {
 	const info = selected.agent;
 	const body = el('div', { class: 'history-list agent-card' },
 		el('div', { class: 'agent-line', text: [statusLabel(selected), info?.type, modelName(info?.model), info?.background ? 'background' : undefined].filter(Boolean).join(' · ') }),
-		el('div', { class: 'agent-line', text: spawnedBy(info?.type) }),
+		el('div', { class: 'agent-line', text: info?.origin === 'toolbar' ? 'Started from the toolbar' : spawnedBy(info?.type) }),
 		liveSpan('div', selected, 'card', 'agent-line'));
 	const report = info?.summary ?? (selected.status !== 'running' ? selected.output : undefined);
+	const question = info?.waiting;
+	if (question && info?.skill) {
+		// A background toolbar run stopped on a question: answered here as on its button.
+		const answer = (allow: boolean) => () => post({ type: 'toolbarApprove', id: info.skill!, approvalId: question.id, allow });
+		const allow = button([el('span', { text: 'Allow' })], { class: 'primary' });
+		allow.addEventListener('click', answer(true));
+		const deny = button([el('span', { text: 'Deny' })], { class: 'ghost' });
+		deny.addEventListener('click', answer(false));
+		body.append(el('div', { class: 'agent-question' },
+			el('div', { class: 'run-question', text: question.title }),
+			question.detail ? el('pre', { class: 'run-detail', text: question.detail }) : undefined,
+			el('div', { class: 'form-actions' }, deny, allow)));
+	}
 	body.append(report
 		? el('div', { class: 'agent-report markdown' }, renderMarkdown(report))
 		: el('div', { class: 'agent-report' }, el('span', { class: selected.status === 'running' ? 'shimmer' : 'faint', text: selected.status === 'running' ? 'Working…' : 'No report.' })));

@@ -63,6 +63,12 @@ export interface TabHost {
 	approvalMode(key: string): ApprovalMode;
 	/** An MCP server an agent asked about, so the approval menu can list it. */
 	noteServer(server: string): void;
+	/**
+	 * The tab let go of the conversation `chatId` — closed, cleared, another
+	 * chat or agent in its place, deleted, the view gone. The toolbar skills
+	 * running in the background from it stop with it, as its agents do.
+	 */
+	released(chatId: string): void;
 }
 
 /** The approval menu's key for a question: its category, or `mcp:<server>` for one server. */
@@ -338,6 +344,7 @@ export class ChatTab {
 		this._endTurnHere();
 		void this._save();
 		this._dropSession();
+		this._host.released(this._chat.id);
 		this._closed = true;
 		// Ended by the user closing it, or the view: nothing finished to read.
 		this._unseen = false;
@@ -349,6 +356,7 @@ export class ChatTab {
 		this._discarded = true;
 		this._pending = [];
 		this._dropSession();
+		this._host.released(this._chat.id);
 	}
 
 	/**

@@ -4270,7 +4270,7 @@ from their shipped webviews — Claude Code 2.1.301 (`webview/index.css`, CSS mo
 | pills and menus | both | agent and model are ghost pills opening in-view menus (label, description, check), not native `<select>`s |
 | code blocks | both | header with the language and a copy button; tables, quotes, rules |
 | copying a message | asked for | a copy button at the bottom right of every prompt and reply, on hover (`.message-copy`); a reply copies as its Markdown; the prompt's copy does not fold the prompt |
-| spacing | asked for | rows `--row-pad` (10px) apart above and below — 6px at first, widened on request twice; the timeline's dot and line are placed from the same variable, so change only it — and 20px between turns; in a reply, paragraphs, lists, quotes, code blocks and tables 0.9em apart |
+| spacing | asked for | rows `--row-pad` (10px) apart above and below — 6px at first, widened on request twice; the timeline's dot and line are placed from the same variable, so change only it — and 20px between turns — none after a turn that holds only its prompt, so messages added during a turn sit 22px apart rather than 42 (asked for); in a reply, paragraphs, lists, quotes, code blocks and tables 0.9em apart |
 | lists | asked for | a bullet is an em dash (`list-style-type: "— "`), items 0.4em apart; numbered items 0.7em apart, their number bold in the theme's chart yellow |
 | sending | asked for | the message's text lifts out of the box and flies to its prompt in the thread (`launchFlight` / `landFlight`): the prompt's text is hidden until the flight lands, so the words are on screen once; the target is the first new prompt **with this text** (two sends inside one post round trip put both prompts in at once, and "the last prompt" was the wrong one), hidden again if it is rebuilt in flight; a chat switch stops the flight; a send with no prompt appearing within 1.5 s (still waiting for detection, refused) fades in place; nothing flies under reduced motion |
 
@@ -4701,6 +4701,32 @@ toolbar; at most 30, prompts up to 20 000 characters.
   failed, "run it again"): the replacement disposes every session, and a disposed session reports
   no end of its turn, so the button read "running" for good (#403). A Stop that lands while a
   clipboard result is being written stays "Stopped.".
+- **A background run is a row of the agents list** of the chat it was pressed in — asked for:
+  pressed, a clipboard or silent skill showed nothing but its button, and a run is an agent
+  working in the background. `ToolbarRuns.rows(chatId)` gives each run a `ToolEntry` with
+  `tool: 'agent'`, published as `state.skillAgents` and merged into `agentRows` by start time,
+  so the composer's agents button, "N agents running" under a finished turn, the tab's agent
+  count, the list, the card and its Stop all take it with nothing of their own. The row carries
+  the skill's own prompt (not the result-marker instruction around it), its tool calls, tokens and
+  the tool it is on; the reply becomes the report **when the run ends**, never while it streams,
+  or the list rebuilt on every chunk (#365). Its card says "Started from the toolbar"
+  (`AgentInfo.origin`). Stop on the row (`toolbar-run-<n>`) goes to `stopRow`, not to the tab.
+  Ended rows stay, 20 per chat and 200 in all, for the life of the window: they are not part of
+  the chat and are not saved with it. The report and the prompt are cut at 20 000 characters (the
+  ended rows go out with every state post; the clipboard has the result whole), and a call Codex
+  reports twice is counted once.
+  - **A run stops when its tab lets go of the chat it was pressed in** — closed, cleared, another
+    chat from the history or the other agent in its place, the chat deleted (asked for: "надо
+    стопать"). `ChatTab.close` and `discard` call `TabHost.released(chatId)`, which runs
+    `ToolbarRuns.stopChat`; every such path goes through one of the two. Left running, the run
+    dropped out of every list while it went on spending the plan, and the close and switch
+    warnings, which count it, promised a stop that did not come (#416). So the warnings are true
+    now: `ChatTabSummary.skillRuns` is sent beside `agents`, the tab's badge and "Closing it
+    stops … N agents" add them up, the close and Clear ask first while any run, and a chat from the
+    history opens into a new tab rather than into one running a skill.
+  - **A run stopped on a question says so in the list** — "Waiting for your answer" — and its card
+    shows the question with Allow / Deny (`AgentInfo.waiting`, answered by `toolbarApprove` under
+    `AgentInfo.skill`), as the button's popover does.
 - **A skill already running asks before it runs again** (`openAgainPopup`, asked for): "… is still
   running. Run it again?" with Stop, Yes and **No — the default**: focused and drawn as the
   primary button, so Enter answers No, as do Escape and a click elsewhere. Every way of starting
@@ -5314,11 +5340,15 @@ which was the first idea and was changed on request. Everything is read from the
 rows: nothing is asked of the CLI, and a chat reopened from the history shows its agents too.
 
 **Once the turn has ended and agents are still running, the foot of the chat says so** — asked
-for: "✱ 2 agents running" under the last turn's "Worked for …" (`agentsRunningLine`, in that
+for: "✱ 2 agents running · 3m 12s" under the last turn's "Worked for …" (`agentsRunningLine`, in that
 turn's tail), the working star in front and turning on the same timer, the text shimmering.
 Only then: while the turn runs, the working line is the one at the bottom, and once no agent is
 `running` the line goes. It counts the chat's running agent rows, whichever turn started them —
-a background agent from an earlier turn included. A click opens the agents list
+a background agent from an earlier turn included, and the toolbar skills running in the
+background. **The time is since the first of them started** — how long the background work has
+gone on, asked for with the choice left to us; a sum of the agents' times would run ahead of the
+clock. It is rewritten in place every second, and the line rebuilt only when the count or that
+start changes. A click opens the agents list
 (`openAgentsPanel`, shared with the button). The tail is rebuilt only when the count changes,
 #365's rule, or a click straddling a post would be lost; checked in headless Chrome against the
 bundle — same element across a post with the same count, gone when the last agent ends.
@@ -7090,6 +7120,9 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
      for on a line of its own is read only as a line of its own.
 415. **Reading the text of every `<synthetic>` message** → an API error is one too, and the turn's
      result repeats it as the error, so "Prompt is too long" was said twice. Skip the flagged one.
+416. **A warning that counts work the path it warns about does not stop** → the tab's agent count
+     took in the background toolbar runs, and "Closing it stops 1 agent" was printed while closing
+     left the run going. Count only what is stopped, or stop what is counted.
 
 ## Special cases and non-obvious decisions
 

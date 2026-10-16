@@ -26,7 +26,7 @@ import { capAt, plainInLabel, plainInPrompt } from '../core/notifyText';
 import { isBrowserApiGranted, workspaceIsRemoteFromHost } from '../setup/proposedApi';
 import { pageTitle } from '../translate/translateText';
 import { generateUuid } from '../core/uuid';
-import { ToolbarRuns } from './toolbarRun';
+import { runRowPrefix, ToolbarRuns } from './toolbarRun';
 import { adaptSigils, fillPrompt, toolbarLimits, validToolbarSkill, withResultMarkers } from './toolbarText';
 
 /**
@@ -199,6 +199,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		inHistory: id => this._history().some(c => c.id === id),
 		approvalMode: key => this._approvalPolicy()[key] ?? 'ask',
 		noteServer: server => this._noteServer(server),
+		released: chatId => this._runs.stopChat(chatId),
 	};
 	private _remembered: RememberedSelection;
 	private readonly _runs = new ToolbarRuns({
@@ -419,6 +420,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				agent: tab.started ? tab.chat.agent : undefined,
 				running: tab.running,
 				agents: tab.agentsRunning,
+				skillRuns: this._runs.runningIn(tab.chat.id),
 				busy: tab.busy,
 				queued: tab.queuedCount,
 				status: tab.status,
@@ -430,6 +432,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			commands: this._registry.commands,
 			toolbar: this._toolbar(),
 			toolbarRuns: this._toolbarRunsState(),
+			skillAgents: this._runs.rows(this._active.chat.id),
 			collapseTools: vscode.workspace.getConfiguration().get<unknown>(collapseToolsSetting) === true,
 			hasBrowserTab: this._browser.hasOpenTabs,
 			browserApi: isBrowserApiGranted(),
@@ -592,6 +595,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				return;
 			}
 			case 'stopAgent':
+				if (message.id.startsWith(runRowPrefix)) {
+					if (!this._runs.stopRow(message.id)) {
+						this._postMessage({ type: 'agentStopFailed', id: message.id });
+					}
+					return;
+				}
 				if (!await this._active.stopAgent(message.id)) {
 					this._postMessage({ type: 'agentStopFailed', id: message.id });
 				}
@@ -819,7 +828,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			return;
 		}
 		const root = vscode.workspace.workspaceFolders?.find(f => f.uri.scheme === 'file')?.uri.fsPath;
-		this._runs.start(skill, skill.result === 'clipboard' ? withResultMarkers(prompt) : prompt, backend, model, effort, this._cwd(), root);
+		this._runs.start(skill, skill.result === 'clipboard' ? withResultMarkers(prompt) : prompt, prompt, tab.chat.id, backend, model, effort, this._cwd(), root);
 	}
 
 	private _fail(err: unknown): void {
@@ -1021,7 +1030,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 */
 	private _clearChat(): void {
 		const tab = this._active;
-		if (!tab.chat.entries.length && !tab.busy) {
+		if (!tab.chat.entries.length && !tab.busy && !this._runs.runningIn(tab.chat.id)) {
 			return;
 		}
 		this._giveBackQueue(tab);
@@ -1419,7 +1428,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		let tab = this._active;
 		// A tab the user named is not empty, though nothing was sent from it yet:
 		// opening a chat into it lost the name.
-		if (tab.started || tab.busy || tab.chat.named) {
+		// Nor is one running a toolbar skill in the background, which opening a
+		// chat into it would stop.
+		if (tab.started || tab.busy || tab.chat.named || this._runs.runningIn(tab.chat.id)) {
 			const added = this._addTab(stored.agent);
 			if (!added) {
 				return;

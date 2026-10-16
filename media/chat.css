@@ -129,6 +129,12 @@ button {
 	margin-top: 20px;
 }
 
+/* Messages added during a turn arrive one after another, each a turn holding
+   only its prompt: half the gap between them (asked for) — 22px rather than 42. */
+.turn:has(> .rows:empty):has(> .turn-tail:empty) + .turn {
+	margin-top: 0;
+}
+
 /* The prompt being answered stays at the top while its reply scrolls under it;
    the next turn's prompt pushes it away. The gradient lets rows fade out under it. */
 .prompt {
@@ -1814,6 +1820,14 @@ body.vscode-high-contrast-light .exec {
 	border: 1px solid var(--border);
 	border-radius: 8px;
 	overflow-wrap: anywhere;
+}
+
+/* A background toolbar run stopped on a question, answered from its card. */
+.agent-question {
+	margin: 8px 0 4px;
+	padding: 8px 10px;
+	border: 1px solid var(--vscode-editorWarning-foreground, var(--border));
+	border-radius: 8px;
 }
 
 .agent-fold {

@@ -191,6 +191,12 @@ export interface AgentInfo {
 	threadId?: string;
 	/** Its own tool calls, oldest first, capped. */
 	calls: { name: string; detail?: string }[];
+	/** A toolbar skill run in the background, not an agent the chat's agent started. */
+	origin?: 'toolbar';
+	/** Such a run's skill id, which its question is answered under (`toolbarApprove`). */
+	skill?: string;
+	/** The question such a run is stopped on, until it is answered. */
+	waiting?: { readonly id: string; readonly title: string; readonly detail?: string };
 }
 
 export interface ToolEntry {
@@ -327,6 +333,8 @@ export interface ChatViewState {
 	/** The chat's own skills, in toolbar order, and the background runs of them by skill id. */
 	readonly toolbar: readonly ToolbarSkill[];
 	readonly toolbarRuns: Readonly<Record<string, ToolbarRun>>;
+	/** The toolbar skills run in the background from this chat, as rows of its agents list. */
+	readonly skillAgents: readonly ToolEntry[];
 	/** `aiBrowser.chat.collapseToolCalls`: tool calls start folded. */
 	readonly collapseTools: boolean;
 }
@@ -348,6 +356,8 @@ export interface ChatTabSummary {
 	readonly running: boolean;
 	/** Agents of this conversation still working. */
 	readonly agents: number;
+	/** Toolbar skills run in the background from it, still going: they stop when the tab lets go of the chat. */
+	readonly skillRuns: number;
 	/** A turn or an agent is running: closing the tab stops it. */
 	readonly busy: boolean;
 	/** Messages queued in the tab, which closing it drops. */

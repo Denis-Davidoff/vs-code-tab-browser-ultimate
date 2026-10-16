@@ -7,8 +7,9 @@ import * as vscode from 'vscode';
 import { confirm } from '../core/notify';
 import type { AgentBackend, AgentSession } from './agents';
 import type { ApprovalRequest } from './agentProtocol';
-import type { AgentId, ApprovalMode, ToolbarRun, ToolbarSkill } from './chatProtocol';
+import type { AgentId, ApprovalMode, ToolbarRun, ToolbarSkill, ToolEntry } from './chatProtocol';
 import { approvalKey } from './chatTab';
+import { capAt } from '../core/notifyText';
 import { extractResult } from './toolbarText';
 
 /** What a run needs from the view that started it. */
@@ -35,7 +36,29 @@ interface Running {
 	 */
 	asked: ApprovalRequest[];
 	clear?: ReturnType<typeof setTimeout>;
+	/** The chat it was pressed in, whose agents list shows it. */
+	chatId: string;
+	/** Its row in that list. */
+	row: ToolEntry;
+	/** The reply so far: the row's report once the run ends, however it ends. */
+	reply: string;
+	/** The tool calls already counted: Codex can report one start twice. */
+	seen: Set<string>;
 }
+
+/** The ids of the runs' rows in the agents list; an agent's own row has the CLI's tool id. */
+export const runRowPrefix = 'toolbar-run-';
+/** How many ended runs a chat's agents list keeps; one chat's runs do not push out another's. */
+const endedRowsKept = 20;
+/** And all chats together, for a window that runs skills all day. */
+const endedRowsKeptInAll = 200;
+/** A run's own tool calls kept on its row, as for an agent's. */
+const callsKept = 100;
+/**
+ * The longest report and prompt a row keeps: up to 20 ended rows a chat go out
+ * with every state post, so a long reply is cut — the clipboard has it whole.
+ */
+const rowTextLimit = 20_000;
 
 /** How long a finished run keeps its done or failed look on the button. */
 const shownForMs = 2500;
@@ -61,6 +84,8 @@ function rank(run: ToolbarRun): number {
  */
 export class ToolbarRuns implements vscode.Disposable {
 	private readonly _runs = new Map<number, Running>();
+	/** Rows of runs that ended, newest last: the list keeps them so their reports can be read. */
+	private _ended: { chatId: string; row: ToolEntry }[] = [];
 	private _next = 0;
 	private _disposed = false;
 
@@ -91,7 +116,46 @@ export class ToolbarRuns implements vscode.Disposable {
 		return this._running(id).length > 0;
 	}
 
-	public start(skill: ToolbarSkill, prompt: string, backend: AgentBackend, model: string, effort: string | undefined, cwd: string, root: string | undefined): void {
+	/**
+	 * The runs pressed in a chat, as rows of its agents list — asked for: a run
+	 * is an agent working in the background, and nothing else showed what it was
+	 * doing. Running ones and the last that ended, oldest first.
+	 */
+	public rows(chatId: string): ToolEntry[] {
+		const live = [...this._runs.values()].filter(r => r.chatId === chatId && r.session).map(r => r.row);
+		return [...this._ended.filter(e => e.chatId === chatId).map(e => e.row), ...live].sort((a, b) => a.startedAt - b.startedAt);
+	}
+
+	/** How many runs pressed in a chat are still going, for its tab's agent count. */
+	public runningIn(chatId: string): number {
+		return [...this._runs.values()].filter(r => r.chatId === chatId && r.session).length;
+	}
+
+	/** Every run pressed in a chat, which its tab has let go of (`TabHost.released`). */
+	public stopChat(chatId: string): void {
+		for (const [key, entry] of this._runs) {
+			if (entry.chatId === chatId && entry.session) {
+				this._end(key, entry, { status: 'failed', message: vscode.l10n.t("Stopped."), endedAt: Date.now() }, failedShownForMs, true);
+			}
+		}
+	}
+
+	/** Stops one run, from the agents list; false when it is not one of these or already over. */
+	public stopRow(rowId: string): boolean {
+		for (const [key, entry] of this._runs) {
+			if (entry.row.id === rowId && entry.session) {
+				this._end(key, entry, { status: 'failed', message: vscode.l10n.t("Stopped."), endedAt: Date.now() }, failedShownForMs, true);
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * `prompt` is what is sent, `shown` the skill's own text for the row — the
+	 * result-marker instruction around it is ours, not the user's.
+	 */
+	public start(skill: ToolbarSkill, prompt: string, shown: string, chatId: string, backend: AgentBackend, model: string, effort: string | undefined, cwd: string, root: string | undefined): void {
 		if (this._disposed) {
 			return;
 		}
@@ -106,9 +170,13 @@ export class ToolbarRuns implements vscode.Disposable {
 		}
 		const key = ++this._next;
 		const session = backend.openSession(cwd, undefined, 0, root);
-		const entry: Running = { skillId: skill.id, agent: backend.id, run: { status: 'running' }, session, asked: [] };
+		const row: ToolEntry = {
+			kind: 'tool', id: `${runRowPrefix}${key}`, tool: 'agent', name: skill.name, detail: `/${skill.name}`,
+			input: capAt(shown, rowTextLimit), status: 'running', startedAt: Date.now(),
+			agent: { type: skill.result === 'clipboard' ? 'toolbar skill · to the clipboard' : 'toolbar skill · silent', model, background: true, origin: 'toolbar', skill: skill.id, toolUses: 0, tokens: 0, calls: [] },
+		};
+		const entry: Running = { skillId: skill.id, agent: backend.id, run: { status: 'running' }, session, asked: [], chatId, row, reply: '', seen: new Set() };
 		this._runs.set(key, entry);
-		let reply = '';
 		const current = () => this._runs.get(key) === entry && entry.session === session;
 		session.onEvent(event => {
 			if (!current()) {
@@ -116,10 +184,30 @@ export class ToolbarRuns implements vscode.Disposable {
 			}
 			switch (event.type) {
 				case 'text':
-					reply += event.text;
+					entry.reply += event.text;
 					return;
 				case 'textBreak':
-					reply += reply ? '\n\n' : '';
+					entry.reply += entry.reply ? '\n\n' : '';
+					return;
+				case 'tool': {
+					// Its own calls, as an agent's card lists them; the reply is set on
+					// the row only at the end, or the list rebuilt on every chunk (#365).
+					const info = row.agent!;
+					if (entry.seen.has(event.id)) {
+						return;
+					}
+					entry.seen.add(event.id);
+					if (info.calls.length < callsKept) {
+						info.calls.push({ name: event.tool.name, detail: event.tool.detail });
+					}
+					info.toolUses = (info.toolUses ?? 0) + 1;
+					info.lastTool = event.tool.name;
+					this._host.changed();
+					return;
+				}
+				case 'tokens':
+					row.agent!.tokens = event.cumulative ? event.input + event.output : (row.agent!.tokens ?? 0) + event.input + event.output;
+					this._host.changed();
 					return;
 				case 'approval': {
 					const request = event.request;
@@ -142,14 +230,14 @@ export class ToolbarRuns implements vscode.Disposable {
 					}
 					return;
 				case 'turnEnd':
-					void this._finish(skill, key, entry, event.error, reply);
+					void this._finish(skill, key, entry, event.error, entry.reply);
 					return;
 			}
 		});
 		this._host.changed();
 		session.send({ text: prompt, images: [] }, model, effort).catch(err => {
 			if (current()) {
-				void this._finish(skill, key, entry, err instanceof Error ? err.message : String(err), reply);
+				void this._finish(skill, key, entry, err instanceof Error ? err.message : String(err), entry.reply);
 			}
 		});
 	}
@@ -199,7 +287,10 @@ export class ToolbarRuns implements vscode.Disposable {
 	/** The run's look: waiting on its oldest open question, else running. */
 	private _showAsked(entry: Running): void {
 		const q = entry.asked[0];
-		entry.run = q ? { status: 'waiting', approval: { id: q.id, title: q.title, detail: q.detail } } : { status: 'running' };
+		const approval = q ? { id: q.id, title: q.title, detail: q.detail } : undefined;
+		entry.run = approval ? { status: 'waiting', approval } : { status: 'running' };
+		// The agents list says so too, and answers it there as the button does.
+		entry.row.agent!.waiting = approval;
 		this._host.changed();
 	}
 
@@ -221,7 +312,7 @@ export class ToolbarRuns implements vscode.Disposable {
 	public stop(skillId: string): void {
 		for (const [key, entry] of this._runs) {
 			if (entry.skillId === skillId && (entry.run.status === 'running' || entry.run.status === 'waiting')) {
-				this._end(key, entry, { status: 'failed', message: vscode.l10n.t("Stopped."), endedAt: Date.now() }, failedShownForMs);
+				this._end(key, entry, { status: 'failed', message: vscode.l10n.t("Stopped."), endedAt: Date.now() }, failedShownForMs, true);
 			}
 		}
 	}
@@ -271,7 +362,7 @@ export class ToolbarRuns implements vscode.Disposable {
 	}
 
 	/** The session is let go here, every way a run ends: a Claude process ends with it. */
-	private _end(key: number, entry: Running, run: ToolbarRun, shownFor: number): void {
+	private _end(key: number, entry: Running, run: ToolbarRun, shownFor: number, stopped = false): void {
 		const session = entry.session;
 		entry.session = undefined;
 		entry.asked = [];
@@ -280,6 +371,14 @@ export class ToolbarRuns implements vscode.Disposable {
 		if (this._disposed) {
 			return;
 		}
+		const row = entry.row;
+		this._closeRow(entry, run.status === 'done' ? 'done' : stopped ? 'stopped' : 'failed', run.endedAt);
+		if (run.status !== 'done' && run.message && !stopped) {
+			row.output = row.output ? `${run.message}\n\n${row.output}` : run.message;
+		} else if (run.status === 'done' && run.message) {
+			row.output = row.output ? `${row.output}\n\n*${run.message}*` : run.message;
+		}
+		this._keepEnded(entry.chatId, row);
 		this._host.changed();
 		entry.clear = setTimeout(() => {
 			if (this._runs.get(key) === entry) {
@@ -308,11 +407,36 @@ export class ToolbarRuns implements vscode.Disposable {
 		}
 	}
 
+	/** The row stays in its chat's list once the button has forgotten the run: its end, and the reply as its report. */
+	private _closeRow(entry: Running, status: ToolEntry['status'], endedAt = Date.now()): void {
+		const row = entry.row;
+		row.output = capAt(entry.reply.trim(), rowTextLimit) || undefined;
+		row.status = status;
+		row.endedAt = endedAt;
+		row.agent!.lastTool = undefined;
+		row.agent!.waiting = undefined;
+	}
+
+	private _keepEnded(chatId: string, row: ToolEntry): void {
+		this._ended.push({ chatId, row });
+		const mine = this._ended.filter(e => e.chatId === chatId);
+		if (mine.length > endedRowsKept) {
+			const drop = new Set(mine.slice(0, mine.length - endedRowsKept));
+			this._ended = this._ended.filter(e => !drop.has(e));
+		}
+		this._ended = this._ended.slice(-endedRowsKeptInAll);
+	}
+
 	/** A skill deleted while it runs: stopped, and nothing left to show. */
 	public forget(skillId: string): void {
 		for (const [key, entry] of this._runs) {
 			if (entry.skillId !== skillId) {
 				continue;
+			}
+			if (entry.session) {
+				// A deleted skill's run still ran: its row says it was stopped.
+				this._closeRow(entry, 'stopped');
+				this._keepEnded(entry.chatId, entry.row);
 			}
 			if (entry.clear) {
 				clearTimeout(entry.clear);

@@ -15,10 +15,11 @@ src/chat/news.ts — see "The AI Browser chat" in CLAUDE.md.
 Browse, debug and test your pages in VS Code's own browser — and let Claude Code or Codex see them, click through them and take screenshots, right inside the editor.
 
 ## 0.7.1 — 2026-10-16
-- **Toolbar skills**: from **/** → *Add skill to toolbar*, a button above the message box running a prompt of your own — with parameters, using the agents' skills, with colours of your choice for its text, border and icon — into the chat, to the clipboard, or silently in the background; also callable as **/name**. Pressed again while it runs, it asks before running a second time.
+- **Toolbar skills**: from **/** → *Add skill to toolbar*, a button above the message box running a prompt of your own — with parameters, using the agents' skills, with colours of your choice for its text, border and icon — into the chat, to the clipboard, or silently in the background; also callable as **/name**. Pressed again while it runs, it asks before running a second time. A skill running in the background shows in the agents list, with its tool calls, its reply, its questions and a Stop, and stops when its chat is closed or cleared.
 - **Tool calls** show the first three lines of their input and output, on a darker card — a command its first three and its output's last three — and a file change its counts with the first three lines removed and added; click IN or OUT to open the whole of it in an editor tab, or a file change to open it in VS Code's diff editor. *Fold Tool Calls* in the settings folds them instead.
-- Once a reply is done while the agents it started work on, the foot of the chat says how many are still running; click it to see them. The agents button beside Send counts only the running ones, and stays when they are done so you can read what they found.
+- Once a reply is done while the agents it started work on, the foot of the chat says how many are still running and for how long; click it to see them. The agents button beside Send counts only the running ones, and stays when they are done so you can read what they found.
 - A diff's added and removed lines are coloured across their whole width, scrolled sideways too.
+- Messages added while the agent works sit closer together.
 - A conversation grown past the model's context says so once, and suggests `/compact`; a clipboard skill copies only what is between its markers, even when the result mentions them.
 
 ## 0.7.0 — 2026-10-16
