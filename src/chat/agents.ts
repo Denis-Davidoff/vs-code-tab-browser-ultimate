@@ -6,7 +6,7 @@
 import * as vscode from 'vscode';
 import { binarySource, chooseAgentBinary, describeBinary } from './agentBinary';
 import type { AgentEvent } from './agentProtocol';
-import type { AgentId, AgentUsage, ChatAgent, ChatModel } from './chatProtocol';
+import type { AgentId, AgentUsage, ChatAgent, ChatCommand, ChatModel } from './chatProtocol';
 import { ClaudeBackend } from './claudeAgent';
 import { CodexBackend } from './codexAgent';
 
@@ -64,6 +64,10 @@ export interface BrowserServer {
 export interface AgentBackend extends vscode.Disposable {
 	readonly id: AgentId;
 	models(): Promise<ChatModel[]>;
+	/** The skills and commands it offers, read again from the CLI; kept as `knownCommands`. */
+	commands(): Promise<ChatCommand[]>;
+	/** The last list `commands()` (or, for Claude Code, `models()`) read; undefined before one. */
+	readonly knownCommands: readonly ChatCommand[] | undefined;
 	usage(): Promise<AgentUsage>;
 	/** `priorCostUsd` is what the conversation has cost so far; see `ClaudeSession._processCost`. */
 	/**
@@ -124,6 +128,48 @@ export class AgentRegistry implements vscode.Disposable {
 
 	public get agents(): readonly ChatAgent[] {
 		return this._agents;
+	}
+
+	/** Each available agent's skills and commands, for the "/" palette. */
+	public get commands(): Partial<Record<AgentId, readonly ChatCommand[]>> {
+		const out: Partial<Record<AgentId, readonly ChatCommand[]>> = {};
+		for (const [id, { backend }] of this._backends) {
+			if (backend.knownCommands && this._agents.some(a => a.id === id && a.available)) {
+				out[id] = backend.knownCommands;
+			}
+		}
+		return out;
+	}
+
+	private readonly _commandsAsked = new Map<AgentId, number>();
+
+	/**
+	 * Lists an agent's skills again — the palette opened, and one may have been
+	 * added since. At most every 10 s per agent: for Claude Code each listing is
+	 * a short-lived CLI process. A failure keeps the list there was.
+	 */
+	public async refreshCommands(id: AgentId): Promise<void> {
+		const entry = this._backends.get(id);
+		const last = this._commandsAsked.get(id) ?? 0;
+		// Not for an agent detection found unusable: listing would start its CLI
+		// (Codex's app-server, a Claude probe) for a list the getter drops. A
+		// stamp in the future — a clock moved back — is due, not fresh (#224).
+		const now = Date.now();
+		if (!entry || this._disposed || (now >= last && now - last < 10_000)
+			|| !this._agents.some(a => a.id === id && a.available)) {
+			return;
+		}
+		this._commandsAsked.set(id, Date.now());
+		const before = JSON.stringify(entry.backend.knownCommands);
+		try {
+			await entry.backend.commands();
+		} catch {
+			return;
+		}
+		// The same backend still, or the list belongs to a copy no longer in use.
+		if (!this._disposed && this._backends.get(id) === entry && JSON.stringify(entry.backend.knownCommands) !== before) {
+			this._onDidChange.fire();
+		}
 	}
 
 	public get detecting(): boolean {
@@ -222,6 +268,7 @@ export class AgentRegistry implements vscode.Disposable {
 		}
 
 		const detail = describeBinary(binary) + (about.choice === 'pinned' ? ' (picked for this project)' : '');
+		const before = entry.backend.knownCommands;
 		try {
 			const models = await entry.backend.models();
 			if (this._disposed) {
@@ -230,6 +277,13 @@ export class AgentRegistry implements vscode.Disposable {
 			if (!models.length) {
 				return { id, name, available: false, models, detail, ...about, problem: vscode.l10n.t("{0} listed no models.", name) };
 			}
+			// Claude Code's come with the models (models() just replaced the list);
+			// Codex's are one more call, made on every detection so a Refresh
+			// finds a skill added since. The throttle starts from a real listing.
+			if (entry.backend.knownCommands === before) {
+				await entry.backend.commands().catch(() => undefined);
+			}
+			this._commandsAsked.set(id, Date.now());
 			return { id, name, available: true, models, detail, ...about };
 		} catch (err) {
 			return { id, name, available: false, models: [], detail, ...about, problem: err instanceof Error ? err.message : String(err) };

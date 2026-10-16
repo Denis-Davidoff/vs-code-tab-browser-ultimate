@@ -7,9 +7,9 @@ import { promises as fs, writeFileSync } from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { JsonLineProcess, withTimeout } from './agentProcess';
-import { claudeApproval, claudeApprovalAnswer, claudeEvents, claudeModels, claudeUsage, type AgentEvent } from './agentProtocol';
+import { claudeApproval, claudeApprovalAnswer, claudeCommands, claudeEvents, claudeModels, claudeUsage, type AgentEvent } from './agentProtocol';
 import type { AgentBackend, AgentSession, BrowserServer, TurnInput } from './agents';
-import type { AgentUsage, ChatModel } from './chatProtocol';
+import type { AgentUsage, ChatCommand, ChatModel } from './chatProtocol';
 import { existingPrivateTempDirectory, privateTempDirectory } from '../core/safeFiles';
 import { generateUuid } from '../core/uuid';
 
@@ -207,8 +207,30 @@ export class ClaudeBackend implements AgentBackend {
 		private readonly _browserServer: () => BrowserServer | undefined = () => undefined,
 	) { }
 
+	private _commands: ChatCommand[] | undefined;
+
+	public get knownCommands(): readonly ChatCommand[] | undefined {
+		return this._commands;
+	}
+
+	/** The `initialize` answer carries the skills and commands too, so they are kept from here. */
 	public async models(): Promise<ChatModel[]> {
-		return this._withProbe(async control => claudeModels(await control.request('initialize')));
+		return this._withProbe(async control => {
+			const answer = await control.request('initialize');
+			this._commands = claudeCommands(answer);
+			return claudeModels(answer);
+		});
+	}
+
+	/**
+	 * Asked of a short-lived process in the project folder, not of a live
+	 * session: a second `initialize` on a running conversation is not
+	 * something the CLI is known to take.
+	 */
+	public async commands(): Promise<ChatCommand[]> {
+		const commands = await this._withProbe(async control => claudeCommands(await control.request('initialize')));
+		this._commands = commands;
+		return commands;
 	}
 
 	/**

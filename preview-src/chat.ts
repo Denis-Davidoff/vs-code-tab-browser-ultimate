@@ -24,7 +24,7 @@
  */
 
 import type {
-	AgentUsage, ApprovalEntry, ApprovalKind, ApprovalMode, AttachmentKind, ChatEntry, ChatStats, ChatSummary, ChatTabStatus, ChatTabSummary, ChatViewState, HostToView, ToolEntry, ViewToHost,
+	AgentId, AgentUsage, ApprovalEntry, ApprovalKind, ApprovalMode, AttachmentKind, ChatCommand, ChatEntry, ChatStats, ChatSummary, ChatTabStatus, ChatTabSummary, ChatViewState, HostToView, ToolEntry, ViewToHost,
 } from '../src/chat/chatProtocol';
 
 interface ViewState {
@@ -115,7 +115,7 @@ input.placeholder = 'Ask about this page, or anything…';
 const plusButton = button([icon('add')], { class: 'ghost round', title: 'Attach to the message — a screenshot or an element of the page, its address, or a file' });
 const browserButton = button([icon('globe')], { class: 'ghost round', title: 'Open a new browser tab' });
 /** "/": the chat's own commands — clear or export this conversation. A square and a slash, both drawn in CSS (`.slash-mark`). */
-const slashButton = button([el('span', { class: 'slash-mark' })], { class: 'ghost round slash-button', title: 'Chat commands — clear this conversation, or export it to the clipboard or a file' });
+const slashButton = button([el('span', { class: 'slash-mark' })], { class: 'ghost round slash-button', title: 'Commands and skills — the agent\'s skills, and clearing or exporting this conversation. Type / in the message box to search them there' });
 const agentPill = button([], { class: 'pill', title: 'Agent' });
 const modelPill = button([], { class: 'pill', title: 'Model' });
 const effortRange = el('input', { class: 'effort-range' });
@@ -138,7 +138,15 @@ const approveToggle = button([], { class: 'pill approve-toggle' });
 // so a narrow side bar wraps them together onto the next line, still at the right.
 const toolbar = el('div', { class: 'toolbar' },
 	plusButton, browserButton, slashButton, agentPill, modelPill, effortBox, approveToggle, el('span', { class: 'toolbar-end' }, agentsButton, usageButton, queueButton, sendButton));
-const composer = el('div', { class: 'composer' }, attachmentsRow, input, toolbar);
+/**
+ * The box's text drawn again behind it, with the agent's commands marked: a
+ * textarea cannot style part of its text, so the marks live in this layer and
+ * the textarea above it is transparent. Same font, padding, wrapping and scroll.
+ */
+const inputMirror = el('div', { class: 'input-mirror' });
+inputMirror.setAttribute('aria-hidden', 'true');
+const inputWrap = el('div', { class: 'input-wrap' }, inputMirror, input);
+const composer = el('div', { class: 'composer' }, attachmentsRow, inputWrap, toolbar);
 /** Asked when another agent is picked for a conversation that has started. */
 const switchCard = el('div', { class: 'switch-card' });
 const footer = el('div', { class: 'footer' }, switchCard, composer);
@@ -148,12 +156,14 @@ const tabStrip = el('div', { class: 'tab-strip' });
 const menu = el('div', { class: 'popup menu' });
 const usagePopup = el('div', { class: 'popup usage-popup' });
 const approvalPopup = el('div', { class: 'popup approval-popup' });
+/** The "/" palette: a search box over the chat's commands and the agent's skills. */
+const palette = el('div', { class: 'popup palette' });
 const historyPanel = el('div', { class: 'history-panel' });
 const agentsPanel = el('div', { class: 'history-panel agents-panel' });
 /** Which copy of each agent's CLI this project uses: opened from the gear in the agent menu. */
 const agentAppsPanel = el('div', { class: 'history-panel agent-apps' });
 
-app.append(tabStrip, thread, blocked, footer, menu, usagePopup, approvalPopup, historyPanel, agentsPanel, agentAppsPanel);
+app.append(tabStrip, thread, blocked, footer, menu, usagePopup, approvalPopup, palette, historyPanel, agentsPanel, agentAppsPanel);
 
 /* ---------------------------------------------------------------- state */
 
@@ -210,6 +220,9 @@ function followDraft(s: ChatViewState): void {
 	}
 	const first = draftChat === undefined;
 	draftChat = s.chatId;
+	if (paletteMode === 'inline') {
+		closePalette();
+	}
 	draftTab = s.activeTab;
 	input.value = drafts[s.chatId] ?? (first ? savedView?.draft ?? '' : '');
 	historyAt = inputHistory.length;
@@ -248,6 +261,9 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 		case 'restoreDraft':
 			// Stop gave the queue back: added to what is in the box, never sent.
 			if (message.chatId === state?.chatId) {
+				if (paletteMode === 'inline') {
+					closePalette();
+				}
 				input.value = input.value.trim() ? `${input.value}\n\n${message.text}` : message.text;
 				autosize();
 				saveDraft();
@@ -290,6 +306,11 @@ function render(): void {
 	app.classList.toggle('is-blocked', !!state.blocked);
 	blocked.textContent = state.blocked ?? '';
 	followDraft(state);
+	const commands = [...knownCommands(state)].join(' ');
+	if (commands !== commandsSignature) {
+		commandsSignature = commands;
+		paintInput();
+	}
 	renderTabs(state);
 	renderSwitch(state);
 	renderThread(state);
@@ -299,6 +320,7 @@ function render(): void {
 	renderApproveToggle(state);
 	renderSend();
 	renderAgents(state);
+	renderPalette(state);
 	if (agentAppsPanel.classList.contains('open')) {
 		fillAgentApps(state);
 	}
@@ -815,8 +837,13 @@ function renderPendingSends(s: ChatViewState): void {
  * while a reply streams) took the reader's selection with it.
  */
 function signature(entry: ChatEntry, i: number): string {
-	return entry.kind === 'user' ? JSON.stringify(entry) : `${JSON.stringify(entry)}|${toggled.get(keyOf(entry, i)) ?? ''}`;
+	// A prompt is rebuilt when the agent's commands change too, so they are
+	// marked once they have been listed.
+	return entry.kind === 'user' ? `${JSON.stringify(entry)}|${commandsSignature}` : `${JSON.stringify(entry)}|${toggled.get(keyOf(entry, i)) ?? ''}`;
 }
+
+/** The commands the marks are drawn from, as one string; set at the top of every render. */
+let commandsSignature = '';
 
 function keyOf(entry: ChatEntry, i: number): string {
 	return entry.kind === 'tool' ? `tool:${entry.id}` : entry.kind === 'approval' ? `approval:${entry.id}` : `${entry.kind}:${i}`;
@@ -1207,7 +1234,7 @@ function promptNode(entry: Extract<ChatEntry, { kind: 'user' }>, i: number): HTM
 			...entry.attachments.map(label => el('span', { class: 'chip small', text: label }))));
 	}
 	if (entry.text) {
-		bubble.append(el('div', { class: 'bubble-text', text: entry.text }));
+		bubble.append(el('div', { class: 'bubble-text' }, ...markCommands(entry.text, knownCommands(state))));
 		const copy = copyButton(() => entry.text, 'Copy prompt');
 		copy.classList.add('message-copy');
 		bubble.append(copy);
@@ -1753,7 +1780,53 @@ effortRange.addEventListener('input', () => {
 function autosize(): void {
 	input.style.height = 'auto';
 	input.style.height = `${Math.min(input.scrollHeight, 200)}px`;
+	paintInput();
 }
+
+/** The commands an agent offers, as typed — `/name` for Claude Code, `$name` for Codex. */
+function knownCommands(s: ChatViewState | undefined): ReadonlySet<string> {
+	const agent = s ? paletteAgent(s) : undefined;
+	return new Set((agent && s?.commands[agent] || []).map(c => c.insert));
+}
+
+/**
+ * Text with the agent's commands marked — asked for, in the box and in the
+ * chat alike. Only a command the agent lists, at the start or after white
+ * space, so a path or a price is never marked; trailing punctuation is not
+ * part of it. Built from text nodes, so `textContent` is the text unchanged —
+ * the copy button and the send's flight read it.
+ */
+function markCommands(text: string, known: ReadonlySet<string>): Node[] {
+	const out: Node[] = [];
+	let last = 0;
+	const re = /(^|\s)([/$]\S+)/g;
+	for (let m = re.exec(text); m; m = re.exec(text)) {
+		const name = m[2].replace(/[.,;:!?)]+$/, '');
+		if (!known.has(name)) {
+			continue;
+		}
+		const start = m.index + m[1].length;
+		if (start > last) {
+			out.push(document.createTextNode(text.slice(last, start)));
+		}
+		out.push(el('span', { class: 'cmd-token', text: name }));
+		last = start + name.length;
+	}
+	if (last < text.length) {
+		out.push(document.createTextNode(text.slice(last)));
+	}
+	return out;
+}
+
+/** The mirror behind the box, kept to its text and its scroll. */
+function paintInput(): void {
+	// A trailing line break needs something after it, or the mirror's last line
+	// is one short of the textarea's.
+	inputMirror.replaceChildren(...markCommands(input.value, knownCommands(state)), '\u200b');
+	inputMirror.scrollTop = input.scrollTop;
+}
+
+input.addEventListener('scroll', () => { inputMirror.scrollTop = input.scrollTop; });
 
 /*
  * ↑ / ↓ walk through the messages sent before, as in a terminal: ↑ is older,
@@ -1783,6 +1856,9 @@ function recall(step: -1 | 1): boolean {
 	if (next < 0 || next > inputHistory.length) {
 		return false;
 	}
+	if (paletteMode === 'inline') {
+		closePalette();
+	}
 	if (historyAt === inputHistory.length && !fromHistory) {
 		historyDraft = input.value;
 	}
@@ -1802,9 +1878,16 @@ input.addEventListener('input', () => {
 	saveDraft();
 	autosize();
 	renderSend();
+	followInlineToken();
 });
 
 input.addEventListener('keydown', event => {
+	// The inline palette takes the keys that move through it and choose from it.
+	if (paletteMode === 'inline' && paletteKey(event)) {
+		event.preventDefault();
+		event.stopPropagation();
+		return;
+	}
 	if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
 		event.preventDefault();
 		// ⌘Enter (Ctrl+Enter elsewhere) queues it for after the running turn;
@@ -1841,6 +1924,8 @@ function send(mode?: 'queue'): void {
 		return;
 	}
 	launchFlight(text);
+	closePalette();
+	paletteDismissed = undefined;
 	// The host decides whether there is anything to queue behind: the queue can
 	// still be waiting to go out for a moment after the turn has ended.
 	post({ type: 'send', text, tabId: state?.activeTab, mode });
@@ -2019,7 +2104,12 @@ function closePopups(except?: HTMLElement): void {
 	if (except !== agentsPanel) {
 		agentsView = undefined;
 	}
-	for (const popup of [menu, usagePopup, approvalPopup, historyPanel, agentsPanel, agentAppsPanel]) {
+	// Closed by another popup, the palette is closed: the next "/" opens it
+	// rather than reading as a second press that closes it.
+	if (except !== palette) {
+		paletteMode = undefined;
+	}
+	for (const popup of [menu, usagePopup, approvalPopup, palette, historyPanel, agentsPanel, agentAppsPanel]) {
 		if (popup !== except) {
 			popup.classList.remove('open');
 		}
@@ -2056,7 +2146,11 @@ function openAbove(popup: HTMLElement, anchor: HTMLElement, align: 'left' | 'rig
 
 document.addEventListener('mousedown', event => {
 	const target = event.target as Node;
-	if (![menu, usagePopup, approvalPopup, historyPanel, agentsPanel, agentAppsPanel, plusButton, usageButton, agentsButton, agentPill, modelPill, approveToggle, slashButton].some(n => n.contains(target))) {
+	// A click in the box moves the caret the inline palette follows, so it is not a click outside it.
+	if (paletteMode === 'inline' && input.contains(target)) {
+		return;
+	}
+	if (![menu, usagePopup, approvalPopup, palette, historyPanel, agentsPanel, agentAppsPanel, plusButton, usageButton, agentsButton, agentPill, modelPill, approveToggle, slashButton].some(n => n.contains(target))) {
 		closePopups();
 	}
 });
@@ -2268,18 +2362,89 @@ modelPill.addEventListener('click', () => {
 
 browserButton.addEventListener('click', () => post({ type: 'openBrowser' }));
 
+/* ---------------------------------------------------------------- the "/" palette */
+
 /**
- * The "/" menu. Clear starts the tab over (the conversation stays in the
- * history), asking first when the tab is working, as closing it does; Export
- * asks where to — the clipboard, or a new editor tab to save.
+ * The "/" palette: the chat's own commands and the agent's skills, behind a
+ * search box — asked for, after Claude Code's own: press "/" and type. It
+ * opens two ways. From the toolbar's "/" button it carries its own search box,
+ * focused at once (`button`). Typed in the message box — "/" or "$" at the start
+ * or after a space, for either agent — the box itself is the search, and the
+ * palette follows what is typed after the sigil (`inline`). Choosing a skill
+ * writes it into the box rather than sending it, so arguments can follow.
+ *
+ * Skills come from the CLI of the agent the tab uses (`state.commands`), and
+ * are asked for again each time the palette opens, so one added meanwhile
+ * shows up. Without a search they are grouped by where they come from; with
+ * one the matches are ranked in one list, each naming its group.
  */
-slashButton.addEventListener('click', () => {
-	const tab = state?.tabs.find(t => t.id === state?.activeTab);
-	const empty = !state?.entries.length;
-	openMenu(slashButton, [
-		{
-			icon: 'clear-all', label: 'Clear conversation', disabled: empty && !tab?.busy,
-			description: 'Start this tab over; the conversation stays in the history',
+interface PaletteItem {
+	readonly key: string;
+	readonly group: string;
+	readonly label: string;
+	readonly hint?: string;
+	readonly detail?: string;
+	readonly icon?: string;
+	/** Everything the search looks at, lower-cased. */
+	readonly haystack: string;
+	readonly name: string;
+	readonly disabled?: boolean;
+	readonly run: () => void;
+}
+
+type PaletteMode = 'button' | 'inline';
+
+let paletteMode: PaletteMode | undefined;
+/** Where the inline query starts in the box, its sigil included. */
+let inlineStart = 0;
+/** The box's text when the user closed the inline palette with Escape: not reopened until it changes. */
+let paletteDismissed: string | undefined;
+let paletteActive = 0;
+let paletteItems: PaletteItem[] = [];
+/** What the list was built from, so a state post rebuilds it only when that changed (#365). */
+let paletteShape = '';
+
+const paletteSearch = el('input', { class: 'palette-search' });
+paletteSearch.type = 'text';
+paletteSearch.spellcheck = false;
+paletteSearch.placeholder = 'Search commands and skills…';
+paletteSearch.setAttribute('aria-label', 'Search commands and skills');
+const paletteList = el('div', { class: 'palette-list' });
+paletteList.setAttribute('role', 'listbox');
+palette.append(paletteSearch, paletteList);
+
+function paletteAgent(s: ChatViewState): AgentId | undefined {
+	const tab = s.tabs.find(t => t.id === s.activeTab);
+	return tab?.agent ?? s.selection.agent;
+}
+
+const groupNames: Record<ChatCommand['group'], string> = {
+	project: 'Project',
+	user: 'Personal',
+	plugin: 'Plugin',
+	synced: 'Synced from claude.ai',
+	system: 'Built into Codex',
+	builtin: 'Built into Claude Code',
+};
+
+function commandGroup(c: ChatCommand): string {
+	return c.group === 'plugin' && c.plugin ? `Plugin · ${c.plugin}` : groupNames[c.group];
+}
+
+/** Clear and Export, as the "/" button always had them; the second step of each is a menu of its own. */
+function chatActions(s: ChatViewState): PaletteItem[] {
+	const tab = s.tabs.find(t => t.id === s.activeTab);
+	const items: PaletteItem[] = [];
+	// Always listed, disabled while there is nothing to act on — hidden, they
+	// read as gone in a new tab, the first place a palette is opened.
+	const canClear = s.entries.length > 0 || !!tab?.busy;
+	const canExport = s.entries.some(e => e.kind === 'user' || e.kind === 'assistant');
+	{
+		items.push({
+			key: 'chat:clear', group: 'Chat', name: 'clear', label: 'Clear conversation', icon: 'clear-all',
+			detail: canClear ? 'Start this tab over; the conversation stays in the history' : 'Nothing to clear yet',
+			disabled: !canClear,
+			haystack: 'clear conversation start over',
 			run: () => {
 				if (!tab?.busy && !tab?.queued) {
 					post({ type: 'clearChat' });
@@ -2291,16 +2456,402 @@ slashButton.addEventListener('click', () => {
 					{ icon: 'close', label: 'Cancel', run: () => undefined },
 				], 'The agent is still working');
 			},
-		},
-		{
-			icon: 'export', label: 'Export conversation…', disabled: !state?.entries.some(e => e.kind === 'user' || e.kind === 'assistant'),
-			description: 'As Markdown, to the clipboard or a file',
+		});
+	}
+	{
+		items.push({
+			key: 'chat:export', group: 'Chat', name: 'export', label: 'Export conversation…', icon: 'export',
+			detail: canExport ? 'As Markdown, to the clipboard or a file' : 'Nothing to export yet',
+			disabled: !canExport,
+			haystack: 'export conversation markdown clipboard file save',
 			run: () => openMenu(slashButton, [
 				{ icon: 'copy', label: 'Copy to clipboard', run: () => post({ type: 'exportChat', to: 'clipboard' }) },
 				{ icon: 'save', label: 'Save to file…', description: 'Opens it in an editor tab and asks where to save', run: () => post({ type: 'exportChat', to: 'file' }) },
 			], 'Export conversation'),
-		},
-	], 'Chat');
+		});
+	}
+	return items;
+}
+
+function skillItems(s: ChatViewState): PaletteItem[] {
+	const agent = paletteAgent(s);
+	return (agent ? s.commands[agent] ?? [] : []).map(c => ({
+		key: `${agent}:${c.insert}`,
+		group: commandGroup(c),
+		name: c.name.toLowerCase(),
+		label: c.insert,
+		hint: c.hint,
+		detail: [c.title, c.description].filter(Boolean).join(' — ') || undefined,
+		haystack: [c.name, c.title, c.description, c.plugin].filter(Boolean).join(' ').toLowerCase(),
+		run: () => insertCommand(c),
+	}));
+}
+
+function paletteQuery(): string {
+	if (paletteMode === 'button') {
+		return paletteSearch.value.trim().toLowerCase();
+	}
+	const caret = input.selectionStart ?? input.value.length;
+	return input.value.slice(inlineStart + 1, caret).toLowerCase();
+}
+
+/**
+ * Ranks a match: the name starting with the query, then the name holding it,
+ * then the rest of the text holding every word of it. No match is undefined.
+ */
+function rank(item: PaletteItem, query: string): number | undefined {
+	if (!query) {
+		return 0;
+	}
+	if (item.name.startsWith(query)) {
+		return 0;
+	}
+	if (item.name.includes(query)) {
+		return 1;
+	}
+	const words = query.split(/\s+/).filter(Boolean);
+	return words.every(w => item.haystack.includes(w)) ? 2 : undefined;
+}
+
+function buildPalette(s: ChatViewState): void {
+	const query = paletteQuery();
+	const inline = paletteMode === 'inline';
+	// "/" also lists the chat's own commands, "$" only skills. Typed in the box,
+	// they come after the skills and only once something is typed after the
+	// "/": with "/" alone, Enter chose Clear conversation — the first row — and
+	// cleared the tab without a question.
+	const sigil = inline ? input.value[inlineStart] : '/';
+	const actions = sigil === '/' && (!inline || query) ? chatActions(s) : [];
+	const all = inline ? [...skillItems(s), ...actions] : [...actions, ...skillItems(s)];
+	const ranked = all.map((item, i) => ({ item, i, r: rank(item, query) }))
+		.filter((x): x is { item: PaletteItem; i: number; r: number } => x.r !== undefined);
+	if (query) {
+		ranked.sort((a, b) => a.r - b.r || a.i - b.i);
+	}
+	const previous = paletteItems[paletteActive]?.key;
+	paletteItems = ranked.map(x => x.item);
+	const kept = paletteItems.findIndex(i => i.key === previous && !i.disabled);
+	// Never a chat command by default without a query: Enter on a fresh "/"
+	// must not clear the conversation. With nothing else to offer, no row is
+	// chosen until an arrow key picks one.
+	paletteActive = kept >= 0 ? kept
+		: query ? stepActive(-1, 1)
+			: paletteItems.findIndex(i => !i.disabled && !i.key.startsWith('chat:'));
+
+	const nodes: Node[] = [];
+	let group: string | undefined;
+	paletteItems.forEach((item, index) => {
+		if (!query && item.group !== group) {
+			group = item.group;
+			nodes.push(el('div', { class: 'palette-group', text: group }));
+		}
+		const row = button([
+			item.icon ? icon(item.icon, 'palette-icon') : el('span', { class: 'palette-icon' }),
+			el('span', { class: 'palette-text' },
+				el('span', { class: 'palette-line' },
+					el('span', { class: item.icon ? 'palette-label' : 'palette-label palette-name', text: item.label }),
+					item.hint ? el('span', { class: 'palette-hint', text: item.hint }) : undefined,
+					query ? el('span', { class: 'palette-tag', text: item.group }) : undefined),
+				item.detail ? el('span', { class: 'palette-detail', text: item.detail }) : undefined),
+		], { class: 'palette-item' });
+		// Not the `disabled` attribute: a disabled button gets no mousedown,
+		// so a click on it took focus out of the box.
+		if (item.disabled) {
+			row.classList.add('disabled');
+			row.setAttribute('aria-disabled', 'true');
+		}
+		row.setAttribute('role', 'option');
+		if (item.detail) {
+			row.title = item.detail;
+		}
+		row.dataset.index = String(index);
+		row.addEventListener('mousemove', () => !item.disabled && setPaletteActive(index, false));
+		// Not a click: in the inline mode a press would take the caret out of
+		// the box first, and with it the query.
+		row.addEventListener('mousedown', event => event.preventDefault());
+		row.addEventListener('click', () => choosePalette(index));
+		nodes.push(row);
+	});
+	// Typed in the box, a query nothing matches is most likely not a command at
+	// all — a path, a price — so the palette stays out of the way, and comes
+	// back if the text starts matching again.
+	palette.classList.toggle('no-match', paletteMode === 'inline' && !paletteItems.some(i => !i.disabled));
+	// Where the agent's skills would be, a line saying why they are not: still
+	// being looked for, none, or a listing that failed — the Chat rows alone
+	// otherwise read as "this agent has no skills" in all three cases.
+	const agent = paletteAgent(s);
+	const listed = agent ? s.commands[agent] : undefined;
+	const name = s.agents.find(a => a.id === agent)?.name ?? 'The agent';
+	const status = query ? (paletteItems.length ? undefined : 'Nothing matches.')
+		: s.detecting && !listed?.length ? `Looking for ${name}'s skills…`
+			: !listed ? `${name}'s skills could not be listed.`
+				: !listed.length ? `${name} lists no skills.` : undefined;
+	if (status) {
+		nodes.push(el('div', { class: 'palette-empty', text: status }));
+	}
+	paletteList.replaceChildren(...nodes);
+	setPaletteActive(paletteActive, true);
+}
+
+/** The next enabled row from `from` in direction `dir`, wrapping; `from` itself when it is the only one. */
+function stepActive(from: number, dir: 1 | -1): number {
+	const n = paletteItems.length;
+	for (let i = 1; i <= n; i++) {
+		const at = ((from + dir * i) % n + n) % n;
+		if (!paletteItems[at].disabled) {
+			return at;
+		}
+	}
+	return Math.max(0, from);
+}
+
+function setPaletteActive(index: number, scroll: boolean): void {
+	paletteActive = index;
+	for (const row of paletteList.querySelectorAll<HTMLElement>('.palette-item')) {
+		const on = Number(row.dataset.index) === index;
+		row.classList.toggle('active', on);
+		row.setAttribute('aria-selected', String(on));
+		if (on && scroll) {
+			row.scrollIntoView({ block: 'nearest' });
+		}
+	}
+}
+
+function choosePalette(index: number): void {
+	const item = paletteItems[index];
+	if (!item || item.disabled) {
+		return;
+	}
+	const typed = paletteMode === 'inline';
+	closePalette();
+	if (typed && item.key.startsWith('chat:')) {
+		// "/clear" typed to reach Clear: the text was the way there, not a message.
+		removeInlineToken();
+	}
+	item.run();
+}
+
+/** The "/query" or "$query" being typed, taken out of the box. */
+function removeInlineToken(): void {
+	const caret = input.selectionStart ?? input.value.length;
+	input.value = input.value.slice(0, inlineStart) + input.value.slice(caret);
+	input.setSelectionRange(inlineStart, inlineStart);
+	afterBoxEdit();
+}
+
+function afterBoxEdit(): void {
+	saveDraft();
+	autosize();
+	renderSend();
+}
+
+/**
+ * A skill into the message box, followed by a space for its arguments. Typed,
+ * it takes the place of what was typed, wherever that is. From the button,
+ * Claude Code's goes at the start — over a "/command" already there, since a
+ * command is read only there — and Codex's "$name", read anywhere, at the caret.
+ */
+function insertCommand(c: ChatCommand): void {
+	const text = `${c.insert} `;
+	let value = input.value;
+	let caret: number;
+	if (paletteWasInline) {
+		const end = inlineEnd;
+		value = value.slice(0, inlineStart) + text + value.slice(end).replace(/^ /, '');
+		caret = inlineStart + text.length;
+	} else if (c.insert.startsWith('/')) {
+		// Over a "/command" already at the start — a bare "/" or one the agent
+		// lists — never over a path the message begins with ("/etc/hosts …").
+		const lead = /^\/\S*/.exec(value)?.[0];
+		const known = lead === '/' || (lead !== undefined && !!state && (state.commands.claude ?? []).some(k => k.insert === lead));
+		const rest = known ? value.slice(lead.length).replace(/^ /, '') : value;
+		value = text + rest;
+		caret = text.length;
+	} else {
+		const at = input.selectionStart ?? value.length;
+		const before = value.slice(0, at);
+		const pad = before && !/\s$/.test(before) ? ' ' : '';
+		value = before + pad + text + value.slice(input.selectionEnd ?? at).replace(/^ /, '');
+		caret = at + pad.length + text.length;
+	}
+	input.value = value;
+	input.focus();
+	input.setSelectionRange(caret, caret);
+	paletteDismissed = input.value;
+	afterBoxEdit();
+}
+
+/** Set as the palette closes, for `insertCommand`: whether it replaces a typed query, and where that ended. */
+let paletteWasInline = false;
+let inlineEnd = 0;
+
+function closePalette(): void {
+	paletteWasInline = paletteMode === 'inline';
+	inlineEnd = input.selectionStart ?? input.value.length;
+	paletteMode = undefined;
+	palette.classList.remove('open');
+	slashButton.classList.remove('active');
+}
+
+function openPalette(mode: PaletteMode): void {
+	const s = state;
+	if (!s) {
+		return;
+	}
+	paletteMode = mode;
+	paletteActive = 0;
+	paletteShape = '';
+	paletteSearch.hidden = mode === 'inline';
+	palette.classList.toggle('inline', mode === 'inline');
+	if (mode === 'button') {
+		paletteSearch.value = '';
+		openAbove(palette, slashButton, 'left');
+	} else {
+		closePopups(palette);
+		const box = app.getBoundingClientRect();
+		const rect = composer.getBoundingClientRect();
+		palette.style.bottom = `${box.bottom - rect.top + 6}px`;
+		palette.style.left = `${Math.max(8, rect.left - box.left)}px`;
+		palette.style.right = '';
+		palette.classList.add('open');
+	}
+	renderPalette(s);
+	if (mode === 'button') {
+		paletteSearch.focus();
+	}
+	const agent = paletteAgent(s);
+	if (agent) {
+		post({ type: 'listCommands', agent });
+	}
+}
+
+function renderPalette(s: ChatViewState): void {
+	if (!paletteMode) {
+		return;
+	}
+	if (!palette.classList.contains('open')) {
+		paletteMode = undefined;
+		return;
+	}
+	// Typed in the box, the query must still be there: the box can be emptied or
+	// rewritten under it (a send, another chat, a recalled message), and an empty
+	// query matches every skill — the palette came back over an empty box and
+	// took ↑ and Enter.
+	if (paletteMode === 'inline' && inlineToken() !== inlineStart) {
+		closePalette();
+		return;
+	}
+	const agent = paletteAgent(s);
+	const shape = JSON.stringify([agent, paletteMode === 'inline' ? input.value.slice(inlineStart, input.selectionStart ?? undefined) : paletteSearch.value,
+		s.detecting, agent ? s.commands[agent] : undefined, s.entries.length > 0,
+		s.entries.some(e => e.kind === 'user' || e.kind === 'assistant'), s.tabs.find(t => t.id === s.activeTab)?.busy]);
+	if (shape === paletteShape) {
+		return;
+	}
+	paletteShape = shape;
+	buildPalette(s);
+}
+
+/** Moves through the list and chooses from it; true when the key was the palette's. */
+function paletteKey(event: KeyboardEvent): boolean {
+	if (!paletteMode || event.isComposing) {
+		return false;
+	}
+	const n = paletteItems.filter(i => !i.disabled).length;
+	// Hidden for want of a match, the inline palette leaves every key to the box.
+	if (paletteMode === 'inline' && !n) {
+		return false;
+	}
+	switch (event.key) {
+		case 'ArrowDown':
+		case 'ArrowUp':
+			if (n) {
+				setPaletteActive(stepActive(paletteActive, event.key === 'ArrowDown' ? 1 : -1), true);
+			}
+			return true;
+		case 'Enter':
+		case 'Tab':
+			// No row chosen yet: typed in the box, the key is the box's (Enter
+			// sends); from the button there is nothing to send.
+			if (event.shiftKey || !n || paletteActive < 0) {
+				return event.key === 'Enter' && paletteMode === 'button';
+			}
+			choosePalette(paletteActive);
+			return true;
+		case 'Escape':
+			if (paletteMode === 'inline') {
+				paletteDismissed = input.value;
+			}
+			closePalette();
+			input.focus();
+			return true;
+	}
+	return false;
+}
+
+/**
+ * The query being typed in the box, if any: "/" or "$" at the start of the box
+ * or after white space, with no space yet — the caret at its end. Asked for:
+ * anywhere in the text, for both agents; the sigil chosen writes the agent's
+ * own (`/name` for Claude Code, `$name` for Codex) in its place.
+ */
+function inlineToken(): number | undefined {
+	if (input.selectionStart !== input.selectionEnd) {
+		return undefined;
+	}
+	const caret = input.selectionStart ?? 0;
+	const before = input.value.slice(0, caret);
+	const after = input.value.slice(caret);
+	if (after && !/^\s/.test(after)) {
+		return undefined;
+	}
+	const m = /(^|\s)[/$]\S*$/.exec(before);
+	return m ? m.index + m[1].length : undefined;
+}
+
+/** After every edit and caret move in the box: opens, follows or closes the inline palette. */
+function followInlineToken(): void {
+	if (paletteMode === 'button') {
+		return;
+	}
+	if (input.value !== paletteDismissed) {
+		paletteDismissed = undefined;
+	}
+	const start = paletteDismissed === undefined ? inlineToken() : undefined;
+	if (start === undefined) {
+		if (paletteMode === 'inline') {
+			closePalette();
+		}
+		return;
+	}
+	inlineStart = start;
+	if (paletteMode !== 'inline') {
+		openPalette('inline');
+	} else if (state) {
+		renderPalette(state);
+	}
+}
+
+paletteSearch.addEventListener('input', () => state && renderPalette(state));
+paletteSearch.addEventListener('keydown', event => {
+	if (paletteKey(event)) {
+		event.preventDefault();
+		event.stopPropagation();
+	}
+});
+input.addEventListener('keyup', event => {
+	if (!['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(event.key)) {
+		followInlineToken();
+	}
+});
+input.addEventListener('click', () => followInlineToken());
+
+slashButton.addEventListener('click', () => {
+	if (paletteMode === 'button') {
+		closePalette();
+		return;
+	}
+	openPalette('button');
 });
 
 /* "+" */

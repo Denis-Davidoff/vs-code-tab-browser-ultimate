@@ -27,7 +27,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import type { AgentInfo, AgentUsage, ApprovalKind, ChatModel, ToolKind, UsageWindow } from './chatProtocol';
+import type { AgentInfo, AgentUsage, ApprovalKind, ChatCommand, ChatModel, CommandGroup, ToolKind, UsageWindow } from './chatProtocol';
 
 /* --------------------------------------------------------------- framing */
 
@@ -92,6 +92,177 @@ export function claudeModels(initialize: unknown): ChatModel[] {
 			defaultEffort: efforts.includes('high') ? 'high' : efforts[Math.floor((efforts.length - 1) / 2)],
 			isDefault: m.value === 'default',
 		});
+	}
+	return out;
+}
+
+/* ---------------------------------------------------------------- skills and commands */
+
+/**
+ * Claude Code's built-in commands that the chat leaves out of the palette:
+ * each one changes something the chat shows or owns, behind its back —
+ * `/model` and `/effort` would leave the pills naming a model the next message
+ * does not use, `/clear` empties the CLI's context while the thread stays on
+ * screen (the palette's own Clear conversation does both), `/rename` names a
+ * session the chat names itself — or is a CLI terminal feature with no meaning
+ * here. They still work when typed; they are only not offered.
+ */
+/** Longest command name kept, and longest description or hint, in characters. */
+const maxCommandName = 200;
+const maxCommandText = 500;
+
+/** A command's text cut to `maxCommandText` code points, so a surrogate pair is never split. */
+function cut(text: string): string {
+	const points = Array.from(text);
+	return points.length > maxCommandText ? `${points.slice(0, maxCommandText).join('')}…` : text;
+}
+
+const hiddenClaudeCommands = new Set(['clear', 'model', 'effort', 'fast', 'rename', 'color', 'focus', 'heapdump', 'resume', 'exit', 'quit', 'login', 'logout', 'output-style']);
+
+/**
+ * Claude Code's skills and commands, from the `initialize` control response.
+ *
+ * Each entry is `{ name, description, argumentHint, builtin? }`. Where a
+ * non-built-in command comes from is only said at the end of its description,
+ * in parentheses — measured on 2.1.301: `(user)` for `~/.claude/skills` and
+ * `~/.claude/commands`, `(project)` for the project's `.claude/`, `(claude.ai
+ * sync)` for skills synced from claude.ai; any other tag, or a `plugin:` name,
+ * is read as a plugin; no tag at all as the user's own. The tag is taken off
+ * the description it labels. A built-in's parentheses are part of its sentence
+ * (`(resumable with /resume)`) and stay. Names starting with `__` and commands
+ * "… sessions only" are internal.
+ *
+ * **A description is the project's own text, passed through uncut**, so it is
+ * read with nothing that backtracks: the tag is matched against the last 200
+ * characters with an anchored pattern (an unanchored `\s*` before it took 7 s
+ * on 100 000 spaces, on the extension host), and what is kept is cut to
+ * `maxCommandText`. It is posted to the view with every state.
+ */
+export function claudeCommands(initialize: unknown): ChatCommand[] {
+	const commands = isRecord(initialize) ? initialize.commands : undefined;
+	if (!Array.isArray(commands)) {
+		return [];
+	}
+	const out: ChatCommand[] = [];
+	const seen = new Set<string>();
+	for (const c of commands) {
+		if (!isRecord(c) || typeof c.name !== 'string' || !c.name || c.name.startsWith('__') || seen.has(c.name)) {
+			continue;
+		}
+		const name = c.name.replace(/^\//, '');
+		if (name.length > maxCommandName) {
+			continue;
+		}
+		let description = typeof c.description === 'string' ? c.description.trim() : '';
+		const hint = typeof c.argumentHint === 'string' && c.argumentHint.trim() ? c.argumentHint.trim() : undefined;
+		let group: CommandGroup;
+		let plugin: string | undefined;
+		if (c.builtin === true) {
+			if (hiddenClaudeCommands.has(name) || /\bsessions only\)\s*$/.test(description)) {
+				continue;
+			}
+			group = 'builtin';
+		} else {
+			const tail = description.slice(-200);
+			const tag = /\(([^()]+)\)$/.exec(tail);
+			const source = tag?.[1].trim();
+			if (tag) {
+				description = description.slice(0, description.length - tail.length + tag.index).trim();
+			}
+			if (source === 'user') {
+				group = 'user';
+			} else if (source === 'project') {
+				group = 'project';
+			} else if (source === 'claude.ai sync') {
+				group = 'synced';
+			} else if (source || name.includes(':')) {
+				group = 'plugin';
+				plugin = name.includes(':') ? name.slice(0, name.indexOf(':')) : source;
+			} else {
+				group = 'user';
+			}
+		}
+		seen.add(c.name);
+		out.push({ name, insert: `/${name}`, description: cut(description) || undefined, hint: hint && cut(hint), group, plugin });
+	}
+	return sortCommands(out);
+}
+
+/**
+ * Codex's skills, from `skills/list` (measured on codex-cli 0.162.0-alpha.17.2).
+ *
+ * The answer is `{ data: [{ cwd, skills, errors }] }`, one entry per folder
+ * asked about. A skill has `name`, `description`, `path` (its `SKILL.md`),
+ * `scope` — `repo` for the project's `.agents/skills` and `.codex/skills`,
+ * `user` for `~/.codex/skills`, `~/.agents/skills` and plugins, `system` for
+ * the ones Codex ships — `enabled`, `pluginId` (`pdf@openai-primary-runtime`)
+ * and an optional `interface` with a `displayName` and a `shortDescription`.
+ * A plugin's skill is named `<plugin>:<skill>`. A disabled skill is left out,
+ * as Codex's own picker leaves it out.
+ */
+export function codexSkills(list: unknown): ChatCommand[] {
+	const data = isRecord(list) ? list.data : undefined;
+	if (!Array.isArray(data)) {
+		return [];
+	}
+	const out: ChatCommand[] = [];
+	const seen = new Set<string>();
+	for (const entry of data) {
+		const skills = isRecord(entry) ? entry.skills : undefined;
+		if (!Array.isArray(skills)) {
+			continue;
+		}
+		for (const s of skills) {
+			if (!isRecord(s) || typeof s.name !== 'string' || !s.name || s.name.length > maxCommandName || /\s/.test(s.name) || s.enabled === false || seen.has(s.name)) {
+				continue;
+			}
+			const face = isRecord(s.interface) ? s.interface : {};
+			const pluginId = typeof s.pluginId === 'string' && s.pluginId ? s.pluginId : undefined;
+			const group: CommandGroup = s.scope === 'repo' ? 'project'
+				: s.scope === 'system' || s.scope === 'admin' ? 'system'
+					: pluginId ? 'plugin' : 'user';
+			const title = typeof face.displayName === 'string' && face.displayName.trim() && face.displayName.trim() !== s.name ? face.displayName.trim() : undefined;
+			const description = [face.shortDescription, s.shortDescription, s.description]
+				.find((d): d is string => typeof d === 'string' && d.trim() !== '')?.trim();
+			seen.add(s.name);
+			out.push({
+				name: s.name, insert: `$${s.name}`, title: title && cut(title), description: description && cut(description), group,
+				plugin: group === 'plugin' ? pluginId?.split('@')[0] : undefined,
+				path: typeof s.path === 'string' && s.path ? s.path : undefined,
+			});
+		}
+	}
+	return sortCommands(out);
+}
+
+const groupOrder: readonly CommandGroup[] = ['project', 'user', 'plugin', 'synced', 'system', 'builtin'];
+
+/** By group, then by plugin, then by name — the order the palette shows them in. */
+function sortCommands(commands: ChatCommand[]): ChatCommand[] {
+	return commands.sort((a, b) =>
+		groupOrder.indexOf(a.group) - groupOrder.indexOf(b.group)
+		|| (a.plugin ?? '').localeCompare(b.plugin ?? '')
+		|| a.name.localeCompare(b.name));
+}
+
+/**
+ * The skills a Codex message names as `$name`, as the `skill` input items
+ * that go with it — the explicit form Codex's own composer sends, beside the
+ * `$name` it leaves in the text. Measured: the text alone usually works too,
+ * since the model is told the skills exist and opens the file itself; the item
+ * is what makes it certain. A name counts only as a whole word after `$`, at
+ * the start or after white space, and only once.
+ */
+export function codexSkillItems(text: string, skills: readonly ChatCommand[]): { type: 'skill'; name: string; path: string }[] {
+	const out: { type: 'skill'; name: string; path: string }[] = [];
+	for (const s of skills) {
+		if (!s.path || out.some(o => o.name === s.name)) {
+			continue;
+		}
+		const escaped = s.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+		if (new RegExp(`(^|\\s)\\$${escaped}(?=$|[\\s.,;!?)])`).test(text)) {
+			out.push({ type: 'skill', name: s.name, path: s.path });
+		}
 	}
 	return out;
 }
@@ -404,6 +575,16 @@ export function claudeEvents(message: Record<string, unknown>, tasks?: Map<strin
 					.filter(isRecord)
 					.filter(block => block.type === 'tool_use' && typeof block.name === 'string')
 					.map(block => ({ type: 'agentCall' as const, parentId, name: block.name as string, detail: toolDetail(block.input) }));
+			}
+			// A command the CLI answers itself — `/usage`, `/agents`, `/context`,
+			// `/mcp` — streams nothing: its whole answer is this one message, from
+			// the model `<synthetic>` (measured, 2.1.301). Text is otherwise read
+			// from the deltas only, so without this the chat showed no answer at all.
+			if (isRecord(message.message) && message.message.model === '<synthetic>') {
+				const texts = content.filter(isRecord)
+					.filter(block => block.type === 'text' && typeof block.text === 'string' && block.text !== '')
+					.map(block => block.text as string);
+				return texts.length ? [{ type: 'textBreak' }, { type: 'text', text: texts.join('\n\n') }] : [];
 			}
 			return content
 				.filter(isRecord)

@@ -240,7 +240,7 @@ difference, in `browserController.js`, was a doc comment whose link had been upd
 - [src/chat/agents.ts](src/chat/agents.ts) — the agent interface, and detecting which agents are installed
 - [src/chat/agentBinary.ts](src/chat/agentBinary.ts) — where `claude` and `codex` are, and which copy to use
 - [src/chat/agentProcess.ts](src/chat/agentProcess.ts) — a CLI speaking one JSON object per line
-- [src/chat/agentProtocol.ts](src/chat/agentProtocol.ts) — reading what the two CLIs say: models, efforts, usage, turn events (leaf, under test)
+- [src/chat/agentProtocol.ts](src/chat/agentProtocol.ts) — reading what the two CLIs say: models, efforts, usage, skills and commands, turn events (leaf, under test)
 - [src/chat/claudeAgent.ts](src/chat/claudeAgent.ts) — Claude Code over `stream-json` and its control channel
 - [src/chat/codexAgent.ts](src/chat/codexAgent.ts) — Codex over `codex app-server` JSON-RPC
 
@@ -4184,14 +4184,19 @@ panel is chosen by the same rule as everywhere else.
 
 **The "/" button**, right of the globe — a square with a slash, both drawn in CSS: the slash is a
 line from the box's centre (`.slash-mark::before`), since a font's "/" has side bearings and sits
-on the baseline, and so was never in the middle of the square — opens the
-chat's own menu, asked for: **Clear conversation** starts the tab over with the same agent, the
-old conversation staying in the history (what Claude Code's `/clear` does), asking first in the
-same menu when the tab is working; **Export conversation** asks where to — the clipboard, or
-**Save to file…**, which opens the transcript (`chatTranscript`, the one handed to the other
-agent) as a new editor tab named `chat-<title>-<time>.md` and runs Save As, so the user picks the
-place. **That editor is plain text** although the name ends in `.md`: a reply or a page's words
-in a Markdown editor make `[x](command:…)` a link that runs a command on Cmd+click (#371).
+on the baseline, and so was never in the middle of the square — opens **the palette**: a search
+box at the top, focused at once so typing filters straight away (asked for, after Claude Code's
+own "/"), over the chat's own commands and the agent's skills. See
+[Skills and commands](#skills-and-commands-the--palette).
+
+The chat's own two are first, under *Chat*: **Clear conversation** starts the tab over with the
+same agent, the old conversation staying in the history (what Claude Code's `/clear` does), asking
+first in the same place when the tab is working; **Export conversation** asks where to — the
+clipboard, or **Save to file…**, which opens the transcript (`chatTranscript`, the one handed to
+the other agent) as a new editor tab named `chat-<title>-<time>.md` and runs Save As, so the user
+picks the place. **That editor is plain text** although the name ends in `.md`: a reply or a
+page's words in a Markdown editor make `[x](command:…)` a link that runs a command on Cmd+click
+(#371).
 
 **Every visible button of the bottom bar has a tooltip** saying what it does, and its key where it
 has one — asked for: Attach, the browser, "/", the agent and model pills, effort, approvals,
@@ -4413,6 +4418,120 @@ Each of these cost a measurement and each would be wrong if guessed:
   `usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET`. `claudeUsage` reads two shapes and
   reports an error rather than throwing on a third.
 
+### Skills and commands: the "/" palette
+
+Asked for: every skill Claude Code and Codex have — the project's and the global ones — in the
+"/" menu, grouped, each agent its own, with autocomplete. **Both lists come from the CLI itself,
+never from reading folders**: the CLIs know where they look (plugins, synced skills, `~/.agents`,
+the managed ones), and a folder walk of ours would drift from that. Measured on Claude Code
+2.1.301 and codex-cli 0.162.0-alpha.17.2:
+
+| | Claude Code | Codex |
+|---|---|---|
+| list | the `commands` of the `initialize` answer — the probe detection already runs | `skills/list` with `cwds: [<project>]`, `forceReload: true` |
+| shape | `{ name, description, argumentHint, builtin? }` | `{ name, description, path, scope, enabled, pluginId, interface: { displayName, shortDescription } }` |
+| source | the description's last parentheses: `(user)`, `(project)`, `(claude.ai sync)`; any other tag or a `plugin:` name is a plugin; no tag is Personal; `builtin: true` | `scope`: `repo`, `user` (a plugin's when `pluginId` is set), `system`, `admin` |
+| typed as | `/name args` at the very start of the message | `$name` anywhere in it |
+| sent as | plain text — skills, `.claude/commands` and built-ins like `/cost` all run from stream-json | the text **plus** `{ type: 'skill', name, path }` per skill named, as Codex's own composer sends it |
+| answered as | a model turn — or, for a command the CLI answers itself (`/usage`, `/agents`, `/context`, `/mcp`, `/config`), **one complete assistant message from the model `<synthetic>` and no stream events at all** | a turn |
+
+`claudeCommands`, `codexSkills` and `codexSkillItems` in `agentProtocol.ts` read them (tests on
+recorded samples). The palette groups by `CommandGroup`: Project, Personal, Plugin · *name*,
+Synced from claude.ai, Built into Codex, Built into Claude Code — and, with a search typed, one
+ranked list instead (name starting with the query, then holding it, then every word in the
+description), each row naming its group.
+
+**A command the CLI answers itself has no deltas, so its answer used to vanish.** The chat reads a
+reply's text from the stream deltas only, because the complete `assistant` message repeats them;
+`/usage` and `/agents` send no deltas, only that complete message, with `model: "<synthetic>"` and
+`num_turns: 0`, so they ended with nothing on screen (reported as "these commands do nothing").
+`claudeEvents` now takes the text of a `<synthetic>` message (measured on 2.1.301 for `/usage`,
+`/agents`, `/context`, `/mcp`, `/config`, `/extra-usage`, `/reload-skills`). A model's complete
+message is still read for its tool calls only, or every reply would show twice.
+
+**It opens two ways.** From the button it has its own search box. **Typed in the message box** —
+`/` or `$` at the start of the box or after white space, anywhere in the text and for either
+agent (asked for) — the box is the search, the palette follows the query, and ↑ / ↓, Enter and
+Tab move and choose (they are the palette's before they are the composer's, so Enter does not
+send `/rev`). Escape closes it and it stays closed until the text changes. **A query nothing
+matches hides the palette and hands every key back to the box** (`no-match`): typed mid-text, a
+`/usr/bin` or a `$5` is far more often not a command, and a popup saying "Nothing matches" over
+it — or swallowing ↑ and Enter — was in the way. `a/b` never opens it: the sigil has to follow a
+space. Choosing a skill writes it into the box, never sends it, so arguments can follow. Typed, it
+takes the place of what was typed and is written in the agent's own form whichever sigil was used
+(`$one` in a Claude chat becomes `/one-more-review`). From the button, Claude's goes at the start of
+the message, over a `/command` already there, since Claude Code reads a command only there — one
+typed mid-text reaches the model as text, which can still use the skill; Codex's goes at the caret.
+Typing `/clear` and choosing Clear conversation takes the `/clear` out of the box again. From the
+button, a Claude command replaces only a `/command` the message starts with — a bare `/` or one the
+agent lists — never a path (`/etc/hosts …` keeps its text, #399).
+
+**Clear and Export are listed from the button always, disabled while there is nothing to act on**
+("Nothing to clear yet"), and the keys pass over them — marked `aria-disabled`, not `disabled`, or
+a click on one took focus out of the box (a disabled button gets no `mousedown`). Hidden in that
+state, as they first were, they read as gone: a new tab is the first place the palette is opened.
+**Typed, they come after the skills, and only once something follows the `/`** (`/cl`); after `$`
+never. **And no chat command is ever the row chosen by default without a query**: with `/` alone
+in the box, Enter took the first row — Clear conversation — and cleared the tab without a question
+(#397). With nothing else to offer, no row is chosen until an arrow picks one, and Enter, typed,
+goes back to the box. Where the skills would be, a line says why there are none: still being
+looked for, none listed, or a listing that failed.
+
+**The inline palette closes whenever the box is rewritten under it** — a send, another chat, a
+recalled message, queued messages given back — and `renderPalette` checks that the typed `/…` is
+still where it was. Left open (hidden for want of a match, after `check /usr/bin`), the next state
+post read an empty query, which matches everything, and the palette came back over the empty box
+and took ↑ and Enter (#398). **Another popup opening resets the palette's mode** too, or the next
+"/" read as the second press of a toggle and closed what was already closed.
+
+**Commands are marked in the text, in the box and in the chat** — asked for. Only a command the
+agent lists, in its own form (`/name` for Claude Code, `$name` for Codex), at the start or after
+white space; trailing punctuation is not part of it (`markCommands`). In a sent prompt it is a
+`span.cmd-token` among text nodes, so `textContent` — what the copy button and the send's flight
+read — is the text unchanged, and the prompt is rebuilt when the agent's list changes
+(`commandsSignature` in its signature). **The box is a textarea, which cannot style part of its
+text**, so the marks are drawn in a mirror behind it (`.input-mirror`): the same text in the same
+font, padding, line height, wrapping and scrollbar gutter, its glyphs transparent, the textarea
+above it with a transparent background, its scroll kept in step. The mark is a background with a
+`box-shadow` rather than padding, which would move the mirror's text off the textarea's.
+
+Details that matter:
+
+- **The list is per backend** (`AgentBackend.knownCommands`), published as `state.commands` by
+  agent, and asked for again each time the palette opens (`listCommands`), at most every 10 s per
+  agent — for Claude Code each listing is a short-lived CLI process in the project folder, never
+  a second `initialize` on a live conversation. Detection fills it: Claude Code's from the
+  answer it already reads for the models, Codex's with one more call on every detection, so a
+  Refresh finds a skill added since; the throttle starts only from a listing that ran. **An agent
+  detection found unusable is not listed** — for a signed-out Codex the listing would start its
+  app-server for a list the state then drops — and a throttle stamp in the future is due (#224).
+  **A Codex listing holds the app-server** like detection does, and starts it again if it had
+  shut down.
+- **A command's text is the project's own and arrives uncut**, so it is read with nothing that
+  backtracks: the source tag is matched against the description's last 200 characters with an
+  anchored pattern — `/\s*\(([^()]+)\)\s*$/` took 7 s on 100 000 spaces in a trusted project's
+  command file, on the extension host (#400) — and descriptions, hints and titles are cut to 500
+  characters, names over 200 skipped. The list goes out with every state post.
+- **Codex's skill items need the paths**, which is why the list lives on the backend rather than
+  only in the view: `CodexSession._send` matches `$name` as a whole word against the backend's
+  list. Measured: `$echo-test` alone usually works too — the model is told the skills exist and
+  opens the file — and the item is what makes it certain. Disabled skills are left out.
+- **Some Claude Code built-ins are not offered** (`hiddenClaudeCommands`): `/model`, `/effort`,
+  `/fast` would leave the pills naming a model the next message does not use, `/clear` empties the
+  CLI's context while the thread stays on screen, `/rename` and `/resume` act on a session the
+  chat owns, `/login`, `/logout`, `/exit`, `/quit` on the process it runs, and `/color`, `/focus`,
+  `/heapdump`, `/output-style` are terminal features. They still run when typed. Names starting with `__` and commands "… sessions only" are internal.
+- **A row is chosen on click with its `mousedown` prevented**: in the inline mode a press would
+  otherwise move focus out of the box, and the caret — and with it the query — would go.
+- **The list is rebuilt only when what it shows changes** (`paletteShape`), #365's rule: state
+  posts arrive every 40 ms while a reply streams, and a rebuild between a press and its release
+  loses the click.
+
+Verified with the compiled registry against both real CLIs in a project with test skills (55 and
+57 listed, a skill added afterwards found on the next refresh, a Codex `$echo-test` turn carrying
+its `skill` item and answering from it), and the palette in headless Chrome: focus on the search
+box, grouping, ranking, ↓ Enter, the inline query for both agents, Escape, `/clear`.
+
 ### Finding the CLIs
 
 `listAgentBinaries` ([src/chat/agentBinary.ts](src/chat/agentBinary.ts)) collects every copy it can find —
@@ -4521,7 +4640,7 @@ Lifetimes: a Claude process lives as long as its conversation's tab (closing the
 it with another agent ends it; a chat from the history only ever goes into a tab with nothing
 running) — so five Claude
 tabs are five `claude` processes. The Codex app-server lives while a Codex conversation
-holds a session, or a detection or usage read is under way, and **shuts down 30 s after the last
+holds a session, or a detection, a usage read or a skills listing is under way, and **shuts down 30 s after the last
 of them lets go** (`idleShutdownMs`); it is restarted on demand, and a thread loaded in an earlier
 app-server is resumed with `thread/resume` (`CodexSession._loadedIn` against
 `CodexBackend.generation`). An app-server whose `initialize` fails or times out is ended there
@@ -6704,6 +6823,26 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
 393. **Finding a DOM node by counting model entries** → a prompt with attachments alone has no text
      node, and the queue's rows sit in another order than entries, so the count was off by one.
      Count the nodes being searched.
+394. **A slash command that changes what the chat shows, offered from the chat** → Claude Code
+     runs `/model sonnet` from a stream-json message, and the pill went on naming the model the
+     process no longer used. The palette leaves such built-ins out (`hiddenClaudeCommands`).
+395. **A palette row chosen on `click` in a mode where the query is the message box** → the press
+     moved focus out of the box first, the caret went, and the query read as empty. Prevent the
+     row's `mousedown`.
+396. **Hiding a menu's fixed actions where they cannot act** → in an empty tab Clear and Export
+     were simply not there, which read as removed. Show them disabled, with the reason.
+397. **A destructive action as a list's default row** → "/" then Enter chose the first row, Clear
+     conversation, and cleared the tab. Never make such a row the default without a query.
+398. **A popup that follows the box, left open when code rewrites the box** → after a send the
+     hidden palette read an empty query, matched everything, and took ↑ and Enter over the empty
+     box. Close it wherever the text is set, and check the token is still there.
+399. **"Replace the command at the start" as "replace whatever starts with /"** → a message
+     beginning with a path lost the path. Replace only a bare `/` or a listed command.
+400. **An unanchored `\s*` before an anchored tail, on text a repository writes** → quadratic in
+     a run of whitespace; 7 s on the extension host for one command file. Anchor it, bound the input.
+401. **Reading a reply's text from the stream deltas only** → a command the CLI answers itself
+     (`/usage`, `/agents`) sends no deltas, only a complete message from `<synthetic>`, and showed
+     nothing at all.
 
 ## Special cases and non-obvious decisions
 

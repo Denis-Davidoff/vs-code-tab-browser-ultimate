@@ -10,7 +10,7 @@ import * as path from 'node:path';
 import { suite, test } from 'node:test';
 import {
 	LineSplitter, chatTitle, claudeApproval, claudeApprovalAnswer, claudeEvents, claudeModels, claudeRateLimitWindows, claudeUsage,
-	claudeTool, codexAgentThreadEvents, codexApproval, codexApprovalAnswer, codexEvents, codexPatchPaths, outsideProject, codexModels, codexUsage, compareCliVersions, parseCliVersion, parseLine, toolDetail, unwrapShell, windowLabel,
+	claudeCommands, claudeTool, codexAgentThreadEvents, codexSkillItems, codexSkills, codexApproval, codexApprovalAnswer, codexEvents, codexPatchPaths, outsideProject, codexModels, codexUsage, compareCliVersions, parseCliVersion, parseLine, toolDetail, unwrapShell, windowLabel,
 } from './agentProtocol.ts';
 
 // The samples below are trimmed copies of what Claude Code 2.1.301 and
@@ -600,5 +600,100 @@ suite('approvals', () => {
 		assert.deepStrictEqual(codexApprovalAnswer('mcpServer/elicitation/request', codexMcp, true), { action: 'accept', content: null });
 		assert.deepStrictEqual(codexApprovalAnswer('mcpServer/elicitation/request', codexMcp, false), { action: 'decline', content: null });
 		assert.deepStrictEqual(codexApprovalAnswer('execCommandApproval', {}, true), { decision: 'approved' });
+	});
+});
+
+suite('skills and commands', () => {
+	// Trimmed from Claude Code 2.1.301's `initialize` and codex-cli
+	// 0.162.0-alpha.17.2's `skills/list`, 2026-10-16.
+	const claudeInit = {
+		commands: [
+			{ name: 'one-more-review', description: 'Run another review pass. (user)', argumentHint: '' },
+			{ name: 'echo-test', description: 'Test skill (project)', argumentHint: '' },
+			{ name: 'cmd-test', description: 'Project command test (project)', argumentHint: '<word>' },
+			{ name: 'pdf', description: 'Read and create PDFs (claude.ai sync)', argumentHint: '' },
+			{ name: 'tools:lint', description: 'Lint it (tools)', argumentHint: '' },
+			{ name: 'compact', description: 'Clear history but keep a summary', argumentHint: '<instructions>', builtin: true },
+			{ name: 'clear', description: 'Clear conversation history (resumable with /resume)', argumentHint: '', builtin: true },
+			{ name: 'model', description: 'Set the model', argumentHint: '', builtin: true },
+			{ name: '__remote-workflow', description: 'Internal', argumentHint: '', builtin: true },
+			{ name: 'workflow-launch-exec', description: 'Launch (workflow_launch event sessions only)', argumentHint: '', builtin: true },
+			{ name: 'cost' },
+		],
+	};
+
+	test('Claude Code: grouped by the tag its description ends in, which is taken off', () => {
+		const commands = claudeCommands(claudeInit);
+		assert.deepStrictEqual(commands.map(c => [c.group, c.name, c.insert]), [
+			['project', 'cmd-test', '/cmd-test'],
+			['project', 'echo-test', '/echo-test'],
+			['user', 'cost', '/cost'],
+			['user', 'one-more-review', '/one-more-review'],
+			['plugin', 'tools:lint', '/tools:lint'],
+			['synced', 'pdf', '/pdf'],
+			['builtin', 'compact', '/compact'],
+		]);
+		assert.strictEqual(commands.find(c => c.name === 'one-more-review')?.description, 'Run another review pass.');
+		assert.strictEqual(commands.find(c => c.name === 'cmd-test')?.hint, '<word>');
+		assert.strictEqual(commands.find(c => c.name === 'tools:lint')?.plugin, 'tools');
+		assert.deepStrictEqual(claudeCommands({}), []);
+		assert.deepStrictEqual(claudeCommands({ commands: [null, 3, { name: '' }] }), []);
+	});
+
+	test('Claude Code: a description of 200 000 spaces is read at once, and cut', () => {
+		// A project's own command file, passed through uncut by the CLI. The
+		// first tag pattern backtracked on it: 7 s on the extension host.
+		const started = Date.now();
+		const [c] = claudeCommands({ commands: [{ name: 'wide', description: `x${' '.repeat(200_000)}y (project)` }] });
+		assert.ok(Date.now() - started < 500);
+		assert.strictEqual(c.group, 'project');
+		assert.ok(Array.from(c.description ?? '').length <= 501);
+		assert.deepStrictEqual(claudeCommands({ commands: [{ name: 'n'.repeat(201), description: 'x' }] }), []);
+	});
+
+	test('Claude Code: a command the CLI answers itself shows its answer', () => {
+		// /usage on 2.1.301: no stream events, one complete message from `<synthetic>`.
+		const usage = { type: 'assistant', message: { model: '<synthetic>', role: 'assistant', content: [{ type: 'text', text: 'Current session: 15% used' }] }, parent_tool_use_id: null };
+		assert.deepStrictEqual(claudeEvents(usage), [{ type: 'textBreak' }, { type: 'text', text: 'Current session: 15% used' }]);
+		// A model's complete message repeats its deltas, and is still read for tool calls only.
+		const real = { type: 'assistant', message: { model: 'claude-haiku-4-5', content: [{ type: 'text', text: 'hi' }] } };
+		assert.deepStrictEqual(claudeEvents(real), []);
+	});
+
+	test('Claude Code: a built-in keeps its own parentheses', () => {
+		const commands = claudeCommands({ commands: [{ name: 'fewer', description: 'Do less (beta)', builtin: true }] });
+		assert.strictEqual(commands[0].description, 'Do less (beta)');
+	});
+
+	const codexList = {
+		data: [{
+			cwd: '/p', errors: [], skills: [
+				{ name: 'code-review', description: 'Long description', interface: { displayName: 'Code Review', shortDescription: 'Evidence-backed review' }, path: '/h/.codex/skills/code-review/SKILL.md', scope: 'user', enabled: true, pluginId: null },
+				{ name: 'echo-test', description: 'Codex test skill', path: '/p/.agents/skills/echo-test/SKILL.md', scope: 'repo', enabled: true, pluginId: null },
+				{ name: 'pdf:pdf', description: 'PDFs', interface: { displayName: 'PDF' }, path: '/h/plugins/pdf/SKILL.md', scope: 'user', enabled: true, pluginId: 'pdf@openai-primary-runtime' },
+				{ name: 'imagegen', description: 'Images', path: '/h/.codex/skills/.system/imagegen/SKILL.md', scope: 'system', enabled: true },
+				{ name: 'off', description: 'Disabled', path: '/x', scope: 'user', enabled: false },
+			],
+		}],
+	};
+
+	test('Codex: grouped by scope and plugin, disabled skills left out', () => {
+		const skills = codexSkills(codexList);
+		assert.deepStrictEqual(skills.map(s => [s.group, s.name, s.insert, s.title, s.plugin]), [
+			['project', 'echo-test', '$echo-test', undefined, undefined],
+			['user', 'code-review', '$code-review', 'Code Review', undefined],
+			['plugin', 'pdf:pdf', '$pdf:pdf', 'PDF', 'pdf'],
+			['system', 'imagegen', '$imagegen', undefined, undefined],
+		]);
+		assert.strictEqual(skills[1].description, 'Evidence-backed review');
+		assert.deepStrictEqual(codexSkills({ data: 'x' }), []);
+	});
+
+	test('Codex: the skills a message names go with it as input items', () => {
+		const skills = codexSkills(codexList);
+		assert.deepStrictEqual(codexSkillItems('$code-review my changes, then $pdf:pdf.', skills).map(i => i.name), ['code-review', 'pdf:pdf']);
+		assert.deepStrictEqual(codexSkillItems('price is 5$code-review', skills), []);
+		assert.deepStrictEqual(codexSkillItems('$code-reviewer', skills), []);
+		assert.deepStrictEqual(codexSkillItems('$echo-test $echo-test', skills), [{ type: 'skill', name: 'echo-test', path: '/p/.agents/skills/echo-test/SKILL.md' }]);
 	});
 });

@@ -975,7 +975,47 @@ button {
 	display: none;
 }
 
+.input-wrap {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+}
+
+/* The box's text drawn behind it, with the commands marked (see inputMirror).
+   It has to lay text out exactly as the textarea does: same font, padding,
+   line height, wrapping and scrollbar gutter. */
+.input-mirror {
+	position: absolute;
+	inset: 0;
+	box-sizing: border-box;
+	padding: 10px 12px 4px;
+	font: inherit;
+	line-height: var(--line);
+	white-space: pre-wrap;
+	overflow-wrap: break-word;
+	color: transparent;
+	overflow: hidden;
+	scrollbar-gutter: stable;
+	pointer-events: none;
+}
+
+.input-mirror .cmd-token {
+	border-radius: 4px;
+	background: color-mix(in srgb, var(--accent) 22%, transparent);
+	box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+/* A command in a sent prompt: the same mark, its text in the accent colour. */
+.bubble-text .cmd-token {
+	border-radius: 4px;
+	background: color-mix(in srgb, var(--accent) 18%, transparent);
+	box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
+	color: var(--vscode-textLink-foreground, var(--fg));
+}
+
 .input {
+	position: relative;
+	scrollbar-gutter: stable;
 	resize: none;
 	border: none;
 	outline: none;
@@ -2465,4 +2505,149 @@ button {
 
 .panel-close:hover {
 	background: var(--soft);
+}
+
+/* ---------------------------------------------------------------- the "/" palette */
+
+.palette {
+	width: 380px;
+	padding: 0;
+	overflow: hidden;
+}
+
+.palette.open {
+	display: flex;
+	flex-direction: column;
+}
+
+.palette-search {
+	margin: 6px 6px 2px;
+	padding: 6px 9px;
+	border-radius: 7px;
+	border: 1px solid var(--border-strong);
+	background: var(--surface, var(--soft));
+	color: var(--vscode-input-foreground, var(--fg));
+	font: inherit;
+	outline: none;
+}
+
+.palette-search:focus {
+	border-color: var(--vscode-focusBorder, var(--accent));
+}
+
+.palette.open.no-match {
+	display: none;
+}
+
+.palette-item.disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+.palette-search[hidden] {
+	display: none;
+}
+
+.palette-list {
+	max-height: min(50vh, 360px);
+	overflow-y: auto;
+	padding: 4px;
+}
+
+.palette-group {
+	padding: 8px 8px 3px;
+	font-size: 0.8em;
+	letter-spacing: 0.02em;
+	color: var(--fg-3);
+}
+
+.palette-group:first-child {
+	padding-top: 2px;
+}
+
+.palette-item {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	width: 100%;
+	padding: 5px 8px;
+	border: none;
+	border-radius: 6px;
+	background: transparent;
+	color: inherit;
+	text-align: left;
+	cursor: pointer;
+}
+
+.palette-item.active {
+	background: var(--vscode-list-activeSelectionBackground, var(--soft-2));
+	color: var(--vscode-list-activeSelectionForeground, var(--fg));
+}
+
+.palette-icon {
+	width: 16px;
+	flex: none;
+	padding-top: 1px;
+	color: var(--fg-3);
+}
+
+.palette-text {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	flex: 1;
+}
+
+.palette-line {
+	display: flex;
+	align-items: baseline;
+	gap: 6px;
+	min-width: 0;
+}
+
+.palette-label {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.palette-name {
+	font-family: var(--mono);
+	font-size: var(--mono-size);
+}
+
+.palette-hint {
+	flex: none;
+	font-family: var(--mono);
+	font-size: var(--mono-size);
+	color: var(--fg-3);
+}
+
+.palette-tag {
+	margin-left: auto;
+	flex: none;
+	font-size: 0.8em;
+	color: var(--fg-3);
+	white-space: nowrap;
+}
+
+.palette-detail {
+	font-size: 0.85em;
+	color: var(--fg-3);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.palette-item.active .palette-detail,
+.palette-item.active .palette-hint,
+.palette-item.active .palette-tag,
+.palette-item.active .palette-icon {
+	color: inherit;
+	opacity: 0.8;
+}
+
+.palette-empty {
+	padding: 10px 8px;
+	color: var(--fg-3);
 }

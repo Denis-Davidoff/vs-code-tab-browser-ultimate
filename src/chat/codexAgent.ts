@@ -5,9 +5,9 @@
 
 import * as vscode from 'vscode';
 import { JsonLineProcess, withTimeout } from './agentProcess';
-import { codexAgentThreadEvents, codexApproval, codexApprovalAnswer, codexEvents, codexPatchPaths, codexModels, codexUsage, type AgentEvent } from './agentProtocol';
+import { codexAgentThreadEvents, codexApproval, codexApprovalAnswer, codexEvents, codexPatchPaths, codexModels, codexSkillItems, codexSkills, codexUsage, type AgentEvent } from './agentProtocol';
 import type { AgentBackend, AgentSession, BrowserServer, TurnInput } from './agents';
-import type { AgentUsage, ChatModel } from './chatProtocol';
+import type { AgentUsage, ChatCommand, ChatModel } from './chatProtocol';
 
 /**
  * Codex, driven as its own VS Code extension drives it: `codex app-server`,
@@ -156,6 +156,25 @@ export class CodexBackend implements AgentBackend {
 			}
 			this._plan = typeof account?.account?.planType === 'string' ? account.account.planType : undefined;
 			return codexModels(await this.request('model/list', {}));
+		});
+	}
+
+	private _skills: ChatCommand[] | undefined;
+
+	public get knownCommands(): readonly ChatCommand[] | undefined {
+		return this._skills;
+	}
+
+	/**
+	 * `skills/list` for the project folder, re-scanned from disk
+	 * (`forceReload`) so a skill added since shows up.
+	 */
+	public commands(): Promise<ChatCommand[]> {
+		return this._held(async () => {
+			await this.ready();
+			const skills = codexSkills(await this.request('skills/list', { cwds: [this._cwd()], forceReload: true }));
+			this._skills = skills;
+			return skills;
 		});
 	}
 
@@ -478,6 +497,9 @@ class CodexSession implements AgentSession {
 		const items: unknown[] = [];
 		if (input.text) {
 			items.push({ type: 'text', text: input.text, text_elements: [] });
+			// A `$skill` the message names goes with it as a `skill` item, the way
+			// Codex's own composer sends it.
+			items.push(...codexSkillItems(input.text, this._backend.knownCommands ?? []));
 		}
 		for (const image of input.images) {
 			items.push({ type: 'image', url: `data:${image.mediaType};base64,${image.base64}` });

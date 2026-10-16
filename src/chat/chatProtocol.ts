@@ -44,6 +44,35 @@ export interface ChatAgent {
 	readonly pinned?: string;
 }
 
+/**
+ * A skill or command an agent offers in the "/" palette, read from the CLI
+ * itself: Claude Code's `initialize` answer, Codex's `skills/list`.
+ */
+export interface ChatCommand {
+	/** The name as typed, without its sigil: `one-more-review`, `pdf:pdf`. */
+	readonly name: string;
+	/** What goes into the message box: `/name` for Claude Code, `$name` for Codex. */
+	readonly insert: string;
+	/** A display name the skill gives itself, when it differs from `name`. */
+	readonly title?: string;
+	readonly description?: string;
+	/** Claude Code's `argumentHint`: `<file>`, `[pr]`. */
+	readonly hint?: string;
+	readonly group: CommandGroup;
+	/** The plugin it comes from, for the `plugin` group. */
+	readonly plugin?: string;
+	/** Codex: the skill's `SKILL.md`, which goes with the turn as a `skill` input item. */
+	readonly path?: string;
+}
+
+/**
+ * Where a command comes from, which is how the palette groups them:
+ * the project's own, the user's, a plugin's, synced from claude.ai, shipped
+ * with the CLI as a skill (`system`, Codex), or one of the CLI's built-in
+ * commands (`builtin`, Claude Code).
+ */
+export type CommandGroup = 'project' | 'user' | 'plugin' | 'synced' | 'system' | 'builtin';
+
 export interface AgentCopy {
 	readonly path: string;
 	readonly version?: string;
@@ -231,6 +260,8 @@ export interface ChatViewState {
 	readonly approvals: { readonly policy: ApprovalPolicy; readonly servers: readonly string[] };
 	/** Another agent was picked for a conversation that has started: the view asks what to do. */
 	readonly switchTo?: AgentId;
+	/** Each agent's skills and commands, for the "/" palette; absent until listed once. */
+	readonly commands: Partial<Record<AgentId, readonly ChatCommand[]>>;
 }
 
 export interface PendingSend {
@@ -326,4 +357,6 @@ export type ViewToHost =
 	/** The composer's browser button: a new browser tab, nothing else. */
 	| { readonly type: 'openBrowser' }
 	| { readonly type: 'setNewsHidden'; readonly hidden: boolean }
-	| { readonly type: 'refreshAgents' };
+	| { readonly type: 'refreshAgents' }
+	/** The "/" palette opened: list the agent's skills again, in case one was added. */
+	| { readonly type: 'listCommands'; readonly agent: AgentId };

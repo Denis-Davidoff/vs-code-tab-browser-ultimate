@@ -21,7 +21,7 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 - Commands, file edits and thinking appear as cards you can open.
 - The chat's agents can use the browser from the first message, no Connect needed (while the MCP server is on). They ask before they act; answer in the chat, or set each kind — the internet, the browser, the terminal, files, each MCP server — to **Auto**, **Ask** or **Deny**.
 - While an agent works, **Enter** adds your message to what it is doing and **⌘Enter** queues it for after; copy any prompt or reply from its corner.
-- **/** beside the globe clears the conversation or exports it — to the clipboard, or a file you save.
+- **/** beside the globe searches your agent's skills and commands — the project's, your own, plugins' — and clears or exports the conversation; or type **/** or **$** anywhere in the message to pick a skill as you write — commands are marked in the text, and the CLI's own `/usage`, `/context` and the like show their answer.
 - Several chats at once, as tabs — up to 10 by default, 30 in Settings — marked while working, when finished and not yet read, or when something went wrong; double-click a tab to rename it; switching a chat to the other agent asks whether to open a new tab, hand the conversation over, or close this one.
 - The agents your agent starts: how many are running, what each one did and found, and a Stop for each.
 

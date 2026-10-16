@@ -411,6 +411,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			tabLimit: limit,
 			approvals: { policy: this._approvalPolicy(), servers: this._approvalServers() },
 			switchTo: this._switchTo,
+			commands: this._registry.commands,
 			hasBrowserTab: this._browser.hasOpenTabs,
 			browserApi: isBrowserApiGranted(),
 			news: this._news,
@@ -455,6 +456,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			case 'refreshAgents':
 				if (!this._blocked()) {
 					await this._registry.detect();
+				}
+				return;
+			case 'listCommands':
+				if (!this._blocked() && (message.agent === 'claude' || message.agent === 'codex') && !this._registry.detecting) {
+					await this._registry.refreshCommands(message.agent);
 				}
 				return;
 			case 'select':
