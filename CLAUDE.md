@@ -123,10 +123,11 @@ cloned repository could switch autofill on for its own dev server (breaks-silent
 
 | Chat setting | Default | |
 |---|---|---|
+| `aiBrowser.chat.tabLimit` | `5` | how many conversations stay open as tabs, 1 to 30 — see [Tabs](#tabs-several-conversations-at-once) |
 | `aiBrowser.chat.claudePath` | `""` | the `claude` executable; empty searches — see [Finding the CLIs](#finding-the-clis) |
 | `aiBrowser.chat.codexPath` | `""` | the `codex` executable, the same way |
 
-Both are `application`-scoped for a sharper reason than the logins ones: each names a program
+The two paths are `application`-scoped for a sharper reason than the logins ones: each names a program
 to run, so a workspace that could set it would be code execution from a cloned repository the
 moment the chat view opens.
 
@@ -1104,7 +1105,11 @@ Claude Code ▸                                                   3_assistant@1
     Connect Claude Code                                         2_mcp@1
     Share Tab with Claude Code                                  2_mcp@2
 Codex ▸                                                         3_assistant@2
-Check Connection                                                3_assistant@3
+AI Browser Chat ▸                                               3_assistant@3   when !chatUnsupported && !chatBlocked
+    Add Element / CSS Path / CSS Path + Location / XPath        1_add@1..4
+    ─────
+    Add Screenshot / Add Page Address                           2_page@1..2
+Check Connection                                                3_assistant@4
 ─────
 Logins and Passkeys ▸                                           3_logins@1
     Fill Saved Login (Cmd+Shift+L) / Save Login from Page        1_page@1..2
@@ -1115,7 +1120,7 @@ Share Tab with All Assistants                                   4_share@1
 Stop Sharing Tab                                                4_share@2   when tabShared
 ```
 
-That is sixteen rows. The menu had eighteen before the submenus, and a flat one would have
+That is seventeen rows. The menu had eighteen before the submenus, and a flat one would have
 had twenty-one once the fourth element kind was added. The `group` prefixes put the
 separators in; ordering comes from the `@n` suffix, not from the position in the
 `contributes.menus` array —
@@ -1166,6 +1171,24 @@ Two behaviours fall out of that code and are relied on here:
   hidden by a `when` clause disappears rather than showing a missing row with an empty flyout.
 - **The same submenu cannot be added twice to one parent** (a warning, and the second is
   dropped).
+
+**"AI Browser Chat ▸" adds to our own chat** what the two assistant submenus hand to theirs —
+asked for: the element, its CSS path, CSS path + location or XPath (the same report text the Add
+entries write, `pickForChat` / `pathReportOf` in `elementPicker.ts`, shared with them), plus a
+screenshot and the page address, as the chat's "+" menu attaches them. The pick runs on the tab
+whose menu it was, **then** the chat is revealed and the chip lands in the chat tab in front, so
+the page stays where the click is wanted. The submenu, its repeat buttons and the chord are gated
+on `!aiBrowser.chatUnsupported && !aiBrowser.chatBlocked` — the second set wherever `chatBlocked()`
+refuses (Restricted Mode, a remote window), cleared when the folder is trusted — and the button
+falls back to its Copy twin there: a remembered chat action otherwise refused on every press
+(#372, #223's shape). A path pick from the palette refuses a page that is not on screen, as the
+element and screenshot entries do. **Its four
+element entries are repeat-button actions like the assistants' Add entries**, a fourth
+destination with a pink ring (asked for, after they first shipped without): each records itself,
+and `aiBrowser.repeat.chat.*` twins carry the primary button and the chord. Wherever the chat
+cannot run the context key falls back to the Copy twin, as it does for an assistant that is not
+installed. Screenshot and page address are not
+repeat actions (see "Not part of the repeat button").
 
 **Only the Add entries are gated on `aiBrowser.<assistant>Installed`; the submenu itself is
 not.** That key means "the assistant's *VS Code extension* is installed", and Connect / Share
@@ -1232,15 +1255,15 @@ glyph that VS Code recolours, so any colour baked into one is lost. A custom SVG
 `background-image` and keeps its own fills — but by the same token it cannot inherit
 `currentColor`, which is why everything here ships as a light/dark pair.
 
-**Each element icon encodes two things at once**, so the grid is 4 × 3 —
-`media/icons/crosshair-<dot>[-<destination>]-<theme>.svg`, twenty-four files:
+**Each element icon encodes two things at once**, so the grid is 4 × 4 —
+`media/icons/crosshair-<dot>[-<destination>]-<theme>.svg`, thirty-two files:
 
 | kind → dot | destination → ring |
 |---|---|
 | element: red `#E03131` | Copy: theme grey |
 | CSS path: blue `#1971C2` | Claude Code: yellow — `#FFD43B` dark, `#A16207` light |
 | CSS path + location: grape `#AE3EC9` | Codex: blue-white — `#C5F6FA` dark, `#0E7490` light |
-| XPath: green `#2F9E44` | |
+| XPath: green `#2F9E44` | AI Browser Chat: pink — `#F783AC` dark, `#BE185D` light |
 
 The same kind keeps its dot across destinations; the same destination keeps its ring across
 kinds; and **no two kinds share a dot**, which `check-manifest` now asserts separately. The
@@ -1262,8 +1285,8 @@ button. Extensions cannot: `menusExtensionPoint.ts` builds an extension's submen
 `{ submenu, icon, title, group, order, when }` and never sets that flag, and the manifest
 schema accepts only `submenu` / `when` / `group`.
 
-So instead: **twelve** primary buttons in `navigation@2` — the four copies plus the same four
-for each assistant — each with a `when` on the `aiBrowser.lastElementAction` context key, so
+So instead: **sixteen** primary buttons in `navigation@2` — the four copies plus the same four
+for each assistant and for the AI Browser chat — each with a `when` on the `aiBrowser.lastElementAction` context key, so
 exactly one is ever visible. The dropdown sits *before* them in `navigation@1`. The Add buttons
 carry the extra condition `aiBrowser.claudeInstalled` / `codexInstalled`, so a button never runs
 into an assistant that is not there — **and the context key falls back to the Copy twin** while
@@ -1274,7 +1297,7 @@ chevron and the chord did nothing. The memento keeps the real choice, so reinsta
 Add button back; `LastElementAction.refresh` runs on `extensions.onDidChange` (breaks-silently
 #223).
 
-The twelve action ids (`element`, `cssPath`, `cssLocation`, `xpath` and `<assistant>:<kind>`)
+The sixteen action ids (`element`, `cssPath`, `cssLocation`, `xpath` and `<destination>:<kind>`, the destination `claude`, `codex` or `chat`)
 are compared
 verbatim in `when` clauses, which makes them **part of the manifest's contract** — renaming one
 in `lastAction.ts` alone silently removes a button. Add commands reuse the crosshair colour of
@@ -1287,18 +1310,18 @@ evaluated before activation, so without it the context key is unset on a fresh w
 toolbar shows a lone chevron with no primary button. Two visually adjacent buttons is as close
 as an extension gets — they are not fused into one control the way Run/Debug is.
 
-**One chord drives whichever tool is active:** `Ctrl+Alt+C` / `Cmd+Alt+C`. Since the twelve
+**One chord drives whichever tool is active:** `Ctrl+Alt+C` / `Cmd+Alt+C`. Since the sixteen
 `when` conditions are mutually exclusive, exactly one binding can match, so the key always runs
 what the right-hand icon shows.
 
-**The chord sits on twelve `repeat.*` delegate commands, not on the commands in the
+**The chord sits on sixteen `repeat.*` delegate commands, not on the commands in the
 dropdown**, and that split is not decorative. VS Code prints a command's keybinding beside
 **every** menu item that invokes it, with no way to opt out — so binding the dropdown commands
-directly put `Cmd+Alt+C` on twelve rows of the menu. Each delegate shares its twin's icon and
+directly put `Cmd+Alt+C` on every row of the menu. Each delegate shares its twin's icon and
 title, is the one contributed to `editor/title`, and is hidden from the command palette with
-`commandPalette` + `when: false` so the same twelve actions do not appear twice there.
+`commandPalette` + `when: false` so the same sixteen actions do not appear twice there.
 
-`check-manifest` holds this together: one chord across the twelve, conditions matching the
+`check-manifest` holds this together: one chord across the sixteen, conditions matching the
 buttons exactly, no dropdown command carrying *that* chord, no other command taking it on any
 platform (compared per platform, not as a `key|mac` pair — #257), and every delegate mirroring its
 twin's icon. The chord rules are scoped to the `repeat.*` bindings —
@@ -3117,7 +3140,7 @@ which the rest of the report is read as Markdown.
 Two dropdown entries — visible area and full page — in a group of their own (`2_shot`), which
 is what puts a separator around them. Group names sort alphabetically, so the numeric prefixes
 (`0_start`, `1_copy`, `2_shot`, `2_translate`, `3_assistant`, `4_share` at the top level, `1_add` and `2_mcp` inside each
-assistant's submenu) are the running order of the menu — see
+assistant's submenu, `1_add` and `2_page` inside the AI Browser Chat one) are the running order of the menu — see
 [the dropdown](#the-dropdown-on-the-browser-tab) for the whole tree.
 
 Capturing is one CDP call, but two arguments matter:
@@ -3307,7 +3330,7 @@ capture keeps the frames consistent with *each other*, not with a page that is n
 Bringing the tab to the front (`Page.bringToFront`) would take focus from the user, so it is not
 done.
 
-**Not part of the repeat button.** The twelve `navigation@2` candidates are element actions; a
+**Not part of the repeat button.** The sixteen `navigation@2` candidates are element actions; a
 screenshot picks nothing, so folding it in would mean a button with no crosshair and a hole in
 the icon grid `check-manifest` enforces.
 
@@ -4118,8 +4141,9 @@ all — but not because the host ignores the contribution. **A view whose contai
 not know is moved into Explorer** ("View container '…' does not exist and all views registered
 to it will be added to 'Explorer'"), so without a guard an older VS Code showed the chat on the
 left after all. The view therefore carries `when: !aiBrowser.chatUnsupported`, set at activation
-below 1.106 (`supportsSecondarySidebar` in `chatView.ts`), and the same key hides the three chat
-commands from the palette, since `aiBrowser.chat.focus` does not exist there. A key is set at
+below 1.106 (`supportsSecondarySidebar` in `chatView.ts`), and the same key hides the chat's nine
+commands from the palette (New Chat, Chat History, Refresh Agents and the six "Add … to AI
+Browser Chat"), since `aiBrowser.chat.focus` does not exist there. A key is set at
 activation and the view can resolve first, so `_blocked()` refuses below 1.106 as well — no CLI
 starts there whichever lands first. Both assistants'
 own extensions add a left activity bar copy for those versions, gated on a context key of the
@@ -4138,17 +4162,18 @@ What is built, and what is not yet:
   streaming conversation with stop; messages sent during a turn; the `+` menu (screenshot of the
   page, element from the page, page address, file); the `U` usage popup (plan limits per agent,
   plus this chat's tokens and cost); history with resume; new chat; refresh; several
-  conversations at once, as tabs; the agents an agent starts, listed, each stoppable on its own.
-- **Not built yet, and the reason the chat exists:** browser tools given to the agent *in
-  process*, with no MCP server, port or token — Codex's `dynamicTools` (see below) and the
-  equivalent for Claude. Today the agents have only their own tools in the chat.
-- **Not built yet:** approvals. Both agents run with every approval refused — see
-  [Permissions](#permissions-none-are-granted-yet).
+  conversations at once, as tabs; the agents an agent starts, listed, each stoppable on its own;
+  approvals asked in the chat, with an Ask / Auto toggle; the browser tools, handed to both agents
+  at every start whether or not Connect was ever pressed — see
+  [Approvals and the browser tools](#approvals-and-the-browser-tools).
+- **Not built yet:** browser tools given to the agent *in process*, with no MCP server, port or
+  token — Codex's `dynamicTools` (see below) and the equivalent for Claude. Today the chat hands
+  each CLI this window's own MCP server instead, which needs the server running.
 
 ### The layout, as asked for
 
 Bottom to top: a toolbar row — `+`, the browser button, the agent pill, the model pill, the effort
-slider and, pushed right, the agents button (only while the chat has agents — see
+slider, the Ask / Auto toggle ([approvals](#approvals-and-the-browser-tools)) and, pushed right, the agents button (only while the chat has agents — see
 [Agents the agent starts](#agents-the-agent-starts)), `U` and Send / Stop — then the message box, then the conversation. The
 browser button (icon only, a globe — `codicon-globe`, the same mark as the extension's own
 status bar item and toolbar dropdown; `codicon-browser` reads as a window) opens a new browser
@@ -4513,26 +4538,129 @@ Stop can arrive before the turn has an id. Each step checks, nothing starts afte
 turn that began while its request was on its way is interrupted rather than left to run to the
 end, unseen, on the user's quota. A send's failure is reported only into the chat it came from.
 
-Requests the CLIs send *us* must be answered or the turn waits for ever: Claude's
-`control_request`s (permission prompts, SDK MCP calls, hooks) get an error response; Codex's
-server requests get a decline or a JSON-RPC `-32601`.
+Requests the CLIs send *us* must be answered or the turn waits for ever. **A permission
+question is held until the user answers it** — Claude's `can_use_tool`, Codex's approval
+requests — and is closed on every path that lets the session go; see
+[Approvals and the browser tools](#approvals-and-the-browser-tools). Everything else is answered
+at once: Claude's other `control_request`s (SDK MCP calls, hooks) get an error response, an MCP
+server's own form (`mcpServer/elicitation/request` that is not a tool approval) is declined, and
+any other Codex server request gets a JSON-RPC `-32601`. Do not "fix" a waiting approval with a
+timeout or a refusal: the wait is the user deciding.
 
-### Permissions: none are granted yet
+### Approvals and the browser tools
 
-**Nothing is granted *by the chat* — but each CLI still applies its own configuration.** Both
-start in the workspace folder and load the user's and the project's settings: Claude Code's
-`permissions.allow` rules and hooks, and the MCP servers either CLI has configured (the
-`ai-browser` server included, once Connect has written it). So a tool the user's own config
-pre-allows runs from the chat without asking, exactly as it would in the CLI; the chat adds no
-grant of its own and removes none. Workspace trust gates the whole chat for that reason.
+Asked for after a chat message "fill in the email field" came back with "I have no permission
+for the built-in browser's tools": the first version started both CLIs so that every tool needing
+a yes was refused, the browser tools included, and the chat needed Connect to have been pressed
+to have those tools at all. **The chat has the browser tools from its first message, and every
+question an agent asks is answered in the chat** — asked for in those words: "access one way or
+another, even if by asking".
 
-Claude runs with `--permission-mode default` and no `--permission-prompt-tool`, so in `-p` mode
-every tool call that needs approval is refused and the model is told so. Codex threads run
-`sandbox: 'read-only'`, `approvalPolicy: 'on-request'`, and every approval request — the
-`item/*/requestApproval` methods and the older `execCommandApproval` / `applyPatchApproval` — is
-declined, with a notice in the chat of the thread that asked. Both
-are deliberate for a first version: approvals belong inside the chat view (a modal would pause
-the browser), and that UI is the next step.
+**The browser tools are handed to each CLI at its start**, from this window's own MCP server
+(`BrowserServer`, read from `McpLifecycle.state` at every start, since the port moves with a
+setting change; nothing while the server is not running):
+
+- **Claude**: `--mcp-config <file>`, a JSON file naming `ai-browser` with its URL and bearer
+  token, in the private temp directory (`chat/mcp-<host pid>-<uuid>.json`, `0600`). **One file
+  per CLI process**, written as it starts and removed when it exits. The first version wrote one
+  per session, cached it, and swept files a day old — so a tab open for more than a day had its
+  file removed by another window's sweep, and the next process it started (a model change, a
+  crash, Stop's fallback) was handed a missing file: the CLI exits with "MCP config file not
+  found", and since the path was cached, so did every message after it (measured). The sweep
+  (`sweepBrowserConfigs`) now removes only files whose extension host pid no longer runs —
+  never by age. **A file, not the JSON as an argument** — `--mcp-config` takes either, and an
+  argument puts the token in the process list, which every local user can read. The directory is
+  resolved once and the file written synchronously in `_start`, so the send awaits nothing that
+  a Stop or a second send could land behind.
+- **Codex**: the `config` override of `thread/start` / `thread/resume`,
+  `{ mcp_servers: { 'ai-browser': { url, http_headers } } }`.
+- **Under the bare `ai-browser` name the injected server replaces a project config's entry of the
+  same name rather than adding a second** — measured on both: Claude lists one `ai-browser` with
+  `source: dynamic`, Codex one `ai-browser`, ready. A per-project `ai-browser-<slug>-<hash>`
+  entry left in `~/.codex/config.toml` is not replaced and would list the tools twice; Connect
+  removes that entry, and the repair renames it, so it is not chased here.
+- **"Our server" is `ai-browser` or exactly that per-project shape** (`isBrowserServer`, a
+  six-hex suffix). Any `ai-browser-…` let a server somebody else named so be answered by the Auto
+  toggle as the browser.
+- **The server must be running**: with `aiBrowser.mcp.enabled: false`, or a server that failed
+  to start, the chat's agents have no browser tools.
+- **A share applies to the chat's agents too.** They call the server as `claude` / `codex`
+  (their `clientInfo` name), so a tab given to "Claude Code" binds the chat's Claude as well, and
+  its calls count as that assignment picking the tab up (🔗 → 🤖).
+
+**The questions come over each CLI's own channel**, and the answers go back the same way.
+Measured live (Claude Code 2.1.301, codex-cli 0.162.0-alpha.17.2); the readers are
+`claudeApproval` / `codexApproval` and the answers `claudeApprovalAnswer` /
+`codexApprovalAnswer` in [src/chat/agentProtocol.ts](src/chat/agentProtocol.ts), under test on the
+recorded requests:
+
+| | Claude Code | Codex |
+|---|---|---|
+| launch | `--permission-prompt-tool stdio` (with `--permission-mode default`) | threads with `approvalPolicy: 'untrusted'`, `approvalsReviewer: 'user'`, `sandbox: 'workspace-write'` (`read-only` with no folder open) |
+| question | `control_request` `can_use_tool` (`tool_name`, `input`, `description`, `tool_use_id`) | `item/commandExecution/requestApproval`, `item/fileChange/requestApproval` (measured: it names only its `itemId`; the paths are on the `fileChange` item started just before, which the session keeps — `filesOf`), and for an MCP tool `mcpServer/elicitation/request` with `_meta.codex_approval_kind: 'mcp_tool_call'` |
+| yes | `{ behavior: 'allow', updatedInput: <input as it came> }` | `{ decision: 'accept' }`; an MCP tool `{ action: 'accept', content: null }` |
+| no | `{ behavior: 'deny', message }` — the model reads it as the tool's error and carries on | `{ decision: 'decline' }`, or `cancel` where the request lists its decisions without `decline`; an MCP tool `{ action: 'decline' }` |
+| withdrawn | `control_cancel_request` (a Stop: measured, the interrupt withdraws the open question at once) | `serverRequest/resolved` (arrives after the stopped turn's `turn/completed`) |
+
+Each of the Codex settings was found by its absence:
+
+- **`approvalsReviewer: 'user'`**, or the question never reaches us: with it left to the user's
+  configuration, Codex's own auto-review approved an MCP tool call by itself ("Automatic approval
+  review approved (risk: low)") and no request was sent.
+- **`untrusted`, not `on-request`**: under `on-request` the model decides whether to ask, and it
+  ran `touch` inside the read-only sandbox without asking, to "Operation not permitted".
+  `untrusted` asks before any command Codex does not know to be read-only — what Claude Code's
+  default mode asks about too.
+- **`workspace-write`, not `read-only`**: an approved command that writes otherwise still fails.
+  Edits still ask under it — measured: an `apply_patch` creating a file sent
+  `item/fileChange/requestApproval` first. **But with no folder open the working directory is
+  the home directory** (`_cwd`), and there `workspace-write` would make all of it writable,
+  `~/.ssh` and the shell's rc files included; such a thread is `read-only` (`threadSettings`).
+
+**How the chat answers** ([src/chat/chatTab.ts](src/chat/chatTab.ts)): a question is an
+`ApprovalEntry` in the conversation — a card with what it is for ("Run this command?", "Use the
+browser?", "Change this file?", "Use this tool?"), the command or tool, its arguments, and
+Allow / Deny, plus **Allow all** for what the toggle covers, which also switches the toggle on.
+**The card shows exactly what Allow runs**: a command whole, line breaks kept, arguments one per
+line, in a scrolling box. The first version folded the command onto one line and cut it at 500
+characters — `echo done` and `rm -rf build` on the next line read as one harmless `echo`, and a
+long command ran a tail nobody saw — while Allow sent the original. Text past 100 000 characters
+is cut with a sentence saying so.
+Never a modal or a QuickPick: either would pause the browser tab the agent is about to use. A
+tab waiting on one shows the waiting mark. Each answered card says how it went: Allowed, Denied,
+Allowed automatically, No longer needed.
+
+**The Ask / Auto toggle** sits in the composer's toolbar and covers **terminal commands and
+browser tools only** (`autoApproved`), as asked for; file edits (the agents' edit tools) and
+other tools always ask — and so do Codex's input to a running command (`kind: 'writeStdin'`) and
+network access for one (`networkApprovalContext`), which are not "a terminal command". A command
+can of course change files itself (`sed -i`, `rm`); Auto lets that run.
+Under Auto those questions are answered at once and leave no card — the tool's own row says what
+ran. Switching it on answers what is already waiting and covered (`autoApproveChanged`).
+
+**A question nobody can answer any more is closed, on every path.** The CLI withdrawing it, the
+tab closing, the other agent taking the tab's place, a replaced backend, the process exiting
+(Claude: `_withdrawAll`; Codex: the backend's `_withdraw`, which also *refuses* the open
+questions of a session going away, or Codex would wait on them until the interrupt landed), and a
+chat reopened from the history (`settled`). A card left "pending" would ask for a click that
+reaches nothing. An answer to a card that is no longer pending is ignored, and so is a second
+click.
+
+**What still decides before the chat is asked:** each CLI's own rules. Both start in the
+workspace folder and load the user's and the project's settings — Claude Code's
+`permissions.allow` rules and hooks, Codex's own rules — so a tool those rules pre-allow runs
+without a question, exactly as in the CLI, and one they deny is refused without one.
+
+**What the chat sets over the user's configuration**, stated because it is a grant: Claude's
+`--permission-mode default` (over a `defaultMode` in settings), and for Codex the sandbox, the
+approval policy and the reviewer — so a `sandbox_mode = "read-only"` in `config.toml` does not
+hold in the chat's threads, which are `workspace-write` inside an open folder. Plus the Auto
+toggle when it is on. Workspace trust gates the whole chat for that reason.
+
+Verified against the real CLIs through the compiled backends: on both, a `touch` and
+`browser_state` each asked once, an Allow ran them (the file created, the tool answered), a Deny
+reached the model, and a Stop with a question open withdrew it; the cards and the toggle against
+a fake session and in headless Chrome.
 
 ### Where it refuses to run
 
@@ -4554,6 +4682,8 @@ the browser), and that UI is the next step.
   Codex's thread id), so opening it from the history continues the real conversation — measured
   for both. Images are not stored; the user entry keeps the attachment labels. Codex threads are
   not `ephemeral`, so they also appear in Codex's own history.
+- **The Ask / Auto toggle**: `workspaceState` `aiBrowser.chat.autoApprove` — per workspace,
+  since a project is what a user trusts with commands; one switch for every tab.
 - **Selection**: `globalState` `aiBrowser.chat.selection` — the last agent, a model per agent and
   an effort per `<agent>:<model>`, made valid against what was detected on every read.
 - **Open tabs**: `workspaceState` `aiBrowser.chat.openTabs` — every tab's chat id in order, which
@@ -4570,16 +4700,45 @@ chat belong to the agent just switched away from (#335).
 
 ### Tabs: several conversations at once
 
-Asked for: "сразу в 2-3-4-5 окнах". The view holds up to `tabLimit` (5) conversations as tabs in
-a strip above the thread; one is in front and **the others go on working** — a reply streams, a
-background agent finishes, in a tab nobody is looking at. A tab shows a blinking dot while it
-answers and the number of its agents still working. Each tab is a `ChatTab`
+Asked for: "сразу в 2-3-4-5 окнах". The view holds up to `aiBrowser.chat.tabLimit` (5 unless
+set) conversations as tabs in a strip above the thread; one is in front and **the others go on
+working** — a reply streams, a background agent finishes, in a tab nobody is looking at. A tab
+shows a mark of how it is doing (below) and the number of its agents still working. Each tab is a `ChatTab`
 ([src/chat/chatTab.ts](src/chat/chatTab.ts)) with everything a conversation had before tabs — its
 chat, its CLI session, `_pending`, the token offset, `_endTurnHere` — moved there unchanged; the
 provider holds what all tabs share: the view, the agents, the selection, the limits, the history.
-The limit is five because each Claude tab is a `claude` process and tabs working at once spend
-the plan's limits at once; a sixth is refused through the status bar and the strip's "+" is
-disabled.
+The default is five because each Claude tab is a `claude` process and tabs working at once spend
+the plan's limits at once; the setting goes up to 30, asked for. One past the limit is refused
+through the status bar, and the strip's "+" is **not shown at all** — asked for; a disabled
+button read as broken. `tabLimit()` reads the setting every time and takes anything that is not
+a whole number from 1 up as the default, and 30 for anything above it (#184's rule: a bad value
+must not take the view down). **Lowering it closes nothing**: the open tabs stay, "+" comes back
+once enough are closed, and only a window restore is cut to the new limit.
+
+**The mark on each tab** (`ChatTab.status`, `ChatTabStatus` in the protocol), all asked for:
+
+| Mark | When |
+|---|---|
+| a pulsing ring, in the warning colour | an approval in the tab waits for an answer — it outranks working, since the agent is stopped on the user and the tab may not be the one in front |
+| the working star, turning | a turn or an agent of the tab runs (`busy`) — the glyph of the working line, turned by the same 120 ms timer, still under reduced motion |
+| green dot | the work ended while nobody was looking at the tab |
+| orange dot | the work ended in an error: an error entry or a failed agent since the last message, or the backend replaced under a running turn |
+| grey square | finished and read |
+| nothing | nothing has been sent from the tab |
+
+- **The end of the work is a change between two posts**, busy then idle, so `ChatTab._post`
+  compares the two on every change rather than any one path marking it — a turn's end, a send
+  that failed before a turn began, the last background agent finishing all arrive that way.
+- **"Read" is decided by the provider**: `_state()` calls `seen()` on the tab in front whenever
+  the view is visible, and `onDidChangeVisibility` posts, so a tab is read the moment the view
+  shows it — not at its next change. A collapsed view, or the side bar showing another container,
+  is not looking.
+- **The orange mark outlives being looked at** and goes with the next message: an error is not
+  over because it was seen, and turning grey would say the work had finished.
+- **Stopping is not failing.** "Stopped." from the user's Stop is a finish like any other; so is
+  closing the tab or the view, which ends the turn and leaves nothing to read (`close()` clears
+  the unread mark). A tab reopened from the history is grey, or orange when its last entry is an
+  error.
 
 - **Closing a tab stops what it runs** — its turn and its agents — and keeps the chat in the
   history. A tab that is working asks first, inside the strip ("… is still working. Closing it
@@ -4641,6 +4800,24 @@ takes it) and goes to the agent as an image block — base64 for Claude, a `data
 the tab explicitly; **Page address** is the URL and title (`pageTitle` + `plainInPrompt`, since
 the title is page-chosen text going into a prompt); **File** is the path only, since both agents
 read files themselves.
+
+**Clicking a chip opens what it attaches**, as a tab of the active editor group, among the other
+editors, and as a preview so the next chip reuses it — asked for. It opened `Beside` at first,
+which split the editor area into a new group and read as a separate window:
+
+- a file — the file itself; a conversation handed over to the other agent — its Markdown file;
+- a screenshot — the PNG, written once per chip beside the screenshots (`savePng`, the private
+  directory swept after a day) and opened in VS Code's image preview;
+- an element, a page address, a conversation handed over without a folder — the text, as a
+  **read-only, plain-text** document under the `ai-browser-attachment:` scheme (a content provider
+  keyed by the chip's id; the label, made file-safe, is its name). An untitled document would ask
+  to be saved when closed, for something that was only shown. **Plain text, not Markdown**: the
+  text is page-written, and a Markdown editor turns `[x](command:…)` in an element's id into a
+  link that runs a command on Cmd+click — the sink of #124 and #132, reached through an editor
+  (#371). A restored editor whose chip is gone says so rather than opening empty, and a screenshot
+  whose file the day's sweep removed is written again.
+
+Chips in sent messages are labels only — the content is not kept — and do not open.
 
 **Without the `browser` grant the page entries say so** — "Browser API not enabled — use Enable
 Browser API in the status bar" — rather than "open a page first", which is what they said while
@@ -4752,7 +4929,8 @@ again rather than adding one. **The agent's thread has no session of its own**, 
 notifications were dropped by the routing that sends each `threadId` to its conversation:
 `CodexSession._watchAgent` binds that thread to the conversation whose turn started it
 (`CodexBackend.bindAgent`), and `notifyAgent` reads it with `codexAgentThreadEvents` — never as the
-reply. An approval request from an agent's thread is declined with the notice in that chat. An
+reply. An approval request from an agent's thread is asked in the conversation the agent belongs
+to, like the conversation's own: a card in that tab, which then shows the waiting mark. An
 agent an agent starts is bound the same way and gets a row of its own; its card says which agent
 started it, read from the path. **The prompt is not sent anywhere**, so a Codex card has no Prompt
 section. The `spawnAgent` / `agentsStates` reading stays, for a Codex that does send them
@@ -6313,6 +6491,40 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
 370. **A stored path that names a file by one of its spellings** → the same file reached first
      through another `PATH` entry read as gone, and a path that carries a version (a copy inside
      an extension) went missing on every update. Match by the file, store what was meant.
+371. **Page-written text opened as Markdown** → an element's id or a page title shown in a
+     Markdown editor turns `[x](command:…)` into a link that runs a command on Cmd+click. A
+     chat chip's text opens as plain text.
+372. **A new destination for the repeat button gated on less than its refusal** → the chat's Add
+     button and chord were gated on the VS Code version alone, so in a remote window or Restricted
+     Mode a remembered chat action refused on every press. Gate the button on everything the
+     command refuses, and fall back to the Copy twin there.
+373. **Cutting a string by UTF-16 unit** → an emoji at the limit leaves half a surrogate pair, and
+     a `vscode.Uri` built from it throws "URI malformed". Cut by code point (`capAt`).
+374. **`claude -p` with no `--permission-prompt-tool`** → every tool that needs a yes is refused
+     on the spot and the model is told it has no permission, MCP tools included, so the chat's
+     agent could not touch the browser it was opened beside. `stdio` sends the question to us.
+375. **Leaving Codex's approval reviewer to the user's config** → its auto-review answers by
+     itself and no approval request is ever sent, so a "ask in the chat" design asks nothing.
+     Set `approvalsReviewer: 'user'`.
+376. **A question card that outlives the process that asked** → nothing withdraws it when the
+     process exits or the session is dropped, and it asks for a click that reaches nothing.
+     Close open questions on every path that lets a session go.
+377. **Rebuilding a static view on every state post** → the empty chat's welcome was rebuilt each
+     time another tab streamed (every 40 ms), and each rebuild restarted its fade-in: the
+     changelog blinked while a different tab was thinking. Key it on what it shows.
+378. **A credential in a CLI argument** → `--mcp-config` takes JSON inline, and the token would
+     then be in the process list for every local user. Pass a `0600` file in a private directory.
+379. **Sweeping by age a file a long-lived owner still points at** → the session cached its
+     `--mcp-config` path and another window removed the file at a day old, so every later
+     process start of that tab failed ("MCP config file not found"). One file per process,
+     removed at its exit; sweep only files whose owning pid is gone.
+380. **An approval prompt that shows a normalised copy of what it approves** → folding a command
+     onto one line and cutting it at 500 characters showed `echo done rm -rf build` while Allow
+     ran both lines and the hidden tail. Show the exact text.
+381. **Composer chips rebuilt on every state post** → #365 again for a new surface: a click on a
+     chip whose press outlasted a 40 ms post never fired, and focus left it. Key the rebuild.
+382. **`workspace-write` in the home directory** → with no folder open the working directory is
+     `~`, so the sandbox opened all of it to writes. Keep such a thread `read-only`.
 
 ## Special cases and non-obvious decisions
 

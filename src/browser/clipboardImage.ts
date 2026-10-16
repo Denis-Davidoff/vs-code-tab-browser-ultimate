@@ -180,6 +180,17 @@ export async function copyImage(png: Buffer, baseName: string): Promise<ImageDel
 	}
 }
 
+/**
+ * Writes `png` beside the screenshots — the private directory, swept after a
+ * day — for something to open it, such as the chat showing an attached
+ * screenshot. Exclusive, as `copyImage` is.
+ */
+export async function savePng(png: Buffer, baseName: string): Promise<vscode.Uri> {
+	const dir = await directory();
+	await prune(dir);
+	return vscode.Uri.file(await writeExclusive(dir, baseName, png));
+}
+
 /** `screenshot-<host>[-full]-<HHMMSS>.png`, so several in a row do not collide. */
 export function screenshotFileName(
 	url: string | undefined,

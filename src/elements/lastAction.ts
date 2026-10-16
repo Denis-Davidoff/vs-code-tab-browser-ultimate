@@ -7,18 +7,21 @@ import * as vscode from 'vscode';
 
 /**
  * Every action the toolbar button can repeat: the four copies, and the same
- * four for each assistant. The value is compared verbatim in `when` clauses,
- * so these strings are part of the manifest's contract.
+ * four for each assistant and for the AI Browser chat. The value is compared
+ * verbatim in `when` clauses, so these strings are part of the manifest's
+ * contract.
  */
 export type ElementActionId =
 	| 'element' | 'cssPath' | 'cssLocation' | 'xpath'
 	| 'claude:element' | 'claude:cssPath' | 'claude:cssLocation' | 'claude:xpath'
-	| 'codex:element' | 'codex:cssPath' | 'codex:cssLocation' | 'codex:xpath';
+	| 'codex:element' | 'codex:cssPath' | 'codex:cssLocation' | 'codex:xpath'
+	| 'chat:element' | 'chat:cssPath' | 'chat:cssLocation' | 'chat:xpath';
 
 const allActions: readonly string[] = [
 	'element', 'cssPath', 'cssLocation', 'xpath',
 	'claude:element', 'claude:cssPath', 'claude:cssLocation', 'claude:xpath',
 	'codex:element', 'codex:cssPath', 'codex:cssLocation', 'codex:xpath',
+	'chat:element', 'chat:cssPath', 'chat:cssLocation', 'chat:xpath',
 ];
 
 const contextKey = 'aiBrowser.lastElementAction';
@@ -53,7 +56,9 @@ export class LastElementAction {
 
 	/**
 	 * What the toolbar shows for the remembered action: the action itself, or
-	 * its Copy twin when the assistant it hands to is not installed.
+	 * its Copy twin when the destination it hands to is not there — an
+	 * assistant not installed or unreachable from a remote window, the chat
+	 * where it cannot run (a VS Code before 1.106, Restricted Mode, a remote window).
 	 *
 	 * **The Add buttons are gated on `aiBrowser.<assistant>Installed`**, so a
 	 * remembered "Add XPath to Claude Code" with Claude Code uninstalled,

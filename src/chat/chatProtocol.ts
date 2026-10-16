@@ -130,8 +130,31 @@ export type ChatEntry =
 	| { readonly kind: 'assistant'; text: string }
 	| { readonly kind: 'thinking'; text: string; readonly startedAt: number; endedAt?: number }
 	| ToolEntry
+	| ApprovalEntry
 	| { readonly kind: 'notice'; readonly text: string }
 	| { readonly kind: 'error'; readonly text: string };
+
+/**
+ * What an approval is for. `command` and `browser` are what the composer's
+ * auto-approve toggle answers by itself; `edit` and `other` always ask.
+ */
+export type ApprovalKind = 'command' | 'browser' | 'edit' | 'other';
+
+/**
+ * An agent asking before it uses a tool, answered in the chat. `pending` until
+ * the user answers, the CLI withdraws it (a Stop, the turn ending), or the
+ * conversation lets go of its session (`cancelled`).
+ */
+export interface ApprovalEntry {
+	readonly kind: 'approval';
+	readonly id: string;
+	readonly what: ApprovalKind;
+	readonly title: string;
+	readonly detail?: string;
+	status: 'pending' | 'allowed' | 'denied' | 'cancelled';
+	/** Answered by the auto-approve toggle rather than by a click. */
+	auto?: boolean;
+}
 
 export interface ChatSummary {
 	readonly id: string;
@@ -183,7 +206,10 @@ export interface ChatViewState {
 	/** The open conversations, in tab order; `chatId`, `entries` and the rest are the active one's. */
 	readonly tabs: readonly ChatTabSummary[];
 	readonly activeTab: string;
+	/** `aiBrowser.chat.tabLimit`; more tabs than this can be open when it was lowered. */
 	readonly tabLimit: number;
+	/** The composer's toggle: terminal commands and browser tools run without asking. Per workspace. */
+	readonly autoApprove: boolean;
 	/** Another agent was picked for a conversation that has started: the view asks what to do. */
 	readonly switchTo?: AgentId;
 }
@@ -199,7 +225,19 @@ export interface ChatTabSummary {
 	readonly agents: number;
 	/** A turn or an agent is running: closing the tab stops it. */
 	readonly busy: boolean;
+	/** The mark on the tab; absent while nothing has been sent from it. See `ChatTab.status`. */
+	readonly status?: ChatTabStatus;
 }
+
+/**
+ * `waiting` while an approval in the tab waits for an answer — the work is
+ * stopped on the user, so it outranks `working`; `working` while a turn or an
+ * agent runs; `unread` once that ended with the
+ * tab out of sight; `failed` when it ended in an error — kept until the next
+ * message, since an error does not stop being one by being looked at; `read`
+ * otherwise.
+ */
+export type ChatTabStatus = 'waiting' | 'working' | 'unread' | 'failed' | 'read';
 
 export type HostToView =
 	| { readonly type: 'state'; readonly state: ChatViewState }
@@ -231,6 +269,10 @@ export type ViewToHost =
 	| { readonly type: 'switchAgent'; readonly choice: 'newTab' | 'replace' | 'continue' | 'cancel' }
 	/** One agent of the conversation in front, by its row id. */
 	| { readonly type: 'stopAgent'; readonly id: string }
+	| { readonly type: 'approve'; readonly id: string; readonly allow: boolean }
+	| { readonly type: 'setAutoApprove'; readonly on: boolean }
+	/** A chip in the composer clicked: its file, its image or its text, in an editor tab. */
+	| { readonly type: 'openAttachment'; readonly id: string }
 	/** The copy of an agent's CLI this project uses; no `path` is Auto, the newest. */
 	| { readonly type: 'setAgentBinary'; readonly agent: AgentId; readonly path?: string }
 	/** VS Code's own setting for an agent's executable. */

@@ -118,7 +118,7 @@ the editor: the page you are looking at is the page your agent reads and drives.
 - 📸 **Screenshots that paste as pictures.** The visible area or the whole scrollable page, on
   the system clipboard as a real PNG — `Cmd`/`Ctrl` + `V` into a chat, an issue or a document.
 - ⌨️ **One key repeats what you did last.** The toolbar's right-hand button and
-  `Cmd`/`Ctrl` + `Alt` + `C` both run the action you used last, whichever of the twelve it was.
+  `Cmd`/`Ctrl` + `Alt` + `C` both run the action you used last, whichever of the sixteen it was.
 - 🔌 **An MCP server, with nothing to install.** No package, no separate process to babysit: the
   extension starts a local server on activation, and one command configures Claude Code, Codex
   or VS Code's own chat to use it.
@@ -187,12 +187,13 @@ The menu, in order:
 | Translate Page… | asks for a language and copies a prompt to paste into your assistant, which translates the page in place — [CLAUDE.md](CLAUDE.md#translating-a-page-through-an-assistant) |
 | Claude Code ▸ | a submenu: the same four picks handed to the Claude Code chat, plus Connect and Share Tab |
 | Codex ▸ | the same, for Codex |
+| AI Browser Chat ▸ | the same four picks, plus a screenshot and the page address, added to this extension's own chat |
 | Check Connection | the mcp server, [CLAUDE.md](CLAUDE.md#mcp-the-browser-exposed-to-claude-code-codex-and-vs-code-chat) |
 | Logins and Passkeys ▸ | fill a saved login, save the one on the page, manage, import, export — [CLAUDE.md](CLAUDE.md#saved-logins-and-passkeys) |
 | Share Tab with All Assistants / Stop Sharing Tab | [CLAUDE.md](CLAUDE.md#mcp-the-browser-exposed-to-claude-code-codex-and-vs-code-chat) |
 
 Everything belonging to one assistant lives in that assistant's submenu, which is what keeps the
-top level at sixteen rows. The four **Add** entries there appear only for an assistant whose
+top level at seventeen rows. The four **Add** entries there appear only for an assistant whose
 extension is actually installed; **Connect** and **Share Tab** are always there, because an
 assistant driven from a terminal through `.mcp.json` needs them and has no extension to detect.
 The menu is attached to the browser tab — from anywhere else, use the command palette.

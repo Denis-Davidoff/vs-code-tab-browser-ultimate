@@ -14,7 +14,7 @@ import { canHandOver, cleanUpReports, publishAssistantContext, type AssistantId 
 import { LastElementAction, type ElementActionId } from './elements/lastAction';
 import { localHosts, normalizeAddress } from './core/webUrl';
 import { BrowserController } from './browser/browserController';
-import { ChatViewProvider, chatUnsupportedContextKey, chatViewId, supportsSecondarySidebar } from './chat/chatView';
+import { ChatViewProvider, chatBlocked, chatBlockedContextKey, chatUnsupportedContextKey, chatViewId, supportsSecondarySidebar } from './chat/chatView';
 import { McpLifecycle } from './mcp/mcpLifecycle';
 import { connectClaudeCode, connectCodex, type SharedPage } from './mcp/mcpSetup';
 import { everyone, forKind, isShareTarget, targetName, type ShareTarget } from './browser/shareRegistry';
@@ -184,7 +184,16 @@ export function activate(context: vscode.ExtensionContext) {
 	// The toolbar's primary button repeats whichever of these ran last, so every
 	// one of them records itself.
 	const lastAction = new LastElementAction(context.globalState);
-	lastAction.initialize(assistant => canHandOver(assistant as AssistantId));
+	// `chat`: the AI Browser chat's Add button falls back to its Copy twin
+	// wherever the chat cannot run — below VS Code 1.106, in Restricted Mode, in
+	// a remote window — as an assistant's does when it cannot be handed to.
+	lastAction.initialize(destination => destination === 'chat' ? chatBlocked() === undefined : canHandOver(destination as AssistantId));
+	const publishChatBlocked = () => vscode.commands.executeCommand('setContext', chatBlockedContextKey, chatBlocked() !== undefined);
+	void publishChatBlocked();
+	context.subscriptions.push(vscode.workspace.onDidGrantWorkspaceTrust(() => {
+		void publishChatBlocked();
+		void lastAction.refresh();
+	}));
 	context.subscriptions.push(vscode.extensions.onDidChange(() => lastAction.refresh()));
 
 	const registerElementCommand = (id: string, remembered: ElementActionId, run: () => Promise<void>) =>
@@ -440,13 +449,32 @@ export function activate(context: vscode.ExtensionContext) {
 	// The AI Browser chat, beside Claude Code's and Codex's own. No CLI starts
 	// until the view is first shown: detection runs when its webview says it is
 	// ready, and a conversation's process when its first message is sent.
-	const chat = new ChatViewProvider(context, browser);
+	// The agents get this window's MCP server whether or not Connect wrote a
+	// config: the chat is for working with the browser. Read at every start of
+	// a CLI, since the port moves with a setting change; nothing while it is not
+	// running.
+	const chat = new ChatViewProvider(context, browser, () => {
+		const state = mcp.state;
+		const url = state.kind === 'running' ? state.server.url : undefined;
+		return state.kind === 'running' && url ? { url, token: state.server.token } : undefined;
+	});
 	if (!supportsSecondarySidebar(vscode.version)) {
 		void vscode.commands.executeCommand('setContext', chatUnsupportedContextKey, true);
 	}
 	context.subscriptions.push(chat, vscode.window.registerWebviewViewProvider(chatViewId, chat, {
 		webviewOptions: { retainContextWhenHidden: true },
 	}));
+	// The element entries of "AI Browser Chat ▸" are toolbar actions like the
+	// assistants' Add entries: each records itself, and has a `repeat.chat.*`
+	// twin for the primary button and the chord.
+	const chatAdds: [ElementActionId, 'element' | 'cssPath' | 'cssLocation' | 'xpath'][] = [
+		['chat:element', 'element'], ['chat:cssPath', 'cssPath'], ['chat:cssLocation', 'cssLocation'], ['chat:xpath', 'xpath'],
+	];
+	for (const [action, what] of chatAdds) {
+		const command = `aiBrowser.chat.add${{ element: 'Element', cssPath: 'CssPath', cssLocation: 'CssLocation', xpath: 'XPath' }[what]}`;
+		registerElementCommand(command, action, () => chat.addFromBrowser(what));
+		registerElementCommand(`aiBrowser.repeat.${action.replace(':', '.')}`, action, () => chat.addFromBrowser(what));
+	}
 	const revealChat = () => vscode.commands.executeCommand(`${chatViewId}.focus`);
 	context.subscriptions.push(
 		vscode.commands.registerCommand('aiBrowser.chat.newChat', async () => {
@@ -462,6 +490,10 @@ export function activate(context: vscode.ExtensionContext) {
 			await revealChat();
 			chat.refreshAgents();
 		}),
+		// The browser tab menu's "AI Browser Chat ▸": the chat is revealed after
+		// the pick, not before, so the page stays where the click is wanted.
+		vscode.commands.registerCommand('aiBrowser.chat.addScreenshot', () => chat.addFromBrowser('screenshot')),
+		vscode.commands.registerCommand('aiBrowser.chat.addPage', () => chat.addFromBrowser('page')),
 	);
 
 }

@@ -47,6 +47,18 @@ export interface AgentSession extends vscode.Disposable {
 	 * agents running. Rejects when the CLI refuses.
 	 */
 	stopAgent?(rowId: string, threadId: string | undefined): Promise<void>;
+	/** Answers an `approval` event this session reported. An id it no longer has is ignored. */
+	answer(id: string, allow: boolean): void;
+}
+
+/**
+ * The extension's own MCP server, as the chat hands it to each CLI it starts —
+ * so the agents in the chat have the browser tools whether or not Connect was
+ * ever pressed. Read at every start: the port can move with a setting change.
+ */
+export interface BrowserServer {
+	readonly url: string;
+	readonly token: string;
 }
 
 export interface AgentBackend extends vscode.Disposable {
@@ -99,7 +111,11 @@ export class AgentRegistry implements vscode.Disposable {
 	public readonly onDidReplace = this._onDidReplace.event;
 
 	/** `pinned`: the copy of an agent's CLI the project picked by hand, if it did. */
-	constructor(private readonly _cwd: () => string, private readonly _pinned: (id: AgentId) => string | undefined = () => undefined) { }
+	constructor(
+		private readonly _cwd: () => string,
+		private readonly _pinned: (id: AgentId) => string | undefined = () => undefined,
+		private readonly _browserServer: () => BrowserServer | undefined = () => undefined,
+	) { }
 
 	public get agents(): readonly ChatAgent[] {
 		return this._agents;
@@ -195,7 +211,7 @@ export class AgentRegistry implements vscode.Disposable {
 		let entry = this._backends.get(id);
 		if (entry?.binary !== binary.path) {
 			this._drop(id, false);
-			const backend = id === 'claude' ? new ClaudeBackend(binary.path, this._cwd) : new CodexBackend(binary.path, this._cwd);
+			const backend = id === 'claude' ? new ClaudeBackend(binary.path, this._cwd, this._browserServer) : new CodexBackend(binary.path, this._cwd, this._browserServer);
 			entry = { binary: binary.path, backend };
 			this._backends.set(id, entry);
 		}

@@ -6,8 +6,8 @@
 import * as assert from 'node:assert';
 import { suite, test } from 'node:test';
 import {
-	LineSplitter, chatTitle, claudeEvents, claudeModels, claudeRateLimitWindows, claudeUsage,
-	claudeTool, codexAgentThreadEvents, codexEvents, codexModels, codexUsage, compareCliVersions, parseCliVersion, parseLine, toolDetail, unwrapShell, windowLabel,
+	LineSplitter, chatTitle, claudeApproval, claudeApprovalAnswer, claudeEvents, claudeModels, claudeRateLimitWindows, claudeUsage,
+	claudeTool, codexAgentThreadEvents, codexApproval, codexApprovalAnswer, codexEvents, codexModels, codexUsage, compareCliVersions, parseCliVersion, parseLine, toolDetail, unwrapShell, windowLabel,
 } from './agentProtocol.ts';
 
 // The samples below are trimmed copies of what Claude Code 2.1.301 and
@@ -448,5 +448,98 @@ suite('tool rows', () => {
 			{ kind: 'edit', name: 'Edit', detail: '/a.ts', input: '-a\n+b\n+c', added: 2, removed: 1 });
 		assert.strictEqual(claudeTool('mcp__ai-browser__browser_click', { selector: '#go' }).name, 'ai-browser · browser_click');
 		assert.strictEqual(claudeTool('Grep', { pattern: 'TODO', path: 'src' }).detail, '"TODO" in src');
+	});
+});
+
+suite('approvals', () => {
+	// Recorded from Claude Code 2.1.301 run with `--permission-prompt-tool stdio`.
+	const claudeBash = {
+		subtype: 'can_use_tool', tool_name: 'Bash', display_name: 'Bash',
+		input: { command: 'touch made-by-test.txt', description: 'Create an empty file called made-by-test.txt' },
+		description: 'Create an empty file called made-by-test.txt',
+		tool_use_id: 'toolu_01ToS8h6vH6iAN68DiZuShtH',
+	};
+
+	test('reads a Claude command, a browser tool, an edit and anything else', () => {
+		assert.deepStrictEqual(claudeApproval('r1', claudeBash), {
+			id: 'r1', what: 'command', title: 'touch made-by-test.txt', detail: 'Create an empty file called made-by-test.txt',
+		});
+		assert.deepStrictEqual(claudeApproval('r2', { tool_name: 'mcp__ai-browser__browser_fill', input: { selector: '#email', value: 'Hello there' } }), {
+			id: 'r2', what: 'browser', title: 'browser_fill', detail: 'selector: #email\nvalue: Hello there',
+		});
+		assert.strictEqual(claudeApproval('r3', { tool_name: 'mcp__ai-browser-picto-2a3f1f__browser_state', input: {} }).what, 'browser');
+		// Somebody else's server named like ours is not the browser.
+		assert.strictEqual(claudeApproval('r3b', { tool_name: 'mcp__ai-browser-evil__run', input: {} }).what, 'other');
+		assert.deepStrictEqual(claudeApproval('r4', { tool_name: 'mcp__figma__get_screenshot', input: { node: '1:2' } }), {
+			id: 'r4', what: 'other', title: 'get_screenshot', detail: 'figma\nnode: 1:2',
+		});
+		assert.deepStrictEqual(claudeApproval('r5', { tool_name: 'Edit', input: { file_path: '/w/a.ts', old_string: 'a', new_string: 'b' } }), {
+			id: 'r5', what: 'edit', title: '/w/a.ts', detail: 'Edit',
+		});
+		assert.strictEqual(claudeApproval('r6', { tool_name: 'WebFetch', display_name: 'Fetch', input: { url: 'https://x' } }).title, 'Fetch');
+	});
+
+	test('shows a command whole, line breaks and all', () => {
+		// What the card shows must be what Allow runs: folded into one line,
+		// `rm -rf build` read as an argument of `echo`.
+		const command = `echo done\nrm -rf build\n${'x'.repeat(900)}`;
+		assert.strictEqual(claudeApproval('r', { tool_name: 'Bash', input: { command } }).title, command);
+		const huge = claudeApproval('r', { tool_name: 'Bash', input: { command: 'y'.repeat(100_010) } }).title;
+		assert.ok(huge.includes('10 more characters not shown'));
+	});
+
+	test('answers Claude with the input as it was, or a refusal', () => {
+		assert.deepStrictEqual(claudeApprovalAnswer(claudeBash.input, true), { behavior: 'allow', updatedInput: claudeBash.input });
+		assert.strictEqual(claudeApprovalAnswer(claudeBash.input, false).behavior, 'deny');
+		assert.deepStrictEqual(claudeApprovalAnswer(undefined, true), { behavior: 'allow', updatedInput: {} });
+	});
+
+	// Recorded from codex-cli 0.162.0-alpha.17.2 with approvalPolicy untrusted and approvalsReviewer user.
+	const codexCommand = {
+		kind: 'command', threadId: 't', turnId: 'u', itemId: 'exec-1',
+		command: "/bin/zsh -lc 'touch made-by-codex.txt'", cwd: '/w',
+		availableDecisions: ['accept', { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['touch', 'made-by-codex.txt'] } }, 'cancel'],
+	};
+	const codexMcp = {
+		threadId: 't', turnId: 'u', serverName: 'ai-browser', mode: 'form',
+		_meta: { codex_approval_kind: 'mcp_tool_call', persist: ['session', 'always'], tool_title: 'Browser state', tool_params: { selector: '#email' } },
+		message: 'Allow the ai-browser MCP server to run tool "browser_state"?',
+		requestedSchema: { type: 'object', properties: {} },
+	};
+
+	test('reads a Codex command, an MCP tool call and a patch', () => {
+		assert.deepStrictEqual(codexApproval('1:5', 'item/commandExecution/requestApproval', codexCommand), {
+			id: '1:5', what: 'command', title: 'touch made-by-codex.txt', detail: undefined,
+		});
+		assert.deepStrictEqual(codexApproval('1:6', 'mcpServer/elicitation/request', codexMcp), {
+			id: '1:6', what: 'browser', title: 'browser_state', detail: 'selector: #email',
+		});
+		assert.strictEqual(codexApproval('1:7', 'mcpServer/elicitation/request', { ...codexMcp, serverName: 'figma' })?.what, 'other');
+		assert.strictEqual(codexApproval('1:8', 'item/fileChange/requestApproval', { reason: 'write a file' })?.what, 'edit');
+		// Measured: the v2 request carries only `itemId`; the paths come from its item.
+		assert.deepStrictEqual(codexApproval('1:8', 'item/fileChange/requestApproval', { itemId: 'e', reason: null, grantRoot: null }, ['/w/hello.txt']), {
+			id: '1:8', what: 'edit', title: '/w/hello.txt', detail: undefined,
+		});
+		assert.match(codexApproval('1:8', 'item/fileChange/requestApproval', { grantRoot: '/w' })?.detail ?? '', /everything under \/w/);
+		// Input to a running command and network access are not what Auto covers.
+		assert.strictEqual(codexApproval('1:10', 'item/commandExecution/requestApproval', { kind: 'writeStdin', command: null })?.what, 'other');
+		assert.deepStrictEqual(codexApproval('1:11', 'item/commandExecution/requestApproval', { command: 'curl x', networkApprovalContext: { host: 'example.com' } })?.title, 'Network access: example.com');
+		assert.strictEqual(codexApproval('1:9', 'execCommandApproval', { command: ['ls', '-la'] })?.title, 'ls -la');
+	});
+
+	test('does not read a form a server asks for as an approval', () => {
+		assert.strictEqual(codexApproval('1:1', 'mcpServer/elicitation/request', { ...codexMcp, _meta: {} }), undefined);
+		assert.strictEqual(codexApproval('1:1', 'item/tool/requestUserInput', {}), undefined);
+	});
+
+	test('answers Codex in each method’s own shape', () => {
+		assert.deepStrictEqual(codexApprovalAnswer('item/commandExecution/requestApproval', codexCommand, true), { decision: 'accept' });
+		// `decline` is not among the decisions offered, so the refusal is `cancel`.
+		assert.deepStrictEqual(codexApprovalAnswer('item/commandExecution/requestApproval', codexCommand, false), { decision: 'cancel' });
+		assert.deepStrictEqual(codexApprovalAnswer('item/commandExecution/requestApproval', { command: 'x' }, false), { decision: 'decline' });
+		assert.deepStrictEqual(codexApprovalAnswer('item/fileChange/requestApproval', {}, false), { decision: 'decline' });
+		assert.deepStrictEqual(codexApprovalAnswer('mcpServer/elicitation/request', codexMcp, true), { action: 'accept', content: null });
+		assert.deepStrictEqual(codexApprovalAnswer('mcpServer/elicitation/request', codexMcp, false), { action: 'decline', content: null });
+		assert.deepStrictEqual(codexApprovalAnswer('execCommandApproval', {}, true), { decision: 'approved' });
 	});
 });

@@ -6,11 +6,11 @@
 import * as vscode from 'vscode';
 import { chatTitle, toolOutputLimit, type AgentEvent } from './agentProtocol';
 import { agentNames, type AgentBackend, type AgentSession, type TurnImage } from './agents';
-import type { AgentId, AttachmentChip, ChatEntry, ChatStats, ToolEntry, UsageWindow } from './chatProtocol';
+import type { AgentId, ApprovalEntry, ApprovalKind, AttachmentChip, ChatEntry, ChatStats, ChatTabStatus, ToolEntry, UsageWindow } from './chatProtocol';
 import { generateUuid } from '../core/uuid';
 
 /**
- * One conversation of the chat: a tab. The view holds several (`tabLimit`),
+ * One conversation of the chat: a tab. The view holds several (`tabLimit()`),
  * one of them shown; each has its own chat, its own CLI session and its own
  * turn bookkeeping, and a tab that is not shown goes on working — its reply
  * streams and its agents finish while another tab is read. Everything that
@@ -41,6 +41,8 @@ export interface Attachment {
 	readonly chip: AttachmentChip;
 	readonly text?: string;
 	readonly image?: TurnImage;
+	/** The file it stands for, where there is one: what clicking the chip opens. */
+	readonly file?: vscode.Uri;
 }
 
 /** What a tab needs from the view that holds it. */
@@ -53,6 +55,13 @@ export interface TabHost {
 	limits(agent: AgentId, windows: readonly UsageWindow[]): void;
 	save(chat: StoredChat): Promise<void>;
 	inHistory(chatId: string): boolean;
+	/** The composer's toggle: terminal commands and browser tools are allowed without asking. */
+	autoApprove(): boolean;
+}
+
+/** What the auto-approve toggle answers by itself; edits and anything else still ask. */
+export function autoApproved(what: ApprovalKind): boolean {
+	return what === 'command' || what === 'browser';
 }
 
 /** `id`: a tab restored with the window keeps the chat id it had, which its draft is kept under. */
@@ -62,6 +71,16 @@ export function newChat(agent: AgentId, id = generateUuid()): StoredChat {
 		id, title: 'New chat', agent, createdAt: now, updatedAt: now, entries: [],
 		stats: { inputTokens: 0, outputTokens: 0, cachedTokens: 0, turns: 0 },
 	};
+}
+
+/** Errors and failed agents in a conversation: the work that ended badly. */
+function failures(chat: StoredChat): number {
+	return chat.entries.filter(e => e.kind === 'error' || (e.kind === 'tool' && e.tool === 'agent' && e.status === 'failed')).length;
+}
+
+/** A conversation whose last word is an error, as one reopened from the history may be. */
+function endedInError(chat: StoredChat): boolean {
+	return chat.entries[chat.entries.length - 1]?.kind === 'error';
 }
 
 /** A chat from the history as a tab shows it: nothing in a stored chat is still running. */
@@ -107,9 +126,23 @@ export class ChatTab {
 	private _pending: { entry?: UserEntry; base?: TokenBase; startedAt?: number }[] = [];
 	/** Added to a cumulative token report; see the `tokens` case. Per session. */
 	private _tokenOffset: TokenBase = { input: 0, output: 0, cached: 0 };
+	/*
+	 * The tab's mark (`status`). Worked out here, on every change, because the
+	 * moment that matters — the work ending — is a change between two of them:
+	 * busy at the last one, idle now. The view decides only whether anybody was
+	 * looking (`seen`).
+	 */
+	private _wasBusy = false;
+	/** The work ended and nobody has looked at the tab since. */
+	private _unseen = false;
+	/** The last work ended in an error; until the next message. */
+	private _failed = false;
+	/** `failures` when the last message was sent, so only what went wrong after it counts. */
+	private _failuresBefore = 0;
 
 	constructor(private readonly _host: TabHost, chat: StoredChat) {
 		this._chat = chat;
+		this._failed = endedInError(chat);
 	}
 
 	public get chat(): StoredChat {
@@ -132,6 +165,30 @@ export class ChatTab {
 	/** A turn is running, or an agent is: closing the tab would stop something. */
 	public get busy(): boolean {
 		return this.running || this._pending.length > 0 || this.agentsRunning > 0;
+	}
+
+	/** An approval waits for the user: the agent is stopped on them. */
+	public get waiting(): boolean {
+		return this._chat.entries.some(e => e.kind === 'approval' && e.status === 'pending');
+	}
+
+	/** The mark on the tab; nothing for a conversation nothing was sent from. */
+	public get status(): ChatTabStatus | undefined {
+		if (this.waiting) {
+			return 'waiting';
+		}
+		if (this.busy) {
+			return 'working';
+		}
+		if (!this.started) {
+			return undefined;
+		}
+		return this._failed ? 'failed' : this._unseen ? 'unread' : 'read';
+	}
+
+	/** The user has the tab in front of them: what it finished is read. An error stays marked. */
+	public seen(): void {
+		this._unseen = false;
 	}
 
 	public stop(): void {
@@ -158,6 +215,8 @@ export class ChatTab {
 		this._closed = false;
 		this._discarded = false;
 		this._chat = chat;
+		this._unseen = false;
+		this._failed = endedInError(chat);
 		this._post();
 	}
 
@@ -167,6 +226,9 @@ export class ChatTab {
 		void this._save();
 		this._dropSession();
 		this._closed = true;
+		// Ended by the user closing it, or the view: nothing finished to read.
+		this._unseen = false;
+		this._wasBusy = false;
 	}
 
 	/** Lets the session go without saving: the chat was deleted. */
@@ -200,6 +262,63 @@ export class ChatTab {
 		}
 	}
 
+	/** The user answered an approval card. Only a pending one, and only while its session is alive. */
+	public answer(id: string, allow: boolean): void {
+		const entry = this._approval(id);
+		if (!entry || entry.status !== 'pending') {
+			return;
+		}
+		entry.status = allow ? 'allowed' : 'denied';
+		this._session?.answer(id, allow);
+		this._post();
+		void this._save();
+	}
+
+	/**
+	 * The toggle was switched on: what it covers and is still waiting is
+	 * answered now, rather than leaving the user to click what they just said
+	 * should not need a click.
+	 */
+	public autoApproveChanged(): void {
+		if (!this._host.autoApprove()) {
+			return;
+		}
+		let answered = false;
+		for (const entry of this._chat.entries) {
+			if (entry.kind === 'approval' && entry.status === 'pending' && autoApproved(entry.what)) {
+				entry.status = 'allowed';
+				entry.auto = true;
+				this._session?.answer(entry.id, true);
+				answered = true;
+			}
+		}
+		if (answered) {
+			this._post();
+			// Saved now: left for the next save, a chat reopened before one came
+			// showed these as "No longer needed".
+			void this._save();
+		}
+	}
+
+	private _approval(id: string): ApprovalEntry | undefined {
+		for (let i = this._chat.entries.length - 1; i >= 0; i--) {
+			const entry = this._chat.entries[i];
+			if (entry.kind === 'approval' && entry.id === id) {
+				return entry;
+			}
+		}
+		return undefined;
+	}
+
+	/** Questions nobody can answer any more — the session is going — are closed in the chat. */
+	private _cancelApprovals(): void {
+		for (const entry of this._chat.entries) {
+			if (entry.kind === 'approval' && entry.status === 'pending') {
+				entry.status = 'cancelled';
+			}
+		}
+	}
+
 	public backendReplaced(agent: AgentId, gone: boolean): void {
 		this._onBackendReplaced(agent, gone);
 	}
@@ -215,6 +334,9 @@ export class ChatTab {
 			this._chat.createdAt = Date.now();
 		}
 		this._textBreak = false;
+		this._failed = false;
+		this._unseen = false;
+		this._failuresBefore = failures(this._chat);
 		const entry: UserEntry = { kind: 'user', text, attachments: attachments.map(a => a.chip.label), at: Date.now() };
 		const running = this._session?.running ?? false;
 		if (!running) {
@@ -256,6 +378,12 @@ export class ChatTab {
 	}
 
 	private _post(): void {
+		const busy = this.busy;
+		if (this._wasBusy && !busy) {
+			this._unseen = true;
+			this._failed ||= failures(this._chat) > this._failuresBefore;
+		}
+		this._wasBusy = busy;
 		this._host.changed();
 	}
 
@@ -408,6 +536,24 @@ export class ChatTab {
 			case 'notice':
 				chat.entries.push({ kind: 'notice', text: event.text });
 				break;
+			case 'approval': {
+				const request = event.request;
+				// Answered by the toggle: no card, the tool's own row says what ran.
+				if (this._host.autoApprove() && autoApproved(request.what)) {
+					this._session?.answer(request.id, true);
+					return;
+				}
+				chat.entries.push({ kind: 'approval', id: request.id, what: request.what, title: request.title, detail: request.detail, status: 'pending' });
+				break;
+			}
+			case 'approvalDone': {
+				const entry = this._approval(event.id);
+				if (entry?.status !== 'pending') {
+					return;
+				}
+				entry.status = 'cancelled';
+				break;
+			}
 			case 'session':
 				chat.ref = event.id;
 				void this._save();
@@ -528,6 +674,7 @@ export class ChatTab {
 	}
 
 	private _dropSession(): void {
+		this._cancelApprovals();
 		this._sessionEvents?.dispose();
 		this._sessionEvents = undefined;
 		this._session?.dispose();
@@ -546,7 +693,10 @@ export class ChatTab {
 		if (!this._session || this._chat.agent !== agent) {
 			return;
 		}
+		// Cut off by something other than the user: marked like an error.
+		this._failed ||= this.busy;
 		this._endTurnHere();
+		this._cancelApprovals();
 		this._sessionEvents?.dispose();
 		this._sessionEvents = undefined;
 		this._session = undefined;
@@ -670,6 +820,9 @@ export function settled(entry: ChatEntry): ChatEntry {
 	}
 	if (entry.kind === 'thinking' && entry.endedAt === undefined) {
 		return { ...entry, endedAt: entry.startedAt };
+	}
+	if (entry.kind === 'approval' && entry.status === 'pending') {
+		return { ...entry, status: 'cancelled' };
 	}
 	return entry;
 }

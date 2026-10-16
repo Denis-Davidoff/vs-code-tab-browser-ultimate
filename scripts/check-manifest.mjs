@@ -108,14 +108,14 @@ for (const file of readdirSync(join(root, 'media', 'icons'))) {
  * stems lining up.
  */
 const grid = {
-	element: ['aiBrowser.copyElement', 'aiBrowser.addElementToClaudeCode', 'aiBrowser.addElementToCodex'],
-	cssPath: ['aiBrowser.copyElementCssPath', 'aiBrowser.addCssPathToClaudeCode', 'aiBrowser.addCssPathToCodex'],
-	cssLocation: ['aiBrowser.copyElementCssLocation', 'aiBrowser.addCssLocationToClaudeCode', 'aiBrowser.addCssLocationToCodex'],
-	xpath: ['aiBrowser.copyElementXPath', 'aiBrowser.addXPathToClaudeCode', 'aiBrowser.addXPathToCodex'],
+	element: ['aiBrowser.copyElement', 'aiBrowser.addElementToClaudeCode', 'aiBrowser.addElementToCodex', 'aiBrowser.chat.addElement'],
+	cssPath: ['aiBrowser.copyElementCssPath', 'aiBrowser.addCssPathToClaudeCode', 'aiBrowser.addCssPathToCodex', 'aiBrowser.chat.addCssPath'],
+	cssLocation: ['aiBrowser.copyElementCssLocation', 'aiBrowser.addCssLocationToClaudeCode', 'aiBrowser.addCssLocationToCodex', 'aiBrowser.chat.addCssLocation'],
+	xpath: ['aiBrowser.copyElementXPath', 'aiBrowser.addXPathToClaudeCode', 'aiBrowser.addXPathToCodex', 'aiBrowser.chat.addXPath'],
 };
 const stem = id => {
 	const icon = commands.get(id)?.icon;
-	const match = /crosshair-(\w+?)(?:-(claude|codex))?-dark\.svg$/.exec(icon?.dark ?? '');
+	const match = /crosshair-(\w+?)(?:-(claude|codex|chat))?-dark\.svg$/.exec(icon?.dark ?? '');
 	return match ? { dot: match[1], dest: match[2] ?? 'copy' } : undefined;
 };
 for (const [kind, ids] of Object.entries(grid)) {
@@ -127,8 +127,8 @@ for (const [kind, ids] of Object.entries(grid)) {
 	if (new Set(stems.map(s => s.dot)).size !== 1) {
 		problems.push(`${kind}: the centre dot differs across destinations`);
 	}
-	if (new Set(stems.map(s => s.dest)).size !== 3) {
-		problems.push(`${kind}: destinations are not copy/claude/codex`);
+	if (new Set(stems.map(s => s.dest)).size !== 4) {
+		problems.push(`${kind}: destinations are not copy/claude/codex/chat`);
 	}
 }
 
@@ -242,6 +242,10 @@ const twins = {
 	'aiBrowser.repeat.codex.cssPath': 'aiBrowser.addCssPathToCodex',
 	'aiBrowser.repeat.codex.cssLocation': 'aiBrowser.addCssLocationToCodex',
 	'aiBrowser.repeat.codex.xpath': 'aiBrowser.addXPathToCodex',
+	'aiBrowser.repeat.chat.element': 'aiBrowser.chat.addElement',
+	'aiBrowser.repeat.chat.cssPath': 'aiBrowser.chat.addCssPath',
+	'aiBrowser.repeat.chat.cssLocation': 'aiBrowser.chat.addCssLocation',
+	'aiBrowser.repeat.chat.xpath': 'aiBrowser.chat.addXPath',
 };
 for (const [delegate, twin] of Object.entries(twins)) {
 	if (!commands.has(delegate)) {

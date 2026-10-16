@@ -39,7 +39,7 @@
 export function plainInNotification(value: string, limit = 80): string {
 	const collapsed = value.replace(/\s+/g, ' ').trim();
 	const delinked = collapsed.replace(/[[\]]/g, '');
-	return delinked.length > limit ? `${delinked.slice(0, limit - 1)}…` : delinked;
+	return capAt(delinked, limit);
 }
 
 /**
@@ -70,7 +70,7 @@ export function plainInNotification(value: string, limit = 80): string {
 export function plainInPrompt(value: string, limit = 120): string {
 	const collapsed = value.replace(/\s+/g, ' ').trim();
 	const plain = collapsed.replace(/[[\]`]/g, '');
-	return plain.length > limit ? `${plain.slice(0, limit - 1)}…` : plain;
+	return capAt(plain, limit);
 }
 
 /**
@@ -93,7 +93,7 @@ export function plainInPrompt(value: string, limit = 120): string {
  */
 export function plainInMarkdown(value: string, limit = 120): string {
 	const collapsed = value.replace(/\s+/g, ' ').trim();
-	const capped = collapsed.length > limit ? `${collapsed.slice(0, limit - 1)}…` : collapsed;
+	const capped = capAt(collapsed, limit);
 	return capped.replace(/[!-/:-@[-`{-~]/g, char => `\\${char}`);
 }
 
@@ -109,6 +109,17 @@ export function plainInMarkdown(value: string, limit = 120): string {
  */
 export function plainInLabel(value: string, limit = 120): string {
 	const collapsed = value.replace(/\s+/g, ' ').trim();
-	const capped = collapsed.length > limit ? `${collapsed.slice(0, limit - 1)}…` : collapsed;
+	const capped = capAt(collapsed, limit);
 	return capped.replace(/\$\(/g, '$​(');
+}
+
+/**
+ * `value` cut to `limit` characters with an ellipsis — counted and cut by code
+ * point. Cut by UTF-16 unit, an emoji straddling the limit left half a
+ * surrogate pair, and a string holding one throws "URI malformed" the moment it
+ * goes into a `vscode.Uri` (a chat chip's name did).
+ */
+function capAt(value: string, limit: number): string {
+	const chars = Array.from(value);
+	return chars.length > limit ? `${chars.slice(0, Math.max(0, limit - 1)).join('')}…` : value;
 }

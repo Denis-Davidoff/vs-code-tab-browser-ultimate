@@ -906,6 +906,34 @@ export async function pickElementContext(tab: vscode.BrowserTab): Promise<string
 	return markdown;
 }
 
+/**
+ * Picks an element on `tab` for the AI Browser chat — the browser tab menu's
+ * "AI Browser Chat ▸" path entries: one of its paths, as the same report the
+ * assistants' Add entries hand over. (Its full context goes through
+ * `pickElementContext`, as the chat's own "+" does.) Answers the report and a
+ * short descriptor for the chip; `undefined` when the pick was cancelled or
+ * refused, which has been said by then.
+ */
+export async function pickForChat(tab: vscode.BrowserTab, kind: PathKind): Promise<{ text: string; descriptor: string } | undefined> {
+	let picked: { text: string; descriptor: string } | undefined;
+	const title = plainInLabel(tab.title.replace(` (${tab.url})`, '').trim(), 60);
+	const what = kind === 'css' ? vscode.l10n.t("its CSS path")
+		: kind === 'cssLocation' ? vscode.l10n.t("its CSS path and page address")
+			: vscode.l10n.t("its XPath");
+	await pickAndDeliver(
+		title
+			? vscode.l10n.t("Click an element in \"{0}\" to attach {1} to the chat", title, what)
+			: vscode.l10n.t("Click an element in the browser to attach {0} to the chat", what),
+		async (client, sessionId, backendNodeId, tab) => {
+			const built = await pathReportOf(client, sessionId, backendNodeId, tab, kind);
+			return built ? { text: built.report, descriptor: built.descriptor } : undefined;
+		},
+		async value => { picked = value; },
+		tab,
+	);
+	return picked;
+}
+
 /* ------------------------------------------------ handing a report to a chat */
 
 /**
@@ -1006,41 +1034,51 @@ function pathPickTitle(kind: PathKind, assistant: AssistantId): string {
 }
 
 export function addPathToAssistant(assistant: AssistantId, kind: PathKind): Promise<void> {
-	const declaration = kind === 'xpath' ? xpathFunctionDeclaration : cssPathFunctionDeclaration;
-
 	return pickAndDeliver(
 		pathPickTitle(kind, assistant),
 		async (client, sessionId, backendNodeId, tab) => {
-			const built = await buildPath(client, sessionId, backendNodeId, declaration,
-				kind === 'xpath' ? vscode.l10n.t("XPath") : vscode.l10n.t("CSS path"));
-			if (!built) {
-				return undefined;
-			}
-			// Every kind gets the element's own document, not the tab's URL —
-			// all three selectors are rooted in that document, so inside an
-			// iframe the tab's URL names a page none of them resolve against.
-			const location = await documentLocation(client, sessionId, backendNodeId, tab);
-			// Only `cssLocation` promises a self-contained "navigate, then find"
-			// pair, so only it refuses. `css` and `xpath` travel with prose that
-			// does not claim the URL is a navigation target.
-			if (kind === 'cssLocation') {
-				const refusal = locatorRefusal(location);
-				if (refusal) {
-					refuse(refusal);
-					return undefined;
-				}
-			}
-			const { url, embeddedIn } = location;
-			const path = kind === 'cssLocation' ? withLocation(built, url) : built;
-			// The descriptor needs the element itself, which the path does not
-			// carry — one extra round trip, worth it for a readable file name.
-			const data = await extractElementData(client, sessionId, backendNodeId);
-			const descriptor = describeElement(data.ancestors);
-			return {
-				report: formatPathReport(descriptor, kind, path, url, embeddedIn),
-				fileName: reportFileName(kind, descriptor),
-			};
+			const built = await pathReportOf(client, sessionId, backendNodeId, tab, kind);
+			return built ? { report: built.report, fileName: reportFileName(kind, built.descriptor) } : undefined;
 		},
 		({ report, fileName }) => deliverToAssistant(assistant, report, fileName),
 	);
+}
+
+/**
+ * The report for one of the element's paths, as the assistants and the chat
+ * are handed it, with the element's descriptor; `undefined` when the path
+ * cannot be promised, which has been said. The path and its refusals come
+ * first, the element's data last, as before this was shared: a page that fails
+ * the data read must still get the path's refusal in the status bar, not an
+ * error toast.
+ */
+async function pathReportOf(
+	client: CDPClient, sessionId: string, backendNodeId: number, tab: vscode.BrowserTab, kind: PathKind,
+): Promise<{ report: string; descriptor: string } | undefined> {
+	const declaration = kind === 'xpath' ? xpathFunctionDeclaration : cssPathFunctionDeclaration;
+	const built = await buildPath(client, sessionId, backendNodeId, declaration,
+		kind === 'xpath' ? vscode.l10n.t("XPath") : vscode.l10n.t("CSS path"));
+	if (!built) {
+		return undefined;
+	}
+	// Every kind gets the element's own document, not the tab's URL — all three
+	// selectors are rooted in that document, so inside an iframe the tab's URL
+	// names a page none of them resolve against.
+	const location = await documentLocation(client, sessionId, backendNodeId, tab);
+	// Only `cssLocation` promises a self-contained "navigate, then find" pair,
+	// so only it refuses. `css` and `xpath` travel with prose that does not
+	// claim the URL is a navigation target.
+	if (kind === 'cssLocation') {
+		const refusal = locatorRefusal(location);
+		if (refusal) {
+			refuse(refusal);
+			return undefined;
+		}
+	}
+	const { url, embeddedIn } = location;
+	const path = kind === 'cssLocation' ? withLocation(built, url) : built;
+	// The descriptor needs the element itself, which the path does not carry —
+	// one extra round trip, worth it for a readable heading and file name.
+	const descriptor = describeElement((await extractElementData(client, sessionId, backendNodeId)).ancestors);
+	return { report: formatPathReport(descriptor, kind, path, url, embeddedIn), descriptor };
 }

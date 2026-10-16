@@ -6,17 +6,19 @@
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { AgentRegistry, agentNames } from './agents';
+import { AgentRegistry, agentNames, type BrowserServer } from './agents';
+import { sweepBrowserConfigs } from './claudeAgent';
 import { bundledPin } from './agentBinary';
 import { ChatTab, newChat, reopened, started, storedEntries, storedTextLimit, type Attachment, type StoredChat, type TabHost } from './chatTab';
 import { chatTranscript, transcriptFileName } from './transcript';
 import { writeChatTranscript } from '../elements/assistants';
+import { savePng } from '../browser/clipboardImage';
 import type { BrowserController } from '../browser/browserController';
 import type {
 	AgentId, AgentUsage, AttachmentKind, ChatSummary,
 	ChatNews, ChatTabSummary, ChatViewState, HostToView, Selection, UsageWindow, ViewToHost,
 } from './chatProtocol';
-import { pickElementContext } from '../elements/elementPicker';
+import { pickElementContext, pickForChat } from '../elements/elementPicker';
 import { parseNews } from './news';
 import { refuse } from '../core/notify';
 import { plainInLabel, plainInPrompt } from '../core/notifyText';
@@ -52,12 +54,48 @@ export const chatViewId = 'aiBrowser.chat';
  * container: **a view whose container the host does not know is not dropped,
  * it is moved into Explorer** ("View container '…' does not exist and all views
  * registered to it will be added to 'Explorer'"). So the view carries
- * `when: !aiBrowser.chatUnsupported`, and the three chat commands are hidden
+ * `when: !aiBrowser.chatUnsupported`, and the chat's commands are hidden
  * from the palette by the same key — on those hosts `aiBrowser.chat.focus` does
  * not exist and every one of them would fail. Claude Code and Codex gate their
  * secondary side bar views on the same version.
  */
 export const chatUnsupportedContextKey = 'aiBrowser.chatUnsupported';
+
+/**
+ * Set while the chat cannot run in this window — Restricted Mode or a remote
+ * window (`chatBlocked`) — and cleared when the folder is trusted. The chat's
+ * entries in the browser tab menu and its repeat buttons are gated on it, so a
+ * remembered "Add … to AI Browser Chat" falls back to its Copy twin there
+ * rather than refusing on every press (#223's shape).
+ */
+export const chatBlockedContextKey = 'aiBrowser.chatBlocked';
+
+/**
+ * Why the chat cannot run in this window at all, or `undefined`.
+ *
+ * - **VS Code before 1.106.** The view is hidden there by a context key, but a
+ *   key is set at activation and the view can resolve first; this keeps any CLI
+ *   from starting there regardless of which lands first.
+ * - **Restricted Mode.** Both CLIs load the project's own configuration —
+ *   Claude Code runs `.claude/settings.json` hooks, which are shell commands —
+ *   so starting one in a folder the user has not trusted runs that folder's
+ *   code. The same reasoning as Connect Codex and `git` (breaks-silently #208).
+ * - **A remote window.** This extension runs on the local machine there, and
+ *   the CLIs and the project are on the remote, so a CLI started here would
+ *   work on the wrong machine.
+ */
+export function chatBlocked(): string | undefined {
+	if (!supportsSecondarySidebar(vscode.version)) {
+		return vscode.l10n.t("The chat needs VS Code 1.106 or later.");
+	}
+	if (!vscode.workspace.isTrusted) {
+		return vscode.l10n.t("The chat is not available in Restricted Mode: Claude Code and Codex load this folder's own configuration, which can run commands. Trust the folder to use it.");
+	}
+	if (workspaceIsRemoteFromHost()) {
+		return vscode.l10n.t("The chat is not available in a remote window yet: AI Browser runs on this machine, while the project is on the remote one.");
+	}
+	return undefined;
+}
 
 /** Whether this VS Code takes a `secondarySidebar` view container: 1.106 or later. */
 export function supportsSecondarySidebar(version: string): boolean {
@@ -76,15 +114,35 @@ const inputHistoryLimit = 100;
  * `workspaceState`, which only this UI writes — a repository cannot set it.
  */
 const agentBinariesKey = 'aiBrowser.chat.agentBinaries';
+/** The composer's auto-approve toggle, per workspace: a project is what a user trusts with commands. */
+const autoApproveKey = 'aiBrowser.chat.autoApprove';
 /** The chats open as tabs, by chat id, and the one in front; restored with the window. */
 const openTabsKey = 'aiBrowser.chat.openTabs';
 /**
- * At most this many tabs. Each Claude Code tab is a `claude` process of its own
- * (a Codex tab is only a thread of the one app-server), and tabs working at
- * once spend the plan's limits at once.
+ * At most this many tabs, `aiBrowser.chat.tabLimit`: 5 unless set, 30 at most.
+ * Each Claude Code tab is a `claude` process of its own (a Codex tab is only a
+ * thread of the one app-server), and tabs working at once spend the plan's
+ * limits at once — which is why there is a ceiling at all.
  */
-export const tabLimit = 5;
+export const defaultTabLimit = 5;
+export const maxTabLimit = 30;
+const tabLimitSetting = 'aiBrowser.chat.tabLimit';
+
+/** The setting as a whole number in range; anything else is the default (#184's rule). */
+export function tabLimit(): number {
+	const value = vscode.workspace.getConfiguration().get<unknown>(tabLimitSetting);
+	return typeof value === 'number' && Number.isInteger(value) && value >= 1
+		? Math.min(value, maxTabLimit)
+		: defaultTabLimit;
+}
 const historyLimit = 50;
+/**
+ * The scheme a composer chip's text opens under: a read-only document, which
+ * an untitled one is not — closing it would ask to save what was only shown.
+ */
+const attachmentScheme = 'ai-browser-attachment';
+/** Texts and images of chips opened recently, by chip id; a chip's content never changes. */
+const openedAttachmentLimit = 30;
 /** A conversation handed over in the message itself, with no folder to write it to: its newest part. */
 const transcriptInlineLimit = 60_000;
 const postDelayMs = 40;
@@ -109,29 +167,51 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private _tabsSaved = '';
 	/** NEWS.md from the installed extension, read once; see `news.ts`. */
 	private _news: ChatNews | undefined;
+	private readonly _attachmentTexts = new Map<string, string>();
+	private readonly _attachmentImages = new Map<string, vscode.Uri>();
 	private readonly _tabHost: TabHost = {
 		cwd: () => this._cwd(),
 		changed: () => this._post(),
 		limits: (agent, windows) => { this._limits.set(agent, windows); },
 		save: chat => this._save(chat),
 		inHistory: id => this._history().some(c => c.id === id),
+		autoApprove: () => this._autoApprove(),
 	};
 	private _remembered: RememberedSelection;
 	private readonly _limits = new Map<AgentId, readonly UsageWindow[]>();
 	private _postTimer: ReturnType<typeof setTimeout> | undefined;
 	private readonly _subscriptions: vscode.Disposable[] = [];
 
+	/**
+	 * `browserServer`: the extension's MCP server while it runs, handed to every
+	 * CLI the chat starts so the agents have the browser tools without Connect.
+	 */
 	constructor(
 		private readonly _context: vscode.ExtensionContext,
 		private readonly _browser: BrowserController,
+		browserServer: () => BrowserServer | undefined = () => undefined,
 	) {
-		this._registry = new AgentRegistry(() => this._cwd(), id => this._agentBinaries()[id]);
+		this._registry = new AgentRegistry(() => this._cwd(), id => this._agentBinaries()[id], browserServer);
+		void sweepBrowserConfigs().catch(() => { /* swept with the temp directory */ });
 		this._subscriptions.push(this._registry, this._registry.onDidChange(() => this._post()));
 		this._remembered = _context.globalState.get<RememberedSelection>(selectionKey) ?? { models: {}, efforts: {} };
 		this._restoreTabs();
 		void this._readNews();
 
 		this._subscriptions.push(this._registry.onDidReplace(e => this._onBackendReplaced(e.agent, e.gone)));
+		// A lower limit closes nothing: the tabs open stay, and "+" comes back
+		// once enough of them are closed.
+		this._subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration(tabLimitSetting)) {
+				this._post();
+			}
+		}));
+		this._subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(attachmentScheme, {
+			// An editor restored after a reload asks for a chip this window never
+			// held, and gets a sentence rather than an empty page.
+			provideTextDocumentContent: uri => this._attachmentTexts.get(uri.query)
+				?? vscode.l10n.t("This attachment was shown in an earlier session and is no longer available. Attach it again to see it."),
+		}));
 		// Trust granted while the view was showing its Restricted Mode notice:
 		// detection never ran, so run it now rather than wait for a Refresh.
 		this._subscriptions.push(vscode.workspace.onDidGrantWorkspaceTrust(() => {
@@ -172,6 +252,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}
 	}
 
+	private _autoApprove(): boolean {
+		return this._context.workspaceState.get<boolean>(autoApproveKey) === true;
+	}
+
 	private _newsHidden(): boolean {
 		const hiddenAt = this._context.globalState.get<string>(newsHiddenKey);
 		return hiddenAt !== undefined && hiddenAt === (this._news?.entries[0]?.title ?? '');
@@ -188,6 +272,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		view.webview.onDidReceiveMessage((message: ViewToHost) => {
 			this._receive(message).catch(err => this._fail(err));
 		}, undefined, this._subscriptions);
+		// Shown again: the tab in front is read now, not at its next change.
+		view.onDidChangeVisibility(() => this._post(), undefined, this._subscriptions);
 		view.onDidDispose(() => {
 			if (this._view === view) {
 				this._view = undefined;
@@ -257,6 +343,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	private _state(): ChatViewState {
+		// Whatever the tab in front finished is read once the view shows it. A
+		// view in another side bar container, or collapsed, is not looked at.
+		if (this._view?.visible) {
+			this._active.seen();
+		}
+		const limit = tabLimit();
 		return {
 			blocked: this._blocked(),
 			detecting: this._registry.detecting,
@@ -274,9 +366,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				running: tab.running,
 				agents: tab.agentsRunning,
 				busy: tab.busy,
+				status: tab.status,
 			})),
 			activeTab: this._active.id,
-			tabLimit,
+			tabLimit: limit,
+			autoApprove: this._autoApprove(),
 			switchTo: this._switchTo,
 			hasBrowserTab: this._browser.hasOpenTabs,
 			browserApi: isBrowserApiGranted(),
@@ -298,19 +392,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 *   work on the wrong machine.
 	 */
 	private _blocked(): string | undefined {
-		// The view is hidden below 1.106 by a context key, but a key is set at
-		// activation and the view can resolve first; this keeps any CLI from
-		// starting there regardless of which lands first.
-		if (!supportsSecondarySidebar(vscode.version)) {
-			return vscode.l10n.t("The chat needs VS Code 1.106 or later.");
-		}
-		if (!vscode.workspace.isTrusted) {
-			return vscode.l10n.t("The chat is not available in Restricted Mode: Claude Code and Codex load this folder's own configuration, which can run commands. Trust the folder to use it.");
-		}
-		if (workspaceIsRemoteFromHost()) {
-			return vscode.l10n.t("The chat is not available in a remote window yet: AI Browser runs on this machine, while the project is on the remote one.");
-		}
-		return undefined;
+		return chatBlocked();
 	}
 
 	/* ------------------------------------------------------------ messages */
@@ -342,6 +424,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				return;
 			case 'stop':
 				this._active.stop();
+				return;
+			case 'openAttachment':
+				await this._openAttachment(message.id);
+				return;
+			case 'approve':
+				// The card is in whichever tab holds it; an id is unique to its question.
+				for (const tab of this._tabs) {
+					tab.answer(message.id, message.allow);
+				}
+				return;
+			case 'setAutoApprove':
+				await this._context.workspaceState.update(autoApproveKey, message.on === true).then(undefined, () => { /* a convenience */ });
+				for (const tab of this._tabs) {
+					tab.autoApproveChanged();
+				}
+				this._post();
 				return;
 			case 'stopAgent':
 				if (!await this._active.stopAgent(message.id)) {
@@ -566,7 +664,64 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}
 	}
 
-	private async _makeAttachment(kind: AttachmentKind): Promise<Attachment | undefined> {
+	/**
+	 * The browser tab menu's "AI Browser Chat ▸": something from the page in
+	 * front, attached to the chat tab in front, and the chat shown. The page is
+	 * the one whose menu it was — focused by construction — and the pick, which
+	 * waits for a click there, comes before the chat is revealed.
+	 */
+	public async addFromBrowser(what: 'element' | 'cssPath' | 'cssLocation' | 'xpath' | 'screenshot' | 'page'): Promise<void> {
+		const blocked = this._blocked();
+		if (blocked) {
+			refuse(blocked);
+			return;
+		}
+		const tab = this._active;
+		const page = this._browser.focusedTab ?? this._browser.userTab;
+		let attachment: Attachment | undefined;
+		try {
+			attachment = await this._fromBrowser(what, page);
+		} catch (err) {
+			// A capture can fail — the tab closing, the page not answering — and
+			// a command that throws gets VS Code's own error toast, over the page
+			// just captured (#10). From the chat's "+" the same failure lands in the
+			// chat; from the tab's menu it goes to the status bar.
+			refuse(vscode.l10n.t("Could not attach from the page: {0}", plainInLabel(err instanceof Error ? err.message : String(err), 120)));
+			return;
+		}
+		if (!attachment) {
+			return;
+		}
+		// The chat tab it was asked from, or the one in front if that one closed meanwhile.
+		(this._tabs.includes(tab) ? tab : this._active).attachments.push(attachment);
+		this._post();
+		await vscode.commands.executeCommand(`${chatViewId}.focus`);
+		this._postMessage({ type: 'focusInput' });
+	}
+
+	/** What `addFromBrowser` attaches; may throw — a capture can fail — which the caller reports. */
+	private async _fromBrowser(what: 'element' | 'cssPath' | 'cssLocation' | 'xpath' | 'screenshot' | 'page', page: vscode.BrowserTab | undefined): Promise<Attachment | undefined> {
+		if (what === 'cssPath' || what === 'cssLocation' || what === 'xpath') {
+			if (!isBrowserApiGranted() || !page) {
+				return this._makeAttachment('element', page);
+			} else if (!onScreen(page, this._browser.focusedTab)) {
+				// From the palette with a file in front, the page can be covered, and a
+				// pick there waits for a click the user cannot make (#355).
+				refuse(vscode.l10n.t("\"{0}\" is not on screen — bring its tab to the front, then attach.", plainInLabel(pageTitle(page.title, page.url), 60)));
+			} else {
+				const picked = await pickForChat(page, what === 'cssPath' ? 'css' : what);
+				if (picked) {
+					const kindLabel = what === 'xpath' ? vscode.l10n.t("XPath") : what === 'cssPath' ? vscode.l10n.t("CSS path") : vscode.l10n.t("CSS path + location");
+					return { chip: { id: generateUuid(), kind: 'element', label: plainInPrompt(`${kindLabel} · ${picked.descriptor}`, 50) }, text: picked.text };
+				}
+			}
+			return undefined;
+		}
+		return this._makeAttachment(what, page);
+	}
+
+	/** `page`: the browser tab to attach from; the one the user last had in front when absent. */
+	private async _makeAttachment(kind: AttachmentKind, page?: vscode.BrowserTab): Promise<Attachment | undefined> {
 		const id = generateUuid();
 		if (kind === 'file') {
 			const picked = await vscode.window.showOpenDialog({
@@ -581,7 +736,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			const shown = vscode.workspace.asRelativePath(file, false);
 			// The path, not the contents: both agents read files themselves, and
 			// a large file pasted into the prompt would cost the whole context.
-			return { chip: { id, kind, label: path.basename(file.fsPath) }, text: `Attached file: ${file.fsPath}${shown !== file.fsPath ? ` (${shown} in the workspace)` : ''}` };
+			return { chip: { id, kind, label: path.basename(file.fsPath) }, file, text: `Attached file: ${file.fsPath}${shown !== file.fsPath ? ` (${shown} in the workspace)` : ''}` };
 		}
 
 		// Two refusals, because the fixes are unrelated (Recipe, step 3): without
@@ -590,7 +745,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			refuse(vscode.l10n.t("Browser API not enabled — click \"Enable Browser API\" in the status bar."));
 			return undefined;
 		}
-		const tab = this._browser.userTab;
+		const tab = page ?? this._browser.userTab;
 		if (!tab) {
 			refuse(this._browser.hasOpenTabs
 				? vscode.l10n.t("Several browser tabs are open — click into the one to attach from, then try again.")
@@ -634,6 +789,52 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				const heading = /^Element:\s*(.+)$/m.exec(markdown)?.[1]?.trim();
 				return { chip: { id, kind, label: heading ? plainInPrompt(heading, 40) : vscode.l10n.t("Element") }, text: markdown };
 			}
+		}
+	}
+
+	/**
+	 * A composer chip clicked: what it attaches, in an editor tab — the file
+	 * itself; a screenshot as an image, written beside the screenshots; an
+	 * element, a page address or a handed-over conversation as a read-only text.
+	 * A tab of the active group, among the other editors, as a preview so the
+	 * next chip reuses it. `Beside` was the first version and split the editor
+	 * area into a new group on every first click, which read as a separate window.
+	 */
+	private async _openAttachment(id: string): Promise<void> {
+		const attachment = this._active.attachments.find(a => a.chip.id === id);
+		if (!attachment) {
+			return;
+		}
+		const options: vscode.TextDocumentShowOptions = { preview: true, viewColumn: vscode.ViewColumn.Active };
+		try {
+			if (attachment.file) {
+				await vscode.commands.executeCommand('vscode.open', attachment.file, options);
+				return;
+			}
+			if (attachment.image) {
+				let uri = this._attachmentImages.get(id);
+				// The screenshots directory is swept after a day, so a chip kept that
+				// long has lost its file: written again rather than opened missing.
+				if (uri && !await vscode.workspace.fs.stat(uri).then(() => true, () => false)) {
+					uri = undefined;
+				}
+				if (!uri) {
+					uri = await savePng(Buffer.from(attachment.image.base64, 'base64'), `attachment-${fileSafe(attachment.chip.label)}.png`);
+					remember(this._attachmentImages, id, uri);
+				}
+				await vscode.commands.executeCommand('vscode.open', uri, options);
+				return;
+			}
+			if (attachment.text) {
+				remember(this._attachmentTexts, id, attachment.text);
+				// Plain text, not Markdown: the text is page-written — an element's id, a
+				// page title — and a Markdown editor turns `[x](command:…)` in it into a
+				// link that runs a command on Cmd+click, the sink of #124 and #132.
+				const uri = vscode.Uri.from({ scheme: attachmentScheme, path: `/${fileSafe(attachment.chip.label)}.txt`, query: id });
+				await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri), options);
+			}
+		} catch (err) {
+			refuse(vscode.l10n.t("Could not open the attachment: {0}", err instanceof Error ? err.message : String(err)));
 		}
 	}
 
@@ -734,7 +935,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		const history = this._history();
 		for (const id of strings(saved?.ids)) {
 			const stored = history.find(c => c.id === id);
-			if (this._tabs.length >= tabLimit) {
+			if (this._tabs.length >= tabLimit()) {
 				break;
 			}
 			if (stored) {
@@ -770,10 +971,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		this._context.workspaceState.update(openTabsKey, value).then(undefined, () => { /* a convenience */ });
 	}
 
-	/** A new tab beside the one in front, and in front; refused past `tabLimit`. */
+	/** A new tab beside the one in front, and in front; refused past `tabLimit()`. */
 	private _addTab(agent: AgentId): ChatTab | undefined {
-		if (this._tabs.length >= tabLimit) {
-			refuse(vscode.l10n.t("{0} chats are open — close one to open another.", tabLimit));
+		if (this._tabs.length >= tabLimit()) {
+			refuse(vscode.l10n.t("{0} chats are open — close one to open another.", this._tabs.length));
 			return undefined;
 		}
 		const tab = new ChatTab(this._tabHost, newChat(agent));
@@ -857,8 +1058,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				this._postMessage({ type: 'focusInput' });
 				return;
 			case 'continue': {
-				if (this._tabs.length >= tabLimit) {
-					refuse(vscode.l10n.t("{0} chats are open — close one to open another.", tabLimit));
+				if (this._tabs.length >= tabLimit()) {
+					refuse(vscode.l10n.t("{0} chats are open — close one to open another.", this._tabs.length));
 					this._post();
 					return;
 				}
@@ -878,6 +1079,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				}
 				const attachment: Attachment = {
 					chip: { id: generateUuid(), kind: 'file', label: vscode.l10n.t("Conversation with {0}", agentNames[chat.agent]) },
+					file: file ? vscode.Uri.file(file) : undefined,
 					text: file
 						? `The user is moving a conversation they had with ${agentNames[chat.agent]} over to you. It is in ${file}: read it first, then carry on from where it left off.`
 						// No folder to put a file in: the conversation itself, capped.
@@ -980,5 +1182,22 @@ function onScreen(tab: vscode.BrowserTab, focused: vscode.BrowserTab | undefined
 		return vscode.window.tabGroups.all.some(group => group.activeTab !== undefined && group.activeTab.input === undefined);
 	} catch {
 		return true;
+	}
+}
+
+/** A chip's label as a file name: page titles can hold anything. */
+function fileSafe(label: string): string {
+	// Cut by code point, and no half of a surrogate pair left anywhere: one in a
+	// `vscode.Uri` throws "URI malformed", and the chip could not be opened.
+	const clean = label.replace(/[\\/:*?"<>|#\x00-\x1f]+/g, '-').replace(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, '').replace(/\s+/g, ' ').trim();
+	return Array.from(clean).slice(0, 60).join('') || 'attachment';
+}
+
+/** Keeps `value` under `key`, dropping the oldest past `openedAttachmentLimit`. */
+function remember<T>(map: Map<string, T>, key: string, value: T): void {
+	map.delete(key);
+	map.set(key, value);
+	while (map.size > openedAttachmentLimit) {
+		map.delete(map.keys().next().value!);
 	}
 }

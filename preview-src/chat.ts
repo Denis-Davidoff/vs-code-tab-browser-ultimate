@@ -24,7 +24,7 @@
  */
 
 import type {
-	AgentUsage, AttachmentKind, ChatEntry, ChatStats, ChatSummary, ChatViewState, HostToView, ToolEntry, ViewToHost,
+	AgentUsage, ApprovalEntry, ApprovalKind, AttachmentKind, ChatEntry, ChatStats, ChatSummary, ChatTabStatus, ChatViewState, HostToView, ToolEntry, ViewToHost,
 } from '../src/chat/chatProtocol';
 
 interface ViewState {
@@ -123,11 +123,13 @@ const effortBox = el('label', { class: 'effort', title: 'Effort' }, effortRange,
 const usageButton = button([el('span', { text: 'U' })], { class: 'ghost round usage-button', title: 'Usage' });
 const agentsButton = button([], { class: 'pill agents-button', title: 'Agents' });
 const sendButton = button([icon('arrow-up')], { class: 'send', title: 'Send' });
+/** Ask before terminal commands and browser tools, or let them run: one switch for every tab. */
+const approveToggle = button([], { class: 'pill approve-toggle' });
 
 // The right-hand buttons (agents, usage, send) are one group pushed to the end,
 // so a narrow side bar wraps them together onto the next line, still at the right.
 const toolbar = el('div', { class: 'toolbar' },
-	plusButton, browserButton, agentPill, modelPill, effortBox, el('span', { class: 'toolbar-end' }, agentsButton, usageButton, sendButton));
+	plusButton, browserButton, agentPill, modelPill, effortBox, approveToggle, el('span', { class: 'toolbar-end' }, agentsButton, usageButton, sendButton));
 const composer = el('div', { class: 'composer' }, attachmentsRow, input, toolbar);
 /** Asked when another agent is picked for a conversation that has started. */
 const switchCard = el('div', { class: 'switch-card' });
@@ -266,6 +268,7 @@ function render(): void {
 	renderThread(state);
 	renderAttachments(state);
 	renderSelectors(state);
+	renderApproveToggle(state);
 	renderSend();
 	renderAgents(state);
 	if (agentAppsPanel.classList.contains('open')) {
@@ -277,10 +280,11 @@ function render(): void {
 
 /**
  * One tab per open conversation. A tab that is not in front goes on working —
- * its dot blinks while it answers, and it counts its agents — and closing one
+ * its mark says how it is doing, and it counts its agents — and closing one
  * that is working stops it, so that asks first, here in the strip. Rebuilt only
  * when what it shows changes: a rebuild between a press and its release loses
- * the click.
+ * the click. "+" is not there at all once the tabs reach the limit (asked for:
+ * a disabled button read as broken), and comes back when one is closed.
  */
 let tabsShown = '';
 /** The tab whose close is being confirmed. */
@@ -299,7 +303,7 @@ function renderTabs(s: ChatViewState): void {
 	const tabs = s.tabs.map(t => {
 		const agent = t.agent ? s.agents.find(a => a.id === t.agent)?.name ?? t.agent : undefined;
 		const label = button([
-			t.running ? el('span', { class: 'tab-dot' }) : undefined,
+			tabMark(t.status),
 			el('span', { class: 'tab-title', text: t.title }),
 			t.agents ? el('span', { class: 'tab-agents', text: String(t.agents), title: `${t.agents} agent${t.agents === 1 ? '' : 's'} working` }) : undefined,
 		], { class: 'tab-label', title: agent ? `${t.title} — ${agent}` : t.title });
@@ -316,9 +320,8 @@ function renderTabs(s: ChatViewState): void {
 		});
 		return el('div', { class: `tab${t.id === s.activeTab ? ' active' : ''}${t.running ? ' running' : ''}` }, label, close);
 	});
-	const add = button([icon('add')], { class: 'ghost round tab-add', title: full ? `${s.tabLimit} chats are open — close one to open another` : 'New chat' });
-	add.disabled = full;
-	add.addEventListener('click', () => post({ type: 'newTab' }));
+	const add = full ? undefined : button([icon('add')], { class: 'ghost round tab-add', title: 'New chat' });
+	add?.addEventListener('click', () => post({ type: 'newTab' }));
 	const row = el('div', { class: 'tab-row' }, ...tabs, add);
 	const nodes: HTMLElement[] = [row];
 	const closing = closingTab ? s.tabs.find(t => t.id === closingTab) : undefined;
@@ -339,6 +342,33 @@ function renderTabs(s: ChatViewState): void {
 	}
 	tabStrip.replaceChildren(...nodes);
 	row.querySelector('.tab.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}
+
+/**
+ * The mark in front of a tab's title: the working star while it works (the
+ * glyph of the working line, turned by the same timer), a green dot for work
+ * finished out of sight, an orange one for work that ended in an error, a grey
+ * square for finished and read. Nothing before the first message. A tab whose
+ * agent waits for an approval shows a pulsing ring instead of the star: the
+ * work is stopped on the user, and the tab may not be the one in front.
+ */
+const tabMarks: Record<ChatTabStatus, string> = {
+	waiting: 'Waiting for your answer',
+	working: 'Working',
+	unread: 'Finished — not read yet',
+	failed: 'Ended with an error',
+	read: 'Finished',
+};
+
+function tabMark(status: ChatTabStatus | undefined): HTMLElement | undefined {
+	if (!status) {
+		return undefined;
+	}
+	return el('span', {
+		class: `tab-mark ${status}`,
+		title: tabMarks[status],
+		text: status === 'working' ? glyphs[glyphAt] : undefined,
+	});
 }
 
 /* ---------------------------------------------------------------- switching agents */
@@ -372,7 +402,7 @@ function renderSwitch(s: ChatViewState): void {
 		b.addEventListener('click', () => post({ type: 'switchAgent', choice }));
 		return b;
 	};
-	const fullNote = `${s.tabLimit} chats are open — close one first.`;
+	const fullNote = `${s.tabs.length} chats are open — close one first.`;
 	const stops = tab.busy
 		? `This chat is still working; its reply${tab.agents ? ` and ${tab.agents} agent${tab.agents === 1 ? '' : 's'}` : ''} will be stopped.`
 		: 'This chat closes and stays in the history.';
@@ -425,6 +455,9 @@ let turnNodes: { root: HTMLElement; rows: HTMLElement; tail: HTMLElement }[] = [
 const spacer = el('div', { class: 'spacer' });
 let workingNode: HTMLElement | undefined;
 
+/** What the welcome was built from; see the empty-chat branch of `renderThread`. */
+let welcomeShown = '';
+
 function renderThread(s: ChatViewState): void {
 	const atBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 60;
 	let stick = atBottom;
@@ -459,12 +492,20 @@ function renderThread(s: ChatViewState): void {
 
 	if (!s.entries.length) {
 		// No spacer here: an empty chat centres its welcome in the panel rather
-		// than anchoring it to the bottom like a conversation.
-		threadInner.replaceChildren(welcome(s));
+		// than anchoring it to the bottom like a conversation. Rebuilt only when
+		// what it shows changes: another tab streaming posts the state every
+		// 40 ms, and each rebuild restarted the welcome's fade-in — the
+		// changelog blinked while a different tab was thinking.
+		const shown = JSON.stringify([s.news, s.newsHidden, s.detecting, s.agents.map(a => [a.name, a.available, a.problem])]);
+		if (shown !== welcomeShown || !threadInner.querySelector('.welcome')) {
+			welcomeShown = shown;
+			threadInner.replaceChildren(welcome(s));
+		}
 		rendered = [];
 		turnNodes = [];
 		return;
 	}
+	welcomeShown = '';
 	threadInner.querySelector('.welcome')?.remove();
 
 	const turns = turnsOf(s.entries);
@@ -516,7 +557,7 @@ function signature(entry: ChatEntry, i: number): string {
 }
 
 function keyOf(entry: ChatEntry, i: number): string {
-	return entry.kind === 'tool' ? `tool:${entry.id}` : `${entry.kind}:${i}`;
+	return entry.kind === 'tool' ? `tool:${entry.id}` : entry.kind === 'approval' ? `approval:${entry.id}` : `${entry.kind}:${i}`;
 }
 
 /** The line under a turn: the live "Working…" while it runs, "Worked for …" once it is done. */
@@ -618,13 +659,16 @@ const glyphs = ['·', '✢', '✳', '✶', '✻', '✽', '✻', '✶', '✳', '�
 let glyphAt = 0;
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 setInterval(() => {
-	if (!workingNode || reducedMotion.matches) {
+	if (reducedMotion.matches || (!workingNode && !tabStrip.querySelector('.tab-mark.working'))) {
 		return;
 	}
 	glyphAt = (glyphAt + 1) % glyphs.length;
-	const glyph = workingNode.querySelector('.working-glyph');
+	const glyph = workingNode?.querySelector('.working-glyph');
 	if (glyph) {
 		glyph.textContent = glyphs[glyphAt];
+	}
+	for (const mark of tabStrip.querySelectorAll('.tab-mark.working')) {
+		mark.textContent = glyphs[glyphAt];
 	}
 }, 120);
 
@@ -685,12 +729,90 @@ function entryNode(entry: ChatEntry, i: number): HTMLElement {
 			return thinkingNode(entry, i);
 		case 'tool':
 			return toolNode(entry);
+		case 'approval':
+			return approvalNode(entry);
 		case 'notice':
 			return el('div', { class: 'row notice' }, icon('info'), el('span', { text: entry.text }));
 		case 'error':
 			return el('div', { class: 'row error' }, icon('error'), el('span', { text: entry.text }));
 	}
 }
+
+const approvalLabels: Record<ApprovalKind, { icon: string; ask: string }> = {
+	command: { icon: 'terminal', ask: 'Run this command?' },
+	browser: { icon: 'globe', ask: 'Use the browser?' },
+	edit: { icon: 'edit', ask: 'Change this file?' },
+	other: { icon: 'tools', ask: 'Use this tool?' },
+};
+
+const approvalOutcomes: Record<Exclude<ApprovalEntry['status'], 'pending'>, string> = {
+	allowed: 'Allowed',
+	denied: 'Denied',
+	cancelled: 'No longer needed',
+};
+
+/**
+ * An agent asking before it uses a tool. Answered here, never in a modal (a
+ * dialog pauses the browser). "Allow all" also switches the composer's toggle
+ * on, so the same kind of question does not come back; it is offered only for
+ * what the toggle covers — terminal commands and browser tools.
+ */
+function approvalNode(entry: ApprovalEntry): HTMLElement {
+	const label = approvalLabels[entry.what];
+	const node = el('div', { class: `row approval ${entry.status}` },
+		el('div', { class: 'approval-head' }, icon(label.icon), el('span', { text: label.ask })),
+		el('div', { class: 'approval-title', text: entry.title }));
+	if (entry.detail) {
+		node.append(el('div', { class: 'approval-detail', text: entry.detail }));
+	}
+	if (entry.status !== 'pending') {
+		node.append(el('div', { class: 'approval-outcome', text: entry.auto ? `${approvalOutcomes[entry.status]} automatically` : approvalOutcomes[entry.status] }));
+		return node;
+	}
+	const answer = (allow: boolean) => {
+		for (const b of node.querySelectorAll('button')) {
+			b.disabled = true;
+		}
+		post({ type: 'approve', id: entry.id, allow });
+	};
+	const allow = button([el('span', { text: 'Allow' })], { class: 'approval-allow' });
+	allow.addEventListener('click', () => answer(true));
+	const deny = button([el('span', { text: 'Deny' })], { class: 'approval-deny' });
+	deny.addEventListener('click', () => answer(false));
+	const actions = el('div', { class: 'approval-actions' }, allow, deny);
+	if (entry.what === 'command' || entry.what === 'browser') {
+		const all = button([el('span', { text: 'Allow all' })], {
+			class: 'approval-all',
+			title: 'Allow this, and run terminal commands and browser actions without asking from now on — the toggle beside the model switches it back',
+		});
+		all.addEventListener('click', () => {
+			post({ type: 'setAutoApprove', on: true });
+			answer(true);
+		});
+		actions.append(all);
+	}
+	node.append(actions);
+	return node;
+}
+
+/** The toggle in the composer: "Ask" asks before terminal commands and browser tools, "Auto" lets them run. */
+function renderApproveToggle(s: ChatViewState): void {
+	const on = s.autoApprove;
+	if (approveToggle.dataset.on === String(on)) {
+		return;
+	}
+	approveToggle.dataset.on = String(on);
+	approveToggle.classList.toggle('on', on);
+	approveToggle.setAttribute('aria-pressed', String(on));
+	approveToggle.replaceChildren(icon(on ? 'unlock' : 'shield'), el('span', { text: on ? 'Auto' : 'Ask' }));
+	approveToggle.title = on
+		? 'Auto: terminal commands and browser actions run without asking. File edits and other tools still ask. Click to ask first again.'
+		: 'Ask: the agent asks before each terminal command or browser action. Click to let them run without asking.';
+}
+
+approveToggle.addEventListener('click', () => {
+	post({ type: 'setAutoApprove', on: approveToggle.dataset.on !== 'true' });
+});
 
 /**
  * A turn's prompt. Sticky inside its turn: while its reply scrolls, it stays at
@@ -1138,7 +1260,18 @@ function inline(parent: HTMLElement, text: string): void {
 
 /* ---------------------------------------------------------------- composer */
 
+/** What the chips were built from: rebuilt only when it changes (#365 — a click straddling a rebuild is lost). */
+let attachmentsShown = '';
+
 function renderAttachments(s: ChatViewState): void {
+	// The state is posted every 40 ms while any tab streams; rebuilding the
+	// chips each time swallowed a click on one whose press outlasted a post,
+	// and took keyboard focus off it.
+	const shown = JSON.stringify(s.attachments.map(c => [c.id, c.kind, c.label, c.thumbnail?.length]));
+	if (shown === attachmentsShown) {
+		return;
+	}
+	attachmentsShown = shown;
 	attachmentsRow.replaceChildren(...s.attachments.map(chip => {
 		const remove = button([icon('close')], { class: 'chip-remove', title: 'Remove' });
 		remove.addEventListener('click', () => post({ type: 'removeAttachment', id: chip.id }));
@@ -1149,7 +1282,10 @@ function renderAttachments(s: ChatViewState): void {
 			img.alt = '';
 			thumb = img;
 		}
-		return el('span', { class: 'chip', title: chip.label }, thumb, el('span', { class: 'chip-label', text: chip.label }), remove);
+		// The chip itself opens what it attaches, in an editor tab; the x removes it.
+		const open = button([thumb, el('span', { class: 'chip-label', text: chip.label })], { class: 'chip-open', title: `Open ${chip.label}` });
+		open.addEventListener('click', () => post({ type: 'openAttachment', id: chip.id }));
+		return el('span', { class: 'chip' }, open, remove);
 	}));
 	attachmentsRow.hidden = !s.attachments.length;
 }

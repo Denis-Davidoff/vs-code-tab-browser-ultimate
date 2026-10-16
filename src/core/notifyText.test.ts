@@ -54,6 +54,17 @@ suite('plainInNotification', () => {
 	});
 });
 
+suite('cutting by character', () => {
+
+	test('an emoji at the limit is kept whole or dropped whole, never halved', () => {
+		const out = plainInPrompt('x'.repeat(38) + '😀😀😀', 40);
+		assert.ok(!/[\ud800-\udbff](?![\udc00-\udfff])/.test(out), JSON.stringify(out));
+		assert.strictEqual(Array.from(out).length, 40);
+		assert.doesNotThrow(() => encodeURIComponent(out));
+		assert.ok(!/[\ud800-\udbff](?![\udc00-\udfff])/.test(plainInLabel('y'.repeat(59) + '🙂🙂', 60)));
+	});
+});
+
 suite('plainInPrompt', () => {
 
 	test('a title cannot become a paragraph of its own', () => {

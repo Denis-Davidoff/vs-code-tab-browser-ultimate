@@ -3,10 +3,11 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import * as os from 'os';
 import * as vscode from 'vscode';
 import { JsonLineProcess, withTimeout } from './agentProcess';
-import { codexAgentThreadEvents, codexEvents, codexModels, codexUsage, type AgentEvent } from './agentProtocol';
-import type { AgentBackend, AgentSession, TurnInput } from './agents';
+import { codexAgentThreadEvents, codexApproval, codexApprovalAnswer, codexEvents, codexModels, codexUsage, type AgentEvent } from './agentProtocol';
+import type { AgentBackend, AgentSession, BrowserServer, TurnInput } from './agents';
 import type { AgentUsage, ChatModel } from './chatProtocol';
 
 /**
@@ -23,11 +24,15 @@ import type { AgentUsage, ChatModel } from './chatProtocol';
  * whatever is installed: `codex app-server generate-json-schema --out <dir>`.
  * Read that rather than guessing a field.
  *
- * **Threads are read-only, and every approval is declined.** `sandbox:
- * 'read-only'` with `approvalPolicy: 'on-request'` means Codex asks before it
- * changes anything, and nothing here can answer yes yet — the decline is
- * reported in the chat so it is not silent. Approvals in the chat are the next
- * step.
+ * **Approvals are asked in the chat.** `approvalPolicy: 'untrusted'` asks before
+ * any command Codex does not know to be read-only, and `approvalsReviewer:
+ * 'user'` sends the question to us — measured: with the reviewer left to the
+ * user's config, Codex's own auto-review answered an MCP tool call by itself and
+ * nothing reached the chat. `sandbox: 'workspace-write'` lets an approved
+ * command change the workspace; `read-only` failed it with "Operation not
+ * permitted" after the yes. Each question is a server request, answered when
+ * the user decides, and `serverRequest/resolved` withdraws one Codex no longer
+ * needs.
  *
  * **`summary: 'auto'` on every turn**, or Codex sends no reasoning at all: the
  * `reasoning` item arrives empty. With it, `item/reasoning/summaryTextDelta`
@@ -44,11 +49,29 @@ const requestTimeoutMs = 30_000;
  */
 const idleShutdownMs = 30_000;
 
-const threadSettings = { sandbox: 'read-only', approvalPolicy: 'on-request' } as const;
+/**
+ * These override the user's own Codex configuration for the chat's threads —
+ * a `sandbox_mode = "read-only"` in `config.toml` included. **With no folder
+ * open the working directory is the home directory** (`ChatViewProvider._cwd`),
+ * and `workspace-write` there would make all of it writable, `~/.ssh` and the
+ * shell's rc files with it; such a thread stays `read-only`, so an approved
+ * command that writes fails rather than reaching them.
+ */
+function threadSettings(cwd: string) {
+	return { sandbox: cwd === os.homedir() ? 'read-only' : 'workspace-write', approvalPolicy: 'untrusted', approvalsReviewer: 'user' } as const;
+}
 
 interface Pending {
 	readonly resolve: (value: unknown) => void;
 	readonly reject: (err: Error) => void;
+}
+
+/** A question Codex asked and the chat has not answered: what to answer it with, and whose it is. */
+interface Asked {
+	readonly requestId: unknown;
+	readonly method: string;
+	readonly params: Record<string, unknown>;
+	readonly session: CodexSession;
 }
 
 export class CodexBackend implements AgentBackend {
@@ -76,8 +99,50 @@ export class CodexBackend implements AgentBackend {
 	/** Calls that need the server for a moment — detection, a usage read. */
 	private _holds = 0;
 	private _idleTimer: ReturnType<typeof setTimeout> | undefined;
+	/** Open questions by the id the chat knows them under: `<generation>:<request id>`. */
+	private readonly _asked = new Map<string, Asked>();
 
-	constructor(private readonly _binary: string, private readonly _cwd: () => string) { }
+	constructor(
+		private readonly _binary: string,
+		private readonly _cwd: () => string,
+		private readonly _browserServer: () => BrowserServer | undefined = () => undefined,
+	) { }
+
+	/**
+	 * The browser server as a thread's `config` override, so the thread has the
+	 * browser tools whether or not Connect Codex wrote a config. Under the bare
+	 * name, it replaces a project `.codex/config.toml` entry rather than adding a
+	 * second (measured: one `ai-browser`, ready).
+	 */
+	public browserConfig(): Record<string, unknown> | undefined {
+		const server = this._browserServer();
+		return server
+			? { mcp_servers: { 'ai-browser': { url: server.url, http_headers: { Authorization: `Bearer ${server.token}` } } } }
+			: undefined;
+	}
+
+	/** Answers a question; one already answered, withdrawn, or of another session is ignored. */
+	public answer(id: string, allow: boolean, session: CodexSession): void {
+		const asked = this._asked.get(id);
+		if (!asked || asked.session !== session) {
+			return;
+		}
+		this._asked.delete(id);
+		this._process?.send({ jsonrpc: '2.0', id: asked.requestId, result: codexApprovalAnswer(asked.method, asked.params, allow) });
+	}
+
+	/** Every open question is withdrawn — the process ended, or the session went. */
+	private _withdraw(which: (asked: Asked) => boolean, answer: boolean): void {
+		for (const [id, asked] of [...this._asked]) {
+			if (which(asked)) {
+				this._asked.delete(id);
+				if (answer) {
+					this._process?.send({ jsonrpc: '2.0', id: asked.requestId, result: codexApprovalAnswer(asked.method, asked.params, false) });
+				}
+				asked.session.emit({ type: 'approvalDone', id });
+			}
+		}
+	}
 
 	public get generation(): number {
 		return this._generation;
@@ -181,6 +246,7 @@ export class CodexBackend implements AgentBackend {
 				pending.reject(error);
 			}
 			this._pending.clear();
+			this._withdraw(() => true, false);
 			for (const session of this._all) {
 				session.processEnded(error.message);
 			}
@@ -233,6 +299,9 @@ export class CodexBackend implements AgentBackend {
 	}
 
 	private _forget(session: CodexSession): void {
+		// Refused rather than left open: the turn is being interrupted, and a
+		// question nobody will answer would hold it until then.
+		this._withdraw(asked => asked.session === session, true);
 		this._all.delete(session);
 		for (const [id, s] of this._sessions) {
 			if (s === session) {
@@ -268,6 +337,15 @@ export class CodexBackend implements AgentBackend {
 			return;
 		}
 		const params = (message.params ?? {}) as Record<string, unknown>;
+		if (method === 'serverRequest/resolved') {
+			const key = `${this._generation}:${String(params.requestId)}`;
+			const asked = this._asked.get(key);
+			if (asked) {
+				this._asked.delete(key);
+				asked.session.emit({ type: 'approvalDone', id: key });
+			}
+			return;
+		}
 		const threadId = typeof params.threadId === 'string' ? params.threadId : undefined;
 		const session = threadId ? this._sessions.get(threadId) : undefined;
 		const agentOf = threadId && !session ? this._agentThreads.get(threadId) : undefined;
@@ -306,28 +384,25 @@ export class CodexBackend implements AgentBackend {
 	}
 
 	private _answer(id: unknown, method: string, params: Record<string, unknown>, session: CodexSession | undefined): void {
-		const reply = (result: unknown) => this._process?.send({ jsonrpc: '2.0', id, result });
-		switch (method) {
-			case 'item/commandExecution/requestApproval':
-			case 'item/fileChange/requestApproval': {
-				const what = typeof params.command === 'string' ? params.command : typeof params.reason === 'string' ? params.reason : undefined;
-				session?.emit({
-					type: 'notice',
-					text: what
-						? vscode.l10n.t("Codex asked for approval ({0}). Approvals are not supported in AI Browser yet, so it was declined.", what)
-						: vscode.l10n.t("Codex asked for approval. Approvals are not supported in AI Browser yet, so it was declined."),
-				});
-				reply({ decision: 'decline' });
+		const key = `${this._generation}:${String(id)}`;
+		const request = codexApproval(key, method, params, session?.filesOf(params.itemId));
+		if (request) {
+			if (!session) {
+				// Nobody to ask: a thread no conversation holds any more.
+				this._process?.send({ jsonrpc: '2.0', id, result: codexApprovalAnswer(method, params, false) });
 				return;
 			}
-			case 'execCommandApproval':
-			case 'applyPatchApproval':
-				session?.emit({ type: 'notice', text: vscode.l10n.t("Codex asked for approval. Approvals are not supported in AI Browser yet, so it was declined.") });
-				reply({ decision: 'denied' });
-				return;
-			default:
-				this._process?.send({ jsonrpc: '2.0', id, error: { code: -32601, message: `${method} is not supported by AI Browser.` } });
+			this._asked.set(key, { requestId: id, method, params, session });
+			session.emit({ type: 'approval', request });
+			return;
 		}
+		if (method === 'mcpServer/elicitation/request') {
+			// A server asking the user to fill in a form: not something the chat
+			// can show yet, and declining it lets the tool call go on.
+			this._process?.send({ jsonrpc: '2.0', id, result: { action: 'decline', content: null } });
+			return;
+		}
+		this._process?.send({ jsonrpc: '2.0', id, error: { code: -32601, message: `${method} is not supported by AI Browser.` } });
 	}
 
 	public dispose(): void {
@@ -358,6 +433,8 @@ class CodexSession implements AgentSession {
 	 * Queued behind the first, the second finds a turn to steer.
 	 */
 	private _queue: Promise<void> = Promise.resolve();
+	/** Paths of the latest `fileChange` items, by item id; bounded. */
+	private readonly _changes = new Map<string, string[]>();
 
 	private readonly _onEvent = new vscode.EventEmitter<AgentEvent>();
 	public readonly onEvent = this._onEvent.event;
@@ -377,6 +454,10 @@ class CodexSession implements AgentSession {
 
 	public get running(): boolean {
 		return this._running;
+	}
+
+	public answer(id: string, allow: boolean): void {
+		this._backend.answer(id, allow, this);
 	}
 
 	public send(input: TurnInput, model: string, effort: string | undefined): Promise<void> {
@@ -478,9 +559,9 @@ class CodexSession implements AgentSession {
 			return this._threadId;
 		}
 		if (this._threadId) {
-			await this._backend.request('thread/resume', { threadId: this._threadId, cwd: this._cwd, ...threadSettings });
+			await this._backend.request('thread/resume', { threadId: this._threadId, cwd: this._cwd, ...threadSettings(this._cwd), config: this._backend.browserConfig() });
 		} else {
-			const started = await this._backend.request('thread/start', { cwd: this._cwd, model, ...threadSettings }) as { thread?: { id?: unknown } };
+			const started = await this._backend.request('thread/start', { cwd: this._cwd, model, ...threadSettings(this._cwd), config: this._backend.browserConfig() }) as { thread?: { id?: unknown } };
 			if (typeof started?.thread?.id !== 'string') {
 				throw new Error('Codex did not start a conversation.');
 			}
@@ -533,6 +614,8 @@ class CodexSession implements AgentSession {
 
 	/** An event of an agent's own thread: the agent's row, never the reply. */
 	public notifyAgent(threadId: string, method: string, params: Record<string, unknown>): void {
+		// An agent's patch is asked about in this conversation too.
+		this._noteChanges(method, params);
 		if (method === 'turn/started' || method === 'turn/completed') {
 			const turn = params.turn as { id?: unknown } | undefined;
 			if (method === 'turn/started' && typeof turn?.id === 'string') {
@@ -547,8 +630,26 @@ class CodexSession implements AgentSession {
 		}
 	}
 
+	/** The paths a `fileChange` item touches, for the approval that names only the item. */
+	public filesOf(itemId: unknown): string[] {
+		return typeof itemId === 'string' ? this._changes.get(itemId) ?? [] : [];
+	}
+
+	private _noteChanges(method: string, params: Record<string, unknown>): void {
+		const item = params.item as { type?: unknown; id?: unknown; changes?: unknown } | undefined;
+		if (method !== 'item/started' || item?.type !== 'fileChange' || typeof item.id !== 'string' || !Array.isArray(item.changes)) {
+			return;
+		}
+		const paths = item.changes.map(c => (c as { path?: unknown })?.path).filter((p): p is string => typeof p === 'string');
+		this._changes.set(item.id, paths);
+		if (this._changes.size > 32) {
+			this._changes.delete(this._changes.keys().next().value!);
+		}
+	}
+
 	public notify(method: string, params: Record<string, unknown>): void {
 		this._watchAgent(method, params);
+		this._noteChanges(method, params);
 		if (method === 'turn/started') {
 			const turn = params.turn as { id?: unknown } | undefined;
 			if (typeof turn?.id === 'string') {

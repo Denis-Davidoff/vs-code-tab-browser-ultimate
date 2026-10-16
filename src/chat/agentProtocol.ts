@@ -24,7 +24,7 @@
  * because the next CLI release may well rename it.
  */
 
-import type { AgentInfo, AgentUsage, ChatModel, ToolKind, UsageWindow } from './chatProtocol';
+import type { AgentInfo, AgentUsage, ApprovalKind, ChatModel, ToolKind, UsageWindow } from './chatProtocol';
 
 /* --------------------------------------------------------------- framing */
 
@@ -339,6 +339,10 @@ export type AgentEvent =
 	| { readonly type: 'turnEnd'; readonly error?: string }
 	| { readonly type: 'tokens'; readonly input: number; readonly output: number; readonly cached: number; readonly costUsd?: number; readonly cumulative: boolean }
 	| { readonly type: 'limits'; readonly windows: readonly UsageWindow[] }
+	/** The agent asks before using a tool; answered through `AgentSession.answer`. */
+	| { readonly type: 'approval'; readonly request: ApprovalRequest }
+	/** The CLI withdrew a question it had asked — a Stop, an interrupted turn. */
+	| { readonly type: 'approvalDone'; readonly id: string }
 	| { readonly type: 'notice'; readonly text: string };
 
 /** Tool output kept per call; a `cat` of a large file is not worth keeping whole. */
@@ -1001,6 +1005,174 @@ export function chatTitle(text: string, limit = 60): string {
 		return 'New chat';
 	}
 	return line.length > limit ? `${line.slice(0, limit - 1).trimEnd()}…` : line;
+}
+
+/* --------------------------------------------------------------- approvals */
+
+/**
+ * A question an agent asks before it uses a tool, as the chat shows it. `id` is
+ * the CLI's own request id, which is what the answer is sent back under.
+ */
+export interface ApprovalRequest {
+	readonly id: string;
+	readonly what: ApprovalKind;
+	readonly title: string;
+	readonly detail?: string;
+}
+
+/**
+ * The MCP server this extension runs, as the chat hands it to both CLIs: the
+ * same name as `mcpServerName` in `mcpClientState.ts`, written twice since a
+ * leaf module may not import another. Also the per-project name Connect Codex
+ * once wrote into the global config, `ai-browser-<slug>-<6 hex>` — and only that
+ * shape: any `ai-browser-…` would let somebody else's server, named so, be
+ * answered by the Auto toggle as if it were the browser.
+ */
+function isBrowserServer(name: string): boolean {
+	return name === 'ai-browser' || /^ai-browser-.+-[0-9a-f]{6}$/.test(name);
+}
+
+/**
+ * What a question shows must be what the answer allows, so a command and a
+ * tool's arguments are shown whole, line breaks included — the card scrolls.
+ * Folding lines into one read `echo done` + `rm -rf build` as one harmless
+ * `echo`, and a cut hid the tail that would run. Bounded only far past
+ * anything a person reads, with the cut said in words.
+ */
+const approvalTextLimit = 100_000;
+
+function whole(value: string): string {
+	const text = value.replace(/\s+$/, '');
+	return text.length > approvalTextLimit
+		? `${text.slice(0, approvalTextLimit)}\n… ${text.length - approvalTextLimit} more characters not shown — deny it if you cannot see what it does.`
+		: text;
+}
+
+/** A tool's arguments, one per line: `selector: #email`, `value: Hello`. */
+function argumentLines(input: unknown): string | undefined {
+	if (!isRecord(input)) {
+		return undefined;
+	}
+	const parts = Object.entries(input).map(([key, value]) => `${key}: ${typeof value === 'string' ? value : JSON.stringify(value)}`);
+	return parts.length ? whole(parts.join('\n')) : undefined;
+}
+
+const claudeEditTools = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+
+/**
+ * Claude Code's `can_use_tool` control request, sent when it runs with
+ * `--permission-prompt-tool stdio` and a tool needs the user's yes. Measured on
+ * 2.1.301: `{ subtype: 'can_use_tool', tool_name, display_name, input,
+ * description, permission_suggestions, blocked_path, tool_use_id }`; an MCP
+ * tool is named `mcp__<server>__<tool>`.
+ */
+export function claudeApproval(id: string, request: Record<string, unknown>): ApprovalRequest {
+	const tool = typeof request.tool_name === 'string' ? request.tool_name : '';
+	const input = isRecord(request.input) ? request.input : {};
+	const description = typeof request.description === 'string' ? oneLine(request.description, 300) : undefined;
+	const mcp = /^mcp__(.+?)__(.+)$/.exec(tool);
+	if (tool === 'Bash') {
+		const command = typeof input.command === 'string' ? input.command : '';
+		return { id, what: 'command', title: whole(command) || 'Bash', detail: description };
+	}
+	if (mcp) {
+		const [, server, name] = mcp;
+		const args = argumentLines(input);
+		return isBrowserServer(server)
+			? { id, what: 'browser', title: name, detail: args }
+			: { id, what: 'other', title: name, detail: [server, args].filter(Boolean).join('\n') };
+	}
+	if (claudeEditTools.has(tool)) {
+		const file = typeof input.file_path === 'string' ? input.file_path : typeof input.notebook_path === 'string' ? input.notebook_path : '';
+		return { id, what: 'edit', title: file || tool, detail: tool };
+	}
+	const name = typeof request.display_name === 'string' && request.display_name ? request.display_name : tool || 'Tool';
+	return { id, what: 'other', title: name, detail: description ?? argumentLines(input) };
+}
+
+/** What `can_use_tool` is answered with: the input as it was, or a refusal the model reads. */
+export function claudeApprovalAnswer(input: unknown, allow: boolean): Record<string, unknown> {
+	return allow
+		? { behavior: 'allow', updatedInput: isRecord(input) ? input : {} }
+		: { behavior: 'deny', message: 'The user declined this in the AI Browser chat.' };
+}
+
+/**
+ * The approvals Codex's app-server asks for (codex-cli 0.162, measured with
+ * `approvalPolicy: 'untrusted'` and `approvalsReviewer: 'user'`): a command
+ * (`item/commandExecution/requestApproval`), a patch
+ * (`item/fileChange/requestApproval`), and an MCP tool, which comes as an
+ * `mcpServer/elicitation/request` whose `_meta.codex_approval_kind` is
+ * `mcp_tool_call` — "Allow the ai-browser MCP server to run tool …?". The two
+ * legacy methods take the same questions in the older shape. Anything else is
+ * not an approval and answers `undefined`.
+ */
+export function codexApproval(id: string, method: string, params: Record<string, unknown>, files: readonly string[] = []): ApprovalRequest | undefined {
+	const reason = typeof params.reason === 'string' && params.reason ? oneLine(params.reason, 300) : undefined;
+	switch (method) {
+		case 'item/commandExecution/requestApproval':
+		case 'execCommandApproval': {
+			const raw = Array.isArray(params.command) ? strings(params.command).join(' ') : typeof params.command === 'string' ? params.command : '';
+			const network = isRecord(params.networkApprovalContext) ? params.networkApprovalContext : undefined;
+			// Typing into a running command, or opening the network for it, is not
+			// "a terminal command" the Auto toggle was asked to cover: it asks.
+			if (params.kind === 'writeStdin' || network) {
+				const host = network && typeof network.host === 'string' ? network.host : undefined;
+				return {
+					id, what: 'other',
+					title: network ? `Network access${host ? `: ${host}` : ''}` : 'Input to a running command',
+					detail: [raw && whole(unwrapShell(raw)), reason].filter(Boolean).join('\n') || undefined,
+				};
+			}
+			return { id, what: 'command', title: whole(unwrapShell(raw)) || 'Command', detail: reason };
+		}
+		case 'item/fileChange/requestApproval':
+		case 'applyPatchApproval': {
+			// The v2 request names only its item; the paths are on the
+			// `fileChange` item that started just before, which the caller keeps.
+			const named = isRecord(params.fileChanges) ? Object.keys(params.fileChanges) : files;
+			const root = typeof params.grantRoot === 'string' && params.grantRoot ? `Write access to everything under ${params.grantRoot} for this conversation` : undefined;
+			return { id, what: 'edit', title: named.length ? named.join('\n') : 'Apply the edit', detail: [root, reason].filter(Boolean).join('\n') || undefined };
+		}
+		case 'mcpServer/elicitation/request': {
+			const meta = isRecord(params._meta) ? params._meta : {};
+			if (meta.codex_approval_kind !== 'mcp_tool_call') {
+				return undefined;
+			}
+			const server = typeof params.serverName === 'string' ? params.serverName : '';
+			const message = typeof params.message === 'string' ? params.message : '';
+			const name = /tool "([^"]+)"/.exec(message)?.[1] ?? (typeof meta.tool_title === 'string' ? meta.tool_title : 'Tool');
+			const args = argumentLines(meta.tool_params);
+			return isBrowserServer(server)
+				? { id, what: 'browser', title: name, detail: args }
+				: { id, what: 'other', title: name, detail: [server, args].filter(Boolean).join('\n') };
+		}
+		default:
+			return undefined;
+	}
+}
+
+/**
+ * The result a Codex approval is answered with. A command's refusal is
+ * `decline` — the turn goes on and the model is told — unless the request lists
+ * its decisions without it, when only `cancel` (which ends the turn) refuses.
+ */
+export function codexApprovalAnswer(method: string, params: Record<string, unknown>, allow: boolean): Record<string, unknown> {
+	switch (method) {
+		case 'item/commandExecution/requestApproval': {
+			if (allow) {
+				return { decision: 'accept' };
+			}
+			const offered = Array.isArray(params.availableDecisions) ? params.availableDecisions : undefined;
+			return { decision: !offered || offered.includes('decline') ? 'decline' : 'cancel' };
+		}
+		case 'item/fileChange/requestApproval':
+			return { decision: allow ? 'accept' : 'decline' };
+		case 'mcpServer/elicitation/request':
+			return { action: allow ? 'accept' : 'decline', content: null };
+		default:
+			return { decision: allow ? 'approved' : 'denied' };
+	}
 }
 
 /* --------------------------------------------------------------- helpers */
