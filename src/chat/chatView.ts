@@ -7,6 +7,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { AgentRegistry, agentNames } from './agents';
+import { bundledPin } from './agentBinary';
 import { ChatTab, newChat, reopened, started, storedEntries, storedTextLimit, type Attachment, type StoredChat, type TabHost } from './chatTab';
 import { chatTranscript, transcriptFileName } from './transcript';
 import { writeChatTranscript } from '../elements/assistants';
@@ -69,6 +70,12 @@ const selectionKey = 'aiBrowser.chat.selection';
 const newsHiddenKey = 'aiBrowser.chat.newsHiddenAt';
 const inputHistoryKey = 'aiBrowser.chat.inputHistory';
 const inputHistoryLimit = 100;
+/**
+ * The copy of each agent's CLI this project picked by hand, by path; absent is
+ * Auto, the newest. Per project because a project can need an older CLI, and in
+ * `workspaceState`, which only this UI writes — a repository cannot set it.
+ */
+const agentBinariesKey = 'aiBrowser.chat.agentBinaries';
 /** The chats open as tabs, by chat id, and the one in front; restored with the window. */
 const openTabsKey = 'aiBrowser.chat.openTabs';
 /**
@@ -118,7 +125,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		private readonly _context: vscode.ExtensionContext,
 		private readonly _browser: BrowserController,
 	) {
-		this._registry = new AgentRegistry(() => this._cwd());
+		this._registry = new AgentRegistry(() => this._cwd(), id => this._agentBinaries()[id]);
 		this._subscriptions.push(this._registry, this._registry.onDidChange(() => this._post()));
 		this._remembered = _context.globalState.get<RememberedSelection>(selectionKey) ?? { models: {}, efforts: {} };
 		this._restoreTabs();
@@ -352,6 +359,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				return;
 			case 'switchAgent':
 				await this._switchAgent(message.choice);
+				return;
+			case 'setAgentBinary':
+				await this._setAgentBinary(message.agent, message.path);
+				return;
+			case 'openAgentSetting':
+				await vscode.commands.executeCommand('workbench.action.openSettings', `aiBrowser.chat.${message.agent}Path`);
 				return;
 			case 'attach':
 				await this._attach(message.kind);
@@ -880,6 +893,39 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	/** The title bar's New Chat, and the tab strip's "+": a new tab. */
 	public newChat(): void {
 		this._addTab(this._remembered.agent ?? this._selection().agent ?? 'claude');
+	}
+
+	private _agentBinaries(): Partial<Record<AgentId, string>> {
+		const stored = this._context.workspaceState.get<Record<string, unknown>>(agentBinariesKey) ?? {};
+		const pick = (id: AgentId) => typeof stored[id] === 'string' ? stored[id] as string : undefined;
+		return { claude: pick('claude'), codex: pick('codex') };
+	}
+
+	/**
+	 * A copy picked in the agent settings, or Auto. It takes effect through
+	 * detection, which replaces the backend when the copy changes — a turn
+	 * running on the old one ends, and each tab's conversation resumes on the
+	 * new copy at its next message, by its `ref`, as after a Refresh.
+	 */
+	private async _setAgentBinary(agent: AgentId, file: string | undefined): Promise<void> {
+		if (agent !== 'claude' && agent !== 'codex') {
+			return;
+		}
+		// Only one of the copies detection found: the view names a path, it does not get to invent one.
+		const copy = file === undefined ? undefined : this._registry.agents.find(a => a.id === agent)?.copies?.find(c => c.path === file);
+		if (file !== undefined && !copy) {
+			return;
+		}
+		try {
+			await this._context.workspaceState.update(agentBinariesKey, { ...this._agentBinaries(), [agent]: copy?.bundled ? bundledPin : file });
+		} catch {
+			return;
+		}
+		if (!this._blocked()) {
+			// This agent only, after any detection already running (which read the
+			// old choice); `redetect` waits for it.
+			await this._registry.redetect(agent);
+		}
 	}
 
 	public refreshAgents(): void {

@@ -1568,6 +1568,8 @@ button {
 	align-items: center;
 	gap: 6px;
 	min-width: 0;
+	/* The back arrow sits where the list's does (.panel-title). */
+	margin-left: -6px;
 }
 
 .agent-card {
@@ -1903,4 +1905,106 @@ button {
 	.tab-dot {
 		animation: none;
 	}
+}
+
+/* ---------------------------------------------------------------- agent apps */
+
+.menu-heading {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 6px;
+}
+
+.menu-heading-action {
+	width: 22px;
+	min-width: 22px;
+	height: 22px;
+	margin: -3px -4px -3px 0;
+	color: var(--fg-3);
+}
+
+.menu-heading-action:hover {
+	color: var(--fg);
+}
+
+.agent-apps-body {
+	display: flex;
+	flex-direction: column;
+	gap: 14px;
+	padding: 10px 14px;
+}
+
+.agent-app {
+	display: flex;
+	flex-direction: column;
+	gap: 5px;
+}
+
+.agent-app-name {
+	font-weight: 600;
+}
+
+.agent-app-select {
+	width: 100%;
+	padding: 4px 6px;
+	border: 1px solid var(--vscode-dropdown-border, var(--border-strong));
+	border-radius: 6px;
+	background: var(--vscode-dropdown-background, var(--soft));
+	color: var(--vscode-dropdown-foreground, var(--fg));
+	font: inherit;
+}
+
+.agent-app-select:focus {
+	outline: 1px solid var(--accent);
+	outline-offset: -1px;
+}
+
+.agent-app-select:disabled {
+	opacity: 0.6;
+}
+
+.agent-app-path {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--fg-3);
+	font-family: var(--vscode-editor-font-family);
+	font-size: 0.85em;
+}
+
+.agent-app-note {
+	color: var(--fg-3);
+	font-size: 0.92em;
+}
+
+.agent-app-note.warn {
+	color: var(--warn);
+}
+
+.agent-app-link {
+	align-self: flex-start;
+	padding: 0;
+	border: none;
+	background: transparent;
+	color: var(--vscode-textLink-foreground, var(--accent));
+	font-size: 0.92em;
+	cursor: pointer;
+}
+
+.agent-app-link:hover {
+	text-decoration: underline;
+}
+
+.agent-apps-body .agents-sub {
+	padding: 0;
+}
+
+/* a panel's title, with the back arrow before it */
+.panel-title {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	min-width: 0;
+	margin-left: -6px;
 }

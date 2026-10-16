@@ -27,6 +27,11 @@ import type { AgentId } from './chatProtocol';
  * an old list. On a tie the earlier candidate wins, so `PATH` keeps priority
  * between equal versions.
  *
+ * **A project can pick one of those copies by hand** — the gear in the agent
+ * menu — or leave it on Auto, the newest. The choice is kept in the project's
+ * `workspaceState` and honoured only while the copy is still found: it picks
+ * among what was discovered, it never names a program of its own.
+ *
  * **The setting overrides all of it, and is `application`-scoped**, and has to
  * be: a path to an executable that a workspace's `.vscode/settings.json` could
  * set is code execution from a cloned repository, the moment the chat opens.
@@ -36,7 +41,18 @@ export interface AgentBinary {
 	readonly path: string;
 	readonly source: 'setting' | 'path' | 'common' | 'extension';
 	readonly version?: string;
+	/** The file `path` resolves to: one file can be reached under several spellings. */
+	readonly realPath?: string;
 }
+
+/**
+ * What a project stores for "the copy bundled with the assistant's VS Code
+ * extension". That copy's path carries the extension's version
+ * (`openai.chatgpt-26.1007.…/bin/…`), so a stored path went missing on every
+ * update of the extension and fell back to the newest copy; the copy itself
+ * is what was picked.
+ */
+export const bundledPin = 'bundled';
 
 const versionTimeoutMs = 5000;
 
@@ -45,21 +61,60 @@ const extensionIds: Record<AgentId, string> = {
 	codex: 'openai.chatgpt',
 };
 
+/** What detection found for one agent, and which copy it uses. */
+export interface AgentBinaryChoice {
+	/** The copy in use; absent when none was found, or the setting names no executable. */
+	readonly chosen?: AgentBinary;
+	/** Every copy found, newest first; empty when the setting decides. */
+	readonly copies: readonly AgentBinary[];
+	/** The `aiBrowser.chat.<agent>Path` setting decides, whatever the project chose. */
+	readonly setting: boolean;
+	/** The project chose a copy that is no longer among those found; the newest is used. */
+	readonly pinMissing: boolean;
+}
+
 /**
+ * The copy to use: the setting when it is set; else the copy the project
+ * chose in the chat's agent settings (`pinned`), **only while it is among the
+ * copies found** — a stored path is never run on its own say-so; else the
+ * newest.
+ *
  * `current` is the binary already in use. It is kept when a Refresh cannot
  * prove another copy newer — its `--version` timed out on a busy machine, or
  * the versions are equal — because switching replaces the backend, and that
  * ends a running conversation for nothing.
  */
-export async function findAgentBinary(agent: AgentId, current?: string): Promise<AgentBinary | undefined> {
+export async function chooseAgentBinary(agent: AgentId, current?: string, pinned?: string): Promise<AgentBinaryChoice> {
+	// `current`: only a Refresh passes it. A choice the user just made asks for a
+	// replacement, and keeping the copy in use — say one whose version could not
+	// be read — left Auto showing beside a copy it did not pick.
 	const configured = vscode.workspace.getConfiguration('aiBrowser.chat').get<string>(`${agent}Path`, '').trim();
 	if (configured) {
 		const resolved = configured.startsWith('~') ? path.join(os.homedir(), configured.slice(1)) : configured;
-		return await isExecutable(resolved)
-			? { path: resolved, source: 'setting', version: await versionOf(resolved) }
-			: undefined;
+		const chosen = await isExecutable(resolved) ? { path: resolved, source: 'setting' as const, version: await versionOf(resolved) } : undefined;
+		return { chosen, copies: [], setting: true, pinMissing: false };
 	}
+	const copies = await listAgentBinaries(agent);
+	if (pinned) {
+		// By the file, not the spelling: the same file reached first through
+		// another `PATH` entry is still the copy the project picked. The copy
+		// found is what runs, never the stored text.
+		const real = pinned === bundledPin ? undefined : await fs.realpath(pinned).catch(() => pinned);
+		const chosen = pinned === bundledPin
+			? copies.find(c => c.source === 'extension')
+			: copies.find(c => c.path === pinned || c.realPath === real);
+		if (chosen) {
+			return { chosen, copies, setting: false, pinMissing: false };
+		}
+	}
+	const best = copies[0];
+	const kept = current ? copies.find(c => c.path === current) : undefined;
+	const chosen = kept && best && kept !== best && (kept.version === undefined || compareCliVersions(kept.version, best.version) === 0) ? kept : best;
+	return { chosen, copies, setting: false, pinMissing: !!pinned };
+}
 
+/** Every copy of the agent's CLI on this machine, each asked its version, newest first. */
+async function listAgentBinaries(agent: AgentId): Promise<AgentBinary[]> {
 	const name = agent === 'claude' ? 'claude' : 'codex';
 	const home = os.homedir();
 	const common = agent === 'claude'
@@ -90,21 +145,16 @@ export async function findAgentBinary(agent: AgentId, current?: string): Promise
 
 	// The same file reached twice (a `PATH` entry that is also a common
 	// location, a symlink into another) is asked once.
-	const unique = new Map<string, { path: string; source: AgentBinary['source'] }>();
+	const unique = new Map<string, { path: string; source: AgentBinary['source']; realPath: string }>();
 	for (const candidate of found) {
 		const real = await fs.realpath(candidate.path).catch(() => candidate.path);
 		if (!unique.has(real)) {
-			unique.set(real, candidate);
+			unique.set(real, { ...candidate, realPath: real });
 		}
 	}
 	const candidates = await Promise.all([...unique.values()].map(async c => ({ ...c, version: await versionOf(c.path) })));
 	// `sort` is stable, so equal versions keep the search order.
-	const best = candidates.sort((a, b) => compareCliVersions(a.version, b.version))[0];
-	const kept = current ? candidates.find(c => c.path === current) : undefined;
-	if (kept && best && kept !== best && (kept.version === undefined || compareCliVersions(kept.version, best.version) === 0)) {
-		return kept;
-	}
-	return best;
+	return candidates.sort((a, b) => compareCliVersions(a.version, b.version));
 }
 
 /** What the binary says for `--version`, or `undefined` when it says nothing usable in time. */
@@ -116,15 +166,19 @@ function versionOf(file: string): Promise<string | undefined> {
 	});
 }
 
-/** Where a binary came from, for the agent dropdown's tooltip. */
-export function describeBinary(binary: AgentBinary): string {
-	const from = {
+/** Where a binary came from, in a few words. */
+export function binarySource(binary: AgentBinary): string {
+	return {
 		setting: 'from the aiBrowser.chat setting',
 		path: 'from PATH',
 		common: 'from a standard install location',
 		extension: "bundled with the assistant's VS Code extension",
 	}[binary.source];
-	return `${binary.version ?? 'unknown version'}, ${from}: ${binary.path}`;
+}
+
+/** Where a binary came from, for the agent dropdown's tooltip. */
+export function describeBinary(binary: AgentBinary): string {
+	return `${binary.version ?? 'unknown version'}, ${binarySource(binary)}: ${binary.path}`;
 }
 
 /** The copy inside the assistant's own VS Code extension, if that is installed. */

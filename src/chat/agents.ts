@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import { describeBinary, findAgentBinary } from './agentBinary';
+import { binarySource, chooseAgentBinary, describeBinary } from './agentBinary';
 import type { AgentEvent } from './agentProtocol';
 import type { AgentId, AgentUsage, ChatAgent, ChatModel } from './chatProtocol';
 import { ClaudeBackend } from './claudeAgent';
@@ -76,6 +76,8 @@ export class AgentRegistry implements vscode.Disposable {
 	private readonly _backends = new Map<AgentId, { binary: string; backend: AgentBackend }>();
 	private _agents: ChatAgent[] = agentIds.map(id => ({ id, name: agentNames[id], available: false, models: [] }));
 	private _detecting: Promise<void> | undefined;
+	/** What is running is a full detection, not one agent's `redetect`. */
+	private _detectingAll = false;
 	private _disposed = false;
 
 	private readonly _onDidChange = new vscode.EventEmitter<void>();
@@ -96,7 +98,8 @@ export class AgentRegistry implements vscode.Disposable {
 	 */
 	public readonly onDidReplace = this._onDidReplace.event;
 
-	constructor(private readonly _cwd: () => string) { }
+	/** `pinned`: the copy of an agent's CLI the project picked by hand, if it did. */
+	constructor(private readonly _cwd: () => string, private readonly _pinned: (id: AgentId) => string | undefined = () => undefined) { }
 
 	public get agents(): readonly ChatAgent[] {
 		return this._agents;
@@ -112,26 +115,74 @@ export class AgentRegistry implements vscode.Disposable {
 
 	/** Runs detection, or joins the one already running. */
 	public detect(): Promise<void> {
-		this._detecting ??= this._detect().finally(() => {
+		if (this._disposed) {
+			return Promise.resolve();
+		}
+		// Joining one agent's re-detection would leave the other unchecked.
+		if (this._detecting && !this._detectingAll) {
+			return this._detecting.then(() => this.detect());
+		}
+		if (!this._detecting) {
+			this._detectingAll = true;
+			this._detecting = this._detect().finally(() => {
+				this._detecting = undefined;
+				this._detectingAll = false;
+				this._onDidChange.fire();
+			});
+			this._onDidChange.fire();
+		}
+		return this._detecting;
+	}
+
+	/**
+	 * Detects one agent again, after the copy it uses was picked: the other
+	 * agent is left alone — re-detecting it could replace its backend and end a
+	 * reply nobody touched — and the copy in use is not held on to, since the
+	 * pick asked for a change.
+	 */
+	public async redetect(id: AgentId): Promise<void> {
+		while (this._detecting) {
+			await this._detecting;
+		}
+		if (this._disposed) {
+			return;
+		}
+		this._detectingAll = false;
+		this._detecting = (async () => {
+			const agent = await this._detectOne(id, false);
+			this._agents = this._agents.map(a => a.id === id ? agent : a);
+		})().finally(() => {
 			this._detecting = undefined;
 			this._onDidChange.fire();
 		});
 		this._onDidChange.fire();
-		return this._detecting;
+		await this._detecting;
 	}
 
 	private async _detect(): Promise<void> {
-		this._agents = await Promise.all(agentIds.map(id => this._detectOne(id)));
+		this._agents = await Promise.all(agentIds.map(id => this._detectOne(id, true)));
 	}
 
-	private async _detectOne(id: AgentId): Promise<ChatAgent> {
+	/** `keepCurrent`: a Refresh keeps the copy in use unless another is proven newer; a pick does not. */
+	private async _detectOne(id: AgentId, keepCurrent: boolean): Promise<ChatAgent> {
 		const name = agentNames[id];
-		const binary = await findAgentBinary(id, this._backends.get(id)?.binary);
+		// Read once: a pick landing while this runs must not label the copy chosen
+		// under the old one.
+		const pinned = this._pinned(id);
+		const found = await chooseAgentBinary(id, keepCurrent ? this._backends.get(id)?.binary : undefined, pinned);
+		const binary = found.chosen;
+		const about = {
+			copies: found.copies.map(c => ({ path: c.path, version: c.version, source: binarySource(c), bundled: c.source === 'extension' || undefined })),
+			binary: binary?.path,
+			choice: found.setting ? 'setting' as const : pinned && !found.pinMissing ? 'pinned' as const : 'auto' as const,
+			pinMissing: found.pinMissing,
+			pinned: found.pinMissing ? pinned : undefined,
+		};
 		if (!binary) {
 			this._drop(id, true);
 			const configured = vscode.workspace.getConfiguration('aiBrowser.chat').get<string>(`${id}Path`, '').trim();
 			return {
-				id, name, available: false, models: [],
+				id, name, available: false, models: [], ...about,
 				problem: configured
 					? vscode.l10n.t("aiBrowser.chat.{0}Path is set to {1}, which is not an executable file.", id, configured)
 					: vscode.l10n.t("{0} was not found. Install its CLI or its VS Code extension, or set aiBrowser.chat.{1}Path.", name, id),
@@ -149,18 +200,18 @@ export class AgentRegistry implements vscode.Disposable {
 			this._backends.set(id, entry);
 		}
 
-		const detail = describeBinary(binary);
+		const detail = describeBinary(binary) + (about.choice === 'pinned' ? ' (picked for this project)' : '');
 		try {
 			const models = await entry.backend.models();
 			if (this._disposed) {
 				return { id, name, available: false, models: [] };
 			}
 			if (!models.length) {
-				return { id, name, available: false, models, detail, problem: vscode.l10n.t("{0} listed no models.", name) };
+				return { id, name, available: false, models, detail, ...about, problem: vscode.l10n.t("{0} listed no models.", name) };
 			}
-			return { id, name, available: true, models, detail };
+			return { id, name, available: true, models, detail, ...about };
 		} catch (err) {
-			return { id, name, available: false, models: [], detail, problem: err instanceof Error ? err.message : String(err) };
+			return { id, name, available: false, models: [], detail, ...about, problem: err instanceof Error ? err.message : String(err) };
 		}
 	}
 

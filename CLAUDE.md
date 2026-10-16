@@ -237,7 +237,7 @@ difference, in `browserController.js`, was a doc comment whose link had been upd
 - [src/chat/news.ts](src/chat/news.ts) — NEWS.md into the empty chat's introduction and "What's new" (leaf, under test)
 - [src/chat/chatProtocol.ts](src/chat/chatProtocol.ts) — the messages between the chat's webview and the host (types only, read by both builds)
 - [src/chat/agents.ts](src/chat/agents.ts) — the agent interface, and detecting which agents are installed
-- [src/chat/agentBinary.ts](src/chat/agentBinary.ts) — where `claude` and `codex` are
+- [src/chat/agentBinary.ts](src/chat/agentBinary.ts) — where `claude` and `codex` are, and which copy to use
 - [src/chat/agentProcess.ts](src/chat/agentProcess.ts) — a CLI speaking one JSON object per line
 - [src/chat/agentProtocol.ts](src/chat/agentProtocol.ts) — reading what the two CLIs say: models, efforts, usage, turn events (leaf, under test)
 - [src/chat/claudeAgent.ts](src/chat/claudeAgent.ts) — Claude Code over `stream-json` and its control channel
@@ -4268,7 +4268,10 @@ added to the harness. Measure with `getComputedStyle` before believing a colour.
 anything that overlays the workbench can pause a browser tab
 ([A notification pauses the built-in browser](#a-notification-pauses-the-built-in-browser)).
 The file picker is the one exception — a native OS dialog, which the overlay manager does not
-see. Popups are positioned relative to `#app`, not the window.
+see. Popups are positioned relative to `#app`, not the window. A panel drawn over the chat (History, Agents, Agent
+apps) has a back arrow before its title and a close button at the right, both closing it
+(`panelHead`) — asked for, since a back arrow at the top left is where a side bar is expected to
+have one. An agent's card keeps its own arrow, which goes back to the list.
 
 **Nothing from a model or a page is parsed as HTML.** `preview-src/chat.ts` has its own small
 Markdown reader (fences, headings, lists, quotes, tables, rules, paragraphs, inline code, bold,
@@ -4358,12 +4361,52 @@ Each of these cost a measurement and each would be wrong if guessed:
 
 ### Finding the CLIs
 
-`findAgentBinary` ([src/chat/agentBinary.ts](src/chat/agentBinary.ts)) collects every copy it can find —
+`listAgentBinaries` ([src/chat/agentBinary.ts](src/chat/agentBinary.ts)) collects every copy it can find —
 `PATH`, then `~/.local/bin`, `~/.claude/local`, `/opt/homebrew/bin`, `/usr/local/bin`, then **the
 copy the assistant's own VS Code extension ships**, `anthropic.claude-code/resources/native-binary/claude`
-and `openai.chatgpt/bin/<platform>/codex` — asks each one `--version`, and **uses the newest**.
+and `openai.chatgpt/bin/<platform>/codex` — asks each one `--version`, and `chooseAgentBinary`
+**uses the newest** unless the project picked another (below).
 The setting, when set, overrides all of it. A tie keeps the search order, so `PATH` wins between
 equal versions. The agent dropdown's tooltip names the version, the source and the path.
+
+**A project can pick the copy by hand.** The gear at the right of the agent menu's "Agent"
+heading opens *Agent apps*, drawn in the view: a select per agent with **Auto — newest** (naming
+the copy Auto is using) and every copy found by version and origin — with the folder too where two
+copies would read alike, since a native select shows no tooltip — the copy in use under it, and a
+link to VS Code's own `aiBrowser.chat.<agent>Path` setting. Asked for, so that a project needing
+an older CLI can keep it while Auto stays the default. How it holds together:
+
+- The choice is kept per project in `workspaceState` (`aiBrowser.chat.agentBinaries`; absent is
+  Auto) and **honoured only while it matches a copy found** (`chooseAgentBinary`); the host refuses
+  a path the view sends that detection did not find. It picks among what was discovered and never
+  names a program of its own — the copy found is what runs, not the stored text.
+- **Matched by the file, not the spelling**: one file reached through two `PATH` entries is listed
+  once, under whichever came first, and a `PATH` reordered between windows used to read the pick as
+  gone. **The copy bundled with the assistant's extension is stored as `bundled`**, not by path:
+  its path carries the extension's version, so a pick of it went missing on every update.
+- A pick that is gone falls back to the newest; the select shows it as "Not found: …" so that
+  choosing Auto is a change and clears it — shown as Auto, it could never be cleared.
+- **The setting still overrides it**: the select is disabled with a note naming the setting, and
+  the link opens it. The setting stays `application`-scoped for the reason below.
+- A pick re-detects **that agent only** (`AgentRegistry.redetect`), after any detection already
+  running — re-detecting both could replace the other agent's backend and end a reply nobody
+  touched. It does not keep the copy in use: the "keep the current copy unless another is proven
+  newer" rule is for a Refresh, and applied to a pick it left Auto beside a copy of unknown
+  version for good. The backend is replaced when the copy differs, so a reply running on the old
+  copy ends and each tab resumes on the new one at its next message, by its `ref`. A Refresh
+  pressed meanwhile waits for it and then runs in full.
+- The select keeps the pick while its detection runs (`pendingPicks`) — falling back to the old
+  value for that second read as a refusal — and the panel says why an agent does not work, a
+  setting that names no executable or a picked copy that is signed out included.
+- The panel is rebuilt only when what it shows changes: a native `<select>` whose element is
+  replaced closes under the pointer, and state posts arrive every 40 ms while a reply streams.
+- A menu opened from a pill near a narrow side bar's right edge is moved left to stay inside the
+  view: `#app` clips what overflows, and at 300 px the gear — the one way into this panel — was
+  cut off.
+
+Measured with this machine's copies: Auto took Codex 0.162.0-alpha.17.2 from the Codex extension
+(GPT-6.1-Sol, GPT-6-Astra, GPT-6-Sol), picking 0.145.0 by hand switched to it and its older list
+(GPT-5.6-Sol …), and Auto brought 0.162 back.
 
 **Newest, not first, and the reason is visible in the model list.** The first version took the
 first match on `PATH`. On the machine it was written on that was a standalone `codex` 0.145.0
@@ -6263,6 +6306,13 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
      can take seconds; meanwhile the tab closed, was replaced, or got another chat from the history,
      and the message went into an old conversation or started a CLI for a tab nothing showed. #339
      one level up: check after the wait, and keep the text when the answer is no.
+369. **A "keep what is running" rule applied to a change the user asked for** → Refresh keeps the
+     copy in use unless another is proven newer, which is right for a Refresh; the same rule on
+     a pick back to Auto kept a copy of unknown version, and the panel showed Auto beside it for
+     good. A deliberate choice asks for the replacement.
+370. **A stored path that names a file by one of its spellings** → the same file reached first
+     through another `PATH` entry read as gone, and a path that carries a version (a copy inside
+     an extension) went missing on every update. Match by the file, store what was meant.
 
 ## Special cases and non-obvious decisions
 

@@ -32,6 +32,25 @@ export interface ChatAgent {
 	/** Which executable is in use: its version, where it came from, its path. */
 	readonly detail?: string;
 	readonly models: readonly ChatModel[];
+	/** Every copy of its CLI found on this machine, newest first; for the agent settings. */
+	readonly copies?: readonly AgentCopy[];
+	/** The path of the copy in use. */
+	readonly binary?: string;
+	/** How it was picked: the newest found, by hand for this project, or by the `aiBrowser.chat.<agent>Path` setting. */
+	readonly choice?: 'auto' | 'pinned' | 'setting';
+	/** The copy this project picked is no longer found, so the newest is used. */
+	readonly pinMissing?: boolean;
+	/** What the project picked, when it is missing: a path, or `bundled`. */
+	readonly pinned?: string;
+}
+
+export interface AgentCopy {
+	readonly path: string;
+	readonly version?: string;
+	/** Where it came from, in a few words: "from PATH", "bundled with …". */
+	readonly source: string;
+	/** The copy inside the assistant's VS Code extension, picked as such rather than by path. */
+	readonly bundled?: boolean;
 }
 
 export interface UsageWindow {
@@ -212,6 +231,10 @@ export type ViewToHost =
 	| { readonly type: 'switchAgent'; readonly choice: 'newTab' | 'replace' | 'continue' | 'cancel' }
 	/** One agent of the conversation in front, by its row id. */
 	| { readonly type: 'stopAgent'; readonly id: string }
+	/** The copy of an agent's CLI this project uses; no `path` is Auto, the newest. */
+	| { readonly type: 'setAgentBinary'; readonly agent: AgentId; readonly path?: string }
+	/** VS Code's own setting for an agent's executable. */
+	| { readonly type: 'openAgentSetting'; readonly agent: AgentId }
 	/** Through the host: `navigator.clipboard` in a webview depends on the host granting it. */
 	| { readonly type: 'copy'; readonly text: string }
 	/** The composer's browser button: a new browser tab, nothing else. */

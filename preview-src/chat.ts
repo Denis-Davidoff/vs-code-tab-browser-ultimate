@@ -139,8 +139,10 @@ const menu = el('div', { class: 'popup menu' });
 const usagePopup = el('div', { class: 'popup usage-popup' });
 const historyPanel = el('div', { class: 'history-panel' });
 const agentsPanel = el('div', { class: 'history-panel agents-panel' });
+/** Which copy of each agent's CLI this project uses: opened from the gear in the agent menu. */
+const agentAppsPanel = el('div', { class: 'history-panel agent-apps' });
 
-app.append(tabStrip, thread, blocked, footer, menu, usagePopup, historyPanel, agentsPanel);
+app.append(tabStrip, thread, blocked, footer, menu, usagePopup, historyPanel, agentsPanel, agentAppsPanel);
 
 /* ---------------------------------------------------------------- state */
 
@@ -266,6 +268,9 @@ function render(): void {
 	renderSelectors(state);
 	renderSend();
 	renderAgents(state);
+	if (agentAppsPanel.classList.contains('open')) {
+		fillAgentApps(state);
+	}
 }
 
 /* ---------------------------------------------------------------- tabs */
@@ -1332,7 +1337,7 @@ function closePopups(except?: HTMLElement): void {
 	if (except !== agentsPanel) {
 		agentsView = undefined;
 	}
-	for (const popup of [menu, usagePopup, historyPanel, agentsPanel]) {
+	for (const popup of [menu, usagePopup, historyPanel, agentsPanel, agentAppsPanel]) {
 		if (popup !== except) {
 			popup.classList.remove('open');
 		}
@@ -1358,11 +1363,18 @@ function openAbove(popup: HTMLElement, anchor: HTMLElement, align: 'left' | 'rig
 		popup.style.left = '';
 	}
 	popup.classList.add('open');
+	// Kept inside the view: `#app` clips what overflows it, and a menu opened
+	// from a pill near a narrow side bar's right edge lost its right side —
+	// with the agent menu's gear, the one way into the agent settings, in it.
+	const overflow = popup.getBoundingClientRect().right - (box.right - 8);
+	if (align === 'left' && overflow > 0) {
+		popup.style.left = `${Math.max(8, rect.left - box.left - overflow)}px`;
+	}
 }
 
 document.addEventListener('mousedown', event => {
 	const target = event.target as Node;
-	if (![menu, usagePopup, historyPanel, agentsPanel, plusButton, usageButton, agentsButton, agentPill, modelPill].some(n => n.contains(target))) {
+	if (![menu, usagePopup, historyPanel, agentsPanel, agentAppsPanel, plusButton, usageButton, agentsButton, agentPill, modelPill].some(n => n.contains(target))) {
 		closePopups();
 	}
 });
@@ -1393,13 +1405,28 @@ interface MenuItem {
 	readonly run: () => void;
 }
 
-function openMenu(anchor: HTMLElement, items: MenuItem[], heading?: string): void {
+/** A button at the right of a menu's heading. */
+interface MenuAction {
+	readonly icon: string;
+	readonly title: string;
+	readonly run: () => void;
+}
+
+function openMenu(anchor: HTMLElement, items: MenuItem[], heading?: string, action?: MenuAction): void {
 	if (menu.classList.contains('open') && anchor.classList.contains('active')) {
 		closePopups();
 		return;
 	}
+	let headingAction: HTMLButtonElement | undefined;
+	if (action) {
+		headingAction = button([icon(action.icon)], { class: 'ghost round menu-heading-action', title: action.title });
+		headingAction.addEventListener('click', () => {
+			closePopups();
+			action.run();
+		});
+	}
 	menu.replaceChildren(
-		heading ? el('div', { class: 'menu-heading', text: heading }) : '',
+		heading ? el('div', { class: 'menu-heading' }, el('span', { text: heading }), headingAction) : '',
 		...items.map(item => {
 			const b = button([
 				item.icon ? icon(item.icon, 'menu-icon') : el('span', { class: 'menu-icon' }),
@@ -1430,8 +1457,117 @@ agentPill.addEventListener('click', () => {
 		checked: a.id === s.selection.agent,
 		disabled: !a.available,
 		run: () => post({ type: 'select', selection: { agent: a.id } }),
-	})), 'Agent');
+	})), 'Agent', { icon: 'gear', title: 'Which Claude Code and Codex apps to use', run: openAgentApps });
 });
+
+/* agent apps */
+
+/**
+ * Which copy of each agent's CLI this project uses. Detection finds every copy
+ * — on PATH, in the usual install places, inside the assistant's own VS Code
+ * extension — and uses the newest (Auto); here a project can pick one by hand.
+ * VS Code's own `aiBrowser.chat.<agent>Path` setting still overrides both, and
+ * a button opens it. Rebuilt only when what it shows changes: a native select
+ * whose element is replaced closes under the user's pointer.
+ */
+let agentAppsShown = '';
+
+function openAgentApps(): void {
+	closePopups(agentAppsPanel);
+	agentAppsShown = '';
+	if (state) {
+		fillAgentApps(state);
+	}
+	agentAppsPanel.classList.add('open');
+}
+
+/**
+ * A pick waiting for the detection it started: shown in its select until that
+ * detection has answered, or the select would jump back to the old copy for as
+ * long as detection takes, which reads as the pick being refused.
+ */
+const pendingPicks = new Map<string, { readonly value: string; readonly at: number; sawDetecting: boolean }>();
+
+function fillAgentApps(s: ChatViewState): void {
+	for (const [id, pick] of pendingPicks) {
+		if (s.detecting) {
+			pick.sawDetecting = true;
+		} else if (pick.sawDetecting || Date.now() - pick.at > 10_000) {
+			// Answered — or refused by the host, which then starts no detection.
+			pendingPicks.delete(id);
+		}
+	}
+	const shape = JSON.stringify([s.detecting, [...pendingPicks], s.agents.map(a => [a.id, a.available, a.problem, a.copies, a.binary, a.choice, a.pinMissing, a.pinned])]);
+	if (shape === agentAppsShown) {
+		return;
+	}
+	agentAppsShown = shape;
+	const body = el('div', { class: 'history-list agent-apps-body' },
+		el('div', { class: 'agents-sub', text: s.detecting
+			? 'Looking for the installed copies…'
+			: 'Which copy of each agent this project uses. Auto picks the newest one found. Changing it ends a reply in progress with that agent; the conversation carries on with the new copy.' }));
+	for (const agent of s.agents) {
+		const copies = agent.copies ?? [];
+		const label = (copy: { version?: string; source: string; path: string }) => {
+			const text = `${copy.version ?? 'unknown version'} — ${copy.source}`;
+			// Two copies alike in version and origin (two PATH directories) are
+			// told apart by their folder: a native select shows no tooltip.
+			const alike = copies.filter(c => `${c.version ?? 'unknown version'} — ${c.source}` === text).length > 1;
+			return alike ? `${text} — ${copy.path.replace(/\/[^/]*$/, '')}` : text;
+		};
+		// Under Auto, the copy Auto is actually using — with equal versions that
+		// can be another one than the first listed.
+		const autoCopy = (agent.choice === 'auto' ? copies.find(c => c.path === agent.binary) : undefined) ?? copies[0];
+		const select = el('select', { class: 'agent-app-select' });
+		const auto = el('option', { text: autoCopy ? `Auto — newest (${autoCopy.version ?? 'unknown version'}, ${autoCopy.source})` : 'Auto — newest' });
+		auto.value = '';
+		select.append(auto);
+		for (const copy of copies) {
+			const option = el('option', { text: label(copy), title: copy.path });
+			option.value = copy.path;
+			select.append(option);
+		}
+		let value = agent.choice === 'pinned' && agent.binary ? agent.binary : '';
+		if (agent.pinMissing) {
+			// Shown as picked, so that choosing Auto is a change and clears it;
+			// selected as Auto, it could not be cleared at all.
+			const missing = el('option', { text: `Not found: ${agent.pinned === 'bundled' ? 'the copy bundled with the extension' : agent.pinned ?? 'the copy picked'}` });
+			missing.value = '\u0000missing';
+			missing.disabled = true;
+			select.append(missing);
+			value = missing.value;
+		}
+		select.value = pendingPicks.get(agent.id)?.value ?? value;
+		select.disabled = s.detecting || agent.choice === 'setting' || !copies.length;
+		select.addEventListener('change', () => {
+			pendingPicks.set(agent.id, { value: select.value, at: Date.now(), sawDetecting: false });
+			post({ type: 'setAgentBinary', agent: agent.id, path: select.value || undefined });
+		});
+
+		const setting = button([el('span', { text: agent.choice === 'setting' ? 'Open the setting' : 'Set a path in VS Code settings…' })], { class: 'agent-app-link' });
+		setting.addEventListener('click', () => post({ type: 'openAgentSetting', agent: agent.id }));
+
+		const notes: HTMLElement[] = [];
+		if (agent.choice === 'setting') {
+			notes.push(el('div', { class: 'agent-app-note', text: `Set by aiBrowser.chat.${agent.id}Path in VS Code settings, which overrides the choice here.` }));
+		} else if (agent.pinMissing && copies.length) {
+			notes.push(el('div', { class: 'agent-app-note warn', text: 'The copy picked for this project is no longer found; the newest is used. Pick Auto to stop looking for it.' }));
+		}
+		// Whatever keeps it from working — a setting naming no executable, a
+		// picked copy that is signed out or lists no models — is said here, where
+		// the copy is chosen.
+		if (!agent.available && agent.problem && !s.detecting) {
+			notes.push(el('div', { class: 'agent-app-note warn', text: agent.problem }));
+		}
+		body.append(el('div', { class: 'agent-app' },
+			el('div', { class: 'agent-app-name', text: agent.name }),
+			select,
+			agent.binary ? el('div', { class: 'agent-app-path', text: `In use: ${agent.binary}`, title: agent.binary }) : undefined,
+			...notes,
+			setting));
+	}
+	agentAppsPanel.replaceChildren(panelHead('Agent apps'), body);
+}
 
 modelPill.addEventListener('click', () => {
 	const s = state;
@@ -1760,7 +1896,7 @@ function fillAgents(agents: ToolEntry[], force = false): void {
 	const selected = agentsView.selected ? agents.find(a => a.id === agentsView!.selected) : undefined;
 
 	if (!selected) {
-		const head = el('div', { class: 'history-head' }, el('span', { text: 'Agents' }), close);
+		const head = panelHead('Agents');
 		const running = agents.filter(a => a.status === 'running').length;
 		const list = el('div', { class: 'history-list' },
 			el('div', { class: 'agents-sub', text: `${agents.length} agent${agents.length === 1 ? '' : 's'}${running ? ` · ${running} running` : ''} · click an agent for details` }));
@@ -1840,10 +1976,21 @@ function toggleHistory(chats: readonly ChatSummary[]): void {
 	historyPanel.classList.add('open');
 }
 
-function fillHistory(chats: readonly ChatSummary[]): void {
+/**
+ * The heading of a panel drawn over the chat: a back arrow before the title and
+ * a close button at the right, both closing it — the arrow is where a back
+ * button is looked for in a side bar.
+ */
+function panelHead(title: string): HTMLElement {
+	const back = button([icon('arrow-left')], { class: 'ghost round', title: 'Back' });
+	back.addEventListener('click', () => closePopups());
 	const close = button([icon('close')], { class: 'ghost round', title: 'Close' });
 	close.addEventListener('click', () => closePopups());
-	const header = el('div', { class: 'history-head' }, el('span', { text: 'History' }), close);
+	return el('div', { class: 'history-head' }, el('span', { class: 'panel-title' }, back, el('span', { text: title })), close);
+}
+
+function fillHistory(chats: readonly ChatSummary[]): void {
+	const header = panelHead('History');
 
 	const list = el('div', { class: 'history-list' });
 	if (!chats.length) {

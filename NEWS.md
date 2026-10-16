@@ -16,7 +16,7 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 
 ## 0.7.0 — 2026-10-16
 - **AI Browser chat** in the secondary side bar: talk to Claude Code or Codex with the CLI you already have.
-- Pick the agent, the model and its effort; **U** shows your plan limits and this chat's tokens.
+- Pick the agent, the model and its effort — and, from the gear, which installed copy of each agent to use; **U** shows your plan limits and this chat's tokens.
 - **+** attaches a screenshot, an element from the page, the page address or a file.
 - Commands, file edits and thinking appear as cards you can open.
 - Several chats at once, as tabs; switching a chat to the other agent asks whether to open a new tab, hand the conversation over, or close this one.
