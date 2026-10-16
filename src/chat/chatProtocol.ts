@@ -83,6 +83,13 @@ export interface ToolbarSkill {
 	readonly name: string;
 	/** What is sent; `{{param}}` is replaced by the value given. */
 	readonly prompt: string;
+	/**
+	 * Prompts sent after it, in order, each once the turn before it has ended —
+	 * as messages queued with ⌘Enter are — and, where it has a check, only when
+	 * the agent judged it true.
+	 * Absent or empty: one prompt. The same parameters fill them.
+	 */
+	readonly followUps?: readonly ToolbarStep[];
 	/** In the chat, as a message; to the clipboard, the marked result only; or silently, the button saying it is done. */
 	readonly result: ToolbarResult;
 	/** Which agents offer it: every one, or one. */
@@ -99,6 +106,18 @@ export interface ToolbarSkill {
 }
 
 export type ToolbarResult = 'chat' | 'clipboard' | 'silent';
+
+/**
+ * A prompt of a toolbar skill after the first. Without a `check` it runs once
+ * the step before it is over, whatever that step did. With one, the agent is
+ * asked at the end of the step before to judge the check and answer with a
+ * marker line (`nextDecision`); the prompt runs only on a yes, and the skill
+ * stops there otherwise.
+ */
+export interface ToolbarStep {
+	readonly prompt: string;
+	readonly check?: string;
+}
 
 /** A value asked for when the skill runs, and written into the prompt as `{{name}}`. Every one is required. */
 export interface ToolbarParam {
@@ -125,6 +144,9 @@ export interface ToolbarRun {
 	readonly count?: number;
 	/** A skill whose result goes into the chat: running while the tab's turn it started runs. Stop stops that tab. */
 	readonly inChat?: boolean;
+	/** A skill of several prompts: the one being run, from 1, and how many there are. */
+	readonly step?: number;
+	readonly steps?: number;
 }
 
 /**
@@ -166,6 +188,12 @@ export interface ChatStats {
 	/** Claude reports a price; Codex does not. */
 	costUsd?: number;
 	turns: number;
+	/** Tokens the conversation's context holds now — the latest request's, not a sum. */
+	contextTokens?: number;
+	/** The model's context window, as the CLI reports it. */
+	contextWindow?: number;
+	/** Compacted since `contextTokens` was reported: that figure is the size before. */
+	contextCompacted?: boolean;
 }
 
 export type ToolKind = 'command' | 'read' | 'edit' | 'search' | 'web' | 'agent' | 'mcp' | 'other';
@@ -337,6 +365,12 @@ export interface ChatViewState {
 	readonly skillAgents: readonly ToolEntry[];
 	/** `aiBrowser.chat.collapseToolCalls`: tool calls start folded. */
 	readonly collapseTools: boolean;
+	/**
+	 * How full the tab in front's context is, once its agent has said — and
+	 * whether the agent can compact it (Claude Code lists `/compact`; Codex has
+	 * `thread/compact/start`).
+	 */
+	readonly context?: { readonly used: number; readonly window?: number; readonly compacted?: boolean; readonly canCompact: boolean };
 }
 
 export interface PendingSend {
@@ -345,6 +379,8 @@ export interface PendingSend {
 	readonly kind: 'steer' | 'queue';
 	/** Labels of the attachments that go with it. */
 	readonly attachments: readonly string[];
+	/** A later prompt of a toolbar skill: its name, and which prompt of how many. */
+	readonly skill?: { readonly name: string; readonly step: number; readonly steps: number; readonly check?: string };
 }
 
 export interface ChatTabSummary {
@@ -406,6 +442,8 @@ export type ViewToHost =
 	| { readonly type: 'unqueue'; readonly id: string }
 	/** The "/" menu: the tab in front starts over; its conversation stays in the history. */
 	| { readonly type: 'clearChat' }
+	/** The context pie: compact the tab's conversation with the agent's own command. */
+	| { readonly type: 'compact'; readonly tabId: string }
 	/** The "/" menu: the tab in front's conversation as Markdown, on the clipboard or into a file the user saves. */
 	| { readonly type: 'exportChat'; readonly to: 'clipboard' | 'file' }
 	| { readonly type: 'stop' }

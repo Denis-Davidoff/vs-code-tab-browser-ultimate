@@ -280,6 +280,8 @@ class ClaudeSession implements AgentSession {
 	private _sessionId: string | undefined;
 	/** Task id to the call it belongs to, from `task_started`; read for `task_updated`. */
 	private readonly _tasks = new Map<string, string>();
+	/** The conversation's own model, for the context window `result` names; see `claudeEvents`. */
+	private readonly _context: { model?: string } = {};
 	/** Calls that are agents, the only ones whose background state holds the process. */
 	private readonly _agentTools = new Set<string>();
 	private _toldWaiting = false;
@@ -475,7 +477,7 @@ class ClaudeSession implements AgentSession {
 			if (process !== this._process) {
 				return;
 			}
-			for (const event of claudeEvents(message, this._tasks)) {
+			for (const event of claudeEvents(message, this._tasks, this._context)) {
 				this._handle(event);
 			}
 		});

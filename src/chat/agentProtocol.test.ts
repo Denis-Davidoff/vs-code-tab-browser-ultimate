@@ -9,7 +9,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { suite, test } from 'node:test';
 import {
-	LineSplitter, chatTitle, claudeApproval, claudeApprovalAnswer, claudeEvents, claudeModels, claudeRateLimitWindows, claudeUsage,
+	LineSplitter, chatTitle, claudeApproval, claudeApprovalAnswer, claudeContextWindow, claudeEvents, claudeModels, claudeRateLimitWindows, claudeUsage,
 	claudeCommands, claudeTool, codexAgentThreadEvents, codexSkillItems, codexSkills, codexApproval, codexApprovalAnswer, codexEvents, codexPatchPaths, outsideProject, codexModels, codexUsage, compareCliVersions, parseCliVersion, parseLine, toolDetail, unwrapShell, windowLabel,
 } from './agentProtocol.ts';
 
@@ -717,5 +717,76 @@ suite('skills and commands', () => {
 		assert.deepStrictEqual(codexSkillItems('price is 5$code-review', skills), []);
 		assert.deepStrictEqual(codexSkillItems('$code-reviewer', skills), []);
 		assert.deepStrictEqual(codexSkillItems('$echo-test $echo-test', skills), [{ type: 'skill', name: 'echo-test', path: '/p/.agents/skills/echo-test/SKILL.md' }]);
+	});
+});
+
+// Measured on 2026-10-17 with Claude Code 2.1.301 and codex-cli 0.162.0-alpha.17.2.
+suite('context window', () => {
+	test('Claude: a reply carries the context it used, the result the window of the conversation\'s model', () => {
+		const context: { model?: string } = {};
+		claudeEvents({ type: 'system', subtype: 'init', session_id: 's', model: 'claude-haiku-5-5' }, undefined, context);
+		const reply = claudeEvents({
+			type: 'assistant', message: {
+				model: 'claude-haiku-5-5', content: [{ type: 'text', text: 'Hi' }],
+				usage: { input_tokens: 2, cache_creation_input_tokens: 8227, cache_read_input_tokens: 11563, output_tokens: 4 },
+			},
+		}, undefined, context);
+		assert.deepStrictEqual(reply, [{ type: 'context', used: 19796 }]);
+		const result = claudeEvents({
+			type: 'result', subtype: 'success', is_error: false, usage: { input_tokens: 2, output_tokens: 5 },
+			modelUsage: {
+				'claude-haiku-5-5': { inputTokens: 2, contextWindow: 1000000 },
+				'claude-sonnet-5-5': { inputTokens: 900, contextWindow: 200000 },
+			},
+		}, undefined, context);
+		assert.deepStrictEqual(result.find(e => e.type === 'context'), { type: 'context', window: 1000000 });
+	});
+
+	test('Claude: a sub-agent\'s reply is not the conversation\'s context', () => {
+		const events = claudeEvents({
+			type: 'assistant', parent_tool_use_id: 'toolu_1',
+			message: { model: 'm', content: [{ type: 'text', text: 'x' }], usage: { input_tokens: 5000, output_tokens: 1 } },
+		});
+		assert.ok(!events.some(e => e.type === 'context'));
+	});
+
+	test('Claude: with the model unknown, only a single entry names the window', () => {
+		assert.strictEqual(claudeContextWindow({ a: { contextWindow: 1000000 } }, undefined), 1000000);
+		assert.strictEqual(claudeContextWindow({ a: { contextWindow: 1000000 }, b: { contextWindow: 200000 } }, undefined), undefined);
+		assert.strictEqual(claudeContextWindow({ a: { contextWindow: 1000000 }, b: { contextWindow: 200000 } }, 'b'), 200000);
+		assert.strictEqual(claudeContextWindow(undefined, 'b'), undefined);
+	});
+
+	test('Claude: a compaction leaves the size unknown and says so', () => {
+		const events = claudeEvents({
+			type: 'system', subtype: 'compact_boundary',
+			compact_metadata: { trigger: 'manual', pre_tokens: 19797, post_tokens: 5110 },
+		});
+		// `post_tokens` is the summary alone: the next request carries the system
+		// prompt and the tools again, so the size waits for it.
+		assert.deepStrictEqual(events, [
+			{ type: 'context', compacted: true },
+			{ type: 'notice', text: 'Conversation compacted: 19,797 tokens of context became a 5,110-token summary.' },
+		]);
+	});
+
+	test('Codex: the last request is the context, not the thread total', () => {
+		const events = codexEvents('thread/tokenUsage/updated', {
+			threadId: 't', turnId: 'u',
+			tokenUsage: {
+				total: { totalTokens: 16067, inputTokens: 16061, cachedInputTokens: 13184, outputTokens: 6, reasoningOutputTokens: 0 },
+				last: { totalTokens: 11043, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0 },
+				modelContextWindow: 475000,
+			},
+		});
+		assert.deepStrictEqual(events.find(e => e.type === 'context'), { type: 'context', used: 11043, window: 475000 });
+		assert.ok(events.some(e => e.type === 'tokens'));
+	});
+
+	test('Codex: a compaction item is a notice', () => {
+		assert.deepStrictEqual(
+			codexEvents('item/completed', { item: { type: 'contextCompaction', id: 'c' }, threadId: 't', turnId: 'u' }),
+			[{ type: 'notice', text: 'Conversation compacted.' }],
+		);
 	});
 });

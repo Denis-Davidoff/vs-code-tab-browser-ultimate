@@ -12,7 +12,7 @@
  * loads it directly (see "Recipe for the next feature" in CLAUDE.md).
  */
 
-import type { ChatCommand, ToolbarColors, ToolbarParam, ToolbarSkill } from './chatProtocol';
+import type { ChatCommand, ToolbarColors, ToolbarParam, ToolbarSkill, ToolbarStep } from './chatProtocol';
 
 /**
  * As typed after `/` or `$`: lower case, no spaces, like a CLI's own skills
@@ -29,6 +29,9 @@ const iconShape = /^[a-z0-9-]{1,60}$/;
 export const toolbarLimits = {
 	skills: 30,
 	prompt: 20_000,
+	/** Prompts after the first: a chain is a few steps, not a script. */
+	followUps: 9,
+	check: 2_000,
 	label: 40,
 	tooltip: 200,
 	params: 10,
@@ -64,6 +67,19 @@ export function validToolbarSkill(raw: unknown): ToolbarSkill | string {
 	if (prompt.length > toolbarLimits.prompt) {
 		return `The prompt is longer than ${toolbarLimits.prompt} characters.`;
 	}
+	const followUps: ToolbarStep[] = [];
+	for (const item of Array.isArray(raw.followUps) ? raw.followUps : []) {
+		const step = validStep(item, followUps.length + 2);
+		if (typeof step === 'string') {
+			return step;
+		}
+		if (step) {
+			followUps.push(step);
+		}
+	}
+	if (followUps.length > toolbarLimits.followUps) {
+		return `A skill sends at most ${toolbarLimits.followUps + 1} prompts.`;
+	}
 	const result = raw.result === 'clipboard' || raw.result === 'silent' ? raw.result : 'chat';
 	const agents = raw.agents === 'claude' || raw.agents === 'codex' ? raw.agents : 'all';
 	const icon = typeof raw.icon === 'string' && iconShape.test(raw.icon) ? raw.icon : 'sparkle';
@@ -84,7 +100,27 @@ export function validToolbarSkill(raw: unknown): ToolbarSkill | string {
 	if (params.length > toolbarLimits.params) {
 		return `A skill takes at most ${toolbarLimits.params} parameters.`;
 	}
-	return { id, name, prompt, result, agents, icon, label, tooltip, colors, params };
+	return { id, name, prompt, followUps: followUps.length ? followUps : undefined, result, agents, icon, label, tooltip, colors, params };
+}
+
+/**
+ * One prompt after the first: an empty one is dropped rather than refused (a
+ * row the editor left blank). An empty check is no check.
+ */
+function validStep(raw: unknown, number: number): ToolbarStep | string | undefined {
+	const from = isRecord(raw) ? raw : { prompt: raw };
+	const prompt = typeof from.prompt === 'string' ? from.prompt.trim() : '';
+	if (!prompt) {
+		return undefined;
+	}
+	if (prompt.length > toolbarLimits.prompt) {
+		return `Prompt ${number} is longer than ${toolbarLimits.prompt} characters.`;
+	}
+	const check = typeof from.check === 'string' ? from.check.trim() : '';
+	if (check.length > toolbarLimits.check) {
+		return `The check before prompt ${number} is longer than ${toolbarLimits.check} characters.`;
+	}
+	return check ? { prompt, check } : { prompt };
 }
 
 /** One colour, as the host keeps it: a theme colour by name or `#rrggbb`, nothing else reaching CSS. */
@@ -152,11 +188,18 @@ export function valueProblem(param: ToolbarParam, value: string): string | undef
 	return undefined;
 }
 
+/** A step of a skill run, filled in: its prompt, and the check made before it, if any. */
+export interface FilledStep {
+	readonly text: string;
+	readonly check?: string;
+}
+
 /**
- * The prompt with every `{{param}}` replaced by its value, or the first
+ * Every step of the skill, the first and its follow-ups in order, with each
+ * `{{param}}` in a prompt or a check replaced by its value — or the first
  * problem with a value. A placeholder naming no parameter is left as written.
  */
-export function fillPrompt(skill: ToolbarSkill, values: Readonly<Record<string, unknown>>): { text: string } | { error: string } {
+export function fillPrompt(skill: ToolbarSkill, values: Readonly<Record<string, unknown>>): { steps: FilledStep[] } | { error: string } {
 	const filled: Record<string, string> = {};
 	for (const param of skill.params) {
 		const raw = values[param.name];
@@ -167,9 +210,13 @@ export function fillPrompt(skill: ToolbarSkill, values: Readonly<Record<string, 
 		}
 		filled[param.name] = value.trim();
 	}
-	const text = skill.prompt.replace(/\{\{\s*([A-Za-z_][A-Za-z0-9_-]*)\s*\}\}/g,
+	const fill = (text: string) => text.replace(/\{\{\s*([A-Za-z_][A-Za-z0-9_-]*)\s*\}\}/g,
 		(whole, name: string) => Object.prototype.hasOwnProperty.call(filled, name) ? filled[name] : whole);
-	return { text };
+	return {
+		steps: [{ text: fill(skill.prompt) }, ...(skill.followUps ?? []).map(step => step.check
+			? { text: fill(step.prompt), check: fill(step.check) }
+			: { text: fill(step.prompt) })],
+	};
 }
 
 /**
@@ -185,6 +232,57 @@ export function adaptSigils(text: string, commands: readonly ChatCommand[]): str
 		const insert = byName.get(name);
 		return insert ? `${lead}${insert}${token.slice(name.length)}` : whole;
 	});
+}
+
+export const nextYes = '<<<NEXT:YES>>>';
+export const nextNo = '<<<NEXT:NO>>>';
+
+/**
+ * A step's prompt when the step after it has a check: the agent is asked to
+ * judge it once its work is done and to end with one of two marker lines,
+ * which `nextDecision` reads. The check is the user's own words, filled with
+ * the skill's parameters like the prompts.
+ */
+export function withNextDecision(prompt: string, check: string): string {
+	return `${prompt}\n\nWhen you have finished the task above, check this: ${check}\nThen end your reply with a line of its own: ${nextYes} if the check passes, ${nextNo} if it does not. Write exactly one of the two, once, as the last line.`;
+}
+
+/**
+ * The agent's answer to `withNextDecision`: the last marker line of the reply
+ * — the last, as with the result markers, since a reply quoting the
+ * instruction names both. Undefined when it wrote neither, which the caller
+ * treats as "stop": going on was not asked for.
+ */
+export function nextDecision(reply: string): boolean | undefined {
+	const lines = reply.split(/\r?\n/).map(line => line.trim().replace(/^[`*_]+|[`*_]+$/g, ''));
+	for (let i = lines.length - 1; i >= 0; i--) {
+		if (lines[i] === nextYes) {
+			return true;
+		}
+		if (lines[i] === nextNo) {
+			return false;
+		}
+	}
+	return undefined;
+}
+
+/**
+ * Whether the next step runs, once the one before it is over. Without a check,
+ * always. With one, only when that step ended without an error — an
+ * interrupted or failed step judged nothing — and the agent answered yes. The
+ * reason is said when it does not.
+ */
+export function stepGate(check: string | undefined, error: string | undefined, reply: string): { go: true } | { go: false; why: string } {
+	if (!check) {
+		return { go: true };
+	}
+	if (error) {
+		return { go: false, why: 'the step before it ended with an error, so the check was not made' };
+	}
+	const answer = nextDecision(reply);
+	return answer === true ? { go: true }
+		: answer === false ? { go: false, why: 'the check did not pass' }
+			: { go: false, why: 'the agent did not say whether the check passed' };
 }
 
 export const resultStart = '<<<RESULT';

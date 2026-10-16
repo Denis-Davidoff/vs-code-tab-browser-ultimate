@@ -4183,7 +4183,7 @@ What is built, and what is not yet:
 
 Bottom to top: a toolbar row — `+`, the browser button, the agent pill, the model pill, the effort
 slider, the approval button ([approvals](#approvals-and-the-browser-tools)) and, pushed right, the agents button (only while the chat has agents — see
-[Agents the agent starts](#agents-the-agent-starts)), `U` and Send / Stop — then the message box, then the conversation. The
+[Agents the agent starts](#agents-the-agent-starts)), the context pie ([below](#the-context-pie-and-compacting)), `U` and Send / Stop — then the message box, then the conversation. The
 browser button (icon only, a globe — `codicon-globe`, the same mark as the extension's own
 status bar item and toolbar dropdown; `codicon-browser` reads as a window) opens a new browser
 tab and does nothing else: it runs
@@ -4271,7 +4271,7 @@ from their shipped webviews — Claude Code 2.1.301 (`webview/index.css`, CSS mo
 | code blocks | both | header with the language and a copy button; tables, quotes, rules |
 | copying a message | asked for | a copy button at the bottom right of every prompt and reply, on hover (`.message-copy`); a reply copies as its Markdown; the prompt's copy does not fold the prompt |
 | spacing | asked for | rows `--row-pad` (10px) apart above and below — 6px at first, widened on request twice; the timeline's dot and line are placed from the same variable, so change only it — and 20px between turns — none after a turn that holds only its prompt, so messages added during a turn sit 22px apart rather than 42 (asked for); in a reply, paragraphs, lists, quotes, code blocks and tables 0.9em apart |
-| lists | asked for | a bullet is an em dash (`list-style-type: "— "`), items 0.4em apart; numbered items 0.7em apart, their number bold in the theme's chart yellow |
+| lists | asked for | a bullet is an em dash (`list-style-type: "— "`) in the theme's chart yellow, items 0.4em apart; numbered items 0.7em apart, their number bold in the same yellow |
 | sending | asked for | the message's text lifts out of the box and flies to its prompt in the thread (`launchFlight` / `landFlight`): the prompt's text is hidden until the flight lands, so the words are on screen once; the target is the first new prompt **with this text** (two sends inside one post round trip put both prompts in at once, and "the last prompt" was the wrong one), hidden again if it is rebuilt in flight; a chat switch stops the flight; a send with no prompt appearing within 1.5 s (still waiting for detection, refused) fades in place; nothing flies under reduced motion |
 
 **The Markdown reader** handles what replies use: fenced code, headings, quotes, rules, tables
@@ -4418,6 +4418,9 @@ refresh the samples.
 | more input mid-turn | another user line — taken into the turn, or answered by a turn of its own; see the queue below | `turn/steer` with `expectedTurnId` |
 | stop | `control_request` `interrupt` | `turn/interrupt` |
 | resume | `--resume <session_id>` | `thread/resume` |
+| context in use | the main agent's `assistant` message `usage`: input + both cache halves + output | `thread/tokenUsage/updated.last.totalTokens` |
+| context window | `result.modelUsage[<model>].contextWindow` | `thread/tokenUsage/updated.modelContextWindow` |
+| compacting | the message `/compact`; `system` `compact_boundary` reports it | `thread/compact/start`, run as a turn with a `contextCompaction` item |
 
 Each of these cost a measurement and each would be wrong if guessed:
 
@@ -4473,6 +4476,79 @@ Each of these cost a measurement and each would be wrong if guessed:
 - **Claude's usage method is marked as unstable by Claude Code itself** — its SDK names it
   `usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET`. `claudeUsage` reads two shapes and
   reports an error rather than throwing on a third.
+
+### The context pie and compacting
+
+Asked for: a small pie beside `U` that fills as the conversation's context window does, and a
+click that runs the agent's own compaction where it has one. `renderContext` in `chat.ts` draws it
+(a `conic-gradient` ring, the share set as `--fill` through the CSSOM, which the CSP allows);
+`ChatStats.contextTokens` / `contextWindow` hold the figures, so a chat reopened from the history
+shows its last known fill. Warning colour from 80 %, error colour from 95 %. It appears once the
+agent has reported a size.
+
+- **The tooltip says how much is used and how much is left** — tokens and share of the window,
+  asked for — and is drawn by the view (`hoverTip`, from `data-tip`), as the toolbar skills' are,
+  since a native `title` did not show on those buttons in VS Code. **The button is never
+  `disabled`**: a disabled button gets no pointer events, so the tooltip — the one place that says
+  why compacting is not on offer right now — would never appear. It is marked `unavailable`
+  (`aria-disabled`) while the tab works or the agent has no compacting, and a click then does
+  nothing.
+- **A click asks first** (asked for): "Compact the conversation?" in the view's own popover —
+  never a modal, which would pause a browser tab beside the chat — with the sizes and what
+  compacting does, and **No as the default** (focused, Enter answers it, as do Escape and a click
+  elsewhere), the shape of the "run it again?" question. Only Yes posts `compact`. The question
+  closes if the tab starts working or the pie goes while it is open.
+
+**The figure is the latest request, never a sum** — a sum counts the conversation once per tool
+round. Measured on Claude Code 2.1.301 and codex-cli 0.162.0-alpha.17.2:
+
+- **Claude Code**: each `assistant` message of the main agent carries that one request's `usage`;
+  input + `cache_creation_input_tokens` + `cache_read_input_tokens` + output is what the next
+  request carries (21 278 after "say hi" here, mostly the system prompt and the tools). A
+  sub-agent's message (`parent_tool_use_id`) is not the conversation's. The **window** comes only
+  with `result`, as `modelUsage[<model>].contextWindow` (1 000 000 for Haiku 5.5) — and that map
+  lists every model the turn used, sub-agents' included, so `claudeEvents` keeps the
+  conversation's model from `init` and the main agent's replies (`ClaudeSession._context`) and
+  reads that entry; with the model unknown only a map of one entry answers.
+- **Codex**: `thread/tokenUsage/updated` carries `last` (the latest request) beside `total` (the
+  thread) and `modelContextWindow` (475 000 for GPT-6.1-Sol). `last.totalTokens` is the one to
+  read: after a compaction `last` has `inputTokens: 0` and `totalTokens` the new size.
+
+**Compacting is the agents' own, and both run it as a turn.** The click sends `{ type: 'compact' }`
+and the provider sends `/compact` into the tab (`_compact`, with no attachments — the chips in the
+box are the next message's), so it shows as that prompt, as both agents' own UIs show it.
+
+- **Claude Code** runs `/compact` from a stream-json message: `system` `status: compacting`, then
+  `compact_boundary` with `compact_metadata` (`trigger`, `pre_tokens`, `post_tokens`), a replayed
+  summary as a `user` message with string content (not read), and a `result` with `num_turns: 0`.
+  It is offered only while the CLI lists `compact` among its commands ("if it has one").
+  **`post_tokens` is the summary alone, not the new context**: a compaction from 21 279 reported
+  2 220, and the next request carried 25 726 — the system prompt and the tools are added back. So
+  the pie does not take it; the size is marked `contextCompacted` (the pie empty, the tooltip
+  saying the new size comes with the next reply) until a reply reports one. Claude Code compacting
+  on its own (`trigger: auto`) arrives the same way.
+- **A Codex compaction's turn takes no more input** (`_compactTurn`, from the request to the
+  turn's end). The app-server refuses a steer into one — `cannot steer a compact turn` is in the
+  0.162 binary, beside `cannot steer a review turn` — and before its `turn/started` there is not
+  even an id to steer by, so a message sent then took the start branch: a second turn beside the
+  compaction, and `_stopRequested` cleared under a Stop. A message sent during a compaction now
+  waits for it to end and starts its own turn, as one sent after Stop does; measured on the real
+  CLI. **A compaction that is answered and never starts a turn** ends after `compactStartWaitMs`
+  (30 s) with a line saying so, or the session read as running for good.
+- **Codex** has no `/compact` in the app-server; `CodexSession._send` turns the message `/compact`
+  (alone, no images) into `thread/compact/start`, typed or clicked. The answer is `{}`; the turn
+  arrives as `turn/started`, a `contextCompaction` item, a `thread/tokenUsage/updated` with the new
+  size (16 067 → 11 043, which *is* the next request's base, unlike Claude's figure), and
+  `turn/completed`. The turn id comes only with `turn/started`, so a Stop pressed before it
+  (`_stopRequested`) is honoured there (`_compacting`). One typed during a turn waits for the turn
+  to end rather than being steered in as text.
+- Both end with a notice, "Conversation compacted…" — Claude's naming the size before and the
+  summary's.
+
+Verified with the compiled backends against both real CLIs (a turn, `/compact`, a turn) and the
+pie in headless Chrome at 42 %, 87 %, just compacted and with no window or no compaction; the
+tooltip, the question, No (nothing posted), Yes (one `compact`), a second press closing it, and a
+busy tab (tooltip shown, no question).
 
 ### Skills and commands: the "/" palette
 
@@ -4753,6 +4829,58 @@ toolbar; at most 30, prompts up to 20 000 characters.
   chat counts as running too**, while the tab it was sent to is busy (`_chatSkillTabs`,
   `inChat`), and from the start of the send — detection can hold it for seconds before the tab is
   busy, and a post in between would otherwise have dropped it. Its Stop is that tab's own Stop.
+- **A skill can send several prompts, one after another** — asked for: the first prompt, then
+  **next prompts** (`ToolbarSkill.followUps`, up to 9), each sent once the agent has finished the
+  one before it, as messages queued with ⌘Enter are. Between two prompts there is either nothing —
+  the next one always goes — or a **check** in the user's words (`ToolbarStep.check`, asked for
+  in those terms: "a check prompt between them, or not"). The check is made by the agent at the
+  end of the step before: that step's prompt is sent with `withNextDecision` appended — judge the
+  check, end with a line `<<<NEXT:YES>>>` or `<<<NEXT:NO>>>` — and `stepGate` reads the last such
+  line of that step's reply. No yes, no next prompt: a no, no marker at all, or a step that ended
+  in an error (it judged nothing) all stop the skill there, with a line saying which. The
+  parameters fill the checks as they fill the prompts (`fillPrompt` returns `steps`).
+  - **Into the chat, every prompt goes into the tab's own queue** (`ChatTab.enqueue` with a
+    `SkillStep`), the first included, and `_drainQueues` sends them. Sent straight out while a turn
+    ran, the first would be steered into that turn and its check read from somebody else's reply.
+    The queue shows them as "/name, prompt 2 of 3 — sent if: …". The gate runs at the end of the
+    step's turn (`_gateNextStep`), the pending entry carrying its `SkillStep`; the instruction is
+    added to what is sent and not to the prompt shown.
+  - **A checked prompt goes out only once its check has passed** — `_gateNextStep` puts its queue id
+    in `_cleared`, and `dequeue` drops the skill's remaining prompts, with a line, when it meets a
+    checked prompt that is not there. "Not gated" is not "passed": a step whose send failed, or
+    that `_send` returned on before `tab.send` (blocked, no agent), has no turn and so no gate, and
+    the next prompt then went out unchecked (review finding; `stepNotSent` now also stops the
+    skill there). **Which check a step asks is decided when it is sent**, from what is queued then
+    (`asked` on the pending entry), and the gate accepts the answer only for that same check: a
+    prompt taken out of the queue with its × made the step before answer one check while the gate
+    read it as another's, and removing the first prompt sent the second with no check at all.
+  - **The next prompts are stored under a key of their own**, `aiBrowser.chat.toolbarSteps` (skill
+    id → steps), and `aiBrowser.chat.toolbar` holds the skills without them. An older build reads
+    the toolbar through its own `validToolbarSkill` and writes the whole list back on any edit, so
+    a window not yet reloaded after the update stripped every skill's next prompts. It never
+    touches the second key; `_toolbar` merges the two on every read and `_storeToolbar` writes both.
+  - **A second run of the same skill adds its chain** (`_chatSkillTabs.chains`), and the skill's
+    Stop drops every chain of it — a single slot let Stop, pressed between two prompts, miss the
+    first run's.
+  - **A background run does not count Claude Code's own turns as steps** (`ownTurns`, from
+    `autoTurn`): a step that started a background agent gets a turn of the CLI's own when the agent
+    finishes, and its end would have sent the next prompt on the wrong reply. **A skill's queued prompts are dropped, not
+    given back to the box**, when the tab lets go of its queue (Stop, Clear, another agent in its
+    place) — they are the skill's, not something typed — and the skill's own Stop drops them even
+    with the tab idle between two of them. The button reads running while any are queued
+    (`_chatSkillTabs.chain`), or it read "done" in the half second between two prompts.
+  - **In the background, one session runs them all** (`ToolbarRuns.start` takes the filled steps):
+    each next prompt is sent on the step's `turnEnd`, the check of the step after is appended to a
+    step's prompt, and the clipboard markers go on the last prompt only — the result is read from
+    the last step's reply alone (`stepReply`). A skill stopped by its check ends **done**, saying
+    after which prompt and why, and copies nothing. The button's tooltip and the agents list say
+    which prompt is running ("prompt 2 of 3", `ToolbarRun.step` / `steps`); the report keeps every
+    step's reply, separated by a rule.
+  - Measured on Claude Code 2.1.301 (Haiku) through the compiled `ToolbarRuns`: a three-prompt
+    clipboard skill whose third prompt checked "7 is even" answered `<<<NEXT:NO>>>` and stopped
+    after prompt 2; checking "7 is odd" ran all three and copied the third reply's result. The chat
+    path was checked against a fake session: a yes ran all three, a no and a missing marker each
+    stopped after prompt 2 with their line.
 - **The buttons are kept and updated in place** (`skillButtons`), #365's rule: a run's state
   changes them often.
 - **Their tooltip is drawn by the view** (`hoverTip`, reading `data-tip`), not a native `title`:
@@ -5108,7 +5236,9 @@ against a fake session and in headless Chrome.
   and `aiBrowser.chat.approvalServers` (the MCP servers seen) — per workspace, since a project is
   what a user trusts with commands; one menu for every tab.
 - **The toolbar's skills**: `globalState` `aiBrowser.chat.toolbar`, in order, each checked again
-  on every read (`validToolbarSkill`).
+  on every read (`validToolbarSkill`); their next prompts in `aiBrowser.chat.toolbarSteps`, by
+  skill id — apart, so an older build cannot strip them (see
+  [The toolbar of skills](#the-toolbar-of-skills)).
 - **Selection**: `globalState` `aiBrowser.chat.selection` — the last agent, a model per agent and
   an effort per `<agent>:<model>`, made valid against what was detected on every read.
 - **Open tabs**: `workspaceState` `aiBrowser.chat.openTabs` — every tab's chat id in order, which
@@ -5259,6 +5389,10 @@ failing both, where the conversation stands two seconds after the turn ended. Pu
 as the first version did, put the prompt in the middle of a reply still streaming, which then went
 on below it. Measured with the real CLI in both shapes: after the first tool's result in one,
 and the story whole, then the prompt, then its answer in the other.
+
+**The queue button is Send's own round button, in the theme's accent colour** (asked for:
+`--vscode-button-background`), so the two read as one pair — Send adds the message to the turn,
+the accent one holds it until the turn ends. It used to be a ghost button with a list icon.
 
 **Queued.** Held in the tab (`ChatTab._queued`) with the attachments in the box at the time, shown
 below the conversation ("Sent when this turn ends", with an x to take it back), and sent by the
@@ -7136,6 +7270,29 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
      stopped scrolling sideways, and a long name that kept its width pushed the group tag past the
      row, where the hidden overflow removed it. Let the flexible part give way, and check every
      piece of the line is still on screen.
+418. **A turn's `usage` as the size of the context** → `result.usage` adds up every request of the
+     turn, so a turn with five tool rounds counts the conversation five times. The context is the
+     latest request's usage — the main agent's last `assistant` message, Codex's `last`.
+419. **A compaction's `post_tokens` as the new context** → it is the summary alone; the next request
+     carries the system prompt and the tools again (2 220 reported, 25 726 carried). Leave the size
+     unknown until a request reports it.
+420. **A chain's next step sent on the chain's say-so alone** → a step that ended in an error, or
+     a reply with no answer, is not a yes; reading "no marker" as "go on" would run a commit after
+     tests nobody saw pass. Only an explicit yes from a clean step lets a checked prompt go.
+421. **A skill's first prompt sent straight into a busy tab** → it is steered into the running
+     turn, and its check is then read from that turn's reply, which answers somebody else's
+     message. Queue every step, the first included.
+422. **"No gate ran" read as "the gate passed"** → the check of a skill's next prompt was asked
+     only at the end of a turn, so a step that never had one — its send failed, it was taken out of
+     the queue — let a checked prompt go out unchecked. A checked prompt needs a recorded pass.
+423. **A question fixed when it is queued and answered when it is sent** → the check a step asks
+     was taken from the list at press time; with a prompt removed from the queue, the answer to one
+     check gated another. Decide the question at send time and accept the answer only for it.
+424. **A new field in a list an older build writes back whole** → an old window rebuilds each
+     toolbar skill without `followUps` and stores the list, so one edit there stripped the new field
+     from every skill. Keep a new field under a key the old build does not know.
+425. **Steering into a turn that is not a model's turn** → Codex refuses input to a compaction (and
+     a review) turn; wait for it to end, as for a turn being stopped.
 
 ## Special cases and non-obvious decisions
 

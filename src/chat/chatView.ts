@@ -9,7 +9,7 @@ import * as vscode from 'vscode';
 import { AgentRegistry, agentNames, type BrowserServer } from './agents';
 import { sweepBrowserConfigs } from './claudeAgent';
 import { bundledPin } from './agentBinary';
-import { ChatTab, newChat, reopened, started, storedEntries, storedTextLimit, type Attachment, type StoredChat, type TabHost } from './chatTab';
+import { ChatTab, newChat, reopened, started, storedEntries, storedTextLimit, type Attachment, type SkillStep, type StoredChat, type TabHost } from './chatTab';
 import { chatTranscript, transcriptFileName } from './transcript';
 import { diffSides } from './diffSides';
 import { writeChatTranscript } from '../elements/assistants';
@@ -27,7 +27,7 @@ import { isBrowserApiGranted, workspaceIsRemoteFromHost } from '../setup/propose
 import { pageTitle } from '../translate/translateText';
 import { generateUuid } from '../core/uuid';
 import { runRowPrefix, ToolbarRuns } from './toolbarRun';
-import { adaptSigils, fillPrompt, toolbarLimits, validToolbarSkill, withResultMarkers } from './toolbarText';
+import { adaptSigils, fillPrompt, toolbarLimits, validToolbarSkill } from './toolbarText';
 
 /**
  * The AI Browser chat: a webview view in its own container in the secondary (right) side bar.
@@ -110,6 +110,14 @@ const historyKey = 'aiBrowser.chat.history';
 const selectionKey = 'aiBrowser.chat.selection';
 /** The toolbar's skills, in order; global, so every project has the same toolbar. */
 const toolbarKey = 'aiBrowser.chat.toolbar';
+/**
+ * A toolbar skill's prompts after the first, by skill id — kept apart from the
+ * skills themselves, which an older build reads and writes back whole: it
+ * rebuilds each skill without the field it does not know, so a toolbar edit
+ * in a window not yet reloaded after an update stripped every skill's next
+ * prompts. An older build never touches this key.
+ */
+const toolbarStepsKey = 'aiBrowser.chat.toolbarSteps';
 const newsHiddenKey = 'aiBrowser.chat.newsHiddenAt';
 const inputHistoryKey = 'aiBrowser.chat.inputHistory';
 const inputHistoryLimit = 100;
@@ -434,11 +442,47 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			toolbarRuns: this._toolbarRunsState(),
 			skillAgents: this._runs.rows(this._active.chat.id),
 			collapseTools: vscode.workspace.getConfiguration().get<unknown>(collapseToolsSetting) === true,
+			context: this._contextState(),
 			hasBrowserTab: this._browser.hasOpenTabs,
 			browserApi: isBrowserApiGranted(),
 			news: this._news,
 			newsHidden: this._newsHidden(),
 		};
+	}
+
+	/**
+	 * The context pie of the tab in front: shown once its agent has reported a
+	 * size, for the agent the conversation belongs to. Compacting is offered
+	 * only where the agent has it — Claude Code lists `/compact` among its
+	 * commands (it may not, on a build that drops it); Codex always takes
+	 * `thread/compact/start`.
+	 */
+	private _contextState(): ChatViewState['context'] {
+		const tab = this._active;
+		const stats = tab.chat.stats;
+		if (!tab.started || stats.contextTokens === undefined) {
+			return undefined;
+		}
+		const agent = tab.chat.agent;
+		const canCompact = agent === 'codex' || !!this._registry.commands.claude?.some(c => c.name === 'compact');
+		return { used: stats.contextTokens, window: stats.contextWindow, compacted: stats.contextCompacted, canCompact };
+	}
+
+	/**
+	 * The pie was clicked: the agent's own compaction, sent as `/compact` —
+	 * Claude Code runs it from a stream-json message, and `CodexSession` turns it
+	 * into `thread/compact/start`. Shown in the conversation as the prompt
+	 * `/compact`, as both agents' own UIs show it. Not while the tab works: the
+	 * view disables the pie then, and a click racing a new turn is dropped
+	 * rather than queued behind it.
+	 */
+	private async _compact(tabId: string): Promise<void> {
+		const tab = this._tabs.find(t => t.id === tabId);
+		if (!tab || tab.busy || !tab.started || this._blocked()) {
+			return;
+		}
+		// `given` is empty: the chips in the box belong to the next message.
+		await this._send('/compact', tab.id, []);
 	}
 
 	/**
@@ -508,8 +552,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				return;
 			case 'stopToolbarSkill': {
 				this._runs.stop(message.id);
-				// Into the chat: Stop is the tab's own Stop, as the composer's is.
-				const tab = this._chatSkillTabs.get(message.id)?.tab;
+				// Into the chat: Stop is the tab's own Stop, as the composer's is —
+				// and a skill of several prompts drops the ones not sent yet, which
+				// an idle moment between two of them would otherwise still send.
+				const inChat = this._chatSkillTabs.get(message.id);
+				const tab = inChat?.tab;
+				for (const chain of inChat?.chains ?? []) {
+					tab?.dropSteps(chain);
+				}
 				if (tab && this._tabs.includes(tab) && tab.busy) {
 					this._giveBackQueue(tab);
 					tab.stop();
@@ -535,6 +585,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				return;
 			case 'clearChat':
 				this._clearChat();
+				return;
+			case 'compact':
+				if (typeof message.tabId === 'string') {
+					await this._compact(message.tabId);
+				}
 				return;
 			case 'exportChat':
 				await this._exportChat(message.to === 'file' ? 'file' : 'clipboard');
@@ -679,9 +734,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	/** The toolbar's skills as stored, each checked again: `globalState` is not ours alone to write. */
 	private _toolbar(): ToolbarSkill[] {
 		const raw = this._context.globalState.get<unknown[]>(toolbarKey);
+		const steps = this._context.globalState.get<unknown>(toolbarStepsKey);
+		const stepsOf = (id: unknown) => typeof id === 'string' && steps && typeof steps === 'object' && Object.prototype.hasOwnProperty.call(steps, id)
+			? (steps as Record<string, unknown>)[id] : undefined;
 		const out: ToolbarSkill[] = [];
 		for (const item of Array.isArray(raw) ? raw : []) {
-			const skill = validToolbarSkill(item);
+			const withSteps = item && typeof item === 'object' && !Array.isArray(item) && (item as { followUps?: unknown }).followUps === undefined
+				? { ...item, followUps: stepsOf((item as { id?: unknown }).id) } : item;
+			const skill = validToolbarSkill(withSteps);
 			if (typeof skill !== 'string' && !out.some(s => s.id === skill.id || s.name.toLowerCase() === skill.name.toLowerCase())) {
 				out.push(skill);
 			}
@@ -694,7 +754,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 * (#255). Swallowed, the editor closed as if a skill were saved that was not.
 	 */
 	private async _storeToolbar(list: readonly ToolbarSkill[]): Promise<boolean> {
-		const stored = await this._context.globalState.update(toolbarKey, list).then(() => true, () => false);
+		// The next prompts under a key of their own (`toolbarStepsKey`); the
+		// skills without them, as an older build reads them.
+		const steps: Record<string, unknown> = {};
+		for (const skill of list) {
+			if (skill.followUps?.length) {
+				steps[skill.id] = skill.followUps;
+			}
+		}
+		const plain = list.map(({ followUps: _, ...skill }) => skill);
+		const stored = await Promise.all([
+			this._context.globalState.update(toolbarStepsKey, steps),
+			this._context.globalState.update(toolbarKey, plain),
+		]).then(() => true, () => false);
 		this._post();
 		if (!stored) {
 			refuse(vscode.l10n.t("The toolbar could not be saved."));
@@ -750,8 +822,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 */
 	private _toolbarRunsState(): Record<string, ToolbarRun> {
 		const out = this._runs.state;
-		for (const [id, { tab, sending }] of [...this._chatSkillTabs]) {
-			if (!this._tabs.includes(tab) || (!sending && !tab.busy)) {
+		for (const [id, { tab, sending, chains }] of [...this._chatSkillTabs]) {
+			if (!this._tabs.includes(tab) || (!sending && !tab.busy && !chains?.some(c => tab.hasSteps(c)))) {
 				this._chatSkillTabs.delete(id);
 			} else if (!out[id]) {
 				out[id] = { status: 'running', inChat: true };
@@ -760,8 +832,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		return out;
 	}
 
-	/** `sending` until the send settles: before that the tab may not be busy yet (detection can take seconds). */
-	private readonly _chatSkillTabs = new Map<string, { tab: ChatTab; sending: boolean }>();
+	/**
+	 * `sending` until the send settles: before that the tab may not be busy yet
+	 * (detection can take seconds). `chain`: a skill of several prompts, running
+	 * while any of them still waits in the tab's queue — between two of them the
+	 * tab is idle for a moment, and the button would otherwise read "done".
+	 */
+	private readonly _chatSkillTabs = new Map<string, { tab: ChatTab; sending: boolean; chains?: string[] }>();
 
 	private async _runToolbarSkill(id: string, values: Readonly<Record<string, string>>, tabId?: string, again = false): Promise<void> {
 		const skill = this._toolbar().find(s => s.id === id);
@@ -800,12 +877,32 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			refuse(filled.error);
 			return;
 		}
-		const prompt = adaptSigils(filled.text, this._registry.commands[agent] ?? []);
+		const commands = this._registry.commands[agent] ?? [];
+		const steps = filled.steps.map(step => ({ ...step, text: adaptSigils(step.text, commands) }));
 		// The button asks before running a skill again; a press that did not ask
 		// (two clicks inside one post) is not taken as a yes.
 		const inChat = this._chatSkillTabs.get(skill.id);
-		if (!again && (this._runs.isRunning(skill.id) || (inChat && (inChat.sending || inChat.tab.busy)))) {
+		if (!again && (this._runs.isRunning(skill.id) || (inChat && (inChat.sending || inChat.tab.busy || !!inChat.chains?.some(c => inChat.tab.hasSteps(c)))))) {
 			refuse(vscode.l10n.t("{0} is still running.", skill.name));
+			return;
+		}
+		if (skill.result === 'chat' && steps.length > 1) {
+			// Several prompts: all of them into the tab's queue, the one ⌘Enter
+			// fills, each sent once the turn before it is over and its check has
+			// passed (`ChatTab._gateNextStep`). The first goes there too, rather
+			// than straight out: sent while a turn runs it would be steered into
+			// that turn, and the steps after it would gate on somebody else's reply.
+			const chain = generateUuid();
+			steps.forEach((step, i) => tab.enqueue(step.text, [], {
+				chain, name: skill.name, step: i + 1, steps: steps.length, check: step.check,
+			}));
+			// A second run while the first is still queued adds its chain: the
+			// skill's Stop drops both.
+			const before = this._chatSkillTabs.get(skill.id);
+			const chains = [...(before?.tab === tab ? before.chains ?? [] : []), chain];
+			this._chatSkillTabs.set(skill.id, { tab, sending: false, chains });
+			this._post();
+			this._drainQueues();
 			return;
 		}
 		if (skill.result === 'chat') {
@@ -815,7 +912,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			this._chatSkillTabs.set(skill.id, entry);
 			this._post();
 			try {
-				await this._send(prompt, tab.id, []);
+				await this._send(steps[0].text, tab.id, []);
 			} finally {
 				entry.sending = false;
 				this._post();
@@ -828,7 +925,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			return;
 		}
 		const root = vscode.workspace.workspaceFolders?.find(f => f.uri.scheme === 'file')?.uri.fsPath;
-		this._runs.start(skill, skill.result === 'clipboard' ? withResultMarkers(prompt) : prompt, prompt, tab.chat.id, backend, model, effort, this._cwd(), root);
+		this._runs.start(skill, steps, tab.chat.id, backend, model, effort, this._cwd(), root);
 	}
 
 	private _fail(err: unknown): void {
@@ -894,14 +991,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 * `given`: a queued message's own attachments, sent instead of what the box
 	 * holds — which is the user's next message, not this one's.
 	 */
-	private async _send(text: string, tabId?: string, given?: Attachment[]): Promise<void> {
+	private async _send(text: string, tabId?: string, given?: Attachment[], step?: SkillStep): Promise<void> {
 		const queued = given !== undefined;
-		if (this._blocked()) {
-			return;
-		}
 		// The tab it was typed in, whatever is in front by now: the state post
 		// that shows another tab is up to 40 ms behind the click that chose it.
 		const tab = tabId ? this._tabs.find(t => t.id === tabId) : this._active;
+		if (this._blocked()) {
+			// A skill prompt not sent stops its skill: the next one's check, if it
+			// has one, was never asked, and the steps after it lose their place.
+			if (tab && step) {
+				tab.stepNotSent(step, vscode.l10n.t("the chat cannot run in this window"));
+			}
+			return;
+		}
 		if (!tab) {
 			this._notSent(text);
 			return;
@@ -917,6 +1019,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			// anyway, the message went into a conversation it was not written for,
 			// or started a CLI for a tab nothing showed or could stop (#339).
 			if (!this._tabs.includes(tab) || tab.chat !== chat) {
+				if (step && this._tabs.includes(tab)) {
+					tab.dropSteps(step.chain);
+				}
 				this._notSent(text);
 				return;
 			}
@@ -935,6 +1040,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			if (text.trim()) {
 				tab.push({ kind: 'notice', text: vscode.l10n.t("Not sent: {0}", text) });
 			}
+			if (step) {
+				tab.stepNotSent(step, vscode.l10n.t("no agent is available"));
+			}
 			return;
 		}
 		const attachments = given ?? tab.attachments;
@@ -949,7 +1057,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		if (tab === this._active) {
 			this._switchTo = undefined;
 		}
-		await tab.send(text, attachments, agent, model, effort, backend);
+		await tab.send(text, attachments, agent, model, effort, backend, step);
 		this._saveTabs();
 	}
 
@@ -1011,7 +1119,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 					this._draining.delete(tab);
 					return;
 				}
-				this._send(next.text, tab.id, next.attachments)
+				this._send(next.text, tab.id, next.attachments, next.step)
 					.catch(err => this._fail(err))
 					.finally(() => {
 						this._draining.delete(tab);

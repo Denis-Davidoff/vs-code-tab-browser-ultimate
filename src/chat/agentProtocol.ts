@@ -513,6 +513,14 @@ export type AgentEvent =
 	| { readonly type: 'turnEnd'; readonly error?: string }
 	| { readonly type: 'tokens'; readonly input: number; readonly output: number; readonly cached: number; readonly costUsd?: number; readonly cumulative: boolean }
 	| { readonly type: 'limits'; readonly windows: readonly UsageWindow[] }
+	/**
+	 * How full the conversation's context window is: `used` tokens the next
+	 * request will carry, out of `window`. Either may come alone — Claude Code
+	 * reports the size with each reply and the window only at the turn's end.
+	 * `compacted`: the conversation was just compacted and its new size is not
+	 * known until the next request reports one.
+	 */
+	| { readonly type: 'context'; readonly used?: number; readonly window?: number; readonly compacted?: boolean }
 	/** The agent asks before using a tool; answered through `AgentSession.answer`. */
 	| { readonly type: 'approval'; readonly request: ApprovalRequest }
 	/** The CLI withdrew a question it had asked — a Stop, an interrupted turn. */
@@ -534,12 +542,22 @@ export const toolOutputLimit = 20_000;
  * `total_cost_usd` the whole process (measured: 0.0018, then 0.0037 for two
  * equal turns), which is why the cost is reported as cumulative and the tokens
  * are not.
+ *
+ * `context` keeps the conversation's own model between messages — from `init`
+ * and the main agent's replies — so the turn's `result`, which lists every
+ * model the turn used (sub-agents included), names the right context window.
  */
-export function claudeEvents(message: Record<string, unknown>, tasks?: Map<string, string>): AgentEvent[] {
+export function claudeEvents(message: Record<string, unknown>, tasks?: Map<string, string>, context?: { model?: string }): AgentEvent[] {
 	switch (message.type) {
 		case 'system':
 			if (message.subtype === 'init' && typeof message.session_id === 'string') {
+				if (context && typeof message.model === 'string') {
+					context.model = message.model;
+				}
 				return [{ type: 'session', id: message.session_id }];
+			}
+			if (message.subtype === 'compact_boundary') {
+				return claudeCompacted(message);
 			}
 			return claudeTaskEvents(message, tasks);
 
@@ -592,10 +610,22 @@ export function claudeEvents(message: Record<string, unknown>, tasks?: Map<strin
 					.map(block => block.text as string);
 				return texts.length ? [{ type: 'textBreak' }, { type: 'text', text: texts.join('\n\n') }] : [];
 			}
-			return content
+			const events: AgentEvent[] = content
 				.filter(isRecord)
 				.filter(block => block.type === 'tool_use' && typeof block.name === 'string' && typeof block.id === 'string')
 				.map(block => ({ type: 'tool' as const, id: block.id as string, tool: claudeTool(block.name as string, block.input) }));
+			// Each of the main agent's replies carries that one request's usage:
+			// everything it read plus what it wrote is what the next request
+			// carries. The turn's `result` adds up every request of the turn, so it
+			// would count the conversation once per tool round.
+			const used = isRecord(message.message) ? claudeContextUsed(message.message.usage) : undefined;
+			if (used !== undefined) {
+				if (context && isRecord(message.message) && typeof message.message.model === 'string') {
+					context.model = message.message.model;
+				}
+				events.push({ type: 'context', used });
+			}
+			return events;
 		}
 
 		case 'user': {
@@ -656,6 +686,10 @@ export function claudeEvents(message: Record<string, unknown>, tasks?: Map<strin
 					cumulative: false,
 				});
 			}
+			const window = claudeContextWindow(message.modelUsage, context?.model);
+			if (window !== undefined) {
+				events.push({ type: 'context', window });
+			}
 			const failed = message.is_error === true || (typeof message.subtype === 'string' && message.subtype !== 'success');
 			events.push({ type: 'turnEnd', error: failed ? resultError(message) : undefined });
 			return events;
@@ -664,6 +698,59 @@ export function claudeEvents(message: Record<string, unknown>, tasks?: Map<strin
 		default:
 			return [];
 	}
+}
+
+/** The context one Claude request used: input, both cache halves, and its own output. */
+function claudeContextUsed(usage: unknown): number | undefined {
+	if (!isRecord(usage) || typeof usage.input_tokens !== 'number') {
+		return undefined;
+	}
+	const used = num(usage.input_tokens) + num(usage.cache_creation_input_tokens) + num(usage.cache_read_input_tokens) + num(usage.output_tokens);
+	return used > 0 ? used : undefined;
+}
+
+/**
+ * The context window of the conversation's model, from `result.modelUsage`
+ * (`{ "<model>": { contextWindow, … } }`, measured on 2.1.301). The map lists
+ * every model the turn used, sub-agents' included, so it is read for the
+ * model the conversation runs on; with that unknown, only a map of one entry
+ * answers — guessing among several could name a sub-agent's smaller window.
+ */
+export function claudeContextWindow(modelUsage: unknown, model: string | undefined): number | undefined {
+	if (!isRecord(modelUsage)) {
+		return undefined;
+	}
+	const windowOf = (entry: unknown) => isRecord(entry) && typeof entry.contextWindow === 'number' && entry.contextWindow > 0 ? entry.contextWindow : undefined;
+	if (model && model in modelUsage) {
+		return windowOf(modelUsage[model]);
+	}
+	const entries = Object.values(modelUsage);
+	return entries.length === 1 ? windowOf(entries[0]) : undefined;
+}
+
+/**
+ * `system` / `compact_boundary`: the conversation was compacted — by `/compact`
+ * or by Claude Code on its own (`trigger: auto`). **`post_tokens` is the
+ * summary alone, not the context**: measured on 2.1.301, a compaction from
+ * 21 279 reported 2 220, and the next request carried 25 726 — the system
+ * prompt and the tools come back on top of the summary. So the size is left
+ * unknown (`compacted`) until that request reports it.
+ */
+function claudeCompacted(message: Record<string, unknown>): AgentEvent[] {
+	const meta = isRecord(message.compact_metadata) ? message.compact_metadata : {};
+	const before = typeof meta.pre_tokens === 'number' ? meta.pre_tokens : undefined;
+	const after = typeof meta.post_tokens === 'number' ? meta.post_tokens : undefined;
+	return [
+		{ type: 'context', compacted: true },
+		{ type: 'notice', text: compactedNotice(before, after) },
+	];
+}
+
+function compactedNotice(before: number | undefined, summary: number | undefined): string {
+	const n = (value: number) => value.toLocaleString('en-US');
+	return before !== undefined && summary !== undefined
+		? `Conversation compacted: ${n(before)} tokens of context became a ${n(summary)}-token summary.`
+		: 'Conversation compacted.';
 }
 
 /**
@@ -873,6 +960,12 @@ export function codexEvents(method: string, params: unknown): AgentEvent[] {
 
 		case 'item/completed': {
 			const item = isRecord(p.item) ? p.item : undefined;
+			// `thread/compact/start`, or Codex compacting on its own: the context
+			// it starts again from comes with the `thread/tokenUsage/updated`
+			// just before (measured: 16 067 → 11 043 on 0.162.0-alpha.17.2).
+			if (item?.type === 'contextCompaction') {
+				return [{ type: 'notice', text: compactedNotice(undefined, undefined) }];
+			}
 			const update = item ? codexToolResult(item) : undefined;
 			const events: AgentEvent[] = update && typeof item!.id === 'string' ? [{ type: 'toolUpdate', id: item!.id as string, update }] : [];
 			const states = item?.type === 'collabAgentToolCall' ? codexAgentStates(item.agentsStates) : [];
@@ -889,10 +982,20 @@ export function codexEvents(method: string, params: unknown): AgentEvent[] {
 		}
 
 		case 'thread/tokenUsage/updated': {
-			const total = isRecord(p.tokenUsage) && isRecord(p.tokenUsage.total) ? p.tokenUsage.total : undefined;
-			return total
+			const usage = isRecord(p.tokenUsage) ? p.tokenUsage : {};
+			const total = isRecord(usage.total) ? usage.total : undefined;
+			const events: AgentEvent[] = total
 				? [{ type: 'tokens', input: num(total.inputTokens), output: num(total.outputTokens), cached: num(total.cachedInputTokens), cumulative: true }]
 				: [];
+			// `last` is the latest request alone — what the context holds now;
+			// after a compaction it is the compacted size with no input at all, so
+			// `totalTokens` is the field to read, not the sum of the parts.
+			const last = isRecord(usage.last) && typeof usage.last.totalTokens === 'number' ? usage.last.totalTokens : undefined;
+			const window = typeof usage.modelContextWindow === 'number' && usage.modelContextWindow > 0 ? usage.modelContextWindow : undefined;
+			if (last !== undefined || window !== undefined) {
+				events.push({ type: 'context', used: last, window });
+			}
+			return events;
 		}
 
 		case 'error': {

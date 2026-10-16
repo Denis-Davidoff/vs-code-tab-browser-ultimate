@@ -10,7 +10,7 @@ import type { ApprovalRequest } from './agentProtocol';
 import type { AgentId, ApprovalMode, ToolbarRun, ToolbarSkill, ToolEntry } from './chatProtocol';
 import { approvalKey } from './chatTab';
 import { capAt } from '../core/notifyText';
-import { extractResult } from './toolbarText';
+import { extractResult, stepGate, withNextDecision, withResultMarkers, type FilledStep } from './toolbarText';
 
 /** What a run needs from the view that started it. */
 export interface ToolbarRunHost {
@@ -40,8 +40,18 @@ interface Running {
 	chatId: string;
 	/** Its row in that list. */
 	row: ToolEntry;
-	/** The reply so far: the row's report once the run ends, however it ends. */
+	/** The reply so far, every step's: the row's report once the run ends, however it ends. */
 	reply: string;
+	/** The step being run, from 0, and its reply alone: what its check and a clipboard result are read from. */
+	step: number;
+	stepReply: string;
+	/**
+	 * Turns Claude Code started on its own — announced by `autoTurn` — still
+	 * to end: an agent a step started in the background finished, and the CLI
+	 * answers that. Their end is not the end of a step, or the next prompt went
+	 * out, and its check was judged, on the wrong reply.
+	 */
+	ownTurns: number;
 	/** The tool calls already counted: Codex can report one start twice. */
 	seen: Set<string>;
 }
@@ -152,10 +162,13 @@ export class ToolbarRuns implements vscode.Disposable {
 	}
 
 	/**
-	 * `prompt` is what is sent, `shown` the skill's own text for the row — the
-	 * result-marker instruction around it is ours, not the user's.
+	 * `steps` are the skill's prompts, filled in and written for the agent: the
+	 * first is sent now and each next one, in the same session, once the turn
+	 * before it has ended and its check — if it has one — passed. The row shows
+	 * the user's own text; the instructions added around it (the check's
+	 * markers, the clipboard's) are ours.
 	 */
-	public start(skill: ToolbarSkill, prompt: string, shown: string, chatId: string, backend: AgentBackend, model: string, effort: string | undefined, cwd: string, root: string | undefined): void {
+	public start(skill: ToolbarSkill, steps: readonly FilledStep[], chatId: string, backend: AgentBackend, model: string, effort: string | undefined, cwd: string, root: string | undefined): void {
 		if (this._disposed) {
 			return;
 		}
@@ -168,14 +181,24 @@ export class ToolbarRuns implements vscode.Disposable {
 				this._runs.delete(key);
 			}
 		}
+		if (!steps.length) {
+			return;
+		}
 		const key = ++this._next;
 		const session = backend.openSession(cwd, undefined, 0, root);
+		const many = steps.length > 1;
+		const shown = many
+			? steps.map((step, i) => `${i + 1}. ${step.check ? `(if: ${step.check}) ` : ''}${step.text}`).join('\n\n')
+			: steps[0].text;
 		const row: ToolEntry = {
-			kind: 'tool', id: `${runRowPrefix}${key}`, tool: 'agent', name: skill.name, detail: `/${skill.name}`,
+			kind: 'tool', id: `${runRowPrefix}${key}`, tool: 'agent', name: skill.name, detail: many ? `/${skill.name} · 1/${steps.length}` : `/${skill.name}`,
 			input: capAt(shown, rowTextLimit), status: 'running', startedAt: Date.now(),
 			agent: { type: skill.result === 'clipboard' ? 'toolbar skill · to the clipboard' : 'toolbar skill · silent', model, background: true, origin: 'toolbar', skill: skill.id, toolUses: 0, tokens: 0, calls: [] },
 		};
-		const entry: Running = { skillId: skill.id, agent: backend.id, run: { status: 'running' }, session, asked: [], chatId, row, reply: '', seen: new Set() };
+		const entry: Running = {
+			skillId: skill.id, agent: backend.id, run: many ? { status: 'running', step: 1, steps: steps.length } : { status: 'running' },
+			session, asked: [], chatId, row, reply: '', seen: new Set(), step: 0, stepReply: '', ownTurns: 0,
+		};
 		this._runs.set(key, entry);
 		const current = () => this._runs.get(key) === entry && entry.session === session;
 		session.onEvent(event => {
@@ -185,9 +208,11 @@ export class ToolbarRuns implements vscode.Disposable {
 			switch (event.type) {
 				case 'text':
 					entry.reply += event.text;
+					entry.stepReply += event.text;
 					return;
 				case 'textBreak':
-					entry.reply += entry.reply ? '\n\n' : '';
+					entry.reply += entry.reply && !entry.reply.endsWith('\n\n') ? '\n\n' : '';
+					entry.stepReply += entry.stepReply ? '\n\n' : '';
 					return;
 				case 'tool': {
 					// Its own calls, as an agent's card lists them; the reply is set on
@@ -229,17 +254,66 @@ export class ToolbarRuns implements vscode.Disposable {
 						this._showAsked(entry);
 					}
 					return;
-				case 'turnEnd':
-					void this._finish(skill, key, entry, event.error, entry.reply);
+				case 'autoTurn':
+					entry.ownTurns++;
 					return;
+				case 'turnEnd': {
+					if (entry.ownTurns > 0 && !event.error) {
+						entry.ownTurns--;
+						return;
+					}
+					entry.ownTurns = 0;
+					const next = steps[entry.step + 1];
+					if (!next) {
+						void this._finish(skill, key, entry, event.error, entry.stepReply);
+						return;
+					}
+					const gate = stepGate(next.check, event.error, entry.stepReply);
+					if (!gate.go) {
+						// The skill stops here, as asked: not a failure of the run unless
+						// the step itself failed.
+						const why = vscode.l10n.t("Stopped after prompt {0} of {1}: {2}.", entry.step + 1, steps.length, gate.why);
+						this._end(key, entry, event.error
+							? { status: 'failed', message: `${event.error} ${why}`, endedAt: Date.now() }
+							: { status: 'done', message: why, endedAt: Date.now() }, event.error ? failedShownForMs : shownForMs);
+						if (!event.error) {
+							confirm(vscode.l10n.t("{0}: {1}", skill.label ?? skill.name, why));
+						}
+						return;
+					}
+					entry.step++;
+					send();
+					return;
+				}
 			}
 		});
-		this._host.changed();
-		session.send({ text: prompt, images: [] }, model, effort).catch(err => {
-			if (current()) {
-				void this._finish(skill, key, entry, err instanceof Error ? err.message : String(err), entry.reply);
+		// The prompt of the step being run, with what the agent is asked to add:
+		// the check of the step after it, or, on the last, the clipboard markers.
+		const send = () => {
+			const at = entry.step;
+			let text = steps[at].text;
+			const check = steps[at + 1]?.check;
+			if (check) {
+				text = withNextDecision(text, check);
+			} else if (at === steps.length - 1 && skill.result === 'clipboard') {
+				text = withResultMarkers(text);
 			}
-		});
+			entry.stepReply = '';
+			if (many) {
+				entry.run = { ...entry.run, step: at + 1, steps: steps.length };
+				row.detail = `/${skill.name} · ${at + 1}/${steps.length}`;
+				if (at > 0) {
+					entry.reply += entry.reply ? '\n\n---\n\n' : '';
+				}
+			}
+			this._host.changed();
+			session.send({ text, images: [] }, model, effort).catch(err => {
+				if (current()) {
+					void this._finish(skill, key, entry, err instanceof Error ? err.message : String(err), entry.stepReply);
+				}
+			});
+		};
+		send();
 	}
 
 	/**
@@ -288,7 +362,8 @@ export class ToolbarRuns implements vscode.Disposable {
 	private _showAsked(entry: Running): void {
 		const q = entry.asked[0];
 		const approval = q ? { id: q.id, title: q.title, detail: q.detail } : undefined;
-		entry.run = approval ? { status: 'waiting', approval } : { status: 'running' };
+		const step = entry.run.steps ? { step: entry.run.step, steps: entry.run.steps } : {};
+		entry.run = approval ? { status: 'waiting', approval, ...step } : { status: 'running', ...step };
 		// The agents list says so too, and answers it there as the button does.
 		entry.row.agent!.waiting = approval;
 		this._host.changed();

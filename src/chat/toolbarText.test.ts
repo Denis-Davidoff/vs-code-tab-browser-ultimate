@@ -6,7 +6,7 @@
 import * as assert from 'node:assert';
 import { suite, test } from 'node:test';
 import type { ToolbarSkill } from './chatProtocol.ts';
-import { adaptSigils, extractResult, fillPrompt, validToolbarSkill, valueProblem, withResultMarkers } from './toolbarText.ts';
+import { adaptSigils, extractResult, fillPrompt, nextDecision, nextNo, nextYes, stepGate, validToolbarSkill, valueProblem, withNextDecision, withResultMarkers } from './toolbarText.ts';
 
 const base = { id: 'abc-1', name: 'pr-review', prompt: 'Review PR {{pr}} with /one-more-review', result: 'chat', agents: 'all', icon: 'git-pull-request', params: [{ name: 'pr', type: 'number' }] };
 
@@ -43,7 +43,7 @@ suite('toolbar skills', () => {
 			{ name: 'tone', type: 'choice', options: ['short', 'long'] },
 			{ name: 'note', type: 'text', maxLength: 5 },
 		], prompt: 'PR {{pr}}, {{ tone }}, {{note}}, {{other}}' }) as ToolbarSkill;
-		assert.deepStrictEqual(fillPrompt(skill, { pr: '42', tone: 'short', note: 'hi' }), { text: 'PR 42, short, hi, {{other}}' });
+		assert.deepStrictEqual(fillPrompt(skill, { pr: '42', tone: 'short', note: 'hi' }), { steps: [{ text: 'PR 42, short, hi, {{other}}' }] });
 		assert.deepStrictEqual(fillPrompt(skill, { pr: 'x', tone: 'short', note: 'hi' }), { error: 'pr: a number is needed.' });
 		assert.deepStrictEqual(fillPrompt(skill, { pr: '1', tone: 'medium', note: 'hi' }), { error: 'tone: one of short, long.' });
 		assert.deepStrictEqual(fillPrompt(skill, { pr: '1', tone: 'long', note: 'toolong' }), { error: 'note: at most 5 characters.' });
@@ -86,5 +86,53 @@ suite('toolbar skills', () => {
 		// The last block, and a shorter fence inside a longer one is content.
 		assert.deepStrictEqual(r('```\nfirst\n```\n````md\nx\n```\ny\n```\n````'), { text: 'x\n```\ny\n```', source: 'fence' });
 		assert.strictEqual(r('Inline ```code``` only'), undefined);
+	});
+});
+
+suite('toolbar skills of several prompts', () => {
+	const base = { id: 'a1', name: 'chain', prompt: 'Fix {{what}}', params: [{ name: 'what' }] };
+
+	test('follow-ups are kept in order, empty ones dropped, an empty check is no check', () => {
+		const skill = validToolbarSkill({ ...base, followUps: [
+			{ prompt: ' Run the tests ', check: '  ' },
+			{ prompt: '' },
+			'Commit {{what}}',
+			{ prompt: 'Push', check: ' the tests for {{what}} pass ' },
+		] }) as ToolbarSkill;
+		assert.deepStrictEqual(skill.followUps, [
+			{ prompt: 'Run the tests' },
+			{ prompt: 'Commit {{what}}' },
+			{ prompt: 'Push', check: 'the tests for {{what}} pass' },
+		]);
+		assert.strictEqual((validToolbarSkill(base) as ToolbarSkill).followUps, undefined);
+		assert.match(validToolbarSkill({ ...base, followUps: Array.from({ length: 10 }, () => 'x') }) as string, /at most 10 prompts/);
+	});
+
+	test('the parameters fill every prompt and every check', () => {
+		const skill = validToolbarSkill({ ...base, followUps: ['Commit {{what}}', { prompt: 'Push', check: '{{what}} is fixed' }] }) as ToolbarSkill;
+		assert.deepStrictEqual(fillPrompt(skill, { what: 'the login' }), { steps: [
+			{ text: 'Fix the login' },
+			{ text: 'Commit the login' },
+			{ text: 'Push', check: 'the login is fixed' },
+		] });
+	});
+
+	test('the check is asked for, and the last marker line answers it', () => {
+		const asked = withNextDecision('Run the tests', 'they all pass');
+		assert.ok(asked.startsWith('Run the tests\n\n'));
+		assert.ok(asked.includes('they all pass'));
+		// Quoting the instruction names both; the last line is the answer.
+		assert.strictEqual(nextDecision(`I will answer ${nextYes} or ${nextNo}.\nAll 12 pass.\n${nextYes}`), true);
+		assert.strictEqual(nextDecision(`Two failed.\n**${nextNo}**`), false);
+		assert.strictEqual(nextDecision(`${nextYes}\nlater: ${nextNo}\n${nextNo}`), false);
+		assert.strictEqual(nextDecision('Done, everything passes.'), undefined);
+	});
+
+	test('the gate: no check always goes on; a check needs a clean step and a yes', () => {
+		assert.deepStrictEqual(stepGate(undefined, 'Stopped.', ''), { go: true });
+		assert.deepStrictEqual(stepGate('ok', undefined, nextYes), { go: true });
+		assert.strictEqual(stepGate('ok', undefined, nextNo).go, false);
+		assert.strictEqual(stepGate('ok', undefined, 'no marker').go, false);
+		assert.strictEqual(stepGate('ok', 'Prompt is too long', nextYes).go, false);
 	});
 });

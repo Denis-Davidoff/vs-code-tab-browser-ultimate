@@ -494,6 +494,18 @@ class CodexSession implements AgentSession {
 		if (this._disposed) {
 			return;
 		}
+		// `/compact` is Codex's own command in its TUI, and the app-server's is a
+		// request of its own, `thread/compact/start` — sent to the model as text
+		// it would only be a sentence about compacting. It runs as a turn
+		// (`turn/started`, a `contextCompaction` item, `turn/completed`), never
+		// inside another, so one sent during a turn waits for that turn's end.
+		const compact = input.text.trim() === '/compact' && !input.images.length;
+		if (compact && this._running) {
+			await this._turnEnded();
+			if (this._disposed) {
+				return;
+			}
+		}
 		const items: unknown[] = [];
 		if (input.text) {
 			items.push({ type: 'text', text: input.text, text_elements: [] });
@@ -507,8 +519,12 @@ class CodexSession implements AgentSession {
 
 		// A message sent after Stop must not be steered into the turn being
 		// interrupted — Codex refuses it, or drops it with that turn. It waits
-		// for the stopped turn to end and starts a turn of its own.
-		if (this._running && this._stopping) {
+		// for the stopped turn to end and starts a turn of its own. The same for
+		// a compaction's turn: the app-server answers a steer into one with
+		// "cannot steer a compact turn" (in the 0.162 binary), and before its
+		// `turn/started` there is no id to steer by at all, so the send would
+		// start a second turn beside it.
+		if (this._running && (this._stopping || this._compactTurn)) {
 			await this._turnEnded();
 			if (this._disposed) {
 				return;
@@ -535,6 +551,30 @@ class CodexSession implements AgentSession {
 				this._finishStartup();
 				return;
 			}
+			if (compact) {
+				// Answered with `{}`: the turn's id arrives with `turn/started`, which
+				// `notify` records — and which interrupts it there if Stop came first.
+				this._compacting = true;
+				this._compactTurn = true;
+				await this._backend.request('thread/compact/start', { threadId });
+				// Answered, and no turn follows — nothing to compact, or an error
+				// notification instead: without this the session read as running
+				// for good, every later message waiting on a turn that never ends.
+				if (this._compacting && !this._disposed) {
+					const watch = setTimeout(() => {
+						if (this._compacting && this._running && !this._disposed) {
+							this._compacting = false;
+							this._compactTurn = false;
+							this._stopRequested = false;
+							this._running = false;
+							this.emit({ type: 'turnEnd', error: vscode.l10n.t("Codex did not start compacting the conversation.") });
+							this._releaseTurnWaiters();
+						}
+					}, compactStartWaitMs);
+					watch.unref?.();
+				}
+				return;
+			}
 			const started = await this._backend.request('turn/start', { threadId, input: items, model, effort: effort ?? null, summary: 'auto' }) as { turn?: { id?: unknown } };
 			const turnId = typeof started?.turn?.id === 'string' ? started.turn.id : undefined;
 			if (this._disposed || this._stopRequested) {
@@ -556,9 +596,16 @@ class CodexSession implements AgentSession {
 			}
 		} catch (err) {
 			this._running = false;
+			this._compacting = false;
+			this._compactTurn = false;
 			throw err;
 		}
 	}
+
+	/** A `thread/compact/start` was sent and its turn has not reported its id yet. */
+	private _compacting = false;
+	/** The running turn is a compaction, from the request to its end: it takes no further input. */
+	private _compactTurn = false;
 
 	private _turnWaiters: (() => void)[] = [];
 
@@ -681,6 +728,16 @@ class CodexSession implements AgentSession {
 			const turn = params.turn as { id?: unknown } | undefined;
 			if (typeof turn?.id === 'string') {
 				this._turnId = turn.id;
+				// A compaction has no id of its own to stop by until now: Stop
+				// pressed while it was being asked for is honoured here.
+				if (this._compacting) {
+					this._compacting = false;
+					if (this._stopRequested && this._threadId) {
+						this._stopRequested = false;
+						this._stopping = true;
+						this._backend.request('turn/interrupt', { threadId: this._threadId, turnId: turn.id }).catch(() => { /* turn/completed reports it */ });
+					}
+				}
 			}
 			return;
 		}
@@ -697,6 +754,7 @@ class CodexSession implements AgentSession {
 			if (event.type === 'turnEnd') {
 				this._running = false;
 				this._turnId = undefined;
+				this._compactTurn = false;
 				const stopped = this._stopping;
 				this._stopping = false;
 				this.emit(stopped ? { type: 'turnEnd', error: 'Stopped.' } : event);
@@ -711,6 +769,8 @@ class CodexSession implements AgentSession {
 		const stopped = this._stopping || this._stopRequested;
 		this._stopping = false;
 		this._stopRequested = false;
+		this._compacting = false;
+		this._compactTurn = false;
 		if (this._running) {
 			this._running = false;
 			this._turnId = undefined;
@@ -742,6 +802,9 @@ class CodexSession implements AgentSession {
 		this._onDispose();
 	}
 }
+
+/** How long a compaction may take to report its turn before the session stops waiting for it. */
+const compactStartWaitMs = 30_000;
 
 function extensionVersion(): string {
 	return vscode.extensions.getExtension('DenysDavydov.tab-browser-ultimate')?.packageJSON?.version ?? '0.0.0';

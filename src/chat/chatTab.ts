@@ -8,6 +8,7 @@ import { chatTitle, toolOutputLimit, type AgentEvent } from './agentProtocol';
 import { agentNames, type AgentBackend, type AgentSession, type TurnImage } from './agents';
 import type { AgentId, ApprovalEntry, ApprovalMode, AttachmentChip, PendingSend, ChatEntry, ChatStats, ChatTabStatus, ToolEntry, UsageWindow } from './chatProtocol';
 import { generateUuid } from '../core/uuid';
+import { stepGate, withNextDecision } from './toolbarText';
 
 /**
  * One conversation of the chat: a tab. The view holds several (`tabLimit()`),
@@ -69,6 +70,21 @@ export interface TabHost {
 	 * running in the background from it stop with it, as its agents do.
 	 */
 	released(chatId: string): void;
+}
+
+/**
+ * A prompt of a toolbar skill of several, sent into the chat: which skill run
+ * (`chain`, one per press), which prompt of how many, and the check it must
+ * pass before it is sent. The prompt before it asks the agent to judge that
+ * check — decided when that prompt is sent, from what is queued then, so a
+ * step taken out of the queue moves the question to the one now next.
+ */
+export interface SkillStep {
+	readonly chain: string;
+	readonly name: string;
+	readonly step: number;
+	readonly steps: number;
+	readonly check?: string;
 }
 
 /** The approval menu's key for a question: its category, or `mcp:<server>` for one server. */
@@ -135,7 +151,14 @@ export class ChatTab {
 	 * steers the running turn instead and is not queued.
 	 */
 	/** Turns waiting to end, oldest first; a turn the CLI started on its own has no `entry`. */
-	private _pending: { entry?: UserEntry; base?: TokenBase; startedAt?: number }[] = [];
+	private _pending: { entry?: UserEntry; base?: TokenBase; startedAt?: number; step?: SkillStep; asked?: string }[] = [];
+	/**
+	 * Queued skill prompts whose check has passed, by queue id. A prompt with
+	 * a check goes out only from here: if the step before it never had a turn
+	 * that judged it — its send failed, it was taken out of the queue — the
+	 * check was not made, and the skill stops (`dequeue`).
+	 */
+	private readonly _cleared = new Set<string>();
 	/**
 	 * Claude: prompts sent during a turn, not in the conversation yet. Claude
 	 * Code takes such a message in at the next tool boundary, or answers it with
@@ -148,7 +171,7 @@ export class ChatTab {
 	private _boundary = false;
 	private _flushTimer: ReturnType<typeof setTimeout> | undefined;
 	/** Held to be sent when the turn ends, oldest first (⌘/Ctrl+Enter). The provider sends them. */
-	private _queued: { readonly id: string; readonly text: string; readonly attachments: Attachment[] }[] = [];
+	private _queued: { readonly id: string; readonly text: string; readonly attachments: Attachment[]; readonly step?: SkillStep }[] = [];
 	/** When the last turn ended, to tell a message's own turn from an agent's. */
 	private _lastTurnEnd = 0;
 	/** Added to a cumulative token report; see the `tokens` case. Per session. */
@@ -209,24 +232,47 @@ export class ChatTab {
 	public get pendingSends(): PendingSend[] {
 		return [
 			...this._waiting.map(w => ({ id: w.id, text: w.entry.text, kind: 'steer' as const, attachments: w.entry.attachments })),
-			...this._queued.map(q => ({ id: q.id, text: q.text, kind: 'queue' as const, attachments: q.attachments.map(a => a.chip.label) })),
+			...this._queued.map(q => ({
+				id: q.id, text: q.text, kind: 'queue' as const, attachments: q.attachments.map(a => a.chip.label),
+				skill: q.step ? { name: q.step.name, step: q.step.step, steps: q.step.steps, check: q.step.check } : undefined,
+			})),
 		];
 	}
 
 	/** Held for after the running turn; `send` it when the tab is idle again — the provider does. */
-	public enqueue(text: string, attachments: Attachment[]): void {
-		this._queued.push({ id: generateUuid(), text, attachments });
+	public enqueue(text: string, attachments: Attachment[], step?: SkillStep): void {
+		this._queued.push({ id: generateUuid(), text, attachments, step });
 		this._post();
 	}
 
+	/** A toolbar skill run still has prompts here to send. */
+	public hasSteps(chain: string): boolean {
+		return this._queued.some(q => q.step?.chain === chain);
+	}
+
+	/** Its prompts not sent yet are dropped: the skill was stopped, or stops here. */
+	public dropSteps(chain: string): number {
+		const before = this._queued.length;
+		this._queued = this._queued.filter(q => q.step?.chain !== chain);
+		if (this._queued.length !== before) {
+			this._post();
+		}
+		return before - this._queued.length;
+	}
+
 	/** Every queued message, taken out — Stop gives them back to the composer rather than sending them. */
+	/**
+	 * The queue, given back to the box. A toolbar skill's prompts are dropped
+	 * rather than given back: they are the skill's, not something the user
+	 * typed, and the skill stops with whatever made the tab let go.
+	 */
 	public takeQueued(): { readonly text: string; readonly attachments: Attachment[] }[] {
 		const all = this._queued;
 		this._queued = [];
 		if (all.length) {
 			this._post();
 		}
-		return all;
+		return all.filter(q => !q.step);
 	}
 
 	/** The waiting prompts go into the conversation where it stands, the next text a block of its own. */
@@ -250,12 +296,28 @@ export class ChatTab {
 	}
 
 	/** The next queued message, taken out of the queue to be sent. */
-	public dequeue(): { readonly text: string; readonly attachments: Attachment[] } | undefined {
-		const next = this._queued.shift();
-		if (next) {
-			this._post();
+	public dequeue(): { readonly text: string; readonly attachments: Attachment[]; readonly step?: SkillStep } | undefined {
+		let next = this._queued.shift();
+		// A checked skill prompt whose check nobody passed: the skill stops
+		// here, and the queue goes on with what is behind its prompts.
+		while (next?.step?.check && !this._cleared.has(next.id)) {
+			const step = next.step;
+			this._queued = this._queued.filter(q => q.step?.chain !== step.chain);
+			this._chat.entries.push({ kind: 'notice', text: vscode.l10n.t("/{0} stopped before prompt {1} of {2}: the check before it was not made.", step.name, step.step, step.steps) });
+			next = this._queued.shift();
 		}
+		if (next) {
+			this._cleared.delete(next.id);
+		}
+		this._post();
 		return next;
+	}
+
+	/** A skill prompt could not be sent: the rest of its skill is dropped, with a line saying so. */
+	public stepNotSent(step: SkillStep, why: string): void {
+		this.dropSteps(step.chain);
+		this._chat.entries.push({ kind: 'notice', text: vscode.l10n.t("/{0} stopped: prompt {1} of {2} was not sent ({3}).", step.name, step.step, step.steps, why) });
+		this._post();
 	}
 
 	public unqueue(id: string): boolean {
@@ -447,7 +509,7 @@ export class ChatTab {
 
 	public async send(
 		text: string, attachments: readonly Attachment[],
-		agent: AgentId, model: string, effort: string | undefined, backend: AgentBackend,
+		agent: AgentId, model: string, effort: string | undefined, backend: AgentBackend, step?: SkillStep,
 	): Promise<void> {
 		if (!this._started()) {
 			this._chat.agent = agent;
@@ -462,9 +524,13 @@ export class ChatTab {
 		this._unseen = false;
 		this._failuresBefore = failures(this._chat);
 		const entry: UserEntry = { kind: 'user', text, attachments: attachments.map(a => a.chip.label), at: Date.now() };
+		// A skill prompt followed by one with a check asks the agent to judge it;
+		// the chat shows the prompt as written, the instruction is ours. The
+		// next prompt is the one queued now, whatever was taken out since.
+		const asked = step ? this._queued.find(q => q.step?.chain === step.chain)?.step?.check : undefined;
 		const running = this._session?.running ?? false;
 		if (!running) {
-			this._pending = [{ entry, base: this._tokenBase(), startedAt: entry.at }];
+			this._pending = [{ entry, base: this._tokenBase(), startedAt: entry.at, step, asked }];
 			this._flushWaiting();
 		}
 		if (running && agent === 'claude') {
@@ -488,7 +554,8 @@ export class ChatTab {
 			this._push(entry);
 		}
 
-		const prompt = [text, ...attachments.map(a => a.text).filter((t): t is string => !!t)].filter(Boolean).join('\n\n');
+		const sent = asked ? withNextDecision(text, asked) : text;
+		const prompt = [sent, ...attachments.map(a => a.text).filter((t): t is string => !!t)].filter(Boolean).join('\n\n');
 		const images = attachments.map(a => a.image).filter((i): i is TurnImage => !!i);
 
 		const chat = this._chat;
@@ -507,6 +574,11 @@ export class ChatTab {
 				// "Stopped." written into the chat on the way out.
 				if (!session.running) {
 					this._pending = this._pending.filter(p => p.entry !== entry);
+				}
+				// A skill prompt that did not go out had no turn to judge the next
+				// one's check, and no turn to follow: the skill stops here.
+				if (step) {
+					this.stepNotSent(step, err instanceof Error ? err.message : String(err));
 				}
 			}
 		}
@@ -762,6 +834,17 @@ export class ChatTab {
 			case 'limits':
 				this._host.limits(chat.agent, event.windows);
 				break;
+			case 'context':
+				if (event.used !== undefined) {
+					chat.stats.contextTokens = event.used;
+					delete chat.stats.contextCompacted;
+				} else if (event.compacted) {
+					chat.stats.contextCompacted = true;
+				}
+				if (event.window !== undefined) {
+					chat.stats.contextWindow = event.window;
+				}
+				break;
 			case 'turnEnd': {
 				this._endThinking();
 				this._textBreak = false;
@@ -816,12 +899,44 @@ export class ChatTab {
 						? { kind: 'notice', text: vscode.l10n.t("Stopped.") }
 						: { kind: 'error', text: event.error });
 				}
+				// After the turn's own error, so the line saying a skill stopped reads
+				// as what followed from it.
+				this._gateNextStep(done, event.error);
 				chat.updatedAt = now;
 				void this._save();
 				break;
 			}
 		}
 		this._post();
+	}
+
+	/**
+	 * A toolbar skill's prompt has had its turn: the next one waiting in the
+	 * queue goes out only if its check passed — read from this turn's reply —
+	 * and otherwise the skill's remaining prompts are dropped, with a line
+	 * saying why. Without a check the next one always goes. A Stop never gets
+	 * here with prompts left: it gives the queue back, which drops them.
+	 */
+	private _gateNextStep(done: { entry?: UserEntry; step?: SkillStep; asked?: string } | undefined, error: string | undefined): void {
+		const step = done?.step;
+		const next = step && this._queued.find(q => q.step?.chain === step.chain);
+		if (!step || !next?.step?.check) {
+			return;
+		}
+		// The check this turn was asked to judge must be the one now next: a
+		// prompt taken out of the queue meanwhile leaves the answer to another.
+		const entries = this._chat.entries;
+		const from = done.entry ? entries.indexOf(done.entry) : -1;
+		const reply = entries.slice(from + 1).filter(e => e.kind === 'assistant').map(e => e.text).join('\n\n');
+		const gate = done.asked === next.step.check
+			? stepGate(next.step.check, error, reply)
+			: { go: false as const, why: 'the check before it was not asked' };
+		if (gate.go) {
+			this._cleared.add(next.id);
+			return;
+		}
+		this.dropSteps(step.chain);
+		entries.push({ kind: 'notice', text: vscode.l10n.t("/{0} stopped after prompt {1} of {2}: {3}.", step.name, step.step, step.steps, gate.why) });
 	}
 
 	/** The tool entry a result belongs to, looked up from the end: results follow their calls. */

@@ -845,10 +845,14 @@ body.vscode-high-contrast-light .exec {
 	color: var(--fg-3);
 }
 
-/* Bullets are an em dash (asked for); a string marker is drawn with the same
-   colour rule as the bullet it replaces. */
+/* Bullets are an em dash (asked for), in the same yellow as the numbers of a
+   numbered list (asked for too); a string marker takes `::marker`'s colour. */
 .markdown ul > li {
 	list-style-type: "\2014\00a0 ";
+}
+
+.markdown ul > li::marker {
+	color: var(--vscode-charts-yellow, #cca700);
 }
 
 /* Numbered items further apart still, their number in yellow (asked for): the
@@ -1304,17 +1308,55 @@ body.vscode-high-contrast-light .exec {
 	font-size: 16px;
 }
 
+/* The same outer size as the "/" square and the context pie beside it, 17 px. */
 .usage-button span {
 	display: inline-flex;
+	box-sizing: border-box;
 	align-items: center;
 	justify-content: center;
 	width: 17px;
 	height: 17px;
 	border-radius: 50%;
 	border: 1.5px solid currentColor;
-	font-size: 10px;
+	font-size: 9px;
 	font-weight: 700;
 	line-height: 1;
+}
+
+/* The context pie: a ring the size of the usage button's, filled clockwise from the top. */
+.context-pie {
+	display: inline-block;
+	box-sizing: border-box;
+	width: 17px;
+	height: 17px;
+	border-radius: 50%;
+	border: 1.5px solid currentColor;
+	background: conic-gradient(currentColor var(--fill, 0%), transparent 0);
+}
+
+/* Kept on hover too, where `.ghost` would turn it the plain foreground. */
+.context-button.warn,
+.context-button.warn:hover {
+	color: var(--vscode-editorWarning-foreground, var(--vscode-charts-yellow));
+}
+
+.context-button.full,
+.context-button.full:hover {
+	color: var(--vscode-errorForeground, var(--vscode-charts-red));
+}
+
+.context-button.unavailable {
+	cursor: default;
+	opacity: 0.7;
+}
+
+.context-button.unavailable:hover {
+	background: transparent;
+}
+
+/* The compact question keeps its line breaks: the size, then what compacting does. */
+.params-popup .run-question {
+	white-space: pre-line;
 }
 
 .pill {
@@ -1429,6 +1471,16 @@ body.vscode-high-contrast-light .exec {
 .send:disabled {
 	opacity: 0.35;
 	cursor: default;
+}
+
+/* Send after this turn: Send's own shape, in the theme's accent colour. */
+.send.queue-button {
+	background: var(--vscode-button-background, var(--vscode-focusBorder));
+	color: var(--vscode-button-foreground, #fff);
+}
+
+.send.queue-button:hover:not(:disabled) {
+	background: var(--vscode-button-hoverBackground, color-mix(in srgb, var(--vscode-button-background, var(--vscode-focusBorder)) 85%, transparent));
 }
 
 .send.stop {
@@ -2548,7 +2600,8 @@ body.vscode-high-contrast-light .exec {
 /* ---------------------------------------------------------------- messages not in the conversation yet */
 
 /* `.ghost.round` would otherwise keep the hidden button on screen. */
-.queue-button[hidden] {
+.queue-button[hidden],
+.context-button[hidden] {
 	display: none;
 }
 
@@ -3096,7 +3149,8 @@ body.vscode-high-contrast-light .exec {
 }
 
 .form-actions button,
-.param-list + button {
+.param-list + button,
+.step-list + button {
 	padding: 4px 12px;
 	border-radius: 6px;
 	border: 1px solid var(--border);
@@ -3193,6 +3247,37 @@ body.vscode-high-contrast-light .exec {
 .icon-cell.on {
 	background: var(--vscode-list-activeSelectionBackground, var(--soft-2));
 	color: var(--vscode-list-activeSelectionForeground, var(--fg));
+}
+
+/* The prompts after the first: each with the check made before it. */
+.step-list {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.step-list:empty {
+	display: none;
+}
+
+.step-row {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	padding: 6px;
+	border: 1px solid var(--border);
+	border-radius: 8px;
+}
+
+.step-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+}
+
+.form-check {
+	resize: vertical;
+	min-height: 2.6em;
 }
 
 .param-list {

@@ -129,9 +129,17 @@ const effortLabel = el('span', { class: 'effort-label' });
 const effortBox = el('label', { class: 'effort', title: 'Effort' }, effortRange, effortLabel);
 const usageButton = button([el('span', { text: 'U' })], { class: 'ghost round usage-button', title: "Usage — your plan's limits for each agent, and this chat's tokens and cost" });
 const agentsButton = button([], { class: 'pill agents-button', title: 'Agents' });
+/** How full the conversation's context is, as a pie that fills; a click compacts it. */
+const contextPie = el('span', { class: 'context-pie' });
+const contextButton = button([contextPie], { class: 'ghost round context-button' });
+contextButton.hidden = true;
 const sendButton = button([icon('arrow-up')], { class: 'send', title: 'Send' });
-/** Only while a turn runs and there is something to send: hold it for after the turn. */
-const queueButton = button([icon('list-ordered')], { class: 'ghost round queue-button', title: 'Send after this turn (⌘Enter)' });
+/**
+ * Only while a turn runs and there is something to send: hold it for after the
+ * turn. The same round button as Send, in the theme's accent colour (asked
+ * for) — Send beside it adds the message to the running turn instead.
+ */
+const queueButton = button([icon('arrow-up')], { class: 'send queue-button', title: 'Send after this turn (⌘Enter)' });
 queueButton.hidden = true;
 queueButton.addEventListener('click', () => send('queue'));
 /** Ask before terminal commands and browser tools, or let them run: one switch for every tab. */
@@ -140,7 +148,7 @@ const approveToggle = button([], { class: 'pill approve-toggle' });
 // The right-hand buttons (agents, usage, send) are one group pushed to the end,
 // so a narrow side bar wraps them together onto the next line, still at the right.
 const toolbar = el('div', { class: 'toolbar' },
-	plusButton, browserButton, slashButton, agentPill, modelPill, effortBox, approveToggle, el('span', { class: 'toolbar-end' }, agentsButton, usageButton, queueButton, sendButton));
+	plusButton, browserButton, slashButton, agentPill, modelPill, effortBox, approveToggle, el('span', { class: 'toolbar-end' }, agentsButton, contextButton, usageButton, queueButton, sendButton));
 /**
  * The box's text drawn again behind it, with the agent's commands in colour:
  * a textarea cannot style part of its text, so this layer shows the text and
@@ -339,6 +347,7 @@ function render(): void {
 	renderSelectors(state);
 	renderApproveToggle(state);
 	renderSend();
+	renderContext(state);
 	renderAgents(state);
 	renderSkillBar(state);
 	renderPalette(state);
@@ -886,7 +895,9 @@ function renderPendingSends(s: ChatViewState): void {
 		}
 		const note = el('div', { class: 'pending-note' },
 			icon(p.kind === 'queue' ? 'list-ordered' : 'loading'),
-			el('span', { text: p.kind === 'queue' ? 'Sent when this turn ends' : 'Waiting for the agent to take it in' }));
+			el('span', { text: p.kind !== 'queue' ? 'Waiting for the agent to take it in'
+				: p.skill ? `/${p.skill.name}, prompt ${p.skill.step} of ${p.skill.steps} — ${p.skill.check ? `sent if: ${p.skill.check}` : 'sent when the turn before it ends'}`
+					: 'Sent when this turn ends' }));
 		if (p.kind === 'queue') {
 			const remove = button([icon('close')], { class: 'pending-remove', title: 'Do not send' });
 			remove.addEventListener('click', () => post({ type: 'unqueue', id: p.id }));
@@ -1997,6 +2008,104 @@ function canSend(): boolean {
 	return !!state && (state.detecting || state.agents.some(a => a.available));
 }
 
+/**
+ * The context pie. It fills with the share of the context window the
+ * conversation holds; the tooltip says how much is left. Warning colour from
+ * 80 %, error colour from 95 % — where the agents start compacting on their
+ * own. Without a window (Claude Code reports it at the end of the first turn)
+ * it shows the size alone and stays empty.
+ */
+function renderContext(s: ChatViewState): void {
+	const c = s.context;
+	contextButton.hidden = !c;
+	if (!c) {
+		if (paramsPopup.classList.contains('open') && contextButton.classList.contains('active')) {
+			closePopups();
+		}
+		return;
+	}
+	// Just compacted (Claude Code): the size before is all that is known, and
+	// the pie stays empty until the next reply reports the new one.
+	const share = c.window && !c.compacted ? Math.min(1, c.used / c.window) : undefined;
+	contextPie.style.setProperty('--fill', `${share === undefined ? 0 : Math.round(share * 1000) / 10}%`);
+	contextButton.classList.toggle('warn', share !== undefined && share >= 0.8 && share < 0.95);
+	contextButton.classList.toggle('full', share !== undefined && share >= 0.95);
+	// Not `disabled`: a disabled button gets no pointer events, so the tooltip
+	// saying how full the context is — and why it cannot be compacted now —
+	// would never show. Marked instead, and the click refuses.
+	const busy = s.running || !!s.tabs.find(t => t.id === s.activeTab)?.busy;
+	const unavailable = !c.canCompact || busy;
+	contextButton.classList.toggle('unavailable', unavailable);
+	contextButton.setAttribute('aria-disabled', String(unavailable));
+	const size = contextSize(c);
+	const action = !c.canCompact ? 'This agent does not offer compacting.'
+		: busy ? 'Compacting is available once the agent has finished.'
+		: 'Click to compact the conversation (/compact) — you will be asked first.';
+	// Drawn by the view (`hoverTip`), as the skill buttons' are; set only when it changes.
+	const tip = `${size}\n${action}`;
+	if (contextButton.dataset.tip !== tip) {
+		contextButton.dataset.tip = tip;
+		contextButton.setAttribute('aria-label', tip);
+		if (hoverTip.anchor === contextButton) {
+			hoverTip.show(contextButton);
+		}
+	}
+	// The question open while the tab started working, or lost its compacting: it goes.
+	if (unavailable && paramsPopup.classList.contains('open') && contextButton.classList.contains('active')) {
+		closePopups();
+	}
+}
+
+/** How full the context is, in words: used and left, in tokens and as a share of the window. */
+function contextSize(c: NonNullable<ChatViewState['context']>): string {
+	if (c.compacted) {
+		return `Context: compacted from ${compact(c.used)} tokens. The new size shows with the agent's next reply.`;
+	}
+	if (!c.window) {
+		return `Context: ${compact(c.used)} tokens used. The window size is not reported yet.`;
+	}
+	const usedPct = Math.min(100, Math.round(c.used / c.window * 100));
+	return `Context used: ${compact(c.used)} (${usedPct}%)\nLeft: ${compact(Math.max(0, c.window - c.used))} (${100 - usedPct}%) of ${compact(c.window)} tokens`;
+}
+
+/**
+ * A click asks first, in the view — never a modal, which would pause a browser
+ * tab beside the chat: compacting replaces the conversation the agent sees
+ * with a summary, and cannot be undone. No is the default, as for running a
+ * skill again: Enter, Escape and a click elsewhere all leave it as it is.
+ */
+contextButton.addEventListener('click', () => {
+	const c = state?.context;
+	if (!state || !c || contextButton.classList.contains('unavailable')) {
+		return;
+	}
+	if (paramsPopup.classList.contains('open') && contextButton.classList.contains('active')) {
+		closePopups();
+		return;
+	}
+	const tabId = state.activeTab;
+	const yes = button([el('span', { text: 'Yes, compact' })], { class: 'ghost', title: 'Send /compact to the agent' });
+	const no = button([el('span', { text: 'No' })], { class: 'primary', title: 'Leave the conversation as it is (Enter)' });
+	no.addEventListener('click', () => closePopups());
+	yes.addEventListener('click', () => {
+		closePopups();
+		post({ type: 'compact', tabId });
+	});
+	paramsPopup.replaceChildren(
+		el('div', { class: 'menu-heading', text: 'Compact the conversation?' }),
+		el('div', { class: 'run-question', text: `${contextSize(c)}\n\nThe agent replaces the conversation with a summary of it and carries on from there. Details it leaves out of the summary are gone for the agent; the chat here stays as it is.` }),
+		el('div', { class: 'form-actions' }, yes, no));
+	paramsPopup.onkeydown = event => {
+		if (event.key === 'Enter' && !event.isComposing && document.activeElement === no) {
+			event.preventDefault();
+			closePopups();
+		}
+	};
+	openAbove(paramsPopup, contextButton, 'right');
+	contextButton.classList.add('active');
+	no.focus();
+});
+
 function renderSend(): void {
 	const running = state?.running ?? false;
 	const hasContent = !!input.value.trim() || !!state?.attachments.length;
@@ -2380,7 +2489,7 @@ function closePopups(except?: HTMLElement): void {
 			popup.classList.remove('open');
 		}
 	}
-	for (const pill of [agentPill, modelPill, plusButton, usageButton, approveToggle, slashButton]) {
+	for (const pill of [agentPill, modelPill, plusButton, usageButton, approveToggle, slashButton, contextButton]) {
 		pill.classList.remove('active');
 	}
 	// A skill button is a popup's anchor too; the mark only tells a second
@@ -2429,7 +2538,7 @@ document.addEventListener('mousedown', event => {
 		}
 		return;
 	}
-	if (![menu, usagePopup, approvalPopup, palette, paramsPopup, skillBar, historyPanel, agentsPanel, agentAppsPanel, plusButton, usageButton, agentsButton, agentPill, modelPill, approveToggle, slashButton].some(n => n.contains(target))) {
+	if (![menu, usagePopup, approvalPopup, palette, paramsPopup, skillBar, historyPanel, agentsPanel, agentAppsPanel, plusButton, usageButton, agentsButton, agentPill, modelPill, approveToggle, slashButton, contextButton].some(n => n.contains(target))) {
 		closePopups();
 	}
 });
@@ -3258,7 +3367,7 @@ function renderSkillBar(s: ChatViewState): void {
 		}
 		const sigil = paletteAgent(s) === 'codex' ? '$' : '/';
 		const base = skill.tooltip ?? `${sigil}${skill.name}`;
-		const runs = run?.count ? `${run.count} runs` : 'running';
+		const runs = run?.count ? `${run.count} runs` : run?.steps ? `prompt ${run.step} of ${run.steps}` : 'running';
 		const note = run?.status === 'running' ? ` — ${run.inChat ? 'running in the chat' : runs}; click to run again or stop`
 			: run?.status === 'waiting' ? ' — waiting for your answer, click to answer'
 				: run?.message ? ` — ${run.message}` : '';
@@ -3332,6 +3441,9 @@ const hoverTip = (() => {
 	window.addEventListener('scroll', () => api.hide(), true);
 	return api;
 })();
+
+// The context pie's tooltip: how much of the window is used and how much is left.
+hoverTip.attach(contextButton);
 
 function toolbarSkill(id: string): ToolbarSkill | undefined {
 	return state?.toolbar.find(s => s.id === id);
@@ -3729,23 +3841,41 @@ function openSkillEditor(skill?: ToolbarSkill): void {
 			name.setSelectionRange(at, at);
 		}
 	});
-	const prompt = el('textarea', { class: 'form-input form-prompt' });
-	prompt.value = skill?.prompt ?? '';
-	prompt.rows = 6;
-	prompt.placeholder = 'Review PR {{pr}} with /one-more-review…';
-	prompt.addEventListener('input', () => followInlineToken(prompt));
-	prompt.addEventListener('keydown', event => {
-		if (paletteMode === 'inline' && paletteTarget === prompt && paletteKey(event)) {
-			event.preventDefault();
-			event.stopPropagation();
+	const prompt = promptField(skill?.prompt ?? '', 'Review PR {{pr}} with /one-more-review…', 6);
+
+	// The prompts after the first, each sent once the one before it is over —
+	// and, where it has a check, only if the agent found the check true.
+	const steps: { prompt: string; check: string }[] = (skill?.followUps ?? []).map(f => ({ prompt: f.prompt, check: f.check ?? '' }));
+	const stepList = el('div', { class: 'step-list' });
+	const paintSteps = () => {
+		stepList.replaceChildren(...steps.map((step, i) => {
+			const check = el('textarea', { class: 'form-input form-check' });
+			check.value = step.check;
+			check.rows = 2;
+			check.placeholder = 'Optional. E.g. "the tests pass" — empty: always go on';
+			check.addEventListener('input', () => { step.check = check.value; });
+			const text = promptField(step.prompt, 'The next prompt…', 4);
+			text.addEventListener('input', () => { step.prompt = text.value; });
+			text.addEventListener('change', () => { step.prompt = text.value; });
+			const remove = button([icon('close')], { class: 'ghost round', title: 'Remove this prompt' });
+			remove.addEventListener('click', () => { steps.splice(i, 1); paintSteps(); });
+			return el('div', { class: 'step-row' },
+				el('div', { class: 'step-head' }, el('span', { class: 'form-label', text: `Prompt ${i + 2}` }), remove),
+				el('span', { class: 'form-hint', text: `Check after prompt ${i + 1} — the agent judges it, and prompt ${i + 2} runs only if it holds` }),
+				check,
+				text);
+		}));
+	};
+	paintSteps();
+	const addStep = button([icon('add'), el('span', { text: 'Add next prompt' })], { class: 'ghost' });
+	addStep.addEventListener('click', () => {
+		if (steps.length >= 9) {
+			return;
 		}
+		steps.push({ prompt: '', check: '' });
+		paintSteps();
+		(stepList.lastElementChild?.querySelector('.form-prompt') as HTMLTextAreaElement | null)?.focus();
 	});
-	prompt.addEventListener('keyup', event => {
-		if (!['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(event.key)) {
-			followInlineToken(prompt);
-		}
-	});
-	prompt.addEventListener('click', () => followInlineToken(prompt));
 
 	const agents = selectField<ToolbarSkill['agents']>([['all', 'All agents'], ['claude', 'Claude Code only'], ['codex', 'Codex only']], editorAgents);
 	agents.addEventListener('change', () => { editorAgents = agents.value as ToolbarSkill['agents']; });
@@ -3856,9 +3986,15 @@ function openSkillEditor(skill?: ToolbarSkill): void {
 			prompt.focus();
 			return;
 		}
+		const emptyStep = steps.findIndex(step => !step.prompt.trim() && step.check.trim());
+		if (emptyStep >= 0) {
+			error.textContent = `Prompt ${emptyStep + 2} has a check but no prompt.`;
+			return;
+		}
 		post({
 			type: 'saveToolbarSkill', skill: {
 				id, name: n, prompt: prompt.value, result: chosenResult, agents: editorAgents, icon: chosenIcon,
+				followUps: steps.filter(step => step.prompt.trim()).map(step => ({ prompt: step.prompt, check: step.check.trim() || undefined })),
 				colors: { text: colors.text.value(), border: colors.border.value(), icon: colors.icon.value() },
 				label: label.value || undefined, tooltip: tooltip.value || undefined,
 				params: drafts.map(d => ({
@@ -3876,6 +4012,10 @@ function openSkillEditor(skill?: ToolbarSkill): void {
 		el('div', { class: 'skill-form' },
 			formRow('Name', name, 'Called as /name or $name; lower case, no spaces.'),
 			formRow('Prompt', prompt, 'Type / or $ for a skill, and {{parameter}} where a value goes.'),
+			el('div', { class: 'form-row' },
+				el('span', { class: 'form-label', text: 'Next prompts' }),
+				el('span', { class: 'form-hint', text: 'Sent one after another, each once the agent has finished the one before — like messages queued with ⌘Enter. A check between two stops the skill there unless it holds.' }),
+				stepList, addStep),
 			formRow('Available in', agents),
 			el('div', { class: 'form-row' }, el('span', { class: 'form-label', text: 'Result' }), resultGroup),
 			el('div', { class: 'form-row' }, el('span', { class: 'form-label', text: 'Icon' }), iconButton, iconPanel),
@@ -3895,6 +4035,31 @@ function openSkillEditor(skill?: ToolbarSkill): void {
 	closePopups(skillEditor);
 	skillEditor.classList.add('open');
 	name.focus();
+}
+
+/**
+ * A prompt field of the skill editor: the "/" and "$" palette works in it as
+ * in the message box, whichever of the editor's prompts it is.
+ */
+function promptField(value: string, placeholder: string, rows: number): HTMLTextAreaElement {
+	const field = el('textarea', { class: 'form-input form-prompt' });
+	field.value = value;
+	field.rows = rows;
+	field.placeholder = placeholder;
+	field.addEventListener('input', () => followInlineToken(field));
+	field.addEventListener('keydown', event => {
+		if (paletteMode === 'inline' && paletteTarget === field && paletteKey(event)) {
+			event.preventDefault();
+			event.stopPropagation();
+		}
+	});
+	field.addEventListener('keyup', event => {
+		if (!['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(event.key)) {
+			followInlineToken(field);
+		}
+	});
+	field.addEventListener('click', () => followInlineToken(field));
+	return field;
 }
 
 function newId(): string {
