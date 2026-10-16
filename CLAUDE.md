@@ -4490,10 +4490,13 @@ white space; trailing punctuation is not part of it (`markCommands`). In a sent 
 `span.cmd-token` among text nodes, so `textContent` — what the copy button and the send's flight
 read — is the text unchanged, and the prompt is rebuilt when the agent's list changes
 (`commandsSignature` in its signature). **The box is a textarea, which cannot style part of its
-text**, so the marks are drawn in a mirror behind it (`.input-mirror`): the same text in the same
-font, padding, line height, wrapping and scrollbar gutter, its glyphs transparent, the textarea
-above it with a transparent background, its scroll kept in step. The mark is a background with a
-`box-shadow` rather than padding, which would move the mirror's text off the textarea's.
+text**, so the text the user sees is a mirror behind it (`.input-mirror`): the same text in the
+same font, padding, line height, wrapping and scrollbar gutter, its scroll kept in step, and the
+textarea above it draws only its caret (`caret-color`) and selection, its own glyphs transparent.
+**The mark is a colour and nothing else** — asked for, after a first version with a background
+that read as a button — and a command keeps the plain arrow rather than the prompt's pointer, since
+it is not clickable. Anything that changes the mirror's layout (padding, a bold weight) moves its
+text off the textarea's caret.
 
 Details that matter:
 

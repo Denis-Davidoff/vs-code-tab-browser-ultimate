@@ -981,9 +981,11 @@ button {
 	flex-direction: column;
 }
 
-/* The box's text drawn behind it, with the commands marked (see inputMirror).
-   It has to lay text out exactly as the textarea does: same font, padding,
-   line height, wrapping and scrollbar gutter. */
+/* The box's text drawn behind it, with the commands in colour (see inputMirror).
+   This layer is the text the user sees: the textarea above it draws only its
+   caret and selection, its own glyphs transparent. So it has to lay text out
+   exactly as the textarea does: same font, padding, line height, wrapping and
+   scrollbar gutter. */
 .input-mirror {
 	position: absolute;
 	inset: 0;
@@ -993,24 +995,18 @@ button {
 	line-height: var(--line);
 	white-space: pre-wrap;
 	overflow-wrap: break-word;
-	color: transparent;
+	color: var(--vscode-input-foreground, var(--fg));
 	overflow: hidden;
 	scrollbar-gutter: stable;
 	pointer-events: none;
 }
 
-.input-mirror .cmd-token {
-	border-radius: 4px;
-	background: color-mix(in srgb, var(--accent) 22%, transparent);
-	box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
-}
-
-/* A command in a sent prompt: the same mark, its text in the accent colour. */
-.bubble-text .cmd-token {
-	border-radius: 4px;
-	background: color-mix(in srgb, var(--accent) 18%, transparent);
-	box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
-	color: var(--vscode-textLink-foreground, var(--fg));
+/* A command, in the box and in a sent prompt: its colour and nothing else —
+   asked for; a background read as a button. Not clickable, so the plain
+   arrow, not the prompt's pointer. */
+.cmd-token {
+	color: var(--vscode-textLink-foreground, var(--accent));
+	cursor: default;
 }
 
 .input {
@@ -1020,7 +1016,9 @@ button {
 	border: none;
 	outline: none;
 	background: transparent;
-	color: var(--vscode-input-foreground, var(--fg));
+	/* The mirror behind draws the text; this draws the caret and the selection. */
+	color: transparent;
+	caret-color: var(--vscode-input-foreground, var(--fg));
 	font: inherit;
 	line-height: var(--line);
 	padding: 10px 12px 4px;

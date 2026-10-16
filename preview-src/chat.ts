@@ -139,9 +139,10 @@ const approveToggle = button([], { class: 'pill approve-toggle' });
 const toolbar = el('div', { class: 'toolbar' },
 	plusButton, browserButton, slashButton, agentPill, modelPill, effortBox, approveToggle, el('span', { class: 'toolbar-end' }, agentsButton, usageButton, queueButton, sendButton));
 /**
- * The box's text drawn again behind it, with the agent's commands marked: a
- * textarea cannot style part of its text, so the marks live in this layer and
- * the textarea above it is transparent. Same font, padding, wrapping and scroll.
+ * The box's text drawn again behind it, with the agent's commands in colour:
+ * a textarea cannot style part of its text, so this layer shows the text and
+ * the textarea above it draws only the caret and the selection, its own
+ * glyphs transparent. Same font, padding, wrapping and scroll.
  */
 const inputMirror = el('div', { class: 'input-mirror' });
 inputMirror.setAttribute('aria-hidden', 'true');
