@@ -2877,9 +2877,7 @@ function buildPalette(s: ChatViewState): void {
 			row.setAttribute('aria-disabled', 'true');
 		}
 		row.setAttribute('role', 'option');
-		if (item.detail) {
-			row.title = item.detail;
-		}
+		fullRowTip(row, item);
 		row.dataset.index = String(index);
 		row.addEventListener('mousemove', () => !item.disabled && setPaletteActive(index, false));
 		// Not a click: in the inline mode a press would take the caret out of
@@ -4316,6 +4314,24 @@ function fold(key: string, label: string, content: HTMLElement): HTMLElement {
 	details.open = toggled.get(key) ?? false;
 	details.addEventListener('toggle', () => toggled.set(key, details.open));
 	return details;
+}
+
+/**
+ * A palette row whose name, hint or description is cut short gets a tooltip
+ * with all of it (asked for, with the sideways scroll gone). Measured on
+ * hover, once laid out; a row that fits gets none.
+ */
+function fullRowTip(row: HTMLElement, item: { label: string; hint?: string; detail?: string }): void {
+	row.addEventListener('mouseenter', () => {
+		const cut = [...row.querySelectorAll<HTMLElement>('.palette-label, .palette-hint, .palette-detail')]
+			.some(node => node.scrollWidth > node.clientWidth + 1);
+		const full = [item.hint ? `${item.label} ${item.hint}` : item.label, item.detail].filter(Boolean).join('\n');
+		if (cut) {
+			row.title = full;
+		} else {
+			row.removeAttribute('title');
+		}
+	});
 }
 
 /* history */

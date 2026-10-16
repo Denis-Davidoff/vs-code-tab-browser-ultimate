@@ -2682,8 +2682,10 @@ body.vscode-high-contrast-light .exec {
 
 /* ---------------------------------------------------------------- the "/" palette */
 
+/* A little wider than a menu (asked for, after long skill names and hints
+   pushed the list sideways); `.popup` keeps it inside the view. */
 .palette {
-	width: 380px;
+	width: 440px;
 	padding: 0;
 	overflow: hidden;
 }
@@ -2721,8 +2723,11 @@ body.vscode-high-contrast-light .exec {
 	display: none;
 }
 
+/* No scroll sideways: a long name, hint or description is cut with an ellipsis
+   and its row gets a tooltip with the whole of it (`fullRowTip`). */
 .palette-list {
 	max-height: min(50vh, 360px);
+	overflow-x: hidden;
 	overflow-y: auto;
 	padding: 4px;
 }
@@ -2778,7 +2783,11 @@ body.vscode-high-contrast-light .exec {
 	min-width: 0;
 }
 
+/* The name is cut only when it and the group tag (in a search) do not fit
+   together: the hint takes no room of its own, so it never squeezes the name. */
 .palette-label {
+	flex: 0 1 auto;
+	min-width: 0;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
@@ -2789,8 +2798,13 @@ body.vscode-high-contrast-light .exec {
 	font-size: var(--mono-size);
 }
 
+/* Only what is left after the name and the tag: it gives way first. */
 .palette-hint {
-	flex: none;
+	flex: 1 1 0;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 	font-family: var(--mono);
 	font-size: var(--mono-size);
 	color: var(--fg-3);

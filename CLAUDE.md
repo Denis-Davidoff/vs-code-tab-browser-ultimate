@@ -4594,6 +4594,15 @@ Details that matter:
   CLI's context while the thread stays on screen, `/rename` and `/resume` act on a session the
   chat owns, `/login`, `/logout`, `/exit`, `/quit` on the process it runs, and `/color`, `/focus`,
   `/heapdump`, `/output-style` are terminal features. They still run when typed. Names starting with `__` and commands "… sessions only" are internal.
+- **No scroll sideways, and a tooltip only where a row is cut** (asked for): the palette is 440 px
+  (it was 380), kept inside the view by `.popup`'s own `max-width`, and its list hides
+  horizontal overflow — a long skill name or argument hint pushed it sideways. The argument hint
+  takes only the room the name and the group tag leave (`flex: 1 1 0`), so it gives way first;
+  the name is cut only when it and the tag do not fit together. A first version kept the name
+  whole up to the row's width, and in a search a long name pushed the group tag out of the row,
+  where the hidden overflow took it (#417). Whatever is cut ends in an ellipsis, and that row's
+  tooltip (`fullRowTip`, measured on hover) carries the name, the hint and the description
+  whole. A row that fits gets no tooltip.
 - **A row is chosen on click with its `mousedown` prevented**: in the inline mode a press would
   otherwise move focus out of the box, and the caret — and with it the query — would go.
 - **The list is rebuilt only when what it shows changes** (`paletteShape`), #365's rule: state
@@ -7123,6 +7132,10 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
 416. **A warning that counts work the path it warns about does not stop** → the tab's agent count
      took in the background toolbar runs, and "Closing it stops 1 agent" was printed while closing
      left the run going. Count only what is stopped, or stop what is counted.
+417. **Hiding overflow to stop a scroll, with an item that does not shrink** → the palette's list
+     stopped scrolling sideways, and a long name that kept its width pushed the group tag past the
+     row, where the hidden overflow removed it. Let the flexible part give way, and check every
+     piece of the line is still on screen.
 
 ## Special cases and non-obvious decisions
 
