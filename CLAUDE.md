@@ -4163,7 +4163,8 @@ What is built, and what is not yet:
   page, element from the page, page address, file); the `U` usage popup (plan limits per agent,
   plus this chat's tokens and cost); history with resume; new chat; refresh; several
   conversations at once, as tabs; the agents an agent starts, listed, each stoppable on its own;
-  approvals asked in the chat, with an Ask / Auto toggle; the browser tools, handed to both agents
+  approvals asked in the chat, with an Auto / Ask / Deny menu by category; messages added to a
+  running turn or queued for after it; the browser tools, handed to both agents
   at every start whether or not Connect was ever pressed — see
   [Approvals and the browser tools](#approvals-and-the-browser-tools).
 - **Not built yet:** browser tools given to the agent *in process*, with no MCP server, port or
@@ -4173,13 +4174,30 @@ What is built, and what is not yet:
 ### The layout, as asked for
 
 Bottom to top: a toolbar row — `+`, the browser button, the agent pill, the model pill, the effort
-slider, the Ask / Auto toggle ([approvals](#approvals-and-the-browser-tools)) and, pushed right, the agents button (only while the chat has agents — see
+slider, the approval button ([approvals](#approvals-and-the-browser-tools)) and, pushed right, the agents button (only while the chat has agents — see
 [Agents the agent starts](#agents-the-agent-starts)), `U` and Send / Stop — then the message box, then the conversation. The
 browser button (icon only, a globe — `codicon-globe`, the same mark as the extension's own
 status bar item and toolbar dropdown; `codicon-browser` reads as a window) opens a new browser
 tab and does nothing else: it runs
 `aiBrowser.newTab`, the dropdown's own "Open New Browser Tab", so the integrated browser or the
 panel is chosen by the same rule as everywhere else.
+
+**The "/" button**, right of the globe — a square with a slash, both drawn in CSS: the slash is a
+line from the box's centre (`.slash-mark::before`), since a font's "/" has side bearings and sits
+on the baseline, and so was never in the middle of the square — opens the
+chat's own menu, asked for: **Clear conversation** starts the tab over with the same agent, the
+old conversation staying in the history (what Claude Code's `/clear` does), asking first in the
+same menu when the tab is working; **Export conversation** asks where to — the clipboard, or
+**Save to file…**, which opens the transcript (`chatTranscript`, the one handed to the other
+agent) as a new editor tab named `chat-<title>-<time>.md` and runs Save As, so the user picks the
+place. **That editor is plain text** although the name ends in `.md`: a reply or a page's words
+in a Markdown editor make `[x](command:…)` a link that runs a command on Cmd+click (#371).
+
+**Every visible button of the bottom bar has a tooltip** saying what it does, and its key where it
+has one — asked for: Attach, the browser, "/", the agent and model pills, effort, approvals,
+usage, queue (⌘/Ctrl+Enter) and Send / Stop (Enter, Shift+Enter for a new line). The Agents panel
+also has a **Close** button centred at its foot (`panelFooter`), asked for: the X at the top is
+far once the list is scrolled.
 
 **↑ / ↓ in the message box walk through the messages sent before**, as in a terminal: ↑ older,
 ↓ newer, and past the newest the text typed before walking comes back. **↑ starts a walk only
@@ -4238,6 +4256,9 @@ from their shipped webviews — Claude Code 2.1.301 (`webview/index.css`, CSS mo
 | composer | Codex surface, Claude Code focus ring | 12 px radius, soft shadow, accent ring on focus, round send button in the foreground colour |
 | pills and menus | both | agent and model are ghost pills opening in-view menus (label, description, check), not native `<select>`s |
 | code blocks | both | header with the language and a copy button; tables, quotes, rules |
+| copying a message | asked for | a copy button at the bottom right of every prompt and reply, on hover (`.message-copy`); a reply copies as its Markdown; the prompt's copy does not fold the prompt |
+| spacing | asked for | rows 6px apart above and below (the timeline's dot and line are placed from the same number), and 10px between turns |
+| sending | asked for | the message's text lifts out of the box and flies to its prompt in the thread (`launchFlight` / `landFlight`): the prompt's text is hidden until the flight lands, so the words are on screen once; the target is the first new prompt **with this text** (two sends inside one post round trip put both prompts in at once, and "the last prompt" was the wrong one), hidden again if it is rebuilt in flight; a chat switch stops the flight; a send with no prompt appearing within 1.5 s (still waiting for detection, refused) fades in place; nothing flies under reduced motion |
 
 **The Markdown reader** handles what replies use: fenced code, headings, quotes, rules, tables
 (outer pipes optional, one column allowed, a `|` inside inline code or escaped `\|` kept as text),
@@ -4257,11 +4278,19 @@ Claude Code's `result.usage` is per turn and is added up, Codex's `tokenUsage.to
 thread's running total and replaces the figure — measured: two short Codex turns read 17 811 and
 17 828, not 17 811 and 35 639. "Sent" includes cached input, which the tooltip breaks out.
 
-- **Turns waiting are a queue (`_pending`), not one baseline.** Claude Code answers a message
-  sent mid-turn with a turn of its own, and with one baseline the first `result` was written onto
-  the *latest* prompt — the queued one — while the second showed nothing. A queued prompt's
-  baseline and start time are taken when the turn before it ends. A Codex message sent mid-turn
-  steers the running turn and is not queued.
+- **Turns waiting are a queue (`_pending`), not one baseline**, and a Claude message sent
+  mid-turn is not in it. Measured on 2.1.301, Claude Code does one of two things with such a
+  message: **taken into the running turn** at the next tool boundary when it arrives while a tool
+  runs — the final reply answers both, and there is one `result`; or **answered by a turn of its
+  own** when it arrives during the final text — a second `result`, announced by `status:
+  requesting` milliseconds after the first. Only the CLI knows which, and it says so only by
+  starting that turn. So a mid-turn message waits in `ChatTab._waiting`, `ClaudeSession` counts
+  only an idle send as a turn, and an `autoTurn` within two seconds of a turn's end takes the
+  waiting prompt as its own (with its baseline and start time); a later one is an agent's.
+  Counting every message as a turn was the first design, from a measurement of the second case
+  only: after a merged message the count stayed at one, and the tab read as working for good —
+  Stop up, the close asking for confirmation (#384). A Codex message sent mid-turn steers the
+  running turn and is not queued.
 - **Codex's running total survives a restart.** Measured: a thread resumed in a new app-server
   reported 39 496 after its second turn, the first having ended at 19 740. A total that ever
   comes back *lower* than what is counted is a counter that started again, and is added on top
@@ -4331,7 +4360,7 @@ refresh the samples.
 | text | `stream_event` / `content_block_delta` / `text_delta` | `item/agentMessage/delta` |
 | tokens | `result.usage`, **per turn** | `thread/tokenUsage/updated.total`, **for the thread** |
 | model / effort | launch flags `--model`, `--effort` | parameters of each `turn/start` |
-| more input mid-turn | another user line (the CLI queues it) | `turn/steer` with `expectedTurnId` |
+| more input mid-turn | another user line — taken into the turn, or answered by a turn of its own; see the queue below | `turn/steer` with `expectedTurnId` |
 | stop | `control_request` `interrupt` | `turn/interrupt` |
 | resume | `--resume <session_id>` | `thread/resume` |
 
@@ -4618,9 +4647,10 @@ Each of the Codex settings was found by its absence:
   `~/.ssh` and the shell's rc files included; such a thread is `read-only` (`threadSettings`).
 
 **How the chat answers** ([src/chat/chatTab.ts](src/chat/chatTab.ts)): a question is an
-`ApprovalEntry` in the conversation — a card with what it is for ("Run this command?", "Use the
-browser?", "Change this file?", "Use this tool?"), the command or tool, its arguments, and
-Allow / Deny, plus **Allow all** for what the toggle covers, which also switches the toggle on.
+`ApprovalEntry` in the conversation — a card with what it is for ("Go to the internet?", "Use the
+browser?", "Run this command?", "Change this file?", "Use a file outside the project?", "Use this
+tool?"), the command or tool, its arguments, and Allow / Deny, plus **Always allow** and **Always
+deny**, which also set the card's category in the approval menu.
 **The card shows exactly what Allow runs**: a command whole, line breaks kept, arguments one per
 line, in a scrolling box. The first version folded the command onto one line and cut it at 500
 characters — `echo done` and `rm -rf build` on the next line read as one harmless `echo`, and a
@@ -4628,15 +4658,57 @@ long command ran a tail nobody saw — while Allow sent the original. Text past 
 is cut with a sentence saying so.
 Never a modal or a QuickPick: either would pause the browser tab the agent is about to use. A
 tab waiting on one shows the waiting mark. Each answered card says how it went: Allowed, Denied,
-Allowed automatically, No longer needed.
+Allowed automatically, Denied automatically, No longer needed.
 
-**The Ask / Auto toggle** sits in the composer's toolbar and covers **terminal commands and
-browser tools only** (`autoApproved`), as asked for; file edits (the agents' edit tools) and
-other tools always ask — and so do Codex's input to a running command (`kind: 'writeStdin'`) and
-network access for one (`networkApprovalContext`), which are not "a terminal command". A command
-can of course change files itself (`sed -i`, `rm`); Auto lets that run.
-Under Auto those questions are answered at once and leave no card — the tool's own row says what
-ran. Switching it on answers what is already waiting and covered (`autoApproveChanged`).
+**The approval menu** — asked for, replacing an on/off toggle that covered terminal and browser
+only. The composer's button opens it, drawn in the view; each category has **Auto · Ask · Deny**,
+and **All** on top sets every one at once (and shows no choice while they differ). The button
+reads "Ask", "Auto", "Deny", or what differs — "Auto 2 · Deny 1" — with every category's mode in
+its tooltip. Categories, as `agentProtocol.ts` sorts the questions (`claudeApproval`,
+`codexApproval`, under test):
+
+| Category | Claude Code | Codex |
+|---|---|---|
+| Internet (`web`) | `WebFetch`, `WebSearch` | network access for a command (`networkApprovalContext`) |
+| AI Browser (`browser`) | `mcp__ai-browser__*` | the `ai-browser` server's tools |
+| Terminal (`command`) | `Bash` | a command, and input to a running one (`writeStdin`) |
+| Files in the project (`edit`) | `Edit` / `Write` / `MultiEdit` / `NotebookEdit` inside the folder | a patch whose files are all inside |
+| Files outside the project (`outside`) | any file tool on a path outside the folder, or whose `blocked_path` is; an absolute or `~` `Glob` / `Grep` pattern; an edit tool naming no file | a patch writing outside — its files or where a move takes one (`move_path`) —, with a `grantRoot`, or naming no file at all |
+| MCP · *server* (`mcp:<server>`) | `mcp__<server>__*` | another server's tool |
+| Other tools (`other`) | the rest | the rest |
+
+- **"Outside the project" is decided by `outsideProject`, and every way out counts**, since Auto
+  for "Files in the project" lets an edit through without a card. Each of these was a review
+  finding where an edit outside went through as inside:
+  - **No local folder open** is no project: the CLIs then work in the home directory, and taking
+    that for the project made `~/.ssh/authorized_keys` an edit "in the project". The tab hands
+    the sessions a separate `projectRoot()`, undefined then, and everything is outside.
+  - **`~`** is expanded to the home directory — as Claude Code does itself; `path.resolve` read
+    `~/.zshrc` as a folder named `~` inside the project. Any other `~name` is outside.
+  - **Symlinks** are followed: real paths are compared (the longest existing part of the path,
+    resolved), so `<project>/homelink/.zshrc` is outside when `homelink` leads to `~`.
+  - **A Codex patch's move destination** (`move_path`, in either shape) is a path it writes, and a
+    patch whose paths are not known is outside — the card names every path.
+- **A server gets its row the first time an agent asks about one of its tools** (`noteServer`,
+  at most 30, kept per workspace), since the servers are each CLI's own configuration and nothing
+  lists them up front. Its name is the key, so a name over 80 characters is not listed rather
+  than cut.
+- **Auto** answers yes and leaves no card — the tool's own row says what ran; **Deny** answers no
+  and leaves one short "Denied automatically" line (`.approval.quiet`: what it was for and the
+  path or command, no details), so a refusal the agent then works around is
+  not a mystery; **Ask** shows the card. A mode changed while cards wait answers them at once
+  (`approvalModesChanged`).
+- **Kept per workspace** (`aiBrowser.chat.approvalPolicy`), a key not set asks. The old toggle's
+  "on" (`aiBrowser.chat.autoApprove`) reads as Terminal and AI Browser on Auto, so nobody's
+  choice changed when the menu came — except that a Codex `writeStdin` is now Terminal's, so it is
+  answered too. The host refuses a key it does not know and a mode that is not one of the three; a
+  server's key is honoured whether or not the menu lists it (the list stops at 30), or a card's
+  "Always" would do nothing for it.
+- **A choice changes the menu's buttons in place** — rebuilt each time, the clicked button was
+  replaced and keyboard focus fell to the page (#365); it is rebuilt only when its rows change,
+  and focus then goes back to the same button.
+- A Codex `item/permissions/requestApproval` (a broader sandbox profile) is still refused with
+  `-32601`: answering it means building a granted profile, not a yes.
 
 **A question nobody can answer any more is closed, on every path.** The CLI withdrawing it, the
 tab closing, the other agent taking the tab's place, a replaced backend, the process exiting
@@ -4654,13 +4726,15 @@ without a question, exactly as in the CLI, and one they deny is refused without 
 **What the chat sets over the user's configuration**, stated because it is a grant: Claude's
 `--permission-mode default` (over a `defaultMode` in settings), and for Codex the sandbox, the
 approval policy and the reviewer — so a `sandbox_mode = "read-only"` in `config.toml` does not
-hold in the chat's threads, which are `workspace-write` inside an open folder. Plus the Auto
-toggle when it is on. Workspace trust gates the whole chat for that reason.
+hold in the chat's threads, which are `workspace-write` inside an open folder (`read-only` with
+none). Plus every category the approval menu has on **Auto** — any of the internet, the browser,
+the terminal, files inside or outside the project, an MCP server, or everything else — which
+answers yes without a card. Workspace trust gates the whole chat for that reason.
 
 Verified against the real CLIs through the compiled backends: on both, a `touch` and
 `browser_state` each asked once, an Allow ran them (the file created, the tool answered), a Deny
-reached the model, and a Stop with a question open withdrew it; the cards and the toggle against
-a fake session and in headless Chrome.
+reached the model, and a Stop with a question open withdrew it; the cards and the approval menu
+against a fake session and in headless Chrome.
 
 ### Where it refuses to run
 
@@ -4682,14 +4756,16 @@ a fake session and in headless Chrome.
   Codex's thread id), so opening it from the history continues the real conversation — measured
   for both. Images are not stored; the user entry keeps the attachment labels. Codex threads are
   not `ephemeral`, so they also appear in Codex's own history.
-- **The Ask / Auto toggle**: `workspaceState` `aiBrowser.chat.autoApprove` — per workspace,
-  since a project is what a user trusts with commands; one switch for every tab.
+- **The approval menu**: `workspaceState` `aiBrowser.chat.approvalPolicy` (a mode per category)
+  and `aiBrowser.chat.approvalServers` (the MCP servers seen) — per workspace, since a project is
+  what a user trusts with commands; one menu for every tab.
 - **Selection**: `globalState` `aiBrowser.chat.selection` — the last agent, a model per agent and
   an effort per `<agent>:<model>`, made valid against what was detected on every read.
 - **Open tabs**: `workspaceState` `aiBrowser.chat.openTabs` — every tab's chat id in order, which
-  of them have not started (`fresh`), and the one in front, written when they change. A started
-  tab comes back from the history; a fresh one comes back empty **with the same chat id**, which is
-  what its draft is kept under — without it a first message being written was lost on reload.
+  of them have not started (`fresh`), the one in front, and the names of fresh tabs the user
+  renamed (`names`), written when they change. A started tab comes back from the history, its
+  name with it; a fresh one comes back empty **with the same chat id**, which is what its draft is
+  kept under — without it a first message being written was lost on reload.
 - **The drafts**, one per open conversation by chat id, in the webview's `setState`; a draft from
   before tabs is read once into the first conversation shown.
 
@@ -4723,8 +4799,7 @@ once enough are closed, and only a window restore is cut to the new limit.
 | the working star, turning | a turn or an agent of the tab runs (`busy`) — the glyph of the working line, turned by the same 120 ms timer, still under reduced motion |
 | green dot | the work ended while nobody was looking at the tab |
 | orange dot | the work ended in an error: an error entry or a failed agent since the last message, or the backend replaced under a running turn |
-| grey square | finished and read |
-| nothing | nothing has been sent from the tab |
+| nothing | finished and read — asked for; a grey square said nothing a plain tab does not — or nothing has been sent from the tab |
 
 - **The end of the work is a change between two posts**, busy then idle, so `ChatTab._post`
   compares the two on every change rather than any one path marking it — a turn's end, a send
@@ -4734,12 +4809,35 @@ once enough are closed, and only a window restore is cut to the new limit.
   shows it — not at its next change. A collapsed view, or the side bar showing another container,
   is not looking.
 - **The orange mark outlives being looked at** and goes with the next message: an error is not
-  over because it was seen, and turning grey would say the work had finished.
+  over because it was seen, and losing its mark would say the work had finished.
 - **Stopping is not failing.** "Stopped." from the user's Stop is a finish like any other; so is
   closing the tab or the view, which ends the turn and leaves nothing to read (`close()` clears
-  the unread mark). A tab reopened from the history is grey, or orange when its last entry is an
-  error.
+  the unread mark). A tab reopened from the history has no mark, or the orange one when its last
+  entry is an error.
 
+- **The tab in front is wider than the others** (130–260 px against 56–140 px), and the width
+  changes with a transition — asked for. That needs the element to survive the switch, so the
+  strip is **keyed**: one element per open tab, updated in place, its label refilled only when
+  what it shows changes, and moved only when out of order (re-inserting ends a transition). It
+  used to be rebuilt whenever anything in it changed, which also lost clicks (#365) and keyboard
+  focus on a tab.
+- **Double-click a tab (or F2) to rename it** — asked for: Enter or a click elsewhere keeps the
+  name, Escape keeps the old one (and goes no further, so it does not also close a popup), an
+  empty name changes nothing. The name is one line, 80 characters at most, and sets
+  `StoredChat.named`, so the first message no longer replaces it with its own text. A state post
+  while the field is open leaves it alone, and so does the host's `focusInput`. Details that
+  each were a defect first:
+  - **After a click elsewhere, focus stays where the click put it** — only Enter and Escape give
+    it back to the tab. It used to go back on every ending, so clicking into the message box to
+    type lost what was typed.
+  - **The double-click belongs to the tab its first click was on.** That click selects the tab,
+    the widths move, and the second click can land on a neighbour — which was then both selected
+    and renamed. The second click is ignored and the rename goes to the first click's tab.
+  - **Enter and Escape inside an IME composition** pick or drop a candidate, not the name.
+  - **A name is shown at once** and held until the host's state carries it, so a post built
+    before the rename does not flick the old name back.
+  - **A named tab is not "empty"**: a chat from the history opens in a new tab instead of over it,
+    and "Close this chat, start …" keeps the name on the tab it reuses.
 - **Closing a tab stops what it runs** — its turn and its agents — and keeps the chat in the
   history. A tab that is working asks first, inside the strip ("… is still working. Closing it
   stops its reply and 1 agent."), never in a modal.
@@ -4771,8 +4869,10 @@ once enough are closed, and only a window restore is cut to the new limit.
   any popup.
 - **A message belongs to the tab it was typed in**: `_send` takes the tab before it waits for
   detection, so moving to another tab meanwhile does not send it there.
-- The strip and the switch card are rebuilt only when what they show changes, the rule #365 set
-  for the agents panel.
+- The strip is never rebuilt (keyed, see above); the switch card is rebuilt only when what it
+  shows changes, the rule #365 set for the agents panel. The empty close-confirm row is
+  `display: none` while hidden — `.tab-confirm`'s own `display: flex` kept its padding on screen,
+  a blank band under the tabs.
 
 **Another agent for a conversation that has started is a question**, asked in a card above the
 composer (`switchTo` in the state; the remembered agent waits for the answer):
@@ -4790,6 +4890,54 @@ and nothing it can find itself: prompts, replies, and one line per tool — the 
 exit code, the file read or edited, an agent with its report fenced. Thinking and notices stay
 out. The two options that open a tab are disabled at the limit. The files are swept with the
 reports (`chat-*.md` is in the sweep's name pattern); by then the agent has read the file.
+
+### Sending during a turn: added to it, or queued after it
+
+Asked for: Enter while an agent works adds the message to the running turn; **⌘Enter**
+(Ctrl+Enter elsewhere), or the queue button beside Send — there only while a turn runs and the
+box has something — holds it until the turn ends and sends it as a turn of its own. With nothing
+running, both just send.
+
+**Added to the turn.** Codex takes it at once (`turn/steer`), and its prompt goes into the
+conversation then. Claude Code decides for itself (measured, see the turn queue under
+[The design](#the-design-and-where-each-part-came-from)): taken in at the next tool boundary, or
+answered by a turn of its own after this one. So a Claude message is **shown below the
+conversation as waiting** ("Waiting for the agent to take it in") and placed where it went in:
+before the output that follows a tool's result, or at the start of its own turn (`autoTurn`), or,
+failing both, where the conversation stands two seconds after the turn ended. Pushing it at once,
+as the first version did, put the prompt in the middle of a reply still streaming, which then went
+on below it. Measured with the real CLI in both shapes: after the first tool's result in one,
+and the story whole, then the prompt, then its answer in the other.
+
+**Queued.** Held in the tab (`ChatTab._queued`) with the attachments in the box at the time, shown
+below the conversation ("Sent when this turn ends", with an x to take it back), and sent by the
+provider (`_drainQueues`) one at a time **half a second after** the tab is idle — no turn running,
+none pending, no prompt waiting, no approval waiting. Not at the instant the turn ends: Claude Code
+may start a turn of its own milliseconds later, and a send then would be taken into it. A queued
+message carries only its own attachments (`_send`'s `only`), not what the box holds for the next.
+**Stop is for everything the tab was going to do**: the queue does not go out after it, it comes
+back into the message box (`restoreDraft`), attachments with it.
+
+Both kinds are built like prompts, so a sent message's flight lands on its row.
+
+**A queue belongs to the conversation it was typed for**, and each of these was a message sent
+into the wrong one, or with nobody watching:
+- **A tab letting go of its conversation gives the queue back to the box** (`_giveBackQueue`) —
+  "Close this chat, start …", Clear conversation, Stop — rather than sending it into what the tab
+  holds next: a message queued for Claude went out as the first message of the Codex chat that
+  replaced it. Closing the tab drops it, and the close asks first, naming how many.
+- **The drain checks the tab still holds the chat it was scheduled for**, and does nothing while
+  there is no view — the view going stopped the tab's work, and a send then started a CLI nobody
+  saw — resuming when the view says `ready`. Its timers are cleared on dispose.
+- **A tab stays draining until its send has gone through**, and the queued message carries its own
+  attachments (`_send`'s `given`): dequeued before a send that waited on detection, the next one
+  went out right behind it, with the first one's chips.
+- **⌘Enter is passed through and the host decides** whether there is anything to queue behind:
+  for a moment after a turn ends the queue is still waiting to go out, and the webview, reading
+  "not running", sent the new message straight past it.
+- **A waiting Claude prompt goes into the chat before it is saved** on every way of letting go —
+  closing the tab, the view, a replaced backend: the save came first, and the history lacked a
+  message the resumed session had.
 
 ### Attachments
 
@@ -6525,6 +6673,36 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
      chip whose press outlasted a 40 ms post never fired, and focus left it. Key the rebuild.
 382. **`workspace-write` in the home directory** → with no folder open the working directory is
      `~`, so the sandbox opened all of it to writes. Keep such a thread `read-only`.
+383. **A CSS transition on an element that is rebuilt** → the class that should animate lands on
+     a brand-new element, which has no "before" to transition from, so the change jumps. The tab
+     strip had to keep its elements across a switch for the front tab's width to animate.
+384. **Counting every message sent to Claude mid-turn as a turn** → one sent while a tool runs is
+     merged into the running turn, so its `result` never comes and the tab read as working for
+     ever. Count idle sends; let `status: requesting` announce a turn of its own.
+385. **Restoring focus from a `blur` handler** → the blur is the user moving focus somewhere, and
+     focusing the old place undoes it: a rename ended by clicking into the message box took the
+     typing away. Restore focus only from the keys that end it.
+386. **Trusting `dblclick`'s target on a surface that moves under the pointer** → the first click
+     changed the layout and the double-click landed on the neighbour. Bind it to the first click.
+387. **Ending "the current" thinking by scanning back to the last prompt** → a prompt sent during
+     the turn sits after the turn's thinking, so the scan stopped short and "Thinking" shimmered
+     for good after the turn ended or was stopped. End every open thinking block.
+388. **A queue that outlives its conversation** → queued text went to the agent that replaced the
+     tab's, and into a stopped chat after the view had gone. Give the queue back when the tab lets
+     go, and check the chat when the drain fires.
+389. **Saving before the step that adds to what is saved** → the waiting prompt went into the chat
+     after the close had saved it, so the history lacked a message the CLI had received.
+390. **Taking the working directory for the project** → with no folder open it is the home
+     directory, so the whole of it counted as "Files in the project" under Auto. Keep "the
+     project" a separate value that can be absent.
+391. **Resolving a path the way the shell does not** → `path.resolve(root, '~/x')` is a folder named
+     `~`, and a symlink compares as text; both let an edit outside the project read as inside.
+392. **An absolutely positioned child as the last child** → it took `.markdown > :last-child` from
+     the reply's last block, and every reply grew a bottom margin. Keep decorations outside the
+     element whose children a rule counts.
+393. **Finding a DOM node by counting model entries** → a prompt with attachments alone has no text
+     node, and the queue's rows sit in another order than entries, so the count was off by one.
+     Count the nodes being searched.
 
 ## Special cases and non-obvious decisions
 

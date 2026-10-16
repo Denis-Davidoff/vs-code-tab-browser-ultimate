@@ -4,10 +4,13 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as assert from 'node:assert';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { suite, test } from 'node:test';
 import {
 	LineSplitter, chatTitle, claudeApproval, claudeApprovalAnswer, claudeEvents, claudeModels, claudeRateLimitWindows, claudeUsage,
-	claudeTool, codexAgentThreadEvents, codexApproval, codexApprovalAnswer, codexEvents, codexModels, codexUsage, compareCliVersions, parseCliVersion, parseLine, toolDetail, unwrapShell, windowLabel,
+	claudeTool, codexAgentThreadEvents, codexApproval, codexApprovalAnswer, codexEvents, codexPatchPaths, outsideProject, codexModels, codexUsage, compareCliVersions, parseCliVersion, parseLine, toolDetail, unwrapShell, windowLabel,
 } from './agentProtocol.ts';
 
 // The samples below are trimmed copies of what Claude Code 2.1.301 and
@@ -461,30 +464,41 @@ suite('approvals', () => {
 	};
 
 	test('reads a Claude command, a browser tool, an edit and anything else', () => {
-		assert.deepStrictEqual(claudeApproval('r1', claudeBash), {
+		assert.deepStrictEqual(claudeApproval('r1', claudeBash, '/w'), {
 			id: 'r1', what: 'command', title: 'touch made-by-test.txt', detail: 'Create an empty file called made-by-test.txt',
 		});
-		assert.deepStrictEqual(claudeApproval('r2', { tool_name: 'mcp__ai-browser__browser_fill', input: { selector: '#email', value: 'Hello there' } }), {
+		assert.deepStrictEqual(claudeApproval('r2', { tool_name: 'mcp__ai-browser__browser_fill', input: { selector: '#email', value: 'Hello there' } }, '/w'), {
 			id: 'r2', what: 'browser', title: 'browser_fill', detail: 'selector: #email\nvalue: Hello there',
 		});
-		assert.strictEqual(claudeApproval('r3', { tool_name: 'mcp__ai-browser-picto-2a3f1f__browser_state', input: {} }).what, 'browser');
+		assert.strictEqual(claudeApproval('r3', { tool_name: 'mcp__ai-browser-picto-2a3f1f__browser_state', input: {} }, '/w').what, 'browser');
 		// Somebody else's server named like ours is not the browser.
-		assert.strictEqual(claudeApproval('r3b', { tool_name: 'mcp__ai-browser-evil__run', input: {} }).what, 'other');
-		assert.deepStrictEqual(claudeApproval('r4', { tool_name: 'mcp__figma__get_screenshot', input: { node: '1:2' } }), {
-			id: 'r4', what: 'other', title: 'get_screenshot', detail: 'figma\nnode: 1:2',
+		assert.strictEqual(claudeApproval('r3b', { tool_name: 'mcp__ai-browser-evil__run', input: {} }, '/w').what, 'mcp');
+		// Another server's tool is a category of its own, by server.
+		assert.deepStrictEqual(claudeApproval('r4', { tool_name: 'mcp__figma__get_screenshot', input: { node: '1:2' } }, '/w'), {
+			id: 'r4', what: 'mcp', server: 'figma', title: 'get_screenshot', detail: 'node: 1:2',
 		});
-		assert.deepStrictEqual(claudeApproval('r5', { tool_name: 'Edit', input: { file_path: '/w/a.ts', old_string: 'a', new_string: 'b' } }), {
+		assert.deepStrictEqual(claudeApproval('r5', { tool_name: 'Edit', input: { file_path: '/w/a.ts', old_string: 'a', new_string: 'b' } }, '/w'), {
 			id: 'r5', what: 'edit', title: '/w/a.ts', detail: 'Edit',
 		});
-		assert.strictEqual(claudeApproval('r6', { tool_name: 'WebFetch', display_name: 'Fetch', input: { url: 'https://x' } }).title, 'Fetch');
+		// Inside means inside the folder, not a name that starts like it.
+		assert.strictEqual(claudeApproval('r5b', { tool_name: 'Write', input: { file_path: '/w-old/a.ts' } }, '/w').what, 'outside');
+		assert.strictEqual(claudeApproval('r5c', { tool_name: 'Edit', input: { file_path: '../x/a.ts' } }, '/w').what, 'outside');
+		assert.strictEqual(claudeApproval('r5d', { tool_name: 'Write', input: { file_path: 'src/a.ts' } }, '/w').what, 'edit');
+		assert.deepStrictEqual(claudeApproval('r5e', { tool_name: 'Read', display_name: 'Read', input: { file_path: '/etc/hosts' } }, '/w'), {
+			id: 'r5e', what: 'outside', title: '/etc/hosts', detail: 'Read',
+		});
+		assert.deepStrictEqual(claudeApproval('r6', { tool_name: 'WebFetch', input: { url: 'https://x', prompt: 'the price' } }, '/w'), {
+			id: 'r6', what: 'web', title: 'https://x', detail: 'the price',
+		});
+		assert.strictEqual(claudeApproval('r6b', { tool_name: 'WebSearch', input: { query: 'vscode api' } }, '/w').what, 'web');
 	});
 
 	test('shows a command whole, line breaks and all', () => {
 		// What the card shows must be what Allow runs: folded into one line,
 		// `rm -rf build` read as an argument of `echo`.
 		const command = `echo done\nrm -rf build\n${'x'.repeat(900)}`;
-		assert.strictEqual(claudeApproval('r', { tool_name: 'Bash', input: { command } }).title, command);
-		const huge = claudeApproval('r', { tool_name: 'Bash', input: { command: 'y'.repeat(100_010) } }).title;
+		assert.strictEqual(claudeApproval('r', { tool_name: 'Bash', input: { command } }, '/w').title, command);
+		const huge = claudeApproval('r', { tool_name: 'Bash', input: { command: 'y'.repeat(100_010) } }, '/w').title;
 		assert.ok(huge.includes('10 more characters not shown'));
 	});
 
@@ -514,17 +528,62 @@ suite('approvals', () => {
 		assert.deepStrictEqual(codexApproval('1:6', 'mcpServer/elicitation/request', codexMcp), {
 			id: '1:6', what: 'browser', title: 'browser_state', detail: 'selector: #email',
 		});
-		assert.strictEqual(codexApproval('1:7', 'mcpServer/elicitation/request', { ...codexMcp, serverName: 'figma' })?.what, 'other');
-		assert.strictEqual(codexApproval('1:8', 'item/fileChange/requestApproval', { reason: 'write a file' })?.what, 'edit');
+		assert.deepStrictEqual(codexApproval('1:7', 'mcpServer/elicitation/request', { ...codexMcp, serverName: 'figma' }), {
+			id: '1:7', what: 'mcp', server: 'figma', title: 'browser_state', detail: 'selector: #email',
+		});
+		assert.strictEqual(codexApproval('1:8', 'item/fileChange/requestApproval', { reason: 'write a file' }, ['/w/a.txt'], '/w')?.what, 'edit');
 		// Measured: the v2 request carries only `itemId`; the paths come from its item.
-		assert.deepStrictEqual(codexApproval('1:8', 'item/fileChange/requestApproval', { itemId: 'e', reason: null, grantRoot: null }, ['/w/hello.txt']), {
+		assert.deepStrictEqual(codexApproval('1:8', 'item/fileChange/requestApproval', { itemId: 'e', reason: null, grantRoot: null }, ['/w/hello.txt'], '/w'), {
 			id: '1:8', what: 'edit', title: '/w/hello.txt', detail: undefined,
 		});
-		assert.match(codexApproval('1:8', 'item/fileChange/requestApproval', { grantRoot: '/w' })?.detail ?? '', /everything under \/w/);
-		// Input to a running command and network access are not what Auto covers.
-		assert.strictEqual(codexApproval('1:10', 'item/commandExecution/requestApproval', { kind: 'writeStdin', command: null })?.what, 'other');
-		assert.deepStrictEqual(codexApproval('1:11', 'item/commandExecution/requestApproval', { command: 'curl x', networkApprovalContext: { host: 'example.com' } })?.title, 'Network access: example.com');
+		assert.strictEqual(codexApproval('1:8', 'item/fileChange/requestApproval', {}, ['/etc/x'], '/w')?.what, 'outside');
+		const root = codexApproval('1:8', 'item/fileChange/requestApproval', { grantRoot: '/w' }, [], '/w');
+		assert.strictEqual(root?.what, 'outside');
+		assert.match(root?.detail ?? '', /everything under \/w/);
+		// Typing into a running command is the terminal's; opening the network for one is the internet's.
+		assert.strictEqual(codexApproval('1:10', 'item/commandExecution/requestApproval', { kind: 'writeStdin', command: null })?.what, 'command');
+		const network = codexApproval('1:11', 'item/commandExecution/requestApproval', { command: 'curl x', networkApprovalContext: { host: 'example.com' } });
+		assert.strictEqual(network?.what, 'web');
+		assert.strictEqual(network?.title, 'Network access: example.com');
 		assert.strictEqual(codexApproval('1:9', 'execCommandApproval', { command: ['ls', '-la'] })?.title, 'ls -la');
+	});
+
+	test('reads every way out of the project as outside it', () => {
+		// No local folder: the CLI works in the home directory, which is not the project.
+		assert.strictEqual(outsideProject(undefined, '/w/a.ts'), true);
+		assert.strictEqual(claudeApproval('n1', { tool_name: 'Write', input: { file_path: path.join(os.homedir(), '.zshrc') } }, undefined).what, 'outside');
+		// `~` is the home directory, as the CLI expands it — not a folder named `~`.
+		assert.strictEqual(outsideProject('/w', '~/.zshrc'), true);
+		assert.strictEqual(outsideProject('/w', '~other/x'), true);
+		assert.strictEqual(claudeApproval('n2', { tool_name: 'Edit', input: { file_path: '~/.zshrc' } }, '/w').what, 'outside');
+		// The path the CLI says the question is about counts too.
+		assert.strictEqual(claudeApproval('n3', { tool_name: 'Read', input: { file_path: 'notes.md' }, blocked_path: '/etc/hosts' }, '/w').what, 'outside');
+		// An absolute search pattern names where it looks.
+		assert.strictEqual(claudeApproval('n4', { tool_name: 'Glob', input: { pattern: '/etc/**' } }, '/w').what, 'outside');
+		assert.strictEqual(claudeApproval('n5', { tool_name: 'Glob', input: { pattern: 'src/**/*.ts' } }, '/w').what, 'other');
+		// A file tool that names no file cannot be promised to stay inside.
+		assert.strictEqual(claudeApproval('n6', { tool_name: 'Write', input: {} }, '/w').what, 'outside');
+	});
+
+	test('follows a symlink out of the project', () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'outside-'));
+		const away = fs.mkdtempSync(path.join(os.tmpdir(), 'away-'));
+		try {
+			fs.symlinkSync(away, path.join(root, 'link'));
+			assert.strictEqual(outsideProject(root, path.join(root, 'link', '.zshrc')), true);
+			assert.strictEqual(outsideProject(root, 'link/new/file.txt'), true);
+			assert.strictEqual(outsideProject(root, 'src/new.ts'), false);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+			fs.rmSync(away, { recursive: true, force: true });
+		}
+	});
+
+	test('reads where a Codex patch moves a file, and a patch with no paths', () => {
+		assert.deepStrictEqual(codexPatchPaths([{ path: '/w/a.txt', kind: { type: 'update', move_path: '/home/u/.zshrc' } }]), ['/w/a.txt', '/home/u/.zshrc']);
+		assert.deepStrictEqual(codexPatchPaths({ '/w/a.txt': { update: {}, move_path: '/etc/x' } }), ['/w/a.txt', '/etc/x']);
+		assert.strictEqual(codexApproval('m1', 'applyPatchApproval', { fileChanges: { '/w/a.txt': { move_path: '/etc/x' } } }, [], '/w')?.what, 'outside');
+		assert.strictEqual(codexApproval('m2', 'item/fileChange/requestApproval', {}, [], '/w')?.what, 'outside');
 	});
 
 	test('does not read a form a server asks for as an approval', () => {

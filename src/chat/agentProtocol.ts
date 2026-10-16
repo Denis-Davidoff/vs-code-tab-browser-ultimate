@@ -24,6 +24,9 @@
  * because the next CLI release may well rename it.
  */
 
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import type { AgentInfo, AgentUsage, ApprovalKind, ChatModel, ToolKind, UsageWindow } from './chatProtocol';
 
 /* --------------------------------------------------------------- framing */
@@ -1016,8 +1019,81 @@ export function chatTitle(text: string, limit = 60): string {
 export interface ApprovalRequest {
 	readonly id: string;
 	readonly what: ApprovalKind;
+	/** The MCP server, for `what: 'mcp'`. */
+	readonly server?: string;
 	readonly title: string;
 	readonly detail?: string;
+}
+
+/**
+ * Whether a path the agent names is outside the project — the "Files outside
+ * the project" category, which decides whether Auto for "Files in the project"
+ * lets it through, so every way out of the folder counts:
+ * - **no project** (`root` undefined: no local folder open) — everything is
+ *   outside; the CLI then works in the home directory, and "inside" would have
+ *   been all of it, `~/.ssh` included;
+ * - **`~`**, which the CLI expands to the home directory itself and
+ *   `path.resolve` reads as a folder named `~`; any other `~name` is outside;
+ * - **a symlink** inside the folder that leads out of it: decided on real
+ *   paths — the longest part of the path that exists, resolved — so
+ *   `<project>/homelink/.zshrc` is outside when `homelink` is a link to `~`;
+ * - `..` out of it, and a name that only starts like the folder (`/w-old`).
+ * A path that cannot be made sense of is outside: this is the cautious side.
+ */
+export function outsideProject(root: string | undefined, file: string): boolean {
+	if (!root) {
+		return true;
+	}
+	let target = file;
+	if (target === '~' || target.startsWith('~/') || (process.platform === 'win32' && target.startsWith('~\\'))) {
+		target = path.join(os.homedir(), target.slice(1));
+	} else if (target.startsWith('~')) {
+		return true;
+	}
+	const base = realish(path.resolve(root));
+	const full = realish(path.resolve(root, target));
+	const rel = path.relative(base, full);
+	return rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel);
+}
+
+/** A path with its longest existing part resolved to where it really is, and the rest as written. */
+function realish(full: string): string {
+	const rest: string[] = [];
+	let current = full;
+	for (;;) {
+		try {
+			return path.join(fs.realpathSync.native(current), ...rest.reverse());
+		} catch {
+			const parent = path.dirname(current);
+			if (parent === current) {
+				return full;
+			}
+			rest.push(path.basename(current));
+			current = parent;
+		}
+	}
+}
+
+/**
+ * The path a file tool of Claude Code's names, whichever field it uses — and
+ * an absolute or `~` search pattern of `Glob` / `Grep`, which names where it
+ * looks as surely as a path does.
+ */
+function claudePath(input: Record<string, unknown>): string | undefined {
+	for (const key of ['file_path', 'notebook_path', 'path']) {
+		if (typeof input[key] === 'string' && input[key]) {
+			return input[key] as string;
+		}
+	}
+	for (const key of ['pattern', 'glob']) {
+		const value = input[key];
+		if (typeof value === 'string' && (path.isAbsolute(value) || value.startsWith('~'))) {
+			// The fixed part before the first wildcard is where it looks.
+			const fixed = value.split(/[*?[{]/)[0];
+			return fixed || value;
+		}
+	}
+	return undefined;
 }
 
 /**
@@ -1026,7 +1102,7 @@ export interface ApprovalRequest {
  * leaf module may not import another. Also the per-project name Connect Codex
  * once wrote into the global config, `ai-browser-<slug>-<6 hex>` — and only that
  * shape: any `ai-browser-…` would let somebody else's server, named so, be
- * answered by the Auto toggle as if it were the browser.
+ * answered by the approval menu's AI Browser mode as if it were the browser.
  */
 function isBrowserServer(name: string): boolean {
 	return name === 'ai-browser' || /^ai-browser-.+-[0-9a-f]{6}$/.test(name);
@@ -1058,15 +1134,19 @@ function argumentLines(input: unknown): string | undefined {
 }
 
 const claudeEditTools = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+const claudeWebTools = new Set(['WebFetch', 'WebSearch']);
 
 /**
  * Claude Code's `can_use_tool` control request, sent when it runs with
  * `--permission-prompt-tool stdio` and a tool needs the user's yes. Measured on
  * 2.1.301: `{ subtype: 'can_use_tool', tool_name, display_name, input,
  * description, permission_suggestions, blocked_path, tool_use_id }`; an MCP
- * tool is named `mcp__<server>__<tool>`.
+ * tool is named `mcp__<server>__<tool>`. `root` is the project folder —
+ * undefined when no local folder is open — which decides whether a file tool's
+ * path is inside the project; so does `blocked_path`, the path the CLI itself
+ * says the question is about.
  */
-export function claudeApproval(id: string, request: Record<string, unknown>): ApprovalRequest {
+export function claudeApproval(id: string, request: Record<string, unknown>, root: string | undefined): ApprovalRequest {
 	const tool = typeof request.tool_name === 'string' ? request.tool_name : '';
 	const input = isRecord(request.input) ? request.input : {};
 	const description = typeof request.description === 'string' ? oneLine(request.description, 300) : undefined;
@@ -1080,13 +1160,24 @@ export function claudeApproval(id: string, request: Record<string, unknown>): Ap
 		const args = argumentLines(input);
 		return isBrowserServer(server)
 			? { id, what: 'browser', title: name, detail: args }
-			: { id, what: 'other', title: name, detail: [server, args].filter(Boolean).join('\n') };
+			: { id, what: 'mcp', server, title: name, detail: args };
 	}
+	if (claudeWebTools.has(tool)) {
+		const target = typeof input.url === 'string' ? input.url : typeof input.query === 'string' ? input.query : '';
+		return { id, what: 'web', title: whole(target) || tool, detail: tool === 'WebFetch' && typeof input.prompt === 'string' ? oneLine(input.prompt, 300) : tool };
+	}
+	const file = claudePath(input);
+	const blocked = typeof request.blocked_path === 'string' && request.blocked_path ? request.blocked_path : undefined;
+	const outside = (!!file && outsideProject(root, file)) || (!!blocked && outsideProject(root, blocked));
 	if (claudeEditTools.has(tool)) {
-		const file = typeof input.file_path === 'string' ? input.file_path : typeof input.notebook_path === 'string' ? input.notebook_path : '';
-		return { id, what: 'edit', title: file || tool, detail: tool };
+		// A file tool with no path is not something "inside" can be promised for.
+		return { id, what: outside || !file ? 'outside' : 'edit', title: file || tool, detail: tool };
 	}
 	const name = typeof request.display_name === 'string' && request.display_name ? request.display_name : tool || 'Tool';
+	// Reading or searching asks only outside the project; that is what it is.
+	if (outside) {
+		return { id, what: 'outside', title: file ?? blocked ?? name, detail: name };
+	}
 	return { id, what: 'other', title: name, detail: description ?? argumentLines(input) };
 }
 
@@ -1107,22 +1198,25 @@ export function claudeApprovalAnswer(input: unknown, allow: boolean): Record<str
  * legacy methods take the same questions in the older shape. Anything else is
  * not an approval and answers `undefined`.
  */
-export function codexApproval(id: string, method: string, params: Record<string, unknown>, files: readonly string[] = []): ApprovalRequest | undefined {
+export function codexApproval(id: string, method: string, params: Record<string, unknown>, files: readonly string[] = [], root?: string): ApprovalRequest | undefined {
 	const reason = typeof params.reason === 'string' && params.reason ? oneLine(params.reason, 300) : undefined;
 	switch (method) {
 		case 'item/commandExecution/requestApproval':
 		case 'execCommandApproval': {
 			const raw = Array.isArray(params.command) ? strings(params.command).join(' ') : typeof params.command === 'string' ? params.command : '';
 			const network = isRecord(params.networkApprovalContext) ? params.networkApprovalContext : undefined;
-			// Typing into a running command, or opening the network for it, is not
-			// "a terminal command" the Auto toggle was asked to cover: it asks.
-			if (params.kind === 'writeStdin' || network) {
-				const host = network && typeof network.host === 'string' ? network.host : undefined;
+			// Opening the network for a command is the internet's category, not the
+			// terminal's; typing into a running command is the terminal's.
+			if (network) {
+				const host = typeof network.host === 'string' ? network.host : undefined;
 				return {
-					id, what: 'other',
-					title: network ? `Network access${host ? `: ${host}` : ''}` : 'Input to a running command',
+					id, what: 'web',
+					title: `Network access${host ? `: ${host}` : ''}`,
 					detail: [raw && whole(unwrapShell(raw)), reason].filter(Boolean).join('\n') || undefined,
 				};
+			}
+			if (params.kind === 'writeStdin') {
+				return { id, what: 'command', title: 'Input to a running command', detail: [raw && whole(unwrapShell(raw)), reason].filter(Boolean).join('\n') || undefined };
 			}
 			return { id, what: 'command', title: whole(unwrapShell(raw)) || 'Command', detail: reason };
 		}
@@ -1130,9 +1224,15 @@ export function codexApproval(id: string, method: string, params: Record<string,
 		case 'applyPatchApproval': {
 			// The v2 request names only its item; the paths are on the
 			// `fileChange` item that started just before, which the caller keeps.
-			const named = isRecord(params.fileChanges) ? Object.keys(params.fileChanges) : files;
-			const root = typeof params.grantRoot === 'string' && params.grantRoot ? `Write access to everything under ${params.grantRoot} for this conversation` : undefined;
-			return { id, what: 'edit', title: named.length ? named.join('\n') : 'Apply the edit', detail: [root, reason].filter(Boolean).join('\n') || undefined };
+			// Every path the patch writes: the files it changes and where a move
+			// takes one (`move_path`), which is a write as surely as an edit is.
+			const named = isRecord(params.fileChanges) ? codexPatchPaths(params.fileChanges) : files;
+			const grantRoot = typeof params.grantRoot === 'string' && params.grantRoot ? params.grantRoot : undefined;
+			const grant = grantRoot ? `Write access to everything under ${grantRoot} for this conversation` : undefined;
+			// Writes under a root of their own, to a file outside the project, or
+			// to files nobody can name, are outside it; no folder, nothing is inside.
+			const outside = !!grantRoot || !named.length || named.some(file => outsideProject(root, file));
+			return { id, what: outside ? 'outside' : 'edit', title: named.length ? named.join('\n') : 'Apply the edit', detail: [grant, reason].filter(Boolean).join('\n') || undefined };
 		}
 		case 'mcpServer/elicitation/request': {
 			const meta = isRecord(params._meta) ? params._meta : {};
@@ -1145,11 +1245,45 @@ export function codexApproval(id: string, method: string, params: Record<string,
 			const args = argumentLines(meta.tool_params);
 			return isBrowserServer(server)
 				? { id, what: 'browser', title: name, detail: args }
-				: { id, what: 'other', title: name, detail: [server, args].filter(Boolean).join('\n') };
+				: { id, what: 'mcp', server, title: name, detail: args };
 		}
 		default:
 			return undefined;
 	}
+}
+
+/**
+ * The paths a Codex patch writes, from either shape it comes in: the legacy
+ * `fileChanges` map (path → change, `move_path` on an update) or the v2
+ * `fileChange` item's `changes` list (`path`, `kind.move_path`).
+ */
+export function codexPatchPaths(changes: unknown): string[] {
+	const out: string[] = [];
+	const moved = (change: unknown) => {
+		if (!isRecord(change)) {
+			return;
+		}
+		const kind = isRecord(change.kind) ? change.kind : undefined;
+		for (const value of [change.move_path, kind?.move_path]) {
+			if (typeof value === 'string' && value) {
+				out.push(value);
+			}
+		}
+	};
+	if (Array.isArray(changes)) {
+		for (const change of changes) {
+			if (isRecord(change) && typeof change.path === 'string') {
+				out.push(change.path);
+			}
+			moved(change);
+		}
+	} else if (isRecord(changes)) {
+		for (const [file, change] of Object.entries(changes)) {
+			out.push(file);
+			moved(change);
+		}
+	}
+	return [...new Set(out)];
 }
 
 /**

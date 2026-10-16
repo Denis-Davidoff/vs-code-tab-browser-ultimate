@@ -119,7 +119,7 @@ export function plainInLabel(value: string, limit = 120): string {
  * surrogate pair, and a string holding one throws "URI malformed" the moment it
  * goes into a `vscode.Uri` (a chat chip's name did).
  */
-function capAt(value: string, limit: number): string {
+export function capAt(value: string, limit: number): string {
 	const chars = Array.from(value);
 	return chars.length > limit ? `${chars.slice(0, Math.max(0, limit - 1)).join('')}…` : value;
 }

@@ -15,13 +15,13 @@ import { writeChatTranscript } from '../elements/assistants';
 import { savePng } from '../browser/clipboardImage';
 import type { BrowserController } from '../browser/browserController';
 import type {
-	AgentId, AgentUsage, AttachmentKind, ChatSummary,
+	AgentId, AgentUsage, ApprovalMode, AttachmentKind, ChatSummary,
 	ChatNews, ChatTabSummary, ChatViewState, HostToView, Selection, UsageWindow, ViewToHost,
 } from './chatProtocol';
 import { pickElementContext, pickForChat } from '../elements/elementPicker';
 import { parseNews } from './news';
-import { refuse } from '../core/notify';
-import { plainInLabel, plainInPrompt } from '../core/notifyText';
+import { confirm, refuse } from '../core/notify';
+import { capAt, plainInLabel, plainInPrompt } from '../core/notifyText';
 import { isBrowserApiGranted, workspaceIsRemoteFromHost } from '../setup/proposedApi';
 import { pageTitle } from '../translate/translateText';
 import { generateUuid } from '../core/uuid';
@@ -114,8 +114,19 @@ const inputHistoryLimit = 100;
  * `workspaceState`, which only this UI writes — a repository cannot set it.
  */
 const agentBinariesKey = 'aiBrowser.chat.agentBinaries';
-/** The composer's auto-approve toggle, per workspace: a project is what a user trusts with commands. */
+/**
+ * The approval menu, per workspace: a project is what a user trusts with
+ * commands. `autoApproveKey` is the on/off toggle it replaced, read once to
+ * carry an "on" over as terminal and browser on Auto.
+ */
+const approvalPolicyKey = 'aiBrowser.chat.approvalPolicy';
+const approvalServersKey = 'aiBrowser.chat.approvalServers';
 const autoApproveKey = 'aiBrowser.chat.autoApprove';
+/** The menu's fixed categories, in its order; MCP servers come between `outside` and `other`. */
+export const approvalCategories = ['web', 'browser', 'command', 'edit', 'outside', 'other'] as const;
+const approvalModes: readonly ApprovalMode[] = ['auto', 'ask', 'deny'];
+/** Servers listed in the menu at most: one row each, and each is an agent's own config. */
+const approvalServerLimit = 30;
 /** The chats open as tabs, by chat id, and the one in front; restored with the window. */
 const openTabsKey = 'aiBrowser.chat.openTabs';
 /**
@@ -146,6 +157,8 @@ const openedAttachmentLimit = 30;
 /** A conversation handed over in the message itself, with no folder to write it to: its newest part. */
 const transcriptInlineLimit = 60_000;
 const postDelayMs = 40;
+/** A tab name, as typed into the tab: kept to what a tab, a history row and a heading can show. */
+const tabTitleLimit = 80;
 
 interface RememberedSelection {
 	agent?: AgentId;
@@ -171,11 +184,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private readonly _attachmentImages = new Map<string, vscode.Uri>();
 	private readonly _tabHost: TabHost = {
 		cwd: () => this._cwd(),
-		changed: () => this._post(),
+		projectRoot: () => vscode.workspace.workspaceFolders?.find(f => f.uri.scheme === 'file')?.uri.fsPath,
+		changed: () => { this._post(); this._drainQueues(); },
 		limits: (agent, windows) => { this._limits.set(agent, windows); },
 		save: chat => this._save(chat),
 		inHistory: id => this._history().some(c => c.id === id),
-		autoApprove: () => this._autoApprove(),
+		approvalMode: key => this._approvalPolicy()[key] ?? 'ask',
+		noteServer: server => this._noteServer(server),
 	};
 	private _remembered: RememberedSelection;
 	private readonly _limits = new Map<AgentId, readonly UsageWindow[]>();
@@ -252,8 +267,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}
 	}
 
-	private _autoApprove(): boolean {
-		return this._context.workspaceState.get<boolean>(autoApproveKey) === true;
+	/** The menu's modes; a key not set asks. The old toggle's "on" reads as terminal and browser on Auto. */
+	private _approvalPolicy(): Record<string, ApprovalMode> {
+		const stored = this._context.workspaceState.get<unknown>(approvalPolicyKey);
+		if (stored && typeof stored === 'object') {
+			return Object.fromEntries(Object.entries(stored as Record<string, unknown>)
+				.filter((e): e is [string, ApprovalMode] => approvalModes.includes(e[1] as ApprovalMode)));
+		}
+		return this._context.workspaceState.get<boolean>(autoApproveKey) === true ? { command: 'auto', browser: 'auto' } : {};
+	}
+
+	private _approvalServers(): string[] {
+		const stored = this._context.workspaceState.get<unknown>(approvalServersKey);
+		return Array.isArray(stored) ? stored.filter((s): s is string => typeof s === 'string' && s !== '') : [];
+	}
+
+	/** A server is listed in the menu once an agent has asked about one of its tools. */
+	private _noteServer(server: string): void {
+		const servers = this._approvalServers();
+		// The name is the key the menu's mode is looked up by, so it is listed as
+		// it is or not at all — a cut name would never match its server again.
+		if (servers.includes(server) || servers.length >= approvalServerLimit || server.length > 80) {
+			return;
+		}
+		this._context.workspaceState.update(approvalServersKey, [...servers, server].sort()).then(() => this._post(), () => { /* a convenience */ });
 	}
 
 	private _newsHidden(): boolean {
@@ -358,19 +395,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			entries: this._active.chat.entries,
 			running: this._active.running,
 			attachments: this._active.attachments.map(a => a.chip),
+			pendingSends: this._active.pendingSends,
 			tabs: this._tabs.map((tab): ChatTabSummary => ({
 				id: tab.id,
 				chatId: tab.chat.id,
-				title: tab.started ? tab.chat.title : vscode.l10n.t("New chat"),
+				title: tab.title ?? vscode.l10n.t("New chat"),
 				agent: tab.started ? tab.chat.agent : undefined,
 				running: tab.running,
 				agents: tab.agentsRunning,
 				busy: tab.busy,
+				queued: tab.queuedCount,
 				status: tab.status,
 			})),
 			activeTab: this._active.id,
 			tabLimit: limit,
-			autoApprove: this._autoApprove(),
+			approvals: { policy: this._approvalPolicy(), servers: this._approvalServers() },
 			switchTo: this._switchTo,
 			hasBrowserTab: this._browser.hasOpenTabs,
 			browserApi: isBrowserApiGranted(),
@@ -401,6 +440,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		switch (message.type) {
 			case 'ready': {
 				this._viewReady = true;
+				// A queue held while there was no view goes out now that there is one.
+				this._drainQueues();
 				this._postMessage({ type: 'state', state: this._state() });
 				const queued = this._queued;
 				this._queued = [];
@@ -420,11 +461,33 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				this._select(message.selection);
 				return;
 			case 'send':
+				if (message.mode === 'queue') {
+					this._queue(message.text, message.tabId);
+					return;
+				}
 				await this._send(message.text, message.tabId);
 				return;
-			case 'stop':
-				this._active.stop();
+			case 'clearChat':
+				this._clearChat();
 				return;
+			case 'exportChat':
+				await this._exportChat(message.to === 'file' ? 'file' : 'clipboard');
+				return;
+			case 'unqueue':
+				for (const tab of this._tabs) {
+					tab.unqueue(message.id);
+				}
+				return;
+			case 'stop': {
+				const tab = this._active;
+				// Stop is for everything this tab was going to do: the queue does
+				// not go out after it. What was queued comes back to the box,
+				// attachments with it, to send or drop.
+				this._giveBackQueue(tab);
+				tab.stop();
+				this._post();
+				return;
+			}
 			case 'openAttachment':
 				await this._openAttachment(message.id);
 				return;
@@ -434,13 +497,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 					tab.answer(message.id, message.allow);
 				}
 				return;
-			case 'setAutoApprove':
-				await this._context.workspaceState.update(autoApproveKey, message.on === true).then(undefined, () => { /* a convenience */ });
+			case 'setApprovalMode': {
+				if (!approvalModes.includes(message.mode)) {
+					return;
+				}
+				const keys = message.key === 'all'
+					? [...approvalCategories, ...this._approvalServers().map(server => `mcp:${server}`)]
+					: [message.key];
+				// A server's key is honoured whether or not the menu lists it — the
+				// list stops at 30 — or a card's "Always" would do nothing for it.
+				const valid = keys.filter(key => (approvalCategories as readonly string[]).includes(key) || (key.startsWith('mcp:') && key.length > 4 && key.length <= 84));
+				if (!valid.length) {
+					return;
+				}
+				const policy: Record<string, ApprovalMode> = { ...this._approvalPolicy() };
+				for (const key of valid) {
+					policy[key] = message.mode;
+				}
+				await this._context.workspaceState.update(approvalPolicyKey, policy).then(undefined, () => { /* a convenience */ });
 				for (const tab of this._tabs) {
-					tab.autoApproveChanged();
+					tab.approvalModesChanged();
 				}
 				this._post();
 				return;
+			}
 			case 'stopAgent':
 				if (!await this._active.stopAgent(message.id)) {
 					this._postMessage({ type: 'agentStopFailed', id: message.id });
@@ -452,6 +532,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			case 'selectTab':
 				this._selectTab(message.id);
 				return;
+			case 'renameTab': {
+				// One line, and short: it is a tab label, a history row and a transcript heading.
+				const title = typeof message.title === 'string' ? capAt(message.title.replace(/\s+/g, ' ').trim(), tabTitleLimit) : '';
+				if (title) {
+					this._tabs.find(t => t.id === message.id)?.rename(title);
+				}
+				return;
+			}
 			case 'closeTab':
 				this._closeTab(message.id);
 				return;
@@ -566,7 +654,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 	/* ------------------------------------------------------------ turns */
 
-	private async _send(text: string, tabId?: string): Promise<void> {
+	/**
+	 * `given`: a queued message's own attachments, sent instead of what the box
+	 * holds — which is the user's next message, not this one's.
+	 */
+	private async _send(text: string, tabId?: string, given?: Attachment[]): Promise<void> {
+		const queued = given !== undefined;
 		if (this._blocked()) {
 			return;
 		}
@@ -593,8 +686,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			}
 		}
 		// Remembered for ↑ even when it is refused below: that is when getting
-		// the text back matters most.
-		void this._rememberInput(text);
+		// the text back matters most. A queued message was remembered when queued.
+		if (!queued) {
+			void this._rememberInput(text);
+		}
 		const { agent, model, effort } = this._selection(tab);
 		const backend = agent && this._registry.backend(agent);
 		if (!agent || !model || !backend) {
@@ -606,14 +701,161 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			}
 			return;
 		}
+		const attachments = given ?? tab.attachments;
+		if (!text.trim() && !attachments.length) {
+			return;
+		}
+		if (!given) {
+			tab.attachments = [];
+		}
+		// Only the tab in front's card: a queued message going out in another
+		// tab must not close the question the user is reading here.
+		if (tab === this._active) {
+			this._switchTo = undefined;
+		}
+		await tab.send(text, attachments, agent, model, effort, backend);
+		this._saveTabs();
+	}
+
+	/**
+	 * ⌘/Ctrl+Enter: held for after the running turn, with the attachments in
+	 * the box. Sent at once when nothing is running — there is nothing to wait for.
+	 */
+	private _queue(text: string, tabId?: string): void {
+		const tab = tabId ? this._tabs.find(t => t.id === tabId) : this._active;
+		if (!tab) {
+			this._notSent(text);
+			return;
+		}
+		// Nothing to wait for: no turn, nothing queued or waiting before it.
+		if (!tab.running && !tab.busy && !tab.pendingSends.length) {
+			void this._send(text, tab.id).catch(err => this._fail(err));
+			return;
+		}
 		const attachments = tab.attachments;
 		if (!text.trim() && !attachments.length) {
 			return;
 		}
+		void this._rememberInput(text);
 		tab.attachments = [];
+		tab.enqueue(text, attachments);
+	}
+
+	/** Tabs whose next queued message is on its way, to the timer and through the send. */
+	private readonly _draining = new Map<ChatTab, ReturnType<typeof setTimeout> | undefined>();
+	private _disposed = false;
+
+	/**
+	 * Sends a tab's next queued message once its turn is over — not at the
+	 * instant it ends: Claude Code may start a turn of its own right after one
+	 * (`requesting`, milliseconds later), and a send then would be taken into
+	 * it. So the tab must still be idle a moment later, **and still hold the
+	 * conversation the message was queued in**. Not while there is no view: the
+	 * view going stopped this tab's work, and a message nobody sees go out would
+	 * start a CLI for it. A tab stays draining until its send has gone through,
+	 * so a send waiting on detection is not followed by the next one.
+	 */
+	private _drainQueues(): void {
+		if (this._disposed || !this._view) {
+			return;
+		}
+		for (const tab of this._tabs) {
+			if (!tab.readyForQueued || this._draining.has(tab)) {
+				continue;
+			}
+			const chat = tab.chat;
+			this._draining.set(tab, setTimeout(() => {
+				this._draining.set(tab, undefined);
+				if (this._disposed || !this._view || !this._tabs.includes(tab) || tab.chat !== chat || !tab.readyForQueued) {
+					this._draining.delete(tab);
+					return;
+				}
+				const next = tab.dequeue();
+				if (!next) {
+					this._draining.delete(tab);
+					return;
+				}
+				this._send(next.text, tab.id, next.attachments)
+					.catch(err => this._fail(err))
+					.finally(() => {
+						this._draining.delete(tab);
+						this._drainQueues();
+					});
+			}, 500));
+		}
+	}
+
+	/**
+	 * "Clear conversation": the tab in front starts a new, empty one with the
+	 * same agent, the old one staying in the history — what Claude Code's own
+	 * `/clear` does. What the tab was doing stops (the view asked first when it
+	 * was busy), its queue goes back into the box, and a name the user gave the
+	 * tab stays on it.
+	 */
+	private _clearChat(): void {
+		const tab = this._active;
+		if (!tab.chat.entries.length && !tab.busy) {
+			return;
+		}
+		this._giveBackQueue(tab);
+		const next = newChat(tab.chat.agent);
+		if (tab.chat.named) {
+			next.title = tab.chat.title;
+			next.named = true;
+		}
+		tab.start(next);
 		this._switchTo = undefined;
-		await tab.send(text, attachments, agent, model, effort, backend);
-		this._saveTabs();
+		this._post();
+		this._postMessage({ type: 'focusInput' });
+	}
+
+	/**
+	 * "Export conversation": the conversation as Markdown, the transcript the
+	 * other agent is handed (`chatTranscript`). To a file, it opens as a new
+	 * editor tab and Save As is asked for, so the user picks where it goes.
+	 * **The editor's language is plain text** although the name ends in `.md`:
+	 * a reply or a page's text in a Markdown editor makes `[x](command:…)` a link
+	 * that runs a command on Cmd+click (#371).
+	 */
+	private async _exportChat(to: 'clipboard' | 'file'): Promise<void> {
+		const chat = this._active.chat;
+		if (!chat.entries.some(e => e.kind === 'user' || e.kind === 'assistant')) {
+			refuse(vscode.l10n.t("Nothing to export yet."));
+			return;
+		}
+		const now = new Date();
+		const text = chatTranscript(chat.title, agentNames[chat.agent], chat.entries, now);
+		if (to === 'clipboard') {
+			await vscode.env.clipboard.writeText(text);
+			confirm(vscode.l10n.t("Conversation copied as Markdown."));
+			return;
+		}
+		try {
+			const folder = vscode.workspace.workspaceFolders?.find(f => f.uri.scheme === 'file')?.uri.fsPath ?? os.homedir();
+			const uri = vscode.Uri.file(path.join(folder, transcriptFileName(chat.title, now))).with({ scheme: 'untitled' });
+			const doc = await vscode.languages.setTextDocumentLanguage(await vscode.workspace.openTextDocument(uri), 'plaintext');
+			const edit = new vscode.WorkspaceEdit();
+			edit.insert(doc.uri, new vscode.Position(0, 0), text);
+			await vscode.workspace.applyEdit(edit);
+			await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.Active, preview: false });
+			await vscode.commands.executeCommand('workbench.action.files.saveAs');
+		} catch (err) {
+			refuse(vscode.l10n.t("Could not open the export: {0}", plainInLabel(err instanceof Error ? err.message : String(err), 120)));
+		}
+	}
+
+	/**
+	 * A tab letting go of its conversation keeps none of its queue: written for
+	 * that conversation, it goes back into the message box, as Stop gives it —
+	 * never on to whatever the tab holds next.
+	 */
+	private _giveBackQueue(tab: ChatTab): void {
+		const queued = tab.takeQueued();
+		if (!queued.length) {
+			return;
+		}
+		tab.attachments.push(...queued.flatMap(q => q.attachments));
+		this._postMessage({ type: 'restoreDraft', chatId: tab.chat.id, text: queued.map(q => q.text).filter(Boolean).join('\n\n') });
 	}
 
 	/** A message whose tab went away before it could be sent: kept in the chat in front, to send again. */
@@ -898,7 +1140,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			return;
 		}
 		let tab = this._active;
-		if (tab.started || tab.busy) {
+		// A tab the user named is not empty, though nothing was sent from it yet:
+		// opening a chat into it lost the name.
+		if (tab.started || tab.busy || tab.chat.named) {
 			const added = this._addTab(stored.agent);
 			if (!added) {
 				return;
@@ -929,7 +1173,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 	/** The open tabs as they were when the window closed; at least one, empty if nothing was open. */
 	private _restoreTabs(): void {
-		const saved = this._context.workspaceState.get<{ ids?: unknown; fresh?: unknown; active?: unknown }>(openTabsKey);
+		const saved = this._context.workspaceState.get<{ ids?: unknown; fresh?: unknown; active?: unknown; names?: unknown }>(openTabsKey);
+		const names = saved?.names && typeof saved.names === 'object' ? saved.names as Record<string, unknown> : {};
 		const strings = (value: unknown) => Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : [];
 		const fresh = new Set(strings(saved?.fresh));
 		const history = this._history();
@@ -943,7 +1188,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			} else if (fresh.has(id)) {
 				// A tab nothing was sent from: it has no history to come back from,
 				// but it comes back with its chat id, which its draft is kept under.
-				this._tabs.push(new ChatTab(this._tabHost, newChat(this._remembered.agent ?? 'claude', id)));
+				const chat = newChat(this._remembered.agent ?? 'claude', id);
+				const name = names[id];
+				if (typeof name === 'string' && name) {
+					chat.title = capAt(name, tabTitleLimit);
+					chat.named = true;
+				}
+				this._tabs.push(new ChatTab(this._tabHost, chat));
 			}
 		}
 		if (!this._tabs.length) {
@@ -961,6 +1212,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		const value = {
 			ids: this._tabs.map(t => t.chat.id),
 			fresh: this._tabs.filter(t => !t.started).map(t => t.chat.id),
+			// A tab renamed before anything was sent from it has no history entry to
+			// keep its name in.
+			names: Object.fromEntries(this._tabs.filter(t => !t.started && t.chat.named).map(t => [t.chat.id, t.chat.title])),
 			active: this._active.chat.id,
 		};
 		const json = JSON.stringify(value);
@@ -1052,11 +1306,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			case 'newTab':
 				this._addTab(to);
 				return;
-			case 'replace':
-				// The same tab, another conversation: its draft goes with it.
-				from.start(newChat(to));
+			case 'replace': {
+				// The same tab, another conversation: its draft goes with it, and so
+				// does a name the user gave the tab — and the queue, back into that
+				// draft rather than on to the other agent.
+				this._giveBackQueue(from);
+				const next = newChat(to);
+				if (from.chat.named) {
+					next.title = from.chat.title;
+					next.named = true;
+				}
+				from.start(next);
 				this._postMessage({ type: 'focusInput' });
 				return;
+			}
 			case 'continue': {
 				if (this._tabs.length >= tabLimit()) {
 					refuse(vscode.l10n.t("{0} chats are open — close one to open another.", this._tabs.length));
@@ -1154,6 +1417,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	public dispose(): void {
+		this._disposed = true;
+		for (const timer of this._draining.values()) {
+			clearTimeout(timer);
+		}
+		this._draining.clear();
 		for (const tab of this._tabs) {
 			tab.close();
 		}

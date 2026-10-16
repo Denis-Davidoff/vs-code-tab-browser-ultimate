@@ -135,10 +135,21 @@ export type ChatEntry =
 	| { readonly kind: 'error'; readonly text: string };
 
 /**
- * What an approval is for. `command` and `browser` are what the composer's
- * auto-approve toggle answers by itself; `edit` and `other` always ask.
+ * What an approval is for — the categories of the composer's approval menu:
+ * the internet (`web`), this extension's browser tools, terminal commands,
+ * edits inside the project, files outside it, another MCP server's tools
+ * (`mcp`, one category per server), and anything else.
  */
-export type ApprovalKind = 'command' | 'browser' | 'edit' | 'other';
+export type ApprovalKind = 'web' | 'browser' | 'command' | 'edit' | 'outside' | 'mcp' | 'other';
+
+/** What a category does with a question: run it without asking, ask, or refuse it without asking. */
+export type ApprovalMode = 'auto' | 'ask' | 'deny';
+
+/**
+ * The approval menu's choices, by category key: an `ApprovalKind` other than
+ * `mcp`, or `mcp:<server>` for one server. A key that is absent asks.
+ */
+export type ApprovalPolicy = Readonly<Record<string, ApprovalMode>>;
 
 /**
  * An agent asking before it uses a tool, answered in the chat. `pending` until
@@ -149,10 +160,12 @@ export interface ApprovalEntry {
 	readonly kind: 'approval';
 	readonly id: string;
 	readonly what: ApprovalKind;
+	/** The MCP server, for `what: 'mcp'`. */
+	readonly server?: string;
 	readonly title: string;
 	readonly detail?: string;
 	status: 'pending' | 'allowed' | 'denied' | 'cancelled';
-	/** Answered by the auto-approve toggle rather than by a click. */
+	/** Answered by the approval menu's choice rather than by a click. */
 	auto?: boolean;
 }
 
@@ -208,10 +221,24 @@ export interface ChatViewState {
 	readonly activeTab: string;
 	/** `aiBrowser.chat.tabLimit`; more tabs than this can be open when it was lowered. */
 	readonly tabLimit: number;
-	/** The composer's toggle: terminal commands and browser tools run without asking. Per workspace. */
-	readonly autoApprove: boolean;
+	/**
+	 * The tab in front's messages not in the conversation yet, in order: sent
+	 * during a turn and not yet taken in by Claude Code (`steer`), or held to be
+	 * sent when the turn ends (`queue`).
+	 */
+	readonly pendingSends: readonly PendingSend[];
+	/** The approval menu: each category's mode, and the MCP servers an agent has asked about. Per workspace. */
+	readonly approvals: { readonly policy: ApprovalPolicy; readonly servers: readonly string[] };
 	/** Another agent was picked for a conversation that has started: the view asks what to do. */
 	readonly switchTo?: AgentId;
+}
+
+export interface PendingSend {
+	readonly id: string;
+	readonly text: string;
+	readonly kind: 'steer' | 'queue';
+	/** Labels of the attachments that go with it. */
+	readonly attachments: readonly string[];
 }
 
 export interface ChatTabSummary {
@@ -225,6 +252,8 @@ export interface ChatTabSummary {
 	readonly agents: number;
 	/** A turn or an agent is running: closing the tab stops it. */
 	readonly busy: boolean;
+	/** Messages queued in the tab, which closing it drops. */
+	readonly queued: number;
 	/** The mark on the tab; absent while nothing has been sent from it. See `ChatTab.status`. */
 	readonly status?: ChatTabStatus;
 }
@@ -245,6 +274,8 @@ export type HostToView =
 	| { readonly type: 'history'; readonly chats: readonly ChatSummary[]; readonly refresh?: boolean }
 	| { readonly type: 'usage'; readonly usage: readonly AgentUsage[]; readonly stats?: ChatStats; readonly loading: boolean }
 	| { readonly type: 'focusInput' }
+	/** Queued messages given back by Stop: added to what is in the message box, not sent. */
+	| { readonly type: 'restoreDraft'; readonly chatId: string; readonly text: string }
 	/** Messages sent from this workspace, oldest first, for the composer's ↑ / ↓. */
 	| { readonly type: 'inputHistory'; readonly items: readonly string[] }
 	/** A Stop for one agent was refused; its button comes back. */
@@ -254,7 +285,17 @@ export type ViewToHost =
 	| { readonly type: 'ready' }
 	| { readonly type: 'select'; readonly selection: Selection }
 	/** `tabId`: the tab it was typed in, which may no longer be the one in front when it arrives. */
-	| { readonly type: 'send'; readonly text: string; readonly tabId?: string }
+	/**
+	 * `queue`: hold it until the running turn ends, then send it as a turn of its
+	 * own (⌘/Ctrl+Enter). Otherwise, during a turn, it is added to that turn.
+	 */
+	| { readonly type: 'send'; readonly text: string; readonly tabId?: string; readonly mode?: 'queue' }
+	/** A queued message taken back before it was sent. */
+	| { readonly type: 'unqueue'; readonly id: string }
+	/** The "/" menu: the tab in front starts over; its conversation stays in the history. */
+	| { readonly type: 'clearChat' }
+	/** The "/" menu: the tab in front's conversation as Markdown, on the clipboard or into a file the user saves. */
+	| { readonly type: 'exportChat'; readonly to: 'clipboard' | 'file' }
 	| { readonly type: 'stop' }
 	| { readonly type: 'attach'; readonly kind: AttachmentKind }
 	| { readonly type: 'removeAttachment'; readonly id: string }
@@ -265,12 +306,15 @@ export type ViewToHost =
 	| { readonly type: 'newTab' }
 	| { readonly type: 'selectTab'; readonly id: string }
 	| { readonly type: 'closeTab'; readonly id: string }
+	/** A tab renamed by double-click; the chat keeps the name, and the first message no longer sets one. */
+	| { readonly type: 'renameTab'; readonly id: string; readonly title: string }
 	/** The answer to `switchTo`. */
 	| { readonly type: 'switchAgent'; readonly choice: 'newTab' | 'replace' | 'continue' | 'cancel' }
 	/** One agent of the conversation in front, by its row id. */
 	| { readonly type: 'stopAgent'; readonly id: string }
 	| { readonly type: 'approve'; readonly id: string; readonly allow: boolean }
-	| { readonly type: 'setAutoApprove'; readonly on: boolean }
+	/** `key`: a category key (see `ApprovalPolicy`), or `all` for every category at once. */
+	| { readonly type: 'setApprovalMode'; readonly key: string; readonly mode: ApprovalMode }
 	/** A chip in the composer clicked: its file, its image or its text, in an editor tab. */
 	| { readonly type: 'openAttachment'; readonly id: string }
 	/** The copy of an agent's CLI this project uses; no `path` is Auto, the newest. */

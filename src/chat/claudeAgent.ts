@@ -227,8 +227,8 @@ export class ClaudeBackend implements AgentBackend {
 		}
 	}
 
-	public openSession(cwd: string, resume?: string, priorCostUsd?: number): AgentSession {
-		const session = new ClaudeSession(this._binary, cwd, resume, priorCostUsd ?? 0, this._browserServer, () => this._sessions.delete(session));
+	public openSession(cwd: string, resume?: string, priorCostUsd?: number, root?: string): AgentSession {
+		const session = new ClaudeSession(this._binary, cwd, root, resume, priorCostUsd ?? 0, this._browserServer, () => this._sessions.delete(session));
 		this._sessions.add(session);
 		return session;
 	}
@@ -289,6 +289,7 @@ class ClaudeSession implements AgentSession {
 	constructor(
 		private readonly _binary: string,
 		private readonly _cwd: string,
+		private readonly _root: string | undefined,
 		resume: string | undefined,
 		priorCostUsd: number,
 		private readonly _browserServer: () => BrowserServer | undefined,
@@ -343,7 +344,17 @@ class ClaudeSession implements AgentSession {
 		if (input.text) {
 			content.push({ type: 'text', text: input.text });
 		}
-		this._pendingTurns++;
+		// **A message sent during a turn is not a turn of its own, or not always.**
+		// Measured on 2.1.301: one that arrives while a tool runs is taken into
+		// the running turn at the next tool boundary — one `result` for both —
+		// and one that arrives during the final text gets a turn of its own,
+		// announced by `status: requesting` after the first `result`. Counting
+		// every message as a turn left the count at one after a merged message:
+		// the chat read as working for ever. So only an idle send starts a turn,
+		// and a following turn is taken from `requesting` (`autoTurn`).
+		if (this._pendingTurns === 0) {
+			this._pendingTurns = 1;
+		}
 		this._process!.send({
 			type: 'user',
 			message: { role: 'user', content },
@@ -432,7 +443,7 @@ class ClaudeSession implements AgentSession {
 		this._process = process;
 		this._control = new ControlChannel(
 			process,
-			(id, request) => { if (process === this._process) { this._onEvent.fire({ type: 'approval', request: claudeApproval(id, request) }); } },
+			(id, request) => { if (process === this._process) { this._onEvent.fire({ type: 'approval', request: claudeApproval(id, request, this._root) }); } },
 			id => { if (process === this._process) { this._onEvent.fire({ type: 'approvalDone', id }); } },
 		);
 		this._launched = { model, effort };

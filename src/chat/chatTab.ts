@@ -6,7 +6,7 @@
 import * as vscode from 'vscode';
 import { chatTitle, toolOutputLimit, type AgentEvent } from './agentProtocol';
 import { agentNames, type AgentBackend, type AgentSession, type TurnImage } from './agents';
-import type { AgentId, ApprovalEntry, ApprovalKind, AttachmentChip, ChatEntry, ChatStats, ChatTabStatus, ToolEntry, UsageWindow } from './chatProtocol';
+import type { AgentId, ApprovalEntry, ApprovalMode, AttachmentChip, PendingSend, ChatEntry, ChatStats, ChatTabStatus, ToolEntry, UsageWindow } from './chatProtocol';
 import { generateUuid } from '../core/uuid';
 
 /**
@@ -30,6 +30,8 @@ export interface StoredChat {
 	/** Whose conversation this is. Fixed by the first message; see `started`. */
 	agent: AgentId;
 	owned?: boolean;
+	/** Named by the user: the first message does not replace the title. */
+	named?: boolean;
 	ref?: string;
 	createdAt: number;
 	updatedAt: number;
@@ -49,19 +51,23 @@ export interface Attachment {
 export interface TabHost {
 	/** Where the agents work. */
 	cwd(): string;
+	/** The project folder, undefined when no local folder is open; see `AgentBackend.openSession`. */
+	projectRoot(): string | undefined;
 	/** Something the view shows changed. */
 	changed(): void;
 	/** A turn's own plan-limit report, kept for the usage popup. */
 	limits(agent: AgentId, windows: readonly UsageWindow[]): void;
 	save(chat: StoredChat): Promise<void>;
 	inHistory(chatId: string): boolean;
-	/** The composer's toggle: terminal commands and browser tools are allowed without asking. */
-	autoApprove(): boolean;
+	/** The approval menu's mode for a category key; see `approvalKey`. */
+	approvalMode(key: string): ApprovalMode;
+	/** An MCP server an agent asked about, so the approval menu can list it. */
+	noteServer(server: string): void;
 }
 
-/** What the auto-approve toggle answers by itself; edits and anything else still ask. */
-export function autoApproved(what: ApprovalKind): boolean {
-	return what === 'command' || what === 'browser';
+/** The approval menu's key for a question: its category, or `mcp:<server>` for one server. */
+export function approvalKey(entry: { readonly what: string; readonly server?: string }): string {
+	return entry.what === 'mcp' ? `mcp:${entry.server ?? ''}` : entry.what;
 }
 
 /** `id`: a tab restored with the window keeps the chat id it had, which its draft is kept under. */
@@ -124,6 +130,21 @@ export class ChatTab {
 	 */
 	/** Turns waiting to end, oldest first; a turn the CLI started on its own has no `entry`. */
 	private _pending: { entry?: UserEntry; base?: TokenBase; startedAt?: number }[] = [];
+	/**
+	 * Claude: prompts sent during a turn, not in the conversation yet. Claude
+	 * Code takes such a message in at the next tool boundary, or answers it with
+	 * a turn of its own once this one ends; until one of those shows, the chat
+	 * shows it as waiting, and puts it where it was taken in — before the output
+	 * that follows a tool's result, or at the start of its own turn.
+	 */
+	private _waiting: { readonly id: string; readonly entry: UserEntry }[] = [];
+	/** A tool's result came after the oldest waiting prompt was sent: the next output is its taking in. */
+	private _boundary = false;
+	private _flushTimer: ReturnType<typeof setTimeout> | undefined;
+	/** Held to be sent when the turn ends, oldest first (⌘/Ctrl+Enter). The provider sends them. */
+	private _queued: { readonly id: string; readonly text: string; readonly attachments: Attachment[] }[] = [];
+	/** When the last turn ended, to tell a message's own turn from an agent's. */
+	private _lastTurnEnd = 0;
 	/** Added to a cumulative token report; see the `tokens` case. Per session. */
 	private _tokenOffset: TokenBase = { input: 0, output: 0, cached: 0 };
 	/*
@@ -162,7 +183,95 @@ export class ChatTab {
 		return started(this._chat);
 	}
 
+	/** What the tab is called: the chat's title once it has one — from its first message, or the user. */
+	public get title(): string | undefined {
+		return this.started || this._chat.named ? this._chat.title : undefined;
+	}
+
+	/** The user named the tab. Saved with the chat once it has started; see `openTabsKey` before that. */
+	public rename(title: string): void {
+		this._chat.title = title;
+		this._chat.named = true;
+		if (this.started) {
+			void this._save();
+		}
+		this._post();
+	}
+
 	/** A turn is running, or an agent is: closing the tab would stop something. */
+	/** The messages not in the conversation yet, for the view; see `PendingSend`. */
+	public get pendingSends(): PendingSend[] {
+		return [
+			...this._waiting.map(w => ({ id: w.id, text: w.entry.text, kind: 'steer' as const, attachments: w.entry.attachments })),
+			...this._queued.map(q => ({ id: q.id, text: q.text, kind: 'queue' as const, attachments: q.attachments.map(a => a.chip.label) })),
+		];
+	}
+
+	/** Held for after the running turn; `send` it when the tab is idle again — the provider does. */
+	public enqueue(text: string, attachments: Attachment[]): void {
+		this._queued.push({ id: generateUuid(), text, attachments });
+		this._post();
+	}
+
+	/** Every queued message, taken out — Stop gives them back to the composer rather than sending them. */
+	public takeQueued(): { readonly text: string; readonly attachments: Attachment[] }[] {
+		const all = this._queued;
+		this._queued = [];
+		if (all.length) {
+			this._post();
+		}
+		return all;
+	}
+
+	/** The waiting prompts go into the conversation where it stands, the next text a block of its own. */
+	private _flushWaiting(): void {
+		if (this._flushTimer) {
+			clearTimeout(this._flushTimer);
+			this._flushTimer = undefined;
+		}
+		if (!this._waiting.length) {
+			return;
+		}
+		// The thought before it is over: what follows is the answer that includes it.
+		this._endThinking();
+		for (const w of this._waiting) {
+			this._chat.entries.push(w.entry);
+		}
+		this._waiting = [];
+		this._boundary = false;
+		this._textBreak = true;
+		this._post();
+	}
+
+	/** The next queued message, taken out of the queue to be sent. */
+	public dequeue(): { readonly text: string; readonly attachments: Attachment[] } | undefined {
+		const next = this._queued.shift();
+		if (next) {
+			this._post();
+		}
+		return next;
+	}
+
+	public unqueue(id: string): boolean {
+		const before = this._queued.length;
+		this._queued = this._queued.filter(q => q.id !== id);
+		if (this._queued.length !== before) {
+			this._post();
+			return true;
+		}
+		return false;
+	}
+
+	/** How many messages are queued: closing the tab drops them, so the close asks. */
+	public get queuedCount(): number {
+		return this._queued.length;
+	}
+
+	/** Messages are queued, and the turn they wait for has ended: the provider may send the next. */
+	public get readyForQueued(): boolean {
+		return this._queued.length > 0 && !this.running && !this._pending.length && !this._waiting.length && !this.waiting;
+	}
+
 	public get busy(): boolean {
 		return this.running || this._pending.length > 0 || this.agentsRunning > 0;
 	}
@@ -222,6 +331,10 @@ export class ChatTab {
 
 	/** Ends what runs, saves, and lets the session go — the tab closing, or the view. */
 	public close(): void {
+		// A prompt still waiting was sent to the CLI: it goes into the chat
+		// before the turn is ended and the chat saved, or the history lacked a
+		// message the resumed session has (the save used to come first).
+		this._flushWaiting();
 		this._endTurnHere();
 		void this._save();
 		this._dropSession();
@@ -275,20 +388,21 @@ export class ChatTab {
 	}
 
 	/**
-	 * The toggle was switched on: what it covers and is still waiting is
-	 * answered now, rather than leaving the user to click what they just said
-	 * should not need a click.
+	 * A category's mode changed in the approval menu: what it covers and is
+	 * still waiting is answered now, rather than leaving the user to click what
+	 * they just said should not need a click.
 	 */
-	public autoApproveChanged(): void {
-		if (!this._host.autoApprove()) {
-			return;
-		}
+	public approvalModesChanged(): void {
 		let answered = false;
 		for (const entry of this._chat.entries) {
-			if (entry.kind === 'approval' && entry.status === 'pending' && autoApproved(entry.what)) {
-				entry.status = 'allowed';
+			if (entry.kind !== 'approval' || entry.status !== 'pending') {
+				continue;
+			}
+			const mode = this._host.approvalMode(approvalKey(entry));
+			if (mode !== 'ask') {
+				entry.status = mode === 'auto' ? 'allowed' : 'denied';
 				entry.auto = true;
-				this._session?.answer(entry.id, true);
+				this._session?.answer(entry.id, mode === 'auto');
 				answered = true;
 			}
 		}
@@ -330,7 +444,9 @@ export class ChatTab {
 		if (!this._started()) {
 			this._chat.agent = agent;
 			this._chat.owned = true;
-			this._chat.title = chatTitle(text || attachments[0]?.chip.label || '');
+			if (!this._chat.named) {
+				this._chat.title = chatTitle(text || attachments[0]?.chip.label || '');
+			}
 			this._chat.createdAt = Date.now();
 		}
 		this._textBreak = false;
@@ -341,10 +457,28 @@ export class ChatTab {
 		const running = this._session?.running ?? false;
 		if (!running) {
 			this._pending = [{ entry, base: this._tokenBase(), startedAt: entry.at }];
-		} else if (agent === 'claude') {
-			this._pending.push({ entry });
+			this._flushWaiting();
 		}
-		this._push(entry);
+		if (running && agent === 'claude') {
+			// Taken into the running turn, or answered by a turn of its own right
+			// after it — Claude Code decides, and says which only by doing it (see
+			// `ClaudeSession.send`). Shown as waiting until then, and put into the
+			// conversation where it was taken in; pushed now, it sat in the middle
+			// of the reply still streaming, which went on below it.
+			if (!this._waiting.length) {
+				this._boundary = false;
+			}
+			this._waiting.push({ id: generateUuid(), entry });
+			this._post();
+		} else {
+			if (running) {
+				// Codex steers it into the running turn at once; a thought in progress
+				// ends here and the turn's next one is a block of its own.
+				this._endThinking();
+				this._textBreak = true;
+			}
+			this._push(entry);
+		}
 
 		const prompt = [text, ...attachments.map(a => a.text).filter((t): t is string => !!t)].filter(Boolean).join('\n\n');
 		const images = attachments.map(a => a.image).filter((i): i is TurnImage => !!i);
@@ -404,7 +538,7 @@ export class ChatTab {
 		if (this._session) {
 			return this._session;
 		}
-		const session = backend.openSession(this._cwd(), this._chat.ref, this._chat.stats.costUsd);
+		const session = backend.openSession(this._cwd(), this._chat.ref, this._chat.stats.costUsd, this._host.projectRoot());
 		this._tokenOffset = { input: 0, output: 0, cached: 0 };
 		const chatId = this._chat.id;
 		this._session = session;
@@ -418,6 +552,15 @@ export class ChatTab {
 
 	private _onAgentEvent(event: AgentEvent): void {
 		const chat = this._chat;
+		if (this._waiting.length) {
+			// A tool's result is the boundary where Claude Code takes a waiting
+			// message in; the output after it is the answer that includes it.
+			if (event.type === 'toolUpdate' && (event.update.output !== undefined || event.update.status) && !event.update.agent) {
+				this._boundary = true;
+			} else if (this._boundary && (event.type === 'text' || event.type === 'thinking' || event.type === 'tool')) {
+				this._flushWaiting();
+			}
+		}
 		const last = chat.entries[chat.entries.length - 1];
 		switch (event.type) {
 			case 'textBreak':
@@ -487,17 +630,29 @@ export class ChatTab {
 					}
 				}
 				break;
-			case 'autoTurn':
-				// The CLI is answering on its own — an agent it started has
-				// finished. No prompt waits on this turn; its text is a block of
-				// its own under whatever came last. It still takes a place in the
-				// queue: a prompt sent while it runs waits behind it, and without the
-				// place this turn's end was written onto that prompt (#345 again).
+			case 'autoTurn': {
+				// The CLI is answering on its own: a message sent during the turn
+				// that just ended, or an agent it started has finished. Its text is
+				// a block of its own under whatever came last. It takes a place in
+				// the queue: a prompt sent while it runs waits behind it, and without
+				// the place this turn's end was written onto that prompt (#345).
+				// A message is what it answers only right after a turn's end —
+				// measured, `requesting` follows the `result` within milliseconds;
+				// later, it is an agent's, and a message still waiting was taken
+				// into the earlier turn.
 				this._textBreak = true;
+				const now = Date.now();
+				const taken = now - this._lastTurnEnd < 2000 ? this._waiting.shift() : undefined;
+				if (taken) {
+					chat.entries.push(taken.entry);
+				} else {
+					this._flushWaiting();
+				}
 				if (!this._pending.length) {
-					this._pending.push({ base: this._tokenBase(), startedAt: Date.now() });
+					this._pending.push({ entry: taken?.entry, base: this._tokenBase(), startedAt: now });
 				}
 				break;
+			}
 			case 'toolUpdate': {
 				const entry = this._tool(event.id);
 				if (!entry) {
@@ -538,12 +693,26 @@ export class ChatTab {
 				break;
 			case 'approval': {
 				const request = event.request;
-				// Answered by the toggle: no card, the tool's own row says what ran.
-				if (this._host.autoApprove() && autoApproved(request.what)) {
+				if (request.what === 'mcp' && request.server) {
+					this._host.noteServer(request.server);
+				}
+				const mode = this._host.approvalMode(approvalKey(request));
+				// Allowed by the menu: no card, the tool's own row says what ran.
+				if (mode === 'auto') {
 					this._session?.answer(request.id, true);
 					return;
 				}
-				chat.entries.push({ kind: 'approval', id: request.id, what: request.what, title: request.title, detail: request.detail, status: 'pending' });
+				// Refused by the menu: a short line, so a refusal the agent then
+				// works around is not a mystery.
+				const denied = mode === 'deny';
+				if (denied) {
+					this._session?.answer(request.id, false);
+				}
+				chat.entries.push({
+					kind: 'approval', id: request.id, what: request.what, server: request.server,
+					title: request.title, detail: request.detail,
+					status: denied ? 'denied' : 'pending', auto: denied || undefined,
+				});
 				break;
 			}
 			case 'approvalDone': {
@@ -589,6 +758,18 @@ export class ChatTab {
 				this._endThinking();
 				this._textBreak = false;
 				const now = Date.now();
+				this._lastTurnEnd = now;
+				// A prompt still waiting is answered by a turn of its own, which
+				// `requesting` announces within milliseconds; if none comes it was
+				// taken in after all, and goes into the conversation here.
+				if (this._waiting.length && !this._flushTimer) {
+					this._flushTimer = setTimeout(() => {
+						this._flushTimer = undefined;
+						if (!this._pending.length) {
+							this._flushWaiting();
+						}
+					}, 2000);
+				}
 				// A tool still marked running when its turn is over will never be
 				// told otherwise; leaving it blinking would say work is going on.
 				for (const entry of chat.entries) {
@@ -646,14 +827,18 @@ export class ChatTab {
 		return undefined;
 	}
 
+	/**
+	 * Every thinking block still open is over. Not only those after the last
+	 * prompt, as it used to be: a message sent during a turn puts a prompt after
+	 * the turn's thinking (Codex steers at once, a waiting Claude prompt goes in
+	 * when it is taken), and the scan stopped at that prompt — the thinking above
+	 * it shimmered "Thinking" for good, after the turn ended or was stopped.
+	 */
 	private _endThinking(): void {
-		for (let i = this._chat.entries.length - 1; i >= 0; i--) {
-			const entry = this._chat.entries[i];
+		const now = Date.now();
+		for (const entry of this._chat.entries) {
 			if (entry.kind === 'thinking' && entry.endedAt === undefined) {
-				entry.endedAt = Date.now();
-			}
-			if (entry.kind === 'user') {
-				return;
+				entry.endedAt = now;
 			}
 		}
 	}
@@ -675,6 +860,8 @@ export class ChatTab {
 
 	private _dropSession(): void {
 		this._cancelApprovals();
+		// Not answered, and not lost: shown where the conversation stands.
+		this._flushWaiting();
 		this._sessionEvents?.dispose();
 		this._sessionEvents = undefined;
 		this._session?.dispose();
@@ -695,6 +882,7 @@ export class ChatTab {
 		}
 		// Cut off by something other than the user: marked like an error.
 		this._failed ||= this.busy;
+		this._flushWaiting();
 		this._endTurnHere();
 		this._cancelApprovals();
 		this._sessionEvents?.dispose();
@@ -707,6 +895,7 @@ export class ChatTab {
 				? vscode.l10n.t("{0} is no longer installed. Install it again, then press Refresh to continue this conversation.", agentNames[agent])
 				: vscode.l10n.t("{0} was replaced by another installed copy; the conversation continues with it.", agentNames[agent]),
 		});
+		void this._save();
 	}
 
 	/**

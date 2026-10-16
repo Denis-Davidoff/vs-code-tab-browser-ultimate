@@ -119,6 +119,10 @@ button {
 	flex-direction: column;
 }
 
+.turn + .turn {
+	margin-top: 10px;
+}
+
 /* The prompt being answered stays at the top while its reply scrolls under it;
    the next turn's prompt pushes it away. The gradient lets rows fade out under it. */
 .prompt {
@@ -130,6 +134,7 @@ button {
 }
 
 .bubble {
+	position: relative;
 	box-sizing: border-box;
 	width: 100%;
 	padding: 7px 11px;
@@ -167,9 +172,11 @@ button {
 	flex-direction: column;
 }
 
+/* A little more air between rows than the first version had — asked for. The
+   timeline's dot and line are placed from the same 6px, below. */
 .row {
 	position: relative;
-	padding: 4px 0 4px 18px;
+	padding: 6px 0 6px 18px;
 	line-height: var(--line);
 	overflow-wrap: anywhere;
 	min-width: 0;
@@ -179,7 +186,7 @@ button {
 	content: '';
 	position: absolute;
 	left: 4px;
-	top: calc(4px + 0.775em - 3px);
+	top: calc(6px + 0.775em - 3px);
 	width: 6px;
 	height: 6px;
 	border-radius: 50%;
@@ -197,12 +204,12 @@ button {
 }
 
 .rows > .row:first-child::after {
-	top: calc(4px + 0.775em);
+	top: calc(6px + 0.775em);
 }
 
 .rows > .row:last-child::after {
 	bottom: auto;
-	height: calc(4px + 0.775em);
+	height: calc(6px + 0.775em);
 }
 
 .rows > .row:only-child::after {
@@ -575,6 +582,24 @@ button {
 
 .copy-button:hover {
 	color: var(--fg);
+}
+
+/* Copying a whole prompt or reply: at the bottom right, on hover — asked for. */
+.copy-button.message-copy {
+	top: auto;
+	bottom: 2px;
+	right: 2px;
+}
+
+.row.assistant .copy-button.message-copy {
+	bottom: -2px;
+	right: 0;
+}
+
+.bubble:hover > .message-copy,
+.row.assistant:hover > .message-copy,
+.copy-button:focus-visible {
+	opacity: 1;
 }
 
 /* thinking */
@@ -1674,15 +1699,20 @@ button {
 	display: none;
 }
 
+/*
+ * The tab in front is wider than the others, and gets there smoothly: the
+ * element is kept across a switch (see `renderTabs`), so its limits transition.
+ */
 .tab {
 	flex: 0 1 auto;
 	min-width: 56px;
-	max-width: 180px;
+	max-width: 140px;
 	display: flex;
 	align-items: center;
 	border-radius: 6px 6px 0 0;
 	color: var(--fg-3);
 	border-bottom: 2px solid transparent;
+	transition: min-width .28s cubic-bezier(.4, 0, .2, 1), max-width .28s cubic-bezier(.4, 0, .2, 1), color .15s ease;
 }
 
 .tab:hover {
@@ -1690,8 +1720,39 @@ button {
 }
 
 .tab.active {
+	min-width: 130px;
+	max-width: 260px;
 	color: var(--fg);
 	border-bottom-color: var(--accent);
+}
+
+/* `display: flex` above would otherwise win over the attribute. */
+.tab-label[hidden] {
+	display: none;
+}
+
+.tab-rename {
+	flex: 1;
+	min-width: 0;
+	margin: 3px 2px 3px 6px;
+	padding: 1px 5px;
+	border: 1px solid var(--accent);
+	border-radius: 4px;
+	background: var(--vscode-input-background, var(--surface));
+	color: var(--vscode-input-foreground, var(--fg));
+	font: inherit;
+	outline: none;
+}
+
+/* A sent message on its way from the box to its prompt; see `launchFlight`. */
+.flight {
+	position: fixed;
+	z-index: 1000;
+	margin: 0;
+	overflow: hidden;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	pointer-events: none;
 }
 
 .tab-label {
@@ -1732,8 +1793,7 @@ button {
 }
 
 .tab-mark.unread::before,
-.tab-mark.failed::before,
-.tab-mark.read::before {
+.tab-mark.failed::before {
 	content: '';
 	display: block;
 }
@@ -1750,14 +1810,6 @@ button {
 	height: 7px;
 	border-radius: 50%;
 	background: var(--vscode-charts-orange, #d18616);
-}
-
-.tab-mark.read::before {
-	width: 6px;
-	height: 6px;
-	border-radius: 1px;
-	background: currentColor;
-	opacity: 0.6;
 }
 
 .tab-agents {
@@ -1806,6 +1858,11 @@ button {
 	padding: 6px 10px;
 	color: var(--fg-2);
 	font-size: 0.92em;
+}
+
+/* `display: flex` above would otherwise keep the empty row's padding on screen. */
+.tab-confirm[hidden] {
+	display: none;
 }
 
 .tab-confirm > span {
@@ -2184,8 +2241,228 @@ button {
 }
 
 @media (prefers-reduced-motion: reduce) {
+	.tab {
+		transition: none;
+	}
+
 	.tab-mark.waiting::before,
 	.row.approval.pending::before {
 		animation: none;
 	}
+}
+
+/* ---------------------------------------------------------------- the approval menu */
+
+.approval-popup {
+	width: 300px;
+	max-height: 70vh;
+	overflow-y: auto;
+	padding: 6px 8px 8px;
+}
+
+.approval-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 4px 2px;
+}
+
+.approval-row.all .approval-row-label {
+	font-weight: 600;
+}
+
+.approval-row-label {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.mode-segs {
+	flex: none;
+	display: inline-flex;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	overflow: hidden;
+}
+
+.mode-seg {
+	padding: 2px 8px;
+	border: none;
+	background: transparent;
+	color: var(--fg-3);
+	font-size: 0.92em;
+	cursor: pointer;
+}
+
+.mode-seg + .mode-seg {
+	border-left: 1px solid var(--border);
+}
+
+.mode-seg:hover {
+	background: var(--soft);
+	color: var(--fg);
+}
+
+.mode-seg.on {
+	color: var(--fg);
+	background: var(--soft-2);
+	font-weight: 600;
+}
+
+.mode-seg.auto.on {
+	color: var(--ok);
+}
+
+.mode-seg.deny.on {
+	color: var(--bad);
+}
+
+.approval-sep {
+	height: 1px;
+	margin: 4px 0;
+	background: var(--border);
+}
+
+.approval-note {
+	margin-top: 6px;
+	color: var(--fg-3);
+	font-size: 0.88em;
+	line-height: 1.4;
+}
+
+/* ---------------------------------------------------------------- messages not in the conversation yet */
+
+/* `.ghost.round` would otherwise keep the hidden button on screen. */
+.queue-button[hidden] {
+	display: none;
+}
+
+/* Below the conversation and not sticky: they are not a turn's prompt yet. */
+.prompt.pending-send {
+	position: static;
+	padding: 4px 0;
+	background: none;
+}
+
+.prompt.pending-send .bubble {
+	opacity: 0.75;
+	border-style: dashed;
+	cursor: default;
+}
+
+.pending-note {
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	margin: 3px 2px 0;
+	color: var(--fg-3);
+	font-size: 0.88em;
+}
+
+.pending-note .codicon {
+	font-size: 12px;
+}
+
+.prompt.pending-send.steer .pending-note .codicon {
+	animation: spin 1.2s linear infinite;
+}
+
+@keyframes spin {
+	to { transform: rotate(360deg); }
+}
+
+.pending-remove {
+	margin-left: auto;
+	padding: 1px;
+	border: none;
+	border-radius: 4px;
+	background: transparent;
+	color: inherit;
+	cursor: pointer;
+}
+
+.pending-remove:hover {
+	background: var(--soft-2);
+	color: var(--fg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.prompt.pending-send.steer .pending-note .codicon {
+		animation: none;
+	}
+}
+
+/* Refused by the approval menu: one line, not a card to read. */
+.row.approval.quiet .approval-head,
+.row.approval.quiet .approval-title {
+	display: inline;
+	font-weight: normal;
+}
+
+.row.approval.quiet .approval-title {
+	margin: 0 0 0 6px;
+	padding: 0;
+	background: none;
+	color: var(--fg-3);
+}
+
+.row.approval.quiet .approval-outcome {
+	display: inline;
+	margin-left: 6px;
+}
+
+.row.approval.quiet .approval-head {
+	display: inline-flex;
+}
+
+/* ---------------------------------------------------------------- the "/" button, the panel footer */
+
+/* A square with a slash in it, drawn like the "U" button's circle. */
+/*
+ * The slash is a line drawn from the box's centre, not the "/" glyph: a
+ * font's slash has its own side bearings and sits on the baseline, so it was
+ * never in the middle of the square, and where depends on the font.
+ */
+.slash-button .slash-mark {
+	position: relative;
+	display: inline-block;
+	width: 15px;
+	height: 15px;
+	border-radius: 3px;
+	border: 1.5px solid currentColor;
+}
+
+.slash-button .slash-mark::before {
+	content: '';
+	position: absolute;
+	left: 50%;
+	top: 50%;
+	width: 1.5px;
+	height: 9px;
+	border-radius: 1px;
+	background: currentColor;
+	transform: translate(-50%, -50%) rotate(24deg);
+}
+
+.panel-footer {
+	flex: none;
+	display: flex;
+	justify-content: center;
+	padding: 8px 0 10px;
+	border-top: 1px solid var(--border);
+}
+
+.panel-close {
+	padding: 3px 16px;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	background: transparent;
+	color: inherit;
+	cursor: pointer;
+}
+
+.panel-close:hover {
+	background: var(--soft);
 }

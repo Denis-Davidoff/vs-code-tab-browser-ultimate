@@ -19,8 +19,10 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 - Pick the agent, the model and its effort — and, from the gear, which installed copy of each agent to use; **U** shows your plan limits and this chat's tokens.
 - **+** attaches a screenshot, an element from the page, the page address or a file; the browser tab's menu adds elements, screenshots and the address too, under AI Browser Chat. Click a chip to open it.
 - Commands, file edits and thinking appear as cards you can open.
-- The chat's agents can use the browser from the first message, no Connect needed (while the MCP server is on). They ask before terminal commands, browser actions and edits; answer in the chat, or switch **Ask** to **Auto** to let commands and browser actions run.
-- Several chats at once, as tabs — five by default, up to 30 in Settings — each marked as working, finished and unread, ended with an error, or read; switching a chat to the other agent asks whether to open a new tab, hand the conversation over, or close this one.
+- The chat's agents can use the browser from the first message, no Connect needed (while the MCP server is on). They ask before they act; answer in the chat, or set each kind — the internet, the browser, the terminal, files, each MCP server — to **Auto**, **Ask** or **Deny**.
+- While an agent works, **Enter** adds your message to what it is doing and **⌘Enter** queues it for after; copy any prompt or reply from its corner.
+- **/** beside the globe clears the conversation or exports it — to the clipboard, or a file you save.
+- Several chats at once, as tabs — five by default, up to 30 in Settings — marked while working, when finished and not yet read, or when something went wrong; double-click a tab to rename it; switching a chat to the other agent asks whether to open a new tab, hand the conversation over, or close this one.
 - The agents your agent starts: how many are running, what each one did and found, and a Stop for each.
 
 ## 0.6.3 — 2026-10-15

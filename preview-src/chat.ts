@@ -24,7 +24,7 @@
  */
 
 import type {
-	AgentUsage, ApprovalEntry, ApprovalKind, AttachmentKind, ChatEntry, ChatStats, ChatSummary, ChatTabStatus, ChatViewState, HostToView, ToolEntry, ViewToHost,
+	AgentUsage, ApprovalEntry, ApprovalKind, ApprovalMode, AttachmentKind, ChatEntry, ChatStats, ChatSummary, ChatTabStatus, ChatTabSummary, ChatViewState, HostToView, ToolEntry, ViewToHost,
 } from '../src/chat/chatProtocol';
 
 interface ViewState {
@@ -110,8 +110,12 @@ const input = el('textarea', { class: 'input' });
 input.rows = 1;
 input.placeholder = 'Ask about this page, or anything…';
 
-const plusButton = button([icon('add')], { class: 'ghost round', title: 'Attach…' });
+// Every button of the bottom bar says what it does, and its key where it has
+// one — asked for: the icons alone did not say it.
+const plusButton = button([icon('add')], { class: 'ghost round', title: 'Attach to the message — a screenshot or an element of the page, its address, or a file' });
 const browserButton = button([icon('globe')], { class: 'ghost round', title: 'Open a new browser tab' });
+/** "/": the chat's own commands — clear or export this conversation. A square and a slash, both drawn in CSS (`.slash-mark`). */
+const slashButton = button([el('span', { class: 'slash-mark' })], { class: 'ghost round slash-button', title: 'Chat commands — clear this conversation, or export it to the clipboard or a file' });
 const agentPill = button([], { class: 'pill', title: 'Agent' });
 const modelPill = button([], { class: 'pill', title: 'Model' });
 const effortRange = el('input', { class: 'effort-range' });
@@ -120,16 +124,20 @@ effortRange.min = '0';
 effortRange.step = '1';
 const effortLabel = el('span', { class: 'effort-label' });
 const effortBox = el('label', { class: 'effort', title: 'Effort' }, effortRange, effortLabel);
-const usageButton = button([el('span', { text: 'U' })], { class: 'ghost round usage-button', title: 'Usage' });
+const usageButton = button([el('span', { text: 'U' })], { class: 'ghost round usage-button', title: "Usage — your plan's limits for each agent, and this chat's tokens and cost" });
 const agentsButton = button([], { class: 'pill agents-button', title: 'Agents' });
 const sendButton = button([icon('arrow-up')], { class: 'send', title: 'Send' });
+/** Only while a turn runs and there is something to send: hold it for after the turn. */
+const queueButton = button([icon('list-ordered')], { class: 'ghost round queue-button', title: 'Send after this turn (⌘Enter)' });
+queueButton.hidden = true;
+queueButton.addEventListener('click', () => send('queue'));
 /** Ask before terminal commands and browser tools, or let them run: one switch for every tab. */
 const approveToggle = button([], { class: 'pill approve-toggle' });
 
 // The right-hand buttons (agents, usage, send) are one group pushed to the end,
 // so a narrow side bar wraps them together onto the next line, still at the right.
 const toolbar = el('div', { class: 'toolbar' },
-	plusButton, browserButton, agentPill, modelPill, effortBox, approveToggle, el('span', { class: 'toolbar-end' }, agentsButton, usageButton, sendButton));
+	plusButton, browserButton, slashButton, agentPill, modelPill, effortBox, approveToggle, el('span', { class: 'toolbar-end' }, agentsButton, usageButton, queueButton, sendButton));
 const composer = el('div', { class: 'composer' }, attachmentsRow, input, toolbar);
 /** Asked when another agent is picked for a conversation that has started. */
 const switchCard = el('div', { class: 'switch-card' });
@@ -139,12 +147,13 @@ const tabStrip = el('div', { class: 'tab-strip' });
 
 const menu = el('div', { class: 'popup menu' });
 const usagePopup = el('div', { class: 'popup usage-popup' });
+const approvalPopup = el('div', { class: 'popup approval-popup' });
 const historyPanel = el('div', { class: 'history-panel' });
 const agentsPanel = el('div', { class: 'history-panel agents-panel' });
 /** Which copy of each agent's CLI this project uses: opened from the gear in the agent menu. */
 const agentAppsPanel = el('div', { class: 'history-panel agent-apps' });
 
-app.append(tabStrip, thread, blocked, footer, menu, usagePopup, historyPanel, agentsPanel, agentAppsPanel);
+app.append(tabStrip, thread, blocked, footer, menu, usagePopup, approvalPopup, historyPanel, agentsPanel, agentAppsPanel);
 
 /* ---------------------------------------------------------------- state */
 
@@ -236,8 +245,26 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 		case 'usage':
 			renderUsage(message.usage, message.stats, message.loading);
 			return;
+		case 'restoreDraft':
+			// Stop gave the queue back: added to what is in the box, never sent.
+			if (message.chatId === state?.chatId) {
+				input.value = input.value.trim() ? `${input.value}\n\n${message.text}` : message.text;
+				autosize();
+				saveDraft();
+				renderSend();
+				input.focus();
+			} else {
+				drafts[message.chatId] = drafts[message.chatId] ? `${drafts[message.chatId]}\n\n${message.text}` : message.text;
+				saveDraft();
+			}
+			return;
 		case 'focusInput':
-			input.focus();
+			// Not while a tab is being renamed: the host asks for this on every tab
+			// selection, and a reply that arrives after the double-click closed
+			// the name field the moment it opened.
+			if (!editingTab) {
+				input.focus();
+			}
 			return;
 		case 'agentStopFailed':
 			stoppingAgents.delete(message.id);
@@ -266,6 +293,7 @@ function render(): void {
 	renderTabs(state);
 	renderSwitch(state);
 	renderThread(state);
+	landFlight(state);
 	renderAttachments(state);
 	renderSelectors(state);
 	renderApproveToggle(state);
@@ -281,74 +309,267 @@ function render(): void {
 /**
  * One tab per open conversation. A tab that is not in front goes on working —
  * its mark says how it is doing, and it counts its agents — and closing one
- * that is working stops it, so that asks first, here in the strip. Rebuilt only
- * when what it shows changes: a rebuild between a press and its release loses
- * the click. "+" is not there at all once the tabs reach the limit (asked for:
- * a disabled button read as broken), and comes back when one is closed.
+ * that is working stops it, so that asks first, here in the strip. The strip
+ * is never rebuilt: each tab keeps its element (see `TabNode`). "+" is not
+ * there at all once the tabs reach the limit (asked for: a disabled button
+ * read as broken), and comes back when one is closed.
  */
-let tabsShown = '';
 /** The tab whose close is being confirmed. */
 let closingTab: string | undefined;
+/** The tab being renamed: its label is an input until Enter, Escape or a click elsewhere. */
+let editingTab: string | undefined;
+
+/**
+ * Each tab's element is kept for as long as the tab is open and updated in
+ * place, rather than the strip being rebuilt: the tab in front is wider, and a
+ * width can only transition on an element that is still there when the class
+ * changes. Within a tab only the label is refilled, and only when what it shows
+ * changed — a rebuild between a press and its release loses the click (#365).
+ */
+interface TabNode {
+	readonly root: HTMLElement;
+	readonly label: HTMLButtonElement;
+	readonly close: HTMLButtonElement;
+	tab: ChatTabSummary;
+	shown: string;
+	/** A name just given, shown until the state carries it; see `startRename`. */
+	pendingTitle?: { readonly title: string; readonly until: number };
+}
+
+const tabNodes = new Map<string, TabNode>();
+const tabRow = el('div', { class: 'tab-row' });
+const tabAdd = button([icon('add')], { class: 'ghost round tab-add', title: 'New chat' });
+tabAdd.addEventListener('click', () => post({ type: 'newTab' }));
+const tabConfirm = el('div', { class: 'tab-confirm' });
+/** The first click of a possible double-click, by tab; see the label's click handler. */
+let firstClick: { readonly id: string; readonly at: number } | undefined;
+const doubleClickMs = 600;
+tabConfirm.hidden = true;
+let confirmShown = '';
+let frontTab: string | undefined;
 
 function renderTabs(s: ChatViewState): void {
-	if (closingTab && !s.tabs.some(t => t.id === closingTab && t.busy)) {
+	if (closingTab && !s.tabs.some(t => t.id === closingTab && (t.busy || t.queued))) {
 		closingTab = undefined;
 	}
-	const shown = JSON.stringify([s.tabs, s.activeTab, s.tabLimit, closingTab]);
-	if (shown === tabsShown) {
+	if (editingTab && !s.tabs.some(t => t.id === editingTab)) {
+		editingTab = undefined;
+	}
+	if (!tabStrip.contains(tabRow)) {
+		tabStrip.replaceChildren(tabRow, tabConfirm);
+	}
+	const open = new Set(s.tabs.map(t => t.id));
+	for (const [id, node] of tabNodes) {
+		if (!open.has(id)) {
+			node.root.remove();
+			tabNodes.delete(id);
+		}
+	}
+	s.tabs.forEach((summary, i) => {
+		const node = tabNodes.get(summary.id) ?? tabNode(summary);
+		const pending = node.pendingTitle;
+		if (pending && (summary.title === pending.title || performance.now() > pending.until)) {
+			node.pendingTitle = undefined;
+		}
+		const t = node.pendingTitle ? { ...summary, title: node.pendingTitle.title } : summary;
+		node.tab = t;
+		const agent = t.agent ? s.agents.find(a => a.id === t.agent)?.name ?? t.agent : undefined;
+		const shown = tabShown(t, agent);
+		if (shown !== node.shown && editingTab !== t.id) {
+			node.shown = shown;
+			fillTab(node, agent);
+		}
+		node.root.classList.toggle('active', t.id === s.activeTab);
+		node.root.classList.toggle('running', t.running);
+		// Moved only when out of place: re-inserting an element ends its transition.
+		if (tabRow.children[i] !== node.root) {
+			tabRow.insertBefore(node.root, tabRow.children[i] ?? null);
+		}
+	});
+	if (s.tabs.length >= s.tabLimit) {
+		tabAdd.remove();
+	} else if (tabRow.lastElementChild !== tabAdd) {
+		tabRow.append(tabAdd);
+	}
+	renderTabConfirm(s);
+	if (s.activeTab !== frontTab) {
+		frontTab = s.activeTab;
+		// After the width has settled, or it scrolls to where the tab was going.
+		setTimeout(() => tabNodes.get(s.activeTab)?.root.scrollIntoView({ block: 'nearest', inline: 'nearest' }), 340);
+	}
+}
+
+function tabShown(t: ChatTabSummary, agent: string | undefined): string {
+	return JSON.stringify([t.title, t.status, t.agents, t.busy, agent]);
+}
+
+function tabNode(t: ChatTabSummary): TabNode {
+	const label = button([], { class: 'tab-label' });
+	const close = button([icon('close')], { class: 'tab-close' });
+	const root = el('div', { class: 'tab' }, label, close);
+	const node: TabNode = { root, label, close, tab: t, shown: '' };
+	label.addEventListener('click', event => {
+		// The second click of a double-click can land on another tab: the
+		// first one selects this tab, the strip's widths move, and the pointer is
+		// over a neighbour by the time it clicks again. The double-click belongs
+		// to the tab the first click was on.
+		const now = performance.now();
+		if (event.detail >= 2 && firstClick && now - firstClick.at < doubleClickMs) {
+			return;
+		}
+		firstClick = { id: node.tab.id, at: now };
+		post({ type: 'selectTab', id: node.tab.id });
+	});
+	label.addEventListener('dblclick', () => {
+		const first = firstClick && performance.now() - firstClick.at < doubleClickMs ? tabNodes.get(firstClick.id) : undefined;
+		firstClick = undefined;
+		startRename(first ?? node);
+	});
+	label.addEventListener('keydown', event => {
+		if (event.key === 'F2') {
+			event.preventDefault();
+			startRename(node);
+		}
+	});
+	close.addEventListener('click', () => {
+		if (node.tab.busy || node.tab.queued) {
+			closingTab = node.tab.id;
+			if (state) {
+				renderTabs(state);
+			}
+			tabConfirm.querySelector<HTMLButtonElement>('.confirm-cancel')?.focus();
+		} else {
+			post({ type: 'closeTab', id: node.tab.id });
+		}
+	});
+	tabNodes.set(t.id, node);
+	return node;
+}
+
+function fillTab(node: TabNode, agent: string | undefined): void {
+	const t = node.tab;
+	const parts: (HTMLElement | undefined)[] = [
+		tabMark(t.status),
+		el('span', { class: 'tab-title', text: t.title }),
+		t.agents ? el('span', { class: 'tab-agents', text: String(t.agents), title: `${t.agents} agent${t.agents === 1 ? '' : 's'} working` }) : undefined,
+	];
+	node.label.replaceChildren(...parts.filter((p): p is HTMLElement => !!p));
+	node.label.title = `${agent ? `${t.title} — ${agent}` : t.title}\nDouble-click to rename`;
+	node.close.title = t.busy ? 'Close (stops what it is doing)' : 'Close';
+}
+
+/**
+ * Renaming in place: Enter or a click elsewhere keeps the name, Escape keeps
+ * the old one. An empty name changes nothing. The label shows the new name at
+ * once, so it does not flick back for the 40 ms until the host's state says so.
+ */
+function startRename(node: TabNode): void {
+	if (editingTab === node.tab.id) {
 		return;
 	}
-	tabsShown = shown;
-	const full = s.tabs.length >= s.tabLimit;
-	const tabs = s.tabs.map(t => {
-		const agent = t.agent ? s.agents.find(a => a.id === t.agent)?.name ?? t.agent : undefined;
-		const label = button([
-			tabMark(t.status),
-			el('span', { class: 'tab-title', text: t.title }),
-			t.agents ? el('span', { class: 'tab-agents', text: String(t.agents), title: `${t.agents} agent${t.agents === 1 ? '' : 's'} working` }) : undefined,
-		], { class: 'tab-label', title: agent ? `${t.title} — ${agent}` : t.title });
-		label.addEventListener('click', () => post({ type: 'selectTab', id: t.id }));
-		const close = button([icon('close')], { class: 'tab-close', title: t.busy ? 'Close (stops what it is doing)' : 'Close' });
-		close.addEventListener('click', () => {
-			if (t.busy) {
-				closingTab = t.id;
-				renderTabs(s);
-				tabStrip.querySelector<HTMLButtonElement>('.confirm-cancel')?.focus();
-			} else {
-				post({ type: 'closeTab', id: t.id });
-			}
-		});
-		return el('div', { class: `tab${t.id === s.activeTab ? ' active' : ''}${t.running ? ' running' : ''}` }, label, close);
+	editingTab = node.tab.id;
+	const before = node.tab.title;
+	const field = el('input', { class: 'tab-rename' });
+	field.value = before;
+	field.maxLength = 80;
+	field.setAttribute('aria-label', 'Tab name');
+	let done = false;
+	/** `fromKeys`: Enter or Escape. A click elsewhere keeps the focus where it went. */
+	const finish = (keep: boolean, fromKeys: boolean) => {
+		if (done) {
+			return;
+		}
+		done = true;
+		const name = field.value.replace(/\s+/g, ' ').trim();
+		editingTab = undefined;
+		field.remove();
+		node.label.hidden = false;
+		if (keep && name && name !== before) {
+			post({ type: 'renameTab', id: node.tab.id, title: name });
+			node.tab = { ...node.tab, title: name };
+			// Shown until the host's state says so: a post it built before it read
+			// the rename would otherwise show the old name for a moment.
+			node.pendingTitle = { title: name, until: performance.now() + 2000 };
+		}
+		const agent = node.tab.agent ? state?.agents.find(a => a.id === node.tab.agent)?.name ?? node.tab.agent : undefined;
+		node.shown = tabShown(node.tab, agent);
+		fillTab(node, agent);
+		if (fromKeys) {
+			node.label.focus();
+		}
+	};
+	field.addEventListener('keydown', event => {
+		// Enter and Escape inside an IME composition pick or drop a candidate.
+		if (event.isComposing || event.keyCode === 229) {
+			return;
+		}
+		if (event.key === 'Enter') {
+			event.preventDefault();
+			finish(true, true);
+		} else if (event.key === 'Escape') {
+			// Not the document's Escape too, which would close a popup or the switch card.
+			event.preventDefault();
+			event.stopPropagation();
+			finish(false, true);
+		}
 	});
-	const add = full ? undefined : button([icon('add')], { class: 'ghost round tab-add', title: 'New chat' });
-	add?.addEventListener('click', () => post({ type: 'newTab' }));
-	const row = el('div', { class: 'tab-row' }, ...tabs, add);
-	const nodes: HTMLElement[] = [row];
-	const closing = closingTab ? s.tabs.find(t => t.id === closingTab) : undefined;
-	if (closing) {
-		const yes = button([el('span', { text: 'Stop and close' })], { class: 'confirm-danger' });
-		yes.addEventListener('click', () => {
-			closingTab = undefined;
-			post({ type: 'closeTab', id: closing.id });
-		});
-		const no = button([el('span', { text: 'Cancel' })], { class: 'confirm-cancel' });
-		no.addEventListener('click', () => {
-			closingTab = undefined;
-			renderTabs(s);
-		});
-		const what = closing.agents ? `its reply and ${closing.agents} agent${closing.agents === 1 ? '' : 's'}` : 'its reply';
-		nodes.push(el('div', { class: 'tab-confirm' },
-			el('span', { text: `"${closing.title}" is still working. Closing it stops ${what}.` }), yes, no));
+	field.addEventListener('blur', () => finish(true, false));
+	node.label.hidden = true;
+	node.root.insertBefore(field, node.close);
+	field.focus();
+	field.select();
+}
+
+/** The close is not confirmed: focus goes back to the tab's own close button, not to the page. */
+function cancelClosing(): void {
+	const id = closingTab;
+	closingTab = undefined;
+	if (state) {
+		renderTabs(state);
 	}
-	tabStrip.replaceChildren(...nodes);
-	row.querySelector('.tab.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+	if (id) {
+		tabNodes.get(id)?.close.focus();
+	}
+}
+
+function renderTabConfirm(s: ChatViewState): void {
+	const closing = closingTab ? s.tabs.find(t => t.id === closingTab) : undefined;
+	const shown = closing ? JSON.stringify([closing.id, closing.title, closing.agents, closing.busy, closing.queued]) : '';
+	if (shown === confirmShown) {
+		return;
+	}
+	confirmShown = shown;
+	tabConfirm.hidden = !closing;
+	if (!closing) {
+		tabConfirm.replaceChildren();
+		return;
+	}
+	const yes = button([el('span', { text: 'Stop and close' })], { class: 'confirm-danger' });
+	yes.addEventListener('click', () => {
+		closingTab = undefined;
+		post({ type: 'closeTab', id: closing.id });
+		if (state) {
+			renderTabs(state);
+		}
+	});
+	const no = button([el('span', { text: 'Cancel' })], { class: 'confirm-cancel' });
+	no.addEventListener('click', () => cancelClosing());
+	const parts = [
+		closing.busy ? 'its reply' : '',
+		closing.agents ? `${closing.agents} agent${closing.agents === 1 ? '' : 's'}` : '',
+	].filter(Boolean);
+	const queued = closing.queued ? `${closing.queued} queued message${closing.queued === 1 ? '' : 's'} will not be sent.` : '';
+	const text = parts.length
+		? `"${closing.title}" is still working. Closing it stops ${parts.join(' and ')}.${queued ? ` ${queued}` : ''}`
+		: `"${closing.title}": ${queued}`;
+	tabConfirm.replaceChildren(el('span', { text }), yes, no);
 }
 
 /**
  * The mark in front of a tab's title: the working star while it works (the
  * glyph of the working line, turned by the same timer), a green dot for work
- * finished out of sight, an orange one for work that ended in an error, a grey
- * square for finished and read. Nothing before the first message. A tab whose
+ * finished out of sight, an orange one for work that ended in an error, and
+ * nothing once it is finished and read — nor before the first message. A tab whose
  * agent waits for an approval shows a pulsing ring instead of the star: the
  * work is stopped on the user, and the tab may not be the one in front.
  */
@@ -361,7 +582,9 @@ const tabMarks: Record<ChatTabStatus, string> = {
 };
 
 function tabMark(status: ChatTabStatus | undefined): HTMLElement | undefined {
-	if (!status) {
+	// Finished and read needs no mark at all — asked for: the grey square it
+	// used to show said nothing a plain tab does not.
+	if (!status || status === 'read') {
 		return undefined;
 	}
 	return el('span', {
@@ -539,12 +762,51 @@ function renderThread(s: ChatViewState): void {
 		}
 		renderTail(nodes.tail, s, turn, t === lastTurn);
 	});
+	renderPendingSends(s);
 
 	if (stick) {
 		thread.scrollTop = thread.scrollHeight;
 	} else if (restore !== undefined) {
 		thread.scrollTop = restore;
 	}
+}
+
+/**
+ * Messages not in the conversation yet, below it: one sent during a turn that
+ * Claude Code has not taken in ("Waiting for the agent"), and the queue
+ * (⌘/Ctrl+Enter, "Sent when this turn ends", with an x to take it back). Built
+ * like prompts, so a sent message's flight lands on its row here.
+ */
+const pendingBox = el('div', { class: 'pending-sends' });
+let pendingShown = '';
+
+function renderPendingSends(s: ChatViewState): void {
+	if (threadInner.lastElementChild !== pendingBox) {
+		threadInner.append(pendingBox);
+	}
+	const shown = JSON.stringify(s.pendingSends);
+	if (shown === pendingShown) {
+		return;
+	}
+	pendingShown = shown;
+	pendingBox.replaceChildren(...s.pendingSends.map(p => {
+		const bubble = el('div', { class: 'bubble' });
+		if (p.attachments.length) {
+			bubble.append(el('div', { class: 'bubble-attachments' }, ...p.attachments.map(label => el('span', { class: 'chip small', text: label }))));
+		}
+		if (p.text) {
+			bubble.append(el('div', { class: 'bubble-text', text: p.text }));
+		}
+		const note = el('div', { class: 'pending-note' },
+			icon(p.kind === 'queue' ? 'list-ordered' : 'loading'),
+			el('span', { text: p.kind === 'queue' ? 'Sent when this turn ends' : 'Waiting for the agent to take it in' }));
+		if (p.kind === 'queue') {
+			const remove = button([icon('close')], { class: 'pending-remove', title: 'Do not send' });
+			remove.addEventListener('click', () => post({ type: 'unqueue', id: p.id }));
+			note.append(remove);
+		}
+		return el('div', { class: `prompt pending-send ${p.kind}` }, bubble, note);
+	}));
 }
 
 /**
@@ -723,8 +985,15 @@ function entryNode(entry: ChatEntry, i: number): HTMLElement {
 	switch (entry.kind) {
 		case 'user':
 			return promptNode(entry, i);
-		case 'assistant':
-			return el('div', { class: 'row assistant markdown' }, renderMarkdown(entry.text));
+		case 'assistant': {
+			// Copies the reply as it came, Markdown and all; shown on hover.
+			const copy = copyButton(() => entry.text, 'Copy reply');
+			copy.classList.add('message-copy');
+			// Beside the Markdown, not in it: as its last child the button took the
+			// `.markdown > :last-child` rule, and every reply kept its last block's
+			// bottom margin.
+			return el('div', { class: 'row assistant' }, el('div', { class: 'markdown' }, renderMarkdown(entry.text)), copy);
+		}
 		case 'thinking':
 			return thinkingNode(entry, i);
 		case 'tool':
@@ -739,9 +1008,12 @@ function entryNode(entry: ChatEntry, i: number): HTMLElement {
 }
 
 const approvalLabels: Record<ApprovalKind, { icon: string; ask: string }> = {
-	command: { icon: 'terminal', ask: 'Run this command?' },
+	web: { icon: 'cloud', ask: 'Go to the internet?' },
 	browser: { icon: 'globe', ask: 'Use the browser?' },
+	command: { icon: 'terminal', ask: 'Run this command?' },
 	edit: { icon: 'edit', ask: 'Change this file?' },
+	outside: { icon: 'folder-opened', ask: 'Use a file outside the project?' },
+	mcp: { icon: 'plug', ask: 'Use this tool?' },
 	other: { icon: 'tools', ask: 'Use this tool?' },
 };
 
@@ -751,19 +1023,55 @@ const approvalOutcomes: Record<Exclude<ApprovalEntry['status'], 'pending'>, stri
 	cancelled: 'No longer needed',
 };
 
+/** The approval menu's key for a card: written twice, see `approvalKey` in chatTab.ts (the webview imports types only). */
+function approvalKeyOf(entry: { readonly what: string; readonly server?: string }): string {
+	return entry.what === 'mcp' ? `mcp:${entry.server ?? ''}` : entry.what;
+}
+
+/** The fixed categories of the approval menu, in its order; servers go before `other`. */
+const approvalRows: readonly { readonly key: string; readonly label: string; readonly hint: string }[] = [
+	{ key: 'web', label: 'Internet', hint: 'Fetching pages and searching the web (Claude Code); network access for a command (Codex)' },
+	{ key: 'browser', label: 'AI Browser', hint: "This window's browser tools: reading, clicking, filling, screenshots" },
+	{ key: 'command', label: 'Terminal', hint: 'Shell commands, and input to a command already running' },
+	{ key: 'edit', label: 'Files in the project', hint: 'Writing and editing files inside the open folder' },
+	{ key: 'outside', label: 'Files outside the project', hint: 'Reading or writing files outside the open folder, or write access under another folder' },
+];
+const approvalOther = { key: 'other', label: 'Other tools', hint: 'Anything that is none of the above' };
+
+function approvalCategoryRows(s: ChatViewState): { key: string; label: string; hint: string }[] {
+	return [
+		...approvalRows,
+		...s.approvals.servers.map(server => ({ key: `mcp:${server}`, label: `MCP · ${server}`, hint: `The tools of the ${server} MCP server` })),
+		approvalOther,
+	];
+}
+
+function approvalLabelOf(s: ChatViewState, key: string): string {
+	return approvalCategoryRows(s).find(r => r.key === key)?.label ?? key;
+}
+
+function modeOf(s: ChatViewState, key: string): ApprovalMode {
+	return s.approvals.policy[key] ?? 'ask';
+}
+
 /**
  * An agent asking before it uses a tool. Answered here, never in a modal (a
- * dialog pauses the browser). "Allow all" also switches the composer's toggle
- * on, so the same kind of question does not come back; it is offered only for
- * what the toggle covers — terminal commands and browser tools.
+ * dialog pauses the browser). "Always allow" and "Always deny" also set the
+ * card's category in the approval menu, so the same kind of question does not
+ * come back; the menu beside the model changes it again.
  */
 function approvalNode(entry: ApprovalEntry): HTMLElement {
 	const label = approvalLabels[entry.what];
 	const node = el('div', { class: `row approval ${entry.status}` },
-		el('div', { class: 'approval-head' }, icon(label.icon), el('span', { text: label.ask })),
+		el('div', { class: 'approval-head' }, icon(label.icon), el('span', { text: entry.what === 'mcp' && entry.server ? `${label.ask} (${entry.server})` : label.ask })),
 		el('div', { class: 'approval-title', text: entry.title }));
-	if (entry.detail) {
+	// Refused by the menu: one short line — what, and that it was refused.
+	const quiet = entry.status === 'denied' && entry.auto;
+	if (entry.detail && !quiet) {
 		node.append(el('div', { class: 'approval-detail', text: entry.detail }));
+	}
+	if (quiet) {
+		node.classList.add('quiet');
 	}
 	if (entry.status !== 'pending') {
 		node.append(el('div', { class: 'approval-outcome', text: entry.auto ? `${approvalOutcomes[entry.status]} automatically` : approvalOutcomes[entry.status] }));
@@ -775,43 +1083,115 @@ function approvalNode(entry: ApprovalEntry): HTMLElement {
 		}
 		post({ type: 'approve', id: entry.id, allow });
 	};
+	const key = approvalKeyOf(entry);
+	const category = state ? approvalLabelOf(state, key) : key;
 	const allow = button([el('span', { text: 'Allow' })], { class: 'approval-allow' });
 	allow.addEventListener('click', () => answer(true));
 	const deny = button([el('span', { text: 'Deny' })], { class: 'approval-deny' });
 	deny.addEventListener('click', () => answer(false));
-	const actions = el('div', { class: 'approval-actions' }, allow, deny);
-	if (entry.what === 'command' || entry.what === 'browser') {
-		const all = button([el('span', { text: 'Allow all' })], {
-			class: 'approval-all',
-			title: 'Allow this, and run terminal commands and browser actions without asking from now on — the toggle beside the model switches it back',
+	const always = (mode: ApprovalMode, text: string) => {
+		const b = button([el('span', { text })], {
+			class: 'approval-always',
+			title: `${text} — "${category}" in this project from now on. The approval button in the bottom bar changes it.`,
 		});
-		all.addEventListener('click', () => {
-			post({ type: 'setAutoApprove', on: true });
-			answer(true);
+		b.addEventListener('click', () => {
+			post({ type: 'setApprovalMode', key, mode });
+			answer(mode === 'auto');
 		});
-		actions.append(all);
-	}
-	node.append(actions);
+		return b;
+	};
+	node.append(el('div', { class: 'approval-actions' }, allow, deny, always('auto', 'Always allow'), always('deny', 'Always deny')));
 	return node;
 }
 
-/** The toggle in the composer: "Ask" asks before terminal commands and browser tools, "Auto" lets them run. */
+/**
+ * The composer's approval button: a summary of the menu's modes. "Ask" while
+ * every category asks, "Auto" or "Deny" while every one does that, and
+ * otherwise what differs — "Auto 2 · Deny 1".
+ */
 function renderApproveToggle(s: ChatViewState): void {
-	const on = s.autoApprove;
-	if (approveToggle.dataset.on === String(on)) {
-		return;
+	const rows = approvalCategoryRows(s);
+	const modes = rows.map(r => modeOf(s, r.key));
+	const auto = modes.filter(m => m === 'auto').length;
+	const deny = modes.filter(m => m === 'deny').length;
+	const text = auto === modes.length ? 'Auto' : deny === modes.length ? 'Deny' : !auto && !deny ? 'Ask'
+		: [auto ? `Auto ${auto}` : '', deny ? `Deny ${deny}` : ''].filter(Boolean).join(' · ');
+	const title = `Approvals — what the agents may do without asking:\n${rows.map(r => `${r.label}: ${modeLabels[modeOf(s, r.key)]}`).join('\n')}\nClick to change: Auto runs it, Ask asks, Deny refuses.`;
+	const shown = JSON.stringify([text, title]);
+	if (approveToggle.dataset.shown !== shown) {
+		approveToggle.dataset.shown = shown;
+		approveToggle.classList.toggle('on', auto > 0);
+		approveToggle.replaceChildren(icon(auto ? 'unlock' : 'shield'), el('span', { text }));
+		approveToggle.title = title;
+		approveToggle.setAttribute('aria-label', `Approvals: ${text}`);
 	}
-	approveToggle.dataset.on = String(on);
-	approveToggle.classList.toggle('on', on);
-	approveToggle.setAttribute('aria-pressed', String(on));
-	approveToggle.replaceChildren(icon(on ? 'unlock' : 'shield'), el('span', { text: on ? 'Auto' : 'Ask' }));
-	approveToggle.title = on
-		? 'Auto: terminal commands and browser actions run without asking. File edits and other tools still ask. Click to ask first again.'
-		: 'Ask: the agent asks before each terminal command or browser action. Click to let them run without asking.';
+	if (approvalPopup.classList.contains('open')) {
+		renderApprovalMenu(s);
+	}
+}
+
+const modeLabels: Record<ApprovalMode, string> = { auto: 'Auto', ask: 'Ask', deny: 'Deny' };
+let approvalMenuRows = '';
+
+/**
+ * The approval menu: a row per category with Auto · Ask · Deny, and "All" on
+ * top, which sets every row at once and shows no choice while they differ.
+ * A choice changes the buttons in place: rebuilt for every change, as it first
+ * was, the clicked button was replaced and keyboard focus fell to the page
+ * (#365). It is rebuilt only when the rows themselves change (a server
+ * appearing), and focus then goes back to the button it was on.
+ */
+function renderApprovalMenu(s: ChatViewState, force = false): void {
+	const rows = approvalCategoryRows(s);
+	const keys = JSON.stringify(rows.map(r => r.key));
+	if (force || keys !== approvalMenuRows || !approvalPopup.firstChild) {
+		const focused = document.activeElement instanceof HTMLElement && approvalPopup.contains(document.activeElement)
+			? { key: document.activeElement.dataset.key, mode: document.activeElement.dataset.mode }
+			: undefined;
+		approvalMenuRows = keys;
+		const row = (key: string, label: string, hint: string, strong = false) => {
+			const segments = (['auto', 'ask', 'deny'] as const).map(mode => {
+				const b = button([el('span', { text: modeLabels[mode] })], { class: `mode-seg ${mode}` });
+				b.dataset.key = key;
+				b.dataset.mode = mode;
+				b.addEventListener('click', () => post({ type: 'setApprovalMode', key, mode }));
+				return b;
+			});
+			const group = el('span', { class: 'mode-segs' }, ...segments);
+			group.setAttribute('role', 'group');
+			group.setAttribute('aria-label', label);
+			return el('div', { class: `approval-row${strong ? ' all' : ''}`, title: hint },
+				el('span', { class: 'approval-row-label', text: label }), group);
+		};
+		approvalPopup.replaceChildren(
+			el('div', { class: 'menu-heading' }, el('span', { text: 'Before a tool runs' })),
+			row('all', 'All', 'Every category at once', true),
+			el('div', { class: 'approval-sep' }),
+			...rows.map(r => row(r.key, r.label, r.hint)),
+			el('div', { class: 'approval-note', text: 'Auto runs it without asking, Deny refuses it without asking. For this project, in every tab. Your own Claude Code and Codex rules still decide first.' }));
+		if (focused?.key) {
+			approvalPopup.querySelector<HTMLElement>(`[data-key="${CSS.escape(focused.key)}"][data-mode="${focused.mode}"]`)?.focus();
+		}
+	}
+	const modes = new Set(rows.map(r => modeOf(s, r.key)));
+	const all: ApprovalMode | undefined = modes.size === 1 ? [...modes][0] : undefined;
+	for (const b of approvalPopup.querySelectorAll<HTMLElement>('.mode-seg')) {
+		const current = b.dataset.key === 'all' ? all : modeOf(s, b.dataset.key ?? '');
+		const on = current === b.dataset.mode;
+		b.classList.toggle('on', on);
+		b.setAttribute('aria-pressed', String(on));
+	}
 }
 
 approveToggle.addEventListener('click', () => {
-	post({ type: 'setAutoApprove', on: approveToggle.dataset.on !== 'true' });
+	if (approvalPopup.classList.contains('open')) {
+		closePopups();
+		return;
+	}
+	if (state) {
+		renderApprovalMenu(state, true);
+	}
+	openAbove(approvalPopup, approveToggle, 'left');
 });
 
 /**
@@ -828,6 +1208,9 @@ function promptNode(entry: Extract<ChatEntry, { kind: 'user' }>, i: number): HTM
 	}
 	if (entry.text) {
 		bubble.append(el('div', { class: 'bubble-text', text: entry.text }));
+		const copy = copyButton(() => entry.text, 'Copy prompt');
+		copy.classList.add('message-copy');
+		bubble.append(copy);
 	}
 	bubble.classList.toggle('expanded', toggled.get(key) === true);
 	bubble.addEventListener('click', () => {
@@ -1307,12 +1690,12 @@ function renderSelectors(s: ChatViewState): void {
 	const agent = s.agents.find(a => a.id === s.selection.agent);
 	agentPill.replaceChildren(...pillContent(agent?.name ?? (s.detecting ? 'Looking…' : 'No agent')));
 	agentPill.disabled = !s.agents.some(a => a.available);
-	agentPill.title = agent?.detail ? `${agent.name} ${agent.detail}` : 'Agent';
+	agentPill.title = `Agent — who answers: Claude Code or Codex${agent?.detail ? `\n${agent.name} ${agent.detail}` : ''}\nClick to pick another; the gear in its menu picks which installed copy.`;
 
 	const model = agent?.models.find(m => m.id === s.selection.model);
 	modelPill.replaceChildren(...pillContent(model?.label ?? 'Model'));
 	modelPill.disabled = !agent?.models.length;
-	modelPill.title = model?.description ?? 'Model';
+	modelPill.title = `Model — which of the agent's models answers${model?.description ? `\n${model.label}: ${model.description}` : ''}`;
 
 	const efforts = model?.efforts ?? [];
 	effortBox.hidden = !efforts.length;
@@ -1320,7 +1703,7 @@ function renderSelectors(s: ChatViewState): void {
 		effortRange.max = String(efforts.length - 1);
 		effortRange.value = String(Math.max(0, efforts.indexOf(s.selection.effort ?? '')));
 		effortLabel.textContent = labelOf(s.selection.effort ?? efforts[0]);
-		effortBox.title = `Effort: ${efforts.map(labelOf).join(' · ')}`;
+		effortBox.title = `Effort — how hard the model thinks before it answers: ${efforts.map(labelOf).join(' · ')}\nMore effort is slower and uses more of your plan.`;
 		effortBox.classList.toggle('max', effortRange.value === effortRange.max);
 	}
 }
@@ -1343,7 +1726,13 @@ function renderSend(): void {
 	const hasContent = !!input.value.trim() || !!state?.attachments.length;
 	const stop = running && !hasContent;
 	sendButton.replaceChildren(icon(stop ? 'debug-stop' : 'arrow-up'));
-	sendButton.title = stop ? 'Stop' : !canSend() ? 'No agent is available' : running ? 'Send (added to the running turn)' : 'Send';
+	const queueKey = `${navigator.platform.startsWith('Mac') ? '⌘' : 'Ctrl+'}Enter`;
+	sendButton.title = stop ? 'Stop — end what the agent is doing now'
+		: !canSend() ? 'No agent is available'
+		: running ? `Add to the running turn (Enter) — the agent takes it into what it is doing. ${queueKey} queues it for when the turn ends instead.`
+		: 'Send (Enter) — Shift+Enter starts a new line';
+	queueButton.hidden = !running || !hasContent || !canSend();
+	queueButton.title = `Queue — send this when the agent finishes the current turn (${queueKey}). Enter adds it to the turn instead.`;
 	sendButton.setAttribute('aria-label', stop ? 'Stop' : 'Send');
 	sendButton.classList.toggle('stop', stop);
 	sendButton.disabled = !stop && (!hasContent || !canSend());
@@ -1418,7 +1807,9 @@ input.addEventListener('input', () => {
 input.addEventListener('keydown', event => {
 	if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
 		event.preventDefault();
-		send();
+		// ⌘Enter (Ctrl+Enter elsewhere) queues it for after the running turn;
+		// Enter adds it to the turn — asked for. With nothing running both send.
+		send(event.metaKey || event.ctrlKey ? 'queue' : undefined);
 		return;
 	}
 	if ((event.key === 'ArrowUp' || event.key === 'ArrowDown') && !event.isComposing
@@ -1443,12 +1834,16 @@ sendButton.addEventListener('click', () => {
 	}
 });
 
-function send(): void {
+/** `queue`: held until the running turn ends (⌘/Ctrl+Enter); otherwise added to it (Enter). */
+function send(mode?: 'queue'): void {
 	const text = input.value;
 	if ((!text.trim() && !state?.attachments.length) || !canSend()) {
 		return;
 	}
-	post({ type: 'send', text, tabId: state?.activeTab });
+	launchFlight(text);
+	// The host decides whether there is anything to queue behind: the queue can
+	// still be waiting to go out for a moment after the turn has ended.
+	post({ type: 'send', text, tabId: state?.activeTab, mode });
 	historyAt = inputHistory.length;
 	historyDraft = '';
 	fromHistory = false;
@@ -1458,6 +1853,157 @@ function send(): void {
 	renderSend();
 	// A sent message always brings the thread down to it.
 	requestAnimationFrame(() => { thread.scrollTop = thread.scrollHeight; });
+}
+
+/* ---------------------------------------------------------------- the message flying into the chat */
+
+/**
+ * A message sent goes from the box into the chat: its text is lifted out of
+ * the box where it was typed, and flies to where its prompt appears in the
+ * thread — asked for. The prompt's own text is hidden until the flight lands,
+ * so there is one copy of the words on screen at every moment. The target is
+ * the prompt the host adds, which arrives with a state post a moment later;
+ * if none comes (a send still waiting for the agents to be found, a refusal),
+ * the text fades where it is. Under reduced motion nothing flies.
+ */
+interface Flight {
+	readonly id: string;
+	readonly ghost: HTMLElement;
+	readonly text: string;
+	readonly chatId: string;
+	/**
+	 * How many prompts with this text were in the thread when it was sent: this
+	 * message's is the next one. Counted on the very nodes it lands on, so a
+	 * prompt with no text (attachments alone) or the queue's place in the thread
+	 * cannot put it off by one, which a count of entries did.
+	 */
+	readonly sameBefore: number;
+	landed: boolean;
+	animation?: Animation;
+}
+
+let flight: Flight | undefined;
+let flightIds = 0;
+const flightWaitMs = 1500;
+const flightMs = 420;
+
+function promptsWithText(text: string): HTMLElement[] {
+	return [...threadInner.querySelectorAll<HTMLElement>('.prompt .bubble-text')].filter(p => p.textContent === text);
+}
+
+function launchFlight(text: string): void {
+	dropFlight();
+	if (!text.trim() || !state || reducedMotion.matches) {
+		return;
+	}
+	const box = input.getBoundingClientRect();
+	const style = getComputedStyle(input);
+	const left = box.left + parseFloat(style.paddingLeft) + parseFloat(style.borderLeftWidth);
+	const top = box.top + parseFloat(style.paddingTop) + parseFloat(style.borderTopWidth);
+	const width = input.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+	const height = input.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
+	const ghost = el('div', { class: 'flight', text });
+	Object.assign(ghost.style, {
+		left: `${left}px`, top: `${top}px`, width: `${width}px`, height: `${height}px`,
+		font: style.font, lineHeight: style.lineHeight, color: style.color,
+	});
+	document.body.append(ghost);
+	const launched: Flight = { id: String(++flightIds), ghost, text, chatId: state.chatId, sameBefore: promptsWithText(text).length, landed: false };
+	flight = launched;
+	setTimeout(() => {
+		if (flight === launched && !launched.landed) {
+			dropFlight();
+		}
+	}, flightWaitMs);
+}
+
+/** Shows again the prompt nodes a flight hid — its own only, never another flight's target. */
+function unhide(current: Flight): void {
+	for (const hidden of threadInner.querySelectorAll<HTMLElement>(`[data-flight="${current.id}"]`)) {
+		hidden.style.visibility = '';
+		delete hidden.dataset.flight;
+	}
+}
+
+function hide(current: Flight, target: HTMLElement): void {
+	target.style.visibility = 'hidden';
+	target.dataset.flight = current.id;
+}
+
+/**
+ * A flight that will not land fades where it is. One that has landed but not
+ * yet taken off — superseded between the landing and its frame — is cleared
+ * too: left alone, its copy of the words stayed on screen and its prompt hidden.
+ */
+function dropFlight(): void {
+	const current = flight;
+	flight = undefined;
+	if (!current || (current.landed && current.animation)) {
+		return;
+	}
+	unhide(current);
+	current.ghost.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 160, easing: 'ease-out' })
+		.finished.catch(() => undefined).finally(() => current.ghost.remove());
+}
+
+/** This message's prompt: the next one with its text after those there were when it was sent. */
+function flightTarget(current: Flight): HTMLElement | undefined {
+	return promptsWithText(current.text)[current.sameBefore];
+}
+
+function landFlight(s: ChatViewState): void {
+	const current = flight;
+	if (!current) {
+		return;
+	}
+	if (s.chatId !== current.chatId) {
+		// Mid-landing too: finishing over another chat would put this message's
+		// words over a conversation it is not in.
+		current.animation?.cancel();
+		current.animation = undefined;
+		dropFlight();
+		return;
+	}
+	const target = flightTarget(current);
+	if (current.landed) {
+		// A prompt rebuilt in flight (its entry changed) comes back visible, and the
+		// words would show twice; the new node is hidden too.
+		if (target) {
+			hide(current, target);
+		}
+		return;
+	}
+	if (!target) {
+		return;
+	}
+	current.landed = true;
+	hide(current, target);
+	// After the thread has scrolled to the new prompt, or the flight aims at
+	// where the prompt was before the scroll.
+	requestAnimationFrame(() => {
+		if (flight !== current) {
+			unhide(current);
+			current.ghost.remove();
+			return;
+		}
+		const aim = flightTarget(current) ?? target;
+		const from = current.ghost.getBoundingClientRect();
+		const to = aim.getBoundingClientRect();
+		const toStyle = getComputedStyle(aim);
+		const flown = current.ghost.animate([
+			{ left: `${from.left}px`, top: `${from.top}px`, width: `${from.width}px`, height: `${from.height}px` },
+			{ left: `${to.left}px`, top: `${to.top}px`, width: `${to.width}px`, height: `${to.height}px`, font: toStyle.font, lineHeight: toStyle.lineHeight, color: toStyle.color },
+		], { duration: flightMs, easing: 'cubic-bezier(.23, 1, .32, 1)', fill: 'forwards' });
+		current.animation = flown;
+		flown.finished.catch(() => undefined).finally(() => {
+			unhide(current);
+			current.ghost.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 90 })
+				.finished.catch(() => undefined).finally(() => current.ghost.remove());
+			if (flight === current) {
+				flight = undefined;
+			}
+		});
+	});
 }
 
 composer.addEventListener('mousedown', event => {
@@ -1473,12 +2019,12 @@ function closePopups(except?: HTMLElement): void {
 	if (except !== agentsPanel) {
 		agentsView = undefined;
 	}
-	for (const popup of [menu, usagePopup, historyPanel, agentsPanel, agentAppsPanel]) {
+	for (const popup of [menu, usagePopup, approvalPopup, historyPanel, agentsPanel, agentAppsPanel]) {
 		if (popup !== except) {
 			popup.classList.remove('open');
 		}
 	}
-	for (const pill of [agentPill, modelPill, plusButton, usageButton]) {
+	for (const pill of [agentPill, modelPill, plusButton, usageButton, approveToggle, slashButton]) {
 		pill.classList.remove('active');
 	}
 }
@@ -1510,7 +2056,7 @@ function openAbove(popup: HTMLElement, anchor: HTMLElement, align: 'left' | 'rig
 
 document.addEventListener('mousedown', event => {
 	const target = event.target as Node;
-	if (![menu, usagePopup, historyPanel, agentsPanel, agentAppsPanel, plusButton, usageButton, agentsButton, agentPill, modelPill].some(n => n.contains(target))) {
+	if (![menu, usagePopup, approvalPopup, historyPanel, agentsPanel, agentAppsPanel, plusButton, usageButton, agentsButton, agentPill, modelPill, approveToggle, slashButton].some(n => n.contains(target))) {
 		closePopups();
 	}
 });
@@ -1521,8 +2067,7 @@ document.addEventListener('keydown', event => {
 	}
 	// The innermost question first: a close being confirmed, then the switch card.
 	if (closingTab && state) {
-		closingTab = undefined;
-		renderTabs(state);
+		cancelClosing();
 		return;
 	}
 	if (state?.switchTo) {
@@ -1722,6 +2267,41 @@ modelPill.addEventListener('click', () => {
 /* the browser button */
 
 browserButton.addEventListener('click', () => post({ type: 'openBrowser' }));
+
+/**
+ * The "/" menu. Clear starts the tab over (the conversation stays in the
+ * history), asking first when the tab is working, as closing it does; Export
+ * asks where to — the clipboard, or a new editor tab to save.
+ */
+slashButton.addEventListener('click', () => {
+	const tab = state?.tabs.find(t => t.id === state?.activeTab);
+	const empty = !state?.entries.length;
+	openMenu(slashButton, [
+		{
+			icon: 'clear-all', label: 'Clear conversation', disabled: empty && !tab?.busy,
+			description: 'Start this tab over; the conversation stays in the history',
+			run: () => {
+				if (!tab?.busy && !tab?.queued) {
+					post({ type: 'clearChat' });
+					return;
+				}
+				// The second question in the same place, before anything is stopped.
+				openMenu(slashButton, [
+					{ icon: 'debug-stop', label: 'Stop and clear', description: 'What the agent is doing stops; queued messages come back to the box', run: () => post({ type: 'clearChat' }) },
+					{ icon: 'close', label: 'Cancel', run: () => undefined },
+				], 'The agent is still working');
+			},
+		},
+		{
+			icon: 'export', label: 'Export conversation…', disabled: !state?.entries.some(e => e.kind === 'user' || e.kind === 'assistant'),
+			description: 'As Markdown, to the clipboard or a file',
+			run: () => openMenu(slashButton, [
+				{ icon: 'copy', label: 'Copy to clipboard', run: () => post({ type: 'exportChat', to: 'clipboard' }) },
+				{ icon: 'save', label: 'Save to file…', description: 'Opens it in an editor tab and asks where to save', run: () => post({ type: 'exportChat', to: 'file' }) },
+			], 'Export conversation'),
+		},
+	], 'Chat');
+});
 
 /* "+" */
 
@@ -2052,7 +2632,7 @@ function fillAgents(agents: ToolEntry[], force = false): void {
 			});
 			list.append(a.status === 'running' ? el('div', { class: 'agent-item' }, row, stopButton(a)) : row);
 		}
-		agentsPanel.replaceChildren(head, list);
+		agentsPanel.replaceChildren(head, list, panelFooter());
 		restore();
 		return;
 	}
@@ -2082,8 +2662,15 @@ function fillAgents(agents: ToolEntry[], force = false): void {
 		el('div', { class: 'agent-calls' }, ...calls.map(c => el('div', { class: 'agent-call' },
 			el('span', { class: 'agent-call-name', text: c.name }),
 			c.detail ? el('span', { class: 'agent-call-detail', text: c.detail, title: c.detail }) : undefined)))));
-	agentsPanel.replaceChildren(head, body);
+	agentsPanel.replaceChildren(head, body, panelFooter());
 	restore();
+}
+
+/** A Close at the bottom of a long panel — asked for: the X at the top is far once the list is scrolled. */
+function panelFooter(): HTMLElement {
+	const close = button([el('span', { text: 'Close' })], { class: 'panel-close', title: 'Close (Escape)' });
+	close.addEventListener('click', () => closePopups());
+	return el('div', { class: 'panel-footer' }, close);
 }
 
 /** Codex names an agent by its path, `/root/<parent>/<agent>`; the one before it started it. */

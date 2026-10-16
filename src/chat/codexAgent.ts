@@ -3,10 +3,9 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import * as os from 'os';
 import * as vscode from 'vscode';
 import { JsonLineProcess, withTimeout } from './agentProcess';
-import { codexAgentThreadEvents, codexApproval, codexApprovalAnswer, codexEvents, codexModels, codexUsage, type AgentEvent } from './agentProtocol';
+import { codexAgentThreadEvents, codexApproval, codexApprovalAnswer, codexEvents, codexPatchPaths, codexModels, codexUsage, type AgentEvent } from './agentProtocol';
 import type { AgentBackend, AgentSession, BrowserServer, TurnInput } from './agents';
 import type { AgentUsage, ChatModel } from './chatProtocol';
 
@@ -57,8 +56,8 @@ const idleShutdownMs = 30_000;
  * shell's rc files with it; such a thread stays `read-only`, so an approved
  * command that writes fails rather than reaching them.
  */
-function threadSettings(cwd: string) {
-	return { sandbox: cwd === os.homedir() ? 'read-only' : 'workspace-write', approvalPolicy: 'untrusted', approvalsReviewer: 'user' } as const;
+function threadSettings(root: string | undefined) {
+	return { sandbox: root ? 'workspace-write' : 'read-only', approvalPolicy: 'untrusted', approvalsReviewer: 'user' } as const;
 }
 
 interface Pending {
@@ -216,8 +215,8 @@ export class CodexBackend implements AgentBackend {
 		process?.dispose();
 	}
 
-	public openSession(cwd: string, resume?: string): AgentSession {
-		const session = new CodexSession(this, cwd, resume, () => this._forget(session));
+	public openSession(cwd: string, resume?: string, _priorCostUsd?: number, root?: string): AgentSession {
+		const session = new CodexSession(this, cwd, root, resume, () => this._forget(session));
 		this._all.add(session);
 		this._cancelIdle();
 		return session;
@@ -385,7 +384,7 @@ export class CodexBackend implements AgentBackend {
 
 	private _answer(id: unknown, method: string, params: Record<string, unknown>, session: CodexSession | undefined): void {
 		const key = `${this._generation}:${String(id)}`;
-		const request = codexApproval(key, method, params, session?.filesOf(params.itemId));
+		const request = codexApproval(key, method, params, session?.filesOf(params.itemId), session?.root);
 		if (request) {
 			if (!session) {
 				// Nobody to ask: a thread no conversation holds any more.
@@ -442,6 +441,7 @@ class CodexSession implements AgentSession {
 	constructor(
 		private readonly _backend: CodexBackend,
 		private readonly _cwd: string,
+		private readonly _root: string | undefined,
 		resume: string | undefined,
 		private readonly _onDispose: () => void,
 	) {
@@ -458,6 +458,11 @@ class CodexSession implements AgentSession {
 
 	public answer(id: string, allow: boolean): void {
 		this._backend.answer(id, allow, this);
+	}
+
+	/** The project folder, undefined with none open: what an edit outside the project is decided by. */
+	public get root(): string | undefined {
+		return this._root;
 	}
 
 	public send(input: TurnInput, model: string, effort: string | undefined): Promise<void> {
@@ -559,9 +564,9 @@ class CodexSession implements AgentSession {
 			return this._threadId;
 		}
 		if (this._threadId) {
-			await this._backend.request('thread/resume', { threadId: this._threadId, cwd: this._cwd, ...threadSettings(this._cwd), config: this._backend.browserConfig() });
+			await this._backend.request('thread/resume', { threadId: this._threadId, cwd: this._cwd, ...threadSettings(this._root), config: this._backend.browserConfig() });
 		} else {
-			const started = await this._backend.request('thread/start', { cwd: this._cwd, model, ...threadSettings(this._cwd), config: this._backend.browserConfig() }) as { thread?: { id?: unknown } };
+			const started = await this._backend.request('thread/start', { cwd: this._cwd, model, ...threadSettings(this._root), config: this._backend.browserConfig() }) as { thread?: { id?: unknown } };
 			if (typeof started?.thread?.id !== 'string') {
 				throw new Error('Codex did not start a conversation.');
 			}
@@ -640,8 +645,8 @@ class CodexSession implements AgentSession {
 		if (method !== 'item/started' || item?.type !== 'fileChange' || typeof item.id !== 'string' || !Array.isArray(item.changes)) {
 			return;
 		}
-		const paths = item.changes.map(c => (c as { path?: unknown })?.path).filter((p): p is string => typeof p === 'string');
-		this._changes.set(item.id, paths);
+		// Where a move takes a file is written too (`kind.move_path`).
+		this._changes.set(item.id, codexPatchPaths(item.changes));
 		if (this._changes.size > 32) {
 			this._changes.delete(this._changes.keys().next().value!);
 		}

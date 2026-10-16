@@ -66,7 +66,12 @@ export interface AgentBackend extends vscode.Disposable {
 	models(): Promise<ChatModel[]>;
 	usage(): Promise<AgentUsage>;
 	/** `priorCostUsd` is what the conversation has cost so far; see `ClaudeSession._processCost`. */
-	openSession(cwd: string, resume?: string, priorCostUsd?: number): AgentSession;
+	/**
+	 * `root`: the project folder, undefined when no local folder is open — it
+	 * decides what a question about a file is (see `outsideProject`), and `cwd`
+	 * is then the home directory, which must not count as the project.
+	 */
+	openSession(cwd: string, resume?: string, priorCostUsd?: number, root?: string): AgentSession;
 }
 
 export const agentNames: Record<AgentId, string> = {
