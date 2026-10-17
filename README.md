@@ -42,6 +42,13 @@ there is not the problem, the missing API is. **Measured by reading the shipped 
 
 ## Changelog
 
+**0.7.5** — A working folder per chat: the folder button beside **/** sets where the agent works
+and lists that folder's files to attach. GitHub repositories open three ways — a separate copy on
+a branch of its own (with its changes, push and pull request), a clone into a folder, or a
+read-only checkout beside the project — and a fetched repository's own Claude Code settings stay
+off until you trust them. Toolbar skills can show their result in a notification and tell you
+when they end.
+
 **0.7.4** — Questions with choices: when the agent asks, a form opens above the message box with
 a tab per question, and Answer sends once every question has an answer. Links in replies open in
 the built-in browser (⌘/Ctrl-click: the system browser), and the file a tool row names opens on a

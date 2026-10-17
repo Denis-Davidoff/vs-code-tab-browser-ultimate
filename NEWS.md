@@ -14,6 +14,12 @@ src/chat/news.ts — see "The AI Browser chat" in CLAUDE.md.
 
 Browse, debug and test your pages in VS Code's own browser — and let Claude Code or Codex see them, click through them and take screenshots, right inside the editor.
 
+## 0.7.5 — 2026-10-17
+- **A working folder per chat**: the folder button beside **/** sets where the tab's agent works — your window's folder, one picked lately or any other — and lists that folder's files and folders to attach; type to search them.
+- **GitHub repositories**, three ways: work in a **separate copy** on a branch of its own (see its changes, push and open a pull request, or remove it), **clone** it into a folder, or **read it beside** your project.
+- A repository fetched from GitHub does not load its own Claude Code settings or hooks until you trust them from the folder button.
+- A toolbar skill can show its result **in a notification**, with Copy and Open, and any skill can **tell you when it ends** — in its own words if you like.
+
 ## 0.7.4 — 2026-10-17
 - **Questions with choices**: when the agent asks "this or that?", a form opens above the message box with a tab per question; pick an option or answer in your own words, and **Answer** sends them once every question has one — or **Skip** lets the agent choose and say so.
 - **Links in replies open**: a click in the built-in browser, ⌘/Ctrl-click in your system browser, a right-click for both and to copy the link. The file a Read or edit row names opens on a click.
