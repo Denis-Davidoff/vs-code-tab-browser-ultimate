@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -12,12 +13,16 @@ import { bundledPin } from './agentBinary';
 import { ChatTab, newChat, reopened, started, storedEntries, storedTextLimit, type Attachment, type SkillStep, type StoredChat, type TabHost } from './chatTab';
 import { chatTranscript, transcriptFileName } from './transcript';
 import { diffSides } from './diffSides';
-import { writeChatTranscript } from '../elements/assistants';
+import { listWorkdir, type WorkdirListing } from './workdir';
+import { compareUrl, parseRepo, repoSlug, validBranch, workBranchName, type RepoRef } from './githubRepo';
+import { cloneInto, copyChanges, isEmptyFolder, isOurWorktree, makeCopy, makeReference, pushCopy, removeCopy } from './repoWork';
+import { gitBinary } from '../core/gitBinary';
+import { cleanUpReportsIn, writeChatTranscript } from '../elements/assistants';
 import { savePng } from '../browser/clipboardImage';
 import type { BrowserController } from '../browser/browserController';
 import type {
 	AgentId, AgentUsage, ApprovalMode, AttachmentKind, ChatSummary,
-	ChatNews, ChatTabSummary, ChatViewState, HostToView, Selection, ToolbarRun, ToolbarSkill, UsageWindow, ViewToHost,
+	ChatNews, ChatTabSummary, ChatViewState, HostToView, RepoMode, Selection, ToolbarRun, ToolbarSkill, UsageWindow, ViewToHost, WorkdirFolder, WorkdirState,
 } from './chatProtocol';
 import { pickElementContext, pickForChat } from '../elements/elementPicker';
 import { parseNews } from './news';
@@ -172,6 +177,13 @@ export function tabLimit(): number {
 		: defaultTabLimit;
 }
 const historyLimit = 50;
+/** The folders picked with the folder button lately, newest first; for every window. */
+const recentFoldersKey = 'aiBrowser.chat.recentFolders';
+const recentFolderLimit = 8;
+/** The GitHub repositories opened lately, `owner/name`, newest first; for every window. */
+const recentReposKey = 'aiBrowser.chat.recentRepos';
+/** A folder's listing is reused for this long: the button is opened again and again while a message is written. */
+const workdirListingMs = 15_000;
 /**
  * The scheme a composer chip's text opens under: a read-only document, which
  * an untitled one is not — closing it would ask to save what was only shown.
@@ -230,7 +242,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private readonly _attachmentTexts = new Map<string, string>();
 	private readonly _attachmentImages = new Map<string, vscode.Uri>();
 	private readonly _tabHost: TabHost = {
-		cwd: () => this._cwd(),
+		cwd: () => this._windowCwd(),
 		projectRoot: () => vscode.workspace.workspaceFolders?.find(f => f.uri.scheme === 'file')?.uri.fsPath,
 		changed: () => { this._post(); this._drainQueues(); },
 		limits: (agent, windows) => { this._limits.set(agent, windows); },
@@ -266,6 +278,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		this._remembered = _context.globalState.get<RememberedSelection>(selectionKey) ?? { models: {}, efforts: {} };
 		this._restoreTabs();
 		void this._readNews();
+		// "Continue in …" writes into the conversation's folder; the activation
+		// sweep reaches only the workspace's.
+		void cleanUpReportsIn([...this._recentFolders(), ...this._tabs.flatMap(t => t.chat.folder !== undefined ? [t.chat.folder] : [])]);
 
 		this._subscriptions.push(this._registry.onDidReplace(e => this._onBackendReplaced(e.agent, e.gone)));
 		// A lower limit closes nothing: the tabs open stay, and "+" comes back
@@ -478,6 +493,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			// On unless switched off: Compact is the default, and a value that is not a boolean is read as it.
 			collapseTools: vscode.workspace.getConfiguration().get<unknown>(collapseToolsSetting) !== false,
 			context: this._contextState(),
+			workdir: this._workdirState(),
 			hasBrowserTab: this._browser.hasOpenTabs,
 			browserApi: isBrowserApiGranted(),
 			news: this._news,
@@ -608,6 +624,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				this._post();
 				return;
 			}
+			case 'setWorkdir':
+				await this._setWorkdir(typeof message.path === 'string' ? message.path : undefined);
+				return;
+			case 'chooseWorkdir':
+				await this._chooseWorkdir();
+				return;
+			case 'listWorkdir':
+				await this._listWorkdir();
+				return;
+			case 'attachPath':
+				if (typeof message.path === 'string') {
+					await this._attachPath(message.path);
+				}
+				return;
+			case 'openRepo':
+				await this._openRepo(message.repo, message.branch, message.mode);
+				return;
+			case 'repoAction':
+				await this._repoAction(message.action);
+				return;
 			case 'listCommands':
 				if (!this._blocked() && (message.agent === 'claude' || message.agent === 'codex') && !this._registry.detecting) {
 					await this._registry.refreshCommands(message.agent);
@@ -1118,8 +1154,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			refuse(vscode.l10n.t("No agent is available to run {0}.", skill.name));
 			return;
 		}
-		const root = vscode.workspace.workspaceFolders?.find(f => f.uri.scheme === 'file')?.uri.fsPath;
-		this._runs.start(skill, steps, stringValues, tab.chat.id, backend, model, effort, this._cwd(), root);
+		// In the folder of the tab it was pressed in, which is that conversation's project.
+		if (!isDirectory(tab.cwd)) {
+			refuse(vscode.l10n.t("The folder this conversation works in is gone: {0}.", plainInLabel(tab.cwd)));
+			return;
+		}
+		this._runs.start(skill, steps, stringValues, tab.chat.id, backend, model, effort, tab.cwd, tab.projectRoot);
 	}
 
 	/**
@@ -1295,6 +1335,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			}
 			return;
 		}
+		// A conversation from the history keeps the folder it worked in, which
+		// may have been moved or deleted since; the CLI would then fail to start
+		// with a message about its own executable.
+		if (tab.chat.folder !== undefined && !isDirectory(tab.chat.folder)) {
+			tab.push({ kind: 'error', text: vscode.l10n.t("The folder this conversation works in is gone: {0}. Pick another one with the folder button — it opens a new tab.", tab.chat.folder) });
+			if (text.trim()) {
+				tab.push({ kind: 'notice', text: vscode.l10n.t("Not sent: {0}", text) });
+			}
+			if (step) {
+				tab.stepNotSent(step, vscode.l10n.t("its folder is gone"));
+			}
+			return;
+		}
 		const attachments = given ?? tab.attachments;
 		if (!text.trim() && !attachments.length) {
 			return;
@@ -1399,6 +1452,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}
 		this._giveBackQueue(tab);
 		const next = newChat(tab.chat.agent);
+		next.folder = tab.chat.folder;
+		next.copy = tab.chat.copy;
+		next.references = tab.chat.references;
 		if (tab.chat.named) {
 			next.title = tab.chat.title;
 			next.named = true;
@@ -1431,7 +1487,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			return;
 		}
 		try {
-			const folder = vscode.workspace.workspaceFolders?.find(f => f.uri.scheme === 'file')?.uri.fsPath ?? os.homedir();
+			const folder = this._active.chat.folder ?? vscode.workspace.workspaceFolders?.find(f => f.uri.scheme === 'file')?.uri.fsPath ?? os.homedir();
 			const uri = vscode.Uri.file(path.join(folder, transcriptFileName(chat.title, now))).with({ scheme: 'untitled' });
 			const doc = await vscode.languages.setTextDocumentLanguage(await vscode.workspace.openTextDocument(uri), 'plaintext');
 			const edit = new vscode.WorkspaceEdit();
@@ -1821,12 +1877,488 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		this.showHistory(true);
 	}
 
+	/* ------------------------------------------------------------ the working folder */
+
+	private readonly _listings = new Map<string, { readonly at: number; readonly listing: Promise<WorkdirListing> }>();
+
+	/** The window's own local folders, which the folder button lists first. */
+	private _workspaceFolders(): WorkdirFolder[] {
+		return (vscode.workspace.workspaceFolders ?? []).filter(f => f.uri.scheme === 'file').map(f => ({ path: f.uri.fsPath, name: f.name }));
+	}
+
+	private _recentFolders(): string[] {
+		const stored = this._context.globalState.get<unknown>(recentFoldersKey);
+		return Array.isArray(stored) ? stored.filter((p): p is string => typeof p === 'string' && path.isAbsolute(p)).slice(0, recentFolderLimit) : [];
+	}
+
+	/** The folder the tab in front works in; undefined is the home directory, with no project. */
+	private _workdir(tab = this._active): string | undefined {
+		return tab.chat.folder ?? this._workspaceFolders()[0]?.path;
+	}
+
+	private _workdirState(): WorkdirState {
+		const tab = this._active;
+		const workspace = this._workspaceFolders();
+		const current = this._workdir(tab);
+		const shown = (p: string): WorkdirFolder => workspace.find(w => w.path === p) ?? { path: p, name: path.basename(p) || p };
+		const copy = tab.chat.copy;
+		return {
+			current: current === undefined ? undefined : copy ? { path: current, name: `${copy.repo} · copy` } : shown(current),
+			picked: tab.chat.folder !== undefined,
+			workspace,
+			recent: this._recentFolders().filter(p => !workspace.some(w => w.path === p)).map(shown),
+			locked: tab.started,
+			empty: current !== undefined && this._emptyFolder(current),
+			copy,
+			references: tab.chat.references ?? [],
+			recentRepos: this._recentRepos(),
+			busy: this._repoBusy.get(tab),
+		};
+	}
+
+	/**
+	 * The folder button: the tab in front works in `folder`, `undefined` being
+	 * the window's own. A conversation that has started keeps the folder it ran
+	 * in — Claude Code finds a session only from the folder it was started in —
+	 * so the folder goes to a new tab beside it. The CLIs load the folder's own
+	 * configuration, its hooks included; picking it is the user's say-so, the
+	 * same consent opening it as a VS Code window would be, and the chat refuses
+	 * in Restricted Mode as before.
+	 */
+	private async _setWorkdir(folder: string | undefined, remember = true, from: ChatTab = this._active): Promise<ChatTab | undefined> {
+		const blocked = this._blocked();
+		if (blocked) {
+			refuse(blocked);
+			return;
+		}
+		if (folder !== undefined) {
+			if (folder.length > 4096 || /[\0\n\r]/.test(folder) || !path.isAbsolute(folder)) {
+				return;
+			}
+			folder = path.resolve(folder);
+			if (!isDirectory(folder)) {
+				refuse(vscode.l10n.t("{0} is not a folder any more.", plainInLabel(folder)));
+				await this._forgetRecent(folder);
+				return undefined;
+			}
+			// The window's own first folder is the default: following it, not pinned.
+			if (folder === this._workspaceFolders()[0]?.path) {
+				folder = undefined;
+			}
+		}
+		// The tab asked for, unless it closed meanwhile (a clone takes minutes).
+		let tab = this._tabs.includes(from) ? from : this._active;
+		if (tab.chat.folder === folder && !tab.chat.copy) {
+			return tab;
+		}
+		if (tab.started) {
+			const opened = this._addTab(tab.chat.agent, tab);
+			if (!opened) {
+				return undefined;
+			}
+			tab = opened;
+		}
+		tab.setFolder(folder);
+		if (folder !== undefined && remember) {
+			await this._rememberFolder(folder);
+		}
+		this._post();
+		this._postMessage({ type: 'focusInput' });
+		// The "/" palette lists the skills of the project in front.
+		const agent = tab.started ? tab.chat.agent : this._selection(tab).agent;
+		if (agent && !this._registry.detecting) {
+			void this._registry.refreshCommands(agent).catch(() => undefined);
+		}
+		return tab;
+	}
+
+	/** "Choose folder…": the system's folder dialog — native, so it pauses no browser tab. */
+	private async _chooseWorkdir(): Promise<void> {
+		const current = this._workdir();
+		const picked = await vscode.window.showOpenDialog({
+			canSelectFiles: false,
+			canSelectFolders: true,
+			canSelectMany: false,
+			defaultUri: current ? vscode.Uri.file(current) : undefined,
+			openLabel: vscode.l10n.t("Work in This Folder"),
+			title: vscode.l10n.t("Folder for the AI Browser chat to work in"),
+		});
+		const uri = picked?.[0];
+		if (uri?.scheme === 'file') {
+			await this._setWorkdir(uri.fsPath);
+		}
+	}
+
+	private async _rememberFolder(folder: string): Promise<void> {
+		const next = [folder, ...this._recentFolders().filter(p => p !== folder)].slice(0, recentFolderLimit);
+		await this._context.globalState.update(recentFoldersKey, next).then(undefined, () => { /* a convenience */ });
+	}
+
+	private async _forgetRecent(folder: string): Promise<void> {
+		const list = this._recentFolders();
+		if (list.includes(folder)) {
+			await this._context.globalState.update(recentFoldersKey, list.filter(p => p !== folder)).then(() => this._post(), () => { /* a convenience */ });
+		}
+	}
+
+	/** The tab in front's folder, listed for the folder button; nothing without a folder. */
+	private async _listWorkdir(): Promise<void> {
+		const folder = this._workdir();
+		if (folder === undefined || this._blocked()) {
+			this._postMessage({ type: 'workdirFiles', folder: '', entries: [], truncated: false });
+			return;
+		}
+		const cached = this._listings.get(folder);
+		const now = Date.now();
+		let listing = cached && now >= cached.at && now - cached.at < workdirListingMs ? cached.listing : undefined;
+		if (!listing) {
+			listing = listWorkdir(folder);
+			this._listings.set(folder, { at: now, listing });
+			// One listing kept per folder, and only a few folders.
+			while (this._listings.size > recentFolderLimit) {
+				this._listings.delete(this._listings.keys().next().value!);
+			}
+		}
+		const { entries, truncated } = await listing;
+		this._postMessage({ type: 'workdirFiles', folder, entries, truncated });
+	}
+
+	/**
+	 * A file or folder of the working folder, chosen in the folder button's list,
+	 * attached to the tab in front's message — as its path, like the "+" menu's
+	 * File: both agents read files themselves. Only inside that folder: the path
+	 * comes from the view.
+	 */
+	private async _attachPath(relative: string): Promise<void> {
+		const folder = this._workdir();
+		if (folder === undefined || this._blocked() || !relative || relative.length > 4096 || /[\0\n\r]/.test(relative)) {
+			return;
+		}
+		const target = path.resolve(folder, relative);
+		const inside = path.relative(folder, target);
+		if (!inside || inside.startsWith('..') || path.isAbsolute(inside)) {
+			return;
+		}
+		let directory: boolean;
+		try {
+			directory = (await fs.promises.stat(target)).isDirectory();
+		} catch {
+			refuse(vscode.l10n.t("{0} is not there any more.", plainInLabel(relative)));
+			return;
+		}
+		const shown = inside.split(path.sep).join('/');
+		const tab = this._active;
+		tab.attachments.push(directory
+			// A folder chip opens its text: `vscode.open` on a folder would open a window.
+			? { chip: { id: generateUuid(), kind: 'file', label: `${path.basename(target)}/` }, text: `Attached folder: ${target} (${shown}/ in the project)` }
+			: { chip: { id: generateUuid(), kind: 'file', label: path.basename(target) }, file: vscode.Uri.file(target), text: `Attached file: ${target} (${shown} in the project)` });
+		this._post();
+		this._postMessage({ type: 'focusInput' });
+	}
+
+	/* ------------------------------------------------------------ GitHub repositories */
+
+	/** What a tab's GitHub operation is doing, while one runs: one at a time per tab. */
+	private readonly _repoBusy = new Map<ChatTab, string>();
+	private readonly _emptyAnswers = new Map<string, { readonly at: number; readonly empty: boolean }>();
+
+	/**
+	 * Whether `folder` is empty, for the GitHub form's "clone here": asked on
+	 * every state post, so answered from a second's cache, and from one entry —
+	 * never the whole folder.
+	 */
+	private _emptyFolder(folder: string): boolean {
+		const now = Date.now();
+		const cached = this._emptyAnswers.get(folder);
+		if (cached && now >= cached.at && now - cached.at < 2_000) {
+			return cached.empty;
+		}
+		let empty = false;
+		try {
+			const dir = fs.opendirSync(folder);
+			try {
+				empty = dir.readSync() === null;
+			} finally {
+				dir.closeSync();
+			}
+		} catch {
+			empty = false;
+		}
+		this._emptyAnswers.clear();
+		this._emptyAnswers.set(folder, { at: now, empty });
+		return empty;
+	}
+
+	private _recentRepos(): string[] {
+		const stored = this._context.globalState.get<unknown>(recentReposKey);
+		return Array.isArray(stored) ? stored.filter((r): r is string => typeof r === 'string' && parseRepo(r) !== undefined).slice(0, recentFolderLimit) : [];
+	}
+
+	private async _rememberRepo(repo: RepoRef): Promise<void> {
+		const slug = repoSlug(repo);
+		const next = [slug, ...this._recentRepos().filter(r => r.toLowerCase() !== slug.toLowerCase())].slice(0, recentFolderLimit);
+		await this._context.globalState.update(recentReposKey, next).then(undefined, () => { /* a convenience */ });
+	}
+
+	/** Where the repositories' clones and copies live: the extension's own storage, never the project. */
+	private _repoStorage(): string {
+		return this._context.globalStorageUri.fsPath;
+	}
+
+	/**
+	 * The folder button's GitHub form: a repository, a branch, and how it is
+	 * used (`RepoMode`). The form is answered once what was typed is checked —
+	 * and, for a clone, once the folder is picked — and closes then; the clone
+	 * itself is reported in the chat, as notices, and in the status bar.
+	 */
+	private async _openRepo(typedRepo: unknown, typedBranch: unknown, mode: unknown): Promise<void> {
+		const answer = (error?: string) => this._postMessage({ type: 'githubAnswer', error });
+		const blocked = this._blocked();
+		if (blocked) {
+			answer(blocked);
+			return;
+		}
+		if (typeof typedRepo !== 'string' || typeof typedBranch !== 'string' || (mode !== 'copy' && mode !== 'clone' && mode !== 'reference')) {
+			return;
+		}
+		const repo = parseRepo(typedRepo);
+		if (!repo) {
+			answer(vscode.l10n.t("Not a GitHub repository: type owner/name, or paste its address."));
+			return;
+		}
+		const branch = typedBranch.trim() ? validBranch(typedBranch) : undefined;
+		if (typedBranch.trim() && !branch) {
+			answer(vscode.l10n.t("Not a branch name git takes."));
+			return;
+		}
+		const git = await gitBinary();
+		if (!git) {
+			answer(vscode.l10n.t("git was not found. Install it — on macOS, the Command Line Tools — and try again."));
+			return;
+		}
+		let tab = this._active;
+		if (this._repoBusy.has(tab)) {
+			answer(vscode.l10n.t("This tab is still busy with {0}.", this._repoBusy.get(tab)!));
+			return;
+		}
+		await this._rememberRepo(repo);
+		switch (mode as RepoMode) {
+			case 'clone': {
+				const dest = await this._cloneTarget(repo);
+				if (typeof dest !== 'string') {
+					answer(dest?.error);
+					return;
+				}
+				answer();
+				await this._repoWork(tab, vscode.l10n.t("cloning {0}", repoSlug(repo)), async () => {
+					await cloneInto(git, repo, branch, dest);
+					// Into the tab it was asked from, not whichever is in front by now.
+					const at = await this._setWorkdir(dest, true, tab);
+					at?.push({ kind: 'notice', text: vscode.l10n.t("Cloned {0} into {1}; the agent works there.", repoSlug(repo), dest) });
+				});
+				return;
+			}
+			case 'copy': {
+				// Shown in the tab it will work in from the start: a new one when this
+				// conversation has started, since its folder is fixed.
+				if (tab.started) {
+					const opened = this._addTab(tab.chat.agent);
+					if (!opened) {
+						answer(vscode.l10n.t("{0} chats are open — close one to open another.", this._tabs.length));
+						return;
+					}
+					tab = opened;
+				}
+				answer();
+				await this._repoWork(tab, vscode.l10n.t("making a copy of {0}", repoSlug(repo)), async () => {
+					const workBranch = workBranchName(new Date(), generateUuid());
+					const made = await makeCopy(git, this._repoStorage(), repo, branch, workBranch);
+					// Sent from meanwhile, or closed: the copy goes to a tab of its own.
+					let target = tab;
+					if (!this._tabs.includes(target) || target.started) {
+						const opened = this._addTab(target.chat.agent, this._tabs.includes(target) ? target : this._active);
+						if (!opened) {
+							throw new Error(vscode.l10n.t("No tab to work in the copy: it is at {0}.", made.path));
+						}
+						target = opened;
+					}
+					target.setFolder(made.path, { repo: repoSlug(repo), base: made.base, branch: workBranch });
+					target.push({ kind: 'notice', text: vscode.l10n.t("Working in a separate copy of {0}, on the branch {1} taken from {2}. Your own folders are not touched; the folder button pushes the work and opens a pull request.", repoSlug(repo), workBranch, made.base) });
+					this._post();
+				});
+				return;
+			}
+			case 'reference': {
+				if (tab.busy) {
+					answer(vscode.l10n.t("Add a repository to read when the agent has finished: it is given to the agent as it starts."));
+					return;
+				}
+				answer();
+				await this._repoWork(tab, vscode.l10n.t("fetching {0}", repoSlug(repo)), async () => {
+					const made = await makeReference(git, this._repoStorage(), repo, branch);
+					if (!this._tabs.includes(tab)) {
+						return;
+					}
+					// Started working meanwhile: Claude Code is given the folder when
+					// the turn has ended (`addReference`), and the user is told.
+					if (tab.busy && tab.chat.agent === 'claude') {
+						tab.push({ kind: 'notice', text: vscode.l10n.t("{0} is read from the next message on, once this turn has ended.", repoSlug(repo)) });
+					}
+					tab.addReference({ repo: repoSlug(repo), branch: made.branch, path: made.path });
+					tab.attachments.push({
+						chip: { id: generateUuid(), kind: 'file', label: vscode.l10n.t("{0} (read only)", repoSlug(repo)) },
+						text: `For reference, the GitHub repository ${repoSlug(repo)} (branch ${made.branch}) is checked out at ${made.path}. Read it as you need to; do not change anything there — it is not part of this project.`,
+					});
+					tab.push({ kind: 'notice', text: vscode.l10n.t("{0} ({1}) is beside the project for the agent to read: {2}", repoSlug(repo), made.branch, made.path) });
+					this._post();
+				});
+				return;
+			}
+		}
+	}
+
+	/**
+	 * Where a clone goes: the folder in use when it is empty, else a folder the
+	 * user picks — itself when empty, else a new `<name>` inside it.
+	 */
+	private async _cloneTarget(repo: RepoRef): Promise<string | { error: string } | undefined> {
+		const current = this._workdir();
+		if (current !== undefined && await isEmptyFolder(current)) {
+			return current;
+		}
+		const picked = await vscode.window.showOpenDialog({
+			canSelectFiles: false,
+			canSelectFolders: true,
+			canSelectMany: false,
+			defaultUri: current ? vscode.Uri.file(path.dirname(current)) : undefined,
+			openLabel: vscode.l10n.t("Clone Here"),
+			title: vscode.l10n.t("Where to clone {0}: an empty folder, or one to make {1} in", repoSlug(repo), repo.name),
+		});
+		const uri = picked?.[0];
+		if (!uri) {
+			return { error: '' };
+		}
+		if (uri.scheme !== 'file') {
+			return { error: vscode.l10n.t("Pick a folder on this machine.") };
+		}
+		if (await isEmptyFolder(uri.fsPath)) {
+			return uri.fsPath;
+		}
+		const dest = path.join(uri.fsPath, repo.name);
+		if (fs.existsSync(dest)) {
+			return { error: vscode.l10n.t("{0} is already there — pick an empty folder.", dest) };
+		}
+		return dest;
+	}
+
+	/** A GitHub operation for `tab`: marked busy, shown in the status bar, and its failure said in the tab. */
+	private async _repoWork(tab: ChatTab, doing: string, work: () => Promise<void>): Promise<void> {
+		this._repoBusy.set(tab, doing);
+		this._post();
+		try {
+			await vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: `$(github) ${doing}…` }, work);
+		} catch (err) {
+			const reason = err instanceof Error ? err.message : String(err);
+			(this._tabs.includes(tab) ? tab : this._active).push({ kind: 'error', text: vscode.l10n.t("GitHub: {0} failed — {1}", doing, reason) });
+			refuse(vscode.l10n.t("GitHub: {0} failed.", doing));
+		} finally {
+			this._repoBusy.delete(tab);
+			this._post();
+		}
+	}
+
+	/**
+	 * A copy that was removed, in every tab that worked in it: one nothing was
+	 * sent from goes back to the window's folder; a started conversation keeps
+	 * its folder — it ran there — loses the copy's actions, and is told.
+	 */
+	private _forgetCopy(folder: string): void {
+		for (const tab of this._tabs) {
+			if (tab.chat.folder !== folder || !tab.chat.copy) {
+				continue;
+			}
+			const repo = tab.chat.copy.repo;
+			if (tab.started) {
+				tab.forgetCopy();
+				tab.push({ kind: 'notice', text: vscode.l10n.t("The copy of {0} was removed. This conversation worked there and cannot go on; it stays in the history.", repo) });
+			} else {
+				tab.setFolder(undefined);
+			}
+		}
+		this._post();
+	}
+
+	/** The folder button's actions on a separate copy of the tab in front. */
+	private async _repoAction(action: unknown): Promise<void> {
+		const tab = this._active;
+		const copy = tab.chat.copy;
+		const folder = tab.chat.folder;
+		const repo = copy && parseRepo(copy.repo);
+		if (!copy || !folder || !repo || this._blocked()) {
+			return;
+		}
+		const git = await gitBinary();
+		if (!git) {
+			refuse(vscode.l10n.t("git was not found."));
+			return;
+		}
+		// Only a copy that is still ours: removed and made again as a plain
+		// folder, git would search upwards for a repository — the home
+		// directory's, perhaps — and commit there.
+		if (action !== 'window' && !await isOurWorktree(this._repoStorage(), repo, folder)) {
+			refuse(vscode.l10n.t("This copy of {0} is no longer there.", plainInLabel(copy.repo)));
+			this._forgetCopy(folder);
+			return;
+		}
+		// A new chat on a copy works in the same copy, so pushing or removing it
+		// waits for every tab in it — and the background skills started there.
+		const sharing = this._tabs.filter(t => t.chat.folder === folder);
+		const working = sharing.some(t => t.busy || this._repoBusy.has(t) || this._runs.runningIn(t.chat.id) > 0);
+		switch (action) {
+			case 'changes':
+				try {
+					await this._openText(`${repo.name} changes`, await copyChanges(git, folder, copy.base));
+				} catch (err) {
+					refuse(vscode.l10n.t("Could not read the copy's changes: {0}", plainInLabel(err instanceof Error ? err.message : String(err), 120)));
+				}
+				return;
+			case 'window':
+				await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(folder), { forceNewWindow: true });
+				return;
+			case 'push':
+				if (working) {
+					refuse(vscode.l10n.t("Push when the agent has finished."));
+					return;
+				}
+				await this._repoWork(tab, vscode.l10n.t("pushing {0}", copy.branch), async () => {
+					const message = capAt(tab.chat.title.replace(/\s+/g, ' ').trim() || 'Changes from the AI Browser chat', 72);
+					await pushCopy(git, folder, copy.base, copy.branch, message);
+					const url = compareUrl(repo, copy.base, copy.branch);
+					tab.push({ kind: 'notice', text: vscode.l10n.t("Pushed {0} to {1}. A pull request into {2}: {3}", copy.branch, copy.repo, copy.base, url) });
+					await vscode.env.openExternal(vscode.Uri.parse(url));
+				});
+				return;
+			case 'remove':
+				if (working) {
+					refuse(vscode.l10n.t("Remove the copy when the agents working in it have finished."));
+					return;
+				}
+				await this._repoWork(tab, vscode.l10n.t("removing the copy of {0}", copy.repo), async () => {
+					await removeCopy(git, this._repoStorage(), repo, folder, copy.branch);
+					this._forgetCopy(folder);
+				});
+				return;
+		}
+	}
+
 	/* ------------------------------------------------------------ tabs */
 
 	/** The open tabs as they were when the window closed; at least one, empty if nothing was open. */
 	private _restoreTabs(): void {
-		const saved = this._context.workspaceState.get<{ ids?: unknown; fresh?: unknown; active?: unknown; names?: unknown }>(openTabsKey);
+		const saved = this._context.workspaceState.get<{ ids?: unknown; fresh?: unknown; active?: unknown; names?: unknown; folders?: unknown; repos?: unknown }>(openTabsKey);
+		const repos = saved?.repos && typeof saved.repos === 'object' ? saved.repos as Record<string, { copy?: unknown; references?: unknown }> : {};
 		const names = saved?.names && typeof saved.names === 'object' ? saved.names as Record<string, unknown> : {};
+		const folders = saved?.folders && typeof saved.folders === 'object' ? saved.folders as Record<string, unknown> : {};
 		const strings = (value: unknown) => Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : [];
 		const fresh = new Set(strings(saved?.fresh));
 		const history = this._history();
@@ -1845,6 +2377,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				if (typeof name === 'string' && name) {
 					chat.title = capAt(name, tabTitleLimit);
 					chat.named = true;
+				}
+				const folder = folders[id];
+				if (typeof folder === 'string' && path.isAbsolute(folder)) {
+					chat.folder = folder;
+					const copy = repos[id]?.copy as StoredChat['copy'] | undefined;
+					if (copy && typeof copy.repo === 'string' && typeof copy.base === 'string' && typeof copy.branch === 'string') {
+						chat.copy = { repo: copy.repo, base: copy.base, branch: copy.branch };
+					}
+				}
+				const references = repos[id]?.references;
+				if (Array.isArray(references)) {
+					chat.references = references.filter((r): r is NonNullable<StoredChat['references']>[number] =>
+						!!r && typeof r.repo === 'string' && typeof r.branch === 'string' && typeof r.path === 'string' && path.isAbsolute(r.path));
 				}
 				this._tabs.push(new ChatTab(this._tabHost, chat));
 			}
@@ -1867,6 +2412,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			// A tab renamed before anything was sent from it has no history entry to
 			// keep its name in.
 			names: Object.fromEntries(this._tabs.filter(t => !t.started && t.chat.named).map(t => [t.chat.id, t.chat.title])),
+			// And one given a folder: a started chat keeps its folder in the history.
+			folders: Object.fromEntries(this._tabs.filter(t => !t.started && t.chat.folder !== undefined).map(t => [t.chat.id, t.chat.folder])),
+			// And a separate copy it works in, or repositories it reads, made before anything was sent.
+			repos: Object.fromEntries(this._tabs.filter(t => !t.started && (t.chat.copy || t.chat.references?.length))
+				.map(t => [t.chat.id, { copy: t.chat.copy, references: t.chat.references }])),
 			active: this._active.chat.id,
 		};
 		const json = JSON.stringify(value);
@@ -1878,13 +2428,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	/** A new tab beside the one in front, and in front; refused past `tabLimit()`. */
-	private _addTab(agent: AgentId): ChatTab | undefined {
+	/** `beside`: the tab it is opened next to and takes its folder from; the one in front unless said. */
+	private _addTab(agent: AgentId, beside: ChatTab = this._active): ChatTab | undefined {
 		if (this._tabs.length >= tabLimit()) {
 			refuse(vscode.l10n.t("{0} chats are open — close one to open another.", this._tabs.length));
 			return undefined;
 		}
-		const tab = new ChatTab(this._tabHost, newChat(agent));
-		this._tabs.splice(this._tabs.indexOf(this._active) + 1, 0, tab);
+		// In the folder of the tab beside it: a new chat is most often more work
+		// on the same project.
+		const chat = newChat(agent);
+		chat.folder = beside.chat.folder;
+		chat.copy = beside.chat.copy;
+		chat.references = beside.chat.references;
+		const tab = new ChatTab(this._tabHost, chat);
+		const at = this._tabs.indexOf(beside);
+		this._tabs.splice((at >= 0 ? at : this._tabs.indexOf(this._active)) + 1, 0, tab);
 		this._active = tab;
 		this._switchTo = undefined;
 		this._post();
@@ -1964,6 +2522,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				// draft rather than on to the other agent.
 				this._giveBackQueue(from);
 				const next = newChat(to);
+				next.folder = from.chat.folder;
+				next.copy = from.chat.copy;
+				next.references = from.chat.references;
 				if (from.chat.named) {
 					next.title = from.chat.title;
 					next.named = true;
@@ -1983,7 +2544,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				const markdown = chatTranscript(chat.title, agentNames[chat.agent], chat.entries, now);
 				let file: string | undefined;
 				try {
-					file = await writeChatTranscript(markdown, transcriptFileName(chat.title, now));
+					file = await writeChatTranscript(markdown, transcriptFileName(chat.title, now), chat.folder);
 				} catch (err) {
 					from.push({ kind: 'error', text: vscode.l10n.t("Could not write the conversation out for {0}: {1}", agentNames[to], err instanceof Error ? err.message : String(err)) });
 					return;
@@ -2063,10 +2624,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		this._runs.backendReplaced(agent, gone);
 	}
 
-	/** Where the agents work: the first local folder, else the home directory. */
-	private _cwd(): string {
+	/** Where the agents work by default: the window's first local folder, else the home directory. */
+	private _windowCwd(): string {
 		const folder = vscode.workspace.workspaceFolders?.find(f => f.uri.scheme === 'file');
 		return folder?.uri.fsPath ?? os.homedir();
+	}
+
+	/**
+	 * Where the tab in front works: the folder its conversation picked, else the
+	 * window's. Detection and the skills listing run here too, so the "/"
+	 * palette lists the skills of the project in front.
+	 */
+	private _cwd(): string {
+		// `_active` is set by `_restoreTabs`, after the registry that asks this is made.
+		const folder = (this._active as ChatTab | undefined)?.cwd;
+		// Not a folder that is gone — a chat from the history, a removed copy:
+		// detection, the skills listing and Codex's one app-server start here,
+		// and a process spawned in a missing folder fails as "spawn … ENOENT",
+		// which reads as the agent not being installed, for every tab.
+		return folder !== undefined && isDirectory(folder) ? folder : this._windowCwd();
 	}
 
 	public dispose(): void {
@@ -2104,6 +2680,15 @@ function onScreen(tab: vscode.BrowserTab, focused: vscode.BrowserTab | undefined
 		return vscode.window.tabGroups.all.some(group => group.activeTab !== undefined && group.activeTab.input === undefined);
 	} catch {
 		return true;
+	}
+}
+
+/** Whether `folder` is a directory now; anything that cannot be read is not. */
+function isDirectory(folder: string): boolean {
+	try {
+		return fs.statSync(folder).isDirectory();
+	} catch {
+		return false;
 	}
 }
 

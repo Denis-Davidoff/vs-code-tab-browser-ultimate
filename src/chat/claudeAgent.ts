@@ -251,8 +251,8 @@ export class ClaudeBackend implements AgentBackend {
 		}
 	}
 
-	public openSession(cwd: string, resume?: string, priorCostUsd?: number, root?: string): AgentSession {
-		const session = new ClaudeSession(this._binary, cwd, root, resume, priorCostUsd ?? 0, this._browserServer, () => this._sessions.delete(session));
+	public openSession(cwd: string, resume?: string, priorCostUsd?: number, root?: string, readDirs?: readonly string[]): AgentSession {
+		const session = new ClaudeSession(this._binary, cwd, root, resume, priorCostUsd ?? 0, this._browserServer, () => this._sessions.delete(session), readDirs ?? []);
 		this._sessions.add(session);
 		return session;
 	}
@@ -320,6 +320,7 @@ class ClaudeSession implements AgentSession {
 		priorCostUsd: number,
 		private readonly _browserServer: () => BrowserServer | undefined,
 		private readonly _onDispose: () => void,
+		private readonly _readDirs: readonly string[] = [],
 	) {
 		this._sessionId = resume;
 		this._sessionCost = priorCostUsd;
@@ -460,6 +461,11 @@ class ClaudeSession implements AgentSession {
 		}
 		if (config) {
 			launch.push('--mcp-config', config);
+		}
+		// With `=`: the option is variadic, and a value after a space would take
+		// the arguments that follow it as more folders.
+		for (const dir of this._readDirs) {
+			launch.push(`--add-dir=${dir}`);
 		}
 		const process = new JsonLineProcess(this._binary, launch, this._cwd);
 		if (config) {
