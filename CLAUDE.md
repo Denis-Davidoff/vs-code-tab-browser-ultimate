@@ -126,7 +126,7 @@ cloned repository could switch autofill on for its own dev server (breaks-silent
 | `aiBrowser.chat.tabLimit` | `10` | how many conversations stay open as tabs, 1 to 30 — see [Tabs](#tabs-several-conversations-at-once) |
 | `aiBrowser.chat.claudePath` | `""` | the `claude` executable; empty searches — see [Finding the CLIs](#finding-the-clis) |
 | `aiBrowser.chat.codexPath` | `""` | the `codex` executable, the same way |
-| `aiBrowser.chat.collapseToolCalls` | `false` | tool calls in the chat start folded — see [The design](#the-design-and-where-each-part-came-from) |
+| `aiBrowser.chat.collapseToolCalls` | `true` | tool calls in the chat start folded — see [The design](#the-design-and-where-each-part-came-from); also the Compact switch in the chat's approval menu |
 
 The two paths are `application`-scoped for a sharper reason than the logins ones: each names a program
 to run, so a workspace that could set it would be code execution from a cloned repository the
@@ -4329,9 +4329,11 @@ Read row.
 
 **The phrase is one of fifty pairs** ("Browsing…" / "Browsed for"). While a turn runs a random
 one is shown and replaced every 8 s; the past form is picked from the turn's start time, so it
-does not change on a re-render or after a reload. **The working line is set larger than the rest
-of the small print** (1.1em, the star 17px — asked for), and so is "N agents running" under a
-finished turn; the "Worked for …" line keeps the smaller size.
+does not change on a re-render or after a reload. **The working line, "N agents running" under a
+finished turn and the "Worked for …" line a turn leaves behind are all the chat text's own size**
+(asked for) — the body's font size set outright rather than in `em`, so no parent scales them; the
+star is 17px and the square 10px, and the token counts stay in the small print (`.worked-tokens`,
+0.92em).
 
 **A turn's tokens are the difference in the chat's totals across the turn**, shown only when the
 agent reported any. That one rule is right for both agents although they report differently —
@@ -4358,9 +4360,17 @@ thread's running total and replaces the figure — measured: two short Codex tur
   (`_tokenOffset`) instead of taking the chat's totals backwards. An *equal* total is a repeat,
   not a reset, or one duplicated event would double the count.
 
-**Every tool call with something to show opens by default** — a command, an edit, an MCP tool's
-IN / OUT — unless `aiBrowser.chat.collapseToolCalls` folds them all (asked for); reads never have
-a body. **A click on an IN or OUT block, or on a command or its output, opens that text in an
+**Every tool call starts folded** — `aiBrowser.chat.collapseToolCalls`, the approval menu's
+Compact switch, is on by default (asked for); switched off, a call with something to show — a
+command, an edit, an MCP tool's IN / OUT — opens by default. Reads never have a body. **A folded
+row still says what the call does** (asked for): a line under its title (`toolSummary`) — a
+command's own description (Claude Code's Bash `description`, Codex's parsed actions), an MCP
+tool's arguments as `key: value · …` (read line by line from the pretty-printed JSON when the
+input was cut and no longer parses — a long argument, or a body cut for the history) — cut to one
+line with an ellipsis, the whole in its tooltip,
+and a click on it unfolds the row. Nothing is added where the title already says it: a read, an
+edit, a search, a fetch, an agent, a tool whose detail is in its title, an MCP call with no
+arguments. **A click on an IN or OUT block, or on a command or its output, opens that text in an
 editor tab** (`openText`): read-only, plain text under the `ai-browser-attachment:` scheme, as a
 chip's text is (#371 — a command's output or a page's markup can hold `[x](command:…)`), a
 preview so the next one reuses the tab, cut at 2 000 000 characters with a line saying so. **A
@@ -5246,6 +5256,14 @@ its tooltip. Categories, as `agentProtocol.ts` sorts the questions (`claudeAppro
 - **A choice changes the menu's buttons in place** — rebuilt each time, the clicked button was
   replaced and keyboard focus fell to the page (#365); it is rebuilt only when its rows change,
   and focus then goes back to the same button.
+- **The menu's foot carries a Compact switch** (asked for): Off · On for
+  `aiBrowser.chat.collapseToolCalls` ("Fold Tool Calls") — on, tool calls start folded; on by
+  default, so a value that is not `false` reads as on. It is the
+  setting itself, written by the host (`setCollapseTools` → `_setCollapseTools`) where it is in
+  force — the workspace when a workspace value would shadow a user one — so the switch and
+  Settings never disagree, and the change comes back as a state post. The button's tooltip names
+  its state. Its segments share `.mode-seg`'s look and are kept out of the mode loop
+  (`:not(.compact-seg)`), which otherwise unmarked them for having no category key.
 - A Codex `item/permissions/requestApproval` (a broader sandbox profile) is still refused with
   `-32601`: answering it means building a granted profile, not a yes.
 

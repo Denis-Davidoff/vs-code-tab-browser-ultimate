@@ -441,7 +441,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			toolbar: this._toolbar(),
 			toolbarRuns: this._toolbarRunsState(),
 			skillAgents: this._runs.rows(this._active.chat.id),
-			collapseTools: vscode.workspace.getConfiguration().get<unknown>(collapseToolsSetting) === true,
+			// On unless switched off: Compact is the default, and a value that is not a boolean is read as it.
+			collapseTools: vscode.workspace.getConfiguration().get<unknown>(collapseToolsSetting) !== false,
 			context: this._contextState(),
 			hasBrowserTab: this._browser.hasOpenTabs,
 			browserApi: isBrowserApiGranted(),

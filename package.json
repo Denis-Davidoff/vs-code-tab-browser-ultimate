@@ -706,7 +706,7 @@
 					},
 					"aiBrowser.chat.collapseToolCalls": {
 						"type": "boolean",
-						"default": false,
+						"default": true,
 						"title": "Fold Tool Calls",
 						"markdownDescription": "%configuration.chat.collapseToolCalls.description%"
 					}

@@ -1461,7 +1461,7 @@ function renderApproveToggle(s: ChatViewState): void {
 	const deny = modes.filter(m => m === 'deny').length;
 	const text = auto === modes.length ? 'Auto' : deny === modes.length ? 'Deny' : !auto && !deny ? 'Ask'
 		: [auto ? `Auto ${auto}` : '', deny ? `Deny ${deny}` : ''].filter(Boolean).join(' · ');
-	const title = `Approvals — what the agents may do without asking:\n${rows.map(r => `${r.label}: ${modeLabels[modeOf(s, r.key)]}`).join('\n')}\nClick to change: Auto runs it, Ask asks, Deny refuses.`;
+	const title = `Approvals — what the agents may do without asking:\n${rows.map(r => `${r.label}: ${modeLabels[modeOf(s, r.key)]}`).join('\n')}\nCompact (tool calls start folded): ${s.collapseTools ? 'On' : 'Off'}\nClick to change: Auto runs it, Ask asks, Deny refuses.`;
 	const shown = JSON.stringify([text, title]);
 	if (approveToggle.dataset.shown !== shown) {
 		approveToggle.dataset.shown = shown;
@@ -1527,7 +1527,7 @@ function renderApprovalMenu(s: ChatViewState, force = false): void {
 	}
 	const modes = new Set(rows.map(r => modeOf(s, r.key)));
 	const all: ApprovalMode | undefined = modes.size === 1 ? [...modes][0] : undefined;
-	for (const b of approvalPopup.querySelectorAll<HTMLElement>('.mode-seg')) {
+	for (const b of approvalPopup.querySelectorAll<HTMLElement>('.mode-seg:not(.compact-seg)')) {
 		const current = b.dataset.key === 'all' ? all : modeOf(s, b.dataset.key ?? '');
 		const on = current === b.dataset.mode;
 		b.classList.toggle('on', on);
@@ -1640,6 +1640,58 @@ function fileLink(file: string): HTMLElement {
 	const link = el('span', { class: 'subject file-link', text: basename(file), title: `${file}\nClick to open` });
 	link.dataset.file = file;
 	return link;
+}
+
+/**
+ * One line under a folded tool row saying what the call does: a command's own
+ * description (Claude Code's Bash `description`, Codex's parsed actions —
+ * "Read a.txt, Listed files"), an MCP tool's arguments ("selector: #email ·
+ * value: me@x.org"). Nothing where the title already says it — a read, an
+ * edit, a search, a fetch, an agent, a tool whose detail is in its title.
+ */
+function toolSummary(t: ToolEntry): string | undefined {
+	const cap = (text: string) => {
+		const line = text.replace(/\s+/g, ' ').trim();
+		return line.length > 240 ? `${line.slice(0, 239)}…` : line || undefined;
+	};
+	if (t.tool === 'command') {
+		// With no command the title already shows the description.
+		const command = (t.input ?? '').split('\n')[0].trim();
+		return command && t.detail && t.detail.trim() !== command ? cap(t.detail) : undefined;
+	}
+	if (t.tool !== 'mcp' || !t.input) {
+		return undefined;
+	}
+	try {
+		const args: unknown = JSON.parse(t.input);
+		if (args && typeof args === 'object' && !Array.isArray(args)) {
+			const parts = Object.entries(args as Record<string, unknown>)
+				.filter(([, value]) => value !== undefined && value !== null && value !== '')
+				.map(([key, value]) => `${key}: ${typeof value === 'string' ? value : JSON.stringify(value)}`);
+			return parts.length ? cap(parts.join(' · ')) : undefined;
+		}
+		return cap(typeof args === 'string' ? args : JSON.stringify(args));
+	} catch {
+		// The input is cut (a tool body past its limit, or one cut for the
+		// history), so it no longer parses: read the pretty-printed object's
+		// top-level keys line by line rather than show its opening brace.
+		const parts = t.input.split('\n')
+			.map(line => /^  "((?:[^"\\]|\\.)*)": (.*?),?$/.exec(line))
+			.filter((m): m is RegExpExecArray => !!m)
+			.map(m => {
+				let value = m[2];
+				try {
+					const parsed: unknown = JSON.parse(value);
+					value = typeof parsed === 'string' ? parsed : value;
+				} catch {
+					// a string cut short loses its closing quote; an object or
+					// array opened on this line keeps its text
+					value = value.startsWith('"') ? value.slice(1) : value;
+				}
+				return `${m[1]}: ${value}`;
+			});
+		return parts.length ? cap(parts.join(' · ')) : undefined;
+	}
 }
 
 /** "Ran `npm test`", "Read a.txt", "Edited app.ts +3 −1" — the Codex panel's activity rows. */
@@ -1781,6 +1833,23 @@ function toolNode(t: ToolEntry): HTMLElement {
 	});
 
 	const node = el('div', { class: `row tool ${status}${open ? ' open' : ''}` }, head);
+	// Folded, the row still says what the call does or did (asked for): the
+	// title names the tool, this line what it was asked to do.
+	const summary = open ? undefined : toolSummary(t);
+	if (summary) {
+		const line = el('div', { class: 'tool-summary', text: summary, title: summary });
+		if (hasBody) {
+			line.classList.add('unfolds');
+			line.addEventListener('click', () => {
+				if (hasSelection()) {
+					return;
+				}
+				toggled.set(key, true);
+				render();
+			});
+		}
+		node.append(line);
+	}
 	if (open) {
 		node.append(t.tool === 'command' ? execCard(t) : t.tool === 'edit' && t.input ? diffCard(t) : outputCard(t));
 	}

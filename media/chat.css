@@ -285,8 +285,8 @@ button {
 	align-items: center;
 	gap: 6px;
 	padding-left: 0;
-	/* larger than the line it leaves behind, asked for: it is what says the agent is at work */
-	font-size: 1.1em;
+	/* the chat text's own size, asked for — the body's, so no parent's em scales it */
+	font-size: var(--vscode-chat-font-size, var(--vscode-font-size));
 }
 
 /* the changing star before "Working…" — fixed width, so the text does not move as it changes */
@@ -308,17 +308,21 @@ button {
 	padding-top: 6px;
 	border-top: 1px solid var(--border);
 	padding-left: 0;
+	/* the chat text's own size, like the working line (asked for) */
+	font-size: var(--vscode-chat-font-size, var(--vscode-font-size));
 }
 
 .worked-tokens {
 	margin-left: auto;
+	/* the token counts stay in the small print */
+	font-size: 0.92em;
 	font-variant-numeric: tabular-nums;
 	color: var(--fg-faint);
 	white-space: pre;
 }
 
 .working-glyph.done {
-	font-size: 9px;
+	font-size: 10px;
 	color: var(--fg-faint);
 }
 
@@ -333,8 +337,8 @@ button {
 	border: none;
 	background: transparent;
 	font: inherit;
-	/* the working line's size, asked for: both say work is going on */
-	font-size: 1.1em;
+	/* the chat text's own size, like the working line (asked for) */
+	font-size: var(--vscode-chat-font-size, var(--vscode-font-size));
 	color: var(--fg-3);
 	cursor: pointer;
 	text-align: left;
@@ -420,6 +424,24 @@ button {
 .tool-icon {
 	flex: none;
 	color: var(--fg-3);
+}
+
+/* what a folded call does, one line under its title */
+.tool-summary {
+	margin: 2px 0 0 22px;
+	overflow: hidden;
+	color: var(--fg-3);
+	font-size: 0.92em;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.tool-summary.unfolds {
+	cursor: pointer;
+}
+
+.tool-summary.unfolds:hover {
+	color: var(--fg-2);
 }
 
 .activity-title {

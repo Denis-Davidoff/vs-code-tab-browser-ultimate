@@ -61,6 +61,6 @@
 	"command.chat.refreshAgents.title": "Refresh Agents",
 	"configuration.chat.tabLimit.description": "How many conversations the AI Browser chat keeps open as tabs at once, from 1 to 30. Each Claude Code tab runs a `claude` process of its own, and tabs working at once spend your plan's limits at once. Lowering it closes nothing; `+` comes back once enough tabs are closed.",
 	"configuration.chat.claudePath.description": "Path to the `claude` executable the chat uses. Empty finds it on `PATH`, in the usual install locations, or inside the Claude Code extension. Machine-wide only: a workspace cannot set it, since it names a program to run.",
-	"configuration.chat.collapseToolCalls.description": "Show the tool calls in the AI Browser chat folded, their input and output hidden until a call is clicked. Off, each call is shown unfolded, with its input and output; click either to open it in an editor tab.",
+	"configuration.chat.collapseToolCalls.description": "Show the tool calls in the AI Browser chat folded, their input and output hidden until a call is clicked — on by default, and the Compact switch in the chat's approval menu. Off, each call is shown unfolded, with its input and output; click either to open it in an editor tab.",
 	"configuration.chat.codexPath.description": "Path to the `codex` executable the chat uses. Empty finds it on `PATH`, in the usual install locations, or inside the Codex extension. Machine-wide only: a workspace cannot set it, since it names a program to run."
 }
