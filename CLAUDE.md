@@ -4171,7 +4171,8 @@ What is built, and what is not yet:
   page, element from the page, page address, file); the `U` usage popup (plan limits per agent,
   plus this chat's tokens and cost); history with resume; new chat; refresh; several
   conversations at once, as tabs; the agents an agent starts, listed, each stoppable on its own;
-  approvals asked in the chat, with an Auto / Ask / Deny menu by category; messages added to a
+  approvals asked in the chat, with an Auto / Ask / Deny menu by category; questions with choices
+  answered in a form while the turn waits; messages added to a
   running turn or queued for after it; the browser tools, handed to both agents
   at every start whether or not Connect was ever pressed — see
   [Approvals and the browser tools](#approvals-and-the-browser-tools).
@@ -4271,7 +4272,7 @@ from their shipped webviews — Claude Code 2.1.301 (`webview/index.css`, CSS mo
 | code blocks | both | header with the language and a copy button; tables, quotes, rules |
 | copying a message | asked for | a copy button at the bottom right of every prompt and reply, on hover (`.message-copy`); a reply copies as its Markdown; the prompt's copy does not fold the prompt |
 | spacing | asked for | rows `--row-pad` (10px) apart above and below — 6px at first, widened on request twice; the timeline's dot and line are placed from the same variable, so change only it — and 20px between turns — none after a turn that holds only its prompt, so messages added during a turn sit 22px apart rather than 42 (asked for); in a reply, paragraphs, lists, quotes, code blocks and tables 0.9em apart |
-| lists | asked for | a bullet is an em dash (`list-style-type: "— "`) in the theme's chart yellow, items 0.4em apart; numbered items 0.7em apart, their number bold in the same yellow |
+| lists | asked for | a bullet is an em dash (`list-style-type: "— "`) in the theme's chart yellow, items 0.4em apart; numbered items 0.7em apart, their number bold in the same yellow; headings (`#`…`######`, h5 and h6 drawn as h4) bold (700) in that yellow too, a little larger by level — 1.3, 1.2, 1.12 and 1.05em |
 | sending | asked for | the message's text lifts out of the box and flies to its prompt in the thread (`launchFlight` / `landFlight`): the prompt's text is hidden until the flight lands, so the words are on screen once; the target is the first new prompt **with this text** (two sends inside one post round trip put both prompts in at once, and "the last prompt" was the wrong one), hidden again if it is rebuilt in flight; a chat switch stops the flight; a send with no prompt appearing within 1.5 s (still waiting for detection, refused) fades in place; nothing flies under reduced motion |
 
 **The Markdown reader** handles what replies use: fenced code, headings, quotes, rules, tables
@@ -4282,9 +4283,55 @@ recursively so `` **`npm test`** `` shows no backticks. A line over 4 000 charac
 plain text: the inline pattern backtracks on long runs of backticks or `[` (0.5–0.9 s for 40 000
 of them), and a streaming reply is re-rendered every 40 ms.
 
-**The phrase is one of thirty pairs** ("Browsing…" / "Browsed for"). While a turn runs a random
+**Links open, and a click chooses where** (asked for): a click opens the address in the built-in
+browser through `aiBrowser.show` — so `useIntegratedBrowser` and the grant decide as everywhere
+else, the panel included — and ⌘-click (Ctrl-click elsewhere) in the system browser through
+`env.openExternal`. A right-click opens a menu in the view (`linkMenu`): both browsers, with the
+gesture shown at the right of each row (`MenuItem.shortcut`), Copy Link and Copy Link Text. Both
+`[text](https://…)` and a bare `https://…` are links; sentence punctuation after a bare address
+is not part of it. Details that matter:
+
+- **Never an `<a href>`**: a click in a webview navigates the view itself. The node is a span the
+  host is asked to open (`openLink`).
+- **The host takes only `http` and `https`** (`_openLink`), whatever the view sends: the address
+  is the model's, and `command:`, `file:` or `vscode:` would make a click run something.
+- **On a Mac only ⌘ means "system browser"**: Ctrl-click there is the right click, which opens the
+  menu.
+- **A click that ends a selection opens nothing**, and the link's click does not reach the row
+  around it, which may fold on a click.
+- **The menu opens below a link with no room above it**: `#app` clips what overflows, and a link
+  near the top of the thread lost the menu's upper rows. `openAbove` resets `top` for that reason.
+- **A ⌘-click on a localhost address can still land in this extension**: `openExternal` goes
+  through the external URI openers, and ours claims localhost-like hosts.
+- **A link inside a panel keeps the panel open under its menu** — an agent's report in the Agents
+  panel holds links too. `openMenu`'s `keep` leaves that panel open, the menu is drawn above it
+  (`.over-panel`, z-index 45 over the panel's 40), and choosing a row, a press elsewhere or the
+  first Escape closes only the menu (`closeMenuOverPanel`). Closing the panel, as every other menu
+  does, hid the link and put the menu in the view's top-left corner (#428).
+
+**The file a Read or an edit row names opens on a click** (asked for): `fileLink` marks the name,
+and the host's `openFile` opens it with `vscode.open` as a preview tab of the active group — so
+text gets the text editor, an image the image preview, anything else whatever VS Code picks; a
+folder is revealed in the Explorer. The path is the agent's: absolute as both CLIs give it, `~/…`
+expanded as Claude Code itself does, a relative one taken from the agents' working directory. A
+file that is gone is refused in the status bar. Two details:
+
+- **The row's head is a button, and a disabled button passes no clicks to what is inside it.** A
+  Read row has nothing to unfold and used to be disabled, so its head is now enabled while it
+  names a file (`no-body` keeps the plain cursor), and the click is sorted in `toolNode`: on the
+  name it opens the file, elsewhere it folds the row if there is anything to fold.
+- **A click that ends a selection of the name opens nothing** — and only a selection touching
+  the name counts (`containsNode`). A press on a button does not collapse a selection elsewhere,
+  so testing for any selection left the name dead while some text in a reply was selected (#429).
+
+Codex reads through commands (`cat`, `sed`), whose rows are commands; only its `View image` is a
+Read row.
+
+**The phrase is one of fifty pairs** ("Browsing…" / "Browsed for"). While a turn runs a random
 one is shown and replaced every 8 s; the past form is picked from the turn's start time, so it
-does not change on a re-render or after a reload.
+does not change on a re-render or after a reload. **The working line is set larger than the rest
+of the small print** (1.1em, the star 17px — asked for), and so is "N agents running" under a
+finished turn; the "Worked for …" line keeps the smaller size.
 
 **A turn's tokens are the difference in the chat's totals across the turn**, shown only when the
 agent reported any. That one rule is right for both agents although they report differently —
@@ -4384,8 +4431,9 @@ have one. An agent's card keeps its own arrow, which goes back to the list.
 
 **Nothing from a model or a page is parsed as HTML.** `preview-src/chat.ts` has its own small
 Markdown reader (fences, headings, lists, quotes, tables, rules, paragraphs, inline code, bold,
-italics, links) that builds nodes and sets `textContent`. Links show their address as a tooltip
-and are not followed: a click in a webview would navigate the view itself. The CSP is the panel's
+italics, links) that builds nodes and sets `textContent`. Links are spans the host is asked to
+open, never `<a href>` — a click in a webview would navigate the view itself; see the Markdown
+reader above. The CSP is the panel's
 minus `frame-src`, plus `img-src data:` for screenshot thumbnails.
 
 **The host owns the state; the webview renders it.** Every change posts a whole
@@ -4733,6 +4781,21 @@ toolbar; at most 30, prompts up to 20 000 characters.
   anchor `active` so a second press closes what the first opened, and that mark is not drawn on a
   skill button (`closePopups` clears it as well). Focus after a click is not drawn either; only
   `:focus-visible` is.
+- **The right-click menu runs it two ways** (asked for): **Run**, a press, and **Run after this
+  turn** (⌘/Ctrl+click on the button does the same), which holds the skill in the tab's queue
+  until the agent has finished, as ⌘Enter holds a message — then Edit, Delete and the moves. Each
+  row shows its gesture (`MenuItem.shortcut`). With nothing running a queued skill starts at once
+  (after the drain's half second). How it waits depends on where the result goes:
+  - **into the chat**, its prompts go into the queue (`ChatTab.enqueue`), one prompt as well as
+    several, so it is the multi-prompt path; the queue row reads "/name — sent when this turn ends";
+  - **clipboard or silent**, a `QueuedRun` waits in the queue ("runs in the background when this
+    turn ends") and the drain starts the background run when its turn comes, through
+    `_runToolbarSkill` again — so the agent, model and checks are the tab's at that moment, not at
+    the press. The item after it waits for it to be started, not to finish;
+  - either is taken out with the queue row's ×, dropped (not given back to the box) when the tab
+    lets go of its queue, and counted by the close's question;
+  - **not refused as "still running"** and not asked "run it again?": another run later is what
+    was chosen.
 - **Pressing a button**: with parameters, a popover asks for them (the type rules again in the
   view for the form, `valueProblem`; the host checks again in `fillPrompt`), Enter runs. A skill
   also runs from the palette's *Toolbar* group, and **a message sent as `/name args` or
@@ -5211,6 +5274,56 @@ Verified against the real CLIs through the compiled backends: on both, a `touch`
 `browser_state` each asked once, an Allow ran them (the file created, the tool answered), a Deny
 reached the model, and a Stop with a question open withdrew it; the cards and the approval menu
 against a fake session and in headless Chrome.
+
+### Questions with choices: the turn waits on a form
+
+Asked for: when an agent asks "this or that?", the chat shows a form, the turn waits, and the
+answer lets it go on. Both CLIs ask through a channel that blocks the turn, so it is built as one
+more kind of approval card (`what: 'question'`, `ApprovalEntry.questions`) and inherits every way
+an approval is withdrawn or closed (#376) — a Stop, the process ending, the tab or view closing, a
+replaced backend. Measured on Claude Code 2.1.301 and codex-cli 0.162.0-alpha.17.2; readers and
+answers in `agentProtocol.ts` (`claudeQuestions`, `codexQuestions`, `validAnswers`, under test on
+the recorded requests):
+
+| | Claude Code | Codex |
+|---|---|---|
+| asked as | `can_use_tool` for `AskUserQuestion`, `requires_user_interaction: true`; `input.questions[]` of `{ question, header, options: [{ label, description }], multiSelect }` | server request `item/tool/requestUserInput`: `questions[]` of `{ id, header, question, options \| null, isOther, isSecret }` |
+| answered | `allow` with `updatedInput: { ...input, answers: { <question text>: "<label>" } }`, several choices joined with ", " — the model reads "Your questions have been answered: …" | `{ answers: { <id>: { answers: ["<label>"] } } }` |
+| skipped | `deny` with `questionSkipped` — "go on with your best judgement and say which choice you made" | `{ answers: {} }` |
+| withdrawn | `control_cancel_request` | `serverRequest/resolved` |
+
+- **Codex offers the tool in its default mode only with a feature flag**:
+  `features.default_mode_request_user_input`, set in every thread's `config` (`threadConfig`).
+  Without it the model either said it had no such tool or wrote the question as text
+  (`agentMessage` with `questions` and `delivery: "async"`) and then slept waiting for a reply —
+  measured both ways. Plan mode has the tool without the flag; the chat does not use plan mode.
+  0.145 starts a thread with the flag set. No `experimentalApi` capability is needed.
+- **Codex says `isBlocking: false` in the default mode, and waits anyway**: an answer sent 45 s
+  later was taken and the turn went on.
+- **The approval menu has no say.** A question is never answered by Auto or Deny, is not a
+  category in the menu, and `approvalModesChanged` passes over it: only the user can choose.
+- **The card**: each question with its header, its options as rows (one, or several where
+  `multiSelect`; number keys pick one), and — where the user's own words are taken — a text row
+  (Claude Code always takes them, as its own picker does; Codex when `isOther` or there are no
+  options; masked when `isSecret`). Answer is enabled once every question has an answer; Skip
+  sends none. **Answer sends exactly what the card shows chosen**: on a one-choice question, taking
+  the own-words row unmarks the options, so an empty row is no answer rather than the option picked
+  before it — which used to go out unseen (#430). Enter in the text row answers. What has been picked is kept outside the row
+  (`questionDrafts`), since a row is rebuilt whenever the chat is shown again.
+- **The host keeps only answers that fit** (`validAnswers`): a known question, one value unless
+  several may be chosen, an option's label unless own words are taken. Nothing that fits is a skip.
+- **A secret answer is not kept**: the chat stores `••••` for it, the CLI gets the text.
+- **While a card waits, the working line says "Waiting for your answer"** instead of a phrase,
+  and the tab shows the waiting mark, as for any approval.
+- **`AskUserQuestion` gets no tool row** — the card is the question and shows the answer, and the
+  tool's result finds no row to update. Codex sends no item for it.
+- **A toolbar skill's background run skips a question**: there is no conversation to show it in,
+  and the skip tells the agent to choose and say so.
+
+Verified end to end through the compiled backends against both real CLIs (asked, answered "Blue",
+the reply named blue; skipped, the reply said no answer was given), and the card in headless
+Chrome (two questions, single and multiple choice, own words replacing an option, the draft
+surviving a rebuild, the answer posted).
 
 ### Where it refuses to run
 
@@ -7293,6 +7406,20 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
      from every skill. Keep a new field under a key the old build does not know.
 425. **Steering into a turn that is not a model's turn** → Codex refuses input to a compaction (and
      a review) turn; wait for it to end, as for a turn being stopped.
+426. **Allowing `AskUserQuestion` with its input unchanged** → it reaches the host as an ordinary
+     `can_use_tool`, so it read as "Use this tool?" under Other tools; Allow sent no answers and
+     Auto answered a question nobody saw. Answer it with `updatedInput.answers`, outside the menu.
+427. **Leaving Codex's `request_user_input` to the default mode** → the tool is not offered there
+     without `features.default_mode_request_user_input`, and the model asks in plain text and
+     sleeps waiting for a reply the chat never sends. Set the feature on every thread.
+428. **A menu that closes every popup, opened from inside one** → a link's menu in an agent's
+     report closed the Agents panel it was in, so its anchor was hidden and the menu landed in the
+     corner. Keep the panel, draw the menu above it, close only the menu.
+429. **"Any selection" as "a selection of this"** → a press on a button does not collapse a
+     selection elsewhere, so a file name in a tool row did nothing while reply text was selected.
+     Ask whether the selection touches the element.
+430. **A form whose answer falls back to a choice it no longer shows** → focusing the empty
+     own-words row unmarked the option, and Answer still sent it. Send what is shown chosen.
 
 ## Special cases and non-obvious decisions
 

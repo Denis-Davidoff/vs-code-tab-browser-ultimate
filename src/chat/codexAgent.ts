@@ -7,7 +7,7 @@ import * as vscode from 'vscode';
 import { JsonLineProcess, withTimeout } from './agentProcess';
 import { codexAgentThreadEvents, codexApproval, codexApprovalAnswer, codexEvents, codexPatchPaths, codexModels, codexSkillItems, codexSkills, codexUsage, type AgentEvent } from './agentProtocol';
 import type { AgentBackend, AgentSession, BrowserServer, TurnInput } from './agents';
-import type { AgentUsage, ChatCommand, ChatModel } from './chatProtocol';
+import type { AgentUsage, ChatCommand, ChatModel, QuestionAnswers } from './chatProtocol';
 
 /**
  * Codex, driven as its own VS Code extension drives it: `codex app-server`,
@@ -108,26 +108,32 @@ export class CodexBackend implements AgentBackend {
 	) { }
 
 	/**
-	 * The browser server as a thread's `config` override, so the thread has the
-	 * browser tools whether or not Connect Codex wrote a config. Under the bare
-	 * name, it replaces a project `.codex/config.toml` entry rather than adding a
-	 * second (measured: one `ai-browser`, ready).
+	 * A thread's `config` override: the browser server, so the thread has the
+	 * browser tools whether or not Connect Codex wrote a config — under the bare
+	 * name it replaces a project `.codex/config.toml` entry rather than adding a
+	 * second (measured: one `ai-browser`, ready) — and the questions feature.
 	 */
-	public browserConfig(): Record<string, unknown> | undefined {
+	public threadConfig(): Record<string, unknown> {
 		const server = this._browserServer();
-		return server
-			? { mcp_servers: { 'ai-browser': { url: server.url, http_headers: { Authorization: `Bearer ${server.token}` } } } }
-			: undefined;
+		return {
+			// `request_user_input` — a question with choices, asked in the chat
+			// and waited on — is offered in the default mode only with this
+			// feature (codex-cli 0.162, measured: without it the model said it had
+			// no such tool, or asked in plain text and slept waiting for a reply).
+			// An older CLI that does not know the feature starts the thread anyway.
+			features: { default_mode_request_user_input: true },
+			...(server ? { mcp_servers: { 'ai-browser': { url: server.url, http_headers: { Authorization: `Bearer ${server.token}` } } } } : {}),
+		};
 	}
 
 	/** Answers a question; one already answered, withdrawn, or of another session is ignored. */
-	public answer(id: string, allow: boolean, session: CodexSession): void {
+	public answer(id: string, allow: boolean, session: CodexSession, answers?: QuestionAnswers): void {
 		const asked = this._asked.get(id);
 		if (!asked || asked.session !== session) {
 			return;
 		}
 		this._asked.delete(id);
-		this._process?.send({ jsonrpc: '2.0', id: asked.requestId, result: codexApprovalAnswer(asked.method, asked.params, allow) });
+		this._process?.send({ jsonrpc: '2.0', id: asked.requestId, result: codexApprovalAnswer(asked.method, asked.params, allow, answers) });
 	}
 
 	/** Every open question is withdrawn — the process ended, or the session went. */
@@ -475,8 +481,8 @@ class CodexSession implements AgentSession {
 		return this._running;
 	}
 
-	public answer(id: string, allow: boolean): void {
-		this._backend.answer(id, allow, this);
+	public answer(id: string, allow: boolean, answers?: QuestionAnswers): void {
+		this._backend.answer(id, allow, this, answers);
 	}
 
 	/** The project folder, undefined with none open: what an edit outside the project is decided by. */
@@ -633,9 +639,9 @@ class CodexSession implements AgentSession {
 			return this._threadId;
 		}
 		if (this._threadId) {
-			await this._backend.request('thread/resume', { threadId: this._threadId, cwd: this._cwd, ...threadSettings(this._root), config: this._backend.browserConfig() });
+			await this._backend.request('thread/resume', { threadId: this._threadId, cwd: this._cwd, ...threadSettings(this._root), config: this._backend.threadConfig() });
 		} else {
-			const started = await this._backend.request('thread/start', { cwd: this._cwd, model, ...threadSettings(this._root), config: this._backend.browserConfig() }) as { thread?: { id?: unknown } };
+			const started = await this._backend.request('thread/start', { cwd: this._cwd, model, ...threadSettings(this._root), config: this._backend.threadConfig() }) as { thread?: { id?: unknown } };
 			if (typeof started?.thread?.id !== 'string') {
 				throw new Error('Codex did not start a conversation.');
 			}

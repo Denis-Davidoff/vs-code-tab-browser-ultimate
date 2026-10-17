@@ -10,7 +10,7 @@ import * as path from 'node:path';
 import { suite, test } from 'node:test';
 import {
 	LineSplitter, chatTitle, claudeApproval, claudeApprovalAnswer, claudeContextWindow, claudeEvents, claudeModels, claudeRateLimitWindows, claudeUsage,
-	claudeCommands, claudeTool, codexAgentThreadEvents, codexSkillItems, codexSkills, codexApproval, codexApprovalAnswer, codexEvents, codexPatchPaths, outsideProject, codexModels, codexUsage, compareCliVersions, parseCliVersion, parseLine, toolDetail, unwrapShell, windowLabel,
+	claudeCommands, claudeTool, codexAgentThreadEvents, codexSkillItems, codexSkills, codexApproval, codexApprovalAnswer, codexEvents, codexPatchPaths, codexQuestions, outsideProject, questionSkipped, validAnswers, codexModels, codexUsage, compareCliVersions, parseCliVersion, parseLine, toolDetail, unwrapShell, windowLabel,
 } from './agentProtocol.ts';
 
 // The samples below are trimmed copies of what Claude Code 2.1.301 and
@@ -788,5 +788,72 @@ suite('context window', () => {
 			codexEvents('item/completed', { item: { type: 'contextCompaction', id: 'c' }, threadId: 't', turnId: 'u' }),
 			[{ type: 'notice', text: 'Conversation compacted.' }],
 		);
+	});
+});
+
+suite('questions with choices', () => {
+	// Recorded from Claude Code 2.1.301: AskUserQuestion reaches the host as `can_use_tool`.
+	const claudeAsk = {
+		subtype: 'can_use_tool', tool_name: 'AskUserQuestion', display_name: 'AskUserQuestion',
+		input: { questions: [{ question: 'Which colour do you prefer?', header: 'Colour', options: [{ label: 'Red', description: 'Choose red' }, { label: 'Blue', description: 'Choose blue' }], multiSelect: false }] },
+		tool_use_id: 'toolu_014XqWYVogTcWUtxRoJJKDpJ', requires_user_interaction: true,
+	};
+	// Recorded from codex-cli 0.162.0-alpha.17.2 with `default_mode_request_user_input` on.
+	const codexAsk = {
+		threadId: 't', turnId: 'u', itemId: 'call_1', isBlocking: false, autoResolutionMs: null,
+		questions: [{ id: 'colour', header: 'Colour', question: 'Which colour do you prefer, red or blue?', isOther: true, isSecret: false, options: [{ label: 'Red', description: 'Choose red.' }, { label: 'Blue', description: 'Choose blue.' }] }],
+	};
+
+	test('reads Claude Code’s AskUserQuestion as a question, not as a tool to allow', () => {
+		const request = claudeApproval('r1', claudeAsk, '/w');
+		assert.strictEqual(request.what, 'question');
+		assert.strictEqual(request.title, 'Colour');
+		assert.deepStrictEqual(request.questions, [{
+			id: '0', header: 'Colour', question: 'Which colour do you prefer?',
+			options: [{ label: 'Red', description: 'Choose red' }, { label: 'Blue', description: 'Choose blue' }],
+			multiSelect: false, other: true,
+		}]);
+	});
+
+	test('answers Claude Code with the answers keyed by the question’s text', () => {
+		const answer = claudeApprovalAnswer(claudeAsk.input, true, { 0: ['Blue'] }, true);
+		assert.deepStrictEqual(answer, { behavior: 'allow', updatedInput: { ...claudeAsk.input, answers: { 'Which colour do you prefer?': 'Blue' } } });
+		// Several choices are joined, as the CLI's own picker joins them.
+		const multi = { questions: [{ question: 'Which?', options: [{ label: 'A' }, { label: 'B' }], multiSelect: true }] };
+		assert.deepStrictEqual((claudeApprovalAnswer(multi, true, { 0: ['A', 'B'] }, true).updatedInput as { answers: unknown }).answers, { 'Which?': 'A, B' });
+		assert.deepStrictEqual(claudeApprovalAnswer(claudeAsk.input, false, undefined, true), { behavior: 'deny', message: questionSkipped });
+	});
+
+	test('reads Codex’s request_user_input and answers it by question id', () => {
+		const request = codexApproval('1:7', 'item/tool/requestUserInput', codexAsk);
+		assert.strictEqual(request?.what, 'question');
+		assert.deepStrictEqual(request?.questions?.[0], {
+			id: 'colour', header: 'Colour', question: 'Which colour do you prefer, red or blue?',
+			options: [{ label: 'Red', description: 'Choose red.' }, { label: 'Blue', description: 'Choose blue.' }],
+			multiSelect: false, other: true,
+		});
+		assert.deepStrictEqual(codexApprovalAnswer('item/tool/requestUserInput', codexAsk, true, { colour: ['Blue'] }), { answers: { colour: { answers: ['Blue'] } } });
+		assert.deepStrictEqual(codexApprovalAnswer('item/tool/requestUserInput', codexAsk, false), { answers: {} });
+	});
+
+	test('takes a Codex question with no options as one in the user’s own words, and keeps a secret one secret', () => {
+		const [q] = codexQuestions({ questions: [{ id: 'k', header: 'Key', question: 'API key?', options: null, isOther: false, isSecret: true }] });
+		assert.strictEqual(q.other, true);
+		assert.strictEqual(q.secret, true);
+	});
+
+	test('keeps only answers that fit what was asked', () => {
+		const questions = [
+			{ id: 'a', question: 'One?', options: [{ label: 'X' }, { label: 'Y' }], multiSelect: false, other: false },
+			{ id: 'b', question: 'Many?', options: [{ label: 'X' }, { label: 'Y' }], multiSelect: true, other: true },
+		];
+		assert.deepStrictEqual(validAnswers(questions, { a: ['Z', 'X', 'Y'], b: ['X', 'mine', 'X', 5], c: ['?'] }), { a: ['X'], b: ['X', 'mine'] });
+		assert.deepStrictEqual(validAnswers(questions, 'nope'), {});
+		assert.deepStrictEqual(validAnswers(questions, { a: ['  '] }), {});
+	});
+
+	test('gives AskUserQuestion no tool row: the card is the question', () => {
+		const events = claudeEvents({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'AskUserQuestion', input: claudeAsk.input }] } });
+		assert.ok(!events.some(e => e.type === 'tool'));
 	});
 });

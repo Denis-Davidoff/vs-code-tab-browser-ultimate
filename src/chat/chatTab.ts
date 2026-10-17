@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import { chatTitle, toolOutputLimit, type AgentEvent } from './agentProtocol';
+import { chatTitle, toolOutputLimit, validAnswers, type AgentEvent } from './agentProtocol';
 import { agentNames, type AgentBackend, type AgentSession, type TurnImage } from './agents';
 import type { AgentId, ApprovalEntry, ApprovalMode, AttachmentChip, PendingSend, ChatEntry, ChatStats, ChatTabStatus, ToolEntry, UsageWindow } from './chatProtocol';
 import { generateUuid } from '../core/uuid';
@@ -79,6 +79,17 @@ export interface TabHost {
  * check — decided when that prompt is sent, from what is queued then, so a
  * step taken out of the queue moves the question to the one now next.
  */
+/**
+ * A toolbar skill that runs in the background (clipboard or silent), held in
+ * a tab's queue by "Run after this turn": started, not sent, when its turn
+ * comes, with the agent and model the tab has then.
+ */
+export interface QueuedRun {
+	readonly skillId: string;
+	readonly name: string;
+	readonly values: Readonly<Record<string, string>>;
+}
+
 export interface SkillStep {
 	readonly chain: string;
 	readonly name: string;
@@ -171,7 +182,7 @@ export class ChatTab {
 	private _boundary = false;
 	private _flushTimer: ReturnType<typeof setTimeout> | undefined;
 	/** Held to be sent when the turn ends, oldest first (⌘/Ctrl+Enter). The provider sends them. */
-	private _queued: { readonly id: string; readonly text: string; readonly attachments: Attachment[]; readonly step?: SkillStep }[] = [];
+	private _queued: { readonly id: string; readonly text: string; readonly attachments: Attachment[]; readonly step?: SkillStep; readonly background?: QueuedRun }[] = [];
 	/** When the last turn ended, to tell a message's own turn from an agent's. */
 	private _lastTurnEnd = 0;
 	/** Added to a cumulative token report; see the `tokens` case. Per session. */
@@ -234,14 +245,15 @@ export class ChatTab {
 			...this._waiting.map(w => ({ id: w.id, text: w.entry.text, kind: 'steer' as const, attachments: w.entry.attachments })),
 			...this._queued.map(q => ({
 				id: q.id, text: q.text, kind: 'queue' as const, attachments: q.attachments.map(a => a.chip.label),
-				skill: q.step ? { name: q.step.name, step: q.step.step, steps: q.step.steps, check: q.step.check } : undefined,
+				skill: q.step ? { name: q.step.name, step: q.step.step, steps: q.step.steps, check: q.step.check }
+					: q.background ? { name: q.background.name, step: 1, steps: 1, background: true } : undefined,
 			})),
 		];
 	}
 
 	/** Held for after the running turn; `send` it when the tab is idle again — the provider does. */
-	public enqueue(text: string, attachments: Attachment[], step?: SkillStep): void {
-		this._queued.push({ id: generateUuid(), text, attachments, step });
+	public enqueue(text: string, attachments: Attachment[], step?: SkillStep, background?: QueuedRun): void {
+		this._queued.push({ id: generateUuid(), text, attachments, step, background });
 		this._post();
 	}
 
@@ -272,7 +284,7 @@ export class ChatTab {
 		if (all.length) {
 			this._post();
 		}
-		return all.filter(q => !q.step);
+		return all.filter(q => !q.step && !q.background);
 	}
 
 	/** The waiting prompts go into the conversation where it stands, the next text a block of its own. */
@@ -296,7 +308,7 @@ export class ChatTab {
 	}
 
 	/** The next queued message, taken out of the queue to be sent. */
-	public dequeue(): { readonly text: string; readonly attachments: Attachment[]; readonly step?: SkillStep } | undefined {
+	public dequeue(): { readonly text: string; readonly attachments: Attachment[]; readonly step?: SkillStep; readonly background?: QueuedRun } | undefined {
 		let next = this._queued.shift();
 		// A checked skill prompt whose check nobody passed: the skill stops
 		// here, and the queue goes on with what is behind its prompts.
@@ -445,14 +457,35 @@ export class ChatTab {
 		}
 	}
 
-	/** The user answered an approval card. Only a pending one, and only while its session is alive. */
-	public answer(id: string, allow: boolean): void {
+	/**
+	 * The user answered an approval card. Only a pending one, and only while its
+	 * session is alive. A question is answered with `answers`, checked against
+	 * what it asked; none that fit is a skip. A secret answer goes to the agent
+	 * and is not kept in the chat.
+	 */
+	public answer(id: string, allow: boolean, answers?: unknown): void {
 		const entry = this._approval(id);
 		if (!entry || entry.status !== 'pending') {
 			return;
 		}
-		entry.status = allow ? 'allowed' : 'denied';
-		this._session?.answer(id, allow);
+		if (entry.questions) {
+			const given = allow ? validAnswers(entry.questions, answers) : {};
+			const answered = Object.keys(given).length > 0;
+			entry.status = answered ? 'allowed' : 'denied';
+			if (answered) {
+				const kept: Record<string, readonly string[]> = {};
+				for (const q of entry.questions) {
+					if (given[q.id]) {
+						kept[q.id] = q.secret ? ['••••'] : given[q.id];
+					}
+				}
+				entry.answers = kept;
+			}
+			this._session?.answer(id, answered, answered ? given : undefined);
+		} else {
+			entry.status = allow ? 'allowed' : 'denied';
+			this._session?.answer(id, allow);
+		}
 		this._post();
 		void this._save();
 	}
@@ -465,7 +498,7 @@ export class ChatTab {
 	public approvalModesChanged(): void {
 		let answered = false;
 		for (const entry of this._chat.entries) {
-			if (entry.kind !== 'approval' || entry.status !== 'pending') {
+			if (entry.kind !== 'approval' || entry.status !== 'pending' || entry.questions) {
 				continue;
 			}
 			const mode = this._host.approvalMode(approvalKey(entry));
@@ -773,6 +806,15 @@ export class ChatTab {
 				break;
 			case 'approval': {
 				const request = event.request;
+				// A question with choices: only the user can choose, so the
+				// approval menu has no say and the card always waits.
+				if (request.questions) {
+					chat.entries.push({
+						kind: 'approval', id: request.id, what: 'question', title: request.title,
+						questions: request.questions, status: 'pending',
+					});
+					break;
+				}
 				if (request.what === 'mcp' && request.server) {
 					this._host.noteServer(request.server);
 				}

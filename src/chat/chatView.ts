@@ -543,7 +543,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				return;
 			}
 			case 'runToolbarSkill':
-				await this._runToolbarSkill(message.id, message.values, message.tabId, message.again === true);
+				await this._runToolbarSkill(message.id, message.values, message.tabId, message.again === true, message.queue === true);
 				return;
 			case 'toolbarApprove':
 				if (typeof message.approvalId === 'string') {
@@ -621,7 +621,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			case 'approve':
 				// The card is in whichever tab holds it; an id is unique to its question.
 				for (const tab of this._tabs) {
-					tab.answer(message.id, message.allow);
+					tab.answer(message.id, message.allow === true, message.answers);
 				}
 				return;
 			case 'setApprovalMode': {
@@ -726,6 +726,99 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				// command already decides that (see "The dropdown on the browser tab").
 				await vscode.commands.executeCommand('aiBrowser.newTab');
 				return;
+			case 'openLink':
+				await this._openLink(message.url, message.external);
+				return;
+			case 'openFile':
+				await this._openFile(message.path);
+				return;
+			case 'setCollapseTools':
+				await this._setCollapseTools(message.collapse === true);
+				return;
+		}
+	}
+
+	/**
+	 * The approval menu's Compact switch writes `aiBrowser.chat.collapseToolCalls`
+	 * — one setting, so the switch and Settings never disagree; the change comes
+	 * back through `onDidChangeConfiguration` and the post it makes. Written where
+	 * it is in force: a workspace value would shadow a user-level write, and the
+	 * switch would then do nothing. A settings.json VS Code cannot parse refuses
+	 * the write, which is said in the status bar.
+	 */
+	private async _setCollapseTools(collapse: boolean): Promise<void> {
+		const config = vscode.workspace.getConfiguration();
+		const info = config.inspect<unknown>(collapseToolsSetting);
+		const target = info?.workspaceValue !== undefined ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
+		try {
+			await config.update(collapseToolsSetting, collapse, target);
+		} catch (error) {
+			refuse(vscode.l10n.t('Could not change Fold Tool Calls: {0}', plainInLabel(error instanceof Error ? error.message : String(error))));
+			this._post();
+		}
+	}
+
+	/**
+	 * A file a tool row names, clicked: opened as a preview tab of the active
+	 * group through `vscode.open`, so each kind gets its own editor — text in
+	 * the text editor, an image in the image preview, anything else in what
+	 * VS Code picks for it. The path is the agent's: absolute as both CLIs give
+	 * it, `~/…` as Claude Code itself expands it, and a relative one is taken
+	 * from the working directory the agents run in. Only a file that exists is
+	 * opened; anything else is refused in the status bar, never a toast over
+	 * the browser.
+	 */
+	private async _openFile(file: unknown): Promise<void> {
+		if (typeof file !== 'string' || !file || file.length > 4096 || /[\0\n\r]/.test(file)) {
+			return;
+		}
+		const expanded = file === '~' || file.startsWith('~/') ? path.join(os.homedir(), file.slice(1)) : file;
+		const uri = vscode.Uri.file(path.resolve(this._cwd(), expanded));
+		try {
+			const stat = await vscode.workspace.fs.stat(uri);
+			if (stat.type & vscode.FileType.Directory) {
+				await vscode.commands.executeCommand('revealInExplorer', uri);
+				return;
+			}
+		} catch {
+			refuse(vscode.l10n.t('{0} is not there any more.', plainInLabel(file)));
+			return;
+		}
+		try {
+			await vscode.commands.executeCommand('vscode.open', uri, { preview: true, viewColumn: vscode.ViewColumn.Active } satisfies vscode.TextDocumentShowOptions);
+		} catch (error) {
+			refuse(vscode.l10n.t('Could not open {0}: {1}', plainInLabel(file), plainInLabel(error instanceof Error ? error.message : String(error))));
+		}
+	}
+
+	/**
+	 * A link a model wrote, clicked in a reply. Only `http` and `https`: the
+	 * address is the model's choice, and `command:`, `file:` or `vscode:` would
+	 * turn a click into running something. The built-in browser goes through
+	 * `aiBrowser.show`, which honours `useIntegratedBrowser` and the grant like
+	 * every other way in; with ⌘/Ctrl held it is the system browser.
+	 */
+	private async _openLink(url: unknown, external: unknown): Promise<void> {
+		let parsed: URL;
+		try {
+			parsed = new URL(String(url));
+		} catch {
+			return;
+		}
+		if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+			return;
+		}
+		const address = parsed.toString();
+		try {
+			if (external === true) {
+				if (!await vscode.env.openExternal(vscode.Uri.parse(address, true))) {
+					refuse(vscode.l10n.t('Could not open the link in the system browser.'));
+				}
+			} else {
+				await vscode.commands.executeCommand('aiBrowser.show', address);
+			}
+		} catch (error) {
+			refuse(vscode.l10n.t('Could not open the link: {0}', plainInLabel(error instanceof Error ? error.message : String(error))));
 		}
 	}
 
@@ -840,7 +933,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 */
 	private readonly _chatSkillTabs = new Map<string, { tab: ChatTab; sending: boolean; chains?: string[] }>();
 
-	private async _runToolbarSkill(id: string, values: Readonly<Record<string, string>>, tabId?: string, again = false): Promise<void> {
+	/**
+	 * `queue` ("Run after this turn", ⌘/Ctrl+click): the skill waits in the
+	 * tab's queue and runs once the turn has ended — its prompts as queued
+	 * messages, or, for a clipboard or silent skill, the background run started
+	 * by the drain (`QueuedRun`). It is not refused as "still running": another
+	 * run later is what was asked for.
+	 */
+	private async _runToolbarSkill(id: string, values: Readonly<Record<string, string>>, tabId?: string, again = false, queue = false): Promise<void> {
 		const skill = this._toolbar().find(s => s.id === id);
 		const tab = tabId ? this._tabs.find(t => t.id === tabId) : this._active;
 		if (skill && !tab) {
@@ -882,11 +982,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		// The button asks before running a skill again; a press that did not ask
 		// (two clicks inside one post) is not taken as a yes.
 		const inChat = this._chatSkillTabs.get(skill.id);
-		if (!again && (this._runs.isRunning(skill.id) || (inChat && (inChat.sending || inChat.tab.busy || !!inChat.chains?.some(c => inChat.tab.hasSteps(c)))))) {
+		if (!again && !queue && (this._runs.isRunning(skill.id) || (inChat && (inChat.sending || inChat.tab.busy || !!inChat.chains?.some(c => inChat.tab.hasSteps(c)))))) {
 			refuse(vscode.l10n.t("{0} is still running.", skill.name));
 			return;
 		}
-		if (skill.result === 'chat' && steps.length > 1) {
+		if (queue && skill.result !== 'chat') {
+			tab.enqueue(steps[0].text, [], undefined, { skillId: skill.id, name: skill.name, values: { ...values } });
+			this._drainQueues();
+			return;
+		}
+		if (skill.result === 'chat' && (steps.length > 1 || queue)) {
 			// Several prompts: all of them into the tab's queue, the one ⌘Enter
 			// fills, each sent once the turn before it is over and its check has
 			// passed (`ChatTab._gateNextStep`). The first goes there too, rather
@@ -1119,7 +1224,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 					this._draining.delete(tab);
 					return;
 				}
-				this._send(next.text, tab.id, next.attachments, next.step)
+				// A background skill queued for after the turn starts here,
+				// checked again as a press would be; the next queued item waits
+				// for it to be started, not for it to finish.
+				const started = next.background
+					? this._runToolbarSkill(next.background.skillId, next.background.values, tab.id, true)
+					: this._send(next.text, tab.id, next.attachments, next.step);
+				started
 					.catch(err => this._fail(err))
 					.finally(() => {
 						this._draining.delete(tab);

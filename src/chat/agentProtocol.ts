@@ -27,7 +27,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import type { AgentInfo, AgentUsage, ApprovalKind, ChatCommand, ChatModel, CommandGroup, ToolKind, UsageWindow } from './chatProtocol';
+import type { AgentInfo, AgentQuestion, AgentUsage, ApprovalKind, ChatCommand, ChatModel, CommandGroup, QuestionAnswers, ToolKind, UsageWindow } from './chatProtocol';
 
 /* --------------------------------------------------------------- framing */
 
@@ -610,9 +610,11 @@ export function claudeEvents(message: Record<string, unknown>, tasks?: Map<strin
 					.map(block => block.text as string);
 				return texts.length ? [{ type: 'textBreak' }, { type: 'text', text: texts.join('\n\n') }] : [];
 			}
+			// `AskUserQuestion` gets no row: its card in the chat is the question
+			// and holds the answer, and its result finds no row to update.
 			const events: AgentEvent[] = content
 				.filter(isRecord)
-				.filter(block => block.type === 'tool_use' && typeof block.name === 'string' && typeof block.id === 'string')
+				.filter(block => block.type === 'tool_use' && typeof block.name === 'string' && typeof block.id === 'string' && block.name !== 'AskUserQuestion')
 				.map(block => ({ type: 'tool' as const, id: block.id as string, tool: claudeTool(block.name as string, block.input) }));
 			// Each of the main agent's replies carries that one request's usage:
 			// everything it read plus what it wrote is what the next request
@@ -1337,6 +1339,134 @@ export interface ApprovalRequest {
 	readonly server?: string;
 	readonly title: string;
 	readonly detail?: string;
+	/** `what: 'question'`: the questions the agent asks, answered with `AgentSession.answer`'s `answers`. */
+	readonly questions?: readonly AgentQuestion[];
+}
+
+/** Bounds on what an agent's question brings in: it is the model's text, shown whole otherwise. */
+const questionLimits = { questions: 10, options: 30, question: 4000, label: 200, description: 600, header: 80, answer: 4000 } as const;
+
+function capText(value: unknown, limit: number): string {
+	const text = typeof value === 'string' ? value.trim() : '';
+	return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
+}
+
+/** One option of a question, in either CLI's shape: `{ label, description }`. */
+function questionOptions(value: unknown): AgentQuestion['options'] {
+	const out: { label: string; description?: string }[] = [];
+	for (const option of Array.isArray(value) ? value : []) {
+		const label = isRecord(option) ? oneLine(String(option.label ?? ''), questionLimits.label) : typeof option === 'string' ? oneLine(option, questionLimits.label) : '';
+		if (!label || out.some(o => o.label === label)) {
+			continue;
+		}
+		const description = isRecord(option) && typeof option.description === 'string' ? capText(option.description, questionLimits.description) : '';
+		out.push(description ? { label, description } : { label });
+		if (out.length >= questionLimits.options) {
+			break;
+		}
+	}
+	return out;
+}
+
+/** A card title for a set of questions: the first one's header, or what it asks. */
+function questionsTitle(questions: readonly AgentQuestion[]): string {
+	const first = questions[0];
+	const title = first?.header || (first ? oneLine(first.question, 120) : '');
+	return questions.length > 1 ? `${title} (+${questions.length - 1} more)` : title || 'Question';
+}
+
+/**
+ * Claude Code's `AskUserQuestion`, which reaches us as `can_use_tool` with
+ * `requires_user_interaction: true` (measured, 2.1.301): `input.questions[]` of
+ * `{ question, header, options: [{ label, description }], multiSelect }`. The
+ * CLI's own UI always offers an answer of the user's own words, so `other` is
+ * always on. Ids are the questions' indexes: the answer goes back keyed by the
+ * question's text, which `claudeApprovalAnswer` looks up again in the input.
+ */
+export function claudeQuestions(input: unknown): AgentQuestion[] {
+	const list = isRecord(input) && Array.isArray(input.questions) ? input.questions : [];
+	const out: AgentQuestion[] = [];
+	list.slice(0, questionLimits.questions).forEach((q, index) => {
+		if (!isRecord(q) || typeof q.question !== 'string' || !q.question.trim()) {
+			return;
+		}
+		const header = capText(q.header, questionLimits.header);
+		out.push({
+			id: String(index),
+			...(header ? { header } : {}),
+			question: capText(q.question, questionLimits.question),
+			options: questionOptions(q.options),
+			multiSelect: q.multiSelect === true,
+			other: true,
+		});
+	});
+	return out;
+}
+
+/**
+ * Codex's `item/tool/requestUserInput` (codex-cli 0.162, measured; the tool is
+ * on in the default mode only with the `default_mode_request_user_input`
+ * feature, which the chat's threads set): `questions[]` of `{ id, header,
+ * question, options: [{ label, description }] | null, isOther, isSecret }`.
+ * No options means an answer in the user's own words.
+ */
+export function codexQuestions(params: Record<string, unknown>): AgentQuestion[] {
+	const out: AgentQuestion[] = [];
+	for (const q of Array.isArray(params.questions) ? params.questions.slice(0, questionLimits.questions) : []) {
+		if (!isRecord(q) || typeof q.id !== 'string' || !q.id || typeof q.question !== 'string' || !q.question.trim() || out.some(o => o.id === q.id)) {
+			continue;
+		}
+		const options = questionOptions(q.options);
+		const header = capText(q.header, questionLimits.header);
+		out.push({
+			id: q.id,
+			...(header ? { header } : {}),
+			question: capText(q.question, questionLimits.question),
+			options,
+			multiSelect: false,
+			other: q.isOther === true || !options.length,
+			...(q.isSecret === true ? { secret: true } : {}),
+		});
+	}
+	return out;
+}
+
+/**
+ * The answers a user sent from the view, kept only where they fit the
+ * questions: a known id, at most one value unless several may be chosen, and a
+ * value that is one of the options unless the user's own words are taken.
+ * Anything else is dropped, so what reaches the CLI is what the card offered.
+ */
+export function validAnswers(questions: readonly AgentQuestion[], answers: unknown): QuestionAnswers {
+	const out: Record<string, string[]> = {};
+	if (!isRecord(answers)) {
+		return out;
+	}
+	for (const q of questions) {
+		if (!Object.prototype.hasOwnProperty.call(answers, q.id)) {
+			continue;
+		}
+		const raw = answers[q.id];
+		const values: string[] = [];
+		for (const value of Array.isArray(raw) ? raw : []) {
+			if (typeof value !== 'string') {
+				continue;
+			}
+			const text = q.secret ? value : value.trim();
+			if (!text || text.length > questionLimits.answer || values.includes(text)) {
+				continue;
+			}
+			if (!q.other && !q.options.some(o => o.label === text)) {
+				continue;
+			}
+			values.push(text);
+		}
+		const kept = q.multiSelect ? values : values.slice(0, 1);
+		if (kept.length) {
+			out[q.id] = kept;
+		}
+	}
+	return out;
 }
 
 /**
@@ -1487,6 +1617,12 @@ export function claudeApproval(id: string, request: Record<string, unknown>, roo
 		// A file tool with no path is not something "inside" can be promised for.
 		return { id, what: outside || !file ? 'outside' : 'edit', title: file || tool, detail: tool };
 	}
+	if (tool === 'AskUserQuestion') {
+		const questions = claudeQuestions(input);
+		if (questions.length) {
+			return { id, what: 'question', title: questionsTitle(questions), questions };
+		}
+	}
 	const name = typeof request.display_name === 'string' && request.display_name ? request.display_name : tool || 'Tool';
 	// Reading or searching asks only outside the project; that is what it is.
 	if (outside) {
@@ -1495,10 +1631,35 @@ export function claudeApproval(id: string, request: Record<string, unknown>, roo
 	return { id, what: 'other', title: name, detail: description ?? argumentLines(input) };
 }
 
-/** What `can_use_tool` is answered with: the input as it was, or a refusal the model reads. */
-export function claudeApprovalAnswer(input: unknown, allow: boolean): Record<string, unknown> {
+/** What the model reads when the user leaves its questions unanswered. */
+export const questionSkipped = 'The user did not answer these questions. Continue with your best judgement, and say which choice you made.';
+
+/**
+ * What `can_use_tool` is answered with: the input as it was, or a refusal the
+ * model reads. An `AskUserQuestion` (`answers` given) is answered by allowing
+ * it with `answers` added to its input — keyed by each question's text, several
+ * choices joined with ", " — which the CLI hands the model as "Your questions
+ * have been answered: …" (measured, 2.1.301). Skipped, it is a refusal that
+ * tells the model to go on without the answer.
+ */
+export function claudeApprovalAnswer(input: unknown, allow: boolean, answers?: QuestionAnswers, question = false): Record<string, unknown> {
+	const given = isRecord(input) ? input : {};
+	if (allow && answers) {
+		const list = Array.isArray(given.questions) ? given.questions : [];
+		const byText: Record<string, string> = {};
+		for (const [id, values] of Object.entries(answers)) {
+			const q = list[Number(id)];
+			if (isRecord(q) && typeof q.question === 'string' && values.length) {
+				byText[q.question] = values.join(', ');
+			}
+		}
+		return { behavior: 'allow', updatedInput: { ...given, answers: byText } };
+	}
+	if (question && !allow) {
+		return { behavior: 'deny', message: questionSkipped };
+	}
 	return allow
-		? { behavior: 'allow', updatedInput: isRecord(input) ? input : {} }
+		? { behavior: 'allow', updatedInput: given }
 		: { behavior: 'deny', message: 'The user declined this in the AI Browser chat.' };
 }
 
@@ -1561,6 +1722,10 @@ export function codexApproval(id: string, method: string, params: Record<string,
 				? { id, what: 'browser', title: name, detail: args }
 				: { id, what: 'mcp', server, title: name, detail: args };
 		}
+		case 'item/tool/requestUserInput': {
+			const questions = codexQuestions(params);
+			return questions.length ? { id, what: 'question', title: questionsTitle(questions), questions } : undefined;
+		}
 		default:
 			return undefined;
 	}
@@ -1605,8 +1770,19 @@ export function codexPatchPaths(changes: unknown): string[] {
  * `decline` — the turn goes on and the model is told — unless the request lists
  * its decisions without it, when only `cancel` (which ends the turn) refuses.
  */
-export function codexApprovalAnswer(method: string, params: Record<string, unknown>, allow: boolean): Record<string, unknown> {
+export function codexApprovalAnswer(method: string, params: Record<string, unknown>, allow: boolean, answers?: QuestionAnswers): Record<string, unknown> {
 	switch (method) {
+		case 'item/tool/requestUserInput': {
+			// `{ answers: { <question id>: { answers: [...] } } }`; skipped, no
+			// answers at all, which the model reads as the user not answering.
+			const out: Record<string, { answers: readonly string[] }> = {};
+			for (const [id, values] of Object.entries(allow && answers ? answers : {})) {
+				if (values.length) {
+					out[id] = { answers: values };
+				}
+			}
+			return { answers: out };
+		}
 		case 'item/commandExecution/requestApproval': {
 			if (allow) {
 				return { decision: 'accept' };

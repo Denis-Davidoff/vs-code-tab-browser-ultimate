@@ -6,7 +6,7 @@
 import * as vscode from 'vscode';
 import { binarySource, chooseAgentBinary, describeBinary } from './agentBinary';
 import type { AgentEvent } from './agentProtocol';
-import type { AgentId, AgentUsage, ChatAgent, ChatCommand, ChatModel } from './chatProtocol';
+import type { AgentId, AgentUsage, ChatAgent, ChatCommand, ChatModel, QuestionAnswers } from './chatProtocol';
 import { ClaudeBackend } from './claudeAgent';
 import { CodexBackend } from './codexAgent';
 
@@ -47,8 +47,12 @@ export interface AgentSession extends vscode.Disposable {
 	 * agents running. Rejects when the CLI refuses.
 	 */
 	stopAgent?(rowId: string, threadId: string | undefined): Promise<void>;
-	/** Answers an `approval` event this session reported. An id it no longer has is ignored. */
-	answer(id: string, allow: boolean): void;
+	/**
+	 * Answers an `approval` event this session reported. An id it no longer has
+	 * is ignored. A question (`what: 'question'`) is answered with `answers`, or
+	 * skipped with `allow` false.
+	 */
+	answer(id: string, allow: boolean, answers?: QuestionAnswers): void;
 }
 
 /**

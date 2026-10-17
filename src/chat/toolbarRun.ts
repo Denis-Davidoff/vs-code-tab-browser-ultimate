@@ -236,6 +236,13 @@ export class ToolbarRuns implements vscode.Disposable {
 					return;
 				case 'approval': {
 					const request = event.request;
+					// A question with choices has no conversation to be shown in
+					// and is skipped: the agent is told to go on with its best
+					// judgement and say what it chose.
+					if (request.questions) {
+						session.answer(request.id, false);
+						return;
+					}
 					if (request.what === 'mcp' && request.server) {
 						this._host.noteServer(request.server);
 					}

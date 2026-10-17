@@ -9,7 +9,7 @@ import * as vscode from 'vscode';
 import { JsonLineProcess, withTimeout } from './agentProcess';
 import { claudeApproval, claudeApprovalAnswer, claudeCommands, claudeEvents, claudeModels, claudeUsage, type AgentEvent } from './agentProtocol';
 import type { AgentBackend, AgentSession, BrowserServer, TurnInput } from './agents';
-import type { AgentUsage, ChatCommand, ChatModel } from './chatProtocol';
+import type { AgentUsage, ChatCommand, ChatModel, QuestionAnswers } from './chatProtocol';
 import { existingPrivateTempDirectory, privateTempDirectory } from '../core/safeFiles';
 import { generateUuid } from '../core/uuid';
 
@@ -109,8 +109,8 @@ function hostRuns(pid: number): boolean {
 class ControlChannel implements vscode.Disposable {
 	private readonly _pending = new Map<string, { resolve: (value: unknown) => void; reject: (err: Error) => void }>();
 	private readonly _subscriptions: vscode.Disposable[] = [];
-	/** Permission questions asked and not yet answered, by request id, with the input they were about. */
-	private readonly _asked = new Map<string, unknown>();
+	/** Permission questions asked and not yet answered, by request id, with the tool and input they were about. */
+	private readonly _asked = new Map<string, { readonly tool: unknown; readonly input: unknown }>();
 
 	/**
 	 * `onAsk` hears a permission question, `onWithdraw` that the CLI no longer
@@ -154,7 +154,7 @@ class ControlChannel implements vscode.Disposable {
 		}
 		const request = message.request as Record<string, unknown> | undefined;
 		if (message.type === 'control_request' && typeof message.request_id === 'string' && request?.subtype === 'can_use_tool' && this._onAsk) {
-			this._asked.set(message.request_id, request.input);
+			this._asked.set(message.request_id, { tool: request.tool_name, input: request.input });
 			this._onAsk(message.request_id, request);
 			return;
 		}
@@ -170,13 +170,15 @@ class ControlChannel implements vscode.Disposable {
 	}
 
 	/** Answers a permission question; a question already answered or withdrawn is ignored. */
-	public answer(id: string, allow: boolean): void {
-		if (!this._asked.has(id)) {
+	public answer(id: string, allow: boolean, answers?: QuestionAnswers): void {
+		const asked = this._asked.get(id);
+		if (!asked) {
 			return;
 		}
-		const input = this._asked.get(id);
 		this._asked.delete(id);
-		this._process.send({ type: 'control_response', response: { subtype: 'success', request_id: id, response: claudeApprovalAnswer(input, allow) } });
+		const question = asked.tool === 'AskUserQuestion';
+		const response = claudeApprovalAnswer(asked.input, allow, question ? answers : undefined, question);
+		this._process.send({ type: 'control_response', response: { subtype: 'success', request_id: id, response } });
 	}
 
 	/** Questions still open, which end with the channel. */
@@ -419,8 +421,8 @@ class ClaudeSession implements AgentSession {
 		});
 	}
 
-	public answer(id: string, allow: boolean): void {
-		this._control?.answer(id, allow);
+	public answer(id: string, allow: boolean, answers?: QuestionAnswers): void {
+		this._control?.answer(id, allow, answers);
 	}
 
 	/**

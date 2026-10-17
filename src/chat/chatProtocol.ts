@@ -265,7 +265,31 @@ export type ChatEntry =
  * edits inside the project, files outside it, another MCP server's tools
  * (`mcp`, one category per server), and anything else.
  */
-export type ApprovalKind = 'web' | 'browser' | 'command' | 'edit' | 'outside' | 'mcp' | 'other';
+export type ApprovalKind = 'web' | 'browser' | 'command' | 'edit' | 'outside' | 'mcp' | 'other' | 'question';
+
+/**
+ * A question with choices the agent asks the user in the middle of a turn —
+ * Claude Code's `AskUserQuestion`, Codex's `request_user_input`. The turn waits
+ * for the answer. Never covered by the approval menu: nothing but the user can
+ * choose.
+ */
+export interface AgentQuestion {
+	/** What the answer is sent back under: the question's index for Claude Code, its own id for Codex. */
+	readonly id: string;
+	/** A short label for the question, when the agent gave one. */
+	readonly header?: string;
+	readonly question: string;
+	readonly options: readonly { readonly label: string; readonly description?: string }[];
+	/** Several options may be chosen together. */
+	readonly multiSelect: boolean;
+	/** An answer of the user's own words is taken besides the options. */
+	readonly other: boolean;
+	/** The answer is a secret (Codex's `isSecret`): typed masked, and not kept in the chat. */
+	readonly secret?: boolean;
+}
+
+/** Answers by question id: the labels chosen, or the user's own words. */
+export type QuestionAnswers = Readonly<Record<string, readonly string[]>>;
 
 /** What a category does with a question: run it without asking, ask, or refuse it without asking. */
 export type ApprovalMode = 'auto' | 'ask' | 'deny';
@@ -292,6 +316,10 @@ export interface ApprovalEntry {
 	status: 'pending' | 'allowed' | 'denied' | 'cancelled';
 	/** Answered by the approval menu's choice rather than by a click. */
 	auto?: boolean;
+	/** `what: 'question'`: the questions asked. `allowed` is answered, `denied` skipped. */
+	readonly questions?: readonly AgentQuestion[];
+	/** What the user answered; a secret answer is not kept. */
+	answers?: QuestionAnswers;
 }
 
 export interface ChatSummary {
@@ -380,7 +408,7 @@ export interface PendingSend {
 	/** Labels of the attachments that go with it. */
 	readonly attachments: readonly string[];
 	/** A later prompt of a toolbar skill: its name, and which prompt of how many. */
-	readonly skill?: { readonly name: string; readonly step: number; readonly steps: number; readonly check?: string };
+	readonly skill?: { readonly name: string; readonly step: number; readonly steps: number; readonly check?: string; readonly background?: boolean };
 }
 
 export interface ChatTabSummary {
@@ -462,7 +490,8 @@ export type ViewToHost =
 	| { readonly type: 'switchAgent'; readonly choice: 'newTab' | 'replace' | 'continue' | 'cancel' }
 	/** One agent of the conversation in front, by its row id. */
 	| { readonly type: 'stopAgent'; readonly id: string }
-	| { readonly type: 'approve'; readonly id: string; readonly allow: boolean }
+	/** An approval card answered; for a question, `allow` with the answers, or no `allow` to skip it. */
+	| { readonly type: 'approve'; readonly id: string; readonly allow: boolean; readonly answers?: QuestionAnswers }
 	/** `key`: a category key (see `ApprovalPolicy`), or `all` for every category at once. */
 	| { readonly type: 'setApprovalMode'; readonly key: string; readonly mode: ApprovalMode }
 	/** A chip in the composer clicked: its file, its image or its text, in an editor tab. */
@@ -479,6 +508,12 @@ export type ViewToHost =
 	| { readonly type: 'copy'; readonly text: string }
 	/** The composer's browser button: a new browser tab, nothing else. */
 	| { readonly type: 'openBrowser' }
+	/** The approval menu's Compact switch: `aiBrowser.chat.collapseToolCalls`, tool calls start folded. */
+	| { readonly type: 'setCollapseTools'; readonly collapse: boolean }
+	/** A file a tool row names (Read, an edit), clicked: opened in an editor tab, whatever kind of file. */
+	| { readonly type: 'openFile'; readonly path: string }
+	/** A link in a reply clicked: the built-in browser, or the system one with ⌘/Ctrl held. */
+	| { readonly type: 'openLink'; readonly url: string; readonly external: boolean }
 	| { readonly type: 'setNewsHidden'; readonly hidden: boolean }
 	| { readonly type: 'refreshAgents' }
 	/** The "/" palette opened: list the agent's skills again, in case one was added. */
@@ -490,7 +525,8 @@ export type ViewToHost =
 	| { readonly type: 'moveToolbarSkill'; readonly id: string; readonly by: -1 | 1 }
 	/** Run with these parameter values, for the tab it was pressed in. */
 	/** `again`: run it although a run of it is going — the user said so when asked. */
-	| { readonly type: 'runToolbarSkill'; readonly id: string; readonly values: Readonly<Record<string, string>>; readonly tabId?: string; readonly again?: boolean }
+	/** `queue`: held in the tab's queue and run once its turn has ended ("Run after this turn"). */
+	| { readonly type: 'runToolbarSkill'; readonly id: string; readonly values: Readonly<Record<string, string>>; readonly tabId?: string; readonly again?: boolean; readonly queue?: boolean }
 	/**
 	 * The answer to the question a background run is waiting on: `approvalId` is
 	 * the question shown, so the answer reaches that run and no other of the skill.

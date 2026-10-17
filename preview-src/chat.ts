@@ -24,7 +24,7 @@
  */
 
 import type {
-	AgentId, AgentUsage, ApprovalEntry, ToolbarParam, ToolbarResult, ToolbarRun, ToolbarSkill, ApprovalKind, ApprovalMode, AttachmentKind, ChatCommand, ChatEntry, ChatStats, ChatSummary, ChatTabStatus, ChatTabSummary, ChatViewState, HostToView, ToolEntry, ViewToHost,
+	AgentId, AgentQuestion, AgentUsage, ApprovalEntry, ToolbarParam, ToolbarResult, ToolbarRun, ToolbarSkill, ApprovalKind, ApprovalMode, AttachmentKind, ChatCommand, ChatEntry, ChatStats, ChatSummary, ChatTabStatus, ChatTabSummary, ChatViewState, HostToView, ToolEntry, ViewToHost,
 } from '../src/chat/chatProtocol';
 // Every codicon the bundled font has, one per line (`name,char,code`); bundled
 // as text by esbuild, so the icon picker lists exactly what can be drawn.
@@ -896,6 +896,8 @@ function renderPendingSends(s: ChatViewState): void {
 		const note = el('div', { class: 'pending-note' },
 			icon(p.kind === 'queue' ? 'list-ordered' : 'loading'),
 			el('span', { text: p.kind !== 'queue' ? 'Waiting for the agent to take it in'
+				: p.skill?.background ? `/${p.skill.name} — runs in the background when this turn ends`
+				: p.skill && p.skill.steps === 1 ? `/${p.skill.name} — sent when this turn ends`
 				: p.skill ? `/${p.skill.name}, prompt ${p.skill.step} of ${p.skill.steps} — ${p.skill.check ? `sent if: ${p.skill.check}` : 'sent when the turn before it ends'}`
 					: 'Sent when this turn ends' }));
 		if (p.kind === 'queue') {
@@ -939,6 +941,8 @@ function renderTail(tail: HTMLElement, s: ChatViewState, turn: Turn, last: boole
 		}
 		const startedAt = prompt?.kind === 'user' ? prompt.at : undefined;
 		workingNode.dataset.since = startedAt ? String(startedAt) : '';
+		// The agent is stopped on the user: no phrase of work while it is.
+		workingNode.dataset.waiting = s.entries.some(e => e.kind === 'approval' && e.status === 'pending') ? '1' : '';
 		tickWorking();
 		return;
 	}
@@ -1000,7 +1004,7 @@ function agentsRunningText(label: string, since: number): string {
 }
 
 /**
- * Thirty ways to say "working", each with its past form for the line left
+ * Fifty ways to say "working", each with its past form for the line left
  * behind when the turn ends ("Browsing…" → "Browsed for 42s"). While a turn
  * runs, a random one is shown and replaced by another every eight seconds, so
  * a long turn does not sit on one word. The past form is chosen from the
@@ -1016,7 +1020,13 @@ const phrases: readonly (readonly [string, string])[] = [
 	['Brewing', 'Brewed'], ['Crafting', 'Crafted'], ['Figuring it out', 'Figured it out'],
 	['Charting a course', 'Charted a course'], ['Following the thread', 'Followed the thread'],
 	['Sorting it out', 'Sorted it out'], ['Assembling', 'Assembled'], ['Polishing', 'Polished'],
-	['Cross-checking', 'Cross-checked'],
+	['Cross-checking', 'Cross-checked'], ['Analyzing', 'Analyzed'], ['Mapping it out', 'Mapped it out'],
+	['Tracing', 'Traced'], ['Probing', 'Probed'], ['Combing through', 'Combed through'], ['Deliberating', 'Deliberated'],
+	['Calibrating', 'Calibrated'], ['Weaving it together', 'Wove it together'], ['Distilling', 'Distilled'],
+	['Sifting through', 'Sifted through'], ['Shaping', 'Shaped'], ['Refining', 'Refined'], ['Navigating', 'Navigated'],
+	['Surveying', 'Surveyed'], ['Decoding', 'Decoded'], ['Fine-tuning', 'Fine-tuned'], ['Gathering clues', 'Gathered clues'],
+	['Laying the groundwork', 'Laid the groundwork'], ['Thinking it through', 'Thought it through'],
+	['Lining things up', 'Lined things up'],
 ];
 const phraseEveryMs = 8000;
 let phraseAt = Math.floor(Math.random() * phrases.length);
@@ -1040,7 +1050,7 @@ function tickWorking(): void {
 		return;
 	}
 	const since = Number(workingNode.dataset.since);
-	const phrase = workingPhrase();
+	const phrase = workingNode.dataset.waiting ? 'Waiting for your answer' : workingPhrase();
 	const label = since ? `${phrase}… ${duration(Date.now() - since)}` : `${phrase}…`;
 	const text = workingNode.querySelector('.working-text');
 	if (text?.textContent !== label) {
@@ -1167,6 +1177,7 @@ const approvalLabels: Record<ApprovalKind, { icon: string; ask: string }> = {
 	outside: { icon: 'folder-opened', ask: 'Use a file outside the project?' },
 	mcp: { icon: 'plug', ask: 'Use this tool?' },
 	other: { icon: 'tools', ask: 'Use this tool?' },
+	question: { icon: 'question', ask: 'The agent asks' },
 };
 
 const approvalOutcomes: Record<Exclude<ApprovalEntry['status'], 'pending'>, string> = {
@@ -1213,6 +1224,9 @@ function modeOf(s: ChatViewState, key: string): ApprovalMode {
  * come back; the menu beside the model changes it again.
  */
 function approvalNode(entry: ApprovalEntry): HTMLElement {
+	if (entry.questions) {
+		return questionNode(entry, entry.questions);
+	}
 	const label = approvalLabels[entry.what];
 	const node = el('div', { class: `row approval ${entry.status}` },
 		el('div', { class: 'approval-head' }, icon(label.icon), el('span', { text: entry.what === 'mcp' && entry.server ? `${label.ask} (${entry.server})` : label.ask })),
@@ -1253,6 +1267,185 @@ function approvalNode(entry: ApprovalEntry): HTMLElement {
 		return b;
 	};
 	node.append(el('div', { class: 'approval-actions' }, allow, deny, always('auto', 'Always allow'), always('deny', 'Always deny')));
+	return node;
+}
+
+/** What the user has picked in a question card so far, by card and question: kept across rebuilds of the row. */
+const questionDrafts = new Map<string, Map<string, { chosen: string[]; other: string; otherOn: boolean }>>();
+
+/**
+ * A question with choices the agent asked in the middle of its turn —
+ * Claude Code's `AskUserQuestion`, Codex's `request_user_input`. The turn
+ * waits on it. Each question offers its options (one, or several where the
+ * agent allows it) and, where it takes them, the user's own words; Answer sends
+ * them all, Skip tells the agent to go on with its own judgement. What is
+ * chosen is kept outside the row (`questionDrafts`), since a row is rebuilt
+ * whenever the chat is shown again.
+ */
+function questionNode(entry: ApprovalEntry, questions: readonly AgentQuestion[]): HTMLElement {
+	const node = el('div', { class: `row approval question ${entry.status}` },
+		el('div', { class: 'approval-head' }, icon('question'), el('span', { text: questions.length > 1 ? `The agent asks ${questions.length} questions` : 'The agent asks' })));
+	if (entry.status !== 'pending') {
+		for (const q of questions) {
+			const given = entry.answers?.[q.id];
+			node.append(el('div', { class: 'question-done' },
+				el('span', { class: 'question-done-q', text: q.header || q.question }),
+				el('span', { class: 'question-done-a', text: given?.length ? given.join(', ') : '—' })));
+		}
+		const outcome = entry.status === 'allowed' ? '' : entry.status === 'denied' ? 'Skipped — the agent goes on with its own judgement' : approvalOutcomes.cancelled;
+		if (outcome) {
+			node.append(el('div', { class: 'approval-outcome', text: outcome }));
+		}
+		return node;
+	}
+	let drafts = questionDrafts.get(entry.id);
+	if (!drafts) {
+		drafts = new Map();
+		questionDrafts.set(entry.id, drafts);
+	}
+	const draftOf = (q: AgentQuestion) => {
+		let d = drafts!.get(q.id);
+		if (!d) {
+			d = { chosen: [], other: '', otherOn: !q.options.length };
+			drafts!.set(q.id, d);
+		}
+		return d;
+	};
+	// What Answer sends is exactly what the card shows chosen: with the own
+	// words row taken on a one-choice question, the options read unchosen, so
+	// an empty row is no answer rather than the option picked before it.
+	const answerOf = (q: AgentQuestion): string[] => {
+		const d = draftOf(q);
+		const own = q.other && d.otherOn && d.other.trim() ? [q.secret ? d.other : d.other.trim()] : [];
+		if (q.multiSelect) {
+			return [...d.chosen, ...own];
+		}
+		return q.other && d.otherOn ? own : d.chosen.slice(0, 1);
+	};
+	const submit = button([el('span', { text: 'Answer' })], { class: 'approval-allow', title: 'Send the answers and let the agent go on' });
+	const skip = button([el('span', { text: 'Skip' })], { title: 'Answer nothing: the agent goes on with its own judgement' });
+	const refresh = () => {
+		submit.disabled = questions.some(q => !answerOf(q).length);
+	};
+	const send = (allow: boolean) => {
+		if (allow && submit.disabled) {
+			return;
+		}
+		for (const b of node.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLTextAreaElement>('button, input, textarea')) {
+			b.disabled = true;
+		}
+		const answers: Record<string, string[]> = {};
+		if (allow) {
+			for (const q of questions) {
+				answers[q.id] = answerOf(q);
+			}
+		}
+		questionDrafts.delete(entry.id);
+		post(allow ? { type: 'approve', id: entry.id, allow: true, answers } : { type: 'approve', id: entry.id, allow: false });
+	};
+	questions.forEach((q, qi) => {
+		const d = draftOf(q);
+		const block = el('div', { class: 'question-block' });
+		if (q.header) {
+			block.append(el('span', { class: 'question-header', text: q.header }));
+		}
+		block.append(el('div', { class: 'question-text', text: q.question }));
+		const list = el('div', { class: 'question-options' });
+		list.setAttribute('role', q.multiSelect ? 'group' : 'radiogroup');
+		const options: HTMLButtonElement[] = [];
+		const mark = () => {
+			options.forEach((b, i) => {
+				const on = d.chosen.includes(q.options[i].label) && !(!q.multiSelect && d.otherOn);
+				b.classList.toggle('chosen', on);
+				b.setAttribute('aria-checked', String(on));
+			});
+			otherRow?.classList.toggle('chosen', d.otherOn);
+			refresh();
+		};
+		q.options.forEach((option, i) => {
+			const b = button([
+				el('span', { class: 'question-key', text: String(i + 1) }),
+				el('span', { class: 'question-option-text' },
+					el('span', { class: 'question-option-label', text: option.label }),
+					option.description ? el('span', { class: 'question-option-description', text: option.description }) : undefined),
+				icon(q.multiSelect ? 'check' : 'circle-filled', 'question-check'),
+			], { class: `question-option ${q.multiSelect ? 'multi' : 'single'}` });
+			b.setAttribute('role', q.multiSelect ? 'checkbox' : 'radio');
+			b.addEventListener('click', () => {
+				if (q.multiSelect) {
+					d.chosen = d.chosen.includes(option.label) ? d.chosen.filter(l => l !== option.label) : [...d.chosen, option.label];
+				} else {
+					d.chosen = [option.label];
+					d.otherOn = false;
+				}
+				mark();
+			});
+			options.push(b);
+			list.append(b);
+		});
+		let otherRow: HTMLElement | undefined;
+		if (q.other) {
+			const input = q.secret ? el('input') : el('textarea');
+			input.className = 'question-other-input';
+			if (input instanceof HTMLInputElement) {
+				input.type = 'password';
+			} else {
+				input.rows = 1;
+			}
+			input.placeholder = q.options.length ? 'Something else — in your own words' : 'Your answer';
+			input.value = d.other;
+			input.addEventListener('focus', () => {
+				if (!d.otherOn) {
+					d.otherOn = true;
+					mark();
+				}
+			});
+			input.addEventListener('input', () => {
+				d.other = input.value;
+				d.otherOn = true;
+				if (input instanceof HTMLTextAreaElement) {
+					input.style.height = 'auto';
+					input.style.height = `${Math.min(input.scrollHeight, 160)}px`;
+				}
+				mark();
+			});
+			(input as HTMLElement).addEventListener('keydown', event => {
+				// Enter answers, Shift+Enter is a new line — as in the message box.
+				if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+					event.preventDefault();
+					send(true);
+				}
+			});
+			otherRow = el('div', { class: 'question-other' }, icon('edit', 'question-other-icon'), input);
+			list.append(otherRow);
+		}
+		block.append(list);
+		block.dataset.index = String(qi);
+		node.append(block);
+		mark();
+	});
+	// Number keys pick an option of the question the focus is in, as the
+	// CLIs' own pickers do; outside a text field only.
+	node.addEventListener('keydown', event => {
+		const target = event.target as HTMLElement;
+		if (target.matches('input, textarea') || event.metaKey || event.ctrlKey || event.altKey) {
+			return;
+		}
+		const n = Number(event.key);
+		const block = target.closest<HTMLElement>('.question-block') ?? node.querySelector<HTMLElement>('.question-block');
+		const option = n >= 1 ? block?.querySelectorAll<HTMLButtonElement>('.question-option')[n - 1] : undefined;
+		if (option) {
+			event.preventDefault();
+			option.click();
+			option.focus();
+		} else if (event.key === 'Enter' && !target.matches('button')) {
+			send(true);
+		}
+	});
+	submit.addEventListener('click', () => send(true));
+	skip.addEventListener('click', () => send(false));
+	refresh();
+	node.append(el('div', { class: 'approval-actions' }, submit, skip));
 	return node;
 }
 
@@ -1320,10 +1513,17 @@ function renderApprovalMenu(s: ChatViewState, force = false): void {
 			row('all', 'All', 'Every category at once', true),
 			el('div', { class: 'approval-sep' }),
 			...rows.map(r => row(r.key, r.label, r.hint)),
-			el('div', { class: 'approval-note', text: 'Auto runs it without asking, Deny refuses it without asking. For this project, in every tab. Your own Claude Code and Codex rules still decide first.' }));
+			el('div', { class: 'approval-note', text: 'Auto runs it without asking, Deny refuses it without asking. For this project, in every tab. Your own Claude Code and Codex rules still decide first.' }),
+			el('div', { class: 'approval-sep' }),
+			compactRow());
 		if (focused?.key) {
 			approvalPopup.querySelector<HTMLElement>(`[data-key="${CSS.escape(focused.key)}"][data-mode="${focused.mode}"]`)?.focus();
 		}
+	}
+	for (const b of approvalPopup.querySelectorAll<HTMLElement>('.compact-seg')) {
+		const on = (b.dataset.compact === 'on') === s.collapseTools;
+		b.classList.toggle('on', on);
+		b.setAttribute('aria-pressed', String(on));
 	}
 	const modes = new Set(rows.map(r => modeOf(s, r.key)));
 	const all: ApprovalMode | undefined = modes.size === 1 ? [...modes][0] : undefined;
@@ -1333,6 +1533,26 @@ function renderApprovalMenu(s: ChatViewState, force = false): void {
 		b.classList.toggle('on', on);
 		b.setAttribute('aria-pressed', String(on));
 	}
+}
+
+/**
+ * Compact: tool calls start folded, their input and output shown only when a
+ * row is clicked — asked for, in this menu. It is `aiBrowser.chat.collapseToolCalls`
+ * ("Fold Tool Calls"), written by the host, so the switch and Settings agree;
+ * rows the user opened or closed keep that.
+ */
+function compactRow(): HTMLElement {
+	const seg = (value: 'off' | 'on', text: string) => {
+		const b = button([el('span', { text })], { class: 'mode-seg compact-seg' });
+		b.dataset.compact = value;
+		b.addEventListener('click', () => post({ type: 'setCollapseTools', collapse: value === 'on' }));
+		return b;
+	};
+	const group = el('span', { class: 'mode-segs' }, seg('off', 'Off'), seg('on', 'On'));
+	group.setAttribute('role', 'group');
+	group.setAttribute('aria-label', 'Compact');
+	return el('div', { class: 'approval-row', title: 'Tool calls start folded — click a row to see its input and output. The same as the Fold Tool Calls setting.' },
+		el('span', { class: 'approval-row-label', text: 'Compact' }), group);
 }
 
 approveToggle.addEventListener('click', () => {
@@ -1411,6 +1631,17 @@ function basename(path: string): string {
 	return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 }
 
+/**
+ * The file a Read or an edit row names, as a link: a click opens it in an
+ * editor tab (`openFile`), whatever kind of file it is. The row's head is the
+ * button that folds the row, so the click is taken in `toolNode` before it.
+ */
+function fileLink(file: string): HTMLElement {
+	const link = el('span', { class: 'subject file-link', text: basename(file), title: `${file}\nClick to open` });
+	link.dataset.file = file;
+	return link;
+}
+
 /** "Ran `npm test`", "Read a.txt", "Edited app.ts +3 −1" — the Codex panel's activity rows. */
 function toolTitle(t: ToolEntry): Child[] {
 	const running = t.status === 'running';
@@ -1423,10 +1654,10 @@ function toolTitle(t: ToolEntry): Child[] {
 			return [verb('Running', 'Ran'), mono(command || t.detail || t.name, t.input)];
 		}
 		case 'read':
-			return [verb('Reading', 'Read'), plain(t.detail ? basename(t.detail) : t.name, t.detail)];
+			return [verb('Reading', 'Read'), t.detail ? fileLink(t.detail) : plain(t.name)];
 		case 'edit':
 			return [
-				verb('Editing', 'Edited'), plain(t.detail ? basename(t.detail) : t.name, t.detail),
+				verb('Editing', 'Edited'), t.detail ? fileLink(t.detail) : plain(t.name),
 				t.added !== undefined && el('span', { class: 'added', text: `+${t.added}` }),
 				t.removed !== undefined && el('span', { class: 'removed', text: `−${t.removed}` }),
 			];
@@ -1522,8 +1753,29 @@ function toolNode(t: ToolEntry): HTMLElement {
 		el('span', { class: 'activity-title' }, ...toolTitle(t)),
 		hasBody && icon('chevron-right', 'chevron'),
 	], { class: 'activity-head', title: t.detail && t.tool === 'command' ? t.detail : '' });
-	head.disabled = !hasBody;
-	head.addEventListener('click', () => {
+	// A row with nothing to unfold still takes a click on the file it names:
+	// a disabled button passes no clicks to what is inside it.
+	const file = head.querySelector<HTMLElement>('.file-link');
+	head.disabled = !hasBody && !file;
+	if (!hasBody) {
+		head.classList.add('no-body');
+	}
+	head.addEventListener('click', event => {
+		const link = (event.target as Element).closest<HTMLElement>('.file-link');
+		if (link?.dataset.file) {
+			// A click that ends a selection of the name opens nothing. Only a
+			// selection touching the name counts: a press on a button does not
+			// collapse a selection elsewhere, so testing for any selection
+			// made the name dead while some text in a reply was selected.
+			const selection = window.getSelection();
+			if (!selection || selection.isCollapsed || !selection.containsNode(link, true)) {
+				post({ type: 'openFile', path: link.dataset.file });
+			}
+			return;
+		}
+		if (!hasBody) {
+			return;
+		}
 		toggled.set(key, !open);
 		render();
 	});
@@ -1896,7 +2148,7 @@ function inline(parent: HTMLElement, text: string): void {
 		parent.append(text);
 		return;
 	}
-	const pattern = /(`+)([^`]+?)\1|\*\*([^*]+)\*\*|(?<![\w*])\*([^*\s][^*]*?)\*(?![\w*])|\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
+	const pattern = /(`+)([^`]+?)\1|\*\*([^*]+)\*\*|(?<![\w*])\*([^*\s][^*]*?)\*(?![\w*])|\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<>()[\]`"]+)/g;
 	let at = 0;
 	for (const match of text.matchAll(pattern)) {
 		if (match.index > at) {
@@ -1914,17 +2166,76 @@ function inline(parent: HTMLElement, text: string): void {
 			const em = el('em');
 			inline(em, match[4]);
 			parent.append(em);
-		} else {
-			// A link's address is shown, never followed: a click in a webview
-			// would navigate the view itself.
-			const link = el('span', { class: 'link', title: match[6] });
+		} else if (match[6] !== undefined) {
+			const link = linkNode(match[6]);
 			inline(link, match[5]);
 			parent.append(link);
+		} else {
+			// A bare address. Sentence punctuation after it is not part of it:
+			// "see https://example.com." ends the sentence, not the URL.
+			const url = match[7].replace(/[.,;:!?'*_]+$/, '');
+			parent.append(linkNode(url, url));
+			at = match.index + url.length;
+			continue;
 		}
 		at = match.index + match[0].length;
 	}
 	if (at < text.length) {
 		parent.append(text.slice(at));
+	}
+}
+
+const isMacView = navigator.platform.startsWith('Mac');
+const modKey = isMacView ? '⌘' : 'Ctrl';
+
+/**
+ * A link in a reply. Never an `<a href>`: a click in a webview would navigate
+ * the view itself. The host opens it — in the built-in browser, or with
+ * ⌘/Ctrl held in the system one — and checks the scheme again there.
+ */
+function linkNode(url: string, text?: string): HTMLElement {
+	const link = el('span', { class: 'link', title: `${url}\nClick: open in AI Browser · ${modKey}+click: system browser`, text });
+	link.setAttribute('role', 'link');
+	link.addEventListener('click', event => {
+		// The row around it may fold or open on a click; this one is the link's.
+		event.stopPropagation();
+		// A drag that selected the link's text ends in a click too.
+		if (event.button !== 0 || hasSelection()) {
+			return;
+		}
+		// On a Mac, Ctrl+click is the right click and opens the menu below.
+		post({ type: 'openLink', url, external: isMacView ? event.metaKey : event.ctrlKey });
+	});
+	link.addEventListener('contextmenu', event => {
+		event.preventDefault();
+		event.stopPropagation();
+		linkMenu(link, url);
+	});
+	return link;
+}
+
+/** The right-click menu of a link: either browser, or a copy of its address or its text. */
+function linkMenu(link: HTMLElement, url: string): void {
+	const text = link.textContent ?? '';
+	// A link in an agent's report sits inside a panel. Closing the panel the
+	// menu was opened from hid the link under it and put the menu in the
+	// corner, so the panel stays open beneath the menu.
+	const panel = [agentsPanel, historyPanel, agentAppsPanel, skillEditor].find(p => p.classList.contains('open') && p.contains(link));
+	openMenu(link, [
+		{ icon: 'globe', label: 'Open in AI Browser', shortcut: 'Click', run: () => post({ type: 'openLink', url, external: false }) },
+		{ icon: 'link-external', label: 'Open in System Browser', shortcut: `${modKey}+Click`, run: () => post({ type: 'openLink', url, external: true }) },
+		{ icon: 'copy', label: 'Copy Link', run: () => post({ type: 'copy', text: url }) },
+		{ icon: 'symbol-text', label: 'Copy Link Text', disabled: !text || text === url, run: () => post({ type: 'copy', text }) },
+	], url.length > 60 ? `${url.slice(0, 57)}…` : url, undefined, panel);
+	if (!menu.classList.contains('open')) {
+		return;
+	}
+	// Opened above the link like every other menu, but a link near the top of
+	// the thread has no room there, and `#app` clips what overflows it.
+	const box = app.getBoundingClientRect();
+	if (menu.getBoundingClientRect().top < box.top + 8) {
+		menu.style.bottom = '';
+		menu.style.top = `${link.getBoundingClientRect().bottom - box.top + 6}px`;
 	}
 }
 
@@ -2475,8 +2786,12 @@ composer.addEventListener('mousedown', event => {
 
 /* ---------------------------------------------------------------- popups */
 
-function closePopups(except?: HTMLElement): void {
-	if (except !== agentsPanel) {
+/**
+ * `keep`: a panel left open under a menu opened from inside it — a link's
+ * right-click menu in an agent's report (see `linkMenu`).
+ */
+function closePopups(except?: HTMLElement, keep?: HTMLElement): void {
+	if (except !== agentsPanel && keep !== agentsPanel) {
 		agentsView = undefined;
 	}
 	// Closed by another popup, the palette is closed: the next "/" opens it
@@ -2485,7 +2800,7 @@ function closePopups(except?: HTMLElement): void {
 		paletteMode = undefined;
 	}
 	for (const popup of [menu, usagePopup, approvalPopup, palette, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel]) {
-		if (popup !== except) {
+		if (popup !== except && popup !== keep) {
 			popup.classList.remove('open');
 		}
 	}
@@ -2497,15 +2812,19 @@ function closePopups(except?: HTMLElement): void {
 	for (const { button } of skillButtons.values()) {
 		button.classList.remove('active');
 	}
+	for (const link of document.querySelectorAll('.link.active')) {
+		link.classList.remove('active');
+	}
 }
 
-function openAbove(popup: HTMLElement, anchor: HTMLElement, align: 'left' | 'right'): void {
-	closePopups(popup);
+function openAbove(popup: HTMLElement, anchor: HTMLElement, align: 'left' | 'right', keep?: HTMLElement): void {
+	closePopups(popup, keep);
 	anchor.classList.add('active');
 	// Relative to the view, not the window: the popup is positioned inside
 	// `#app`, and the two only coincide when nothing else is laid out around it.
 	const box = app.getBoundingClientRect();
 	const rect = anchor.getBoundingClientRect();
+	popup.style.top = '';
 	popup.style.bottom = `${box.bottom - rect.top + 6}px`;
 	if (align === 'left') {
 		popup.style.left = `${Math.max(8, rect.left - box.left)}px`;
@@ -2524,8 +2843,25 @@ function openAbove(popup: HTMLElement, anchor: HTMLElement, align: 'left' | 'rig
 	}
 }
 
+/** A menu opened over a panel goes on its own, leaving the panel: true when there was one to close. */
+function closeMenuOverPanel(): boolean {
+	if (!menu.classList.contains('open') || !menu.classList.contains('over-panel')) {
+		return false;
+	}
+	menu.classList.remove('open', 'over-panel');
+	for (const link of document.querySelectorAll('.link.active')) {
+		link.classList.remove('active');
+	}
+	return true;
+}
+
 document.addEventListener('mousedown', event => {
 	const target = event.target as Node;
+	// A menu over a panel closes on any press outside it; the panel then
+	// decides for itself below, as for any press.
+	if (!menu.contains(target)) {
+		closeMenuOverPanel();
+	}
 	// A click in the box moves the caret the inline palette follows, so it is not a click outside it.
 	if (paletteMode === 'inline' && paletteTarget.contains(target)) {
 		return;
@@ -2556,6 +2892,10 @@ document.addEventListener('keydown', event => {
 		post({ type: 'switchAgent', choice: 'cancel' });
 		return;
 	}
+	// A menu over a panel first, the panel with the next Escape.
+	if (closeMenuOverPanel()) {
+		return;
+	}
 	closePopups();
 });
 
@@ -2565,6 +2905,8 @@ interface MenuItem {
 	readonly description?: string;
 	readonly checked?: boolean;
 	readonly disabled?: boolean;
+	/** A key or gesture that does the same, shown at the right of the row. */
+	readonly shortcut?: string;
 	readonly run: () => void;
 }
 
@@ -2575,7 +2917,8 @@ interface MenuAction {
 	readonly run: () => void;
 }
 
-function openMenu(anchor: HTMLElement, items: MenuItem[], heading?: string, action?: MenuAction): void {
+/** `keep`: the panel the menu is opened from inside, which stays open under it. */
+function openMenu(anchor: HTMLElement, items: MenuItem[], heading?: string, action?: MenuAction, keep?: HTMLElement): void {
 	if (menu.classList.contains('open') && anchor.classList.contains('active')) {
 		closePopups();
 		return;
@@ -2584,7 +2927,9 @@ function openMenu(anchor: HTMLElement, items: MenuItem[], heading?: string, acti
 	if (action) {
 		headingAction = button([icon(action.icon)], { class: 'ghost round menu-heading-action', title: action.title });
 		headingAction.addEventListener('click', () => {
-			closePopups();
+			if (!closeMenuOverPanel()) {
+				closePopups();
+			}
 			action.run();
 		});
 	}
@@ -2596,16 +2941,22 @@ function openMenu(anchor: HTMLElement, items: MenuItem[], heading?: string, acti
 				el('span', { class: 'menu-text' },
 					el('span', { class: 'menu-label', text: item.label }),
 					item.description ? el('span', { class: 'menu-description', text: item.description }) : undefined),
+				item.shortcut ? el('span', { class: 'menu-shortcut', text: item.shortcut }) : '',
 				item.checked ? icon('check', 'menu-check') : el('span', { class: 'menu-check' }),
 			], { class: 'menu-item' });
 			b.disabled = !!item.disabled;
 			b.addEventListener('click', () => {
-				closePopups();
+				// Opened over a panel, only the menu goes: the panel stays.
+				if (!closeMenuOverPanel()) {
+					closePopups();
+				}
 				item.run();
 			});
 			return b;
 		}));
-	openAbove(menu, anchor, 'left');
+	// Over a panel the menu is drawn above it: a panel sits over the popups.
+	menu.classList.toggle('over-panel', !!keep);
+	openAbove(menu, anchor, 'left', keep);
 }
 
 agentPill.addEventListener('click', () => {
@@ -3338,7 +3689,8 @@ function renderSkillBar(s: ChatViewState): void {
 			const button = el('button', { class: 'skill-button' });
 			button.type = 'button';
 			const id = skill.id;
-			button.addEventListener('click', () => pressSkill(id, button));
+			// ⌘/Ctrl+click queues it for after the running turn, as ⌘Enter queues a message.
+			button.addEventListener('click', event => pressSkill(id, button, event.metaKey || event.ctrlKey));
 			hoverTip.attach(button);
 			button.addEventListener('contextmenu', event => {
 				event.preventDefault();
@@ -3450,7 +3802,7 @@ function toolbarSkill(id: string): ToolbarSkill | undefined {
 }
 
 /** A press: answer or stop a run in the background, else run — asking for parameters first. */
-function pressSkill(id: string, anchor: HTMLElement): void {
+function pressSkill(id: string, anchor: HTMLElement, queue = false): void {
 	const skill = toolbarSkill(id);
 	if (!skill) {
 		return;
@@ -3459,7 +3811,22 @@ function pressSkill(id: string, anchor: HTMLElement): void {
 		closePopups();
 		return;
 	}
+	if (queue) {
+		queueSkill(skill, anchor);
+		return;
+	}
 	requestSkill(skill, anchor, {});
+}
+
+/**
+ * "Run after this turn": the skill waits in the tab's queue and starts once
+ * the agent has finished, as a message queued with ⌘Enter does — into the
+ * chat as a message, or in the background for a clipboard or silent skill.
+ * With nothing running it starts at once. Not asked "run it again?": queuing
+ * another run is what was chosen.
+ */
+function queueSkill(skill: ToolbarSkill, anchor: HTMLElement): void {
+	invokeSkill(skill, anchor, {}, true, state?.activeTab, true);
 }
 
 /** The skill's own button when the bar shows it, else the "/" button: where its popovers open. */
@@ -3491,21 +3858,21 @@ function requestSkill(skill: ToolbarSkill, anchor: HTMLElement, given: Readonly<
 }
 
 /** Runs a skill whose every parameter has a valid value; otherwise asks for them, `given` filled in. */
-function invokeSkill(skill: ToolbarSkill, anchor: HTMLElement, given: Readonly<Record<string, string>>, again: boolean, tabId: string | undefined): void {
+function invokeSkill(skill: ToolbarSkill, anchor: HTMLElement, given: Readonly<Record<string, string>>, again: boolean, tabId: string | undefined, queue = false): void {
 	const values: Record<string, string> = {};
 	for (const p of skill.params) {
 		values[p.name] = given[p.name] ?? p.preset ?? '';
 	}
 	const complete = skill.params.every(p => !valueProblem(p, values[p.name]));
 	if (complete && (Object.keys(given).length || !skill.params.length)) {
-		postRun(skill, values, again, tabId);
+		postRun(skill, values, again, tabId, queue);
 		return;
 	}
-	openParams(skill, anchor, values, again, tabId);
+	openParams(skill, anchor, values, again, tabId, queue);
 }
 
-function postRun(skill: ToolbarSkill, values: Record<string, string>, again: boolean, tabId: string | undefined): void {
-	post({ type: 'runToolbarSkill', id: skill.id, values, tabId, again: again || undefined });
+function postRun(skill: ToolbarSkill, values: Record<string, string>, again: boolean, tabId: string | undefined, queue = false): void {
+	post({ type: 'runToolbarSkill', id: skill.id, values, tabId, again: again || undefined, queue: queue || undefined });
 }
 
 /**
@@ -3614,7 +3981,7 @@ function valueProblem(param: ToolbarParam, value: string): string | undefined {
 	return undefined;
 }
 
-function openParams(skill: ToolbarSkill, anchor: HTMLElement, values: Record<string, string>, again: boolean, tabId: string | undefined): void {
+function openParams(skill: ToolbarSkill, anchor: HTMLElement, values: Record<string, string>, again: boolean, tabId: string | undefined, queue = false): void {
 	const fields = skill.params.map(param => {
 		let field: HTMLInputElement | HTMLSelectElement;
 		if (param.type === 'choice') {
@@ -3655,7 +4022,7 @@ function openParams(skill: ToolbarSkill, anchor: HTMLElement, values: Record<str
 			out[param.name] = field.value.trim();
 		}
 		closePopups();
-		postRun(skill, out, again, tabId);
+		postRun(skill, out, again, tabId, queue);
 	};
 	run.addEventListener('click', submit);
 	paramsPopup.replaceChildren(
@@ -3709,7 +4076,14 @@ function skillMenu(id: string, anchor: HTMLElement): void {
 	if (!skill) {
 		return;
 	}
+	const busy = !!state?.tabs.find(t => t.id === state?.activeTab)?.busy;
 	openMenu(anchor, [
+		{ icon: 'play', label: 'Run', shortcut: 'Click', run: () => requestSkill(skill, anchor, {}) },
+		{
+			icon: 'list-ordered', label: 'Run after this turn', shortcut: `${modKey}+Click`,
+			description: busy ? 'Waits in the queue until the agent has finished' : 'Nothing is running: it runs now',
+			run: () => queueSkill(skill, anchor),
+		},
 		{ icon: 'edit', label: 'Edit toolbar skill…', run: () => openSkillEditor(skill) },
 		{ icon: 'trash', label: 'Delete toolbar skill', run: () => confirmDeleteSkill(skill, anchor) },
 		{ icon: 'arrow-left', label: 'Move left', disabled: at <= 0, run: () => post({ type: 'moveToolbarSkill', id, by: -1 }) },
