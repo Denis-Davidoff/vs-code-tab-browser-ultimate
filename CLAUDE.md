@@ -4269,10 +4269,11 @@ from their shipped webviews — Claude Code 2.1.301 (`webview/index.css`, CSS mo
 | working line | Claude Code's spinner row, Codex's shimmer | a star changing shape every 120 ms (`· ✢ ✳ ✶ ✻ ✽` and back, in the accent colour, still under reduced motion), then "Browsing… 12s"; when the turn ends a small square takes the star's slot, so the line does not shift, before "Browsed for 42s" and, right-aligned, the turn's tokens "↑ 35k ↓ 812" — all asked for |
 | composer | Codex surface, Claude Code focus ring | 12 px radius, soft shadow, accent ring on focus, round send button in the foreground colour |
 | pills and menus | both | agent and model are ghost pills opening in-view menus (label, description, check), not native `<select>`s |
-| code blocks | both | header with the language and a copy button; tables, quotes, rules |
+| code blocks | both | header with the language — in the chart yellow, bold (asked for) — and a copy button; the code a little brighter than the prose, mixed towards white on a dark theme and towards black on a light one (`body.vscode-dark` / `vscode-light`; high contrast keeps its own) |
+| quotes | asked for | `6px 14px` inside, a 3 px left border in the chart yellow, text at 88 % of the foreground; consecutive `>` lines are **one** blockquote, a bare `>` a paragraph break — each line used to be a blockquote of its own, which padding turned into a stack of boxes; a quote with no text (a lone `>` while a reply streams) draws nothing |
 | copying a message | asked for | a copy button at the bottom right of every prompt and reply, on hover (`.message-copy`); a reply copies as its Markdown; the prompt's copy does not fold the prompt |
 | spacing | asked for | rows `--row-pad` (10px) apart above and below — 6px at first, widened on request twice; the timeline's dot and line are placed from the same variable, so change only it — and 20px between turns — none after a turn that holds only its prompt, so messages added during a turn sit 22px apart rather than 42 (asked for); in a reply, paragraphs, lists, quotes, code blocks and tables 0.9em apart |
-| lists | asked for | a bullet is an em dash (`list-style-type: "— "`) in the theme's chart yellow, items 0.4em apart; numbered items 0.7em apart, their number bold in the same yellow; headings (`#`…`######`, h5 and h6 drawn as h4) bold (700) in that yellow too, a little larger by level — 1.3, 1.2, 1.12 and 1.05em |
+| lists | asked for | a bullet is an em dash (`list-style-type: "— "`) in the theme's chart yellow, items 0.4em apart; numbered items 0.7em apart, their number bold in the same yellow; headings (`#`…`######`, h5 and h6 sized as h4) bold (700), a little larger by level — 1.3, 1.2, 1.12 and 1.05em — and coloured from that yellow at h6 to white at h1, a fifth more white each level up (`level-N`, `--heading-yellow`); on a light theme the top is the foreground, since white would not read |
 | sending | asked for | the message's text lifts out of the box and flies to its prompt in the thread (`launchFlight` / `landFlight`): the prompt's text is hidden until the flight lands, so the words are on screen once; the target is the first new prompt **with this text** (two sends inside one post round trip put both prompts in at once, and "the last prompt" was the wrong one), hidden again if it is rebuilt in flight; a chat switch stops the flight; a send with no prompt appearing within 1.5 s (still waiting for detection, refused) fades in place; nothing flies under reduced motion |
 
 **The Markdown reader** handles what replies use: fenced code, headings, quotes, rules, tables
@@ -4333,7 +4334,8 @@ does not change on a re-render or after a reload. **The working line, "N agents 
 finished turn and the "Worked for …" line a turn leaves behind are all the chat text's own size**
 (asked for) — the body's font size set outright rather than in `em`, so no parent scales them; the
 star is 17px and the square 10px, and the token counts stay in the small print (`.worked-tokens`,
-0.92em).
+0.92em). **All three have the same space above them, 8px** (`margin-top`, asked for: twice the 4px
+it was, and one value for the three), and the working line 2px inside, as "agents running" has.
 
 **A turn's tokens are the difference in the chat's totals across the turn**, shown only when the
 agent reported any. That one rule is right for both agents although they report differently —
@@ -5320,14 +5322,30 @@ the recorded requests):
   later was taken and the turn went on.
 - **The approval menu has no say.** A question is never answered by Auto or Deny, is not a
   category in the menu, and `approvalModesChanged` passes over it: only the user can choose.
-- **The card**: each question with its header, its options as rows (one, or several where
-  `multiSelect`; number keys pick one), and — where the user's own words are taken — a text row
-  (Claude Code always takes them, as its own picker does; Codex when `isOther` or there are no
-  options; masked when `isSecret`). Answer is enabled once every question has an answer; Skip
-  sends none. **Answer sends exactly what the card shows chosen**: on a one-choice question, taking
-  the own-words row unmarks the options, so an empty row is no answer rather than the option picked
-  before it — which used to go out unseen (#430). Enter in the text row answers. What has been picked is kept outside the row
-  (`questionDrafts`), since a row is rebuilt whenever the chat is shown again.
+- **The form is a window above the message box, not a card in the thread** (asked for):
+  `questionDock`, first in the footer and as wide as the composer, built by `questionForm` for the
+  oldest card of the chat in front that still waits (`renderQuestionDock`). The thread keeps one row
+  for the card — the questions' names and "Waiting for your answer — in the form above the message
+  box" — which becomes the answers once it is answered. The form is built once per card and never
+  on a state post (#365); what has been picked lives in `questionDrafts` and the open tab in
+  `questionTabs`, so switching chats and back finds both again.
+- **A tab per question** (with more than one), named by its header, with a green check once it has
+  an answer, and "N of M answered" in the form's head. Each question shows its options as rows (one,
+  or several where `multiSelect`; number keys pick one in the open tab) and — where the user's own
+  words are taken — a text row (Claude Code always takes them, as its own picker does; Codex when
+  `isOther` or there are no options; masked when `isSecret`). **Answer is enabled only once every
+  question has an answer**; before that it is dimmed and marked `aria-disabled`, never `disabled` —
+  a disabled button gets no pointer events, so the tooltip saying "Answer every question first"
+  would never show — and a press opens the open question if it still needs its answer, else the
+  next that does. Skip sends none. Picking an option of a one-choice question moves on to the next
+  question still unanswered, and with none left focuses Answer; Enter in a text row answers, or
+  moves on the same way. **The focus goes with the open question** (`show`): hiding the block that
+  held it dropped it to the body, where the number keys and Enter reach nothing, so a second `1`
+  did nothing (review finding). The tabs wrap onto a second row rather than scroll: a strip with
+  no scrollbar left the open tab past the edge of a narrow side bar.
+  **Answer sends exactly what the form shows chosen**: on a one-choice question, taking the own-words
+  row unmarks the options, so an empty row is no answer rather than the option picked before it —
+  which used to go out unseen (#430).
 - **The host keeps only answers that fit** (`validAnswers`): a known question, one value unless
   several may be chosen, an option's label unless own words are taken. Nothing that fits is a skip.
 - **A secret answer is not kept**: the chat stores `••••` for it, the CLI gets the text.
@@ -5341,7 +5359,9 @@ the recorded requests):
 Verified end to end through the compiled backends against both real CLIs (asked, answered "Blue",
 the reply named blue; skipped, the reply said no answer was given), and the card in headless
 Chrome (two questions, single and multiple choice, own words replacing an option, the draft
-surviving a rebuild, the answer posted).
+surviving a rebuild, the answer posted). The form above the message box was checked there too:
+three questions, a pick moving to the next tab, a state post leaving the form as it was, Answer
+disabled until the third was answered, the answers posted, the form gone and the row showing them.
 
 ### Where it refuses to run
 
@@ -7438,6 +7458,14 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
      Ask whether the selection touches the element.
 430. **A form whose answer falls back to a choice it no longer shows** → focusing the empty
      own-words row unmarked the option, and Answer still sent it. Send what is shown chosen.
+431. **`width: 100%` plus padding and a border on an element that is not `border-box`** → a
+     question card's own-words row is a `div` (the options are buttons, which default to
+     `border-box`), so it came out 2px wider than the card and the whole thread scrolled sideways
+     by that much. Give such rows `box-sizing: border-box`.
+432. **Hiding a codicon with `display: none` under one class** → codicon.css sets `display` with
+     `.codicon[class*='codicon-']`, which is more specific, so the form's tab checks showed on every
+     tab, answered or not, and the check's `font-size` never applied either. Style a codicon with
+     a selector more specific than that (`.qd-tabs .qd-tab .qd-tab-check`, `:not(.answered)`).
 
 ## Special cases and non-obvious decisions
 

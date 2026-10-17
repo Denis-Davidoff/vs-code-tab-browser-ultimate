@@ -164,7 +164,10 @@ const switchCard = el('div', { class: 'switch-card' });
 /** The toolbar skills the tab's agent offers, above the message box. */
 const skillBar = el('div', { class: 'skill-bar' });
 skillBar.hidden = true;
-const footer = el('div', { class: 'footer' }, switchCard, skillBar, composer);
+/** A question with choices the agent waits on: answered here, above the message box, a tab per question. */
+const questionDock = el('div', { class: 'question-dock' });
+questionDock.hidden = true;
+const footer = el('div', { class: 'footer' }, questionDock, switchCard, skillBar, composer);
 /** One tab per open conversation, above the thread. */
 const tabStrip = el('div', { class: 'tab-strip' });
 
@@ -341,6 +344,7 @@ function render(): void {
 	}
 	renderTabs(state);
 	renderSwitch(state);
+	renderQuestionDock(state);
 	renderThread(state);
 	landFlight(state);
 	renderAttachments(state);
@@ -1270,34 +1274,68 @@ function approvalNode(entry: ApprovalEntry): HTMLElement {
 	return node;
 }
 
-/** What the user has picked in a question card so far, by card and question: kept across rebuilds of the row. */
-const questionDrafts = new Map<string, Map<string, { chosen: string[]; other: string; otherOn: boolean }>>();
-
 /**
  * A question with choices the agent asked in the middle of its turn —
  * Claude Code's `AskUserQuestion`, Codex's `request_user_input`. The turn
- * waits on it. Each question offers its options (one, or several where the
- * agent allows it) and, where it takes them, the user's own words; Answer sends
- * them all, Skip tells the agent to go on with its own judgement. What is
- * chosen is kept outside the row (`questionDrafts`), since a row is rebuilt
- * whenever the chat is shown again.
+ * waits on it. In the thread it is one row: while it waits, a line pointing at
+ * the form above the message box (`questionForm`); once answered, the answers.
  */
 function questionNode(entry: ApprovalEntry, questions: readonly AgentQuestion[]): HTMLElement {
 	const node = el('div', { class: `row approval question ${entry.status}` },
 		el('div', { class: 'approval-head' }, icon('question'), el('span', { text: questions.length > 1 ? `The agent asks ${questions.length} questions` : 'The agent asks' })));
-	if (entry.status !== 'pending') {
+	if (entry.status === 'pending') {
 		for (const q of questions) {
-			const given = entry.answers?.[q.id];
-			node.append(el('div', { class: 'question-done' },
-				el('span', { class: 'question-done-q', text: q.header || q.question }),
-				el('span', { class: 'question-done-a', text: given?.length ? given.join(', ') : '—' })));
+			node.append(el('div', { class: 'question-done' }, el('span', { class: 'question-done-q pending', text: q.header || q.question })));
 		}
-		const outcome = entry.status === 'allowed' ? '' : entry.status === 'denied' ? 'Skipped — the agent goes on with its own judgement' : approvalOutcomes.cancelled;
-		if (outcome) {
-			node.append(el('div', { class: 'approval-outcome', text: outcome }));
-		}
+		node.append(el('div', { class: 'approval-outcome', text: 'Waiting for your answer — in the form above the message box' }));
 		return node;
 	}
+	for (const q of questions) {
+		const given = entry.answers?.[q.id];
+		node.append(el('div', { class: 'question-done' },
+			el('span', { class: 'question-done-q', text: q.header || q.question }),
+			el('span', { class: 'question-done-a', text: given?.length ? given.join(', ') : '—' })));
+	}
+	const outcome = entry.status === 'allowed' ? '' : entry.status === 'denied' ? 'Skipped — the agent goes on with its own judgement' : approvalOutcomes.cancelled;
+	if (outcome) {
+		node.append(el('div', { class: 'approval-outcome', text: outcome }));
+	}
+	return node;
+}
+
+/** The question form shown above the message box, as `<chat id>:<entry id>`, or '' for none. */
+let dockShown = '';
+
+/**
+ * The oldest question of the chat in front that still waits, as a form above
+ * the message box. Built once per question and never on a state post — a
+ * rebuild between a press and its release loses the click (#365), and the
+ * picks live in `questionDrafts` anyway.
+ */
+function renderQuestionDock(s: ChatViewState): void {
+	const entry = s.entries.find((e): e is ApprovalEntry => e.kind === 'approval' && e.status === 'pending' && !!e.questions?.length);
+	const key = entry ? `${s.chatId}:${entry.id}` : '';
+	if (key === dockShown) {
+		return;
+	}
+	dockShown = key;
+	questionDock.hidden = !entry;
+	questionDock.replaceChildren(...(entry ? [questionForm(entry, entry.questions!)] : []));
+}
+
+/** What the user has picked in a question form so far, by card and question: kept across rebuilds. */
+const questionDrafts = new Map<string, Map<string, { chosen: string[]; other: string; otherOn: boolean }>>();
+/** The question each form has open, by card. */
+const questionTabs = new Map<string, number>();
+
+/**
+ * The form for one card: a tab per question (with more than one), the open
+ * question's options and, where the agent takes them, the user's own words;
+ * Answer — enabled once every question has an answer — sends them all, Skip
+ * tells the agent to go on with its own judgement. Picking one option of a
+ * one-choice question moves on to the next question still unanswered.
+ */
+function questionForm(entry: ApprovalEntry, questions: readonly AgentQuestion[]): HTMLElement {
 	let drafts = questionDrafts.get(entry.id);
 	if (!drafts) {
 		drafts = new Map();
@@ -1311,9 +1349,9 @@ function questionNode(entry: ApprovalEntry, questions: readonly AgentQuestion[])
 		}
 		return d;
 	};
-	// What Answer sends is exactly what the card shows chosen: with the own
+	// What Answer sends is exactly what the form shows chosen: with the own
 	// words row taken on a one-choice question, the options read unchosen, so
-	// an empty row is no answer rather than the option picked before it.
+	// an empty row is no answer rather than the option picked before it (#430).
 	const answerOf = (q: AgentQuestion): string[] => {
 		const d = draftOf(q);
 		const own = q.other && d.otherOn && d.other.trim() ? [q.secret ? d.other : d.other.trim()] : [];
@@ -1322,13 +1360,63 @@ function questionNode(entry: ApprovalEntry, questions: readonly AgentQuestion[])
 		}
 		return q.other && d.otherOn ? own : d.chosen.slice(0, 1);
 	};
-	const submit = button([el('span', { text: 'Answer' })], { class: 'approval-allow', title: 'Send the answers and let the agent go on' });
+	const answered = (q: AgentQuestion) => answerOf(q).length > 0;
+
+	const node = el('div', { class: 'question-form' });
+	const progress = el('span', { class: 'qd-progress' });
+	node.append(el('div', { class: 'qd-head' }, icon('question'),
+		el('span', { class: 'qd-title', text: questions.length > 1 ? `The agent asks ${questions.length} questions` : 'The agent asks' }),
+		progress));
+	const tabs: HTMLButtonElement[] = [];
+	const blocks: HTMLElement[] = [];
+	const submit = button([el('span', { text: 'Answer' })], { class: 'approval-allow' });
 	const skip = button([el('span', { text: 'Skip' })], { title: 'Answer nothing: the agent goes on with its own judgement' });
+
+	const show = (index: number) => {
+		// Hiding the block that holds the focus drops it to the body, where the
+		// number keys and Enter reach nothing: it goes into the block shown.
+		const hadFocus = node.contains(document.activeElement);
+		questionTabs.set(entry.id, index);
+		tabs.forEach((tab, i) => {
+			tab.classList.toggle('active', i === index);
+			tab.setAttribute('aria-selected', String(i === index));
+		});
+		blocks.forEach((block, i) => block.hidden = i !== index);
+		if (hadFocus) {
+			const block = blocks[index];
+			block?.querySelector<HTMLElement>('.question-option.chosen, .question-option, .question-other-input')?.focus();
+		}
+	};
+	const current = () => Math.min(questionTabs.get(entry.id) ?? 0, questions.length - 1);
+	const allAnswered = () => questions.every(answered);
 	const refresh = () => {
-		submit.disabled = questions.some(q => !answerOf(q).length);
+		const done = questions.filter(answered).length;
+		// Unavailable rather than `disabled`: a disabled button gets no pointer
+		// events in VS Code, so its tooltip — the one place that says why — never
+		// showed. A press then opens the next question still unanswered.
+		submit.classList.toggle('unavailable', done < questions.length);
+		submit.setAttribute('aria-disabled', String(done < questions.length));
+		submit.title = done < questions.length ? 'Answer every question first' : 'Send the answers and let the agent go on';
+		progress.textContent = questions.length > 1 ? `${done} of ${questions.length} answered` : '';
+		tabs.forEach((tab, i) => tab.classList.toggle('answered', answered(questions[i])));
+	};
+	/** The next question still unanswered after `from`, wrapping round; undefined when all are. */
+	const nextOpen = (from: number) => {
+		for (let k = 1; k <= questions.length; k++) {
+			const i = (from + k) % questions.length;
+			if (!answered(questions[i])) {
+				return i;
+			}
+		}
+		return undefined;
 	};
 	const send = (allow: boolean) => {
-		if (allow && submit.disabled) {
+		if (allow && !allAnswered()) {
+			// The open question first, while it still needs its answer; then the next that does.
+			const next = answered(questions[current()]) ? nextOpen(current()) : current();
+			if (next !== undefined) {
+				show(next);
+			}
 			return;
 		}
 		for (const b of node.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLTextAreaElement>('button, input, textarea')) {
@@ -1341,12 +1429,27 @@ function questionNode(entry: ApprovalEntry, questions: readonly AgentQuestion[])
 			}
 		}
 		questionDrafts.delete(entry.id);
+		questionTabs.delete(entry.id);
 		post(allow ? { type: 'approve', id: entry.id, allow: true, answers } : { type: 'approve', id: entry.id, allow: false });
 	};
+
+	if (questions.length > 1) {
+		const strip = el('div', { class: 'qd-tabs' });
+		strip.setAttribute('role', 'tablist');
+		questions.forEach((q, i) => {
+			const tab = button([icon('check', 'qd-tab-check'), el('span', { class: 'qd-tab-label', text: q.header || `Question ${i + 1}` })], { class: 'qd-tab', title: q.question });
+			tab.setAttribute('role', 'tab');
+			tab.addEventListener('click', () => show(i));
+			tabs.push(tab);
+			strip.append(tab);
+		});
+		node.append(strip);
+	}
+	const body = el('div', { class: 'qd-body' });
 	questions.forEach((q, qi) => {
 		const d = draftOf(q);
 		const block = el('div', { class: 'question-block' });
-		if (q.header) {
+		if (q.header && questions.length === 1) {
 			block.append(el('span', { class: 'question-header', text: q.header }));
 		}
 		block.append(el('div', { class: 'question-text', text: q.question }));
@@ -1374,11 +1477,19 @@ function questionNode(entry: ApprovalEntry, questions: readonly AgentQuestion[])
 			b.addEventListener('click', () => {
 				if (q.multiSelect) {
 					d.chosen = d.chosen.includes(option.label) ? d.chosen.filter(l => l !== option.label) : [...d.chosen, option.label];
-				} else {
-					d.chosen = [option.label];
-					d.otherOn = false;
+					mark();
+					return;
 				}
+				d.chosen = [option.label];
+				d.otherOn = false;
 				mark();
+				// One choice made: on to the next question that still needs one.
+				const next = nextOpen(qi);
+				if (next !== undefined && next !== qi) {
+					show(next);
+				} else if (next === undefined) {
+					submit.focus();
+				}
 			});
 			options.push(b);
 			list.append(b);
@@ -1410,7 +1521,7 @@ function questionNode(entry: ApprovalEntry, questions: readonly AgentQuestion[])
 				mark();
 			});
 			(input as HTMLElement).addEventListener('keydown', event => {
-				// Enter answers, Shift+Enter is a new line — as in the message box.
+				// Enter answers — or moves to the next question still open —, Shift+Enter is a new line.
 				if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
 					event.preventDefault();
 					send(true);
@@ -1420,32 +1531,34 @@ function questionNode(entry: ApprovalEntry, questions: readonly AgentQuestion[])
 			list.append(otherRow);
 		}
 		block.append(list);
-		block.dataset.index = String(qi);
-		node.append(block);
+		blocks.push(block);
+		body.append(block);
 		mark();
 	});
-	// Number keys pick an option of the question the focus is in, as the
-	// CLIs' own pickers do; outside a text field only.
+	node.append(body);
+	// Number keys pick an option of the open question, as the CLIs' own pickers
+	// do; outside a text field only.
 	node.addEventListener('keydown', event => {
 		const target = event.target as HTMLElement;
 		if (target.matches('input, textarea') || event.metaKey || event.ctrlKey || event.altKey) {
 			return;
 		}
 		const n = Number(event.key);
-		const block = target.closest<HTMLElement>('.question-block') ?? node.querySelector<HTMLElement>('.question-block');
-		const option = n >= 1 ? block?.querySelectorAll<HTMLButtonElement>('.question-option')[n - 1] : undefined;
+		const option = n >= 1 ? blocks[current()]?.querySelectorAll<HTMLButtonElement>('.question-option')[n - 1] : undefined;
 		if (option) {
 			event.preventDefault();
+			// No focus() after: the click may have moved on to the next question, or to
+			// Answer, and `show` has put the focus where it belongs.
 			option.click();
-			option.focus();
 		} else if (event.key === 'Enter' && !target.matches('button')) {
 			send(true);
 		}
 	});
 	submit.addEventListener('click', () => send(true));
 	skip.addEventListener('click', () => send(false));
+	node.append(el('div', { class: 'approval-actions qd-actions' }, skip, submit));
+	show(current());
 	refresh();
-	node.append(el('div', { class: 'approval-actions' }, submit, skip));
 	return node;
 }
 
@@ -2059,7 +2172,7 @@ function renderMarkdown(text: string): DocumentFragment {
 		const heading = /^(#{1,6})\s+(.*)$/.exec(line);
 		if (heading) {
 			flush();
-			const h = el('div', { class: `heading h${Math.min(heading[1].length, 4)}` });
+			const h = el('div', { class: `heading h${Math.min(heading[1].length, 4)} level-${heading[1].length}` });
 			inline(h, heading[2]);
 			out.append(h);
 			continue;
@@ -2072,9 +2185,40 @@ function renderMarkdown(text: string): DocumentFragment {
 		const quote = /^\s*>\s?(.*)$/.exec(line);
 		if (quote) {
 			flush();
+			// Consecutive `>` lines are one quote, a bare `>` between them a paragraph break,
+			// or every line became a padded box of its own.
 			const q = el('blockquote');
-			inline(q, quote[1]);
-			out.append(q);
+			let para: string[] = [];
+			const end = () => {
+				if (para.length) {
+					const p = el('p');
+					para.forEach((text, n) => {
+						if (n) {
+							p.append(el('br'));
+						}
+						inline(p, text);
+					});
+					q.append(p);
+					para = [];
+				}
+			};
+			for (let j = i; j < lines.length; j++) {
+				const m = /^\s*>\s?(.*)$/.exec(lines[j]);
+				if (!m) {
+					break;
+				}
+				i = j;
+				if (m[1].trim()) {
+					para.push(m[1]);
+				} else {
+					end();
+				}
+			}
+			end();
+			// A lone `>` — a reply still streaming its first quoted word — is no box yet.
+			if (q.childElementCount) {
+				out.append(q);
+			}
 			continue;
 		}
 		const bullet = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/.exec(line);
@@ -2176,7 +2320,7 @@ function tableCells(row: string): string[] {
 
 function codeBlock(code: string, lang: string): HTMLElement {
 	return el('div', { class: 'code-block' },
-		el('div', { class: 'code-head' }, el('span', { text: lang || 'text' }), copyButton(() => code)),
+		el('div', { class: 'code-head' }, el('span', { class: 'code-lang', text: lang || 'text' }), copyButton(() => code)),
 		el('pre', {}, el('code', { text: code })));
 }
 
