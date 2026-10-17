@@ -4471,6 +4471,7 @@ function openSkillEditor(skill?: ToolbarSkill): void {
 		['chat', 'In the chat', 'Sent as a message of the tab it is pressed in'],
 		['clipboard', 'To the clipboard', 'Runs in the background; only the marked result is copied'],
 		['silent', 'Silently', 'Runs in the background; the button says when it is done'],
+		['toast', 'In a notification', 'Runs in the background; the marked result is shown in a VS Code notification, with Copy and Open — which pauses a browser tab on screen until it is dismissed'],
 	];
 	let chosenResult: ToolbarResult = skill?.result ?? 'chat';
 	const resultGroup = el('div', { class: 'form-choices' }, ...results.map(([value, label, hint]) => {
@@ -4482,6 +4483,23 @@ function openSkillEditor(skill?: ToolbarSkill): void {
 		return el('label', { class: 'form-choice' }, radio, el('span', { class: 'form-choice-text' },
 			el('span', { text: label }), el('span', { class: 'form-hint', text: hint })));
 	}));
+
+	// How its end is told: not at all, in a sentence of ours, or in the user's own words.
+	type NotifyMode = 'none' | 'auto' | 'text';
+	let notifyMode: NotifyMode = skill?.notify?.mode ?? 'none';
+	const notifyPick = selectField<NotifyMode>([['none', 'No notification'], ['auto', 'Automatic — done, or what went wrong'], ['text', 'My own text']], notifyMode);
+	const notifyText = textField(skill?.notify?.mode === 'text' ? skill.notify.text : '', '{{skill}} is {{status}}: {{result}}');
+	notifyText.maxLength = 500;
+	const notifyTextRow = el('div', { class: 'notify-text' }, notifyText,
+		el('span', { class: 'form-hint', text: 'Fills in {{skill}}, {{status}} (done or failed), {{message}}, {{result}} and the parameters by name.' }));
+	notifyTextRow.hidden = notifyMode !== 'text';
+	notifyPick.addEventListener('change', () => {
+		notifyMode = notifyPick.value as NotifyMode;
+		notifyTextRow.hidden = notifyMode !== 'text';
+		if (notifyMode === 'text') {
+			notifyText.focus();
+		}
+	});
 
 	// The icon: a button showing it, opening a searchable grid of every codicon.
 	const iconPreview = el('span', { class: 'icon-preview' });
@@ -4573,6 +4591,11 @@ function openSkillEditor(skill?: ToolbarSkill): void {
 			prompt.focus();
 			return;
 		}
+		if (notifyMode === 'text' && !notifyText.value.trim()) {
+			error.textContent = 'The notification text is empty.';
+			notifyText.focus();
+			return;
+		}
 		const emptyStep = steps.findIndex(step => !step.prompt.trim() && step.check.trim());
 		if (emptyStep >= 0) {
 			error.textContent = `Prompt ${emptyStep + 2} has a check but no prompt.`;
@@ -4581,6 +4604,7 @@ function openSkillEditor(skill?: ToolbarSkill): void {
 		post({
 			type: 'saveToolbarSkill', skill: {
 				id, name: n, prompt: prompt.value, result: chosenResult, agents: editorAgents, icon: chosenIcon,
+				notify: notifyMode === 'auto' ? { mode: 'auto' } : notifyMode === 'text' ? { mode: 'text', text: notifyText.value.trim() } : undefined,
 				followUps: steps.filter(step => step.prompt.trim()).map(step => ({ prompt: step.prompt, check: step.check.trim() || undefined })),
 				colors: { text: colors.text.value(), border: colors.border.value(), icon: colors.icon.value() },
 				label: label.value || undefined, tooltip: tooltip.value || undefined,
@@ -4605,6 +4629,8 @@ function openSkillEditor(skill?: ToolbarSkill): void {
 				stepList, addStep),
 			formRow('Available in', agents),
 			el('div', { class: 'form-row' }, el('span', { class: 'form-label', text: 'Result' }), resultGroup),
+			el('div', { class: 'form-row' }, el('span', { class: 'form-label', text: 'Notify when it ends' }), notifyPick, notifyTextRow,
+				el('span', { class: 'form-hint', text: 'A VS Code notification when the skill is done or something went wrong — not when you stop it. A notification pauses a browser tab on screen until it is dismissed.' })),
 			el('div', { class: 'form-row' }, el('span', { class: 'form-label', text: 'Icon' }), iconButton, iconPanel),
 			el('div', { class: 'form-row' }, el('span', { class: 'form-label', text: 'Colours' }),
 				el('div', { class: 'color-parts' },

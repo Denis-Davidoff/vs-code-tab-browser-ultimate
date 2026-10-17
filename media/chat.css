@@ -3749,3 +3749,15 @@ body.vscode-light .code-block pre {
 	opacity: 1;
 	visibility: visible;
 }
+
+/* the skill editor's own notification text, under its select */
+.notify-text {
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+	margin-top: 4px;
+}
+
+.notify-text[hidden] {
+	display: none;
+}

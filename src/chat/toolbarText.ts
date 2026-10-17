@@ -12,7 +12,7 @@
  * loads it directly (see "Recipe for the next feature" in CLAUDE.md).
  */
 
-import type { ChatCommand, ToolbarColors, ToolbarParam, ToolbarSkill, ToolbarStep } from './chatProtocol';
+import type { ChatCommand, ToolbarColors, ToolbarNotify, ToolbarParam, ToolbarSkill, ToolbarStep } from './chatProtocol';
 
 /**
  * As typed after `/` or `$`: lower case, no spaces, like a CLI's own skills
@@ -38,6 +38,8 @@ export const toolbarLimits = {
 	maxLength: 10_000,
 	options: 30,
 	option: 100,
+	/** A notification's own text, before its placeholders are filled in. */
+	notifyText: 500,
 } as const;
 
 /**
@@ -80,7 +82,11 @@ export function validToolbarSkill(raw: unknown): ToolbarSkill | string {
 	if (followUps.length > toolbarLimits.followUps) {
 		return `A skill sends at most ${toolbarLimits.followUps + 1} prompts.`;
 	}
-	const result = raw.result === 'clipboard' || raw.result === 'silent' ? raw.result : 'chat';
+	const result = raw.result === 'clipboard' || raw.result === 'silent' || raw.result === 'toast' ? raw.result : 'chat';
+	const notify = validNotify(raw.notify);
+	if (typeof notify === 'string') {
+		return notify;
+	}
 	const agents = raw.agents === 'claude' || raw.agents === 'codex' ? raw.agents : 'all';
 	const icon = typeof raw.icon === 'string' && iconShape.test(raw.icon) ? raw.icon : 'sparkle';
 	const colors = validColors(raw.colors, raw.color);
@@ -100,7 +106,40 @@ export function validToolbarSkill(raw: unknown): ToolbarSkill | string {
 	if (params.length > toolbarLimits.params) {
 		return `A skill takes at most ${toolbarLimits.params} parameters.`;
 	}
-	return { id, name, prompt, followUps: followUps.length ? followUps : undefined, result, agents, icon, label, tooltip, colors, params };
+	return { id, name, prompt, followUps: followUps.length ? followUps : undefined, result, notify, agents, icon, label, tooltip, colors, params };
+}
+
+/** None, ours, or the user's own text — which may not be empty, or the notification would say nothing. */
+function validNotify(raw: unknown): ToolbarNotify | string | undefined {
+	if (!isRecord(raw)) {
+		return undefined;
+	}
+	if (raw.mode === 'auto') {
+		return { mode: 'auto' };
+	}
+	if (raw.mode !== 'text') {
+		return undefined;
+	}
+	const value = typeof raw.text === 'string' ? raw.text.trim() : '';
+	if (!value) {
+		return 'The notification text is empty.';
+	}
+	if (value.length > toolbarLimits.notifyText) {
+		return `The notification text is longer than ${toolbarLimits.notifyText} characters.`;
+	}
+	return { mode: 'text', text: value };
+}
+
+/**
+ * A notification's own text with its placeholders filled in: `{{skill}}`,
+ * `{{status}}`, `{{message}}`, `{{result}}` and the skill's parameters, by
+ * name. A placeholder naming none of them is left as written, as in a prompt.
+ * The values are put in as they are — the caller makes the whole safe for a
+ * notification (`plainInNotification`), since a result is a model's text.
+ */
+export function notificationText(template: string, values: Readonly<Record<string, string>>): string {
+	return template.replace(/\{\{\s*([A-Za-z_][A-Za-z0-9_-]*)\s*\}\}/g,
+		(whole, name: string) => Object.prototype.hasOwnProperty.call(values, name) ? values[name] : whole);
 }
 
 /**
@@ -297,9 +336,12 @@ export const resultEnd = 'RESULT>>>';
  * any code block inside the result, and JSON makes the model escape every
  * line break and quote of a multi-line text; the markers need neither.
  */
-export function withResultMarkers(prompt: string): string {
-	const rule = `put the final result, and nothing else, between a line ${resultStart} and a line ${resultEnd}, each marker on a line of its own. Everything between them is copied to the clipboard exactly as it stands, so do not wrap it in a code fence or add any comment inside; anything you say outside the markers is not copied.`;
-	return `This task runs in the background and its result is copied to the clipboard. When you are done, ${rule}\n\n${prompt}\n\nRemember: ${rule}`;
+export function withResultMarkers(prompt: string, to: 'clipboard' | 'notification' = 'clipboard'): string {
+	const where = to === 'clipboard'
+		? { done: 'copied to the clipboard', kept: 'copied' }
+		: { done: 'shown to the user in a short notification', kept: 'shown' };
+	const rule = `put the final result, and nothing else, between a line ${resultStart} and a line ${resultEnd}, each marker on a line of its own. Everything between them is ${where.done} exactly as it stands, so do not wrap it in a code fence or add any comment inside; anything you say outside the markers is not ${where.kept}.`;
+	return `This task runs in the background and its result is ${where.done}. When you are done, ${rule}\n\n${prompt}\n\nRemember: ${rule}`;
 }
 
 /** Where a clipboard result was found. */

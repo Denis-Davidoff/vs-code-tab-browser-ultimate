@@ -22,12 +22,12 @@ import type {
 import { pickElementContext, pickForChat } from '../elements/elementPicker';
 import { parseNews } from './news';
 import { confirm, refuse } from '../core/notify';
-import { capAt, plainInLabel, plainInPrompt } from '../core/notifyText';
+import { capAt, plainInLabel, plainInNotification, plainInPrompt } from '../core/notifyText';
 import { isBrowserApiGranted, workspaceIsRemoteFromHost } from '../setup/proposedApi';
 import { pageTitle } from '../translate/translateText';
 import { generateUuid } from '../core/uuid';
-import { runRowPrefix, ToolbarRuns } from './toolbarRun';
-import { adaptSigils, fillPrompt, toolbarLimits, validToolbarSkill } from './toolbarText';
+import { runRowPrefix, ToolbarRuns, type SkillEnd } from './toolbarRun';
+import { adaptSigils, fillPrompt, notificationText, toolbarLimits, validToolbarSkill } from './toolbarText';
 
 /**
  * The AI Browser chat: a webview view in its own container in the secondary (right) side bar.
@@ -118,6 +118,15 @@ const toolbarKey = 'aiBrowser.chat.toolbar';
  * prompts. An older build never touches this key.
  */
 const toolbarStepsKey = 'aiBrowser.chat.toolbarSteps';
+/**
+ * What came after 0.7.4 to a toolbar skill, by skill id, kept apart for the same
+ * reason: `toast` (the result shown in a notification — stored in the skill
+ * itself as `silent`, which is what an older build then does) and `notify`.
+ * An older build reads an unknown `result` as `chat` and writes it back so.
+ */
+const toolbarExtrasKey = 'aiBrowser.chat.toolbarExtras';
+/** The longest text a skill's notification shows; Open has the whole result. */
+const skillToastLimit = 1_000;
 const newsHiddenKey = 'aiBrowser.chat.newsHiddenAt';
 const inputHistoryKey = 'aiBrowser.chat.inputHistory';
 const inputHistoryLimit = 100;
@@ -183,6 +192,28 @@ interface RememberedSelection {
 	efforts: Record<string, string>;
 }
 
+/**
+ * A toolbar skill sent into the chat, one per press: a list per skill, since a
+ * second run (asked "run it again?") must not overwrite the first, whose end is
+ * told on its own. `sending` until the send settles — before that the tab may
+ * not be busy yet (detection can take seconds); `chains`, a skill of several
+ * prompts, running while any of them still waits in the tab's queue — between
+ * two of them the tab is idle for a moment, and the button would otherwise read
+ * "done".
+ */
+interface ChatSkillRun {
+	readonly tab: ChatTab;
+	/** The conversation it was sent into: a tab cleared or given another since let go of it. */
+	readonly chatId: string;
+	sending: boolean;
+	readonly chains?: string[];
+	/** What its notification is made of, once its work in the tab is over. */
+	readonly skill: ToolbarSkill;
+	readonly values: Readonly<Record<string, string>>;
+	/** The tab's Stop was pressed: the end is the user's, and is not told. */
+	stopped?: boolean;
+}
+
 export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
 	private _view: vscode.WebviewView | undefined;
 	private _viewReady = false;
@@ -214,6 +245,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		approvalMode: key => this._approvalPolicy()[key] ?? 'ask',
 		noteServer: server => this._noteServer(server),
 		changed: () => this._post(),
+		ended: (skill, end) => this._skillEnded(skill, end),
 	});
 	private readonly _limits = new Map<AgentId, readonly UsageWindow[]>();
 	private _postTimer: ReturnType<typeof setTimeout> | undefined;
@@ -345,8 +377,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 					tab.close();
 				}
 				// The toolbar's background runs too: their button and its question
-				// went with the view.
+				// went with the view. The skills sent into the chat ended with their
+				// tabs' turns, the user's doing — not told.
 				this._runs.viewClosed();
+				this._chatSkillTabs.clear();
 			}
 		}, undefined, this._subscriptions);
 	}
@@ -530,6 +564,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				return;
 			case 'deleteToolbarSkill':
 				this._runs.forget(message.id);
+				// Sent into the chat: its turn goes on, but the skill is gone — not told.
+				this._chatSkillTabs.delete(message.id);
 				await this._storeToolbar(this._toolbar().filter(s => s.id !== message.id));
 				return;
 			case 'moveToolbarSkill': {
@@ -556,14 +592,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				// Into the chat: Stop is the tab's own Stop, as the composer's is —
 				// and a skill of several prompts drops the ones not sent yet, which
 				// an idle moment between two of them would otherwise still send.
-				const inChat = this._chatSkillTabs.get(message.id);
-				const tab = inChat?.tab;
-				for (const chain of inChat?.chains ?? []) {
-					tab?.dropSteps(chain);
+				const runs = this._chatSkillTabs.get(message.id) ?? [];
+				for (const run of runs) {
+					for (const chain of run.chains ?? []) {
+						run.tab.dropSteps(chain);
+					}
 				}
-				if (tab && this._tabs.includes(tab) && tab.busy) {
-					this._giveBackQueue(tab);
-					tab.stop();
+				for (const tab of new Set(runs.map(run => run.tab))) {
+					if (this._tabs.includes(tab) && tab.busy) {
+						this._giveBackQueue(tab);
+						tab.stop();
+					}
 				}
 				this._chatSkillTabs.delete(message.id);
 				this._post();
@@ -607,6 +646,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				// attachments with it, to send or drop.
 				this._giveBackQueue(tab);
 				tab.stop();
+				// A skill sent into this tab was stopped by the user, not ended: no notification.
+				for (const run of [...this._chatSkillTabs.values()].flat()) {
+					if (run.tab === tab) {
+						run.stopped = true;
+					}
+				}
 				this._post();
 				return;
 			}
@@ -829,13 +874,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private _toolbar(): ToolbarSkill[] {
 		const raw = this._context.globalState.get<unknown[]>(toolbarKey);
 		const steps = this._context.globalState.get<unknown>(toolbarStepsKey);
-		const stepsOf = (id: unknown) => typeof id === 'string' && steps && typeof steps === 'object' && Object.prototype.hasOwnProperty.call(steps, id)
-			? (steps as Record<string, unknown>)[id] : undefined;
+		const extras = this._context.globalState.get<unknown>(toolbarExtrasKey);
+		const byId = (store: unknown, id: unknown) => typeof id === 'string' && store && typeof store === 'object' && Object.prototype.hasOwnProperty.call(store, id)
+			? (store as Record<string, unknown>)[id] : undefined;
 		const out: ToolbarSkill[] = [];
 		for (const item of Array.isArray(raw) ? raw : []) {
-			const withSteps = item && typeof item === 'object' && !Array.isArray(item) && (item as { followUps?: unknown }).followUps === undefined
-				? { ...item, followUps: stepsOf((item as { id?: unknown }).id) } : item;
-			const skill = validToolbarSkill(withSteps);
+			let merged: unknown = item;
+			if (item && typeof item === 'object' && !Array.isArray(item)) {
+				const record = item as { id?: unknown; followUps?: unknown; result?: unknown; notify?: unknown };
+				const extra = byId(extras, record.id) as { toast?: unknown; notify?: unknown } | undefined;
+				merged = {
+					...record,
+					followUps: record.followUps ?? byId(steps, record.id),
+					// `toast` only over the `silent` it was stored as: a skill an older build
+					// changed to another result since keeps that one.
+					result: record.result === 'silent' && extra?.toast === true ? 'toast' : record.result,
+					notify: record.notify ?? extra?.notify,
+				};
+			}
+			// A stored notification this build cannot take — a longer text a newer build
+			// allowed, a hand edit — is dropped, not the skill: the next save would
+			// otherwise delete it with its next prompts. Refused only from the editor.
+			let skill = validToolbarSkill(merged);
+			if (typeof skill === 'string' && merged && typeof merged === 'object' && (merged as { notify?: unknown }).notify !== undefined) {
+				skill = validToolbarSkill({ ...merged, notify: undefined });
+			}
 			if (typeof skill !== 'string' && !out.some(s => s.id === skill.id || s.name.toLowerCase() === skill.name.toLowerCase())) {
 				out.push(skill);
 			}
@@ -851,14 +914,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		// The next prompts under a key of their own (`toolbarStepsKey`); the
 		// skills without them, as an older build reads them.
 		const steps: Record<string, unknown> = {};
+		const extras: Record<string, unknown> = {};
 		for (const skill of list) {
 			if (skill.followUps?.length) {
 				steps[skill.id] = skill.followUps;
 			}
+			if (skill.result === 'toast' || skill.notify) {
+				extras[skill.id] = { toast: skill.result === 'toast' || undefined, notify: skill.notify };
+			}
 		}
-		const plain = list.map(({ followUps: _, ...skill }) => skill);
+		const plain = list.map(({ followUps: _, notify: __, ...skill }) => ({ ...skill, result: skill.result === 'toast' ? 'silent' : skill.result }));
 		const stored = await Promise.all([
 			this._context.globalState.update(toolbarStepsKey, steps),
+			this._context.globalState.update(toolbarExtrasKey, extras),
 			this._context.globalState.update(toolbarKey, plain),
 		]).then(() => true, () => false);
 		this._post();
@@ -916,23 +984,39 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 */
 	private _toolbarRunsState(): Record<string, ToolbarRun> {
 		const out = this._runs.state;
-		for (const [id, { tab, sending, chains }] of [...this._chatSkillTabs]) {
-			if (!this._tabs.includes(tab) || (!sending && !tab.busy && !chains?.some(c => tab.hasSteps(c)))) {
+		for (const [id, runs] of [...this._chatSkillTabs]) {
+			const left = runs.filter(run => {
+				const { tab } = run;
+				if (!this._tabs.includes(tab) || tab.chat.id !== run.chatId) {
+					// The tab closed, was cleared or given another conversation: the
+					// user let go of the skill's turn, which is not told.
+					return false;
+				}
+				if (run.sending || tab.busy || !!run.chains?.some(c => tab.hasSteps(c))) {
+					return true;
+				}
+				// Its work in the chat is over: told as the skill asks, unless the user stopped it.
+				if (!run.stopped && this._view) {
+					this._skillEnded(run.skill, { status: tab.status === 'failed' ? 'failed' : 'done', values: run.values });
+				}
+				return false;
+			});
+			if (!left.length) {
 				this._chatSkillTabs.delete(id);
-			} else if (!out[id]) {
-				out[id] = { status: 'running', inChat: true };
+			} else {
+				this._chatSkillTabs.set(id, left);
+				out[id] ??= { status: 'running', inChat: true };
 			}
 		}
 		return out;
 	}
 
-	/**
-	 * `sending` until the send settles: before that the tab may not be busy yet
-	 * (detection can take seconds). `chain`: a skill of several prompts, running
-	 * while any of them still waits in the tab's queue — between two of them the
-	 * tab is idle for a moment, and the button would otherwise read "done".
-	 */
-	private readonly _chatSkillTabs = new Map<string, { tab: ChatTab; sending: boolean; chains?: string[] }>();
+	/** The skills sent into the chat whose work there is not over, by skill id; see `ChatSkillRun`. */
+	private readonly _chatSkillTabs = new Map<string, ChatSkillRun[]>();
+
+	private _addChatRun(run: ChatSkillRun): void {
+		this._chatSkillTabs.set(run.skill.id, [...this._chatSkillTabs.get(run.skill.id) ?? [], run]);
+	}
 
 	/**
 	 * `queue` ("Run after this turn", ⌘/Ctrl+click): the skill waits in the
@@ -980,10 +1064,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}
 		const commands = this._registry.commands[agent] ?? [];
 		const steps = filled.steps.map(step => ({ ...step, text: adaptSigils(step.text, commands) }));
+		// The parameters as given, for the placeholders of the skill's notification.
+		const stringValues: Record<string, string> = {};
+		for (const param of skill.params) {
+			const value = values[param.name];
+			stringValues[param.name] = typeof value === 'string' ? value.trim() : '';
+		}
 		// The button asks before running a skill again; a press that did not ask
 		// (two clicks inside one post) is not taken as a yes.
-		const inChat = this._chatSkillTabs.get(skill.id);
-		if (!again && !queue && (this._runs.isRunning(skill.id) || (inChat && (inChat.sending || inChat.tab.busy || !!inChat.chains?.some(c => inChat.tab.hasSteps(c)))))) {
+		const inChat = (this._chatSkillTabs.get(skill.id) ?? []).some(run => run.sending || run.tab.busy || !!run.chains?.some(c => run.tab.hasSteps(c)));
+		if (!again && !queue && (this._runs.isRunning(skill.id) || inChat)) {
 			refuse(vscode.l10n.t("{0} is still running.", skill.name));
 			return;
 		}
@@ -1002,11 +1092,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			steps.forEach((step, i) => tab.enqueue(step.text, [], {
 				chain, name: skill.name, step: i + 1, steps: steps.length, check: step.check,
 			}));
-			// A second run while the first is still queued adds its chain: the
-			// skill's Stop drops both.
-			const before = this._chatSkillTabs.get(skill.id);
-			const chains = [...(before?.tab === tab ? before.chains ?? [] : []), chain];
-			this._chatSkillTabs.set(skill.id, { tab, sending: false, chains });
+			// A run of its own beside any earlier one: the skill's Stop drops every
+			// chain, and each run is told on its own end.
+			this._addChatRun({ tab, chatId: tab.chat.id, sending: false, chains: [chain], skill, values: stringValues });
 			this._post();
 			this._drainQueues();
 			return;
@@ -1014,8 +1102,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		if (skill.result === 'chat') {
 			// Its own attachments — none — not the chips in the box, which are
 			// the user's next message.
-			const entry = { tab, sending: true };
-			this._chatSkillTabs.set(skill.id, entry);
+			const entry: ChatSkillRun = { tab, chatId: tab.chat.id, sending: true, skill, values: stringValues };
+			this._addChatRun(entry);
 			this._post();
 			try {
 				await this._send(steps[0].text, tab.id, []);
@@ -1031,7 +1119,63 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			return;
 		}
 		const root = vscode.workspace.workspaceFolders?.find(f => f.uri.scheme === 'file')?.uri.fsPath;
-		this._runs.start(skill, steps, tab.chat.id, backend, model, effort, this._cwd(), root);
+		this._runs.start(skill, steps, stringValues, tab.chat.id, backend, model, effort, this._cwd(), root);
+	}
+
+	/**
+	 * A toolbar skill's run ended on its own — in the background or in the chat —
+	 * and is told as the skill asks: its result in a notification (`toast`), with
+	 * Copy and Open for the whole of it, and/or a notification of the end, ours
+	 * (`auto`) or the user's own text with its placeholders filled in.
+	 *
+	 * A notification pauses a browser tab on screen until it is dismissed (see
+	 * "A notification pauses the built-in browser" in CLAUDE.md); these are asked
+	 * for, per skill, and the editor says so. Everything shown goes through
+	 * `plainInNotification`: a result is a model's text, and a notification body
+	 * opens `[x](command:…)` as a one-click command (#124).
+	 */
+	private _skillEnded(skill: ToolbarSkill, end: SkillEnd): void {
+		const name = skill.label ?? skill.name;
+		const failed = end.status === 'failed';
+		const toast = skill.result === 'toast' && !failed && end.result !== undefined;
+		const status = failed ? vscode.l10n.t("failed") : vscode.l10n.t("done");
+		let text: string | undefined;
+		if (skill.notify?.mode === 'text') {
+			text = notificationText(skill.notify.text, { ...end.values, skill: name, status, message: end.message ?? '', result: end.result ?? '' });
+			if (toast && !/\{\{\s*result\s*\}\}/.test(skill.notify.text)) {
+				text = `${text} — ${end.result}`;
+			}
+		} else if (toast) {
+			text = `${name}: ${end.result}`;
+		} else if (skill.notify?.mode === 'auto' || skill.result === 'toast') {
+			// Ours; a `toast` skill that ended with nothing to show says why even unasked.
+			// "Done." says nothing the sentence does not; anything else — why a check
+			// stopped the skill, where the result went — is said after the name.
+			const said = end.message && end.message !== vscode.l10n.t("Done.") ? end.message : undefined;
+			text = failed
+				? end.message ? vscode.l10n.t("{0} failed: {1}", name, end.message) : vscode.l10n.t("{0} ended with an error — see its chat.", name)
+				: said ? `${name}: ${said}` : vscode.l10n.t("{0} is done.", name);
+		}
+		if (!text) {
+			return;
+		}
+		const shown = plainInNotification(text, skillToastLimit);
+		const copy = vscode.l10n.t("Copy");
+		const open = vscode.l10n.t("Open");
+		const result = toast ? end.result! : undefined;
+		const buttons = result !== undefined ? [copy, open] : [];
+		const shownNow = failed ? vscode.window.showWarningMessage(shown, ...buttons) : vscode.window.showInformationMessage(shown, ...buttons);
+		void Promise.resolve(shownNow).then(async choice => {
+			if (result === undefined) {
+				return;
+			}
+			if (choice === copy) {
+				await vscode.env.clipboard.writeText(result);
+				confirm(vscode.l10n.t("{0}: copied to the clipboard.", name));
+			} else if (choice === open) {
+				await this._openText(skill.name, result);
+			}
+		}).catch(err => refuse(err instanceof Error ? err.message : String(err)));
 	}
 
 	private _fail(err: unknown): void {

@@ -90,8 +90,14 @@ export interface ToolbarSkill {
 	 * Absent or empty: one prompt. The same parameters fill them.
 	 */
 	readonly followUps?: readonly ToolbarStep[];
-	/** In the chat, as a message; to the clipboard, the marked result only; or silently, the button saying it is done. */
+	/**
+	 * In the chat, as a message; to the clipboard, the marked result only;
+	 * silently, the button saying it is done; or in a VS Code notification, the
+	 * marked result as its text.
+	 */
 	readonly result: ToolbarResult;
+	/** A VS Code notification when a run ends — done, failed, or stopped by its check; absent, none. */
+	readonly notify?: ToolbarNotify;
 	/** Which agents offer it: every one, or one. */
 	readonly agents: 'all' | AgentId;
 	/** A codicon name, without `codicon-`. */
@@ -105,7 +111,14 @@ export interface ToolbarSkill {
 	readonly params: readonly ToolbarParam[];
 }
 
-export type ToolbarResult = 'chat' | 'clipboard' | 'silent';
+export type ToolbarResult = 'chat' | 'clipboard' | 'silent' | 'toast';
+
+/**
+ * How a run's end is told: `auto`, a sentence of ours ("… is done", "… failed: …");
+ * `text`, the user's own, where `{{skill}}`, `{{status}}`, `{{message}}`,
+ * `{{result}}` and the skill's parameters are filled in (`notificationText`).
+ */
+export type ToolbarNotify = { readonly mode: 'auto' } | { readonly mode: 'text'; readonly text: string };
 
 /**
  * A prompt of a toolbar skill after the first. Without a `check` it runs once

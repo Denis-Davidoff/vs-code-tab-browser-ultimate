@@ -6,7 +6,7 @@
 import * as assert from 'node:assert';
 import { suite, test } from 'node:test';
 import type { ToolbarSkill } from './chatProtocol.ts';
-import { adaptSigils, extractResult, fillPrompt, nextDecision, nextNo, nextYes, stepGate, validToolbarSkill, valueProblem, withNextDecision, withResultMarkers } from './toolbarText.ts';
+import { adaptSigils, extractResult, fillPrompt, nextDecision, nextNo, nextYes, notificationText, stepGate, validToolbarSkill, valueProblem, withNextDecision, withResultMarkers } from './toolbarText.ts';
 
 const base = { id: 'abc-1', name: 'pr-review', prompt: 'Review PR {{pr}} with /one-more-review', result: 'chat', agents: 'all', icon: 'git-pull-request', params: [{ name: 'pr', type: 'number' }] };
 
@@ -134,5 +134,33 @@ suite('toolbar skills of several prompts', () => {
 		assert.strictEqual(stepGate('ok', undefined, nextNo).go, false);
 		assert.strictEqual(stepGate('ok', undefined, 'no marker').go, false);
 		assert.strictEqual(stepGate('ok', 'Prompt is too long', nextYes).go, false);
+	});
+
+	test("a result shown in a notification, and how a run's end is told", () => {
+		const toast = validToolbarSkill({ ...base, result: 'toast', notify: { mode: 'auto' } }) as ToolbarSkill;
+		assert.strictEqual(toast.result, 'toast');
+		assert.deepStrictEqual(toast.notify, { mode: 'auto' });
+		const own = validToolbarSkill({ ...base, notify: { mode: 'text', text: '  {{skill}} is {{status}}  ' } }) as ToolbarSkill;
+		assert.deepStrictEqual(own.notify, { mode: 'text', text: '{{skill}} is {{status}}' });
+		assert.match(validToolbarSkill({ ...base, notify: { mode: 'text', text: '  ' } }) as string, /notification text is empty/);
+		assert.match(validToolbarSkill({ ...base, notify: { mode: 'text', text: 'x'.repeat(501) } }) as string, /longer than 500/);
+		// Anything else is no notification, and an unknown result is the chat.
+		assert.strictEqual((validToolbarSkill({ ...base, notify: { mode: 'loud' } }) as ToolbarSkill).notify, undefined);
+		assert.strictEqual((validToolbarSkill({ ...base, notify: 'auto' }) as ToolbarSkill).notify, undefined);
+		assert.strictEqual((validToolbarSkill({ ...base, result: 'popup' }) as ToolbarSkill).result, 'chat');
+	});
+
+	test("a notification's own text has its placeholders filled in", () => {
+		const values = { skill: 'pr-review', status: 'done', message: '', result: 'LGTM', pr: '42' };
+		assert.strictEqual(notificationText('{{skill}} #{{ pr }} is {{status}}: {{result}}', values), 'pr-review #42 is done: LGTM');
+		// A placeholder naming nothing is left as written, as in a prompt.
+		assert.strictEqual(notificationText('{{nope}} and {{message}}.', values), '{{nope}} and .');
+	});
+
+	test('a notification run is told where its result goes', () => {
+		const prompt = withResultMarkers('Do it', 'notification');
+		assert.match(prompt, /shown to the user in a short notification/);
+		assert.doesNotMatch(prompt, /clipboard/);
+		assert.match(withResultMarkers('Do it'), /copied to the clipboard/);
 	});
 });

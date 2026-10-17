@@ -1001,7 +1001,10 @@ so the report went to the clipboard"). Each reports that the thing the user aske
 happen, and each is rare; a paused page is an acceptable price for not losing that. The refusal
 in a **remote** window is not among them: there it is every press, so it goes through `refuse()`,
 and the Add entries are hidden in the first place (`canHandOver`). The modal in
-`enableBrowserApi` is the same call — it asks a question, and blocking is the point.
+`enableBrowserApi` is the same call — it asks a question, and blocking is the point. **And a
+toolbar skill's own notifications**, its result shown "In a notification" or its "Notify when it
+ends": asked for, per skill, and the editor says beside both choices that a notification pauses a
+browser tab on screen — see [The toolbar of skills](#the-toolbar-of-skills).
 
 **The paste modal after Connect is a success that interrupts, and it is modal on purpose.** Translate
 Page's "the prompt is on your clipboard" is the other, for the same reason.
@@ -4761,7 +4764,8 @@ editor lowers capitals as they are typed, and a stored name with capitals is rea
 not refused), a **prompt** that may name the
 agents' skills (the editor's prompt has the same `/` / `$` palette as the box) and take
 parameters as `{{name}}`, **where it is offered** (every agent, Claude Code or Codex), **what
-becomes of the result**, an **icon** from the codicon set, an optional **colour**, **label** and **tooltip**,
+becomes of the result** — in the chat, to the clipboard, silently, or in a notification — and
+**whether its end is told**, an **icon** from the codicon set, an optional **colour**, **label** and **tooltip**,
 and **parameters** — name, type (text, number or a choice of values), maximum length, preset;
 each is required. Kept in `globalState` (`aiBrowser.chat.toolbar`), so every project has the same
 toolbar; at most 30, prompts up to 20 000 characters.
@@ -4803,7 +4807,7 @@ toolbar; at most 30, prompts up to 20 000 characters.
   (after the drain's half second). How it waits depends on where the result goes:
   - **into the chat**, its prompts go into the queue (`ChatTab.enqueue`), one prompt as well as
     several, so it is the multi-prompt path; the queue row reads "/name — sent when this turn ends";
-  - **clipboard or silent**, a `QueuedRun` waits in the queue ("runs in the background when this
+  - **clipboard, silent or in a notification**, a `QueuedRun` waits in the queue ("runs in the background when this
     turn ends") and the drain starts the background run when its turn comes, through
     `_runToolbarSkill` again — so the agent, model and checks are the tab's at that moment, not at
     the press. The item after it waits for it to be started, not to finish;
@@ -4829,9 +4833,10 @@ toolbar; at most 30, prompts up to 20 000 characters.
   for every agent works on either.
   - **In the chat**: sent to that tab as a message, through `_send` with its own empty attachment
     list, so it does not take the chips in the box.
-  - **To the clipboard / silently**: a background run (`ToolbarRuns`), a session of its own on the
-    tab's agent, model and effort, never shown in a tab, let go when its turn ends. A clipboard
-    run's prompt gets `withResultMarkers`: put the result, and nothing else, between `<<<RESULT`
+  - **To the clipboard / silently / in a notification**: a background run (`ToolbarRuns`), a session
+    of its own on the tab's agent, model and effort, never shown in a tab, let go when its turn ends.
+    A clipboard run's prompt gets `withResultMarkers` (a notification run's too, worded for where
+    its result goes): put the result, and nothing else, between `<<<RESULT`
     and `RESULT>>>`, each on a line of its own, no fence inside. **The instruction stands before
     the prompt and again after it**: once, at the end, it lost to the prompt's own wording — a
     skill the prompt names brings its own output format — and the model wrote no markers, so a
@@ -4907,6 +4912,46 @@ toolbar; at most 30, prompts up to 20 000 characters.
   chat counts as running too**, while the tab it was sent to is busy (`_chatSkillTabs`,
   `inChat`), and from the start of the send — detection can hold it for seconds before the tab is
   busy, and a post in between would otherwise have dropped it. Its Stop is that tab's own Stop.
+- **Its result in a notification, and its end told** — asked for. "In a notification"
+  (`result: 'toast'`) is a background run like the clipboard's: the last prompt carries the result
+  markers (`withResultMarkers(…, 'notification')`, which says where the result goes) and the marked
+  result is shown in an information notification with **Copy** (the whole result) and **Open** (the
+  whole result in a read-only plain-text tab, `_openText`). "Notify when it ends" (`notify`) is
+  none, `auto` — "… is done.", "…: Copied to the clipboard.", "… failed: <reason>" — or the user's
+  own text, where `notificationText` fills in `{{skill}}`, `{{status}}` (done or failed),
+  `{{message}}` (what the button says), `{{result}}` and the parameters by name. It works for every
+  result, chat included. Details that matter:
+  - **Told only for an end the user did not cause.** Done, failed, or stopped by its check is told;
+    the skill's own Stop, the tab's Stop, a closed tab, a tab cleared or given another conversation
+    ("Close this chat, start …"), a deleted skill and a closed view are not — the last ends every
+    run at once (`_end`'s `stopped` and `quiet`). `ToolbarRuns` hands each end to its host
+    (`ToolbarRunHost.ended`), and a skill sent into the chat is told once its work in the tab is
+    over (`_toolbarRunsState`), failed when the tab's mark is `failed`. Each press of a chat skill
+    is a `ChatSkillRun` of its own, remembering the conversation it went into: one record per skill
+    let a second run overwrite the first, whose end was then never told, and only the tab's Stop
+    marked a run as the user's end, so Clear, a replaced conversation and a closed view each
+    announced "… is done." for work the user had just ended (review finding).
+  - **One notification for a notification result.** With its own text, the result is added after
+    it unless the text names `{{result}}`; a notification result that ended with nothing to show
+    says why even with no notify chosen — it was asked to show something.
+  - **Everything shown goes through `plainInNotification`**, a cap of 1 000 characters included: a
+    result is a model's text, a page's words can be in it, and a notification body opens
+    `[x](command:…)` as a one-click command (#124, #132). Copy and Open carry the result as it is.
+  - **A notification pauses a browser tab on screen** until it is dismissed
+    ([why](#a-notification-pauses-the-built-in-browser)); this one is opted into per skill, and the
+    editor says so under both choices, "In a notification" and "Notify when it ends".
+  - **Stored where an older build cannot undo it**, #424's rule: `toast` and `notify` live in
+    `aiBrowser.chat.toolbarExtras` by skill id, and the skill itself is stored with `silent` for a
+    `toast` result — what an older build then does — since an older build reads an unknown
+    `result` as `chat` and writes it back so. On reading, `toast` is restored only over that
+    `silent`: a skill an older build changed to another result since keeps that one. **A stored
+    `notify` this build cannot take is dropped on reading, not the skill** — a longer text a newer
+    build allowed, a hand edit: `validToolbarSkill` refuses it, and a refused skill vanished from
+    the list and was deleted, next prompts and all, by the next save (review finding). It is
+    refused only from the editor.
+  - Verified with the compiled `ToolbarRuns` and `ChatViewProvider` against a stubbed `vscode`: each
+    result and notify combination, Copy and Open, no notification after a Stop or a closed view,
+    the storage round trip and an older build's edit; the editor in headless Chrome.
 - **A skill can send several prompts, one after another** — asked for: the first prompt, then
   **next prompts** (`ToolbarSkill.followUps`, up to 9), each sent once the agent has finished the
   one before it, as messages queued with ⌘Enter are. Between two prompts there is either nothing —
@@ -5390,8 +5435,9 @@ disabled until the third was answered, the answers posted, the form gone and the
   and `aiBrowser.chat.approvalServers` (the MCP servers seen) — per workspace, since a project is
   what a user trusts with commands; one menu for every tab.
 - **The toolbar's skills**: `globalState` `aiBrowser.chat.toolbar`, in order, each checked again
-  on every read (`validToolbarSkill`); their next prompts in `aiBrowser.chat.toolbarSteps`, by
-  skill id — apart, so an older build cannot strip them (see
+  on every read (`validToolbarSkill`); their next prompts in `aiBrowser.chat.toolbarSteps`, and a
+  notification result and how their end is told in `aiBrowser.chat.toolbarExtras`, by skill id —
+  apart, so an older build cannot strip them (see
   [The toolbar of skills](#the-toolbar-of-skills)).
 - **Selection**: `globalState` `aiBrowser.chat.selection` — the last agent, a model per agent and
   an effort per `<agent>:<model>`, made valid against what was detected on every read.

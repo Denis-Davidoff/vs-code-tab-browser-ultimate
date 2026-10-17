@@ -19,10 +19,30 @@ export interface ToolbarRunHost {
 	noteServer(server: string): void;
 	/** Something a button shows changed. */
 	changed(): void;
+	/**
+	 * A run ended on its own — done, failed, or stopped by its check — and not by
+	 * the user's Stop or the view closing: the host tells it as the skill asks
+	 * (`ToolbarSkill.notify`, a `toast` result).
+	 */
+	ended(skill: ToolbarSkill, end: SkillEnd): void;
+}
+
+/** How a run ended, for its notification. */
+export interface SkillEnd {
+	readonly status: 'done' | 'failed';
+	/** What the button says: "Copied to the clipboard.", an error, why the skill stopped. */
+	readonly message?: string;
+	/** The marked result of a clipboard or notification run. */
+	readonly result?: string;
+	/** The parameters it was run with, for the notification's placeholders. */
+	readonly values: Readonly<Record<string, string>>;
 }
 
 interface Running {
 	skillId: string;
+	/** The skill as it was when pressed, and the values it was run with: what its notification is made of. */
+	skill: ToolbarSkill;
+	values: Readonly<Record<string, string>>;
 	/** The agent whose backend holds the session: a Refresh replacing it ends the run. */
 	agent: AgentId;
 	run: ToolbarRun;
@@ -168,7 +188,7 @@ export class ToolbarRuns implements vscode.Disposable {
 	 * the user's own text; the instructions added around it (the check's
 	 * markers, the clipboard's) are ours.
 	 */
-	public start(skill: ToolbarSkill, steps: readonly FilledStep[], chatId: string, backend: AgentBackend, model: string, effort: string | undefined, cwd: string, root: string | undefined): void {
+	public start(skill: ToolbarSkill, steps: readonly FilledStep[], values: Readonly<Record<string, string>>, chatId: string, backend: AgentBackend, model: string, effort: string | undefined, cwd: string, root: string | undefined): void {
 		if (this._disposed) {
 			return;
 		}
@@ -193,10 +213,10 @@ export class ToolbarRuns implements vscode.Disposable {
 		const row: ToolEntry = {
 			kind: 'tool', id: `${runRowPrefix}${key}`, tool: 'agent', name: skill.name, detail: many ? `/${skill.name} · 1/${steps.length}` : `/${skill.name}`,
 			input: capAt(shown, rowTextLimit), status: 'running', startedAt: Date.now(),
-			agent: { type: skill.result === 'clipboard' ? 'toolbar skill · to the clipboard' : 'toolbar skill · silent', model, background: true, origin: 'toolbar', skill: skill.id, toolUses: 0, tokens: 0, calls: [] },
+			agent: { type: skill.result === 'clipboard' ? 'toolbar skill · to the clipboard' : skill.result === 'toast' ? 'toolbar skill · in a notification' : 'toolbar skill · silent', model, background: true, origin: 'toolbar', skill: skill.id, toolUses: 0, tokens: 0, calls: [] },
 		};
 		const entry: Running = {
-			skillId: skill.id, agent: backend.id, run: many ? { status: 'running', step: 1, steps: steps.length } : { status: 'running' },
+			skillId: skill.id, skill, values, agent: backend.id, run: many ? { status: 'running', step: 1, steps: steps.length } : { status: 'running' },
 			session, asked: [], chatId, row, reply: '', seen: new Set(), step: 0, stepReply: '', ownTurns: 0,
 		};
 		this._runs.set(key, entry);
@@ -304,6 +324,8 @@ export class ToolbarRuns implements vscode.Disposable {
 				text = withNextDecision(text, check);
 			} else if (at === steps.length - 1 && skill.result === 'clipboard') {
 				text = withResultMarkers(text);
+			} else if (at === steps.length - 1 && skill.result === 'toast') {
+				text = withResultMarkers(text, 'notification');
 			}
 			entry.stepReply = '';
 			if (many) {
@@ -385,7 +407,8 @@ export class ToolbarRuns implements vscode.Disposable {
 	public viewClosed(): void {
 		for (const [key, entry] of this._runs) {
 			if (entry.run.status === 'running' || entry.run.status === 'waiting') {
-				this._end(key, entry, { status: 'failed', message: vscode.l10n.t("The chat view was closed."), endedAt: Date.now() }, failedShownForMs);
+				// Not told: every run ends at once here, and the user closed the view.
+				this._end(key, entry, { status: 'failed', message: vscode.l10n.t("The chat view was closed."), endedAt: Date.now() }, failedShownForMs, false, undefined, true);
 			}
 		}
 	}
@@ -408,7 +431,7 @@ export class ToolbarRuns implements vscode.Disposable {
 			this._end(key, entry, { status: 'failed', message: error, endedAt: Date.now() }, failedShownForMs);
 			return;
 		}
-		if (skill.result !== 'clipboard') {
+		if (skill.result !== 'clipboard' && skill.result !== 'toast') {
 			this._end(key, entry, { status: 'done', message: vscode.l10n.t("Done."), endedAt: Date.now() }, shownForMs);
 			confirm(vscode.l10n.t("{0} is done.", name));
 			return;
@@ -418,7 +441,12 @@ export class ToolbarRuns implements vscode.Disposable {
 		const found = extractResult(reply);
 		const copied = found?.text ?? reply.trim();
 		if (!copied) {
-			this._end(key, entry, { status: 'failed', message: vscode.l10n.t("The reply was empty; nothing was copied."), endedAt: Date.now() }, failedShownForMs);
+			this._end(key, entry, { status: 'failed', message: skill.result === 'toast' ? vscode.l10n.t("The reply was empty; there was nothing to show.") : vscode.l10n.t("The reply was empty; nothing was copied."), endedAt: Date.now() }, failedShownForMs);
+			return;
+		}
+		if (skill.result === 'toast') {
+			// The host shows it (`ended`), with Copy and Open for the whole of it.
+			this._end(key, entry, { status: 'done', message: vscode.l10n.t("Shown in a notification."), endedAt: Date.now() }, shownForMs, false, copied);
 			return;
 		}
 		try {
@@ -443,8 +471,11 @@ export class ToolbarRuns implements vscode.Disposable {
 		confirm(vscode.l10n.t("{0}: {1}", name, message));
 	}
 
-	/** The session is let go here, every way a run ends: a Claude process ends with it. */
-	private _end(key: number, entry: Running, run: ToolbarRun, shownFor: number, stopped = false): void {
+	/**
+	 * The session is let go here, every way a run ends: a Claude process ends with
+	 * it. The host is told of an end the user did not cause (`stopped`, `quiet`).
+	 */
+	private _end(key: number, entry: Running, run: ToolbarRun, shownFor: number, stopped = false, result?: string, quiet = false): void {
 		const session = entry.session;
 		entry.session = undefined;
 		entry.asked = [];
@@ -462,6 +493,9 @@ export class ToolbarRuns implements vscode.Disposable {
 		}
 		this._keepEnded(entry.chatId, row);
 		this._host.changed();
+		if (!stopped && !quiet && (run.status === 'done' || run.status === 'failed')) {
+			this._host.ended(entry.skill, { status: run.status, message: run.message, result, values: entry.values });
+		}
 		entry.clear = setTimeout(() => {
 			if (this._runs.get(key) === entry) {
 				this._runs.delete(key);
