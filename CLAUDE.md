@@ -4777,6 +4777,10 @@ folder* section of `chatView.ts`.
   menu's "inside the project", Codex's `workspace-write` sandbox and Claude Code's working
   directory all follow it; a toolbar skill's background run takes the folder of the tab it was
   pressed in.
+- **The home directory picked as the folder is no project** (`ChatTab.projectRoot`, `isHome` by
+  real path): the agents work there as with no folder at all — Codex read-only, every file
+  "outside" to the approval menu — and the folder button says so (#447). As a project, `~`
+  gave Codex's sandbox all of it, `~/.ssh` included. A workspace opened at `~` is left as it was.
 - **Fixed once the conversation has started**: Claude Code keeps its sessions per folder
   (`~/.claude/projects/<folder>`), and `--resume` from another folder does not find the one it
   is given. So another folder picked for a started conversation **opens a new tab** in it, and
@@ -4866,9 +4870,15 @@ default one), and **how to use it**, asked for as a choice rather than one fixed
   `core.fsmonitor=false`**, and the copy's actions first check it is still our worktree
   (`isOurWorktree`, its `.git` file read without git, pointing into `base/.git/worktrees/`): the
   agent working in a copy can rewrite that file, and a removed copy made again as a plain folder
-  sent git searching upwards — to the home directory's repository, perhaps (#435). On Windows
-  `gitBinary` answers an absolute path, since a bare `git` is looked for in the working
-  directory first, which is repository content here.
+  sent git searching upwards — to the home directory's repository, perhaps (#435). And
+  `gitBinary` answers an absolute path on every platform, found only in absolute `PATH`
+  entries: a bare `git` is looked up when it runs, and an empty or `.` entry — or, on Windows,
+  the working directory itself, searched first — ran a `git` committed in the repository
+  (#448).
+- **Only a clean "not found" is absence** in `repoWork.ts` (`exists`), the rule `presence()`
+  follows for the MCP repair: any other `stat` failure read as absent sent `prepare` off to
+  delete the clone and make it again under the copies' unpushed work. A clone that fails
+  removes only itself, and the repository's folder only when that leaves it empty (#449).
 - **Only github.com, and only an address of our own making** (`parseRepo` / `cloneUrl`, leaf,
   under test): what is typed is read for an owner and a name, and the clone address is built
   from them — a typed URL could name another host, or `ext::`, git's transport that runs a
@@ -5408,9 +5418,11 @@ Each of the Codex settings was found by its absence:
   default mode asks about too.
 - **`workspace-write`, not `read-only`**: an approved command that writes otherwise still fails.
   Edits still ask under it — measured: an `apply_patch` creating a file sent
-  `item/fileChange/requestApproval` first. **But with no folder open the working directory is
-  the home directory** (`_cwd`), and there `workspace-write` would make all of it writable,
-  `~/.ssh` and the shell's rc files included; such a thread is `read-only` (`threadSettings`).
+  `item/fileChange/requestApproval` first. **But with no project the working directory is the
+  home directory** — no folder open (`_windowCwd`), or the home directory picked with the
+  folder button (`ChatTab.projectRoot`, #447) — and there `workspace-write` would make all of it
+  writable, `~/.ssh` and the shell's rc files included; such a thread is `read-only`
+  (`threadSettings`).
 
 **How the chat answers** ([src/chat/chatTab.ts](src/chat/chatTab.ts)): a question is an
 `ApprovalEntry` in the conversation — a card with what it is for ("Go to the internet?", "Use the
@@ -7723,6 +7735,14 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
      conversation. Keep only a row picked with the keys, in the same search.
 446. **"Not busy" as "quiet"** → between a turn's end and the turn Claude Code starts on its own
      the tab reads idle; ending the session there lost a prompt it had already taken.
+447. **The home directory as a project** → picked with the folder button, `~` became the root:
+     Codex's `workspace-write` covered all of it and every file there was "inside" — what #382
+     and #390 had closed for no folder at all.
+448. **A bare `git` where a repository is the working directory** → looked up at run time, an
+     empty or `.` `PATH` entry (Windows: the working directory first) ran the repository's own
+     `git`. Resolve it once, absolutely, from absolute entries only.
+449. **"Could not stat it" as "not there", before a delete** → `prepare` would have re-cloned over
+     the copies' work; and a failed clone removed the repository's whole folder, copies with it.
 
 ## Special cases and non-obvious decisions
 
@@ -8362,9 +8382,10 @@ with `LC_ALL=C` so a translated git says it in English.
 
 **Which `git` runs matters on macOS**, where `/usr/bin/git` without the Command Line Tools opens
 a system dialog offering to install them. `gitBinary` takes the path VS Code's Git extension
-already resolved when it is active, then a `git` on `PATH` outside `/usr/bin`, then `/usr/bin/git`
-only if `xcode-select -p` succeeds — the guard the Git extension itself uses — and otherwise skips
-the check. Breaks-silently #172.
+already resolved when it is active, then a `git` on an absolute `PATH` entry outside `/usr/bin`,
+then `/usr/bin/git` only if `xcode-select -p` succeeds — the guard the Git extension itself uses —
+and otherwise skips the check. Breaks-silently #172. Elsewhere it is the first `git` (`git.exe`)
+on an absolute `PATH` entry, by its absolute path, or nothing (#448).
 
 **A workspace opened at `~` makes the project and global Codex configs one file**
 (`codexProjectIsGlobal`), and every path that treated them as two went wrong: Connect wrote the

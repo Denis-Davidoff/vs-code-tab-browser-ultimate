@@ -19,7 +19,8 @@ import * as vscode from 'vscode';
  * active (it has done this dance, honouring `git.path`); on macOS, a git
  * outside `/usr/bin` on `PATH` (Homebrew and the like need no tools), then
  * `/usr/bin/git` only once `xcode-select -p` confirms the tools are there;
- * anywhere else, `git` from `PATH`. Answered once per window.
+ * anywhere else, the first `git` on `PATH`. Always an absolute path, and only
+ * from absolute `PATH` entries. Answered once per window.
  */
 let gitBinaryAnswer: Promise<string | undefined> | undefined;
 
@@ -39,41 +40,38 @@ async function findGit(): Promise<string | undefined> {
 			// The extension is up but its API is not; fall through.
 		}
 	}
-	if (process.platform === 'win32') {
-		// An absolute path: given a bare name, Windows looks in the working
-		// directory first, and the chat runs git inside repository content —
-		// a `git.exe` committed at a repository's root would be run.
-		for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
-			if (!dir || !path.isAbsolute(dir)) {
-				continue;
-			}
-			const candidate = path.join(dir, 'git.exe');
-			try {
-				await vscode.workspace.fs.stat(vscode.Uri.file(candidate));
-				return candidate;
-			} catch {
-				// Not here.
-			}
-		}
-		return undefined;
-	}
+	// Off macOS, the first `git` on an absolute `PATH` entry, and nothing else.
+	// A bare name is looked up at run time, and an empty or `.` entry — or, on
+	// Windows, the working directory itself, searched first — then runs a `git`
+	// committed in the repository the chat is working in.
 	if (process.platform !== 'darwin') {
-		return 'git';
+		return onPath(process.platform === 'win32' ? 'git.exe' : 'git');
 	}
-	for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
-		if (!dir || path.resolve(dir) === '/usr/bin') {
-			continue;
-		}
-		const candidate = path.join(dir, 'git');
-		try {
-			await vscode.workspace.fs.stat(vscode.Uri.file(candidate));
-			return candidate;
-		} catch {
-			// Not here.
-		}
+	const found = await onPath('git', dir => path.resolve(dir) === '/usr/bin');
+	if (found) {
+		return found;
 	}
 	const tools = await new Promise<boolean>(resolve => {
 		execFile('xcode-select', ['-p'], { timeout: 5_000 }, error => resolve(!error));
 	});
 	return tools ? '/usr/bin/git' : undefined;
+}
+
+/** The first `name` in an absolute `PATH` entry, by its absolute path; `skip` passes over an entry. */
+async function onPath(name: string, skip: (dir: string) => boolean = () => false): Promise<string | undefined> {
+	for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
+		if (!dir || !path.isAbsolute(dir) || skip(dir)) {
+			continue;
+		}
+		const candidate = path.join(dir, name);
+		try {
+			const stat = await vscode.workspace.fs.stat(vscode.Uri.file(candidate));
+			if (stat.type & vscode.FileType.File) {
+				return candidate;
+			}
+		} catch {
+			// Not here.
+		}
+	}
+	return undefined;
 }

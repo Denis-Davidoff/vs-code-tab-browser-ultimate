@@ -3960,7 +3960,7 @@ function workdirItemsFor(s: ChatViewState, query: string): WorkdirItem[] {
 	if (w.current) {
 		items.push({
 			key: 'folder:current', group, label: w.current.name, icon: 'check', current: true,
-			detail: `${w.current.path} — in use${w.locked ? ' by this conversation' : ''}`,
+			detail: `${w.current.path} — in use${w.locked ? ' by this conversation' : ''}${w.noProject ? '; the home directory, so no project: Codex only reads, and every file counts as outside' : ''}`,
 			run: () => input.focus(),
 		});
 	} else {

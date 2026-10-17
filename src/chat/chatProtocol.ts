@@ -405,6 +405,8 @@ export interface WorkdirState {
 	readonly current?: WorkdirFolder;
 	/** The conversation picked its folder rather than taking the window's. */
 	readonly picked: boolean;
+	/** The folder is the home directory: the agents work there with no project — read only for Codex, every file "outside". */
+	readonly noProject?: boolean;
 	readonly workspace: readonly WorkdirFolder[];
 	readonly recent: readonly WorkdirFolder[];
 	/** The conversation has started: another folder opens a new tab, this one stays where it is. */

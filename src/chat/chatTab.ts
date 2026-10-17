@@ -3,6 +3,9 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { realpathSync } from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { chatTitle, toolOutputLimit, validAnswers, type AgentEvent } from './agentProtocol';
 import { agentNames, type AgentBackend, type AgentSession, type TurnImage } from './agents';
@@ -130,6 +133,32 @@ export function newChat(agent: AgentId, id = generateUuid()): StoredChat {
 		stats: { inputTokens: 0, outputTokens: 0, cachedTokens: 0, turns: 0 },
 	};
 }
+
+/**
+ * Whether `folder` is the home directory, by its real path: a link to it is it
+ * too. Asked on every state post, so answered once per folder — a folder does
+ * not become the home directory while the window runs.
+ */
+export function isHome(folder: string): boolean {
+	let answer = homeAnswers.get(folder);
+	if (answer === undefined) {
+		const real = (p: string) => {
+			try {
+				return realpathSync(p);
+			} catch {
+				return path.resolve(p);
+			}
+		};
+		answer = real(folder) === real(os.homedir());
+		if (homeAnswers.size > 100) {
+			homeAnswers.clear();
+		}
+		homeAnswers.set(folder, answer);
+	}
+	return answer;
+}
+
+const homeAnswers = new Map<string, boolean>();
 
 /** Errors and failed agents in a conversation: the work that ended badly. */
 function failures(chat: StoredChat): number {
@@ -675,9 +704,18 @@ export class ChatTab {
 		return this._chat.folder ?? this._host.cwd();
 	}
 
-	/** The project the approval menu's "inside" means; see `AgentBackend.openSession`. */
+	/**
+	 * The project the approval menu's "inside" means; see `AgentBackend.openSession`.
+	 * The home directory picked as the folder is no project, as with no folder at
+	 * all: as one, Codex's `workspace-write` opened all of it, `~/.ssh` included,
+	 * and the menu counted every file there as inside (#382, #390, #447).
+	 */
 	public get projectRoot(): string | undefined {
-		return this._chat.folder ?? this._host.projectRoot();
+		const folder = this._chat.folder;
+		if (folder === undefined) {
+			return this._host.projectRoot();
+		}
+		return isHome(folder) ? undefined : folder;
 	}
 
 	/**

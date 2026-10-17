@@ -75,8 +75,24 @@ function repoDir(storage: string, repo: RepoRef): string {
 	return path.join(storage, 'github', repo.owner.toLowerCase(), repo.name.toLowerCase());
 }
 
+/**
+ * Whether `file` is there. **Only a clean "not found" is absence**, the rule
+ * `presence()` in the MCP repair follows: any other failure — no permission, an
+ * I/O error, a stalled mount — is thrown. Read as absent, it sent `prepare` off
+ * to delete the repository's clone and make it again, under every copy's
+ * unpushed work.
+ */
 async function exists(file: string): Promise<boolean> {
-	return fs.stat(file).then(() => true, () => false);
+	try {
+		await fs.stat(file);
+		return true;
+	} catch (err) {
+		const code = (err as NodeJS.ErrnoException).code;
+		if (code === 'ENOENT' || code === 'ENOTDIR') {
+			return false;
+		}
+		throw err;
+	}
 }
 
 /**
@@ -130,8 +146,11 @@ async function prepare(git: string, storage: string, repo: RepoRef, branch: stri
 		try {
 			await runGit(git, ['clone', '--filter=blob:none', '--no-checkout', '--', cloneUrl(repo), base], dir, networkTimeoutMs);
 		} catch (err) {
-			// A name that does not exist, or no access: nothing is left behind for it.
-			await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
+			// A name that does not exist, or no access: nothing is left behind for
+			// it — the failed clone, and the repository's folder only if that
+			// leaves it empty. Never the whole folder: the copies are in it.
+			await fs.rm(base, { recursive: true, force: true }).catch(() => undefined);
+			await fs.rmdir(dir).catch(() => undefined);
 			throw err;
 		}
 	}

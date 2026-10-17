@@ -10,7 +10,7 @@ import * as vscode from 'vscode';
 import { AgentRegistry, agentNames, type BrowserServer } from './agents';
 import { sweepBrowserConfigs } from './claudeAgent';
 import { bundledPin } from './agentBinary';
-import { ChatTab, newChat, reopened, started, storedEntries, storedTextLimit, type Attachment, type SkillStep, type StoredChat, type TabHost } from './chatTab';
+import { ChatTab, isHome, newChat, reopened, started, storedEntries, storedTextLimit, type Attachment, type SkillStep, type StoredChat, type TabHost } from './chatTab';
 import { chatTranscript, transcriptFileName } from './transcript';
 import { diffSides } from './diffSides';
 import { listWorkdir, type WorkdirListing } from './workdir';
@@ -1919,6 +1919,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		return {
 			current: current === undefined ? undefined : copy ? { path: current, name: `${copy.repo} · copy` } : shown(current),
 			picked: tab.chat.folder !== undefined,
+			noProject: tab.chat.folder !== undefined && isHome(tab.chat.folder),
 			workspace,
 			recent: this._recentFolders().filter(p => !workspace.some(w => w.path === p)).map(shown),
 			locked: tab.started,
