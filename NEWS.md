@@ -14,6 +14,14 @@ src/chat/news.ts — see "The AI Browser chat" in CLAUDE.md.
 
 Browse, debug and test your pages in VS Code's own browser — and let Claude Code or Codex see them, click through them and take screenshots, right inside the editor.
 
+## 0.7.7 — 2026-10-17
+- Saved logins: signing in with **Enter** on a form whose button is an arrow or labelled in another language is noticed again, so the offer to save comes up; a save from an offer withdrawn meanwhile no longer says "Saved" before it is undone.
+- Connect Codex and the startup repair work again in a `config.toml` that also holds servers written as `[mcp_servers]` keys; only a clash with our own entry is left alone.
+- Pressing the toolbar's Copy button in a window with no folder no longer takes the **Add to Claude Code** button away from your other windows.
+- Element reports: HTML in an element's id can no longer turn into a clickable command in the saved `.md` file.
+- `browser_console` with `clear` clears only the lines it returned, and long lines are never cut in the middle of an emoji.
+- Messages given back by **Stop** or **Clear** join what you had typed before pressing ↑, not the recalled message; the **/** button is a little smaller.
+
 ## 0.7.6 — 2026-10-17
 - Saved logins: a "Forgot password?" button no longer counts as signing in, so a mistyped password is not offered as an update; and a save from an offer that turns out wrong is undone, even if it was still being written.
 - The chat's buttons answer every click while a reply streams, and a new conversation sits by the message box again.

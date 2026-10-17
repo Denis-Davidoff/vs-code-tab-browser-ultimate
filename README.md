@@ -42,6 +42,13 @@ there is not the problem, the missing API is. **Measured by reading the shipped 
 
 ## Changelog
 
+**0.7.7** — Follow-up fixes to 0.7.6. Saved logins notice an Enter sign-in again on forms whose
+button is an arrow or in another language. Connect Codex and the startup repair no longer stop at a
+config holding servers in another TOML spelling. The toolbar's Copy button in a folderless window
+keeps the Add button in your other windows, an element's id can no longer become a command link in
+a saved report, `browser_console` clears only what it returned, and messages given back by Stop or
+Clear join your earlier draft rather than a recalled message.
+
 **0.7.6** — Fixes from a review of the whole project. Saved logins no longer take a "Forgot
 password?" button for a sign-in, and undo a save from an offer that turns out wrong. The chat's
 buttons answer every click while a reply streams, an input method's Escape no longer closes a form,
