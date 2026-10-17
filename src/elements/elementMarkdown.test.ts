@@ -5,7 +5,7 @@
 
 import * as assert from 'node:assert';
 import { suite, test } from 'node:test';
-import { formatAncestor, renderElementMarkdown, type ElementData } from './elementMarkdown.ts';
+import { formatAncestor, inertProse, renderElementMarkdown, type ElementData } from './elementMarkdown.ts';
 
 const fixture: ElementData = {
 	outerHTML: '<div class="flex py-8"><span>14</span></div>',
@@ -120,5 +120,16 @@ suite('page-supplied text stays on one line', () => {
 
 	test('ordinary values are untouched', () => {
 		assert.strictEqual(formatAncestor({ tagName: 'main', id: 'content→x' }), 'main#content→x');
+	});
+});
+
+suite('inertProse', () => {
+	test('a link or an autolink the page wrote does not survive on a prose line', () => {
+		assert.strictEqual(inertProse('div#[Fix](command:x.y)'), 'div#[Fix]\\(command:x.y)');
+		assert.strictEqual(inertProse('a#<command:x.y>'), 'a#\\<command:x.y>');
+	});
+
+	test('brackets that make no link are left alone', () => {
+		assert.strictEqual(inertProse('div.w-[30px].grid'), 'div.w-[30px].grid');
 	});
 });

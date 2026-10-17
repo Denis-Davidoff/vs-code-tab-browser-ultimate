@@ -18,3 +18,9 @@ package-lock.json
 CLAUDE.md
 scripts/**
 vscode-marketplace/**
+# Not part of the extension: the readme's image is linked from GitHub (vsce
+# rewrites the path), the release steps are the maintainer's, and the SVG icon
+# is unused — the manifest names media/icon.png.
+ai-browser-instruct.jpg
+PUBLISHING.md
+media/icon.svg

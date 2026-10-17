@@ -36,6 +36,16 @@ interface ConsoleLine {
 
 /** How many console lines to keep. Enough to be useful, bounded so it cannot grow without limit. */
 const consoleLimit = 200;
+/**
+ * A console line kept at most this long, and the tool's whole answer at most
+ * `consoleOutputLimit` characters — the newest lines kept. The 200-line cap
+ * bounded the count and not the size: a React app's key warnings carry stacks
+ * of a few kilobytes each, and the answer then passed the 25 000 tokens Claude
+ * Code accepts from a tool (#201), with no argument to narrow it but `clear`,
+ * which throws away exactly what was asked for.
+ */
+const consoleLineLimit = 2_000;
+const consoleOutputLimit = 40_000;
 
 /** Where a frame's scripts run: the session that reaches it, and its default context there. */
 interface FrameScope {
@@ -279,7 +289,7 @@ class TabSession {
 	}
 
 	private _record(level: string, text: string): void {
-		this._console.push({ level, text });
+		this._console.push({ level, text: text.length > consoleLineLimit ? `${text.slice(0, consoleLineLimit)}… [${text.length - consoleLineLimit} more characters]` : text });
 		if (this._console.length > consoleLimit) {
 			this._console.splice(0, this._console.length - consoleLimit);
 		}
@@ -2888,9 +2898,18 @@ export class BrowserController implements vscode.Disposable {
 					session.client.send('Log.clear', {}, session.sessionId),
 				].map(sent => withTimeout(sent, pageScrollTimeoutMs, 'console clear').catch(() => undefined)));
 			}
-			return lines.length
-				? lines.join('\n')
-				: 'The console is empty. Note that only messages logged since this tab was first inspected are captured.';
+			if (!lines.length) {
+				return 'The console is empty. Note that only messages logged since this tab was first inspected are captured.';
+			}
+			// The newest lines, as many as fit.
+			let size = 0;
+			let from = lines.length;
+			while (from > 0 && size + lines[from - 1].length + 1 <= consoleOutputLimit) {
+				size += lines[from - 1].length + 1;
+				from--;
+			}
+			const shown = lines.slice(from).join('\n');
+			return from > 0 ? `[${from} older lines left out to keep the answer small]\n${shown}` : shown;
 		});
 	}
 

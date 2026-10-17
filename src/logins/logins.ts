@@ -567,6 +567,20 @@ class LoginsFeature implements WatcherHandlers, vscode.Disposable {
 
 	/** Remembers how to undo what an offer just did, while its sign-in can still be withdrawn. */
 	private _noteCommit(offer: Offer, undo: (vault: Vault) => Vault | undefined): void {
+		// Withdrawn while the write was on its way, or while a "Replace?" modal
+		// waited: there was no commit yet for the withdrawal to undo, and it
+		// fires once. Undone here, or the rejected password stayed saved.
+		if (offer.withdrawn) {
+			void this._write(vault => {
+				const undone = undo(vault);
+				return undone ? { vault: undone, result: true } : undefined;
+			}).then(done => {
+				if (done) {
+					refuse(vscode.l10n.t("The sign-in on {0} did not go through, so the saved login was put back as it was.", plainInLabel(offer.submit.origin)));
+				}
+			});
+			return;
+		}
 		this._lastCommit = { origin: offer.submit.origin, until: offer.at + revertWindowMs, undo };
 	}
 
@@ -672,7 +686,7 @@ class LoginsFeature implements WatcherHandlers, vscode.Disposable {
 					username = edited.trim();
 				}
 				settle();
-				const saved = await this._saveNew(submit.origin, username, submit.password, now);
+				const saved = await this._saveNew(submit.origin, username, submit.password, now, offer);
 				if (saved) {
 					this._noteCommit(offer, vault => {
 						const entry = vault.logins.find(e => e.id === saved.after.id);
@@ -697,7 +711,7 @@ class LoginsFeature implements WatcherHandlers, vscode.Disposable {
 	 * overwrote a saved password with whatever the field held. Replacing is
 	 * now a question with its own answer.
 	 */
-	private async _saveNew(origin: string, username: string, password: string, now: number)
+	private async _saveNew(origin: string, username: string, password: string, now: number, offer?: Offer)
 		: Promise<{ readonly before?: LoginEntry; readonly after: LoginEntry } | undefined> {
 		const vault = await this._read();
 		if (!vault) {
@@ -723,6 +737,11 @@ class LoginsFeature implements WatcherHandlers, vscode.Disposable {
 						known.username || vscode.l10n.t("(no username)"), origin),
 					{ modal: true }, replace);
 				if (answer !== replace) {
+					return undefined;
+				}
+				// The modal can stay up while the site draws its form again: an
+				// answer to an offer withdrawn meanwhile writes nothing.
+				if (offer && !this._stillValid(offer)) {
 					return undefined;
 				}
 				agreed = { id: known.id, password: known.password };

@@ -974,8 +974,12 @@ async function deliverToAssistant(
 			return;
 
 		case 'noWorkspace':
+			// The status bar, not a toast: in a window with no folder this is
+			// every press, and a toast pauses the page just picked in (#323). The
+			// Add entries are hidden there (`canHandOver`), so this is reached
+			// only through a keybinding or the palette.
 			await vscode.env.clipboard.writeText(report);
-			vscode.window.showWarningMessage(vscode.l10n.t(
+			refuse(vscode.l10n.t(
 				"{0} addresses files by their path inside the workspace, and no local folder is open — the report was copied to the clipboard instead.",
 				assistantName(assistant)));
 			return;

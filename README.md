@@ -42,6 +42,13 @@ there is not the problem, the missing API is. **Measured by reading the shipped 
 
 ## Changelog
 
+**0.7.6** — Fixes from a review of the whole project. Saved logins no longer take a "Forgot
+password?" button for a sign-in, and undo a save from an offer that turns out wrong. The chat's
+buttons answer every click while a reply streams, an input method's Escape no longer closes a form,
+and messages given back by Stop or Clear are kept. A fetched repository's own skills stay off until
+trusted, Add to Claude Code is hidden with no folder open, Codex configs in other TOML spellings
+are left intact, and `browser_console` answers stay within a tool's size limit.
+
 **0.7.5** — A working folder per chat: the folder button beside **/** sets where the agent works
 and lists that folder's files to attach. GitHub repositories open three ways — a separate copy on
 a branch of its own (with its changes, push and pull request), a clone into a folder, or a

@@ -3103,9 +3103,9 @@ body.vscode-light .code-block pre {
 .slash-button .slash-mark {
 	position: relative;
 	display: inline-block;
-	width: 15px;
-	height: 15px;
-	border-radius: 3px;
+	width: 12px;
+	height: 12px;
+	border-radius: 2.5px;
 	border: 1.5px solid currentColor;
 }
 
@@ -3115,7 +3115,7 @@ body.vscode-light .code-block pre {
 	left: 50%;
 	top: 50%;
 	width: 1.5px;
-	height: 9px;
+	height: 7px;
 	border-radius: 1px;
 	background: currentColor;
 	transform: translate(-50%, -50%) rotate(24deg);

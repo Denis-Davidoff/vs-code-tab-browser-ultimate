@@ -48,6 +48,20 @@ export function oneLine(value: string): string {
 		ch => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`);
 }
 
+/**
+ * Page-chosen text on a prose line of a report, kept from becoming a link. A
+ * report is a `.md` file, and opened in an editor VS Code's Markdown support
+ * turns `[x](command:…)` — an element id may hold exactly that — or
+ * `<command:…>` into a link that runs a command on Cmd+click (#371's sink,
+ * through a file on disk). Only `](` and `<` are escaped: a Tailwind class like
+ * `w-[30px]` keeps its brackets. **Written twice on purpose**, in
+ * `elementMarkdown.ts` and `reportFormat.ts`, since neither leaf may import the
+ * other.
+ */
+export function inertProse(value: string): string {
+	return value.replace(/\]\(/g, ']\\(').replace(/</g, '\\<');
+}
+
 /** `tag#id.class.class`, the notation used for both the path and the title. */
 export function formatAncestor(ancestor: ElementAncestor): string {
 	const id = ancestor.id ? `#${ancestor.id}` : '';
@@ -81,15 +95,15 @@ export function renderElementMarkdown(data: ElementData, url: string | undefined
 	// The element itself is the last entry of `ancestors`.
 	const self = data.ancestors.at(-1);
 	if (self) {
-		sections.push(`Element: ${formatAncestor(self)}`);
+		sections.push(`Element: ${inertProse(formatAncestor(self))}`);
 	}
 
 	if (url) {
-		sections.push(`URL: ${oneLine(url)}`);
+		sections.push(`URL: ${inertProse(oneLine(url))}`);
 	}
 
 	if (data.ancestors.length) {
-		sections.push(`HTML Path: ${data.ancestors.map(formatAncestor).join(' > ')}`);
+		sections.push(`HTML Path: ${inertProse(data.ancestors.map(formatAncestor).join(' > '))}`);
 	}
 
 	sections.push(`Outer HTML:\n${fence(data.outerHTML, 'html')}`);

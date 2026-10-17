@@ -328,6 +328,52 @@ export function codexUnterminated(text: string): boolean {
 	return quote !== undefined || depth > 0 || braces > 0;
 }
 
+/** Any table header, `[path]` or `[[path]]`, for `codexServersElsewhere`. */
+const anyHeader = new RegExp(String.raw`^\s*\[\[?\s*(${keyPath})\s*\]\]?\s*$`);
+
+/**
+ * Whether the document defines MCP servers in a form this file does not model:
+ * keys under a bare `[mcp_servers]` table (`ai-browser = { url = … }`), or
+ * dotted keys at the root (`mcp_servers.ai-browser.url = …`). Only
+ * `[mcp_servers.<name>]` tables become entries, so such a server was
+ * invisible: Connect appended a table of the same name and the repair renamed
+ * onto one, and two definitions of one table is TOML that does not parse —
+ * every server in the file gone for Codex. `codex mcp add` never writes these
+ * forms; a hand-written file can. **A file that answers true is not
+ * rewritten**, as for `codexUnterminated`.
+ */
+export function codexServersElsewhere(text: string): boolean {
+	let quote: string | undefined;
+	let depth = 0;
+	let braces = 0;
+	/** The current table's path; undefined at the root. */
+	let table: string | undefined;
+	for (const line of text.split(/\r?\n/)) {
+		const inContinuation = quote !== undefined || depth > 0 || braces > 0;
+		const scan = scanLine(line, quote);
+		quote = scan.multiline;
+		depth = Math.max(0, depth + scan.depth);
+		braces = Math.max(0, braces + scan.braces);
+		if (inContinuation) {
+			continue;
+		}
+		const header = anyHeader.exec(scan.text);
+		if (header) {
+			table = canonicalPath(header[1], true);
+			continue;
+		}
+		const kv = keyValue.exec(scan.text);
+		if (!kv) {
+			continue;
+		}
+		const key = canonicalPath(kv[1]);
+		if (table === 'mcp_servers' || (table === undefined && (key === 'mcp_servers' || key.startsWith('mcp_servers.')))) {
+			return true;
+		}
+	}
+	return false;
+}
+
 /**
  * A line that is credibly a table header — `[key]` or `[[key]]`, where the key
  * is a dotted path of bare or quoted TOML keys, with an optional comment.

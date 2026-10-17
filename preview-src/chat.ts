@@ -323,6 +323,12 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 				if (paletteMode === 'inline') {
 					closePalette();
 				}
+				// A message recalled with ↑ ends its walk here: the box now holds
+				// text of its own, and a walk still in progress saved the text from
+				// before it as the draft — the queue given back was lost at the next
+				// tab switch or chat change.
+				fromHistory = false;
+				historyAt = inputHistory.length;
 				input.value = input.value.trim() ? `${input.value}\n\n${message.text}` : message.text;
 				autosize();
 				saveDraft();
@@ -851,6 +857,13 @@ function renderThread(s: ChatViewState): void {
 	}
 	welcomeShown = '';
 	threadInner.querySelector('.welcome')?.remove();
+	// The welcome took the spacer's place, and the chat id does not change when
+	// a fresh tab gets its first message, so the reset above never put it back:
+	// every new conversation sat at the top of the panel until the tab was
+	// switched away and back.
+	if (spacer.parentElement !== threadInner) {
+		threadInner.prepend(spacer);
+	}
 
 	const turns = turnsOf(s.entries);
 	const lastTurn = turns.length - 1;
@@ -2526,14 +2539,35 @@ function pillContent(label: string): Node[] {
 	return [el('span', { class: 'pill-label', text: label }), icon('chevron-down', 'pill-chevron')];
 }
 
+/**
+ * A button's contents replaced only when they change. Every state post — every
+ * 40 ms while any tab streams — used to rebuild them, and a click whose press
+ * lands on the icon or label and whose release comes after the rebuild never
+ * fires (#365): Stop missed 10 of 10 presses at its centre during a reply,
+ * the one moment it is pressed, and the agent and model pills likewise.
+ */
+function setIcon(target: HTMLElement, name: string): void {
+	if (target.dataset.shown !== name) {
+		target.dataset.shown = name;
+		target.replaceChildren(icon(name));
+	}
+}
+
+function setPill(pill: HTMLElement, label: string): void {
+	if (pill.dataset.shown !== label) {
+		pill.dataset.shown = label;
+		pill.replaceChildren(...pillContent(label));
+	}
+}
+
 function renderSelectors(s: ChatViewState): void {
 	const agent = s.agents.find(a => a.id === s.selection.agent);
-	agentPill.replaceChildren(...pillContent(agent?.name ?? (s.detecting ? 'Looking…' : 'No agent')));
+	setPill(agentPill, agent?.name ?? (s.detecting ? 'Looking…' : 'No agent'));
 	agentPill.disabled = !s.agents.some(a => a.available);
 	agentPill.title = `Agent — who answers: Claude Code or Codex${agent?.detail ? `\n${agent.name} ${agent.detail}` : ''}\nClick to pick another; the gear in its menu picks which installed copy.`;
 
 	const model = agent?.models.find(m => m.id === s.selection.model);
-	modelPill.replaceChildren(...pillContent(model?.label ?? 'Model'));
+	setPill(modelPill, model?.label ?? 'Model');
 	modelPill.disabled = !agent?.models.length;
 	modelPill.title = `Model — which of the agent's models answers${model?.description ? `\n${model.label}: ${model.description}` : ''}`;
 
@@ -2663,7 +2697,7 @@ function renderSend(): void {
 	const running = state?.running ?? false;
 	const hasContent = !!input.value.trim() || !!state?.attachments.length;
 	const stop = running && !hasContent;
-	sendButton.replaceChildren(icon(stop ? 'debug-stop' : 'arrow-up'));
+	setIcon(sendButton, stop ? 'debug-stop' : 'arrow-up');
 	const queueKey = `${navigator.platform.startsWith('Mac') ? '⌘' : 'Ctrl+'}Enter`;
 	sendButton.title = stop ? 'Stop — end what the agent is doing now'
 		: !canSend() ? 'No agent is available'
@@ -3130,7 +3164,10 @@ document.addEventListener('mousedown', event => {
 });
 
 document.addEventListener('keydown', event => {
-	if (event.key !== 'Escape') {
+	// An input method's own Escape drops a candidate, not the form it is typed
+	// in: without this, cancelling a conversion closed the toolbar skill editor,
+	// the GitHub form or a parameters popover, and what was typed went with it.
+	if (event.key !== 'Escape' || event.isComposing || event.keyCode === 229) {
 		return;
 	}
 	// The innermost question first: a close being confirmed, then the switch card.

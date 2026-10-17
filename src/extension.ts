@@ -24,6 +24,7 @@ import {
 	enableBrowserApi, integratedBrowserCommand, isBrowserApiGranted, shouldUseIntegratedBrowser, setOwnExtensionKind,
 } from './setup/proposedApi';
 import { confirm, refuse } from './core/notify';
+import { plainInLabel } from './core/notifyText';
 import { registerStatusBar } from './setup/statusBar';
 import { registerUpdateCheck } from './setup/updateCheck';
 import { registerLogins } from './logins/logins';
@@ -287,8 +288,10 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 		try {
 			const shared = await browser.shareTab(tab, target);
+			// The title is the page's own, and the status bar draws `$(name)` as
+			// our icons (#258, #318).
 			confirm(vscode.l10n.t("{0} now works on {1} — and on nothing else",
-				shared.label, shared.title || shared.url));
+				shared.label, plainInLabel(shared.title || shared.url)));
 		} catch (err) {
 			// A refusal, not a crash: the tab can close while the click is
 			// queued behind another transition. Through `refuse()` because a
@@ -336,6 +339,12 @@ export function activate(context: vscode.ExtensionContext) {
 	// extension can be installed while this window is open.
 	publishAssistantContext();
 	context.subscriptions.push(vscode.extensions.onDidChange(publishAssistantContext));
+	// Claude Code needs a local folder (`canHandOver`), and one can be added or
+	// removed while the window is open.
+	context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(() => {
+		publishAssistantContext();
+		void lastAction.refresh();
+	}));
 	void cleanUpReports();
 
 	// These record themselves too, so the toolbar button repeats "Add XPath to

@@ -752,8 +752,18 @@ export class ChatTab {
 	}
 
 	/** Claude Code must start again to load what changed (`_restartForDirs`); now if idle, else once the work ends. */
-	public restartSession(): void {
+	/**
+	 * `now`: let an idle session go at once rather than after the quiet wait —
+	 * for a folder whose own settings have just been held back, where the
+	 * process running there must not be the one that reads them.
+	 */
+	public restartSession(now = false): void {
 		if (!this._session || this._chat.agent !== 'claude') {
+			return;
+		}
+		if (now && !this.busy && !this._waiting.length) {
+			this._restartForDirs = false;
+			this._dropSession();
 			return;
 		}
 		this._restartForDirs = true;
@@ -773,7 +783,12 @@ export class ChatTab {
 		}
 		this._restartTimer = setTimeout(() => {
 			this._restartTimer = undefined;
-			if (!this._restartForDirs || this._closed) {
+			// Not `_closed`: a tab the view let go of when it was closed is
+			// reused when the view comes back, and `_closed` is reset only by
+			// `start()` — so a reference added or a folder trusted after that
+			// never reached Claude Code. A tab really closed holds no session,
+			// which the check below already covers.
+			if (!this._restartForDirs) {
 				return;
 			}
 			if (this.busy || this._waiting.length) {

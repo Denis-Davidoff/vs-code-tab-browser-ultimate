@@ -565,7 +565,12 @@ function watchOutcome(field, root, removed) {
   watching = { field, root };
   const started = Date.now();
   let goneSince = removed ? Date.now() : 0;
-  const outcome = result => { watching = null; send({ type: 'outcome', result }); };
+  // After a verdict the next report on the fields always goes out. The page
+  // judged "gone" by polling, so a form that faded out and came back — no node
+  // removed — left the last report sent still reading "password shown", and
+  // the identical report of its return was suppressed: the watcher, which
+  // withdraws an offer only on a report, never heard the form come back.
+  const outcome = result => { watching = null; lastReport = ''; send({ type: 'outcome', result }); };
   const tick = () => {
     if (stopped || generation !== watchGeneration) return;
     if (goneSince) {
@@ -699,7 +704,17 @@ listen(globalThis, 'click', e => {
   // sign-in, and the next page having no form then read as one. A link whose
   // href only a script acts on (#, javascript:, none) can still be a submit.
   const leaving = button.localName === 'a' && navigates(button);
-  const submits = !leaving && (button.type === 'submit' || submitWords.test(label));
+  // A submit button is one that says so: an explicit type=submit (or an image
+  // input). A button with no type attribute reports "submit" from .type even
+  // where there is no form to submit, and a single-page app's "Forgot
+  // password?" is exactly that kind; read as a submit it sent the guess just
+  // typed, and the route change after it read as a sign-in. Such a button
+  // counts only by its words, and never when its words lead elsewhere. A real
+  // form submission is captured by the submit event above either way.
+  const declared = (button.getAttribute('type') || '').toLowerCase();
+  const explicitSubmit = (button.localName === 'button' && declared === 'submit')
+    || (button.localName === 'input' && (declared === 'submit' || declared === 'image'));
+  const submits = !leaving && (explicitSubmit || (submitWords.test(label) && !leadsAway.test(label)));
   // Moving on from a submission whose form is still showing — a link, a
   // toggle, anything but submitting again — means it did not work: the page
   // kept the form and drew an error. Left running, the watch read the form

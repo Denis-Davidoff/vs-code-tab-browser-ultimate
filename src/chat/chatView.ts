@@ -2127,10 +2127,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		return this._untrustedFolders().some(p => p === resolved);
 	}
 
+	/**
+	 * Holds `folder`'s own settings back, and lets go of every Claude session
+	 * already working there: whether a session loads them was decided when it
+	 * opened, and a clone into the folder a conversation is in (the default for
+	 * an empty one) otherwise left that session — and every process it starts
+	 * after a model change — loading the repository's hooks.
+	 */
 	private async _markUntrusted(folder: string): Promise<void> {
 		const resolved = path.resolve(folder);
 		const next = [resolved, ...this._untrustedFolders().filter(p => p !== resolved)].slice(0, untrustedLimit);
 		await this._context.globalState.update(untrustedFoldersKey, next);
+		for (const tab of this._tabs) {
+			if (path.resolve(tab.cwd) === resolved) {
+				tab.restartSession(true);
+			}
+		}
 	}
 
 	/** Which of the project configuration files `folder` has, for the folder button to name; cached like `_emptyFolder`. */

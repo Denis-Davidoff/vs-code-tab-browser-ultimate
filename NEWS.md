@@ -14,6 +14,16 @@ src/chat/news.ts — see "The AI Browser chat" in CLAUDE.md.
 
 Browse, debug and test your pages in VS Code's own browser — and let Claude Code or Codex see them, click through them and take screenshots, right inside the editor.
 
+## 0.7.6 — 2026-10-17
+- Saved logins: a "Forgot password?" button no longer counts as signing in, so a mistyped password is not offered as an update; and a save from an offer that turns out wrong is undone, even if it was still being written.
+- The chat's buttons answer every click while a reply streams, and a new conversation sits by the message box again.
+- Escape that cancels an input method's conversion no longer closes the skill editor, the GitHub form or a popover.
+- Messages given back by **Stop** or **Clear** stay in the box when you switch tabs.
+- A repository fetched from GitHub keeps its own skills and commands off until you trust it too.
+- **Add to Claude Code** is hidden when no folder is open, rather than failing after every pick.
+- Safer Codex configs: Connect leaves a file alone when it defines servers in another TOML spelling; the startup repair goes on past a `.mcp.json` it cannot write.
+- `browser_console` answers stay within what Claude Code accepts from a tool, newest lines kept.
+
 ## 0.7.5 — 2026-10-17
 - **A working folder per chat**: the folder button beside **/** sets where the tab's agent works — your window's folder, one picked lately or any other — and lists that folder's files and folders to attach; type to search them.
 - **GitHub repositories**, three ways: work in a **separate copy** on a branch of its own (see its changes, push and open a pull request, or remove it), **clone** it into a folder, or **read it beside** your project.

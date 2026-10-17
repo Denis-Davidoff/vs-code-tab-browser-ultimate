@@ -4805,7 +4805,14 @@ folder* section of `chatView.ts`.
   are not loaded. Measured on 2.1.301: a `SessionStart` hook ran on an `initialize` alone, before
   any message, and with those flags did not (#443). The folder button names the files it holds
   back and offers *Trust this repository's settings…*, asked first; trusting restarts each Claude
-  session there once it is quiet. Its skills and CLAUDE.md are still read — text, not code. Codex
+  session there once it is quiet. Its own skills and commands are not loaded either — measured on
+  2.1.301, `initialize` with those flags lists neither a `.claude/commands/*.md` nor a
+  `.claude/skills/*/SKILL.md` of the folder, where without them it lists both. **Marking a folder
+  held back lets go of every Claude session already working there** (`_markUntrusted`,
+  `restartSession(true)`): whether a session loads a folder's settings is decided when it opens,
+  and a clone into the folder a conversation is in — the default for an empty one — otherwise
+  left that session, and every process it started after a model change, loading the clone's
+  hooks (#450). A session in the middle of a turn is let go once the tab is quiet. Codex
   loads a project's own configuration only for a project it trusts already.
 - **The files are a walk of our own** (`listWorkdir`, leaf, under test), not `git ls-files` —
   reading the index runs the repository's `core.fsmonitor` (#208), and nothing says the folder
@@ -7743,6 +7750,65 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
      `git`. Resolve it once, absolutely, from absolute entries only.
 449. **"Could not stat it" as "not there", before a delete** → `prepare` would have re-cloned over
      the copies' work; and a failed clone removed the repository's whole folder, copies with it.
+450. **A decision taken when a session opens, about something that can change under it** → a
+     folder held back after a Claude session was already working there kept loading its own
+     settings in every process that session started. Let the sessions there go when the folder's
+     standing changes, in either direction.
+451. **`button.type === 'submit'` as "this button submits"** → a `<button>` with no `type`
+     attribute reports `submit` with no form to submit, and an app's "Forgot password?" is one:
+     the guess just typed went out as a sign-in, the route change read as success, and the
+     extension offered it as the new password — #233's outcome, the one the feature exists to
+     prevent. Only an explicit `type=submit` is a submit; a typeless button counts by its words,
+     and never when they lead elsewhere. Measured in Chrome with the shipped script: four
+     typeless "Forgot password?" shapes captured nothing, four real sign-ins (`Log in`, `Войти`, an
+     arrow icon, one inside a form) were captured as before.
+452. **A withdrawal that can only undo a commit already recorded** → an offer withdrawn while its
+     "Replace its password?" modal was up, or while its write was on its way, had nothing to
+     undo yet, and fires once: the rejected password stayed saved. The modal's answer is checked
+     against the withdrawal, and `_noteCommit` undoes at once what a withdrawn offer wrote.
+453. **Suppressing a report identical to the last one sent, across a verdict judged without
+     reports** → a sign-in form that faded out and back (no node removed) was judged gone by
+     polling while the last report sent still read "password shown", so the report of its
+     return was suppressed and the offer never withdrawn. A verdict resets the comparison.
+454. **One file's write failure thrown out of a loop over files** → an unwritable `.mcp.json`
+     ended `repairConfigs` before `~/.codex/config.toml`, at every start, silently. Each file is
+     its own outcome.
+455. **Rebuilding a button's contents on every state post** → #365 for the composer's own
+     controls: a press on Stop's icon during a reply landed on a node replaced before the
+     release, 0 of 10 clicks. Replace them only when what they show changes (`setIcon`,
+     `setPill`).
+456. **A placeholder that takes the place of a structural element** → the empty chat's welcome
+     replaced the spacer, and the first message of a fresh tab (same chat id) never brought it
+     back: new conversations sat at the top of the panel.
+457. **A sanitiser for one sink reused for its neighbour** → `plainInNotification` keeps `$(`,
+     and `scopeNote` feeds status bar confirmations too, where `$(name)` is an icon. Page text
+     bound for a label goes through `plainInLabel` (#258, #318), wherever else it also goes.
+458. **A fallback that is rare in general and constant in one layout, again** → with no folder
+     open, Add to Claude Code toasted over the page after every pick. `canHandOver` now needs a
+     local folder for Claude Code, re-published when folders change; the refusal itself goes to
+     the status bar (#323's rule).
+459. **A tab flag that outlives what it describes** → `_closed` set when the view went away was
+     reset only by `start()`, and the view brings the same tabs back: every `restartSession`
+     after that did nothing, so a reference or a trusted folder never reached Claude Code.
+460. **Page-chosen text on a prose line of a Markdown file** → an element id of
+     `[x](command:…)` became a link in the `.md` report, which a Markdown editor runs on
+     Cmd+click (#371's sink, through a file on disk). `inertProse` escapes `](` and `<`; a
+     Tailwind class's brackets are left alone.
+461. **Splitting `mcp__<server>__<tool>` at the first `__`** → a server named `ai-browser__fs`
+     read as ours and its writes were answered by the AI Browser category's Auto. A name with
+     `__` past the server is asked under Other tools.
+462. **A TOML writer that sees only one spelling of a server** → `[mcp_servers]` keys and root
+     dotted keys define servers too; unseen, Connect appended a table of the same name — TOML
+     that does not parse. `codexServersElsewhere` makes Connect, the repair and the removal
+     leave such a file alone.
+463. **A size limit on the count of lines and not on their length** → 200 console lines of
+     React warnings with stacks passed the 25 000 tokens Claude Code takes from a tool. Lines are
+     cut at 2 000 characters and the answer at 40 000, newest kept.
+464. **An input method's Escape read as the user's** → cancelling a conversion closed the
+     toolbar skill editor, the GitHub form or a popover, and what was typed went with it.
+465. **A draft saved from before a ↑ walk while the box took new text** → queued messages given
+     back by Stop or Clear were appended to a recalled message, and the draft kept the text from
+     before the walk, so the next tab switch dropped them. Giving text back ends the walk.
 
 ## Special cases and non-obvious decisions
 

@@ -6,7 +6,7 @@
 import * as assert from 'node:assert';
 import { suite, test } from 'node:test';
 import {
-	fenced, formatElementReport, formatPathReport, inlineCode, locationSeparator, reportFileName,
+	fenced, formatElementReport, formatPathReport, inertProse, inlineCode, locationSeparator, reportFileName,
 	slugify, stamp, withLocation,
 } from './reportFormat.ts';
 
@@ -297,5 +297,13 @@ suite('report text from the page stays on one line', () => {
 		const at = pair.indexOf(locationSeparator);
 		assert.strictEqual(pair.slice(0, at), 'http://localhost:3000/a');
 		assert.strictEqual(pair.slice(at + locationSeparator.length), '#\\31 → > span');
+	});
+});
+
+suite('inertProse', () => {
+	test('the same rule as elementMarkdown.ts: no link survives, Tailwind brackets do', () => {
+		assert.strictEqual(inertProse('http://h/[x](command:y)'), 'http://h/[x]\\(command:y)');
+		assert.strictEqual(inertProse('<command:y>'), '\\<command:y>');
+		assert.strictEqual(inertProse('div.w-[30px]'), 'div.w-[30px]');
 	});
 });

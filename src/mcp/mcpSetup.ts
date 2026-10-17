@@ -8,7 +8,7 @@ import * as crypto from 'crypto';
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { codexEntries, codexRangeDeletable, codexUnterminated } from './codexToml';
+import { codexEntries, codexRangeDeletable, codexServersElsewhere, codexUnterminated } from './codexToml';
 import { lockPath, withLock } from '../core/fileLock';
 import { serverName } from './mcpClientState';
 import {
@@ -18,7 +18,7 @@ import {
 } from './mcpRepair';
 import type { McpServer } from './mcpServer';
 import { confirm } from '../core/notify';
-import { plainInNotification, plainInPrompt } from '../core/notifyText';
+import { plainInLabel, plainInNotification, plainInPrompt } from '../core/notifyText';
 import { withConfigTomlRule } from './gitignoreRule';
 import { workspaceIsRemoteFromHost } from '../setup/proposedApi';
 import { writeFileAtomic } from '../core/safeFiles';
@@ -395,6 +395,12 @@ async function writeCodexConfig(
 		// end of file and the splice would take every server below it with us.
 		throw new Error('the existing config ends inside an unclosed value');
 	}
+	if (codexServersElsewhere(existing)) {
+		// A server written as `[mcp_servers]` keys or root dotted keys is not an
+		// entry here, so a table of the same name would be appended beside it:
+		// TOML that does not parse. `codex mcp add` goes on the clipboard instead.
+		throw new Error('the existing config defines MCP servers in a form this extension does not edit');
+	}
 	const newline = /\r\n/.test(existing) ? '\r\n' : '\n';
 	const lines = existing === '' ? [] : existing.split(/\r?\n/);
 
@@ -726,7 +732,7 @@ export async function removeCodexGlobalEntry(server: McpServer): Promise<GlobalE
 		}
 		// Only a clean absence is "nothing to do"; an unreadable file may well
 		// hold the duplicate (items 94 and 101).
-		if (read.kind !== 'text' || codexUnterminated(read.text)) {
+		if (read.kind !== 'text' || codexUnterminated(read.text) || codexServersElsewhere(read.text)) {
 			outcome = 'refused';
 			return;
 		}
@@ -927,9 +933,11 @@ function scopeNote(shared: SharedPage | undefined): string {
 	return shared
 		// The page chooses its own title, and a notification body is linked text
 		// opened with `allowCommands: true` — see {@link plainInNotification}. The
-		// label beside it is ours (`targetName`), so only this half is neutralised.
+		// note also goes into status bar confirmations, which draw `$(name)` as
+		// our icons, hence `plainInLabel` as well (#318). The label beside it is
+		// ours (`targetName`), so only this half is neutralised.
 		? vscode.l10n.t(" {0} works on {1} — use \"Stop Sharing Tab\" to let it follow you again.",
-			shared.label ?? vscode.l10n.t("It"), plainInNotification(shared.title ?? shared.url))
+			shared.label ?? vscode.l10n.t("It"), plainInLabel(plainInNotification(shared.title ?? shared.url)))
 		// The command is named, so the title has to be the one the palette
 		// actually has: it was renamed in the same change that added this
 		// sentence, and naming a title nobody can find is worse than naming
@@ -1774,7 +1782,38 @@ export async function repairConfigs(
 		 */
 		prunes = false,
 	): Promise<void> => {
-		const took = await withLock(lockPath(configLockName(uri)), async () => {
+		// One file that cannot be written — a read-only `.mcp.json` under
+		// Perforce, one left owned by root, a rename an antivirus holds — is that
+		// file skipped, not the repair. Thrown out of here, it ended
+		// `repairConfigs` before the global Codex config was reached, so its
+		// port was never corrected and nothing was pruned, at every start for as
+		// long as the file stayed unwritable, with nothing said.
+		let took: boolean;
+		try {
+			took = await applyLocked(uri, label, rewrite, inside, prunes);
+		} catch {
+			// The file was there and was not brought up to date: like one that
+			// could not be read, it keeps the run from claiming completeness
+			// where completeness is what a completion marker rests on.
+			if (prunes) {
+				unreadable = true;
+			}
+			return;
+		}
+		// Losing a race is not an error: the next start repairs it.
+		if (prunes) {
+			busy ||= !took;
+		}
+	};
+
+	const applyLocked = (
+		uri: vscode.Uri,
+		label: string,
+		rewrite: (text: string) => Rewrite,
+		inside: (() => Promise<void>) | undefined,
+		prunes: boolean,
+	): Promise<boolean> => {
+		return withLock(lockPath(configLockName(uri)), async () => {
 			const read = await readConfig(uri);
 			if (read.kind === 'absent') {
 				if (inside) {
@@ -1829,10 +1868,6 @@ export async function repairConfigs(
 			}
 			report.removed.push(...result.removed);
 		});
-		// Losing a race is not an error: the next start repairs it.
-		if (prunes) {
-			busy ||= !took;
-		}
 	};
 
 	/**
@@ -1845,7 +1880,9 @@ export async function repairConfigs(
 	 * with the window next door.
 	 */
 	const rewriteCodex = (name: string, prune: ReadonlySet<string>) => (text: string): Rewrite => {
-		if (codexUnterminated(text)) {
+		// Also left alone: servers defined in a form `codexEntries` does not
+		// see, where a rename onto `ai-browser` would make a second definition.
+		if (codexUnterminated(text) || codexServersElsewhere(text)) {
 			// A value that never closes makes its table's range run to end of
 			// file, so a deletion would take every table below it — the user's
 			// other MCP servers and our own live entry — while reporting the one

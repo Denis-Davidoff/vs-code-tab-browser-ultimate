@@ -5,7 +5,7 @@
 
 import * as assert from 'node:assert';
 import { suite, test } from 'node:test';
-import { codexEntries, codexRangeDeletable, codexUnterminated, scanLine } from './codexToml.ts';
+import { codexEntries, codexRangeDeletable, codexServersElsewhere, codexUnterminated, scanLine } from './codexToml.ts';
 
 suite('scanLine', () => {
 
@@ -376,5 +376,23 @@ suite('dotted keys in every spelling belong to their table', () => {
 	test('a quoted segment in a table header names the same table', () => {
 		const entries = codexEntries('[mcp_servers."ai-browser".http_headers]\nAuthorization = "x"\n');
 		assert.strictEqual(entries[0].name, 'ai-browser.http_headers');
+	});
+});
+
+suite('codexServersElsewhere', () => {
+	test('sees a server written under a bare [mcp_servers] table', () => {
+		assert.strictEqual(codexServersElsewhere('[mcp_servers]\nai-browser = { url = "http://x" }\n'), true);
+	});
+
+	test('sees a server written as dotted keys at the root', () => {
+		assert.strictEqual(codexServersElsewhere('model = "o3"\nmcp_servers.ai-browser.url = "http://x"\n'), true);
+		assert.strictEqual(codexServersElsewhere('"mcp_servers" . "ai-browser" . url = "http://x"\n'), true);
+	});
+
+	test('is quiet for the usual tables, and for the same words in a string or another table', () => {
+		assert.strictEqual(codexServersElsewhere('[mcp_servers.ai-browser]\nurl = "http://x"\n'), false);
+		assert.strictEqual(codexServersElsewhere('note = """\n[mcp_servers]\nx = 1\n"""\n'), false);
+		assert.strictEqual(codexServersElsewhere('[profiles.a]\nmcp_servers.x = 1\n'), false);
+		assert.strictEqual(codexServersElsewhere('[mcp_servers]\n'), false);
 	});
 });

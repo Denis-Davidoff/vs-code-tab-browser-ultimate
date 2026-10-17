@@ -103,6 +103,20 @@ export function oneLine(value: string): string {
 }
 
 /**
+ * Page-chosen text on a prose line of a report, kept from becoming a link. A
+ * report is a `.md` file, and opened in an editor VS Code's Markdown support
+ * turns `[x](command:…)` — an element id may hold exactly that — or
+ * `<command:…>` into a link that runs a command on Cmd+click (#371's sink,
+ * through a file on disk). Only `](` and `<` are escaped: a Tailwind class like
+ * `w-[30px]` keeps its brackets. **Written twice on purpose**, in
+ * `elementMarkdown.ts` and `reportFormat.ts`, since neither leaf may import the
+ * other.
+ */
+export function inertProse(value: string): string {
+	return value.replace(/\]\(/g, ']\\(').replace(/</g, '\\<');
+}
+
+/**
  * Wraps page content in a fenced block whose fence is always one backtick
  * longer than the longest run inside it.
  *
@@ -178,7 +192,7 @@ export function formatPathReport(
 		// heading, in a file whose reader is usually a model.
 		`# ${pathLabel(kind)} of ${inlineCode(descriptor)}`,
 		url
-			? `${pathLabel(kind)} of an element on ${oneLine(url)}`
+			? `${pathLabel(kind)} of an element on ${inertProse(oneLine(url))}`
 			: `${pathLabel(kind)} of an element in the integrated browser`,
 	];
 	// Asked of the body, not of the kind. `withLocation` yields the bare selector
@@ -196,7 +210,7 @@ export function formatPathReport(
 		// way it resolves with one `querySelector`. Where it came from is still
 		// worth saying, and the report has room for it where the one-liner does
 		// not.
-		lines.push(`Picked inside a frame embedded in ${oneLine(embeddedIn)}.`);
+		lines.push(`Picked inside a frame embedded in ${inertProse(oneLine(embeddedIn))}.`);
 	}
 	lines.push(fenced(path, fenceLanguage(kind)));
 	return `${lines.join('\n\n')}\n`;

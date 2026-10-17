@@ -72,6 +72,14 @@ export function isInstalled(id: AssistantId): boolean {
  * (#223), rather than offering an action that is refused after every pick.
  */
 export function canHandOver(id: AssistantId): boolean {
+	// Nor, for Claude Code, in a window with no local folder: it addresses files
+	// by their path inside the workspace (`'noWorkspace'`), so every pick there
+	// ended in a toast over the page just picked in (#323's rule). Hidden, the
+	// repeat button falls back to its Copy twin; the folder can be added while
+	// the window is open, so the key is published again when folders change.
+	if (assistants[id].reportsIn === 'workspace' && vscode.workspace.workspaceFolders?.[0]?.uri.scheme !== 'file') {
+		return false;
+	}
 	return isInstalled(id) && !workspaceIsRemoteFromHost();
 }
 

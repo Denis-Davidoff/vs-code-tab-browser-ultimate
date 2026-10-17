@@ -1602,6 +1602,14 @@ export function claudeApproval(id: string, request: Record<string, unknown>, roo
 	if (mcp) {
 		const [, server, name] = mcp;
 		const args = argumentLines(input);
+		// `mcp__<server>__<tool>` cannot be split for sure when either half holds
+		// `__` itself: `mcp__ai-browser__fs__write_file` read as our server and
+		// its Auto answered a filesystem server's write, and `team__deploy` was
+		// filed under `team`, whose "Always" then covered it. Such a name names
+		// no category it can be trusted with, so it is asked under Other tools.
+		if (name.includes('__')) {
+			return { id, what: 'other', title: tool, detail: args };
+		}
 		return isBrowserServer(server)
 			? { id, what: 'browser', title: name, detail: args }
 			: { id, what: 'mcp', server, title: name, detail: args };
