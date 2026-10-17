@@ -4238,6 +4238,9 @@ running; it ships in the VSIX like README.md, and a change reaches users with th
 file parses), forgivingly: comments are skipped, entries without items are dropped, and a file
 that cannot be read leaves the welcome its own one-line text. **Add an entry with every release
 that ships something a user would notice**; the authoring notes are in the file's own comment.
+**And the README's *Changelog* with it**, one short paragraph per version: it fell four releases
+behind (0.7.0–0.7.3) while NEWS.md kept up, and the README is the extension's page in VS Code
+and on Open VSX.
 
 **"Hide changelog" folds "What's new" away, and "Show changelog" brings it back** — links in the
 small print, asked for. The choice is kept in `globalState` (`aiBrowser.chat.newsHiddenAt`), so it

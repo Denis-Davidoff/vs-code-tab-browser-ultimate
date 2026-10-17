@@ -42,6 +42,27 @@ there is not the problem, the missing API is. **Measured by reading the shipped 
 
 ## Changelog
 
+**0.7.3** — Toolbar skills can send several prompts in a row, each once the agent has finished the
+one before — and, where you write a check between two, only if the agent finds it true. A small
+pie beside **U** fills as the conversation uses up the model's context window; click it to compact
+the conversation with the agent's own `/compact`. The button that queues a message for after the
+current turn is now Send's twin, in the accent colour.
+
+**0.7.2** — Toolbar skills running in the background show in the agents list with their tool
+calls, reply and a Stop; the foot of the chat says how long the agents have been running; the
+**/** palette cuts long rows instead of scrolling sideways.
+
+**0.7.1** — Toolbar skills: buttons above the message box running prompts of your own — with
+parameters, your agents' skills and colours of your choice — into the chat, to the clipboard or
+silently in the background, also callable as **/name**. Tool calls show the first lines of their
+input and output and open whole in an editor tab; a file change opens in VS Code's diff editor.
+
+**0.7.0** — The AI Browser chat, in the secondary side bar: talk to Claude Code or Codex with the
+CLI you already have, pick the agent, model and effort, and attach screenshots, page elements, the
+address or files. Its agents can use the browser from the first message and ask before they act —
+answered in the chat, or set to Auto, Ask or Deny per kind. Several chats at once as tabs, the
+agents' skills under **/**, and the sub-agents they start listed with a Stop for each.
+
 **0.6.3** — Assistants can now read and work inside embedded frames, including ones from other
 sites — a OneNote notebook in SharePoint, a document viewer, a payment form. A new
 `browser_frames` tool lists them, the reading, clicking, filling and waiting tools take a frame,
