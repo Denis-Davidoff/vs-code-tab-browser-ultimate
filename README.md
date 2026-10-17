@@ -42,6 +42,12 @@ there is not the problem, the missing API is. **Measured by reading the shipped 
 
 ## Changelog
 
+**0.7.4** — Questions with choices: when the agent asks, a form opens above the message box with
+a tab per question, and Answer sends once every question has an answer. Links in replies open in
+the built-in browser (⌘/Ctrl-click: the system browser), and the file a tool row names opens on a
+click. Tool calls start folded with a line saying what each does, toolbar skills can run after the
+current turn, and headings, quotes and code blocks in replies are restyled.
+
 **0.7.3** — Toolbar skills can send several prompts in a row, each once the agent has finished the
 one before — and, where you write a check between two, only if the agent finds it true. A small
 pie beside **U** fills as the conversation uses up the model's context window; click it to compact

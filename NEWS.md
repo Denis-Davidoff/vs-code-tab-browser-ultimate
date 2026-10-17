@@ -14,6 +14,13 @@ src/chat/news.ts — see "The AI Browser chat" in CLAUDE.md.
 
 Browse, debug and test your pages in VS Code's own browser — and let Claude Code or Codex see them, click through them and take screenshots, right inside the editor.
 
+## 0.7.4 — 2026-10-17
+- **Questions with choices**: when the agent asks "this or that?", a form opens above the message box with a tab per question; pick an option or answer in your own words, and **Answer** sends them once every question has one — or **Skip** lets the agent choose and say so.
+- **Links in replies open**: a click in the built-in browser, ⌘/Ctrl-click in your system browser, a right-click for both and to copy the link. The file a Read or edit row names opens on a click.
+- **Tool calls start folded**, each with a line saying what it does; switch it with *Compact* in the approval menu.
+- A toolbar skill can **run after this turn** (⌘/Ctrl-click, or its right-click menu) instead of right away.
+- Replies read better: headings shade from yellow to white, quotes have a yellow edge, code is a little brighter with its language in yellow.
+
 ## 0.7.3 — 2026-10-17
 - **Toolbar skills can send several prompts in a row**: add next prompts in the skill's editor, each sent once the agent has finished the one before — and, where you write a check between two, only if the agent finds it true; otherwise the skill stops there and says why.
 - The button that holds a message until the agent's turn ends is now Send's own round button, in the theme's accent colour.
