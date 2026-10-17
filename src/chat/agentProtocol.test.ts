@@ -488,6 +488,8 @@ suite('approvals', () => {
 		// A name that cannot be split for sure is no category's: not ours, not a server's.
 		assert.strictEqual(claudeApproval('r3c', { tool_name: 'mcp__ai-browser__fs__write_file', input: {} }, '/w').what, 'other');
 		assert.strictEqual(claudeApproval('r3d', { tool_name: 'mcp__team__deploy__prod', input: {} }, '/w').what, 'other');
+		assert.strictEqual(claudeApproval('r3e', { tool_name: 'mcp__ai-browser___write_file', input: {} }, '/w').what, 'other');
+		assert.strictEqual(claudeApproval('r3f', { tool_name: 'mcp__ai-browser__browser_state', input: {} }, '/w').what, 'browser');
 		// Another server's tool is a category of its own, by server.
 		assert.deepStrictEqual(claudeApproval('r4', { tool_name: 'mcp__figma__get_screenshot', input: { node: '1:2' } }, '/w'), {
 			id: 'r4', what: 'mcp', server: 'figma', title: 'get_screenshot', detail: 'node: 1:2',

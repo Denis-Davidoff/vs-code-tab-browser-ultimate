@@ -395,11 +395,14 @@ async function writeCodexConfig(
 		// end of file and the splice would take every server below it with us.
 		throw new Error('the existing config ends inside an unclosed value');
 	}
-	if (codexServersElsewhere(existing)) {
+	const elsewhere = codexServersElsewhere(existing);
+	if (elsewhere.inline || elsewhere.names.has(name)) {
 		// A server written as `[mcp_servers]` keys or root dotted keys is not an
 		// entry here, so a table of the same name would be appended beside it:
-		// TOML that does not parse. `codex mcp add` goes on the clipboard instead.
-		throw new Error('the existing config defines MCP servers in a form this extension does not edit');
+		// TOML that does not parse. Only that name, or the inline
+		// `mcp_servers = { … }`, refuses; any other server in another spelling
+		// is left as it is. `codex mcp add` goes on the clipboard instead.
+		throw new Error(`the existing config already defines "${name}" in a form this extension does not edit`);
 	}
 	const newline = /\r\n/.test(existing) ? '\r\n' : '\n';
 	const lines = existing === '' ? [] : existing.split(/\r?\n/);
@@ -732,7 +735,11 @@ export async function removeCodexGlobalEntry(server: McpServer): Promise<GlobalE
 		}
 		// Only a clean absence is "nothing to do"; an unreadable file may well
 		// hold the duplicate (items 94 and 101).
-		if (read.kind !== 'text' || codexUnterminated(read.text) || codexServersElsewhere(read.text)) {
+		// Not refused for servers in another spelling (`codexServersElsewhere`):
+		// this only deletes header tables of ours, which cannot collide with
+		// them, and refusing here made every press of Connect report an old
+		// entry it could not remove — in a file that had none.
+		if (read.kind !== 'text' || codexUnterminated(read.text)) {
 			outcome = 'refused';
 			return;
 		}
@@ -1880,9 +1887,13 @@ export async function repairConfigs(
 	 * with the window next door.
 	 */
 	const rewriteCodex = (name: string, prune: ReadonlySet<string>) => (text: string): Rewrite => {
-		// Also left alone: servers defined in a form `codexEntries` does not
-		// see, where a rename onto `ai-browser` would make a second definition.
-		if (codexUnterminated(text) || codexServersElsewhere(text)) {
+		// Servers in another spelling are passed to the repair below, which
+		// renames nothing onto them; only the inline `mcp_servers = { … }` beside
+		// header tables — TOML that already does not parse — is left alone.
+		// Refusing every such file switched the repair off for good: `complete`
+		// never true, no port fixed, nothing pruned (item 109).
+		const elsewhere = codexServersElsewhere(text);
+		if (codexUnterminated(text) || (elsewhere.inline && codexEntries(text).length > 0)) {
 			// A value that never closes makes its table's range run to end of
 			// file, so a deletion would take every table below it — the user's
 			// other MCP servers and our own live entry — while reporting the one
@@ -1899,7 +1910,7 @@ export async function repairConfigs(
 		// closing over the pre-prune text would be answering about other lines.
 		const repaired = repairCodexToml(
 			pruned.text, codexEntries(pruned.text), endpoint(server, name, url),
-			(from, to) => codexRangeDeletable(pruned.text, from, to));
+			(from, to) => codexRangeDeletable(pruned.text, from, to), elsewhere.names);
 		return {
 			text: repaired.text,
 			changed: pruned.changed || repaired.changed,

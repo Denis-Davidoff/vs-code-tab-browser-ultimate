@@ -97,7 +97,18 @@ export class LastElementAction {
 		await vscode.commands.executeCommand('setContext', contextKey, this._shown(this.value));
 	}
 
-	public async record(id: ElementActionId): Promise<void> {
+	/**
+	 * `repeat`: pressed through the toolbar's primary button or its chord. When
+	 * that button is the Copy twin standing in for a remembered action whose
+	 * destination is not here (`_shown`), the press records nothing: the memento
+	 * is global, and recording `xpath` over `claude:xpath` from a window with no
+	 * folder took "Add XPath to Claude Code" away from every project window too.
+	 */
+	public async record(id: ElementActionId, repeat = false): Promise<void> {
+		if (repeat && !id.includes(':') && this._shown(this.value) === id && this.value !== id) {
+			await this.refresh();
+			return;
+		}
 		await this.memento.update(mementoKey, id);
 		await vscode.commands.executeCommand('setContext', contextKey, this._shown(id));
 	}

@@ -380,19 +380,33 @@ suite('dotted keys in every spelling belong to their table', () => {
 });
 
 suite('codexServersElsewhere', () => {
-	test('sees a server written under a bare [mcp_servers] table', () => {
-		assert.strictEqual(codexServersElsewhere('[mcp_servers]\nai-browser = { url = "http://x" }\n'), true);
+	const names = (text: string) => [...codexServersElsewhere(text).names];
+
+	test('names a server written under a bare [mcp_servers] table', () => {
+		assert.deepStrictEqual(names('[mcp_servers]\nai-browser = { url = "http://x" }\ncontext7.command = "npx"\n'), ['ai-browser', 'context7']);
 	});
 
-	test('sees a server written as dotted keys at the root', () => {
-		assert.strictEqual(codexServersElsewhere('model = "o3"\nmcp_servers.ai-browser.url = "http://x"\n'), true);
-		assert.strictEqual(codexServersElsewhere('"mcp_servers" . "ai-browser" . url = "http://x"\n'), true);
+	test('names a server written as dotted keys at the root, spelled as an entry root is', () => {
+		assert.deepStrictEqual(names('model = "o3"\nmcp_servers.ai-browser.url = "http://x"\n'), ['ai-browser']);
+		assert.deepStrictEqual(names('"mcp_servers" . "ai-browser" . url = "http://x"\n'), ['ai-browser']);
+		assert.deepStrictEqual(names('mcp_servers."ai.bak".url = "http://x"\n'), ['"ai.bak"']);
 	});
 
-	test('is quiet for the usual tables, and for the same words in a string or another table', () => {
-		assert.strictEqual(codexServersElsewhere('[mcp_servers.ai-browser]\nurl = "http://x"\n'), false);
-		assert.strictEqual(codexServersElsewhere('note = """\n[mcp_servers]\nx = 1\n"""\n'), false);
-		assert.strictEqual(codexServersElsewhere('[profiles.a]\nmcp_servers.x = 1\n'), false);
-		assert.strictEqual(codexServersElsewhere('[mcp_servers]\n'), false);
+	test('the inline form is flagged, not named', () => {
+		const found = codexServersElsewhere('mcp_servers = { a = { url = "http://x" } }\n');
+		assert.strictEqual(found.inline, true);
+		assert.deepStrictEqual([...found.names], []);
+	});
+
+	test('finds nothing in the usual tables, nor the same words in a string or another table', () => {
+		for (const text of [
+			'[mcp_servers.ai-browser]\nurl = "http://x"\n',
+			'note = """\n[mcp_servers]\nx = 1\n"""\n',
+			'[profiles.a]\nmcp_servers.x = 1\n',
+			'[mcp_servers]\n',
+		]) {
+			const found = codexServersElsewhere(text);
+			assert.deepStrictEqual([[...found.names], found.inline], [[], false], text);
+		}
 	});
 });

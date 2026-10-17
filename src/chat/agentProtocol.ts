@@ -1607,7 +1607,11 @@ export function claudeApproval(id: string, request: Record<string, unknown>, roo
 		// its Auto answered a filesystem server's write, and `team__deploy` was
 		// filed under `team`, whose "Always" then covered it. Such a name names
 		// no category it can be trusted with, so it is asked under Other tools.
-		if (name.includes('__')) {
+		// Counted over the whole name, overlaps included: `mcp__ai-browser___x`
+		// is our server's `_x` or the server `ai-browser_`'s `x` (Claude Code
+		// turns `ai-browser.` into that), and the lazy split above picks ours.
+		const rest = tool.slice('mcp__'.length);
+		if (rest.indexOf('__') !== rest.lastIndexOf('__')) {
 			return { id, what: 'other', title: tool, detail: args };
 		}
 		return isBrowserServer(server)

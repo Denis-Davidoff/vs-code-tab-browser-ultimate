@@ -107,13 +107,16 @@ export function oneLine(value: string): string {
  * report is a `.md` file, and opened in an editor VS Code's Markdown support
  * turns `[x](command:…)` — an element id may hold exactly that — or
  * `<command:…>` into a link that runs a command on Cmd+click (#371's sink,
- * through a file on disk). Only `](` and `<` are escaped: a Tailwind class like
- * `w-[30px]` keeps its brackets. **Written twice on purpose**, in
- * `elementMarkdown.ts` and `reportFormat.ts`, since neither leaf may import the
- * other.
+ * through a file on disk), and so does raw HTML — `<a href="command:…">` is
+ * found by the Markdown language server's HTML parser, which reads the raw
+ * text, so a Markdown escape `\<` stops nothing there. `<` is therefore written
+ * as the entity `&lt;`, which no link reader takes for a tag or an autolink;
+ * `](` is escaped too. A Tailwind class like `w-[30px]` keeps its brackets.
+ * **Written twice on purpose**, in `elementMarkdown.ts` and `reportFormat.ts`,
+ * since neither leaf may import the other.
  */
 export function inertProse(value: string): string {
-	return value.replace(/\]\(/g, ']\\(').replace(/</g, '\\<');
+	return value.replace(/\]\(/g, ']\\(').replace(/</g, '&lt;');
 }
 
 /**

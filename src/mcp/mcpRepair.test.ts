@@ -225,6 +225,23 @@ suite('repairCodexToml', () => {
 		assert.ok(after.includes('[mcp_servers.ai-browser]'), after);
 	});
 
+	test('does not rename onto a server another spelling already defines', () => {
+		const before = [
+			`[mcp_servers]`,
+			`ai-browser = { command = "npx" }`,
+			``,
+			`[mcp_servers.tab-browser]`,
+			`url = "http://127.0.0.1:43111/mcp/${token}"`,
+			``,
+		].join('\n');
+		const result = repairCodexToml(before, codexEntries(before), endpoint,
+			(from, to) => codexRangeDeletable(before, from, to), new Set(['ai-browser']));
+		assert.ok(result.changed, 'the port is still corrected');
+		assert.ok(result.text.includes('[mcp_servers.tab-browser]'), result.text);
+		assert.ok(!result.text.includes('[mcp_servers.ai-browser]'), result.text);
+		assert.ok(result.text.includes(url), result.text);
+	});
+
 	test('removes a duplicate of ours rather than leaving two tool lists', () => {
 		const before = [
 			`[mcp_servers.tab-browser]`,

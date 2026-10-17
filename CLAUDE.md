@@ -3110,7 +3110,13 @@ that does not arrive as `file:`, so the user read "Sent to Codex" while nothing 
 clipboard fallback never ran (breaks-silently #313). **The Add entries are hidden there too**:
 `aiBrowser.<id>Installed` is published from `canHandOver`, which is false in such a window, so the
 menu drops them and the repeat button falls back to its Copy twin (#223). The refusal itself goes
-to the status bar — it would otherwise be a toast after every pick (#323).
+to the status bar — it would otherwise be a toast after every pick (#323). **Claude Code's are
+hidden with no local folder open as well** (`canHandOver`, re-published on
+`onDidChangeWorkspaceFolders`): its reports live in `<folder>/.ai-browser/`, so without one every
+pick ended in the clipboard fallback (#458). **A press of the Copy twin standing in for such an
+action records nothing** (`LastElementAction.record`'s `repeat`): the memento is global, and
+recording `xpath` over `claude:xpath` from a folderless window took the Add button away from every
+project window (#468).
 
 `.ai-browser/` gets a `.gitignore` of `*` on first creation — these are drafts for one
 conversation. Reports are swept after 5 hours, at most hourly **per directory** from the write
@@ -3719,6 +3725,21 @@ give no submission or `remained` now. **One shape is lost**: an `<a href="/login
 intercepts with `preventDefault` is a navigating link here, so it is not captured. Breaks-silently
 #307, #308, #320.
 
+**A button submits by its explicit type or by its words — not by `.type` alone** (#451). A
+`<button>` with no `type` attribute reports `submit` even where there is no form, and an app's
+"Forgot password?" is one. So a click captures only on an explicit `type=submit` (or an image
+input) or on the submit words with no `leadsAway` word beside them; any other button only arms the
+removal capture. **But the watched form's own submit button never ends its watch**, whatever its
+words (`resubmits`): Enter submits a form by sending a *trusted* click to its default button
+(implicit submission, `detail: 0`), and a typeless default button labelled with an arrow or in
+another language was read as "moving on" — every Enter sign-in on such a form ended `remained` two
+milliseconds after it started (#466). The same rule keeps a double-click alive. Two shapes are lost
+to the narrowing, knowingly: a **formless** typeless button whose label holds no submit word,
+followed by a full navigation (the removal capture never fires across one), and a sign-in whose
+label carries a `leadsAway` substring next to its submit word (an id `backoffice-login` holds
+`back`). Counting every typeless button again would bring back the false success #451 removed, and
+a miss costs an offer where a false success costs a password.
+
 **Every captured value must be one the user's own input left in its field** — provenance per
 value, not per form. `trustedValues` keeps, for each field, the value it held after its last
 *trusted* `input` event. A password whose value has changed since — `browser_fill`, the page's
@@ -4199,7 +4220,8 @@ tab and does nothing else: it runs
 `aiBrowser.newTab`, the dropdown's own "Open New Browser Tab", so the integrated browser or the
 panel is chosen by the same rule as everywhere else.
 
-**The "/" button**, right of the globe — a square with a slash, both drawn in CSS: the slash is a
+**The "/" button**, right of the globe — a square with a slash, both drawn in CSS, 15 px with its
+border (17 px before; made smaller on request, so it no longer matches the `U` and the pie): the slash is a
 line from the box's centre (`.slash-mark::before`), since a font's "/" has side bearings and sits
 on the baseline, and so was never in the middle of the square — opens **the palette**: a search
 box at the top, focused at once so typing filters straight away (asked for, after Claude Code's
@@ -7792,23 +7814,53 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
      after that did nothing, so a reference or a trusted folder never reached Claude Code.
 460. **Page-chosen text on a prose line of a Markdown file** → an element id of
      `[x](command:…)` became a link in the `.md` report, which a Markdown editor runs on
-     Cmd+click (#371's sink, through a file on disk). `inertProse` escapes `](` and `<`; a
-     Tailwind class's brackets are left alone.
+     Cmd+click (#371's sink, through a file on disk). `inertProse` escapes `](` and writes `<` as
+     `&lt;`; a Tailwind class's brackets are left alone. See #469 for why not `\<`.
 461. **Splitting `mcp__<server>__<tool>` at the first `__`** → a server named `ai-browser__fs`
      read as ours and its writes were answered by the AI Browser category's Auto. A name with
-     `__` past the server is asked under Other tools.
+     more than one `__` is asked under Other tools — counted with overlaps, since
+     `mcp__ai-browser___x` is also the server `ai-browser_`'s `x` (Claude Code turns
+     `ai-browser.` into that), and the lazy split picked ours.
 462. **A TOML writer that sees only one spelling of a server** → `[mcp_servers]` keys and root
      dotted keys define servers too; unseen, Connect appended a table of the same name — TOML
-     that does not parse. `codexServersElsewhere` makes Connect, the repair and the removal
-     leave such a file alone.
+     that does not parse. `codexServersElsewhere` names those servers: Connect refuses a
+     collision with its own name (or the inline `mcp_servers = { … }`), the repair renames
+     nothing onto them, and the removal ignores them. See #467.
 463. **A size limit on the count of lines and not on their length** → 200 console lines of
      React warnings with stacks passed the 25 000 tokens Claude Code takes from a tool. Lines are
-     cut at 2 000 characters and the answer at 40 000, newest kept.
+     cut at 2 000 characters — never inside a surrogate pair, whose lone half a strict JSON reader
+     (serde, behind Codex) refuses (#373's rule) — and the answer at 40 000, newest kept. With
+     `clear`, only the lines the answer carried are cleared (#470).
 464. **An input method's Escape read as the user's** → cancelling a conversion closed the
      toolbar skill editor, the GitHub form or a popover, and what was typed went with it.
 465. **A draft saved from before a ↑ walk while the box took new text** → queued messages given
      back by Stop or Clear were appended to a recalled message, and the draft kept the text from
-     before the walk, so the next tab switch dropped them. Giving text back ends the walk.
+     before the walk, so the next tab switch dropped them. Giving text back ends the walk — and
+     adds it to the draft from before the walk, not to the message on show: the first fix built
+     on the recalled text, so the draft typed before ↑ was lost for good, and the queued message,
+     usually the one recalled, went in twice.
+466. **Narrowing what counts as a submit without asking what else reads "not a submit"** → the
+     click handler ends a running watch on any click that is not a submit, and Enter's implicit
+     submission *is* a trusted click on the form's default button. Once a typeless button stopped
+     counting by its type, every Enter sign-in on a form whose default button had no submit word
+     ended `remained` at once. A click that submits the watched form itself never ends its watch.
+467. **A guard against a collision that refuses on the mere presence of the other party** → the
+     detector for servers in another TOML spelling refused the whole file, valid or not, so one
+     hand-written `[mcp_servers]` server switched the global repair off for good — `complete`
+     never true, no port fixed, nothing pruned — and Connect reported an old entry it could not
+     remove on every press. Item 109's rule: refuse only the collision, keep the rest.
+468. **A substitute press recorded as a choice** → in a window with no folder the toolbar's Copy
+     twin stands in for "Add XPath to Claude Code", and pressing it wrote `xpath` into the
+     global memento, taking the Add button away from every project window. A repeat press on a
+     stand-in records nothing.
+469. **A Markdown escape against a reader that does not read Markdown** → `\<` stopped the
+     autolink, and the Markdown language server finds HTML links with an HTML parser over the
+     raw text, where the backslash is nothing: `<a href="command:…">` in an element id was still
+     a Cmd+click command in the report. Write `<` as `&lt;`; check every link reader the editor
+     runs, not the renderer alone.
+470. **Clearing everything when the answer carried a part** → `browser_console` with `clear`
+     emptied the buffer and the browser's store, then cut the answer to its newest lines, so the
+     older ones it said it had "left out" were gone. Clear only what was returned.
 
 ## Special cases and non-obvious decisions
 

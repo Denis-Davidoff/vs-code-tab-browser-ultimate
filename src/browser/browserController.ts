@@ -47,6 +47,22 @@ const consoleLimit = 200;
 const consoleLineLimit = 2_000;
 const consoleOutputLimit = 40_000;
 
+/**
+ * A console line cut at `consoleLineLimit` — never inside a surrogate pair: half
+ * an emoji is a lone surrogate, which `JSON.stringify` writes as `\ud83d` and
+ * a strict JSON reader (serde, behind Codex) refuses, failing the whole answer
+ * (#373's rule, for a different sink). Sliced rather than spread into code
+ * points, since the line can be megabytes.
+ */
+function cutLine(text: string): string {
+	let end = consoleLineLimit;
+	const last = text.charCodeAt(end - 1);
+	if (last >= 0xd800 && last <= 0xdbff) {
+		end--;
+	}
+	return `${text.slice(0, end)}… [${text.length - end} more characters]`;
+}
+
 /** Where a frame's scripts run: the session that reaches it, and its default context there. */
 interface FrameScope {
 	readonly sessionId: string;
@@ -289,7 +305,7 @@ class TabSession {
 	}
 
 	private _record(level: string, text: string): void {
-		this._console.push({ level, text: text.length > consoleLineLimit ? `${text.slice(0, consoleLineLimit)}… [${text.length - consoleLineLimit} more characters]` : text });
+		this._console.push({ level, text: text.length > consoleLineLimit ? cutLine(text) : text });
 		if (this._console.length > consoleLimit) {
 			this._console.splice(0, this._console.length - consoleLimit);
 		}
@@ -584,8 +600,9 @@ class TabSession {
 		return this._console;
 	}
 
-	public clearConsole(): void {
-		this._console.length = 0;
+	/** Empties the buffer, keeping its oldest `keep` lines. */
+	public clearConsole(keep = 0): void {
+		this._console.length = Math.min(keep, this._console.length);
 	}
 
 	public dispose(): void {
@@ -2884,8 +2901,18 @@ export class BrowserController implements vscode.Disposable {
 	public async consoleOutput(clear: boolean, caller: CallerIdentity): Promise<unknown> {
 		return this._withSession(caller, async session => {
 			const lines = session.consoleLines.map(line => `[${line.level}] ${line.text}`);
+			// The newest lines, as many as fit.
+			let size = 0;
+			let from = lines.length;
+			while (from > 0 && size + lines[from - 1].length + 1 <= consoleOutputLimit) {
+				size += lines[from - 1].length + 1;
+				from--;
+			}
 			if (clear) {
-				session.clearConsole();
+				// Only what this answer carries: the older lines it leaves out stay
+				// in our buffer for the next call. Cleared with the rest, they were
+				// gone while the answer said only that they had been left out.
+				session.clearConsole(from);
 				// **The browser's copy too, not only ours.** `Runtime.enable` and
 				// `Log.enable` replay what the page logged before a session attached
 				// — `_enableDomains` relies on it — so clearing our buffer alone was
@@ -2901,15 +2928,13 @@ export class BrowserController implements vscode.Disposable {
 			if (!lines.length) {
 				return 'The console is empty. Note that only messages logged since this tab was first inspected are captured.';
 			}
-			// The newest lines, as many as fit.
-			let size = 0;
-			let from = lines.length;
-			while (from > 0 && size + lines[from - 1].length + 1 <= consoleOutputLimit) {
-				size += lines[from - 1].length + 1;
-				from--;
-			}
 			const shown = lines.slice(from).join('\n');
-			return from > 0 ? `[${from} older lines left out to keep the answer small]\n${shown}` : shown;
+			if (!from) {
+				return shown;
+			}
+			return clear
+				? `[${from} older lines left out to keep the answer small; they were not cleared — call again to read them]\n${shown}`
+				: `[${from} older lines left out to keep the answer small]\n${shown}`;
 		});
 	}
 

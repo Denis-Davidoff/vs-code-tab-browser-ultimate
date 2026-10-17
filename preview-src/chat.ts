@@ -323,13 +323,16 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 				if (paletteMode === 'inline') {
 					closePalette();
 				}
-				// A message recalled with ↑ ends its walk here: the box now holds
-				// text of its own, and a walk still in progress saved the text from
-				// before it as the draft — the queue given back was lost at the next
-				// tab switch or chat change.
+				// A message recalled with ↑ ends its walk here, and the queue is
+				// added to the draft from before the walk, not to the message on
+				// show: built on the recalled text, the draft typed before ↑ was lost
+				// for good, and the queued message — usually the newest in the
+				// history, so the one recalled — went in twice. Left walking, the
+				// queue given back was lost at the next tab switch instead.
+				const base = currentDraft();
 				fromHistory = false;
 				historyAt = inputHistory.length;
-				input.value = input.value.trim() ? `${input.value}\n\n${message.text}` : message.text;
+				input.value = base.trim() ? `${base}\n\n${message.text}` : message.text;
 				autosize();
 				saveDraft();
 				renderSend();

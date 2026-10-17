@@ -238,7 +238,8 @@ The menu, in order:
 
 Everything belonging to one assistant lives in that assistant's submenu, which is what keeps the
 top level at seventeen rows. The four **Add** entries there appear only for an assistant whose
-extension is actually installed; **Connect** and **Share Tab** are always there, because an
+extension is actually installed and can take a report in this window — Claude Code's need a local
+folder open, and neither works in a remote window; **Connect** and **Share Tab** are always there, because an
 assistant driven from a terminal through `.mcp.json` needs them and has no extension to detect.
 The menu is attached to the browser tab — from anywhere else, use the command palette.
 

@@ -197,9 +197,9 @@ export function activate(context: vscode.ExtensionContext) {
 	}));
 	context.subscriptions.push(vscode.extensions.onDidChange(() => lastAction.refresh()));
 
-	const registerElementCommand = (id: string, remembered: ElementActionId, run: () => Promise<void>) =>
+	const registerElementCommand = (id: string, remembered: ElementActionId, run: () => Promise<void>, repeat = false) =>
 		context.subscriptions.push(vscode.commands.registerCommand(id, async () => {
-			await lastAction.record(remembered);
+			await lastAction.record(remembered, repeat);
 			await run();
 		}));
 
@@ -387,7 +387,7 @@ export function activate(context: vscode.ExtensionContext) {
 		['codex:xpath', () => addPathToAssistant('codex', 'xpath')],
 	];
 	for (const [action, run] of repeats) {
-		registerElementCommand(`aiBrowser.repeat.${action.replace(':', '.')}`, action, run);
+		registerElementCommand(`aiBrowser.repeat.${action.replace(':', '.')}`, action, run, true);
 	}
 
 	context.subscriptions.push(vscode.commands.registerCommand(openApiCommand, async (url: vscode.Uri | string, showOptions?: {

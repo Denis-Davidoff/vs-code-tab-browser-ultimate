@@ -751,11 +751,12 @@ export class ChatTab {
 		return this.cwd;
 	}
 
-	/** Claude Code must start again to load what changed (`_restartForDirs`); now if idle, else once the work ends. */
 	/**
-	 * `now`: let an idle session go at once rather than after the quiet wait —
-	 * for a folder whose own settings have just been held back, where the
-	 * process running there must not be the one that reads them.
+	 * Claude Code must start again to load what changed (`_restartForDirs`):
+	 * once the work ends and the tab stays quiet. `now`: an idle session goes
+	 * at once rather than after the quiet wait — for a folder whose own
+	 * settings have just been held back, where the process running there must
+	 * not be the one that reads them.
 	 */
 	public restartSession(now = false): void {
 		if (!this._session || this._chat.agent !== 'claude') {
@@ -821,6 +822,9 @@ export class ChatTab {
 			return this._session;
 		}
 		const session = backend.openSession(this._cwd(), this._chat.ref, this._chat.stats.costUsd, this.projectRoot, this._chat.references?.map(r => r.path), this._host.ownSettings(this._cwd()));
+		// A session opened now starts with what the restart was for; one still
+		// pending would let it go after its first turn, for nothing.
+		this._restartForDirs = false;
 		this._tokenOffset = { input: 0, output: 0, cached: 0 };
 		const chatId = this._chat.id;
 		this._session = session;

@@ -303,7 +303,7 @@ suite('report text from the page stays on one line', () => {
 suite('inertProse', () => {
 	test('the same rule as elementMarkdown.ts: no link survives, Tailwind brackets do', () => {
 		assert.strictEqual(inertProse('http://h/[x](command:y)'), 'http://h/[x]\\(command:y)');
-		assert.strictEqual(inertProse('<command:y>'), '\\<command:y>');
+		assert.strictEqual(inertProse('<command:y>'), '&lt;command:y>');
 		assert.strictEqual(inertProse('div.w-[30px]'), 'div.w-[30px]');
 	});
 });

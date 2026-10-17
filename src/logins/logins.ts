@@ -665,7 +665,12 @@ class LoginsFeature implements WatcherHandlers, vscode.Disposable {
 						const entry = vault.logins.find(e => e.id === before.id);
 						return entry && entry.password === submit.password ? putLogin(vault, before) : undefined;
 					});
-					confirm(vscode.l10n.t("Updated the password of {0}", shownUsername(decision.entry.username)));
+					// Withdrawn while the write was on its way: `_noteCommit` has just
+					// put it back and said so, and a success line here would claim
+					// the opposite a moment before.
+					if (!offer.withdrawn) {
+						confirm(vscode.l10n.t("Updated the password of {0}", shownUsername(decision.entry.username)));
+					}
 				} else if (missing) {
 					refuse(vscode.l10n.t("That login was deleted in the meantime, so nothing was updated."));
 				}
@@ -765,9 +770,11 @@ class LoginsFeature implements WatcherHandlers, vscode.Disposable {
 				known = conflict;
 				continue;
 			}
-			if (done === 'saved') {
+			// Not for an offer withdrawn meanwhile: the caller's `_noteCommit` puts
+			// the write back and says so.
+			if (done === 'saved' && !offer?.withdrawn) {
 				confirm(vscode.l10n.t("Saved the login {0} for {1}", shownUsername(username), plainInLabel(origin)));
-			} else if (done === 'updated') {
+			} else if (done === 'updated' && !offer?.withdrawn) {
 				confirm(vscode.l10n.t("Updated the password of {0}", shownUsername(username)));
 			}
 			return done && after ? { before, after } : undefined;

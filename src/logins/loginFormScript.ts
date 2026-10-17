@@ -715,11 +715,19 @@ listen(globalThis, 'click', e => {
   const explicitSubmit = (button.localName === 'button' && declared === 'submit')
     || (button.localName === 'input' && (declared === 'submit' || declared === 'image'));
   const submits = !leaving && (explicitSubmit || (submitWords.test(label) && !leadsAway.test(label)));
+  // The watched form's own submit button is submitting again, whatever its
+  // words: clicked a second time, or clicked by the browser itself, which is
+  // how Enter submits a form — implicit submission sends a trusted click to
+  // the form's default button. Read as moving on, a typeless default button
+  // labelled with an arrow or in another language ended every Enter sign-in
+  // the moment it started.
+  const resubmits = !!watching && !leaving && !!button.form && button.type === 'submit'
+    && root === watching.root && !leadsAway.test(label);
   // Moving on from a submission whose form is still showing — a link, a
   // toggle, anything but submitting again — means it did not work: the page
   // kept the form and drew an error. Left running, the watch read the form
   // going away under the next route ("Forgot password?") as its success.
-  if (!submits && watching && watching.field.isConnected && isRendered(watching.field)) {
+  if (!submits && !resubmits && watching && watching.field.isConnected && isRendered(watching.field)) {
     endWatch();
     state.intent.delete(root);
   }

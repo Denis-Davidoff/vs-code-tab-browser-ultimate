@@ -581,6 +581,12 @@ export function repairCodexToml(
 	 * cannot drift back out of the rule.
 	 */
 	deletable: RangeDeletable,
+	/**
+	 * Servers the document defines outside a `[mcp_servers.<name>]` header
+	 * (`codexServersElsewhere`): not entries, so not in `entries`, and a rename
+	 * onto one of them is a second definition of that table.
+	 */
+	elsewhere: ReadonlySet<string> = new Set(),
 ): Repair {
 	const unchanged: Repair = { text, changed: false, collapsed: [] };
 
@@ -594,7 +600,7 @@ export function repairCodexToml(
 	// stable; otherwise the first of ours, which keeps it where the user put it.
 	const source = roots.includes(endpoint.name) ? endpoint.name : roots[0];
 
-	const foreign = new Set(entries.map(entry => rootTable(entry.name)).filter(name => !roots.includes(name)));
+	const foreign = new Set([...entries.map(entry => rootTable(entry.name)).filter(name => !roots.includes(name)), ...elsewhere]);
 	const canonical = foreign.has(endpoint.name) ? source : endpoint.name;
 
 	// Same rule as the `.mcp.json` side: an entry that already says the right

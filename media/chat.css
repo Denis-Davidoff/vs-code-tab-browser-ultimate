@@ -1426,7 +1426,8 @@ body.vscode-light .code-block pre {
 	font-size: 16px;
 }
 
-/* The same outer size as the "/" square and the context pie beside it, 17 px. */
+/* The same outer size as the context pie beside it, 17 px. The "/" square was 17 px
+ * too, and was made smaller on request (15 px with its border). */
 .usage-button span {
 	display: inline-flex;
 	box-sizing: border-box;

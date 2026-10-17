@@ -126,7 +126,8 @@ suite('page-supplied text stays on one line', () => {
 suite('inertProse', () => {
 	test('a link or an autolink the page wrote does not survive on a prose line', () => {
 		assert.strictEqual(inertProse('div#[Fix](command:x.y)'), 'div#[Fix]\\(command:x.y)');
-		assert.strictEqual(inertProse('a#<command:x.y>'), 'a#\\<command:x.y>');
+		assert.strictEqual(inertProse('a#<command:x.y>'), 'a#&lt;command:x.y>');
+		assert.strictEqual(inertProse('div#x <a href="command:y">Fix'), 'div#x &lt;a href="command:y">Fix');
 	});
 
 	test('brackets that make no link are left alone', () => {

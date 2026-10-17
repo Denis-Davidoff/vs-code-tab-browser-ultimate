@@ -331,18 +331,34 @@ export function codexUnterminated(text: string): boolean {
 /** Any table header, `[path]` or `[[path]]`, for `codexServersElsewhere`. */
 const anyHeader = new RegExp(String.raw`^\s*\[\[?\s*(${keyPath})\s*\]\]?\s*$`);
 
+export interface ServersElsewhere {
+	/** The servers defined outside a `[mcp_servers.<name>]` header, spelled as entry roots are. */
+	readonly names: ReadonlySet<string>;
+	/** `mcp_servers = { … }` itself: every server is in one value no reader here opens. */
+	readonly inline: boolean;
+}
+
 /**
- * Whether the document defines MCP servers in a form this file does not model:
- * keys under a bare `[mcp_servers]` table (`ai-browser = { url = … }`), or
- * dotted keys at the root (`mcp_servers.ai-browser.url = …`). Only
+ * The MCP servers a document defines in a form this file does not model: keys
+ * under a bare `[mcp_servers]` table (`ai-browser = { url = … }`), or dotted
+ * keys at the root (`mcp_servers.ai-browser.url = …`). Only
  * `[mcp_servers.<name>]` tables become entries, so such a server was
  * invisible: Connect appended a table of the same name and the repair renamed
  * onto one, and two definitions of one table is TOML that does not parse —
  * every server in the file gone for Codex. `codex mcp add` never writes these
- * forms; a hand-written file can. **A file that answers true is not
- * rewritten**, as for `codexUnterminated`.
+ * forms; a hand-written file can.
+ *
+ * **Names, not a verdict on the file.** Only a table of the *same name* breaks
+ * anything: deleting our header tables beside them, or editing their lines,
+ * parses fine. Refusing the whole file instead switched the startup repair off
+ * for good — `complete` never true, no port fixed, nothing pruned — for every
+ * valid config holding one server in another spelling (item 109's rule: drop
+ * the entry, keep the rest). Writers refuse only a collision, or the inline
+ * form, whose names nothing here reads.
  */
-export function codexServersElsewhere(text: string): boolean {
+export function codexServersElsewhere(text: string): ServersElsewhere {
+	const names = new Set<string>();
+	let inline = false;
 	let quote: string | undefined;
 	let depth = 0;
 	let braces = 0;
@@ -366,12 +382,18 @@ export function codexServersElsewhere(text: string): boolean {
 		if (!kv) {
 			continue;
 		}
-		const key = canonicalPath(kv[1]);
-		if (table === 'mcp_servers' || (table === undefined && (key === 'mcp_servers' || key.startsWith('mcp_servers.')))) {
-			return true;
+		const parts = kv[1].match(new RegExp(keyPart, 'g')) ?? [kv[1]];
+		if (table === 'mcp_servers') {
+			names.add(canonicalPath(parts[0], true));
+		} else if (table === undefined && unquote(parts[0]) === 'mcp_servers') {
+			if (parts.length === 1) {
+				inline = true;
+			} else {
+				names.add(canonicalPath(parts[1], true));
+			}
 		}
 	}
-	return false;
+	return { names, inline };
 }
 
 /**
