@@ -78,8 +78,16 @@ export interface AgentBackend extends vscode.Disposable {
 	 * `root`: the project folder, undefined when no local folder is open — it
 	 * decides what a question about a file is (see `outsideProject`), and `cwd`
 	 * is then the home directory, which must not count as the project.
+	 * `readDirs`: folders beside the project the agent may read — GitHub
+	 * repositories added for reference. Claude Code is given them with
+	 * `--add-dir`, which spares a question per read; an edit there is still
+	 * "outside the project" to the approval menu. Codex reads anywhere already.
+	 * `ownSettings` false: the folder came from GitHub and was not trusted yet
+	 * — Claude Code loads only the user's settings and MCP servers, never the
+	 * project's, whose hooks are shell commands. Codex loads a project's own
+	 * configuration only for a project it trusts already.
 	 */
-	openSession(cwd: string, resume?: string, priorCostUsd?: number, root?: string): AgentSession;
+	openSession(cwd: string, resume?: string, priorCostUsd?: number, root?: string, readDirs?: readonly string[], ownSettings?: boolean): AgentSession;
 }
 
 export const agentNames: Record<AgentId, string> = {
@@ -128,6 +136,8 @@ export class AgentRegistry implements vscode.Disposable {
 		private readonly _cwd: () => string,
 		private readonly _pinned: (id: AgentId) => string | undefined = () => undefined,
 		private readonly _browserServer: () => BrowserServer | undefined = () => undefined,
+		/** Whether the folder `cwd` names may load its own settings; see `openSession`. */
+		private readonly _ownSettings: () => boolean = () => true,
 	) { }
 
 	public get agents(): readonly ChatAgent[] {
@@ -145,25 +155,30 @@ export class AgentRegistry implements vscode.Disposable {
 		return out;
 	}
 
-	private readonly _commandsAsked = new Map<AgentId, number>();
+	/** When each agent's skills were last listed, and for which working directory. */
+	private readonly _commandsAsked = new Map<AgentId, { at: number; cwd: string }>();
 
 	/**
 	 * Lists an agent's skills again — the palette opened, and one may have been
 	 * added since. At most every 10 s per agent: for Claude Code each listing is
-	 * a short-lived CLI process. A failure keeps the list there was.
+	 * a short-lived CLI process. A failure keeps the list there was. The working
+	 * directory is the tab in front's, which can be another project than the
+	 * last listing's — its own skills then — so a new folder is always due.
 	 */
 	public async refreshCommands(id: AgentId): Promise<void> {
 		const entry = this._backends.get(id);
-		const last = this._commandsAsked.get(id) ?? 0;
+		const asked = this._commandsAsked.get(id);
+		const last = asked?.at ?? 0;
+		const cwd = this._cwd();
 		// Not for an agent detection found unusable: listing would start its CLI
 		// (Codex's app-server, a Claude probe) for a list the getter drops. A
 		// stamp in the future — a clock moved back — is due, not fresh (#224).
 		const now = Date.now();
-		if (!entry || this._disposed || (now >= last && now - last < 10_000)
+		if (!entry || this._disposed || (now >= last && now - last < 10_000 && asked?.cwd === cwd)
 			|| !this._agents.some(a => a.id === id && a.available)) {
 			return;
 		}
-		this._commandsAsked.set(id, Date.now());
+		this._commandsAsked.set(id, { at: Date.now(), cwd });
 		const before = JSON.stringify(entry.backend.knownCommands);
 		try {
 			await entry.backend.commands();
@@ -266,7 +281,7 @@ export class AgentRegistry implements vscode.Disposable {
 		let entry = this._backends.get(id);
 		if (entry?.binary !== binary.path) {
 			this._drop(id, false);
-			const backend = id === 'claude' ? new ClaudeBackend(binary.path, this._cwd, this._browserServer) : new CodexBackend(binary.path, this._cwd, this._browserServer);
+			const backend = id === 'claude' ? new ClaudeBackend(binary.path, this._cwd, this._browserServer, this._ownSettings) : new CodexBackend(binary.path, this._cwd, this._browserServer);
 			entry = { binary: binary.path, backend };
 			this._backends.set(id, entry);
 		}
@@ -287,7 +302,7 @@ export class AgentRegistry implements vscode.Disposable {
 			if (entry.backend.knownCommands === before) {
 				await entry.backend.commands().catch(() => undefined);
 			}
-			this._commandsAsked.set(id, Date.now());
+			this._commandsAsked.set(id, { at: Date.now(), cwd: this._cwd() });
 			return { id, name, available: true, models, detail, ...about };
 		} catch (err) {
 			return { id, name, available: false, models: [], detail, ...about, problem: err instanceof Error ? err.message : String(err) };

@@ -24,8 +24,9 @@
  */
 
 import type {
-	AgentId, AgentQuestion, AgentUsage, ApprovalEntry, ToolbarParam, ToolbarResult, ToolbarRun, ToolbarSkill, ApprovalKind, ApprovalMode, AttachmentKind, ChatCommand, ChatEntry, ChatStats, ChatSummary, ChatTabStatus, ChatTabSummary, ChatViewState, HostToView, ToolEntry, ViewToHost,
+	AgentId, AgentQuestion, AgentUsage, ApprovalEntry, ToolbarParam, ToolbarResult, ToolbarRun, ToolbarSkill, ApprovalKind, ApprovalMode, AttachmentKind, ChatCommand, ChatEntry, ChatStats, ChatSummary, ChatTabStatus, ChatTabSummary, ChatViewState, HostToView, RepoMode, ToolEntry, ViewToHost, WorkdirFolder,
 } from '../src/chat/chatProtocol';
+import { baseName, searchPaths } from './fileRank';
 // Every codicon the bundled font has, one per line (`name,char,code`); bundled
 // as text by esbuild, so the icon picker lists exactly what can be drawn.
 import codiconCsv from '@vscode/codicons/dist/codicon.csv';
@@ -119,6 +120,8 @@ const plusButton = button([icon('add')], { class: 'ghost round', title: 'Attach 
 const browserButton = button([icon('globe')], { class: 'ghost round', title: 'Open a new browser tab' });
 /** "/": the chat's own commands — clear or export this conversation. A square and a slash, both drawn in CSS (`.slash-mark`). */
 const slashButton = button([el('span', { class: 'slash-mark' })], { class: 'ghost round slash-button', title: 'Commands and skills — the agent\'s skills, and clearing or exporting this conversation. Type / in the message box to search them there' });
+/** The working folder: where the tab's agent works, and the files of it to attach. */
+const workdirButton = button([icon('folder')], { class: 'ghost round workdir-button', title: 'Working folder' });
 const agentPill = button([], { class: 'pill', title: 'Agent' });
 const modelPill = button([], { class: 'pill', title: 'Model' });
 const effortRange = el('input', { class: 'effort-range' });
@@ -148,7 +151,7 @@ const approveToggle = button([], { class: 'pill approve-toggle' });
 // The right-hand buttons (agents, usage, send) are one group pushed to the end,
 // so a narrow side bar wraps them together onto the next line, still at the right.
 const toolbar = el('div', { class: 'toolbar' },
-	plusButton, browserButton, slashButton, agentPill, modelPill, effortBox, approveToggle, el('span', { class: 'toolbar-end' }, agentsButton, contextButton, usageButton, queueButton, sendButton));
+	plusButton, browserButton, slashButton, workdirButton, agentPill, modelPill, effortBox, approveToggle, el('span', { class: 'toolbar-end' }, agentsButton, contextButton, usageButton, queueButton, sendButton));
 /**
  * The box's text drawn again behind it, with the agent's commands in colour:
  * a textarea cannot style part of its text, so this layer shows the text and
@@ -176,6 +179,8 @@ const usagePopup = el('div', { class: 'popup usage-popup' });
 const approvalPopup = el('div', { class: 'popup approval-popup' });
 /** The "/" palette: a search box over the chat's commands and the agent's skills. */
 const palette = el('div', { class: 'popup palette' });
+/** The folder button's list: folders to work in, then the files of the one in use. */
+const workdirPopup = el('div', { class: 'popup palette workdir-popup' });
 /** Adding or editing a toolbar skill: a panel over the chat. */
 const skillEditor = el('div', { class: 'history-panel skill-editor' });
 /** A toolbar skill's parameters, asked for when it runs; or its run, while it runs. */
@@ -185,7 +190,7 @@ const agentsPanel = el('div', { class: 'history-panel agents-panel' });
 /** Which copy of each agent's CLI this project uses: opened from the gear in the agent menu. */
 const agentAppsPanel = el('div', { class: 'history-panel agent-apps' });
 
-app.append(tabStrip, thread, blocked, footer, menu, usagePopup, approvalPopup, palette, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel);
+app.append(tabStrip, thread, blocked, footer, menu, usagePopup, approvalPopup, palette, workdirPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel);
 
 /* ---------------------------------------------------------------- state */
 
@@ -289,6 +294,29 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 		case 'toolbarError':
 			showEditorError(message.message);
 			return;
+		case 'githubAnswer':
+			// Only the form it answers: closed meanwhile, there is nothing to say.
+			if (repoFormError?.isConnected && paramsPopup.classList.contains('open')) {
+				if (message.error === undefined) {
+					closePopups();
+					input.focus();
+				} else {
+					repoFormError.textContent = message.error;
+					repoFormSubmit?.removeAttribute('disabled');
+				}
+			}
+			return;
+		case 'workdirFiles':
+			// Kept by folder: two listings can be in flight at once, a slow one for
+			// the tab left behind arriving after the one for the tab in front.
+			workdirListings.set(message.folder, { entries: message.entries, truncated: message.truncated, revision: ++workdirRevision });
+			while (workdirListings.size > 8) {
+				workdirListings.delete(workdirListings.keys().next().value!);
+			}
+			if (state) {
+				renderWorkdir(state);
+			}
+			return;
 		case 'restoreDraft':
 			// Stop gave the queue back: added to what is in the box, never sent.
 			if (message.chatId === state?.chatId) {
@@ -355,6 +383,7 @@ function render(): void {
 	renderAgents(state);
 	renderSkillBar(state);
 	renderPalette(state);
+	renderWorkdir(state);
 	if (agentAppsPanel.classList.contains('open')) {
 		fillAgentApps(state);
 	}
@@ -3012,12 +3041,15 @@ function closePopups(except?: HTMLElement, keep?: HTMLElement): void {
 	if (except !== palette) {
 		paletteMode = undefined;
 	}
-	for (const popup of [menu, usagePopup, approvalPopup, palette, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel]) {
+	if (except !== paramsPopup) {
+		paramsPopup.classList.remove('repo-form');
+	}
+	for (const popup of [menu, usagePopup, approvalPopup, palette, workdirPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel]) {
 		if (popup !== except && popup !== keep) {
 			popup.classList.remove('open');
 		}
 	}
-	for (const pill of [agentPill, modelPill, plusButton, usageButton, approveToggle, slashButton, contextButton]) {
+	for (const pill of [agentPill, modelPill, plusButton, usageButton, approveToggle, slashButton, workdirButton, contextButton]) {
 		pill.classList.remove('active');
 	}
 	// A skill button is a popup's anchor too; the mark only tells a second
@@ -3030,8 +3062,13 @@ function closePopups(except?: HTMLElement, keep?: HTMLElement): void {
 	}
 }
 
-function openAbove(popup: HTMLElement, anchor: HTMLElement, align: 'left' | 'right', keep?: HTMLElement): void {
+/** `form`: the GitHub form's own class on the reused parameters popover, set before it is measured; anything else opened there drops it. */
+function openAbove(popup: HTMLElement, anchor: HTMLElement, align: 'left' | 'right', keep?: HTMLElement, form?: 'repo-form'): void {
 	closePopups(popup, keep);
+	popup.classList.remove('repo-form');
+	if (form) {
+		popup.classList.add(form);
+	}
 	anchor.classList.add('active');
 	// Relative to the view, not the window: the popup is positioned inside
 	// `#app`, and the two only coincide when nothing else is laid out around it.
@@ -3087,7 +3124,7 @@ document.addEventListener('mousedown', event => {
 		}
 		return;
 	}
-	if (![menu, usagePopup, approvalPopup, palette, paramsPopup, skillBar, historyPanel, agentsPanel, agentAppsPanel, plusButton, usageButton, agentsButton, agentPill, modelPill, approveToggle, slashButton, contextButton].some(n => n.contains(target))) {
+	if (![menu, usagePopup, approvalPopup, palette, workdirPopup, paramsPopup, skillBar, historyPanel, agentsPanel, agentAppsPanel, plusButton, usageButton, agentsButton, agentPill, modelPill, approveToggle, slashButton, workdirButton, contextButton].some(n => n.contains(target))) {
 		closePopups();
 	}
 });
@@ -3858,6 +3895,449 @@ slashButton.addEventListener('click', () => {
 		return;
 	}
 	openPalette('button');
+});
+
+/* ---------------------------------------------------------------- the working folder */
+
+/**
+ * The folder button, right of "/": where the tab's agent works, and the files
+ * of that folder to add to the message — asked for. A search box at the top,
+ * focused at once, as in the "/" palette; under it the folders to work in (the
+ * one in use, the window's own, those picked lately, and Choose folder…),
+ * then the files and folders of the one in use. Without a search the files
+ * are the folder's own entries; with one, the best matches from anywhere in
+ * it (`searchPaths`). A file or folder chosen is attached as its path.
+ *
+ * A conversation that has started keeps its folder: another one opens a new
+ * tab (`StoredChat.folder`), and the rows say so.
+ */
+interface WorkdirItem {
+	readonly key: string;
+	readonly group: string;
+	readonly label: string;
+	readonly detail?: string;
+	readonly icon: string;
+	readonly current?: boolean;
+	readonly run: () => void;
+}
+
+/** Results shown at most for a search; the listing itself can be 20 000 long. */
+const workdirResultLimit = 100;
+/** The working folder's listing, as the host last sent it. */
+const workdirListings = new Map<string, { entries: readonly string[]; truncated: boolean; revision: number }>();
+/** Counts the listings that arrived, so one with the same number of entries still rebuilds the list. */
+let workdirRevision = 0;
+
+/** The listing of the folder in use, when one has arrived. */
+function currentListing(s: ChatViewState) {
+	return s.workdir.current ? workdirListings.get(s.workdir.current.path) : undefined;
+}
+let workdirItems: WorkdirItem[] = [];
+let workdirActive = 0;
+/** What the list was built from: a state post rebuilds it only when that changed (#365). */
+let workdirShape = '';
+/** The folder whose files were last asked for while the list is open. */
+let workdirAsked: string | undefined;
+
+const workdirSearch = el('input', { class: 'palette-search' });
+workdirSearch.type = 'text';
+workdirSearch.spellcheck = false;
+workdirSearch.placeholder = 'Search folders and files…';
+workdirSearch.setAttribute('aria-label', 'Search folders and files');
+const workdirList = el('div', { class: 'palette-list' });
+workdirList.setAttribute('role', 'listbox');
+workdirPopup.append(workdirSearch, workdirList);
+
+function workdirItemsFor(s: ChatViewState, query: string): WorkdirItem[] {
+	const w = s.workdir;
+	const items: WorkdirItem[] = [];
+	const group = 'Working folder';
+	const move = w.locked ? ' · opens a new tab' : '';
+	const folderRow = (f: WorkdirFolder, origin: string): WorkdirItem => ({
+		key: `folder:${f.path}`, group, label: f.name, icon: 'folder', detail: `${f.path} — ${origin}${move}`,
+		run: () => post({ type: 'setWorkdir', path: f.path }),
+	});
+	if (w.current) {
+		items.push({
+			key: 'folder:current', group, label: w.current.name, icon: 'check', current: true,
+			detail: `${w.current.path} — in use${w.locked ? ' by this conversation' : ''}${w.noProject ? '; the home directory, so no project: Codex only reads, and every file counts as outside' : ''}`,
+			run: () => input.focus(),
+		});
+	} else {
+		items.push({ key: 'folder:current', group, label: 'No folder', icon: 'check', current: true, detail: 'The home directory, with no project', run: () => input.focus() });
+	}
+	const seen = new Set(w.current ? [w.current.path] : []);
+	for (const f of w.workspace) {
+		if (!seen.has(f.path)) {
+			seen.add(f.path);
+			items.push(folderRow(f, "this window's folder"));
+		}
+	}
+	for (const f of w.recent) {
+		if (!seen.has(f.path)) {
+			seen.add(f.path);
+			items.push(folderRow(f, 'picked recently'));
+		}
+	}
+	// Picked in a window with no folder: the way back to none.
+	if (w.picked && !w.workspace.length) {
+		items.push({ key: 'folder:none', group, label: 'No folder', icon: 'home', detail: `The home directory, with no project${move}`, run: () => post({ type: 'setWorkdir' }) });
+	}
+	items.push({
+		key: 'folder:choose', group, label: 'Choose folder…', icon: 'folder-opened',
+		detail: `Any folder on this machine${move}`, run: () => post({ type: 'chooseWorkdir' }),
+	});
+	items.push(...githubItems(w, move));
+	const folders = query ? items.filter(i => i.key === 'folder:choose' || i.key === 'github:open' || [i.label, i.detail].join(' ').toLowerCase().includes(query)) : items;
+
+	const files: WorkdirItem[] = [];
+	const listing = currentListing(s);
+	if (w.current && listing) {
+		const filesGroup = `Files in ${w.current.name}`;
+		for (const entry of searchPaths(listing.entries, query, workdirResultLimit)) {
+			const isDir = entry.endsWith('/');
+			const parent = entry.slice(0, entry.length - baseName(entry).length - (isDir ? 1 : 0));
+			files.push({
+				key: `file:${entry}`, group: filesGroup, label: isDir ? `${baseName(entry)}/` : baseName(entry),
+				icon: isDir ? 'folder' : 'file', detail: parent ? parent.replace(/\/$/, '') : undefined,
+				run: () => post({ type: 'attachPath', path: entry }),
+			});
+		}
+	}
+	// With a search, the files first: the folders are a handful and rarely what is typed for.
+	return query ? [...files, ...folders] : [...folders, ...files];
+}
+
+/**
+ * The GitHub rows: on a separate copy, what can be done with it; then opening
+ * a repository — the form asks which way (`openRepoForm`) — and the ones
+ * opened lately, which open the form filled in.
+ */
+function githubItems(w: ChatViewState['workdir'], move: string): WorkdirItem[] {
+	const group = 'GitHub';
+	const items: WorkdirItem[] = [];
+	if (w.busy) {
+		items.push({ key: 'github:busy', group, label: `${w.busy[0].toUpperCase()}${w.busy.slice(1)}…`, icon: 'sync', detail: 'In the status bar while it runs', run: () => input.focus() });
+	}
+	if (w.copy) {
+		const copy = w.copy;
+		items.push(
+			{ key: 'github:changes', group, label: 'Changes in the copy', icon: 'diff', detail: `Against ${copy.base}, in an editor tab`, run: () => post({ type: 'repoAction', action: 'changes' }) },
+			{
+				key: 'github:push', group, label: 'Push and open a pull request…', icon: 'git-pull-request', detail: `${copy.branch} into ${copy.base}`,
+				run: () => openMenu(workdirButton, [
+					{ icon: 'cloud-upload', label: 'Push', description: `Uncommitted changes are committed first, as the chat's title; then ${copy.branch} goes to GitHub and the pull request page opens`, run: () => post({ type: 'repoAction', action: 'push' }) },
+					{ icon: 'close', label: 'Cancel', run: () => undefined },
+				], `Push to ${copy.repo}?`),
+			},
+			{ key: 'github:window', group, label: 'Open the copy in a new window', icon: 'empty-window', detail: 'To look at it, or carry on by hand', run: () => post({ type: 'repoAction', action: 'window' }) },
+			{
+				key: 'github:remove', group, label: 'Remove the copy…', icon: 'trash', detail: 'What was not pushed is lost',
+				run: () => openMenu(workdirButton, [
+					{ icon: 'trash', label: 'Remove', description: w.locked ? 'This conversation worked there and cannot go on; it stays in the history' : 'The tab goes back to the window\'s folder', run: () => post({ type: 'repoAction', action: 'remove' }) },
+					{ icon: 'close', label: 'Cancel', run: () => undefined },
+				], 'Remove the copy? Changes not pushed are lost.'),
+			},
+		);
+	}
+	for (const r of w.references) {
+		items.push({ key: `github:ref:${r.path}`, group, label: `${r.repo} (${r.branch})`, icon: 'book', current: true, detail: `Read beside the project — ${r.path}`, run: () => input.focus() });
+	}
+	if (w.heldBack?.length) {
+		const files = w.heldBack.join(', ');
+		items.push({
+			key: 'github:trust', group, label: "Trust this repository's settings…", icon: 'shield', detail: `Held back: ${files}`,
+			run: () => openMenu(workdirButton, [
+				{ icon: 'shield', label: 'Trust and load them', description: `Claude Code loads ${files} from the next message on. Hooks there are shell commands that run on your machine — read them first`, run: () => post({ type: 'trustWorkdir' }) },
+				{ icon: 'close', label: 'Cancel', run: () => undefined },
+			], "Trust this repository's own settings?"),
+		});
+	}
+	items.push({ key: 'github:open', group, label: 'Open a GitHub repository…', icon: 'github', detail: `Work in a copy, clone it, or read it beside the project${move}`, run: () => openRepoForm('') });
+	for (const repo of w.recentRepos) {
+		items.push({ key: `github:repo:${repo}`, group, label: repo, icon: 'repo', detail: 'Opened lately', run: () => openRepoForm(repo) });
+	}
+	return items;
+}
+
+/** The GitHub form's error line and Open button, while it is open; `githubAnswer` writes to them. */
+let repoFormError: HTMLElement | undefined;
+let repoFormSubmit: HTMLButtonElement | undefined;
+
+/**
+ * Which way a repository is used — asked for: the choice is the user's, each
+ * option saying what it does to their files. The default is a separate copy,
+ * or a clone into the folder in use when that is empty.
+ */
+function openRepoForm(repo: string): void {
+	const w = state?.workdir;
+	if (!w) {
+		return;
+	}
+	const repoInput = el('input', { class: 'form-input' });
+	repoInput.type = 'text';
+	repoInput.spellcheck = false;
+	repoInput.value = repo;
+	repoInput.placeholder = 'owner/name, or its github.com address';
+	const branchInput = el('input', { class: 'form-input' });
+	branchInput.type = 'text';
+	branchInput.spellcheck = false;
+	branchInput.placeholder = 'Its default branch';
+	const newTab = w.locked ? ' Opens a new tab.' : '';
+	const modes: { mode: RepoMode; label: string; detail: string }[] = [
+		{ mode: 'copy', label: 'Work in a separate copy', detail: `Cloned into the extension's own storage, on a new branch. Your folders are not touched; the work goes back as a pull request.${newTab}` },
+		{
+			mode: 'clone', label: w.empty && w.current ? `Clone into ${w.current.name}` : 'Clone into a folder',
+			detail: w.empty && w.current ? `It is empty; the agent then works in the clone.` : `You pick the folder; the agent then works in the clone.${newTab}`,
+		},
+		{ mode: 'reference', label: 'Read it beside this project', detail: 'The agent works here as before and can read the repository; nothing there is changed.' },
+	];
+	let chosen: RepoMode = w.empty && w.current ? 'clone' : 'copy';
+	const options = modes.map(m => {
+		const option = button([
+			icon('circle-large-outline', 'repo-mode-mark'),
+			el('span', { class: 'repo-mode-text' }, el('span', { class: 'repo-mode-label', text: m.label }), el('span', { class: 'repo-mode-detail', text: m.detail })),
+		], { class: 'repo-mode' });
+		option.setAttribute('role', 'radio');
+		option.addEventListener('click', () => { chosen = m.mode; mark(); });
+		return { mode: m.mode, option };
+	});
+	const mark = () => {
+		for (const { mode, option } of options) {
+			const on = mode === chosen;
+			option.classList.toggle('chosen', on);
+			option.setAttribute('aria-checked', String(on));
+			const glyph = option.querySelector('.repo-mode-mark')!;
+			glyph.classList.toggle('codicon-pass-filled', on);
+			glyph.classList.toggle('codicon-circle-large-outline', !on);
+		}
+	};
+	mark();
+	const error = el('div', { class: 'form-error' });
+	const open = button([el('span', { text: 'Open' })], { class: 'primary', title: 'Open (Enter)' });
+	const cancel = button([el('span', { text: 'Cancel' })], { class: 'ghost' });
+	repoFormError = error;
+	repoFormSubmit = open;
+	const submit = () => {
+		if (!repoInput.value.trim()) {
+			error.textContent = 'Which repository?';
+			repoInput.focus();
+			return;
+		}
+		error.textContent = chosen === 'clone' && !(w.empty && w.current) ? 'Pick the folder in the dialog…' : '';
+		// Until the host answers: one press, one clone.
+		open.setAttribute('disabled', '');
+		post({ type: 'openRepo', repo: repoInput.value, branch: branchInput.value, mode: chosen });
+	};
+	open.addEventListener('click', submit);
+	cancel.addEventListener('click', () => { closePopups(); input.focus(); });
+	paramsPopup.replaceChildren(
+		el('div', { class: 'menu-heading', text: 'Open a GitHub repository' }),
+		el('label', { class: 'form-row' }, el('span', { class: 'form-label', text: 'Repository' }), repoInput),
+		el('label', { class: 'form-row' }, el('span', { class: 'form-label', text: 'Branch (optional)' }), branchInput),
+		el('div', { class: 'form-label repo-mode-heading', text: 'How to use it' }),
+		el('div', { class: 'repo-modes' }, ...options.map(o => o.option)),
+		error,
+		el('div', { class: 'form-actions' }, cancel, open));
+	paramsPopup.onkeydown = event => {
+		if (event.key === 'Enter' && !event.isComposing && (event.target === repoInput || event.target === branchInput)) {
+			event.preventDefault();
+			submit();
+		}
+	};
+	openAbove(paramsPopup, workdirButton, 'left', undefined, 'repo-form');
+	(repo ? branchInput : repoInput).focus();
+}
+
+/** What the list says under the files when it has no files to show. */
+function workdirStatus(s: ChatViewState, query: string, shown: number): string | undefined {
+	const current = s.workdir.current;
+	if (!current) {
+		return 'No folder in use — choose one to see its files.';
+	}
+	const listing = currentListing(s);
+	if (!listing) {
+		return 'Listing the files…';
+	}
+	if (!listing.entries.length) {
+		return 'The folder is empty, or could not be read.';
+	}
+	if (query && !shown) {
+		return 'No file matches.';
+	}
+	if (listing.truncated) {
+		return `Only the first ${listing.entries.length.toLocaleString()} files are listed; the search looks among them.`;
+	}
+	return undefined;
+}
+
+function buildWorkdir(s: ChatViewState): void {
+	const query = workdirSearch.value.trim().toLowerCase();
+	workdirItems = workdirItemsFor(s, query);
+	// Kept only when picked with an arrow key, and only while the search is the
+	// one it was picked in. A row chosen by the first letters, or under a
+	// pointer passing by, outlived the typing: Enter then attached that file
+	// over the best match, or moved the conversation to a folder row (#412's
+	// lesson, here).
+	const kept = workdirArrowed && workdirArrowed.query === query ? workdirItems.findIndex(i => i.key === workdirArrowed!.key) : -1;
+	// With a search the best file is chosen; without one, nothing — Enter on a
+	// fresh list must not move the conversation to another folder.
+	// With a search only a file is chosen by default: a folder row chosen that
+	// way moved the conversation, or opened Choose folder…, on a typo and Enter.
+	workdirActive = kept >= 0 ? kept : query && workdirItems[0]?.key.startsWith('file:') ? 0 : -1;
+	const nodes: Node[] = [];
+	let group: string | undefined;
+	const files = workdirItems.filter(i => i.key.startsWith('file:')).length;
+	let status = workdirStatus(s, query, files);
+	workdirItems.forEach((item, index) => {
+		if (item.group !== group) {
+			// Without a search the status goes where the files would be, after the
+			// folders (a cut listing's note before its files); with one, at the end.
+			if (group === 'GitHub' && !query && status) {
+				nodes.push(el('div', { class: 'palette-empty', text: status }));
+				status = undefined;
+			}
+			group = item.group;
+			nodes.push(el('div', { class: 'palette-group', text: group }));
+		}
+		const row = button([
+			icon(item.icon, 'palette-icon'),
+			el('span', { class: 'palette-text' },
+				el('span', { class: 'palette-line' }, el('span', { class: 'palette-label', text: item.label })),
+				item.detail ? el('span', { class: 'palette-detail', text: item.detail }) : undefined),
+		], { class: item.current ? 'palette-item current' : 'palette-item' });
+		row.setAttribute('role', 'option');
+		fullRowTip(row, item);
+		row.dataset.index = String(index);
+		row.addEventListener('mousemove', () => setWorkdirActive(index, false));
+		// The search box keeps the focus, and with it what is typed.
+		row.addEventListener('mousedown', event => event.preventDefault());
+		row.addEventListener('click', () => chooseWorkdirItem(index));
+		nodes.push(row);
+	});
+	if (status) {
+		nodes.push(el('div', { class: 'palette-empty', text: status }));
+	}
+	workdirList.replaceChildren(...nodes);
+	setWorkdirActive(workdirActive, true);
+}
+
+/** The row picked with an arrow key, and the search it was picked in. */
+let workdirArrowed: { readonly key: string; readonly query: string } | undefined;
+
+function setWorkdirActive(index: number, scroll: boolean): void {
+	workdirActive = index;
+	for (const row of workdirList.querySelectorAll<HTMLElement>('.palette-item')) {
+		const on = Number(row.dataset.index) === index;
+		row.classList.toggle('active', on);
+		row.setAttribute('aria-selected', String(on));
+		if (on && scroll) {
+			row.scrollIntoView({ block: 'nearest' });
+		}
+	}
+}
+
+function chooseWorkdirItem(index: number): void {
+	const item = workdirItems[index];
+	if (!item) {
+		return;
+	}
+	closePopups();
+	item.run();
+}
+
+function renderWorkdir(s: ChatViewState): void {
+	const w = s.workdir;
+	workdirButton.title = w.current
+		? `Working folder: ${w.current.path}${w.picked ? '' : " (this window's)"} — where the agent works, and its files to add to the message`
+		: 'Working folder: none, the home directory — choose a folder for the agent to work in, and its files to add to the message';
+	workdirButton.classList.toggle('picked', w.picked);
+	if (!workdirPopup.classList.contains('open')) {
+		return;
+	}
+	const shape = JSON.stringify([w, workdirSearch.value, currentListing(s)?.revision]);
+	// Not under a press: a listing arriving between a press and its release
+	// rebuilt the rows and lost the click (#365). Rebuilt when the press ends.
+	if (workdirPressed) {
+		return;
+	}
+	if (shape === workdirShape) {
+		return;
+	}
+	// A folder moved to while the list is open — another tab, Choose folder…:
+	// its files are asked for.
+	if (w.current && w.current.path !== workdirAsked) {
+		workdirAsked = w.current.path;
+		post({ type: 'listWorkdir' });
+	}
+	workdirShape = shape;
+	buildWorkdir(s);
+}
+
+function openWorkdir(): void {
+	if (!state) {
+		return;
+	}
+	workdirSearch.value = '';
+	workdirArrowed = undefined;
+	workdirShape = '';
+	workdirActive = -1;
+	openAbove(workdirPopup, workdirButton, 'left');
+	// Asked every time it opens: files come and go while a message is written.
+	workdirAsked = state.workdir.current?.path;
+	post({ type: 'listWorkdir' });
+	renderWorkdir(state);
+	workdirSearch.focus();
+}
+
+/** A pointer is pressed in the list: it is not rebuilt until the press ends. */
+let workdirPressed = false;
+workdirList.addEventListener('mousedown', () => { workdirPressed = true; });
+document.addEventListener('mouseup', () => {
+	if (!workdirPressed) {
+		return;
+	}
+	workdirPressed = false;
+	// After the click that this release makes has run.
+	setTimeout(() => state && renderWorkdir(state), 0);
+});
+
+workdirButton.addEventListener('click', () => {
+	if (workdirPopup.classList.contains('open')) {
+		closePopups();
+		return;
+	}
+	openWorkdir();
+});
+workdirSearch.addEventListener('input', () => state && renderWorkdir(state));
+workdirSearch.addEventListener('keydown', event => {
+	if (event.isComposing) {
+		return;
+	}
+	const n = workdirItems.length;
+	switch (event.key) {
+		case 'ArrowDown':
+		case 'ArrowUp':
+			if (n) {
+				const dir = event.key === 'ArrowDown' ? 1 : -1;
+				setWorkdirActive(((workdirActive < 0 ? (dir === 1 ? -1 : 0) : workdirActive) + dir + n) % n, true);
+				workdirArrowed = { key: workdirItems[workdirActive].key, query: workdirSearch.value.trim().toLowerCase() };
+			}
+			break;
+		case 'Enter':
+			if (workdirActive >= 0) {
+				chooseWorkdirItem(workdirActive);
+			}
+			break;
+		case 'Escape':
+			closePopups();
+			input.focus();
+			break;
+		default:
+			return;
+	}
+	event.preventDefault();
+	event.stopPropagation();
 });
 
 /* ---------------------------------------------------------------- the toolbar of skills */

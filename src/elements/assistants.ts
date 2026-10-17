@@ -246,12 +246,16 @@ async function writeReport(
  * with them, by then read. Returns the file's path, or `undefined` with no
  * local folder to put it in.
  */
-export async function writeChatTranscript(text: string, fileName: string): Promise<string | undefined> {
+export async function writeChatTranscript(text: string, fileName: string, workdir?: string): Promise<string | undefined> {
+	// Into the conversation's own folder when it picked one: `cleanUpReportsIn` sweeps those.
 	// Without a local folder the agents work in the home directory, and a file
 	// in the temp directory is outside it: Claude Code asks before reading
 	// there, and the chat answers every such question no. The caller then hands
-	// the text over itself.
-	const folder = vscode.workspace.workspaceFolders?.find(f => f.uri.scheme === 'file');
+	// the text over itself. `workdir`: the folder the conversation works in,
+	// picked in the chat, which is where the next agent reads from.
+	const folder: vscode.WorkspaceFolder | undefined = workdir
+		? { uri: vscode.Uri.file(workdir), name: path.basename(workdir), index: 0 }
+		: vscode.workspace.workspaceFolders?.find(f => f.uri.scheme === 'file');
 	if (!folder) {
 		return undefined;
 	}
@@ -284,6 +288,22 @@ export async function cleanUpReports(): Promise<void> {
 	const folder = vscode.workspace.workspaceFolders?.[0];
 	if (folder?.uri.scheme === 'file') {
 		await prune(await reportDirectory('workspace', folder));
+	}
+}
+
+/**
+ * Sweeps the `.ai-browser/` of folders the chat worked in besides the
+ * workspace's — where "Continue in …" wrote a conversation out — which the
+ * activation sweep above does not reach. Same rules: a real directory, our own
+ * file names only. Never rejects.
+ */
+export async function cleanUpReportsIn(folders: readonly string[]): Promise<void> {
+	for (const folder of new Set(folders)) {
+		try {
+			await prune(path.join(folder, '.ai-browser'));
+		} catch {
+			// A folder that cannot be looked at holds nothing to sweep.
+		}
 	}
 }
 

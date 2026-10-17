@@ -188,7 +188,7 @@ export class ToolbarRuns implements vscode.Disposable {
 	 * the user's own text; the instructions added around it (the check's
 	 * markers, the clipboard's) are ours.
 	 */
-	public start(skill: ToolbarSkill, steps: readonly FilledStep[], values: Readonly<Record<string, string>>, chatId: string, backend: AgentBackend, model: string, effort: string | undefined, cwd: string, root: string | undefined): void {
+	public start(skill: ToolbarSkill, steps: readonly FilledStep[], values: Readonly<Record<string, string>>, chatId: string, backend: AgentBackend, model: string, effort: string | undefined, cwd: string, root: string | undefined, ownSettings = true): void {
 		if (this._disposed) {
 			return;
 		}
@@ -205,7 +205,7 @@ export class ToolbarRuns implements vscode.Disposable {
 			return;
 		}
 		const key = ++this._next;
-		const session = backend.openSession(cwd, undefined, 0, root);
+		const session = backend.openSession(cwd, undefined, 0, root, undefined, ownSettings);
 		const many = steps.length > 1;
 		const shown = many
 			? steps.map((step, i) => `${i + 1}. ${step.check ? `(if: ${step.check}) ` : ''}${step.text}`).join('\n\n')

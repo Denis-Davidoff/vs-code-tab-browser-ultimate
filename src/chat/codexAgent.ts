@@ -50,11 +50,12 @@ const idleShutdownMs = 30_000;
 
 /**
  * These override the user's own Codex configuration for the chat's threads —
- * a `sandbox_mode = "read-only"` in `config.toml` included. **With no folder
- * open the working directory is the home directory** (`ChatViewProvider._cwd`),
- * and `workspace-write` there would make all of it writable, `~/.ssh` and the
- * shell's rc files with it; such a thread stays `read-only`, so an approved
- * command that writes fails rather than reaching them.
+ * a `sandbox_mode = "read-only"` in `config.toml` included. **With no project
+ * the working directory is the home directory** — no folder open
+ * (`ChatViewProvider._windowCwd`), or the home directory picked with the folder
+ * button (`ChatTab.projectRoot`) — and `workspace-write` there would make all of
+ * it writable, `~/.ssh` and the shell's rc files with it; such a thread stays
+ * `read-only`, so an approved command that writes fails rather than reaching them.
  */
 function threadSettings(root: string | undefined) {
 	return { sandbox: root ? 'workspace-write' : 'read-only', approvalPolicy: 'untrusted', approvalsReviewer: 'user' } as const;
@@ -240,7 +241,7 @@ export class CodexBackend implements AgentBackend {
 		process?.dispose();
 	}
 
-	public openSession(cwd: string, resume?: string, _priorCostUsd?: number, root?: string): AgentSession {
+	public openSession(cwd: string, resume?: string, _priorCostUsd?: number, root?: string, _readDirs?: readonly string[], _ownSettings?: boolean): AgentSession {
 		const session = new CodexSession(this, cwd, root, resume, () => this._forget(session));
 		this._all.add(session);
 		this._cancelIdle();

@@ -3,10 +3,13 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { realpathSync } from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { chatTitle, toolOutputLimit, validAnswers, type AgentEvent } from './agentProtocol';
 import { agentNames, type AgentBackend, type AgentSession, type TurnImage } from './agents';
-import type { AgentId, ApprovalEntry, ApprovalMode, AttachmentChip, PendingSend, ChatEntry, ChatStats, ChatTabStatus, ToolEntry, UsageWindow } from './chatProtocol';
+import type { AgentId, RepoCopy, RepoReference, ApprovalEntry, ApprovalMode, AttachmentChip, PendingSend, ChatEntry, ChatStats, ChatTabStatus, ToolEntry, UsageWindow } from './chatProtocol';
 import { generateUuid } from '../core/uuid';
 import { stepGate, withNextDecision } from './toolbarText';
 
@@ -24,6 +27,8 @@ const agentCallLimit = 100;
 const entryLimit = 400;
 export const storedTextLimit = 20_000;
 const storedToolLimit = 4_000;
+/** How long a tab must stay quiet before Claude Code is restarted under it; past Claude Code's own following turn. */
+const restartQuietMs = 2_500;
 
 export interface StoredChat {
 	id: string;
@@ -34,6 +39,21 @@ export interface StoredChat {
 	/** Named by the user: the first message does not replace the title. */
 	named?: boolean;
 	ref?: string;
+	/**
+	 * The folder the conversation works in, picked with the composer's folder
+	 * button; absent, the window's own (`TabHost.cwd`). Fixed once the
+	 * conversation has started: Claude Code keeps a session under the folder it
+	 * ran in, and `--resume` from another one does not find it.
+	 */
+	folder?: string;
+	/**
+	 * Set when `folder` is a separate copy of a GitHub repository, made by the
+	 * folder button: a worktree in the extension's storage on a branch of ours,
+	 * `branch`, taken from `base`. The local project is not touched.
+	 */
+	copy?: RepoCopy;
+	/** GitHub repositories cloned beside the project for the agent to read; see `AgentBackend.openSession`. */
+	references?: RepoReference[];
 	createdAt: number;
 	updatedAt: number;
 	entries: ChatEntry[];
@@ -50,10 +70,12 @@ export interface Attachment {
 
 /** What a tab needs from the view that holds it. */
 export interface TabHost {
-	/** Where the agents work. */
+	/** Where the agents work when the conversation picked no folder of its own. */
 	cwd(): string;
-	/** The project folder, undefined when no local folder is open; see `AgentBackend.openSession`. */
+	/** The project folder then, undefined when no local folder is open; see `AgentBackend.openSession`. */
 	projectRoot(): string | undefined;
+	/** Whether the agents may load `folder`'s own settings: false for one fetched from GitHub and not trusted yet. */
+	ownSettings(folder: string): boolean;
 	/** Something the view shows changed. */
 	changed(): void;
 	/** A turn's own plan-limit report, kept for the usage popup. */
@@ -111,6 +133,32 @@ export function newChat(agent: AgentId, id = generateUuid()): StoredChat {
 		stats: { inputTokens: 0, outputTokens: 0, cachedTokens: 0, turns: 0 },
 	};
 }
+
+/**
+ * Whether `folder` is the home directory, by its real path: a link to it is it
+ * too. Asked on every state post, so answered once per folder — a folder does
+ * not become the home directory while the window runs.
+ */
+export function isHome(folder: string): boolean {
+	let answer = homeAnswers.get(folder);
+	if (answer === undefined) {
+		const real = (p: string) => {
+			try {
+				return realpathSync(p);
+			} catch {
+				return path.resolve(p);
+			}
+		};
+		answer = real(folder) === real(os.homedir());
+		if (homeAnswers.size > 100) {
+			homeAnswers.clear();
+		}
+		homeAnswers.set(folder, answer);
+	}
+	return answer;
+}
+
+const homeAnswers = new Map<string, boolean>();
 
 /** Errors and failed agents in a conversation: the work that ended badly. */
 function failures(chat: StoredChat): number {
@@ -198,6 +246,13 @@ export class ChatTab {
 	private _unseen = false;
 	/** The last work ended in an error; until the next message. */
 	private _failed = false;
+	/**
+	 * What Claude Code is started with changed while it worked — a repository
+	 * to read added, its folder's settings trusted: the session is let go once
+	 * the work ends, and the next message resumes it with the new arguments.
+	 */
+	private _restartForDirs = false;
+	private _restartTimer: ReturnType<typeof setTimeout> | undefined;
 	/** `failures` when the last message was sent, so only what went wrong after it counts. */
 	private _failuresBefore = 0;
 
@@ -406,6 +461,7 @@ export class ChatTab {
 		this._chat = chat;
 		this._unseen = false;
 		this._failed = endedInError(chat);
+		this._restartForDirs = false;
 		this._post();
 	}
 
@@ -631,6 +687,11 @@ export class ChatTab {
 			this._failed ||= failures(this._chat) > this._failuresBefore;
 		}
 		this._wasBusy = busy;
+		if (this._restartForDirs && !busy) {
+			// Never from inside the event that ended the turn, and not until it is
+			// quiet; the next message resumes the session with its new arguments.
+			this._scheduleRestart();
+		}
 		this._host.changed();
 	}
 
@@ -638,8 +699,101 @@ export class ChatTab {
 		return this._discarded ? Promise.resolve() : this._host.save(chat);
 	}
 
+	/** Where the agents work: the conversation's own folder, else the window's. */
+	public get cwd(): string {
+		return this._chat.folder ?? this._host.cwd();
+	}
+
+	/**
+	 * The project the approval menu's "inside" means; see `AgentBackend.openSession`.
+	 * The home directory picked as the folder is no project, as with no folder at
+	 * all: as one, Codex's `workspace-write` opened all of it, `~/.ssh` included,
+	 * and the menu counted every file there as inside (#382, #390, #447).
+	 */
+	public get projectRoot(): string | undefined {
+		const folder = this._chat.folder;
+		if (folder === undefined) {
+			return this._host.projectRoot();
+		}
+		return isHome(folder) ? undefined : folder;
+	}
+
+	/**
+	 * Another working folder for a conversation that has not started; the
+	 * provider opens a new tab for one that has (see `StoredChat.folder`).
+	 * `undefined` is the window's own.
+	 */
+	public setFolder(folder: string | undefined, copy?: RepoCopy): void {
+		if (this.started) {
+			return;
+		}
+		this._chat.folder = folder;
+		this._chat.copy = copy;
+		this._post();
+	}
+
+	/**
+	 * A repository to read beside the project. Claude Code is given it at its
+	 * start (`--add-dir`), so a session already running is let go and resumed
+	 * by its `ref` at the next message; the caller refuses while the tab works.
+	 */
+	public addReference(reference: RepoReference): void {
+		const list = (this._chat.references ?? []).filter(r => r.path !== reference.path);
+		this._chat.references = [...list, reference];
+		this.restartSession();
+		if (this.started) {
+			void this._save();
+		}
+		this._post();
+	}
+
 	private _cwd(): string {
-		return this._host.cwd();
+		return this.cwd;
+	}
+
+	/** Claude Code must start again to load what changed (`_restartForDirs`); now if idle, else once the work ends. */
+	public restartSession(): void {
+		if (!this._session || this._chat.agent !== 'claude') {
+			return;
+		}
+		this._restartForDirs = true;
+		this._scheduleRestart();
+	}
+
+	/**
+	 * Quiet: no turn, nothing pending or waiting to be taken in — and, after a
+	 * wait, still so. Claude Code answers a message sent late in a turn, or a
+	 * background agent's end, with a turn of its own a moment after the last
+	 * one ended (`autoTurn`); `busy` does not cover that gap, and a session let
+	 * go in it took the prompt as answered and ended the CLI before it replied.
+	 */
+	private _scheduleRestart(): void {
+		if (this._restartTimer || !this._restartForDirs || this.busy || this._waiting.length) {
+			return;
+		}
+		this._restartTimer = setTimeout(() => {
+			this._restartTimer = undefined;
+			if (!this._restartForDirs || this._closed) {
+				return;
+			}
+			if (this.busy || this._waiting.length) {
+				// Busy again: `_post` schedules it once the work ends.
+				return;
+			}
+			this._restartForDirs = false;
+			if (this._session) {
+				this._dropSession();
+			}
+		}, restartQuietMs);
+	}
+
+	/** The copy this conversation worked in was removed: its actions go, its folder stays. */
+	public forgetCopy(): void {
+		this._chat.copy = undefined;
+		if (this.started) {
+			void this._save();
+		}
+		this._post();
 	}
 
 	private _tokenBase(): TokenBase {
@@ -651,7 +805,7 @@ export class ChatTab {
 		if (this._session) {
 			return this._session;
 		}
-		const session = backend.openSession(this._cwd(), this._chat.ref, this._chat.stats.costUsd, this._host.projectRoot());
+		const session = backend.openSession(this._cwd(), this._chat.ref, this._chat.stats.costUsd, this.projectRoot, this._chat.references?.map(r => r.path), this._host.ownSettings(this._cwd()));
 		this._tokenOffset = { input: 0, output: 0, cached: 0 };
 		const chatId = this._chat.id;
 		this._session = session;

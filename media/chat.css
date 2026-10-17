@@ -3301,6 +3301,78 @@ body.vscode-light .code-block pre {
 	color: var(--fg-3);
 }
 
+/* ---------------------------------------------------------------- the working folder */
+
+/* A folder of the conversation's own, not the window's: the icon in the accent colour. */
+.workdir-button.picked .codicon {
+	color: var(--accent);
+}
+
+/* The folder in use, marked with a check. */
+.palette-item.current .palette-icon {
+	color: var(--accent);
+	opacity: 1;
+}
+
+/* The GitHub form, in the parameters popover: wider, for the three ways' sentences. */
+.params-popup.repo-form {
+	width: 340px;
+}
+
+.repo-mode-heading {
+	padding: 6px 0 2px;
+}
+
+.repo-modes {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.repo-mode {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	padding: 6px 8px;
+	border: 1px solid transparent;
+	border-radius: 7px;
+	background: transparent;
+	color: inherit;
+	text-align: left;
+	cursor: pointer;
+}
+
+.repo-mode:hover {
+	background: var(--soft);
+}
+
+.repo-mode.chosen {
+	border-color: var(--vscode-focusBorder, var(--accent));
+	background: var(--soft);
+}
+
+.repo-mode .repo-mode-mark {
+	flex: none;
+	padding-top: 1px;
+	color: var(--fg-3);
+}
+
+.repo-mode.chosen .repo-mode-mark {
+	color: var(--accent);
+}
+
+.repo-mode-text {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	min-width: 0;
+}
+
+.repo-mode-detail {
+	font-size: 0.85em;
+	color: var(--fg-3);
+}
+
 /* ---------------------------------------------------------------- the toolbar of skills */
 
 .skill-bar {

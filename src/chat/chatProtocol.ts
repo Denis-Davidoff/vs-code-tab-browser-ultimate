@@ -365,6 +365,68 @@ export interface ChatNews {
 	readonly entries: readonly { readonly title: string; readonly items: readonly string[] }[];
 }
 
+/** A folder the composer's folder button offers: its path, and the name it is shown by. */
+export interface WorkdirFolder {
+	readonly path: string;
+	readonly name: string;
+}
+
+/**
+ * The composer's folder button: where the tab in front works, and the folders
+ * it can be moved to — the window's own, then the ones picked recently.
+ */
+/** A separate copy of a GitHub repository a conversation works in. */
+export interface RepoCopy {
+	/** `owner/name`. */
+	readonly repo: string;
+	/** The branch it was taken from, which a pull request goes into. */
+	readonly base: string;
+	/** Ours, in the copy: `ai-browser/…`. */
+	readonly branch: string;
+}
+
+/** A GitHub repository cloned beside the project for the agent to read. */
+export interface RepoReference {
+	readonly repo: string;
+	readonly branch: string;
+	readonly path: string;
+}
+
+/**
+ * How a GitHub repository is used, the folder button's form asks:
+ * - `copy` — a separate copy the agent works in; the local project is not touched, and the work goes back as a branch and a pull request;
+ * - `clone` — cloned into a local folder, which becomes the working folder;
+ * - `reference` — cloned beside the project, for the agent to read.
+ */
+export type RepoMode = 'copy' | 'clone' | 'reference';
+
+export interface WorkdirState {
+	/** Absent: no folder of the window's and none picked — the home directory, with no project. */
+	readonly current?: WorkdirFolder;
+	/** The conversation picked its folder rather than taking the window's. */
+	readonly picked: boolean;
+	/** The folder is the home directory: the agents work there with no project — read only for Codex, every file "outside". */
+	readonly noProject?: boolean;
+	readonly workspace: readonly WorkdirFolder[];
+	readonly recent: readonly WorkdirFolder[];
+	/** The conversation has started: another folder opens a new tab, this one stays where it is. */
+	readonly locked: boolean;
+	/** The folder in use is empty: the GitHub form offers to clone into it. */
+	readonly empty: boolean;
+	/** The working folder is a separate copy of a GitHub repository. */
+	readonly copy?: RepoCopy;
+	readonly references: readonly RepoReference[];
+	/** Repositories opened lately, `owner/name`, newest first. */
+	readonly recentRepos: readonly string[];
+	/** A GitHub operation of the tab in front under way: what it is doing, in a few words. */
+	readonly busy?: string;
+	/**
+	 * The folder was fetched from GitHub and its own Claude Code settings are
+	 * held back until trusted: the configuration files it has, which may be none.
+	 */
+	readonly heldBack?: readonly string[];
+}
+
 export interface ChatViewState {
 	/** Set when the chat cannot run in this window at all. */
 	readonly blocked?: string;
@@ -412,6 +474,8 @@ export interface ChatViewState {
 	 * `thread/compact/start`).
 	 */
 	readonly context?: { readonly used: number; readonly window?: number; readonly compacted?: boolean; readonly canCompact: boolean };
+	/** The tab in front's working folder, for the folder button. */
+	readonly workdir: WorkdirState;
 }
 
 export interface PendingSend {
@@ -468,7 +532,14 @@ export type HostToView =
 	/** A toolbar skill saved, by its id: the editor closes. */
 	| { readonly type: 'toolbarSaved'; readonly id: string }
 	/** A toolbar skill refused, with the reason: the editor stays open and shows it. */
-	| { readonly type: 'toolbarError'; readonly message: string };
+	| { readonly type: 'toolbarError'; readonly message: string }
+	/**
+	 * The files and folders of `folder`, relative and `/`-separated, a folder
+	 * ending with `/`; sent when the folder button asks, not with every state.
+	 */
+	| { readonly type: 'workdirFiles'; readonly folder: string; readonly entries: readonly string[]; readonly truncated: boolean }
+	/** The GitHub form's answer: taken (the form closes), or refused with the reason (it stays). */
+	| { readonly type: 'githubAnswer'; readonly error?: string };
 
 export type ViewToHost =
 	| { readonly type: 'ready' }
@@ -545,4 +616,21 @@ export type ViewToHost =
 	 * the question shown, so the answer reaches that run and no other of the skill.
 	 */
 	| { readonly type: 'toolbarApprove'; readonly id: string; readonly approvalId: string; readonly allow: boolean }
-	| { readonly type: 'stopToolbarSkill'; readonly id: string };
+	| { readonly type: 'stopToolbarSkill'; readonly id: string }
+	/**
+	 * The folder button: the tab in front works in `path` — absent, the
+	 * window's own folder. A conversation that has started gets a new tab.
+	 */
+	| { readonly type: 'setWorkdir'; readonly path?: string }
+	/** The folder button's "Choose folder…": the system's folder dialog. */
+	| { readonly type: 'chooseWorkdir' }
+	/** The folder button opened: list the tab in front's working folder. */
+	| { readonly type: 'listWorkdir' }
+	/** A file or folder of the working folder, by its path relative to it, attached to the message. */
+	| { readonly type: 'attachPath'; readonly path: string }
+	/** The GitHub form: a repository, a branch (empty: its default) and how it is used. */
+	| { readonly type: 'openRepo'; readonly repo: string; readonly branch: string; readonly mode: RepoMode }
+	/** On a separate copy: its changes in an editor tab; pushed as a branch and a pull request opened; the copy removed. */
+	| { readonly type: 'repoAction'; readonly action: 'changes' | 'push' | 'window' | 'remove' }
+	/** The tab in front's folder, fetched from GitHub, may load its own Claude Code settings from now on. */
+	| { readonly type: 'trustWorkdir' };

@@ -199,6 +199,17 @@ class ControlChannel implements vscode.Disposable {
 	}
 }
 
+/**
+ * A folder the extension fetched from GitHub and the user has not trusted:
+ * only the user's own settings, and only the MCP servers given with
+ * `--mcp-config`. `-p` skips Claude Code's own trust dialog, so without these
+ * the repository's `.claude/settings.json` hooks — shell commands — ran on the
+ * first process started there (measured on 2.1.301: a `SessionStart` hook on an
+ * `initialize` alone; with these, nothing). Its skills and CLAUDE.md are still
+ * read: text, not code.
+ */
+const projectSettingsOff = ['--setting-sources=user', '--strict-mcp-config'];
+
 export class ClaudeBackend implements AgentBackend {
 	public readonly id = 'claude' as const;
 	private readonly _sessions = new Set<ClaudeSession>();
@@ -207,6 +218,7 @@ export class ClaudeBackend implements AgentBackend {
 		private readonly _binary: string,
 		private readonly _cwd: () => string,
 		private readonly _browserServer: () => BrowserServer | undefined = () => undefined,
+		private readonly _ownSettings: () => boolean = () => true,
 	) { }
 
 	private _commands: ChatCommand[] | undefined;
@@ -251,14 +263,16 @@ export class ClaudeBackend implements AgentBackend {
 		}
 	}
 
-	public openSession(cwd: string, resume?: string, priorCostUsd?: number, root?: string): AgentSession {
-		const session = new ClaudeSession(this._binary, cwd, root, resume, priorCostUsd ?? 0, this._browserServer, () => this._sessions.delete(session));
+	public openSession(cwd: string, resume?: string, priorCostUsd?: number, root?: string, readDirs?: readonly string[], ownSettings = true): AgentSession {
+		const session = new ClaudeSession(this._binary, cwd, root, resume, priorCostUsd ?? 0, this._browserServer, () => this._sessions.delete(session), readDirs ?? [], ownSettings);
 		this._sessions.add(session);
 		return session;
 	}
 
 	private async _withProbe<T>(use: (control: ControlChannel) => Promise<T>): Promise<T> {
-		const process = new JsonLineProcess(this._binary, args, this._cwd());
+		// The skills listing starts a process in the tab in front's folder, and a
+		// `SessionStart` hook runs on that alone — measured, with nothing sent.
+		const process = new JsonLineProcess(this._binary, this._ownSettings() ? args : [...args, ...projectSettingsOff], this._cwd());
 		const control = new ControlChannel(process);
 		try {
 			return await use(control);
@@ -320,6 +334,8 @@ class ClaudeSession implements AgentSession {
 		priorCostUsd: number,
 		private readonly _browserServer: () => BrowserServer | undefined,
 		private readonly _onDispose: () => void,
+		private readonly _readDirs: readonly string[] = [],
+		private readonly _ownSettings = true,
 	) {
 		this._sessionId = resume;
 		this._sessionCost = priorCostUsd;
@@ -460,6 +476,14 @@ class ClaudeSession implements AgentSession {
 		}
 		if (config) {
 			launch.push('--mcp-config', config);
+		}
+		// With `=`: the option is variadic, and a value after a space would take
+		// the arguments that follow it as more folders.
+		for (const dir of this._readDirs) {
+			launch.push(`--add-dir=${dir}`);
+		}
+		if (!this._ownSettings) {
+			launch.push(...projectSettingsOff);
 		}
 		const process = new JsonLineProcess(this._binary, launch, this._cwd);
 		if (config) {

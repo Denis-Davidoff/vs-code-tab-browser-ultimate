@@ -147,7 +147,7 @@ not kinds of code:
 
 | Folder | Holds |
 |---|---|
-| `core/` | shared plumbing: `dispose`, `uuid`, `notify`, `notifyText`, `safeFiles`, `fileLock`, `webUrl`, `cdp` |
+| `core/` | shared plumbing: `dispose`, `uuid`, `notify`, `notifyText`, `safeFiles`, `fileLock`, `webUrl`, `cdp`, `gitBinary` |
 | `setup/` | the `browser` grant, the status bar, the release watch: `proposedApi`, `argvJson`, `statusBar`, `updateCheck`, `updateVersion` |
 | `panel/` | the old webview panel: `aiBrowserManager`, `aiBrowserView` |
 | `browser/` | the built-in browser for the tools: `browserController`, sharing, screenshots and their encoders, `clipboardImage` |
@@ -240,6 +240,11 @@ difference, in `browserController.js`, was a doc comment whose link had been upd
 - [src/chat/transcript.ts](src/chat/transcript.ts) — a conversation as Markdown, for handing it to the other agent (leaf, under test)
 - [src/chat/diffSides.ts](src/chat/diffSides.ts) — a diff card's text as the before and after VS Code's diff editor compares (leaf, under test)
 - [src/chat/news.ts](src/chat/news.ts) — NEWS.md into the empty chat's introduction and "What's new" (leaf, under test)
+- [src/chat/workdir.ts](src/chat/workdir.ts) — the working folder's files for the folder button: a walk that reads `.gitignore` (leaf, under test)
+- [preview-src/fileRank.ts](preview-src/fileRank.ts) — searching those files in the view (leaf, under test)
+- [src/chat/githubRepo.ts](src/chat/githubRepo.ts) — a GitHub repository as typed: owner and name, branch names, addresses (leaf, under test)
+- [src/chat/repoWork.ts](src/chat/repoWork.ts) — the git work behind it: the clone in storage, separate copies, read-only checkouts, push
+- [src/core/gitBinary.ts](src/core/gitBinary.ts) — a `git` that can be run without the macOS install dialog, for Connect Codex and the chat
 - [src/chat/chatProtocol.ts](src/chat/chatProtocol.ts) — the messages between the chat's webview and the host (types only, read by both builds)
 - [src/chat/agents.ts](src/chat/agents.ts) — the agent interface, and detecting which agents are installed
 - [src/chat/agentBinary.ts](src/chat/agentBinary.ts) — where `claude` and `codex` are, and which copy to use
@@ -4210,6 +4215,9 @@ picks the place. **That editor is plain text** although the name ends in `.md`: 
 page's words in a Markdown editor make `[x](command:…)` a link that runs a command on Cmd+click
 (#371).
 
+**The folder button**, right of "/" (`codicon-folder`), sets where the tab's agent works and
+lists that folder's files to attach — see [The working folder](#the-working-folder).
+
 **Every visible button of the bottom bar has a tooltip** saying what it does, and its key where it
 has one — asked for: Attach, the browser, "/", the agent and model pills, effort, approvals,
 usage, queue (⌘/Ctrl+Enter) and Send / Stop (Enter, Shift+Enter for a new line). The Agents panel
@@ -4756,6 +4764,175 @@ Verified with the compiled registry against both real CLIs in a project with tes
 its `skill` item and answering from it), and the palette in headless Chrome: focus on the search
 box, grouping, ranking, ↓ Enter, the inline query for both agents, Escape, `/clear`.
 
+### The working folder
+
+Asked for: a button right of "/" with a folder on it — a search box at the top, focused at once
+as in the "/" palette, then the folder the agent works in, then the files and folders of that
+folder to add to the message. `workdirPopup` in `chat.ts`; the host's half is the *working
+folder* section of `chatView.ts`.
+
+- **The folder belongs to the conversation** (`StoredChat.folder`), absent meaning the window's
+  own — its first local folder, else the home directory with no project, as before. Each tab can
+  work in another project. `ChatTab.cwd` / `projectRoot` hand it to the session, so the approval
+  menu's "inside the project", Codex's `workspace-write` sandbox and Claude Code's working
+  directory all follow it; a toolbar skill's background run takes the folder of the tab it was
+  pressed in.
+- **The home directory picked as the folder is no project** (`ChatTab.projectRoot`, `isHome` by
+  real path): the agents work there as with no folder at all — Codex read-only, every file
+  "outside" to the approval menu — and the folder button says so (#447). As a project, `~`
+  gave Codex's sandbox all of it, `~/.ssh` included. A workspace opened at `~` is left as it was.
+- **Fixed once the conversation has started**: Claude Code keeps its sessions per folder
+  (`~/.claude/projects/<folder>`), and `--resume` from another folder does not find the one it
+  is given. So another folder picked for a started conversation **opens a new tab** in it, and
+  the rows say so ("opens a new tab"). A new tab — New Chat, the switch card's options, Clear —
+  starts in the folder of the tab it came from; "Continue in …" writes the transcript into that
+  folder's `.ai-browser/`, where the next agent can read it without asking.
+- **The rows**: the folder in use (a check), the window's own folders, those picked lately
+  (`globalState` `aiBrowser.chat.recentFolders`, eight, every window), "No folder" when a folder
+  was picked in a window that has none, and **Choose folder…** — the system's folder dialog,
+  which pauses no browser tab. Picking the window's first folder stores nothing: the
+  conversation then follows the window. A folder that is gone is refused and dropped from the
+  recent list; a conversation from the history whose folder is gone refuses to send and says so,
+  rather than letting the CLI fail to start with a message about its own executable.
+- **Picking a local folder is consent for its configuration; a repository fetched from GitHub is
+  not.** Both CLIs load the folder's own settings, Claude Code's hooks included — shell commands
+  — and `claude -p` skips Claude Code's own trust dialog (its `--help` says so). A folder the
+  user chose on their own disk is theirs; the chat still refuses as a whole in Restricted Mode
+  and in a remote window. **A copy or a clone the extension fetched is held back**
+  (`aiBrowser.chat.untrustedFolders` in `globalState`): Claude Code is started there with
+  `--setting-sources=user --strict-mcp-config` — the session, the skills listing and a toolbar
+  skill's background run alike — so the repository's `.claude/settings*.json` and `.mcp.json`
+  are not loaded. Measured on 2.1.301: a `SessionStart` hook ran on an `initialize` alone, before
+  any message, and with those flags did not (#443). The folder button names the files it holds
+  back and offers *Trust this repository's settings…*, asked first; trusting restarts each Claude
+  session there once it is quiet. Its skills and CLAUDE.md are still read — text, not code. Codex
+  loads a project's own configuration only for a project it trusts already.
+- **The files are a walk of our own** (`listWorkdir`, leaf, under test), not `git ls-files` —
+  reading the index runs the repository's `core.fsmonitor` (#208), and nothing says the folder
+  is trusted — nor the editor's own ripgrep, whose path differs between VS Code
+  (`@vscode/ripgrep-universal`), forks and releases. Breadth first, so a cut listing keeps the
+  shallow entries; `.git`, `node_modules` and what the root `.gitignore` names are skipped (a
+  subset of git's rules — negations are not modelled, which can only leave a file out); symbolic
+  links are listed and never entered; at most 20 000 entries, 16 levels and 3 s — the deadline
+  checked per entry and raced against each `readdir`, so a stalled mount cannot hold it. Measured:
+  this repository in 12 ms, a folder of 70 projects cut at 20 000 in 165 ms.
+- **The `.gitignore` is matched without regular expressions** (#433): it is the repository's
+  text, and `*a*a*…*b` turned into a backtracking pattern against a long name froze the
+  extension host. A two-pointer wildcard walk per segment and a table for `**`, both polynomial;
+  at most 2 000 rules of 500 characters.
+- **Detection, the skills listing and Codex's one app-server start in the tab in front's folder
+  — unless it is gone**, when they start in the window's (#434). A chat from the history or a
+  removed copy in front made every agent read as not installed.
+- **Sent once per opening, not with the state** (`workdirFiles`): twenty thousand paths in every
+  40 ms post would be the whole message. The host keeps a folder's listing 15 s, since the
+  button is opened again and again while a message is written. A folder moved to while the list
+  is open is listed then.
+- **The search is the view's** (`searchPaths`): the name starting with the query, holding it,
+  the path holding it, every word somewhere in the path, its letters in order in the name
+  (`cv` finds `chatView.ts`); a query with a `/` is about the path. Ties go to the shallower,
+  then the shorter. Without a query the folder's own entries are shown, folders first; with one,
+  the best 100, before the folder rows. **No row is chosen without a query**, so Enter on a
+  fresh list cannot move the conversation to another folder — #397's rule. With one, the top row
+  is chosen if it is a file; **a row is kept across rebuilds only when picked with an arrow key,
+  in the same search** (#445) — chosen by the first letters, or under a pointer passing by, it
+  outlived the typing.
+- **A file or folder chosen is attached as its path**, as the "+" menu's File is: both agents
+  read files themselves. The host resolves it against the folder in use and refuses anything
+  that leads out of it — the path comes from the view. A folder's chip opens its text, not the
+  folder: `vscode.open` on a folder opens a window.
+- The list is rebuilt only when what it shows changes (#365); the button's icon is in the accent
+  colour while the conversation has a folder of its own, and its tooltip names the folder.
+
+#### A GitHub repository, three ways
+
+The folder button's *GitHub* group: **Open a GitHub repository…** and the ones opened lately
+(`globalState` `aiBrowser.chat.recentRepos`) open a form — repository, branch (empty: the
+default one), and **how to use it**, asked for as a choice rather than one fixed behaviour:
+
+| Way (`RepoMode`) | What happens | The user's files |
+|---|---|---|
+| `copy` — *Work in a separate copy* (the default) | a worktree of the repository in the extension's storage, on a new branch `ai-browser/<date>-<id>`; the tab works there (`StoredChat.copy`) | not touched |
+| `clone` — *Clone into a folder* (the default when the folder in use is empty) | `git clone` into the folder in use when it is empty, else into a folder picked in the system dialog (itself if empty, else a new `<name>` in it); the clone is then an ordinary working folder | a new folder |
+| `reference` — *Read it beside this project* | a read-only checkout in storage, handed to the agent beside its project (`StoredChat.references`) | not touched |
+
+[src/chat/repoWork.ts](src/chat/repoWork.ts) does the git work, and its shape is the point:
+
+- **One clone per repository** in `globalStorage/github/<owner>/<name>/base`, blobless
+  (`--filter=blob:none`) and with no checkout of its own, fetched again each time it is used.
+  Copies (`copies/<branch>-<hash>`) and read-only checkouts (`refs/<branch>-<hash>`, detached,
+  forced and cleaned to the remote's latest on each use) are **worktrees** of it — two copies on
+  one repository share its history and never each other's files. The hash is the branch's:
+  `feat/x` and `feat-x` flatten to the same name and once shared a checkout (#436). Operations on
+  one repository run one at a time.
+- **Git runs only in folders this extension made**, whose `.git/config` is git's own default —
+  never in one a repository chose, where reading the index runs `core.fsmonitor` (#208). The
+  clone into a user's folder is made by `git clone` itself. **And every call sets
+  `core.fsmonitor=false`**, and the copy's actions first check it is still our worktree
+  (`isOurWorktree`, its `.git` file read without git, pointing into `base/.git/worktrees/`): the
+  agent working in a copy can rewrite that file, and a removed copy made again as a plain folder
+  sent git searching upwards — to the home directory's repository, perhaps (#435). And
+  `gitBinary` answers an absolute path on every platform, found only in absolute `PATH`
+  entries: a bare `git` is looked up when it runs, and an empty or `.` entry — or, on Windows,
+  the working directory itself, searched first — ran a `git` committed in the repository
+  (#448).
+- **Only a clean "not found" is absence** in `repoWork.ts` (`exists`), the rule `presence()`
+  follows for the MCP repair: any other `stat` failure read as absent sent `prepare` off to
+  delete the clone and make it again under the copies' unpushed work. A clone that fails
+  removes only itself, and the repository's folder only when that leaves it empty (#449).
+- **Only github.com, and only an address of our own making** (`parseRepo` / `cloneUrl`, leaf,
+  under test): what is typed is read for an owner and a name, and the clone address is built
+  from them — a typed URL could name another host, or `ext::`, git's transport that runs a
+  program. Branch names are checked too (`validBranch`), above all never starting with `-`.
+- **No prompt ever waits** (`GIT_TERMINAL_PROMPT=0`): https, so the user's credential helper
+  answers for a private repository; one it cannot answer for fails with git's own message,
+  shown in the chat. A clone that fails leaves nothing behind. Ten minutes at most for network
+  work.
+- **Progress is the status bar** (`ProgressLocation.Window`) **and notices in the tab** — the
+  form closes as soon as what was typed is checked (`githubAnswer`). One GitHub operation per tab
+  at a time (`_repoBusy`), shown as a row in the group.
+- **A copy goes to a tab that has not started** — a new one when the tab in front has, or when
+  something was sent from it while the copy was being made — since a conversation's folder is
+  fixed. A new tab, Clear and "Close this chat, start …" keep the copy and the references, as
+  they keep the folder — so **several tabs can work in one copy**, and Push and Remove wait for
+  all of them, their background skills included (#437). A removed copy is forgotten in every tab
+  that had it (`_forgetCopy`). A clone lands in the tab it was asked from, not whichever is in
+  front when it finishes.
+- **On a copy the group has its actions** (`repoAction`): *Changes in the copy* (status, new
+  files and the diff from where the copy and its branch last met — `merge-base`, since
+  `origin/<base>` moves with every fetch of the repository and upstream's new files read as the
+  copy's deletions, #444 — in a read-only tab); *Push and open a pull
+  request…* — asked first in the view; uncommitted changes are committed with the chat's title,
+  the branch is pushed with `--set-upstream`, and GitHub's compare page opens (no `gh` needed,
+  and the user writes the pull request there); *Open the copy in a new window*; *Remove the
+  copy…* — asked first, refused while the tab works; a conversation that worked there cannot go
+  on and says so. A copy left by picking another folder before anything was sent stays in
+  storage.
+- **A reference is given to Claude Code with `--add-dir=<path>`** (`readDirs` of
+  `openSession`), with `=` since the option is variadic and would take the arguments after it.
+  Measured on 2.1.301: the CLI takes it and reads the folder. It goes in at the process's
+  start, so adding one drops an idle Claude session, resumed by its `ref` at the next message. It
+  is refused while the tab works; one that started working while the checkout was being made
+  has its session let go once the work ends (`restartSession`), and says so (#438). **Once the
+  tab is quiet, and 2.5 s later still quiet** — no turn, nothing pending, no prompt waiting to be
+  taken in: Claude Code answers a late message or a background agent's end with a turn of its
+  own a moment after the last one, which `busy` does not cover, and a session let go in that
+  gap took the prompt as answered and ended the CLI before it replied (#446). Codex reads anywhere in its sandbox already. The agent is
+  told in a chip on the next message; an edit there is "outside the project" to the approval
+  menu, so it is asked about — read-only by the approval menu, not by the file system.
+- Measured against `octocat/Hello-World`: a copy in 2.1 s, a read-only checkout in 1.1 s, a
+  second branch, a missing branch and a missing repository refused with their reasons, a clone,
+  the changes text, a removal. Push was checked only to the point git refused (no rights there).
+  **Not run inside VS Code yet** — the form and the rows were checked in headless Chrome.
+
+- **"Continue in …" in a picked folder writes there**, and the view sweeps the `.ai-browser/` of
+  the recent folders and the open tabs' folders at start (`cleanUpReportsIn`), which the
+  activation sweep — the workspace's only — does not reach.
+- **Known and left:** `_emptyFolder` and `isDirectory` are synchronous (`opendirSync`,
+  `statSync`), cached or one call each; on a stalled mount they block the host for that call.
+
+**Not built:** an issue or a pull request as the input (an issue's text attached, a PR checked
+out into a copy for review).
+
 ### The toolbar of skills
 
 Asked for: skills of the chat's own, as buttons above the message box (`.skill-bar`). A toolbar
@@ -5241,9 +5418,11 @@ Each of the Codex settings was found by its absence:
   default mode asks about too.
 - **`workspace-write`, not `read-only`**: an approved command that writes otherwise still fails.
   Edits still ask under it — measured: an `apply_patch` creating a file sent
-  `item/fileChange/requestApproval` first. **But with no folder open the working directory is
-  the home directory** (`_cwd`), and there `workspace-write` would make all of it writable,
-  `~/.ssh` and the shell's rc files included; such a thread is `read-only` (`threadSettings`).
+  `item/fileChange/requestApproval` first. **But with no project the working directory is the
+  home directory** — no folder open (`_windowCwd`), or the home directory picked with the
+  folder button (`ChatTab.projectRoot`, #447) — and there `workspace-write` would make all of it
+  writable, `~/.ssh` and the shell's rc files included; such a thread is `read-only`
+  (`threadSettings`).
 
 **How the chat answers** ([src/chat/chatTab.ts](src/chat/chatTab.ts)): a question is an
 `ApprovalEntry` in the conversation — a card with what it is for ("Go to the internet?", "Use the
@@ -5326,9 +5505,11 @@ reaches nothing. An answer to a card that is no longer pending is ignored, and s
 click.
 
 **What still decides before the chat is asked:** each CLI's own rules. Both start in the
-workspace folder and load the user's and the project's settings — Claude Code's
+conversation's working folder and load the user's and the project's settings — Claude Code's
 `permissions.allow` rules and hooks, Codex's own rules — so a tool those rules pre-allow runs
-without a question, exactly as in the CLI, and one they deny is refused without one.
+without a question, exactly as in the CLI, and one they deny is refused without one. A folder
+fetched from GitHub and not trusted yet loads the user's alone (see
+[The working folder](#the-working-folder)).
 
 **What the chat sets over the user's configuration**, stated because it is a grant: Claude's
 `--permission-mode default` (over a `defaultMode` in settings), and for Codex the sandbox, the
@@ -5439,6 +5620,11 @@ disabled until the third was answered, the answers posted, the form gone and the
   notification result and how their end is told in `aiBrowser.chat.toolbarExtras`, by skill id —
   apart, so an older build cannot strip them (see
   [The toolbar of skills](#the-toolbar-of-skills)).
+- **The working folder**: on the chat (`StoredChat.folder`), and for a tab nothing was sent from
+  in `aiBrowser.chat.openTabs` (`folders`); the folders picked lately in `globalState`
+  `aiBrowser.chat.recentFolders`; a separate copy and the references of a tab nothing was sent
+  from in `openTabs` (`repos`), of a started one on the chat; the repositories opened lately in
+  `globalState` `aiBrowser.chat.recentRepos`; their clones in the extension's global storage.
 - **Selection**: `globalState` `aiBrowser.chat.selection` — the last agent, a model per agent and
   an effort per `<agent>:<model>`, made valid against what was detected on every read.
 - **Open tabs**: `workspaceState` `aiBrowser.chat.openTabs` — every tab's chat id in order, which
@@ -7515,6 +7701,48 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
      `.codicon[class*='codicon-']`, which is more specific, so the form's tab checks showed on every
      tab, answered or not, and the check's `font-size` never applied either. Style a codicon with
      a selector more specific than that (`.qd-tabs .qd-tab .qd-tab-check`, `:not(.answered)`).
+433. **A glob turned into a regular expression, on text a repository wrote** → `*` as `[^/]*`
+     backtracks, and `*a*a*a…*b` against a long name ran for longer than anyone waits, on the
+     extension host. Match wildcards with the two-pointer walk.
+434. **The working directory of a shared process taken from the tab in front** → a tab whose
+     folder was deleted put detection and Codex's one app-server in a missing directory, and
+     `spawn` reports that as `ENOENT` of the binary: every agent read as not installed.
+435. **Running git in a folder that should be our worktree without checking it still is** →
+     removed and made again as a plain folder, git searches upwards and commits in whatever
+     repository it finds; and a worktree's `.git` is a file the agent can rewrite.
+436. **A flattened name as a unique key** → `feat/x` and `feat-x` became one folder, and the
+     second branch's checkout replaced the first tab's under it.
+437. **Guarding a shared resource on the tab that asked** → two tabs worked in one copy, and
+     Remove from the idle one deleted the worktree under the other's running agent.
+438. **A restart that waits for idle, checked only when asked** → a reference added during a
+     long fetch arrived while the tab worked, and the running Claude Code never got `--add-dir`.
+439. **A reply for a slow request accepted whatever it is for** → the file listing of the tab
+     left behind landed after the one in front's and replaced it; listings are kept by folder.
+440. **A rebuild signature that counts entries rather than names them** → a renamed file kept
+     its old row; and a list rebuilt under a press lost the click (#365, again).
+441. **A default row chosen by a search that matched only actions** → a typo and Enter moved the
+     conversation to another folder; only a file is chosen by default.
+442. **A class one popup adds to a popover others reuse** → the GitHub form's width stayed on
+     the next skill's parameters; `openAbove` sets or clears it.
+443. **Starting `claude -p` in a folder fetched from the internet** → `-p` skips Claude Code's
+     trust dialog, and the repository's `.claude/settings.json` hooks ran as shell commands on
+     the first process — the skills listing, before any message. Hold its settings back
+     (`--setting-sources=user --strict-mcp-config`) until the user trusts them.
+444. **A diff against a remote-tracking ref** → it moves with every fetch, and what came in
+     upstream read as deletions made by the copy. Diff from the merge base.
+445. **Keeping a list's chosen row while it still matches** → chosen by the first letters or a
+     pointer passing by, it beat the best match, and Enter attached the wrong file or moved the
+     conversation. Keep only a row picked with the keys, in the same search.
+446. **"Not busy" as "quiet"** → between a turn's end and the turn Claude Code starts on its own
+     the tab reads idle; ending the session there lost a prompt it had already taken.
+447. **The home directory as a project** → picked with the folder button, `~` became the root:
+     Codex's `workspace-write` covered all of it and every file there was "inside" — what #382
+     and #390 had closed for no folder at all.
+448. **A bare `git` where a repository is the working directory** → looked up at run time, an
+     empty or `.` `PATH` entry (Windows: the working directory first) ran the repository's own
+     `git`. Resolve it once, absolutely, from absolute entries only.
+449. **"Could not stat it" as "not there", before a delete** → `prepare` would have re-cloned over
+     the copies' work; and a failed clone removed the repository's whole folder, copies with it.
 
 ## Special cases and non-obvious decisions
 
@@ -8154,9 +8382,10 @@ with `LC_ALL=C` so a translated git says it in English.
 
 **Which `git` runs matters on macOS**, where `/usr/bin/git` without the Command Line Tools opens
 a system dialog offering to install them. `gitBinary` takes the path VS Code's Git extension
-already resolved when it is active, then a `git` on `PATH` outside `/usr/bin`, then `/usr/bin/git`
-only if `xcode-select -p` succeeds — the guard the Git extension itself uses — and otherwise skips
-the check. Breaks-silently #172.
+already resolved when it is active, then a `git` on an absolute `PATH` entry outside `/usr/bin`,
+then `/usr/bin/git` only if `xcode-select -p` succeeds — the guard the Git extension itself uses —
+and otherwise skips the check. Breaks-silently #172. Elsewhere it is the first `git` (`git.exe`)
+on an absolute `PATH` entry, by its absolute path, or nothing (#448).
 
 **A workspace opened at `~` makes the project and global Codex configs one file**
 (`codexProjectIsGlobal`), and every path that treated them as two went wrong: Connect wrote the
