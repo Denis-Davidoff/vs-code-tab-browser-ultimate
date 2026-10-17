@@ -240,7 +240,7 @@ export class CodexBackend implements AgentBackend {
 		process?.dispose();
 	}
 
-	public openSession(cwd: string, resume?: string, _priorCostUsd?: number, root?: string): AgentSession {
+	public openSession(cwd: string, resume?: string, _priorCostUsd?: number, root?: string, _readDirs?: readonly string[], _ownSettings?: boolean): AgentSession {
 		const session = new CodexSession(this, cwd, root, resume, () => this._forget(session));
 		this._all.add(session);
 		this._cancelIdle();

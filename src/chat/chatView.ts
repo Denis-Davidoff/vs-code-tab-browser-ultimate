@@ -182,6 +182,16 @@ const recentFoldersKey = 'aiBrowser.chat.recentFolders';
 const recentFolderLimit = 8;
 /** The GitHub repositories opened lately, `owner/name`, newest first; for every window. */
 const recentReposKey = 'aiBrowser.chat.recentRepos';
+/**
+ * Folders the extension fetched from GitHub — copies and clones — whose own
+ * Claude Code settings the user has not trusted yet; for every window. Kept
+ * until trusted, at most `untrustedLimit` (the oldest drop off, and are then
+ * trusted — never the other way round for a folder nobody marked).
+ */
+const untrustedFoldersKey = 'aiBrowser.chat.untrustedFolders';
+const untrustedLimit = 200;
+/** A project's own configuration files, which the folder button names when it holds them back. */
+const projectConfigFiles = ['.claude/settings.json', '.claude/settings.local.json', '.mcp.json'];
 /** A folder's listing is reused for this long: the button is opened again and again while a message is written. */
 const workdirListingMs = 15_000;
 /**
@@ -244,6 +254,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private readonly _tabHost: TabHost = {
 		cwd: () => this._windowCwd(),
 		projectRoot: () => vscode.workspace.workspaceFolders?.find(f => f.uri.scheme === 'file')?.uri.fsPath,
+		ownSettings: folder => !this._untrusted(folder),
 		changed: () => { this._post(); this._drainQueues(); },
 		limits: (agent, windows) => { this._limits.set(agent, windows); },
 		save: chat => this._save(chat),
@@ -272,7 +283,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		private readonly _browser: BrowserController,
 		browserServer: () => BrowserServer | undefined = () => undefined,
 	) {
-		this._registry = new AgentRegistry(() => this._cwd(), id => this._agentBinaries()[id], browserServer);
+		this._registry = new AgentRegistry(() => this._cwd(), id => this._agentBinaries()[id], browserServer, () => !this._untrusted(this._cwd()));
 		void sweepBrowserConfigs().catch(() => { /* swept with the temp directory */ });
 		this._subscriptions.push(this._registry, this._registry.onDidChange(() => this._post()));
 		this._remembered = _context.globalState.get<RememberedSelection>(selectionKey) ?? { models: {}, efforts: {} };
@@ -643,6 +654,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				return;
 			case 'repoAction':
 				await this._repoAction(message.action);
+				return;
+			case 'trustWorkdir':
+				await this._trustWorkdir();
 				return;
 			case 'listCommands':
 				if (!this._blocked() && (message.agent === 'claude' || message.agent === 'codex') && !this._registry.detecting) {
@@ -1159,7 +1173,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			refuse(vscode.l10n.t("The folder this conversation works in is gone: {0}.", plainInLabel(tab.cwd)));
 			return;
 		}
-		this._runs.start(skill, steps, stringValues, tab.chat.id, backend, model, effort, tab.cwd, tab.projectRoot);
+		this._runs.start(skill, steps, stringValues, tab.chat.id, backend, model, effort, tab.cwd, tab.projectRoot, !this._untrusted(tab.cwd));
 	}
 
 	/**
@@ -1913,6 +1927,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			references: tab.chat.references ?? [],
 			recentRepos: this._recentRepos(),
 			busy: this._repoBusy.get(tab),
+			heldBack: current !== undefined && this._untrusted(current) ? this._configFiles(current) : undefined,
 		};
 	}
 
@@ -2100,6 +2115,64 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		await this._context.globalState.update(recentReposKey, next).then(undefined, () => { /* a convenience */ });
 	}
 
+	private _untrustedFolders(): string[] {
+		const stored = this._context.globalState.get<unknown>(untrustedFoldersKey);
+		return Array.isArray(stored) ? stored.filter((p): p is string => typeof p === 'string') : [];
+	}
+
+	/** A folder fetched from GitHub whose own settings are held back; see `AgentBackend.openSession`. */
+	private _untrusted(folder: string): boolean {
+		const resolved = path.resolve(folder);
+		return this._untrustedFolders().some(p => p === resolved);
+	}
+
+	private async _markUntrusted(folder: string): Promise<void> {
+		const resolved = path.resolve(folder);
+		const next = [resolved, ...this._untrustedFolders().filter(p => p !== resolved)].slice(0, untrustedLimit);
+		await this._context.globalState.update(untrustedFoldersKey, next);
+	}
+
+	/** Which of the project configuration files `folder` has, for the folder button to name; cached like `_emptyFolder`. */
+	private _configFiles(folder: string): string[] {
+		const now = Date.now();
+		const cached = this._configAnswers.get(folder);
+		if (cached && now >= cached.at && now - cached.at < 2_000) {
+			return cached.files;
+		}
+		const files = projectConfigFiles.filter(f => {
+			try {
+				return fs.statSync(path.join(folder, f)).isFile();
+			} catch {
+				return false;
+			}
+		});
+		this._configAnswers.clear();
+		this._configAnswers.set(folder, { at: now, files });
+		return files;
+	}
+
+	private readonly _configAnswers = new Map<string, { readonly at: number; readonly files: string[] }>();
+
+	/**
+	 * The folder button's "Trust this repository's settings": the tab in front's
+	 * folder loads its own Claude Code settings from now on, in every tab that
+	 * works there — each Claude session started again when it is quiet.
+	 */
+	private async _trustWorkdir(): Promise<void> {
+		const folder = this._workdir();
+		if (folder === undefined || this._blocked() || !this._untrusted(folder)) {
+			return;
+		}
+		const resolved = path.resolve(folder);
+		await this._context.globalState.update(untrustedFoldersKey, this._untrustedFolders().filter(p => p !== resolved));
+		for (const tab of this._tabs) {
+			if (path.resolve(tab.cwd) === resolved) {
+				tab.restartSession();
+			}
+		}
+		this._post();
+	}
+
 	/** Where the repositories' clones and copies live: the extension's own storage, never the project. */
 	private _repoStorage(): string {
 		return this._context.globalStorageUri.fsPath;
@@ -2151,10 +2224,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				}
 				answer();
 				await this._repoWork(tab, vscode.l10n.t("cloning {0}", repoSlug(repo)), async () => {
+					// Marked before anything can start there: the clone's own settings
+					// are held back until the user trusts them.
+					await this._markUntrusted(dest);
 					await cloneInto(git, repo, branch, dest);
 					// Into the tab it was asked from, not whichever is in front by now.
 					const at = await this._setWorkdir(dest, true, tab);
 					at?.push({ kind: 'notice', text: vscode.l10n.t("Cloned {0} into {1}; the agent works there.", repoSlug(repo), dest) });
+					this._noteHeldBack(at, dest);
 				});
 				return;
 			}
@@ -2173,6 +2250,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				await this._repoWork(tab, vscode.l10n.t("making a copy of {0}", repoSlug(repo)), async () => {
 					const workBranch = workBranchName(new Date(), generateUuid());
 					const made = await makeCopy(git, this._repoStorage(), repo, branch, workBranch);
+					await this._markUntrusted(made.path);
 					// Sent from meanwhile, or closed: the copy goes to a tab of its own.
 					let target = tab;
 					if (!this._tabs.includes(target) || target.started) {
@@ -2184,6 +2262,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 					}
 					target.setFolder(made.path, { repo: repoSlug(repo), base: made.base, branch: workBranch });
 					target.push({ kind: 'notice', text: vscode.l10n.t("Working in a separate copy of {0}, on the branch {1} taken from {2}. Your own folders are not touched; the folder button pushes the work and opens a pull request.", repoSlug(repo), workBranch, made.base) });
+					this._noteHeldBack(target, made.path);
 					this._post();
 				});
 				return;
@@ -2249,6 +2328,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			return { error: vscode.l10n.t("{0} is already there — pick an empty folder.", dest) };
 		}
 		return dest;
+	}
+
+	/** Tells the tab that a fetched repository's own settings are held back, when it has any. */
+	private _noteHeldBack(tab: ChatTab | undefined, folder: string): void {
+		const files = this._configFiles(folder);
+		if (tab && files.length) {
+			tab.push({ kind: 'notice', text: vscode.l10n.t("This repository has its own Claude Code settings ({0}). They are not loaded — hooks in them are shell commands it would run on your machine. Read them, then trust them from the folder button if you want them.", files.join(', ')) });
+		}
 	}
 
 	/** A GitHub operation for `tab`: marked busy, shown in the status bar, and its failure said in the tab. */

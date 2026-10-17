@@ -82,8 +82,12 @@ export interface AgentBackend extends vscode.Disposable {
 	 * repositories added for reference. Claude Code is given them with
 	 * `--add-dir`, which spares a question per read; an edit there is still
 	 * "outside the project" to the approval menu. Codex reads anywhere already.
+	 * `ownSettings` false: the folder came from GitHub and was not trusted yet
+	 * — Claude Code loads only the user's settings and MCP servers, never the
+	 * project's, whose hooks are shell commands. Codex loads a project's own
+	 * configuration only for a project it trusts already.
 	 */
-	openSession(cwd: string, resume?: string, priorCostUsd?: number, root?: string, readDirs?: readonly string[]): AgentSession;
+	openSession(cwd: string, resume?: string, priorCostUsd?: number, root?: string, readDirs?: readonly string[], ownSettings?: boolean): AgentSession;
 }
 
 export const agentNames: Record<AgentId, string> = {
@@ -132,6 +136,8 @@ export class AgentRegistry implements vscode.Disposable {
 		private readonly _cwd: () => string,
 		private readonly _pinned: (id: AgentId) => string | undefined = () => undefined,
 		private readonly _browserServer: () => BrowserServer | undefined = () => undefined,
+		/** Whether the folder `cwd` names may load its own settings; see `openSession`. */
+		private readonly _ownSettings: () => boolean = () => true,
 	) { }
 
 	public get agents(): readonly ChatAgent[] {
@@ -275,7 +281,7 @@ export class AgentRegistry implements vscode.Disposable {
 		let entry = this._backends.get(id);
 		if (entry?.binary !== binary.path) {
 			this._drop(id, false);
-			const backend = id === 'claude' ? new ClaudeBackend(binary.path, this._cwd, this._browserServer) : new CodexBackend(binary.path, this._cwd, this._browserServer);
+			const backend = id === 'claude' ? new ClaudeBackend(binary.path, this._cwd, this._browserServer, this._ownSettings) : new CodexBackend(binary.path, this._cwd, this._browserServer);
 			entry = { binary: binary.path, backend };
 			this._backends.set(id, entry);
 		}

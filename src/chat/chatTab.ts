@@ -24,6 +24,8 @@ const agentCallLimit = 100;
 const entryLimit = 400;
 export const storedTextLimit = 20_000;
 const storedToolLimit = 4_000;
+/** How long a tab must stay quiet before Claude Code is restarted under it; past Claude Code's own following turn. */
+const restartQuietMs = 2_500;
 
 export interface StoredChat {
 	id: string;
@@ -69,6 +71,8 @@ export interface TabHost {
 	cwd(): string;
 	/** The project folder then, undefined when no local folder is open; see `AgentBackend.openSession`. */
 	projectRoot(): string | undefined;
+	/** Whether the agents may load `folder`'s own settings: false for one fetched from GitHub and not trusted yet. */
+	ownSettings(folder: string): boolean;
 	/** Something the view shows changed. */
 	changed(): void;
 	/** A turn's own plan-limit report, kept for the usage popup. */
@@ -213,8 +217,13 @@ export class ChatTab {
 	private _unseen = false;
 	/** The last work ended in an error; until the next message. */
 	private _failed = false;
-	/** A repository to read was added while Claude Code worked: its session is let go once the work ends. */
+	/**
+	 * What Claude Code is started with changed while it worked — a repository
+	 * to read added, its folder's settings trusted: the session is let go once
+	 * the work ends, and the next message resumes it with the new arguments.
+	 */
 	private _restartForDirs = false;
+	private _restartTimer: ReturnType<typeof setTimeout> | undefined;
 	/** `failures` when the last message was sent, so only what went wrong after it counts. */
 	private _failuresBefore = 0;
 
@@ -650,16 +659,9 @@ export class ChatTab {
 		}
 		this._wasBusy = busy;
 		if (this._restartForDirs && !busy) {
-			// Not from inside the event that ended the turn: the session is still
-			// handing it out. The next message resumes it with `--add-dir`.
-			setTimeout(() => {
-				if (this._restartForDirs && !this.busy && !this._closed) {
-					this._restartForDirs = false;
-					if (this._session) {
-						this._dropSession();
-					}
-				}
-			}, 0);
+			// Never from inside the event that ended the turn, and not until it is
+			// quiet; the next message resumes the session with its new arguments.
+			this._scheduleRestart();
 		}
 		this._host.changed();
 	}
@@ -700,15 +702,7 @@ export class ChatTab {
 	public addReference(reference: RepoReference): void {
 		const list = (this._chat.references ?? []).filter(r => r.path !== reference.path);
 		this._chat.references = [...list, reference];
-		if (this._session && this._chat.agent === 'claude') {
-			if (this.busy) {
-				// Working: dropped once the work has ended (`_post`), or the folder
-				// would reach Claude Code only at some later restart.
-				this._restartForDirs = true;
-			} else {
-				this._dropSession();
-			}
-		}
+		this.restartSession();
 		if (this.started) {
 			void this._save();
 		}
@@ -717,6 +711,42 @@ export class ChatTab {
 
 	private _cwd(): string {
 		return this.cwd;
+	}
+
+	/** Claude Code must start again to load what changed (`_restartForDirs`); now if idle, else once the work ends. */
+	public restartSession(): void {
+		if (!this._session || this._chat.agent !== 'claude') {
+			return;
+		}
+		this._restartForDirs = true;
+		this._scheduleRestart();
+	}
+
+	/**
+	 * Quiet: no turn, nothing pending or waiting to be taken in — and, after a
+	 * wait, still so. Claude Code answers a message sent late in a turn, or a
+	 * background agent's end, with a turn of its own a moment after the last
+	 * one ended (`autoTurn`); `busy` does not cover that gap, and a session let
+	 * go in it took the prompt as answered and ended the CLI before it replied.
+	 */
+	private _scheduleRestart(): void {
+		if (this._restartTimer || !this._restartForDirs || this.busy || this._waiting.length) {
+			return;
+		}
+		this._restartTimer = setTimeout(() => {
+			this._restartTimer = undefined;
+			if (!this._restartForDirs || this._closed) {
+				return;
+			}
+			if (this.busy || this._waiting.length) {
+				// Busy again: `_post` schedules it once the work ends.
+				return;
+			}
+			this._restartForDirs = false;
+			if (this._session) {
+				this._dropSession();
+			}
+		}, restartQuietMs);
 	}
 
 	/** The copy this conversation worked in was removed: its actions go, its folder stays. */
@@ -737,7 +767,7 @@ export class ChatTab {
 		if (this._session) {
 			return this._session;
 		}
-		const session = backend.openSession(this._cwd(), this._chat.ref, this._chat.stats.costUsd, this.projectRoot, this._chat.references?.map(r => r.path));
+		const session = backend.openSession(this._cwd(), this._chat.ref, this._chat.stats.costUsd, this.projectRoot, this._chat.references?.map(r => r.path), this._host.ownSettings(this._cwd()));
 		this._tokenOffset = { input: 0, output: 0, cached: 0 };
 		const chatId = this._chat.id;
 		this._session = session;

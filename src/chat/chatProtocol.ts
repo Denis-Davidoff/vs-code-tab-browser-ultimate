@@ -418,6 +418,11 @@ export interface WorkdirState {
 	readonly recentRepos: readonly string[];
 	/** A GitHub operation of the tab in front under way: what it is doing, in a few words. */
 	readonly busy?: string;
+	/**
+	 * The folder was fetched from GitHub and its own Claude Code settings are
+	 * held back until trusted: the configuration files it has, which may be none.
+	 */
+	readonly heldBack?: readonly string[];
 }
 
 export interface ChatViewState {
@@ -624,4 +629,6 @@ export type ViewToHost =
 	/** The GitHub form: a repository, a branch (empty: its default) and how it is used. */
 	| { readonly type: 'openRepo'; readonly repo: string; readonly branch: string; readonly mode: RepoMode }
 	/** On a separate copy: its changes in an editor tab; pushed as a branch and a pull request opened; the copy removed. */
-	| { readonly type: 'repoAction'; readonly action: 'changes' | 'push' | 'window' | 'remove' };
+	| { readonly type: 'repoAction'; readonly action: 'changes' | 'push' | 'window' | 'remove' }
+	/** The tab in front's folder, fetched from GitHub, may load its own Claude Code settings from now on. */
+	| { readonly type: 'trustWorkdir' };

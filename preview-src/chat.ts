@@ -4043,6 +4043,16 @@ function githubItems(w: ChatViewState['workdir'], move: string): WorkdirItem[] {
 	for (const r of w.references) {
 		items.push({ key: `github:ref:${r.path}`, group, label: `${r.repo} (${r.branch})`, icon: 'book', current: true, detail: `Read beside the project — ${r.path}`, run: () => input.focus() });
 	}
+	if (w.heldBack?.length) {
+		const files = w.heldBack.join(', ');
+		items.push({
+			key: 'github:trust', group, label: "Trust this repository's settings…", icon: 'shield', detail: `Held back: ${files}`,
+			run: () => openMenu(workdirButton, [
+				{ icon: 'shield', label: 'Trust and load them', description: `Claude Code loads ${files} from the next message on. Hooks there are shell commands that run on your machine — read them first`, run: () => post({ type: 'trustWorkdir' }) },
+				{ icon: 'close', label: 'Cancel', run: () => undefined },
+			], "Trust this repository's own settings?"),
+		});
+	}
 	items.push({ key: 'github:open', group, label: 'Open a GitHub repository…', icon: 'github', detail: `Work in a copy, clone it, or read it beside the project${move}`, run: () => openRepoForm('') });
 	for (const repo of w.recentRepos) {
 		items.push({ key: `github:repo:${repo}`, group, label: repo, icon: 'repo', detail: 'Opened lately', run: () => openRepoForm(repo) });
@@ -4163,9 +4173,13 @@ function workdirStatus(s: ChatViewState, query: string, shown: number): string |
 
 function buildWorkdir(s: ChatViewState): void {
 	const query = workdirSearch.value.trim().toLowerCase();
-	const previous = workdirItems[workdirActive]?.key;
 	workdirItems = workdirItemsFor(s, query);
-	const kept = workdirItems.findIndex(i => i.key === previous);
+	// Kept only when picked with an arrow key, and only while the search is the
+	// one it was picked in. A row chosen by the first letters, or under a
+	// pointer passing by, outlived the typing: Enter then attached that file
+	// over the best match, or moved the conversation to a folder row (#412's
+	// lesson, here).
+	const kept = workdirArrowed && workdirArrowed.query === query ? workdirItems.findIndex(i => i.key === workdirArrowed!.key) : -1;
 	// With a search the best file is chosen; without one, nothing — Enter on a
 	// fresh list must not move the conversation to another folder.
 	// With a search only a file is chosen by default: a folder row chosen that
@@ -4207,6 +4221,9 @@ function buildWorkdir(s: ChatViewState): void {
 	workdirList.replaceChildren(...nodes);
 	setWorkdirActive(workdirActive, true);
 }
+
+/** The row picked with an arrow key, and the search it was picked in. */
+let workdirArrowed: { readonly key: string; readonly query: string } | undefined;
 
 function setWorkdirActive(index: number, scroll: boolean): void {
 	workdirActive = index;
@@ -4262,6 +4279,7 @@ function openWorkdir(): void {
 		return;
 	}
 	workdirSearch.value = '';
+	workdirArrowed = undefined;
 	workdirShape = '';
 	workdirActive = -1;
 	openAbove(workdirPopup, workdirButton, 'left');
@@ -4303,6 +4321,7 @@ workdirSearch.addEventListener('keydown', event => {
 			if (n) {
 				const dir = event.key === 'ArrowDown' ? 1 : -1;
 				setWorkdirActive(((workdirActive < 0 ? (dir === 1 ? -1 : 0) : workdirActive) + dir + n) % n, true);
+				workdirArrowed = { key: workdirItems[workdirActive].key, query: workdirSearch.value.trim().toLowerCase() };
 			}
 			break;
 		case 'Enter':

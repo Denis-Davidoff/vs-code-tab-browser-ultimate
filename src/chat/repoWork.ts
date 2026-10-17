@@ -213,10 +213,15 @@ export async function isEmptyFolder(folder: string): Promise<boolean> {
 	}
 }
 
-/** What a separate copy changed from the branch it was taken from: the status, then the diff. */
+/** What a separate copy changed from the branch it was taken from: the status, then the diff from where they last met. */
 export async function copyChanges(git: string, copy: string, base: string): Promise<string> {
 	const status = (await runGit(git, ['status', '--short', '--branch'], copy)).trimEnd();
-	const diff = (await runGit(git, ['diff', '--stat', '--patch', `origin/${base}`, '--'], copy)).trimEnd();
+	// From where the copy and its branch last met, not from `origin/<base>`:
+	// that ref moves with every fetch of the repository — another copy, a
+	// read-only checkout, the agent's own `git pull` — and what came in upstream
+	// since read as the copy's own deletions.
+	const since = (await runGit(git, ['merge-base', `origin/${base}`, 'HEAD'], copy)).trim();
+	const diff = (await runGit(git, ['diff', '--stat', '--patch', since, '--'], copy)).trimEnd();
 	const untracked = (await runGit(git, ['ls-files', '--others', '--exclude-standard'], copy)).trim();
 	return [
 		status,

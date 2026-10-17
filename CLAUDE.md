@@ -4790,10 +4790,19 @@ folder* section of `chatView.ts`.
   conversation then follows the window. A folder that is gone is refused and dropped from the
   recent list; a conversation from the history whose folder is gone refuses to send and says so,
   rather than letting the CLI fail to start with a message about its own executable.
-- **Picking a folder is consent for its configuration.** Both CLIs load the folder's own
-  settings, Claude Code's hooks included. The window's workspace trust says nothing about a
-  folder outside it; the click is the user's say-so, as opening that folder in VS Code would be.
-  The chat still refuses as a whole in Restricted Mode and in a remote window.
+- **Picking a local folder is consent for its configuration; a repository fetched from GitHub is
+  not.** Both CLIs load the folder's own settings, Claude Code's hooks included — shell commands
+  — and `claude -p` skips Claude Code's own trust dialog (its `--help` says so). A folder the
+  user chose on their own disk is theirs; the chat still refuses as a whole in Restricted Mode
+  and in a remote window. **A copy or a clone the extension fetched is held back**
+  (`aiBrowser.chat.untrustedFolders` in `globalState`): Claude Code is started there with
+  `--setting-sources=user --strict-mcp-config` — the session, the skills listing and a toolbar
+  skill's background run alike — so the repository's `.claude/settings*.json` and `.mcp.json`
+  are not loaded. Measured on 2.1.301: a `SessionStart` hook ran on an `initialize` alone, before
+  any message, and with those flags did not (#443). The folder button names the files it holds
+  back and offers *Trust this repository's settings…*, asked first; trusting restarts each Claude
+  session there once it is quiet. Its skills and CLAUDE.md are still read — text, not code. Codex
+  loads a project's own configuration only for a project it trusts already.
 - **The files are a walk of our own** (`listWorkdir`, leaf, under test), not `git ls-files` —
   reading the index runs the repository's `core.fsmonitor` (#208), and nothing says the folder
   is trusted — nor the editor's own ripgrep, whose path differs between VS Code
@@ -4819,7 +4828,10 @@ folder* section of `chatView.ts`.
   (`cv` finds `chatView.ts`); a query with a `/` is about the path. Ties go to the shallower,
   then the shorter. Without a query the folder's own entries are shown, folders first; with one,
   the best 100, before the folder rows. **No row is chosen without a query**, so Enter on a
-  fresh list cannot move the conversation to another folder — #397's rule.
+  fresh list cannot move the conversation to another folder — #397's rule. With one, the top row
+  is chosen if it is a file; **a row is kept across rebuilds only when picked with an arrow key,
+  in the same search** (#445) — chosen by the first letters, or under a pointer passing by, it
+  outlived the typing.
 - **A file or folder chosen is attached as its path**, as the "+" menu's File is: both agents
   read files themselves. The host resolves it against the folder in use and refuses anything
   that leads out of it — the path comes from the view. A folder's chip opens its text, not the
@@ -4876,7 +4888,9 @@ default one), and **how to use it**, asked for as a choice rather than one fixed
   that had it (`_forgetCopy`). A clone lands in the tab it was asked from, not whichever is in
   front when it finishes.
 - **On a copy the group has its actions** (`repoAction`): *Changes in the copy* (status, new
-  files and the diff against the branch it came from, in a read-only tab); *Push and open a pull
+  files and the diff from where the copy and its branch last met — `merge-base`, since
+  `origin/<base>` moves with every fetch of the repository and upstream's new files read as the
+  copy's deletions, #444 — in a read-only tab); *Push and open a pull
   request…* — asked first in the view; uncommitted changes are committed with the chat's title,
   the branch is pushed with `--set-upstream`, and GitHub's compare page opens (no `gh` needed,
   and the user writes the pull request there); *Open the copy in a new window*; *Remove the
@@ -4888,7 +4902,11 @@ default one), and **how to use it**, asked for as a choice rather than one fixed
   Measured on 2.1.301: the CLI takes it and reads the folder. It goes in at the process's
   start, so adding one drops an idle Claude session, resumed by its `ref` at the next message. It
   is refused while the tab works; one that started working while the checkout was being made
-  has its session let go once the work ends (`_restartForDirs`), and says so (#438). Codex reads anywhere in its sandbox already. The agent is
+  has its session let go once the work ends (`restartSession`), and says so (#438). **Once the
+  tab is quiet, and 2.5 s later still quiet** — no turn, nothing pending, no prompt waiting to be
+  taken in: Claude Code answers a late message or a background agent's end with a turn of its
+  own a moment after the last one, which `busy` does not cover, and a session let go in that
+  gap took the prompt as answered and ended the CLI before it replied (#446). Codex reads anywhere in its sandbox already. The agent is
   told in a chip on the next message; an edit there is "outside the project" to the approval
   menu, so it is asked about — read-only by the approval menu, not by the file system.
 - Measured against `octocat/Hello-World`: a copy in 2.1 s, a read-only checkout in 1.1 s, a
@@ -5475,9 +5493,11 @@ reaches nothing. An answer to a card that is no longer pending is ignored, and s
 click.
 
 **What still decides before the chat is asked:** each CLI's own rules. Both start in the
-workspace folder and load the user's and the project's settings — Claude Code's
+conversation's working folder and load the user's and the project's settings — Claude Code's
 `permissions.allow` rules and hooks, Codex's own rules — so a tool those rules pre-allow runs
-without a question, exactly as in the CLI, and one they deny is refused without one.
+without a question, exactly as in the CLI, and one they deny is refused without one. A folder
+fetched from GitHub and not trusted yet loads the user's alone (see
+[The working folder](#the-working-folder)).
 
 **What the chat sets over the user's configuration**, stated because it is a grant: Claude's
 `--permission-mode default` (over a `defaultMode` in settings), and for Codex the sandbox, the
@@ -7692,6 +7712,17 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
      conversation to another folder; only a file is chosen by default.
 442. **A class one popup adds to a popover others reuse** → the GitHub form's width stayed on
      the next skill's parameters; `openAbove` sets or clears it.
+443. **Starting `claude -p` in a folder fetched from the internet** → `-p` skips Claude Code's
+     trust dialog, and the repository's `.claude/settings.json` hooks ran as shell commands on
+     the first process — the skills listing, before any message. Hold its settings back
+     (`--setting-sources=user --strict-mcp-config`) until the user trusts them.
+444. **A diff against a remote-tracking ref** → it moves with every fetch, and what came in
+     upstream read as deletions made by the copy. Diff from the merge base.
+445. **Keeping a list's chosen row while it still matches** → chosen by the first letters or a
+     pointer passing by, it beat the best match, and Enter attached the wrong file or moved the
+     conversation. Keep only a row picked with the keys, in the same search.
+446. **"Not busy" as "quiet"** → between a turn's end and the turn Claude Code starts on its own
+     the tab reads idle; ending the session there lost a prompt it had already taken.
 
 ## Special cases and non-obvious decisions
 
