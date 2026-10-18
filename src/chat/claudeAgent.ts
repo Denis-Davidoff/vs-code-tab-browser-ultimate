@@ -600,7 +600,10 @@ class ClaudeSession implements AgentSession {
 				this._pendingTurns = 1;
 				break;
 			case 'tool':
-				if (event.tool.kind === 'agent') {
+				// An agent an agent started lives and ends inside its parent: the
+				// parent is what holds a model change back and what a process exit
+				// ends, and the chat ends the child with it (`parentId`).
+				if (event.tool.kind === 'agent' && !event.tool.agent?.parentId) {
 					this._agentTools.add(event.id);
 					// Asked for in the background: counted from the call, so a process
 					// that goes before the launch is confirmed still reports it ended.

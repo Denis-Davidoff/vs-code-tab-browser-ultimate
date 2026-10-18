@@ -1391,6 +1391,9 @@ body.vscode-light .code-block pre {
 }
 
 .toolbar-end {
+	--toolbar-icon-size: 20px;
+	/* Keep circular marks optically aligned with the internal space of the glyphs. */
+	--toolbar-round-mark-size: calc(var(--toolbar-icon-size) * 0.875);
 	display: inline-flex;
 	align-items: center;
 	gap: 2px;
@@ -1426,8 +1429,6 @@ body.vscode-light .code-block pre {
 	font-size: 16px;
 }
 
-/* The same outer size as the context pie beside it, 17 px. The "/" square was 17 px
- * too, and was made smaller on request (15 px with its border). */
 /* The U of the usage button, and of the limit line that repeats it. */
 .u-mark {
 	flex: none;
@@ -1520,12 +1521,34 @@ body.vscode-light .code-block pre {
 	outline-offset: -1px;
 }
 
-/* The context pie: a ring the size of the usage button's, filled clockwise from the top. */
+/* The cup is 35% and the hubot 50% larger than the shared toolbar scale. */
+.sleep-button svg {
+	width: calc(var(--toolbar-icon-size) * 1.35);
+	height: calc(var(--toolbar-icon-size) * 1.35);
+	flex: none;
+}
+
+.agents-button .codicon {
+	width: calc(var(--toolbar-icon-size) * 1.5);
+	height: calc(var(--toolbar-icon-size) * 1.5);
+	font-size: calc(var(--toolbar-icon-size) * 1.5);
+	line-height: 1;
+	flex: none;
+}
+
+.usage-button .u-mark {
+	width: var(--toolbar-round-mark-size);
+	height: var(--toolbar-round-mark-size);
+	border-width: 1.5px;
+	font-size: 10px;
+}
+
+/* The context pie fills clockwise from the top. */
 .context-pie {
 	display: inline-block;
 	box-sizing: border-box;
-	width: 17px;
-	height: 17px;
+	width: var(--toolbar-round-mark-size);
+	height: var(--toolbar-round-mark-size);
 	border-radius: 50%;
 	border: 1.5px solid currentColor;
 	background: conic-gradient(currentColor var(--fill, 0%), transparent 0);
@@ -3912,3 +3935,34 @@ body.vscode-light .code-block pre {
 .notify-text[hidden] {
 	display: none;
 }
+
+.sleep-button svg { display: block; }
+.sleep-popup { width: 292px; padding: 10px; }
+.sleep-heading { font-weight: 600; margin-bottom: 6px; }
+.sleep-status { font-size: 11px; opacity: .8; overflow-wrap: anywhere; margin-bottom: 8px; }
+.sleep-label { font-size: 11px; opacity: .7; margin: 8px 0 4px; }
+.sleep-options { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; }
+.sleep-option { background: transparent; color: inherit; border: 1px solid transparent; border-radius: 5px; padding: 6px; cursor: pointer; font: inherit; }
+.sleep-option:hover { background: var(--vscode-list-hoverBackground); }
+.sleep-option.selected { border-color: currentColor; background: var(--vscode-list-hoverBackground); }
+.sleep-popup > .sleep-option { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; margin-top: 8px; padding: 10px; }
+.sleep-option:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
+
+.sleep-popup > .sleep-agents-option {
+	display: flex;
+	align-items: center;
+	gap: 9px;
+	margin-top: 12px;
+	padding: 10px;
+	font-weight: 600;
+	background: var(--vscode-button-secondaryBackground, var(--soft-2));
+	border-color: var(--border-strong);
+}
+.sleep-popup > .sleep-agents-option:hover { background: var(--vscode-button-secondaryHoverBackground, var(--soft-2)); }
+.sleep-popup > .sleep-agents-option.selected { border-color: currentColor; }
+.sleep-popup > .sleep-option .codicon { flex-shrink: 0; font-size: 16px; }
+
+.sleep-status.sleep-enabled-status { color: var(--warn); opacity: 1; }
+
+.sleep-agents-option .codicon-hubot { color: var(--vscode-charts-blue, #75beff); }
+.sleep-popup .sleep-option .codicon-circle-slash { color: var(--vscode-charts-orange, #d18616); }

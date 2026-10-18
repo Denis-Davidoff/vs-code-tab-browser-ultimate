@@ -604,9 +604,9 @@ export const toolOutputLimit = 20_000;
  * and the main agent's replies — so the turn's `result`, which lists every
  * model the turn used (sub-agents included), names the right context window.
  */
-export function claudeEvents(message: Record<string, unknown>, tasks?: Map<string, string>, context?: { model?: string }): AgentEvent[] {
+export function claudeEvents(message: Record<string, unknown>, tasks?: Map<string, string>, context?: { model?: string; nestedAgents?: Set<string> }): AgentEvent[] {
 	switch (message.type) {
-		case 'system':
+		case 'system': {
 			if (message.subtype === 'init' && typeof message.session_id === 'string') {
 				if (context && typeof message.model === 'string') {
 					context.model = message.model;
@@ -616,7 +616,12 @@ export function claudeEvents(message: Record<string, unknown>, tasks?: Map<strin
 			if (message.subtype === 'compact_boundary') {
 				return claudeCompacted(message);
 			}
-			return claudeTaskEvents(message, tasks);
+			const events = claudeTaskEvents(message, tasks);
+			for (const event of events) {
+				if (event.type === 'toolUpdate' && event.update.status) { context?.nestedAgents?.delete(event.id); }
+			}
+			return events;
+		}
 
 		case 'stream_event': {
 			const event = isRecord(message.event) ? message.event : undefined;
@@ -646,10 +651,19 @@ export function claudeEvents(message: Record<string, unknown>, tasks?: Map<strin
 			// agent's row, not in the conversation.
 			if (typeof message.parent_tool_use_id === 'string') {
 				const parentId = message.parent_tool_use_id;
-				return content
-					.filter(isRecord)
-					.filter(block => block.type === 'tool_use' && typeof block.name === 'string')
-					.map(block => ({ type: 'agentCall' as const, parentId, name: block.name as string, detail: toolDetail(block.input) }));
+				const events: AgentEvent[] = [];
+				for (const block of content.filter(isRecord)) {
+					if (block.type !== 'tool_use' || typeof block.name !== 'string') { continue; }
+					events.push({ type: 'agentCall', parentId, name: block.name, detail: toolDetail(block.input) });
+					const tool = claudeTool(block.name, block.input);
+					if (tool.kind === 'agent' && typeof block.id === 'string') {
+						if (context) { (context.nestedAgents ??= new Set()).add(block.id); }
+						// Background, so the turn's end does not settle it while its
+						// parent works on; `parentId` ends it with the parent.
+						events.push({ type: 'tool', id: block.id, tool: { ...tool, agent: { ...tool.agent, background: true, parentId } } });
+					}
+				}
+				return events;
 			}
 			// A command the CLI answers itself — `/usage`, `/agents`, `/context`,
 			// `/mcp` — streams nothing: its whole answer is this one message, from
@@ -688,16 +702,13 @@ export function claudeEvents(message: Record<string, unknown>, tasks?: Map<strin
 		}
 
 		case 'user': {
-			if (message.parent_tool_use_id) {
-				return [];
-			}
 			const content = isRecord(message.message) ? message.message.content : undefined;
 			if (!Array.isArray(content)) {
 				return [];
 			}
 			return content
 				.filter(isRecord)
-				.filter(block => block.type === 'tool_result' && typeof block.tool_use_id === 'string')
+				.filter(block => block.type === 'tool_result' && typeof block.tool_use_id === 'string' && (!message.parent_tool_use_id || context?.nestedAgents?.has(block.tool_use_id)))
 				.map(block => {
 					// A background agent's call answers at once with "Async agent
 					// launched": the agent is only starting, so the row stays running
@@ -711,6 +722,7 @@ export function claudeEvents(message: Record<string, unknown>, tasks?: Map<strin
 							update: { agent: { background: true, model: typeof r.resolvedModel === 'string' ? r.resolvedModel : undefined } },
 						};
 					}
+					context?.nestedAgents?.delete(block.tool_use_id as string);
 					const failed = block.is_error === true;
 					const text = resultText(block.content);
 					// A failed Bash result starts with Claude Code's own "Exit code N"
@@ -1081,7 +1093,7 @@ export function codexEvents(method: string, params: unknown): AgentEvent[] {
  * arrives as both `item/started` and `item/completed`, so only the first is
  * read.
  */
-export function codexSubAgentEvents(item: Record<string, unknown>): AgentEvent[] {
+export function codexSubAgentEvents(item: Record<string, unknown>, parentId?: string): AgentEvent[] {
 	const id = typeof item.agentThreadId === 'string' ? item.agentThreadId : undefined;
 	if (!id) {
 		return [];
@@ -1090,7 +1102,10 @@ export function codexSubAgentEvents(item: Record<string, unknown>): AgentEvent[]
 		case 'started': {
 			const path = typeof item.agentPath === 'string' ? item.agentPath : undefined;
 			const name = path?.split('/').filter(Boolean).pop()?.replace(/[_-]+/g, ' ').trim();
-			return [{ type: 'tool', id, tool: { kind: 'agent', name: 'Agent', detail: name ? oneLine(name) : undefined, agent: { type: path, threadId: id } } }];
+			// Background: an agent's thread can outlive the turn that started it.
+			// Stop and an app-server exit settle it (`CodexSession`), as does its
+			// parent agent ending (`parentId`, for an agent an agent started).
+			return [{ type: 'tool', id, tool: { kind: 'agent', name: 'Agent', detail: name ? oneLine(name) : undefined, agent: { type: path, threadId: id, background: true, ...(parentId ? { parentId } : {}) } } }];
 		}
 		case 'completed':
 			return [{ type: 'toolUpdate', id, update: { status: 'done' } }];
@@ -1114,7 +1129,7 @@ export function codexAgentThreadEvents(threadId: string, method: string, params:
 	switch (method) {
 		case 'item/started': {
 			if (item?.type === 'subAgentActivity') {
-				return codexSubAgentEvents(item);
+				return codexSubAgentEvents(item, threadId);
 			}
 			const tool = item ? codexTool(item) : undefined;
 			const detail = tool?.kind === 'command' ? tool.input || tool.detail : tool?.detail;

@@ -696,7 +696,30 @@ class CodexSession implements AgentSession {
 		return this._threadId;
 	}
 
+	/**
+	 * Stop is for everything this conversation was doing, its agents included.
+	 * Their rows are background — a thread can outlive the turn that started it
+	 * — so the stopped turn's end passes over them, and whether Codex interrupts
+	 * an agent's thread with its parent's turn is not measured. So each running
+	 * agent turn is interrupted here and every agent row ends now, a Stop with
+	 * only agents left working included.
+	 */
 	public stop(): void {
+		this._interruptAgents();
+		for (const id of [...this._backgroundAgents]) {
+			this.emit({ type: 'toolUpdate', id, update: { status: 'stopped' } });
+		}
+		this._stopTurn();
+	}
+
+	private _interruptAgents(): void {
+		for (const [threadId, turnId] of this._agentTurns) {
+			this._backend.request('turn/interrupt', { threadId, turnId }).catch(() => { /* already over */ });
+		}
+		this._agentTurns.clear();
+	}
+
+	private _stopTurn(): void {
 		if (!this._running) {
 			return;
 		}
@@ -719,6 +742,8 @@ class CodexSession implements AgentSession {
 
 	/** The running turn of each agent thread of this conversation, for `stopAgent`. */
 	private readonly _agentTurns = new Map<string, string>();
+	/** Agent rows that outlive the main turn; a server exit must settle them too. */
+	private readonly _backgroundAgents = new Set<string>();
 
 	/**
 	 * An agent's thread runs turns of its own; interrupting the one running stops
@@ -814,6 +839,10 @@ class CodexSession implements AgentSession {
 
 	public processEnded(reason: string): void {
 		const stopped = this._stopping || this._stopRequested;
+		this._agentTurns.clear();
+		for (const id of [...this._backgroundAgents]) {
+			this.emit({ type: 'toolUpdate', id, update: { status: stopped ? 'stopped' : 'failed', output: stopped ? 'Stopped.' : reason } });
+		}
 		this._stopping = false;
 		this._stopRequested = false;
 		this._compacting = false;
@@ -828,6 +857,16 @@ class CodexSession implements AgentSession {
 
 	public emit(event: AgentEvent): void {
 		if (!this._disposed) {
+			if (event.type === 'tool' && event.tool.kind === 'agent' && event.tool.agent?.background) {
+				this._backgroundAgents.add(event.id);
+			} else if (event.type === 'toolUpdate') {
+				if (event.update.status) { this._backgroundAgents.delete(event.id); }
+				else if (event.update.agent?.background) { this._backgroundAgents.add(event.id); }
+			} else if (event.type === 'agentStates') {
+				for (const state of event.states) {
+					if (state.status !== 'running') { this._backgroundAgents.delete(state.threadId); }
+				}
+			}
 			this._onEvent.fire(event);
 		}
 	}
@@ -836,13 +875,12 @@ class CodexSession implements AgentSession {
 		if (this._disposed) {
 			return;
 		}
-		this.stop();
+		this._stopTurn();
 		// Its agents too: their threads live in the app-server the other tabs
-		// share, and once this session is gone nothing shows or stops them.
-		for (const [threadId, turnId] of this._agentTurns) {
-			this._backend.request('turn/interrupt', { threadId, turnId }).catch(() => { /* already over */ });
-		}
-		this._agentTurns.clear();
+		// share, and once this session is gone nothing shows or stops them. Their
+		// rows are the tab's to end (`_endTurnHere`), not told from here.
+		this._interruptAgents();
+		this._backgroundAgents.clear();
 		this._disposed = true;
 		this._releaseTurnWaiters();
 		this._onEvent.dispose();

@@ -14,6 +14,10 @@ src/chat/news.ts — see "The AI Browser chat" in CLAUDE.md.
 
 Browse, debug and test your pages in VS Code's own browser — and let Claude Code or Codex see them, click through them and take screenshots, right inside the editor.
 
+## 0.7.9 — 2026-10-18
+- **Keep the computer awake** from the chat: the cup button holds off system sleep for a set time, or until the agents and sub-agents in this window finish — one shared helper answers for every window, and closing a window releases its hold.
+- Codex agents, and agents started by other agents, stay listed as running after the turn that started them; **Stop**, closing the tab or a parent agent ending now ends them too, instead of leaving them "running".
+
 ## 0.7.8 — 2026-10-18
 - A **plan-limit line** above the chat when your agent's nearest limit is 90 % used: it names the limit and when it resets, comes back at every further percent and at 100 % after you close it, and says so when the agent starts spending usage credits; click it to open the usage popup.
 - **U** is coloured by how much of your plan is used — green, yellow, orange, red — and turns into a red disc once a limit is reached or credits are being spent.

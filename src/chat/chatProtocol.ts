@@ -1,3 +1,4 @@
+import type { SleepChoice, SleepState } from '../power/sleepProtocol';
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -252,6 +253,12 @@ export interface AgentInfo {
 	summary?: string;
 	/** Codex: the thread the agent runs in, which later status reports name. */
 	threadId?: string;
+	/**
+	 * The row of the agent that started this one, for an agent an agent started.
+	 * Such a row ends with its parent when the parent is stopped or fails: its
+	 * own report may never come, and it would read as running for good.
+	 */
+	parentId?: string;
 	/** Its own tool calls, oldest first, capped. */
 	calls: { name: string; detail?: string }[];
 	/** A toolbar skill run in the background, not an agent the chat's agent started. */
@@ -450,6 +457,7 @@ export interface WorkdirState {
 }
 
 export interface ChatViewState {
+	readonly sleep?: SleepState;
 	/** Set when the chat cannot run in this window at all. */
 	readonly blocked?: string;
 	readonly detecting: boolean;
@@ -572,6 +580,7 @@ export type HostToView =
 	| { readonly type: 'githubAnswer'; readonly error?: string };
 
 export type ViewToHost =
+	| { readonly type: 'setSleep'; readonly choice: SleepChoice }
 	| { readonly type: 'ready' }
 	| { readonly type: 'select'; readonly selection: Selection }
 	/** `tabId`: the tab it was typed in, which may no longer be the one in front when it arrives. */

@@ -1,3 +1,4 @@
+import { SleepControl } from '../power/sleepControl';
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -28,7 +29,7 @@ import { pickElementContext, pickForChat } from '../elements/elementPicker';
 import { parseNews } from './news';
 import { confirm, refuse } from '../core/notify';
 import { capAt, plainInLabel, plainInNotification, plainInPrompt } from '../core/notifyText';
-import { isBrowserApiGranted, workspaceIsRemoteFromHost } from '../setup/proposedApi';
+import { hostIsRemote, isBrowserApiGranted, workspaceIsRemoteFromHost } from '../setup/proposedApi';
 import { pageTitle } from '../translate/translateText';
 import { generateUuid } from '../core/uuid';
 import { runRowPrefix, ToolbarRuns, type SkillEnd } from './toolbarRun';
@@ -249,6 +250,7 @@ interface ChatSkillRun {
 }
 
 export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
+	private readonly _sleep: SleepControl;
 	private _view: vscode.WebviewView | undefined;
 	private _viewReady = false;
 	private _queued: HostToView[] = [];
@@ -308,6 +310,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		this._subscriptions.push(this._registry, this._registry.onDidChange(() => this._post()));
 		this._remembered = _context.globalState.get<RememberedSelection>(selectionKey) ?? { models: {}, efforts: {} };
 		this._restoreTabs();
+		this._sleep = new SleepControl(
+			() => this._tabs.some(t => t.busy || t.waiting || t.queuedCount > 0 || this._runs.runningIn(t.chat.id) > 0),
+			() => this._post(),
+			hostIsRemote() ? "Sleep prevention requires a local VS Code window." : undefined,
+		);
 		void this._readNews();
 		// "Continue in …" writes into the conversation's folder; the activation
 		// sweep reaches only the workspace's.
@@ -496,6 +503,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		const limit = tabLimit();
 		const selection = this._selection();
 		return {
+			sleep: this._sleep.state,
 			blocked: this._blocked(),
 			detecting: this._registry.detecting,
 			agents: this._registry.agents,
@@ -592,6 +600,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 	private async _receive(message: ViewToHost): Promise<void> {
 		switch (message.type) {
+			case 'setSleep':
+				this._sleep.choose(message.choice);
+				return;
 			case 'ready': {
 				this._viewReady = true;
 				// A queue held while there was no view goes out now that there is one.
@@ -2898,6 +2909,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 	public dispose(): void {
 		this._disposed = true;
+		this._sleep.dispose();
 		this._runs.dispose();
 		for (const timer of this._usageChecks.values()) {
 			clearTimeout(timer);

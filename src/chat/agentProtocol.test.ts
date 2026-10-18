@@ -441,7 +441,7 @@ suite('codexEvents', () => {
 	test('subAgentActivity: started is a row keyed by the agent thread, completed and interrupted end it', () => {
 		const started = { type: 'subAgentActivity', id: 'call_1', kind: 'started', agentThreadId: 'th-a', agentPath: '/root/read_a' };
 		assert.deepStrictEqual(codexEvents('item/started', { item: started }), [
-			{ type: 'tool', id: 'th-a', tool: { kind: 'agent', name: 'Agent', detail: 'read a', agent: { type: '/root/read_a', threadId: 'th-a' } } },
+			{ type: 'tool', id: 'th-a', tool: { kind: 'agent', name: 'Agent', detail: 'read a', agent: { type: '/root/read_a', threadId: 'th-a', background: true } } },
 		]);
 		assert.deepStrictEqual(codexEvents('item/completed', { item: started }), []);
 		assert.deepStrictEqual(codexEvents('item/started', { item: { ...started, id: 'x', kind: 'completed' } }), [{ type: 'toolUpdate', id: 'th-a', update: { status: 'done' } }]);
@@ -926,4 +926,31 @@ suite('questions with choices', () => {
 		const events = claudeEvents({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'AskUserQuestion', input: claudeAsk.input }] } });
 		assert.ok(!events.some(e => e.type === 'tool'));
 	});
+});
+
+
+test('nested Claude agents remain tracked after their parent result, until their own result', () => {
+	const context: { nestedAgents?: Set<string> } = {};
+	const events = claudeEvents({ type: 'assistant', parent_tool_use_id: 'parent', message: { content: [
+		{ type: 'tool_use', id: 'nested', name: 'Agent', input: { description: 'Nested work' } },
+	] } }, new Map(), context);
+	assert.ok(events.some(e => e.type === 'tool' && e.id === 'nested' && e.tool.agent?.background));
+	assert.ok(context.nestedAgents?.has('nested'));
+	claudeEvents({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'parent', content: 'done' }] } }, new Map(), context);
+	assert.ok(context.nestedAgents?.has('nested'));
+	const done = claudeEvents({ type: 'user', parent_tool_use_id: 'parent', message: { content: [{ type: 'tool_result', tool_use_id: 'nested', content: 'done' }] } }, new Map(), context);
+	assert.ok(done.some(e => e.type === 'toolUpdate' && e.id === 'nested' && e.update.status === 'done'));
+	assert.ok(!context.nestedAgents?.has('nested'));
+});
+
+test('an agent an agent started names its parent, on both agents', () => {
+	const claude = claudeEvents({ type: 'assistant', parent_tool_use_id: 'parent', message: { content: [
+		{ type: 'tool_use', id: 'nested', name: 'Agent', input: { description: 'Nested work' } },
+	] } }, new Map(), {});
+	assert.ok(claude.some(e => e.type === 'tool' && e.id === 'nested' && e.tool.agent?.parentId === 'parent'));
+	const child = { type: 'subAgentActivity', kind: 'started', agentThreadId: 'th-b', agentPath: '/root/a/b' };
+	const nested = codexAgentThreadEvents('th-a', 'item/started', { item: child });
+	assert.ok(nested.some(e => e.type === 'tool' && e.tool.agent?.parentId === 'th-a' && e.tool.agent.background));
+	const top = codexEvents('item/started', { item: { ...child, agentThreadId: 'th-a' } });
+	assert.ok(top.some(e => e.type === 'tool' && e.tool.agent?.parentId === undefined));
 });

@@ -893,8 +893,8 @@ export class ChatTab {
 				// that is the same agent, running again, not a second row.
 				const known = event.tool.kind === 'agent' ? this._tool(event.id) : undefined;
 				if (known) {
-					// Only while a turn runs, or nothing would ever settle it again.
-					if (this._session?.running) {
+					// Background agents can start another turn after the main reply.
+					if (this._session && (this._session.running || event.tool.agent?.background)) {
 						known.status = 'running';
 						known.endedAt = undefined;
 					}
@@ -1143,7 +1143,33 @@ export class ChatTab {
 				break;
 			}
 		}
+		this._endOrphanedAgents();
 		this._post();
+	}
+
+	/**
+	 * An agent an agent started ends when its parent is stopped or fails. Its own
+	 * report may never come — Claude Code's interrupt and `stop_task` are not
+	 * measured to report the agents inside — and the turn's end passes over it,
+	 * being background; left running, the tab reads as working and "until agents
+	 * finish" keeps the computer awake for good. A parent that finished is not
+	 * followed: its children report their own end, and may outlive it on Codex.
+	 */
+	private _endOrphanedAgents(): void {
+		const now = Date.now();
+		let changed = true;
+		while (changed) {
+			changed = false;
+			for (const entry of this._chat.entries) {
+				const parentId = entry.kind === 'tool' && entry.status === 'running' ? entry.agent?.parentId : undefined;
+				const parent = parentId ? this._tool(parentId) : undefined;
+				if (entry.kind === 'tool' && (parent?.status === 'stopped' || parent?.status === 'failed')) {
+					entry.status = parent.status;
+					entry.endedAt = now;
+					changed = true;
+				}
+			}
+		}
 	}
 
 	/**

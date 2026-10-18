@@ -1,3 +1,4 @@
+import { sleepMinutes, sleepHours, type SleepChoice } from '../src/power/sleepProtocol';
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -134,6 +135,8 @@ const usageTitle = "Usage — your plan's limits for each agent, and this chat's
 const usageButton = button([el('span', { class: 'u-mark', text: 'U' })], { class: 'ghost round usage-button', title: usageTitle });
 const agentsButton = button([], { class: 'pill agents-button', title: 'Agents' });
 /** How full the conversation's context is, as a pie that fills; a click compacts it. */
+const sleepButton = button([], { class: 'ghost round sleep-button', title: 'Keep computer awake' });
+const sleepPopup = el('div', { class: 'popup sleep-popup' });
 const contextPie = el('span', { class: 'context-pie' });
 const contextButton = button([contextPie], { class: 'ghost round context-button' });
 contextButton.hidden = true;
@@ -152,7 +155,7 @@ const approveToggle = button([], { class: 'pill approve-toggle' });
 // The right-hand buttons (agents, usage, send) are one group pushed to the end,
 // so a narrow side bar wraps them together onto the next line, still at the right.
 const toolbar = el('div', { class: 'toolbar' },
-	plusButton, browserButton, slashButton, workdirButton, agentPill, modelPill, effortBox, approveToggle, el('span', { class: 'toolbar-end' }, agentsButton, contextButton, usageButton, queueButton, sendButton));
+	plusButton, browserButton, slashButton, workdirButton, agentPill, modelPill, effortBox, approveToggle, el('span', { class: 'toolbar-end' }, agentsButton, contextButton, sleepButton, usageButton, queueButton, sendButton));
 /**
  * The box's text drawn again behind it, with the agent's commands in colour:
  * a textarea cannot style part of its text, so this layer shows the text and
@@ -202,7 +205,7 @@ const agentsPanel = el('div', { class: 'history-panel agents-panel' });
 /** Which copy of each agent's CLI this project uses: opened from the gear in the agent menu. */
 const agentAppsPanel = el('div', { class: 'history-panel agent-apps' });
 
-app.append(tabStrip, usageAlertBar, thread, blocked, footer, menu, usagePopup, approvalPopup, palette, workdirPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel);
+app.append(sleepPopup, tabStrip, usageAlertBar, thread, blocked, footer, menu, usagePopup, approvalPopup, palette, workdirPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel);
 
 /* ---------------------------------------------------------------- state */
 
@@ -401,6 +404,7 @@ function render(): void {
 	renderApproveToggle(state);
 	renderSend();
 	renderContext(state);
+	renderSleep();
 	renderUsageLevel(state);
 	renderUsageAlert(state);
 	renderAgents(state);
@@ -3095,12 +3099,12 @@ function closePopups(except?: HTMLElement, keep?: HTMLElement): void {
 	if (except !== paramsPopup) {
 		paramsPopup.classList.remove('repo-form');
 	}
-	for (const popup of [menu, usagePopup, approvalPopup, palette, workdirPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel]) {
+	for (const popup of [sleepPopup, menu, usagePopup, approvalPopup, palette, workdirPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel]) {
 		if (popup !== except && popup !== keep) {
 			popup.classList.remove('open');
 		}
 	}
-	for (const pill of [agentPill, modelPill, plusButton, usageButton, approveToggle, slashButton, workdirButton, contextButton]) {
+	for (const pill of [sleepButton, agentPill, modelPill, plusButton, usageButton, approveToggle, slashButton, workdirButton, contextButton]) {
 		pill.classList.remove('active');
 	}
 	// A skill button is a popup's anchor too; the mark only tells a second
@@ -3175,7 +3179,7 @@ document.addEventListener('mousedown', event => {
 		}
 		return;
 	}
-	if (![menu, usagePopup, approvalPopup, palette, workdirPopup, paramsPopup, skillBar, historyPanel, agentsPanel, agentAppsPanel, plusButton, usageButton, usageAlertText, agentsButton, agentPill, modelPill, approveToggle, slashButton, workdirButton, contextButton].some(n => n.contains(target))) {
+	if (![sleepPopup, sleepButton, menu, usagePopup, approvalPopup, palette, workdirPopup, paramsPopup, skillBar, historyPanel, agentsPanel, agentAppsPanel, plusButton, usageButton, usageAlertText, agentsButton, agentPill, modelPill, approveToggle, slashButton, workdirButton, contextButton].some(n => n.contains(target))) {
 		closePopups();
 	}
 });
@@ -5886,3 +5890,75 @@ function ago(at: number): string {
 
 autosize();
 post({ type: 'ready' });
+
+
+/* The assertion belongs to this window; the OS coordinator combines windows. */
+function cupIcon(full: boolean): SVGSVGElement {
+	const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+	svg.setAttribute('viewBox', '0 0 16 16');
+	svg.setAttribute('width', '16'); svg.setAttribute('height', '16');
+	svg.setAttribute('aria-hidden', 'true');
+	const path = document.createElementNS(svg.namespaceURI, 'path');
+	path.setAttribute('d', 'M2 3.5h9v5a4.5 4.5 0 0 1-9 0z M11 4h1.5a2 2 0 0 1 0 4H11 M1 14h12');
+	path.setAttribute('fill', 'none'); path.setAttribute('stroke', 'currentColor'); path.setAttribute('stroke-width', '1.2');
+	if (full) {
+		const liquid = document.createElementNS(svg.namespaceURI, 'path');
+		liquid.setAttribute('d', 'M3 6h7v2.5a3.5 3.5 0 0 1-7 0z');
+		liquid.setAttribute('fill', 'currentColor'); svg.append(liquid);
+	}
+	svg.append(path); return svg;
+}
+let sleepSignature = '';
+function renderSleep(): void {
+	const sleep = state?.sleep;
+	const active = sleep?.active === true;
+	const seconds = Math.max(0, Math.ceil(((sleep?.until ?? 0) - Date.now()) / 1000));
+	const countdown = `${Math.floor(seconds / 3600).toString().padStart(2, '0')}:${Math.floor(seconds / 60 % 60).toString().padStart(2, '0')}:${(seconds % 60).toString().padStart(2, '0')}`;
+	const tip = sleep?.error ? `Cannot keep computer awake: ${sleep.error}`
+		: sleep?.mode === 'timer' ? `Keep awake: ${countdown}${active ? '' : ' — starting…'}`
+		: sleep?.mode === 'agents' ? 'Keep awake until all agents and subagents in this window finish'
+		: 'Keep computer awake — off in this window';
+	sleepButton.title = tip; sleepButton.setAttribute('aria-label', tip);
+	sleepButton.setAttribute('aria-pressed', String(active));
+	const signature = JSON.stringify([sleep?.mode, sleep?.minutes, active, sleep?.error]);
+	if (signature !== sleepSignature) {
+		sleepSignature = signature; sleepButton.replaceChildren(cupIcon(active));
+		buildSleepPopup();
+	}
+	const status = sleepPopup.querySelector('.sleep-status');
+	if (status) {
+		status.textContent = tip;
+		status.classList.toggle('sleep-enabled-status', !!sleep && (sleep.mode === 'timer' || sleep.mode === 'agents') && !sleep.error);
+	}
+}
+function buildSleepPopup(): void {
+	const sleep = state?.sleep;
+	const choose = (choice: SleepChoice) => { post({ type: 'setSleep', choice }); closePopups(); };
+	const option = (label: string, choice: SleepChoice, selected: boolean) => {
+		const b = button([label], { class: 'sleep-option' });
+		b.classList.toggle('selected', selected); b.setAttribute('aria-pressed', String(selected));
+		b.addEventListener('click', () => choose(choice)); return b;
+	};
+	const minutes = el('div', { class: 'sleep-options' });
+	for (const n of sleepMinutes) { minutes.append(option(String(n), { mode: 'timer', minutes: n }, sleep?.mode === 'timer' && sleep.minutes === n)); }
+	const hours = el('div', { class: 'sleep-options' });
+	for (const n of sleepHours) { hours.append(option(String(n), { mode: 'timer', minutes: n * 60 }, sleep?.mode === 'timer' && sleep.minutes === n * 60)); }
+	const agentsOption = option('Until agents and subagents finish in this window', { mode: 'agents' }, sleep?.mode === 'agents');
+	agentsOption.classList.add('sleep-agents-option');
+	agentsOption.prepend(icon('hubot'));
+	sleepPopup.replaceChildren(el('div', { class: 'sleep-heading', text: 'Keep this window awake' }),
+		el('div', { class: 'sleep-status' }), el('div', { class: 'sleep-label', text: 'Minutes' }), minutes,
+		el('div', { class: 'sleep-label', text: 'Hours' }), hours,
+		agentsOption);
+	if (sleep && sleep.mode !== 'off') {
+		const off = option('Turn off for this window', { mode: 'off' }, false);
+		off.prepend(icon('circle-slash'));
+		sleepPopup.append(off);
+	}
+}
+sleepButton.addEventListener('click', () => {
+	if (sleepPopup.classList.contains('open')) { closePopups(); return; }
+	buildSleepPopup(); renderSleep(); openAbove(sleepPopup, sleepButton, 'right');
+});
+sleepPopup.addEventListener('keydown', event => { if (event.key === 'Escape') { closePopups(); sleepButton.focus(); } });
+setInterval(renderSleep, 1000);

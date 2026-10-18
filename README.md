@@ -42,6 +42,11 @@ there is not the problem, the missing API is. **Measured by reading the shipped 
 
 ## Changelog
 
+**0.7.9** — Keep-awake. The cup button in the chat keeps the computer from sleeping for a set
+time, or until this window's agents and sub-agents finish. Codex agents and nested agents keep
+their place in the agents list after the turn that started them, and Stop or closing the tab ends
+them.
+
 **0.7.8** — Plan limits in sight. A line above the chat appears once your agent's nearest limit is
 90 % used, says when it resets, returns at every further percent and at 100 % after you close it,
 and tells you when the agent starts spending usage credits. The **U** button is coloured by how much

@@ -156,6 +156,7 @@ not kinds of code:
 | `logins/` | saved logins and passkeys, including the MPL-2.0 `loginFormScript.ts` |
 | `translate/` | Translate Page |
 | `chat/` | the AI Browser chat and the agents behind it |
+| `power/` | keeping the computer awake from the chat: the window's vote, the shared daemon, the OS lock |
 
 Rules that come with it:
 
@@ -253,6 +254,9 @@ difference, in `browserController.js`, was a doc comment whose link had been upd
 - [src/chat/usageAlert.ts](src/chat/usageAlert.ts) — the plan-limit line above the chat: which limit, when it shows, what closing it means, when the plan is asked for (leaf, under test)
 - [src/chat/claudeAgent.ts](src/chat/claudeAgent.ts) — Claude Code over `stream-json` and its control channel
 - [src/chat/codexAgent.ts](src/chat/codexAgent.ts) — Codex over `codex app-server` JSON-RPC
+- [src/power/sleepProtocol.ts](src/power/sleepProtocol.ts) — the keep-awake choices and state (types and lists, read by both builds)
+- [src/power/sleepControl.ts](src/power/sleepControl.ts) — one window's keep-awake choice, and its vote to the daemon
+- [src/power/sleepDaemon.ts](src/power/sleepDaemon.ts) — the shared daemon holding the OS lock while any window votes for it
 
 **There is only ever one panel.** `AIBrowserManager._activeView` is a single slot: a repeat
 `show()` reuses the existing panel rather than creating a second one. If multiple tabs are ever
@@ -5496,7 +5500,9 @@ does once the view is gone, so the turn is ended, the chat saved and the session
 than left working unseen on the user's quota. A kill is SIGTERM, then SIGKILL after 3 s for a
 process that is still there — a CLI busy in a tool call, or one that traps the signal.
 **With the chat open, the extension does start processes** — the user's own CLIs, and
-only while a conversation needs them; nothing else in the extension does.
+only while a conversation needs them — and, once keep-awake is switched on in some window, one
+detached daemon and the OS's own lock under it; see
+[Keeping the computer awake](#keeping-the-computer-awake). Nothing else in the extension does.
 
 **Every path that lets go of a session mid-turn ends the turn in the chat first** (`_endTurnHere`,
 in `ChatTab`): closing a tab, the other agent taking a tab's place ("Close this chat, start …"), a
@@ -6162,9 +6168,32 @@ started it, read from the path. **The prompt is not sent anywhere**, so a Codex 
 section. The `spawnAgent` / `agentsStates` reading stays, for a Codex that does send them
 (`multi_agent_v2` is off here).
 
-A Codex agent is deliberately **not** `background`: the parent `wait`s inside its turn (measured),
-so `completed` arrives before the turn ends, and the turn's end settles anything left like any
-other row — a row blinking for ever is the worse error.
+**A Codex agent is `background`**, and that reverses an earlier decision on purpose. It used not
+to be: the parent `wait`s inside its turn (measured), so `completed` arrives before the turn ends,
+and the turn's end settled anything left like any other row — a row blinking for ever being the
+worse error. That holds for the turn that waits, and not for a thread given more work later, or
+an agent an agent started, whose parent's turn is not this conversation's; the end-of-turn sweep
+marked those done while they worked on, and "until agents finish" (keep-awake) let the computer
+sleep under them. So the rows survive the turn, and **every way an agent can be left without its
+own report ends it from our side instead**:
+
+- **Stop** (`CodexSession.stop`) interrupts every agent turn of the conversation and ends every
+  agent row as stopped, a Stop pressed with only agents left working included — whether Codex
+  interrupts an agent's thread with its parent's turn is not measured, so it is not relied on.
+- **The app-server exiting** ends them as failed (`processEnded`, `_backgroundAgents`).
+- **Closing the tab** interrupts their turns and the tab ends the rows (`_endTurnHere`).
+- **A parent agent stopped or failed** ends the agents it started (`parentId`, below).
+
+**An agent an agent started names its parent** (`AgentInfo.parentId`): Codex's from the thread
+the `subAgentActivity` arrived on, Claude Code's from the `parent_tool_use_id` of the message
+holding the `Agent` call (`nestedAgents` in `claudeEvents` lets its result through, which a
+sub-agent's results otherwise are not). `ChatTab._endOrphanedAgents` ends such a row, after every
+event, once its parent is stopped or failed — grandchildren too. Its own report may never come:
+Claude Code's interrupt and `stop_task` are not measured to report the agents inside, and the row
+is background, so nothing else would end it. A parent that *finished* is not followed, since its
+children report their own end and a Codex thread may outlive its parent. **A nested Claude agent
+is not one of `ClaudeSession._agents`**: it lives inside its parent, which is what holds a model
+change back and what a process exit ends.
 
 **Each running agent can be stopped on its own**, from the agents panel — a Stop button on its
 row and in its card — while the turn and the other agents go on:
@@ -6201,6 +6230,53 @@ agent still running; after the review, a message sent during the automatic turn 
 and tokens. The panel was checked in headless Chrome: hidden with no agents, a click and a fold
 landing with a state post between press and release, a 3 006-character selection and the scroll
 surviving posts, ↑ in a wrapped draft moving the caret.
+
+### Keeping the computer awake
+
+The cup button in the composer's right-hand group keeps the computer from sleeping: for a number
+of minutes or hours (the lists in `sleepProtocol.ts`, anything else refused), or **until the agents
+and sub-agents in this window finish** — no tab busy, waiting on an approval, holding a queue, or
+running a toolbar skill in the background. The choice is **per window** and lives in memory: a
+reload switches it off. The display may still sleep; only system sleep is held off.
+
+[src/power/](src/power/) holds it, in three parts, and the split is the design:
+
+- **`SleepControl`**, one per window in the chat's provider, holds the choice and reduces it to one
+  boolean vote, re-judged every second (a timer running out, the agents finishing — after 500 ms,
+  so a choice made between two turns is not dropped at once). Only the vote crosses the process.
+- **`runSleepDaemon`**, one per user, takes every window's vote over a Unix socket
+  (`<tmpdir>/ai-browser-wake-<uid>/v1.sock`, the directory `0700` and checked to be ours) or a named
+  pipe on Windows, and holds the OS lock while any vote is true. A window's closed socket is its
+  vote withdrawn, so a window that goes away cannot leave the lock held. It exits 3 s after its last
+  window, and 10 s after starting with none.
+- **The OS lock** is a child of the daemon that holds it while it lives: `caffeinate -i -w <daemon
+  pid>` on macOS, `systemd-inhibit --what=sleep` around a `cat` of stdin on Linux,
+  `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)` in a PowerShell reading stdin on
+  Windows. Each ends when the daemon does — `-w` on macOS, stdin closing elsewhere — so a crash
+  releases it too.
+
+Why a daemon rather than a lock per window: two windows each running `caffeinate` would be correct
+too, but the first to switch off could not tell whether the computer was still held, and the
+button's "active" would be one window's opinion. The daemon answers for all of them.
+
+Details that matter:
+
+- **The daemon is forked from the extension host** with `ELECTRON_RUN_AS_NODE=1`, detached, so it
+  outlives the window that started it. Two windows starting it at once are serialised by
+  `withLock` on `<socket>.startup`: the second finds the first listening and exits. A socket file
+  left by a crashed daemon is probed, then removed.
+- **A refusal from the OS sticks** until a window votes again (`error`), or a lock the system
+  denies would be asked for every second.
+- **Refused in a remote or web window** (`hostIsRemote`): the lock would be taken on the wrong
+  machine, or on none.
+- The tooltip and the popup's status are refilled every second (the countdown); the popup is
+  rebuilt only when the choice, the state or the error change.
+
+**Known and left:** on Windows the pipe name is machine-wide and predictable, so another local user
+can take it first and make the feature fail for this one — the same class as the lock files under
+[Known issues](#known-issues-not-yet-fixed). Not measured inside VS Code on Linux or Windows; the
+tests drive the daemon with a stand-in lock process and check only the commands each platform
+would run.
 
 ### Verified how
 
@@ -8048,6 +8124,12 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
      with the first report of the new period — "spending credits" over a limit at 2 %, until a
      full read up to fifteen minutes later. Let the event that ends the condition (the limit
      resetting) clear the flag in the stored state, not only in what is shown.
+477. **Marking a row background without giving it another way to end** → the end-of-turn sweep is
+     the only thing that settles a row whose own report never comes, and `background` opts out of
+     it. Codex agent rows and nested agents were made background and a Stop left them "running"
+     for good — the tab busy, and keep-awake holding the computer. Every path that can leave an
+     agent without its report ends it from our side: Stop, the process exiting, the tab closing,
+     the parent agent ending (`parentId`).
 
 ## Special cases and non-obvious decisions
 
