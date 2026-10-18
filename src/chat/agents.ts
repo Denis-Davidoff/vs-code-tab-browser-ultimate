@@ -72,7 +72,13 @@ export interface AgentBackend extends vscode.Disposable {
 	commands(): Promise<ChatCommand[]>;
 	/** The last list `commands()` (or, for Claude Code, `models()`) read; undefined before one. */
 	readonly knownCommands: readonly ChatCommand[] | undefined;
-	usage(): Promise<AgentUsage>;
+	/**
+	 * The plan's limits, read whole. `liveOnly`: only from a process already
+	 * running, never one started for it — the chat's own checks after a turn.
+	 * Every read that succeeds is also reported to the registry's
+	 * `onDidReadUsage`, as is the one detection makes along the way.
+	 */
+	usage(liveOnly?: boolean): Promise<AgentUsage>;
 	/** `priorCostUsd` is what the conversation has cost so far; see `ClaudeSession._processCost`. */
 	/**
 	 * `root`: the project folder, undefined when no local folder is open — it
@@ -130,6 +136,10 @@ export class AgentRegistry implements vscode.Disposable {
 	 * stayed "Running…" and were saved that way.
 	 */
 	public readonly onDidReplace = this._onDidReplace.event;
+
+	private readonly _onDidReadUsage = new vscode.EventEmitter<AgentUsage>();
+	/** A plan's limits read whole, by any backend — detection's read included. */
+	public readonly onDidReadUsage = this._onDidReadUsage.event;
 
 	/** `pinned`: the copy of an agent's CLI the project picked by hand, if it did. */
 	constructor(
@@ -281,7 +291,10 @@ export class AgentRegistry implements vscode.Disposable {
 		let entry = this._backends.get(id);
 		if (entry?.binary !== binary.path) {
 			this._drop(id, false);
-			const backend = id === 'claude' ? new ClaudeBackend(binary.path, this._cwd, this._browserServer, this._ownSettings) : new CodexBackend(binary.path, this._cwd, this._browserServer);
+			const seen = (usage: AgentUsage) => { if (!this._disposed) { this._onDidReadUsage.fire(usage); } };
+			const backend = id === 'claude'
+				? new ClaudeBackend(binary.path, this._cwd, this._browserServer, this._ownSettings, seen)
+				: new CodexBackend(binary.path, this._cwd, this._browserServer, seen);
 			entry = { binary: binary.path, backend };
 			this._backends.set(id, entry);
 		}
@@ -327,5 +340,6 @@ export class AgentRegistry implements vscode.Disposable {
 		this._backends.clear();
 		this._onDidChange.dispose();
 		this._onDidReplace.dispose();
+		this._onDidReadUsage.dispose();
 	}
 }

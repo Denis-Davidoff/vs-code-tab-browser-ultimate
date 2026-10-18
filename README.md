@@ -42,6 +42,12 @@ there is not the problem, the missing API is. **Measured by reading the shipped 
 
 ## Changelog
 
+**0.7.8** — Plan limits in sight. A line above the chat appears once your agent's nearest limit is
+90 % used, says when it resets, returns at every further percent and at 100 % after you close it,
+and tells you when the agent starts spending usage credits. The **U** button is coloured by how much
+of the plan is used and turns red when a limit is reached. The figures are read from what the agents
+already report, without starting extra processes.
+
 **0.7.7** — Follow-up fixes to 0.7.6. Saved logins notice an Enter sign-in again on forms whose
 button is an arrow or in another language. Connect Codex and the startup repair no longer stop at a
 config holding servers in another TOML spelling. The toolbar's Copy button in a folderless window

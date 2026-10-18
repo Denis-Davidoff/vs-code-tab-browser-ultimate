@@ -250,6 +250,7 @@ difference, in `browserController.js`, was a doc comment whose link had been upd
 - [src/chat/agentBinary.ts](src/chat/agentBinary.ts) — where `claude` and `codex` are, and which copy to use
 - [src/chat/agentProcess.ts](src/chat/agentProcess.ts) — a CLI speaking one JSON object per line
 - [src/chat/agentProtocol.ts](src/chat/agentProtocol.ts) — reading what the two CLIs say: models, efforts, usage, skills and commands, turn events (leaf, under test)
+- [src/chat/usageAlert.ts](src/chat/usageAlert.ts) — the plan-limit line above the chat: which limit, when it shows, what closing it means, when the plan is asked for (leaf, under test)
 - [src/chat/claudeAgent.ts](src/chat/claudeAgent.ts) — Claude Code over `stream-json` and its control channel
 - [src/chat/codexAgent.ts](src/chat/codexAgent.ts) — Codex over `codex app-server` JSON-RPC
 
@@ -4198,7 +4199,8 @@ What is built, and what is not yet:
 - **Built:** agent detection; agent / model / effort selectors from the CLIs themselves; a
   streaming conversation with stop; messages sent during a turn; the `+` menu (screenshot of the
   page, element from the page, page address, file); the `U` usage popup (plan limits per agent,
-  plus this chat's tokens and cost); history with resume; new chat; refresh; several
+  plus this chat's tokens and cost), the button coloured by the nearest limit and a line above
+  the chat from 90 %; history with resume; new chat; refresh; several
   conversations at once, as tabs; the agents an agent starts, listed, each stoppable on its own;
   approvals asked in the chat, with an Auto / Ask / Deny menu by category; questions with choices
   answered in a form while the turn waits; messages added to a
@@ -4213,7 +4215,7 @@ What is built, and what is not yet:
 
 Bottom to top: a toolbar row — `+`, the browser button, the agent pill, the model pill, the effort
 slider, the approval button ([approvals](#approvals-and-the-browser-tools)) and, pushed right, the agents button (only while the chat has agents — see
-[Agents the agent starts](#agents-the-agent-starts)), the context pie ([below](#the-context-pie-and-compacting)), `U` and Send / Stop — then the message box, then the conversation. The
+[Agents the agent starts](#agents-the-agent-starts)), the context pie ([below](#the-context-pie-and-compacting)), `U` (coloured by how much of the plan is used, [below](#the-plan-limit-line-and-the-colour-of-u)) and Send / Stop — then the message box, then the conversation, and above it, under the tabs, the plan-limit line while a limit is 90 % used or credits are spent. The
 browser button (icon only, a globe — `codicon-globe`, the same mark as the extension's own
 status bar item and toolbar dropdown; `codicon-browser` reads as a window) opens a new browser
 tab and does nothing else: it runs
@@ -4507,7 +4509,7 @@ refresh the samples.
 | side channel | `control_request` / `control_response`, correlated by `request_id` | ordinary requests |
 | models | `initialize` → `models[]`: `value`, `displayName`, `supportsEffort`, `supportedEffortLevels` | `model/list` → `supportedReasoningEfforts[]`, `defaultReasoningEffort`, `isDefault`, `hidden` |
 | plan usage | `get_usage` → `rate_limits.limits[]` (`percent` 0–100, `resets_at` ISO), `subscription_type` | `account/rateLimits/read` → `primary` / `secondary` (`usedPercent`, `windowDurationMins`, `resetsAt` in seconds) |
-| live usage | a `rate_limit_event` before each turn | `account/rateLimits/updated` |
+| live usage | a `rate_limit_event` after a turn's first model request — not before it, and not on every turn | `account/rateLimits/updated`, a sparse update |
 | text | `stream_event` / `content_block_delta` / `text_delta` | `item/agentMessage/delta` |
 | tokens | `result.usage`, **per turn** | `thread/tokenUsage/updated.total`, **for the thread** |
 | model / effort | launch flags `--model`, `--effort` | parameters of each `turn/start` |
@@ -4645,6 +4647,161 @@ Verified with the compiled backends against both real CLIs (a turn, `/compact`, 
 pie in headless Chrome at 42 %, 87 %, just compacted and with no window or no compaction; the
 tooltip, the question, No (nothing posted), Yes (one `compact`), a second press closing it, and a
 busy tab (tooltip shown, no question).
+
+### The plan-limit line, and the colour of `U`
+
+Asked for: a line above the chat when the nearest limit of the agent's plan is 90 % used or
+more, shown again at every further percent and at 100 % even after it was closed, and when the
+agent starts spending credits; the `U` button coloured by how much is used. The rules are
+[src/chat/usageAlert.ts](src/chat/usageAlert.ts) (leaf, under test); the host's half is the
+*usage* section of `chatView.ts`, the view's `renderUsageLevel` / `renderUsageAlert`.
+
+- **Which limit: the one closest to running out, whatever its length** (`closestLimit`). "The
+  nearest period" was read as the limit that stops the agent first — a weekly limit at 95 %
+  stops it as surely as a 5-hour one at 95 %. Switching to the shortest window is one line in
+  `closestLimit` if that is ever what is meant.
+- **For the agent of the tab in front** (`_selection().agent`): the line and the colour are about
+  the plan the next message spends. A Codex limit is not shown over a Claude conversation.
+- **Closing means "seen at this percentage, in this period"** (`closeAlert`,
+  `aiBrowser.chat.usageAlertsClosed` in `globalState` — one plan, so closed in one window is
+  closed in all; read through `readClosedAlerts`, which drops what it cannot read). Closed at
+  91 %, the line stays away at 91 % and comes back at 92 %; closed at 99 %, it comes back at
+  100 %. The percentage compared is the whole one the line names (`wholePercent`, floored), so
+  91.8 does not count as "higher" than a close at 91. Closing records every limit at 90 % or
+  more with its reset time, not only the one named — or closing "now spending credits" would
+  put "limit reached" up in its place for the same moment — and **as it was shown**: the view
+  sends the alert it showed, so a figure that arrived while the click was on its way is not
+  closed above what was on screen, and credits are closed only when the line was about them.
+- **Within one period a limit's use only grows, and a lower figure is not a reset.** Claude
+  Code's two reports disagree by a point in the same second — measured on 2.1.301, `get_usage`
+  85 and 24 against `rate_limit_event` 0.84 and 0.23, three times over — and the first version
+  read the event's lower figure as the limit resetting: it forgot the close, and the line closed
+  at 92 % came back at 91 % on the next message (breaks-silently #472). So a period is told by
+  its reset time (`laterPeriod`, ten minutes of tolerance, since `get_usage` names the same
+  reset with a second's jitter: 13:39:59.6 and 13:40:00.2): `mergeLimits` keeps a limit's higher
+  figure within one period, from either source, and `settleClosed` forgets a close only once the
+  reset time has moved on to a later period — or, with no reset time known, once the figure has
+  fallen by `resetDrop` (10 points; a real reset falls to near zero). A new period at the same
+  percentage shows the line again, before anything is settled (`closedFor`). Credits closed
+  stay closed until the limit they were spent past resets.
+- **Only the limits the latest report names are judged** (`settleClosed`'s `named`). The closes
+  are shared by every window, and a figure this window kept from an earlier report — a model's
+  own weekly limit, which a turn's report leaves out — may be older than the close another
+  window made.
+- **A limit whose reset time has passed is left out** (`currentLimits`, at every post), and
+  credits spent past it with it, unless another limit is still at 100 %. `_watchReset` posts
+  when the next reset of the agent in front passes (at most an hour ahead, then looked at
+  again), and the view refills the line's "resets in …" every half minute. Without both, the
+  line said "reached, resets in 1 h 40 min" three hours later and `U` stayed red until the next
+  message brought new figures (breaks-silently #475).
+- **The view hides a closed line at once and keeps it hidden** while a post still carries the same
+  alert (`closedUsageAlert`), so it does not flash back in the moment before the host has the
+  close. The line is built once and refilled, never rebuilt (#365): its close button must not be
+  replaced between a press and its release, and the reset time in its words moves on by itself.
+  Closed from the keyboard, the focus goes to the message box rather than to the body.
+- **The line's height is taken from the thread**, so a thread that was following its end is put
+  back at the end whenever the line comes, goes or wraps (`renderUsageAlert`). It appears while a
+  reply is on its way — Claude Code reports its limits once the turn's first model request has
+  answered — and at 61 px (a narrow side bar, or the credits wording) it put the thread past
+  `renderThread`'s 60 px "at the end", so the reply streamed out of sight for the rest of the turn
+  (breaks-silently #474).
+- **The look, as asked for**: a fixed yellow (`#ffd43b`) with black text, the same in every
+  theme so the black stays readable; the `U` of the usage button on the left (`.u-mark`, shared
+  with the button), filled black once the limit is reached or credits are spent; a close button
+  on the right. Its words name the agent, the limit, the percentage or "reached", and when it
+  resets; a click on them opens the usage popup, but not a click that ends a selection of them,
+  nor any click of a double or triple one (#353's rule — opening the popup asks every agent, and
+  starts a probe for Claude Code with no conversation running). The first click of a double click
+  arrives before the word is selected, so the open waits `multiClickMs` and is dropped if another
+  click or a selection comes, as #408's `onPlainClick` does; opening at once asked every agent
+  under someone double-clicking a word to copy it. The half-minute refill of "resets in …" skips
+  a selection in the words, which a refill would take away. `usageAlertText` is in the document
+  `mousedown` handler's list of places that do not close popups: that handler runs before the
+  click, so without it a press on the words with the popup open closed it, and the click opened
+  it again with every agent asked once more.
+- **`U`'s colour** (`usageColor`, set as `--usage-color` through the CSSOM, as the pie's fill is):
+  the foreground below 25 %, then mixed towards `charts.green` by 50 %, `charts.yellow` by 75 %,
+  `charts.orange` by 90 % and `charts.red` by 100 % (`color-mix`, so every theme has it); a limit
+  reached, or credits being spent, is a saturated red disc (`#e5141f`, `.limit-full`). Its
+  tooltip names the limit and the percentage, and so does its `aria-label`: a screen reader
+  otherwise kept the button's fixed name, and the colour says nothing there.
+
+**Where the figures come from, and how often the plan is asked.** Not often, as asked:
+
+| Source | Cost | Read as |
+|---|---|---|
+| detection | nothing extra: Claude Code's `get_usage` goes on the probe process detection already starts, Codex's `account/rateLimits/read` on the app-server detection already holds | whole |
+| a turn | nothing: Claude Code's `rate_limit_event`, Codex's `account/rateLimits/updated` | the limits it names |
+| after a turn, when `usageCheckDue` says so | one request on the process the conversation already runs (`usage(liveOnly)`), never a new one | whole |
+| the `U` popup | as before — a probe process for Claude Code when no conversation runs | whole |
+
+`usageCheckDue`: never twice inside a minute; after a big request (40 000 tokens not read from the
+cache, or three minutes); every three minutes from 80 %; otherwise every fifteen. The check runs
+two seconds after the turn ends (`usageCheckDelayMs`), since the provider counts a turn a moment
+after answering it, and at most one per agent at a time. Every whole read reaches the view
+through `AgentRegistry.onDidReadUsage`, whoever asked for it.
+
+- **Detection is not delayed by its usage read.** Claude Code: `initialize` is sent first and
+  answers in ~200 ms; `get_usage` follows on the same process and answers in ~1 s (measured on
+  2.1.301), and the probe is kept for it at most `usageProbeWaitMs` (8 s), then ended. Codex: the
+  read is started without being waited for, inside the app-server's hold.
+- **Credits** (`usingCredits` on `AgentUsage` and on the `limits` event):
+  - *Claude Code*, measured on 2.1.301: `rate_limit_event`'s `rate_limit_info` carries
+    `isUsingOverage` beside `overageStatus` and `overageEnabled` — the turn's own word, read by
+    `claudeRateLimit`. `get_usage` says only whether extra usage is on (`extra_usage.is_enabled`,
+    `spend_limit_reached`, `used_credits`), so the read guesses: on, its cap not reached, and a
+    limit **of the whole plan** at 100 % — `scope` null; a model's own weekly limit
+    (`weekly_scoped`, `scope.model`) used up leaves the other models on the plan, and counting it
+    called a user on Sonnet "spending usage credits" because Fable's limit was spent
+    (breaks-silently #473). The guess is a point high at worst (100 there can be 99 in the event),
+    so **the turn's word outranks it** (`LimitState.turnSaid`): a full read's `true` does not
+    overrule a turn that said `false`, and can still clear one that said `true` (a reset). Claude
+    Code renamed `/extra-usage` to `/usage-credits` (seen in the CLI's own answer), so the line
+    says "usage credits".
+  - *Codex*, read from the 0.162 schema, **not measured in a session that spends credits**:
+    past a limit — `ordinaryUsageAllowed: false` (the read only), `rateLimitReachedType`, or a
+    window at 100 % — with credits to spend (`hasCredits` or `unlimited`) and `spendControlReached`
+    not true. `account/rateLimits/updated` is a sparse update — the schema says a field it leaves
+    null does not clear what was read — and never carries `ordinaryUsageAllowed`, so it may only
+    *set* credits, never clear them; the next full read does — **or the limit they were spent
+    past resetting**: a report that shows a limit at 100 % reset, or its reset time passing
+    (`currentLimits`, applied to the stored figures before each merge too), ends them unless
+    another limit is still at 100 %. Without that, the update of a new period kept the old
+    `true`, and the line said "Codex is now spending credits" over a limit at 2 % — with its
+    close forgotten in the same report, the limit having reset (breaks-silently #476). Check all
+    of it against a real account when one gets there.
+  - *Claude Code*'s event comes **after a turn's first model request**, not before it, and not on
+    every turn — measured on 2.1.301: after the first request's `message_stop`, once in a turn
+    that ran a tool, and once across two turns of one process. So the figures a turn brings are a
+    moment behind its start, and the after-turn check is what keeps a long session current.
+- **Codex names its windows after their limit only when the read lists several**
+  (`rateLimitsByLimitId`), and `account/rateLimits/updated` carries one limit at a time. Read on
+  its own, the notification named its windows as the only limit's — a second "5-hour limit"
+  beside "Codex · 5-hour limit", which a close keyed by the other label would not recognise, so a
+  closed line would come back on the next turn (found by reading the schema, before it
+  shipped). `CodexBackend._namedLimits` remembers the read's shape and `codexUsage(…, named)`
+  names the notification's windows the same way (breaks-silently #471). A limit with no
+  `limitName` is named by its `limitId` — measured on 0.162: the main limit is `limitId:
+  "codex"`, `limitName: null`, so two unnamed limits would otherwise share one label. An update
+  that names neither while the read listed several (the schema allows both null) gives no
+  windows at all: they could only be named as the one limit's, which no close matches.
+- **A check after a turn that read nothing does not count** — no process running any more (a
+  turn ended by closing its tab), a request that failed: `_usageAsked` is put back, so the next
+  turn may ask. And detection's Claude Code probe, kept for its usage answer, is ended with the
+  backend (`ClaudeBackend._lent`).
+
+Verified: the rules under `npm test`; the compiled `ClaudeBackend` and `CodexBackend` against the
+real CLIs (detection answered in 234 ms and 447 ms, the usage read arrived after it, no probe
+process left behind, `usage(true)` refused with no process and answered with one); the host's
+half with a stubbed `vscode` (closed at 91.2, hidden at 91.8, shown at 92; closed at 92 from a
+full read and still closed after the turn's 0.91 and the next read's 92; a close made in one
+window kept when another window's turn report leaves the limit out; a reset forgetting the close;
+a reached limit's line and red disc gone once its reset time passed; credits; the check after a
+turn, once per minute, nothing after dispose; the turn's weight from `ChatTab`); the view in
+headless Chrome (the colour at nine levels, the red disc, the line's words for all three kinds and
+both agents, the close posted and held, focus to the message box, the text opening the popup and
+a selection of it not, the thread kept at its end while a 61 px line appears and the reply
+streams on, a 260 px side bar).
 
 ### Skills and commands: the "/" palette
 
@@ -5297,7 +5454,9 @@ old to answer `initialize` / `model/list`, is listed as unavailable with the rea
 so outright (`account/read` → no account, `requiresOpenaiAuth: true`). It runs when the view's
 webview first says `ready`, when trust is granted to a folder the view was refusing, and on
 Refresh Agents, which reveals the view first — **no CLI starts before the chat is opened**.
-Claude's probe exits as soon as it has answered. Codex's answer comes from the app-server
+Claude's probe exits once it has answered — kept at most `usageProbeWaitMs` (8 s) more for the
+plan's usage, read on the same process ([the plan-limit line](#the-plan-limit-line-and-the-colour-of-u)).
+Codex's answer comes from the app-server
 itself, which then shuts down 30 s after nothing needs it (see below) — it used to stay up for
 the rest of the window, a signed-out Codex included, for a user who might only ever chat with
 Claude. A path set in `aiBrowser.chat.<id>Path` that is not an executable says so, rather than
@@ -5654,6 +5813,9 @@ disabled until the third was answered, the answers posted, the form gone and the
   `aiBrowser.chat.recentFolders`; a separate copy and the references of a tab nothing was sent
   from in `openTabs` (`repos`), of a started one on the chat; the repositories opened lately in
   `globalState` `aiBrowser.chat.recentRepos`; their clones in the extension's global storage.
+- **The plan-limit lines closed**: `globalState` `aiBrowser.chat.usageAlertsClosed` — per agent,
+  each limit's percentage when closed and whether credits were; see
+  [The plan-limit line](#the-plan-limit-line-and-the-colour-of-u).
 - **Selection**: `globalState` `aiBrowser.chat.selection` — the last agent, a model per agent and
   an effort per `<agent>:<model>`, made valid against what was detected on every read.
 - **Open tabs**: `workspaceState` `aiBrowser.chat.openTabs` — every tab's chat id in order, which
@@ -7861,6 +8023,31 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
 470. **Clearing everything when the answer carried a part** → `browser_console` with `clear`
      emptied the buffer and the browser's store, then cut the answer to its newest lines, so the
      older ones it said it had "left out" were gone. Clear only what was returned.
+471. **Two sources of one figure that name it differently** → Codex's read names its windows
+     after their limit when it lists several, and the `updated` notification, carrying one
+     limit, would not; a close keyed by one label never matches the other, and the closed
+     plan-limit line comes back on the next turn. Name them the same way in both
+     (`_namedLimits`).
+472. **Two sources of one figure that round differently, the lower read as a reset** → Claude
+     Code's `get_usage` says 85 where the turn's `rate_limit_event` says 0.84 in the same second,
+     and a close forgotten whenever the figure fell came undone on the next message: the line
+     closed at 92 % came back at 91 %. Tell a reset by the reset time moving on, and keep a
+     limit's higher figure within one period.
+473. **A per-model limit read as the plan's** → `get_usage` lists a model's own weekly limit
+     (`weekly_scoped`) beside the plan's, and "extra usage on and any limit at 100 %" called a
+     user on another model "spending usage credits". Only a limit with no `scope` stops the plan.
+474. **An element above a scrolling list that changes height after the list measured its end** →
+     the thread decides "following the end" as under 60 px from it; a 61 px line appearing just
+     after a send put it past that, and the reply streamed out of sight for the rest of the turn.
+     Measure the end before the change and put it back after.
+475. **A figure kept past its reset time** → nothing new arrives when a limit resets, so the line
+     said "reached, resets in 1 h 40 min" hours later and `U` stayed red. Drop what has reset at
+     every post, and post when the next reset passes.
+476. **A flag one source can set and only another can clear** → Codex's sparse update says when
+     credits are spent and never that they stopped, so after a reset the stored `true` came back
+     with the first report of the new period — "spending credits" over a limit at 2 %, until a
+     full read up to fifteen minutes later. Let the event that ends the condition (the limit
+     resetting) clear the flag in the stored state, not only in what is shown.
 
 ## Special cases and non-obvious decisions
 

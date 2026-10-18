@@ -342,6 +342,8 @@ export function windowLabel(minutes: number): string {
  */
 export function claudeUsage(response: unknown): AgentUsage {
 	const usage: { plan?: string; windows: UsageWindow[]; notes: string[] } = { windows: [], notes: [] };
+	/** The limits of the whole plan, not of one model: only those send a message to extra usage. */
+	const planWide: UsageWindow[] = [];
 	if (!isRecord(response)) {
 		return { agent: 'claude', ...usage, error: 'Claude Code returned no usage.' };
 	}
@@ -356,29 +358,48 @@ export function claudeUsage(response: unknown): AgentUsage {
 			if (!isRecord(row) || typeof row.percent !== 'number') {
 				continue;
 			}
-			usage.windows.push({
+			const window = {
 				label: claudeLimitLabel(row),
 				usedPercent: row.percent,
 				resetsAt: isoTime(row.resets_at),
-			});
+			};
+			usage.windows.push(window);
+			// A model's own weekly limit (`weekly_scoped`, `scope.model`) used up
+			// leaves the other models on the plan.
+			if (row.scope === null || row.scope === undefined) {
+				planWide.push(window);
+			}
 		}
 	} else {
 		for (const [key, label] of [['five_hour', '5-hour limit'], ['seven_day', 'Weekly limit']] as const) {
 			const w = limits[key];
 			if (isRecord(w) && typeof w.utilization === 'number') {
-				usage.windows.push({ label, usedPercent: w.utilization, resetsAt: isoTime(w.resets_at) });
+				const window = { label, usedPercent: w.utilization, resetsAt: isoTime(w.resets_at) };
+				usage.windows.push(window);
+				planWide.push(window);
 			}
 		}
 	}
 	const extra = limits && isRecord(limits.extra_usage) ? limits.extra_usage : undefined;
+	// Spending extra usage now: it is on, its own cap is not reached, and a limit
+	// of the whole plan is — which is when Claude Code bills past the plan. A
+	// guess: measured on 2.1.301, `get_usage` says only whether it is on, and
+	// reads a point higher than the turn's own report (85 against 0.84), so 100
+	// here can be 99 there. Whether a turn spends it comes with
+	// `rate_limit_event`'s `isUsingOverage` (`claudeRateLimit`), which outranks
+	// this (`LimitState.turnSaid`).
+	const usingCredits = extra?.is_enabled === true && extra.spend_limit_reached !== true && planWide.some(w => w.usedPercent >= 100);
 	if (extra?.is_enabled === true) {
 		const spend = limits && isRecord(limits.spend) && isRecord(limits.spend.used) ? limits.spend.used : undefined;
 		const amount = spend && typeof spend.amount_minor === 'number' && typeof spend.exponent === 'number'
 			? `${(spend.amount_minor / 10 ** spend.exponent).toFixed(spend.exponent)} ${typeof spend.currency === 'string' ? spend.currency : ''}`.trim()
 			: undefined;
 		usage.notes.push(amount ? `Extra usage is on — ${amount} used this month.` : 'Extra usage is on.');
+		if (usingCredits) {
+			usage.notes.push('A plan limit is reached: messages now spend usage credits (extra usage).');
+		}
 	}
-	return { agent: 'claude', ...usage };
+	return { agent: 'claude', ...usage, usingCredits };
 }
 
 function claudeLimitLabel(row: Record<string, unknown>): string {
@@ -394,18 +415,29 @@ function claudeLimitLabel(row: Record<string, unknown>): string {
 }
 
 /**
- * The windows in a Claude Code `rate_limit_event`, sent before every turn.
+ * The windows in a Claude Code `rate_limit_event`. Measured on 2.1.301: sent
+ * after a turn's first model request, not before it, and not on every turn.
  *
  * **Its `utilization` is a fraction, not a percentage** — 0.06 means 6%, while
  * `get_usage` reports the same window on a 0–100 scale. Read with the other
  * function's scale and every bar shows 0%.
  */
 export function claudeRateLimitWindows(event: unknown): UsageWindow[] | undefined {
+	return claudeRateLimit(event)?.windows;
+}
+
+/**
+ * A `rate_limit_event` whole: its windows, and whether this turn spends extra
+ * usage — `isUsingOverage`, measured on 2.1.301 beside `overageStatus` and
+ * `overageEnabled`. Absent when the event carries no windows.
+ */
+export function claudeRateLimit(event: unknown): { windows: UsageWindow[]; usingCredits?: boolean } | undefined {
 	const info = isRecord(event) && isRecord(event.rate_limit_info) ? event.rate_limit_info : undefined;
 	const windows = info && isRecord(info.unifiedWindows) ? info.unifiedWindows : undefined;
 	if (!windows) {
 		return undefined;
 	}
+	const usingCredits = typeof info?.isUsingOverage === 'boolean' ? info.isUsingOverage : undefined;
 	const out: UsageWindow[] = [];
 	for (const [key, label] of [['five_hour', '5-hour limit'], ['seven_day', 'Weekly limit']] as const) {
 		const w = windows[key];
@@ -417,7 +449,7 @@ export function claudeRateLimitWindows(event: unknown): UsageWindow[] | undefine
 			});
 		}
 	}
-	return out;
+	return { windows: out, usingCredits };
 }
 
 /**
@@ -426,15 +458,25 @@ export function claudeRateLimitWindows(event: unknown): UsageWindow[] | undefine
  * read adds `rateLimitsByLimitId` when there is more than one limit.
  * `usedPercent` is 0–100 and `resetsAt` is in seconds.
  */
-export function codexUsage(response: unknown, plan?: string): AgentUsage {
+/**
+ * `named`: whether the windows are named after their limit. Undefined: when
+ * the answer lists several. The `updated` notification carries one limit, and
+ * its backend says whether the last read listed several.
+ */
+export function codexUsage(response: unknown, plan?: string, named?: boolean): AgentUsage {
 	const windows: UsageWindow[] = [];
 	const notes: string[] = [];
+	let usingCredits = false;
 	if (!isRecord(response)) {
 		return { agent: 'codex', plan, windows, notes, error: 'Codex returned no usage.' };
 	}
+	// `ordinaryUsageAllowed` false: the plan's own usage is used up (the read
+	// carries it; the `updated` notification does not, and a limit at 100 %
+	// stands in for it there).
+	const ordinaryBlocked = response.ordinaryUsageAllowed === false;
 	const byId = isRecord(response.rateLimitsByLimitId) ? Object.values(response.rateLimitsByLimitId) : [];
 	const limits = byId.length ? byId : [response.rateLimits];
-	const named = limits.length > 1;
+	named ??= limits.length > 1;
 	for (const limit of limits) {
 		if (!isRecord(limit)) {
 			continue;
@@ -442,7 +484,11 @@ export function codexUsage(response: unknown, plan?: string): AgentUsage {
 		if (!plan && typeof limit.planType === 'string') {
 			plan = limit.planType;
 		}
-		const prefix = named && typeof limit.limitName === 'string' && limit.limitName ? `${limit.limitName} · ` : '';
+		// Measured on 0.162: the main limit's `limitName` is null, its `limitId`
+		// "codex"; the id keeps two unnamed limits from sharing a label.
+		const name = typeof limit.limitName === 'string' && limit.limitName ? limit.limitName
+			: typeof limit.limitId === 'string' && limit.limitId ? limit.limitId : '';
+		const prefix = named && name ? `${name} · ` : '';
 		for (const key of ['primary', 'secondary']) {
 			const w = limit[key];
 			if (isRecord(w) && typeof w.usedPercent === 'number') {
@@ -462,8 +508,19 @@ export function codexUsage(response: unknown, plan?: string): AgentUsage {
 		if (limit.rateLimitReachedType) {
 			notes.push('A limit has been reached.');
 		}
+		// Past a limit with credits to spend, and no spend cap reached: Codex
+		// goes on by spending them. Read from the schema of 0.162 and a read with
+		// nothing spent; a session that actually spends credits was not measured.
+		const full = (w: unknown) => isRecord(w) && typeof w.usedPercent === 'number' && w.usedPercent >= 100;
+		const reached = ordinaryBlocked || !!limit.rateLimitReachedType || full(limit.primary) || full(limit.secondary);
+		if (reached && (credits?.hasCredits === true || credits?.unlimited === true) && limit.spendControlReached !== true) {
+			usingCredits = true;
+		}
 	}
-	return { agent: 'codex', plan, windows, notes };
+	if (usingCredits) {
+		notes.push('A plan limit is reached: Codex now spends credits.');
+	}
+	return { agent: 'codex', plan, windows, notes, usingCredits };
 }
 
 /* ---------------------------------------------------------------- events */
@@ -512,7 +569,7 @@ export type AgentEvent =
 	| { readonly type: 'session'; readonly id: string }
 	| { readonly type: 'turnEnd'; readonly error?: string }
 	| { readonly type: 'tokens'; readonly input: number; readonly output: number; readonly cached: number; readonly costUsd?: number; readonly cumulative: boolean }
-	| { readonly type: 'limits'; readonly windows: readonly UsageWindow[] }
+	| { readonly type: 'limits'; readonly windows: readonly UsageWindow[]; readonly usingCredits?: boolean }
 	/**
 	 * How full the conversation's context window is: `used` tokens the next
 	 * request will carry, out of `window`. Either may come alone — Claude Code
@@ -670,8 +727,10 @@ export function claudeEvents(message: Record<string, unknown>, tasks?: Map<strin
 		}
 
 		case 'rate_limit_event': {
-			const windows = claudeRateLimitWindows(message);
-			return windows?.length ? [{ type: 'limits', windows }] : [];
+			const limit = claudeRateLimit(message);
+			return limit && (limit.windows.length || limit.usingCredits !== undefined)
+				? [{ type: 'limits', windows: limit.windows, usingCredits: limit.usingCredits }]
+				: [];
 		}
 
 		case 'result': {

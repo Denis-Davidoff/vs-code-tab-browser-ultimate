@@ -106,7 +106,17 @@ export class CodexBackend implements AgentBackend {
 		private readonly _binary: string,
 		private readonly _cwd: () => string,
 		private readonly _browserServer: () => BrowserServer | undefined = () => undefined,
+		/** A plan read whole; the chat keeps its limit line from these. */
+		private readonly _sawUsage: (usage: AgentUsage) => void = () => { },
 	) { }
+
+	/**
+	 * Whether the last read listed several limits, so their windows are named
+	 * after them. `account/rateLimits/updated` carries one limit at a time, and
+	 * read on its own it would be named as the only one — a second line beside
+	 * the read's, which a closed alert would not recognise.
+	 */
+	private _namedLimits = false;
 
 	/**
 	 * A thread's `config` override: the browser server, so the thread has the
@@ -162,7 +172,11 @@ export class CodexBackend implements AgentBackend {
 				throw new Error(vscode.l10n.t("Codex is not signed in. Run `codex login` in a terminal, then refresh."));
 			}
 			this._plan = typeof account?.account?.planType === 'string' ? account.account.planType : undefined;
-			return codexModels(await this.request('model/list', {}));
+			const models = codexModels(await this.request('model/list', {}));
+			// The plan's usage while the server is up anyway, so the chat knows how
+			// near a limit is before the first message; detection does not wait.
+			void this.usage(true);
+			return models;
 		});
 	}
 
@@ -185,12 +199,27 @@ export class CodexBackend implements AgentBackend {
 		});
 	}
 
-	public async usage(): Promise<AgentUsage> {
+	/** `liveOnly`: never start the app-server for it; the chat's own checks after a turn ask this way. */
+	public async usage(liveOnly = false): Promise<AgentUsage> {
+		if (liveOnly && (!this._process || this._process.exited)) {
+			return { agent: 'codex', windows: [], notes: [], error: 'Codex is not running.' };
+		}
 		try {
-			return await this._held(async () => {
+			const usage = await this._held(async () => {
 				await this.ready();
-				return codexUsage(await this.request('account/rateLimits/read', undefined), this._plan);
+				const response = await this.request('account/rateLimits/read', undefined) as { rateLimitsByLimitId?: unknown } | undefined;
+				const byId = response?.rateLimitsByLimitId;
+				this._namedLimits = !!byId && typeof byId === 'object' && Object.keys(byId).length > 1;
+				return codexUsage(response, this._plan);
 			});
+			if (!usage.error) {
+				try {
+					this._sawUsage(usage);
+				} catch {
+					// The chat's bookkeeping; the read itself succeeded.
+				}
+			}
+			return usage;
 		} catch (err) {
 			return { agent: 'codex', windows: [], notes: [], error: err instanceof Error ? err.message : String(err) };
 		}
@@ -384,9 +413,20 @@ export class CodexBackend implements AgentBackend {
 		}
 
 		if (method === 'account/rateLimits/updated') {
-			const usage = codexUsage(params, this._plan);
+			const usage = codexUsage(params, this._plan, this._namedLimits);
+			// The notification is a sparse update — the 0.162 schema says a field
+			// it leaves null does not clear what was read — and it never carries
+			// `ordinaryUsageAllowed`, so it can say credits are spent but not that
+			// they stopped: the next full read says that.
+			const usingCredits = usage.usingCredits || undefined;
+			// With several limits a window is named after its limit, and a sparse
+			// update may leave both the name and the id null: its windows could only
+			// be named as the one limit's, a second label a close does not match
+			// (#471). They wait for the next full read.
+			const snapshot = (params as { rateLimits?: { limitName?: unknown; limitId?: unknown } }).rateLimits;
+			const unnamed = this._namedLimits && !snapshot?.limitName && !snapshot?.limitId;
 			for (const s of this._all) {
-				s.emit({ type: 'limits', windows: usage.windows });
+				s.emit({ type: 'limits', windows: unnamed ? [] : usage.windows, usingCredits });
 			}
 			return;
 		}

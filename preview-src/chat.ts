@@ -24,7 +24,7 @@
  */
 
 import type {
-	AgentId, AgentQuestion, AgentUsage, ApprovalEntry, ToolbarParam, ToolbarResult, ToolbarRun, ToolbarSkill, ApprovalKind, ApprovalMode, AttachmentKind, ChatCommand, ChatEntry, ChatStats, ChatSummary, ChatTabStatus, ChatTabSummary, ChatViewState, HostToView, RepoMode, ToolEntry, ViewToHost, WorkdirFolder,
+	AgentId, AgentQuestion, AgentUsage, ApprovalEntry, UsageAlert, ToolbarParam, ToolbarResult, ToolbarRun, ToolbarSkill, ApprovalKind, ApprovalMode, AttachmentKind, ChatCommand, ChatEntry, ChatStats, ChatSummary, ChatTabStatus, ChatTabSummary, ChatViewState, HostToView, RepoMode, ToolEntry, ViewToHost, WorkdirFolder,
 } from '../src/chat/chatProtocol';
 import { baseName, searchPaths } from './fileRank';
 // Every codicon the bundled font has, one per line (`name,char,code`); bundled
@@ -130,7 +130,8 @@ effortRange.min = '0';
 effortRange.step = '1';
 const effortLabel = el('span', { class: 'effort-label' });
 const effortBox = el('label', { class: 'effort', title: 'Effort' }, effortRange, effortLabel);
-const usageButton = button([el('span', { text: 'U' })], { class: 'ghost round usage-button', title: "Usage — your plan's limits for each agent, and this chat's tokens and cost" });
+const usageTitle = "Usage — your plan's limits for each agent, and this chat's tokens and cost";
+const usageButton = button([el('span', { class: 'u-mark', text: 'U' })], { class: 'ghost round usage-button', title: usageTitle });
 const agentsButton = button([], { class: 'pill agents-button', title: 'Agents' });
 /** How full the conversation's context is, as a pie that fills; a click compacts it. */
 const contextPie = el('span', { class: 'context-pie' });
@@ -173,6 +174,17 @@ questionDock.hidden = true;
 const footer = el('div', { class: 'footer' }, questionDock, switchCard, skillBar, composer);
 /** One tab per open conversation, above the thread. */
 const tabStrip = el('div', { class: 'tab-strip' });
+/**
+ * A plan limit near its end, reached, or credits being spent, for the agent of
+ * the tab in front: a line between the tabs and the thread. Built once and
+ * refilled; see `renderUsageAlert`.
+ */
+const usageAlertText = el('span', { class: 'usage-alert-text' });
+const usageAlertClose = button([icon('close')], { class: 'usage-alert-close' });
+const usageAlertBar = el('div', { class: 'usage-alert' },
+	el('span', { class: 'u-mark', text: 'U' }), usageAlertText, usageAlertClose);
+usageAlertBar.hidden = true;
+usageAlertBar.setAttribute('role', 'status');
 
 const menu = el('div', { class: 'popup menu' });
 const usagePopup = el('div', { class: 'popup usage-popup' });
@@ -190,7 +202,7 @@ const agentsPanel = el('div', { class: 'history-panel agents-panel' });
 /** Which copy of each agent's CLI this project uses: opened from the gear in the agent menu. */
 const agentAppsPanel = el('div', { class: 'history-panel agent-apps' });
 
-app.append(tabStrip, thread, blocked, footer, menu, usagePopup, approvalPopup, palette, workdirPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel);
+app.append(tabStrip, usageAlertBar, thread, blocked, footer, menu, usagePopup, approvalPopup, palette, workdirPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel);
 
 /* ---------------------------------------------------------------- state */
 
@@ -389,6 +401,8 @@ function render(): void {
 	renderApproveToggle(state);
 	renderSend();
 	renderContext(state);
+	renderUsageLevel(state);
+	renderUsageAlert(state);
 	renderAgents(state);
 	renderSkillBar(state);
 	renderPalette(state);
@@ -3161,7 +3175,7 @@ document.addEventListener('mousedown', event => {
 		}
 		return;
 	}
-	if (![menu, usagePopup, approvalPopup, palette, workdirPopup, paramsPopup, skillBar, historyPanel, agentsPanel, agentAppsPanel, plusButton, usageButton, agentsButton, agentPill, modelPill, approveToggle, slashButton, workdirButton, contextButton].some(n => n.contains(target))) {
+	if (![menu, usagePopup, approvalPopup, palette, workdirPopup, paramsPopup, skillBar, historyPanel, agentsPanel, agentAppsPanel, plusButton, usageButton, usageAlertText, agentsButton, agentPill, modelPill, approveToggle, slashButton, workdirButton, contextButton].some(n => n.contains(target))) {
 		closePopups();
 	}
 });
@@ -5285,6 +5299,180 @@ function renderUsage(usage: readonly AgentUsage[], stats: ChatStats | undefined,
 	}
 	usagePopup.replaceChildren(...sections);
 }
+
+/**
+ * The `U` button takes the colour of the limit closest to running out (asked
+ * for): the foreground below 25 %, then towards green by 50 %, yellow by 75 %,
+ * orange by 90 % and red by 100 %; a limit reached, or credits being spent, is
+ * a red disc. Set through the CSSOM, which the CSP allows, as the pie's fill is.
+ */
+const usageStops: readonly (readonly [number, string])[] = [
+	[25, 'var(--vscode-foreground)'],
+	[50, 'var(--vscode-charts-green)'],
+	[75, 'var(--vscode-charts-yellow)'],
+	[90, 'var(--vscode-charts-orange)'],
+	[100, 'var(--vscode-charts-red)'],
+];
+
+function usageColor(percent: number): string {
+	if (percent < usageStops[0][0]) {
+		return usageStops[0][1];
+	}
+	for (let i = 1; i < usageStops.length; i++) {
+		const [to, toColor] = usageStops[i];
+		if (percent < to) {
+			const [from, fromColor] = usageStops[i - 1];
+			const share = Math.round((percent - from) / (to - from) * 100);
+			return `color-mix(in srgb, ${toColor} ${share}%, ${fromColor})`;
+		}
+	}
+	return usageStops[usageStops.length - 1][1];
+}
+
+function renderUsageLevel(s: ChatViewState): void {
+	const u = s.usage;
+	const full = !!u && (u.usingCredits || u.percent >= 100);
+	const color = u ? usageColor(u.percent) : '';
+	if (usageButton.style.getPropertyValue('--usage-color') !== color) {
+		if (color) {
+			usageButton.style.setProperty('--usage-color', color);
+		} else {
+			usageButton.style.removeProperty('--usage-color');
+		}
+	}
+	usageButton.classList.toggle('level', !!u);
+	usageButton.classList.toggle('limit-full', full);
+	const name = u && agentName(s, s.selection.agent);
+	const title = !u ? usageTitle
+		: `${usageTitle}
+${name ? `${name}: ` : ''}${u.label} — ${Math.floor(Math.min(100, u.percent))}% used${u.usingCredits ? ', now spending credits' : ''}`;
+	if (usageButton.title !== title) {
+		usageButton.title = title;
+		// What a screen reader names it by: the colour alone says nothing there.
+		usageButton.setAttribute('aria-label', title);
+	}
+}
+
+function agentName(s: ChatViewState, id: AgentId | undefined): string | undefined {
+	return id ? s.agents.find(a => a.id === id)?.name ?? id : undefined;
+}
+
+/** The line's words for an alert: which agent, which limit, how far, and when it resets. */
+function usageAlertWords(s: ChatViewState, a: UsageAlert): string {
+	const name = agentName(s, a.agent) ?? a.agent;
+	const where = a.percent >= 100 ? `${a.label} reached` : `${a.label} ${a.percent}% used`;
+	const reset = a.resetsAt ? `, resets ${resetText(a.resetsAt)}` : '';
+	if (a.kind === 'credits') {
+		return `${name} is now spending ${a.agent === 'claude' ? 'usage credits' : 'credits'} — ${where}${reset}`;
+	}
+	return `${name}: ${where}${reset}`;
+}
+
+/** The alert the user closed, hidden until the host's state stops carrying it. */
+let closedUsageAlert: string | undefined;
+
+function alertKey(a: UsageAlert): string {
+	return `${a.agent}|${a.kind}|${a.label}|${a.percent}`;
+}
+
+/**
+ * The line is refilled in place, never rebuilt: its close button must not be
+ * replaced between a press and its release (#365), and the reset time in its
+ * words moves on by itself (refilled every half minute, below).
+ *
+ * The line takes its height from the thread, so a thread that was following
+ * its end is put back at the end when the line comes, goes or wraps: shown
+ * while a reply streams (Claude Code reports its limits with a turn's first
+ * model request, Codex as a turn goes), 61 px of
+ * line left the reply streaming out of sight, `renderThread` reading the
+ * thread as scrolled up from then on.
+ */
+function renderUsageAlert(s: ChatViewState): void {
+	const atEnd = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 60;
+	const height = usageAlertBar.hidden ? 0 : usageAlertBar.offsetHeight;
+	fillUsageAlert(s);
+	if (atEnd && (usageAlertBar.hidden ? 0 : usageAlertBar.offsetHeight) !== height) {
+		thread.scrollTop = thread.scrollHeight;
+	}
+}
+
+function fillUsageAlert(s: ChatViewState): void {
+	const a = s.usageAlert;
+	if (closedUsageAlert && (!a || alertKey(a) !== closedUsageAlert)) {
+		closedUsageAlert = undefined;
+	}
+	const show = !!a && !s.blocked && closedUsageAlert === undefined;
+	usageAlertBar.hidden = !show;
+	if (!show || !a) {
+		return;
+	}
+	const words = usageAlertWords(s, a);
+	if (usageAlertText.textContent !== words) {
+		usageAlertText.textContent = words;
+	}
+	usageAlertBar.classList.toggle('reached', a.kind !== 'high');
+	const closeTip = a.kind === 'credits'
+		? 'Close — it comes back when credits are spent again after this limit has reset'
+		: a.percent >= 100
+			? 'Close — it comes back once this limit has reset and climbs past 90% again'
+			: 'Close — it comes back when this limit goes up by another percent, and at 100%';
+	if (usageAlertClose.title !== closeTip) {
+		usageAlertClose.title = closeTip;
+		usageAlertClose.setAttribute('aria-label', closeTip);
+	}
+	usageAlertText.title = 'Show your plan\'s limits';
+}
+
+usageAlertClose.addEventListener('click', () => {
+	const a = state?.usageAlert;
+	if (!a || !state) {
+		return;
+	}
+	// Closed from the keyboard, the focus would fall to the body with the button.
+	const hadFocus = document.activeElement === usageAlertClose;
+	closedUsageAlert = alertKey(a);
+	renderUsageAlert(state);
+	post({ type: 'dismissUsageAlert', alert: a });
+	if (hadFocus) {
+		input.focus();
+	}
+});
+
+/** Whether a selection lies in the line's words. */
+function usageAlertSelected(): boolean {
+	const selection = window.getSelection();
+	return !!selection && !selection.isCollapsed && selection.containsNode(usageAlertText, true);
+}
+
+/** The popup the words open, waiting out the double-click window (#408's rule). */
+let usageAlertOpen: ReturnType<typeof setTimeout> | undefined;
+
+// Not on a click that ends a selection of its words (#353), nor on any click of
+// a double or triple one: opening the popup asks every agent for its usage, and
+// starts a probe for Claude Code with no conversation running. The first click
+// of a double click arrives before the word is selected, so the open waits
+// `multiClickMs` and is dropped if another click or a selection comes.
+usageAlertText.addEventListener('click', event => {
+	clearTimeout(usageAlertOpen);
+	usageAlertOpen = undefined;
+	if (event.detail > 1 || usageAlertSelected()) {
+		return;
+	}
+	usageAlertOpen = setTimeout(() => {
+		usageAlertOpen = undefined;
+		if (!usageAlertSelected() && !usageAlertBar.hidden && !usagePopup.classList.contains('open')) {
+			usageButton.click();
+		}
+	}, multiClickMs);
+});
+
+// "Resets in 12 min" moves on with nothing posted; the host posts when a reset
+// passes. Not while the words are selected: refilling them takes the selection.
+setInterval(() => {
+	if (state && !usageAlertBar.hidden && !usageAlertSelected()) {
+		renderUsageAlert(state);
+	}
+}, 30_000);
 
 function resetText(at: number): string {
 	const minutes = Math.round((at - Date.now()) / 60000);

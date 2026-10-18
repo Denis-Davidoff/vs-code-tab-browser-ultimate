@@ -14,6 +14,11 @@ src/chat/news.ts — see "The AI Browser chat" in CLAUDE.md.
 
 Browse, debug and test your pages in VS Code's own browser — and let Claude Code or Codex see them, click through them and take screenshots, right inside the editor.
 
+## 0.7.8 — 2026-10-18
+- A **plan-limit line** above the chat when your agent's nearest limit is 90 % used: it names the limit and when it resets, comes back at every further percent and at 100 % after you close it, and says so when the agent starts spending usage credits; click it to open the usage popup.
+- **U** is coloured by how much of your plan is used — green, yellow, orange, red — and turns into a red disc once a limit is reached or credits are being spent.
+- Your plan's limits stay current without starting anything extra: they are read when the agents are detected, from each turn's own report, and now and then after a turn on the process the conversation already runs.
+
 ## 0.7.7 — 2026-10-17
 - Saved logins: signing in with **Enter** on a form whose button is an arrow or labelled in another language is noticed again, so the offer to save comes up; a save from an offer withdrawn meanwhile no longer says "Saved" before it is undone.
 - Connect Codex and the startup repair work again in a `config.toml` that also holds servers written as `[mcp_servers]` keys; only a clash with our own entry is left alone.

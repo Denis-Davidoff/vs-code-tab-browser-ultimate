@@ -9,7 +9,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { suite, test } from 'node:test';
 import {
-	LineSplitter, chatTitle, claudeApproval, claudeApprovalAnswer, claudeContextWindow, claudeEvents, claudeModels, claudeRateLimitWindows, claudeUsage,
+	LineSplitter, chatTitle, claudeApproval, claudeApprovalAnswer, claudeContextWindow, claudeEvents, claudeModels, claudeRateLimit, claudeRateLimitWindows, claudeUsage,
 	claudeCommands, claudeTool, codexAgentThreadEvents, codexSkillItems, codexSkills, codexApproval, codexApprovalAnswer, codexEvents, codexPatchPaths, codexQuestions, outsideProject, questionSkipped, validAnswers, codexModels, codexUsage, compareCliVersions, parseCliVersion, parseLine, toolDetail, unwrapShell, windowLabel,
 } from './agentProtocol.ts';
 
@@ -142,6 +142,58 @@ suite('usage', () => {
 		]);
 	});
 
+	test('Claude: a limit reached with extra usage on spends it, unless its own cap is reached', () => {
+		const at = (extra: Record<string, unknown>, percent: number) => claudeUsage({
+			rate_limits: { limits: [{ kind: 'session', percent }, { kind: 'weekly_all', percent: 40 }], extra_usage: extra },
+		});
+		assert.strictEqual(at({ is_enabled: true }, 100).usingCredits, true);
+		assert.ok(at({ is_enabled: true }, 100).notes.some(n => n.includes('spend usage credits')));
+		assert.strictEqual(at({ is_enabled: true }, 99).usingCredits, false);
+		assert.strictEqual(at({ is_enabled: true, spend_limit_reached: true }, 100).usingCredits, false);
+		assert.strictEqual(at({ is_enabled: false }, 100).usingCredits, false);
+	});
+
+	test("Claude: one model's own weekly limit used up does not mean extra usage is spent", () => {
+		// The shape measured on 2.1.301: `scope` null on the plan's limits, a model on a scoped one.
+		const usage = claudeUsage({
+			rate_limits: {
+				limits: [
+					{ kind: 'session', percent: 33, scope: null },
+					{ kind: 'weekly_all', percent: 86, scope: null },
+					{ kind: 'weekly_scoped', percent: 100, scope: { model: { id: null, display_name: 'Fable' }, surface: null } },
+				],
+				extra_usage: { is_enabled: true, spend_limit_reached: false },
+			},
+		});
+		assert.strictEqual(usage.usingCredits, false);
+		assert.ok(usage.windows.some(w => w.label === 'Weekly · Fable' && w.usedPercent === 100));
+	});
+
+	test('Claude: the rate_limit_event says whether this turn spends extra usage', () => {
+		// As measured on 2.1.301, beside the windows.
+		const event = (info: Record<string, unknown>) => ({
+			type: 'rate_limit_event',
+			rate_limit_info: { status: 'allowed', rateLimitType: 'five_hour', overageStatus: 'allowed', overageEnabled: true, unifiedWindows: { five_hour: { utilization: 1 } }, ...info },
+		});
+		assert.strictEqual(claudeRateLimit(event({ isUsingOverage: true }))?.usingCredits, true);
+		assert.strictEqual(claudeRateLimit(event({ isUsingOverage: false }))?.usingCredits, false);
+		assert.strictEqual(claudeRateLimit(event({}))?.usingCredits, undefined);
+		assert.strictEqual(claudeRateLimit({ type: 'rate_limit_event', rate_limit_info: { isUsingOverage: true } }), undefined);
+	});
+
+	test('Codex: past a limit with credits to spend, and no spend cap, it spends them', () => {
+		const read = (rateLimits: Record<string, unknown>, ordinaryUsageAllowed = true) => codexUsage({
+			ordinaryUsageAllowed,
+			rateLimits: { primary: { usedPercent: 30, windowDurationMins: 300 }, credits: { hasCredits: true, unlimited: false, balance: '12' }, ...rateLimits },
+		});
+		assert.strictEqual(read({}).usingCredits, false);
+		assert.strictEqual(read({}, false).usingCredits, true);
+		assert.strictEqual(read({ primary: { usedPercent: 100, windowDurationMins: 300 } }).usingCredits, true);
+		assert.strictEqual(read({ rateLimitReachedType: 'primary' }).usingCredits, true);
+		assert.strictEqual(read({ spendControlReached: true }, false).usingCredits, false);
+		assert.strictEqual(read({ credits: { hasCredits: false, unlimited: false, balance: '0' } }, false).usingCredits, false);
+	});
+
 	test('Codex: both windows, labelled by length, with reset times in seconds', () => {
 		const usage = codexUsage({
 			rateLimits: { primary: { usedPercent: 12, windowDurationMins: 300, resetsAt: 1792156873 }, secondary: { usedPercent: 40, windowDurationMins: 10080 }, planType: 'plus', credits: { hasCredits: false, unlimited: false, balance: '0' } },
@@ -160,6 +212,19 @@ suite('usage', () => {
 			},
 		});
 		assert.deepStrictEqual(usage.windows.map(w => w.label), ['Codex · 5-hour limit', 'Reviews · 1-day limit']);
+	});
+
+	test('Codex: a limit with no name is named by its id, as the main one is (measured: limitId "codex", limitName null)', () => {
+		const usage = codexUsage({
+			rateLimitsByLimitId: {
+				codex: { limitId: 'codex', limitName: null, primary: { usedPercent: 1, windowDurationMins: 300 } },
+				other: { limitId: 'other', limitName: null, primary: { usedPercent: 2, windowDurationMins: 300 } },
+			},
+		});
+		assert.deepStrictEqual(usage.windows.map(w => w.label), ['codex · 5-hour limit', 'other · 5-hour limit']);
+		// The update carries one of them; its backend says the read listed several.
+		const update = codexUsage({ rateLimits: { limitId: 'codex', limitName: null, primary: { usedPercent: 3, windowDurationMins: 300 } } }, undefined, true);
+		assert.deepStrictEqual(update.windows.map(w => w.label), ['codex · 5-hour limit']);
 	});
 
 	test('windowLabel names the lengths the CLIs use', () => {
@@ -292,8 +357,8 @@ suite('claudeEvents', () => {
 	});
 
 	test('a rate limit event becomes limits', () => {
-		const events = claudeEvents({ type: 'rate_limit_event', rate_limit_info: { unifiedWindows: { five_hour: { utilization: 0.5 } } } });
-		assert.strictEqual(events[0].type, 'limits');
+		const events = claudeEvents({ type: 'rate_limit_event', rate_limit_info: { isUsingOverage: false, unifiedWindows: { five_hour: { utilization: 0.5 } } } });
+		assert.deepStrictEqual(events, [{ type: 'limits', windows: [{ label: '5-hour limit', usedPercent: 50, resetsAt: undefined }], usingCredits: false }]);
 	});
 });
 

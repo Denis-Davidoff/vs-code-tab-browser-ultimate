@@ -22,7 +22,7 @@ import { savePng } from '../browser/clipboardImage';
 import type { BrowserController } from '../browser/browserController';
 import type {
 	AgentId, AgentUsage, ApprovalMode, AttachmentKind, ChatSummary,
-	ChatNews, ChatTabSummary, ChatViewState, HostToView, RepoMode, Selection, ToolbarRun, ToolbarSkill, UsageWindow, ViewToHost, WorkdirFolder, WorkdirState,
+	ChatNews, ChatTabSummary, ChatViewState, HostToView, RepoMode, Selection, ToolbarRun, ToolbarSkill, UsageAlert, UsageWindow, ViewToHost, WorkdirFolder, WorkdirState,
 } from './chatProtocol';
 import { pickElementContext, pickForChat } from '../elements/elementPicker';
 import { parseNews } from './news';
@@ -33,6 +33,7 @@ import { pageTitle } from '../translate/translateText';
 import { generateUuid } from '../core/uuid';
 import { runRowPrefix, ToolbarRuns, type SkillEnd } from './toolbarRun';
 import { adaptSigils, fillPrompt, notificationText, toolbarLimits, validToolbarSkill } from './toolbarText';
+import { closeAlert, closestLimit, currentLimits, mergeLimits, nextReset, readClosedAlerts, settleClosed, usageAlertFor, usageCheckDue, type ClosedAlerts, type LimitState, type TurnWeight } from './usageAlert';
 
 /**
  * The AI Browser chat: a webview view in its own container in the secondary (right) side bar.
@@ -133,6 +134,17 @@ const toolbarExtrasKey = 'aiBrowser.chat.toolbarExtras';
 /** The longest text a skill's notification shows; Open has the whole result. */
 const skillToastLimit = 1_000;
 const newsHiddenKey = 'aiBrowser.chat.newsHiddenAt';
+/**
+ * The plan-limit lines the user closed, by agent: each limit's percentage when
+ * it was closed, and whether credits were being spent; see `usageAlert.ts`.
+ * Global, like the plan it describes: closed in one window, closed in all.
+ */
+const closedAlertsKey = 'aiBrowser.chat.usageAlertsClosed';
+/**
+ * How long after a turn's end the plan is asked for: the provider counts the
+ * turn's usage a moment after answering it.
+ */
+const usageCheckDelayMs = 2_000;
 const inputHistoryKey = 'aiBrowser.chat.inputHistory';
 const inputHistoryLimit = 100;
 /**
@@ -256,7 +268,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		projectRoot: () => vscode.workspace.workspaceFolders?.find(f => f.uri.scheme === 'file')?.uri.fsPath,
 		ownSettings: folder => !this._untrusted(folder),
 		changed: () => { this._post(); this._drainQueues(); },
-		limits: (agent, windows) => { this._limits.set(agent, windows); },
+		limits: (agent, windows, usingCredits) => this._noteLimits(agent, windows, usingCredits, false),
+		turnEnded: (agent, weight) => this._turnEnded(agent, weight),
 		save: chat => this._save(chat),
 		inHistory: id => this._history().some(c => c.id === id),
 		approvalMode: key => this._approvalPolicy()[key] ?? 'ask',
@@ -270,7 +283,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		changed: () => this._post(),
 		ended: (skill, end) => this._skillEnded(skill, end),
 	});
-	private readonly _limits = new Map<AgentId, readonly UsageWindow[]>();
+	/** What is known of each agent's plan limits; see `_noteLimits`. */
+	private readonly _limits = new Map<AgentId, LimitState>();
+	/** When each agent's plan was last asked for after a turn; see `usageCheckDue`. */
+	private readonly _usageAsked = new Map<AgentId, number>();
+	/** An agent's plan being asked for after a turn, by its timer while it waits. */
+	private readonly _usageChecks = new Map<AgentId, ReturnType<typeof setTimeout> | undefined>();
+	/** Posts when the next limit of the agent in front resets, so the line and `U` follow it. */
+	private _resetTimer: { at: number; timer: ReturnType<typeof setTimeout> } | undefined;
 	private _postTimer: ReturnType<typeof setTimeout> | undefined;
 	private readonly _subscriptions: vscode.Disposable[] = [];
 
@@ -294,6 +314,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		void cleanUpReportsIn([...this._recentFolders(), ...this._tabs.flatMap(t => t.chat.folder !== undefined ? [t.chat.folder] : [])]);
 
 		this._subscriptions.push(this._registry.onDidReplace(e => this._onBackendReplaced(e.agent, e.gone)));
+		// Every read of a plan whole — detection's, the U popup's, the checks
+		// after a turn — replaces what was known of it.
+		this._subscriptions.push(this._registry.onDidReadUsage(u => this._noteLimits(u.agent, u.windows, u.usingCredits, true)));
 		// A lower limit closes nothing: the tabs open stay, and "+" comes back
 		// once enough of them are closed.
 		this._subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
@@ -471,11 +494,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			this._active.seen();
 		}
 		const limit = tabLimit();
+		const selection = this._selection();
 		return {
 			blocked: this._blocked(),
 			detecting: this._registry.detecting,
 			agents: this._registry.agents,
-			selection: this._selection(),
+			selection,
+			...this._usageState(selection.agent),
 			chatId: this._active.chat.id,
 			entries: this._active.chat.entries,
 			running: this._active.running,
@@ -791,6 +816,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				return;
 			case 'usage':
 				await this._usage();
+				return;
+			case 'dismissUsageAlert':
+				this._dismissUsageAlert(message.alert);
 				return;
 			case 'openChat':
 				this._openChat(message.id);
@@ -1802,6 +1830,129 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 	/* ------------------------------------------------------------ usage */
 
+	/**
+	 * New figures for `agent`'s plan. `whole`: a full read, which replaces what
+	 * was known; otherwise a turn's own report, which updates the limits it
+	 * names. A close that no longer applies — the limit reset — is forgotten,
+	 * so the next climb shows the line again; only the limits this report
+	 * names are judged (see `settleClosed`).
+	 */
+	private _noteLimits(agent: AgentId, windows: readonly UsageWindow[], usingCredits: boolean | undefined, whole: boolean): void {
+		if (this._disposed) {
+			return;
+		}
+		// What has reset since is dropped first (`currentLimits`), so a sparse
+		// report of the new period cannot bring back the old period's credits.
+		const state = mergeLimits(currentLimits(this._limits.get(agent), Date.now()), windows, usingCredits, whole);
+		this._limits.set(agent, state);
+		const closed = this._closedAlerts();
+		const settled = settleClosed(closed, agent, state, new Set(windows.map(w => w.label)));
+		if (settled !== closed) {
+			void this._context.globalState.update(closedAlertsKey, settled).then(undefined, () => undefined);
+		}
+		this._post();
+	}
+
+	private _closedAlerts(): ClosedAlerts {
+		return readClosedAlerts(this._context.globalState.get<unknown>(closedAlertsKey));
+	}
+
+	/**
+	 * The `U` button's level and the limit line, for the agent of the tab in
+	 * front: the line is about the plan the next message spends.
+	 */
+	private _usageState(agent: AgentId | undefined): Pick<ChatViewState, 'usage' | 'usageAlert'> {
+		const now = Date.now();
+		const known = agent ? this._limits.get(agent) : undefined;
+		this._watchReset(nextReset(known, now));
+		const state = currentLimits(known, now);
+		const closest = closestLimit(state);
+		if (!agent || !state || !closest) {
+			return {};
+		}
+		return {
+			usage: { percent: closest.usedPercent, label: closest.label, usingCredits: state.usingCredits },
+			usageAlert: usageAlertFor(agent, state, this._closedAlerts()),
+		};
+	}
+
+	/**
+	 * A post when `at` passes: a limit that resets takes the line and `U`'s
+	 * colour with it (`currentLimits`) without waiting for the next message.
+	 * At most an hour ahead, then looked at again: a timer's delay is capped,
+	 * and a weekly reset is days away.
+	 */
+	private _watchReset(at: number | undefined): void {
+		if (this._disposed || this._resetTimer?.at === at) {
+			return;
+		}
+		clearTimeout(this._resetTimer?.timer);
+		this._resetTimer = undefined;
+		if (at === undefined) {
+			return;
+		}
+		const timer = setTimeout(() => {
+			this._resetTimer = undefined;
+			this._post();
+		}, Math.min(Math.max(0, at - Date.now()) + 1_000, 3_600_000));
+		this._resetTimer = { at, timer };
+	}
+
+	/**
+	 * The line closed: what it stood for stays closed until the limit moves on.
+	 * Closed as it was shown, which the view sends: a figure that arrived while
+	 * the click was on its way was never seen.
+	 */
+	private _dismissUsageAlert(alert: unknown): void {
+		const a = alert as Partial<UsageAlert> | undefined;
+		const agent = a?.agent;
+		if (agent !== 'claude' && agent !== 'codex') {
+			return;
+		}
+		const shown: UsageAlert | undefined = typeof a?.label === 'string' && typeof a.percent === 'number' && Number.isFinite(a.percent)
+			&& (a.kind === 'high' || a.kind === 'reached' || a.kind === 'credits')
+			? { agent, kind: a.kind, label: a.label, percent: a.percent }
+			: undefined;
+		const closed = closeAlert(this._closedAlerts(), agent, currentLimits(this._limits.get(agent), Date.now()), shown);
+		void this._context.globalState.update(closedAlertsKey, closed).then(() => this._post(), () => this._post());
+		this._post();
+	}
+
+	/**
+	 * A turn ended: the plan is asked for when `usageCheckDue` says so — after
+	 * a big request, more readily near a limit, otherwise now and then — and
+	 * only of a process already running. Between those, the turns' own reports
+	 * (Claude Code's `rate_limit_event`, Codex's `account/rateLimits/updated`)
+	 * keep the figures current at no cost.
+	 */
+	private _turnEnded(agent: AgentId, weight: TurnWeight): void {
+		const now = Date.now();
+		if (this._disposed || this._usageChecks.has(agent)
+			|| !usageCheckDue(now, this._usageAsked.get(agent), weight, closestLimit(currentLimits(this._limits.get(agent), now))?.usedPercent)) {
+			return;
+		}
+		const before = this._usageAsked.get(agent);
+		this._usageAsked.set(agent, now);
+		const timer = setTimeout(() => {
+			this._usageChecks.set(agent, undefined);
+			const backend = this._disposed ? undefined : this._registry.backend(agent);
+			// A check that read nothing — no process running any more, a request
+			// that failed — does not count: the next turn may ask again.
+			const read = backend ? backend.usage(true).then(u => !u.error, () => false) : Promise.resolve(false);
+			void read.then(ok => {
+				this._usageChecks.delete(agent);
+				if (!ok && this._usageAsked.get(agent) === now) {
+					if (before === undefined) {
+						this._usageAsked.delete(agent);
+					} else {
+						this._usageAsked.set(agent, before);
+					}
+				}
+			});
+		}, usageCheckDelayMs);
+		this._usageChecks.set(agent, timer);
+	}
+
 	private async _usage(): Promise<void> {
 		const agents = this._registry.agents.filter(a => a.available);
 		const stats = this._active.started ? { ...this._active.chat.stats } : undefined;
@@ -1813,7 +1964,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				: { agent: a.id, windows: [], notes: [], error: vscode.l10n.t("Not running.") };
 			// A turn's own limit report is newer than nothing, if the read failed.
 			const live = this._limits.get(a.id);
-			return answer.error && live?.length ? { ...answer, windows: live, error: undefined } : answer;
+			return answer.error && live?.windows.length ? { ...answer, windows: live.windows, usingCredits: live.usingCredits, error: undefined } : answer;
 		}));
 		this._postMessage({ type: 'usage', usage, stats, loading: false });
 	}
@@ -2748,6 +2899,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	public dispose(): void {
 		this._disposed = true;
 		this._runs.dispose();
+		for (const timer of this._usageChecks.values()) {
+			clearTimeout(timer);
+		}
+		this._usageChecks.clear();
+		clearTimeout(this._resetTimer?.timer);
+		this._resetTimer = undefined;
 		for (const timer of this._draining.values()) {
 			clearTimeout(timer);
 		}

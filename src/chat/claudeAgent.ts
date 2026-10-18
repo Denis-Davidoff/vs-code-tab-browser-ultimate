@@ -41,6 +41,8 @@ import { generateUuid } from '../core/uuid';
 const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--thinking-display', 'summarized', '--permission-mode', 'default', '--permission-prompt-tool', 'stdio'];
 
 const controlTimeoutMs = 20_000;
+/** How long detection's process is kept for the plan's usage after the models are in. */
+const usageProbeWaitMs = 8_000;
 
 /**
  * Where the `--mcp-config` files go: the private temp directory, `0700`, made
@@ -213,12 +215,17 @@ const projectSettingsOff = ['--setting-sources=user', '--strict-mcp-config'];
 export class ClaudeBackend implements AgentBackend {
 	public readonly id = 'claude' as const;
 	private readonly _sessions = new Set<ClaudeSession>();
+	/** Detection's processes kept for the usage answer; ended with the backend. */
+	private readonly _lent = new Set<() => void>();
+	private _disposed = false;
 
 	constructor(
 		private readonly _binary: string,
 		private readonly _cwd: () => string,
 		private readonly _browserServer: () => BrowserServer | undefined = () => undefined,
 		private readonly _ownSettings: () => boolean = () => true,
+		/** A plan read whole; the chat keeps its limit line from these. */
+		private readonly _sawUsage: (usage: AgentUsage) => void = () => { },
 	) { }
 
 	private _commands: ChatCommand[] | undefined;
@@ -227,13 +234,37 @@ export class ClaudeBackend implements AgentBackend {
 		return this._commands;
 	}
 
-	/** The `initialize` answer carries the skills and commands too, so they are kept from here. */
+	/**
+	 * The `initialize` answer carries the skills and commands too, so they are
+	 * kept from here. The plan's usage is asked of the same process, so the
+	 * chat knows how near a limit is before the first message without starting
+	 * another one: detection does not wait for it, and the process is kept for
+	 * the answer, at most `usageProbeWaitMs`.
+	 */
 	public async models(): Promise<ChatModel[]> {
-		return this._withProbe(async control => {
-			const answer = await control.request('initialize');
+		const probe = this._probe();
+		const initialize = probe.control.request('initialize');
+		// Guarded whole: a throw while reading the answer would otherwise escape
+		// the `void` below as an unhandled rejection (#93).
+		const usage = probe.control.request('get_usage').then(response => { this._seen(claudeUsage(response)); }).catch(() => undefined);
+		let lent = false;
+		try {
+			const answer = await initialize;
 			this._commands = claudeCommands(answer);
+			if (!this._disposed) {
+				lent = true;
+				this._lent.add(probe.close);
+				void Promise.race([usage, new Promise(resolve => setTimeout(resolve, usageProbeWaitMs))]).finally(() => {
+					this._lent.delete(probe.close);
+					probe.close();
+				});
+			}
 			return claudeModels(answer);
-		});
+		} finally {
+			if (!lent) {
+				probe.close();
+			}
+		}
 	}
 
 	/**
@@ -250,14 +281,19 @@ export class ClaudeBackend implements AgentBackend {
 	/**
 	 * Plan usage. Asked of a live session when there is one — the answer is the
 	 * same and it saves a start-up — and of a short-lived process otherwise.
+	 * `liveOnly`: never start a process for it; the chat's own checks after a
+	 * turn ask this way, the `U` popup does not.
 	 */
-	public async usage(): Promise<AgentUsage> {
+	public async usage(liveOnly = false): Promise<AgentUsage> {
 		try {
 			const live = [...this._sessions].find(s => s.control);
+			if (!live?.control && liveOnly) {
+				return { agent: 'claude', windows: [], notes: [], error: 'No conversation is running.' };
+			}
 			const response = live?.control
 				? await live.control.request('get_usage')
 				: await this._withProbe(control => control.request('get_usage'));
-			return claudeUsage(response);
+			return this._seen(claudeUsage(response));
 		} catch (err) {
 			return { agent: 'claude', windows: [], notes: [], error: err instanceof Error ? err.message : String(err) };
 		}
@@ -269,20 +305,46 @@ export class ClaudeBackend implements AgentBackend {
 		return session;
 	}
 
+	private _seen(usage: AgentUsage): AgentUsage {
+		if (!usage.error && !this._disposed) {
+			try {
+				this._sawUsage(usage);
+			} catch {
+				// The chat's bookkeeping; the read itself succeeded.
+			}
+		}
+		return usage;
+	}
+
 	private async _withProbe<T>(use: (control: ControlChannel) => Promise<T>): Promise<T> {
+		const probe = this._probe();
+		try {
+			return await use(probe.control);
+		} finally {
+			probe.close();
+		}
+	}
+
+	private _probe(): { control: ControlChannel; close: () => void } {
 		// The skills listing starts a process in the tab in front's folder, and a
 		// `SessionStart` hook runs on that alone — measured, with nothing sent.
 		const process = new JsonLineProcess(this._binary, this._ownSettings() ? args : [...args, ...projectSettingsOff], this._cwd());
 		const control = new ControlChannel(process);
-		try {
-			return await use(control);
-		} finally {
-			control.dispose();
-			process.dispose();
-		}
+		return {
+			control,
+			close: () => {
+				control.dispose();
+				process.dispose();
+			},
+		};
 	}
 
 	public dispose(): void {
+		this._disposed = true;
+		for (const close of [...this._lent]) {
+			close();
+		}
+		this._lent.clear();
 		for (const session of [...this._sessions]) {
 			session.dispose();
 		}

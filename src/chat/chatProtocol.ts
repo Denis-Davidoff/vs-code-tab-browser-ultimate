@@ -192,6 +192,28 @@ export interface AgentUsage {
 	readonly windows: readonly UsageWindow[];
 	readonly notes: readonly string[];
 	readonly error?: string;
+	/**
+	 * A plan limit is passed and the agent goes on by spending credits — Claude
+	 * Code's extra usage, Codex's credits. Absent when the answer does not say.
+	 */
+	readonly usingCredits?: boolean;
+}
+
+/**
+ * The line above the chat about the tab in front's agent: a plan limit at
+ * 90 % or more (`high`), at 100 % (`reached`), or passed with the agent now
+ * spending credits (`credits`). Shown until closed, and again when the
+ * percentage grows past the one it was closed at; see `usageAlert.ts`.
+ */
+export interface UsageAlert {
+	readonly agent: AgentId;
+	readonly kind: 'high' | 'reached' | 'credits';
+	/** The limit it is about — the one closest to running out. */
+	readonly label: string;
+	/** Whole percent, at most 100. */
+	readonly percent: number;
+	/** Epoch milliseconds. */
+	readonly resetsAt?: number;
 }
 
 export interface ChatStats {
@@ -476,6 +498,14 @@ export interface ChatViewState {
 	readonly context?: { readonly used: number; readonly window?: number; readonly compacted?: boolean; readonly canCompact: boolean };
 	/** The tab in front's working folder, for the folder button. */
 	readonly workdir: WorkdirState;
+	/**
+	 * The tab in front's agent's plan, as far as it is known: the limit closest
+	 * to running out (its percentage colours the `U` button) and whether the
+	 * agent spends credits now. Absent until a figure has come in.
+	 */
+	readonly usage?: { readonly percent: number; readonly label: string; readonly usingCredits: boolean };
+	/** The line above the chat, while there is one to show. */
+	readonly usageAlert?: UsageAlert;
 }
 
 export interface PendingSend {
@@ -562,6 +592,8 @@ export type ViewToHost =
 	| { readonly type: 'attach'; readonly kind: AttachmentKind }
 	| { readonly type: 'removeAttachment'; readonly id: string }
 	| { readonly type: 'usage' }
+	/** The usage line closed: not shown again until its percentage grows. */
+	| { readonly type: 'dismissUsageAlert'; readonly alert: UsageAlert }
 	| { readonly type: 'openChat'; readonly id: string }
 	| { readonly type: 'deleteChat'; readonly id: string }
 	| { readonly type: 'newChat' }

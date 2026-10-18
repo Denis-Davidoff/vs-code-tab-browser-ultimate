@@ -12,6 +12,7 @@ import { agentNames, type AgentBackend, type AgentSession, type TurnImage } from
 import type { AgentId, RepoCopy, RepoReference, ApprovalEntry, ApprovalMode, AttachmentChip, PendingSend, ChatEntry, ChatStats, ChatTabStatus, ToolEntry, UsageWindow } from './chatProtocol';
 import { generateUuid } from '../core/uuid';
 import { stepGate, withNextDecision } from './toolbarText';
+import type { TurnWeight } from './usageAlert';
 
 /**
  * One conversation of the chat: a tab. The view holds several (`tabLimit()`),
@@ -78,8 +79,14 @@ export interface TabHost {
 	ownSettings(folder: string): boolean;
 	/** Something the view shows changed. */
 	changed(): void;
-	/** A turn's own plan-limit report, kept for the usage popup. */
-	limits(agent: AgentId, windows: readonly UsageWindow[]): void;
+	/**
+	 * A turn's own plan-limit report — the limits it names, and whether the
+	 * agent spends credits now when it says so — for the usage popup and the
+	 * limit line above the chat.
+	 */
+	limits(agent: AgentId, windows: readonly UsageWindow[], usingCredits: boolean | undefined): void;
+	/** A turn ended, this heavy; the view decides whether to ask for the plan's limits. */
+	turnEnded(agent: AgentId, weight: TurnWeight): void;
 	save(chat: StoredChat): Promise<void>;
 	inHistory(chatId: string): boolean;
 	/** The approval menu's mode for a category key; see `approvalKey`. */
@@ -817,6 +824,19 @@ export class ChatTab {
 		return { input: st.inputTokens, output: st.outputTokens, cached: st.cachedTokens };
 	}
 
+	/**
+	 * How heavy the turn that just ended was: input not read from the cache
+	 * plus output, against its baseline, and its length. No baseline (a turn
+	 * the CLI started on its own before any was taken) counts no tokens.
+	 */
+	private _turnWeight(base: TokenBase | undefined, startedAt: number | undefined, now: number): TurnWeight {
+		const st = this._chat.stats;
+		const tokens = base
+			? Math.max(0, st.inputTokens - base.input - Math.max(0, st.cachedTokens - base.cached)) + Math.max(0, st.outputTokens - base.output)
+			: 0;
+		return { tokens, ms: startedAt !== undefined ? Math.max(0, now - startedAt) : 0 };
+	}
+
 	private _ensureSession(backend: AgentBackend): AgentSession {
 		if (this._session) {
 			return this._session;
@@ -1047,7 +1067,7 @@ export class ChatTab {
 				}
 				break;
 			case 'limits':
-				this._host.limits(chat.agent, event.windows);
+				this._host.limits(chat.agent, event.windows, event.usingCredits);
 				break;
 			case 'context':
 				if (event.used !== undefined) {
@@ -1089,6 +1109,7 @@ export class ChatTab {
 				}
 				// The oldest prompt still waiting is the one this turn answered.
 				const done = this._pending.shift();
+				this._host.turnEnded(chat.agent, this._turnWeight(done?.base, done?.startedAt ?? done?.entry?.at, now));
 				if (done?.entry && done.entry.at !== undefined) {
 					done.entry.workedMs = now - (done.startedAt ?? done.entry.at);
 					const base = done.base;
