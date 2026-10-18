@@ -1239,6 +1239,7 @@ body.vscode-light .code-block pre {
 }
 
 .composer {
+	container-type: inline-size;
 	display: flex;
 	flex-direction: column;
 	border-radius: var(--radius-lg);
@@ -1264,7 +1265,30 @@ body.vscode-light .code-block pre {
 	display: none;
 }
 
+.input-area {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) 40px;
+	min-height: 68px;
+}
+
+.input-actions {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 4px;
+	padding: 8px 8px 0 0;
+}
+
+.send-slot {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 28px;
+	height: 28px;
+}
+
 .input-wrap {
+	min-width: 0;
 	position: relative;
 	display: flex;
 	flex-direction: column;
@@ -1300,6 +1324,10 @@ body.vscode-light .code-block pre {
 
 .input {
 	position: relative;
+	box-sizing: border-box;
+	width: 100%;
+	min-height: 68px;
+	flex: none;
 	scrollbar-gutter: stable;
 	resize: none;
 	border: none;
@@ -1383,17 +1411,46 @@ body.vscode-light .code-block pre {
 }
 
 .toolbar {
-	display: flex;
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
 	align-items: center;
-	flex-wrap: wrap;
-	gap: 0;
+	gap: 2px 8px;
 	padding: 2px 6px 6px 4px;
 }
 
-.toolbar-end {
+.toolbar-settings,
+.toolbar-attachments {
+	display: flex;
+	align-items: center;
+	min-width: 0;
+}
+
+.toolbar-settings { gap: 2px; justify-content: center; justify-self: center; max-width: 100%; }
+.toolbar-attachments { flex: none; }
+.toolbar-settings .effort-button { display: none; }
+
+@container (max-width: 680px) {
+	.toolbar { grid-template-columns: auto minmax(0, 1fr); gap: 4px; }
+	.toolbar-attachments { grid-column: 1; grid-row: 1; }
+	.toolbar-end { grid-column: 2; grid-row: 1; }
+	.toolbar-settings { grid-column: 1 / -1; grid-row: 2; width: 100%; }
+	.toolbar-settings > .pill { min-width: 0; }
+	.toolbar-settings > .pill:nth-child(1) { flex: 0 1 auto; max-width: 90px; }
+	.toolbar-settings > .pill:nth-child(2) { flex: 0 1 auto; max-width: 130px; }
+	.toolbar-settings .effort { display: none; }
+	.toolbar-settings .effort-button:not([hidden]) { display: inline-flex; flex: none; }
+	.toolbar-settings .approve-toggle { flex: none; }
+}
+
+
+.toolbar-end,
+.workdir-status {
 	--toolbar-icon-size: 20px;
 	/* Keep circular marks optically aligned with the internal space of the glyphs. */
 	--toolbar-round-mark-size: calc(var(--toolbar-icon-size) * 0.875);
+}
+
+.toolbar-end {
 	display: inline-flex;
 	align-items: center;
 	gap: 2px;
@@ -1521,7 +1578,7 @@ body.vscode-light .code-block pre {
 	outline-offset: -1px;
 }
 
-/* The cup about the size of the round marks beside it (the pie, the U); the hubot 50% larger. */
+/* The cup and the hubot about the size of the round marks beside them (the pie, the U). */
 .sleep-button svg {
 	width: calc(var(--toolbar-icon-size) * 0.9);
 	height: calc(var(--toolbar-icon-size) * 0.9);
@@ -1529,9 +1586,9 @@ body.vscode-light .code-block pre {
 }
 
 .agents-button .codicon {
-	width: calc(var(--toolbar-icon-size) * 1.5);
-	height: calc(var(--toolbar-icon-size) * 1.5);
-	font-size: calc(var(--toolbar-icon-size) * 1.5);
+	width: calc(var(--toolbar-icon-size) * 0.9);
+	height: calc(var(--toolbar-icon-size) * 0.9);
+	font-size: calc(var(--toolbar-icon-size) * 0.9);
 	line-height: 1;
 	flex: none;
 }
@@ -1632,7 +1689,8 @@ body.vscode-light .code-block pre {
 	display: none;
 }
 
-.effort.max .effort-label {
+.effort.max .effort-label,
+.effort-button.max .pill-label {
 	color: var(--vscode-charts-purple, var(--fg));
 }
 
@@ -1666,11 +1724,12 @@ body.vscode-light .code-block pre {
 }
 
 .send {
+	position: relative;
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	width: 28px;
-	height: 28px;
+	width: 24px;
+	height: 24px;
 	padding: 0;
 	border: none;
 	border-radius: 999px;
@@ -1680,8 +1739,11 @@ body.vscode-light .code-block pre {
 	transition: opacity .15s, background .15s;
 }
 
+/* Keep a 28 px hit target around the 24 px visible button. */
+.send::after { content: ''; position: absolute; inset: -2px; border-radius: 50%; }
+
 .send .codicon {
-	font-size: 16px;
+	font-size: 14px;
 }
 
 .send:hover:not(:disabled) {
@@ -1693,9 +1755,9 @@ body.vscode-light .code-block pre {
 	cursor: default;
 }
 
-/* Send after this turn: Send's own shape, in the theme's accent colour. */
+/* Secondary action below Send, with a quieter background and a readable glyph. */
 .send.queue-button {
-	background: var(--vscode-button-background, var(--vscode-focusBorder));
+	background: color-mix(in srgb, var(--vscode-button-background, var(--vscode-focusBorder)) 55%, transparent);
 	color: var(--vscode-button-foreground, #fff);
 }
 
@@ -3405,9 +3467,9 @@ body.vscode-light .code-block pre {
 
 /* ---------------------------------------------------------------- the working folder */
 
-/* A folder of the conversation's own, not the window's: the icon in the accent colour. */
-.workdir-button.picked .codicon {
-	color: var(--accent);
+/* The mode label carries the status colour; the folder icon stays neutral. */
+.workdir-button .codicon {
+	color: var(--fg-3);
 }
 
 /* The folder in use, marked with a check. */
@@ -3966,3 +4028,41 @@ body.vscode-light .code-block pre {
 
 .sleep-agents-option .codicon-hubot { color: var(--vscode-charts-blue, #75beff); }
 .sleep-popup .sleep-option .codicon-circle-slash { color: var(--vscode-charts-orange, #d18616); }
+
+/* Current workspace sits below the input card, beside the folder picker. */
+.workdir-status {
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	min-width: 0;
+	margin-top: 3px;
+	padding: 0 3px;
+	color: var(--fg-3);
+	font-size: 11px;
+}
+.workdir-status .workdir-button { flex: none; }
+.workdir-summary {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex: 1;
+	min-width: 0;
+	padding: 4px 2px;
+	border: none;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	text-align: left;
+	cursor: pointer;
+}
+.workdir-summary:hover { color: var(--fg); }
+.workdir-summary:focus-visible { outline: 1px solid var(--accent); border-radius: 4px; }
+.workdir-mode { flex: none; font-weight: 600; }
+.workdir-location { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workdir-location.path-tail { direction: rtl; text-align: left; }
+.workdir-location-value { direction: ltr; unicode-bidi: isolate; }
+.workdir-status.github-mode .workdir-mode { color: var(--vscode-textLink-foreground, var(--accent)); }
+
+.workdir-status.current-project .workdir-mode { color: var(--ok); }
+
+.workdir-status.external-folder .workdir-mode { color: var(--vscode-charts-orange, #d18616); }

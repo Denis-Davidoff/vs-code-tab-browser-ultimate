@@ -131,6 +131,8 @@ effortRange.min = '0';
 effortRange.step = '1';
 const effortLabel = el('span', { class: 'effort-label' });
 const effortBox = el('label', { class: 'effort', title: 'Effort' }, effortRange, effortLabel);
+const effortButton = button([], { class: 'pill effort-button', title: 'Effort' });
+effortButton.hidden = true;
 const usageTitle = "Usage — your plan's limits for each agent, and this chat's tokens and cost";
 const usageButton = button([el('span', { class: 'u-mark', text: 'U' })], { class: 'ghost round usage-button', title: usageTitle });
 const agentsButton = button([], { class: 'pill agents-button', title: 'Agents' });
@@ -143,8 +145,8 @@ contextButton.hidden = true;
 const sendButton = button([icon('arrow-up')], { class: 'send', title: 'Send' });
 /**
  * Only while a turn runs and there is something to send: hold it for after the
- * turn. The same round button as Send, in the theme's accent colour (asked
- * for) — Send beside it adds the message to the running turn instead.
+ * turn. Shown below Send in the input's action column; Send adds the
+ * message to the running turn instead.
  */
 const queueButton = button([icon('arrow-up')], { class: 'send queue-button', title: 'Send after this turn (⌘Enter)' });
 queueButton.hidden = true;
@@ -152,10 +154,11 @@ queueButton.addEventListener('click', () => send('queue'));
 /** Ask before terminal commands and browser tools, or let them run: one switch for every tab. */
 const approveToggle = button([], { class: 'pill approve-toggle' });
 
-// The right-hand buttons (agents, usage, send) are one group pushed to the end,
-// so a narrow side bar wraps them together onto the next line, still at the right.
-const toolbar = el('div', { class: 'toolbar' },
-	plusButton, browserButton, slashButton, workdirButton, agentPill, modelPill, effortBox, approveToggle, el('span', { class: 'toolbar-end' }, agentsButton, contextButton, sleepButton, usageButton, queueButton, sendButton));
+// Settings and tools get deliberate rows in a narrow composer.
+const toolbarSettings = el('div', { class: 'toolbar-settings' }, agentPill, modelPill, effortBox, effortButton, approveToggle);
+const toolbarAttachments = el('span', { class: 'toolbar-attachments' }, plusButton, browserButton, slashButton);
+const toolbarEnd = el('span', { class: 'toolbar-end' }, agentsButton, contextButton, usageButton);
+const toolbar = el('div', { class: 'toolbar' }, toolbarAttachments, toolbarSettings, toolbarEnd);
 /**
  * The box's text drawn again behind it, with the agent's commands in colour:
  * a textarea cannot style part of its text, so this layer shows the text and
@@ -165,7 +168,10 @@ const toolbar = el('div', { class: 'toolbar' },
 const inputMirror = el('div', { class: 'input-mirror' });
 inputMirror.setAttribute('aria-hidden', 'true');
 const inputWrap = el('div', { class: 'input-wrap' }, inputMirror, input);
-const composer = el('div', { class: 'composer' }, attachmentsRow, inputWrap, toolbar);
+const inputActions = el('div', { class: 'input-actions' },
+	el('span', { class: 'send-slot' }, sendButton), el('span', { class: 'send-slot' }, queueButton));
+const inputArea = el('div', { class: 'input-area' }, inputWrap, inputActions);
+const composer = el('div', { class: 'composer' }, attachmentsRow, inputArea, toolbar);
 /** Asked when another agent is picked for a conversation that has started. */
 const switchCard = el('div', { class: 'switch-card' });
 /** The toolbar skills the tab's agent offers, above the message box. */
@@ -174,7 +180,13 @@ skillBar.hidden = true;
 /** A question with choices the agent waits on: answered here, above the message box, a tab per question. */
 const questionDock = el('div', { class: 'question-dock' });
 questionDock.hidden = true;
-const footer = el('div', { class: 'footer' }, questionDock, switchCard, skillBar, composer);
+const workdirMode = el('span', { class: 'workdir-mode' });
+const workdirLocationText = el('span', { class: 'workdir-location-value' });
+const workdirLocation = el('span', { class: 'workdir-location' }, workdirLocationText);
+const workdirSummary = button([workdirMode, workdirLocation], { class: 'workdir-summary', title: 'Working folder' });
+const workdirFooter = el('div', { class: 'workdir-status' }, workdirButton, workdirSummary, sleepButton);
+const footer = el('div', { class: 'footer' }, questionDock, switchCard, skillBar, composer, workdirFooter);
+workdirSummary.addEventListener('click', () => workdirButton.click());
 /** One tab per open conversation, above the thread. */
 const tabStrip = el('div', { class: 'tab-strip' });
 /**
@@ -2594,11 +2606,15 @@ function renderSelectors(s: ChatViewState): void {
 
 	const efforts = model?.efforts ?? [];
 	effortBox.hidden = !efforts.length;
+	effortButton.hidden = !efforts.length;
 	if (efforts.length) {
 		effortRange.max = String(efforts.length - 1);
 		effortRange.value = String(Math.max(0, efforts.indexOf(s.selection.effort ?? '')));
 		effortLabel.textContent = labelOf(s.selection.effort ?? efforts[0]);
+		setPill(effortButton, effortLabel.textContent);
 		effortBox.title = `Effort — how hard the model thinks before it answers: ${efforts.map(labelOf).join(' · ')}\nMore effort is slower and uses more of your plan.`;
+		effortButton.title = effortBox.title;
+		effortButton.classList.toggle('max', effortRange.value === effortRange.max);
 		effortBox.classList.toggle('max', effortRange.value === effortRange.max);
 	}
 }
@@ -2748,6 +2764,12 @@ function autosize(): void {
 	input.style.height = `${Math.min(input.scrollHeight, 200)}px`;
 	paintInput();
 }
+
+let inputWidth = 0;
+new ResizeObserver(() => {
+	const width = inputWrap.clientWidth;
+	if (width !== inputWidth) { inputWidth = width; autosize(); }
+}).observe(inputWrap);
 
 /** The commands an agent offers, as typed — `/name` for Claude Code, `$name` for Codex. */
 function knownCommands(s: ChatViewState | undefined): ReadonlySet<string> {
@@ -3104,7 +3126,7 @@ function closePopups(except?: HTMLElement, keep?: HTMLElement): void {
 			popup.classList.remove('open');
 		}
 	}
-	for (const pill of [sleepButton, agentPill, modelPill, plusButton, usageButton, approveToggle, slashButton, workdirButton, contextButton]) {
+	for (const pill of [effortButton, sleepButton, agentPill, modelPill, plusButton, usageButton, approveToggle, slashButton, workdirButton, contextButton]) {
 		pill.classList.remove('active');
 	}
 	// A skill button is a popup's anchor too; the mark only tells a second
@@ -3179,7 +3201,7 @@ document.addEventListener('mousedown', event => {
 		}
 		return;
 	}
-	if (![sleepPopup, sleepButton, menu, usagePopup, approvalPopup, palette, workdirPopup, paramsPopup, skillBar, historyPanel, agentsPanel, agentAppsPanel, plusButton, usageButton, usageAlertText, agentsButton, agentPill, modelPill, approveToggle, slashButton, workdirButton, contextButton].some(n => n.contains(target))) {
+	if (![workdirFooter, effortButton, sleepPopup, sleepButton, menu, usagePopup, approvalPopup, palette, workdirPopup, paramsPopup, skillBar, historyPanel, agentsPanel, agentAppsPanel, plusButton, usageButton, usageAlertText, agentsButton, agentPill, modelPill, approveToggle, slashButton, workdirButton, contextButton].some(n => n.contains(target))) {
 		closePopups();
 	}
 });
@@ -3266,6 +3288,16 @@ function openMenu(anchor: HTMLElement, items: MenuItem[], heading?: string, acti
 	menu.classList.toggle('over-panel', !!keep);
 	openAbove(menu, anchor, 'left', keep);
 }
+
+effortButton.addEventListener('click', () => {
+	const selection = state?.selection;
+	const model = state?.agents.find(a => a.id === selection?.agent)?.models.find(m => m.id === selection?.model);
+	if (!selection || !model?.efforts.length) { return; }
+	openMenu(effortButton, model.efforts.map(effort => ({
+		label: labelOf(effort), checked: effort === (selection.effort ?? model.efforts[0]),
+		run: () => post({ type: 'select', selection: { ...selection, effort } }),
+	})), 'Effort — how hard the model thinks');
+});
 
 agentPill.addEventListener('click', () => {
 	const s = state;
@@ -4310,6 +4342,24 @@ function renderWorkdir(s: ChatViewState): void {
 		? `Working folder: ${w.current.path}${w.picked ? '' : " (this window's)"} — where the agent works, and its files to add to the message`
 		: 'Working folder: none, the home directory — choose a folder for the agent to work in, and its files to add to the message';
 	workdirButton.classList.toggle('picked', w.picked);
+	const currentProject = !w.copy && !w.noProject && !!w.current && w.workspace.some(folder => folder.path === w.current?.path);
+	const mode = w.copy ? 'GitHub' : w.noProject || !w.current ? 'Home' : currentProject ? 'Current' : 'External';
+	const location = w.copy ? `${w.copy.repo} · ${w.copy.branch}` : w.current?.path ?? 'Home directory · no project';
+	workdirMode.textContent = mode;
+	workdirLocationText.textContent = location;
+	workdirLocation.classList.toggle('path-tail', !!w.current && !w.copy);
+	const detail = w.copy
+		? `GitHub: ${w.copy.repo}\nBranch: ${w.copy.branch} (from ${w.copy.base})\nWorking copy: ${w.current?.path ?? ''}`
+		: `${workdirButton.title}${w.noProject ? '\nHome directory, with no project' : ''}`;
+	const references = w.references.length ? `\nGitHub references: ${w.references.map(r => r.repo).join(', ')}` : '';
+	const summary = `${detail}${references}${w.busy ? `\n${w.busy}…` : ''}`;
+	workdirSummary.title = summary;
+	workdirSummary.setAttribute('aria-label', `${mode}: ${location}. Click to change working folder or GitHub mode`);
+	workdirButton.title = summary;
+	workdirButton.setAttribute('aria-label', 'Change working folder or GitHub mode');
+	workdirFooter.classList.toggle('github-mode', !!w.copy);
+	workdirFooter.classList.toggle('current-project', currentProject);
+	workdirFooter.classList.toggle('external-folder', !w.copy && !w.noProject && !!w.current && !currentProject);
 	if (!workdirPopup.classList.contains('open')) {
 		return;
 	}
