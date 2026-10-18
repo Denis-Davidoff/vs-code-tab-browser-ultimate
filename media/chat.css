@@ -1521,10 +1521,10 @@ body.vscode-light .code-block pre {
 	outline-offset: -1px;
 }
 
-/* The cup is 35% and the hubot 50% larger than the shared toolbar scale. */
+/* The cup about the size of the round marks beside it (the pie, the U); the hubot 50% larger. */
 .sleep-button svg {
-	width: calc(var(--toolbar-icon-size) * 1.35);
-	height: calc(var(--toolbar-icon-size) * 1.35);
+	width: calc(var(--toolbar-icon-size) * 0.9);
+	height: calc(var(--toolbar-icon-size) * 0.9);
 	flex: none;
 }
 
