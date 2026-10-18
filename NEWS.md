@@ -14,6 +14,22 @@ src/chat/news.ts — see "The AI Browser chat" in CLAUDE.md.
 
 Browse, debug and test your pages in VS Code's own browser — and let Claude Code or Codex see them, click through them and take screenshots, right inside the editor.
 
+## 0.7.12 — 2026-10-19
+- **Attachment references**: each chip has a short `@N` reference. Click its icon or reference to insert it at the caret, or type **@** to search attached files, pages, elements and screenshots; the agent receives the matching content. Click the name to open it, or right-click for both actions.
+- **Toolbar skills**: add a skill with the wand button, drag buttons to reorder them, and expand a crowded toolbar with the arrow button. **Add next prompt** waits for the preceding prompt and its sub-agents, including restarted Codex agents, to finish in both chat and background runs.
+- **Local links in replies** open files in editor tabs, with a jump to the line when supplied. Project folders open in VS Code Explorer; other folders open in the system file manager. Right-click a file link to open it or reveal it in Finder / File Explorer.
+- **Automatic chat titles**: after the first prompt, a short background request on an available lightweight model can replace the first-line title. Context is limited, effort is minimal, and manually entered names always win; an unavailable model or failed request keeps the existing title.
+- **Remove unused GitHub copies** from the folder menu after switching elsewhere, including copies with detached HEAD. Only managed copies in the extension's storage can be deleted; user-picked clone folders are kept.
+- **Clearer chat controls**: the Mode button shows coloured Auto / Ask / Deny counts, hiding zero counts; the context pie changes smoothly from grey through white, green, yellow and orange to red as it fills. User messages have a subtle yellow border, and tab marks are better aligned.
+- Popups and tooltips close when focus leaves the chat panel, including a click elsewhere in VS Code.
+
+## 0.7.11 — 2026-10-18
+- **A responsive chat composer**: toolbar groups adapt to the available width, and the effort slider becomes a compact selector when space is tight.
+- Send and queued-send buttons sit beside the message box. The working folder has its own status line, with the keep-awake cup at the right.
+
+## 0.7.10 — 2026-10-18
+- The keep-awake cup is smaller and better matches the context and usage icons beside it.
+
 ## 0.7.9 — 2026-10-18
 - **Keep the computer awake** from the chat: the cup button holds off system sleep for a set time, or until the agents and sub-agents in this window finish — one shared helper answers for every window, and closing a window releases its hold.
 - Codex agents, and agents started by other agents, stay listed as running after the turn that started them; **Stop**, closing the tab or a parent agent ending now ends them too, instead of leaving them "running".
@@ -58,6 +74,10 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 - **Toolbar skills can send several prompts in a row**: add next prompts in the skill's editor, each sent once the agent has finished the one before — and, where you write a check between two, only if the agent finds it true; otherwise the skill stops there and says why.
 - The button that holds a message until the agent's turn ends is now Send's own round button, in the theme's accent colour.
 - A small **pie** beside **U** fills as the conversation uses up the model's context window; hover it to see how much is used and how much is left; click it to compact the conversation with the agent's own `/compact` — it asks first.
+
+## 0.7.2 — 2026-10-16
+- Toolbar skills running in the background appear in the agents list with their tool calls, reply and a Stop button.
+- The chat footer shows how long agents have been running, and long rows in the **/** palette are cut instead of scrolling sideways.
 
 ## 0.7.1 — 2026-10-16
 - **Toolbar skills**: from **/** → *Add skill to toolbar*, a button above the message box running a prompt of your own — with parameters, using the agents' skills, with colours of your choice for its text, border and icon — into the chat, to the clipboard, or silently in the background; also callable as **/name**. Pressed again while it runs, it asks before running a second time. A skill running in the background shows in the agents list, with its tool calls, its reply, its questions and a Stop, and stops when its chat is closed or cleared.

@@ -42,6 +42,19 @@ there is not the problem, the missing API is. **Measured by reading the shipped 
 
 ## Changelog
 
+**0.7.12** — Attachment references (`@N`) with an **@** picker; toolbar skills with a wand-shaped
+Add button, drag-and-drop ordering and an expandable list; follow-up prompts wait for their
+sub-agents. Local file links open in editor tabs and folder links in VS Code Explorer or the
+system file manager. Lightweight background requests name new chats without replacing manual
+names. Unused managed GitHub copies can be deleted from the folder menu. Mode counts and context
+usage are colour-coded, and popups close when focus leaves the panel.
+
+**0.7.11** — A responsive chat composer: toolbar groups adapt to the sidebar width, effort has a
+compact selector, Send and queued-send sit beside the message box, and the working folder has
+its own status line.
+
+**0.7.10** — A smaller keep-awake cup, matching the context and usage icons.
+
 **0.7.9** — Keep-awake. The cup button in the chat keeps the computer from sleeping for a set
 time, or until this window's agents and sub-agents finish. Codex agents and nested agents keep
 their place in the agents list after the turn that started them, and Stop or closing the tab ends
@@ -213,6 +226,32 @@ It started as a standalone copy of the Simple Browser extension that ships with 
 repackaged so it can be built, installed and extended on its own. That panel is still in here
 (`aiBrowser.useIntegratedBrowser: false`), but everything above is built against the editor's
 own browser.
+
+## Working in the AI Browser chat
+
+- **Refer to an attachment** with `@1`, `@2`, and so on. Type **@** in the message box to find an
+  attached file, page, element or screenshot by name or number; select with the arrow keys and
+  Enter / Tab, or click. Clicking a chip's icon or `@N` inserts the reference at the caret (or at
+  the end if no position is set). Its name opens the attachment; right-click offers both actions.
+- **Build a quick-skill toolbar** with the wand button above the message box. Drag skill buttons
+  to change their saved order. If the row overflows, the arrow button expands or collapses the
+  list; dragging works in the expanded list too. In a skill's editor, **Add next prompt** creates
+  another step: it waits for the preceding prompt, its sub-agents and the parent's follow-up to
+  finish. A check between steps must pass before the next one runs.
+- **Open local links in replies**: files open in editor tabs, including a line or column when
+  specified. Folders inside the VS Code workspace are revealed in Explorer; other folders open
+  in Finder, File Explorer or your system file manager. Right-click offers the relevant choices.
+- **Automatic titles** use a single short background request after the first prompt, on an
+  available lightweight model with minimum effort. Only a bounded fragment of that prompt and
+  attachment names is sent, without the chat history or attachment contents. Manual names are
+  preserved; if no suitable model is available or the request fails, the first-line title stays.
+- **Clean up GitHub copies** from the folder menu after switching to another folder and waiting
+  for work in the copy to finish. Deleting a managed copy loses changes that were not pushed.
+  Clones in user-picked folders cannot be deleted through this action.
+- **Read the indicators**: Mode counts are Auto (green), Ask (yellow) and Deny (red), with zero
+  counts hidden. The context pie blends from grey to white at 25%, green at 50%, yellow at 75%,
+  orange at 90% and red at 100%; the neutral colour adapts to light themes. Click it to request
+  context compaction. Menus and popups also close when you click outside the chat panel.
 
 ## Try another useful extension: Task & Script Explorer
 
