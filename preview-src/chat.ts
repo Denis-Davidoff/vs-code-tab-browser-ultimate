@@ -426,6 +426,7 @@ function render(): void {
 	if (agentAppsPanel.classList.contains('open')) {
 		fillAgentApps(state);
 	}
+	scheduleToolbarLayout();
 }
 
 /* ---------------------------------------------------------------- tabs */
@@ -2764,6 +2765,39 @@ function autosize(): void {
 	input.style.height = `${Math.min(input.scrollHeight, 200)}px`;
 	paintInput();
 }
+
+// Fit the actual labels and visible indicators instead of guessing a sidebar breakpoint.
+let toolbarLayoutFrame: number | undefined;
+let toolbarLayoutShape = '';
+function scheduleToolbarLayout(): void {
+	if (toolbarLayoutFrame !== undefined) { return; }
+	toolbarLayoutFrame = requestAnimationFrame(() => {
+		toolbarLayoutFrame = undefined;
+		const width = toolbar.clientWidth;
+		if (!width) { return; }
+		const style = getComputedStyle(toolbar);
+		const shape = JSON.stringify([width, style.font, agentPill.textContent, modelPill.textContent,
+			effortLabel.textContent, effortButton.hidden, approveToggle.textContent,
+			agentsButton.textContent, agentsButton.hidden, contextButton.hidden]);
+		if (shape === toolbarLayoutShape) { return; }
+		toolbarLayoutShape = shape;
+		toolbar.classList.remove('stacked', 'compact-effort');
+		// Measure unshrunk settings in both presentations; these temporary styles
+		// are removed in the same frame, without replacing or cloning controls.
+		toolbarSettings.style.width = 'max-content';
+		toolbarSettings.style.maxWidth = 'none';
+		const available = width - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+		const sides = toolbarAttachments.getBoundingClientRect().width + toolbarEnd.getBoundingClientRect().width;
+		const gap = parseFloat(style.columnGap) * 2;
+		const fits = () => Math.ceil(sides + toolbarSettings.getBoundingClientRect().width + gap) <= available;
+		if (!fits()) { toolbar.classList.add('compact-effort'); }
+		if (!fits()) { toolbar.classList.add('stacked'); }
+		toolbarSettings.style.removeProperty('width');
+		toolbarSettings.style.removeProperty('max-width');
+	});
+}
+new ResizeObserver(scheduleToolbarLayout).observe(toolbar);
+void document.fonts.ready.then(() => { toolbarLayoutShape = ''; scheduleToolbarLayout(); });
 
 let inputWidth = 0;
 new ResizeObserver(() => {

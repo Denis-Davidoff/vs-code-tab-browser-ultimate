@@ -1239,7 +1239,6 @@ body.vscode-light .code-block pre {
 }
 
 .composer {
-	container-type: inline-size;
 	display: flex;
 	flex-direction: column;
 	border-radius: var(--radius-lg);
@@ -1412,7 +1411,7 @@ body.vscode-light .code-block pre {
 
 .toolbar {
 	display: grid;
-	grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+	grid-template-columns: minmax(max-content, 1fr) auto minmax(max-content, 1fr);
 	align-items: center;
 	gap: 2px 8px;
 	padding: 2px 6px 6px 4px;
@@ -1426,21 +1425,21 @@ body.vscode-light .code-block pre {
 }
 
 .toolbar-settings { gap: 2px; justify-content: center; justify-self: center; max-width: 100%; }
-.toolbar-attachments { flex: none; }
+.toolbar-attachments { flex: none; width: max-content; }
 .toolbar-settings .effort-button { display: none; }
 
-@container (max-width: 680px) {
-	.toolbar { grid-template-columns: auto minmax(0, 1fr); gap: 4px; }
-	.toolbar-attachments { grid-column: 1; grid-row: 1; }
-	.toolbar-end { grid-column: 2; grid-row: 1; }
-	.toolbar-settings { grid-column: 1 / -1; grid-row: 2; width: 100%; }
-	.toolbar-settings > .pill { min-width: 0; }
-	.toolbar-settings > .pill:nth-child(1) { flex: 0 1 auto; max-width: 90px; }
-	.toolbar-settings > .pill:nth-child(2) { flex: 0 1 auto; max-width: 130px; }
-	.toolbar-settings .effort { display: none; }
-	.toolbar-settings .effort-button:not([hidden]) { display: inline-flex; flex: none; }
-	.toolbar-settings .approve-toggle { flex: none; }
-}
+.toolbar.compact-effort .toolbar-settings > .pill { min-width: 0; }
+.toolbar.compact-effort .toolbar-settings > .pill:nth-child(1) { flex: 0 1 auto; max-width: 90px; }
+.toolbar.compact-effort .toolbar-settings > .pill:nth-child(2) { flex: 0 1 auto; max-width: 130px; }
+.toolbar.compact-effort .effort { display: none; }
+.toolbar.compact-effort .effort-button:not([hidden]) { display: inline-flex; flex: none; }
+.toolbar.compact-effort .approve-toggle { flex: none; }
+
+.toolbar.stacked { grid-template-columns: auto minmax(0, 1fr); gap: 4px; }
+.toolbar.stacked .toolbar-settings { grid-column: 1 / -1; grid-row: 1; width: 100%; }
+.toolbar.stacked .toolbar-attachments { grid-column: 1; grid-row: 2; }
+.toolbar.stacked .toolbar-end { grid-column: 2; grid-row: 2; }
+
 
 
 .toolbar-end,
@@ -1451,6 +1450,7 @@ body.vscode-light .code-block pre {
 }
 
 .toolbar-end {
+	width: max-content;
 	display: inline-flex;
 	align-items: center;
 	gap: 2px;
@@ -4041,11 +4041,12 @@ body.vscode-light .code-block pre {
 	font-size: 11px;
 }
 .workdir-status .workdir-button { flex: none; }
+.workdir-status .sleep-button { flex: none; margin-left: auto; }
 .workdir-summary {
 	display: flex;
 	align-items: center;
 	gap: 6px;
-	flex: 1;
+	flex: 0 1 auto;
 	min-width: 0;
 	padding: 4px 2px;
 	border: none;
