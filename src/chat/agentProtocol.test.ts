@@ -428,7 +428,7 @@ suite('codexEvents', () => {
 		assert.ok(spawn.type === 'tool');
 		assert.strictEqual(spawn.tool.kind, 'agent');
 		assert.strictEqual(spawn.tool.detail, 'Read the docs');
-		assert.deepStrictEqual(spawn.tool.agent, { type: 'spawnAgent', model: 'gpt-6', threadId: 'th1' });
+		assert.deepStrictEqual(spawn.tool.agent, { type: 'spawnAgent', background: true, model: 'gpt-6', threadId: 'th1' });
 		assert.deepStrictEqual(
 			codexEvents('item/completed', { item: { type: 'collabAgentToolCall', id: 'c1', tool: 'spawnAgent', status: 'completed', receiverThreadIds: ['th1'] } }),
 			[{ type: 'toolUpdate', id: 'c1', update: { agent: { threadId: 'th1' } } }]);

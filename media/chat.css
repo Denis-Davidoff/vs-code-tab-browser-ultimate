@@ -1611,15 +1611,10 @@ body.vscode-light .code-block pre {
 	background: conic-gradient(currentColor var(--fill, 0%), transparent 0);
 }
 
-/* Kept on hover too, where `.ghost` would turn it the plain foreground. */
-.context-button.warn,
-.context-button.warn:hover {
-	color: var(--vscode-editorWarning-foreground, var(--vscode-charts-yellow));
-}
-
-.context-button.full,
-.context-button.full:hover {
-	color: var(--vscode-errorForeground, var(--vscode-charts-red));
+/* A dark neutral keeps the 25% landmark visible on a light background. */
+body.vscode-light .context-pie,
+body.vscode-high-contrast-light .context-pie {
+	--context-neutral: var(--fg);
 }
 
 .context-button.unavailable {

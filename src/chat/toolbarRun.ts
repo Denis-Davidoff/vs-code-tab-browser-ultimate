@@ -1,3 +1,4 @@
+import { SkillAgents } from './skillAgents';
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -56,6 +57,7 @@ interface Running {
 	 */
 	asked: ApprovalRequest[];
 	clear?: ReturnType<typeof setTimeout>;
+	stepTimer?: ReturnType<typeof setTimeout>;
 	/** The chat it was pressed in, whose agents list shows it. */
 	chatId: string;
 	/** Its row in that list. */
@@ -221,10 +223,49 @@ export class ToolbarRuns implements vscode.Disposable {
 		};
 		this._runs.set(key, entry);
 		const current = () => this._runs.get(key) === entry && entry.session === session;
+		const children = new SkillAgents();
+		let pendingEnd = false;
+		const advance = (error?: string) => {
+			const next = steps[entry.step + 1];
+			if (!next) {
+				void this._finish(skill, key, entry, error, entry.stepReply);
+				return;
+			}
+			const gate = stepGate(next.check, error, entry.stepReply);
+			if (!gate.go) {
+				// The skill stops here, as asked: not a failure of the run unless
+				// the step itself failed.
+				const why = vscode.l10n.t("Stopped after prompt {0} of {1}: {2}.", entry.step + 1, steps.length, gate.why);
+				this._end(key, entry, error
+					? { status: 'failed', message: `${error} ${why}`, endedAt: Date.now() }
+					: { status: 'done', message: why, endedAt: Date.now() }, error ? failedShownForMs : shownForMs);
+				if (!error) {
+					confirm(vscode.l10n.t("{0}: {1}", skill.label ?? skill.name, why));
+				}
+				return;
+			}
+			entry.step++;
+			send();
+			return;
+		};
+		const scheduleAdvance = () => {
+			if (entry.stepTimer) { clearTimeout(entry.stepTimer); entry.stepTimer = undefined; }
+			if (!current() || !pendingEnd || children.running || session.running || entry.ownTurns || entry.asked.length) { return; }
+			// Allow the parent's automatic reply to a child result to start first.
+			entry.stepTimer = setTimeout(() => {
+				entry.stepTimer = undefined;
+				if (!current() || !pendingEnd || children.running || session.running || entry.ownTurns || entry.asked.length) { return; }
+				pendingEnd = false;
+				advance();
+			}, 500);
+		};
+
 		session.onEvent(event => {
 			if (!current()) {
 				return;
 			}
+			children.observe(event);
+			if (event.type !== 'turnEnd') { scheduleAdvance(); }
 			switch (event.type) {
 				case 'text':
 					entry.reply += event.text;
@@ -279,37 +320,21 @@ export class ToolbarRuns implements vscode.Disposable {
 					if (entry.asked.some(q => q.id === event.id)) {
 						entry.asked = entry.asked.filter(q => q.id !== event.id);
 						this._showAsked(entry);
+						scheduleAdvance();
 					}
 					return;
 				case 'autoTurn':
 					entry.ownTurns++;
 					return;
 				case 'turnEnd': {
-					if (entry.ownTurns > 0 && !event.error) {
-						entry.ownTurns--;
-						return;
-					}
-					entry.ownTurns = 0;
-					const next = steps[entry.step + 1];
-					if (!next) {
+					if (event.error) {
+						pendingEnd = false;
 						void this._finish(skill, key, entry, event.error, entry.stepReply);
 						return;
 					}
-					const gate = stepGate(next.check, event.error, entry.stepReply);
-					if (!gate.go) {
-						// The skill stops here, as asked: not a failure of the run unless
-						// the step itself failed.
-						const why = vscode.l10n.t("Stopped after prompt {0} of {1}: {2}.", entry.step + 1, steps.length, gate.why);
-						this._end(key, entry, event.error
-							? { status: 'failed', message: `${event.error} ${why}`, endedAt: Date.now() }
-							: { status: 'done', message: why, endedAt: Date.now() }, event.error ? failedShownForMs : shownForMs);
-						if (!event.error) {
-							confirm(vscode.l10n.t("{0}: {1}", skill.label ?? skill.name, why));
-						}
-						return;
-					}
-					entry.step++;
-					send();
+					if (entry.ownTurns > 0) { entry.ownTurns--; }
+					else { pendingEnd = true; }
+					scheduleAdvance();
 					return;
 				}
 			}
@@ -476,6 +501,8 @@ export class ToolbarRuns implements vscode.Disposable {
 	 * it. The host is told of an end the user did not cause (`stopped`, `quiet`).
 	 */
 	private _end(key: number, entry: Running, run: ToolbarRun, shownFor: number, stopped = false, result?: string, quiet = false): void {
+		clearTimeout(entry.stepTimer);
+		entry.stepTimer = undefined;
 		const session = entry.session;
 		entry.session = undefined;
 		entry.asked = [];
@@ -557,6 +584,7 @@ export class ToolbarRuns implements vscode.Disposable {
 			if (entry.clear) {
 				clearTimeout(entry.clear);
 			}
+			clearTimeout(entry.stepTimer);
 			entry.session?.dispose();
 			this._runs.delete(key);
 		}
@@ -568,6 +596,7 @@ export class ToolbarRuns implements vscode.Disposable {
 			if (entry.clear) {
 				clearTimeout(entry.clear);
 			}
+			clearTimeout(entry.stepTimer);
 			entry.session?.dispose();
 			entry.session = undefined;
 		}

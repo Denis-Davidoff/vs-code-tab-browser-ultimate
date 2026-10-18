@@ -176,7 +176,7 @@ const composer = el('div', { class: 'composer' }, attachmentsRow, inputArea, too
 /** Asked when another agent is picked for a conversation that has started. */
 const switchCard = el('div', { class: 'switch-card' });
 /** The toolbar skills the tab's agent offers, above the message box. */
-const skillAddButton = button([icon('add')], { class: 'skill-button skill-add', title: 'Add skill to toolbar' });
+const skillAddButton = button([icon('wand')], { class: 'skill-button skill-add', title: 'Add skill to toolbar' });
 skillAddButton.setAttribute('aria-label', 'Add skill to toolbar');
 skillAddButton.dataset.tip = 'Add skill to toolbar';
 skillAddButton.addEventListener('click', () => openSkillEditor());
@@ -2732,13 +2732,25 @@ function canSend(): boolean {
 	return !!state && (state.detecting || state.agents.some(a => a.available));
 }
 
-/**
- * The context pie. It fills with the share of the context window the
- * conversation holds; the tooltip says how much is left. Warning colour from
- * 80 %, error colour from 95 % — where the agents start compacting on their
- * own. Without a window (Claude Code reports it at the end of the first turn)
- * it shows the size alone and stays empty.
- */
+/** Smooth colour landmarks: grey, white, green, yellow, orange, red. */
+function contextColor(share: number | undefined): string {
+	const stops: readonly [number, string][] = [
+		[0, 'var(--fg-3)'], [0.25, 'var(--context-neutral, #eeeeee)'],
+		[0.5, '#86bc88'], [0.75, '#dfcf70'], [0.9, '#e8a064'], [1, '#e27777'],
+	];
+	const value = share === undefined || !Number.isFinite(share) ? 0 : Math.max(0, Math.min(1, share));
+	for (let i = 1; i < stops.length; i++) {
+		const [end, to] = stops[i];
+		const [start, from] = stops[i - 1];
+		if (value <= end) {
+			const percent = Math.round((value - start) / (end - start) * 100);
+			return `color-mix(in srgb, ${from}, ${to} ${percent}%)`;
+		}
+	}
+	return stops[stops.length - 1][1];
+}
+
+/** The pie fills with context usage; unknown/compacted usage remains empty and grey. */
 function renderContext(s: ChatViewState): void {
 	const c = s.context;
 	contextButton.hidden = !c;
@@ -2752,8 +2764,7 @@ function renderContext(s: ChatViewState): void {
 	// the pie stays empty until the next reply reports the new one.
 	const share = c.window && !c.compacted ? Math.min(1, c.used / c.window) : undefined;
 	contextPie.style.setProperty('--fill', `${share === undefined ? 0 : Math.round(share * 1000) / 10}%`);
-	contextButton.classList.toggle('warn', share !== undefined && share >= 0.8 && share < 0.95);
-	contextButton.classList.toggle('full', share !== undefined && share >= 0.95);
+	contextPie.style.color = contextColor(share);
 	// Not `disabled`: a disabled button gets no pointer events, so the tooltip
 	// saying how full the context is — and why it cannot be compacted now —
 	// would never show. Marked instead, and the click refuses.

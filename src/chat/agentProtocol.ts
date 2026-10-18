@@ -1196,10 +1196,9 @@ function codexTool(item: Record<string, unknown>): ToolStart | undefined {
 			const threads = Array.isArray(item.receiverThreadIds) ? item.receiverThreadIds.filter((t): t is string => typeof t === 'string') : [];
 			return {
 				kind: 'agent', name: 'Agent', detail: prompt ? oneLine(prompt.split('\n')[0]) : undefined, input: prompt,
-				// Not `background`: Codex's parent normally `wait`s for its agents
-				// inside the turn, and nothing measured says a state arrives after
-				// it — so the turn's end settles the row like any other tool's.
-				agent: { type: 'spawnAgent', model: typeof item.model === 'string' ? item.model : undefined, threadId: threads[0] },
+				// A spawn starts a child; only its own completion/state report ends it,
+				// even when the parent returns without calling wait.
+				agent: { type: 'spawnAgent', background: true, model: typeof item.model === 'string' ? item.model : undefined, threadId: threads[0] },
 			};
 		}
 		default:

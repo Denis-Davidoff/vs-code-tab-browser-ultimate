@@ -380,6 +380,11 @@ export class ChatTab {
 
 	/** The next queued message, taken out of the queue to be sent. */
 	public dequeue(): { readonly text: string; readonly attachments: Attachment[]; readonly step?: SkillStep; readonly background?: QueuedRun } | undefined {
+		if (this._stepEnded) {
+			const ended = this._stepEnded;
+			this._stepEnded = undefined;
+			this._gateNextStep(ended.done, ended.error);
+		}
 		let next = this._queued.shift();
 		// A checked skill prompt whose check nobody passed: the skill stops
 		// here, and the queue goes on with what is behind its prompts.
@@ -420,7 +425,7 @@ export class ChatTab {
 
 	/** Messages are queued, and the turn they wait for has ended: the provider may send the next. */
 	public get readyForQueued(): boolean {
-		return this._queued.length > 0 && !this.running && !this._pending.length && !this._waiting.length && !this.waiting;
+		return this._queued.length > 0 && !this.busy && !this._waiting.length && !this.waiting;
 	}
 
 	public get busy(): boolean {
@@ -1146,7 +1151,7 @@ export class ChatTab {
 				}
 				// After the turn's own error, so the line saying a skill stopped reads
 				// as what followed from it.
-				this._gateNextStep(done, event.error);
+				if (done?.step) { this._stepEnded = { done, error: event.error }; }
 				chat.updatedAt = now;
 				void this._save();
 				break;
@@ -1188,6 +1193,8 @@ export class ChatTab {
 	 * saying why. Without a check the next one always goes. A Stop never gets
 	 * here with prompts left: it gives the queue back, which drops them.
 	 */
+	private _stepEnded?: { done: { entry?: UserEntry; step?: SkillStep; asked?: string }; error?: string };
+
 	private _gateNextStep(done: { entry?: UserEntry; step?: SkillStep; asked?: string } | undefined, error: string | undefined): void {
 		const step = done?.step;
 		const next = step && this._queued.find(q => q.step?.chain === step.chain);
@@ -1253,6 +1260,7 @@ export class ChatTab {
 	}
 
 	private _dropSession(): void {
+		this._stepEnded = undefined;
 		this._cancelApprovals();
 		// Not answered, and not lost: shown where the conversation stands.
 		this._flushWaiting();
