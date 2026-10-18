@@ -1,3 +1,4 @@
+import { localFileLink } from '../src/chat/fileLinks';
 import { sleepMinutes, sleepHours, type SleepChoice } from '../src/power/sleepProtocol';
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
@@ -175,8 +176,19 @@ const composer = el('div', { class: 'composer' }, attachmentsRow, inputArea, too
 /** Asked when another agent is picked for a conversation that has started. */
 const switchCard = el('div', { class: 'switch-card' });
 /** The toolbar skills the tab's agent offers, above the message box. */
-const skillBar = el('div', { class: 'skill-bar' });
-skillBar.hidden = true;
+const skillAddButton = button([icon('add')], { class: 'skill-button skill-add', title: 'Add skill to toolbar' });
+skillAddButton.setAttribute('aria-label', 'Add skill to toolbar');
+skillAddButton.dataset.tip = 'Add skill to toolbar';
+skillAddButton.addEventListener('click', () => openSkillEditor());
+const skillList = el('div', { class: 'skill-list' });
+const skillExpandButton = button([icon('chevron-up')], { class: 'skill-button skill-add skill-expand', title: 'Show all skills' });
+skillExpandButton.hidden = true;
+skillExpandButton.setAttribute('aria-expanded', 'false');
+const skillBar = el('div', { class: 'skill-bar' }, skillAddButton, skillList, skillExpandButton);
+skillExpandButton.addEventListener('click', () => {
+	const expanded = skillBar.classList.toggle('expanded');
+	updateSkillExpandButton(expanded);
+});
 /** A question with choices the agent waits on: answered here, above the message box, a tab per question. */
 const questionDock = el('div', { class: 'question-dock' });
 questionDock.hidden = true;
@@ -298,6 +310,14 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 			state = message.state;
 			render();
 			return;
+		case 'localLinkInfo': {
+			const pending = pendingLocalLinkMenu;
+			if (pending?.request === message.request) {
+				pendingLocalLinkMenu = undefined;
+				if (pending.link.isConnected) { linkMenu(pending.link, pending.url, message.directory, message.inWorkspace); }
+			}
+			return;
+		}
 		case 'history':
 			if (message.refresh) {
 				// A delete changed the list: update a panel that is open, and leave
@@ -1638,24 +1658,28 @@ function questionForm(entry: ApprovalEntry, questions: readonly AgentQuestion[])
 	return node;
 }
 
-/**
- * The composer's approval button: a summary of the menu's modes. "Ask" while
- * every category asks, "Auto" or "Deny" while every one does that, and
- * otherwise what differs — "Auto 2 · Deny 1".
- */
+/** The approval modes, counted in Auto / Ask / Deny order; empty modes stay hidden. */
 function renderApproveToggle(s: ChatViewState): void {
 	const rows = approvalCategoryRows(s);
 	const modes = rows.map(r => modeOf(s, r.key));
 	const auto = modes.filter(m => m === 'auto').length;
 	const deny = modes.filter(m => m === 'deny').length;
-	const text = auto === modes.length ? 'Auto' : deny === modes.length ? 'Deny' : !auto && !deny ? 'Ask'
-		: [auto ? `Auto ${auto}` : '', deny ? `Deny ${deny}` : ''].filter(Boolean).join(' · ');
+	const counts = [
+		{ mode: 'auto', label: 'Auto', count: auto },
+		{ mode: 'ask', label: 'Ask', count: modes.length - auto - deny },
+		{ mode: 'deny', label: 'Deny', count: deny },
+	].filter(item => item.count > 0);
+	const text = counts.map(item => `${item.label} ${item.count}`).join(' • ');
 	const title = `Approvals — what the agents may do without asking:\n${rows.map(r => `${r.label}: ${modeLabels[modeOf(s, r.key)]}`).join('\n')}\nCompact (tool calls start folded): ${s.collapseTools ? 'On' : 'Off'}\nClick to change: Auto runs it, Ask asks, Deny refuses.`;
 	const shown = JSON.stringify([text, title]);
 	if (approveToggle.dataset.shown !== shown) {
 		approveToggle.dataset.shown = shown;
-		approveToggle.classList.toggle('on', auto > 0);
-		approveToggle.replaceChildren(icon(auto ? 'unlock' : 'shield'), el('span', { text }));
+		const parts: HTMLElement[] = [el('span', { text: 'Mode' })];
+		counts.forEach((item, index) => {
+			if (index) { parts.push(el('span', { class: 'mode-separator', text: '•' })); }
+			parts.push(el('strong', { class: `mode-count mode-${item.mode}`, text: String(item.count), title: item.label }));
+		});
+		approveToggle.replaceChildren(...parts);
 		approveToggle.title = title;
 		approveToggle.setAttribute('aria-label', `Approvals: ${text}`);
 	}
@@ -2437,7 +2461,7 @@ function inline(parent: HTMLElement, text: string): void {
 		parent.append(text);
 		return;
 	}
-	const pattern = /(`+)([^`]+?)\1|\*\*([^*]+)\*\*|(?<![\w*])\*([^*\s][^*]*?)\*(?![\w*])|\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<>()[\]`"]+)/g;
+	const pattern = /(`+)([^`]+?)\1|\*\*([^*]+)\*\*|(?<![\w*])\*([^*\s][^*]*?)\*(?![\w*])|\[([^\]]+)\]\((<[^>]+>|[^\s)]+)\)|((?:https?:\/\/|file:\/\/)[^\s<>()[\]`"]+)/g;
 	let at = 0;
 	for (const match of text.matchAll(pattern)) {
 		if (match.index > at) {
@@ -2456,9 +2480,14 @@ function inline(parent: HTMLElement, text: string): void {
 			inline(em, match[4]);
 			parent.append(em);
 		} else if (match[6] !== undefined) {
-			const link = linkNode(match[6]);
-			inline(link, match[5]);
-			parent.append(link);
+			const destination = match[6].replace(/^<|>$/g, '');
+			if (/^https?:\/\//i.test(destination) || localFileLink(destination)) {
+				const link = linkNode(destination);
+				inline(link, match[5]);
+				parent.append(link);
+			} else {
+				parent.append(match[0]);
+			}
 		} else {
 			// A bare address. Sentence punctuation after it is not part of it:
 			// "see https://example.com." ends the sentence, not the URL.
@@ -2483,7 +2512,12 @@ const modKey = isMacView ? '⌘' : 'Ctrl';
  * ⌘/Ctrl held in the system one — and checks the scheme again there.
  */
 function linkNode(url: string, text?: string): HTMLElement {
-	const link = el('span', { class: 'link', title: `${url}\nClick: open in AI Browser · ${modKey}+click: system browser`, text });
+	const local = !!localFileLink(url);
+	const link = el('span', { class: 'link', title: local ? `${url}\nOpen file in editor; project folder in VS Code Explorer, other folder in file manager` : `${url}\nClick: open in AI Browser · ${modKey}+click: system browser`, text });
+	link.tabIndex = 0;
+	link.addEventListener('keydown', event => {
+		if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); post({ type: 'openLink', url, external: false }); }
+	});
 	link.setAttribute('role', 'link');
 	link.addEventListener('click', event => {
 		// The row around it may fold or open on a click; this one is the link's.
@@ -2498,21 +2532,37 @@ function linkNode(url: string, text?: string): HTMLElement {
 	link.addEventListener('contextmenu', event => {
 		event.preventDefault();
 		event.stopPropagation();
-		linkMenu(link, url);
+		if (local) {
+			const request = ++localLinkMenuRequest;
+			pendingLocalLinkMenu = { link, url, request };
+			post({ type: 'localLinkInfo', url, request });
+		} else {
+			linkMenu(link, url);
+		}
 	});
 	return link;
 }
 
 /** The right-click menu of a link: either browser, or a copy of its address or its text. */
-function linkMenu(link: HTMLElement, url: string): void {
+let localLinkMenuRequest = 0;
+let pendingLocalLinkMenu: { link: HTMLElement; url: string; request: number } | undefined;
+
+function linkMenu(link: HTMLElement, url: string, directory?: boolean, inWorkspace = false): void {
 	const text = link.textContent ?? '';
 	// A link in an agent's report sits inside a panel. Closing the panel the
 	// menu was opened from hid the link under it and put the menu in the
 	// corner, so the panel stays open beneath the menu.
 	const panel = [agentsPanel, historyPanel, agentAppsPanel, skillEditor].find(p => p.classList.contains('open') && p.contains(link));
 	openMenu(link, [
-		{ icon: 'globe', label: 'Open in AI Browser', shortcut: 'Click', run: () => post({ type: 'openLink', url, external: false }) },
-		{ icon: 'link-external', label: 'Open in System Browser', shortcut: `${modKey}+Click`, run: () => post({ type: 'openLink', url, external: true }) },
+		...(localFileLink(url) ? [
+			...(directory && inWorkspace ? [{ icon: 'files', label: 'Show in VS Code Explorer', shortcut: 'Click', run: () => post({ type: 'openLink', url, external: false }) }] : []),
+			...(directory === false ? [{ icon: 'go-to-file', label: 'Open in tab', run: () => post({ type: 'openLink', url, external: false }) }] : []),
+			{ icon: 'folder-opened', label: isMacView ? 'Show in Finder' : navigator.platform.startsWith('Win') ? 'Show in File Explorer' : 'Show in File Manager', disabled: directory === undefined,
+				run: () => post({ type: 'openLink', url, external: false, reveal: true }) },
+		] : [
+			{ icon: 'globe', label: 'Open in AI Browser', shortcut: 'Click', run: () => post({ type: 'openLink', url, external: false }) },
+			{ icon: 'link-external', label: 'Open in System Browser', shortcut: `${modKey}+Click`, run: () => post({ type: 'openLink', url, external: true }) },
+		]),
 		{ icon: 'copy', label: 'Copy Link', run: () => post({ type: 'copy', text: url }) },
 		{ icon: 'symbol-text', label: 'Copy Link Text', disabled: !text || text === url, run: () => post({ type: 'copy', text }) },
 	], url.length > 60 ? `${url.slice(0, 57)}…` : url, undefined, panel);
@@ -2537,7 +2587,7 @@ function renderAttachments(s: ChatViewState): void {
 	// The state is posted every 40 ms while any tab streams; rebuilding the
 	// chips each time swallowed a click on one whose press outlasted a post,
 	// and took keyboard focus off it.
-	const shown = JSON.stringify(s.attachments.map(c => [c.id, c.kind, c.label, c.thumbnail?.length]));
+	const shown = JSON.stringify(s.attachments.map(c => [c.id, c.kind, c.label, c.reference, c.thumbnail?.length]));
 	if (shown === attachmentsShown) {
 		return;
 	}
@@ -2552,12 +2602,61 @@ function renderAttachments(s: ChatViewState): void {
 			img.alt = '';
 			thumb = img;
 		}
-		// The chip itself opens what it attaches, in an editor tab; the x removes it.
-		const open = button([thumb, el('span', { class: 'chip-label', text: chip.label })], { class: 'chip-open', title: `Open ${chip.label}` });
+		const reference = chip.reference;
+		const insert = button([thumb], { class: 'chip-reference', title: `Insert reference ${reference ?? ''}` });
+		insert.disabled = !reference;
+		// Keep the textarea's selection while pressing the icon or reference.
+		insert.addEventListener('mousedown', event => event.preventDefault());
+		insert.addEventListener('click', () => { if (reference) { insertAttachmentReference(reference); } });
+		const open = button([
+			el('span', { class: 'chip-label', text: chip.label }),
+		], { class: 'chip-open', title: `Open ${chip.label}` });
 		open.addEventListener('click', () => post({ type: 'openAttachment', id: chip.id }));
-		return el('span', { class: 'chip' }, open, remove);
+		const referenceButton = reference ? button([
+			el('span', { class: 'chip-reference-label', text: reference }),
+		], { class: 'chip-reference', title: `Insert reference ${reference}` }) : undefined;
+		referenceButton?.addEventListener('mousedown', event => event.preventDefault());
+		referenceButton?.addEventListener('click', () => { if (reference) { insertAttachmentReference(reference); } });
+		const root = el('span', { class: 'chip' }, insert, open, referenceButton, remove);
+		root.addEventListener('contextmenu', event => {
+			event.preventDefault();
+			openMenu(root, [
+				{ icon: 'go-to-file', label: 'Open in tab', run: () => post({ type: 'openAttachment', id: chip.id }) },
+				{ icon: 'mention', label: 'Insert reference', description: reference, disabled: !reference,
+					run: () => { if (reference) { insertAttachmentReference(reference); } } },
+			], chip.label);
+		});
+		return root;
 	}));
 	attachmentsRow.hidden = !s.attachments.length;
+}
+
+// A selection is remembered per draft; without one, references append to the message.
+let attachmentCaret: { chat: string | undefined; value: string; start: number; end: number } | undefined;
+function rememberAttachmentCaret(): void {
+	attachmentCaret = { chat: draftChat, value: input.value, start: input.selectionStart, end: input.selectionEnd };
+}
+input.addEventListener('select', rememberAttachmentCaret);
+input.addEventListener('keyup', rememberAttachmentCaret);
+input.addEventListener('click', rememberAttachmentCaret);
+input.addEventListener('input', rememberAttachmentCaret);
+input.addEventListener('blur', rememberAttachmentCaret);
+
+function insertAttachmentReference(reference: string): void {
+	const selection = attachmentCaret && attachmentCaret.chat === draftChat && attachmentCaret.value === input.value ? attachmentCaret : undefined;
+	const start = selection?.start ?? input.value.length;
+	const end = selection?.end ?? start;
+	const before = input.value.slice(0, start);
+	const after = input.value.slice(end);
+	const leading = before && !/\s$/.test(before) ? ' ' : '';
+	const trailing = !after || !/^\s/.test(after) ? ' ' : '';
+	input.setRangeText(`${leading}${reference}${trailing}`, start, end, 'end');
+	input.focus();
+	rememberAttachmentCaret();
+	// Chip insertion always edits the composer, even after using a skill editor.
+	saveDraft();
+	autosize();
+	renderSend();
 }
 
 function attachmentIcon(kind: AttachmentKind): string {
@@ -3216,6 +3315,20 @@ function closeMenuOverPanel(): boolean {
 	return true;
 }
 
+/** Clicks elsewhere in VS Code never reach this webview's document. */
+function dismissOutsideView(): void {
+	pendingLocalLinkMenu = undefined;
+	closePopups();
+	hoverTip.hide();
+}
+
+window.addEventListener('blur', dismissOutsideView);
+document.addEventListener('visibilitychange', () => {
+	if (document.hidden) {
+		dismissOutsideView();
+	}
+});
+
 document.addEventListener('mousedown', event => {
 	const target = event.target as Node;
 	// A menu over a panel closes on any press outside it; the panel then
@@ -3628,6 +3741,26 @@ function skillItems(s: ChatViewState): PaletteItem[] {
 	}));
 }
 
+function attachmentItems(s: ChatViewState): PaletteItem[] {
+	return s.attachments.flatMap(chip => {
+		const reference = chip.reference;
+		if (!reference) { return []; }
+		return [{
+			key: `attachment:${chip.id}`, group: 'Attachments', name: reference.slice(1),
+			label: `${reference} ${chip.label}`, icon: attachmentIcon(chip.kind),
+			detail: chip.kind, haystack: `${reference} ${chip.label} ${chip.kind}`.toLowerCase(),
+			run: () => {
+				// closePalette preserves the query bounds before the textarea regains focus.
+				input.setRangeText(`${reference} `, inlineStart, inlineEnd, 'end');
+				input.focus();
+				rememberAttachmentCaret();
+				paletteDismissed = input.value;
+				afterBoxEdit();
+			},
+		}];
+	});
+}
+
 function paletteQuery(): string {
 	if (paletteMode === 'button') {
 		return paletteSearch.value.trim().toLowerCase();
@@ -3665,7 +3798,8 @@ function buildPalette(s: ChatViewState): void {
 	const box = paletteTarget === input;
 	const actions = box && sigil === '/' && (!inline || query) ? chatActions(s) : [];
 	const own = box ? toolbarItems(s) : [];
-	const all = inline ? [...own, ...skillItems(s), ...actions] : [...actions, ...own, ...skillItems(s)];
+	const all = box && sigil === '@' ? attachmentItems(s)
+		: inline ? [...own, ...skillItems(s), ...actions] : [...actions, ...own, ...skillItems(s)];
 	const ranked = all.map((item, i) => ({ item, i, r: rank(item, query) }))
 		.filter((x): x is { item: PaletteItem; i: number; r: number } => x.r !== undefined);
 	if (query) {
@@ -3730,7 +3864,8 @@ function buildPalette(s: ChatViewState): void {
 	const agent = paletteSkillsAgent(s);
 	const listed = agent ? s.commands[agent] : undefined;
 	const name = s.agents.find(a => a.id === agent)?.name ?? 'The agent';
-	const status = query ? (paletteItems.length ? undefined : 'Nothing matches.')
+	const status = sigil === '@' ? (paletteItems.length ? undefined : 'No matching attachments.')
+		: query ? (paletteItems.length ? undefined : 'Nothing matches.')
 		: s.detecting && !listed?.length ? `Looking for ${name}'s skills…`
 			: !listed ? `${name}'s skills could not be listed.`
 				: !listed.length ? `${name} lists no skills.` : undefined;
@@ -3883,7 +4018,7 @@ function openPalette(mode: PaletteMode): void {
 		paletteSearch.focus();
 	}
 	const agent = paletteSkillsAgent(s);
-	if (agent) {
+	if (agent && !(mode === 'inline' && paletteTarget.value[inlineStart] === '@')) {
 		post({ type: 'listCommands', agent });
 	}
 }
@@ -3906,7 +4041,7 @@ function renderPalette(s: ChatViewState): void {
 	}
 	const agent = paletteSkillsAgent(s);
 	const shape = JSON.stringify([agent, paletteTarget === input, s.toolbar, paletteMode === 'inline' ? paletteTarget.value.slice(inlineStart, paletteTarget.selectionStart ?? undefined) : paletteSearch.value,
-		s.detecting, agent ? s.commands[agent] : undefined, s.entries.length > 0,
+		s.detecting, agent ? s.commands[agent] : undefined, s.attachments, s.entries.length > 0,
 		s.entries.some(e => e.kind === 'user' || e.kind === 'assistant'), s.tabs.find(t => t.id === s.activeTab)?.busy]);
 	if (shape === paletteShape) {
 		return;
@@ -3968,7 +4103,7 @@ function inlineToken(): number | undefined {
 	if (after && !/^\s/.test(after)) {
 		return undefined;
 	}
-	const m = /(^|\s)[/$]\S*$/.exec(before);
+	const m = (paletteTarget === input ? /(^|\s)[/@$]\S*$/ : /(^|\s)[/$]\S*$/).exec(before);
 	return m ? m.index + m[1].length : undefined;
 }
 
@@ -4101,6 +4236,16 @@ function workdirItemsFor(s: ChatViewState, query: string): WorkdirItem[] {
 		if (!seen.has(f.path)) {
 			seen.add(f.path);
 			items.push(folderRow(f, 'picked recently'));
+			if (f.removable) {
+				items.push({
+					key: `folder:remove:${f.path}`, group, label: `Remove ${f.name}…`, icon: 'trash',
+					detail: `Delete the temporary repository copy — ${f.path}`,
+					run: () => openMenu(workdirButton, [
+						{ icon: 'trash', label: 'Remove', description: 'Changes not pushed are lost', run: () => post({ type: 'removeRepoFolder', path: f.path }) },
+						{ icon: 'close', label: 'Cancel', run: () => undefined },
+					], `Remove ${f.name}? Changes not pushed are lost.`),
+				});
+			}
 		}
 	}
 	// Picked in a window with no folder: the way back to none.
@@ -4508,9 +4653,84 @@ function visibleToolbar(s: ChatViewState): ToolbarSkill[] {
 /** Each skill's button, kept across posts and updated in place (#365): a run's state changes it often. */
 const skillButtons = new Map<string, { button: HTMLButtonElement; shape: string }>();
 
+
+let draggedSkill: string | undefined;
+let skillDragEnded = -Infinity;
+
+function clearSkillDropMarks(): void {
+	for (const { button } of skillButtons.values()) {
+		button.classList.remove('drop-before', 'drop-after');
+	}
+}
+
+function makeSkillDraggable(button: HTMLButtonElement, id: string): void {
+	button.draggable = true;
+	button.addEventListener('dragstart', event => {
+		if (!event.dataTransfer) { event.preventDefault(); return; }
+		draggedSkill = id;
+		event.dataTransfer.effectAllowed = 'move';
+		event.dataTransfer.setData('application/x-ai-browser-toolbar-skill', id);
+		button.classList.add('dragging');
+		hoverTip.hide();
+		closePopups();
+	});
+	button.addEventListener('dragover', event => {
+		if (!draggedSkill || draggedSkill === id) { clearSkillDropMarks(); return; }
+		event.preventDefault();
+		if (event.dataTransfer) { event.dataTransfer.dropEffect = 'move'; }
+		clearSkillDropMarks();
+		const rect = button.getBoundingClientRect();
+		button.classList.add(event.clientX >= rect.left + rect.width / 2 ? 'drop-after' : 'drop-before');
+	});
+	button.addEventListener('dragleave', () => button.classList.remove('drop-before', 'drop-after'));
+	button.addEventListener('drop', event => {
+		if (!draggedSkill) { return; }
+		event.preventDefault();
+		event.stopPropagation();
+		const from = draggedSkill;
+		const rect = button.getBoundingClientRect();
+		const after = event.clientX >= rect.left + rect.width / 2;
+		clearSkillDropMarks();
+		if (from !== id) { post({ type: 'placeToolbarSkill', id: from, target: id, after }); }
+	});
+	button.addEventListener('dragend', () => {
+		draggedSkill = undefined;
+		skillDragEnded = performance.now();
+		button.classList.remove('dragging');
+		clearSkillDropMarks();
+	});
+}
+
+function updateSkillExpandButton(expanded: boolean): void {
+	skillExpandButton.replaceChildren(icon(expanded ? 'chevron-down' : 'chevron-up'));
+	const label = expanded ? 'Collapse skills' : 'Show all skills';
+	skillExpandButton.title = label;
+	skillExpandButton.dataset.tip = label;
+	skillExpandButton.setAttribute('aria-label', label);
+	skillExpandButton.setAttribute('aria-expanded', String(expanded));
+}
+
+let skillLayoutFrame: number | undefined;
+function scheduleSkillLayout(): void {
+	if (skillLayoutFrame !== undefined) { return; }
+	skillLayoutFrame = requestAnimationFrame(() => {
+		skillLayoutFrame = undefined;
+		if (!skillBar.clientWidth) { return; }
+		const gap = parseFloat(getComputedStyle(skillBar).columnGap) || 0;
+		const buttons = Array.from(skillList.children) as HTMLElement[];
+		const width = buttons.reduce((sum, b) => sum + b.getBoundingClientRect().width, 0) + Math.max(0, buttons.length - 1) * gap;
+		const overflow = width > skillBar.clientWidth - skillAddButton.offsetWidth - gap;
+		skillExpandButton.hidden = !overflow;
+		if (!overflow && skillBar.classList.contains('expanded')) {
+			skillBar.classList.remove('expanded');
+			updateSkillExpandButton(false);
+		}
+	});
+}
+new ResizeObserver(scheduleSkillLayout).observe(skillBar);
+
 function renderSkillBar(s: ChatViewState): void {
 	const skills = visibleToolbar(s);
-	skillBar.hidden = !skills.length;
 	const keep = new Set(skills.map(k => k.id));
 	for (const [id, entry] of skillButtons) {
 		if (!keep.has(id)) {
@@ -4525,7 +4745,10 @@ function renderSkillBar(s: ChatViewState): void {
 			button.type = 'button';
 			const id = skill.id;
 			// ⌘/Ctrl+click queues it for after the running turn, as ⌘Enter queues a message.
-			button.addEventListener('click', event => pressSkill(id, button, event.metaKey || event.ctrlKey));
+			button.addEventListener('click', event => {
+				if (!draggedSkill && performance.now() - skillDragEnded > 250) { pressSkill(id, button, event.metaKey || event.ctrlKey); }
+			});
+			makeSkillDraggable(button, id);
 			hoverTip.attach(button);
 			button.addEventListener('contextmenu', event => {
 				event.preventDefault();
@@ -4568,10 +4791,11 @@ function renderSkillBar(s: ChatViewState): void {
 				hoverTip.show(entry.button);
 			}
 		}
-		if (skillBar.children[index] !== entry.button) {
-			skillBar.insertBefore(entry.button, skillBar.children[index] ?? null);
+		if (skillList.children[index] !== entry.button) {
+			skillList.insertBefore(entry.button, skillList.children[index] ?? null);
 		}
 	});
+	scheduleSkillLayout();
 }
 
 /**
@@ -4631,6 +4855,8 @@ const hoverTip = (() => {
 
 // The context pie's tooltip: how much of the window is used and how much is left.
 hoverTip.attach(contextButton);
+hoverTip.attach(skillAddButton);
+hoverTip.attach(skillExpandButton);
 
 function toolbarSkill(id: string): ToolbarSkill | undefined {
 	return state?.toolbar.find(s => s.id === id);

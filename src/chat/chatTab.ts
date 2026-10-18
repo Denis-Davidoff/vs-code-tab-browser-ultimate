@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { attachmentContext, attachmentReference } from './attachmentReferences';
 import { realpathSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -300,13 +301,21 @@ export class ChatTab {
 		this._post();
 	}
 
+	/** A late background title must never replace a manually named or different conversation. */
+	public applyGeneratedTitle(chatId: string, title: string): void {
+		if (this._closed || this._discarded || this._chat.id !== chatId || this._chat.named || !this.started) { return; }
+		this._chat.title = title;
+		void this._save();
+		this._post();
+	}
+
 	/** A turn is running, or an agent is: closing the tab would stop something. */
 	/** The messages not in the conversation yet, for the view; see `PendingSend`. */
 	public get pendingSends(): PendingSend[] {
 		return [
 			...this._waiting.map(w => ({ id: w.id, text: w.entry.text, kind: 'steer' as const, attachments: w.entry.attachments })),
 			...this._queued.map(q => ({
-				id: q.id, text: q.text, kind: 'queue' as const, attachments: q.attachments.map(a => a.chip.label),
+				id: q.id, text: q.text, kind: 'queue' as const, attachments: q.attachments.map(a => `${attachmentReference(a.chip)} ${a.chip.label}`),
 				skill: q.step ? { name: q.step.name, step: q.step.step, steps: q.step.steps, check: q.step.check }
 					: q.background ? { name: q.background.name, step: 1, steps: 1, background: true } : undefined,
 			})),
@@ -619,7 +628,7 @@ export class ChatTab {
 		this._failed = false;
 		this._unseen = false;
 		this._failuresBefore = failures(this._chat);
-		const entry: UserEntry = { kind: 'user', text, attachments: attachments.map(a => a.chip.label), at: Date.now() };
+		const entry: UserEntry = { kind: 'user', text, attachments: attachments.map(a => `${attachmentReference(a.chip)} ${a.chip.label}`), at: Date.now() };
 		// A skill prompt followed by one with a check asks the agent to judge it;
 		// the chat shows the prompt as written, the instruction is ours. The
 		// next prompt is the one queued now, whatever was taken out since.
@@ -651,7 +660,7 @@ export class ChatTab {
 		}
 
 		const sent = asked ? withNextDecision(text, asked) : text;
-		const prompt = [sent, ...attachments.map(a => a.text).filter((t): t is string => !!t)].filter(Boolean).join('\n\n');
+		const prompt = [sent, attachmentContext(attachments)].filter(Boolean).join('\n\n');
 		const images = attachments.map(a => a.image).filter((i): i is TurnImage => !!i);
 
 		const chat = this._chat;

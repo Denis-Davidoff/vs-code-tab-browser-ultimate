@@ -1,3 +1,4 @@
+import { requestTitle } from './autoTitle';
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -297,6 +298,10 @@ export class ClaudeBackend implements AgentBackend {
 		} catch (err) {
 			return { agent: 'claude', windows: [], notes: [], error: err instanceof Error ? err.message : String(err) };
 		}
+	}
+
+	public generateTitle(model: ChatModel, context: string, signal: AbortSignal): Promise<string | undefined> {
+		return requestTitle(this._binary, this.id, model, context, signal);
 	}
 
 	public openSession(cwd: string, resume?: string, priorCostUsd?: number, root?: string, readDirs?: readonly string[], ownSettings = true): AgentSession {

@@ -151,7 +151,7 @@ button {
 	width: 100%;
 	padding: 7px 11px;
 	border-radius: var(--radius);
-	border: 1px solid var(--border-strong);
+	border: 1px solid color-mix(in srgb, var(--vscode-charts-yellow, #cca700) 35%, var(--border-strong));
 	background: var(--surface);
 	line-height: var(--line);
 	cursor: pointer;
@@ -1604,8 +1604,8 @@ body.vscode-light .code-block pre {
 .context-pie {
 	display: inline-block;
 	box-sizing: border-box;
-	width: var(--toolbar-round-mark-size);
-	height: var(--toolbar-round-mark-size);
+	width: calc(var(--toolbar-round-mark-size) * 0.9);
+	height: calc(var(--toolbar-round-mark-size) * 0.9);
 	border-radius: 50%;
 	border: 1.5px solid currentColor;
 	background: conic-gradient(currentColor var(--fill, 0%), transparent 0);
@@ -2340,7 +2340,8 @@ body.vscode-light .code-block pre {
 .tab-mark {
 	flex: none;
 	width: 10px;
-	height: 10px;
+	height: 1em;
+	align-self: center;
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
@@ -2348,6 +2349,8 @@ body.vscode-light .code-block pre {
 }
 
 .tab-mark.working {
+	/* Symbol glyphs sit below the visual centre of the text line. */
+	transform: translateY(-1px);
 	color: var(--accent);
 	font-size: 11px;
 }
@@ -2385,6 +2388,8 @@ body.vscode-light .code-block pre {
 .tab-close {
 	flex: none;
 	display: flex;
+	align-items: center;
+	justify-content: center;
 	padding: 2px;
 	margin-right: 3px;
 	border: none;
@@ -2655,6 +2660,30 @@ body.vscode-light .code-block pre {
 	gap: 4px;
 	min-width: 0;
 	margin-left: -6px;
+}
+
+/* The icon and reference insert a reference; the label opens the attachment. */
+.chip-reference {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 5px;
+	flex: none;
+	padding: 0;
+	border: none;
+	background: transparent;
+	color: var(--fg-3);
+	font: inherit;
+	cursor: pointer;
+}
+
+.chip-reference:hover {
+	color: var(--fg);
+}
+
+.chip-reference-label {
+	color: var(--fg-3);
+	font-size: 0.9em;
 }
 
 /* a composer chip opens what it attaches */
@@ -3060,11 +3089,24 @@ body.vscode-light .code-block pre {
 }
 
 .approve-toggle {
-	gap: 3px;
+	gap: 4px;
+	color: var(--fg-3);
 }
 
-.approve-toggle.on {
-	color: var(--warn);
+.approve-toggle .mode-count {
+	font-weight: 400;
+}
+
+.approve-toggle .mode-auto {
+	color: color-mix(in srgb, var(--vscode-charts-green, #89b883) 65%, var(--fg-3));
+}
+
+.approve-toggle .mode-ask {
+	color: color-mix(in srgb, var(--vscode-charts-yellow, #cca700) 65%, var(--fg-3));
+}
+
+.approve-toggle .mode-deny {
+	color: color-mix(in srgb, var(--vscode-charts-red, #cd8585) 65%, var(--fg-3));
 }
 
 .tab-mark.waiting::before {
@@ -3541,10 +3583,24 @@ body.vscode-light .code-block pre {
 
 .skill-bar {
 	display: flex;
-	flex-wrap: wrap;
+	align-items: flex-start;
 	gap: 4px;
 	padding: 0 2px 6px;
 }
+
+.skill-list {
+	display: flex;
+	flex: 1;
+	min-width: 0;
+	flex-wrap: wrap;
+	gap: 4px;
+	max-height: 26px;
+	overflow: hidden;
+}
+
+.skill-list > .skill-button { flex-shrink: 0; }
+.skill-bar.expanded .skill-list { max-height: none; overflow: visible; }
+.skill-expand[hidden] { display: none; }
 
 .skill-bar[hidden] {
 	display: none;
@@ -3566,6 +3622,32 @@ body.vscode-light .code-block pre {
 	cursor: pointer;
 	transition: background .15s, color .15s, border-color .15s;
 }
+
+.skill-add {
+	flex: none;
+	width: 26px;
+	padding: 0;
+	justify-content: center;
+}
+
+.skill-button.dragging {
+	opacity: 0.45;
+}
+
+.skill-button.drop-before::before,
+.skill-button.drop-after::after {
+	content: '';
+	position: absolute;
+	top: 1px;
+	bottom: 1px;
+	width: 2px;
+	border-radius: 1px;
+	background: var(--accent);
+	pointer-events: none;
+}
+
+.skill-button.drop-before::before { left: -4px; }
+.skill-button.drop-after::after { right: -4px; }
 
 /* Hover, and a darker shade while pressed — nothing that stays once the
    button is let go: the `active` class an open popover leaves on its anchor
@@ -4041,7 +4123,7 @@ body.vscode-light .code-block pre {
 	font-size: 11px;
 }
 .workdir-status .workdir-button { flex: none; }
-.workdir-status .sleep-button { flex: none; margin-left: auto; }
+.workdir-status .sleep-button { flex: none; margin-left: auto; margin-right: 4px; }
 .workdir-summary {
 	display: flex;
 	align-items: center;

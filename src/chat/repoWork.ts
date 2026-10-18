@@ -266,7 +266,7 @@ export async function pushCopy(git: string, copy: string, base: string, branch: 
 }
 
 /** Removes a separate copy and its local branch; what was pushed stays on GitHub. */
-export function removeCopy(git: string, storage: string, repo: RepoRef, copy: string, branch: string): Promise<void> {
+export function removeCopy(git: string, storage: string, repo: RepoRef, copy: string, branch?: string): Promise<void> {
 	return serial(repoSlug(repo).toLowerCase(), async () => {
 		const base = path.join(repoDir(storage, repo), 'base');
 		await runGit(git, ['worktree', 'remove', '--force', '--', copy], base).catch(async () => {
@@ -274,6 +274,34 @@ export function removeCopy(git: string, storage: string, repo: RepoRef, copy: st
 			await fs.rm(copy, { recursive: true, force: true });
 			await runGit(git, ['worktree', 'prune'], base);
 		});
-		await runGit(git, ['branch', '-D', branch], base).catch(() => undefined);
+		if (branch) {
+			await runGit(git, ['branch', '-D', branch], base).catch(() => undefined);
+		}
 	});
+}
+
+/** Only disposable copies in our storage; never a clone in a user-picked folder. */
+export function storedCopyRepo(storage: string, folder: string): RepoRef | undefined {
+	const relative = path.relative(path.join(storage, 'github'), folder);
+	const parts = relative.split(path.sep);
+	if (parts.length !== 4 || parts[2] !== 'copies' || parts.some(p => !p || p === '.' || p === '..')) {
+		return undefined;
+	}
+	return /^[A-Za-z0-9_.-]+$/.test(parts[0]) && /^[A-Za-z0-9_.-]+$/.test(parts[1])
+		? { owner: parts[0], name: parts[1] } : undefined;
+}
+
+export async function removeStoredCopy(git: string, storage: string, folder: string): Promise<void> {
+	const repo = storedCopyRepo(storage, folder);
+	if (!repo || !await isOurWorktree(storage, repo, folder)) {
+		throw new GitError('This folder is not a managed repository copy.');
+	}
+	const realRoot = await fs.realpath(path.join(storage, 'github'));
+	const realFolder = await fs.realpath(folder);
+	if (path.relative(realRoot, realFolder) !== path.relative(path.join(storage, 'github'), folder)) {
+		throw new GitError('The repository copy points outside its storage folder.');
+	}
+	// rev-parse succeeds for detached HEAD too; there is then no current branch to delete.
+	const branch = (await runGit(git, ['rev-parse', '--abbrev-ref', 'HEAD'], folder)).trim();
+	await removeCopy(git, storage, repo, folder, branch === 'HEAD' ? undefined : branch);
 }

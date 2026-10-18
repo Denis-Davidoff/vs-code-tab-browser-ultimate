@@ -1,3 +1,4 @@
+import { requestTitle } from './autoTitle';
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -268,6 +269,10 @@ export class CodexBackend implements AgentBackend {
 		this._process = undefined;
 		this._ready = undefined;
 		process?.dispose();
+	}
+
+	public generateTitle(model: ChatModel, context: string, signal: AbortSignal): Promise<string | undefined> {
+		return requestTitle(this._binary, this.id, model, context, signal);
 	}
 
 	public openSession(cwd: string, resume?: string, _priorCostUsd?: number, root?: string, _readDirs?: readonly string[], _ownSettings?: boolean): AgentSession {

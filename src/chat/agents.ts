@@ -67,6 +67,8 @@ export interface BrowserServer {
 
 export interface AgentBackend extends vscode.Disposable {
 	readonly id: AgentId;
+	/** Optional one-shot title on a small model; never uses a conversation session. */
+	generateTitle?(model: ChatModel, context: string, signal: AbortSignal): Promise<string | undefined>;
 	models(): Promise<ChatModel[]>;
 	/** The skills and commands it offers, read again from the CLI; kept as `knownCommands`. */
 	commands(): Promise<ChatCommand[]>;

@@ -1,9 +1,12 @@
+import { titleModel } from './autoTitle';
+import { localFileLink } from './fileLinks';
 import { SleepControl } from '../power/sleepControl';
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { attachmentReference } from './attachmentReferences';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -16,7 +19,7 @@ import { chatTranscript, transcriptFileName } from './transcript';
 import { diffSides } from './diffSides';
 import { listWorkdir, type WorkdirListing } from './workdir';
 import { compareUrl, parseRepo, repoSlug, validBranch, workBranchName, type RepoRef } from './githubRepo';
-import { cloneInto, copyChanges, isEmptyFolder, isOurWorktree, makeCopy, makeReference, pushCopy, removeCopy } from './repoWork';
+import { cloneInto, copyChanges, isEmptyFolder, isOurWorktree, makeCopy, makeReference, pushCopy, removeCopy, storedCopyRepo, removeStoredCopy } from './repoWork';
 import { gitBinary } from '../core/gitBinary';
 import { cleanUpReportsIn, writeChatTranscript } from '../elements/assistants';
 import { savePng } from '../browser/clipboardImage';
@@ -512,7 +515,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			chatId: this._active.chat.id,
 			entries: this._active.chat.entries,
 			running: this._active.running,
-			attachments: this._active.attachments.map(a => a.chip),
+			attachments: this._active.attachments.map(a => ({ ...a.chip, reference: attachmentReference(a.chip) })),
 			pendingSends: this._active.pendingSends,
 			tabs: this._tabs.map((tab): ChatTabSummary => ({
 				id: tab.id,
@@ -631,6 +634,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				this._chatSkillTabs.delete(message.id);
 				await this._storeToolbar(this._toolbar().filter(s => s.id !== message.id));
 				return;
+			case 'placeToolbarSkill': {
+				if (message.id === message.target) { return; }
+				const list = [...this._toolbar()];
+				const from = list.findIndex(s => s.id === message.id);
+				if (from < 0 || !list.some(s => s.id === message.target)) { return; }
+				const [skill] = list.splice(from, 1);
+				const target = list.findIndex(s => s.id === message.target);
+				list.splice(target + (message.after === true ? 1 : 0), 0, skill);
+				await this._storeToolbar(list);
+				return;
+			}
 			case 'moveToolbarSkill': {
 				const list = [...this._toolbar()];
 				const at = list.findIndex(s => s.id === message.id);
@@ -687,6 +701,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				return;
 			case 'openRepo':
 				await this._openRepo(message.repo, message.branch, message.mode);
+				return;
+			case 'removeRepoFolder':
+				if (typeof message.path === 'string') { await this._removeRepoFolder(message.path); }
 				return;
 			case 'repoAction':
 				await this._repoAction(message.action);
@@ -802,7 +819,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				// One line, and short: it is a tab label, a history row and a transcript heading.
 				const title = typeof message.title === 'string' ? capAt(message.title.replace(/\s+/g, ' ').trim(), tabTitleLimit) : '';
 				if (title) {
-					this._tabs.find(t => t.id === message.id)?.rename(title);
+					const tab = this._tabs.find(t => t.id === message.id);
+					if (tab) { this._titleRequests.get(tab)?.abort(); tab.rename(title); }
 				}
 				return;
 			}
@@ -861,8 +879,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				// command already decides that (see "The dropdown on the browser tab").
 				await vscode.commands.executeCommand('aiBrowser.newTab');
 				return;
+			case 'localLinkInfo':
+				await this._localLinkInfo(message.url, message.request);
+				return;
 			case 'openLink':
-				await this._openLink(message.url, message.external);
+				await this._openLink(message.url, message.external, message.reveal);
 				return;
 			case 'openFile':
 				await this._openFile(message.path);
@@ -903,7 +924,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 * opened; anything else is refused in the status bar, never a toast over
 	 * the browser.
 	 */
-	private async _openFile(file: unknown): Promise<void> {
+	private async _openFile(file: unknown, line?: number, column?: number, reveal = false): Promise<void> {
 		if (typeof file !== 'string' || !file || file.length > 4096 || /[\0\n\r]/.test(file)) {
 			return;
 		}
@@ -911,8 +932,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		const uri = vscode.Uri.file(path.resolve(this._cwd(), expanded));
 		try {
 			const stat = await vscode.workspace.fs.stat(uri);
-			if (stat.type & vscode.FileType.Directory) {
-				await vscode.commands.executeCommand('revealInExplorer', uri);
+			if (reveal || (stat.type & vscode.FileType.Directory)) {
+				const inProject = !reveal && !!vscode.workspace.getWorkspaceFolder(uri);
+				await vscode.commands.executeCommand(inProject ? 'revealInExplorer' : 'revealFileInOS', uri);
 				return;
 			}
 		} catch {
@@ -920,20 +942,43 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			return;
 		}
 		try {
-			await vscode.commands.executeCommand('vscode.open', uri, { preview: true, viewColumn: vscode.ViewColumn.Active } satisfies vscode.TextDocumentShowOptions);
+			const position = line !== undefined ? new vscode.Position(Math.max(0, line - 1), Math.max(0, (column ?? 1) - 1)) : undefined;
+			await vscode.commands.executeCommand('vscode.open', uri, { preview: true, viewColumn: vscode.ViewColumn.Active, selection: position ? new vscode.Range(position, position) : undefined } satisfies vscode.TextDocumentShowOptions);
 		} catch (error) {
 			refuse(vscode.l10n.t('Could not open {0}: {1}', plainInLabel(file), plainInLabel(error instanceof Error ? error.message : String(error))));
 		}
 	}
 
 	/**
-	 * A link a model wrote, clicked in a reply. Only `http` and `https`: the
-	 * address is the model's choice, and `command:`, `file:` or `vscode:` would
-	 * turn a click into running something. The built-in browser goes through
+	 * A link a model wrote: local paths open existing files or reveal folders.
+	 * Other links allow only http/https, never command: or vscode:. The built-in browser goes through
 	 * `aiBrowser.show`, which honours `useIntegratedBrowser` and the grant like
 	 * every other way in; with ⌘/Ctrl held it is the system browser.
 	 */
-	private async _openLink(url: unknown, external: unknown): Promise<void> {
+	private async _localLinkInfo(url: unknown, request: number): Promise<void> {
+		let directory: boolean | undefined;
+		let inWorkspace = false;
+		const local = typeof url === 'string' && localFileLink(url);
+		if (local && local.path.length <= 4096) {
+			const file = local.path;
+			const expanded = file === '~' || file.startsWith('~/') ? path.join(os.homedir(), file.slice(1)) : file;
+			try {
+				const uri = vscode.Uri.file(path.resolve(this._cwd(), expanded));
+				const stat = await vscode.workspace.fs.stat(uri);
+				inWorkspace = !!vscode.workspace.getWorkspaceFolder(uri);
+				directory = !!(stat.type & vscode.FileType.Directory);
+			} catch { /* Missing links still offer copying their path. */ }
+		}
+		this._postMessage({ type: 'localLinkInfo', request, directory, inWorkspace });
+	}
+
+	private async _openLink(url: unknown, external: unknown, reveal?: boolean): Promise<void> {
+		if (typeof url !== 'string') { return; }
+		const local = localFileLink(url);
+		if (local) {
+			await this._openFile(local.path, local.line, local.column, reveal === true);
+			return;
+		}
 		let parsed: URL;
 		try {
 			parsed = new URL(String(url));
@@ -1413,8 +1458,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		if (tab === this._active) {
 			this._switchTo = undefined;
 		}
-		await tab.send(text, attachments, agent, model, effort, backend, step);
+		const needsTitle = !tab.started && !tab.chat.named;
+		const titleContext = [text.slice(0, 1000), ...attachments.slice(0, 5).map(a => a.chip.label.slice(0, 80))].join('\n').slice(0, 1200);
+		const sent = tab.send(text, attachments, agent, model, effort, backend, step);
+		if (needsTitle) { this._generateTabTitle(tab, agent, titleContext); }
+		await sent;
 		this._saveTabs();
+	}
+
+	private readonly _titleRequests = new Map<ChatTab, AbortController>();
+
+	private _generateTabTitle(tab: ChatTab, agent: AgentId, context: string): void {
+		const backend = this._registry.backend(agent);
+		const model = titleModel(this._registry.agents.find(a => a.id === agent)?.models ?? []);
+		if (!backend?.generateTitle || !model) { return; }
+		this._titleRequests.get(tab)?.abort();
+		const chatId = tab.chat.id;
+		const controller = new AbortController();
+		this._titleRequests.set(tab, controller);
+		void backend.generateTitle(model, context, controller.signal).then(title => {
+			if (title && !controller.signal.aborted && this._tabs.includes(tab)) { tab.applyGeneratedTitle(chatId, title); }
+		}).catch(() => undefined).finally(() => {
+			if (this._titleRequests.get(tab) === controller) { this._titleRequests.delete(tab); }
+		});
 	}
 
 	/**
@@ -2076,7 +2142,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		const tab = this._active;
 		const workspace = this._workspaceFolders();
 		const current = this._workdir(tab);
-		const shown = (p: string): WorkdirFolder => workspace.find(w => w.path === p) ?? { path: p, name: path.basename(p) || p };
+		const shown = (p: string): WorkdirFolder => workspace.find(w => w.path === p) ?? { path: p, name: path.basename(p) || p, removable: p !== current && !!storedCopyRepo(this._repoStorage(), p) };
 		const copy = tab.chat.copy;
 		return {
 			current: current === undefined ? undefined : copy ? { path: current, name: `${copy.repo} · copy` } : shown(current),
@@ -2135,6 +2201,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				return undefined;
 			}
 			tab = opened;
+		}
+		if (tab.chat.copy && tab.chat.folder) {
+			await this._rememberFolder(tab.chat.folder);
 		}
 		tab.setFolder(folder);
 		if (folder !== undefined && remember) {
@@ -2435,6 +2504,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 						}
 						target = opened;
 					}
+					await this._rememberFolder(made.path);
 					target.setFolder(made.path, { repo: repoSlug(repo), base: made.base, branch: workBranch });
 					target.push({ kind: 'notice', text: vscode.l10n.t("Working in a separate copy of {0}, on the branch {1} taken from {2}. Your own folders are not touched; the folder button pushes the work and opens a pull request.", repoSlug(repo), workBranch, made.base) });
 					this._noteHeldBack(target, made.path);
@@ -2548,6 +2618,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			}
 		}
 		this._post();
+	}
+
+	private async _removeRepoFolder(folder: string): Promise<void> {
+		if (this._blocked() || !this._recentFolders().includes(folder) || !storedCopyRepo(this._repoStorage(), folder)) { return; }
+		const unavailable = () => this._workdir() === folder || this._workspaceFolders().some(w => w.path === folder)
+			|| this._tabs.some(t => (this._workdir(t) === folder || t.chat.references?.some(r => r.path === folder))
+				&& (t.busy || this._repoBusy.has(t) || this._runs.runningIn(t.chat.id) > 0));
+		if (unavailable()) {
+			refuse(vscode.l10n.t("Switch to another folder and wait for agents working in the copy to finish before removing it."));
+			return;
+		}
+		const git = await gitBinary();
+		if (!git || unavailable()) { return; }
+		await this._repoWork(this._active, vscode.l10n.t("removing repository copy"), async () => {
+			await removeStoredCopy(git, this._repoStorage(), folder);
+			this._forgetCopy(folder);
+			this._listings.delete(folder);
+			await this._forgetRecent(folder);
+		});
 	}
 
 	/** The folder button's actions on a separate copy of the tab in front. */
@@ -2734,6 +2823,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	private _removeTab(tab: ChatTab): void {
+		this._titleRequests.get(tab)?.abort();
+		this._titleRequests.delete(tab);
 		const at = this._tabs.indexOf(tab);
 		if (at < 0) {
 			return;
@@ -2881,6 +2972,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 */
 	private _onBackendReplaced(agent: AgentId, gone: boolean): void {
 		for (const tab of this._tabs) {
+			if (tab.chat.agent === agent) { this._titleRequests.get(tab)?.abort(); }
 			tab.backendReplaced(agent, gone);
 		}
 		this._runs.backendReplaced(agent, gone);
@@ -2909,6 +3001,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 	public dispose(): void {
 		this._disposed = true;
+		for (const request of this._titleRequests.values()) { request.abort(); }
+		this._titleRequests.clear();
 		this._sleep.dispose();
 		this._runs.dispose();
 		for (const timer of this._usageChecks.values()) {

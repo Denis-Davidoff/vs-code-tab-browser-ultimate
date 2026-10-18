@@ -375,6 +375,8 @@ export type AttachmentKind = 'screenshot' | 'element' | 'page' | 'file';
 
 /** What the composer shows for an attachment; the content stays in the host. */
 export interface AttachmentChip {
+	/** Short reference inserted into the message, e.g. @1. */
+	readonly reference?: string;
 	readonly id: string;
 	readonly kind: AttachmentKind;
 	readonly label: string;
@@ -396,6 +398,7 @@ export interface ChatNews {
 
 /** A folder the composer's folder button offers: its path, and the name it is shown by. */
 export interface WorkdirFolder {
+	readonly removable?: boolean;
 	readonly path: string;
 	readonly name: string;
 }
@@ -556,6 +559,7 @@ export interface ChatTabSummary {
 export type ChatTabStatus = 'waiting' | 'working' | 'unread' | 'failed' | 'read';
 
 export type HostToView =
+	| { readonly type: 'localLinkInfo'; readonly request: number; readonly directory?: boolean; readonly inWorkspace: boolean }
 	| { readonly type: 'state'; readonly state: ChatViewState }
 	/** `refresh`: update an open panel in place; never open or close it. */
 	| { readonly type: 'history'; readonly chats: readonly ChatSummary[]; readonly refresh?: boolean }
@@ -638,7 +642,8 @@ export type ViewToHost =
 	/** A file a tool row names (Read, an edit), clicked: opened in an editor tab, whatever kind of file. */
 	| { readonly type: 'openFile'; readonly path: string }
 	/** A link in a reply clicked: the built-in browser, or the system one with ⌘/Ctrl held. */
-	| { readonly type: 'openLink'; readonly url: string; readonly external: boolean }
+	| { readonly type: 'localLinkInfo'; readonly url: string; readonly request: number }
+	| { readonly type: 'openLink'; readonly url: string; readonly external: boolean; readonly reveal?: boolean }
 	| { readonly type: 'setNewsHidden'; readonly hidden: boolean }
 	| { readonly type: 'refreshAgents' }
 	/** The "/" palette opened: list the agent's skills again, in case one was added. */
@@ -647,6 +652,7 @@ export type ViewToHost =
 	| { readonly type: 'saveToolbarSkill'; readonly skill: ToolbarSkill }
 	| { readonly type: 'deleteToolbarSkill'; readonly id: string }
 	/** Moved one place left (-1) or right (1). */
+	| { readonly type: 'placeToolbarSkill'; readonly id: string; readonly target: string; readonly after: boolean }
 	| { readonly type: 'moveToolbarSkill'; readonly id: string; readonly by: -1 | 1 }
 	/** Run with these parameter values, for the tab it was pressed in. */
 	/** `again`: run it although a run of it is going — the user said so when asked. */
@@ -672,6 +678,7 @@ export type ViewToHost =
 	/** The GitHub form: a repository, a branch (empty: its default) and how it is used. */
 	| { readonly type: 'openRepo'; readonly repo: string; readonly branch: string; readonly mode: RepoMode }
 	/** On a separate copy: its changes in an editor tab; pushed as a branch and a pull request opened; the copy removed. */
+	| { readonly type: 'removeRepoFolder'; readonly path: string }
 	| { readonly type: 'repoAction'; readonly action: 'changes' | 'push' | 'window' | 'remove' }
 	/** The tab in front's folder, fetched from GitHub, may load its own Claude Code settings from now on. */
 	| { readonly type: 'trustWorkdir' };
