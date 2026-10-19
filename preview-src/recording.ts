@@ -1,15 +1,16 @@
 // This page belongs to the extension, never to the recorded website.
-// CDP JPEGs become origin-clean canvas pixels; no getDisplayMedia permission is needed.
-(() => {
-	const host = (globalThis as unknown as { acquireVsCodeApi(): { postMessage(message: unknown): void } }).acquireVsCodeApi();
-	const canvas = document.querySelector('canvas')!;
+// CDP frames become origin-clean canvas pixels; no getDisplayMedia permission is needed.
+export function createRecordingEncoder(send: (message: any) => void): { receive(message: any): void; dispose(): void } {
+	const canvas = document.createElement('canvas');
+	canvas.width = 1280; canvas.height = 720;
 	const context = canvas.getContext('2d', { alpha: false })!;
-	const status = document.getElementById('status')!;
-	const video = document.querySelector('video')!;
-	const save = document.getElementById('save')!;
+	const status = document.createElement('span');
+	const video = document.createElement('video');
+	const save = document.createElement('button');
 	let recorder: MediaRecorder | undefined;
 	let stream: MediaStream | undefined;
 	let mime = '';
+	let bitrate = 12_000_000;
 	let stopped = false;
 	let sequence = 0;
 	let chunks: Promise<void> = Promise.resolve();
@@ -18,7 +19,6 @@
 	let frameTimer: number | undefined;
 	const acknowledgements = new Map<number, () => void>();
 	const blobs: Blob[] = [];
-	const send = (message: unknown) => host.postMessage(message);
 	const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 	const fail = (error: unknown) => { status.textContent = `Recording failed: ${errorText(error)}`; send({ type: 'error', error: errorText(error) }); };
 	const cleanup = () => {
@@ -48,7 +48,7 @@
 	}
 	function startEncoder(): void {
 		stream = canvas.captureStream(0);
-		recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 2_500_000 });
+		recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: bitrate });
 		recorder.ondataavailable = event => {
 			if (!event.data.size || stopped) { return; }
 			blobs.push(event.data);
@@ -75,7 +75,9 @@
 	async function handle(message: any): Promise<Record<string, unknown> | undefined> {
 		switch (message.type) {
 			case 'init': {
-				mime = ['video/mp4;codecs=avc1.42001E', 'video/mp4', 'video/webm;codecs=vp8', 'video/webm']
+				bitrate = message.bitrate;
+				// Let the encoder choose an AVC level suitable for 1440p/4K instead of forcing a 720p-level codec.
+				mime = ['video/mp4', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
 					.find(format => MediaRecorder.isTypeSupported(format)) ?? '';
 				if (!mime) { throw new Error('This editor has no supported video encoder.'); }
 				return { mime };
@@ -83,7 +85,7 @@
 			case 'frame': {
 				if (stopped || recorder?.state === 'paused') { return {}; }
 				const bytes = Uint8Array.from(atob(message.data), character => character.charCodeAt(0));
-				const picture = await createImageBitmap(new Blob([bytes], { type: 'image/jpeg' }));
+				const picture = await createImageBitmap(new Blob([bytes], { type: message.mimeType ?? 'image/png' }));
 				try {
 					if (!recorder) {
 						canvas.width = Math.max(2, Math.floor(picture.width / 2) * 2);
@@ -96,6 +98,7 @@
 					context.fillRect(0, 0, canvas.width, canvas.height);
 					context.drawImage(picture, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
 					if (!recorder) { startEncoder(); }
+					else { requestFrame(); }
 				} finally { picture.close(); }
 				return { mime: recorder?.mimeType };
 			}
@@ -147,8 +150,7 @@
 		}
 		return undefined;
 	}
-	window.addEventListener('message', event => {
-		const message = event.data;
+	const receive = (message: any) => {
 		if (message?.type === 'chunkAck') {
 			acknowledgements.get(message.seq)?.(); acknowledgements.delete(message.seq); return;
 		}
@@ -158,8 +160,7 @@
 				if (reply) { send({ type: 'reply', seq: message.seq, ...reply }); }
 			} catch (error) { send({ type: 'reply', seq: message.seq, error: errorText(error) }); }
 		});
-	});
+	};
 	save.addEventListener('click', () => send({ type: 'save' }));
-	window.addEventListener('unload', () => { cleanup(); if (playbackUrl) { URL.revokeObjectURL(playbackUrl); } });
-	send({ type: 'ready' });
-})();
+	return { receive, dispose: () => { cleanup(); if (playbackUrl) { URL.revokeObjectURL(playbackUrl); } } };
+}

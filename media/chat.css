@@ -4352,3 +4352,12 @@ body.vscode-high-contrast-light .context-pie {
 .feature-settings-save { padding: 5px 14px; border: 0; border-radius: 3px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); cursor: pointer; }
 .feature-settings-save:hover { background: var(--vscode-button-hoverBackground); }
 .feature-settings-save:disabled { opacity: .5; cursor: default; }
+.feature-settings-tabs { display: flex; gap: 16px; }
+.feature-settings-tab { border-bottom-color: transparent; }
+.feature-settings-tab[aria-selected="true"] { border-bottom-color: var(--vscode-focusBorder); }
+.feature-settings-content[hidden], .video-recording-bar[hidden] { display: none; }
+.video-recording-bar { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; padding: 6px 8px; border: 1px solid var(--vscode-panel-border); border-radius: 5px; background: var(--vscode-editorWidget-background); }
+.video-recording-bar > .codicon { color: var(--vscode-errorForeground); }
+.video-recording-bar.paused > .codicon { color: var(--vscode-editorWarning-foreground); }
+.video-recording-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.video-recording-controls { display: inline-flex; gap: 2px; flex-shrink: 0; }

@@ -5,7 +5,8 @@ import { SleepControl } from '../power/sleepControl';
 import { VoiceRecording, voiceHelperPath, voiceUnavailable } from './voiceRecorder';
 import { tidyTranscript, voiceChipLabel, voiceLocalePattern, voiceMaxSeconds, voicePromptText, type HelperLine } from './voiceText';
 import { privateTempDirectory } from '../core/safeFiles';
-import type { BrowserRecording, RecordingDestination } from '../browser/recording';
+import type { BrowserRecording, RecordingDestination, RecordingEncoder } from '../browser/recording';
+import { readRecordingQuality, recordingQualityKey } from '../browser/recordingQuality';
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -341,6 +342,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		this._registry = new AgentRegistry(() => this._cwd(), id => this._agentBinaries()[id], browserServer, () => !this._untrusted(this._cwd()));
 		void sweepBrowserConfigs().catch(() => { /* swept with the temp directory */ });
 		this._subscriptions.push(this._registry, this._registry.onDidChange(() => this._post()));
+		if (_recording) { this._subscriptions.push(_recording.onDidChange(() => this._postRecording())); }
 		this._remembered = _context.globalState.get<RememberedSelection>(selectionKey) ?? { models: {}, efforts: {} };
 		this._restoreTabs();
 		this._sleep = new SleepControl(
@@ -444,6 +446,46 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	/* ------------------------------------------------------------ webview */
+	private _postRecording(): void {
+		const current = this._recording?.current;
+		const phase = current?.state;
+		this._postMessage({ type: 'recordingStatus', seconds: current?.durationSeconds ?? 0,
+			state: phase === 'starting' || phase === 'recording' || phase === 'paused' || phase === 'stopping' ? phase : undefined });
+	}
+	private _videoEncoder?: { id: string; messages: vscode.EventEmitter<any>; host: RecordingEncoder };
+
+	public createRecordingEncoder(id: string): RecordingEncoder {
+		this._videoEncoder?.host.dispose();
+		const messages = new vscode.EventEmitter<any>();
+		const closed = new vscode.EventEmitter<void>();
+		let disposed = false;
+		const host: RecordingEncoder = {
+			webview: { onDidReceiveMessage: messages.event, postMessage: message => {
+				if (disposed || !this._view || !this._viewReady) { return Promise.resolve(false); }
+				return this._view.webview.postMessage({ type: 'recording', id, message });
+			} },
+			onDidDispose: closed.event,
+			dispose: () => {
+				if (disposed) { return; }
+				disposed = true;
+				if (this._videoEncoder?.id === id) { this._videoEncoder = undefined; }
+				this._postMessage({ type: 'recording', id, message: { type: 'close' } });
+				closed.fire(); messages.dispose(); closed.dispose();
+			},
+		};
+		this._videoEncoder = { id, messages, host };
+		// Defer until the recording host has subscribed to ready/error events.
+		void Promise.resolve().then(async () => {
+			if (disposed) { return; }
+			const needsView = !this._viewReady;
+			this._postMessage({ type: 'recording', id, message: { type: 'open' } });
+			if (needsView) {
+				await vscode.commands.executeCommand(`${chatViewId}.focus`);
+				await vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
+			}
+		}).catch(error => messages.fire({ type: 'error', error: String(error) }));
+		return host;
+	}
 
 	public resolveWebviewView(view: vscode.WebviewView): void {
 		this._view = view;
@@ -460,6 +502,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			if (this._view === view) {
 				this._view = undefined;
 				this._viewReady = false;
+				this._videoEncoder?.host.dispose();
 				// Nothing can show what a conversation does once its view is gone,
 				// so its CLI is not left working unseen on the user's quota. The
 				// chat is saved and resumes from the history; Codex's app-server
@@ -489,6 +532,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 					default-src 'none';
 					font-src data:;
 					img-src data:;
+					media-src blob:;
 					style-src ${webview.cspSource};
 					script-src 'nonce-${nonce}';
 					">
@@ -558,6 +602,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		return {
 			sleep: this._sleep.state,
 			featureAi: readFeatureAiSettings(this._context.globalState.get(featureAiKey)),
+			recordingQuality: readRecordingQuality(this._context.globalState.get(recordingQualityKey)),
 			voice: this._voiceAvailability(),
 			blocked: this._blocked(),
 			detecting: this._registry.detecting,
@@ -655,6 +700,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 	private async _receive(message: ViewToHost): Promise<void> {
 		switch (message.type) {
+			case 'controlRecording':
+				await this._recording?.control(message.action);
+				return;
+			case 'recording':
+				if (this._videoEncoder?.id === message.id) { this._videoEncoder.messages.fire(message.message); }
+				return;
 			case 'voiceStart':
 				await this._voiceStart();
 				return;
@@ -671,8 +722,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				try {
 					const settings = readFeatureAiSettings(message.settings);
 					await this._context.globalState.update(featureAiKey, settings);
+					const recordingQuality = readRecordingQuality(message.recordingQuality ?? this._context.globalState.get(recordingQualityKey));
+					await this._context.globalState.update(recordingQualityKey, recordingQuality);
 					this._postMessage({ type: 'state', state: this._state() });
-					this._postMessage({ type: 'featureAiSaved', settings });
+					this._postMessage({ type: 'featureAiSaved', settings, recordingQuality });
 				} catch (error) {
 					this._postMessage({ type: 'featureAiSaved', error: error instanceof Error ? error.message : String(error) });
 				}
@@ -689,6 +742,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				return;
 			case 'ready': {
 				this._viewReady = true;
+				this._postRecording();
 				// A queue held while there was no view goes out now that there is one.
 				this._drainQueues();
 				this._postMessage({ type: 'state', state: this._state() });
@@ -3594,6 +3648,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	public dispose(): void {
+		this._videoEncoder?.host.dispose();
 		this._disposed = true;
 		for (const request of this._titleRequests.values()) { request.abort(); }
 		this._titleRequests.clear();

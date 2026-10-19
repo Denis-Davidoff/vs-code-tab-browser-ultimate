@@ -1,4 +1,6 @@
 import { aiFeatures, readFeatureAiSettings, type AiFeature, type FeatureAiSettings, type FeatureEffort } from '../src/chat/featureAi';
+import { createRecordingEncoder } from './recording';
+import { recordingProfiles, readRecordingQuality, type RecordingQuality } from '../src/browser/recordingQuality';
 import { localFileLink } from '../src/chat/fileLinks';
 import { sleepMinutes, sleepHours, type SleepChoice } from '../src/power/sleepProtocol';
 /*---------------------------------------------------------------------------------------------
@@ -113,6 +115,16 @@ thread.append(threadInner);
 const blocked = el('div', { class: 'blocked' });
 
 const attachmentsRow = el('div', { class: 'attachments' });
+const videoRecordingLabel = el('span', { class: 'video-recording-label' });
+const videoPauseButton = button([icon('debug-pause')], { class: 'ghost', title: 'Pause video recording' });
+const videoStopButton = button([icon('debug-stop')], { class: 'ghost', title: 'Stop video recording' });
+const videoRecordingBar = el('div', { class: 'video-recording-bar' }, icon('record'), videoRecordingLabel,
+	el('span', { class: 'video-recording-controls' }, videoPauseButton, videoStopButton));
+videoRecordingBar.hidden = true;
+videoRecordingBar.setAttribute('role', 'status');
+let videoIsPaused = false;
+videoPauseButton.addEventListener('click', () => post({ type: 'controlRecording', action: videoIsPaused ? 'resume' : 'pause' }));
+videoStopButton.addEventListener('click', () => post({ type: 'controlRecording', action: 'stop' }));
 const input = el('textarea', { class: 'input' });
 input.rows = 1;
 input.placeholder = 'Ask about this page, or anything…';
@@ -201,7 +213,7 @@ voiceError.setAttribute('role', 'alert');
 const inputActions = el('div', { class: 'input-actions' },
 	el('span', { class: 'send-slot' }, sendButton), el('span', { class: 'send-slot' }, micButton), el('span', { class: 'send-slot' }, queueButton));
 const inputArea = el('div', { class: 'input-area' }, inputWrap, inputActions);
-const composer = el('div', { class: 'composer' }, attachmentsRow, voiceError, inputArea, toolbar);
+const composer = el('div', { class: 'composer' }, videoRecordingBar, attachmentsRow, voiceError, inputArea, toolbar);
 /** Asked when another agent is picked for a conversation that has started. */
 const switchCard = el('div', { class: 'switch-card' });
 /** The toolbar skills the tab's agent offers, above the message box. */
@@ -648,9 +660,36 @@ function followDraft(s: ChatViewState): void {
 	autosize();
 }
 
+let recordingEncoder: { id: string; encoder: ReturnType<typeof createRecordingEncoder> } | undefined;
+window.addEventListener('unload', () => recordingEncoder?.encoder.dispose());
 window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 	const message = event.data;
 	switch (message.type) {
+		case 'recordingStatus': {
+			videoRecordingBar.hidden = !message.state;
+			videoIsPaused = message.state === 'paused';
+			const seconds = Math.floor(message.seconds);
+			const time = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+			videoRecordingLabel.textContent = message.state === 'starting' ? 'Starting video recording…'
+				: message.state === 'stopping' ? 'Saving video…' : `${videoIsPaused ? 'Video paused' : 'Recording video'} · ${time}`;
+			videoRecordingBar.classList.toggle('paused', videoIsPaused);
+			videoPauseButton.replaceChildren(icon(videoIsPaused ? 'debug-continue' : 'debug-pause'));
+			videoPauseButton.title = videoIsPaused ? 'Resume video recording' : 'Pause video recording';
+			videoPauseButton.disabled = videoStopButton.disabled = message.state !== 'recording' && message.state !== 'paused';
+			return;
+		}
+		case 'recording': {
+			if (message.message.type === 'open') {
+				recordingEncoder?.encoder.dispose();
+				const encoder = createRecordingEncoder(reply => post({ type: 'recording', id: message.id, message: reply }));
+				recordingEncoder = { id: message.id, encoder };
+				post({ type: 'recording', id: message.id, message: { type: 'ready' } });
+			} else if (recordingEncoder?.id === message.id) {
+				if (message.message.type === 'close') { recordingEncoder.encoder.dispose(); recordingEncoder = undefined; }
+				else { recordingEncoder.encoder.receive(message.message); }
+			}
+			return;
+		}
 		case 'state':
 			state = message.state;
 			render();
@@ -789,9 +828,11 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
         case 'featureAiSaved':
             featureSettingsSaving = false;
             if (!message.error && message.settings) { featureSettingsDraft = readFeatureAiSettings(message.settings); }
+            if (!message.error) { videoQualityDraft = readRecordingQuality(message.recordingQuality); }
             featureSettingsStatus.textContent = message.error ? `Could not save settings: ${message.error}` : 'Settings saved.';
             featureSettingsSave.disabled = false;
             for (const select of featureSettingsPanel.querySelectorAll('select')) {
+                if (select.dataset.field === 'recordingQuality') { select.value = videoQualityDraft; select.disabled = false; continue; }
                 const choice = featureSettingsDraft[select.dataset.feature as AiFeature];
                 select.value = select.dataset.field === 'agent' ? choice.agent : choice.effort;
                 select.disabled = false;
@@ -7075,11 +7116,12 @@ const featureSettingsStatus = el('div', { class: 'feature-settings-status' });
 featureSettingsStatus.setAttribute('role', 'status');
 const featureSettingsSave = button(['Save'], { class: 'feature-settings-save' });
 let featureSettingsDraft: FeatureAiSettings = readFeatureAiSettings(undefined);
+let videoQualityDraft: RecordingQuality = 'high';
 
 function openFeatureSettings(): void {
 	if (!state) { return; }
 	closePopups(featureSettingsPanel);
-	if (!featureSettingsSaving) { featureSettingsDraft = readFeatureAiSettings(state.featureAi); }
+	if (!featureSettingsSaving) { featureSettingsDraft = readFeatureAiSettings(state.featureAi); videoQualityDraft = readRecordingQuality(state.recordingQuality); }
 	featureSettingsStatus.textContent = featureSettingsSaving ? 'Saving…' : '';
 	featureSettingsSave.disabled = featureSettingsSaving;
 	const close = button([icon('close')], { title: 'Close settings', class: 'ghost' });
@@ -7094,6 +7136,24 @@ function openFeatureSettings(): void {
 	tab.setAttribute('aria-selected', 'true');
 	tab.setAttribute('aria-controls', 'feature-ai-content');
 	tabs.append(tab);
+	const videoTab = button(['Video recording'], { class: 'feature-settings-tab' });
+	videoTab.id = 'video-quality-tab';
+	videoTab.setAttribute('role', 'tab'); videoTab.setAttribute('aria-selected', 'false');
+	videoTab.setAttribute('aria-controls', 'video-quality-content');
+	tabs.append(videoTab);
+	const videoContent = el('div', { class: 'feature-settings-content' });
+	videoContent.id = 'video-quality-content'; videoContent.hidden = true;
+	videoContent.setAttribute('role', 'tabpanel'); videoContent.setAttribute('aria-labelledby', videoTab.id);
+	const quality = el('select'); quality.dataset.field = 'recordingQuality';
+	quality.setAttribute('aria-label', 'Video recording quality'); quality.disabled = featureSettingsSaving;
+	for (const key of ['balanced', 'high', 'maximum'] as const) {
+		const option = el('option', { text: recordingProfiles[key].label }); option.value = key; quality.append(option);
+	}
+	quality.value = videoQualityDraft;
+	quality.addEventListener('change', () => { videoQualityDraft = readRecordingQuality(quality.value); featureSettingsStatus.textContent = 'Unsaved changes.'; });
+	videoContent.append(el('div', { class: 'feature-settings-row' }, el('strong', { text: 'Video recording' }),
+		el('label', {}, el('span', { text: 'Quality' }), quality)),
+		el('p', { text: 'High is the default. Maximum preserves more detail and creates larger files. Resolution is limited by the source page. Changes apply to the next recording and are shared across projects.' }));
 	const content = el('div', { class: 'feature-settings-content' });
 	content.id = 'feature-ai-content';
 	content.setAttribute('role', 'tabpanel');
@@ -7138,7 +7198,12 @@ function openFeatureSettings(): void {
 		content.append(row);
 	}
 	content.append(el('p', { class: 'feature-settings-note', text: "Commit messages use the selected agent's remembered chat model or its default. Branch names and chat titles use an available lightweight model. Effort is mapped to the levels supported by that model. Settings are shared across projects." }));
-	featureSettingsPanel.replaceChildren(heading, tabs, content, el('div', { class: 'feature-settings-actions' }, featureSettingsStatus, featureSettingsSave));
+	const selectTab = (video: boolean) => {
+		content.hidden = video; videoContent.hidden = !video;
+		tab.setAttribute('aria-selected', String(!video)); videoTab.setAttribute('aria-selected', String(video));
+	};
+	tab.addEventListener('click', () => selectTab(false)); videoTab.addEventListener('click', () => selectTab(true));
+	featureSettingsPanel.replaceChildren(heading, tabs, content, videoContent, el('div', { class: 'feature-settings-actions' }, featureSettingsStatus, featureSettingsSave));
 	featureSettingsPanel.classList.add('open');
 	tab.focus();
 }
@@ -7148,7 +7213,7 @@ featureSettingsSave.addEventListener('click', () => {
 	featureSettingsSave.disabled = true;
 	for (const select of featureSettingsPanel.querySelectorAll('select')) { select.disabled = true; }
 	featureSettingsStatus.textContent = 'Saving…';
-	post({ type: 'saveFeatureAi', settings: featureSettingsDraft });
+	post({ type: 'saveFeatureAi', settings: featureSettingsDraft, recordingQuality: videoQualityDraft });
 });
 featureSettingsPanel.addEventListener('keydown', event => {
 	if (event.key === 'Escape' && !event.isComposing) { event.stopPropagation(); closePopups(); input.focus(); }

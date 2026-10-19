@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const executable = process.argv[2] ?? process.env.AI_BROWSER_CODE_BIN
 	?? (process.platform === 'darwin' ? '/Applications/Visual Studio Code.app/Contents/MacOS/Code' : 'code');
-if (!existsSync(join(repo, 'out/browser/recording.js')) || !existsSync(join(repo, 'media/recording.js'))) {
+if (!existsSync(join(repo, 'out/browser/recording.js')) || !existsSync(join(repo, 'media/chat.js'))) {
 	throw new Error('Run npm run compile before the recording smoke test.');
 }
 // Electron's Unix socket path must fit in 103 bytes (macOS temp roots are long).
@@ -22,6 +22,7 @@ copyFileSync(join(repo, 'scripts/recording-smoke/extension.cjs'), join(extension
 writeFileSync(join(extension, 'package.json'), JSON.stringify({
 	name: 'recording-probe', publisher: 'local', version: '0.0.1', engines: { vscode: '^1.85.0' },
 	main: 'extension.cjs', enabledApiProposals: ['browser'], activationEvents: ['onStartupFinished'],
+	contributes: { views: { explorer: [{ id: 'aiBrowser.chat', name: 'Recording test chat', type: 'webview' }] } },
 }));
 const env = { ...process.env, AI_BROWSER_RECORDING_REPO: repo, AI_BROWSER_RECORDING_OUTPUT: root };
 delete env.ELECTRON_RUN_AS_NODE;

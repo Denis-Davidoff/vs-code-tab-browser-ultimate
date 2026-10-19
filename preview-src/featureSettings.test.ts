@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { createContext, runInContext } from 'node:vm';
 import { transpileModule, ScriptTarget } from 'typescript';
 import { aiFeatures, readFeatureAiSettings, type FeatureAiSettings } from '../src/chat/featureAi.ts';
+import { recordingProfiles, readRecordingQuality, type RecordingQuality } from '../src/browser/recordingQuality.ts';
 
 // Exercise the actual handlers with delayed host replies; no model or VS Code process is started.
 class Element {
@@ -12,6 +13,8 @@ class Element {
 	events: Record<string, () => void> = {};
 	textContent = '';
 	value = '';
+	id = '';
+	hidden = false;
 	disabled = false;
 	classList = { add() {} };
 	readonly tag: string;
@@ -30,15 +33,16 @@ function harness() {
 	const panel = new Element('div');
 	const save = new Element('button');
 	const status = new Element('div');
-	const posts: { settings: FeatureAiSettings }[] = [];
+	const posts: { settings: FeatureAiSettings; recordingQuality?: RecordingQuality }[] = [];
 	const scope = {
-		state: { featureAi: readFeatureAiSettings(undefined), agents: [] },
+		state: { featureAi: readFeatureAiSettings(undefined), recordingQuality: 'high' as RecordingQuality, agents: [] },
 		featureSettingsPanel: panel, featureSettingsSave: save, featureSettingsStatus: status,
 		featureSettingsSaving: false, featureSettingsDraft: readFeatureAiSettings(undefined),
+		videoQualityDraft: 'high' as RecordingQuality, recordingProfiles, readRecordingQuality,
 		readFeatureAiSettings, aiFeatures, input: { focus() {} }, closePopups() {},
 		el(tag: string, _props: unknown, ...children: (Element | string)[]) { const node = new Element(tag); node.append(...children); return node; },
 		button: () => new Element('button'), icon: () => new Element('i'),
-		post(message: { settings: FeatureAiSettings }) { posts.push(message); }, message: {} as { settings?: FeatureAiSettings; error?: string },
+		post(message: { settings: FeatureAiSettings; recordingQuality?: RecordingQuality }) { posts.push(message); }, message: {} as { settings?: FeatureAiSettings; recordingQuality?: RecordingQuality; error?: string },
 	};
 	const context = createContext(scope);
 	const execute = (code: string) => runInContext(transpileModule(code, { compilerOptions: { target: ScriptTarget.ES2022 } }).outputText, context);
@@ -48,7 +52,7 @@ function harness() {
 	assert.ok(open && listener && acknowledgement);
 	execute(open + '\n' + listener);
 	return { scope, panel, save, status, posts, open: () => execute('openFeatureSettings();'),
-		ack(settings?: FeatureAiSettings, error?: string) { scope.message = { settings, error }; execute(acknowledgement); } };
+		ack(settings?: FeatureAiSettings, error?: string, recordingQuality?: RecordingQuality) { scope.message = { settings, error, recordingQuality }; execute(acknowledgement); } };
 }
 
 for (const failed of [false, true]) {
@@ -88,4 +92,17 @@ test('save confirmation supplies authoritative choices without waiting for a sta
 	assert.equal(fields[4].value, 'codex');
 	assert.equal(fields[5].value, 'medium');
 	assert.deepEqual(ui.scope.featureSettingsDraft, saved);
+});
+
+test('video quality shares the settings panel and saves without changing AI choices', () => {
+	const ui = harness(); ui.open();
+	const videoTab = ui.panel.querySelectorAll('button').find(button => button.id === 'video-quality-tab')!;
+	videoTab.events.click();
+	assert.equal(ui.panel.querySelectorAll('div').find(node => node.id === 'feature-ai-content')!.hidden, true);
+	assert.equal(ui.panel.querySelectorAll('div').find(node => node.id === 'video-quality-content')!.hidden, false);
+	const quality = ui.panel.querySelectorAll('select').find(field => field.dataset.field === 'recordingQuality')!;
+	assert.equal(quality.value, 'high'); quality.value = 'maximum'; quality.events.change(); ui.save.events.click();
+	assert.equal(ui.posts[0].recordingQuality, 'maximum');
+	ui.ack(ui.posts[0].settings, undefined, 'maximum');
+	assert.equal(quality.value, 'maximum'); assert.equal(quality.disabled, false);
 });

@@ -44,8 +44,12 @@ there is not the problem, the missing API is. **Measured by reading the shipped 
 
 Record the visible browser page without granting the operating system screen recording access.
 The extension receives page frames through CDP and encodes them with the editor's built-in
-`MediaRecorder`: MP4 when supported, otherwise WebM. Recordings are silent, with a maximum
-frame size of 1280 × 720. Capture frequency depends on the editor; smooth 30 fps is not guaranteed.
+`MediaRecorder`: MP4 when supported, otherwise WebM. Recordings are silent. The chat's top
+settings button has a **Video recording** tab: **Balanced · 1080p** (6 Mbps), **High · 1440p**
+(12 Mbps, default), or **Maximum · 4K** (24 Mbps). Source frames use lossless PNG; the source
+page limits the actual resolution. Changes apply to the next recording and are shared across
+projects. Higher quality produces larger files. Capture frequency depends on the editor;
+smooth 30 fps is not guaranteed.
 
 - **AI Browser Chat:** choose **Record the browser page** under **+**, or the recording action
   under **AI Browser Chat** in the browser tab's extension menu. Stop attaches the video to that
@@ -60,9 +64,12 @@ frame size of 1280 × 720. Capture frequency depends on the editor; smooth 30 fp
   completed result after a stop from the toolbar, including the file path and delivery outcome.
 
 During recording, **Pause / Resume** and **Stop** appear in the browser tab's top toolbar.
-Pausing stops CDP capture and excludes the pause from the video. Keep the browser visible and
-the **Browser recording** encoder panel open until you stop. Closing that panel cancels the
-recording. One recording can run at a time, for up to ten active minutes and 256 MB.
+The chat also shows a recording notice and timer above the message box, with adjacent pause
+and stop buttons. The notice follows recording, paused and saving states.
+Pausing stops CDP capture and excludes the pause from the video. Keep the browser visible;
+encoding runs inside the chat webview without opening a separate recording tab, and continues
+when the chat is hidden. The chat view is initialized if it has not been opened yet.
+One recording can run at a time, for up to ten active minutes and 256 MB.
 
 Videos are kept as local temporary files; use **Save as…** to keep a permanent copy. Chat
 attachments provide a file reference to the agent, not native video input. MCP returns metadata

@@ -890,17 +890,17 @@
 				{
 					"command": "aiBrowser.recording.pause",
 					"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.recordingState == recording",
-					"group": "navigation@00"
+					"group": "navigation@0"
 				},
 				{
 					"command": "aiBrowser.recording.resume",
 					"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.recordingState == paused",
-					"group": "navigation@00"
+					"group": "navigation@0"
 				},
 				{
 					"command": "aiBrowser.recording.stop",
 					"when": "activeEditor == 'workbench.editor.browser' && (aiBrowser.recordingState == recording || aiBrowser.recordingState == paused)",
-					"group": "navigation@01"
+					"group": "navigation@0.1"
 				}
 			],
 			"aiBrowser.elementMenu": [

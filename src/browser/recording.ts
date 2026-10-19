@@ -6,6 +6,7 @@ import { generateUuid } from '../core/uuid';
 import { privateTempDirectory } from '../core/safeFiles';
 import type { BrowserController } from './browserController';
 import { callerKey, type CallerIdentity } from './shareRegistry';
+import { recordingProfiles, recordingQualityKey, readRecordingQuality } from './recordingQuality';
 
 export interface RecordingResult {
 	id: string;
@@ -26,11 +27,17 @@ export interface RecordingResult {
 /** A destination captured at start, never whichever chat happens to be active at stop. */
 export type RecordingDestination = (result: RecordingResult, file: vscode.Uri) => boolean;
 
+export interface RecordingEncoder {
+	readonly webview: Pick<vscode.Webview, 'postMessage' | 'onDidReceiveMessage'>;
+	readonly onDidDispose: vscode.Event<void>;
+	dispose(): void;
+}
+
 interface Run {
 	result: RecordingResult;
 	caller?: CallerIdentity;
 	tab: vscode.BrowserTab;
-	panel: vscode.WebviewPanel;
+	panel: RecordingEncoder;
 	channel?: vscode.BrowserCDPSession;
 	client?: CDPClient;
 	session?: string;
@@ -43,6 +50,7 @@ interface Run {
 	activeSince?: number;
 	elapsed: number;
 	busyFrame: boolean;
+	profile: { width: number; height: number; bitrate: number };
 	stop?: Promise<RecordingResult>;
 }
 
@@ -59,7 +67,10 @@ export class BrowserRecording implements vscode.Disposable {
 	private readonly _results = new Map<string, { owner: string; result: RecordingResult }>();
 	private _disposed = false;
 	private _controls: Promise<unknown> = Promise.resolve();
-	private readonly _panels = new Set<vscode.WebviewPanel>();
+	private readonly _changed = new vscode.EventEmitter<RecordingResult | undefined>();
+	public readonly onDidChange = this._changed.event;
+	public get current(): RecordingResult | undefined { return this._active ? this._snapshot(this._active) : undefined; }
+	public createEncoder: ((id: string) => RecordingEncoder) | undefined;
 	public destination: ((chatId?: string) => RecordingDestination | undefined) | undefined;
 
 	constructor(private readonly _context: vscode.ExtensionContext, private readonly _browser: BrowserController) { this._publish(); }
@@ -71,14 +82,11 @@ export class BrowserRecording implements vscode.Disposable {
 		const tab = this._browser.recordingTab(caller);
 		const attach = delivery === 'chat' ? this.destination?.(caller?.chatId) : undefined;
 		if (delivery === 'chat' && !attach) { throw new Error('Open an AI Browser Chat before recording to the chat.'); }
-		const panel = vscode.window.createWebviewPanel('aiBrowser.recording', vscode.l10n.t('Browser recording'),
-			{ viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
-			{ enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [vscode.Uri.joinPath(this._context.extensionUri, 'media')] });
-		this._panels.add(panel);
-		// Keep only one finished preview; the saved file and chat attachment outlive it.
-		for (const previous of this._panels) { if (previous !== panel) { previous.dispose(); } }
 		const result: RecordingResult = { id: generateUuid(), state: 'starting', delivery, tabId: this._browser.tabIdOf(tab), url: tab.url, durationSeconds: 0, frames: 0, bytes: 0 };
-		const run: Run = { result, caller: caller ? { ...caller } : undefined, tab, panel, parts: [], pending: new Map(), next: 0, elapsed: 0, busyFrame: false, attach };
+		if (!this.createEncoder) { throw new Error('The background video encoder is unavailable.'); }
+		const panel = this.createEncoder(result.id);
+		const profile = recordingProfiles[readRecordingQuality(this._context.globalState?.get(recordingQualityKey))];
+		const run: Run = { result, caller: caller ? { ...caller } : undefined, tab, panel, profile, parts: [], pending: new Map(), next: 0, elapsed: 0, busyFrame: false, attach };
 		this._active = run;
 		let rejectStartup!: (error: Error) => void;
 		const cancelled = new Promise<never>((_, reject) => { rejectStartup = reject; });
@@ -118,16 +126,14 @@ export class BrowserRecording implements vscode.Disposable {
 			} catch (error) { this._fail(run, error); }
 		});
 		panel.onDidDispose(() => {
-			panelMessages.dispose(); this._panels.delete(panel);
-			if (this._active === run && result.state !== 'completed') { this._fail(run, new Error('The recording encoder was closed before the video finished.')); }
+			panelMessages.dispose();
+			if (this._active === run && result.state !== 'completed') { this._fail(run, new Error('The background recording service stopped before the video finished.')); }
 		});
-		const script = panel.webview.asWebviewUri(vscode.Uri.joinPath(this._context.extensionUri, 'media', 'recording.js'));
-		const nonce = generateUuid();
-		panel.webview.html = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; img-src data:; media-src blob:; style-src 'nonce-${nonce}'"><style nonce="${nonce}">body{font:13px sans-serif;color:var(--vscode-foreground);background:var(--vscode-editor-background);padding:16px}canvas,video{max-width:100%;height:auto}button{padding:6px 12px}canvas{display:block}</style></head><body><p id="status">Starting browser recording…</p><canvas width="1280" height="720"></canvas><video controls hidden></video><button id="save" hidden>Save video as…</button><script nonce="${nonce}" src="${script}"></script></body></html>`;
+
 		try {
 			await bounded(starting(loaded), 'Loading the video encoder');
 			this._assertActive(run);
-			const init = await starting(this._request(run, 'init'));
+			const init = await starting(this._request(run, 'init', { bitrate: profile.bitrate }));
 			result.mimeType = init.mime;
 			const dir = await starting(privateTempDirectory('recordings'));
 			this._assertActive(run);
@@ -166,6 +172,7 @@ export class BrowserRecording implements vscode.Disposable {
 			run.activeSince = Date.now();
 			this._publish();
 			const timer = setInterval(() => {
+				this._changed.fire(this.current);
 				if (this._seconds(run) >= 600) { void this.stop().catch(error => this._fail(run, error)); }
 			}, 1000);
 			run.parts.push(new vscode.Disposable(() => clearInterval(timer)));
@@ -279,7 +286,7 @@ export class BrowserRecording implements vscode.Disposable {
 		}
 		run.busyFrame = true;
 		try {
-			const reply = await this._request(run, 'frame', { data: params.data });
+			const reply = await this._request(run, 'frame', { data: params.data, mimeType: 'image/png' });
 			if (typeof reply.mime === 'string') { run.result.mimeType = reply.mime; }
 			run.result.frames++;
 			await ack();
@@ -302,7 +309,7 @@ export class BrowserRecording implements vscode.Disposable {
 	}
 
 	private _screencast(run: Run): Promise<any> {
-		return this._send(run, 'Page.startScreencast', { format: 'jpeg', quality: 80, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1 });
+		return this._send(run, 'Page.startScreencast', { format: 'png', maxWidth: run.profile.width, maxHeight: run.profile.height, everyNthFrame: 1 });
 	}
 	private _send(run: Run, method: string, params?: object): Promise<any> {
 		return bounded(run.client!.send(method, params, run.session), method);
@@ -329,6 +336,7 @@ export class BrowserRecording implements vscode.Disposable {
 		const run = this._active;
 		void vscode.commands.executeCommand('setContext', 'aiBrowser.recordingState', run?.result.state ?? 'idle');
 		void vscode.commands.executeCommand('setContext', 'aiBrowser.recordingActive', !!run);
+		this._changed.fire(this.current);
 	}
 	private _fail(run: Run, error: unknown, notify = true): void {
 		if (this._active !== run) { return; }
@@ -351,10 +359,11 @@ export class BrowserRecording implements vscode.Disposable {
 		else if (run.channel) { void run.channel.close(); }
 		if (this._active === run) { this._active = undefined; }
 		this._publish();
+		run.panel.dispose();
 	}
 	public dispose(): void {
 		this._disposed = true;
 		if (this._active) { const run = this._active; this._fail(run, new Error('The extension stopped.')); run.panel.dispose(); }
-		for (const panel of this._panels) { panel.dispose(); }
+		this._changed.dispose();
 	}
 }

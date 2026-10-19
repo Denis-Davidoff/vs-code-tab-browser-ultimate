@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { ModuleKind, ScriptTarget, transpileModule } from 'typescript';
+import { recordingProfiles, recordingQualityKey, readRecordingQuality } from './recordingQuality.ts';
 
 const source = fs.readFileSync(path.resolve('src/browser/recording.ts'), 'utf8');
 const compiled = transpileModule(source, { compilerOptions: { module: ModuleKind.CommonJS, target: ScriptTarget.ES2022 } }).outputText;
@@ -17,6 +18,7 @@ class Events {
 		return { dispose: () => this.listeners.delete(listener) };
 	};
 	fire(value?: any): void { for (const listener of [...this.listeners]) { listener(value); } }
+	dispose(): void { this.listeners.clear(); }
 }
 
 async function until(condition: () => boolean): Promise<void> {
@@ -31,7 +33,8 @@ function harness(options: { holdReady?: boolean; holdFirstFrame?: boolean; holdC
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'recording-test-'));
 	const changedShare = new Events(), closedTab = new Events();
 	const panels: any[] = [], channels: any[] = [], clients: any[] = [];
-	const state = { allowed: true, clipboard: '', holdFrame: false, holdStop: false, failAck: false, closeDuringStop: false };
+	const state = { allowed: true, clipboard: '', holdFrame: false, holdStop: false, failAck: false, closeDuringStop: false, quality: 'high' };
+	const commands: { method: string; params: any }[] = [];
 	const window: any = { browserTabs: [], activeBrowserTab: undefined, onDidCloseBrowserTab: closedTab.event,
 		showInformationMessage: async () => undefined, showErrorMessage: async () => undefined };
 	const tab: any = { url: 'https://recording.test', startCDPSession: () => {
@@ -49,6 +52,7 @@ function harness(options: { holdReady?: boolean; holdFirstFrame?: boolean; holdC
 	};
 	const uri = (fsPath: string) => ({ fsPath, toString: () => fsPath });
 	const vscode = {
+		EventEmitter: Events,
 		window, commands: { executeCommand: async () => undefined }, l10n: { t: (message: string) => message },
 		env: { clipboard: { writeText: async (text: string) => { state.clipboard = text; } } },
 		Uri: { file: uri, joinPath: (_root: any, ...parts: string[]) => uri(parts.join('/')) },
@@ -92,7 +96,8 @@ function harness(options: { holdReady?: boolean; holdFirstFrame?: boolean; holdC
 		async attachToPage(): Promise<string> { return 'page'; }
 		on(_method: string, handler: (params: any, session: string) => void) { this.handler = handler; return { dispose: () => { this.handler = undefined; } }; }
 		frame(): void { this.handler?.({ sessionId: 1, data: 'jpeg' }, 'page'); }
-		async send(method: string): Promise<object> {
+		async send(method: string, params?: any): Promise<object> {
+			commands.push({ method, params });
 			if (this.isClosed) { throw new Error('CDP session closed'); }
 			if (method === 'Page.startScreencast' && !options.holdFirstFrame) { queueMicrotask(() => this.frame()); }
 			if (method === 'Page.screencastFrameAck' && state.failAck) { throw new Error('Live acknowledgement failed'); }
@@ -114,12 +119,14 @@ function harness(options: { holdReady?: boolean; holdFirstFrame?: boolean; holdC
 				case '../core/uuid': return { generateUuid: randomUUID };
 				case '../core/safeFiles': return { privateTempDirectory: async () => root };
 				case './shareRegistry': return { callerKey: (caller: any) => caller.sessionId ?? caller.kind };
+				case './recordingQuality': return { recordingProfiles, recordingQualityKey, readRecordingQuality };
 				default: throw new Error(`Unexpected dependency: ${name}`);
 			}
 		},
 	});
-	const recording = new exported.BrowserRecording({ extensionUri: uri(root) }, browser);
-	return { recording, tab, window, panels, channels, clients, state, closedTab,
+	const recording = new exported.BrowserRecording({ extensionUri: uri(root), globalState: { get: () => state.quality } }, browser);
+	recording.createEncoder = () => { const panel = window.createWebviewPanel(); panel.webview.html = ''; return panel; };
+	return { recording, tab, window, panels, channels, clients, state, closedTab, commands,
 		cleanup: () => { recording.dispose(); fs.rmSync(root, { recursive: true, force: true }); } };
 }
 
@@ -133,6 +140,27 @@ test('manual pause can resume on the original tab after focus moves elsewhere', 
 		assert.equal(h.recording._active.tab, h.tab);
 		const result = await h.recording.control('stop');
 		assert.equal(result.state, 'completed'); assert.ok(fs.existsSync(result.file));
+	} finally { h.cleanup(); }
+});
+
+test('quality is snapshotted at start and preserves lossless source frames after resume', async () => {
+	const h = harness();
+	try {
+		h.state.quality = 'maximum'; await h.recording.start();
+		h.state.quality = 'balanced'; await h.recording.control('pause'); await h.recording.control('resume');
+		for (const command of h.commands.filter(c => c.method === 'Page.startScreencast')) {
+			assert.equal(command.params.format, 'png'); assert.equal(command.params.maxWidth, 3840); assert.equal(command.params.maxHeight, 2160);
+		}
+		assert.equal((await h.recording.control('stop')).state, 'completed');
+	} finally { h.cleanup(); }
+});
+
+test('recording notifications follow start, pause, resume and completion', async () => {
+	const h = harness(), states: (string | undefined)[] = [];
+	try {
+		h.recording.onDidChange((result: any) => states.push(result?.state));
+		await h.recording.start(); await h.recording.control('pause'); await h.recording.control('resume'); await h.recording.control('stop');
+		assert.deepEqual(states, ['starting', 'recording', 'paused', 'recording', 'stopping', undefined]);
 	} finally { h.cleanup(); }
 });
 
@@ -234,5 +262,15 @@ test('acknowledgement errors from a live source are still reported', async () =>
 		await h.recording.start(); const run = h.recording._active; h.state.failAck = true;
 		h.clients[0].frame(); await until(() => !h.recording._active);
 		assert.equal(run.result.state, 'failed'); assert.match(run.result.error, /Live acknowledgement failed/);
+	} finally { h.cleanup(); }
+});
+
+test('losing the background encoder releases CDP and removes partial output', async () => {
+	const h = harness();
+	try {
+		await h.recording.start(); const run = h.recording._active;
+		h.panels[0].dispose();
+		assert.equal(run.result.state, 'failed'); assert.equal(h.recording._active, undefined);
+		assert.equal(h.clients[0].isClosed, true); assert.ok(!fs.existsSync(run.file));
 	} finally { h.cleanup(); }
 });

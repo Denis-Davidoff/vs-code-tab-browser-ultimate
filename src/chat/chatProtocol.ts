@@ -1,4 +1,5 @@
 import type { FeatureAiSettings } from './featureAi';
+import type { RecordingQuality } from '../browser/recordingQuality';
 import type { SleepChoice, SleepState } from '../power/sleepProtocol';
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
@@ -515,6 +516,7 @@ export type VoiceEvent =
 	| { readonly phase: 'error'; readonly message: string };
 
 export interface ChatViewState {
+	readonly recordingQuality?: RecordingQuality;
 	readonly featureAi?: FeatureAiSettings;
 	readonly sleep?: SleepState;
 	readonly voice: VoiceAvailability;
@@ -616,6 +618,8 @@ export interface ChatTabSummary {
 export type ChatTabStatus = 'waiting' | 'working' | 'unread' | 'failed' | 'read';
 
 export type HostToView =
+	| { readonly type: 'recordingStatus'; readonly state?: 'starting' | 'recording' | 'paused' | 'stopping'; readonly seconds: number }
+	| { readonly type: 'recording'; readonly id: string; readonly message: any }
 	| { readonly type: 'localLinkInfo'; readonly request: number; readonly directory?: boolean; readonly inWorkspace: boolean }
 	| { readonly type: 'state'; readonly state: ChatViewState }
 	/** `refresh`: update an open panel in place; never open or close it. */
@@ -624,7 +628,7 @@ export type HostToView =
 	| { readonly type: 'focusInput' }
 	/** The view's title bar cup: open the keep-awake popup. */
 	| { readonly type: 'openSettings' }
-	| { readonly type: 'featureAiSaved'; readonly settings?: FeatureAiSettings; readonly error?: string }
+	| { readonly type: 'featureAiSaved'; readonly settings?: FeatureAiSettings; readonly recordingQuality?: RecordingQuality; readonly error?: string }
 	| { readonly type: 'openSleep' }
 	/** Queued messages given back by Stop: added to what is in the message box, not sent. */
 	| { readonly type: 'restoreDraft'; readonly chatId: string; readonly text: string }
@@ -650,6 +654,8 @@ export type HostToView =
 	| { readonly type: 'voice'; readonly event: VoiceEvent };
 
 export type ViewToHost =
+	| { readonly type: 'controlRecording'; readonly action: 'pause' | 'resume' | 'stop' }
+	| { readonly type: 'recording'; readonly id: string; readonly message: any }
 	| { readonly type: 'setSleep'; readonly choice: SleepChoice }
 	/** The microphone button: start a voice message for the tab in front. */
 	| { readonly type: 'voiceStart' }
@@ -748,7 +754,7 @@ export type ViewToHost =
 	| { readonly type: 'gitCommit'; readonly folder: string; readonly tabId: string; readonly scope?: 'staged' | 'all' }
 	| { readonly type: 'gitIndexAction'; readonly folder: string; readonly tabId: string; readonly action: 'stage' | 'unstage'; readonly path?: string }
 	| { readonly type: 'fixGitCommit' | 'dismissGitCommit'; readonly folder: string; readonly id: string; readonly tabId: string }
-	| { readonly type: 'saveFeatureAi'; readonly settings: FeatureAiSettings }
+	| { readonly type: 'saveFeatureAi'; readonly settings: FeatureAiSettings; readonly recordingQuality?: RecordingQuality }
 	| { readonly type: 'gitBranchName'; readonly id: number; readonly folder: string; readonly tabId: string }
 	| { readonly type: 'gitBranchAction'; readonly folder: string; readonly action: 'switch' | 'create' | 'delete'; readonly name: string; readonly remote?: boolean }
 	| { readonly type: 'refreshWorkdirGit' }

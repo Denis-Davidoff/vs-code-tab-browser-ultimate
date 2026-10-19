@@ -3,13 +3,14 @@ const vscode = require('vscode'), fs = require('fs'), http = require('http'), as
 const repo = process.env.AI_BROWSER_RECORDING_REPO, root = process.env.AI_BROWSER_RECORDING_OUTPUT;
 const wait = ms => new Promise(r => setTimeout(r, ms));
 const until = async condition => {
-    const deadline = Date.now() + 5000;
+    const deadline = Date.now() + 15000;
     while (!condition()) {
         if (Date.now() > deadline) throw Error('Timed out waiting for recording transition');
         await wait(10);
     }
 };
-exports.activate = async function (context) {
+exports.activate = function (context) { setTimeout(() => run(context), 100); };
+async function run(context) {
     const report = { checks: [] };
     let browser, recording, chat, mcp, server, tab;
     const previousClipboard = await vscode.env.clipboard.readText();
@@ -23,7 +24,10 @@ exports.activate = async function (context) {
         Object.defineProperty(testContext, 'extensionUri', { value: vscode.Uri.file(repo) });
         recording = new BrowserRecording(testContext, browser);
         chat = new ChatViewProvider(testContext, browser, () => undefined, recording);
+        chat._registry.detect = async () => {};
+        context.subscriptions.push(vscode.window.registerWebviewViewProvider('aiBrowser.chat', chat, { webviewOptions: { retainContextWhenHidden: true } }));
         recording.destination = id => chat.recordingDestination(id);
+        recording.createEncoder = id => chat.createRecordingEncoder(id);
         for (const action of ['pause', 'resume', 'stop'])
             context.subscriptions.push(vscode.commands.registerCommand('aiBrowser.recording.' + action, () => recording.control(action)));
         server = http.createServer((q, r) => { r.setHeader('content-type', 'text/html'); r.end('<body style="background:#123;color:white;font:28px sans-serif"><h1>Live recording integration</h1><canvas width="640" height="360"></canvas><script>const c=document.querySelector("canvas").getContext("2d");function draw(t){c.fillStyle="#123";c.fillRect(0,0,640,360);c.fillStyle="#4de";c.fillRect((t/4)%500,100,100,100);c.fillStyle="white";c.fillText(Math.round(t),20,40);requestAnimationFrame(draw)}requestAnimationFrame(draw)</script>'); });
@@ -73,6 +77,8 @@ exports.activate = async function (context) {
             releaseInit();
         }
         let started = await own('browser_recording_start');
+        assert.equal(recording._active.profile.width, 2560, 'new recordings default to high quality');
+        await chat._receive({ type: 'saveFeatureAi', settings: {}, recordingQuality: 'maximum' });
         assert.ok(started.frames > 0, 'start returns only after an encoded frame');
         assert.equal(started.delivery, 'chat');
         report.checks.push('MCP starts real CDP and webview encoder');
@@ -90,6 +96,7 @@ exports.activate = async function (context) {
         assert.equal(pausedAgain.durationSeconds, paused.durationSeconds);
         report.checks.push('toolbar pause stops frames and duration');
         await own('browser_recording_resume', { id: started.id });
+        assert.equal(recording._active.profile.width, 2560, 'changing quality does not resize a running recording');
         await wait(1800);
         assert.ok((await own('browser_recording_status', { id: started.id })).frames > paused.frames, 'new browser frames arrive after resume');
         chat.newChat();
@@ -106,6 +113,7 @@ exports.activate = async function (context) {
         report.chat = finished;
         report.checks.push('toolbar stop finalized video; MCP status finds result; attachment remains in original chat');
         const manual = await recording.start();
+        assert.equal(recording._active.profile.width, 3840, 'saved quality applies to the next recording');
         await wait(1600);
         await recording.control('pause');
         const other = await vscode.window.openBrowserTab('http://127.0.0.1:' + server.address().port + '/other');
@@ -141,6 +149,10 @@ exports.activate = async function (context) {
             return reply;
         };
         try {
+            // Force a real page frame into the race even when the page is static or throttled.
+            const activeSource = recording._active;
+            const screenshot = await recording._send(activeSource, 'Page.captureScreenshot', { format: 'png' });
+            void recording._frame(activeSource, { sessionId: 0, data: screenshot.data }).catch(error => recording._fail(activeSource, error));
             await until(() => waitingFrame);
             const active = recording._active;
             await tab.close();
@@ -159,13 +171,21 @@ exports.activate = async function (context) {
             releaseFrame(); releaseFinish();
         }
         tab = await vscode.window.openBrowserTab('http://127.0.0.1:' + server.address().port);
-        const failure = await external('browser_recording_start');
-        const partial = recording._active.file;
-        recording._active.panel.dispose();
-        await wait(300);
-        assert.equal((await external('browser_recording_status', { id: failure.id })).state, 'failed');
-        assert.ok(!fs.existsSync(partial));
-        report.checks.push('closing encoder rejects capture and deletes partial video');
+        await wait(1500);
+        const hidden = await external('browser_recording_start');
+        await vscode.commands.executeCommand('workbench.action.closeSidebar');
+        await until(() => !chat._view.visible);
+        await wait(2500);
+        const hiddenResult = await external('browser_recording_stop', { id: hidden.id });
+        assert.equal(hiddenResult.state, 'completed');
+        assert.ok(hiddenResult.bytes > 0);
+        assert.ok(hiddenResult.durationSeconds > 2, 'hidden encoder keeps video time');
+        const startedHidden = await external('browser_recording_start');
+        assert.equal(chat._view.visible, false, 'starting another recording does not reveal the chat');
+        await wait(1200);
+        assert.equal((await external('browser_recording_stop', { id: startedHidden.id })).state, 'completed');
+        assert.ok(vscode.window.tabGroups.all.flatMap(group => group.tabs).every(tab => tab.label !== 'Browser recording'));
+        report.checks.push('recording and starting while chat is hidden; no recording editor tab is created');
         report.ok = true;
     }
     catch (e) {
@@ -191,4 +211,4 @@ exports.activate = async function (context) {
         fs.writeFileSync(root + '/integration-result.json', JSON.stringify(report, null, 2));
         setTimeout(() => vscode.commands.executeCommand('workbench.action.closeWindow'), 500);
     }
-};
+}

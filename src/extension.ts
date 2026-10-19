@@ -483,6 +483,7 @@ export function activate(context: vscode.ExtensionContext) {
 		webviewOptions: { retainContextWhenHidden: true },
 	}));
 	recording.destination = chatId => chat.recordingDestination(chatId);
+	recording.createEncoder = id => chat.createRecordingEncoder(id);
 	context.subscriptions.push(vscode.commands.registerCommand('aiBrowser.recording.startChat', async () => {
 		await vscode.commands.executeCommand(`${chatViewId}.focus`);
 		return recording.start(undefined, 'chat');
