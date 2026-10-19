@@ -499,6 +499,12 @@ export function activate(context: vscode.ExtensionContext) {
 			await revealChat();
 			chat.refreshAgents();
 		}),
+		// Two commands for one button: a title bar icon is static, so the
+		// filled cup is a second command swapped in by a context key.
+		...['aiBrowser.chat.keepAwake', 'aiBrowser.chat.keepAwakeActive'].map(id => vscode.commands.registerCommand(id, async () => {
+			await revealChat();
+			chat.showKeepAwake();
+		})),
 		// The browser tab menu's "AI Browser Chat ▸": the chat is revealed after
 		// the pick, not before, so the page stays where the click is wanted.
 		vscode.commands.registerCommand('aiBrowser.chat.addScreenshot', () => chat.addFromBrowser('screenshot')),

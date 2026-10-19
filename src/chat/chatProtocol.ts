@@ -565,6 +565,8 @@ export type HostToView =
 	| { readonly type: 'history'; readonly chats: readonly ChatSummary[]; readonly refresh?: boolean }
 	| { readonly type: 'usage'; readonly usage: readonly AgentUsage[]; readonly stats?: ChatStats; readonly loading: boolean }
 	| { readonly type: 'focusInput' }
+	/** The view's title bar cup: open the keep-awake popup. */
+	| { readonly type: 'openSleep' }
 	/** Queued messages given back by Stop: added to what is in the message box, not sent. */
 	| { readonly type: 'restoreDraft'; readonly chatId: string; readonly text: string }
 	/** Messages sent from this workspace, oldest first, for the composer's ↑ / ↓. */

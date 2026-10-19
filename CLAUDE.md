@@ -255,7 +255,7 @@ difference, in `browserController.js`, was a doc comment whose link had been upd
 - [src/chat/claudeAgent.ts](src/chat/claudeAgent.ts) — Claude Code over `stream-json` and its control channel
 - [src/chat/codexAgent.ts](src/chat/codexAgent.ts) — Codex over `codex app-server` JSON-RPC
 - [src/power/sleepProtocol.ts](src/power/sleepProtocol.ts) — the keep-awake choices and state (types and lists, read by both builds)
-- [src/power/sleepControl.ts](src/power/sleepControl.ts) — one window's keep-awake choice, and its vote to the daemon
+- [src/power/sleepControl.ts](src/power/sleepControl.ts) — one window's keep-awake choice (a timer, or until one tab's or every tab's agents finish), and its vote to the daemon
 - [src/power/sleepDaemon.ts](src/power/sleepDaemon.ts) — the shared daemon holding the OS lock while any window votes for it
 
 **There is only ever one panel.** `AIBrowserManager._activeView` is a single slot: a repeat
@@ -6233,11 +6233,61 @@ surviving posts, ↑ in a wrapped draft moving the caret.
 
 ### Keeping the computer awake
 
-The cup button in the composer's right-hand group keeps the computer from sleeping: for a number
-of minutes or hours (the lists in `sleepProtocol.ts`, anything else refused), or **until the agents
-and sub-agents in this window finish** — no tab busy, waiting on an approval, holding a queue, or
-running a toolbar skill in the background. The choice is **per window** and lives in memory: a
-reload switches it off. The display may still sleep; only system sleep is held off.
+The cup in the chat view's title bar — beside New Chat, Chat History and Refresh Agents —
+keeps the computer from sleeping: for a number of minutes or hours (the lists in
+`sleepProtocol.ts`, anything else refused), or **until the agents and sub-agents finish** — no
+tab busy, waiting on an approval, holding a queue, or running a toolbar skill in the background.
+The choice is **per window** and lives in memory: a reload switches it off. The display may still
+sleep; only system sleep is held off.
+
+**It sits in the title bar because it is one setting for the whole chat** — asked for, in two
+steps: from the composer, where it read as belonging to the conversation in front, to the tab
+strip, then up to the view's own title. Details that follow from being there:
+
+- **A title bar icon is static**, so the button is two commands: `aiBrowser.chat.keepAwake` (an
+  empty cup) and `aiBrowser.chat.keepAwakeActive` (a filled one), swapped by the
+  `aiBrowser.keepAwakeActive` context key, which the provider sets whenever the choice is not
+  off (`_publishSleep`) and clears on dispose.
+- **The two cups are glyphs of an icon font of our own, so they take the theme's icon colour**
+  — asked for, after they first shipped as SVG pairs and stood out beside New Chat and History.
+  A contributed SVG is drawn as a picture and keeps its fills; a font glyph is drawn as text in
+  `icon.foreground`, exactly as a codicon is, hover and every theme included. The codicon font has
+  `coffee` but no filled form, so `media/ai-browser-icons.ttf` (U+E001 empty, U+E002 full) is
+  contributed through `contributes.icons` as `$(ai-browser-cup)` / `$(ai-browser-cup-full)`.
+  Details that matter:
+  - **It is generated, not drawn in a font editor**: `node ./scripts/build-icon-font.mjs` writes
+    the TTF from code, no dependency (no fontTools here, and the project keeps none). The ten
+    tables Chromium's sanitizer (OTS) requires are written by hand; a font it rejects simply draws
+    nothing, so check a rebuild in headless Chrome with an `@font-face` page — `document.fonts`
+    reports `loaded` or `error`. Its metrics copy `codicon.ttf` (300 units per em, the glyph in
+    0..300 above the baseline), which is what puts the cup at the same size and height as a
+    codicon. Glyphs are filled outlines: a stroke has no meaning in a font, so walls are rings
+    whose inner contour winds the other way.
+  - **VS Code takes `ttf`, `woff` and `woff2`** for `fontPath` (`{ttf:"truetype",…}` in the
+    workbench bundle, 1.137); TTF needs no compression step. `fontCharacter` is `"\\E001"` in the
+    JSON — a backslash and the hex code.
+  - **`check-manifest` checks both halves**: every `$(ai-browser-…)` a command names is declared
+    in `contributes.icons`, and every declared font exists. An unknown icon id draws an empty
+    button with no error anywhere — verified by misspelling one and watching the check fail.
+  - The font sits in `media/`, not `media/icons/`, which `check-manifest` reserves for SVGs and
+    sweeps for orphans.
+- **The popup is still the view's own** (never a QuickPick, which would pause a browser tab):
+  the command reveals the view and posts `openSleep`, held until the webview says `ready` like
+  every non-state message, and the popup hangs from the view's top right corner, under the
+  button (`openSleepPopup`). A press on the title bar is outside the webview, so it cannot toggle
+  the popup closed; Escape, a click elsewhere or a choice closes it.
+- Both commands are hidden from the palette with the rest of the chat's title commands.
+
+**"Until the agents finish" has a scope** (`SleepScope`), asked for in the same breath: **This
+tab** waits on the tab in front when it was chosen (`{ mode: 'agents', scope: 'tab', tabId }`),
+**All tabs** on every tab of the window (`scope: 'window'`, also what an absent scope means). A
+timer has no scope — it holds the computer, whatever the tabs do — which is why the popup
+labels the timer grid "the whole app". `SleepControl` asks `working(tabId)`; the provider
+answers for that tab alone, so a tab-scoped hold ends when that tab's work does even while
+another tab works on, and **a closed tab works no more**, so closing it ends the hold too. A
+`setSleep` naming a tab that has already closed is ignored. When another tab holds it, the
+popup says so ("Now held by …"), so choosing This tab reads as moving the hold. Tab ids are
+minted per extension host, which costs nothing here: the choice does not survive a reload anyway.
 
 [src/power/](src/power/) holds it, in three parts, and the split is the design:
 
@@ -6270,7 +6320,8 @@ Details that matter:
 - **Refused in a remote or web window** (`hostIsRemote`): the lock would be taken on the wrong
   machine, or on none.
 - The tooltip and the popup's status are refilled every second (the countdown); the popup is
-  rebuilt only when the choice, the state or the error change.
+  rebuilt only when the choice, the state, the error, the tab in front or the watched tab's name
+  change (#365).
 
 **Known and left:** on Windows the pipe name is machine-wide and predictable, so another local user
 can take it first and make the feature fail for this one — the same class as the lock files under

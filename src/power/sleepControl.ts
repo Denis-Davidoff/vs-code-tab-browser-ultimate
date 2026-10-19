@@ -17,13 +17,16 @@ export class SleepControl {
 	private connecting = false;
 	private endpoint = '';
 	private armedAt = 0;
-	constructor(private readonly working: () => boolean, private readonly changed: () => void, private readonly unavailable?: string) {
+	/** `working(tabId)`: whether that tab still works — or, with no id, any tab of the window. */
+	constructor(private readonly working: (tabId?: string) => boolean, private readonly changed: () => void, private readonly unavailable?: string) {
 		this.timer = setInterval(() => this.update(), 1000);
 	}
 	public choose(choice: SleepChoice): void {
 		if (!validSleepChoice(choice)) { return; }
 		this.armedAt = Date.now();
-		this.state = { mode: choice.mode, active: false, ...(choice.mode === 'timer' ? { minutes: choice.minutes, until: Date.now() + choice.minutes * 60000 } : {}) };
+		this.state = { mode: choice.mode, active: false,
+			...(choice.mode === 'timer' ? { minutes: choice.minutes, until: Date.now() + choice.minutes * 60000 } : {}),
+			...(choice.mode === 'agents' ? (choice.scope === 'tab' ? { scope: 'tab' as const, tabId: choice.tabId } : { scope: 'window' as const }) : {}) };
 		this.update();
 		this.socket?.write(`${this.wanted}\n`);
 		this.changed();
@@ -32,7 +35,7 @@ export class SleepControl {
 		if (this.disposed) { return; }
 		const before = JSON.stringify(this.state);
 		if ((this.state.mode === 'timer' && Date.now() >= this.state.until!) ||
-			(this.state.mode === 'agents' && !this.working() && Date.now() - this.armedAt > 500)) {
+			(this.state.mode === 'agents' && !this.working(this.state.scope === 'tab' ? this.state.tabId : undefined) && Date.now() - this.armedAt > 500)) {
 			this.state = { mode: 'off', active: false };
 		}
 		const wanted = this.state.mode !== 'off';

@@ -33,11 +33,12 @@ class EventEmitter<T> {
 const vscode = { EventEmitter, l10n: { t: (text: string) => text } };
 const protocol = load<typeof import('../chat/agentProtocol.ts')>('src/chat/agentProtocol.ts');
 const { CodexBackend } = load<typeof import('../chat/codexAgent.ts')>('src/chat/codexAgent.ts', {
-	vscode, './agentProtocol': protocol, './agentProcess': {},
+	vscode, './agentProtocol': protocol, './agentProcess': {}, './autoTitle': { requestTitle: async () => undefined },
 });
 const { ChatTab, newChat } = load<typeof import('../chat/chatTab.ts')>('src/chat/chatTab.ts', {
 	vscode, './agentProtocol': protocol, './agents': { agentNames: { codex: 'Codex' } },
 	'../core/uuid': { generateUuid: () => 'test-chat' }, './toolbarText': {},
+	'./attachmentReferences': load('src/chat/attachmentReferences.ts'),
 });
 const { SleepControl } = load<typeof import('./sleepControl.ts')>('src/power/sleepControl.ts', {
 	'./sleepProtocol': load('src/power/sleepProtocol.ts'),

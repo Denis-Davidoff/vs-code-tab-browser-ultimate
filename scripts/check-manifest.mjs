@@ -57,9 +57,27 @@ for (const id of commands.keys()) {
 
 /* icon paths must resolve, and every icon file must be referenced */
 const referenced = new Set();
+/*
+ * A `$(id)` the extension contributes itself (`contributes.icons`) must be declared, and its
+ * font must be there: an unknown id draws nothing, with no error anywhere.
+ */
+const ownIcons = contributes.icons ?? {};
+for (const [id, icon] of Object.entries(ownIcons)) {
+	const font = icon?.default?.fontPath;
+	if (typeof font === 'string' && !existsSync(join(root, font))) {
+		problems.push(`icon ${id}: font not found — ${font}`);
+	}
+}
 const collectIcon = (icon, owner) => {
-	if (!icon || typeof icon === 'string') {
-		return; // `$(codicon)` or absent
+	if (typeof icon === 'string') {
+		const id = /^\$\(([^)~]+)/.exec(icon)?.[1];
+		if (id?.startsWith('ai-browser-') && !ownIcons[id]) {
+			problems.push(`${owner}: icon $(${id}) is not in contributes.icons`);
+		}
+		return;
+	}
+	if (!icon) {
+		return;
 	}
 	for (const path of Object.values(icon)) {
 		referenced.add(path);

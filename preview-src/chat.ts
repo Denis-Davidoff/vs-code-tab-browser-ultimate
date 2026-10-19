@@ -138,7 +138,6 @@ const usageTitle = "Usage — your plan's limits for each agent, and this chat's
 const usageButton = button([el('span', { class: 'u-mark', text: 'U' })], { class: 'ghost round usage-button', title: usageTitle });
 const agentsButton = button([], { class: 'pill agents-button', title: 'Agents' });
 /** How full the conversation's context is, as a pie that fills; a click compacts it. */
-const sleepButton = button([], { class: 'ghost round sleep-button', title: 'Keep computer awake' });
 const sleepPopup = el('div', { class: 'popup sleep-popup' });
 const contextPie = el('span', { class: 'context-pie' });
 const contextButton = button([contextPie], { class: 'ghost round context-button' });
@@ -196,7 +195,7 @@ const workdirMode = el('span', { class: 'workdir-mode' });
 const workdirLocationText = el('span', { class: 'workdir-location-value' });
 const workdirLocation = el('span', { class: 'workdir-location' }, workdirLocationText);
 const workdirSummary = button([workdirMode, workdirLocation], { class: 'workdir-summary', title: 'Working folder' });
-const workdirFooter = el('div', { class: 'workdir-status' }, workdirButton, workdirSummary, sleepButton);
+const workdirFooter = el('div', { class: 'workdir-status' }, workdirButton, workdirSummary);
 const footer = el('div', { class: 'footer' }, questionDock, switchCard, skillBar, composer, workdirFooter);
 workdirSummary.addEventListener('click', () => workdirButton.click());
 /** One tab per open conversation, above the thread. */
@@ -388,6 +387,9 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 				drafts[message.chatId] = drafts[message.chatId] ? `${drafts[message.chatId]}\n\n${message.text}` : message.text;
 				saveDraft();
 			}
+			return;
+		case 'openSleep':
+			buildSleepPopup(); renderSleep(); openSleepPopup();
 			return;
 		case 'focusInput':
 			// Not while a tab is being renamed: the host asks for this on every tab
@@ -3270,7 +3272,7 @@ function closePopups(except?: HTMLElement, keep?: HTMLElement): void {
 			popup.classList.remove('open');
 		}
 	}
-	for (const pill of [effortButton, sleepButton, agentPill, modelPill, plusButton, usageButton, approveToggle, slashButton, workdirButton, contextButton]) {
+	for (const pill of [effortButton, agentPill, modelPill, plusButton, usageButton, approveToggle, slashButton, workdirButton, contextButton]) {
 		pill.classList.remove('active');
 	}
 	// A skill button is a popup's anchor too; the mark only tells a second
@@ -3359,7 +3361,7 @@ document.addEventListener('mousedown', event => {
 		}
 		return;
 	}
-	if (![workdirFooter, effortButton, sleepPopup, sleepButton, menu, usagePopup, approvalPopup, palette, workdirPopup, paramsPopup, skillBar, historyPanel, agentsPanel, agentAppsPanel, plusButton, usageButton, usageAlertText, agentsButton, agentPill, modelPill, approveToggle, slashButton, workdirButton, contextButton].some(n => n.contains(target))) {
+	if (![workdirFooter, effortButton, sleepPopup, menu, usagePopup, approvalPopup, palette, workdirPopup, paramsPopup, skillBar, historyPanel, agentsPanel, agentAppsPanel, plusButton, usageButton, usageAlertText, agentsButton, agentPill, modelPill, approveToggle, slashButton, workdirButton, contextButton].some(n => n.contains(target))) {
 		closePopups();
 	}
 });
@@ -6213,37 +6215,29 @@ autosize();
 post({ type: 'ready' });
 
 
-/* The assertion belongs to this window; the OS coordinator combines windows. */
-function cupIcon(full: boolean): SVGSVGElement {
-	const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-	svg.setAttribute('viewBox', '0 0 16 16');
-	svg.setAttribute('width', '16'); svg.setAttribute('height', '16');
-	svg.setAttribute('aria-hidden', 'true');
-	const path = document.createElementNS(svg.namespaceURI, 'path');
-	path.setAttribute('d', 'M2 3.5h9v5a4.5 4.5 0 0 1-9 0z M11 4h1.5a2 2 0 0 1 0 4H11 M1 14h12');
-	path.setAttribute('fill', 'none'); path.setAttribute('stroke', 'currentColor'); path.setAttribute('stroke-width', '1.2');
-	if (full) {
-		const liquid = document.createElementNS(svg.namespaceURI, 'path');
-		liquid.setAttribute('d', 'M3 6h7v2.5a3.5 3.5 0 0 1-7 0z');
-		liquid.setAttribute('fill', 'currentColor'); svg.append(liquid);
-	}
-	svg.append(path); return svg;
-}
+/* The popup of the title bar's cup; the window's choice, voted to the OS coordinator. */
 let sleepSignature = '';
+/** The tab a tab-scoped hold waits on, by name, for the tooltip and the popup. */
+function sleepTabTitle(tabId: string | undefined): string {
+	const title = state?.tabs.find(t => t.id === tabId)?.title;
+	return title ? `\u201c${title}\u201d` : 'this tab';
+}
 function renderSleep(): void {
 	const sleep = state?.sleep;
 	const active = sleep?.active === true;
 	const seconds = Math.max(0, Math.ceil(((sleep?.until ?? 0) - Date.now()) / 1000));
 	const countdown = `${Math.floor(seconds / 3600).toString().padStart(2, '0')}:${Math.floor(seconds / 60 % 60).toString().padStart(2, '0')}:${(seconds % 60).toString().padStart(2, '0')}`;
+	const tabScoped = sleep?.mode === 'agents' && sleep.scope === 'tab';
 	const tip = sleep?.error ? `Cannot keep computer awake: ${sleep.error}`
 		: sleep?.mode === 'timer' ? `Keep awake: ${countdown}${active ? '' : ' — starting…'}`
-		: sleep?.mode === 'agents' ? 'Keep awake until all agents and subagents in this window finish'
-		: 'Keep computer awake — off in this window';
-	sleepButton.title = tip; sleepButton.setAttribute('aria-label', tip);
-	sleepButton.setAttribute('aria-pressed', String(active));
-	const signature = JSON.stringify([sleep?.mode, sleep?.minutes, active, sleep?.error]);
+		: tabScoped ? `Keep awake until the agents and subagents in ${sleepTabTitle(sleep.tabId)} finish`
+		: sleep?.mode === 'agents' ? 'Keep awake until the agents and subagents in every tab finish'
+		: 'Keep computer awake — off';
+	// The tab in front and the watched tab's name decide which row reads as chosen.
+	const signature = JSON.stringify([sleep?.mode, sleep?.minutes, sleep?.scope, sleep?.tabId, active, sleep?.error,
+		state?.activeTab, tabScoped ? sleepTabTitle(sleep.tabId) : '', sleepTabTitle(state?.activeTab)]);
 	if (signature !== sleepSignature) {
-		sleepSignature = signature; sleepButton.replaceChildren(cupIcon(active));
+		sleepSignature = signature;
 		buildSleepPopup();
 	}
 	const status = sleepPopup.querySelector('.sleep-status');
@@ -6260,26 +6254,54 @@ function buildSleepPopup(): void {
 		b.classList.toggle('selected', selected); b.setAttribute('aria-pressed', String(selected));
 		b.addEventListener('click', () => choose(choice)); return b;
 	};
+	/** A wide row: an icon, a label, and a line under it saying what it waits on. */
+	const wideOption = (glyph: string, label: string, detail: string, choice: SleepChoice, selected: boolean) => {
+		const b = option('', choice, selected);
+		b.replaceChildren(icon(glyph), el('span', { class: 'sleep-option-text' },
+			el('span', { class: 'sleep-option-label', text: label }), el('span', { class: 'sleep-option-detail', text: detail })));
+		if (selected) { b.append(icon('check')); }
+		b.classList.add('sleep-agents-option');
+		return b;
+	};
 	const minutes = el('div', { class: 'sleep-options' });
 	for (const n of sleepMinutes) { minutes.append(option(String(n), { mode: 'timer', minutes: n }, sleep?.mode === 'timer' && sleep.minutes === n)); }
 	const hours = el('div', { class: 'sleep-options' });
 	for (const n of sleepHours) { hours.append(option(String(n), { mode: 'timer', minutes: n * 60 }, sleep?.mode === 'timer' && sleep.minutes === n * 60)); }
-	const agentsOption = option('Until agents and subagents finish in this window', { mode: 'agents' }, sleep?.mode === 'agents');
-	agentsOption.classList.add('sleep-agents-option');
-	agentsOption.prepend(icon('hubot'));
-	sleepPopup.replaceChildren(el('div', { class: 'sleep-heading', text: 'Keep this window awake' }),
-		el('div', { class: 'sleep-status' }), el('div', { class: 'sleep-label', text: 'Minutes' }), minutes,
-		el('div', { class: 'sleep-label', text: 'Hours' }), hours,
-		agentsOption);
+	const tabId = state?.activeTab;
+	const watched = sleep?.mode === 'agents' && sleep.scope === 'tab' ? sleep.tabId : undefined;
+	const thisTab = tabId ? wideOption('comment-discussion', 'This tab', `Until the agents and subagents in ${sleepTabTitle(tabId)} finish`,
+		{ mode: 'agents', scope: 'tab', tabId }, watched === tabId) : undefined;
+	const allTabs = wideOption('hubot', 'All tabs', 'Until the agents and subagents in every tab of this window finish',
+		{ mode: 'agents', scope: 'window' }, sleep?.mode === 'agents' && sleep.scope !== 'tab');
+	sleepPopup.replaceChildren(el('div', { class: 'sleep-heading', text: 'Keep computer awake' }),
+		el('div', { class: 'sleep-status' }),
+		el('div', { class: 'sleep-label', text: 'For a time — the whole app' }),
+		el('div', { class: 'sleep-label sleep-sublabel', text: 'Minutes' }), minutes,
+		el('div', { class: 'sleep-label sleep-sublabel', text: 'Hours' }), hours,
+		el('div', { class: 'sleep-label', text: 'Until the agents finish' }),
+		...(thisTab ? [thisTab] : []), allTabs);
+	// Another tab holds it: say so, so moving the hold here is a visible change.
+	if (watched && watched !== tabId) {
+		sleepPopup.append(el('div', { class: 'sleep-note', text: `Now held by ${sleepTabTitle(watched)}.` }));
+	}
 	if (sleep && sleep.mode !== 'off') {
-		const off = option('Turn off for this window', { mode: 'off' }, false);
+		const off = option('Turn off', { mode: 'off' }, false);
 		off.prepend(icon('circle-slash'));
 		sleepPopup.append(off);
 	}
 }
-sleepButton.addEventListener('click', () => {
-	if (sleepPopup.classList.contains('open')) { closePopups(); return; }
-	buildSleepPopup(); renderSleep(); openAbove(sleepPopup, sleepButton, 'right');
-});
-sleepPopup.addEventListener('keydown', event => { if (event.key === 'Escape') { closePopups(); sleepButton.focus(); } });
+/**
+ * Opened from the cup in the view's title bar, which is outside the webview:
+ * so the popup hangs from the view's top right corner, under that button.
+ */
+function openSleepPopup(): void {
+	closePopups(sleepPopup);
+	sleepPopup.style.bottom = '';
+	sleepPopup.style.left = '';
+	sleepPopup.style.top = '6px';
+	sleepPopup.style.right = '8px';
+	sleepPopup.classList.add('open');
+	sleepPopup.querySelector<HTMLButtonElement>('.sleep-option.selected, .sleep-option')?.focus();
+}
+sleepPopup.addEventListener('keydown', event => { if (event.key === 'Escape' && !event.isComposing) { closePopups(); input.focus(); } });
 setInterval(renderSleep, 1000);

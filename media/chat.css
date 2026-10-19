@@ -1578,13 +1578,7 @@ body.vscode-light .code-block pre {
 	outline-offset: -1px;
 }
 
-/* The cup and the hubot about the size of the round marks beside them (the pie, the U). */
-.sleep-button svg {
-	width: calc(var(--toolbar-icon-size) * 0.9);
-	height: calc(var(--toolbar-icon-size) * 0.9);
-	flex: none;
-}
-
+/* The hubot about the size of the round marks beside it (the pie, the U). */
 .agents-button .codicon {
 	width: calc(var(--toolbar-icon-size) * 0.9);
 	height: calc(var(--toolbar-icon-size) * 0.9);
@@ -2409,6 +2403,7 @@ body.vscode-high-contrast-light .context-pie {
 	flex: none;
 	margin-left: 2px;
 }
+
 
 .tab-confirm {
 	display: flex;
@@ -4075,8 +4070,8 @@ body.vscode-high-contrast-light .context-pie {
 	display: none;
 }
 
-.sleep-button svg { display: block; }
-.sleep-popup { width: 292px; padding: 10px; }
+.sleep-popup { width: 292px; padding: 10px; max-height: calc(100% - 48px); overflow-y: auto; }
+.sleep-popup > .sleep-agents-option + .sleep-agents-option { margin-top: 6px; }
 .sleep-heading { font-weight: 600; margin-bottom: 6px; }
 .sleep-status { font-size: 11px; opacity: .8; overflow-wrap: anywhere; margin-bottom: 8px; }
 .sleep-label { font-size: 11px; opacity: .7; margin: 8px 0 4px; }
@@ -4098,8 +4093,15 @@ body.vscode-high-contrast-light .context-pie {
 	border-color: var(--border-strong);
 }
 .sleep-popup > .sleep-agents-option:hover { background: var(--vscode-button-secondaryHoverBackground, var(--soft-2)); }
-.sleep-popup > .sleep-agents-option.selected { border-color: currentColor; }
+.sleep-popup > .sleep-agents-option.selected { border-color: var(--vscode-focusBorder, currentColor); }
+.sleep-popup > .sleep-agents-option .codicon-check { margin-left: auto; color: var(--vscode-focusBorder, currentColor); }
 .sleep-popup > .sleep-option .codicon { flex-shrink: 0; font-size: 16px; }
+.sleep-sublabel { margin-top: 4px; opacity: .55; }
+.sleep-option-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.sleep-option-label { font-weight: 600; }
+.sleep-option-detail { font-size: 11px; opacity: .75; overflow-wrap: anywhere; }
+.sleep-note { font-size: 11px; opacity: .75; margin-top: 6px; overflow-wrap: anywhere; }
+.sleep-agents-option .codicon-comment-discussion { color: var(--vscode-charts-yellow, #cca700); }
 
 .sleep-status.sleep-enabled-status { color: var(--warn); opacity: 1; }
 
@@ -4118,7 +4120,6 @@ body.vscode-high-contrast-light .context-pie {
 	font-size: 11px;
 }
 .workdir-status .workdir-button { flex: none; }
-.workdir-status .sleep-button { flex: none; margin-left: auto; margin-right: 4px; }
 .workdir-summary {
 	display: flex;
 	align-items: center;

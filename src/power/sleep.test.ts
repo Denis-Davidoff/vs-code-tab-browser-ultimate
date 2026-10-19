@@ -61,6 +61,36 @@ test('window timer replacement, expiry, cancellation and delayed subagents', () 
 	} finally { control.dispose(); f.close(); }
 });
 
+test('agents mode scoped to one tab waits on that tab only; window scope on every tab', () => {
+	const f = fixture();
+	const { SleepControl } = f.require('./sleepControl.js') as { SleepControl: typeof Control };
+	const busy = new Set(['a', 'b']);
+	const asked: (string | undefined)[] = [];
+	const control = new SleepControl(tabId => { asked.push(tabId); return tabId === undefined ? busy.size > 0 : busy.has(tabId); }, () => {}, 'Test: no OS assertion');
+	const now = Date.now;
+	const later = (fn: () => void) => { Date.now = () => now() + 1000; try { fn(); } finally { Date.now = now; } };
+	try {
+		control.choose({ mode: 'agents', scope: 'tab', tabId: '' });
+		assert.equal(control.state.mode, 'off', 'a tab scope needs a tab');
+		control.choose({ mode: 'agents', scope: 'window', tabId: 'a' } as never);
+		assert.equal(control.state.mode, 'off', 'a window scope names no tab');
+		control.choose({ mode: 'agents', scope: 'tab', tabId: 'a' });
+		assert.deepEqual([control.state.scope, control.state.tabId], ['tab', 'a']);
+		busy.delete('a');
+		later(() => control.update());
+		assert.equal(control.state.mode, 'off', 'tab a finished while b still works');
+		assert.equal(asked.at(-1), 'a');
+		control.choose({ mode: 'agents' });
+		assert.equal(control.state.scope, 'window', 'no scope reads as the window');
+		later(() => control.update());
+		assert.equal(control.state.mode, 'agents', 'b still works');
+		assert.equal(asked.at(-1), undefined);
+		busy.delete('b');
+		later(() => control.update());
+		assert.equal(control.state.mode, 'off');
+	} finally { control.dispose(); f.close(); }
+});
+
 test('all platforms request system sleep prevention while allowing display sleep', () => {
 	const f = fixture();
 	try {

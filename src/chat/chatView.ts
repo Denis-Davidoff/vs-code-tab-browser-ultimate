@@ -314,8 +314,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		this._remembered = _context.globalState.get<RememberedSelection>(selectionKey) ?? { models: {}, efforts: {} };
 		this._restoreTabs();
 		this._sleep = new SleepControl(
-			() => this._tabs.some(t => t.busy || t.waiting || t.queuedCount > 0 || this._runs.runningIn(t.chat.id) > 0),
-			() => this._post(),
+			// A tab that has closed works no more, so a hold scoped to it ends.
+			tabId => (tabId === undefined ? this._tabs : this._tabs.filter(t => t.id === tabId))
+				.some(t => t.busy || t.waiting || t.queuedCount > 0 || this._runs.runningIn(t.chat.id) > 0),
+			() => { this._publishSleep(); this._post(); },
 			hostIsRemote() ? "Sleep prevention requires a local VS Code window." : undefined,
 		);
 		void this._readNews();
@@ -486,6 +488,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	/** Coalesces state posts: a streaming reply changes the state many times a frame. */
+	private _sleepShown?: boolean;
+	/** The title bar shows an empty or a filled cup, by context key. */
+	private _publishSleep(): void {
+		const on = this._sleep.state.mode !== 'off';
+		if (on !== this._sleepShown) {
+			this._sleepShown = on;
+			void vscode.commands.executeCommand('setContext', 'aiBrowser.keepAwakeActive', on);
+		}
+	}
+
 	private _post(): void {
 		if (this._postTimer) {
 			return;
@@ -604,6 +616,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private async _receive(message: ViewToHost): Promise<void> {
 		switch (message.type) {
 			case 'setSleep':
+				// A tab closed while the popup was open: nothing to wait for.
+				if (message.choice?.mode === 'agents' && message.choice.scope === 'tab') {
+					const tabId = message.choice.tabId;
+					if (!this._tabs.some(t => t.id === tabId)) {
+						return;
+					}
+				}
 				this._sleep.choose(message.choice);
 				return;
 			case 'ready': {
@@ -2067,6 +2086,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	/** `refresh`: the list changed under an open panel; it updates it and never opens or closes it. */
+	/** The title bar's cup; the popup is the view's own, so it pauses no browser tab. */
+	public showKeepAwake(): void {
+		this._postMessage({ type: 'openSleep' });
+	}
+
 	public showHistory(refresh = false): void {
 		const chats: ChatSummary[] = this._history().map(c => ({ id: c.id, title: c.title, agent: c.agent, updatedAt: c.updatedAt }));
 		this._postMessage({ type: 'history', chats, refresh });
@@ -3004,6 +3028,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		for (const request of this._titleRequests.values()) { request.abort(); }
 		this._titleRequests.clear();
 		this._sleep.dispose();
+		void vscode.commands.executeCommand('setContext', 'aiBrowser.keepAwakeActive', false);
 		this._runs.dispose();
 		for (const timer of this._usageChecks.values()) {
 			clearTimeout(timer);

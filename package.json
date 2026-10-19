@@ -137,6 +137,8 @@
 		"onCommand:aiBrowser.chat.newChat",
 		"onCommand:aiBrowser.chat.history",
 		"onCommand:aiBrowser.chat.refreshAgents",
+		"onCommand:aiBrowser.chat.keepAwake",
+		"onCommand:aiBrowser.chat.keepAwakeActive",
 		"onCommand:aiBrowser.chat.addElement",
 		"onCommand:aiBrowser.chat.addCssPath",
 		"onCommand:aiBrowser.chat.addCssLocation",
@@ -577,8 +579,36 @@
 				"title": "%command.chat.refreshAgents.title%",
 				"category": "%displayName%",
 				"icon": "$(refresh)"
+			},
+			{
+				"command": "aiBrowser.chat.keepAwake",
+				"title": "%command.chat.keepAwake.title%",
+				"category": "%displayName%",
+				"icon": "$(ai-browser-cup)"
+			},
+			{
+				"command": "aiBrowser.chat.keepAwakeActive",
+				"title": "%command.chat.keepAwakeActive.title%",
+				"category": "%displayName%",
+				"icon": "$(ai-browser-cup-full)"
 			}
 		],
+		"icons": {
+			"ai-browser-cup": {
+				"description": "%icon.cup.description%",
+				"default": {
+					"fontPath": "media/ai-browser-icons.ttf",
+					"fontCharacter": "\\E001"
+				}
+			},
+			"ai-browser-cup-full": {
+				"description": "%icon.cupFull.description%",
+				"default": {
+					"fontPath": "media/ai-browser-icons.ttf",
+					"fontCharacter": "\\E002"
+				}
+			}
+		},
 		"viewsContainers": {
 			"secondarySidebar": [
 				{
@@ -977,6 +1007,14 @@
 				{
 					"command": "aiBrowser.chat.refreshAgents",
 					"when": "!aiBrowser.chatUnsupported"
+				},
+				{
+					"command": "aiBrowser.chat.keepAwake",
+					"when": "!aiBrowser.chatUnsupported && !aiBrowser.keepAwakeActive"
+				},
+				{
+					"command": "aiBrowser.chat.keepAwakeActive",
+					"when": "!aiBrowser.chatUnsupported && aiBrowser.keepAwakeActive"
 				}
 			],
 			"aiBrowser.claudeMenu": [
@@ -1102,6 +1140,16 @@
 					"command": "aiBrowser.chat.refreshAgents",
 					"when": "view == aiBrowser.chat",
 					"group": "navigation@3"
+				},
+				{
+					"command": "aiBrowser.chat.keepAwake",
+					"when": "view == aiBrowser.chat && !aiBrowser.keepAwakeActive",
+					"group": "navigation@4"
+				},
+				{
+					"command": "aiBrowser.chat.keepAwakeActive",
+					"when": "view == aiBrowser.chat && aiBrowser.keepAwakeActive",
+					"group": "navigation@4"
 				}
 			]
 		},
