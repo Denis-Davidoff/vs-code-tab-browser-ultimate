@@ -263,6 +263,8 @@ function refreshGitStatus(): void {
  if (!gitFolder || gitPending) { return; }
  gitPending = true;
  gitRefresh.disabled = true;
+ gitPopupRefresh.disabled = true;
+ branchRefresh.disabled = true;
  post({ type: 'refreshWorkdirGit' });
 }
 gitRefresh.addEventListener('click', refreshGitStatus);
@@ -313,7 +315,12 @@ gitPopup.id = 'git-changes-popup';
 gitPopup.setAttribute('role', 'dialog');
 gitPopup.setAttribute('aria-label', 'Git changes and commit');
 commitButton.setAttribute('aria-controls', gitPopup.id);
-const gitPopupHeader = el('div', { class: 'git-changes-heading' }, el('strong', {}, 'Git changes'), el('span', { class: 'git-change-totals' }, gitChanged, gitDeleted));
+const gitPopupRefresh = button([icon('refresh')], { class: 'ghost round', title: 'Refresh Git changes' });
+gitPopupRefresh.setAttribute('aria-label', 'Refresh Git changes');
+gitPopupRefresh.disabled = gitPending;
+gitPopupRefresh.addEventListener('click', () => { gitPopupPinned = true; refreshGitStatus(); });
+const gitPopupHeader = el('div', { class: 'git-changes-heading' }, el('strong', {}, 'Git changes'),
+ el('div', { class: 'git-changes-heading-tools' }, el('span', { class: 'git-change-totals' }, gitChanged, gitDeleted), gitPopupRefresh));
 const gitPopupError = el('div', { class: 'git-branch-error' });
 gitPopupError.setAttribute('role', 'status');
 const gitPopupList = el('div', { class: 'git-changes-list' });
@@ -496,10 +503,14 @@ branchError.setAttribute('role', 'status');
 const branchCreate = button([icon('add'), 'Create branch…'], { class: 'git-branch-create' });
 const branchList = el('div', { class: 'palette-list git-branch-list' });
 const branchSearchRow = el('div', { class: 'git-branch-search-row' });
-const branchMagic = button([icon('sparkle')], { class: 'git-branch-magic' });
+const branchMagic = button([icon('sparkle')], { class: 'ghost round git-branch-magic', title: 'Generate branch name automatically' });
 branchMagic.dataset.tip = 'Generate branch name automatically';
 branchMagic.setAttribute('aria-label', branchMagic.dataset.tip);
-branchSearchRow.append(branchSearch, branchMagic);
+const branchRefresh = button([icon('refresh')], { class: 'ghost round', title: 'Refresh Git branches' });
+branchRefresh.setAttribute('aria-label', 'Refresh Git branches');
+branchRefresh.disabled = gitPending;
+branchRefresh.addEventListener('click', refreshGitStatus);
+branchSearchRow.append(branchSearch, branchMagic, branchRefresh);
 branchPopup.append(branchSearchRow, branchError, branchCreate, branchList);
 let branchNameSequence = 0;
 let branchNamePending: { id: number; tabId: string; folder: string; query: string } | undefined;
@@ -805,6 +816,8 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
    if (message.folder !== gitFolder) { return; }
    gitPending = false;
    gitRefresh.disabled = false;
+   gitPopupRefresh.disabled = false;
+   branchRefresh.disabled = false;
    gitFiles = message.status;
    if (message.error) { gitError = message.error; }
    else if (!gitIndexPending) { gitError = ''; }
