@@ -5,7 +5,8 @@ import { localFileLink } from './fileLinks';
 import { SleepControl } from '../power/sleepControl';
 import { VoiceRecording, voiceHelperPath, voiceUnavailable } from './voiceRecorder';
 import { tidyTranscript, voiceChipLabel, voiceLocalePattern, voiceMaxSeconds, voicePromptText, type HelperLine } from './voiceText';
-import { privateTempDirectory, projectTempDirectory, legacyPrivateTempDirectory } from '../core/safeFiles';
+import { privateTempDirectory, projectTempDirectory, legacyPrivateTempDirectory, writeExclusive } from '../core/safeFiles';
+import { pastedFileLimit, pastedFileName, pastedImageType } from './pastedFiles';
 import type { BrowserRecording, RecordingDestination, RecordingEncoder } from '../browser/recording';
 import { readRecordingQuality, recordingQualityKey } from '../browser/recordingQuality';
 /*---------------------------------------------------------------------------------------------
@@ -1021,6 +1022,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				return;
 			case 'attach':
 				await this._attach(message.kind);
+				return;
+			case 'pasteFile':
+				await this._pasteFile(message);
 				return;
 			case 'removeAttachment':
 				this._active.attachments = this._active.attachments.filter(a => a.chip.id !== message.id);
@@ -2087,6 +2091,43 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			this._post();
 			return true;
 		};
+	}
+
+	private async _pasteFile(message: Extract<ViewToHost, { type: 'pasteFile' }>): Promise<void> {
+		let saved: string | undefined;
+		try {
+			const tab = this._tabs.find(tab => tab.id === message.tabId && tab.chat.id === message.chatId);
+			if (!tab) { throw new Error('The destination chat is no longer open.'); }
+			if (typeof message.base64 !== 'string' || message.base64.length > Math.ceil(pastedFileLimit / 3) * 4
+				|| message.base64.length % 4 !== 0 || /[^A-Za-z0-9+/=]/.test(message.base64)) {
+				throw new Error('Invalid clipboard file or file exceeds 64 MB.');
+			}
+			const data = Buffer.from(message.base64, 'base64');
+			if (data.toString('base64') !== message.base64) { throw new Error('Invalid clipboard file.'); }
+			if (data.length > pastedFileLimit) { throw new Error('Clipboard files must be 64 MB or smaller.'); }
+			const name = pastedFileName(message.name);
+			const project = this._workdir(tab);
+			saved = await writeExclusive(await projectTempDirectory(project, 'files'), `${generateUuid()}-${name}`, data);
+			await trackTemporaryFile(saved, project);
+			if (this._disposed || !this._tabs.includes(tab) || tab.chat.id !== message.chatId) {
+				throw new Error('The destination chat is no longer open.');
+			}
+			const imageType = pastedImageType(name, message.mime);
+			const video = message.mime.startsWith('video/') || /\.(mp4|webm|mov|m4v|avi|mkv)$/i.test(name);
+			tab.attachments.push({
+				chip: { id: generateUuid(), kind: video ? 'video' : 'file', label: name },
+				file: vscode.Uri.file(saved),
+				text: `Attached file: ${saved}`,
+				image: imageType ? { mediaType: imageType, base64: message.base64 } : undefined,
+			});
+			this._post();
+			// Publish chips before acknowledging so attachment-only messages can be sent immediately.
+			this._postMessage({ type: 'state', state: this._state() });
+			this._postMessage({ type: 'pastedFileResult', id: message.id });
+		} catch (error) {
+			if (saved) { await fs.promises.unlink(saved).catch(() => {}); }
+			this._postMessage({ type: 'pastedFileResult', id: message.id, error: error instanceof Error ? error.message : String(error) });
+		}
 	}
 
 	private async _attach(kind: AttachmentKind): Promise<void> {

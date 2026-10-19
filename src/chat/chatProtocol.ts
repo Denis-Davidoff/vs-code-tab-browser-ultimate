@@ -628,6 +628,7 @@ export interface ChatTabSummary {
 export type ChatTabStatus = 'waiting' | 'working' | 'unread' | 'failed' | 'read';
 
 export type HostToView =
+	| { readonly type: 'pastedFileResult'; readonly id: string; readonly error?: string }
 	| { readonly type: 'temporaryStorage'; readonly storage?: TemporaryStorage; readonly error?: string }
 	| { readonly type: 'recordingStatus'; readonly state?: 'starting' | 'recording' | 'paused' | 'stopping'; readonly seconds: number }
 	| { readonly type: 'recording'; readonly id: string; readonly message: any }
@@ -694,6 +695,7 @@ export type ViewToHost =
 	| { readonly type: 'exportChat'; readonly to: 'clipboard' | 'file' }
 	| { readonly type: 'stop' }
 	| { readonly type: 'attach'; readonly kind: AttachmentKind }
+	| { readonly type: 'pasteFile'; readonly id: string; readonly tabId: string; readonly chatId: string; readonly name: string; readonly mime: string; readonly base64: string }
 	| { readonly type: 'removeAttachment'; readonly id: string }
 	| { readonly type: 'usage' }
 	/** The usage line closed: not shown again until its percentage grows. */

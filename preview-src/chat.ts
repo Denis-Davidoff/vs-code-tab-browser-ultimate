@@ -1,6 +1,8 @@
 import type { TemporaryStorage } from '../src/core/temporaryFiles';
 import { aiFeatures, defaultFeaturePrompts, featurePromptLimit, readFeatureAiSettings, type AiFeature, type FeatureAiSettings, type FeatureEffort } from '../src/chat/featureAi';
 import { createRecordingEncoder } from './recording';
+import { clipboardFiles, fileBase64 } from './clipboardFiles';
+import { pastedFileLimit } from '../src/chat/pastedFiles';
 import { recordingProfiles, readRecordingQuality, type RecordingQuality } from '../src/browser/recordingQuality';
 import { localFileLink } from '../src/chat/fileLinks';
 import { sleepMinutes, sleepHours, type SleepChoice } from '../src/power/sleepProtocol';
@@ -129,6 +131,13 @@ thread.append(threadInner);
 const blocked = el('div', { class: 'blocked' });
 
 const attachmentsRow = el('div', { class: 'attachments' });
+const pasteStatus = el('div', { class: 'paste-status' });
+pasteStatus.hidden = true;
+pasteStatus.setAttribute('role', 'status');
+let pendingPasteCount = 0;
+let pasteSequence = 0;
+let pasteQueue = Promise.resolve();
+const pastedFileRequests = new Map<string, (error?: string) => void>();
 const videoRecordingLabel = el('span', { class: 'video-recording-label' });
 const videoPauseButton = button([icon('debug-pause')], { class: 'ghost', title: 'Pause video recording' });
 const videoStopButton = button([icon('debug-stop')], { class: 'ghost', title: 'Stop video recording' });
@@ -228,7 +237,7 @@ voiceError.setAttribute('role', 'alert');
 const inputActions = el('div', { class: 'input-actions' },
 	el('span', { class: 'send-slot' }, sendButton), el('span', { class: 'send-slot' }, micButton), el('span', { class: 'send-slot' }, queueButton));
 const inputArea = el('div', { class: 'input-area' }, inputWrap, inputActions);
-const composer = el('div', { class: 'composer' }, videoRecordingBar, attachmentsRow, voiceError, inputArea, toolbar);
+const composer = el('div', { class: 'composer' }, videoRecordingBar, attachmentsRow, pasteStatus, voiceError, inputArea, toolbar);
 /** Asked when another agent is picked for a conversation that has started. */
 const switchCard = el('div', { class: 'switch-card' });
 /** The toolbar skills the tab's agent offers, above the message box. */
@@ -719,6 +728,9 @@ window.addEventListener('unload', () => recordingEncoder?.encoder.dispose());
 window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 	const message = event.data;
 	switch (message.type) {
+		case 'pastedFileResult':
+			pastedFileRequests.get(message.id)?.(message.error);
+			return;
 		case 'recordingStatus': {
 			videoRecordingBar.hidden = !message.state;
 			videoIsPaused = message.state === 'paused';
@@ -2762,9 +2774,8 @@ function renderMarkdown(text: string): DocumentFragment {
 	const out = document.createDocumentFragment();
 	const lines = text.split('\n');
 	let paragraph: string[] = [];
-	let list: HTMLElement | undefined;
-	/** A list indented under the last item of `list`, which keeps its own numbering. */
-	let sub: HTMLElement | undefined;
+	/** One frame per indentation level: nested lists attach to the preceding item at that level. */
+	const listFrames: { indent: number; list: HTMLElement; parentItem?: HTMLElement; lastItem: HTMLElement; lastNumber?: number }[] = [];
 
 	const flush = () => {
 		if (paragraph.length) {
@@ -2778,8 +2789,7 @@ function renderMarkdown(text: string): DocumentFragment {
 			out.append(p);
 			paragraph = [];
 		}
-		list = undefined;
-		sub = undefined;
+		listFrames.length = 0;
 	};
 
 	for (let i = 0; i < lines.length; i++) {
@@ -2865,33 +2875,48 @@ function renderMarkdown(text: string): DocumentFragment {
 				flush();
 			}
 			const li = el('li');
-			inline(li, bullet[3]);
-			// An indented item belongs to a list of its own inside the item above
-			// it. Appended to the outer list, "1. First / 1. sub / 2. sub /
-			// 2. Second" numbered the outer items on through the sub-items, so
-			// "Second" read as 4.
-			const parentItem = list?.lastElementChild;
-			if (bullet[1].length >= 2 && parentItem) {
-				if (!sub || (sub.tagName === 'OL') !== ordered || sub.parentElement !== parentItem) {
-					sub = newList(ordered, bullet[2]);
-					parentItem.append(sub);
+			inline(li, bullet[3].trim());
+			// Codex and other Markdown streams indent nested markers by two or four
+			// spaces. Clamp skipped indentation to one level so mixed conventions
+			// still produce the hierarchy instead of flattening descendants.
+			const spaces = bullet[1].replace(/\t/g, '    ').length;
+			const requestedIndent = Math.floor(spaces / 2);
+			let indent = Math.min(requestedIndent, listFrames.length);
+			// Some streams add indentation before a numbered sibling. At any depth,
+			// keep a continuing number beside its sibling instead of opening a
+			// spurious nested list.
+			if (ordered && listFrames.length > 0 && requestedIndent >= listFrames.length) {
+				const previous = listFrames[listFrames.length - 1];
+				if ((previous.list.tagName === 'OL') && previous.lastNumber === parseInt(bullet[2], 10) - 1) {
+					indent = listFrames.length - 1;
 				}
-				sub.append(li);
-				continue;
 			}
-			sub = undefined;
-			if (!list || (list.tagName === 'OL') !== ordered) {
-				list = newList(ordered, bullet[2]);
-				out.append(list);
+			listFrames.length = Math.min(listFrames.length, indent + 1);
+			const parentItem = indent > 0 ? listFrames[indent - 1]?.lastItem : undefined;
+			let frame = listFrames[indent];
+			if (!frame || (frame.list.tagName === 'OL') !== ordered || frame.parentItem !== parentItem) {
+				const target = newList(ordered, bullet[2]);
+				if (parentItem) {
+					parentItem.append(target);
+				} else {
+					out.append(target);
+				}
+				frame = { indent, list: target, parentItem, lastItem: li };
+				listFrames[indent] = frame;
 			}
-			list.append(li);
+			frame.list.append(li);
+			frame.lastItem = li;
+			if (ordered) { frame.lastNumber = parseInt(bullet[2], 10); }
+			else { delete frame.lastNumber; }
 			continue;
 		}
 		if (!line.trim()) {
-			flush();
+			// Blank lines are allowed between Markdown list items and must not
+			// reset the parent item needed to attach the next nested level.
+			if (!listFrames.length) { flush(); }
 			continue;
 		}
-		list = undefined;
+		listFrames.length = 0;
 		paragraph.push(line);
 	}
 	flush();
@@ -3269,7 +3294,7 @@ function labelOf(effort: string): string {
  * box — the send button used to clear it into a refusal.
  */
 function canSend(): boolean {
-	return !!state && (state.detecting || state.agents.some(a => a.available));
+	return !pendingPasteCount && !!state && (state.detecting || state.agents.some(a => a.available));
 }
 
 /** Smooth colour landmarks: grey, white, green, yellow, orange, red. */
@@ -3548,6 +3573,53 @@ function recall(step: -1 | 1): boolean {
 	renderSend();
 	return true;
 }
+
+input.addEventListener('paste', event => {
+	if (!event.clipboardData || !state) { return; }
+	const files = clipboardFiles(event.clipboardData);
+	if (!files.length) { return; }
+	event.preventDefault();
+	const tabId = state.activeTab;
+	const chatId = state.chatId;
+	const text = event.clipboardData.getData('text/plain');
+	if (text) {
+		input.setRangeText(text, input.selectionStart, input.selectionEnd, 'end');
+		input.dispatchEvent(new Event('input', { bubbles: true }));
+	}
+	pendingPasteCount += files.length;
+	pasteStatus.hidden = false;
+	pasteStatus.textContent = 'Adding clipboard files…';
+	renderSend();
+	pasteQueue = pasteQueue.then(async () => {
+		const errors: string[] = [];
+		for (const file of files) {
+			try {
+				if (file.size > pastedFileLimit) { throw new Error(`${file.name}: files must be 64 MB or smaller.`); }
+				const base64 = await fileBase64(file);
+				const id = `paste-${++pasteSequence}`;
+				await new Promise<void>((resolve, reject) => {
+					const timer = setTimeout(() => {
+						pastedFileRequests.delete(id);
+						reject(new Error(`${file.name}: attachment timed out.`));
+					}, 120_000);
+					pastedFileRequests.set(id, error => {
+						clearTimeout(timer);
+						pastedFileRequests.delete(id);
+						error ? reject(new Error(`${file.name}: ${error}`)) : resolve();
+					});
+					post({ type: 'pasteFile', id, tabId, chatId, name: file.name, mime: file.type, base64 });
+				});
+			} catch (error) {
+				errors.push(error instanceof Error ? error.message : String(error));
+			} finally {
+				pendingPasteCount--;
+				renderSend();
+			}
+		}
+		pasteStatus.textContent = errors.length ? errors.join(' ') : pendingPasteCount ? 'Adding clipboard files…' : '';
+		pasteStatus.hidden = !pasteStatus.textContent;
+	});
+});
 
 input.addEventListener('input', () => {
 	historyAt = inputHistory.length;

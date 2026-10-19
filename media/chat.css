@@ -853,6 +853,12 @@ body.vscode-high-contrast-light .exec {
 	}
 }
 
+.paste-status {
+	padding: 4px 0;
+	font-size: 0.9em;
+	color: var(--fg-3);
+}
+
 /* ---------------------------------------------------------------- markdown */
 
 .markdown > :first-child {
@@ -864,12 +870,12 @@ body.vscode-high-contrast-light .exec {
 }
 
 .markdown p {
-	margin: 0 0 0.9em;
+	margin: 1.26em 0;
 }
 
 .markdown .heading {
 	font-weight: 700;
-	margin: 0.9em 0 0.35em;
+	margin: 1.26em 0;
 	line-height: 1.3;
 	/* from the yellow of the list dashes and numbers at h6 to white at h1, asked for: each level
 	   up takes a fifth more of `--heading-top`. White only where it reads — a dark theme; on a light
@@ -912,12 +918,22 @@ body.vscode-dark .markdown .heading {
 
 .markdown ul,
 .markdown ol {
-	margin: 0 0 0.9em;
+	margin: 1.26em 0;
 	padding-left: 1.4em;
 }
 
 .markdown li {
-	margin: 0.4em 0;
+	margin: 0.15em 0;
+}
+
+.markdown li > ul,
+.markdown li > ol {
+	margin-top: 0.315em;
+	padding-left: calc(1.4em - 4px);
+}
+
+.markdown li > ul {
+	padding-left: calc(1.4em - 6px);
 }
 
 .markdown li.nested {
@@ -928,10 +944,17 @@ body.vscode-dark .markdown .heading {
 	color: var(--fg-3);
 }
 
-/* Bullets are an em dash (asked for), in the same yellow as the numbers of a
-   numbered list (asked for too); a string marker takes `::marker`'s colour. */
+/* Top-level bullets use an em dash; nested lists use standard depth markers. */
 .markdown ul > li {
 	list-style-type: "\2014\00a0 ";
+}
+
+.markdown li ul > li {
+	list-style-type: circle;
+}
+
+.markdown li li ul > li {
+	list-style-type: square;
 }
 
 .markdown ul > li::marker {
@@ -941,7 +964,7 @@ body.vscode-dark .markdown .heading {
 /* Numbered items further apart still, their number in yellow (asked for): the
    theme's chart yellow, which every theme defines for its own background. */
 .markdown ol > li {
-	margin: 0.7em 0;
+	margin: 0.2625em 0;
 }
 
 .markdown ol > li::marker {
@@ -950,7 +973,7 @@ body.vscode-dark .markdown .heading {
 }
 
 .markdown blockquote {
-	margin: 0 0 0.9em;
+	margin: 1.26em 0;
 	padding: 6px 14px;
 	border-left: 3px solid var(--vscode-charts-yellow, #cca700);
 	color: color-mix(in srgb, var(--vscode-foreground) 88%, transparent);
@@ -968,7 +991,7 @@ body.vscode-dark .markdown .heading {
 .markdown hr {
 	border: none;
 	border-top: 1px solid var(--border);
-	margin: 0.8em 0;
+	margin: 1.26em 0;
 }
 
 .markdown :not(pre) > code {
@@ -1003,7 +1026,7 @@ body.vscode-dark .markdown .heading {
 
 .code-block {
 	position: relative;
-	margin: 0.5em 0 0.9em;
+	margin: 1.26em 0;
 	border: 1px solid var(--border-strong);
 	border-radius: var(--radius);
 	overflow: hidden;
@@ -1051,7 +1074,7 @@ body.vscode-light .code-block pre {
 
 .table-wrap {
 	overflow-x: auto;
-	margin: 0.5em 0 0.9em;
+	margin: 1.26em 0;
 }
 
 .markdown table {
