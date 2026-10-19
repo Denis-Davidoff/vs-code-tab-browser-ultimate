@@ -23,3 +23,5 @@ vscode-marketplace/*.vsix
 # The chat view's bundle, built like index.js
 media/chat.js
 media/chat.js.map
+media/recording.js
+media/recording.js.map

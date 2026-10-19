@@ -144,7 +144,14 @@
 		"onCommand:aiBrowser.chat.addCssLocation",
 		"onCommand:aiBrowser.chat.addXPath",
 		"onCommand:aiBrowser.chat.addScreenshot",
-		"onCommand:aiBrowser.chat.addPage"
+		"onCommand:aiBrowser.chat.addPage",
+		"onCommand:aiBrowser.recording.startChat",
+		"onCommand:aiBrowser.recording.startClaude",
+		"onCommand:aiBrowser.recording.startCodex",
+		"onCommand:aiBrowser.recording.pause",
+		"onCommand:aiBrowser.recording.resume",
+		"onCommand:aiBrowser.recording.stop",
+		"onCommand:aiBrowser.chat.settings"
 	],
 	"capabilities": {
 		"virtualWorkspaces": true,
@@ -597,6 +604,42 @@
 				"title": "%command.chat.keepAwakeActive.title%",
 				"category": "%displayName%",
 				"icon": "$(ai-browser-cup-full)"
+			},
+			{
+				"command": "aiBrowser.recording.startChat",
+				"title": "%command.recording.startChat.title%",
+				"icon": "$(device-camera-video)",
+				"enablement": "!aiBrowser.recordingActive"
+			},
+			{
+				"command": "aiBrowser.recording.startClaude",
+				"title": "%command.recording.startClaude.title%",
+				"icon": "$(device-camera-video)",
+				"enablement": "!aiBrowser.recordingActive"
+			},
+			{
+				"command": "aiBrowser.recording.startCodex",
+				"title": "%command.recording.startCodex.title%",
+				"icon": "$(device-camera-video)",
+				"enablement": "!aiBrowser.recordingActive"
+			},
+			{
+				"command": "aiBrowser.recording.pause",
+				"title": "%command.recording.pause.title%",
+				"icon": "$(debug-pause)",
+				"enablement": "aiBrowser.recordingState == recording"
+			},
+			{
+				"command": "aiBrowser.recording.resume",
+				"title": "%command.recording.resume.title%",
+				"icon": "$(debug-continue)",
+				"enablement": "aiBrowser.recordingState == paused"
+			},
+			{
+				"command": "aiBrowser.recording.stop",
+				"title": "%command.recording.stop.title%",
+				"icon": "$(debug-stop)",
+				"enablement": "aiBrowser.recordingState == recording || aiBrowser.recordingState == paused"
 			}
 		],
 		"icons": {
@@ -843,6 +886,21 @@
 					"command": "aiBrowser.repeat.chat.xpath",
 					"group": "navigation@2",
 					"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'chat:xpath' && !aiBrowser.chatUnsupported && !aiBrowser.chatBlocked"
+				},
+				{
+					"command": "aiBrowser.recording.pause",
+					"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.recordingState == recording",
+					"group": "navigation@00"
+				},
+				{
+					"command": "aiBrowser.recording.resume",
+					"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.recordingState == paused",
+					"group": "navigation@00"
+				},
+				{
+					"command": "aiBrowser.recording.stop",
+					"when": "activeEditor == 'workbench.editor.browser' && (aiBrowser.recordingState == recording || aiBrowser.recordingState == paused)",
+					"group": "navigation@01"
 				}
 			],
 			"aiBrowser.elementMenu": [
@@ -1059,6 +1117,11 @@
 				{
 					"command": "aiBrowser.shareTabWithClaudeCode",
 					"group": "2_mcp@2"
+				},
+				{
+					"command": "aiBrowser.recording.startClaude",
+					"group": "2_recording",
+					"when": "!aiBrowser.recordingActive"
 				}
 			],
 			"aiBrowser.chatMenu": [
@@ -1085,6 +1148,11 @@
 				{
 					"command": "aiBrowser.chat.addPage",
 					"group": "2_page@2"
+				},
+				{
+					"command": "aiBrowser.recording.startChat",
+					"group": "2_recording",
+					"when": "!aiBrowser.recordingActive"
 				}
 			],
 			"aiBrowser.codexMenu": [
@@ -1115,6 +1183,11 @@
 				{
 					"command": "aiBrowser.shareTabWithCodex",
 					"group": "2_mcp@2"
+				},
+				{
+					"command": "aiBrowser.recording.startCodex",
+					"group": "2_recording",
+					"when": "!aiBrowser.recordingActive"
 				}
 			],
 			"aiBrowser.loginsMenu": [

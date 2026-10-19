@@ -40,6 +40,40 @@ there is not the problem, the missing API is. **Measured by reading the shipped 
 
 [![Step-by-step setup: install, enable the browser API, open a page, connect Claude Code or Codex](ai-browser-instruct.jpg)](https://raw.githubusercontent.com/Denis-Davidoff/vs-code-tab-browser-ultimate/main/ai-browser-instruct.jpg)
 
+## Browser video recording
+
+Record the visible browser page without granting the operating system screen recording access.
+The extension receives page frames through CDP and encodes them with the editor's built-in
+`MediaRecorder`: MP4 when supported, otherwise WebM. Recordings are silent, with a maximum
+frame size of 1280 × 720. Capture frequency depends on the editor; smooth 30 fps is not guaranteed.
+
+- **AI Browser Chat:** choose **Record the browser page** under **+**, or the recording action
+  under **AI Browser Chat** in the browser tab's extension menu. Stop attaches the video to that
+  conversation's draft. Open the attachment to preview it; its context menu offers **Save video as…**.
+- **Claude Code / Codex extensions:** choose the recording action under the corresponding
+  assistant in the browser menu. Stop copies the file path and shows a notification with the
+  duration, size, **Open video** and **Save as…** actions.
+- **MCP:** `browser_recording_start` returns an `id`. Use `browser_recording_pause`,
+  `browser_recording_resume`, `browser_recording_stop`, or `browser_recording_status` with that id.
+  The extension's chat clients attach to their own conversation; external clients copy the path.
+  Optional `destination: "chat" | "clipboard"` overrides delivery. Status also returns the
+  completed result after a stop from the toolbar, including the file path and delivery outcome.
+
+During recording, **Pause / Resume** and **Stop** appear in the browser tab's top toolbar.
+Pausing stops CDP capture and excludes the pause from the video. Keep the browser visible and
+the **Browser recording** encoder panel open until you stop. Closing that panel cancels the
+recording. One recording can run at a time, for up to ten active minutes and 256 MB.
+
+Videos are kept as local temporary files; use **Save as…** to keep a permanent copy. Chat
+attachments provide a file reference to the agent, not native video input. MCP returns metadata
+and the path rather than transferring video bytes. This mode records the page viewport, not
+the editor chrome or desktop.
+
+To run the local end-to-end recording smoke test after `npm run compile`, use
+`node scripts/check-recording.mjs [path-to-editor-executable]`. It opens an isolated editor
+profile, checks MCP, toolbar commands, pause timing, chat attachments and clipboard delivery,
+then restores the clipboard. It does not request OS screen recording access.
+
 ## Changelog
 
 **0.7.14** — Git controls in the chat footer: inspect staged and unstaged files, stage or unstage

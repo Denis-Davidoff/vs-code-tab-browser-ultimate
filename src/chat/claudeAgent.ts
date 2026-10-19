@@ -309,8 +309,9 @@ export class ClaudeBackend implements AgentBackend {
 		return requestTitle(this._binary, this.id, model, context, signal, purpose);
 	}
 
-	public openSession(cwd: string, resume?: string, priorCostUsd?: number, root?: string, readDirs?: readonly string[], ownSettings = true): AgentSession {
-		const session = new ClaudeSession(this._binary, cwd, root, resume, priorCostUsd ?? 0, this._browserServer, () => this._sessions.delete(session), readDirs ?? [], ownSettings);
+	public openSession(cwd: string, resume?: string, priorCostUsd?: number, root?: string, readDirs?: readonly string[], ownSettings = true, chatId?: string): AgentSession {
+		const browserServer = () => { const server = this._browserServer(); return server ? { ...server, chatId } : undefined; };
+		const session = new ClaudeSession(this._binary, cwd, root, resume, priorCostUsd ?? 0, browserServer, () => this._sessions.delete(session), readDirs ?? [], ownSettings);
 		this._sessions.add(session);
 		return session;
 	}
@@ -530,7 +531,7 @@ class ClaudeSession implements AgentSession {
 		}
 		const file = path.join(dir, `mcp-${process.pid}-${generateUuid()}.json`);
 		try {
-			writeFileSync(file, JSON.stringify({ mcpServers: { 'ai-browser': { type: 'http', url: server.url, headers: { Authorization: `Bearer ${server.token}` } } } }), { mode: 0o600, flag: 'wx' });
+			writeFileSync(file, JSON.stringify({ mcpServers: { 'ai-browser': { type: 'http', url: server.url, headers: { Authorization: `Bearer ${server.token}`, ...(server.chatId ? { 'X-AI-Browser-Chat': server.chatId } : {}) } } } }), { mode: 0o600, flag: 'wx' });
 			return file;
 		} catch {
 			return undefined;

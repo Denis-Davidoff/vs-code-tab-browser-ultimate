@@ -3034,6 +3034,7 @@ function renderAttachments(s: ChatViewState): void {
 			event.preventDefault();
 			openMenu(root, [
 				{ icon: 'go-to-file', label: 'Open in tab', run: () => post({ type: 'openAttachment', id: chip.id }) },
+				...(chip.kind === 'video' ? [{ icon: 'save', label: 'Save video as…', run: () => post({ type: 'saveAttachment', id: chip.id }) }] : []),
 				{ icon: 'mention', label: 'Insert reference', description: reference, disabled: !reference,
 					run: () => { if (reference) { insertAttachmentReference(reference); } } },
 			], chip.label);
@@ -3078,6 +3079,7 @@ function attachmentIcon(kind: AttachmentKind): string {
 		case 'page': return 'link';
 		case 'file': return 'file';
 		case 'voice': return 'mic';
+		case 'video': return 'device-camera-video';
 	}
 }
 
@@ -6301,6 +6303,7 @@ function newId(): string {
 /* "+" */
 
 const attachItems: { kind: AttachmentKind; icon: string; label: string; needsTab: boolean }[] = [
+	{ kind: 'video', icon: 'device-camera-video', label: 'Record the browser page', needsTab: true },
 	{ kind: 'screenshot', icon: 'device-camera', label: 'Screenshot of the page', needsTab: true },
 	{ kind: 'element', icon: 'inspect', label: 'Element from the page…', needsTab: true },
 	{ kind: 'page', icon: 'link', label: 'Page address', needsTab: true },

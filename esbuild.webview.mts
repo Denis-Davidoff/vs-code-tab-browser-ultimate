@@ -20,6 +20,7 @@ const options = {
 		// Script running inside the chat view. Same CSP rules as the panel, so
 		// the same `iife` format.
 		'chat': path.join(srcDir, 'chat.ts'),
+		'recording': path.join(srcDir, 'recording.ts'),
 		// Codicon font, referenced by the panel html. The `.ttf` is inlined as a
 		// data uri because the panel's CSP only allows `font-src data:`.
 		'codicon': path.join(rootDir, 'node_modules', '@vscode', 'codicons', 'dist', 'codicon.css'),

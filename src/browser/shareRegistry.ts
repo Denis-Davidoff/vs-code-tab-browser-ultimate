@@ -49,6 +49,8 @@ export function forSession(session: string, kind: ClientKind): ShareTarget {
 export interface CallerIdentity {
 	readonly kind: ClientKind;
 	readonly sessionId?: string;
+	/** Set by the extension's own chat clients, never inferred from the agent's name. */
+	readonly chatId?: string;
 }
 
 /** One assignment, for the UI to render and for the user to undo. */

@@ -63,6 +63,7 @@ export interface AgentSession extends vscode.Disposable {
 export interface BrowserServer {
 	readonly url: string;
 	readonly token: string;
+	readonly chatId?: string;
 }
 
 export interface AgentBackend extends vscode.Disposable {
@@ -97,7 +98,7 @@ export interface AgentBackend extends vscode.Disposable {
 	 * project's, whose hooks are shell commands. Codex loads a project's own
 	 * configuration only for a project it trusts already.
 	 */
-	openSession(cwd: string, resume?: string, priorCostUsd?: number, root?: string, readDirs?: readonly string[], ownSettings?: boolean): AgentSession;
+	openSession(cwd: string, resume?: string, priorCostUsd?: number, root?: string, readDirs?: readonly string[], ownSettings?: boolean, chatId?: string): AgentSession;
 }
 
 export const agentNames: Record<AgentId, string> = {

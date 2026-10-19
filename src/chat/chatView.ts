@@ -5,6 +5,7 @@ import { SleepControl } from '../power/sleepControl';
 import { VoiceRecording, voiceHelperPath, voiceUnavailable } from './voiceRecorder';
 import { tidyTranscript, voiceChipLabel, voiceLocalePattern, voiceMaxSeconds, voicePromptText, type HelperLine } from './voiceText';
 import { privateTempDirectory } from '../core/safeFiles';
+import type { BrowserRecording, RecordingDestination } from '../browser/recording';
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -335,6 +336,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		private readonly _context: vscode.ExtensionContext,
 		private readonly _browser: BrowserController,
 		browserServer: () => BrowserServer | undefined = () => undefined,
+		private readonly _recording?: BrowserRecording,
 	) {
 		this._registry = new AgentRegistry(() => this._cwd(), id => this._agentBinaries()[id], browserServer, () => !this._untrusted(this._cwd()));
 		void sweepBrowserConfigs().catch(() => { /* swept with the temp directory */ });
@@ -865,6 +867,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			case 'openAttachment':
 				await this._openAttachment(message.id);
 				return;
+			case 'saveAttachment': {
+				const attachment = this._active.attachments.find(a => a.chip.id === message.id);
+				if (!attachment?.file || attachment.chip.kind !== 'video') { return; }
+				const target = await vscode.window.showSaveDialog({ defaultUri: attachment.file });
+				if (target && target.toString() !== attachment.file.toString()) {
+					await vscode.workspace.fs.copy(attachment.file, target, { overwrite: true });
+				}
+				return;
+			}
 			case 'approve':
 				// The card is in whichever tab holds it; an id is unique to its question.
 				for (const tab of this._tabs) {
@@ -1955,6 +1966,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 	/* ------------------------------------------------------------ attachments */
 
+	public recordingDestination(chatId?: string): RecordingDestination | undefined {
+		if (this._disposed || this._blocked()) { return undefined; }
+		const tab = chatId ? this._tabs.find(tab => tab.chat.id === chatId) : this._active;
+		if (!tab) { return undefined; }
+		const original = tab.chat.id;
+		return (result, file) => {
+			if (this._disposed || !this._tabs.includes(tab) || tab.chat.id !== original) { return false; }
+			tab.attachments.push({
+				chip: { id: generateUuid(), kind: 'video', label: `Video · ${result.durationSeconds.toFixed(1)}s` }, file,
+				text: `Recorded browser video: ${file.fsPath}\nFormat: ${result.mimeType}; duration: ${result.durationSeconds.toFixed(1)} seconds; size: ${result.bytes} bytes.\nThis attachment is a local video file reference, not native video input.`,
+			});
+			this._post();
+			return true;
+		};
+	}
+
 	private async _attach(kind: AttachmentKind): Promise<void> {
 		const tab = this._active;
 		const attachment = await this._makeAttachment(kind);
@@ -2024,6 +2051,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	/** `page`: the browser tab to attach from; the one the user last had in front when absent. */
 	private async _makeAttachment(kind: AttachmentKind, page?: vscode.BrowserTab): Promise<Attachment | undefined> {
 		const id = generateUuid();
+		if (kind === 'video') {
+			if (!this._recording) { throw new Error('Video recording is unavailable.'); }
+			await this._recording.start(undefined, 'chat');
+			return undefined;
+		}
 		if (kind === 'voice') {
 			// Recorded with the microphone button, never asked for through "+".
 			return undefined;

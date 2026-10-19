@@ -875,7 +875,7 @@ export class ChatTab {
 		if (this._session) {
 			return this._session;
 		}
-		const session = backend.openSession(this._cwd(), this._chat.ref, this._chat.stats.costUsd, this.projectRoot, this._chat.references?.map(r => r.path), this._host.ownSettings(this._cwd()));
+		const session = backend.openSession(this._cwd(), this._chat.ref, this._chat.stats.costUsd, this.projectRoot, this._chat.references?.map(r => r.path), this._host.ownSettings(this._cwd()), this._chat.id);
 		// A session opened now starts with what the restart was for; one still
 		// pending would let it go after its first turn, for nothing.
 		this._restartForDirs = false;

@@ -126,7 +126,7 @@ export class CodexBackend implements AgentBackend {
 	 * name it replaces a project `.codex/config.toml` entry rather than adding a
 	 * second (measured: one `ai-browser`, ready) — and the questions feature.
 	 */
-	public threadConfig(): Record<string, unknown> {
+	public threadConfig(chatId?: string): Record<string, unknown> {
 		const server = this._browserServer();
 		return {
 			// `request_user_input` — a question with choices, asked in the chat
@@ -135,7 +135,7 @@ export class CodexBackend implements AgentBackend {
 			// no such tool, or asked in plain text and slept waiting for a reply).
 			// An older CLI that does not know the feature starts the thread anyway.
 			features: { default_mode_request_user_input: true },
-			...(server ? { mcp_servers: { 'ai-browser': { url: server.url, http_headers: { Authorization: `Bearer ${server.token}` } } } } : {}),
+			...(server ? { mcp_servers: { 'ai-browser': { url: server.url, http_headers: { Authorization: `Bearer ${server.token}`, ...(chatId ? { 'X-AI-Browser-Chat': chatId } : {}) } } } } : {}),
 		};
 	}
 
@@ -280,8 +280,8 @@ export class CodexBackend implements AgentBackend {
 		return requestTitle(this._binary, this.id, model, context, signal, purpose);
 	}
 
-	public openSession(cwd: string, resume?: string, _priorCostUsd?: number, root?: string, _readDirs?: readonly string[], _ownSettings?: boolean): AgentSession {
-		const session = new CodexSession(this, cwd, root, resume, () => this._forget(session));
+	public openSession(cwd: string, resume?: string, _priorCostUsd?: number, root?: string, _readDirs?: readonly string[], _ownSettings?: boolean, chatId?: string): AgentSession {
+		const session = new CodexSession(this, cwd, root, resume, () => this._forget(session), chatId);
 		this._all.add(session);
 		this._cancelIdle();
 		return session;
@@ -520,6 +520,7 @@ class CodexSession implements AgentSession {
 		private readonly _root: string | undefined,
 		resume: string | undefined,
 		private readonly _onDispose: () => void,
+		private readonly _chatId?: string,
 	) {
 		this._threadId = resume;
 	}
@@ -690,9 +691,9 @@ class CodexSession implements AgentSession {
 			return this._threadId;
 		}
 		if (this._threadId) {
-			await this._backend.request('thread/resume', { threadId: this._threadId, cwd: this._cwd, ...threadSettings(this._root), config: this._backend.threadConfig() });
+			await this._backend.request('thread/resume', { threadId: this._threadId, cwd: this._cwd, ...threadSettings(this._root), config: this._backend.threadConfig(this._chatId) });
 		} else {
-			const started = await this._backend.request('thread/start', { cwd: this._cwd, model, ...threadSettings(this._root), config: this._backend.threadConfig() }) as { thread?: { id?: unknown } };
+			const started = await this._backend.request('thread/start', { cwd: this._cwd, model, ...threadSettings(this._root), config: this._backend.threadConfig(this._chatId) }) as { thread?: { id?: unknown } };
 			if (typeof started?.thread?.id !== 'string') {
 				throw new Error('Codex did not start a conversation.');
 			}

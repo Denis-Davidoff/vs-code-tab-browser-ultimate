@@ -372,7 +372,7 @@ export interface ChatSummary {
 	readonly updatedAt: number;
 }
 
-export type AttachmentKind = 'screenshot' | 'element' | 'page' | 'file' | 'voice';
+export type AttachmentKind = 'screenshot' | 'element' | 'page' | 'file' | 'voice' | 'video';
 
 /** What the composer shows for an attachment; the content stays in the host. */
 export interface AttachmentChip {
@@ -697,6 +697,7 @@ export type ViewToHost =
 	| { readonly type: 'setApprovalMode'; readonly key: string; readonly mode: ApprovalMode }
 	/** A chip in the composer clicked: its file, its image or its text, in an editor tab. */
 	| { readonly type: 'openAttachment'; readonly id: string }
+	| { readonly type: 'saveAttachment'; readonly id: string }
 	/** A tool call's input or output, opened as a read-only text in an editor tab. */
 	| { readonly type: 'openText'; readonly name: string; readonly text: string }
 	/** A diff card clicked: its before and after in VS Code's diff editor. `name` is the file it changes. */

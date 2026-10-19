@@ -1393,6 +1393,17 @@ export class BrowserController implements vscode.Disposable {
 		return this._pins.has(callerKey(caller)) ? 'selected' : 'automatic';
 	}
 
+	/** Resolve once for a long-lived recording, using the same access rules as other tools. */
+	public recordingTab(caller?: CallerIdentity): vscode.BrowserTab { return this._requireTab(caller); }
+
+	/** A recording stays on its original tab; changing focus or a tool pin does not revoke access. */
+	public canRecordTab(tab: vscode.BrowserTab, caller?: CallerIdentity): boolean {
+		if (!isBrowserApiGranted() || !vscode.window.browserTabs.includes(tab)) { return false; }
+		if (!caller) { return true; }
+		const assignment = this._shares.resolve(caller);
+		return assignment.kind === 'unassigned' || (assignment.kind === 'shared' && assignment.tab === tab);
+	}
+
 	/**
 	 * The tab to act on, or a refusal the model can act on.
 	 *

@@ -7,6 +7,7 @@ import * as http from 'http';
 import * as net from 'net';
 import * as vscode from 'vscode';
 import { BrowserController } from '../browser/browserController';
+import type { BrowserRecording } from '../browser/recording';
 import { modelFrameLimits } from '../browser/screenshotFrames';
 import { defaultSegmentChars, maxSegmentChars, parseReplacements, segmentBudget } from '../translate/translateText';
 import { generateUuid } from '../core/uuid';
@@ -118,6 +119,7 @@ export class McpServer implements vscode.Disposable {
 		 * the assignment exists to prevent. The window owns it now.
 		 */
 		sessionKinds: Map<string, ClientKind>,
+		private readonly _recording?: BrowserRecording,
 	) {
 		this._sessionKinds = sessionKinds;
 		this._tools = this._buildTools();
@@ -354,7 +356,9 @@ export class McpServer implements vscode.Disposable {
 		// 🔗 — "nobody has picked this up" — while that very client drove the
 		// page, which is the one thing the marker exists to tell apart. An
 		// unrecognised assistant is `other` everywhere else here too.
-		const caller: Caller = { kind: kind ?? 'other', sessionId };
+		const caller: Caller = { kind: kind ?? 'other', sessionId,
+			...(typeof req.headers['x-ai-browser-chat'] === 'string' ? { chatId: req.headers['x-ai-browser-chat'] } : {}),
+		};
 
 		// **A call the client gave up on is cancelled here too.** The MCP
 		// client sends `notifications/cancelled` when its user presses Esc, and
@@ -620,6 +624,33 @@ export class McpServer implements vscode.Disposable {
 					return toolContent(blocks);
 				},
 			},
+			{
+				name: 'browser_recording_start', title: 'Record the browser page',
+				description: 'Starts a silent video of this caller\'s browser viewport, without OS screen capture. '
+					+ 'Returns a recording id immediately after capture starts. The user can pause or stop in the browser toolbar. '
+					+ 'Use browser_recording_status with that id to retrieve the finished file after a toolbar stop. '
+					+ 'AI Browser Chat clients attach to the chat draft selected at start; external clients copy the file path to the clipboard. '
+					+ 'destination overrides this choice. One recording at a time, up to 10 active minutes or 256 MB. '
+					+ 'Keep the browser visible for smooth capture. Video is not sent as native model input.',
+				inputSchema: schema({ destination: { type: 'string', enum: ['chat', 'clipboard'], description: 'chat attaches to the AI Browser Chat draft selected at start; clipboard copies the local file path on completion.' } }),
+				run: async (args, caller, signal) => {
+					if (!this._recording) { throw new Error('Video recording is unavailable.'); }
+					if (args.destination !== undefined && args.destination !== 'chat' && args.destination !== 'clipboard') { throw new Error('destination must be chat or clipboard.'); }
+					return this._recording.start(caller, args.destination ?? (caller.chatId ? 'chat' : 'clipboard'), signal);
+				},
+			},
+			...(['pause', 'resume', 'stop', 'status'] as const).map(action => ({
+				name: `browser_recording_${action}`, title: `Browser recording: ${action}`,
+				description: action === 'status'
+					? 'Reads this MCP session\'s recording state, including a toolbar stop. A completed result gives file, mimeType, durationSeconds, bytes, attachedToChat and clipboardCopied. No video bytes are returned.'
+					: `${action} this MCP session's recording. Paused recordings capture no frames. Stop finalizes the video and delivers it to the destination selected at start.`,
+				inputSchema: schema({ id: string('Recording id returned by browser_recording_start') }, ['id']),
+				run: async (args: Record<string, unknown>, caller: Caller) => {
+					if (!this._recording) { throw new Error('Video recording is unavailable.'); }
+					if (typeof args.id !== 'string' || !args.id) { throw new Error('A recording id is required.'); }
+					return action === 'status' ? this._recording.status(args.id, caller) : this._recording.control(action, args.id, caller);
+				},
+			})),
 			{
 				name: 'browser_click', title: 'Click',
 				description: 'Clicks the first element matching a CSS selector.',

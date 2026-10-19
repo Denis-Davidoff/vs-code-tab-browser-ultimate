@@ -14,6 +14,7 @@ import { canHandOver, cleanUpReports, publishAssistantContext, type AssistantId 
 import { LastElementAction, type ElementActionId } from './elements/lastAction';
 import { localHosts, normalizeAddress } from './core/webUrl';
 import { BrowserController } from './browser/browserController';
+import { BrowserRecording } from './browser/recording';
 import { ChatViewProvider, chatBlocked, chatBlockedContextKey, chatUnsupportedContextKey, chatViewId, supportsSecondarySidebar } from './chat/chatView';
 import { McpLifecycle } from './mcp/mcpLifecycle';
 import { connectClaudeCode, connectCodex, type SharedPage } from './mcp/mcpSetup';
@@ -206,8 +207,16 @@ export function activate(context: vscode.ExtensionContext) {
 	// --- MCP: the browser exposed to Claude Code, Codex and VS Code chat --------
 	const browser = new BrowserController();
 	context.subscriptions.push(browser);
+	const recording = new BrowserRecording(context, browser);
+	context.subscriptions.push(recording);
+	for (const command of ['startClaude', 'startCodex']) {
+		context.subscriptions.push(vscode.commands.registerCommand(`aiBrowser.recording.${command}`, () => recording.start()));
+	}
+	for (const action of ['pause', 'resume', 'stop'] as const) {
+		context.subscriptions.push(vscode.commands.registerCommand(`aiBrowser.recording.${action}`, () => recording.control(action)));
+	}
 
-	const mcp = new McpLifecycle(context, browser, context.extension.packageJSON.version ?? '0.0.0');
+	const mcp = new McpLifecycle(context, browser, context.extension.packageJSON.version ?? '0.0.0', recording);
 	context.subscriptions.push(mcp);
 	mcp.apply();
 
@@ -466,12 +475,17 @@ export function activate(context: vscode.ExtensionContext) {
 		const state = mcp.state;
 		const url = state.kind === 'running' ? state.server.url : undefined;
 		return state.kind === 'running' && url ? { url, token: state.server.token } : undefined;
-	});
+	}, recording);
 	if (!supportsSecondarySidebar(vscode.version)) {
 		void vscode.commands.executeCommand('setContext', chatUnsupportedContextKey, true);
 	}
 	context.subscriptions.push(chat, vscode.window.registerWebviewViewProvider(chatViewId, chat, {
 		webviewOptions: { retainContextWhenHidden: true },
+	}));
+	recording.destination = chatId => chat.recordingDestination(chatId);
+	context.subscriptions.push(vscode.commands.registerCommand('aiBrowser.recording.startChat', async () => {
+		await vscode.commands.executeCommand(`${chatViewId}.focus`);
+		return recording.start(undefined, 'chat');
 	}));
 	// The element entries of "AI Browser Chat ▸" are toolbar actions like the
 	// assistants' Add entries: each records itself, and has a `repeat.chat.*`
