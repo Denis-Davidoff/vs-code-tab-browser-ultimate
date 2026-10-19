@@ -43,7 +43,7 @@ export function fileIconId(theme: Theme, path: string, language: string | undefi
 }
 
 /** Each refresh reads the selected theme again, including generated theme files. */
-export async function themedGitFiles(status: WorkdirGitStatus, webview: vscode.Webview, media: vscode.Uri): Promise<WorkdirGitStatus> {
+export async function themedGitFiles(status: WorkdirGitStatus, webview: vscode.Webview, media: vscode.Uri, folder?: vscode.Uri): Promise<WorkdirGitStatus> {
  try {
   const selected = vscode.workspace.getConfiguration('workbench').get<string | null>('iconTheme');
   const contributions = vscode.extensions.all.flatMap(extension =>
@@ -61,11 +61,24 @@ export async function themedGitFiles(status: WorkdirGitStatus, webview: vscode.W
   const resource = (relative: string) => webview.asWebviewUri(vscode.Uri.joinPath(directory, relative)).toString();
   const languages = vscode.extensions.all.flatMap(extension => extension.packageJSON.contributes?.languages ?? []) as { id: string; filenames?: string[]; extensions?: string[] }[];
   const decorate = (file: WorkdirGitStatus['staged'][number]) => {
+   const uri = folder ? vscode.Uri.joinPath(folder, file.path) : undefined;
+   const openLanguage = uri ? vscode.workspace.textDocuments.find(document => document.uri.toString() === uri.toString())?.languageId : undefined;
+   let configuredLanguage: string | undefined;
+   if (uri && (!openLanguage || openLanguage === 'plaintext')) {
+    const associations = vscode.workspace.getConfiguration('files', uri).get<Record<string, string>>('associations', {});
+    // Longest pattern wins; for equal lengths, the last configured association wins.
+    const patterns = Object.entries(associations).reverse().sort(([a], [b]) => b.length - a.length);
+    // Pattern-only selectors inspect uri/languageId, so deleted files need no document opened.
+    const target = { uri: uri.with({ path: uri.path.toLowerCase() }), languageId: '' } as vscode.TextDocument;
+    configuredLanguage = patterns.find(([pattern, language]) => typeof language === 'string' && vscode.languages.match({
+     pattern: pattern.includes('/') ? pattern.toLowerCase() : `**/${pattern.toLowerCase()}`,
+    }, target) > 0)?.[1];
+   }
    const basename = file.path.split('/').pop()!.toLowerCase();
    const language = languages.find(l => l.filenames?.some(n => n.toLowerCase() === basename))
     ?? languages.filter(l => l.extensions?.some(ext => basename.endsWith(ext.toLowerCase())))
      .sort((a, b) => Math.max(...b.extensions!.filter(ext => basename.endsWith(ext.toLowerCase())).map(ext => ext.length)) - Math.max(...a.extensions!.filter(ext => basename.endsWith(ext.toLowerCase())).map(ext => ext.length)))[0];
-   const id = fileIconId(theme, file.path, language?.id, variant);
+   const id = fileIconId(theme, file.path, openLanguage && openLanguage !== 'plaintext' ? openLanguage : configuredLanguage ?? language?.id, variant);
    const definition = id ? theme.iconDefinitions?.[id] : undefined;
    let icon: FileThemeIcon | undefined;
    if (definition?.iconPath) { icon = { image: resource(definition.iconPath) }; }

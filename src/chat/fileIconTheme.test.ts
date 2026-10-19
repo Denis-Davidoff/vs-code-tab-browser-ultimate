@@ -92,3 +92,44 @@ test('both high contrast color kinds select highContrast icons instead of light'
   assert.ok(result.staged[0].icon.image.endsWith(`${expected}.svg`), `color kind ${kind}`);
  }
 });
+
+test('configured associations and open document languages select language icons for deleted or custom files', async () => {
+ const theme = {
+  file: 'generic', languageIds: { typescript: 'ts', javascript: 'js' },
+  iconDefinitions: { generic: { iconPath: 'generic.svg' }, ts: { iconPath: 'typescript.svg' }, js: { iconPath: 'javascript.svg' } },
+ };
+ const uri = (path: string): any => ({ path, toString: () => `file://${path}`, with: (change: { path: string }) => uri(change.path) });
+ const documents: { uri: any; languageId: string }[] = [];
+ const scopes: string[] = [];
+ Object.assign(vscode, {
+  workspace: {
+   textDocuments: documents,
+   getConfiguration: (section: string, resource: any) => ({ get: () => {
+    if (section === 'workbench') { return 'selected'; }
+    scopes.push(resource.path);
+    return { '*.custom': 'typescript', '**/special.custom': 'javascript' };
+   } }),
+   fs: { readFile: async () => Buffer.from(JSON.stringify(theme)) },
+  },
+  extensions: { all: [{ extensionUri: uri('/extension'), packageJSON: { contributes: { iconThemes: [{ id: 'selected', path: 'theme.json' }] } } }] },
+  Uri: { joinPath: (base: any, ...parts: string[]) => uri([base.path, ...parts].join('/')) },
+  languages: { match: (selector: { pattern: string }, document: any) => {
+   const pattern = selector.pattern;
+   return pattern === '**/*.custom' ? Number(document.uri.path.endsWith('.custom'))
+    : pattern === '**/special.custom' ? Number(document.uri.path.endsWith('/special.custom')) : 0;
+  } },
+  window: { activeColorTheme: { kind: 2 } }, ColorThemeKind: { Light: 1, HighContrast: 3, HighContrastLight: 4 },
+ });
+ const status = { staged: [{ path: 'example.custom', status: 'D' }, { path: 'special.custom', status: 'M' }], unstaged: [], changed: 1, deleted: 1 };
+ const render = () => themedGitFiles(status, { options: {}, asWebviewUri: (resource: any) => resource.toString() }, uri('/media'), uri('/project'));
+ let result = await render();
+ assert.ok(result.staged[0].icon.image.endsWith('/typescript.svg'));
+ assert.ok(result.staged[1].icon.image.endsWith('/javascript.svg'));
+ assert.deepEqual(scopes, ['/project/example.custom', '/project/special.custom']);
+ documents.push({ uri: uri('/project/example.custom'), languageId: 'javascript' });
+ result = await render();
+ assert.ok(result.staged[0].icon.image.endsWith('/javascript.svg'), 'manual language overrides configured association');
+ documents[0].languageId = 'plaintext';
+ result = await render();
+ assert.ok(result.staged[0].icon.image.endsWith('/typescript.svg'), 'plaintext falls back to path association like Explorer');
+});
