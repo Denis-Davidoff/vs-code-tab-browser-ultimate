@@ -95,6 +95,19 @@ function button(content: Child[], props: { class?: string; title?: string } = {}
 	return b;
 }
 
+/** Search controls share an inset clear button, including programmatically filled queries. */
+function clearableSearch(field: HTMLInputElement): HTMLElement {
+	const clear = button([icon('close')], { class: 'palette-search-clear', title: 'Clear search' });
+	clear.addEventListener('click', event => {
+		event.stopPropagation();
+		if (field.disabled) { return; }
+		field.value = '';
+		field.dispatchEvent(new Event('input', { bubbles: true }));
+		field.focus();
+	});
+	return el('div', { class: 'palette-search-field' }, field, clear);
+}
+
 function copyButton(text: () => string, title = 'Copy'): HTMLButtonElement {
 	const b = button([icon('copy')], { class: 'copy-button', title });
 	b.addEventListener('click', event => {
@@ -510,7 +523,7 @@ const branchRefresh = button([icon('refresh')], { class: 'ghost round', title: '
 branchRefresh.setAttribute('aria-label', 'Refresh Git branches');
 branchRefresh.disabled = gitPending;
 branchRefresh.addEventListener('click', refreshGitStatus);
-branchSearchRow.append(branchSearch, branchMagic, branchRefresh);
+branchSearchRow.append(clearableSearch(branchSearch), branchMagic, branchRefresh);
 branchPopup.append(branchSearchRow, branchError, branchCreate, branchList);
 let branchNameSequence = 0;
 let branchNamePending: { id: number; tabId: string; folder: string; query: string } | undefined;
@@ -540,6 +553,7 @@ function renderBranches(): void {
 	branchSearch.disabled = branchBusy;
  branchMagic.disabled = branchBusy || !branchState || !!branchNamePending;
  branchMagic.classList.toggle('loading', !!branchNamePending);
+ branchError.classList.toggle('generating', !!branchNamePending);
 	branchCreate.textContent = query ? `+ Create “${query}” from ${branchState?.current || 'HEAD'}` : '+ Create a new branch (enter name above)';
 	branchCreate.disabled = branchBusy || !branchState || !query || !!branchState?.branches.some(b => !b.remote && b.name === query);
 	branchList.replaceChildren();
@@ -4486,7 +4500,7 @@ paletteSearch.placeholder = 'Search commands and skills…';
 paletteSearch.setAttribute('aria-label', 'Search commands and skills');
 const paletteList = el('div', { class: 'palette-list' });
 paletteList.setAttribute('role', 'listbox');
-palette.append(paletteSearch, paletteList);
+palette.append(clearableSearch(paletteSearch), paletteList);
 
 function paletteAgent(s: ChatViewState): AgentId | undefined {
 	const tab = s.tabs.find(t => t.id === s.activeTab);
@@ -5048,7 +5062,7 @@ workdirSearch.placeholder = 'Search folders and files…';
 workdirSearch.setAttribute('aria-label', 'Search folders and files');
 const workdirList = el('div', { class: 'palette-list' });
 workdirList.setAttribute('role', 'listbox');
-workdirPopup.append(workdirSearch, workdirList);
+workdirPopup.append(clearableSearch(workdirSearch), workdirList);
 
 function workdirItemsFor(s: ChatViewState, query: string): WorkdirItem[] {
 	const w = s.workdir;

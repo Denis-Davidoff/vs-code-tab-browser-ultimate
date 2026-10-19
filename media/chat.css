@@ -3361,9 +3361,49 @@ body.vscode-high-contrast-light .context-pie {
 	flex-direction: column;
 }
 
-.palette-search {
+.palette-search-field {
+	position: relative;
 	margin: 6px 6px 2px;
-	padding: 6px 9px;
+	min-width: 0;
+}
+
+.palette-search-field:has(.palette-search[hidden]) {
+	display: none;
+}
+
+.palette-search-clear {
+	position: absolute;
+	top: 50%;
+	right: 5px;
+	transform: translateY(-50%);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	padding: 0;
+	border: none;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--fg-3);
+	cursor: pointer;
+}
+
+.palette-search-clear:hover {
+	background: var(--soft-2);
+	color: var(--fg);
+}
+
+.palette-search-field:has(.palette-search:placeholder-shown) .palette-search-clear,
+.palette-search-field:has(.palette-search:disabled) .palette-search-clear {
+	display: none;
+}
+
+.palette-search {
+	box-sizing: border-box;
+	width: 100%;
+	margin: 0;
+	padding: 6px 30px 6px 9px;
 	border-radius: 7px;
 	border: 1px solid var(--border-strong);
 	background: var(--surface, var(--soft));
@@ -4300,6 +4340,7 @@ body.vscode-high-contrast-light .context-pie {
 .git-branch-select:disabled, .git-branch-create:disabled { opacity: .55; cursor: default; }
 .git-branch-delete { color: var(--vscode-gitDecoration-deletedResourceForeground, #f14c4c); flex: none; }
 .git-branch-error { color: var(--vscode-errorForeground, #f14c4c); white-space: pre-wrap; overflow-wrap: anywhere; padding: 0 12px; font-size: 11px; }
+.git-branch-error.generating { color: var(--warn); }
 .git-branch-error:empty { display: none; }
 .git-branch-empty { padding: 12px 6px; color: var(--fg-3); }
 
@@ -4340,7 +4381,7 @@ body.vscode-high-contrast-light .context-pie {
 .git-refresh-slot { display: inline-flex; flex: none; }
 
 .git-branch-search-row { display: flex; align-items: center; gap: 4px; padding-right: 6px; }
-.git-branch-search-row .palette-search { flex: 1; min-width: 0; }
+.git-branch-search-row .palette-search-field { flex: 1; min-width: 0; }
 .git-branch-search-row > .round { flex: none; }
 
 .feature-settings { inset: 0; width: 100%; height: 100%; min-width: 0; max-width: none; max-height: none; overflow: hidden; padding: 12px; border: 0; border-radius: 0; box-shadow: none; box-sizing: border-box; }
