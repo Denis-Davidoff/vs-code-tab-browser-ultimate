@@ -19,8 +19,9 @@ can also be attributed from their directory. Older shared temp captures without
 ownership metadata appear in all-project accounting and are cleaned only by the
 all-project action. Files in a live producer process belonging to another window
 are protected. Current draft attachments, active recordings and agent requests,
-files younger than one minute, and untracked artifacts younger than 24 hours are
-also protected. Cleanup does not follow symbolic links or recursively remove folders.
+files younger than one minute, and isolated AI request instructions younger than
+24 hours are also protected. Manual cleanup can remove older legacy captures even
+when they have no ownership record. Cleanup does not follow symbolic links or recursively remove folders.
 
 Cleanup deliberately excludes saved chat history, downloaded agent binaries, login
 storage, user exports made with Save as, MCP settings in projects/home directories,

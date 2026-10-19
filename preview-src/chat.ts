@@ -7227,7 +7227,7 @@ function renderTemporaryStorage(error?: string): void {
  temporaryStorageContent.replaceChildren(
   el('p', { text: 'Files are grouped in ~/.ai-browser/projects by project. Shared disposable files live in ~/.ai-browser/shared. Project-local reports and exports use .ai-browser/.' }),
   el('p', { class: 'temporary-project', text: storage?.project ? `Current project: ${storage.project} · ${storage.projectFiles} files · ${format(storage.projectBytes)}` : 'No project selected.' }), status, actions,
-  el('p', { text: 'Cleaning removes local files permanently; old chat links to them may stop working. Draft attachments, active requests and files owned by another running window are protected. Files created in the last minute and untracked files less than 24 hours old are kept. AI request instructions and connection files are normally removed automatically.' }),
+  el('p', { text: 'Cleaning removes local files permanently; old chat links to them may stop working. Draft attachments, active requests and files owned by another running window are protected. Files created in the last minute are kept. Isolated AI request files are protected for 24 hours. AI request instructions and connection files are normally removed automatically.' }),
  );
  if (storage?.busy) { temporaryStorageContent.append(el('p', { text: storage.busy })); }
  if (storage && !storage.folders.length) { temporaryStorageContent.append(el('p', { text: 'No temporary folders found.' })); }

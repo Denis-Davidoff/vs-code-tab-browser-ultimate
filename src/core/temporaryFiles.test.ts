@@ -51,6 +51,7 @@ test('recent legacy files, unknown files, live credentials and files from anothe
  const h = await harness();
  try {
   const recent = await h.write('screenshots', 'recent.png', undefined, false);
+  const now = new Date(); await fs.utimes(recent, now, now);
   const unknown = await h.write('screenshots', 'user.txt', undefined, false);
   const secret = await h.write('chat', `mcp-${process.pid}-aaaa.json`, undefined, false);
   const foreign = await h.write('screenshots', 'foreign.png');
@@ -192,4 +193,15 @@ test('cleanup refuses linked ancestors of credential folders and linked workspac
   assert.equal((await temporaryStorage({ ...options, cleanup: 'project' })).deleted, 0);
   await fs.stat(credentials); await fs.stat(report);
  } finally { await h.cleanup(); await fs.rm(outside, { recursive: true, force: true }); }
+});
+
+
+test('manual cleanup removes legacy captures younger than a day after handoff grace expires', async () => {
+ const h = await harness();
+ try {
+  const file = await h.write('screenshots', 'legacy-recent.png', undefined, false);
+  const result = await temporaryStorage({ ...h.options, cleanup: 'all' });
+  assert.equal(result.deleted, 1); assert.equal(result.skipped, 0);
+  await assert.rejects(fs.stat(file), { code: 'ENOENT' });
+ } finally { await h.cleanup(); }
 });

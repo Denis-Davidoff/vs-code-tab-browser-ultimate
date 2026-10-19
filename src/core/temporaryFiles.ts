@@ -151,8 +151,8 @@ export async function temporaryStorage(options: {
     const protectedFile = Date.now() - stat.mtimeMs < 60_000 || !!options.busy || !!options.protect?.(file) || protectedFiles.has(file)
      || (record && record.pid !== process.pid && running(record.pid))
      || (servicePid !== undefined && running(servicePid))
-     // Older files have no owner record. Give running clients a grace period.
-     || (!record && !candidate.service && Date.now() - stat.mtimeMs < 24 * 60 * 60 * 1000);
+     // Isolated request folders may still be the working directory of a live CLI.
+     || (candidate.request && Date.now() - stat.mtimeMs < 24 * 60 * 60 * 1000);
     const selected = options.cleanup === 'all' || (options.cleanup === 'project' && !!options.project && owner === options.project);
     if (selected && !protectedFile) {
      await fs.unlink(file); result.deleted++;
