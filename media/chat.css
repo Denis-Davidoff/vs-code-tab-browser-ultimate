@@ -4303,7 +4303,6 @@ body.vscode-high-contrast-light .context-pie {
 .git-commit-notice { display: flex; align-items: flex-start; gap: 6px; margin: 4px 3px 0; padding: 7px 8px; border: 1px solid var(--border-strong); border-radius: 6px; font-size: 11px; }
 .git-commit-notice[hidden], .git-commit-fix[hidden] { display: none; }
 .git-commit-notice[data-phase="error"] { color: var(--vscode-errorForeground, #f14c4c); }
-.git-commit-notice[data-phase="done"] { color: var(--vscode-gitDecoration-addedResourceForeground, #73c991); }
 .git-commit-notice-text { flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 140px; overflow: auto; }
 .git-commit-fix { flex: none; max-width: 120px; padding: 2px 4px; border: 0; background: transparent; color: var(--vscode-textLink-foreground, var(--accent)); font: inherit; cursor: pointer; }
 .git-commit-fix:disabled { opacity: .55; cursor: default; }

@@ -5232,7 +5232,7 @@ function renderWorkdir(s: ChatViewState): void {
 	commitButton.setAttribute('aria-busy', String(committing));
 	commitIcon.className = committing ? 'codicon codicon-loading codicon-modifier-spin' : 'codicon codicon-git-commit';
 	commitButton.title = committing ? commit.message ?? 'Committing…' : 'Git changes and commit';
-	commitNotice.hidden = !commit || committing;
+	commitNotice.hidden = commit?.phase !== 'error';
 	commitNotice.dataset.phase = commit?.phase ?? '';
 	commitNoticeText.textContent = commit?.message ?? '';
 	commitFix.hidden = commit?.phase !== 'error';

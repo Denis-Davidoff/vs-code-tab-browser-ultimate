@@ -106,4 +106,12 @@ test('the combined trigger remains accessible with staged files while the chat i
 	});
 	assert.equal(context.commitButton.disabled, false);
 	assert.equal(context.commitButton.title, 'Git changes and commit');
+	const render = production('renderWorkdir', context);
+	for (const phase of ['done', 'error']) {
+		render({
+			workdir: { current: { path: '/repo' }, workspace: [{ path: '/repo' }], references: [], commit: { id: 'job', phase, message: 'Commit result' } },
+			agents: [], selection: {}, running: false,
+		});
+		assert.equal(context.commitNotice.hidden, phase !== 'error');
+	}
 });

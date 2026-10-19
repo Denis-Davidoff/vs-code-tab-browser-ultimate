@@ -4974,8 +4974,9 @@ folder* section of `chatView.ts`.
   same lock immediately before starting; queued work waits for its release. The copy's selected
   branch is separate from its original owned branch; cleanup only deletes a generated branch
   whose name matches the copy directory, preserving preexisting branches after checkout.
-  Failures remain visible with an explicit action to send their diagnostics to the current chat
-  for repair; no repair turn starts automatically. See `gitAccess.ts`, `gitIndex.ts`,
+  Successful commits use a native VS Code notification that closes after ten seconds; no success
+  banner or extra success entry is added to the chat. Failures remain visible with an explicit
+  action to send their diagnostics to the current chat for repair; no repair turn starts automatically. See `gitAccess.ts`, `gitIndex.ts`,
   `gitCommit.ts`, `commitMessage.ts`, and `_commitWorkdir` in `chatView.ts`.
 - **The folder belongs to the conversation** (`StoredChat.folder`), absent meaning the window's
   own — its first local folder, else the home directory with no project, as before. Each tab can

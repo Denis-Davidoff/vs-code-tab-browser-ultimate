@@ -40,6 +40,7 @@ import type {
 import { pickElementContext, pickForChat } from '../elements/elementPicker';
 import { parseNews } from './news';
 import { confirm, refuse } from '../core/notify';
+import { timedInformation } from '../core/timedToast';
 import { capAt, plainInLabel, plainInNotification, plainInPrompt } from '../core/notifyText';
 import { hostIsRemote, isBrowserApiGranted, workspaceIsRemoteFromHost } from '../setup/proposedApi';
 import { pageTitle } from '../translate/translateText';
@@ -2533,8 +2534,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 					this._post();
 				}, scope,
 			);
-			job.state = { id: job.state.id, phase: 'done', message: `Committed ${result.hash}: ${result.message.split('\n')[0]}` };
-			if (this._tabs.includes(tab) && tab.chat.id === job.chatId) { tab.push({ kind: 'notice', text: job.state.message! }); }
+			if (this._gitCommits.get(folder) === job) { this._gitCommits.delete(folder); }
+			if (!this._disposed) { timedInformation(`Committed ${result.hash}: ${result.message.split('\n')[0]}`); }
 		} catch (error) {
 			const detail = (error instanceof Error ? error.message : String(error)).slice(0, 6000);
 			job.state = { id: job.state.id, phase: 'error', message: `Commit failed: ${detail}` };
