@@ -728,6 +728,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 					await this._context.globalState.update(featureAiKey, settings);
 					const recordingQuality = readRecordingQuality(message.recordingQuality ?? this._context.globalState.get(recordingQualityKey));
 					await this._context.globalState.update(recordingQualityKey, recordingQuality);
+					await vscode.commands.executeCommand('setContext', 'aiBrowser.recordingQuality', recordingQuality);
 					this._postMessage({ type: 'state', state: this._state() });
 					this._postMessage({ type: 'featureAiSaved', settings, recordingQuality });
 				} catch (error) {

@@ -155,6 +155,24 @@ test('quality is snapshotted at start and preserves lossless source frames after
 	} finally { h.cleanup(); }
 });
 
+test('menu quality overrides the next recording without changing the saved default', async () => {
+	const h = harness();
+	try {
+		h.state.quality = 'maximum';
+		await h.recording.start(undefined, 'clipboard', undefined, 'balanced');
+		await h.recording.control('pause'); await h.recording.control('resume');
+		for (const command of h.commands.filter(c => c.method === 'Page.startScreencast')) {
+			assert.equal(command.params.maxWidth, 1920); assert.equal(command.params.maxHeight, 1080);
+		}
+		assert.equal(h.state.quality, 'maximum');
+		await h.recording.control('stop');
+		await h.recording.start();
+		const latest = h.commands.filter(c => c.method === 'Page.startScreencast').at(-1)!;
+		assert.equal(latest.params.maxWidth, 3840);
+		await h.recording.control('stop');
+	} finally { h.cleanup(); }
+});
+
 test('recording notifications follow start, pause, resume and completion', async () => {
 	const h = harness(), states: (string | undefined)[] = [];
 	try {

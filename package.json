@@ -152,7 +152,13 @@
 		"onCommand:aiBrowser.recording.pause",
 		"onCommand:aiBrowser.recording.resume",
 		"onCommand:aiBrowser.recording.stop",
-		"onCommand:aiBrowser.chat.settings"
+		"onCommand:aiBrowser.chat.settings",
+		"onCommand:aiBrowser.recording.balanced",
+		"onCommand:aiBrowser.recording.balancedDefault",
+		"onCommand:aiBrowser.recording.high",
+		"onCommand:aiBrowser.recording.highDefault",
+		"onCommand:aiBrowser.recording.maximum",
+		"onCommand:aiBrowser.recording.maximumDefault"
 	],
 	"capabilities": {
 		"virtualWorkspaces": true,
@@ -645,6 +651,36 @@
 				"title": "%command.recording.stop.title%",
 				"icon": "$(debug-stop)",
 				"enablement": "aiBrowser.recordingState == recording || aiBrowser.recordingState == paused"
+			},
+			{
+				"command": "aiBrowser.recording.balanced",
+				"title": "Balanced · 1080p",
+				"enablement": "!aiBrowser.recordingActive"
+			},
+			{
+				"command": "aiBrowser.recording.balancedDefault",
+				"title": "Balanced · 1080p *",
+				"enablement": "!aiBrowser.recordingActive"
+			},
+			{
+				"command": "aiBrowser.recording.high",
+				"title": "High · 1440p",
+				"enablement": "!aiBrowser.recordingActive"
+			},
+			{
+				"command": "aiBrowser.recording.highDefault",
+				"title": "High · 1440p *",
+				"enablement": "!aiBrowser.recordingActive"
+			},
+			{
+				"command": "aiBrowser.recording.maximum",
+				"title": "Maximum · 4K",
+				"enablement": "!aiBrowser.recordingActive"
+			},
+			{
+				"command": "aiBrowser.recording.maximumDefault",
+				"title": "Maximum · 4K *",
+				"enablement": "!aiBrowser.recordingActive"
 			}
 		],
 		"icons": {
@@ -950,9 +986,9 @@
 					"group": "2_translate@1"
 				},
 				{
-					"command": "aiBrowser.recording.start",
 					"group": "2_recording@1",
-					"when": "!aiBrowser.recordingActive"
+					"when": "!aiBrowser.recordingActive",
+					"submenu": "aiBrowser.recordingMenu"
 				},
 				{
 					"submenu": "aiBrowser.claudeMenu",
@@ -1251,6 +1287,38 @@
 					"when": "view == aiBrowser.chat && aiBrowser.keepAwakeActive",
 					"group": "navigation@4"
 				}
+			],
+			"aiBrowser.recordingMenu": [
+				{
+					"command": "aiBrowser.recording.balanced",
+					"group": "1_quality@1",
+					"when": "aiBrowser.recordingQuality != balanced"
+				},
+				{
+					"command": "aiBrowser.recording.balancedDefault",
+					"group": "1_quality@1",
+					"when": "aiBrowser.recordingQuality == balanced"
+				},
+				{
+					"command": "aiBrowser.recording.high",
+					"group": "1_quality@2",
+					"when": "aiBrowser.recordingQuality != high"
+				},
+				{
+					"command": "aiBrowser.recording.highDefault",
+					"group": "1_quality@2",
+					"when": "aiBrowser.recordingQuality == high"
+				},
+				{
+					"command": "aiBrowser.recording.maximum",
+					"group": "1_quality@3",
+					"when": "aiBrowser.recordingQuality != maximum"
+				},
+				{
+					"command": "aiBrowser.recording.maximumDefault",
+					"group": "1_quality@3",
+					"when": "aiBrowser.recordingQuality == maximum"
+				}
 			]
 		},
 		"submenus": [
@@ -1277,6 +1345,10 @@
 			{
 				"id": "aiBrowser.loginsMenu",
 				"label": "%submenu.loginsMenu.label%"
+			},
+			{
+				"id": "aiBrowser.recordingMenu",
+				"label": "%command.recording.start.title%"
 			}
 		],
 		"mcpServerDefinitionProviders": [

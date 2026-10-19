@@ -6,7 +6,7 @@ import { generateUuid } from '../core/uuid';
 import { privateTempDirectory } from '../core/safeFiles';
 import type { BrowserController } from './browserController';
 import { callerKey, type CallerIdentity } from './shareRegistry';
-import { recordingProfiles, recordingQualityKey, readRecordingQuality } from './recordingQuality';
+import { recordingProfiles, recordingQualityKey, readRecordingQuality, type RecordingQuality } from './recordingQuality';
 
 export interface RecordingResult {
 	id: string;
@@ -75,7 +75,7 @@ export class BrowserRecording implements vscode.Disposable {
 
 	constructor(private readonly _context: vscode.ExtensionContext, private readonly _browser: BrowserController) { this._publish(); }
 
-	public async start(caller?: CallerIdentity, delivery: 'chat' | 'clipboard' = 'clipboard', signal?: AbortSignal): Promise<RecordingResult> {
+	public async start(caller?: CallerIdentity, delivery: 'chat' | 'clipboard' = 'clipboard', signal?: AbortSignal, quality?: RecordingQuality): Promise<RecordingResult> {
 		if (signal?.aborted) { throw new Error('Recording startup was cancelled.'); }
 		if (this._disposed) { throw new Error('Recording is unavailable.'); }
 		if (this._active) { throw new Error('A recording is already in progress. Stop it first.'); }
@@ -85,7 +85,7 @@ export class BrowserRecording implements vscode.Disposable {
 		const result: RecordingResult = { id: generateUuid(), state: 'starting', delivery, tabId: this._browser.tabIdOf(tab), url: tab.url, durationSeconds: 0, frames: 0, bytes: 0 };
 		if (!this.createEncoder) { throw new Error('The background video encoder is unavailable.'); }
 		const panel = this.createEncoder(result.id);
-		const profile = recordingProfiles[readRecordingQuality(this._context.globalState?.get(recordingQualityKey))];
+		const profile = recordingProfiles[readRecordingQuality(quality ?? this._context.globalState?.get(recordingQualityKey))];
 		const run: Run = { result, caller: caller ? { ...caller } : undefined, tab, panel, profile, parts: [], pending: new Map(), next: 0, elapsed: 0, busyFrame: false, attach };
 		this._active = run;
 		let rejectStartup!: (error: Error) => void;

@@ -15,6 +15,7 @@ import { LastElementAction, type ElementActionId } from './elements/lastAction';
 import { localHosts, normalizeAddress } from './core/webUrl';
 import { BrowserController } from './browser/browserController';
 import { BrowserRecording } from './browser/recording';
+import { recordingQualityKey, readRecordingQuality } from './browser/recordingQuality';
 import { ChatViewProvider, chatBlocked, chatBlockedContextKey, chatUnsupportedContextKey, chatViewId, supportsSecondarySidebar } from './chat/chatView';
 import { McpLifecycle } from './mcp/mcpLifecycle';
 import { connectClaudeCode, connectCodex, type SharedPage } from './mcp/mcpSetup';
@@ -210,6 +211,13 @@ export function activate(context: vscode.ExtensionContext) {
 	const recording = new BrowserRecording(context, browser);
 	context.subscriptions.push(recording);
 	context.subscriptions.push(vscode.commands.registerCommand('aiBrowser.recording.start', () => recording.start(undefined, 'clipboard')));
+	void vscode.commands.executeCommand('setContext', 'aiBrowser.recordingQuality', readRecordingQuality(context.globalState.get(recordingQualityKey)));
+	for (const quality of ['balanced', 'high', 'maximum'] as const) {
+		for (const suffix of ['', 'Default']) {
+			context.subscriptions.push(vscode.commands.registerCommand(`aiBrowser.recording.${quality}${suffix}`, () => recording.start(undefined, 'clipboard', undefined, quality)));
+		}
+	}
+
 	for (const command of ['startClaude', 'startCodex']) {
 		context.subscriptions.push(vscode.commands.registerCommand(`aiBrowser.recording.${command}`, async () => {
 			await vscode.env.clipboard.writeText(
