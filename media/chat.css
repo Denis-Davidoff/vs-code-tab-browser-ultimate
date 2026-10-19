@@ -295,6 +295,7 @@ button {
 
 /* the changing star before "Working…" — fixed width, so the text does not move as it changes */
 .working-glyph {
+	transform: translateX(-2px);
 	display: inline-block;
 	width: 18px;
 	text-align: center;
@@ -3087,7 +3088,7 @@ body.vscode-high-contrast-light .context-pie {
 }
 
 .approve-toggle {
-	gap: 2px;
+	gap: 8px;
 	color: var(--fg-3);
 }
 
@@ -4447,3 +4448,6 @@ body.vscode-high-contrast-light .context-pie {
 :focus-visible {
 	outline: none;
 }
+
+.approve-toggle .mode-group { display: inline-flex; align-items: center; gap: 1px; white-space: nowrap; }
+.approve-toggle .mode-group .codicon { color: inherit; }

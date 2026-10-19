@@ -2205,10 +2205,11 @@ function renderApproveToggle(s: ChatViewState): void {
 	const shown = JSON.stringify([text, title]);
 	if (approveToggle.dataset.shown !== shown) {
 		approveToggle.dataset.shown = shown;
-		const parts: HTMLElement[] = [el('span', { text: 'Mode:' })];
-		counts.forEach((item, index) => {
-			if (index) { parts.push(el('span', { class: 'mode-separator', text: '•' })); }
-			parts.push(el('strong', { class: `mode-count mode-${item.mode}`, text: String(item.count), title: item.label }));
+		const glyphs: Record<string, string> = { auto: 'zap', ask: 'question', deny: 'circle-slash' };
+		const parts = counts.map(item => {
+			const glyph = icon(glyphs[item.mode]); glyph.setAttribute('aria-hidden', 'true');
+			return el('span', { class: `mode-group mode-${item.mode}`, title: `${item.label}: ${item.count}` },
+				glyph, el('strong', { class: 'mode-count', text: String(item.count) }));
 		});
 		approveToggle.replaceChildren(...parts);
 		approveToggle.title = title;
@@ -4200,7 +4201,7 @@ document.addEventListener('mousedown', event => {
 		}
 		return;
 	}
-	if (![workdirFooter, effortButton, featureSettingsPanel, sleepPopup, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillBar, historyPanel, agentsPanel, agentAppsPanel, plusButton, usageButton, usageAlertText, agentsButton, agentPill, modelPill, approveToggle, slashButton, workdirButton, branchButton, commitButton, contextButton].some(n => n.contains(target))) {
+	if (![workdirSummary, gitRefreshSlot, effortButton, featureSettingsPanel, sleepPopup, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillBar, historyPanel, agentsPanel, agentAppsPanel, plusButton, usageButton, usageAlertText, agentsButton, agentPill, modelPill, approveToggle, slashButton, workdirButton, branchButton, commitButton, contextButton].some(n => n.contains(target))) {
 		closePopups();
 	}
 });
