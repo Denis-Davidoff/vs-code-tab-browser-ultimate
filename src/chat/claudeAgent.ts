@@ -301,12 +301,12 @@ export class ClaudeBackend implements AgentBackend {
 		}
 	}
 
-	public async generateCommitMessage(model: string, effort: string | undefined, context: string, signal: AbortSignal): Promise<string> {
-		return requestCommitMessage(this._binary, this.id, model, effort, context, signal, await privateTempDirectory('shared', 'runtime'));
+	public async generateCommitMessage(model: string, effort: string | undefined, context: string, signal: AbortSignal, systemPrompt?: string): Promise<string> {
+		return requestCommitMessage(this._binary, this.id, model, effort, context, signal, await privateTempDirectory('shared', 'runtime'), systemPrompt);
 	}
 
-	public async generateTitle(model: ChatModel, context: string, signal: AbortSignal, purpose?: 'branch'): Promise<string | undefined> {
-		return requestTitle(this._binary, this.id, model, context, signal, purpose, await privateTempDirectory('shared', 'runtime'));
+	public async generateTitle(model: ChatModel, context: string, signal: AbortSignal, purpose?: 'branch', systemPrompt?: string): Promise<string | undefined> {
+		return requestTitle(this._binary, this.id, model, context, signal, purpose, await privateTempDirectory('shared', 'runtime'), systemPrompt);
 	}
 
 	public openSession(cwd: string, resume?: string, priorCostUsd?: number, root?: string, readDirs?: readonly string[], ownSettings = true, chatId?: string): AgentSession {

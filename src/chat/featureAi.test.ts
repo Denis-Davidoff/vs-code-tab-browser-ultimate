@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { transpileModule, ModuleKind, ScriptTarget } from 'typescript';
-import { aiFeatures, featureAiKey, featureEffort, readFeatureAiSettings } from './featureAi.ts';
+import { aiFeatures, defaultFeaturePrompts, featurePromptLimit, featureAiKey, featureEffort, readFeatureAiSettings } from './featureAi.ts';
 import { titleModel } from './autoTitle.ts';
 import type { ChatModel } from './chatProtocol.ts';
 
@@ -36,7 +36,7 @@ function method(name: string) {
 	const match = new RegExp(`private ${name}\\([\\s\\S]*?\\n\\t\\}`).exec(source)?.[0];
 	assert.ok(match);
 	const code = transpileModule(`({ ${match.replace('private ', '')} })`, { compilerOptions: { module: ModuleKind.CommonJS, target: ScriptTarget.ES2022 } }).outputText;
-	return runInNewContext(code, { featureAiKey, featureEffort, readFeatureAiSettings, titleModel, AbortController })[name];
+	return runInNewContext(code, { featureAiKey, defaultFeaturePrompts, featureEffort, readFeatureAiSettings, titleModel, AbortController })[name];
 }
 
 test('feature routing follows Auto, supports a different agent and keeps lightweight naming models', () => {
@@ -70,17 +70,19 @@ test('automatic chat titles send the configured agent and effort to the backend'
 	const generate = method('_generateTabTitle');
 	let actualAgent: string | undefined;
 	let actualEffort: string | undefined;
+	let actualPrompt: string | undefined;
 	let applied: string | undefined;
 	const tab = { chat: { id: 'chat' }, applyGeneratedTitle(_id: string, title: string) { applied = title; } };
 	const host = {
-		_featureSelection: (feature: string) => { assert.equal(feature, 'chatTitle'); return { agent: 'claude', model: model('haiku'), effort: 'max' }; },
-		_registry: { backend(agent: string) { actualAgent = agent; return { async generateTitle(selected: ChatModel) { actualEffort = selected.efforts[0]; return 'Title'; } }; } },
+		_featureSelection: (feature: string) => { assert.equal(feature, 'chatTitle'); return { agent: 'claude', model: model('haiku'), effort: 'max', prompt: 'Custom title system prompt' }; },
+		_registry: { backend(agent: string) { actualAgent = agent; return { async generateTitle(selected: ChatModel, _context: string, _signal: AbortSignal, _purpose: unknown, prompt?: string) { actualPrompt = prompt; actualEffort = selected.efforts[0]; return 'Title'; } }; } },
 		_titleRequests: new Map(), _featureRequestAgents: new WeakMap(), _tabs: [tab],
 	};
 	generate.call(host, tab, 'codex', 'discussion');
 	await new Promise(resolve => setImmediate(resolve));
 	assert.equal(actualAgent, 'claude');
 	assert.equal(actualEffort, 'max');
+	assert.equal(actualPrompt, 'Custom title system prompt');
 	assert.equal(applied, 'Title');
 	assert.equal(host._titleRequests.size, 0);
 });
@@ -106,4 +108,13 @@ test('refreshing a feature agent cancels its requests even when the chat uses an
 	assert.equal(branch.signal.aborted, true);
 	assert.equal(messages[0].type, 'gitBranchNameResult');
 	assert.equal(messages[0].id, 7);
+});
+
+
+test('system prompts validate stored input and independently fall back to defaults', () => {
+ const value = readFeatureAiSettings({ chatTitle: { prompt: '  Custom title instruction  ' }, branchName: { prompt: ' ' }, commitMessage: { prompt: 'x'.repeat(featurePromptLimit + 1) } });
+ assert.equal(value.chatTitle.prompt, 'Custom title instruction');
+ assert.equal(value.branchName.prompt, undefined); assert.equal(value.commitMessage.prompt, undefined);
+ assert.equal(readFeatureAiSettings({ chatTitle: { prompt: 'bad\0prompt' } }).chatTitle.prompt, undefined);
+ assert.equal(readFeatureAiSettings({ chatTitle: { prompt: 12 } }).chatTitle.prompt, undefined);
 });

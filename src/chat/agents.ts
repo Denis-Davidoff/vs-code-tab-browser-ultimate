@@ -69,9 +69,9 @@ export interface BrowserServer {
 export interface AgentBackend extends vscode.Disposable {
 	readonly id: AgentId;
 	/** A text-only commit message on the model and effort chosen for this feature. */
-	generateCommitMessage?(model: string, effort: string | undefined, context: string, signal: AbortSignal): Promise<string>;
+	generateCommitMessage?(model: string, effort: string | undefined, context: string, signal: AbortSignal, systemPrompt?: string): Promise<string>;
 	/** Optional one-shot title on a small model; never uses a conversation session. */
-	generateTitle?(model: ChatModel, context: string, signal: AbortSignal, purpose?: 'branch'): Promise<string | undefined>;
+	generateTitle?(model: ChatModel, context: string, signal: AbortSignal, purpose?: 'branch', systemPrompt?: string): Promise<string | undefined>;
 	models(): Promise<ChatModel[]>;
 	/** The skills and commands it offers, read again from the CLI; kept as `knownCommands`. */
 	commands(): Promise<ChatCommand[]>;

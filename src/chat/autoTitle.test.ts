@@ -36,12 +36,16 @@ const fs = require('node:fs');
 let text = '';
 process.stdin.on('data', c => text += c);
 process.stdin.on('end', () => {
- fs.writeFileSync(${JSON.stringify(log)}, JSON.stringify({text, cwd: process.cwd(), args: process.argv.slice(2)}));
+ const args = process.argv.slice(2);
+ const system = args.includes('--system-prompt') ? args[args.indexOf('--system-prompt') + 1]
+  : fs.readFileSync(JSON.parse(args.find(a => a.startsWith('model_instructions_file=')).slice('model_instructions_file='.length)), 'utf8');
+ fs.writeFileSync(${JSON.stringify(log)}, JSON.stringify({text, cwd: process.cwd(), args, system}));
  console.log(JSON.stringify(${agent === 'claude' ? JSON.stringify({result: purpose ? 'feat/git-magic' : 'Короткое название'}) : JSON.stringify({type:'item.completed',item:{type:'agent_message',text: purpose ? 'feat/git-magic' : 'Короткое название'}})}));
 });\n`, { mode: 0o700 });
-			assert.equal(await requestTitle(binary, agent, model(agent === 'claude' ? 'haiku' : 'gpt-mini'), 'x'.repeat(5000), new AbortController().signal, purpose, scratch), purpose ? 'feat/git-magic' : 'Короткое название');
+			assert.equal(await requestTitle(binary, agent, model(agent === 'claude' ? 'haiku' : 'gpt-mini'), 'x'.repeat(5000), new AbortController().signal, purpose, scratch, purpose ? 'Custom branch instructions.' : undefined), purpose ? 'feat/git-magic' : 'Короткое название');
 			const request = JSON.parse(await fs.readFile(log, 'utf8'));
 			assert.equal(request.text.length, purpose ? 5000 : 1200);
+			if (purpose) { assert.equal(request.system, 'Custom branch instructions.'); } else { assert.match(request.system, /Write a short chat title/); }
 			assert.ok(request.cwd.includes('ai-browser-title-'));
 			assert.equal(await fs.realpath(path.dirname(request.cwd)), await fs.realpath(scratch));
 			await assert.rejects(fs.stat(request.cwd), { code: 'ENOENT' });

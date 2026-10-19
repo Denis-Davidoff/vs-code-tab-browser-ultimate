@@ -23,11 +23,15 @@ const fs = require('node:fs');
 let text = '';
 process.stdin.on('data', chunk => text += chunk);
 process.stdin.on('end', () => {
- fs.writeFileSync(${JSON.stringify(log)}, JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd(), text }));
+ const args = process.argv.slice(2);
+ const system = args.includes('--system-prompt') ? args[args.indexOf('--system-prompt') + 1]
+  : fs.readFileSync(JSON.parse(args.find(a => a.startsWith('model_instructions_file=')).slice('model_instructions_file='.length)), 'utf8');
+ fs.writeFileSync(${JSON.stringify(log)}, JSON.stringify({text, cwd: process.cwd(), args, system}));
  console.log(JSON.stringify(${agent === 'claude' ? "{result: 'fix: update Git footer'}" : "{type:'item.completed',item:{type:'agent_message',text:'fix: update Git footer'}}"}));
 });\n`, { mode: 0o700 });
-			assert.equal(await requestCommitMessage(binary, agent, 'selected-model', 'high', 'x'.repeat(200_000), new AbortController().signal, directory), 'fix: update Git footer');
+			assert.equal(await requestCommitMessage(binary, agent, 'selected-model', 'high', 'x'.repeat(200_000), new AbortController().signal, directory, 'Custom commit system instructions.'), 'fix: update Git footer');
 			const request = JSON.parse(await fs.readFile(log, 'utf8'));
+			assert.equal(request.system, 'Custom commit system instructions.');
 			assert.equal(request.args[request.args.indexOf('--model') + 1], 'selected-model');
 			assert.ok(request.args.includes(agent === 'claude' ? 'high' : 'model_reasoning_effort="high"'));
 			assert.ok(!request.args.includes('--resume'));

@@ -16,18 +16,18 @@ export function cleanCommitMessage(text: string): string {
 }
 
 /** A single text-only request on the selected model, independent of the chat's history and tools. */
-export async function requestCommitMessage(binary: string, agent: AgentId, model: string, effort: string | undefined, context: string, signal: AbortSignal, runtime?: string): Promise<string> {
+export async function requestCommitMessage(binary: string, agent: AgentId, model: string, effort: string | undefined, context: string, signal: AbortSignal, runtime?: string, systemPrompt = instructions): Promise<string> {
 	signal.throwIfAborted();
 	const directory = await fs.mkdtemp(path.join(runtime ?? os.tmpdir(), 'ai-browser-commit-'));
 	try {
 		signal.throwIfAborted();
 		let args: string[];
 		if (agent === 'claude') {
-			args = ['-p', '--output-format', 'json', '--model', model, '--tools', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--no-session-persistence', '--setting-sources', 'user', '--settings', '{"disableAllHooks":true}', '--system-prompt', instructions];
+			args = ['-p', '--output-format', 'json', '--model', model, '--tools', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--no-session-persistence', '--setting-sources', 'user', '--settings', '{"disableAllHooks":true}', '--system-prompt', systemPrompt];
 			if (effort) { args.push('--effort', effort); }
 		} else {
 			const file = path.join(directory, 'instructions.txt');
-			await fs.writeFile(file, instructions, { mode: 0o600 });
+			await fs.writeFile(file, systemPrompt, { mode: 0o600 });
 			args = ['exec', '--json', '--ephemeral', '--ignore-user-config', '--ignore-rules', '--skip-git-repo-check', '--sandbox', 'read-only', '--model', model,
 				'-c', `model_instructions_file=${JSON.stringify(file)}`, '-c', 'web_search="disabled"', '-c', 'model_reasoning_summary="none"'];
 			for (const feature of ['shell_tool', 'unified_exec', 'plugins', 'apps', 'browser_use', 'computer_use', 'multi_agent', 'hooks', 'js_repl']) { args.push('--disable', feature); }

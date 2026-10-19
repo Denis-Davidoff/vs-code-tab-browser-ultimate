@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { createContext, runInContext } from 'node:vm';
 import { transpileModule, ScriptTarget } from 'typescript';
-import { aiFeatures, readFeatureAiSettings, type FeatureAiSettings } from '../src/chat/featureAi.ts';
+import { aiFeatures, defaultFeaturePrompts, featurePromptLimit, readFeatureAiSettings, type FeatureAiSettings } from '../src/chat/featureAi.ts';
 import { recordingProfiles, readRecordingQuality, type RecordingQuality } from '../src/browser/recordingQuality.ts';
 
 // Exercise the actual handlers with delayed host replies; no model or VS Code process is started.
@@ -14,6 +14,7 @@ class Element {
 	textContent = '';
 	value = '';
 	id = '';
+	className = '';
 	hidden = false;
 	disabled = false;
 	classList = { add() {} };
@@ -25,7 +26,12 @@ class Element {
 	focus() {}
 	addEventListener(event: string, handler: () => void) { this.events[event] = handler; }
 	querySelectorAll(tag: string): Element[] {
-		return this.children.flatMap(child => child instanceof Element ? [...(child.tag === tag ? [child] : []), ...child.querySelectorAll(tag)] : []);
+		const matches = (child: Element) => tag.split(',').some(raw => {
+            const selector = raw.trim();
+            return selector.startsWith('.') ? child.className.split(' ').includes(selector.slice(1))
+                : selector === 'textarea[data-feature]' ? child.tag === 'textarea' && !!child.dataset.feature : child.tag === selector;
+        });
+        return this.children.flatMap(child => child instanceof Element ? [...(matches(child) ? [child] : []), ...child.querySelectorAll(tag)] : []);
 	}
 }
 const source = readFileSync('preview-src/chat.ts', 'utf8');
@@ -39,9 +45,9 @@ function harness() {
 		featureSettingsPanel: panel, featureSettingsSave: save, featureSettingsStatus: status,
 		featureSettingsSaving: false, featureSettingsDraft: readFeatureAiSettings(undefined),
 		videoQualityDraft: 'high' as RecordingQuality, recordingProfiles, readRecordingQuality,
-		readFeatureAiSettings, aiFeatures, createTemporarySettings: () => new Element('div'), input: { focus() {} }, closePopups() {},
-		el(tag: string, _props: unknown, ...children: (Element | string)[]) { const node = new Element(tag); node.append(...children); return node; },
-		button: () => new Element('button'), icon: () => new Element('i'),
+		readFeatureAiSettings, aiFeatures, defaultFeaturePrompts, featurePromptLimit, createTemporarySettings: () => new Element('div'), input: { focus() {} }, closePopups() {},
+		el(tag: string, props: { class?: string } = {}, ...children: (Element | string)[]) { const node = new Element(tag); node.className = props.class ?? ''; node.append(...children); return node; },
+		button: (children: (Element | string)[], props: { class?: string } = {}) => { const node = new Element('button'); node.className = props.class ?? ''; node.append(...children); return node; }, icon: () => new Element('i'),
 		post(message: { settings: FeatureAiSettings; recordingQuality?: RecordingQuality }) { posts.push(message); }, message: {} as { settings?: FeatureAiSettings; recordingQuality?: RecordingQuality; error?: string },
 	};
 	const context = createContext(scope);
@@ -120,4 +126,24 @@ test('temporary storage tab requests current accounting independently of AI sett
  assert.equal(ui.save.hidden, true);
  (tabs.children[0] as Element).events.click();
  assert.equal(ui.save.hidden, false);
+});
+
+
+test('custom system prompts survive save/reopen and can be restored independently', () => {
+ const ui = harness(); ui.open();
+ const fields = ui.panel.querySelectorAll('textarea');
+ assert.equal(fields.length, 3);
+ assert.equal(fields[0].value, defaultFeaturePrompts.commitMessage);
+ fields[0].value = 'Write a concise commit message in Russian.'; fields[0].events.input();
+ ui.save.events.click();
+ assert.ok(fields.every(field => field.disabled));
+ assert.equal(ui.posts[0].settings.commitMessage.prompt, 'Write a concise commit message in Russian.');
+ ui.ack(ui.posts[0].settings);
+ assert.equal(fields[0].value, 'Write a concise commit message in Russian.');
+ assert.ok(fields.every(field => !field.disabled));
+ const resets = ui.panel.querySelectorAll('.feature-prompt-reset');
+ resets[0].events.click();
+ assert.equal(fields[0].value, defaultFeaturePrompts.commitMessage);
+ assert.equal(ui.scope.featureSettingsDraft.commitMessage.prompt, undefined);
+ assert.equal(fields[1].value, defaultFeaturePrompts.branchName);
 });

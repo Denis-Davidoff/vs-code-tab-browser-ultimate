@@ -1,5 +1,5 @@
 import { trackTemporaryFile, temporaryStorage } from '../core/temporaryFiles';
-import { featureAiKey, featureEffort, readFeatureAiSettings, type AiFeature } from './featureAi';
+import { featureAiKey, defaultFeaturePrompts, featureEffort, readFeatureAiSettings, type AiFeature } from './featureAi';
 import { availableBranchName, titleModel } from './autoTitle';
 import { localFileLink } from './fileLinks';
 import { SleepControl } from '../power/sleepControl';
@@ -1689,7 +1689,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				?? available.models.find(m => m.isDefault) ?? available.models[0]
 			: titleModel(available.models);
 		if (!model) { throw new Error(feature === 'commitMessage' ? 'No model is available for the selected agent.' : 'No lightweight model is available for the selected agent.'); }
-		return { agent, model, effort: featureEffort(model, choice.effort) };
+		return { agent, model, effort: featureEffort(model, choice.effort), prompt: choice.prompt ?? defaultFeaturePrompts[feature] };
 	}
 
 	private _generateTabTitle(tab: ChatTab, agent: AgentId, context: string): void {
@@ -1703,7 +1703,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		const controller = new AbortController();
 		this._titleRequests.set(tab, controller);
 		this._featureRequestAgents.set(controller, selected.agent);
-		void backend.generateTitle(model, context, controller.signal).then(title => {
+		void backend.generateTitle(model, context, controller.signal, undefined, selected.prompt).then(title => {
 			if (title && !controller.signal.aborted && this._tabs.includes(tab)) { tab.applyGeneratedTitle(chatId, title); }
 		}).catch(() => undefined).finally(() => {
 			if (this._titleRequests.get(tab) === controller) { this._titleRequests.delete(tab); }
@@ -2695,7 +2695,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			release = await this._gitAccess.mutate(folder, () => this._busyGitFolders());
 			if (this._registry.detecting) { await this._registry.detect(); }
 			guard();
-			const { agent, model: selectedModel, effort } = this._featureSelection('commitMessage', tab);
+			const { agent, model: selectedModel, effort, prompt } = this._featureSelection('commitMessage', tab);
 			const model = selectedModel.id;
 			const backend = this._registry.backend(agent);
 			if (!backend?.generateCommitMessage) { throw new Error('The selected agent cannot generate commit messages.'); }
@@ -2706,7 +2706,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			const result = await commitChanges(
 				args => this._runWorkdirGit(git, [...config, ...args], folder),
 				async context => {
-					const message = await backend.generateCommitMessage!(model, effort, context, job.controller.signal);
+					const message = await backend.generateCommitMessage!(model, effort, context, job.controller.signal, prompt);
 					job.proposedMessage = message;
 					return message;
 				}, guard,
@@ -2771,7 +2771,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this._runWorkdirGit(git, ['diff', '--cached', '--no-ext-diff', '--no-textconv', '--no-color', '--stat'], folder),
    ]) : [];
    const context = `Changes:\n${status.slice(0, 3000)}\n${diffs.join('\n').slice(0, 3000)}\nDiscussion:\n${discussion.slice(-6000)}`;
-   let name = await backend.generateTitle(model, context, controller.signal, 'branch');
+   let name = await backend.generateTitle(model, context, controller.signal, 'branch', selected.prompt);
    if (controller.signal.aborted || !this._tabs.includes(tab) || tab.chat.id !== chatId) { return; }
    if (!name) { throw new Error('Could not generate a branch name. Please try again.'); }
    await this._runWorkdirGit(git, ['check-ref-format', `refs/heads/${name}`], folder);

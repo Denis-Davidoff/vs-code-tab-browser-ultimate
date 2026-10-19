@@ -1,5 +1,5 @@
 import type { TemporaryStorage } from '../src/core/temporaryFiles';
-import { aiFeatures, readFeatureAiSettings, type AiFeature, type FeatureAiSettings, type FeatureEffort } from '../src/chat/featureAi';
+import { aiFeatures, defaultFeaturePrompts, featurePromptLimit, readFeatureAiSettings, type AiFeature, type FeatureAiSettings, type FeatureEffort } from '../src/chat/featureAi';
 import { createRecordingEncoder } from './recording';
 import { recordingProfiles, readRecordingQuality, type RecordingQuality } from '../src/browser/recordingQuality';
 import { localFileLink } from '../src/chat/fileLinks';
@@ -898,6 +898,11 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
                 select.value = select.dataset.field === 'agent' ? choice.agent : choice.effort;
                 select.disabled = false;
             }
+            for (const field of featureSettingsPanel.querySelectorAll<HTMLTextAreaElement>('textarea[data-feature]')) {
+                const feature = field.dataset.feature as AiFeature;
+                field.value = featureSettingsDraft[feature].prompt ?? defaultFeaturePrompts[feature]; field.disabled = false;
+            }
+            for (const reset of featureSettingsPanel.querySelectorAll<HTMLButtonElement>('.feature-prompt-reset')) { reset.disabled = false; }
             return;
 		case 'openSleep':
 			buildSleepPopup(); renderSleep(); openSleepPopup();
@@ -7329,9 +7334,26 @@ function openFeatureSettings(): void {
 			featureSettingsStatus.textContent = 'Unsaved changes.';
 		});
 		row.append(el('label', {}, el('span', { text: 'Agent' }), agent), el('label', {}, el('span', { text: 'Effort' }), effort));
+		const prompt = el('textarea', { class: 'feature-system-prompt' });
+		prompt.dataset.feature = feature; prompt.rows = 7; prompt.maxLength = featurePromptLimit;
+		prompt.setAttribute('aria-label', `${labels[feature]} system prompt`);
+		prompt.value = featureSettingsDraft[feature].prompt ?? defaultFeaturePrompts[feature];
+		prompt.disabled = featureSettingsSaving;
+		prompt.addEventListener('input', () => {
+			featureSettingsDraft = { ...featureSettingsDraft, [feature]: { ...featureSettingsDraft[feature], prompt: prompt.value } };
+			featureSettingsStatus.textContent = 'Unsaved changes.';
+		});
+		const reset = button(['Restore default prompt'], { class: 'ghost feature-prompt-reset' });
+		reset.disabled = featureSettingsSaving;
+		reset.addEventListener('click', () => {
+			const { prompt: _oldPrompt, ...choice } = featureSettingsDraft[feature];
+			featureSettingsDraft = { ...featureSettingsDraft, [feature]: choice };
+			prompt.value = defaultFeaturePrompts[feature]; featureSettingsStatus.textContent = 'Unsaved changes.';
+		});
+		row.append(el('label', { class: 'feature-prompt-field' }, el('span', { text: 'System prompt' }), prompt), reset);
 		content.append(row);
 	}
-	content.append(el('p', { class: 'feature-settings-note', text: "Commit messages use the selected agent's remembered chat model or its default. Branch names and chat titles use an available lightweight model. Effort is mapped to the levels supported by that model. Settings are shared across projects." }));
+	content.append(el('p', { class: 'feature-settings-note', text: "Commit messages use the selected agent's remembered chat model or its default. Branch names and chat titles use an available lightweight model. Effort is mapped to the levels supported by that model. Custom prompts apply to future requests; output format and length checks still apply. Empty prompts use the defaults. Settings are shared across projects." }));
 	const selectTab = (selected: 'ai' | 'video' | 'temporary') => {
 		content.hidden = selected !== 'ai'; videoContent.hidden = selected !== 'video'; temporaryContent.hidden = selected !== 'temporary';
 		tab.setAttribute('aria-selected', String(selected === 'ai')); videoTab.setAttribute('aria-selected', String(selected === 'video'));
@@ -7364,7 +7386,7 @@ featureSettingsSave.addEventListener('click', () => {
 	if (featureSettingsSaving) { return; }
 	featureSettingsSaving = true;
 	featureSettingsSave.disabled = true;
-	for (const select of featureSettingsPanel.querySelectorAll('select')) { select.disabled = true; }
+	for (const field of featureSettingsPanel.querySelectorAll<HTMLSelectElement | HTMLTextAreaElement | HTMLButtonElement>('select, textarea, .feature-prompt-reset')) { field.disabled = true; }
 	featureSettingsStatus.textContent = 'Saving…';
 	post({ type: 'saveFeatureAi', settings: featureSettingsDraft, recordingQuality: videoQualityDraft });
 });

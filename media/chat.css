@@ -4451,3 +4451,7 @@ body.vscode-high-contrast-light .context-pie {
 
 .approve-toggle .mode-group { display: inline-flex; align-items: center; gap: 1px; white-space: nowrap; }
 .approve-toggle .mode-group .codicon { color: inherit; }
+
+.feature-prompt-field { grid-column: 1 / -1; }
+.feature-system-prompt { width: 100%; box-sizing: border-box; min-height: 120px; padding: 8px; resize: vertical; font: inherit; line-height: 1.45; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, var(--border)); border-radius: 4px; }
+.feature-prompt-reset { justify-self: start; grid-column: 1 / -1; }
