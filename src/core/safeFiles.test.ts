@@ -9,7 +9,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { suite, test } from 'node:test';
 import {
-	existingPrivateTempDirectory, privateTempDirectory, resetPrivateTempDirectory, writeExclusive, writeFileAtomic,
+	existingPrivateTempDirectory, privateTempDirectory, projectTempDirectory, resetPrivateTempDirectory, writeExclusive, writeFileAtomic,
 } from './safeFiles.ts';
 
 const posix = process.platform !== 'win32';
@@ -22,10 +22,15 @@ async function scratch(): Promise<string> {
 async function withTmpdir<T>(body: (tmp: string) => Promise<T>): Promise<T> {
 	const tmp = await scratch();
 	const saved = process.env.TMPDIR;
+	const savedHome = process.env.HOME;
+	process.env.HOME = tmp;
+	resetPrivateTempDirectory();
 	process.env.TMPDIR = tmp;
 	try {
 		return await body(tmp);
 	} finally {
+		resetPrivateTempDirectory();
+		if (savedHome === undefined) { delete process.env.HOME; } else { process.env.HOME = savedHome; }
 		if (saved === undefined) {
 			delete process.env.TMPDIR;
 		} else {
@@ -48,16 +53,16 @@ suite('privateTempDirectory', { skip: !posix }, () => {
 	// directory of their choosing: it must not be used.
 	test('a planted symlink at the root is not followed', () => withTmpdir(async tmp => {
 		const decoy = await scratch();
-		await fs.symlink(decoy, path.join(tmp, `ai-browser-${process.getuid!()}`));
+		await fs.symlink(decoy, path.join(tmp, '.ai-browser'));
 		const dir = await privateTempDirectory('reports');
-		assert.ok(!dir.startsWith(path.join(tmp, `ai-browser-${process.getuid!()}`)));
+		assert.ok(!dir.startsWith(path.join(tmp, '.ai-browser')));
 		assert.deepStrictEqual(await fs.readdir(decoy), []);
 		assert.strictEqual(await modeOf(path.dirname(dir)), 0o700);
 	}));
 
 	test('a root that others can enter is not used', () => withTmpdir(async tmp => {
 		resetPrivateTempDirectory();
-		const root = path.join(tmp, `ai-browser-${process.getuid!()}`);
+		const root = path.join(tmp, '.ai-browser');
 		await fs.mkdir(root);
 		await fs.chmod(root, 0o777);
 		const dir = await privateTempDirectory('x');
@@ -69,7 +74,7 @@ suite('privateTempDirectory', { skip: !posix }, () => {
 	// so the sweep never found anything to retire.
 	test('the substitute root is made once, not per call', () => withTmpdir(async tmp => {
 		resetPrivateTempDirectory();
-		const root = path.join(tmp, `ai-browser-${process.getuid!()}`);
+		const root = path.join(tmp, '.ai-browser');
 		await fs.mkdir(root);
 		await fs.chmod(root, 0o755);
 		const first = await privateTempDirectory('screenshots');
@@ -77,6 +82,24 @@ suite('privateTempDirectory', { skip: !posix }, () => {
 		assert.strictEqual(first, second);
 		assert.strictEqual(await existingPrivateTempDirectory('screenshots'), first);
 		resetPrivateTempDirectory();
+	}));
+
+	test('home root groups captures by stable project hash and gives unknown files a shared home', () => withTmpdir(async tmp => {
+		const first = await projectTempDirectory('/projects/one', 'captures');
+		assert.ok(first.startsWith(path.join(tmp, '.ai-browser', 'projects')));
+		assert.equal(first, await projectTempDirectory('/projects/one', 'captures'));
+		assert.notEqual(first, await projectTempDirectory('/projects/two', 'captures'));
+		assert.equal(await projectTempDirectory(undefined, 'files'), path.join(tmp, '.ai-browser', 'shared', 'files'));
+	}));
+
+	 test('a symlink inside private storage is refused before files are created', () => withTmpdir(async () => {
+		const root = await privateTempDirectory();
+		const external = await scratch();
+		try {
+			await fs.symlink(external, path.join(root, 'shared'));
+			await assert.rejects(projectTempDirectory(undefined, 'captures'));
+			assert.deepStrictEqual(await fs.readdir(external), []);
+		} finally { await fs.rm(external, { recursive: true, force: true }); }
 	}));
 
 	test('looking for the directory does not create it', () => withTmpdir(async tmp => {

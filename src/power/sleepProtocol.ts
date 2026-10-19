@@ -4,6 +4,8 @@ export const sleepHours = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 24, 48, 72] as
 export type SleepScope = 'tab' | 'window';
 export type SleepChoice = { mode: 'off' } | { mode: 'agents'; scope?: SleepScope; tabId?: string } | { mode: 'timer'; minutes: number };
 export interface SleepState {
+	automatic?: boolean;
+	automaticActive?: boolean;
 	mode: SleepChoice['mode'];
 	until?: number;
 	minutes?: number;

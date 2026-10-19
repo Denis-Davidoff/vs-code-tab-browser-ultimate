@@ -1,3 +1,4 @@
+import { privateTempDirectory } from '../core/safeFiles';
 import { requestCommitMessage } from './commitMessage';
 import { requestTitle } from './autoTitle';
 /*---------------------------------------------------------------------------------------------
@@ -272,12 +273,12 @@ export class CodexBackend implements AgentBackend {
 		process?.dispose();
 	}
 
-	public generateCommitMessage(model: string, effort: string | undefined, context: string, signal: AbortSignal): Promise<string> {
-		return requestCommitMessage(this._binary, this.id, model, effort, context, signal);
+	public async generateCommitMessage(model: string, effort: string | undefined, context: string, signal: AbortSignal): Promise<string> {
+		return requestCommitMessage(this._binary, this.id, model, effort, context, signal, await privateTempDirectory('shared', 'runtime'));
 	}
 
-	public generateTitle(model: ChatModel, context: string, signal: AbortSignal, purpose?: 'branch'): Promise<string | undefined> {
-		return requestTitle(this._binary, this.id, model, context, signal, purpose);
+	public async generateTitle(model: ChatModel, context: string, signal: AbortSignal, purpose?: 'branch'): Promise<string | undefined> {
+		return requestTitle(this._binary, this.id, model, context, signal, purpose, await privateTempDirectory('shared', 'runtime'));
 	}
 
 	public openSession(cwd: string, resume?: string, _priorCostUsd?: number, root?: string, _readDirs?: readonly string[], _ownSettings?: boolean, chatId?: string): AgentSession {

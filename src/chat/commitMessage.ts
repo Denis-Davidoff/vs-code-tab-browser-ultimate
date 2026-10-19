@@ -16,9 +16,9 @@ export function cleanCommitMessage(text: string): string {
 }
 
 /** A single text-only request on the selected model, independent of the chat's history and tools. */
-export async function requestCommitMessage(binary: string, agent: AgentId, model: string, effort: string | undefined, context: string, signal: AbortSignal): Promise<string> {
+export async function requestCommitMessage(binary: string, agent: AgentId, model: string, effort: string | undefined, context: string, signal: AbortSignal, runtime?: string): Promise<string> {
 	signal.throwIfAborted();
-	const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-browser-commit-'));
+	const directory = await fs.mkdtemp(path.join(runtime ?? os.tmpdir(), 'ai-browser-commit-'));
 	try {
 		signal.throwIfAborted();
 		let args: string[];

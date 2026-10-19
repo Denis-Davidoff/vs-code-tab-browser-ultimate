@@ -1,3 +1,5 @@
+import { configureTemporaryFiles } from './core/temporaryFiles';
+import { privateTempDirectory } from './core/safeFiles';
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -503,7 +505,9 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(chat, vscode.window.registerWebviewViewProvider(chatViewId, chat, {
 		webviewOptions: { retainContextWhenHidden: true },
 	}));
+	configureTemporaryFiles(() => privateTempDirectory('inventory'), () => chat.temporaryProject);
 	recording.destination = chatId => chat.recordingDestination(chatId);
+	recording.project = chatId => chat.recordingProject(chatId);
 	recording.createEncoder = id => chat.createRecordingEncoder(id);
 	context.subscriptions.push(vscode.commands.registerCommand('aiBrowser.recording.startChat', async () => {
 		await vscode.commands.executeCommand(`${chatViewId}.focus`);

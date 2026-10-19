@@ -24,11 +24,16 @@ export class SleepControl {
 	public choose(choice: SleepChoice): void {
 		if (!validSleepChoice(choice)) { return; }
 		this.armedAt = Date.now();
-		this.state = { mode: choice.mode, active: false,
+		this.state = { mode: choice.mode, active: false, ...(this.state.automatic ? { automatic: true } : {}),
 			...(choice.mode === 'timer' ? { minutes: choice.minutes, until: Date.now() + choice.minutes * 60000 } : {}),
 			...(choice.mode === 'agents' ? (choice.scope === 'tab' ? { scope: 'tab' as const, tabId: choice.tabId } : { scope: 'window' as const }) : {}) };
 		this.update();
 		this.socket?.write(`${this.wanted}\n`);
+		this.changed();
+	}
+	public setAutomatic(enabled: boolean): void {
+		this.state.automatic = enabled;
+		this.update();
 		this.changed();
 	}
 	public update(): void {
@@ -36,9 +41,11 @@ export class SleepControl {
 		const before = JSON.stringify(this.state);
 		if ((this.state.mode === 'timer' && Date.now() >= this.state.until!) ||
 			(this.state.mode === 'agents' && !this.working(this.state.scope === 'tab' ? this.state.tabId : undefined) && Date.now() - this.armedAt > 500)) {
-			this.state = { mode: 'off', active: false };
+			this.state = { mode: 'off', active: false, ...(this.state.automatic ? { automatic: true } : {}) };
 		}
-		const wanted = this.state.mode !== 'off';
+		const automaticActive = this.state.automatic === true && this.working();
+		if (this.state.automatic !== undefined) { this.state.automaticActive = automaticActive; }
+		const wanted = this.state.mode !== 'off' || automaticActive;
 		if (wanted && this.unavailable) { this.state.error = this.unavailable; }
 		if (wanted && !this.unavailable && !this.socket && !this.connecting) { this.start(); }
 		if (wanted !== this.wanted) { this.wanted = wanted; this.socket?.write(`${wanted}\n`); }

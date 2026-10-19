@@ -39,7 +39,7 @@ function harness() {
 		featureSettingsPanel: panel, featureSettingsSave: save, featureSettingsStatus: status,
 		featureSettingsSaving: false, featureSettingsDraft: readFeatureAiSettings(undefined),
 		videoQualityDraft: 'high' as RecordingQuality, recordingProfiles, readRecordingQuality,
-		readFeatureAiSettings, aiFeatures, input: { focus() {} }, closePopups() {},
+		readFeatureAiSettings, aiFeatures, createTemporarySettings: () => new Element('div'), input: { focus() {} }, closePopups() {},
 		el(tag: string, _props: unknown, ...children: (Element | string)[]) { const node = new Element(tag); node.append(...children); return node; },
 		button: () => new Element('button'), icon: () => new Element('i'),
 		post(message: { settings: FeatureAiSettings; recordingQuality?: RecordingQuality }) { posts.push(message); }, message: {} as { settings?: FeatureAiSettings; recordingQuality?: RecordingQuality; error?: string },
@@ -105,4 +105,19 @@ test('video quality shares the settings panel and saves without changing AI choi
 	assert.equal(ui.posts[0].recordingQuality, 'maximum');
 	ui.ack(ui.posts[0].settings, undefined, 'maximum');
 	assert.equal(quality.value, 'maximum'); assert.equal(quality.disabled, false);
+});
+
+test('temporary storage tab requests current accounting independently of AI settings saves', () => {
+ const ui = harness();
+ ui.open();
+ const layout = ui.panel.children[1] as Element;
+ const tabs = layout.children[0] as Element;
+ const temporary = tabs.children[2] as Element;
+ // The settings panel's host request is separate from its Save action.
+ Object.assign(ui.scope, { temporaryStorageBusy: false, renderTemporaryStorage() {} });
+ temporary.events.click();
+ assert.deepEqual(JSON.parse(JSON.stringify(ui.posts[0])), { type: 'temporaryStorage', action: 'refresh' });
+ assert.equal(ui.save.hidden, true);
+ (tabs.children[0] as Element).events.click();
+ assert.equal(ui.save.hidden, false);
 });

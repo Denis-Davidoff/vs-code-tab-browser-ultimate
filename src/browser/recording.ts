@@ -1,9 +1,10 @@
+import { trackTemporaryFile, temporaryProject } from '../core/temporaryFiles';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { CDPClient } from '../core/cdp';
 import { generateUuid } from '../core/uuid';
-import { privateTempDirectory } from '../core/safeFiles';
+import { projectTempDirectory } from '../core/safeFiles';
 import type { BrowserController } from './browserController';
 import { callerKey, type CallerIdentity } from './shareRegistry';
 import { recordingProfiles, recordingQualityKey, readRecordingQuality, type RecordingQuality } from './recordingQuality';
@@ -72,6 +73,7 @@ export class BrowserRecording implements vscode.Disposable {
 	public get current(): RecordingResult | undefined { return this._active ? this._snapshot(this._active) : undefined; }
 	public createEncoder: ((id: string) => RecordingEncoder) | undefined;
 	public destination: ((chatId?: string) => RecordingDestination | undefined) | undefined;
+	public project: ((chatId: string) => string | undefined) | undefined;
 
 	constructor(private readonly _context: vscode.ExtensionContext, private readonly _browser: BrowserController) { this._publish(); }
 
@@ -85,6 +87,7 @@ export class BrowserRecording implements vscode.Disposable {
 		const result: RecordingResult = { id: generateUuid(), state: 'starting', delivery, tabId: this._browser.tabIdOf(tab), url: tab.url, durationSeconds: 0, frames: 0, bytes: 0 };
 		if (!this.createEncoder) { throw new Error('The background video encoder is unavailable.'); }
 		const panel = this.createEncoder(result.id);
+		const project = caller?.chatId ? this.project?.(caller.chatId) : temporaryProject();
 		const profile = recordingProfiles[readRecordingQuality(quality ?? this._context.globalState?.get(recordingQualityKey))];
 		const run: Run = { result, caller: caller ? { ...caller } : undefined, tab, panel, profile, parts: [], pending: new Map(), next: 0, elapsed: 0, busyFrame: false, attach };
 		this._active = run;
@@ -135,10 +138,12 @@ export class BrowserRecording implements vscode.Disposable {
 			this._assertActive(run);
 			const init = await starting(this._request(run, 'init', { bitrate: profile.bitrate }));
 			result.mimeType = init.mime;
-			const dir = await starting(privateTempDirectory('recordings'));
+			const dir = await starting(projectTempDirectory(project, 'captures'));
 			this._assertActive(run);
 			run.file = path.join(dir, `${result.id}.${init.mime.startsWith('video/mp4') ? 'mp4' : 'webm'}`);
 			run.fd = fs.openSync(run.file, 'wx', 0o600);
+			await trackTemporaryFile(run.file, project);
+			this._assertActive(run);
 			const channel = await starting(bounded(Promise.resolve(tab.startCDPSession()).then(channel => {
 				if (this._active !== run) { void channel.close(); throw new Error('Recording was cancelled.'); }
 				run.channel = channel;

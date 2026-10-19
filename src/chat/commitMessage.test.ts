@@ -26,7 +26,7 @@ process.stdin.on('end', () => {
  fs.writeFileSync(${JSON.stringify(log)}, JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd(), text }));
  console.log(JSON.stringify(${agent === 'claude' ? "{result: 'fix: update Git footer'}" : "{type:'item.completed',item:{type:'agent_message',text:'fix: update Git footer'}}"}));
 });\n`, { mode: 0o700 });
-			assert.equal(await requestCommitMessage(binary, agent, 'selected-model', 'high', 'x'.repeat(200_000), new AbortController().signal), 'fix: update Git footer');
+			assert.equal(await requestCommitMessage(binary, agent, 'selected-model', 'high', 'x'.repeat(200_000), new AbortController().signal, directory), 'fix: update Git footer');
 			const request = JSON.parse(await fs.readFile(log, 'utf8'));
 			assert.equal(request.args[request.args.indexOf('--model') + 1], 'selected-model');
 			assert.ok(request.args.includes(agent === 'claude' ? 'high' : 'model_reasoning_effort="high"'));

@@ -144,3 +144,46 @@ test('two windows share one assertion and release only after the last disconnect
 		f.close();
 	}
 });
+
+test('automatic awake follows active work across all tabs and rearms for later tasks', () => {
+ const f = fixture();
+ const { SleepControl } = f.require('./sleepControl.js') as { SleepControl: typeof Control };
+ const tasks = new Set<string>();
+ const control = new SleepControl(() => tasks.size > 0, () => {}, 'Test: no OS assertion');
+ try {
+  control.setAutomatic(true);
+  assert.equal(control.state.automaticActive, false, 'idle tabs do not hold awake');
+  tasks.add('first'); control.update();
+  assert.equal(control.state.automaticActive, true);
+  tasks.add('second'); tasks.delete('first'); control.update();
+  assert.equal(control.state.automaticActive, true, 'work in a second tab keeps awake');
+  tasks.clear(); control.update();
+  assert.equal(control.state.automaticActive, false);
+  assert.equal(control.state.automatic, true, 'the setting remains armed after work ends');
+  tasks.add('later'); control.update();
+  assert.equal(control.state.automaticActive, true);
+  control.setAutomatic(false);
+  assert.equal(control.state.automaticActive, false);
+  assert.equal(control.state.mode, 'off');
+ } finally { control.dispose(); f.close(); }
+});
+
+test('automatic awake coexists with manual timers and survives timer expiry', () => {
+ const f = fixture();
+ const { SleepControl } = f.require('./sleepControl.js') as { SleepControl: typeof Control };
+ let working = false;
+ const control = new SleepControl(() => working, () => {}, 'Test: no OS assertion');
+ try {
+  control.choose({ mode: 'timer', minutes: 5 });
+  control.setAutomatic(true); control.setAutomatic(false);
+  assert.equal(control.state.mode, 'timer', 'disabling automatic mode preserves the timer');
+  control.setAutomatic(true);
+  control.state.until = Date.now() - 1; control.update();
+  assert.equal(control.state.mode, 'off'); assert.equal(control.state.automatic, true);
+  working = true; control.update();
+  assert.equal(control.state.automaticActive, true);
+  control.choose({ mode: 'off' });
+  assert.equal(control.state.automatic, true, 'manual off does not disable the persistent setting');
+  assert.equal(control.state.automaticActive, true);
+ } finally { control.dispose(); f.close(); }
+});

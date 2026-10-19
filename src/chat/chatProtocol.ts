@@ -1,3 +1,4 @@
+import type { TemporaryStorage } from '../core/temporaryFiles';
 import type { FeatureAiSettings } from './featureAi';
 import type { RecordingQuality } from '../browser/recordingQuality';
 import type { SleepChoice, SleepState } from '../power/sleepProtocol';
@@ -627,6 +628,7 @@ export interface ChatTabSummary {
 export type ChatTabStatus = 'waiting' | 'working' | 'unread' | 'failed' | 'read';
 
 export type HostToView =
+	| { readonly type: 'temporaryStorage'; readonly storage?: TemporaryStorage; readonly error?: string }
 	| { readonly type: 'recordingStatus'; readonly state?: 'starting' | 'recording' | 'paused' | 'stopping'; readonly seconds: number }
 	| { readonly type: 'recording'; readonly id: string; readonly message: any }
 	| { readonly type: 'localLinkInfo'; readonly request: number; readonly directory?: boolean; readonly inWorkspace: boolean }
@@ -663,8 +665,10 @@ export type HostToView =
 	| { readonly type: 'voice'; readonly event: VoiceEvent };
 
 export type ViewToHost =
+	| { readonly type: 'temporaryStorage'; readonly action: 'refresh' | 'all' | 'project'; readonly project?: string }
 	| { readonly type: 'controlRecording'; readonly action: 'pause' | 'resume' | 'stop' }
 	| { readonly type: 'recording'; readonly id: string; readonly message: any }
+	| { readonly type: 'setAutomaticAwake'; readonly enabled: boolean }
 	| { readonly type: 'setSleep'; readonly choice: SleepChoice }
 	/** The microphone button: start a voice message for the tab in front. */
 	| { readonly type: 'voiceStart' }

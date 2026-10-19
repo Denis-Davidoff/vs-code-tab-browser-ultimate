@@ -33,9 +33,9 @@ export function availableBranchName(proposed: string, branches: readonly string[
 }
 
 /** A bounded one-shot request, independent of the conversation, project and its tools. */
-export async function requestTitle(binary: string, agent: AgentId, model: ChatModel, context: string, signal: AbortSignal, purpose?: 'branch'): Promise<string | undefined> {
+export async function requestTitle(binary: string, agent: AgentId, model: ChatModel, context: string, signal: AbortSignal, purpose?: 'branch', runtime?: string): Promise<string | undefined> {
 	if (signal.aborted) { return undefined; }
-	const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-browser-title-'));
+	const directory = await fs.mkdtemp(path.join(runtime ?? os.tmpdir(), 'ai-browser-title-'));
 	try {
 		if (signal.aborted) { return undefined; }
 		const prompt = context.slice(0, purpose === 'branch' ? 12000 : 1200);

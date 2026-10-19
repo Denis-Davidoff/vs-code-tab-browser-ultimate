@@ -1,3 +1,4 @@
+import { trackTemporaryFile, temporaryProject } from '../core/temporaryFiles';
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -7,7 +8,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { workspaceIsRemoteFromHost } from '../setup/proposedApi';
-import { existingPrivateTempDirectory, privateTempDirectory, writeExclusive } from '../core/safeFiles';
+import { existingReportDirectories, projectTempDirectory, writeExclusive } from '../core/safeFiles';
 
 /**
  * Handing a report to Claude Code or Codex.
@@ -135,7 +136,7 @@ const lastPrune = new Map<string, number>();
 async function reportDirectory(reportsIn: Assistant['reportsIn'], folder: vscode.WorkspaceFolder | undefined): Promise<string> {
 	return reportsIn === 'workspace'
 		? path.join(folder!.uri.fsPath, '.ai-browser')
-		: privateTempDirectory('reports');
+		: projectTempDirectory(folder?.uri.fsPath ?? temporaryProject(), 'reports');
 }
 
 /**
@@ -227,6 +228,7 @@ async function writeReport(
 	folder: vscode.WorkspaceFolder | undefined,
 ): Promise<vscode.Uri> {
 
+	const project = folder?.uri.fsPath ?? temporaryProject();
 	const directory = await reportDirectory(reportsIn, folder);
 	await fs.mkdir(directory, { recursive: true });
 	// The write follows a symlinked `.ai-browser/` just as the sweep did, which
@@ -244,6 +246,7 @@ async function writeReport(
 	// second collided and the second silently replaced the file an assistant
 	// had already been handed.
 	const file = await writeExclusive(directory, fileName, text);
+	await trackTemporaryFile(file, project);
 	return vscode.Uri.file(file);
 }
 
@@ -279,16 +282,13 @@ export async function writeChatTranscript(text: string, fileName: string, workdi
  * safe; resolving the private temp directory can throw (`EACCES`, `ENOSPC`,
  * `EROFS` on the temp root), and a throw here escaped as an unhandled rejection
  * (breaks-silently #93). Looking the directory up with
- * `existingPrivateTempDirectory` also keeps activation from making directories
+ * `existingReportDirectories` also keeps activation from making directories
  * just to find them empty.
  */
 export async function cleanUpReports(): Promise<void> {
 	lastPrune.clear();
 	try {
-		const temp = await existingPrivateTempDirectory('reports');
-		if (temp) {
-			await prune(temp);
-		}
+		for (const directory of await existingReportDirectories()) { await prune(directory); }
 	} catch {
 		// The temp root cannot be looked at; there is nothing of ours to sweep.
 	}

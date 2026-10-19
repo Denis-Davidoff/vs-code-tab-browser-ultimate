@@ -1,3 +1,4 @@
+import type { TemporaryStorage } from '../src/core/temporaryFiles';
 import { aiFeatures, readFeatureAiSettings, type AiFeature, type FeatureAiSettings, type FeatureEffort } from '../src/chat/featureAi';
 import { createRecordingEncoder } from './recording';
 import { recordingProfiles, readRecordingQuality, type RecordingQuality } from '../src/browser/recordingQuality';
@@ -154,6 +155,7 @@ const agentsButton = button([], { class: 'pill agents-button', title: 'Agents' }
 const sleepPopup = el('div', { class: 'popup sleep-popup' });
 const featureSettingsPanel = el('div', { class: 'popup feature-settings' });
 featureSettingsPanel.setAttribute('role', 'dialog');
+featureSettingsPanel.tabIndex = -1;
 featureSettingsPanel.setAttribute('aria-label', 'Chat Settings');
 const contextPie = el('span', { class: 'context-pie' });
 const contextButton = button([contextPie], { class: 'ghost round context-button' });
@@ -248,8 +250,8 @@ const branchButton = button([icon('git-branch'), branchName, icon('chevron-down'
 branchButton.setAttribute('aria-haspopup', 'dialog');
 branchButton.setAttribute('aria-expanded', 'false');
 const commitIcon = icon('git-commit');
-const gitStagedCount = el('span', { class: 'git-staged-count', title: 'Staged files' }, '0');
-const gitUnstagedCount = el('span', { class: 'git-unstaged-count', title: 'Unstaged files' }, '0');
+const gitStagedCount = el('span', { class: 'git-staged-count', title: 'Staged files' });
+const gitUnstagedCount = el('span', { class: 'git-unstaged-count', title: 'Unstaged files' });
 const commitButton = button([commitIcon, 'Commit', gitStagedCount, gitUnstagedCount, icon('chevron-down')], { class: 'ghost git-commit-button', title: 'Git changes and commit' });
 commitButton.setAttribute('aria-haspopup', 'dialog');
 commitButton.setAttribute('aria-expanded', 'false');
@@ -367,8 +369,10 @@ function gitFileIcon(file: import('../src/chat/chatProtocol').GitStatusFile): HT
 function renderGitChanges(): void {
 	const staged = gitFiles?.staged.length ?? 0;
 	const unstaged = gitFiles?.unstaged.length ?? 0;
-	gitStagedCount.textContent = String(staged);
-	gitUnstagedCount.textContent = String(unstaged);
+	gitStagedCount.textContent = staged ? String(staged) : '';
+	gitStagedCount.hidden = staged === 0;
+	gitUnstagedCount.textContent = unstaged ? String(unstaged) : '';
+	gitUnstagedCount.hidden = unstaged === 0;
 	gitChanged.textContent = gitFiles ? `+${gitFiles.changed}` : '—';
 	gitDeleted.textContent = gitFiles ? `−${gitFiles.deleted}` : '';
 	commitButton.setAttribute('aria-label', `Git changes and commit. Staged: ${staged} files. Unstaged: ${unstaged} files.`);
@@ -846,6 +850,11 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 				drafts[message.chatId] = drafts[message.chatId] ? `${drafts[message.chatId]}\n\n${message.text}` : message.text;
 				saveDraft();
 			}
+			return;
+		case 'temporaryStorage':
+			temporaryStorageBusy = false;
+			temporaryStorageState = message.storage;
+			renderTemporaryStorage(message.error);
 			return;
 		case 'openSettings':
             openFeatureSettings();
@@ -7059,9 +7068,11 @@ function renderSleep(): void {
 		: sleep?.mode === 'timer' ? `Keep awake: ${countdown}${active ? '' : ' — starting…'}`
 		: tabScoped ? `Keep awake until the agents and subagents in ${sleepTabTitle(sleep.tabId)} finish`
 		: sleep?.mode === 'agents' ? 'Keep awake until the agents and subagents in every tab finish'
+		: sleep?.automaticActive ? 'Keep awake automatically while tasks are active in any tab'
+		: sleep?.automatic ? 'Automatic awake is enabled — waiting for active tasks'
 		: 'Keep computer awake — off';
 	// The tab in front and the watched tab's name decide which row reads as chosen.
-	const signature = JSON.stringify([sleep?.mode, sleep?.minutes, sleep?.scope, sleep?.tabId, active, sleep?.error,
+	const signature = JSON.stringify([sleep?.mode, sleep?.minutes, sleep?.scope, sleep?.tabId, active, sleep?.error, sleep?.automatic, sleep?.automaticActive,
 		state?.activeTab, tabScoped ? sleepTabTitle(sleep.tabId) : '', sleepTabTitle(state?.activeTab)]);
 	if (signature !== sleepSignature) {
 		sleepSignature = signature;
@@ -7070,7 +7081,7 @@ function renderSleep(): void {
 	const status = sleepPopup.querySelector('.sleep-status');
 	if (status) {
 		status.textContent = tip;
-		status.classList.toggle('sleep-enabled-status', !!sleep && (sleep.mode === 'timer' || sleep.mode === 'agents') && !sleep.error);
+		status.classList.toggle('sleep-enabled-status', !!sleep && (sleep.mode === 'timer' || sleep.mode === 'agents' || sleep.automaticActive) && !sleep.error);
 	}
 }
 function buildSleepPopup(): void {
@@ -7112,10 +7123,18 @@ function buildSleepPopup(): void {
 		sleepPopup.append(el('div', { class: 'sleep-note', text: `Now held by ${sleepTabTitle(watched)}.` }));
 	}
 	if (sleep && sleep.mode !== 'off') {
-		const off = option('Turn off', { mode: 'off' }, false);
+		const off = option(sleep.automatic ? 'Turn off manual awake' : 'Turn off', { mode: 'off' }, false);
 		off.prepend(icon('circle-slash'));
 		sleepPopup.append(off);
 	}
+	const automatic = el('input'); automatic.type = 'checkbox'; automatic.checked = sleep?.automatic === true;
+	automatic.addEventListener('change', () => {
+		post({ type: 'setAutomaticAwake', enabled: automatic.checked });
+		automatic.checked = sleep?.automatic === true;
+	});
+	sleepPopup.append(el('label', { class: 'sleep-automatic' }, automatic,
+		el('span', {}, el('span', { text: 'Automatically while tasks are active' }),
+			el('span', { class: 'sleep-option-detail', text: 'All chat tabs · stops when every task finishes' }))));
 }
 /**
  * Opened from the cup in the view's title bar, which is outside the webview:
@@ -7143,6 +7162,42 @@ const featureSettingsSave = button(['Save'], { class: 'feature-settings-save' })
 let featureSettingsDraft: FeatureAiSettings = readFeatureAiSettings(undefined);
 let videoQualityDraft: RecordingQuality = 'high';
 
+let temporaryStorageState: TemporaryStorage | undefined;
+let temporaryStorageBusy = false;
+const temporaryStorageContent = el('div', { class: 'feature-settings-content temporary-storage' });
+function renderTemporaryStorage(error?: string): void {
+ const storage = temporaryStorageState;
+ const format = (bytes: number) => bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${(bytes / 1024).toFixed(1)} KB`;
+ const status = el('p', { text: error || (temporaryStorageBusy ? 'Working…' : storage
+  ? `${storage.files} files · ${format(storage.bytes)}${storage.deleted ? ` · Deleted ${storage.deleted}` : ''}${storage.skipped ? ` · Protected ${storage.skipped}` : ''}${storage.errors ? ` · Errors ${storage.errors}` : ''}` : 'Refresh to inspect temporary files.') });
+ status.setAttribute('role', 'status');
+ const actions = el('div', { class: 'temporary-storage-actions' });
+ for (const [action, label] of [['refresh', 'Refresh'], ['project', 'Clean project'], ['all', 'Delete all temporary files']] as const) {
+  const control = button([label], { class: action === 'all' ? 'temporary-delete-all' : 'ghost' });
+  control.disabled = temporaryStorageBusy || (action !== 'refresh' && (!!storage?.busy || !storage)) || (action === 'project' && !storage?.project);
+  control.addEventListener('click', () => {
+   temporaryStorageBusy = true; renderTemporaryStorage(); post({ type: 'temporaryStorage', action, ...(action === 'project' ? { project: storage?.project } : {}) });
+  });
+  actions.append(control);
+ }
+ temporaryStorageContent.replaceChildren(
+  el('p', { text: 'Files are grouped in ~/.ai-browser/projects by project. Shared disposable files live in ~/.ai-browser/shared. Project-local reports and exports use .ai-browser/.' }),
+  el('p', { class: 'temporary-project', text: storage?.project ? `Current project: ${storage.project} · ${storage.projectFiles} files · ${format(storage.projectBytes)}` : 'No project selected.' }), status, actions,
+  el('p', { text: 'Cleaning removes local files permanently; old chat links to them may stop working. Draft attachments, active requests and files owned by another running window are protected. Files created in the last minute and untracked files less than 24 hours old are kept. AI request instructions and connection files are normally removed automatically.' }),
+ );
+ if (storage?.busy) { temporaryStorageContent.append(el('p', { text: storage.busy })); }
+ if (storage && !storage.folders.length) { temporaryStorageContent.append(el('p', { text: 'No temporary folders found.' })); }
+ for (const folder of storage?.folders ?? []) {
+  temporaryStorageContent.append(el('div', { class: 'temporary-folder' },
+   el('code', { text: folder.path }),
+   el('span', { text: `${folder.files} files · ${format(folder.bytes)} · ${folder.protected} protected` })));
+ }
+}
+function createTemporarySettings(): HTMLElement {
+ renderTemporaryStorage();
+ return temporaryStorageContent;
+}
+
 function openFeatureSettings(): void {
 	if (!state) { return; }
 	closePopups(featureSettingsPanel);
@@ -7155,7 +7210,8 @@ function openFeatureSettings(): void {
 	const heading = el('div', { class: 'feature-settings-heading' }, el('strong', { text: 'Chat Settings' }), close);
 	const tabs = el('div', { class: 'feature-settings-tabs' });
 	tabs.setAttribute('role', 'tablist');
-	const tab = button(['AI for Extension Features'], { class: 'feature-settings-tab' });
+	tabs.setAttribute('aria-orientation', 'vertical');
+	const tab = button(['AI features'], { class: 'feature-settings-tab' });
 	tab.id = 'feature-ai-tab';
 	tab.setAttribute('role', 'tab');
 	tab.setAttribute('aria-selected', 'true');
@@ -7166,6 +7222,14 @@ function openFeatureSettings(): void {
 	videoTab.setAttribute('role', 'tab'); videoTab.setAttribute('aria-selected', 'false');
 	videoTab.setAttribute('aria-controls', 'video-quality-content');
 	tabs.append(videoTab);
+	const temporaryTab = button(['Temporary files'], { class: 'feature-settings-tab' });
+	temporaryTab.id = 'temporary-files-tab';
+	temporaryTab.setAttribute('role', 'tab'); temporaryTab.setAttribute('aria-selected', 'false');
+	temporaryTab.setAttribute('aria-controls', 'temporary-files-content');
+	tabs.append(temporaryTab);
+	const temporaryContent = createTemporarySettings();
+	temporaryContent.id = 'temporary-files-content'; temporaryContent.hidden = true;
+	temporaryContent.setAttribute('role', 'tabpanel'); temporaryContent.setAttribute('aria-labelledby', temporaryTab.id);
 	const videoContent = el('div', { class: 'feature-settings-content' });
 	videoContent.id = 'video-quality-content'; videoContent.hidden = true;
 	videoContent.setAttribute('role', 'tabpanel'); videoContent.setAttribute('aria-labelledby', videoTab.id);
@@ -7223,14 +7287,33 @@ function openFeatureSettings(): void {
 		content.append(row);
 	}
 	content.append(el('p', { class: 'feature-settings-note', text: "Commit messages use the selected agent's remembered chat model or its default. Branch names and chat titles use an available lightweight model. Effort is mapped to the levels supported by that model. Settings are shared across projects." }));
-	const selectTab = (video: boolean) => {
-		content.hidden = video; videoContent.hidden = !video;
-		tab.setAttribute('aria-selected', String(!video)); videoTab.setAttribute('aria-selected', String(video));
+	const selectTab = (selected: 'ai' | 'video' | 'temporary') => {
+		content.hidden = selected !== 'ai'; videoContent.hidden = selected !== 'video'; temporaryContent.hidden = selected !== 'temporary';
+		tab.setAttribute('aria-selected', String(selected === 'ai')); videoTab.setAttribute('aria-selected', String(selected === 'video'));
+		temporaryTab.setAttribute('aria-selected', String(selected === 'temporary'));
+		featureSettingsSave.hidden = selected === 'temporary';
 	};
-	tab.addEventListener('click', () => selectTab(false)); videoTab.addEventListener('click', () => selectTab(true));
-	featureSettingsPanel.replaceChildren(heading, tabs, content, videoContent, el('div', { class: 'feature-settings-actions' }, featureSettingsStatus, featureSettingsSave));
+	tab.addEventListener('click', () => selectTab('ai')); videoTab.addEventListener('click', () => selectTab('video'));
+	temporaryTab.addEventListener('click', () => {
+		selectTab('temporary');
+		if (!temporaryStorageBusy) { temporaryStorageBusy = true; renderTemporaryStorage(); post({ type: 'temporaryStorage', action: 'refresh' }); }
+	});
+	featureSettingsSave.hidden = false;
+	const sections = [tab, videoTab, temporaryTab];
+	tabs.addEventListener('keydown', event => {
+		const index = sections.indexOf(document.activeElement as HTMLButtonElement);
+		if (index < 0 || !['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) { return; }
+		event.preventDefault();
+		const next = event.key === 'Home' ? 0 : event.key === 'End' ? sections.length - 1
+			: (index + (event.key === 'ArrowDown' ? 1 : -1) + sections.length) % sections.length;
+		sections[next].click(); sections[next].focus();
+	});
+	featureSettingsPanel.replaceChildren(heading,
+		el('div', { class: 'feature-settings-layout' }, tabs,
+			el('div', { class: 'feature-settings-main' }, content, videoContent, temporaryContent,
+				el('div', { class: 'feature-settings-actions' }, featureSettingsStatus, featureSettingsSave))));
 	featureSettingsPanel.classList.add('open');
-	tab.focus();
+	featureSettingsPanel.focus();
 }
 featureSettingsSave.addEventListener('click', () => {
 	if (featureSettingsSaving) { return; }

@@ -33,6 +33,8 @@ function harness(options: { holdReady?: boolean; holdFirstFrame?: boolean; holdC
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'recording-test-'));
 	const changedShare = new Events(), closedTab = new Events();
 	const panels: any[] = [], channels: any[] = [], clients: any[] = [];
+	const storageProjects: (string | undefined)[] = [];
+	const trackedProjects: (string | undefined)[] = [];
 	const state = { allowed: true, clipboard: '', holdFrame: false, holdStop: false, failAck: false, closeDuringStop: false, quality: 'high' };
 	const commands: { method: string; params: any }[] = [];
 	const window: any = { browserTabs: [], activeBrowserTab: undefined, onDidCloseBrowserTab: closedTab.event,
@@ -117,7 +119,8 @@ function harness(options: { holdReady?: boolean; holdFirstFrame?: boolean; holdC
 				case 'node:path': return path;
 				case '../core/cdp': return { CDPClient: Client };
 				case '../core/uuid': return { generateUuid: randomUUID };
-				case '../core/safeFiles': return { privateTempDirectory: async () => root };
+				case '../core/temporaryFiles': return { trackTemporaryFile: async (_file: string, project?: string) => { trackedProjects.push(project); }, temporaryProject: () => '/project-b' };
+				case '../core/safeFiles': return { projectTempDirectory: async (project?: string) => { storageProjects.push(project); return root; } };
 				case './shareRegistry': return { callerKey: (caller: any) => caller.sessionId ?? caller.kind };
 				case './recordingQuality': return { recordingProfiles, recordingQualityKey, readRecordingQuality };
 				default: throw new Error(`Unexpected dependency: ${name}`);
@@ -126,7 +129,7 @@ function harness(options: { holdReady?: boolean; holdFirstFrame?: boolean; holdC
 	});
 	const recording = new exported.BrowserRecording({ extensionUri: uri(root), globalState: { get: () => state.quality } }, browser);
 	recording.createEncoder = () => { const panel = window.createWebviewPanel(); panel.webview.html = ''; return panel; };
-	return { recording, tab, window, panels, channels, clients, state, closedTab, commands,
+	return { recording, tab, window, panels, channels, clients, state, closedTab, commands, storageProjects, trackedProjects,
 		cleanup: () => { recording.dispose(); fs.rmSync(root, { recursive: true, force: true }); } };
 }
 
@@ -291,4 +294,27 @@ test('losing the background encoder releases CDP and removes partial output', as
 		assert.equal(run.result.state, 'failed'); assert.equal(h.recording._active, undefined);
 		assert.equal(h.clients[0].isClosed, true); assert.ok(!fs.existsSync(run.file));
 	} finally { h.cleanup(); }
+});
+
+
+test('a background chat recording uses the caller project instead of the selected chat project', async () => {
+ const h = harness();
+ try {
+  h.recording.project = (chatId: string) => chatId === 'chat-a' ? '/project-a' : undefined;
+  await h.recording.start({ kind: 'codex', sessionId: 'session-a', chatId: 'chat-a' });
+  assert.deepEqual(h.storageProjects, ['/project-a']);
+  assert.deepEqual(h.trackedProjects, ['/project-a']);
+  await h.recording.control('stop');
+ } finally { h.cleanup(); }
+});
+
+test('an unknown caller chat never falls back to another chat project', async () => {
+ const h = harness();
+ try {
+  h.recording.project = () => undefined;
+  await h.recording.start({ kind: 'codex', chatId: 'closed-chat' });
+  assert.deepEqual(h.storageProjects, [undefined]);
+  assert.deepEqual(h.trackedProjects, [undefined]);
+  await h.recording.control('stop');
+ } finally { h.cleanup(); }
 });

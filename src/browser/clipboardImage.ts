@@ -1,3 +1,4 @@
+import { trackTemporaryFile, temporaryProject } from '../core/temporaryFiles';
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -8,7 +9,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { hostIsRemote } from '../setup/proposedApi';
-import { privateTempDirectory, writeExclusive } from '../core/safeFiles';
+import { projectTempDirectory, writeExclusive } from '../core/safeFiles';
 
 /**
  * Putting an image on the clipboard.
@@ -29,14 +30,15 @@ const keepFor = 24 * 60 * 60 * 1000;
  * Where screenshots go: a directory only this user can enter, never the shared
  * `/tmp/ai-browser/…` — see `privateTempDirectory`.
  */
-function directory(): Promise<string> {
-	return privateTempDirectory('screenshots');
+function directory(project: string | undefined): Promise<string> {
+	return projectTempDirectory(project, 'captures');
 }
 
 async function prune(dir: string): Promise<void> {
 	try {
 		const now = Date.now();
 		for (const name of await fs.readdir(dir)) {
+			if (!name.endsWith('.png')) { continue; }
 			const file = path.join(dir, name);
 			try {
 				const stat = await fs.stat(file);
@@ -137,12 +139,14 @@ function clipboardCommand(file: string): { command: string; args: string[]; env?
  * merely did not reach the clipboard.
  */
 export async function copyImage(png: Buffer, baseName: string): Promise<ImageDelivery> {
-	const dir = await directory();
+	const project = temporaryProject();
+	const dir = await directory(project);
 	await prune(dir);
 
 	// Exclusive: two captures in one second share a name, and the second used
 	// to replace the first.
 	const target = await writeExclusive(dir, baseName, png);
+	await trackTemporaryFile(target, project);
 	const uri = vscode.Uri.file(target);
 
 	// In a remote workspace the extension host — and therefore any command it
@@ -186,9 +190,12 @@ export async function copyImage(png: Buffer, baseName: string): Promise<ImageDel
  * screenshot. Exclusive, as `copyImage` is.
  */
 export async function savePng(png: Buffer, baseName: string): Promise<vscode.Uri> {
-	const dir = await directory();
+	const project = temporaryProject();
+	const dir = await directory(project);
 	await prune(dir);
-	return vscode.Uri.file(await writeExclusive(dir, baseName, png));
+	const file = await writeExclusive(dir, baseName, png);
+	await trackTemporaryFile(file, project);
+	return vscode.Uri.file(file);
 }
 
 /** `screenshot-<host>[-full]-<HHMMSS>.png`, so several in a row do not collide. */

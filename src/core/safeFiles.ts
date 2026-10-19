@@ -15,7 +15,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 /**
- * A directory under the temp directory that only this user can enter.
+ * A directory beneath ~/.ai-browser that only this user can enter.
  *
  * **`os.tmpdir()` is shared on Linux**, and screenshots and reports used to be
  * written to the predictable `/tmp/ai-browser/…` with a plain `writeFile`. Any
@@ -26,7 +26,7 @@ import * as path from 'path';
  * (macOS and Windows hand each user a private temp directory, so this was a
  * Linux problem; the rules below are harmless there.)
  *
- * So the root is per user and created `0700`, and an existing one is accepted
+ * The current root is ~/.ai-browser, created `0700`, and an existing one is accepted
  * only when it is a real directory — not a symlink — owned by this user with no
  * group or other access. Anything inside it is then out of other users' reach
  * by construction. A root that fails the check is not repaired, since it may
@@ -34,9 +34,58 @@ import * as path from 'path';
  * random and `0700` — made once per process, see {@link substitute}.
  */
 export async function privateTempDirectory(...segments: string[]): Promise<string> {
-	const dir = path.join(await privateRoot(true) as string, ...segments);
-	await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+	let dir = await privateRoot(true) as string;
+	const relative = path.join('.', ...segments);
+	if (path.isAbsolute(relative) || relative === '..' || relative.startsWith(`..${path.sep}`)) { throw new Error('Invalid private directory path'); }
+	for (const segment of relative.split(path.sep).filter(value => value && value !== '.')) {
+		dir = path.join(dir, segment);
+		try { await fs.mkdir(dir, { mode: 0o700 }); }
+		catch (error: any) { if (error.code !== 'EEXIST') { throw error; } }
+		const stat = await fs.lstat(dir);
+		if (!stat.isDirectory() || stat.isSymbolicLink()) { throw new Error(`Refusing to use a linked private directory: ${dir}`); }
+	}
 	return dir;
+}
+
+/** New capture folders are grouped by project beneath the private home root. */
+export function projectTempDirectory(project: string | undefined, category: 'captures' | 'reports' | 'files'): Promise<string> {
+ const owner = project ? ['projects', crypto.createHash('sha256').update(path.resolve(project)).digest('hex').slice(0, 16)] : ['shared'];
+ return privateTempDirectory(...owner, category);
+}
+
+/** Previous OS-temp storage is read only for accounting; existing links stay valid. */
+export async function legacyPrivateTempDirectory(): Promise<string | undefined> {
+ const uid = process.getuid?.();
+ const root = path.join(os.tmpdir(), `ai-browser-${uid ?? 'user'}`);
+ return await isPrivate(root, uid) ? root : undefined;
+}
+
+/** Enumerate reports in both storage layouts without creating folders or following links. */
+export async function existingReportDirectories(): Promise<string[]> {
+ const roots = new Set([await privateRoot(false), await legacyPrivateTempDirectory()].filter((root): root is string => !!root));
+ const directories: string[] = [];
+ const realDirectory = async (directory: string) => {
+  const stat = await fs.lstat(directory).catch(() => undefined);
+  return !!stat?.isDirectory() && !stat.isSymbolicLink();
+ };
+ for (const root of roots) {
+  if (!await realDirectory(root)) { continue; }
+  const owners = [root];
+  const shared = path.join(root, 'shared');
+  if (await realDirectory(shared)) { owners.push(shared); }
+  const projects = path.join(root, 'projects');
+  if (await realDirectory(projects)) {
+   for (const name of await fs.readdir(projects).catch(() => [])) {
+    const project = path.join(projects, name);
+    if (/^[a-f0-9]{16}$/.test(name) && await realDirectory(project)) { owners.push(project); }
+   }
+  }
+  for (const owner of owners) {
+   const reports = path.join(owner, 'reports');
+   if (await realDirectory(reports)) { directories.push(reports); }
+  }
+ }
+ return directories;
 }
 
 /**
@@ -65,7 +114,7 @@ async function privateRoot(create: boolean): Promise<string | undefined> {
 		return substitute;
 	}
 	const uid = process.getuid?.();
-	const root = path.join(os.tmpdir(), `ai-browser-${uid ?? 'user'}`);
+	const root = path.join(os.homedir(), '.ai-browser');
 	if (create) {
 		try {
 			await fs.mkdir(root, { mode: 0o700 });
@@ -91,15 +140,10 @@ export function resetPrivateTempDirectory(): void {
 }
 
 async function isPrivate(dir: string, uid: number | undefined): Promise<boolean> {
-	if (process.platform === 'win32') {
-		// No POSIX modes or owners to read, and the temp directory is per user.
-		return true;
-	}
 	try {
 		const stat = await fs.lstat(dir);
-		return stat.isDirectory()
-			&& (uid === undefined || stat.uid === uid)
-			&& (stat.mode & 0o077) === 0;
+		return stat.isDirectory() && !stat.isSymbolicLink()
+			&& (process.platform === 'win32' || ((uid === undefined || stat.uid === uid) && (stat.mode & 0o077) === 0));
 	} catch {
 		return false;
 	}

@@ -35,6 +35,7 @@ const protocol = load<typeof import('../chat/agentProtocol.ts')>('src/chat/agent
 const { CodexBackend } = load<typeof import('../chat/codexAgent.ts')>('src/chat/codexAgent.ts', {
 	vscode, './agentProtocol': protocol, './agentProcess': {}, './autoTitle': { requestTitle: async () => undefined },
 	'./commitMessage': { requestCommitMessage: async () => 'test commit' },
+	'../core/safeFiles': { privateTempDirectory: async () => '/unused-test-runtime' },
 });
 const { ChatTab, newChat } = load<typeof import('../chat/chatTab.ts')>('src/chat/chatTab.ts', {
 	vscode, './agentProtocol': protocol, './agents': { agentNames: { codex: 'Codex' } },

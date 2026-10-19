@@ -1,10 +1,11 @@
+import { trackTemporaryFile, temporaryStorage } from '../core/temporaryFiles';
 import { featureAiKey, featureEffort, readFeatureAiSettings, type AiFeature } from './featureAi';
 import { availableBranchName, titleModel } from './autoTitle';
 import { localFileLink } from './fileLinks';
 import { SleepControl } from '../power/sleepControl';
 import { VoiceRecording, voiceHelperPath, voiceUnavailable } from './voiceRecorder';
 import { tidyTranscript, voiceChipLabel, voiceLocalePattern, voiceMaxSeconds, voicePromptText, type HelperLine } from './voiceText';
-import { privateTempDirectory } from '../core/safeFiles';
+import { privateTempDirectory, projectTempDirectory, legacyPrivateTempDirectory } from '../core/safeFiles';
 import type { BrowserRecording, RecordingDestination, RecordingEncoder } from '../browser/recording';
 import { readRecordingQuality, recordingQualityKey } from '../browser/recordingQuality';
 /*---------------------------------------------------------------------------------------------
@@ -196,6 +197,7 @@ export const defaultTabLimit = 10;
 export const maxTabLimit = 30;
 const tabLimitSetting = 'aiBrowser.chat.tabLimit';
 const collapseToolsSetting = 'aiBrowser.chat.collapseToolCalls';
+const automaticAwakeKey = 'aiBrowser.chat.automaticAwake';
 /** The most of a tool's input or output opened in a tab; past it the text is cut with a line saying so. */
 const openTextLimit = 2_000_000;
 
@@ -353,6 +355,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			() => { this._publishSleep(); this._post(); },
 			hostIsRemote() ? "Sleep prevention requires a local VS Code window." : undefined,
 		);
+		this._sleep.setAutomatic(_context.globalState.get(automaticAwakeKey) === true);
 		void this._readNews();
 		// "Continue in …" writes into the conversation's folder; the activation
 		// sweep reaches only the workspace's.
@@ -580,7 +583,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private _voiceAttached?: { tab: ChatTab; chipId: string };
 	/** The title bar shows an empty or a filled cup, by context key. */
 	private _publishSleep(): void {
-		const on = this._sleep.state.mode !== 'off';
+		const on = this._sleep.state.mode !== 'off' || this._sleep.state.automaticActive === true;
 		if (on !== this._sleepShown) {
 			this._sleepShown = on;
 			void vscode.commands.executeCommand('setContext', 'aiBrowser.keepAwakeActive', on);
@@ -725,6 +728,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			case 'voiceCancel':
 				this._voiceCancel(true);
 				return;
+			case 'temporaryStorage':
+				if (message.action === 'refresh' || message.action === 'all' || message.action === 'project') { await this._temporaryFiles(message.action, message.project); }
+				return;
 			case 'saveFeatureAi':
 				try {
 					const settings = readFeatureAiSettings(message.settings);
@@ -736,6 +742,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 					this._postMessage({ type: 'featureAiSaved', settings, recordingQuality });
 				} catch (error) {
 					this._postMessage({ type: 'featureAiSaved', error: error instanceof Error ? error.message : String(error) });
+				}
+				return;
+			case 'setAutomaticAwake':
+				if (typeof message.enabled === 'boolean') {
+					await this._context.globalState.update(automaticAwakeKey, message.enabled);
+					this._sleep.setAutomatic(message.enabled);
 				}
 				return;
 			case 'setSleep':
@@ -1916,7 +1928,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		this._postVoice({ phase: 'starting' });
 		let file: string;
 		try {
-			file = path.join(await privateTempDirectory('voice'), `voice-${generateUuid()}.m4a`);
+			file = path.join(await projectTempDirectory(tab.cwd, 'captures'), `voice-${generateUuid()}.m4a`);
+			await trackTemporaryFile(file, tab.cwd);
 		} catch (err) {
 			this._postVoice({ phase: 'error', message: err instanceof Error ? err.message : String(err) });
 			return;
@@ -2027,6 +2040,38 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	/* ------------------------------------------------------------ attachments */
+
+	public get temporaryProject(): string | undefined { return this._workdir(); }
+
+	private _temporaryCleaning = false;
+	private async _temporaryFiles(action: 'refresh' | 'all' | 'project', expectedProject?: string): Promise<void> {
+		if (this._temporaryCleaning) { return; }
+		this._temporaryCleaning = true;
+		try {
+			const project = this._workdir();
+			if (action === 'project' && (!project || expectedProject !== project)) { throw new Error('The selected project changed. Refresh the temporary files list before cleaning.'); }
+			const isBusy = () => this._recording?.current || this._voice || this._tabs.some(tab => tab.busy || tab.waiting || tab.queuedCount > 0 || this._runs.runningIn(tab.chat.id) > 0)
+				|| [...this._gitCommits.values()].some(job => job.state.phase === 'generating' || job.state.phase === 'committing') || this._branchNameRequests.size || this._titleRequests.size;
+			const busy = isBusy();
+			const root = await privateTempDirectory();
+			const legacy = await legacyPrivateTempDirectory();
+			const storage = await temporaryStorage({ root, legacyRoots: legacy ? [legacy] : [], inventory: await privateTempDirectory('inventory'),
+				project, projects: [...this._recentFolders(), ...this._tabs.map(tab => tab.cwd), ...this._workspaceFolders().map(folder => folder.path)],
+				protectedFiles: this._tabs.flatMap(tab => tab.attachments.flatMap(attachment => attachment.file ? [attachment.file.fsPath] : [])),
+				cleanup: action === 'refresh' ? undefined : action,
+				protect: file => !!isBusy() || this._tabs.some(tab => tab.attachments.some(attachment => attachment.file?.fsPath === file)),
+				busy: busy ? 'Finish active recordings and agent requests before cleaning temporary files.' : undefined,
+			});
+			this._postMessage({ type: 'temporaryStorage', storage });
+		} catch (error) {
+			this._postMessage({ type: 'temporaryStorage', error: error instanceof Error ? error.message : String(error) });
+		} finally { this._temporaryCleaning = false; }
+	}
+
+	public recordingProject(chatId: string): string | undefined {
+		const tab = this._tabs.find(tab => tab.chat.id === chatId);
+		return tab ? this._workdir(tab) : undefined;
+	}
 
 	public recordingDestination(chatId?: string): RecordingDestination | undefined {
 		if (this._disposed || this._blocked()) { return undefined; }
