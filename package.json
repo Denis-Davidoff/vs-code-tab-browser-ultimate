@@ -581,6 +581,12 @@
 				"icon": "$(refresh)"
 			},
 			{
+				"command": "aiBrowser.chat.settings",
+				"title": "%command.chat.settings.title%",
+				"category": "%displayName%",
+				"icon": "$(gear)"
+			},
+			{
 				"command": "aiBrowser.chat.keepAwake",
 				"title": "%command.chat.keepAwake.title%",
 				"category": "%displayName%",
@@ -1134,6 +1140,11 @@
 				}
 			],
 			"view/title": [
+				{
+					"command": "aiBrowser.chat.settings",
+					"when": "view == aiBrowser.chat",
+					"group": "navigation@5"
+				},
 				{
 					"command": "aiBrowser.chat.newChat",
 					"when": "view == aiBrowser.chat",

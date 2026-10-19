@@ -1,3 +1,4 @@
+import { featureAiKey, featureEffort, readFeatureAiSettings, type AiFeature } from './featureAi';
 import { availableBranchName, titleModel } from './autoTitle';
 import { localFileLink } from './fileLinks';
 import { SleepControl } from '../power/sleepControl';
@@ -554,6 +555,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		const selection = this._selection();
 		return {
 			sleep: this._sleep.state,
+			featureAi: readFeatureAiSettings(this._context.globalState.get(featureAiKey)),
 			voice: this._voiceAvailability(),
 			blocked: this._blocked(),
 			detecting: this._registry.detecting,
@@ -662,6 +664,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				return;
 			case 'voiceCancel':
 				this._voiceCancel(true);
+				return;
+			case 'saveFeatureAi':
+				try {
+					const settings = readFeatureAiSettings(message.settings);
+					await this._context.globalState.update(featureAiKey, settings);
+					this._postMessage({ type: 'state', state: this._state() });
+					this._postMessage({ type: 'featureAiSaved', settings });
+				} catch (error) {
+					this._postMessage({ type: 'featureAiSaved', error: error instanceof Error ? error.message : String(error) });
+				}
 				return;
 			case 'setSleep':
 				// A tab closed while the popup was open: nothing to wait for.
@@ -1576,17 +1588,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	private readonly _branchNameRequests = new Map<ChatTab, AbortController>();
+	private readonly _featureRequestAgents = new WeakMap<AbortController, AgentId>();
+	private readonly _branchNameRequestIds = new WeakMap<AbortController, number>();
 
 	private readonly _titleRequests = new Map<ChatTab, AbortController>();
 
+	private _featureSelection(feature: AiFeature, tab: ChatTab, currentAgent = this._selection(tab).agent) {
+		const choice = readFeatureAiSettings(this._context.globalState.get(featureAiKey))[feature];
+		const agent = choice.agent === 'auto' ? currentAgent : choice.agent;
+		const available = this._registry.agents.find(a => a.id === agent && a.available);
+		if (!available || !agent) { throw new Error('The agent selected for this feature is unavailable. Open Chat Settings to choose another.'); }
+		const selection = this._selection(tab);
+		const model = feature === 'commitMessage'
+			? available.models.find(m => m.id === (selection.agent === agent ? selection.model : this._remembered.models[agent]))
+				?? available.models.find(m => m.isDefault) ?? available.models[0]
+			: titleModel(available.models);
+		if (!model) { throw new Error(feature === 'commitMessage' ? 'No model is available for the selected agent.' : 'No lightweight model is available for the selected agent.'); }
+		return { agent, model, effort: featureEffort(model, choice.effort) };
+	}
+
 	private _generateTabTitle(tab: ChatTab, agent: AgentId, context: string): void {
-		const backend = this._registry.backend(agent);
-		const model = titleModel(this._registry.agents.find(a => a.id === agent)?.models ?? []);
-		if (!backend?.generateTitle || !model) { return; }
+		let selected: ReturnType<ChatViewProvider['_featureSelection']>;
+		try { selected = this._featureSelection('chatTitle', tab, agent); } catch { return; }
+		const backend = this._registry.backend(selected.agent);
+		if (!backend?.generateTitle) { return; }
+		const model = { ...selected.model, efforts: selected.effort ? [selected.effort] : [] };
 		this._titleRequests.get(tab)?.abort();
 		const chatId = tab.chat.id;
 		const controller = new AbortController();
 		this._titleRequests.set(tab, controller);
+		this._featureRequestAgents.set(controller, selected.agent);
 		void backend.generateTitle(model, context, controller.signal).then(title => {
 			if (title && !controller.signal.aborted && this._tabs.includes(tab)) { tab.applyGeneratedTitle(chatId, title); }
 		}).catch(() => undefined).finally(() => {
@@ -2323,12 +2354,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}
 	}
 
-	/** `refresh`: the list changed under an open panel; it updates it and never opens or closes it. */
+	/** The title bar's gear opens settings inside the chat view. */
+	public showSettings(): void {
+		this._postMessage({ type: 'openSettings' });
+	}
+
 	/** The title bar's cup; the popup is the view's own, so it pauses no browser tab. */
 	public showKeepAwake(): void {
 		this._postMessage({ type: 'openSleep' });
 	}
 
+	/** `refresh` updates an already open history panel. */
 	public showHistory(refresh = false): void {
 		const chats: ChatSummary[] = this._history().map(c => ({ id: c.id, title: c.title, agent: c.agent, updatedAt: c.updatedAt }));
 		this._postMessage({ type: 'history', chats, refresh });
@@ -2518,11 +2554,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			release = await this._gitAccess.mutate(folder, () => this._busyGitFolders());
 			if (this._registry.detecting) { await this._registry.detect(); }
 			guard();
-			const { agent, model, effort } = this._selection(tab);
-			const backend = agent && this._registry.backend(agent);
-			if (!agent || !model || !backend?.generateCommitMessage || !this._registry.agents.some(a => a.id === agent && a.available)) {
-				throw new Error('Select an available model in the chat before committing.');
-			}
+			const { agent, model: selectedModel, effort } = this._featureSelection('commitMessage', tab);
+			const model = selectedModel.id;
+			const backend = this._registry.backend(agent);
+			if (!backend?.generateCommitMessage) { throw new Error('The selected agent cannot generate commit messages.'); }
 			job.agent = agent;
 			const git = await gitBinary();
 			if (!git) { throw new Error('Git is unavailable.'); }
@@ -2578,11 +2613,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   this._branchNameRequests.set(tab, controller);
   const chatId = tab.chat.id;
   try {
-   const { agent } = this._selection(tab);
-   if (!agent) { throw new Error('No agent is selected.'); }
-   const backend = this._registry.backend(agent);
-   const model = titleModel(this._registry.agents.find(a => a.id === agent && a.available)?.models ?? []);
-   if (!model || !backend?.generateTitle) { throw new Error('No inexpensive model is available for the current agent.'); }
+   const selected = this._featureSelection('branchName', tab);
+   this._featureRequestAgents.set(controller, selected.agent);
+   this._branchNameRequestIds.set(controller, message.id);
+   const backend = this._registry.backend(selected.agent);
+   const model = { ...selected.model, efforts: selected.effort ? [selected.effort] : [] };
+   if (!backend?.generateTitle) { throw new Error('The selected agent cannot generate branch names.'); }
    const git = await gitBinary();
    if (!git) { throw new Error('Git is unavailable.'); }
    const folder = message.folder;
@@ -3490,7 +3526,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 */
 	private _onBackendReplaced(agent: AgentId, gone: boolean): void {
 		for (const tab of this._tabs) {
-			if (tab.chat.agent === agent) { this._titleRequests.get(tab)?.abort(); this._branchNameRequests.get(tab)?.abort(); }
+			const title = this._titleRequests.get(tab);
+			if (title && this._featureRequestAgents.get(title) === agent) { title.abort(); }
+			const branch = this._branchNameRequests.get(tab);
+			if (branch && this._featureRequestAgents.get(branch) === agent) {
+				branch.abort();
+				const id = this._branchNameRequestIds.get(branch);
+				if (id !== undefined) { this._postMessage({ type: 'gitBranchNameResult', id, error: 'The selected agent was refreshed. Please try again.' }); }
+			}
 			tab.backendReplaced(agent, gone);
 		}
 		for (const job of this._gitCommits.values()) { if (job.agent === agent) { job.controller.abort(); } }

@@ -1,3 +1,4 @@
+import type { FeatureAiSettings } from './featureAi';
 import type { SleepChoice, SleepState } from '../power/sleepProtocol';
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
@@ -514,6 +515,7 @@ export type VoiceEvent =
 	| { readonly phase: 'error'; readonly message: string };
 
 export interface ChatViewState {
+	readonly featureAi?: FeatureAiSettings;
 	readonly sleep?: SleepState;
 	readonly voice: VoiceAvailability;
 	/** Set when the chat cannot run in this window at all. */
@@ -621,6 +623,8 @@ export type HostToView =
 	| { readonly type: 'usage'; readonly usage: readonly AgentUsage[]; readonly stats?: ChatStats; readonly loading: boolean }
 	| { readonly type: 'focusInput' }
 	/** The view's title bar cup: open the keep-awake popup. */
+	| { readonly type: 'openSettings' }
+	| { readonly type: 'featureAiSaved'; readonly settings?: FeatureAiSettings; readonly error?: string }
 	| { readonly type: 'openSleep' }
 	/** Queued messages given back by Stop: added to what is in the message box, not sent. */
 	| { readonly type: 'restoreDraft'; readonly chatId: string; readonly text: string }
@@ -743,6 +747,7 @@ export type ViewToHost =
 	| { readonly type: 'gitCommit'; readonly folder: string; readonly tabId: string; readonly scope?: 'staged' | 'all' }
 	| { readonly type: 'gitIndexAction'; readonly folder: string; readonly tabId: string; readonly action: 'stage' | 'unstage'; readonly path?: string }
 	| { readonly type: 'fixGitCommit' | 'dismissGitCommit'; readonly folder: string; readonly id: string; readonly tabId: string }
+	| { readonly type: 'saveFeatureAi'; readonly settings: FeatureAiSettings }
 	| { readonly type: 'gitBranchName'; readonly id: number; readonly folder: string; readonly tabId: string }
 	| { readonly type: 'gitBranchAction'; readonly folder: string; readonly action: 'switch' | 'create' | 'delete'; readonly name: string; readonly remote?: boolean }
 	| { readonly type: 'refreshWorkdirGit' }

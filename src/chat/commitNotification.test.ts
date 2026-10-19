@@ -17,17 +17,18 @@ for (const failed of [false, true]) {
 		const entries: { kind: string; text: string }[] = [];
 		const toasts: string[] = [];
 		let released = false;
-		const tab = { id: 'tab', chat: { id: 'chat' }, busy: false, push(entry: { kind: string; text: string }) { entries.push(entry); } };
+		const tab = { id: 'tab', chat: { id: 'chat', agent: 'codex' }, busy: false, push(entry: { kind: string; text: string }) { entries.push(entry); } };
 		const host = {
 			_tabs: [tab], _active: tab, _disposed: false, _workdir: () => '/repo', _gitCommits: new Map(), _repoBusy: new Map(),
 			_runs: { runningIn: () => 0 }, _blocked: () => false, _busyGitFolders: () => [],
 			_gitAccess: { async mutate() { return () => { released = true; }; } },
-			_registry: { detecting: false, agents: [{ id: 'codex', available: true }], backend: () => ({ generateCommitMessage: async () => 'Update footer' }) },
-			_selection: () => ({ agent: 'codex', model: 'selected' }), _untrusted: () => false, _post() {}, async _refreshWorkdirGit() {},
+			_registry: { detecting: false, agents: [{ id: 'codex', available: true }], backend: (agent: string) => { assert.equal(agent, 'claude'); return { generateCommitMessage: async (model: string, effort: string) => { assert.equal(model, 'selected'); assert.equal(effort, 'low'); return 'Update footer'; } }; } },
+			_featureSelection: () => ({ agent: 'claude', model: { id: 'selected' }, effort: 'low' }), _untrusted: () => false, _post() {}, async _refreshWorkdirGit() {},
 		};
 		const commit = runInNewContext(code, {
 			AbortController, generateUuid: () => 'job', gitBinary: async () => '/git',
-			async commitChanges() {
+			async commitChanges(_run: unknown, generate: (context: string) => Promise<string>) {
+				assert.equal(await generate('changes'), 'Update footer');
 				if (failed) { throw new Error('pre-commit check failed'); }
 				return { hash: '4c71a87', message: 'Update footer\n\nDetails' };
 			},

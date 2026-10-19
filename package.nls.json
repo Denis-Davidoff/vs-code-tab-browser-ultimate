@@ -59,6 +59,7 @@
 	"command.chat.newChat.title": "New Chat",
 	"command.chat.history.title": "Chat History",
 	"command.chat.refreshAgents.title": "Refresh Agents",
+	"command.chat.settings.title": "Chat Settings",
 	"command.chat.keepAwake.title": "Keep Computer Awake",
 	"command.chat.keepAwakeActive.title": "Keep Computer Awake (On)",
 	"icon.cup.description": "Keep the computer awake — off",

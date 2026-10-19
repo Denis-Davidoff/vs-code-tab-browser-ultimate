@@ -1,3 +1,4 @@
+import { aiFeatures, readFeatureAiSettings, type AiFeature, type FeatureAiSettings, type FeatureEffort } from '../src/chat/featureAi';
 import { localFileLink } from '../src/chat/fileLinks';
 import { sleepMinutes, sleepHours, type SleepChoice } from '../src/power/sleepProtocol';
 /*---------------------------------------------------------------------------------------------
@@ -139,6 +140,9 @@ const usageButton = button([el('span', { class: 'u-mark', text: 'U' })], { class
 const agentsButton = button([], { class: 'pill agents-button', title: 'Agents' });
 /** How full the conversation's context is, as a pie that fills; a click compacts it. */
 const sleepPopup = el('div', { class: 'popup sleep-popup' });
+const featureSettingsPanel = el('div', { class: 'popup feature-settings' });
+featureSettingsPanel.setAttribute('role', 'dialog');
+featureSettingsPanel.setAttribute('aria-label', 'Chat Settings');
 const contextPie = el('span', { class: 'context-pie' });
 const contextButton = button([contextPie], { class: 'ghost round context-button' });
 contextButton.hidden = true;
@@ -223,10 +227,10 @@ const workdirLocation = el('span', { class: 'workdir-location' }, workdirLocatio
 const workdirSummary = button([workdirMode, workdirLocation], { class: 'workdir-summary', title: 'Working folder' });
 const gitChanged = el('span', { class: 'git-changed' }, '+0');
 const gitDeleted = el('span', { class: 'git-deleted' }, '−0');
-const gitRefresh = button([icon('refresh')], { class: 'ghost round', title: 'Обновить статус Git' });
-gitRefresh.setAttribute('aria-label', 'Обновить статус Git');
+const gitRefresh = button([icon('refresh')], { class: 'ghost round', title: 'Refresh Git status' });
+gitRefresh.setAttribute('aria-label', 'Refresh Git status');
 const gitRefreshSlot = el('span', { class: 'git-refresh-slot' }, gitRefresh);
-gitRefreshSlot.dataset.tip = 'Обновить статус Git';
+gitRefreshSlot.dataset.tip = 'Refresh Git status';
 const branchName = el('span', { class: 'git-branch-name' }, '…');
 const branchButton = button([icon('git-branch'), branchName, icon('chevron-down')], { class: 'ghost git-branch-button', title: 'Switch or manage Git branches' });
 branchButton.setAttribute('aria-haspopup', 'dialog');
@@ -334,10 +338,13 @@ function renderGitChanges(): void {
 	if (!gitPopup.classList.contains('open') || gitPopupPressed) { return; }
 	const commit = state?.workdir.commit;
 	const committing = commit?.phase === 'generating' || commit?.phase === 'committing';
-	const modelAvailable = state?.agents.some(a => a.id === state?.selection.agent && a.available) && !!state.selection.model;
+	const commitChoice = readFeatureAiSettings(state?.featureAi).commitMessage;
+	const commitAgentId = commitChoice.agent === 'auto' ? state?.selection.agent : commitChoice.agent;
+	const commitAgent = state?.agents.find(a => a.id === commitAgentId && a.available);
+	const modelAvailable = !!commitAgent?.models.length;
 	const busyReason = committing ? commit?.message ?? 'Committing…' : gitIndexPending ? 'Updating Git changes…' : branchBusy ? 'Switching branch…' : state?.running ? 'Wait for the agent to finish before changing Git files.' : '';
-	const commitReason = busyReason || (!modelAvailable ? 'Select an available model in the chat to generate a commit message.' : '');
-	const shape = JSON.stringify([gitFiles, gitError, busyReason, commitReason, state?.selection.model]);
+	const commitReason = busyReason || (!modelAvailable ? 'Choose an available agent for commit messages in Chat Settings.' : '');
+	const shape = JSON.stringify([gitFiles, gitError, busyReason, commitReason, commitAgentId, commitChoice.effort]);
 	if (shape === gitPopupShape) { return; }
 	gitPopupShape = shape;
 	gitPopupError.textContent = gitError;
@@ -369,7 +376,7 @@ function renderGitChanges(): void {
 	}
 	const note = (text: string) => gitPopupActions.append(el('div', { class: 'git-changes-hint' }, text));
 	const commitAction = (label: string, scope: 'staged' | 'all') => {
-		const action = button([icon('git-commit'), label], { class: 'git-changes-commit', title: commitReason || `Generate a commit message with ${state?.selection.model}` });
+		const action = button([icon('git-commit'), label], { class: 'git-changes-commit', title: commitReason || `Generate a commit message with ${commitAgent?.name ?? 'the configured agent'}` });
 		action.disabled = !!commitReason;
 		action.addEventListener('click', () => commitGitFiles(scope));
 		gitPopupActions.append(action);
@@ -567,7 +574,7 @@ const agentsPanel = el('div', { class: 'history-panel agents-panel' });
 /** Which copy of each agent's CLI this project uses: opened from the gear in the agent menu. */
 const agentAppsPanel = el('div', { class: 'history-panel agent-apps' });
 
-app.append(sleepPopup, tabStrip, usageAlertBar, thread, blocked, footer, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel);
+app.append(featureSettingsPanel, sleepPopup, tabStrip, usageAlertBar, thread, blocked, footer, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel);
 
 /* ---------------------------------------------------------------- state */
 
@@ -776,6 +783,20 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 				saveDraft();
 			}
 			return;
+		case 'openSettings':
+            openFeatureSettings();
+            return;
+        case 'featureAiSaved':
+            featureSettingsSaving = false;
+            if (!message.error && message.settings) { featureSettingsDraft = readFeatureAiSettings(message.settings); }
+            featureSettingsStatus.textContent = message.error ? `Could not save settings: ${message.error}` : 'Settings saved.';
+            featureSettingsSave.disabled = false;
+            for (const select of featureSettingsPanel.querySelectorAll('select')) {
+                const choice = featureSettingsDraft[select.dataset.feature as AiFeature];
+                select.value = select.dataset.field === 'agent' ? choice.agent : choice.effort;
+                select.disabled = false;
+            }
+            return;
 		case 'openSleep':
 			buildSleepPopup(); renderSleep(); openSleepPopup();
 			return;
@@ -3964,7 +3985,7 @@ function closePopups(except?: HTMLElement, keep?: HTMLElement): void {
 	if (except !== paramsPopup) {
 		paramsPopup.classList.remove('repo-form');
 	}
-	for (const popup of [sleepPopup, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel]) {
+	for (const popup of [featureSettingsPanel, sleepPopup, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel]) {
 		if (popup !== except && popup !== keep) {
 			popup.classList.remove('open');
 		}
@@ -4058,7 +4079,7 @@ document.addEventListener('mousedown', event => {
 		}
 		return;
 	}
-	if (![workdirFooter, effortButton, sleepPopup, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillBar, historyPanel, agentsPanel, agentAppsPanel, plusButton, usageButton, usageAlertText, agentsButton, agentPill, modelPill, approveToggle, slashButton, workdirButton, branchButton, commitButton, contextButton].some(n => n.contains(target))) {
+	if (![workdirFooter, effortButton, featureSettingsPanel, sleepPopup, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillBar, historyPanel, agentsPanel, agentAppsPanel, plusButton, usageButton, usageAlertText, agentsButton, agentPill, modelPill, approveToggle, slashButton, workdirButton, branchButton, commitButton, contextButton].some(n => n.contains(target))) {
 		closePopups();
 	}
 });
@@ -7042,3 +7063,90 @@ function openSleepPopup(): void {
 }
 sleepPopup.addEventListener('keydown', event => { if (event.key === 'Escape' && !event.isComposing) { closePopups(); input.focus(); } });
 setInterval(renderSleep, 1000);
+
+
+/* ---------------------------------------------------------------- feature settings */
+
+let featureSettingsSaving = false;
+const featureSettingsStatus = el('div', { class: 'feature-settings-status' });
+featureSettingsStatus.setAttribute('role', 'status');
+const featureSettingsSave = button(['Save'], { class: 'feature-settings-save' });
+let featureSettingsDraft: FeatureAiSettings = readFeatureAiSettings(undefined);
+
+function openFeatureSettings(): void {
+	if (!state) { return; }
+	closePopups(featureSettingsPanel);
+	if (!featureSettingsSaving) { featureSettingsDraft = readFeatureAiSettings(state.featureAi); }
+	featureSettingsStatus.textContent = featureSettingsSaving ? 'Saving…' : '';
+	featureSettingsSave.disabled = featureSettingsSaving;
+	const close = button([icon('close')], { title: 'Close settings', class: 'ghost' });
+	close.setAttribute('aria-label', 'Close settings');
+	close.addEventListener('click', () => { closePopups(); input.focus(); });
+	const heading = el('div', { class: 'feature-settings-heading' }, el('strong', { text: 'Chat Settings' }), close);
+	const tabs = el('div', { class: 'feature-settings-tabs' });
+	tabs.setAttribute('role', 'tablist');
+	const tab = button(['AI for Extension Features'], { class: 'feature-settings-tab' });
+	tab.id = 'feature-ai-tab';
+	tab.setAttribute('role', 'tab');
+	tab.setAttribute('aria-selected', 'true');
+	tab.setAttribute('aria-controls', 'feature-ai-content');
+	tabs.append(tab);
+	const content = el('div', { class: 'feature-settings-content' });
+	content.id = 'feature-ai-content';
+	content.setAttribute('role', 'tabpanel');
+	content.setAttribute('aria-labelledby', tab.id);
+	content.append(el('p', { text: 'Choose an agent and effort for each feature. Auto follows the current chat agent. Changes apply to future requests.' }));
+	const labels: Record<AiFeature, string> = { commitMessage: 'Commit messages', branchName: 'Branch names', chatTitle: 'Chat titles' };
+	for (const feature of aiFeatures) {
+		const row = el('div', { class: 'feature-settings-row' });
+		row.append(el('strong', { text: labels[feature] }));
+		const agent = el('select');
+		agent.setAttribute('aria-label', `${labels[feature]} agent`);
+		agent.dataset.feature = feature;
+		agent.dataset.field = 'agent';
+		for (const [value, label] of [['auto', 'Current agent (Auto)'], ['claude', 'Claude Code'], ['codex', 'Codex']]) {
+			const available = value === 'auto' || state.agents.some(a => a.id === value && a.available);
+			const option = el('option', { text: `${label}${available ? '' : ' (unavailable)'}` });
+			option.value = value;
+			agent.append(option);
+		}
+		agent.value = featureSettingsDraft[feature].agent;
+		agent.disabled = featureSettingsSaving;
+		const effort = el('select');
+		effort.setAttribute('aria-label', `${labels[feature]} effort`);
+		effort.dataset.feature = feature;
+		effort.dataset.field = 'effort';
+		for (const [value, label] of [['minimum', 'Minimum'], ['medium', 'Medium'], ['maximum', 'Maximum']]) {
+			const option = el('option', { text: label });
+			option.value = value;
+			effort.append(option);
+		}
+		effort.value = featureSettingsDraft[feature].effort;
+		effort.disabled = featureSettingsSaving;
+		agent.addEventListener('change', () => {
+			featureSettingsDraft = { ...featureSettingsDraft, [feature]: { ...featureSettingsDraft[feature], agent: agent.value as 'auto' | AgentId } };
+			featureSettingsStatus.textContent = 'Unsaved changes.';
+		});
+		effort.addEventListener('change', () => {
+			featureSettingsDraft = { ...featureSettingsDraft, [feature]: { ...featureSettingsDraft[feature], effort: effort.value as FeatureEffort } };
+			featureSettingsStatus.textContent = 'Unsaved changes.';
+		});
+		row.append(el('label', {}, el('span', { text: 'Agent' }), agent), el('label', {}, el('span', { text: 'Effort' }), effort));
+		content.append(row);
+	}
+	content.append(el('p', { class: 'feature-settings-note', text: "Commit messages use the selected agent's remembered chat model or its default. Branch names and chat titles use an available lightweight model. Effort is mapped to the levels supported by that model. Settings are shared across projects." }));
+	featureSettingsPanel.replaceChildren(heading, tabs, content, el('div', { class: 'feature-settings-actions' }, featureSettingsStatus, featureSettingsSave));
+	featureSettingsPanel.classList.add('open');
+	tab.focus();
+}
+featureSettingsSave.addEventListener('click', () => {
+	if (featureSettingsSaving) { return; }
+	featureSettingsSaving = true;
+	featureSettingsSave.disabled = true;
+	for (const select of featureSettingsPanel.querySelectorAll('select')) { select.disabled = true; }
+	featureSettingsStatus.textContent = 'Saving…';
+	post({ type: 'saveFeatureAi', settings: featureSettingsDraft });
+});
+featureSettingsPanel.addEventListener('keydown', event => {
+	if (event.key === 'Escape' && !event.isComposing) { event.stopPropagation(); closePopups(); input.focus(); }
+});

@@ -4337,3 +4337,18 @@ body.vscode-high-contrast-light .context-pie {
 .git-branch-magic { display: flex; align-items: center; gap: 4px; white-space: nowrap; padding: 5px 7px; color: var(--vscode-textLink-foreground); border: 0; border-radius: 4px; background: transparent; cursor: pointer; }
 .git-branch-magic:hover { background: var(--vscode-toolbar-hoverBackground); }
 .git-branch-magic:disabled { opacity: .5; cursor: default; }
+
+.feature-settings { top: 6px; right: 8px; width: min(440px, calc(100% - 16px)); max-height: calc(100% - 12px); overflow: auto; padding: 12px; box-sizing: border-box; }
+.feature-settings.open { display: flex; flex-direction: column; gap: 12px; }
+.feature-settings-heading, .feature-settings-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.feature-settings-tabs { border-bottom: 1px solid var(--vscode-panel-border); }
+.feature-settings-tab { padding: 8px 0; color: var(--vscode-foreground); border: 0; border-bottom: 2px solid var(--vscode-focusBorder); background: transparent; cursor: pointer; }
+.feature-settings-content p { margin: 0 0 12px; color: var(--vscode-descriptionForeground); line-height: 1.5; }
+.feature-settings-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px 10px; padding: 12px 0; border-top: 1px solid var(--vscode-panel-border); }
+.feature-settings-row > strong { grid-column: 1 / -1; }
+.feature-settings-row label { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.feature-settings-row select { width: 100%; min-width: 0; padding: 5px; color: var(--vscode-dropdown-foreground); background: var(--vscode-dropdown-background); border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border)); border-radius: 3px; }
+.feature-settings-content .feature-settings-note, .feature-settings-status { font-size: 11px; color: var(--vscode-descriptionForeground); }
+.feature-settings-save { padding: 5px 14px; border: 0; border-radius: 3px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); cursor: pointer; }
+.feature-settings-save:hover { background: var(--vscode-button-hoverBackground); }
+.feature-settings-save:disabled { opacity: .5; cursor: default; }

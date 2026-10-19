@@ -490,6 +490,10 @@ export function activate(context: vscode.ExtensionContext) {
 			await revealChat();
 			chat.newChat();
 		}),
+		vscode.commands.registerCommand('aiBrowser.chat.settings', async () => {
+			await revealChat();
+			chat.showSettings();
+		}),
 		vscode.commands.registerCommand('aiBrowser.chat.history', async () => {
 			await revealChat();
 			chat.showHistory();

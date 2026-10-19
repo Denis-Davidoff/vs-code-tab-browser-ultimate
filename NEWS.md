@@ -15,10 +15,11 @@ src/chat/news.ts — see "The AI Browser chat" in CLAUDE.md.
 Browse, debug and test your pages in VS Code's own browser — and let Claude Code or Codex see them, click through them and take screenshots, right inside the editor.
 
 ## 0.7.14 — 2026-10-19
+- **Chat Settings**: the gear beside the keep-awake cup opens **AI for Extension Features**. Choose the current chat agent (Auto), Claude Code or Codex, and minimum, medium or maximum effort independently for commit messages, branch names and chat titles. Settings are saved across projects; naming features use lightweight models.
 - **Git in the chat footer**: see the current branch and staged / unstaged file counts beside the working folder. Hover the counts to inspect file names and stage or unstage individual files or a whole group; refresh the repository status with the refresh button.
 - **Manage branches**: search local and remote branches, switch branches, create one from the current HEAD, or delete a local branch. The current branch has a green check, and deleting another branch keeps the list open.
-- **Suggest a branch name** with the sparkle button beside the branch search. An available lightweight model uses the current changes or chat discussion at minimum effort; the proposed name accounts for existing branch names and stays in the field for you to review before creating it.
-- **Commit with an AI-generated message** using the model selected in the chat. Choose staged changes or all changes when both are present, or stage all first when nothing is staged. Commit failures offer help from the current agent; successful commits show a VS Code notification for ten seconds.
+- **Suggest a branch name** with the sparkle button beside the branch search. An available lightweight model uses the current changes or chat discussion at the configured effort (minimum by default); the proposed name accounts for existing branch names and stays in the field for you to review before creating it.
+- **Commit with an AI-generated message** using the agent and effort chosen in Chat Settings. Choose staged changes or all changes when both are present, or stage all first when nothing is staged. Commit failures offer help from the current agent; successful commits show a VS Code notification for ten seconds.
 
 ## 0.7.13 — 2026-10-19
 - **Voice messages** (macOS 26+): the microphone under Send records, with a live waveform and a five-minute limit. The speech is transcribed on your Mac and written into the message box at the caret, so you can correct it before sending. Escape discards the recording, and the audio is never kept.
