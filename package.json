@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate",
 	"displayName": "AI Browser🏆 Claude + Codex",
 	"description": "Embedded browser tab with AI capabilities, Claude and Codex integration",
-	"version": "0.7.14",
+	"version": "0.7.15",
 	"enabledApiProposals": [
 		"externalUriOpener",
 		"browser"
@@ -145,6 +145,7 @@
 		"onCommand:aiBrowser.chat.addXPath",
 		"onCommand:aiBrowser.chat.addScreenshot",
 		"onCommand:aiBrowser.chat.addPage",
+		"onCommand:aiBrowser.recording.start",
 		"onCommand:aiBrowser.recording.startChat",
 		"onCommand:aiBrowser.recording.startClaude",
 		"onCommand:aiBrowser.recording.startCodex",
@@ -606,6 +607,12 @@
 				"icon": "$(ai-browser-cup-full)"
 			},
 			{
+				"command": "aiBrowser.recording.start",
+				"title": "%command.recording.start.title%",
+				"icon": "$(device-camera-video)",
+				"enablement": "!aiBrowser.recordingActive"
+			},
+			{
 				"command": "aiBrowser.recording.startChat",
 				"title": "%command.recording.startChat.title%",
 				"icon": "$(device-camera-video)",
@@ -614,14 +621,12 @@
 			{
 				"command": "aiBrowser.recording.startClaude",
 				"title": "%command.recording.startClaude.title%",
-				"icon": "$(device-camera-video)",
-				"enablement": "!aiBrowser.recordingActive"
+				"icon": "$(copy)"
 			},
 			{
 				"command": "aiBrowser.recording.startCodex",
 				"title": "%command.recording.startCodex.title%",
-				"icon": "$(device-camera-video)",
-				"enablement": "!aiBrowser.recordingActive"
+				"icon": "$(copy)"
 			},
 			{
 				"command": "aiBrowser.recording.pause",
@@ -945,6 +950,11 @@
 					"group": "2_translate@1"
 				},
 				{
+					"command": "aiBrowser.recording.start",
+					"group": "2_recording@1",
+					"when": "!aiBrowser.recordingActive"
+				},
+				{
 					"submenu": "aiBrowser.claudeMenu",
 					"group": "3_assistant@1"
 				},
@@ -1120,8 +1130,7 @@
 				},
 				{
 					"command": "aiBrowser.recording.startClaude",
-					"group": "2_recording",
-					"when": "!aiBrowser.recordingActive"
+					"group": "2_recording"
 				}
 			],
 			"aiBrowser.chatMenu": [
@@ -1186,8 +1195,7 @@
 				},
 				{
 					"command": "aiBrowser.recording.startCodex",
-					"group": "2_recording",
-					"when": "!aiBrowser.recordingActive"
+					"group": "2_recording"
 				}
 			],
 			"aiBrowser.loginsMenu": [

@@ -31,6 +31,7 @@ import { changeGitIndex } from './gitIndex';
 import { commitChanges } from './gitCommit';
 import { branchCommand, parseGitBranches } from './gitBranchState';
 import { parseGitStatus } from './gitStatus';
+import { themedGitFiles } from './fileIconTheme';
 import { runGit } from './repoWork';
 import { gitBinary } from '../core/gitBinary';
 import { cleanUpReportsIn, writeChatTranscript } from '../elements/assistants';
@@ -364,10 +365,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		// A lower limit closes nothing: the tabs open stay, and "+" comes back
 		// once enough of them are closed.
 		this._subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration('workbench.iconTheme')) { void this._refreshWorkdirGit(); }
 			if (e.affectsConfiguration(tabLimitSetting) || e.affectsConfiguration(collapseToolsSetting)) {
 				this._post();
 			}
 		}));
+		this._subscriptions.push(vscode.window.onDidChangeActiveColorTheme(() => { void this._refreshWorkdirGit(); }));
+		this._subscriptions.push(vscode.extensions.onDidChange(() => { void this._refreshWorkdirGit(); }));
 		this._subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(attachmentScheme, {
 			// An editor restored after a reload asks for a chip this window never
 			// held, and gets a sentence rather than an empty page.
@@ -530,8 +534,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				<meta http-equiv="Content-type" content="text/html;charset=UTF-8">
 				<meta http-equiv="Content-Security-Policy" content="
 					default-src 'none';
-					font-src data:;
-					img-src data:;
+					font-src data: ${webview.cspSource};
+					img-src data: ${webview.cspSource};
 					media-src blob:;
 					style-src ${webview.cspSource};
 					script-src 'nonce-${nonce}';
@@ -2576,7 +2580,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				this._runWorkdirGit(git, ['symbolic-ref', '--quiet', 'HEAD'], folder, 15_000).catch(() => ''),
 				this._runWorkdirGit(git, ['for-each-ref', '--sort=refname', '--format=%(refname)%00%(symref)', 'refs/heads/', 'refs/remotes/'], folder, 15_000),
 			]);
-			this._postMessage({ type: 'workdirGit', folder, status: parseGitStatus(output), branches: parseGitBranches(current, refs) });
+			const status = parseGitStatus(output);
+			const decorated = this._view ? await themedGitFiles(status, this._view.webview, vscode.Uri.joinPath(this._context.extensionUri, 'media')) : status;
+			this._postMessage({ type: 'workdirGit', folder, status: decorated, branches: parseGitBranches(current, refs) });
 		} catch (error) {
 			this._postMessage({ type: 'workdirGit', folder, error: error instanceof Error ? error.message : String(error) });
 		}

@@ -43,7 +43,9 @@ function panel(staged: string[], unstaged: string[], available = true) {
 	const context = {
 		gitFiles: files, gitStagedCount: new Node(), gitUnstagedCount: new Node(), gitChanged: new Node(), gitDeleted: new Node(),
 		commitButton: new Node(), gitPopup: popup, gitPopupPressed: false, gitPopupShape: '', gitError: '', gitIndexPending: false, branchBusy: false,
-		state: { workdir: {}, selection: { agent: 'codex', model: 'selected' }, agents: [{ id: 'codex', available }], running: false },
+		state: { workdir: {}, selection: { agent: 'codex', model: 'selected' }, agents: [{ id: 'codex', available, models: available ? [{ id: 'selected' }] : [] }], running: false },
+		readFeatureAiSettings: () => ({ commitMessage: { agent: 'auto', effort: 'medium' } }),
+		gitFileIcon: () => new Node(),
 		gitPopupError: new Node(), gitPopupList: list, gitPopupActions: footer, el, button, icon: () => new Node(),
 		commitGitFiles: (scope: string) => actions.push({ kind: scope }),
 		changeGitFiles: (kind: string, path?: string) => actions.push({ kind, path }),
@@ -76,7 +78,7 @@ test('an empty index offers staging all first and does not start a commit', () =
 test('each group and each file has the correct stage or unstage action', () => {
 	const { list, actions } = panel(['staged.txt'], ['unstaged.txt']);
 	for (const group of nodes(list, 'git-changes-group')) { (group.children[1] as Node).click(); }
-	for (const row of nodes(list, 'git-changes-file')) { (row.children[1] as Node).click(); }
+	for (const row of nodes(list, 'git-changes-file')) { (row.children.at(-1) as Node).click(); }
 	assert.deepEqual(actions, [
 		{ kind: 'unstage', path: undefined }, { kind: 'stage', path: undefined },
 		{ kind: 'unstage', path: 'staged.txt' }, { kind: 'stage', path: 'unstaged.txt' },
@@ -85,10 +87,10 @@ test('each group and each file has the correct stage or unstage action', () => {
 
 test('model unavailability explains commit restrictions while staging remains usable', () => {
 	const { footer, list, actions } = panel(['staged.txt'], ['unstaged.txt'], false);
-	assert.match(footer.textContent, /Select an available model/);
+	assert.match(footer.textContent, /Choose an available agent/);
 	assert.equal(nodes(footer, 'git-changes-commit').every(choice => choice.disabled), true);
 	const unstaged = nodes(list, 'git-changes-file')[1];
-	(unstaged.children[1] as Node).click();
+	(unstaged.children.at(-1) as Node).click();
 	assert.deepEqual(actions, [{ kind: 'stage', path: 'unstaged.txt' }]);
 });
 

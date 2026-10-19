@@ -69,9 +69,10 @@
 	"configuration.chat.collapseToolCalls.description": "Show the tool calls in the AI Browser chat folded, their input and output hidden until a call is clicked — on by default, and the Compact switch in the chat's approval menu. Off, each call is shown unfolded, with its input and output; click either to open it in an editor tab.",
 	"configuration.chat.voiceLanguage.description": "The language voice messages are transcribed in, as a BCP 47 tag such as `ru-RU` or `en-US`. Empty: the first of the Mac's preferred languages that macOS can transcribe on the device. Voice messages need macOS 26 or later.",
 	"configuration.chat.codexPath.description": "Path to the `codex` executable the chat uses. Empty finds it on `PATH`, in the usual install locations, or inside the Codex extension. Machine-wide only: a workspace cannot set it, since it names a program to run.",
+	"command.recording.start.title": "Record video",
 	"command.recording.startChat.title": "Record page to AI Browser Chat",
-	"command.recording.startClaude.title": "Record page · copy path for Claude Code",
-	"command.recording.startCodex.title": "Record page · copy path for Codex",
+	"command.recording.startClaude.title": "Record page prompt",
+	"command.recording.startCodex.title": "Record page prompt",
 	"command.recording.pause.title": "Pause browser recording",
 	"command.recording.resume.title": "Resume browser recording",
 	"command.recording.stop.title": "Stop browser recording"

@@ -209,8 +209,21 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(browser);
 	const recording = new BrowserRecording(context, browser);
 	context.subscriptions.push(recording);
+	context.subscriptions.push(vscode.commands.registerCommand('aiBrowser.recording.start', () => recording.start(undefined, 'clipboard')));
 	for (const command of ['startClaude', 'startCodex']) {
-		context.subscriptions.push(vscode.commands.registerCommand(`aiBrowser.recording.${command}`, () => recording.start()));
+		context.subscriptions.push(vscode.commands.registerCommand(`aiBrowser.recording.${command}`, async () => {
+			await vscode.env.clipboard.writeText(
+				'When I ask you to record a video of the browser page, use the AI Browser MCP server (ai-browser, or its project-specific ai-browser-* entry). '
+				+ 'Find its tools by the suffixes below; your MCP client may add a server prefix or replace hyphens with underscores. '
+				+ 'Use browser_state to identify the shared browser page, then browser_recording_start with {"destination":"clipboard"} to start recording. '
+				+ 'Keep the returned recording id. Use browser_recording_pause, browser_recording_resume and browser_recording_stop with {"id":"<recording id>"} when asked. '
+				+ 'The user can also pause and stop from the browser toolbar; use browser_recording_status with the same id to retrieve the completed result. '
+				+ 'After completion, give me the local video file path from the result; it is also copied to the clipboard. '
+				+ 'If the server or page is unavailable, ask me to connect MCP or share the page using the AI Browser menu. '
+				+ 'Wait for my request to record before starting a recording.'
+			);
+			void vscode.window.showInformationMessage(vscode.l10n.t('Recording prompt copied. Paste it into Claude Code or Codex.'));
+		}));
 	}
 	for (const action of ['pause', 'resume', 'stop'] as const) {
 		context.subscriptions.push(vscode.commands.registerCommand(`aiBrowser.recording.${action}`, () => recording.control(action)));

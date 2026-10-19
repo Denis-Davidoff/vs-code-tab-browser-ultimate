@@ -4361,3 +4361,7 @@ body.vscode-high-contrast-light .context-pie {
 .video-recording-bar.paused > .codicon { color: var(--vscode-editorWarning-foreground); }
 .video-recording-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .video-recording-controls { display: inline-flex; gap: 2px; flex-shrink: 0; }
+
+.git-file-icon { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 16px; height: 16px; line-height: 1; }
+.git-file-icon:empty { display: none; }
+.git-file-icon img { width: 16px; height: 16px; object-fit: contain; }

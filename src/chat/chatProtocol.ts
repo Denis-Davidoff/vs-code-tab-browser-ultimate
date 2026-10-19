@@ -441,7 +441,16 @@ export interface GitBranchState {
  readonly branches: readonly { name: string; remote: boolean }[];
 }
 
+export interface FileThemeIcon {
+ readonly image?: string;
+ readonly character?: string;
+ readonly font?: string;
+ readonly color?: string;
+ readonly size?: string;
+}
+
 export interface GitStatusFile {
+ readonly icon?: FileThemeIcon;
 	readonly path: string;
 	readonly status: string;
 	readonly originalPath?: string;

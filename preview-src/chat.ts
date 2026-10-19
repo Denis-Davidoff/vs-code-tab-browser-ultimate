@@ -339,6 +339,31 @@ function commitGitFiles(scope: 'staged' | 'all'): void {
 	closePopups();
 	post({ type: 'gitCommit', folder: gitFolder, tabId: state.activeTab, scope });
 }
+const fileThemeFonts = new Map<string, string>();
+function gitFileIcon(file: import('../src/chat/chatProtocol').GitStatusFile): HTMLElement {
+ const data = file.icon;
+ const node = el('span', { class: 'git-file-icon' });
+ node.setAttribute('aria-hidden', 'true');
+ if (data?.image) {
+  const image = el('img');
+  image.src = data.image;
+  image.alt = '';
+  node.append(image);
+ } else if (data?.font && data.character) {
+  let family = fileThemeFonts.get(data.font);
+  if (!family) {
+   family = `git-file-theme-${fileThemeFonts.size}`;
+   fileThemeFonts.set(data.font, family);
+   const font = new FontFace(family, `url(${JSON.stringify(data.font)})`);
+   void font.load().then(loaded => document.fonts.add(loaded)).catch(() => {});
+  }
+  node.style.fontFamily = family;
+  node.style.color = data.color ?? '';
+  node.style.fontSize = data.size ?? '16px';
+  node.textContent = data.character;
+ }
+ return node;
+}
 function renderGitChanges(): void {
 	const staged = gitFiles?.staged.length ?? 0;
 	const unstaged = gitFiles?.unstaged.length ?? 0;
@@ -383,7 +408,7 @@ function renderGitChanges(): void {
 				class: file.status === 'M' ? 'git-modified' : file.status === '?' ? 'git-changed' : '',
 				title: file.status === '?' ? 'New — file not yet tracked by Git' : file.status === 'M' ? 'Modified file' : file.status,
 			}, file.status === '?' ? 'N' : file.status);
-			gitPopupList.append(el('div', { class: 'git-changes-file' }, el('span', { class: file.status === 'D' ? 'git-file git-deleted' : 'git-file', title: name }, statusMark, '  ', name), move));
+			gitPopupList.append(el('div', { class: 'git-changes-file' }, gitFileIcon(file), el('span', { class: file.status === 'D' ? 'git-file git-deleted' : 'git-file', title: name }, statusMark, '  ', name), move));
 		}
 	}
 	const note = (text: string) => gitPopupActions.append(el('div', { class: 'git-changes-hint' }, text));
