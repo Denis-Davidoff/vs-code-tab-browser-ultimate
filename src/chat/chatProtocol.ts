@@ -371,7 +371,7 @@ export interface ChatSummary {
 	readonly updatedAt: number;
 }
 
-export type AttachmentKind = 'screenshot' | 'element' | 'page' | 'file';
+export type AttachmentKind = 'screenshot' | 'element' | 'page' | 'file' | 'voice';
 
 /** What the composer shows for an attachment; the content stays in the host. */
 export interface AttachmentChip {
@@ -459,8 +459,36 @@ export interface WorkdirState {
 	readonly heldBack?: readonly string[];
 }
 
+/** The composer's microphone: whether it can record here, and why not. */
+export interface VoiceAvailability {
+	readonly available: boolean;
+	/** Why not, when it is not: shown as the button's tooltip. */
+	readonly reason?: string;
+	/** The longest recording, in seconds. */
+	readonly maxSeconds: number;
+}
+
+/** A voice message being recorded, transcribed or refused; sent as it changes, not with the state. */
+export type VoiceEvent =
+	| { readonly phase: 'starting' }
+	/** `level` 0…1, the newest input level; `seconds` recorded so far. */
+	| { readonly phase: 'recording'; readonly level: number; readonly seconds: number; readonly locale?: string }
+	/** The limit was reached and recording stopped; the user still chooses send, attach or discard. */
+	| { readonly phase: 'limit'; readonly seconds: number }
+	| { readonly phase: 'downloading' }
+	| { readonly phase: 'transcribing' }
+	/**
+	 * The transcript is ready. `text`: the view writes it into the message box at the caret —
+	 * the usual case; absent, it was attached as a chip instead, the tab it was recorded for no
+	 * longer being the one in front. `send`: the view then sends the message, as Enter would.
+	 */
+	| { readonly phase: 'done'; readonly send: boolean; readonly text?: string }
+	| { readonly phase: 'cancelled' }
+	| { readonly phase: 'error'; readonly message: string };
+
 export interface ChatViewState {
 	readonly sleep?: SleepState;
+	readonly voice: VoiceAvailability;
 	/** Set when the chat cannot run in this window at all. */
 	readonly blocked?: string;
 	readonly detecting: boolean;
@@ -583,10 +611,17 @@ export type HostToView =
 	 */
 	| { readonly type: 'workdirFiles'; readonly folder: string; readonly entries: readonly string[]; readonly truncated: boolean }
 	/** The GitHub form's answer: taken (the form closes), or refused with the reason (it stays). */
-	| { readonly type: 'githubAnswer'; readonly error?: string };
+	| { readonly type: 'githubAnswer'; readonly error?: string }
+	| { readonly type: 'voice'; readonly event: VoiceEvent };
 
 export type ViewToHost =
 	| { readonly type: 'setSleep'; readonly choice: SleepChoice }
+	/** The microphone button: start a voice message for the tab in front. */
+	| { readonly type: 'voiceStart' }
+	/** Enter (`send`) or Space (`attach`): stop, transcribe, attach the transcript. */
+	| { readonly type: 'voiceStop'; readonly action: 'send' | 'attach' }
+	/** Escape: stop and throw the recording away. */
+	| { readonly type: 'voiceCancel' }
 	| { readonly type: 'ready' }
 	| { readonly type: 'select'; readonly selection: Selection }
 	/** `tabId`: the tab it was typed in, which may no longer be the one in front when it arrives. */

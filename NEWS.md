@@ -14,6 +14,10 @@ src/chat/news.ts — see "The AI Browser chat" in CLAUDE.md.
 
 Browse, debug and test your pages in VS Code's own browser — and let Claude Code or Codex see them, click through them and take screenshots, right inside the editor.
 
+## 0.7.13 — 2026-10-19
+- **Voice messages** (macOS 26+): the microphone under Send records, with a live waveform and a five-minute limit. The speech is transcribed on your Mac and written into the message box at the caret, so you can correct it before sending. Escape discards the recording, and the audio is never kept.
+- **Keep the computer awake** has moved to the chat's title bar. Hold sleep off for a set time, or until the agents finish in **this tab** or in **all tabs**.
+
 ## 0.7.12 — 2026-10-19
 - **Attachment references**: each chip has a short `@N` reference. Click its icon or reference to insert it at the caret, or type **@** to search attached files, pages, elements and screenshots; the agent receives the matching content. Click the name to open it, or right-click for both actions.
 - **Toolbar skills**: add a skill with the wand button, drag buttons to reorder them, and expand a crowded toolbar with the arrow button. **Add next prompt** waits for the preceding prompt and its sub-agents, including restarted Codex agents, to finish in both chat and background runs.

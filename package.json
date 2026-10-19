@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate",
 	"displayName": "AI Browser🏆 Claude + Codex",
 	"description": "Embedded browser tab with AI capabilities, Claude and Codex integration",
-	"version": "0.7.12",
+	"version": "0.7.13",
 	"enabledApiProposals": [
 		"externalUriOpener",
 		"browser"
@@ -739,6 +739,14 @@
 						"default": true,
 						"title": "Fold Tool Calls",
 						"markdownDescription": "%configuration.chat.collapseToolCalls.description%"
+					},
+					"aiBrowser.chat.voiceLanguage": {
+						"type": "string",
+						"default": "",
+						"title": "Voice Message Language",
+						"pattern": "^([A-Za-z]{2,3}([-_][A-Za-z0-9]{2,8})*)?$",
+						"patternErrorMessage": "A language tag such as ru-RU or en-US, or empty for the Mac's own language.",
+						"markdownDescription": "%configuration.chat.voiceLanguage.description%"
 					}
 				}
 			}

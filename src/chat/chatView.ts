@@ -1,6 +1,9 @@
 import { titleModel } from './autoTitle';
 import { localFileLink } from './fileLinks';
 import { SleepControl } from '../power/sleepControl';
+import { VoiceRecording, voiceHelperPath, voiceUnavailable } from './voiceRecorder';
+import { tidyTranscript, voiceChipLabel, voiceLocalePattern, voiceMaxSeconds, voicePromptText, type HelperLine } from './voiceText';
+import { privateTempDirectory } from '../core/safeFiles';
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -26,7 +29,7 @@ import { savePng } from '../browser/clipboardImage';
 import type { BrowserController } from '../browser/browserController';
 import type {
 	AgentId, AgentUsage, ApprovalMode, AttachmentKind, ChatSummary,
-	ChatNews, ChatTabSummary, ChatViewState, HostToView, RepoMode, Selection, ToolbarRun, ToolbarSkill, UsageAlert, UsageWindow, ViewToHost, WorkdirFolder, WorkdirState,
+	ChatNews, ChatTabSummary, ChatViewState, HostToView, RepoMode, Selection, ToolbarRun, ToolbarSkill, UsageAlert, UsageWindow, ViewToHost, VoiceEvent, WorkdirFolder, WorkdirState,
 } from './chatProtocol';
 import { pickElementContext, pickForChat } from '../elements/elementPicker';
 import { parseNews } from './news';
@@ -252,6 +255,14 @@ interface ChatSkillRun {
 	stopped?: boolean;
 }
 
+
+/** A voice message being recorded: for which tab and conversation, and what Enter or Space asked for. */
+interface Voice {
+	readonly recording: VoiceRecording;
+	readonly tab: ChatTab;
+	readonly chatId: string;
+	action?: 'send' | 'attach';
+}
 export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
 	private readonly _sleep: SleepControl;
 	private _view: vscode.WebviewView | undefined;
@@ -442,6 +453,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				// tabs' turns, the user's doing — not told.
 				this._runs.viewClosed();
 				this._chatSkillTabs.clear();
+				// A recording nobody can see is not left listening to the microphone.
+				this._voiceCancel();
 			}
 		}, undefined, this._subscriptions);
 	}
@@ -489,6 +502,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 	/** Coalesces state posts: a streaming reply changes the state many times a frame. */
 	private _sleepShown?: boolean;
+	/** The voice message being recorded, the tab it is for, and what Enter or Space asked for. */
+	private _voice?: Voice;
+	/** Bumped by every start and cancel: a start that awaited across one of them goes no further. */
+	private _voiceGeneration = 0;
+	/** The chip the last transcript left, until the next start: what a cancel that crossed it takes back. */
+	private _voiceAttached?: { tab: ChatTab; chipId: string };
 	/** The title bar shows an empty or a filled cup, by context key. */
 	private _publishSleep(): void {
 		const on = this._sleep.state.mode !== 'off';
@@ -519,6 +538,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		const selection = this._selection();
 		return {
 			sleep: this._sleep.state,
+			voice: this._voiceAvailability(),
 			blocked: this._blocked(),
 			detecting: this._registry.detecting,
 			agents: this._registry.agents,
@@ -615,6 +635,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 	private async _receive(message: ViewToHost): Promise<void> {
 		switch (message.type) {
+			case 'voiceStart':
+				await this._voiceStart();
+				return;
+			case 'voiceStop':
+				if (this._voice && !this._voice.recording.ended && (message.action === 'send' || message.action === 'attach')) {
+					this._voice.action = message.action;
+					this._voice.recording.stop();
+				}
+				return;
+			case 'voiceCancel':
+				this._voiceCancel(true);
+				return;
 			case 'setSleep':
 				// A tab closed while the popup was open: nothing to wait for.
 				if (message.choice?.mode === 'agents' && message.choice.scope === 'tab') {
@@ -1688,6 +1720,148 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		this._postMessage({ type: 'inputHistory', items: kept });
 	}
 
+	/* ------------------------------------------------------------ voice messages */
+
+	/** Whether this machine can record, asked once: it does not change while the window runs, and the state is built every 40 ms. */
+	private _voiceMachine?: { reason?: string };
+
+	private _voiceAvailability(): ChatViewState['voice'] {
+		this._voiceMachine ??= { reason: voiceUnavailable(this._context.extensionPath, hostIsRemote()) };
+		const reason = this._blocked() ?? this._voiceMachine.reason;
+		return { available: !reason, reason, maxSeconds: voiceMaxSeconds };
+	}
+
+	/**
+	 * The microphone button: the helper records for the tab in front until Enter, Space or
+	 * Escape. Recorded in the extension host because a webview may not open the microphone —
+	 * VS Code grants `vscode-webview://` no `media` permission.
+	 */
+	private async _voiceStart(): Promise<void> {
+		const { reason } = this._voiceAvailability();
+		if (reason) {
+			this._postVoice({ phase: 'error', message: reason });
+			return;
+		}
+		// One recording at a time. One still live here was started for a view that has gone
+		// without telling us — a webview reload — and nobody can see or end it: it goes.
+		this._voiceCancel();
+		this._voiceAttached = undefined;
+		const generation = ++this._voiceGeneration;
+		const tab = this._active;
+		const chatId = tab.chat.id;
+		this._postVoice({ phase: 'starting' });
+		let file: string;
+		try {
+			file = path.join(await privateTempDirectory('voice'), `voice-${generateUuid()}.m4a`);
+		} catch (err) {
+			this._postVoice({ phase: 'error', message: err instanceof Error ? err.message : String(err) });
+			return;
+		}
+		// A cancel, a newer start, the view closing or the provider going while that was awaited.
+		if (this._disposed || !this._view || generation !== this._voiceGeneration) {
+			return;
+		}
+		const locale = vscode.workspace.getConfiguration('aiBrowser.chat').get<unknown>('voiceLanguage');
+		let current: Voice | undefined;
+		const recording = new VoiceRecording(voiceHelperPath(this._context.extensionPath), file, voiceMaxSeconds,
+			typeof locale === 'string' && voiceLocalePattern.test(locale) ? locale : '',
+			line => { if (current && this._voice === current) { this._voiceEvent(current, line); } });
+		current = { recording, tab, chatId };
+		this._voice = current;
+	}
+
+	/** Voice events reach a view that is there, or nobody: queued, 25 levels a second would pile up for the next one. */
+	private _postVoice(event: VoiceEvent): void {
+		if (this._view && this._viewReady) {
+			void this._view.webview.postMessage({ type: 'voice', event } satisfies HostToView);
+		}
+	}
+
+	private _voiceEvent(voice: Voice, line: HelperLine): void {
+		switch (line.e) {
+			case 'ready':
+				this._postVoice({ phase: 'recording', level: 0, seconds: 0, locale: line.locale });
+				return;
+			case 'level':
+				this._postVoice({ phase: 'recording', level: line.v, seconds: line.t });
+				return;
+			case 'limit':
+				this._postVoice({ phase: 'limit', seconds: line.t });
+				return;
+			case 'status':
+				this._postVoice({ phase: line.v });
+				return;
+			case 'error': {
+				this._voice = undefined;
+				const message = line.code === 'denied'
+					? vscode.l10n.t("Microphone access is off for VS Code. Turn it on in System Settings › Privacy & Security › Microphone, then quit and reopen VS Code.")
+					: line.code === 'locale'
+						? vscode.l10n.t("{0} Set aiBrowser.chat.voiceLanguage to a language macOS can transcribe.", line.message)
+						: line.message;
+				this._postVoice({ phase: 'error', message });
+				return;
+			}
+			case 'text': {
+				this._voice = undefined;
+				const transcript = tidyTranscript(line.v);
+				if (!transcript) {
+					this._postVoice({ phase: 'error', message: vscode.l10n.t("Nothing was heard in the recording.") });
+					return;
+				}
+				// The usual case, asked for: the words go into the message box like typed text,
+				// where they can be read and changed before sending. Only the box in front can
+				// take them, and only while it still holds the conversation it was recorded for.
+				if (voice.tab === this._active && voice.tab.chat.id === voice.chatId) {
+					this._postVoice({ phase: 'done', send: voice.action === 'send', text: transcript });
+					return;
+				}
+				// Otherwise — another tab in front, the tab cleared — a chip on the tab it was
+				// recorded for (or the one in front if that one closed), never sent unseen.
+				const tab = this._tabs.includes(voice.tab) ? voice.tab : this._active;
+				const chipId = generateUuid();
+				tab.attachments.push({
+					chip: { id: chipId, kind: 'voice', label: voiceChipLabel(transcript, line.t) },
+					text: voicePromptText(transcript, line.t),
+					spoken: transcript,
+				});
+				this._voiceAttached = { tab, chipId };
+				// The state goes first and at once, not coalesced: the view's Enter sends
+				// what it holds, and the chip must be in it by then.
+				clearTimeout(this._postTimer);
+				this._postTimer = undefined;
+				this._postMessage({ type: 'state', state: this._state() });
+				this._postVoice({ phase: 'done', send: false });
+				return;
+			}
+		}
+	}
+
+	/**
+	 * Escape, the view closing, the provider going. With nothing recording, a cancel from the view
+	 * crossed the transcript on its way — Enter, then Escape within the transcription — and the
+	 * chip that transcript left is taken back: the user threw it away. The view posts a cancel
+	 * only while it shows a recording, never after the transcript has reached it.
+	 */
+	private _voiceCancel(fromView = false): void {
+		this._voiceGeneration++;
+		const voice = this._voice;
+		this._voice = undefined;
+		if (voice && !voice.recording.ended) {
+			voice.recording.cancel();
+			this._postVoice({ phase: 'cancelled' });
+			return;
+		}
+		const attached = this._voiceAttached;
+		this._voiceAttached = undefined;
+		if (fromView && attached) {
+			const index = attached.tab.attachments.findIndex(a => a.chip.id === attached.chipId);
+			if (index >= 0) {
+				attached.tab.attachments.splice(index, 1);
+				this._post();
+			}
+		}
+	}
+
 	/* ------------------------------------------------------------ attachments */
 
 	private async _attach(kind: AttachmentKind): Promise<void> {
@@ -1759,6 +1933,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	/** `page`: the browser tab to attach from; the one the user last had in front when absent. */
 	private async _makeAttachment(kind: AttachmentKind, page?: vscode.BrowserTab): Promise<Attachment | undefined> {
 		const id = generateUuid();
+		if (kind === 'voice') {
+			// Recorded with the microphone button, never asked for through "+".
+			return undefined;
+		}
 		if (kind === 'file') {
 			const picked = await vscode.window.showOpenDialog({
 				canSelectMany: false,
@@ -3028,6 +3206,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		for (const request of this._titleRequests.values()) { request.abort(); }
 		this._titleRequests.clear();
 		this._sleep.dispose();
+		this._voiceCancel();
 		void vscode.commands.executeCommand('setContext', 'aiBrowser.keepAwakeActive', false);
 		this._runs.dispose();
 		for (const timer of this._usageChecks.values()) {

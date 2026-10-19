@@ -26,7 +26,7 @@ import { sleepMinutes, sleepHours, type SleepChoice } from '../src/power/sleepPr
  */
 
 import type {
-	AgentId, AgentQuestion, AgentUsage, ApprovalEntry, UsageAlert, ToolbarParam, ToolbarResult, ToolbarRun, ToolbarSkill, ApprovalKind, ApprovalMode, AttachmentKind, ChatCommand, ChatEntry, ChatStats, ChatSummary, ChatTabStatus, ChatTabSummary, ChatViewState, HostToView, RepoMode, ToolEntry, ViewToHost, WorkdirFolder,
+	AgentId, AgentQuestion, AgentUsage, ApprovalEntry, UsageAlert, ToolbarParam, ToolbarResult, ToolbarRun, ToolbarSkill, ApprovalKind, ApprovalMode, AttachmentKind, ChatCommand, ChatEntry, ChatStats, ChatSummary, ChatTabStatus, ChatTabSummary, ChatViewState, HostToView, RepoMode, ToolEntry, ViewToHost, VoiceEvent, WorkdirFolder,
 } from '../src/chat/chatProtocol';
 import { baseName, searchPaths } from './fileRank';
 // Every codicon the bundled font has, one per line (`name,char,code`); bundled
@@ -168,10 +168,36 @@ const toolbar = el('div', { class: 'toolbar' }, toolbarAttachments, toolbarSetti
 const inputMirror = el('div', { class: 'input-mirror' });
 inputMirror.setAttribute('aria-hidden', 'true');
 const inputWrap = el('div', { class: 'input-wrap' }, inputMirror, input);
+/** Below Send: record a voice message — asked for. The host records it; a webview may not open the microphone. */
+const micButton = button([icon('mic')], { class: 'ghost round mic-button', title: 'Record a voice message' });
+/**
+ * The recording, across the message box while it lasts: the input's waveform,
+ * the time, the limit and what is left, and the three keys. The box's text
+ * stays underneath and comes back when it ends.
+ */
+const voiceWave = el('canvas', { class: 'voice-wave' });
+const voiceTime = el('span', { class: 'voice-time' });
+const voiceHint = el('span', { class: 'voice-hint' });
+const voiceBar = el('div', { class: 'voice-bar' },
+	el('span', { class: 'voice-dot' }), voiceWave, el('span', { class: 'voice-info' }, voiceTime, voiceHint));
+voiceBar.hidden = true;
+voiceBar.tabIndex = -1;
+// The bar replaces the box a screen reader was in, so what it says is announced: the hint line
+// (the keys, "Transcribing…"), not the time, which changes 25 times a second.
+voiceBar.setAttribute('aria-label', 'Voice message');
+voiceHint.setAttribute('role', 'status');
+inputWrap.append(voiceBar);
+/**
+ * Why a voice message could not be made, above the box rather than over it: the box stays
+ * usable, and no key is taken to close it. A click, or a few seconds, takes it away.
+ */
+const voiceError = el('div', { class: 'voice-error' });
+voiceError.hidden = true;
+voiceError.setAttribute('role', 'alert');
 const inputActions = el('div', { class: 'input-actions' },
-	el('span', { class: 'send-slot' }, sendButton), el('span', { class: 'send-slot' }, queueButton));
+	el('span', { class: 'send-slot' }, sendButton), el('span', { class: 'send-slot' }, micButton), el('span', { class: 'send-slot' }, queueButton));
 const inputArea = el('div', { class: 'input-area' }, inputWrap, inputActions);
-const composer = el('div', { class: 'composer' }, attachmentsRow, inputArea, toolbar);
+const composer = el('div', { class: 'composer' }, attachmentsRow, voiceError, inputArea, toolbar);
 /** Asked when another agent is picked for a conversation that has started. */
 const switchCard = el('div', { class: 'switch-card' });
 /** The toolbar skills the tab's agent offers, above the message box. */
@@ -340,6 +366,9 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 		case 'toolbarError':
 			showEditorError(message.message);
 			return;
+		case 'voice':
+			onVoice(message.event);
+			return;
 		case 'githubAnswer':
 			// Only the form it answers: closed meanwhile, there is nothing to say.
 			if (repoFormError?.isConnected && paramsPopup.classList.contains('open')) {
@@ -420,6 +449,7 @@ function render(): void {
 	if (!state) {
 		return;
 	}
+	renderVoice();
 	app.classList.toggle('is-blocked', !!state.blocked);
 	blocked.textContent = state.blocked ?? '';
 	followDraft(state);
@@ -2667,6 +2697,7 @@ function attachmentIcon(kind: AttachmentKind): string {
 		case 'element': return 'inspect';
 		case 'page': return 'link';
 		case 'file': return 'file';
+		case 'voice': return 'mic';
 	}
 }
 
@@ -3055,6 +3086,307 @@ sendButton.addEventListener('click', () => {
 		send();
 	}
 });
+
+/* ---------------------------------------------------------------- voice messages */
+
+/**
+ * The recording as the view sees it. `starting`: asked for, the helper not recording yet;
+ * `finishing`: stopped, the transcript on its way. A refusal is not a phase: it is shown
+ * above the box (`voiceError`) and the view is idle again.
+ */
+type VoicePhase = 'idle' | 'starting' | 'recording' | 'limit' | 'finishing';
+let voicePhase: VoicePhase = 'idle';
+/** `finishing` after Space: the box is back to write in, and the bar is gone — only the button says it is transcribing. */
+let voiceAttaching = false;
+/** The helper is fetching the language's model; said when the recording ends, which may be before it is done. */
+let voiceDownloading = false;
+let voiceSeconds = 0;
+let voiceLocale = '';
+/** The newest levels, oldest first; as many as the bar has room for. */
+let voiceLevels: number[] = [];
+/** Escape before the helper had started: cancelled the moment it does. */
+let voicePendingCancel = false;
+/** Where the caret was when the recording ended: the transcript goes in there. */
+let voiceCaret: number | undefined;
+let voiceErrorTimer: ReturnType<typeof setTimeout> | undefined;
+
+micButton.addEventListener('click', () => {
+	if (voicePhase === 'idle') {
+		if (state?.voice.available === false) {
+			// Not posted: the host would answer with the same reason.
+			showVoiceError(state.voice.reason ?? 'Voice messages are not available here.');
+		} else {
+			startVoice();
+		}
+	} else if (voicePhase === 'recording' || voicePhase === 'limit') {
+		// The button pressed again: the same as Space, attached and kept to write beside.
+		stopVoice('attach');
+	}
+});
+
+voiceError.addEventListener('click', hideVoiceError);
+
+function showVoiceError(message: string): void {
+	voiceError.textContent = message;
+	voiceError.hidden = false;
+	clearTimeout(voiceErrorTimer);
+	voiceErrorTimer = setTimeout(hideVoiceError, 8000);
+}
+
+function hideVoiceError(): void {
+	clearTimeout(voiceErrorTimer);
+	voiceError.hidden = true;
+}
+
+function startVoice(): void {
+	hideVoiceError();
+	closePalette();
+	voicePhase = 'starting';
+	voiceAttaching = false;
+	voiceDownloading = false;
+	voiceSeconds = 0;
+	voiceLevels = [];
+	voicePendingCancel = false;
+	renderVoice();
+	voiceBar.focus();
+	post({ type: 'voiceStart' });
+}
+
+function stopVoice(action: 'send' | 'attach'): void {
+	voiceCaret = input.selectionStart ?? input.value.length;
+	voicePhase = 'finishing';
+	voiceAttaching = action === 'attach';
+	renderVoice();
+	if (voiceAttaching) {
+		// Space means "keep writing": the box is given back now, not when the transcript lands.
+		input.focus();
+	}
+	post({ type: 'voiceStop', action });
+}
+
+function cancelVoice(): void {
+	if (voicePhase === 'starting') {
+		voicePendingCancel = true;
+	} else if (voicePhase !== 'idle') {
+		post({ type: 'voiceCancel' });
+	}
+	endVoice();
+}
+
+function endVoice(): void {
+	// The focus goes back to the box only from the bar: after Space it is already there, and
+	// the user may have moved on since.
+	const fromBar = voicePhase !== 'idle' && !voiceAttaching;
+	voicePhase = 'idle';
+	voiceAttaching = false;
+	renderVoice();
+	if (fromBar && (document.activeElement === voiceBar || document.activeElement === document.body)) {
+		input.focus();
+	}
+}
+
+function onVoice(event: VoiceEvent): void {
+	switch (event.phase) {
+		case 'starting':
+			return;
+		case 'recording':
+			if (voicePendingCancel) {
+				voicePendingCancel = false;
+				post({ type: 'voiceCancel' });
+				return;
+			}
+			if (voicePhase !== 'starting' && voicePhase !== 'recording') {
+				return;
+			}
+			if (voicePhase === 'starting') {
+				voiceLocale = event.locale ?? '';
+				voicePhase = 'recording';
+			}
+			voiceSeconds = event.seconds;
+			voiceLevels.push(event.level);
+			if (voiceLevels.length > 400) {
+				voiceLevels.splice(0, voiceLevels.length - 400);
+			}
+			renderVoice();
+			return;
+		case 'limit':
+			if (voicePhase === 'recording') {
+				voicePhase = 'limit';
+				voiceSeconds = event.seconds;
+				renderVoice();
+			}
+			return;
+		case 'downloading':
+			// Sent once, at the start, while the user is still speaking: kept for when it ends.
+			if (voicePhase !== 'idle') {
+				voiceDownloading = true;
+				renderVoice();
+			}
+			return;
+		case 'transcribing':
+			if (voicePhase !== 'idle') {
+				voiceDownloading = false;
+				renderVoice();
+			}
+			return;
+		case 'done':
+			// Only the recording on screen: one discarded with Escape while it was being
+			// transcribed sends nothing — the host takes its chip back.
+			if (voicePhase !== 'finishing') {
+				return;
+			}
+			endVoice();
+			if (event.text) {
+				insertTranscript(event.text);
+			}
+			if (event.send) {
+				send();
+			} else {
+				renderSend();
+			}
+			return;
+		case 'cancelled':
+			if (voicePhase !== 'idle') {
+				endVoice();
+			}
+			return;
+		case 'error':
+			// A refusal for a recording already thrown away says nothing.
+			if (voicePhase === 'idle' && !voicePendingCancel) {
+				return;
+			}
+			voicePendingCancel = false;
+			endVoice();
+			showVoiceError(event.message);
+			return;
+	}
+}
+
+/**
+ * While a recording is on screen the three keys are its — asked for: Enter sends it at once,
+ * Space attaches it and leaves the box to write in, Escape throws it away. Taken in the capture
+ * phase, before the box sees them — but only from the composer and the bar: a key typed into
+ * another field (a tab being renamed, a form) is that field's.
+ */
+document.addEventListener('keydown', event => {
+	const ours = voicePhase === 'starting' || voicePhase === 'recording' || voicePhase === 'limit' || (voicePhase === 'finishing' && !voiceAttaching);
+	if (!ours || event.isComposing || event.keyCode === 229) {
+		return;
+	}
+	const target = event.target;
+	if (target instanceof Node && target !== document.body && !composer.contains(target)) {
+		return;
+	}
+	if (event.key === 'Escape') {
+		event.preventDefault();
+		event.stopPropagation();
+		cancelVoice();
+	} else if (event.key === 'Enter' || event.key === ' ') {
+		event.preventDefault();
+		event.stopPropagation();
+		// Enter only ends the recording, as Space does — asked for: the transcript goes into the
+		// box to be read, and sending is the box's own Enter after that.
+		if (!event.repeat && (voicePhase === 'recording' || voicePhase === 'limit')) {
+			stopVoice('attach');
+		}
+	}
+}, true);
+
+function renderVoice(): void {
+	const bar = voicePhase !== 'idle' && !voiceAttaching;
+	voiceBar.hidden = !bar;
+	inputWrap.classList.toggle('voice-on', bar);
+	voiceBar.classList.toggle('live', voicePhase === 'recording');
+	voiceBar.classList.toggle('waiting', voicePhase === 'starting' || voicePhase === 'finishing');
+	const recording = voicePhase === 'recording' || voicePhase === 'limit';
+	micButton.classList.toggle('recording', recording);
+	micButton.classList.toggle('transcribing', voicePhase === 'finishing');
+	micButton.setAttribute('aria-pressed', String(recording));
+	setIcon(micButton, voicePhase === 'finishing' ? 'loading' : 'mic');
+	micButton.querySelector('.codicon')?.classList.toggle('codicon-modifier-spin', voicePhase === 'finishing');
+	const available = state?.voice.available ?? false;
+	micButton.setAttribute('aria-disabled', String(!available && voicePhase === 'idle'));
+	const max = state?.voice.maxSeconds ?? 300;
+	const finishing = voiceDownloading
+		? `Getting the speech model${voiceLocale ? ` for ${voiceLocale}` : ''} — once per language…`
+		: 'Transcribing…';
+	const title = voicePhase === 'idle'
+		? (available ? `Record a voice message — up to ${clock(max)}, transcribed on this Mac` : (state?.voice.reason ?? 'Voice messages are not available'))
+		: voicePhase === 'starting' ? 'Starting the microphone…'
+		: recording ? 'Stop and write the words into the message box (Enter, Space) — Esc discards it'
+		: voiceAttaching ? `${finishing} The words will go into the message box.` : finishing;
+	if (micButton.title !== title) {
+		micButton.title = title;
+	}
+	if (!bar) {
+		return;
+	}
+	voiceTime.textContent = voicePhase === 'starting' ? '' : `${clock(voiceSeconds)} / ${clock(max)} · ${clock(Math.max(0, max - voiceSeconds))} left`;
+	voiceHint.textContent = voicePhase === 'starting' ? 'Starting the microphone…'
+		: voicePhase === 'recording' ? 'Enter or Space to stop · Esc discard'
+		: voicePhase === 'limit' ? 'Limit reached — Enter or Space to stop · Esc discard'
+		: finishing;
+	drawWave();
+}
+
+/** The levels as bars, the newest at the right, mirrored about the middle. */
+function drawWave(): void {
+	const ratio = window.devicePixelRatio || 1;
+	const width = voiceWave.clientWidth, height = voiceWave.clientHeight;
+	if (!width || !height) {
+		return;
+	}
+	if (voiceWave.width !== Math.round(width * ratio) || voiceWave.height !== Math.round(height * ratio)) {
+		voiceWave.width = Math.round(width * ratio);
+		voiceWave.height = Math.round(height * ratio);
+	}
+	const g = voiceWave.getContext('2d');
+	if (!g) {
+		return;
+	}
+	g.setTransform(ratio, 0, 0, ratio, 0, 0);
+	g.clearRect(0, 0, width, height);
+	g.fillStyle = getComputedStyle(voiceWave).color;
+	const step = 3, bar = 2;
+	const count = Math.floor(width / step);
+	const levels = voiceLevels.slice(-count);
+	const start = width - levels.length * step;
+	levels.forEach((level, i) => {
+		const h = Math.max(2, Math.min(height, level * level * height * 1.6));
+		g.fillRect(start + i * step, (height - h) / 2, bar, h);
+	});
+}
+
+/**
+ * The transcript written into the box where the caret was when the recording ended, spaced from
+ * the text around it, and the caret put at the end of the box. Typed after a Space, the rest of
+ * the message comes after the transcript, which is the order it was said and written in.
+ */
+function insertTranscript(text: string): void {
+	if (paletteMode === 'inline') {
+		closePalette();
+	}
+	const value = input.value;
+	const at = Math.min(Math.max(0, voiceCaret ?? value.length), value.length);
+	const before = value.slice(0, at), after = value.slice(at);
+	const lead = before && !/\s$/.test(before) ? ' ' : '';
+	const tail = after && !/^\s/.test(after) ? ' ' : '';
+	input.value = before + lead + text + tail + after;
+	// The caret goes to the end of the whole text — asked for — ready to go on writing or press Enter.
+	input.setSelectionRange(input.value.length, input.value.length);
+	input.scrollTop = input.scrollHeight;
+	fromHistory = false;
+	historyAt = inputHistory.length;
+	paintInput();
+	autosize();
+	saveDraft();
+	input.focus();
+}
+
+function clock(seconds: number): string {
+	const whole = Math.max(0, Math.floor(seconds));
+	return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
+}
 
 /** `queue`: held until the running turn ends (⌘/Ctrl+Enter); otherwise added to it (Enter). */
 function send(mode?: 'queue'): void {

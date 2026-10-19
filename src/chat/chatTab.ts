@@ -68,6 +68,12 @@ export interface Attachment {
 	readonly image?: TurnImage;
 	/** The file it stands for, where there is one: what clicking the chip opens. */
 	readonly file?: vscode.Uri;
+	/**
+	 * A voice message's transcript, plain. It is the user's own words, so it goes into the
+	 * message itself — shown in the chat, kept in the history, sent as instruction — and not
+	 * under the attachments' "treat as data" header; `text` is what the agent is given.
+	 */
+	readonly spoken?: string;
 }
 
 /** What a tab needs from the view that holds it. */
@@ -621,11 +627,17 @@ export class ChatTab {
 		text: string, attachments: readonly Attachment[],
 		agent: AgentId, model: string, effort: string | undefined, backend: AgentBackend, step?: SkillStep,
 	): Promise<void> {
+		// A voice message is part of what the user says: what the chat shows and keeps is the
+		// transcript; what the agent reads is it said to be one; the rest stay attachments.
+		const voices = attachments.filter(a => a.spoken !== undefined);
+		const shown = [text, ...voices.map(a => a.spoken!)].filter(t => t.trim()).join('\n\n');
+		const said = [text, ...voices.map(a => a.text ?? a.spoken!)].filter(t => t.trim()).join('\n\n');
+		const context = attachments.filter(a => a.spoken === undefined);
 		if (!this._started()) {
 			this._chat.agent = agent;
 			this._chat.owned = true;
 			if (!this._chat.named) {
-				this._chat.title = chatTitle(text || attachments[0]?.chip.label || '');
+				this._chat.title = chatTitle(shown || attachments[0]?.chip.label || '');
 			}
 			this._chat.createdAt = Date.now();
 		}
@@ -633,7 +645,7 @@ export class ChatTab {
 		this._failed = false;
 		this._unseen = false;
 		this._failuresBefore = failures(this._chat);
-		const entry: UserEntry = { kind: 'user', text, attachments: attachments.map(a => `${attachmentReference(a.chip)} ${a.chip.label}`), at: Date.now() };
+		const entry: UserEntry = { kind: 'user', text: shown, attachments: attachments.map(a => `${attachmentReference(a.chip)} ${a.chip.label}`), at: Date.now() };
 		// A skill prompt followed by one with a check asks the agent to judge it;
 		// the chat shows the prompt as written, the instruction is ours. The
 		// next prompt is the one queued now, whatever was taken out since.
@@ -664,8 +676,8 @@ export class ChatTab {
 			this._push(entry);
 		}
 
-		const sent = asked ? withNextDecision(text, asked) : text;
-		const prompt = [sent, attachmentContext(attachments)].filter(Boolean).join('\n\n');
+		const sent = asked ? withNextDecision(said, asked) : said;
+		const prompt = [sent, attachmentContext(context)].filter(Boolean).join('\n\n');
 		const images = attachments.map(a => a.image).filter((i): i is TurnImage => !!i);
 
 		const chat = this._chat;

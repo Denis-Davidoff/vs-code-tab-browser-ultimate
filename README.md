@@ -42,6 +42,10 @@ there is not the problem, the missing API is. **Measured by reading the shipped 
 
 ## Changelog
 
+**0.7.13** — Voice messages on macOS 26+: record from the microphone under Send, transcribed on
+the device and written into the message box for review before sending. The keep-awake cup moved
+to the chat's title bar, and "until the agents finish" can follow this tab or all tabs.
+
 **0.7.12** — Attachment references (`@N`) with an **@** picker; toolbar skills with a wand-shaped
 Add button, drag-and-drop ordering and an expandable list; follow-up prompts wait for their
 sub-agents. Local file links open in editor tabs and folder links in VS Code Explorer or the
