@@ -276,8 +276,8 @@ export class CodexBackend implements AgentBackend {
 		return requestCommitMessage(this._binary, this.id, model, effort, context, signal);
 	}
 
-	public generateTitle(model: ChatModel, context: string, signal: AbortSignal): Promise<string | undefined> {
-		return requestTitle(this._binary, this.id, model, context, signal);
+	public generateTitle(model: ChatModel, context: string, signal: AbortSignal, purpose?: 'branch'): Promise<string | undefined> {
+		return requestTitle(this._binary, this.id, model, context, signal, purpose);
 	}
 
 	public openSession(cwd: string, resume?: string, _priorCostUsd?: number, root?: string, _readDirs?: readonly string[], _ownSettings?: boolean): AgentSession {

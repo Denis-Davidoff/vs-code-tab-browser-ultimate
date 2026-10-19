@@ -1,4 +1,4 @@
-import { titleModel } from './autoTitle';
+import { availableBranchName, titleModel } from './autoTitle';
 import { localFileLink } from './fileLinks';
 import { SleepControl } from '../power/sleepControl';
 import { VoiceRecording, voiceHelperPath, voiceUnavailable } from './voiceRecorder';
@@ -768,6 +768,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			case 'dismissGitCommit':
 				await this._answerCommit(message);
 				return;
+			case 'gitBranchName':
+                await this._suggestBranchName(message);
+                return;
 			case 'gitBranchAction':
 				await this._gitBranchAction(message);
 				return;
@@ -1571,6 +1574,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			}
 		}
 	}
+
+	private readonly _branchNameRequests = new Map<ChatTab, AbortController>();
 
 	private readonly _titleRequests = new Map<ChatTab, AbortController>();
 
@@ -2565,6 +2570,44 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 
+ private async _suggestBranchName(message: Extract<ViewToHost, { type: 'gitBranchName' }>): Promise<void> {
+  const tab = this._tabs.find(t => t.id === message.tabId);
+  if (!tab || tab !== this._active || message.folder !== this._workdir(tab) || this._blocked()) { return; }
+  const controller = new AbortController();
+  this._branchNameRequests.get(tab)?.abort();
+  this._branchNameRequests.set(tab, controller);
+  const chatId = tab.chat.id;
+  try {
+   const { agent } = this._selection(tab);
+   if (!agent) { throw new Error('No agent is selected.'); }
+   const backend = this._registry.backend(agent);
+   const model = titleModel(this._registry.agents.find(a => a.id === agent && a.available)?.models ?? []);
+   if (!model || !backend?.generateTitle) { throw new Error('No inexpensive model is available for the current agent.'); }
+   const git = await gitBinary();
+   if (!git) { throw new Error('Git is unavailable.'); }
+   const folder = message.folder;
+   const status = await this._runWorkdirGit(git, ['status', '--porcelain=v1', '--untracked-files=all'], folder);
+   const discussion = tab.chat.entries.filter(e => e.kind === 'user' || e.kind === 'assistant').slice(-6).map(e => 'text' in e ? e.text.slice(-1500) : '').join('\n');
+   if (!status.trim() && !discussion.trim()) { throw new Error('No changes or discussion to name the branch from.'); }
+   const diffs = status.trim() ? await Promise.all([
+    this._runWorkdirGit(git, ['diff', '--no-ext-diff', '--no-textconv', '--no-color', '--stat'], folder),
+    this._runWorkdirGit(git, ['diff', '--cached', '--no-ext-diff', '--no-textconv', '--no-color', '--stat'], folder),
+   ]) : [];
+   const context = `Changes:\n${status.slice(0, 3000)}\n${diffs.join('\n').slice(0, 3000)}\nDiscussion:\n${discussion.slice(-6000)}`;
+   let name = await backend.generateTitle(model, context, controller.signal, 'branch');
+   if (controller.signal.aborted || !this._tabs.includes(tab) || tab.chat.id !== chatId) { return; }
+   if (!name) { throw new Error('Could not generate a branch name. Please try again.'); }
+   await this._runWorkdirGit(git, ['check-ref-format', `refs/heads/${name}`], folder);
+   const refs = (await this._runWorkdirGit(git, ['for-each-ref', '--format=%(refname)', 'refs/heads/'], folder)).trim().split('\n').filter(Boolean).map(ref => ref.slice('refs/heads/'.length));
+   name = availableBranchName(name, refs);
+   if (!controller.signal.aborted) { this._postMessage({ type: 'gitBranchNameResult', id: message.id, name }); }
+  } catch (error) {
+   if (!controller.signal.aborted) { this._postMessage({ type: 'gitBranchNameResult', id: message.id, error: error instanceof Error ? error.message : String(error) }); }
+  } finally {
+   if (this._branchNameRequests.get(tab) === controller) { this._branchNameRequests.delete(tab); }
+  }
+ }
+
 	private async _gitBranchAction(message: Extract<ViewToHost, { type: 'gitBranchAction' }>): Promise<void> {
 		const { folder, name, action, remote } = message;
 		const answer = (error?: string) => this._postMessage({ type: 'gitBranchResult', folder, action, error });
@@ -3296,6 +3339,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		for (const [folder, job] of this._gitCommits) {
 			if (job.tab === tab) { job.controller.abort(); this._gitCommits.delete(folder); }
 		}
+		this._branchNameRequests.get(tab)?.abort();
+        this._branchNameRequests.delete(tab);
 		this._titleRequests.get(tab)?.abort();
 		this._titleRequests.delete(tab);
 		const at = this._tabs.indexOf(tab);
@@ -3445,7 +3490,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 */
 	private _onBackendReplaced(agent: AgentId, gone: boolean): void {
 		for (const tab of this._tabs) {
-			if (tab.chat.agent === agent) { this._titleRequests.get(tab)?.abort(); }
+			if (tab.chat.agent === agent) { this._titleRequests.get(tab)?.abort(); this._branchNameRequests.get(tab)?.abort(); }
 			tab.backendReplaced(agent, gone);
 		}
 		for (const job of this._gitCommits.values()) { if (job.agent === agent) { job.controller.abort(); } }
@@ -3477,6 +3522,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		this._disposed = true;
 		for (const request of this._titleRequests.values()) { request.abort(); }
 		this._titleRequests.clear();
+        for (const request of this._branchNameRequests.values()) { request.abort(); }
+        this._branchNameRequests.clear();
 		for (const job of this._gitCommits.values()) { job.controller.abort(); }
 		this._sleep.dispose();
 		this._voiceCancel();

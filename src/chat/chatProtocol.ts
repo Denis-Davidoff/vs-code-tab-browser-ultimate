@@ -637,6 +637,7 @@ export type HostToView =
 	 * ending with `/`; sent when the folder button asks, not with every state.
 	 */
 	| { readonly type: 'gitIndexResult'; readonly folder: string; readonly error?: string }
+	| { readonly type: 'gitBranchNameResult'; readonly id: number; readonly name?: string; readonly error?: string }
 	| { readonly type: 'gitBranchResult'; readonly folder: string; readonly action: 'switch' | 'create' | 'delete'; readonly error?: string }
 	| { readonly type: 'workdirGit'; readonly folder: string; readonly status?: WorkdirGitStatus; readonly branches?: GitBranchState; readonly error?: string }
 	| { readonly type: 'workdirFiles'; readonly folder: string; readonly entries: readonly string[]; readonly truncated: boolean }
@@ -742,6 +743,7 @@ export type ViewToHost =
 	| { readonly type: 'gitCommit'; readonly folder: string; readonly tabId: string; readonly scope?: 'staged' | 'all' }
 	| { readonly type: 'gitIndexAction'; readonly folder: string; readonly tabId: string; readonly action: 'stage' | 'unstage'; readonly path?: string }
 	| { readonly type: 'fixGitCommit' | 'dismissGitCommit'; readonly folder: string; readonly id: string; readonly tabId: string }
+	| { readonly type: 'gitBranchName'; readonly id: number; readonly folder: string; readonly tabId: string }
 	| { readonly type: 'gitBranchAction'; readonly folder: string; readonly action: 'switch' | 'create' | 'delete'; readonly name: string; readonly remote?: boolean }
 	| { readonly type: 'refreshWorkdirGit' }
 	| { readonly type: 'listWorkdir' }

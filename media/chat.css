@@ -4331,3 +4331,9 @@ body.vscode-high-contrast-light .context-pie {
 .git-branch-select.current:disabled { opacity: 1; font-weight: 600; background: color-mix(in srgb, var(--vscode-gitDecoration-addedResourceForeground, #73c991) 13%, transparent); }
 
 .git-refresh-slot { display: inline-flex; flex: none; }
+
+.git-branch-search-row { display: flex; align-items: center; gap: 4px; padding-right: 6px; }
+.git-branch-search-row .palette-search { flex: 1; min-width: 0; }
+.git-branch-magic { display: flex; align-items: center; gap: 4px; white-space: nowrap; padding: 5px 7px; color: var(--vscode-textLink-foreground); border: 0; border-radius: 4px; background: transparent; cursor: pointer; }
+.git-branch-magic:hover { background: var(--vscode-toolbar-hoverBackground); }
+.git-branch-magic:disabled { opacity: .5; cursor: default; }

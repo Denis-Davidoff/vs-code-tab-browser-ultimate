@@ -70,7 +70,7 @@ export interface AgentBackend extends vscode.Disposable {
 	/** A text-only commit message on the exact model selected in the chat. */
 	generateCommitMessage?(model: string, effort: string | undefined, context: string, signal: AbortSignal): Promise<string>;
 	/** Optional one-shot title on a small model; never uses a conversation session. */
-	generateTitle?(model: ChatModel, context: string, signal: AbortSignal): Promise<string | undefined>;
+	generateTitle?(model: ChatModel, context: string, signal: AbortSignal, purpose?: 'branch'): Promise<string | undefined>;
 	models(): Promise<ChatModel[]>;
 	/** The skills and commands it offers, read again from the CLI; kept as `knownCommands`. */
 	commands(): Promise<ChatCommand[]>;

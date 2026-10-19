@@ -305,8 +305,8 @@ export class ClaudeBackend implements AgentBackend {
 		return requestCommitMessage(this._binary, this.id, model, effort, context, signal);
 	}
 
-	public generateTitle(model: ChatModel, context: string, signal: AbortSignal): Promise<string | undefined> {
-		return requestTitle(this._binary, this.id, model, context, signal);
+	public generateTitle(model: ChatModel, context: string, signal: AbortSignal, purpose?: 'branch'): Promise<string | undefined> {
+		return requestTitle(this._binary, this.id, model, context, signal, purpose);
 	}
 
 	public openSession(cwd: string, resume?: string, priorCostUsd?: number, root?: string, readDirs?: readonly string[], ownSettings = true): AgentSession {

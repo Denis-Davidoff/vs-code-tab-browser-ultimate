@@ -447,7 +447,21 @@ const branchError = el('div', { class: 'git-branch-error' });
 branchError.setAttribute('role', 'status');
 const branchCreate = button([icon('add'), 'Create branch…'], { class: 'git-branch-create' });
 const branchList = el('div', { class: 'palette-list git-branch-list' });
-branchPopup.append(branchSearch, branchError, branchCreate, branchList);
+const branchSearchRow = el('div', { class: 'git-branch-search-row' });
+const branchMagic = button([icon('sparkle')], { class: 'git-branch-magic' });
+branchMagic.dataset.tip = 'Generate branch name automatically';
+branchMagic.setAttribute('aria-label', branchMagic.dataset.tip);
+branchSearchRow.append(branchSearch, branchMagic);
+branchPopup.append(branchSearchRow, branchError, branchCreate, branchList);
+let branchNameSequence = 0;
+let branchNamePending: { id: number; tabId: string; folder: string; query: string } | undefined;
+branchMagic.addEventListener('click', () => {
+ if (!state || !gitFolder || branchBusy || branchNamePending) { return; }
+ branchNamePending = { id: ++branchNameSequence, tabId: state.activeTab, folder: gitFolder, query: branchSearch.value };
+ branchError.textContent = 'Generating branch name…';
+ post({ type: 'gitBranchName', ...branchNamePending });
+ renderBranches();
+});
 let branchState: GitBranchState | undefined;
 let branchBusy = false;
 let branchDeleting: string | undefined;
@@ -461,10 +475,12 @@ function runBranchAction(action: 'switch' | 'create' | 'delete', name: string, r
 }
 function renderBranches(): void {
 	const query = branchSearch.value.trim();
-	const shape = JSON.stringify([branchState, query, branchBusy, branchDeleting, gitPending]);
+	const shape = JSON.stringify([branchState, query, branchBusy, branchDeleting, gitPending, !!branchNamePending]);
 	if (shape === branchRenderedShape) { return; }
 	branchRenderedShape = shape;
 	branchSearch.disabled = branchBusy;
+ branchMagic.disabled = branchBusy || !branchState || !!branchNamePending;
+ branchMagic.classList.toggle('loading', !!branchNamePending);
 	branchCreate.textContent = query ? `+ Create “${query}” from ${branchState?.current || 'HEAD'}` : '+ Create a new branch (enter name above)';
 	branchCreate.disabled = branchBusy || !branchState || !query || !!branchState?.branches.some(b => !b.remote && b.name === query);
 	branchList.replaceChildren();
@@ -678,6 +694,17 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 				}
 			}
 			return;
+  case 'gitBranchNameResult': {
+   const pending = branchNamePending;
+   if (!pending || pending.id !== message.id) { return; }
+   branchNamePending = undefined;
+   if (state?.activeTab === pending.tabId && gitFolder === pending.folder && branchPopup.classList.contains('open') && !branchBusy && branchSearch.value === pending.query) {
+    branchError.textContent = message.error ?? '';
+    if (message.name) { branchSearch.value = message.name; branchDeleting = undefined; branchSearch.focus(); }
+   }
+   renderBranches();
+   return;
+  }
   case 'gitBranchResult': {
    if (message.folder !== gitFolder) { return; }
    branchBusy = false;
@@ -3920,7 +3947,7 @@ composer.addEventListener('mousedown', event => {
  * right-click menu in an agent's report (see `linkMenu`).
  */
 function closePopups(except?: HTMLElement, keep?: HTMLElement): void {
- if (except !== branchPopup) { branchButton.setAttribute('aria-expanded', 'false'); }
+ if (except !== branchPopup) { branchButton.setAttribute('aria-expanded', 'false'); branchNamePending = undefined; }
  if (except !== gitPopup) {
   gitPopupPinned = false;
   commitButton.setAttribute('aria-expanded', 'false');
@@ -5576,6 +5603,7 @@ const hoverTip = (() => {
 
 // The context pie's tooltip: how much of the window is used and how much is left.
 hoverTip.attach(gitRefreshSlot);
+hoverTip.attach(branchMagic);
 hoverTip.attach(contextButton);
 hoverTip.attach(skillAddButton);
 hoverTip.attach(skillExpandButton);
