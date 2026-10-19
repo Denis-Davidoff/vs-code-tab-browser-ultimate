@@ -105,6 +105,21 @@ function branchFolder(branch: string): string {
 	return `${readable}-${createHash('sha256').update(branch).digest('hex').slice(0, 6)}`;
 }
 
+/** A managed copy containing the selected directory, including a subdirectory of a copy. */
+export function managedCopy(storage: string, folder: string): { folder: string; repo: RepoRef } | undefined {
+	const relative = path.relative(path.join(storage, 'github'), folder);
+	const parts = relative.split(path.sep);
+	if (parts.length < 4) { return undefined; }
+	const root = path.join(storage, 'github', ...parts.slice(0, 4));
+	const repo = storedCopyRepo(storage, root);
+	return repo ? { folder: root, repo } : undefined;
+}
+
+/** The directory name records which generated branch belongs to this disposable copy. */
+export function ownsCopyBranch(folder: string, branch: string): boolean {
+	return branch.startsWith('ai-browser/') && path.basename(folder) === branchFolder(branch);
+}
+
 /**
  * Whether `folder` is still a worktree of this repository's clone in storage:
  * its `.git` a file pointing into `base/.git/worktrees/`. Read here, without
@@ -269,13 +284,17 @@ export async function pushCopy(git: string, copy: string, base: string, branch: 
 export function removeCopy(git: string, storage: string, repo: RepoRef, copy: string, branch?: string): Promise<void> {
 	return serial(repoSlug(repo).toLowerCase(), async () => {
 		const base = path.join(repoDir(storage, repo), 'base');
+		// The selected branch may belong to the user. Only delete the branch used to create this copy.
+		const owned = branch && ownsCopyBranch(copy, branch) ? branch
+			: (await runGit(git, ['for-each-ref', '--format=%(refname:strip=2)', 'refs/heads/ai-browser/'], base))
+				.split('\n').find(candidate => ownsCopyBranch(copy, candidate));
 		await runGit(git, ['worktree', 'remove', '--force', '--', copy], base).catch(async () => {
 			// A worktree whose folder is already gone: forget it.
 			await fs.rm(copy, { recursive: true, force: true });
 			await runGit(git, ['worktree', 'prune'], base);
 		});
-		if (branch) {
-			await runGit(git, ['branch', '-D', branch], base).catch(() => undefined);
+		if (owned) {
+			await runGit(git, ['branch', '-D', owned], base).catch(() => undefined);
 		}
 	});
 }
@@ -301,7 +320,5 @@ export async function removeStoredCopy(git: string, storage: string, folder: str
 	if (path.relative(realRoot, realFolder) !== path.relative(path.join(storage, 'github'), folder)) {
 		throw new GitError('The repository copy points outside its storage folder.');
 	}
-	// rev-parse succeeds for detached HEAD too; there is then no current branch to delete.
-	const branch = (await runGit(git, ['rev-parse', '--abbrev-ref', 'HEAD'], folder)).trim();
-	await removeCopy(git, storage, repo, folder, branch === 'HEAD' ? undefined : branch);
+	await removeCopy(git, storage, repo, folder);
 }

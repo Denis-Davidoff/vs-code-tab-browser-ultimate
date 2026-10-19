@@ -26,7 +26,7 @@ import { sleepMinutes, sleepHours, type SleepChoice } from '../src/power/sleepPr
  */
 
 import type {
-	AgentId, AgentQuestion, AgentUsage, ApprovalEntry, UsageAlert, ToolbarParam, ToolbarResult, ToolbarRun, ToolbarSkill, ApprovalKind, ApprovalMode, AttachmentKind, ChatCommand, ChatEntry, ChatStats, ChatSummary, ChatTabStatus, ChatTabSummary, ChatViewState, HostToView, RepoMode, ToolEntry, ViewToHost, VoiceEvent, WorkdirFolder,
+	AgentId, AgentQuestion, AgentUsage, ApprovalEntry, UsageAlert, ToolbarParam, ToolbarResult, ToolbarRun, ToolbarSkill, ApprovalKind, ApprovalMode, AttachmentKind, ChatCommand, ChatEntry, ChatStats, ChatSummary, ChatTabStatus, ChatTabSummary, ChatViewState, HostToView, RepoMode, ToolEntry, ViewToHost, VoiceEvent, WorkdirFolder, GitBranchState, WorkdirGitStatus,
 } from '../src/chat/chatProtocol';
 import { baseName, searchPaths } from './fileRank';
 // Every codicon the bundled font has, one per line (`name,char,code`); bundled
@@ -221,8 +221,53 @@ const workdirMode = el('span', { class: 'workdir-mode' });
 const workdirLocationText = el('span', { class: 'workdir-location-value' });
 const workdirLocation = el('span', { class: 'workdir-location' }, workdirLocationText);
 const workdirSummary = button([workdirMode, workdirLocation], { class: 'workdir-summary', title: 'Working folder' });
-const workdirFooter = el('div', { class: 'workdir-status' }, workdirButton, workdirSummary);
-const footer = el('div', { class: 'footer' }, questionDock, switchCard, skillBar, composer, workdirFooter);
+const gitChanged = el('span', { class: 'git-changed' }, '+0');
+const gitDeleted = el('span', { class: 'git-deleted' }, '−0');
+const gitRefresh = button([icon('refresh')], { class: 'ghost round', title: 'Обновить статус Git' });
+gitRefresh.setAttribute('aria-label', 'Обновить статус Git');
+const gitRefreshSlot = el('span', { class: 'git-refresh-slot' }, gitRefresh);
+gitRefreshSlot.dataset.tip = 'Обновить статус Git';
+const branchName = el('span', { class: 'git-branch-name' }, '…');
+const branchButton = button([icon('git-branch'), branchName, icon('chevron-down')], { class: 'ghost git-branch-button', title: 'Switch or manage Git branches' });
+branchButton.setAttribute('aria-haspopup', 'dialog');
+branchButton.setAttribute('aria-expanded', 'false');
+const commitIcon = icon('git-commit');
+const gitStagedCount = el('span', { class: 'git-staged-count', title: 'Staged files' }, '0');
+const gitUnstagedCount = el('span', { class: 'git-unstaged-count', title: 'Unstaged files' }, '0');
+const commitButton = button([commitIcon, 'Commit', gitStagedCount, gitUnstagedCount, icon('chevron-down')], { class: 'ghost git-commit-button', title: 'Git changes and commit' });
+commitButton.setAttribute('aria-haspopup', 'dialog');
+commitButton.setAttribute('aria-expanded', 'false');
+const gitStatus = el('div', { class: 'git-status' }, branchButton, commitButton, gitRefreshSlot);
+gitStatus.hidden = true;
+let gitFolder: string | undefined;
+let gitPending = false;
+function refreshGitStatus(): void {
+ if (!gitFolder || gitPending) { return; }
+ gitPending = true;
+ gitRefresh.disabled = true;
+ post({ type: 'refreshWorkdirGit' });
+}
+gitRefresh.addEventListener('click', refreshGitStatus);
+gitStatus.addEventListener('mouseenter', refreshGitStatus);
+commitButton.addEventListener('focus', refreshGitStatus);
+setInterval(() => { if (!document.hidden) { refreshGitStatus(); } }, 15_000);
+const workdirFooter = el('div', { class: 'workdir-status' }, workdirButton, workdirSummary, gitStatus);
+const commitNoticeText = el('span', { class: 'git-commit-notice-text' });
+const commitFix = button(['Fix with current model'], { class: 'git-commit-fix' });
+const commitDismiss = button([icon('close')], { class: 'ghost round', title: 'Dismiss commit result' });
+commitDismiss.setAttribute('aria-label', 'Dismiss commit result');
+const commitNotice = el('div', { class: 'git-commit-notice' }, commitNoticeText, commitFix, commitDismiss);
+commitNotice.setAttribute('role', 'status');
+commitNotice.setAttribute('aria-live', 'polite');
+commitNotice.hidden = true;
+function answerCommit(type: 'fixGitCommit' | 'dismissGitCommit'): void {
+	const commit = state?.workdir.commit;
+	if (!gitFolder || !state || !commit) { return; }
+	post({ type, folder: gitFolder, id: commit.id, tabId: state.activeTab });
+}
+commitFix.addEventListener('click', () => { commitFix.disabled = true; answerCommit('fixGitCommit'); });
+commitDismiss.addEventListener('click', () => answerCommit('dismissGitCommit'));
+const footer = el('div', { class: 'footer' }, questionDock, switchCard, skillBar, composer, workdirFooter, commitNotice);
 workdirSummary.addEventListener('click', () => workdirButton.click());
 /** One tab per open conversation, above the thread. */
 const tabStrip = el('div', { class: 'tab-strip' });
@@ -245,6 +290,258 @@ const approvalPopup = el('div', { class: 'popup approval-popup' });
 const palette = el('div', { class: 'popup palette' });
 /** The folder button's list: folders to work in, then the files of the one in use. */
 const workdirPopup = el('div', { class: 'popup palette workdir-popup' });
+const gitPopup = el('div', { class: 'popup palette git-changes-popup' });
+gitPopup.id = 'git-changes-popup';
+gitPopup.setAttribute('role', 'dialog');
+gitPopup.setAttribute('aria-label', 'Git changes and commit');
+commitButton.setAttribute('aria-controls', gitPopup.id);
+const gitPopupHeader = el('div', { class: 'git-changes-heading' }, el('strong', {}, 'Git changes'), el('span', { class: 'git-change-totals' }, gitChanged, gitDeleted));
+const gitPopupError = el('div', { class: 'git-branch-error' });
+gitPopupError.setAttribute('role', 'status');
+const gitPopupList = el('div', { class: 'git-changes-list' });
+const gitPopupActions = el('div', { class: 'git-changes-actions' });
+gitPopup.append(gitPopupHeader, gitPopupError, gitPopupList, gitPopupActions);
+let gitFiles: WorkdirGitStatus | undefined;
+let gitError = '';
+let gitIndexPending = false;
+let gitPopupPinned = false;
+let gitPopupPressed = false;
+let gitPopupShape = '';
+let gitOpenTimer: ReturnType<typeof setTimeout> | undefined;
+let gitCloseTimer: ReturnType<typeof setTimeout> | undefined;
+
+function changeGitFiles(action: 'stage' | 'unstage', path?: string): void {
+	if (!gitFolder || !state || gitIndexPending) { return; }
+	gitPopupPinned = true;
+	gitIndexPending = true;
+	gitError = '';
+	renderGitChanges();
+	post({ type: 'gitIndexAction', folder: gitFolder, tabId: state.activeTab, action, path });
+}
+function commitGitFiles(scope: 'staged' | 'all'): void {
+	if (!gitFolder || !state || gitIndexPending) { return; }
+	closePopups();
+	post({ type: 'gitCommit', folder: gitFolder, tabId: state.activeTab, scope });
+}
+function renderGitChanges(): void {
+	const staged = gitFiles?.staged.length ?? 0;
+	const unstaged = gitFiles?.unstaged.length ?? 0;
+	gitStagedCount.textContent = String(staged);
+	gitUnstagedCount.textContent = String(unstaged);
+	gitChanged.textContent = gitFiles ? `+${gitFiles.changed}` : '—';
+	gitDeleted.textContent = gitFiles ? `−${gitFiles.deleted}` : '';
+	commitButton.setAttribute('aria-label', `Git changes and commit. Staged: ${staged} files. Unstaged: ${unstaged} files.`);
+	if (!gitPopup.classList.contains('open') || gitPopupPressed) { return; }
+	const commit = state?.workdir.commit;
+	const committing = commit?.phase === 'generating' || commit?.phase === 'committing';
+	const modelAvailable = state?.agents.some(a => a.id === state?.selection.agent && a.available) && !!state.selection.model;
+	const busyReason = committing ? commit?.message ?? 'Committing…' : gitIndexPending ? 'Updating Git changes…' : branchBusy ? 'Switching branch…' : state?.running ? 'Wait for the agent to finish before changing Git files.' : '';
+	const commitReason = busyReason || (!modelAvailable ? 'Select an available model in the chat to generate a commit message.' : '');
+	const shape = JSON.stringify([gitFiles, gitError, busyReason, commitReason, state?.selection.model]);
+	if (shape === gitPopupShape) { return; }
+	gitPopupShape = shape;
+	gitPopupError.textContent = gitError;
+	gitPopupList.replaceChildren();
+	gitPopupActions.replaceChildren();
+	if (!gitFiles) {
+		gitPopupList.append(el('div', { class: 'git-branch-empty' }, gitError || 'Loading Git changes…'));
+		return;
+	}
+	for (const [label, files, action] of [['Staged', gitFiles.staged, 'unstage'], ['Unstaged', gitFiles.unstaged, 'stage']] as const) {
+		const all = button([icon(action === 'stage' ? 'add' : 'discard')], { class: 'ghost round', title: action === 'stage' ? 'Stage all files' : 'Unstage all files (keep working changes)' });
+		all.setAttribute('aria-label', action === 'stage' ? 'Stage all files' : 'Unstage all files');
+		all.disabled = !files.length || !!busyReason;
+		all.addEventListener('click', () => changeGitFiles(action));
+		gitPopupList.append(el('div', { class: 'git-changes-group' }, el('strong', {}, `${label} (${files.length})`), all));
+		if (!files.length) { gitPopupList.append(el('div', { class: 'git-branch-empty' }, 'No files')); }
+		for (const file of files) {
+			const name = file.originalPath ? `${file.originalPath} → ${file.path}` : file.path;
+			const move = button([icon(action === 'stage' ? 'add' : 'discard')], { class: 'ghost round', title: `${action === 'stage' ? 'Stage' : 'Unstage'} ${file.path}` });
+			move.setAttribute('aria-label', `${action === 'stage' ? 'Stage' : 'Unstage'} ${file.path}`);
+			move.disabled = !!busyReason;
+			move.addEventListener('click', () => changeGitFiles(action, file.path));
+			const statusMark = el('span', {
+				class: file.status === 'M' ? 'git-modified' : file.status === '?' ? 'git-changed' : '',
+				title: file.status === '?' ? 'New — file not yet tracked by Git' : file.status === 'M' ? 'Modified file' : file.status,
+			}, file.status === '?' ? 'N' : file.status);
+			gitPopupList.append(el('div', { class: 'git-changes-file' }, el('span', { class: file.status === 'D' ? 'git-file git-deleted' : 'git-file', title: name }, statusMark, '  ', name), move));
+		}
+	}
+	const note = (text: string) => gitPopupActions.append(el('div', { class: 'git-changes-hint' }, text));
+	const commitAction = (label: string, scope: 'staged' | 'all') => {
+		const action = button([icon('git-commit'), label], { class: 'git-changes-commit', title: commitReason || `Generate a commit message with ${state?.selection.model}` });
+		action.disabled = !!commitReason;
+		action.addEventListener('click', () => commitGitFiles(scope));
+		gitPopupActions.append(action);
+	};
+	if (staged && unstaged) {
+		note('What would you like to commit?');
+		commitAction(`Commit staged (${staged})`, 'staged');
+		commitAction('Commit all changes', 'all');
+	} else if (staged) { commitAction(`Commit staged (${staged})`, 'staged'); }
+	else if (unstaged) {
+		note('Nothing staged. Add all changed files to Staged?');
+		const stage = button([icon('add'), 'Stage all files'], { class: 'git-changes-commit' });
+		stage.disabled = !!busyReason;
+		stage.addEventListener('click', () => changeGitFiles('stage'));
+		gitPopupActions.append(stage);
+	} else { note('No changes to commit.'); }
+	if (busyReason || (staged && commitReason)) { note(busyReason || commitReason); }
+	if (staged && !modelAvailable && !busyReason) {
+		const choose = button(['Choose model…'], { class: 'ghost' });
+		choose.addEventListener('click', () => { closePopups(); modelPill.click(); });
+		gitPopupActions.append(choose);
+	}
+}
+function openGitChanges(pin: boolean): void {
+	if (!gitFolder) { return; }
+	if (!pin && document.querySelector('.popup.open') && !gitPopup.classList.contains('open')) { return; }
+	if (pin) { gitPopupPinned = true; }
+	if (!gitPopup.classList.contains('open')) {
+		openAbove(gitPopup, commitButton, 'right');
+		gitPopupShape = '';
+	}
+	commitButton.setAttribute('aria-expanded', 'true');
+	renderGitChanges();
+	refreshGitStatus();
+}
+function closeGitHover(): void {
+	clearTimeout(gitOpenTimer);
+	clearTimeout(gitCloseTimer);
+	gitCloseTimer = setTimeout(() => {
+		if (!gitPopupPinned && gitPopup.classList.contains('open')) { closePopups(); }
+	}, 250);
+}
+commitButton.addEventListener('click', () => {
+	clearTimeout(gitOpenTimer); clearTimeout(gitCloseTimer);
+	if (gitPopup.classList.contains('open') && gitPopupPinned) { closePopups(); return; }
+	openGitChanges(true);
+	gitPopup.querySelector<HTMLButtonElement>('.git-changes-commit:not(:disabled)')?.focus();
+});
+commitButton.addEventListener('mouseenter', () => {
+	clearTimeout(gitCloseTimer);
+	gitOpenTimer = setTimeout(() => openGitChanges(false), 150);
+});
+commitButton.addEventListener('mouseleave', closeGitHover);
+gitPopup.addEventListener('mouseenter', () => clearTimeout(gitCloseTimer));
+gitPopup.addEventListener('mouseleave', closeGitHover);
+gitPopup.addEventListener('focusin', () => { gitPopupPinned = true; });
+gitPopup.addEventListener('mousedown', () => { gitPopupPressed = true; gitPopupPinned = true; });
+document.addEventListener('mouseup', () => {
+	if (!gitPopupPressed) { return; }
+	gitPopupPressed = false;
+	setTimeout(renderGitChanges, 0);
+});
+
+const branchPopup = el('div', { class: 'popup palette git-branch-popup' });
+branchPopup.id = 'git-branch-popup';
+branchPopup.setAttribute('role', 'dialog');
+branchPopup.setAttribute('aria-label', 'Git branches');
+branchButton.setAttribute('aria-controls', branchPopup.id);
+const branchSearch = el('input', { class: 'palette-search' });
+branchSearch.type = 'text';
+branchSearch.placeholder = 'Find or create a branch…';
+branchSearch.setAttribute('aria-label', 'Find or create a branch');
+branchSearch.spellcheck = false;
+const branchError = el('div', { class: 'git-branch-error' });
+branchError.setAttribute('role', 'status');
+const branchCreate = button([icon('add'), 'Create branch…'], { class: 'git-branch-create' });
+const branchList = el('div', { class: 'palette-list git-branch-list' });
+branchPopup.append(branchSearch, branchError, branchCreate, branchList);
+let branchState: GitBranchState | undefined;
+let branchBusy = false;
+let branchDeleting: string | undefined;
+let branchRenderedShape = "";
+function runBranchAction(action: 'switch' | 'create' | 'delete', name: string, remote = false): void {
+	if (!gitFolder || branchBusy) { return; }
+	branchBusy = true;
+	branchError.textContent = action === 'delete' ? 'Deleting branch…' : 'Switching branch…';
+	post({ type: 'gitBranchAction', folder: gitFolder, action, name, remote });
+	renderBranches();
+}
+function renderBranches(): void {
+	const query = branchSearch.value.trim();
+	const shape = JSON.stringify([branchState, query, branchBusy, branchDeleting, gitPending]);
+	if (shape === branchRenderedShape) { return; }
+	branchRenderedShape = shape;
+	branchSearch.disabled = branchBusy;
+	branchCreate.textContent = query ? `+ Create “${query}” from ${branchState?.current || 'HEAD'}` : '+ Create a new branch (enter name above)';
+	branchCreate.disabled = branchBusy || !branchState || !query || !!branchState?.branches.some(b => !b.remote && b.name === query);
+	branchList.replaceChildren();
+	if (!branchState) {
+		branchList.append(el('div', { class: 'git-branch-empty' }, gitPending ? 'Loading branches…' : 'No Git repository available'));
+		return;
+	}
+	for (const remote of [false, true]) {
+		const matches = branchState.branches.filter(b => b.remote === remote && b.name.toLowerCase().includes(query.toLowerCase()));
+		if (!matches.length) { continue; }
+		branchList.append(el('div', { class: 'git-group-title' }, remote ? 'Remote branches' : 'Local branches'));
+		for (const branch of matches) {
+			const current = !remote && branch.name === branchState.current;
+			const select = button([icon(current ? 'check' : 'git-branch', current ? 'git-current-check' : ''), el('span', { class: 'git-branch-row-name' }, branch.name)], { class: current ? 'git-branch-select current' : 'git-branch-select', title: current ? 'Current branch' : `Switch to ${branch.name}` });
+			if (current) { select.setAttribute('aria-current', 'true'); }
+			select.disabled = current || branchBusy;
+			select.addEventListener('click', () => runBranchAction('switch', branch.name, remote));
+			const row = el('div', { class: 'git-branch-row' }, select);
+			if (!remote && !current) {
+				const remove = button([branchDeleting === branch.name ? 'Delete?' : icon('trash')], { class: 'ghost git-branch-delete', title: `Delete local branch ${branch.name}` });
+				remove.setAttribute('aria-label', `Delete local branch ${branch.name}`);
+				remove.disabled = branchBusy;
+				remove.addEventListener('click', () => {
+					if (branchDeleting === branch.name) { runBranchAction('delete', branch.name); }
+					else { branchDeleting = branch.name; renderBranches(); }
+				});
+				row.append(remove);
+				if (branchDeleting === branch.name) {
+					const cancel = button(['Cancel'], { class: 'ghost' });
+					cancel.disabled = branchBusy;
+					cancel.addEventListener('click', () => { branchDeleting = undefined; renderBranches(); });
+					row.append(cancel);
+				}
+			}
+			branchList.append(row);
+		}
+	}
+	if (!branchList.childElementCount) { branchList.append(el('div', { class: 'git-branch-empty' }, 'No matching branches')); }
+}
+branchButton.addEventListener('click', () => {
+	if (branchPopup.classList.contains('open')) { closePopups(); return; }
+	branchSearch.value = '';
+	branchDeleting = undefined;
+	branchError.textContent = '';
+	renderBranches();
+	openAbove(branchPopup, branchButton, 'right');
+	branchButton.setAttribute('aria-expanded', 'true');
+	refreshGitStatus();
+	branchSearch.focus();
+});
+branchSearch.addEventListener('input', () => { branchDeleting = undefined; renderBranches(); });
+branchCreate.addEventListener('click', () => runBranchAction('create', branchSearch.value.trim()));
+branchSearch.addEventListener('keydown', event => {
+	if (event.isComposing) { return; }
+	if (event.key === 'Enter') {
+		event.preventDefault();
+		const exact = branchState?.branches.find(b => b.name === branchSearch.value.trim());
+		if (exact) { if (exact.remote || exact.name !== branchState?.current) { runBranchAction('switch', exact.name, exact.remote); } }
+		else {
+			const match = branchState?.branches.find(b => b.name.toLowerCase().includes(branchSearch.value.trim().toLowerCase()) && (b.remote || b.name !== branchState?.current));
+			if (match) { runBranchAction('switch', match.name, match.remote); }
+			else if (!branchCreate.disabled) { branchCreate.click(); }
+		}
+	} else if (event.key === 'ArrowDown') {
+		event.preventDefault();
+		branchList.querySelector<HTMLButtonElement>('.git-branch-select:not(:disabled)')?.focus();
+	}
+});
+branchList.addEventListener('keydown', event => {
+	if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') { return; }
+	event.preventDefault();
+	const choices = [...branchList.querySelectorAll<HTMLButtonElement>('.git-branch-select:not(:disabled)')];
+	const index = choices.indexOf(document.activeElement as HTMLButtonElement);
+	const next = index + (event.key === 'ArrowDown' ? 1 : -1);
+	if (next < 0) { branchSearch.focus(); } else { choices[Math.min(next, choices.length - 1)]?.focus(); }
+});
+
 /** Adding or editing a toolbar skill: a panel over the chat. */
 const skillEditor = el('div', { class: 'history-panel skill-editor' });
 /** A toolbar skill's parameters, asked for when it runs; or its run, while it runs. */
@@ -254,7 +551,7 @@ const agentsPanel = el('div', { class: 'history-panel agents-panel' });
 /** Which copy of each agent's CLI this project uses: opened from the gear in the agent menu. */
 const agentAppsPanel = el('div', { class: 'history-panel agent-apps' });
 
-app.append(sleepPopup, tabStrip, usageAlertBar, thread, blocked, footer, menu, usagePopup, approvalPopup, palette, workdirPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel);
+app.append(sleepPopup, tabStrip, usageAlertBar, thread, blocked, footer, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel);
 
 /* ---------------------------------------------------------------- state */
 
@@ -381,6 +678,41 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 				}
 			}
 			return;
+  case 'gitBranchResult': {
+   if (message.folder !== gitFolder) { return; }
+   branchBusy = false;
+   branchDeleting = undefined;
+   branchError.textContent = message.error ?? '';
+   renderBranches();
+   renderGitChanges();
+   if (!message.error) {
+    if (message.action === 'delete') {
+     if (branchPopup.classList.contains('open')) { branchSearch.focus(); }
+    } else { closePopups(); branchButton.focus(); }
+   }
+   return;
+  }
+  case 'gitIndexResult': {
+   if (message.folder !== gitFolder) { return; }
+   gitIndexPending = false;
+   if (message.error) { gitError = message.error; }
+   renderGitChanges();
+   return;
+  }
+  case 'workdirGit': {
+   if (message.folder !== gitFolder) { return; }
+   gitPending = false;
+   gitRefresh.disabled = false;
+   gitFiles = message.status;
+   if (message.error) { gitError = message.error; }
+   else if (!gitIndexPending) { gitError = ''; }
+   branchState = message.branches;
+   branchName.textContent = branchState ? branchState.current || 'Detached HEAD' : 'Git';
+   branchButton.title = branchState ? `Current branch: ${branchState.current || 'Detached HEAD'} — switch or manage branches` : message.error ?? 'Git branches unavailable';
+   if (branchPopup.classList.contains('open')) { renderBranches(); }
+   renderGitChanges();
+   return;
+  }
 		case 'workdirFiles':
 			// Kept by folder: two listings can be in flight at once, a slow one for
 			// the tab left behind arriving after the one for the tab in front.
@@ -3588,6 +3920,12 @@ composer.addEventListener('mousedown', event => {
  * right-click menu in an agent's report (see `linkMenu`).
  */
 function closePopups(except?: HTMLElement, keep?: HTMLElement): void {
+ if (except !== branchPopup) { branchButton.setAttribute('aria-expanded', 'false'); }
+ if (except !== gitPopup) {
+  gitPopupPinned = false;
+  commitButton.setAttribute('aria-expanded', 'false');
+  clearTimeout(gitOpenTimer); clearTimeout(gitCloseTimer);
+ }
 	if (except !== agentsPanel && keep !== agentsPanel) {
 		agentsView = undefined;
 	}
@@ -3599,12 +3937,12 @@ function closePopups(except?: HTMLElement, keep?: HTMLElement): void {
 	if (except !== paramsPopup) {
 		paramsPopup.classList.remove('repo-form');
 	}
-	for (const popup of [sleepPopup, menu, usagePopup, approvalPopup, palette, workdirPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel]) {
+	for (const popup of [sleepPopup, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel]) {
 		if (popup !== except && popup !== keep) {
 			popup.classList.remove('open');
 		}
 	}
-	for (const pill of [effortButton, agentPill, modelPill, plusButton, usageButton, approveToggle, slashButton, workdirButton, contextButton]) {
+	for (const pill of [effortButton, agentPill, modelPill, plusButton, usageButton, approveToggle, slashButton, workdirButton, branchButton, commitButton, contextButton]) {
 		pill.classList.remove('active');
 	}
 	// A skill button is a popup's anchor too; the mark only tells a second
@@ -3693,7 +4031,7 @@ document.addEventListener('mousedown', event => {
 		}
 		return;
 	}
-	if (![workdirFooter, effortButton, sleepPopup, menu, usagePopup, approvalPopup, palette, workdirPopup, paramsPopup, skillBar, historyPanel, agentsPanel, agentAppsPanel, plusButton, usageButton, usageAlertText, agentsButton, agentPill, modelPill, approveToggle, slashButton, workdirButton, contextButton].some(n => n.contains(target))) {
+	if (![workdirFooter, effortButton, sleepPopup, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillBar, historyPanel, agentsPanel, agentAppsPanel, plusButton, usageButton, usageAlertText, agentsButton, agentPill, modelPill, approveToggle, slashButton, workdirButton, branchButton, commitButton, contextButton].some(n => n.contains(target))) {
 		closePopups();
 	}
 });
@@ -3716,6 +4054,11 @@ document.addEventListener('keydown', event => {
 	}
 	// A menu over a panel first, the panel with the next Escape.
 	if (closeMenuOverPanel()) {
+		return;
+	}
+	if (gitPopup.classList.contains('open')) {
+		closePopups();
+		commitButton.focus();
 		return;
 	}
 	closePopups();
@@ -4862,6 +5205,39 @@ function chooseWorkdirItem(index: number): void {
 
 function renderWorkdir(s: ChatViewState): void {
 	const w = s.workdir;
+	const folder = w.current?.path;
+	gitStatus.hidden = !folder;
+	if (folder !== gitFolder) {
+		closePopups();
+		gitFolder = folder;
+		branchState = undefined;
+		branchBusy = false;
+		branchDeleting = undefined;
+		branchName.textContent = '…';
+		gitPending = false;
+		gitChanged.textContent = '…';
+		gitDeleted.textContent = '';
+		gitFiles = undefined;
+		gitError = '';
+		gitIndexPending = false;
+		gitPopupShape = '';
+		refreshGitStatus();
+	}
+	const commit = w.commit;
+	const committing = commit?.phase === 'generating' || commit?.phase === 'committing';
+	const modelAvailable = s.agents.some(a => a.id === s.selection.agent && a.available);
+	commitButton.disabled = false;
+	renderGitChanges();
+	branchButton.disabled = committing;
+	commitButton.setAttribute('aria-busy', String(committing));
+	commitIcon.className = committing ? 'codicon codicon-loading codicon-modifier-spin' : 'codicon codicon-git-commit';
+	commitButton.title = committing ? commit.message ?? 'Committing…' : 'Git changes and commit';
+	commitNotice.hidden = !commit || committing;
+	commitNotice.dataset.phase = commit?.phase ?? '';
+	commitNoticeText.textContent = commit?.message ?? '';
+	commitFix.hidden = commit?.phase !== 'error';
+	commitFix.disabled = !modelAvailable || s.running;
+	commitFix.title = `Ask ${s.selection.model ?? 'the current model'} to diagnose and fix this commit error`;
 	workdirButton.title = w.current
 		? `Working folder: ${w.current.path}${w.picked ? '' : " (this window's)"} — where the agent works, and its files to add to the message`
 		: 'Working folder: none, the home directory — choose a folder for the agent to work in, and its files to add to the message';
@@ -5199,6 +5575,7 @@ const hoverTip = (() => {
 })();
 
 // The context pie's tooltip: how much of the window is used and how much is left.
+hoverTip.attach(gitRefreshSlot);
 hoverTip.attach(contextButton);
 hoverTip.attach(skillAddButton);
 hoverTip.attach(skillExpandButton);

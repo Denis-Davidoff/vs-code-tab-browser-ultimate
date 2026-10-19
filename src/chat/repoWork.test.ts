@@ -9,7 +9,7 @@ import { transpileModule, ModuleKind, ScriptTarget } from 'typescript';
 import type * as RepoWork from './repoWork.ts';
 
 for (const detached of [false, true]) {
-	test(`remove managed copy with ${detached ? 'detached HEAD' : 'attached branch'}`, async () => {
+	test(`remove managed copy preserves an unowned branch with ${detached ? 'detached HEAD' : 'attached branch'}`, async () => {
 		const scratch = mkdtempSync(join(tmpdir(), 'repo-remove-test-'));
 		try {
 			// Load the production modules as CommonJS, as the extension does.
@@ -36,7 +36,8 @@ for (const detached of [false, true]) {
 			await removeStoredCopy('git', storage, copy);
 			assert.equal(existsSync(copy), false);
 			assert.ok(!git(['worktree', 'list', '--porcelain']).includes(copy));
-			assert.equal(git(['branch', '--list', 'work']).trim().length > 0, detached);
+			// A branch not created for this generated copy must survive its worktree's removal.
+			assert.equal(git(['branch', '--list', 'work']).trim().length > 0, true);
 			assert.equal(existsSync(join(base, '.git')), true);
 		} finally {
 			rmSync(scratch, { recursive: true, force: true });

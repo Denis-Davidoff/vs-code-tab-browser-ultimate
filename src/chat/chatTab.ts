@@ -836,6 +836,14 @@ export class ChatTab {
 		}, restartQuietMs);
 	}
 
+	/** Push the selected branch while retaining ownership of the original cleanup branch. */
+	public updateCopyBranch(branch: string): void {
+		if (!this._chat.copy || this._chat.copy.branch === branch) { return; }
+		this._chat.copy = { ...this._chat.copy, ownedBranch: this._chat.copy.ownedBranch ?? this._chat.copy.branch, branch };
+		if (this.started) { void this._save(); }
+		this._post();
+	}
+
 	/** The copy this conversation worked in was removed: its actions go, its folder stays. */
 	public forgetCopy(): void {
 		this._chat.copy = undefined;

@@ -22,13 +22,19 @@ import { chatTranscript, transcriptFileName } from './transcript';
 import { diffSides } from './diffSides';
 import { listWorkdir, type WorkdirListing } from './workdir';
 import { compareUrl, parseRepo, repoSlug, validBranch, workBranchName, type RepoRef } from './githubRepo';
-import { cloneInto, copyChanges, isEmptyFolder, isOurWorktree, makeCopy, makeReference, pushCopy, removeCopy, storedCopyRepo, removeStoredCopy } from './repoWork';
+import { cloneInto, copyChanges, isEmptyFolder, isOurWorktree, makeCopy, makeReference, pushCopy, removeCopy, storedCopyRepo, removeStoredCopy, managedCopy } from './repoWork';
+import { GitAccess } from './gitAccess';
+import { changeGitIndex } from './gitIndex';
+import { commitChanges } from './gitCommit';
+import { branchCommand, parseGitBranches } from './gitBranchState';
+import { parseGitStatus } from './gitStatus';
+import { runGit } from './repoWork';
 import { gitBinary } from '../core/gitBinary';
 import { cleanUpReportsIn, writeChatTranscript } from '../elements/assistants';
 import { savePng } from '../browser/clipboardImage';
 import type { BrowserController } from '../browser/browserController';
 import type {
-	AgentId, AgentUsage, ApprovalMode, AttachmentKind, ChatSummary,
+	AgentId, AgentUsage, ApprovalMode, AttachmentKind, ChatSummary, GitCommitState,
 	ChatNews, ChatTabSummary, ChatViewState, HostToView, RepoMode, Selection, ToolbarRun, ToolbarSkill, UsageAlert, UsageWindow, ViewToHost, VoiceEvent, WorkdirFolder, WorkdirState,
 } from './chatProtocol';
 import { pickElementContext, pickForChat } from '../elements/elementPicker';
@@ -263,6 +269,15 @@ interface Voice {
 	readonly chatId: string;
 	action?: 'send' | 'attach';
 }
+interface GitCommitJob {
+	state: GitCommitState;
+	readonly controller: AbortController;
+	readonly tab: ChatTab;
+	readonly chatId: string;
+	agent?: AgentId;
+	proposedMessage?: string;
+}
+
 export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
 	private readonly _sleep: SleepControl;
 	private _view: vscode.WebviewView | undefined;
@@ -742,6 +757,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			case 'chooseWorkdir':
 				await this._chooseWorkdir();
 				return;
+			case 'gitIndexAction':
+				await this._changeGitIndex(message);
+				return;
+			case 'gitCommit':
+				await this._commitWorkdir(message.folder, message.tabId, message.scope);
+				return;
+			case 'fixGitCommit':
+			case 'dismissGitCommit':
+				await this._answerCommit(message);
+				return;
+			case 'gitBranchAction':
+				await this._gitBranchAction(message);
+				return;
+			case 'refreshWorkdirGit':
+				await this._refreshWorkdirGit();
+				return;
 			case 'listWorkdir':
 				await this._listWorkdir();
 				return;
@@ -1210,7 +1241,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 * by the drain (`QueuedRun`). It is not refused as "still running": another
 	 * run later is what was asked for.
 	 */
-	private async _runToolbarSkill(id: string, values: Readonly<Record<string, string>>, tabId?: string, again = false, queue = false): Promise<void> {
+	private async _runToolbarSkill(id: string, values: Readonly<Record<string, string>>, tabId?: string, again = false, queue = false, waitForGit = false): Promise<void> {
 		const skill = this._toolbar().find(s => s.id === id);
 		const tab = tabId ? this._tabs.find(t => t.id === tabId) : this._active;
 		if (skill && !tab) {
@@ -1308,7 +1339,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			refuse(vscode.l10n.t("The folder this conversation works in is gone: {0}.", plainInLabel(tab.cwd)));
 			return;
 		}
-		this._runs.start(skill, steps, stringValues, tab.chat.id, backend, model, effort, tab.cwd, tab.projectRoot, !this._untrusted(tab.cwd));
+		const chat = tab.chat;
+		try {
+			await this._gitAccess.launch(tab.cwd,
+				() => !this._disposed && this._tabs.includes(tab) && tab.chat === chat,
+				() => this._runs.start(skill, steps, stringValues, chat.id, backend, model, effort, tab.cwd, tab.projectRoot, !this._untrusted(tab.cwd)), waitForGit);
+		} catch (error) {
+			refuse(error instanceof Error ? error.message : String(error));
+		}
 	}
 
 	/**
@@ -1497,24 +1535,40 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			}
 			return;
 		}
-		const attachments = given ?? tab.attachments;
-		if (!text.trim() && !attachments.length) {
-			return;
+		try {
+			await this._gitAccess.launch(tab.cwd,
+				() => !this._disposed && this._tabs.includes(tab) && tab.chat === chat,
+				async () => {
+					const attachments = given ?? tab.attachments;
+					if (!text.trim() && !attachments.length) {
+						return;
+					}
+					if (!given) {
+						tab.attachments = [];
+					}
+					// Only the tab in front's card: a queued message going out in another
+					// tab must not close the question the user is reading here.
+					if (tab === this._active) {
+						this._switchTo = undefined;
+					}
+					const needsTitle = !tab.started && !tab.chat.named;
+					const titleContext = [text.slice(0, 1000), ...attachments.slice(0, 5).map(a => a.chip.label.slice(0, 80))].join('\n').slice(0, 1200);
+					const sent = tab.send(text, attachments, agent, model, effort, backend, step);
+					if (needsTitle) { this._generateTabTitle(tab, agent, titleContext); }
+					await sent;
+					this._saveTabs();
+				}, queued);
+		} catch (error) {
+			if (this._tabs.includes(tab) && tab.chat === chat) {
+				tab.push({ kind: 'error', text: error instanceof Error ? error.message : String(error) });
+				if (step) { tab.stepNotSent(step, 'Git is updating the repository'); }
+			}
+			if (!queued && text.trim()) {
+				if (tab === this._active && tab.chat === chat) {
+					this._postMessage({ type: 'restoreDraft', chatId: chat.id, text });
+				} else { this._notSent(text); }
+			}
 		}
-		if (!given) {
-			tab.attachments = [];
-		}
-		// Only the tab in front's card: a queued message going out in another
-		// tab must not close the question the user is reading here.
-		if (tab === this._active) {
-			this._switchTo = undefined;
-		}
-		const needsTitle = !tab.started && !tab.chat.named;
-		const titleContext = [text.slice(0, 1000), ...attachments.slice(0, 5).map(a => a.chip.label.slice(0, 80))].join('\n').slice(0, 1200);
-		const sent = tab.send(text, attachments, agent, model, effort, backend, step);
-		if (needsTitle) { this._generateTabTitle(tab, agent, titleContext); }
-		await sent;
-		this._saveTabs();
 	}
 
 	private readonly _titleRequests = new Map<ChatTab, AbortController>();
@@ -1596,7 +1650,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				// checked again as a press would be; the next queued item waits
 				// for it to be started, not for it to finish.
 				const started = next.background
-					? this._runToolbarSkill(next.background.skillId, next.background.values, tab.id, true)
+					? this._runToolbarSkill(next.background.skillId, next.background.values, tab.id, true, false, true)
 					: this._send(next.text, tab.id, next.attachments, next.step);
 				started
 					.catch(err => this._fail(err))
@@ -2340,6 +2394,218 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		return tab.chat.folder ?? this._workspaceFolders()[0]?.path;
 	}
 
+	private readonly _gitAccess = new GitAccess(folder => this._gitWorktreeIdentity(folder));
+
+	private async _assertGitFolder(folder: string): Promise<void> {
+		const storage = this._repoStorage();
+		const real = await fs.promises.realpath(folder);
+		const managed = managedCopy(storage, path.resolve(folder)) ?? managedCopy(storage, real);
+		if (managed && !await isOurWorktree(storage, managed.repo, managed.folder)) {
+			throw new Error('This managed repository copy is no longer its original Git worktree. Git operation cancelled.');
+		}
+		for (const tab of this._tabs) {
+			if (tab.chat.folder !== folder || !tab.chat.copy) { continue; }
+			const repo = parseRepo(tab.chat.copy.repo);
+			if (!repo || !await isOurWorktree(storage, repo, folder)) {
+				throw new Error('This repository copy is no longer its original Git worktree. Git operation cancelled.');
+			}
+		}
+	}
+
+	private async _runWorkdirGit(git: string, args: readonly string[], folder: string, timeoutMs?: number): Promise<string> {
+		await this._assertGitFolder(folder);
+		return runGit(git, args, folder, timeoutMs);
+	}
+
+	private async _gitWorktreeIdentity(folder: string): Promise<string> {
+		await this._assertGitFolder(folder);
+		const git = await gitBinary();
+		if (git) {
+			const directory = await runGit(git, ['rev-parse', '--absolute-git-dir'], folder, 15_000).catch(() => undefined);
+			if (directory) { return `git:${await fs.promises.realpath(directory.trim())}`; }
+		}
+		// Chats also work outside Git repositories; unrelated mutations must not prevent that.
+		return `folder:${await fs.promises.realpath(folder)}`;
+	}
+
+	private _busyGitFolders(): string[] {
+		return this._tabs.filter(t => t.busy || this._repoBusy.has(t) || this._runs.runningIn(t.chat.id) > 0).map(t => t.cwd);
+	}
+
+	private async _withGitMutation<T>(folder: string, work: () => Promise<T>): Promise<T> {
+		const release = await this._gitAccess.mutate(folder, () => this._busyGitFolders());
+		try { return await work(); } finally { release(); }
+	}
+
+	private async _refreshWorkdirGit(): Promise<void> {
+		const folder = this._workdir();
+		if (!folder) { return; }
+		try {
+			const git = await gitBinary();
+			if (!git) { throw new Error('Git is unavailable'); }
+			const [output, current, refs] = await Promise.all([
+				this._runWorkdirGit(git, ['--no-optional-locks', 'status', '--porcelain=v1', '-z', '--untracked-files=all'], folder, 15_000),
+				this._runWorkdirGit(git, ['symbolic-ref', '--quiet', 'HEAD'], folder, 15_000).catch(() => ''),
+				this._runWorkdirGit(git, ['for-each-ref', '--sort=refname', '--format=%(refname)%00%(symref)', 'refs/heads/', 'refs/remotes/'], folder, 15_000),
+			]);
+			this._postMessage({ type: 'workdirGit', folder, status: parseGitStatus(output), branches: parseGitBranches(current, refs) });
+		} catch (error) {
+			this._postMessage({ type: 'workdirGit', folder, error: error instanceof Error ? error.message : String(error) });
+		}
+	}
+
+	private async _changeGitIndex(message: Extract<ViewToHost, { type: 'gitIndexAction' }>): Promise<void> {
+		const { folder, action } = message;
+		const tab = this._tabs.find(t => t.id === message.tabId);
+		let error: string | undefined;
+		try {
+			if (!tab || tab !== this._active || typeof folder !== 'string' || this._workdir(tab) !== folder
+				|| !['stage', 'unstage'].includes(action) || (message.path !== undefined && typeof message.path !== 'string')) {
+				throw new Error('The working folder changed. Open Git changes again.');
+			}
+			if (this._blocked()) { throw new Error('Git changes are unavailable in this window.'); }
+			const git = await gitBinary();
+			if (!git) { throw new Error('Git is unavailable.'); }
+			await this._withGitMutation(folder, async () => {
+				const current = () => {
+					if (!this._tabs.includes(tab) || tab !== this._active || this._workdir(tab) !== folder) {
+						throw new Error('The working folder changed. Open Git changes again.');
+					}
+				};
+				current();
+				const status = parseGitStatus(await this._runWorkdirGit(git, ['status', '--porcelain=v1', '-z', '--untracked-files=all'], folder));
+				await changeGitIndex(args => { current(); return this._runWorkdirGit(git, args, folder); }, status, action, message.path);
+			});
+		} catch (err) { error = err instanceof Error ? err.message : String(err); }
+		finally {
+			if (!this._disposed && folder === this._workdir()) { await this._refreshWorkdirGit(); }
+			this._postMessage({ type: 'gitIndexResult', folder, error });
+		}
+	}
+
+	private readonly _gitCommits = new Map<string, GitCommitJob>();
+
+	private async _commitWorkdir(folder: string, tabId: string, scope: 'staged' | 'all' = 'staged'): Promise<void> {
+		const tab = this._tabs.find(t => t.id === tabId);
+		if (typeof folder !== 'string' || !tab || tab !== this._active || this._workdir(tab) !== folder || !['staged', 'all'].includes(scope)) { return; }
+		const previous = this._gitCommits.get(folder)?.state.phase;
+		if (previous === 'generating' || previous === 'committing') { return; }
+		const job: GitCommitJob = {
+			state: { id: generateUuid(), phase: 'generating', message: 'Preparing changes…' },
+			controller: new AbortController(), tab, chatId: tab.chat.id,
+		};
+		this._gitCommits.set(folder, job);
+		this._post();
+		let release: (() => void) | undefined;
+		const guard = () => {
+			job.controller.signal.throwIfAborted();
+			if (this._disposed || !this._tabs.includes(tab) || tab.chat.id !== job.chatId || this._workdir(tab) !== folder) {
+				throw new Error('The conversation or working folder changed. Commit was cancelled.');
+			}
+			if (this._blocked()) { throw new Error('Commit is unavailable in this window.'); }
+			if (this._tabs.some(t => this._workdir(t) === folder && (t.busy || this._repoBusy.has(t) || this._runs.runningIn(t.chat.id) > 0))) {
+				throw new Error('Wait for agents working in this repository to finish before committing.');
+			}
+		};
+		try {
+			guard();
+			release = await this._gitAccess.mutate(folder, () => this._busyGitFolders());
+			if (this._registry.detecting) { await this._registry.detect(); }
+			guard();
+			const { agent, model, effort } = this._selection(tab);
+			const backend = agent && this._registry.backend(agent);
+			if (!agent || !model || !backend?.generateCommitMessage || !this._registry.agents.some(a => a.id === agent && a.available)) {
+				throw new Error('Select an available model in the chat before committing.');
+			}
+			job.agent = agent;
+			const git = await gitBinary();
+			if (!git) { throw new Error('Git is unavailable.'); }
+			const config = this._untrusted(folder) ? ['-c', `core.hooksPath=${os.devNull}`] : [];
+			const result = await commitChanges(
+				args => this._runWorkdirGit(git, [...config, ...args], folder),
+				async context => {
+					const message = await backend.generateCommitMessage!(model, effort, context, job.controller.signal);
+					job.proposedMessage = message;
+					return message;
+				}, guard,
+				phase => {
+					job.state = { id: job.state.id, phase, message: phase === 'generating' ? `Generating commit message with ${model}…` : 'Committing…' };
+					this._post();
+				}, scope,
+			);
+			job.state = { id: job.state.id, phase: 'done', message: `Committed ${result.hash}: ${result.message.split('\n')[0]}` };
+			if (this._tabs.includes(tab) && tab.chat.id === job.chatId) { tab.push({ kind: 'notice', text: job.state.message! }); }
+		} catch (error) {
+			const detail = (error instanceof Error ? error.message : String(error)).slice(0, 6000);
+			job.state = { id: job.state.id, phase: 'error', message: `Commit failed: ${detail}` };
+			if (!this._disposed && this._tabs.includes(tab) && tab.chat.id === job.chatId) { tab.push({ kind: 'error', text: job.state.message! }); }
+		} finally {
+			release?.();
+			if (!this._disposed) {
+				this._post();
+				if (folder === this._workdir()) { await this._refreshWorkdirGit(); }
+			}
+		}
+	}
+
+	private async _answerCommit(message: Extract<ViewToHost, { type: 'fixGitCommit' | 'dismissGitCommit' }>): Promise<void> {
+		const tab = this._tabs.find(t => t.id === message.tabId);
+		const job = this._gitCommits.get(message.folder);
+		if (!tab || tab !== this._active || this._workdir(tab) !== message.folder || !job || job.state.id !== message.id
+			|| (job.state.phase !== 'error' && job.state.phase !== 'done')) { return; }
+		if (message.type === 'dismissGitCommit') {
+			this._gitCommits.delete(message.folder); this._post(); return;
+		}
+		if (job.state.phase !== 'error') { return; }
+		const prompt = `Help fix this Git commit failure in the working repository ${message.folder}. Inspect the actual repository state, diagnose and fix the cause, then retry the commit if possible. Preserve the user's changes and staged selection. Do not reset, discard changes, bypass hooks or push. If fixing it needs a choice, ask first.\n\nReported error:\n${job.state.message}${job.proposedMessage ? `\n\nGenerated commit message:\n${job.proposedMessage}` : ''}`;
+		this._gitCommits.delete(message.folder);
+		this._post();
+		await this._send(prompt, tab.id, []);
+	}
+
+
+	private async _gitBranchAction(message: Extract<ViewToHost, { type: 'gitBranchAction' }>): Promise<void> {
+		const { folder, name, action, remote } = message;
+		const answer = (error?: string) => this._postMessage({ type: 'gitBranchResult', folder, action, error });
+		if (typeof folder !== 'string' || folder !== this._workdir() || typeof name !== 'string'
+			|| !['switch', 'create', 'delete'].includes(action) || !name || name.startsWith('-') || /[\0\r\n]/.test(name)) {
+			answer('Invalid branch action or working folder.'); return;
+		}
+		let release: (() => void) | undefined;
+		try {
+			release = await this._gitAccess.mutate(folder, () => this._busyGitFolders());
+			if (this._blocked()) { throw new Error('Git branch actions are unavailable in this window.'); }
+			const sharing = () => this._tabs.filter(t => this._workdir(t) === folder);
+			const working = () => sharing().some(t => t.busy || this._repoBusy.has(t) || this._runs.runningIn(t.chat.id) > 0);
+			if (working()) { throw new Error('Wait for agents working in this folder to finish.'); }
+			const git = await gitBinary();
+			if (!git) { throw new Error('Git is unavailable.'); }
+			const refs = await this._runWorkdirGit(git, ['for-each-ref', '--format=%(refname)%00%(symref)', 'refs/heads/', 'refs/remotes/'], folder);
+			const branches = parseGitBranches('', refs).branches;
+			if (action !== 'create' && !branches.some(b => b.name === name && b.remote === (remote === true))) {
+				throw new Error('This branch no longer exists. Refresh the branch list.');
+			}
+			if (action === 'delete' && remote) { throw new Error('Only local branches can be deleted here.'); }
+			if (action === 'create') { await this._runWorkdirGit(git, ['check-ref-format', `refs/heads/${name}`], folder); }
+			if (folder !== this._workdir() || working()) { throw new Error('The working folder changed or an agent started. Try again when it is idle.'); }
+			// Branch switching must not execute hooks from a repository fetched from GitHub.
+			const args = ['-c', `core.hooksPath=${os.devNull}`];
+			await this._runWorkdirGit(git, [...args, ...branchCommand(action, name, remote)], folder);
+			if (action !== 'delete') {
+				const current = (await this._runWorkdirGit(git, ['symbolic-ref', '--short', 'HEAD'], folder)).trim();
+				for (const tab of sharing()) { tab.updateCopyBranch(current); }
+			}
+			this._listings.delete(folder);
+			this._post();
+			answer();
+		} catch (error) {
+			answer(error instanceof Error ? error.message : String(error));
+		} finally {
+			release?.();
+			if (folder === this._workdir()) { await this._refreshWorkdirGit(); }
+		}
+	}
+
 	private _workdirState(): WorkdirState {
 		const tab = this._active;
 		const workspace = this._workspaceFolders();
@@ -2347,6 +2613,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		const shown = (p: string): WorkdirFolder => workspace.find(w => w.path === p) ?? { path: p, name: path.basename(p) || p, removable: p !== current && !!storedCopyRepo(this._repoStorage(), p) };
 		const copy = tab.chat.copy;
 		return {
+			commit: current === undefined ? undefined : this._gitCommits.get(current)?.state,
 			current: current === undefined ? undefined : copy ? { path: current, name: `${copy.repo} · copy` } : shown(current),
 			picked: tab.chat.folder !== undefined,
 			noProject: tab.chat.folder !== undefined && isHome(tab.chat.folder),
@@ -2707,7 +2974,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 						target = opened;
 					}
 					await this._rememberFolder(made.path);
-					target.setFolder(made.path, { repo: repoSlug(repo), base: made.base, branch: workBranch });
+					target.setFolder(made.path, { repo: repoSlug(repo), base: made.base, branch: workBranch, ownedBranch: workBranch });
 					target.push({ kind: 'notice', text: vscode.l10n.t("Working in a separate copy of {0}, on the branch {1} taken from {2}. Your own folders are not touched; the folder button pushes the work and opens a pull request.", repoSlug(repo), workBranch, made.base) });
 					this._noteHeldBack(target, made.path);
 					this._post();
@@ -2833,12 +3100,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}
 		const git = await gitBinary();
 		if (!git || unavailable()) { return; }
-		await this._repoWork(this._active, vscode.l10n.t("removing repository copy"), async () => {
+		await this._withGitMutation(folder, () => this._repoWork(this._active, vscode.l10n.t("removing repository copy"), async () => {
 			await removeStoredCopy(git, this._repoStorage(), folder);
 			this._forgetCopy(folder);
 			this._listings.delete(folder);
 			await this._forgetRecent(folder);
-		});
+		}));
 	}
 
 	/** The folder button's actions on a separate copy of the tab in front. */
@@ -2883,23 +3150,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 					refuse(vscode.l10n.t("Push when the agent has finished."));
 					return;
 				}
-				await this._repoWork(tab, vscode.l10n.t("pushing {0}", copy.branch), async () => {
+				await this._withGitMutation(folder, () => this._repoWork(tab, vscode.l10n.t("pushing {0}", copy.branch), async () => {
 					const message = capAt(tab.chat.title.replace(/\s+/g, ' ').trim() || 'Changes from the AI Browser chat', 72);
 					await pushCopy(git, folder, copy.base, copy.branch, message);
 					const url = compareUrl(repo, copy.base, copy.branch);
 					tab.push({ kind: 'notice', text: vscode.l10n.t("Pushed {0} to {1}. A pull request into {2}: {3}", copy.branch, copy.repo, copy.base, url) });
 					await vscode.env.openExternal(vscode.Uri.parse(url));
-				});
+				}));
 				return;
 			case 'remove':
 				if (working) {
 					refuse(vscode.l10n.t("Remove the copy when the agents working in it have finished."));
 					return;
 				}
-				await this._repoWork(tab, vscode.l10n.t("removing the copy of {0}", copy.repo), async () => {
-					await removeCopy(git, this._repoStorage(), repo, folder, copy.branch);
+				await this._withGitMutation(folder, () => this._repoWork(tab, vscode.l10n.t("removing the copy of {0}", copy.repo), async () => {
+					await removeCopy(git, this._repoStorage(), repo, folder, copy.ownedBranch ?? copy.branch);
 					this._forgetCopy(folder);
-				});
+				}));
 				return;
 		}
 	}
@@ -2936,7 +3203,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 					chat.folder = folder;
 					const copy = repos[id]?.copy as StoredChat['copy'] | undefined;
 					if (copy && typeof copy.repo === 'string' && typeof copy.base === 'string' && typeof copy.branch === 'string') {
-						chat.copy = { repo: copy.repo, base: copy.base, branch: copy.branch };
+						chat.copy = { repo: copy.repo, base: copy.base, branch: copy.branch, ownedBranch: typeof copy.ownedBranch === 'string' ? copy.ownedBranch : undefined };
 					}
 				}
 				const references = repos[id]?.references;
@@ -3025,6 +3292,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	private _removeTab(tab: ChatTab): void {
+		for (const [folder, job] of this._gitCommits) {
+			if (job.tab === tab) { job.controller.abort(); this._gitCommits.delete(folder); }
+		}
 		this._titleRequests.get(tab)?.abort();
 		this._titleRequests.delete(tab);
 		const at = this._tabs.indexOf(tab);
@@ -3177,6 +3447,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			if (tab.chat.agent === agent) { this._titleRequests.get(tab)?.abort(); }
 			tab.backendReplaced(agent, gone);
 		}
+		for (const job of this._gitCommits.values()) { if (job.agent === agent) { job.controller.abort(); } }
 		this._runs.backendReplaced(agent, gone);
 	}
 
@@ -3205,6 +3476,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		this._disposed = true;
 		for (const request of this._titleRequests.values()) { request.abort(); }
 		this._titleRequests.clear();
+		for (const job of this._gitCommits.values()) { job.controller.abort(); }
 		this._sleep.dispose();
 		this._voiceCancel();
 		void vscode.commands.executeCommand('setContext', 'aiBrowser.keepAwakeActive', false);

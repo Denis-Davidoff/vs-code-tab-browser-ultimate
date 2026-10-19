@@ -1,3 +1,4 @@
+import { requestCommitMessage } from './commitMessage';
 import { requestTitle } from './autoTitle';
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
@@ -269,6 +270,10 @@ export class CodexBackend implements AgentBackend {
 		this._process = undefined;
 		this._ready = undefined;
 		process?.dispose();
+	}
+
+	public generateCommitMessage(model: string, effort: string | undefined, context: string, signal: AbortSignal): Promise<string> {
+		return requestCommitMessage(this._binary, this.id, model, effort, context, signal);
 	}
 
 	public generateTitle(model: ChatModel, context: string, signal: AbortSignal): Promise<string | undefined> {

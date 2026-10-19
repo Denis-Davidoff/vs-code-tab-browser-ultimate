@@ -413,8 +413,10 @@ export interface RepoCopy {
 	readonly repo: string;
 	/** The branch it was taken from, which a pull request goes into. */
 	readonly base: string;
-	/** Ours, in the copy: `ai-browser/…`. */
+	/** The branch currently selected in the copy. */
 	readonly branch: string;
+	/** The generated branch owned by this disposable copy; independent of checkout. */
+	readonly ownedBranch?: string;
 }
 
 /** A GitHub repository cloned beside the project for the agent to read. */
@@ -432,7 +434,32 @@ export interface RepoReference {
  */
 export type RepoMode = 'copy' | 'clone' | 'reference';
 
+export interface GitBranchState {
+ readonly current: string;
+ readonly branches: readonly { name: string; remote: boolean }[];
+}
+
+export interface GitStatusFile {
+	readonly path: string;
+	readonly status: string;
+	readonly originalPath?: string;
+}
+
+export interface WorkdirGitStatus {
+	readonly staged: readonly GitStatusFile[];
+	readonly unstaged: readonly GitStatusFile[];
+	readonly changed: number;
+	readonly deleted: number;
+}
+
+export interface GitCommitState {
+	readonly id: string;
+	readonly phase: 'generating' | 'committing' | 'done' | 'error';
+	readonly message?: string;
+}
+
 export interface WorkdirState {
+	readonly commit?: GitCommitState;
 	/** Absent: no folder of the window's and none picked — the home directory, with no project. */
 	readonly current?: WorkdirFolder;
 	/** The conversation picked its folder rather than taking the window's. */
@@ -609,6 +636,9 @@ export type HostToView =
 	 * The files and folders of `folder`, relative and `/`-separated, a folder
 	 * ending with `/`; sent when the folder button asks, not with every state.
 	 */
+	| { readonly type: 'gitIndexResult'; readonly folder: string; readonly error?: string }
+	| { readonly type: 'gitBranchResult'; readonly folder: string; readonly action: 'switch' | 'create' | 'delete'; readonly error?: string }
+	| { readonly type: 'workdirGit'; readonly folder: string; readonly status?: WorkdirGitStatus; readonly branches?: GitBranchState; readonly error?: string }
 	| { readonly type: 'workdirFiles'; readonly folder: string; readonly entries: readonly string[]; readonly truncated: boolean }
 	/** The GitHub form's answer: taken (the form closes), or refused with the reason (it stays). */
 	| { readonly type: 'githubAnswer'; readonly error?: string }
@@ -709,6 +739,11 @@ export type ViewToHost =
 	/** The folder button's "Choose folder…": the system's folder dialog. */
 	| { readonly type: 'chooseWorkdir' }
 	/** The folder button opened: list the tab in front's working folder. */
+	| { readonly type: 'gitCommit'; readonly folder: string; readonly tabId: string; readonly scope?: 'staged' | 'all' }
+	| { readonly type: 'gitIndexAction'; readonly folder: string; readonly tabId: string; readonly action: 'stage' | 'unstage'; readonly path?: string }
+	| { readonly type: 'fixGitCommit' | 'dismissGitCommit'; readonly folder: string; readonly id: string; readonly tabId: string }
+	| { readonly type: 'gitBranchAction'; readonly folder: string; readonly action: 'switch' | 'create' | 'delete'; readonly name: string; readonly remote?: boolean }
+	| { readonly type: 'refreshWorkdirGit' }
 	| { readonly type: 'listWorkdir' }
 	/** A file or folder of the working folder, by its path relative to it, attached to the message. */
 	| { readonly type: 'attachPath'; readonly path: string }

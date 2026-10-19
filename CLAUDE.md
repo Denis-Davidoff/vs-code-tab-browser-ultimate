@@ -4957,6 +4957,26 @@ as in the "/" palette, then the folder the agent works in, then the files and fo
 folder to add to the message. `workdirPopup` in `chat.ts`; the host's half is the *working
 folder* section of `chatView.ts`.
 
+- **Git footer**: beside the working path, the branch dropdown searches local and known remote
+  branches, switches or creates a branch, and deletes local branches with `git branch -d`.
+  The combined **Commit** trigger with numeric staged/unstaged counters stays accessible and opens the changes panel on hover
+  or click. It shows Staged and Unstaged groups, changed/deleted totals, and per-file and group
+  Stage (+) / Unstage (undo) actions. Unstage changes only the index, including renames and an
+  unborn HEAD. Staging does not require a model; unavailable commit actions explain why.
+  Mixed changes offer **Commit staged** or **Commit all changes**. An empty index first offers
+  **Stage all files**; the host defaults to staged-only and never implicitly stages on that path.
+  Commit generates a message using the chat's selected agent, model and effort, then runs
+  `git commit`. The text request runs separately without tools or conversation history. A changed
+  index or HEAD during generation cancels the commit. Managed-copy ownership is checked before
+  Git discovery and every footer Git command. Mutations reserve the canonical per-worktree Git
+  directory before checking busy agents: root folders, subdirectories and symlink aliases share
+  a lock, while separate worktrees do not. Composer sends and background skills consult that
+  same lock immediately before starting; queued work waits for its release. The copy's selected
+  branch is separate from its original owned branch; cleanup only deletes a generated branch
+  whose name matches the copy directory, preserving preexisting branches after checkout.
+  Failures remain visible with an explicit action to send their diagnostics to the current chat
+  for repair; no repair turn starts automatically. See `gitAccess.ts`, `gitIndex.ts`,
+  `gitCommit.ts`, `commitMessage.ts`, and `_commitWorkdir` in `chatView.ts`.
 - **The folder belongs to the conversation** (`StoredChat.folder`), absent meaning the window's
   own — its first local folder, else the home directory with no project, as before. Each tab can
   work in another project. `ChatTab.cwd` / `projectRoot` hand it to the session, so the approval
