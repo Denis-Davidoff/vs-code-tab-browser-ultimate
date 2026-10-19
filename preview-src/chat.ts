@@ -2161,7 +2161,7 @@ function renderApproveToggle(s: ChatViewState): void {
 	const shown = JSON.stringify([text, title]);
 	if (approveToggle.dataset.shown !== shown) {
 		approveToggle.dataset.shown = shown;
-		const parts: HTMLElement[] = [el('span', { text: 'Mode' })];
+		const parts: HTMLElement[] = [el('span', { text: 'Mode:' })];
 		counts.forEach((item, index) => {
 			if (index) { parts.push(el('span', { class: 'mode-separator', text: '•' })); }
 			parts.push(el('strong', { class: `mode-count mode-${item.mode}`, text: String(item.count), title: item.label }));
@@ -7133,8 +7133,8 @@ function buildSleepPopup(): void {
 		automatic.checked = sleep?.automatic === true;
 	});
 	sleepPopup.append(el('label', { class: 'sleep-automatic' }, automatic,
-		el('span', {}, el('span', { text: 'Automatically while tasks are active' }),
-			el('span', { class: 'sleep-option-detail', text: 'All chat tabs · stops when every task finishes' }))));
+		el('span', {}, el('span', { text: 'Keep awake automatically while tasks are running' }),
+			el('span', { class: 'sleep-option-detail', text: 'Across all chat tabs · turns off when all tasks finish' }))));
 }
 /**
  * Opened from the cup in the view's title bar, which is outside the webview:
