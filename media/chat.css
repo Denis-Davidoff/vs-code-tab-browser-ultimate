@@ -357,8 +357,7 @@ button {
 }
 
 .agents-running:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: 2px;
+	outline: none;
 }
 
 /* ---------------------------------------------------------------- activity rows */
@@ -1108,24 +1107,42 @@ body.vscode-light .code-block pre {
 	color: var(--fg-faint);
 }
 
-/* "What's new", from NEWS.md: small print under the welcome, newest first */
-.news {
-	max-width: 320px;
-	margin: 22px auto 0;
-	padding-top: 12px;
-	border-top: 1px solid var(--border);
-	text-align: left;
-	font-size: 0.85em;
-	line-height: 1.5;
-	color: var(--fg-3);
+/* Changelog is opened from the welcome link, in a modal above the chat. */
+.news-dialog {
+	box-sizing: border-box;
+	width: min(520px, calc(100vw - 32px));
+	max-height: calc(100vh - 32px);
+	padding: 20px;
+	border: 1px solid var(--border-strong);
+	border-radius: var(--radius-lg);
+	color: var(--fg);
+	background: var(--elevated, var(--bg));
+	box-shadow: 0 12px 40px #0005;
+	overflow: auto;
 }
 
-.news-heading {
-	margin-bottom: 8px;
-	font-size: 0.85em;
-	letter-spacing: 0.04em;
-	text-transform: uppercase;
-	color: var(--fg-faint);
+.news-dialog::backdrop {
+	background: #0006;
+}
+
+.news-dialog-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	margin-bottom: 16px;
+}
+
+.news-dialog-title {
+	margin: 0;
+	font-size: 1.1em;
+}
+
+.news {
+	text-align: left;
+	font-size: 0.9em;
+	line-height: 1.5;
+	color: var(--fg-3);
 }
 
 .news-entry + .news-entry {
@@ -1163,14 +1180,15 @@ body.vscode-light .code-block pre {
 	color: var(--vscode-textLink-foreground);
 }
 
-/* "Hide changelog" / "Show changelog": a link, not a button, in the small print */
+/* A single link below the welcome text. */
 .news-toggle {
 	display: block;
-	margin: 10px auto 0;
+	margin: 14px auto 0;
 	padding: 0;
 	border: none;
 	background: transparent;
-	font-size: 0.95em;
+	font-size: 0.85em;
+	text-decoration: none;
 	color: var(--vscode-textLink-foreground);
 	cursor: pointer;
 }
@@ -1180,15 +1198,7 @@ body.vscode-light .code-block pre {
 }
 
 .news-toggle:focus-visible {
-	outline: 1px solid var(--accent);
-	outline-offset: 2px;
-}
-
-.news-collapsed {
-	border-top: none;
-	padding-top: 0;
-	margin-top: 14px;
-	text-align: center;
+	outline: none;
 }
 
 .welcome-problem {
@@ -1574,8 +1584,7 @@ body.vscode-light .code-block pre {
 }
 
 .usage-alert-close:focus-visible {
-	outline: 1px solid #000;
-	outline-offset: -1px;
+	outline: none;
 }
 
 /* The hubot about the size of the round marks beside it (the pie, the U). */
@@ -2599,8 +2608,7 @@ body.vscode-high-contrast-light .context-pie {
 }
 
 .agent-app-select:focus {
-	outline: 1px solid var(--accent);
-	outline-offset: -1px;
+	outline: none;
 }
 
 .agent-app-select:disabled {
@@ -3656,8 +3664,7 @@ body.vscode-high-contrast-light .context-pie {
 }
 
 .skill-button:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder, var(--accent));
-	outline-offset: 1px;
+	outline: none;
 }
 
 /* The skill's own colours, for the label, the border and the icon; a run's
@@ -4080,7 +4087,7 @@ body.vscode-high-contrast-light .context-pie {
 .sleep-option:hover { background: var(--vscode-list-hoverBackground); }
 .sleep-option.selected { border-color: currentColor; background: var(--vscode-list-hoverBackground); }
 .sleep-popup > .sleep-option { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; margin-top: 8px; padding: 10px; }
-.sleep-option:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
+.sleep-option:focus-visible { outline: none; }
 
 .sleep-popup > .sleep-agents-option {
 	display: flex;
@@ -4135,7 +4142,7 @@ body.vscode-high-contrast-light .context-pie {
 	cursor: pointer;
 }
 .workdir-summary:hover { color: var(--fg); }
-.workdir-summary:focus-visible { outline: 1px solid var(--accent); border-radius: 4px; }
+.workdir-summary:focus-visible { outline: none; border-radius: 4px; }
 .workdir-mode { flex: none; font-weight: 600; }
 .workdir-location { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workdir-location.path-tail { direction: rtl; text-align: left; }
@@ -4386,10 +4393,16 @@ body.vscode-high-contrast-light .context-pie {
 .temporary-delete-all:hover { background: var(--vscode-button-hoverBackground); }
 .temporary-delete-all:disabled { opacity: .5; cursor: default; }
 .feature-settings:focus, .feature-settings-tab:focus { outline: none; }
-.feature-settings-tab:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -2px; }
+.feature-settings-tab:focus-visible { outline: none; }
 
 .sleep-automatic { display: flex; align-items: flex-start; gap: 8px; padding: 10px 6px 4px; margin-top: 8px; border-top: 1px solid var(--vscode-panel-border); cursor: pointer; }
 .sleep-automatic > span { display: flex; flex-direction: column; gap: 3px; }
 .sleep-automatic input { accent-color: var(--vscode-button-background); flex: none; }
 
 .git-changes-heading-tools { display: flex; align-items: center; gap: 8px; }
+
+/* Keep focus behavior without a visual outline on webview controls. */
+:focus,
+:focus-visible {
+	outline: none;
+}

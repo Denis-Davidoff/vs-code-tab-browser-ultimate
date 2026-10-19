@@ -1699,8 +1699,8 @@ setInterval(() => {
 /**
  * The empty chat: what AI Browser is, and what is new. Both come from NEWS.md
  * in the installed extension (`news` in the state) — the introduction as the
- * lead, the newest entries below it in small print — so the text is edited in
- * that file, not here. Until it has been read, or if it cannot be, the welcome
+ * lead, the newest entries in a dialog opened by a link — so the text is edited
+ * in that file, not here. Until it has been read, or if it cannot be, the welcome
  * says what the agents can do with what is available.
  */
 function welcome(s: ChatViewState): HTMLElement {
@@ -1718,16 +1718,17 @@ function welcome(s: ChatViewState): HTMLElement {
 		box.append(el('div', { class: 'welcome-problem', text: `${agent.name}: ${agent.problem}` }));
 	}
 	if (s.news?.entries.length) {
-		const toggle = (hidden: boolean, label: string) => {
-			const b = button([el('span', { text: label })], { class: 'news-toggle', title: label });
-			b.addEventListener('click', () => post({ type: 'setNewsHidden', hidden }));
-			return b;
-		};
-		if (s.newsHidden) {
-			box.append(el('div', { class: 'news news-collapsed' }, toggle(false, 'Show changelog')));
-		} else {
-			const news = el('div', { class: 'news' }, el('div', { class: 'news-heading', text: "What's new" }));
-			for (const entry of s.news.entries) {
+		const link = el('a', { class: 'news-toggle', text: 'Show changelog' });
+		link.href = '#changelog';
+		link.setAttribute('aria-haspopup', 'dialog');
+		link.addEventListener('click', event => {
+			event.preventDefault();
+			const heading = el('h2', { class: 'news-dialog-title', text: "What's new" });
+			heading.id = 'changelog-title';
+			const close = button([icon('close')], { class: 'ghost round', title: 'Close changelog' });
+			close.setAttribute('aria-label', 'Close changelog');
+			const news = el('div', { class: 'news' });
+			for (const entry of s.news!.entries) {
 				const items = el('ul', { class: 'news-items' });
 				for (const item of entry.items) {
 					const li = el('li');
@@ -1736,9 +1737,25 @@ function welcome(s: ChatViewState): HTMLElement {
 				}
 				news.append(el('div', { class: 'news-entry' }, el('div', { class: 'news-title', text: entry.title }), items));
 			}
-			news.append(toggle(true, 'Hide changelog'));
-			box.append(news);
-		}
+			const dialog = el('dialog', { class: 'news-dialog' },
+				el('div', { class: 'news-dialog-header' }, heading, close), news);
+			dialog.setAttribute('aria-labelledby', heading.id);
+			close.addEventListener('click', () => dialog.close());
+			dialog.addEventListener('click', event => {
+				const bounds = dialog.getBoundingClientRect();
+				if (event.target === dialog && (event.clientX < bounds.left || event.clientX > bounds.right
+					|| event.clientY < bounds.top || event.clientY > bounds.bottom)) {
+					dialog.close();
+				}
+			});
+			dialog.addEventListener('close', () => {
+				dialog.remove();
+				if (link.isConnected) { link.focus(); }
+			}, { once: true });
+			document.body.append(dialog);
+			dialog.showModal();
+		});
+		box.append(link);
 	}
 	return box;
 }

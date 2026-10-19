@@ -32,7 +32,6 @@ textarea {
 	font-family: var(--vscode-font-family);
 	padding: var(--input-padding-vertical) var(--input-padding-horizontal);
 	color: var(--vscode-input-foreground);
-	outline-color: var(--vscode-input-border);
 	background-color: var(--vscode-input-background);
 }
 
@@ -45,7 +44,7 @@ button {
 	border: none;
 	padding: 3px;
 	text-align: center;
-	outline: 1px solid transparent;
+	outline: none;
 	color: var(--vscode-icon-foreground);
 	background: none;
 	border-radius: 5px;
@@ -59,11 +58,6 @@ button:hover:not(:disabled) {
 
 button:disabled {
 	opacity: 0.5;
-}
-
-input:focus,
-button:focus {
-	outline-color: var(--vscode-focusBorder);
 }
 
 .header {
@@ -115,4 +109,10 @@ iframe {
 
 .iframe-focused.enable-focus-lock-indicator .iframe-focused-alert {
 	display: block;
+}
+
+/* Keep focus behavior without a visual outline on webview controls. */
+:focus,
+:focus-visible {
+	outline: none;
 }
