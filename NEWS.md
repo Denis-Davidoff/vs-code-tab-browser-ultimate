@@ -14,6 +14,15 @@ src/chat/news.ts — see "The AI Browser chat" in CLAUDE.md.
 
 Browse, debug and test your pages in VS Code's own browser — and let Claude Code or Codex see them, click through them and take screenshots, right inside the editor.
 
+## 0.7.17 — 2026-10-20
+- **Record a video of a browser page** from the tab's toolbar: Balanced 1080p, High 1440p or Maximum 4K, with pause, resume and stop. The video goes into the AI Browser Chat draft or its path to the clipboard; Claude Code and Codex can record through the `browser_recording_*` tools. Reaching the 10-minute or 256 MB limit now stops the recording and keeps the video.
+- **Paste files into the chat**: files and images on the clipboard are attached when pasted into the message box; PNG, JPEG, GIF and WebP also go to the agent as images.
+- **Temporary files** now live in `~/.ai-browser`, grouped by project. Chat Settings shows what is stored and cleans a project or everything, never touching the current draft's attachments.
+- **Your own system prompts** for commit messages, branch names and chat titles in Chat Settings, and keep-awake can switch on automatically while agents work. The Git footer shows file icons from your icon theme.
+- **Safer approvals**: PowerShell and other command tools are asked about under Terminal and show the command itself; a write through a symlink that leads out of the project counts as outside it.
+- **Saved logins**: a password the site rejected is no longer offered as an update after you click away, and a password for one account is no longer offered for another after switching accounts. A CSV import without dates says which accounts it could not order.
+- **Fixes**: Restricted Mode no longer runs Git in the chat footer; the skill editor and Chat Settings keep what you typed when focus leaves the panel; Enter in branch search switches only to an exactly named branch; "/start" in a sentence no longer clears the chat; recording and prompt confirmations no longer pause the page.
+
 ## 0.7.14 — 2026-10-19
 - **Chat Settings**: the gear beside the keep-awake cup opens **AI for Extension Features**. Choose the current chat agent (Auto), Claude Code or Codex, and minimum, medium or maximum effort independently for commit messages, branch names and chat titles. Settings are saved across projects; naming features use lightweight models.
 - **Git in the chat footer**: see the current branch and staged / unstaged file counts beside the working folder. Hover the counts to inspect file names and stage or unstage individual files or a whole group; refresh the repository status with the refresh button.

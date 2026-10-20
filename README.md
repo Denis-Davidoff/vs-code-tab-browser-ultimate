@@ -83,6 +83,14 @@ then restores the clipboard. It does not request OS screen recording access.
 
 ## Changelog
 
+**0.7.17** — Video recording of browser pages (three quality presets, pause and stop on the tab,
+`browser_recording_*` tools for the assistants; both limits keep the video). Files pasted into the
+chat are attached. Temporary files moved to `~/.ai-browser`, with per-project cleanup in Chat
+Settings. Custom system prompts for commit messages, branch names and titles, automatic
+keep-awake while agents work, and themed file icons in the Git footer. Command tools such as
+PowerShell are approved under Terminal; a rejected password is no longer offered as an update;
+Restricted Mode runs no Git; unsaved skill and settings edits survive focus changes.
+
 **0.7.14** — Git controls in the chat footer: inspect staged and unstaged files, stage or unstage
 changes, refresh status, and search, switch, create or delete branches. The sparkle button suggests
 a branch name from changes or discussion using a lightweight model at the configured effort. Commit
