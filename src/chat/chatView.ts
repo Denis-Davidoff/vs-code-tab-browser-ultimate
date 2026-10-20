@@ -35,7 +35,8 @@ import { branchCommand, parseGitBranches } from './gitBranchState';
 import { gitDiffSides } from './gitDiff';
 import { assertSwitchReady, switchAndUpdate, type SwitchResult } from './gitBranchSwitch';
 import { parseGitStatus } from './gitStatus';
-import { themedGitFiles } from './fileIconTheme';
+import { chatResourceRoots, loadFileIconTable, themedGitFiles } from './fileIconTheme';
+import type { FileIconTable } from './fileIconTable';
 import { runGit } from './repoWork';
 import { gitBinary } from '../core/gitBinary';
 import { cleanUpReportsIn, writeChatTranscript } from '../elements/assistants';
@@ -415,7 +416,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		// A lower limit closes nothing: the tabs open stay, and "+" comes back
 		// once enough of them are closed.
 		this._subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
-			if (e.affectsConfiguration('workbench.iconTheme') || e.affectsConfiguration('files.associations')) { this._gitEventRefresh(); }
+			if (e.affectsConfiguration('workbench.iconTheme') || e.affectsConfiguration('files.associations')) { this._gitEventRefresh(); this._postFileIcons(); }
 			if (e.affectsConfiguration(tabLimitSetting) || e.affectsConfiguration(collapseToolsSetting) || e.affectsConfiguration(viewModeSetting)) {
 				this._post();
 			}
@@ -423,7 +424,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		// These change only how the footer's files are drawn (their icons), so
 		// they go through `_gitEventRefresh`: debounced, and only while the view
 		// is on screen.
-		this._subscriptions.push(vscode.window.onDidChangeActiveColorTheme(() => this._gitEventRefresh()));
+		this._subscriptions.push(vscode.window.onDidChangeActiveColorTheme(() => { this._gitEventRefresh(); this._postFileIcons(); }));
 		// The suggested file follows the text editor in front.
 		this._subscriptions.push(vscode.window.onDidChangeActiveTextEditor(() => this._post()));
 		// A selection there is suggested in its place. Every cursor move fires
@@ -443,7 +444,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		// Changing a document's language fires close/open events in VS Code.
 		this._subscriptions.push(vscode.workspace.onDidOpenTextDocument(() => this._gitEventRefresh()));
 		this._subscriptions.push(vscode.workspace.onDidCloseTextDocument(() => this._gitEventRefresh()));
-		this._subscriptions.push(vscode.extensions.onDidChange(() => this._gitEventRefresh()));
+		this._subscriptions.push(vscode.extensions.onDidChange(() => { this._gitEventRefresh(); this._postFileIcons(); }));
 		this._subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(attachmentScheme, {
 			// An editor restored after a reload asks for a chip this window never
 			// held, and gets a sentence rather than an empty page.
@@ -569,7 +570,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		this._view = view;
 		this._viewReady = false;
 		const media = vscode.Uri.joinPath(this._context.extensionUri, 'media');
-		view.webview.options = { enableScripts: true, localResourceRoots: [media] };
+		// With the icon theme's folder from the start: adding it at the first
+		// theme read would make VS Code reload the page (`chatResourceRoots`).
+		view.webview.options = { enableScripts: true, localResourceRoots: chatResourceRoots(media) };
 		view.webview.html = this._html(view.webview, media);
 		view.webview.onDidReceiveMessage((message: ViewToHost) => {
 			this._receive(message).catch(err => this._fail(err));
@@ -637,6 +640,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 * user has never opened is the common case: a title-bar command reveals it
 	 * and posts in the same breath.
 	 */
+	private _fileIconsRequest = 0;
+	private _fileIconTable?: FileIconTable;
+	/**
+	 * The file icon theme's table for the names in the conversation, sent on
+	 * `ready` and whenever the theme, the colour theme's kind, an association or
+	 * the installed extensions change. Only to a live view: a table is a
+	 * snapshot, and `ready` asks for a fresh one. The newest request wins.
+	 */
+	private _postFileIcons(): void {
+		const view = this._view;
+		if (!view || !this._viewReady) { return; }
+		const request = ++this._fileIconsRequest;
+		const media = vscode.Uri.joinPath(this._context.extensionUri, 'media');
+		loadFileIconTable(view.webview, media).catch(() => undefined).then(table => {
+			if (request !== this._fileIconsRequest) { return; }
+			this._fileIconTable = table;
+			if (this._view === view && this._viewReady) {
+				void view.webview.postMessage({ type: 'fileIcons', table } satisfies HostToView);
+			}
+		});
+	}
+
 	private _postMessage(message: HostToView): void {
 		if (!this._view || !this._viewReady) {
 			// `workdirGit` is a snapshot, not an event: a stale one is worth
@@ -851,6 +876,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				this._postRecording();
 				// A queue held while there was no view goes out now that there is one.
 				this._drainQueues();
+				// The last table known goes before the first state, so a chat is
+				// drawn with its icons once rather than drawn and then drawn again;
+				// the fresh read below changes nothing in the view when it is equal.
+				if (this._fileIconTable) { void this._view?.webview.postMessage({ type: 'fileIcons', table: this._fileIconTable } satisfies HostToView); }
 				this._postMessage({ type: 'state', state: this._state() });
 				const queued = this._queued;
 				this._queued = [];
@@ -859,6 +888,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				// Nothing was read while there was no view (see `_refreshWorkdirGit`),
 				// so the footer starts from a fresh read rather than from nothing.
 				void this._refreshWorkdirGit();
+				this._postFileIcons();
 				if (!this._blocked() && !this._registry.detecting && !this._registry.agents.some(a => a.available || a.problem)) {
 					await this._registry.detect();
 				}
@@ -2235,7 +2265,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			const imageType = pastedImageType(name, message.mime);
 			const video = message.mime.startsWith('video/') || /\.(mp4|webm|mov|m4v|avi|mkv)$/i.test(name);
 			tab.attachments.push({
-				chip: { id: generateUuid(), kind: video ? 'video' : 'file', label: name },
+				chip: { id: generateUuid(), kind: video ? 'video' : 'file', label: name, ...(video ? {} : { iconName: name }) },
 				file: vscode.Uri.file(saved),
 				text: `Attached file: ${saved}`,
 				image: imageType ? { mediaType: imageType, base64: message.base64 } : undefined,
@@ -2581,7 +2611,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			const shown = vscode.workspace.asRelativePath(file, false);
 			// The path, not the contents: both agents read files themselves, and
 			// a large file pasted into the prompt would cost the whole context.
-			return { chip: { id, kind, label: path.basename(file.fsPath) }, file, text: `Attached file: ${file.fsPath}${shown !== file.fsPath ? ` (${shown} in the workspace)` : ''}` };
+			return { chip: { id, kind, label: path.basename(file.fsPath), iconName: path.basename(file.fsPath) }, file, text: `Attached file: ${file.fsPath}${shown !== file.fsPath ? ` (${shown} in the workspace)` : ''}` };
 		}
 
 		// Two refusals, because the fixes are unrelated (Recipe, step 3): without
@@ -3617,8 +3647,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		const tab = this._active;
 		tab.attachments.push(directory
 			// A folder chip opens its text: `vscode.open` on a folder would open a window.
-			? { chip: { id: generateUuid(), kind: 'file', label: `${path.basename(target)}/` }, text: `Attached folder: ${target} (${shown}/ in the project)` }
-			: { chip: { id: generateUuid(), kind: 'file', label: path.basename(target) }, file: vscode.Uri.file(target), text: `Attached file: ${target} (${shown} in the project)` });
+			? { chip: { id: generateUuid(), kind: 'file', label: `${path.basename(target)}/`, iconName: `${path.basename(target)}/` }, text: `Attached folder: ${target} (${shown}/ in the project)` }
+			: { chip: { id: generateUuid(), kind: 'file', label: path.basename(target), iconName: path.basename(target) }, file: vscode.Uri.file(target), text: `Attached file: ${target} (${shown} in the project)` });
 		this._post();
 		this._postMessage({ type: 'focusInput' });
 	}
@@ -3672,7 +3702,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		if (editor && selected) {
 			if (!attached.some(a => a.selectionKey === selected)) {
 				out.push({
-					chip: { id: `suggest:selection:${selected}`, kind: 'selection', label: selectionLabel(editor) },
+					chip: { id: `suggest:selection:${selected}`, kind: 'selection', label: selectionLabel(editor), iconName: path.basename(editor.document.uri.path) || undefined },
 					accept: () => {
 						// What is selected now, not what the chip showed.
 						const current = vscode.window.activeTextEditor;
@@ -3688,7 +3718,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		} else if (uri?.scheme === 'file' && !attached.some(a => a.file?.fsPath === uri.fsPath)) {
 			const folder = this._workdir(this._active);
 			out.push({
-				chip: { id: `suggest:file:${uri.toString()}`, kind: 'file', label: path.basename(uri.fsPath) },
+				chip: { id: `suggest:file:${uri.toString()}`, kind: 'file', label: path.basename(uri.fsPath), iconName: path.basename(uri.fsPath) },
 				accept: () => fileAttachment(uri, folder, false),
 			});
 		}
@@ -4647,7 +4677,7 @@ function selectionAttachment(editor: vscode.TextEditor): Attachment | string | u
 	if (Buffer.byteLength(text, 'utf8') > 1_000_000) {
 		return vscode.l10n.t("The selection is too large to attach (maximum 1 MB).");
 	}
-	return { chip: { id: generateUuid(), kind: 'selection', label: selectionLabel(editor) }, text, selectionKey: key };
+	return { chip: { id: generateUuid(), kind: 'selection', label: selectionLabel(editor), iconName: path.basename(editor.document.uri.path) || undefined }, text, selectionKey: key };
 }
 
 function fileAttachment(uri: vscode.Uri, folder: string | undefined, directory: boolean): Attachment {
@@ -4655,6 +4685,6 @@ function fileAttachment(uri: vscode.Uri, folder: string | undefined, directory: 
 	const inProject = relative !== undefined && relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
 	const shown = inProject ? relative.split(path.sep).join('/') : undefined;
 	return directory
-		? { chip: { id: generateUuid(), kind: 'file', label: `${path.basename(uri.fsPath)}/` }, text: `Attached folder: ${uri.fsPath}${shown ? ` (${shown}/ in the project)` : ''}` }
-		: { chip: { id: generateUuid(), kind: 'file', label: path.basename(uri.fsPath) }, file: uri, text: `Attached file: ${uri.fsPath}${shown ? ` (${shown} in the project)` : ''}` };
+		? { chip: { id: generateUuid(), kind: 'file', label: `${path.basename(uri.fsPath)}/`, iconName: `${path.basename(uri.fsPath)}/` }, text: `Attached folder: ${uri.fsPath}${shown ? ` (${shown}/ in the project)` : ''}` }
+		: { chip: { id: generateUuid(), kind: 'file', label: path.basename(uri.fsPath), iconName: path.basename(uri.fsPath) }, file: uri, text: `Attached file: ${uri.fsPath}${shown ? ` (${shown} in the project)` : ''}` };
 }

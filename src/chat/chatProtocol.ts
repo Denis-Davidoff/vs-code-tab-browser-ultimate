@@ -303,6 +303,8 @@ export type ChatViewMode = 'minimal' | 'compact' | 'standard';
 export type ChatEntry =
 	| {
 		readonly kind: 'user'; readonly text: string; readonly attachments: readonly string[]; readonly at?: number;
+		/** Beside `attachments`, by index: the file name each chip carries (`AttachmentChip.iconName`), `null` for none. */
+		readonly attachmentFiles?: readonly (string | null)[];
 		/** Set when the turn ends: how long it took and what it cost in tokens. */
 		workedMs?: number; tokensIn?: number; tokensOut?: number; tokensCached?: number;
 	}
@@ -392,6 +394,12 @@ export interface AttachmentChip {
 	readonly id: string;
 	readonly kind: AttachmentKind;
 	readonly label: string;
+	/**
+	 * The name of the file (or folder, ending in `/`) the chip carries, for the
+	 * file icon theme's icon in front of it in the sent message; absent for a
+	 * chip that is not one file, such as a conversation handed over.
+	 */
+	readonly iconName?: string;
 	/** A small data URI for screenshots. */
 	readonly thumbnail?: string;
 }
@@ -673,14 +681,16 @@ export type HostToView =
 	| { readonly type: 'toolbarSaved'; readonly id: string }
 	/** A toolbar skill refused, with the reason: the editor stays open and shows it. */
 	| { readonly type: 'toolbarError'; readonly message: string }
-	/**
-	 * The files and folders of `folder`, relative and `/`-separated, a folder
-	 * ending with `/`; sent when the folder button asks, not with every state.
-	 */
+	/** The selected file icon theme for file names in the conversation; absent with none selected. */
+	| { readonly type: 'fileIcons'; readonly table?: import('./fileIconTable').FileIconTable }
 	| { readonly type: 'gitIndexResult'; readonly folder: string; readonly error?: string }
 	| { readonly type: 'gitBranchNameResult'; readonly id: number; readonly name?: string; readonly error?: string }
 	| { readonly type: 'gitBranchResult'; readonly folder: string; readonly action: 'switch' | 'create' | 'delete'; readonly error?: string }
 	| { readonly type: 'workdirGit'; readonly folder: string; readonly status?: WorkdirGitStatus; readonly branches?: GitBranchState; readonly error?: string }
+	/**
+	 * The files and folders of `folder`, relative and `/`-separated, a folder
+	 * ending with `/`; sent when the folder button asks, not with every state.
+	 */
 	| { readonly type: 'workdirFiles'; readonly folder: string; readonly entries: readonly string[]; readonly truncated: boolean }
 	/** The GitHub form's answer: taken (the form closes), or refused with the reason (it stays). */
 	| { readonly type: 'githubAnswer'; readonly error?: string }

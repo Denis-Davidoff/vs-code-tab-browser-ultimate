@@ -4649,6 +4649,25 @@ body.vscode-high-contrast-light .context-pie {
 .git-file-icon { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 16px; height: 16px; line-height: 1; }
 .git-file-icon:empty { display: none; }
 .git-file-icon img { width: 16px; height: 16px; object-fit: contain; }
+/*
+ * A file icon theme's icon before a file name in a reply or a prompt. The glyph
+ * comes from `data-char` through `::before`, so it is never part of the text a
+ * selection or a copy takes; an SVG theme sets the background instead.
+ */
+.theme-file-icon {
+	/* One line tall and centred on it, as the Explorer centres its icons in a row:
+	   a box 1em tall left the glyph — set at 150% — riding above the text. */
+	display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 1lh;
+	margin-right: 3px; vertical-align: top; overflow: visible; user-select: none; -webkit-user-select: none;
+	background: no-repeat center / 16px 16px; font-style: normal; font-weight: normal; text-decoration: none;
+}
+.theme-file-icon::before { content: attr(data-char); font-size: var(--icon-size, 100%); line-height: 1; }
+/* In a chip the chip's own gap parts icon and label, so the icon has no margin;
+   and a font glyph's box is its ink, not its advance — Seti's glyph at 150% is
+   19.5 px wide with ~3.7 px of bearing on each side (measured), which put the
+   label a further 7 px away. 12 px with the overflow showing is the ink. */
+.chip .theme-file-icon { margin-right: 0; }
+.chip .theme-file-icon[data-char] { width: 12px; }
 
 .temporary-storage-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .temporary-folder { display: flex; flex-direction: column; gap: 4px; padding: 8px 0; border-bottom: 1px solid var(--vscode-widget-border); }

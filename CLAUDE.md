@@ -246,6 +246,7 @@ difference, in `browserController.js`, was a doc comment whose link had been upd
 - [src/chat/transcript.ts](src/chat/transcript.ts) — a conversation as Markdown, for handing it to the other agent (leaf, under test)
 - [src/chat/diffSides.ts](src/chat/diffSides.ts) — a diff card's text as the before and after VS Code's diff editor compares (leaf, under test)
 - [src/chat/news.ts](src/chat/news.ts) — NEWS.md into the empty chat's introduction and "What's new" (leaf, under test)
+- [src/chat/fileIconTable.ts](src/chat/fileIconTable.ts) — the file icon theme as a lookup table, and which tokens of a message name a file (leaf, under test, read by both builds)
 - [src/chat/workdir.ts](src/chat/workdir.ts) — the working folder's files for the folder button: a walk that reads `.gitignore` (leaf, under test)
 - [preview-src/fileRank.ts](preview-src/fileRank.ts) — searching those files in the view (leaf, under test)
 - [src/chat/githubRepo.ts](src/chat/githubRepo.ts) — a GitHub repository as typed: owner and name, branch names, addresses (leaf, under test)
@@ -4705,6 +4706,61 @@ file that is gone is refused in the status bar. Two details:
 
 Codex reads through commands (`cat`, `sed`), whose rows are commands; only its `View image` is a
 Read row.
+
+**File names in the conversation carry the Explorer's icon** — asked for, for the agents'
+replies, the user's messages and the composer's chips (not the folder list): the file of a Read or
+an edit row, a local file link in a reply, inline code that names a file (`chat.ts` — any name
+with an extension the theme or a language knows), in a sent prompt its file chips
+(`UserEntry.attachmentFiles`, from `AttachmentChip.iconName`, set only where the chip is one file:
+a file, a folder, a pasted file, a selection) and path-like words in its text, and the same chips
+and the suggestions in the composer (`chipIcon`, falling back to the kind's codicon; a screenshot
+keeps its thumbnail). How it holds together:
+
+- **The webview cannot reach the workbench's icons**, so the host reads the theme
+  `workbench.iconTheme` selects (`loadFileIconTable` in `fileIconTheme.ts`, the same loader as the
+  Git list's), merges its `light` / `highContrast` section for the colour theme's kind, resolves
+  every definition to a webview resource, adds the languages by name and extension from the
+  extensions' contributions and the plain-name and `*.ext` entries of `files.associations`, and
+  posts the table (`fileIcons`). The view looks names up itself (`resolveFileIcon`): a reply can
+  name any file, so they cannot be resolved one path at a time as the Git list's are. VS Code's
+  order: file name, extensions longest first, language, the theme's default. No theme, or none for
+  the name (a folder in Seti), draws nothing.
+- **Sent on `ready` and on every change of the icon theme, `files.associations`, the colour
+  theme or the installed extensions**, only to a live view, the newest request winning. A table
+  that differs from the one shown bumps `fileIconsSignature`, which is in every row's signature,
+  so the rows on screen are drawn again with it — the whole conversation, so an equal table
+  changes nothing (most of those events change nothing about icons). The host keeps the last
+  table and posts it before the first state on `ready`, so an opened chat is drawn once with its
+  icons rather than drawn and then drawn again.
+- **The table carries only what the colour theme's kind reaches, and each font once**
+  (`fonts`, an icon naming it by index): measured on Seti, 96 KB with every definition and the
+  font address repeated per icon, 29 KB this way. A lookup is ~0.25 µs; reading the theme ~1 ms.
+- **The icon is one line tall and centred on it** (`height: 1lh`, `vertical-align: top`, the
+  glyph's 150% on `::before` only, through `--icon-size`), as the Explorer centres icons in its
+  rows. A box 1em tall with the size on the box left the glyph riding above the text.
+- **In a chip the glyph's box is 12px, not 16px, with no margin**: Seti's glyph at 19.5px has
+  about 3.7px of empty bearing on each side, so a 16px box plus the chip's own 5px `gap` left the
+  icon far from "@1 image.png". An SVG icon keeps 16px — it has no bearings.
+- **The view is created with the theme's folder among its resource roots** (`chatResourceRoots`,
+  used by `resolveWebviewView` and every theme read). A change of `localResourceRoots` makes VS
+  Code send the page again (`contentOptions` → `doUpdateContent`, read in the 1.137 bundle): the
+  script starts over and every message posted until its next `ready` is lost. Created with
+  `media/` alone, the first theme read on `ready` reloaded the chat on every opening — in any
+  window, once the table was read regardless of Git. Switching to a theme from another extension
+  still reloads it once; nothing else can add that folder.
+- **In prose a word needs a `/` to count** (`namesFile`): an icon before "Node.js" would be wrong;
+  a name the theme knows on its own (`package.json`) is the exception. In inline code a known
+  extension is enough. Prompt words are found greedily and their trailing `.` / `:` taken off in a
+  loop (`withFileIcons`): a lazy token with a lookahead for that punctuation was quadratic on a
+  long run of dots (200 ms for 20 000, measured), and so is `/[.:]+$/` on the same input.
+- **The glyph is `::before { content: attr(data-char) }`**, not text: copying a reply or a prompt
+  takes no private-use character. The font is loaded with the `FontFace` API (`font-src` allows
+  `cspSource`), an SVG icon is a background image set through the CSSOM — no `<style>`, which the
+  CSP refuses.
+
+Verified: the leaf under `npm test`; the compiled loader against the real Seti theme of the installed VS Code
+with a stubbed `vscode` (dark and light colours, `package.json`, `Dockerfile`, a language-only
+match, a folder with no icon); the glyphs in headless Chrome. **Not run inside VS Code yet.**
 
 **The phrase is one of fifty pairs** ("Browsing…" / "Browsed for"). While a turn runs a random
 one is shown and replaced every 8 s; the past form is picked from the turn's start time, so it

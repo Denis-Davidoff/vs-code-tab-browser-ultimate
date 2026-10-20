@@ -5,6 +5,7 @@ import { clipboardFiles, fileBase64 } from './clipboardFiles';
 import { pastedFileLimit } from '../src/chat/pastedFiles';
 import { maxRecordingSeconds, minRecordingSeconds, readRecordingQuality, readRecordingSeconds, recordingProfiles, type RecordingQuality } from '../src/browser/recordingQuality';
 import { localFileLink } from '../src/chat/fileLinks';
+import { namesFile, resolveFileIcon, type FileIconTable } from '../src/chat/fileIconTable';
 import { sleepMinutes, sleepHours, type SleepChoice } from '../src/power/sleepProtocol';
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
@@ -373,6 +374,84 @@ function commitGitFiles(scope: 'staged' | 'all'): void {
 	post({ type: 'gitCommit', folder: gitFolder, tabId: state.activeTab, scope });
 }
 const fileThemeFonts = new Map<string, string>();
+/** The font family a file icon theme's font is loaded under, loading it once. */
+function fileThemeFont(url: string): string {
+ let family = fileThemeFonts.get(url);
+ if (!family) {
+  family = `git-file-theme-${fileThemeFonts.size}`;
+  fileThemeFonts.set(url, family);
+  const font = new FontFace(family, `url(${JSON.stringify(url)})`);
+  void font.load().then(loaded => document.fonts.add(loaded)).catch(() => {});
+ }
+ return family;
+}
+
+/** The selected file icon theme, from the host (`fileIcons`); unset with none selected. */
+let fileIconTable: FileIconTable | undefined;
+/**
+ * Changes with every table that differs from the one before, so the rows
+ * already drawn are drawn again with it — and only then: the host sends the
+ * table on every theme, association or extension change, mostly unchanged.
+ */
+let fileIconsSignature = '';
+let fileIconsShown = 'null';
+
+/**
+ * The Explorer's icon for a file or folder name (a folder ends with `/`), from
+ * the file icon theme — or nothing, where there is no theme or it has no icon
+ * for the name. The glyph is drawn by `::before` from `data-char`, so it is not
+ * part of the text: copying a reply or a prompt copies no private-use character.
+ */
+function themeFileIcon(name: string): HTMLElement | undefined {
+ const data = fileIconTable ? resolveFileIcon(fileIconTable, name) : undefined;
+ if (!data || !(data.image || (data.font && data.character))) { return undefined; }
+ const node = el('span', { class: 'theme-file-icon' });
+ node.setAttribute('aria-hidden', 'true');
+ if (data.image) {
+  node.style.backgroundImage = `url(${JSON.stringify(data.image)})`;
+ } else {
+  node.dataset.char = data.character;
+  node.style.fontFamily = fileThemeFont(data.font!);
+  node.style.color = data.color ?? '';
+  // On `::before` only: the box keeps the text's size, so it is one line tall.
+  if (data.size) { node.style.setProperty('--icon-size', data.size); }
+ }
+ return node;
+}
+
+/**
+ * Text nodes with an icon put in front of each token that names a file
+ * (`namesFile`, outside inline code): how a prompt shows `src/chat/chatView.ts`.
+ * Other nodes are passed through as they are.
+ */
+function withFileIcons(nodes: readonly Node[]): Node[] {
+ if (!fileIconTable) { return [...nodes]; }
+ const table = fileIconTable;
+ const out: Node[] = [];
+ for (const node of nodes) {
+  if (node.nodeType !== Node.TEXT_NODE) { out.push(node); continue; }
+  const text = node.textContent ?? '';
+  let last = 0;
+  // Greedy, with sentence punctuation taken off the end in code: a lazy token
+  // with a lookahead for that punctuation backtracked quadratically on a long
+  // run of dots (200 ms for 20 000, measured).
+  for (const m of text.matchAll(/(^|[\s(\["'«])([^\s()\[\]"'«»,;!?]+)/g)) {
+   let end = m[2].length;
+   while (end > 0 && (m[2][end - 1] === '.' || m[2][end - 1] === ':')) { end--; }
+   const token = m[2].slice(0, end);
+   if (!token) { continue; }
+   const start = m.index + m[1].length;
+   const fileIcon = namesFile(table, token, false) ? themeFileIcon(token) : undefined;
+   if (!fileIcon) { continue; }
+   if (start > last) { out.push(document.createTextNode(text.slice(last, start))); }
+   out.push(fileIcon, document.createTextNode(token));
+   last = start + token.length;
+  }
+  out.push(last ? document.createTextNode(text.slice(last)) : node);
+ }
+ return out;
+}
+
 function gitFileIcon(file: import('../src/chat/chatProtocol').GitStatusFile): HTMLElement {
  const data = file.icon;
  const node = el('span', { class: 'git-file-icon' });
@@ -383,14 +462,7 @@ function gitFileIcon(file: import('../src/chat/chatProtocol').GitStatusFile): HT
   image.alt = '';
   node.append(image);
  } else if (data?.font && data.character) {
-  let family = fileThemeFonts.get(data.font);
-  if (!family) {
-   family = `git-file-theme-${fileThemeFonts.size}`;
-   fileThemeFonts.set(data.font, family);
-   const font = new FontFace(family, `url(${JSON.stringify(data.font)})`);
-   void font.load().then(loaded => document.fonts.add(loaded)).catch(() => {});
-  }
-  node.style.fontFamily = family;
+  node.style.fontFamily = fileThemeFont(data.font);
   node.style.color = data.color ?? '';
   node.style.fontSize = data.size ?? '16px';
   node.textContent = data.character;
@@ -909,6 +981,15 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
    renderGitChanges();
    return;
   }
+		case 'fileIcons': {
+			const shown = JSON.stringify(message.table ?? null);
+			if (shown === fileIconsShown) { return; }
+			fileIconsShown = shown;
+			fileIconTable = message.table;
+			fileIconsSignature = String(Number(fileIconsSignature || 0) + 1);
+			render();
+			return;
+		}
 		case 'workdirFiles':
 			// Kept by folder: two listings can be in flight at once, a slow one for
 			// the tab left behind arriving after the one for the tab in front.
@@ -1618,8 +1699,8 @@ function signature(entry: ChatEntry, i: number): string {
 	// marked once they have been listed. A row, when "Fold Tool Calls" changes:
 	// without it the rows already on screen kept the old setting until another
 	// chat was shown. A row the user opened or closed keeps that either way.
-	return entry.kind === 'user' ? `${JSON.stringify(entry)}|${commandsSignature}`
-		: `${JSON.stringify(entry)}|${toggled.get(keyOf(entry, i)) ?? ''}|${openByDefault()}`;
+	return entry.kind === 'user' ? `${JSON.stringify(entry)}|${commandsSignature}|${fileIconsSignature}`
+		: `${JSON.stringify(entry)}|${toggled.get(keyOf(entry, i)) ?? ''}|${openByDefault()}|${fileIconsSignature}`;
 }
 
 /** The commands the marks are drawn from, as one string; set at the top of every render. */
@@ -2567,10 +2648,13 @@ function promptNode(entry: Extract<ChatEntry, { kind: 'user' }>, i: number): HTM
 	const bubble = el('div', { class: 'bubble' });
 	if (entry.attachments.length) {
 		bubble.append(el('div', { class: 'bubble-attachments' },
-			...entry.attachments.map(label => el('span', { class: 'chip small', text: label }))));
+			...entry.attachments.map((label, index) => {
+				const file = entry.attachmentFiles?.[index];
+				return el('span', { class: 'chip small' }, file ? themeFileIcon(file) : undefined, label);
+			})));
 	}
 	if (entry.text) {
-		bubble.append(el('div', { class: 'bubble-text' }, ...markCommands(entry.text, knownCommands(state))));
+		bubble.append(el('div', { class: 'bubble-text' }, ...withFileIcons(markCommands(entry.text, knownCommands(state)))));
 		const copy = copyButton(() => entry.text, 'Copy prompt');
 		copy.classList.add('message-copy');
 		bubble.append(copy);
@@ -2628,7 +2712,7 @@ function basename(path: string): string {
  * button that folds the row, so the click is taken in `toolNode` before it.
  */
 function fileLink(file: string): HTMLElement {
-	const link = el('span', { class: 'subject file-link', text: basename(file), title: `${file}\nClick to open` });
+	const link = el('span', { class: 'subject file-link', title: `${file}\nClick to open` }, themeFileIcon(basename(file)), basename(file));
 	link.dataset.file = file;
 	return link;
 }
@@ -3259,7 +3343,10 @@ function inline(parent: HTMLElement, text: string): void {
 			parent.append(text.slice(at, match.index));
 		}
 		if (match[2] !== undefined) {
-			parent.append(el('code', { text: match[2] }));
+			// `src/a.ts` is how replies name files; the icon goes before the code.
+			const name = match[2].trim();
+			const fileIcon = fileIconTable && namesFile(fileIconTable, name, true) ? themeFileIcon(name) : undefined;
+			parent.append(...(fileIcon ? [fileIcon] : []), el('code', { text: match[2] }));
 		} else if (match[3] !== undefined) {
 			// Formatted recursively: `**\`npm test\`**` is how replies name
 			// files, and as plain text it showed the backticks.
@@ -3275,6 +3362,9 @@ function inline(parent: HTMLElement, text: string): void {
 			if (/^https?:\/\//i.test(destination) || localFileLink(destination)) {
 				const link = linkNode(destination);
 				inline(link, match[5]);
+				const local = localFileLink(destination);
+				const fileIcon = local ? themeFileIcon(local.path) : undefined;
+				if (fileIcon) { link.prepend(fileIcon); }
 				parent.append(link);
 			} else {
 				parent.append(match[0]);
@@ -3381,6 +3471,7 @@ function renderAttachments(s: ChatViewState): void {
 	const shown = JSON.stringify([
 		s.attachments.map(c => [c.id, c.kind, c.label, c.reference, c.thumbnail?.length]),
 		s.suggestions.map(c => [c.id, c.kind, c.label]),
+		fileIconsSignature,
 	]);
 	if (shown === attachmentsShown) {
 		return;
@@ -3389,7 +3480,7 @@ function renderAttachments(s: ChatViewState): void {
 	attachmentsRow.replaceChildren(...s.attachments.map(chip => {
 		const remove = button([icon('close')], { class: 'chip-remove', title: 'Remove — an open file or page goes back to being a suggestion' });
 		remove.addEventListener('click', () => post({ type: 'removeAttachment', id: chip.id }));
-		let thumb: HTMLElement = icon(attachmentIcon(chip.kind));
+		let thumb: HTMLElement = chipIcon(chip);
 		if (chip.thumbnail) {
 			const img = el('img', { class: 'thumb' });
 			img.src = chip.thumbnail;
@@ -3439,7 +3530,17 @@ function suggestionChip(chip: AttachmentChip): HTMLElement {
 	add.addEventListener('mousedown', event => event.preventDefault());
 	add.addEventListener('click', () => post({ type: 'acceptSuggestion', id: chip.id }));
 	return el('span', { class: 'chip suggested', title: `Suggested: ${chip.label} — press + to attach ${what}` },
-		add, icon(attachmentIcon(chip.kind)), el('span', { class: 'chip-label', text: chip.label }));
+		add, chipIcon(chip), el('span', { class: 'chip-label', text: chip.label }));
+}
+
+/**
+ * A chip's icon: the file icon theme's for a chip that carries one file or
+ * folder (`iconName` — a pasted image, a file attached from the "+" menu, the
+ * Explorer or the folder list, a selection of a file), the kind's codicon for
+ * the rest and wherever the theme has none.
+ */
+function chipIcon(chip: AttachmentChip): HTMLElement {
+	return (chip.iconName ? themeFileIcon(chip.iconName) : undefined) ?? icon(attachmentIcon(chip.kind));
 }
 
 // A selection is remembered per draft; without one, references append to the message.

@@ -1,8 +1,11 @@
 import * as vscode from 'vscode';
 import type { FileThemeIcon, WorkdirGitStatus } from './chatProtocol';
+import type { FileIconTable, TableIcon } from './fileIconTable';
 
 interface Associations {
  file?: string;
+ folder?: string;
+ folderNames?: Record<string, string>;
  fileNames?: Record<string, string>;
  fileExtensions?: Record<string, string>;
  languageIds?: Record<string, string>;
@@ -42,24 +45,127 @@ export function fileIconId(theme: Theme, path: string, language: string | undefi
  return (language && lookup('languageIds', language)) || specific?.file || theme.file;
 }
 
+type Definition = NonNullable<Theme['iconDefinitions']>[string];
+interface LoadedTheme {
+ readonly theme: Theme;
+ readonly variant?: 'light' | 'highContrast';
+ readonly icon: (definition: Definition | undefined) => FileThemeIcon | undefined;
+}
+
+/**
+ * The theme `workbench.iconTheme` selects, read again on every call (a theme
+ * file can be generated), with the webview allowed to load from its extension.
+ * `undefined` with no theme selected or the extension gone.
+ */
+function selectedIconTheme() {
+ const selected = vscode.workspace.getConfiguration('workbench').get<string | null>('iconTheme');
+ const contributions = vscode.extensions.all.flatMap(extension =>
+  (extension.packageJSON.contributes?.iconThemes ?? []).map((theme: { id: string; path: string }) => ({ extension, theme })));
+ return contributions.find(entry => entry.theme.id === selected);
+}
+
+/**
+ * The folders the chat view may load from: `media/` and the selected icon
+ * theme's extension. Set when the view is created as well as on every theme
+ * read, because a change of `localResourceRoots` makes VS Code send the page
+ * again — the view's script starts over and every message posted until its
+ * next `ready` is lost. Created with the same roots, the reads change nothing.
+ */
+export function chatResourceRoots(media: vscode.Uri): vscode.Uri[] {
+ const chosen = selectedIconTheme();
+ return [media, ...(chosen ? [chosen.extension.extensionUri] : [])];
+}
+
+async function loadSelectedTheme(webview: vscode.Webview, media: vscode.Uri): Promise<LoadedTheme | undefined> {
+ const chosen = selectedIconTheme();
+ // Remove old resource roots when icons are disabled or the selected extension
+ // disappears. An unchanged list is not assigned: VS Code skips equal options,
+ // but this keeps the reload out of reach of a host that does not.
+ const roots = chatResourceRoots(media);
+ const current = webview.options.localResourceRoots ?? [];
+ if (roots.length !== current.length || roots.some((root, i) => root.toString() !== current[i].toString())) {
+  webview.options = { ...webview.options, localResourceRoots: roots };
+ }
+ if (!chosen) { return undefined; }
+ const uri = vscode.Uri.joinPath(chosen.extension.extensionUri, chosen.theme.path);
+ const directory = vscode.Uri.joinPath(uri, '..');
+ const theme = parseIconTheme(Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8'));
+ const kind = vscode.window.activeColorTheme.kind;
+ const variant = kind === vscode.ColorThemeKind.Light ? 'light'
+  : kind === vscode.ColorThemeKind.HighContrast || kind === vscode.ColorThemeKind.HighContrastLight ? 'highContrast' : undefined;
+ const resource = (relative: string) => webview.asWebviewUri(vscode.Uri.joinPath(directory, relative)).toString();
+ const icon = (definition: Definition | undefined): FileThemeIcon | undefined => {
+  if (definition?.iconPath) { return { image: resource(definition.iconPath) }; }
+  if (definition?.fontCharacter) {
+   const font = theme.fonts?.find(f => f.id === definition.fontId) ?? theme.fonts?.[0];
+   if (font?.src[0]) { return { character: decodeFontCharacter(definition.fontCharacter), font: resource(font.src[0].path), color: definition.fontColor, size: definition.fontSize ?? font.size }; }
+  }
+  return undefined;
+ };
+ return { theme, variant, icon };
+}
+
+interface LanguageContribution { id: string; filenames?: string[]; extensions?: string[] }
+const languageContributions = () =>
+ vscode.extensions.all.flatMap(extension => extension.packageJSON.contributes?.languages ?? []) as LanguageContribution[];
+
+const lowerKeys = (record: Record<string, string> | undefined): Record<string, string> =>
+ Object.fromEntries(Object.entries(record ?? {}).filter(([, v]) => typeof v === 'string').map(([k, v]) => [k.toLowerCase(), v]));
+
+/**
+ * The selected theme as a table the chat view looks names up in itself
+ * (`resolveFileIcon`): a reply can name any file, so the icons cannot be
+ * resolved here path by path the way the Git list's are. Languages come from
+ * the extensions' contributions, plus `files.associations` entries that are a
+ * plain name or `*.ext`; glob patterns are left out.
+ */
+export async function loadFileIconTable(webview: vscode.Webview, media: vscode.Uri): Promise<FileIconTable | undefined> {
+ const loaded = await loadSelectedTheme(webview, media);
+ if (!loaded) { return undefined; }
+ const { theme, variant } = loaded;
+ const specific = variant ? theme[variant] : undefined;
+ const merged = (key: 'fileNames' | 'fileExtensions' | 'folderNames' | 'languageIds') => ({ ...lowerKeys(theme[key]), ...lowerKeys(specific?.[key]) });
+ const languageByName: Record<string, string> = {};
+ const languageByExtension: Record<string, string> = {};
+ for (const language of languageContributions()) {
+  for (const name of language.filenames ?? []) { languageByName[name.toLowerCase()] ??= language.id; }
+  for (const extension of language.extensions ?? []) { languageByExtension[extension.toLowerCase().replace(/^\./, '')] ??= language.id; }
+ }
+ const associations = vscode.workspace.getConfiguration('files').get<Record<string, string>>('associations', {});
+ for (const [pattern, language] of Object.entries(associations)) {
+  if (typeof language !== 'string') { continue; }
+  const extension = /^\*\.([^*?[\]{}/\\]+)$/.exec(pattern)?.[1];
+  if (extension) { languageByExtension[extension.toLowerCase()] = language; }
+  else if (!/[*?[\]{}/\\]/.test(pattern)) { languageByName[pattern.toLowerCase()] = language; }
+ }
+ const maps = { fileNames: merged('fileNames'), fileExtensions: merged('fileExtensions'), folderNames: merged('folderNames'), languageIds: merged('languageIds') };
+ const file = specific?.file ?? theme.file;
+ const folder = specific?.folder ?? theme.folder;
+ // Only what this colour theme's associations reach: the light and
+ // high-contrast definitions of the other kinds are half of a theme like Seti.
+ const used = new Set<string>([...Object.values(maps).flatMap(map => Object.values(map)), ...(file ? [file] : []), ...(folder ? [folder] : [])]);
+ const fonts: string[] = [];
+ const icons: Record<string, TableIcon> = {};
+ for (const id of used) {
+  const icon = loaded.icon(theme.iconDefinitions?.[id]);
+  if (!icon) { continue; }
+  let font: number | undefined;
+  if (icon.font) {
+   font = fonts.indexOf(icon.font);
+   if (font < 0) { font = fonts.push(icon.font) - 1; }
+  }
+  icons[id] = { image: icon.image, character: icon.character, font, color: icon.color, size: icon.size };
+ }
+ return { fonts, icons, file, folder, ...maps, languageByName, languageByExtension };
+}
+
 /** Each refresh reads the selected theme again, including generated theme files. */
 export async function themedGitFiles(status: WorkdirGitStatus, webview: vscode.Webview, media: vscode.Uri, folder?: vscode.Uri): Promise<WorkdirGitStatus> {
  try {
-  const selected = vscode.workspace.getConfiguration('workbench').get<string | null>('iconTheme');
-  const contributions = vscode.extensions.all.flatMap(extension =>
-   (extension.packageJSON.contributes?.iconThemes ?? []).map((theme: { id: string; path: string }) => ({ extension, theme })));
-  const chosen = contributions.find(entry => entry.theme.id === selected);
-  // Remove old resource roots when icons are disabled or the selected extension disappears.
-  webview.options = { ...webview.options, localResourceRoots: [media, ...(chosen ? [chosen.extension.extensionUri] : [])] };
-  if (!chosen) { return status; }
-  const uri = vscode.Uri.joinPath(chosen.extension.extensionUri, chosen.theme.path);
-  const directory = vscode.Uri.joinPath(uri, '..');
-  const theme = parseIconTheme(Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8'));
-  const kind = vscode.window.activeColorTheme.kind;
-  const variant = kind === vscode.ColorThemeKind.Light ? 'light'
-   : kind === vscode.ColorThemeKind.HighContrast || kind === vscode.ColorThemeKind.HighContrastLight ? 'highContrast' : undefined;
-  const resource = (relative: string) => webview.asWebviewUri(vscode.Uri.joinPath(directory, relative)).toString();
-  const languages = vscode.extensions.all.flatMap(extension => extension.packageJSON.contributes?.languages ?? []) as { id: string; filenames?: string[]; extensions?: string[] }[];
+  const loaded = await loadSelectedTheme(webview, media);
+  if (!loaded) { return status; }
+  const { theme, variant } = loaded;
+  const languages = languageContributions();
   const decorate = (file: WorkdirGitStatus['staged'][number]) => {
    const uri = folder ? vscode.Uri.joinPath(folder, file.path) : undefined;
    const openLanguage = uri ? vscode.workspace.textDocuments.find(document => document.uri.toString() === uri.toString())?.languageId : undefined;
@@ -80,12 +186,7 @@ export async function themedGitFiles(status: WorkdirGitStatus, webview: vscode.W
      .sort((a, b) => Math.max(...b.extensions!.filter(ext => basename.endsWith(ext.toLowerCase())).map(ext => ext.length)) - Math.max(...a.extensions!.filter(ext => basename.endsWith(ext.toLowerCase())).map(ext => ext.length)))[0];
    const id = fileIconId(theme, file.path, openLanguage && openLanguage !== 'plaintext' ? openLanguage : configuredLanguage ?? language?.id, variant);
    const definition = id ? theme.iconDefinitions?.[id] : undefined;
-   let icon: FileThemeIcon | undefined;
-   if (definition?.iconPath) { icon = { image: resource(definition.iconPath) }; }
-   else if (definition?.fontCharacter) {
-    const font = theme.fonts?.find(f => f.id === definition.fontId) ?? theme.fonts?.[0];
-    if (font?.src[0]) { icon = { character: decodeFontCharacter(definition.fontCharacter), font: resource(font.src[0].path), color: definition.fontColor, size: definition.fontSize ?? font.size }; }
-   }
+   const icon = loaded.icon(definition);
    return { ...file, ...(icon ? { icon } : {}) };
   };
   return { ...status, staged: status.staged.map(decorate), unstaged: status.unstaged.map(decorate) };
