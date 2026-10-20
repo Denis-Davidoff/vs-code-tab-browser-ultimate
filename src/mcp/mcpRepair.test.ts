@@ -8,8 +8,8 @@ import { suite, test } from 'node:test';
 import { codexEntries, codexRangeDeletable, codexUnterminated } from './codexToml.ts';
 import { codexEntryCarriesToken } from './mcpClientState.ts';
 import {
-	codexRetiredTables, codexOurTables, mergeAuthorization, parseInlineTable, removeCodexTables,
-	repairClaudeJson, repairCodexToml, spliceCodexTables,
+	codexRetiredTables, codexOurTables, mergeAuthorization, parseClaudeConfig, parseInlineTable,
+	removeCodexTables, repairClaudeJson, repairCodexToml, spliceCodexTables,
 } from './mcpRepair.ts';
 
 const token = 'ourtoken0000000000000000000000000000000000000000000000000000abcd';
@@ -1125,11 +1125,12 @@ suite('repairCodexToml reads every spelling of http_headers', () => {
 	// Item 175: both inputs are TOML Codex loads; both came out unparsable.
 
 	test('a multi-line inline table is replaced whole, keeping the other headers', () => {
+		// The token rides in the URL, so the table lacks our authorization and
+		// has to be rewritten: all of it, not its first line.
 		const text = [
 			'[mcp_servers.ai-browser]',
-			'url = "http://127.0.0.1:43110/mcp"',
+			`url = "http://127.0.0.1:43110/mcp/${token}"`,
 			'http_headers = {',
-			`  Authorization = "Bearer ${token}",`,
 			'  X-Org = "acme",',
 			'}',
 			'',
@@ -1149,6 +1150,23 @@ suite('repairCodexToml reads every spelling of http_headers', () => {
 			'url = "http://x/mcp"',
 			'',
 		].join('\n'));
+		assert.ok(!codexUnterminated(result.text));
+	});
+
+	test('a multi-line inline table that already carries our token is left as written', () => {
+		const text = [
+			'[mcp_servers.ai-browser]',
+			'url = "http://127.0.0.1:43110/mcp"',
+			'http_headers = {',
+			`  Authorization = "Bearer ${token}",`,
+			'  X-Org = "acme",',
+			'}',
+			'',
+		].join('\n');
+
+		const result = repairToml(text);
+		assert.ok(result.changed);
+		assert.strictEqual(result.text, text.replace('http://127.0.0.1:43110/mcp', url));
 		assert.ok(!codexUnterminated(result.text));
 	});
 
@@ -1421,5 +1439,179 @@ suite('a correct entry in another spelling is not "repaired"', () => {
 		const result = repairToml(text);
 		assert.ok(result.changed);
 		assert.strictEqual(codexEntries(result.text)[0].values.get('url'), url);
+	});
+});
+
+suite('repairCodexToml leaves the lines that are right as they are written', () => {
+
+	// The unattended repair rewrote the header, `http_headers` and every
+	// sub-table header on each port move, which changes none of them, so the
+	// comments on those lines and the inline table's spacing went every time.
+
+	const old = 'http://127.0.0.1:43110/mcp';
+
+	test('a port move edits the url and nothing else', () => {
+		const text = [
+			'[mcp_servers.ai-browser] # managed by AI Browser',
+			`url = "${old}" # this window`,
+			`http_headers = {Authorization="Bearer ${token}",  X-Org = 'acme'} # rotated`,
+			'startup_timeout_sec = 20',
+			'',
+			'[mcp_servers.ai-browser.env_http_headers] # from 1Password',
+			'X-Secret = "OP_SECRET"',
+			'',
+		].join('\n');
+
+		const result = repairToml(text);
+		assert.ok(result.changed);
+		assert.strictEqual(result.text, text.replace(`url = "${old}"`, `url = "${url}"`));
+	});
+
+	test('a url with a # inside its string keeps only the real comment', () => {
+		const text = [
+			'[mcp_servers.ai-browser]',
+			`  url = "${old}#frag" # note`,
+			`http_headers = { Authorization = "Bearer ${token}" }`,
+			'',
+		].join('\n');
+
+		const result = repairToml(text);
+		assert.strictEqual(result.text.split('\n')[1], `  url = "${url}" # note`);
+	});
+
+	test('a rename keeps the comments on the headers it rewrites', () => {
+		const text = [
+			'[mcp_servers.tab-browser] # managed',
+			`url = "${url}"`,
+			`http_headers = { Authorization = "Bearer ${token}" } # rotated`,
+			'',
+			'  [mcp_servers.tab-browser.env_http_headers]   # from 1Password',
+			'X-Secret = "OP_SECRET"',
+			'',
+		].join('\n');
+
+		const result = repairToml(text);
+		assert.ok(result.changed);
+		assert.deepStrictEqual(result.collapsed, ['tab-browser']);
+		assert.strictEqual(result.text, [
+			'[mcp_servers.ai-browser] # managed',
+			`url = "${url}"`,
+			`http_headers = { Authorization = "Bearer ${token}" } # rotated`,
+			'',
+			'  [mcp_servers.ai-browser.env_http_headers]   # from 1Password',
+			'X-Secret = "OP_SECRET"',
+			'',
+		].join('\n'));
+	});
+
+	test('a header sub-table that is already right keeps its header and authorization lines', () => {
+		const text = [
+			'[mcp_servers.ai-browser]',
+			`url = "${old}"`,
+			'',
+			'[mcp_servers.ai-browser.http_headers] # credentials',
+			`Authorization = "Bearer ${token}" # do not share`,
+			'',
+		].join('\n');
+
+		const result = repairToml(text);
+		assert.strictEqual(result.text, text.replace(old, url));
+	});
+
+	test('a missing authorization goes under the sub-table header as written', () => {
+		const text = [
+			'[mcp_servers.ai-browser]',
+			`url = "${old}/${token}"`,
+			'',
+			'[mcp_servers.ai-browser.http_headers] # credentials',
+			'X-Org = "acme"',
+			'',
+		].join('\n');
+
+		const result = repairToml(text);
+		assert.strictEqual(result.text, [
+			'[mcp_servers.ai-browser]',
+			`url = "${url}"`,
+			'',
+			'[mcp_servers.ai-browser.http_headers] # credentials',
+			`Authorization = "Bearer ${token}"`,
+			'X-Org = "acme"',
+			'',
+		].join('\n'));
+	});
+
+	test('a dotted authorization that is already right is not rewritten', () => {
+		const text = [
+			'[mcp_servers.ai-browser] # managed',
+			`url = "${old}"`,
+			`http_headers.Authorization = "Bearer ${token}"   # rotated`,
+			'',
+		].join('\n');
+
+		const result = repairToml(text);
+		assert.strictEqual(result.text, text.replace(old, url));
+	});
+
+	test('an inline table whose authorization is ours is not reformatted when only the url moves', () => {
+		const text = [
+			'[mcp_servers.ai-browser]',
+			`url = '${old}'`,
+			`http_headers = {   "Authorization"   =   "Bearer ${token}"   }`,
+			'',
+		].join('\n');
+
+		const result = repairToml(text);
+		assert.ok(result.changed);
+		assert.strictEqual(result.text.split('\n')[2], text.split('\n')[2]);
+	});
+
+	test('an authorization still in the url is moved into the inline table, the comments staying', () => {
+		const text = [
+			'[mcp_servers.ai-browser] # managed',
+			`url = "${old}/${token}" # this window`,
+			'',
+		].join('\n');
+
+		const result = repairToml(text);
+		assert.strictEqual(result.text, [
+			'[mcp_servers.ai-browser] # managed',
+			`url = "${url}" # this window`,
+			`http_headers = { Authorization = "Bearer ${token}" }`,
+			'',
+		].join('\n'));
+	});
+});
+
+suite('parseClaudeConfig refuses a shape it cannot rebuild the file from', () => {
+
+	// Connect took any parsed non-null value: a top-level array was written back
+	// as `[]` under "Wrote .mcp.json", and a string `mcpServers` was spread into
+	// index keys. A refusal must not look like success (#113).
+
+	test('an object with or without mcpServers is a config', () => {
+		assert.deepStrictEqual(parseClaudeConfig('{}'), {});
+		assert.deepStrictEqual(parseClaudeConfig('  \n'), {});
+		assert.deepStrictEqual(parseClaudeConfig('{"x": 1}'), { x: 1 });
+		assert.deepStrictEqual(parseClaudeConfig('{"mcpServers": {}}'), { mcpServers: {} });
+	});
+
+	test('anything else is refused like a parse error', () => {
+		for (const text of ['[]', '[{"mcpServers": {}}]', '"x"', '42', 'null', 'true', '{',
+			'{"mcpServers": []}', '{"mcpServers": "x"}', '{"mcpServers": null}', '{"mcpServers": 3}']) {
+			assert.strictEqual(parseClaudeConfig(text), undefined, text);
+		}
+	});
+
+	test('the repair leaves an mcpServers array alone rather than punching holes in it', () => {
+		const text = JSON.stringify({
+			mcpServers: [{ type: 'http', url: 'http://127.0.0.1:43110/mcp', headers: { Authorization: `Bearer ${token}` } }],
+		}, null, 2) + '\n';
+		const result = repairClaudeJson(text, endpoint);
+		assert.strictEqual(result.changed, false);
+		assert.strictEqual(result.text, text);
+	});
+
+	test('the repair still refuses a top-level array', () => {
+		assert.strictEqual(repairClaudeJson('[]\n', endpoint).changed, false);
 	});
 });

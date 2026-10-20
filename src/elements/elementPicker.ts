@@ -1083,6 +1083,44 @@ async function pathReportOf(
 	const path = kind === 'cssLocation' ? withLocation(built, url) : built;
 	// The descriptor needs the element itself, which the path does not carry —
 	// one extra round trip, worth it for a readable heading and file name.
-	const descriptor = describeElement((await extractElementData(client, sessionId, backendNodeId)).ancestors);
+	const descriptor = await elementDescriptor(client, sessionId, backendNodeId);
 	return { report: formatPathReport(descriptor, kind, path, url, embeddedIn), descriptor };
+}
+
+/**
+ * The picked element's descriptor (`tag#id.class`) for a path report's heading
+ * and file name, read from `DOM.describeNode` alone.
+ *
+ * Not from `extractElementData`, which this used to call for nothing but its
+ * last ancestor: that read also asks for the box model, CSS and markup, and
+ * throws where the element has no box — an image-map `<area>`, an element in a
+ * `display: none` subtree — so an Add whose path had already been built and
+ * verified failed with an error toast while its Copy twin worked. A label is
+ * never worth losing the path over, so any failure here is the generic one.
+ */
+async function elementDescriptor(client: CDPClient, sessionId: string, backendNodeId: number): Promise<string> {
+	try {
+		const { node } = await client.send('DOM.describeNode', { backendNodeId }, sessionId) as
+			{ node?: { localName?: string; nodeName?: string; attributes?: string[] } };
+		const tagName = node?.localName || node?.nodeName?.toLowerCase();
+		if (!tagName) {
+			return describeElement([]);
+		}
+		const attributes = node?.attributes ?? [];
+		const attribute = (name: string) => {
+			for (let i = 0; i + 1 < attributes.length; i += 2) {
+				if (attributes[i] === name) {
+					return attributes[i + 1];
+				}
+			}
+			return undefined;
+		};
+		return describeElement([{
+			tagName,
+			id: attribute('id') || undefined,
+			classNames: attribute('class')?.trim().split(/\s+/).filter(Boolean),
+		}]);
+	} catch {
+		return describeElement([]);
+	}
 }

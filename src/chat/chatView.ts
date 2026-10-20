@@ -1,4 +1,4 @@
-import { trackTemporaryFile, temporaryStorage } from '../core/temporaryFiles';
+import { comparablePath, trackTemporaryFile, temporaryStorage } from '../core/temporaryFiles';
 import { featureAiKey, defaultFeaturePrompts, featureEffort, readFeatureAiSettings, type AiFeature } from './featureAi';
 import { availableBranchName, titleModel } from './autoTitle';
 import { localFileLink } from './fileLinks';
@@ -227,6 +227,8 @@ const untrustedLimit = 200;
 const projectConfigFiles = ['.claude/settings.json', '.claude/settings.local.json', '.mcp.json'];
 /** A folder's listing is reused for this long: the button is opened again and again while a message is written. */
 const workdirListingMs = 15_000;
+/** Editor events come in bursts (a folder of files opened at once): one Git read for the lot. */
+const gitEventDebounceMs = 300;
 /**
  * The scheme a composer chip's text opens under: a read-only document, which
  * an untitled one is not — closing it would ask to save what was only shown.
@@ -369,16 +371,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		// A lower limit closes nothing: the tabs open stay, and "+" comes back
 		// once enough of them are closed.
 		this._subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
-			if (e.affectsConfiguration('workbench.iconTheme') || e.affectsConfiguration('files.associations')) { void this._refreshWorkdirGit(); }
+			if (e.affectsConfiguration('workbench.iconTheme') || e.affectsConfiguration('files.associations')) { this._gitEventRefresh(); }
 			if (e.affectsConfiguration(tabLimitSetting) || e.affectsConfiguration(collapseToolsSetting)) {
 				this._post();
 			}
 		}));
-		this._subscriptions.push(vscode.window.onDidChangeActiveColorTheme(() => { void this._refreshWorkdirGit(); }));
+		// These change only how the footer's files are drawn (their icons), so
+		// they go through `_gitEventRefresh`: debounced, and only while the view
+		// is on screen.
+		this._subscriptions.push(vscode.window.onDidChangeActiveColorTheme(() => this._gitEventRefresh()));
 		// Changing a document's language fires close/open events in VS Code.
-		this._subscriptions.push(vscode.workspace.onDidOpenTextDocument(() => { void this._refreshWorkdirGit(); }));
-		this._subscriptions.push(vscode.workspace.onDidCloseTextDocument(() => { void this._refreshWorkdirGit(); }));
-		this._subscriptions.push(vscode.extensions.onDidChange(() => { void this._refreshWorkdirGit(); }));
+		this._subscriptions.push(vscode.workspace.onDidOpenTextDocument(() => this._gitEventRefresh()));
+		this._subscriptions.push(vscode.workspace.onDidCloseTextDocument(() => this._gitEventRefresh()));
+		this._subscriptions.push(vscode.extensions.onDidChange(() => this._gitEventRefresh()));
 		this._subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(attachmentScheme, {
 			// An editor restored after a reload asks for a chip this window never
 			// held, and gets a sentence rather than an empty page.
@@ -507,8 +512,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		view.webview.onDidReceiveMessage((message: ViewToHost) => {
 			this._receive(message).catch(err => this._fail(err));
 		}, undefined, this._subscriptions);
-		// Shown again: the tab in front is read now, not at its next change.
-		view.onDidChangeVisibility(() => this._post(), undefined, this._subscriptions);
+		// Shown again: the tab in front is read now, not at its next change — and
+		// the footer's Git state, if an editor event was let pass while hidden.
+		view.onDidChangeVisibility(() => {
+			this._post();
+			if (view.visible && this._gitStale) { this._gitEventRefresh(); }
+		}, undefined, this._subscriptions);
 		view.onDidDispose(() => {
 			if (this._view === view) {
 				this._view = undefined;
@@ -518,8 +527,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				// so its CLI is not left working unseen on the user's quota. The
 				// chat is saved and resumes from the history; Codex's app-server
 				// then goes idle and shuts down on its own.
+				// `'view'`: the same tabs are shown again when the view comes back,
+				// and must not come back marked closed.
 				for (const tab of this._tabs) {
-					tab.close();
+					tab.close('view');
 				}
 				// The toolbar's background runs too: their button and its question
 				// went with the view. The skills sent into the chat ended with their
@@ -566,7 +577,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 */
 	private _postMessage(message: HostToView): void {
 		if (!this._view || !this._viewReady) {
-			if (message.type !== 'state') {
+			// `workdirGit` is a snapshot, not an event: a stale one is worth
+			// nothing to a view that asks for its own on `ready`, and queued it
+			// piled up for the window's lifetime — one per document opened —
+			// while the chat view was never opened.
+			if (message.type !== 'state' && message.type !== 'workdirGit') {
 				this._queued.push(message);
 			}
 			return;
@@ -771,6 +786,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				this._queued = [];
 				queued.forEach(m => this._postMessage(m));
 				this._postMessage({ type: 'inputHistory', items: this._inputHistory() });
+				// Nothing was read while there was no view (see `_refreshWorkdirGit`),
+				// so the footer starts from a fresh read rather than from nothing.
+				void this._refreshWorkdirGit();
 				if (!this._blocked() && !this._registry.detecting && !this._registry.agents.some(a => a.available || a.problem)) {
 					await this._registry.detect();
 				}
@@ -2063,7 +2081,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				project, projects: [...this._recentFolders(), ...this._tabs.map(tab => tab.cwd), ...this._workspaceFolders().map(folder => folder.path)],
 				protectedFiles: this._tabs.flatMap(tab => tab.attachments.flatMap(attachment => attachment.file ? [attachment.file.fsPath] : [])),
 				cleanup: action === 'refresh' ? undefined : action,
-				protect: file => !!isBusy() || this._tabs.some(tab => tab.attachments.some(attachment => attachment.file?.fsPath === file)),
+				// Compared in one spelling: on Windows `fsPath` lowercases the drive
+				// letter and the scanned paths do not, so a plain `===` never matched
+				// and the draft's own file was deleted.
+				protect: file => !!isBusy() || this._tabs.some(tab => tab.attachments.some(attachment => !!attachment.file && comparablePath(attachment.file.fsPath) === comparablePath(file))),
 				busy: busy ? 'Finish active recordings and agent requests before cleaning temporary files.' : undefined,
 			});
 			this._postMessage({ type: 'temporaryStorage', storage });
@@ -2655,13 +2676,87 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	private async _withGitMutation<T>(folder: string, work: () => Promise<T>): Promise<T> {
+		// Before the lock: taking it runs `git rev-parse` in the folder (#208).
+		if (this._blocked()) { throw new Error('Git is unavailable in this window.'); }
 		const release = await this._gitAccess.mutate(folder, () => this._busyGitFolders());
 		try { return await work(); } finally { release(); }
 	}
 
-	private async _refreshWorkdirGit(): Promise<void> {
+	/** Set when an editor event was let pass while the view was hidden or absent. */
+	private _gitStale = false;
+	private _gitEventTimer: ReturnType<typeof setTimeout> | undefined;
+	/** The read under way for a folder, and whether another was asked for meanwhile. */
+	private readonly _gitRefreshes = new Map<string, { again: boolean; done: Promise<void> }>();
+
+	/**
+	 * An editor event that may change how the footer's files are drawn: every
+	 * document opened or closed, a theme, an extension. Each used to start three
+	 * `git` processes on the spot, whether or not anyone could see the footer, so
+	 * opening a batch of files spawned dozens at once. Now nothing runs while the
+	 * view is hidden or absent — the read is owed (`_gitStale`) and paid when it
+	 * is shown — and a burst of events is one read.
+	 */
+	private _gitEventRefresh(): void {
+		if (this._disposed) { return; }
+		if (!this._view?.visible || !this._viewReady) {
+			this._gitStale = true;
+			return;
+		}
+		clearTimeout(this._gitEventTimer);
+		this._gitEventTimer = setTimeout(() => {
+			this._gitEventTimer = undefined;
+			void this._refreshWorkdirGit();
+		}, gitEventDebounceMs);
+	}
+
+	/**
+	 * Reads the working folder's Git state for the footer. At most one read per
+	 * folder is under way: a call while one runs asks for a single rerun after
+	 * it — which is what a caller that has just changed the index needs — and
+	 * is answered when that rerun is done.
+	 */
+	private _refreshWorkdirGit(): Promise<void> {
+		// Only for a view that can show it: the answer is not queued (see
+		// `_postMessage`), and `ready` asks for a fresh one.
+		if (this._disposed || !this._view || !this._viewReady) {
+			this._gitStale = true;
+			return Promise.resolve();
+		}
 		const folder = this._workdir();
-		if (!folder) { return; }
+		if (!folder) { return Promise.resolve(); }
+		const running = this._gitRefreshes.get(folder);
+		if (running) {
+			running.again = true;
+			return running.done;
+		}
+		this._gitStale = false;
+		const entry = { again: false, done: Promise.resolve() };
+		this._gitRefreshes.set(folder, entry);
+		entry.done = (async () => {
+			try {
+				do {
+					entry.again = false;
+					await this._readWorkdirGit(folder);
+					// A rerun for a folder no longer in front, or for a view that has
+					// gone, would only spend processes.
+				} while (entry.again && !this._disposed && this._viewReady && folder === this._workdir());
+			} finally {
+				this._gitRefreshes.delete(folder);
+			}
+		})();
+		return entry.done;
+	}
+
+	private async _readWorkdirGit(folder: string): Promise<void> {
+		// Restricted Mode, or a remote window: `git status` runs the repository's
+		// own `filter.<driver>.clean` commands from `.git/config`, which
+		// `core.fsmonitor=false` does not stop — code from a folder the user has
+		// not trusted (#208). Every other footer Git path refuses here too. The
+		// view still gets an answer, or its refresh button stays disabled.
+		if (this._blocked()) {
+			this._postMessage({ type: 'workdirGit', folder, error: 'Git is unavailable in this window.' });
+			return;
+		}
 		try {
 			const git = await gitBinary();
 			if (!git) { throw new Error('Git is unavailable'); }
@@ -2835,6 +2930,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}
 		let release: (() => void) | undefined;
 		try {
+			// Asked before the lock too: taking it runs `git rev-parse` in the folder (#208).
+			if (this._blocked()) { throw new Error('Git branch actions are unavailable in this window.'); }
 			release = await this._gitAccess.mutate(folder, () => this._busyGitFolders());
 			if (this._blocked()) { throw new Error('Git branch actions are unavailable in this window.'); }
 			const sharing = () => this._tabs.filter(t => this._workdir(t) === folder);
@@ -3765,6 +3862,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			clearTimeout(timer);
 		}
 		this._draining.clear();
+		clearTimeout(this._gitEventTimer);
+		this._gitEventTimer = undefined;
 		for (const tab of this._tabs) {
 			tab.close();
 		}

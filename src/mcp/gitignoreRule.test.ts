@@ -29,6 +29,25 @@ suite('ignoresConfigToml', () => {
 		assert.strictEqual(ignoresConfigToml('config.toml  \n'), true);
 	});
 
+	// Git drops unescaped trailing spaces and nothing else; each of these was
+	// measured with `git check-ignore` (git 2.54).
+	test('only unescaped trailing spaces are dropped, as in git', () => {
+		assert.strictEqual(ignoresConfigToml('config.toml   \n'), true);
+		assert.strictEqual(ignoresConfigToml('config.toml   \r\n'), true);
+		assert.strictEqual(ignoresConfigToml('config.toml\t\n'), false);
+		assert.strictEqual(ignoresConfigToml('config.toml \t\n'), false);
+		assert.strictEqual(ignoresConfigToml('config.toml\t \n'), false);
+		assert.strictEqual(ignoresConfigToml('*\t\n'), false);
+		assert.strictEqual(ignoresConfigToml('config.toml\\ \n'), false);
+		assert.strictEqual(ignoresConfigToml('config.toml\\  \n'), false);
+		assert.strictEqual(withConfigTomlRule('config.toml\t\n'), 'config.toml\t\nconfig.toml\n');
+	});
+
+	test('a negation is still read as re-including, whatever whitespace trails it', () => {
+		assert.strictEqual(ignoresConfigToml('config.toml\n!config.toml\t\n'), false);
+		assert.strictEqual(ignoresConfigToml('config.toml\n!config.toml   \n'), false);
+	});
+
 	test('a negation it does not model is read as re-including the file', () => {
 		for (const line of ['!config.*', '!*', '!c*', '!**/config.toml']) {
 			assert.strictEqual(ignoresConfigToml(`config.toml\n${line}\n`), false, line);

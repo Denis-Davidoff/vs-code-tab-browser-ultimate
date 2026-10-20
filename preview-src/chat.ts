@@ -619,13 +619,15 @@ branchSearch.addEventListener('keydown', event => {
 	if (event.isComposing) { return; }
 	if (event.key === 'Enter') {
 		event.preventDefault();
+		// Only the branch named exactly is switched to from the search box;
+		// anything else typed is a new branch, and nothing typed does nothing.
+		// The first branch that merely contained the text used to be checked
+		// out — any branch on an empty box, `experiment-old` for "exp" while
+		// the row offered to create "exp". A row picked with ↓ has the focus,
+		// and Enter there is that row's own button.
 		const exact = branchState?.branches.find(b => b.name === branchSearch.value.trim());
 		if (exact) { if (exact.remote || exact.name !== branchState?.current) { runBranchAction('switch', exact.name, exact.remote); } }
-		else {
-			const match = branchState?.branches.find(b => b.name.toLowerCase().includes(branchSearch.value.trim().toLowerCase()) && (b.remote || b.name !== branchState?.current));
-			if (match) { runBranchAction('switch', match.name, match.remote); }
-			else if (!branchCreate.disabled) { branchCreate.click(); }
-		}
+		else if (!branchCreate.disabled) { branchCreate.click(); }
 	} else if (event.key === 'ArrowDown') {
 		event.preventDefault();
 		branchList.querySelector<HTMLButtonElement>('.git-branch-select:not(:disabled)')?.focus();
@@ -644,6 +646,12 @@ branchList.addEventListener('keydown', event => {
 const skillEditor = el('div', { class: 'history-panel skill-editor' });
 /** A toolbar skill's parameters, asked for when it runs; or its run, while it runs. */
 const paramsPopup = el('div', { class: 'popup params-popup' });
+/**
+ * The anchor of the parameters popover while it holds a form the user types
+ * into — the GitHub form, a toolbar skill's parameters — and undefined while
+ * it holds a question or nothing. Set after `openAbove`, which clears it.
+ */
+let paramsFormAnchor: HTMLElement | undefined;
 const historyPanel = el('div', { class: 'history-panel' });
 const agentsPanel = el('div', { class: 'history-panel agents-panel' });
 /** Which copy of each agent's CLI this project uses: opened from the gear in the agent menu. */
@@ -4183,6 +4191,9 @@ function closePopups(except?: HTMLElement, keep?: HTMLElement): void {
 	}
 	if (except !== paramsPopup) {
 		paramsPopup.classList.remove('repo-form');
+		if (keep !== paramsPopup) {
+			paramsFormAnchor = undefined;
+		}
 	}
 	for (const popup of [featureSettingsPanel, sleepPopup, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel]) {
 		if (popup !== except && popup !== keep) {
@@ -4205,6 +4216,9 @@ function closePopups(except?: HTMLElement, keep?: HTMLElement): void {
 /** `form`: the GitHub form's own class on the reused parameters popover, set before it is measured; anything else opened there drops it. */
 function openAbove(popup: HTMLElement, anchor: HTMLElement, align: 'left' | 'right', keep?: HTMLElement, form?: 'repo-form'): void {
 	closePopups(popup, keep);
+	if (popup === paramsPopup) {
+		paramsFormAnchor = undefined;
+	}
 	popup.classList.remove('repo-form');
 	if (form) {
 		popup.classList.add(form);
@@ -4245,10 +4259,34 @@ function closeMenuOverPanel(): boolean {
 	return true;
 }
 
-/** Clicks elsewhere in VS Code never reach this webview's document. */
+/**
+ * The open form holding what the user typed and has not saved: it outlives
+ * the view losing focus, as the composer's draft does. Reopening any of them
+ * rebuilds it from stored state, so closing it on a blur threw the text away —
+ * a click into a file, Cmd+Tab, the side bar collapsed, or the skill editor's
+ * own native colour picker, which takes the focus out of the document.
+ */
+function formHoldingInput(): HTMLElement | undefined {
+	for (const form of [skillEditor, featureSettingsPanel]) {
+		if (form.classList.contains('open')) {
+			return form;
+		}
+	}
+	return paramsFormAnchor && paramsPopup.classList.contains('open') ? paramsPopup : undefined;
+}
+
+/**
+ * Clicks elsewhere in VS Code never reach this webview's document. Menus and
+ * questions close; a form being filled in stays, with its anchor still marked
+ * so a second press of it closes it rather than building it afresh. Escape,
+ * its own buttons and a press elsewhere in the view still close it.
+ */
 function dismissOutsideView(): void {
 	pendingLocalLinkMenu = undefined;
-	closePopups();
+	const form = formHoldingInput();
+	const anchor = form === paramsPopup ? paramsFormAnchor : undefined;
+	closePopups(form);
+	anchor?.classList.add('active');
 	hoverTip.hide();
 }
 
@@ -4567,6 +4605,8 @@ let inlineStart = 0;
 /** The box's text when the user closed the inline palette with Escape: not reopened until it changes. */
 let paletteDismissed: string | undefined;
 let paletteActive = 0;
+/** The row an arrow key last moved to: the one way a typed chat command becomes the chosen row without its exact name. */
+let paletteArrowPick: string | undefined;
 let paletteItems: PaletteItem[] = [];
 /** What the list was built from, so a state post rebuilds it only when that changed (#365). */
 let paletteShape = '';
@@ -4707,8 +4747,10 @@ function paletteQuery(): string {
 /**
  * Ranks a match: the name starting with the query, then the name holding it,
  * then the rest of the text holding every word of it. No match is undefined.
+ * `nameOnly`: the name alone counts — for the chat's own commands typed in the
+ * box, where "/start" in a sentence found Clear conversation by its description.
  */
-function rank(item: PaletteItem, query: string): number | undefined {
+function rank(item: PaletteItem, query: string, nameOnly = false): number | undefined {
 	if (!query) {
 		return 0;
 	}
@@ -4717,6 +4759,9 @@ function rank(item: PaletteItem, query: string): number | undefined {
 	}
 	if (item.name.includes(query)) {
 		return 1;
+	}
+	if (nameOnly) {
+		return undefined;
 	}
 	const words = query.split(/\s+/).filter(Boolean);
 	return words.every(w => item.haystack.includes(w)) ? 2 : undefined;
@@ -4735,14 +4780,21 @@ function buildPalette(s: ChatViewState): void {
 	const own = box ? toolbarItems(s) : [];
 	const all = box && sigil === '@' ? attachmentItems(s)
 		: inline ? [...own, ...skillItems(s), ...actions] : [...actions, ...own, ...skillItems(s)];
-	const ranked = all.map((item, i) => ({ item, i, r: rank(item, query) }))
+	// Typed, a chat command is reached by its name and only chosen on purpose:
+	// "Our API has POST /start" or "do it all /over" matched Clear conversation
+	// through its description, it became the first row, and Enter cleared the
+	// tab — idle, without a question — instead of sending the message. So it
+	// matches by name alone and is the chosen row only when its name is exactly
+	// what was typed or an arrow key picked it.
+	const typedAction = (item: PaletteItem) => inline && item.key.startsWith('chat:');
+	const ranked = all.map((item, i) => ({ item, i, r: rank(item, query, typedAction(item)) }))
 		.filter((x): x is { item: PaletteItem; i: number; r: number } => x.r !== undefined);
 	if (query) {
 		ranked.sort((a, b) => a.r - b.r || a.i - b.i);
 	}
 	const previous = paletteItems[paletteActive]?.key;
 	paletteItems = ranked.map(x => x.item);
-	const kept = paletteItems.findIndex(i => i.key === previous && !i.disabled);
+	const kept = paletteItems.findIndex(i => i.key === previous && !i.disabled && (!typedAction(i) || i.key === paletteArrowPick));
 	// Never a chat command by default without a query: Enter on a fresh "/"
 	// must not clear the conversation. With nothing else to offer, no row is
 	// chosen until an arrow key picks one.
@@ -4754,7 +4806,7 @@ function buildPalette(s: ChatViewState): void {
 	const exact = query ? paletteItems.findIndex(i => !i.disabled && i.name === query) : -1;
 	paletteActive = exact >= 0 && paletteItems[kept]?.name !== query ? exact
 		: kept >= 0 ? kept
-			: query ? stepActive(-1, 1)
+			: query ? (inline ? paletteItems.findIndex(i => !i.disabled && !typedAction(i)) : stepActive(-1, 1))
 				: paletteItems.findIndex(i => !i.disabled && !i.key.startsWith('chat:') && !i.key.startsWith('toolbar:'));
 
 	const nodes: Node[] = [];
@@ -4922,6 +4974,7 @@ function openPalette(mode: PaletteMode): void {
 	}
 	paletteMode = mode;
 	paletteActive = 0;
+	paletteArrowPick = undefined;
 	paletteShape = '';
 	paletteSearch.hidden = mode === 'inline';
 	palette.classList.toggle('inline', mode === 'inline');
@@ -5000,6 +5053,7 @@ function paletteKey(event: KeyboardEvent): boolean {
 		case 'ArrowUp':
 			if (n) {
 				setPaletteActive(stepActive(paletteActive, event.key === 'ArrowDown' ? 1 : -1), true);
+				paletteArrowPick = paletteItems[paletteActive]?.key;
 			}
 			return true;
 		case 'Enter':
@@ -5350,6 +5404,7 @@ function openRepoForm(repo: string): void {
 		}
 	};
 	openAbove(paramsPopup, workdirButton, 'left', undefined, 'repo-form');
+	paramsFormAnchor = workdirButton;
 	(repo ? branchInput : repoInput).focus();
 }
 
@@ -6069,6 +6124,7 @@ function openParams(skill: ToolbarSkill, anchor: HTMLElement, values: Record<str
 		}
 	};
 	openAbove(paramsPopup, anchor, 'left');
+	paramsFormAnchor = anchor;
 	fields[0]?.field.focus();
 }
 

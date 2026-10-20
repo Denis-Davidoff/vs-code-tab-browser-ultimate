@@ -1020,7 +1020,8 @@ ends": asked for, per skill, and the editor says beside both choices that a noti
 browser tab on screen — see [The toolbar of skills](#the-toolbar-of-skills).
 
 **The paste modal after Connect is a success that interrupts, and it is modal on purpose.** Translate
-Page's "the prompt is on your clipboard" is the other, for the same reason.
+Page's "the prompt is on your clipboard" is the other, for the same reason, and "Copy Recording
+Prompt for Claude Code / Codex" the third — it was a toast, which paused the tab it was pressed on.
 Asked for explicitly: once the file is written and the prompt copied, the paste is the one step
 left, and a status bar line was too easy to miss — the setup looked finished with nothing
 checked. `askToPaste` in [src/mcp/mcpSetup.ts](src/mcp/mcpSetup.ts) shows "Paste into the Claude Code /
@@ -1119,6 +1120,9 @@ Connect Codex                                                   0_start@3
 ─────
 Copy Element / CSS Path / CSS Path + Location / Element XPath   1_copy@1..4
 ─────
+Record Video ▸                                                  2_recording@1   when !recordingActive
+    Balanced · 1080p / High · 1440p / Maximum · 4K (* default)  1_quality@1..3
+─────
 Copy Screenshot (Visible Area) / (Full Page)                    2_shot@1..2
 ─────
 Translate Page…                                                 2_translate@1
@@ -1128,11 +1132,15 @@ Claude Code ▸                                                   3_assistant@1
     ─────
     Connect Claude Code                                         2_mcp@1
     Share Tab with Claude Code                                  2_mcp@2
+    ─────
+    Copy Recording Prompt for Claude Code                       2_recording
 Codex ▸                                                         3_assistant@2
 AI Browser Chat ▸                                               3_assistant@3   when !chatUnsupported && !chatBlocked
     Add Element / CSS Path / CSS Path + Location / XPath        1_add@1..4
     ─────
     Add Screenshot / Add Page Address                           2_page@1..2
+    ─────
+    Record Page to AI Browser Chat                              2_recording     when !recordingActive
 Check Connection                                                3_assistant@4
 ─────
 Logins and Passkeys ▸                                           3_logins@1
@@ -1144,7 +1152,9 @@ Share Tab with All Assistants                                   4_share@1
 Stop Sharing Tab                                                4_share@2   when tabShared
 ```
 
-That is seventeen rows. The menu had eighteen before the submenus, and a flat one would have
+That is eighteen rows — seventeen before Record Video. While a recording runs, Pause / Resume
+(`navigation@0`) and Stop (`navigation@0.1`) stand before the dropdown (`navigation@1`); see
+[Browser video recording](#browser-video-recording). The menu had eighteen before the submenus, and a flat one would have
 had twenty-one once the fourth element kind was added. The `group` prefixes put the
 separators in; ordering comes from the `@n` suffix, not from the position in the
 `contributes.menus` array —
@@ -1299,7 +1309,10 @@ readable — a pale yellow or a blue-white is invisible on a white background.
 **`npm run check-manifest` guards all of this**, because none of it produces a compile error:
 a menu item pointing at a missing command, a command with no activation event, an icon path
 with a typo, an icon file nobody references, two primary buttons sharing a `lastElementAction`,
-two kinds sharing a centre dot, and this grid losing its shape. Run it after touching `package.json` or `media/icons`.
+two kinds sharing a centre dot, this grid losing its shape, and a command with no `category` — a
+command that only makes sense in a menu is hidden with `commandPalette` / `when: false` instead,
+or the palette lists bare rows such as "Balanced · 1080p *". Run it after touching `package.json`
+or `media/icons`.
 
 **The primary button is a faked split button.** VS Code has the real thing —
 `isSplitButton: { togglePrimaryAction: true }` on a submenu item, rendered by
@@ -1508,6 +1521,12 @@ since a notification would pause the very tab being picked in. Only `cssLocation
 address-less frame: `css` and `xpath` travel with prose that does not claim their URL is a
 navigation target. This is the rule already written down for `browser_snapshot` — never hand out
 a selector that does not resolve with the call its consumer will make.
+
+**The heading of a path report is labelled from `DOM.describeNode` alone** (`elementDescriptor`).
+It came from `extractElementData`, which also asks for the box model and throws for an element
+without one, such as an image-map `<area>` — so an Add whose path was already built and checked
+failed with an error toast over the page, while its Copy twin worked. A failed read falls back
+to `element`: a label is never worth losing the path over.
 
 **And all three kinds refuse a path that does not resolve back to the element**, because the
 builders now check it in the page — `querySelector` for CSS, `document.evaluate` for XPath — and
@@ -1891,6 +1910,14 @@ team-shared file replaced it with our single entry and said it had succeeded. Bo
 writers go through `readConfig` for that reason; `writeCodexConfig` throws instead, which
 `connectCodex` already reports with the `codex mcp add` fallback.
 
+**Parsed is not enough: it has to be a config** (`parseClaudeConfig` in `mcpRepair.ts`, the one
+check both writers use). A top-level array, or an `mcpServers` that is not an object, is refused
+like a parse error. Connect took any parsed non-null value, so an array came back with
+`mcpServers` set as a property `JSON.stringify` does not write, `[]` went to disk, and the command
+said "Wrote .mcp.json" (#113); a string `mcpServers` was spread into index keys. The repair
+refused the array at the top level and accepted one under `mcpServers`, where deleting our entry
+left a `null` in its place.
+
 One shared global name would let the second project overwrite the first, hence the hash — the
 name is still minted, because entries written by earlier releases are still out there.
 `codex mcp add` is still offered as a command for anyone who would rather not have a file
@@ -2066,6 +2093,18 @@ wrong (the header if the name is from an older release, `url`, and `http_headers
 anything the user added to the table — `startup_timeout_sec`, `enabled_tools`, a comment —
 where it is. Whole-table removal is still used for *duplicates* of ours, which are not tables
 to fix.
+
+**And a line that is already right is not written out again, even in our own spelling.** The
+repair used to replace the header, `http_headers` and every sub-table header on each run, so
+`[mcp_servers.ai-browser] # managed`, `http_headers = {…} # rotated` and
+`[mcp_servers.x.env_http_headers] # from 1Password` lost their comments, and the inline table its
+spacing, on every port move — which changes none of those lines. A header is now rewritten only
+when the name changes, `url` only when it is not ours, and `http_headers` only when the merge
+would change what it means (`inlineHeadersStale`: the first authorization is not our token, or a
+carried key is missing). A rewritten line keeps its indentation; a renamed header and a one-line
+value keep their comment. No edit at all is `changed: false`, whatever the file's newlines.
+Fuzzed (about 32 000 configs) against the previous build: identical TOML, identical `changed`,
+and no comment lost on a table of ours.
 
 Two smaller things fall out of it. **Every writer of `~/.codex/config.toml` is locked**
 ([src/core/fileLock.ts](src/core/fileLock.ts)) — the connect path's write used to be unlocked on the
@@ -3142,16 +3181,23 @@ which can commit it as a symlink, and following one deleted files outside the wo
 - **`/tmp` is shared on Linux.** Another local user could create that predictable tree first and
   plant a symlink under an expected name, so the write followed it and overwrote any file the
   victim could write; and under `umask 022` each capture of a logged-in page was `0644`, readable
-  by everybody. The temp root is now `ai-browser-<uid>`, created `0700` and accepted only as a
-  real directory owned by this user with no group or other bits — otherwise a `mkdtemp`
-  directory is used rather than a directory somebody else may own, **made once per process**: a
-  fresh one per call put every file in a directory of its own, so the sweep never found anything
-  to retire. The activation sweep looks the directory up with `existingPrivateTempDirectory`,
-  which creates nothing and cannot reject — `cleanUpReports` is not awaited, and a throw from it
-  was an unhandled rejection (#93). macOS and Windows already give each user a
-  private temp directory, so this changes nothing there beyond the path. Old files under the
-  previous `ai-browser/` path are no longer swept; they are in the OS temp directory and go with
-  it.
+  by everybody. The private root is now **`~/.ai-browser`** (`privateRoot` in `safeFiles.ts`),
+  created `0700` and accepted only as a real directory owned by this user with no group or other
+  bits — otherwise a `mkdtemp` directory in the OS temp directory is used rather than a directory
+  somebody else may own, **made once per process**: a fresh one per call put every file in a
+  directory of its own, so the sweep never found anything to retire. The activation sweep looks
+  the directory up with `existingPrivateTempDirectory`, which creates nothing and cannot reject —
+  `cleanUpReports` is not awaited, and a throw from it was an unhandled rejection (#93).
+- **Inside the root, files are grouped by project** (`projectTempDirectory`):
+  `projects/<hash of the folder's full path>/{captures,reports,files}`, and `shared/…` for no
+  project — screenshots, videos and voice captures in `captures`, reports in `reports`, pasted
+  files in `files`, the Claude `--mcp-config` files in `shared/runtime/chat`, the isolated title,
+  branch-name and commit-message requests in `shared/runtime`, and the cleanup panel's ownership
+  records in `inventory`. The full table, and what is protected from cleanup, is in
+  [docs/temporary-files.md](docs/temporary-files.md). The previous root, `ai-browser-<uid>` in
+  the OS temp directory, is still read (`legacyPrivateTempDirectory`) so its old files can be
+  swept and cleaned; nothing new is written there, and nothing is moved, so links already handed
+  out stay valid.
 - **Names carry `HHMMSS` and nothing finer**, so two reports on one element in the same second
   shared a path and the second replaced the file an assistant had already been handed.
   `writeExclusive` keeps the readable name and adds `-2`, `-3`, … on a collision; its `wx` open
@@ -3169,8 +3215,9 @@ which the rest of the report is read as Markdown.
 
 Two dropdown entries — visible area and full page — in a group of their own (`2_shot`), which
 is what puts a separator around them. Group names sort alphabetically, so the numeric prefixes
-(`0_start`, `1_copy`, `2_shot`, `2_translate`, `3_assistant`, `4_share` at the top level, `1_add` and `2_mcp` inside each
-assistant's submenu, `1_add` and `2_page` inside the AI Browser Chat one) are the running order of the menu — see
+(`0_start`, `1_copy`, `2_recording`, `2_shot`, `2_translate`, `3_assistant`, `3_logins`, `4_share` at the
+top level, `1_add`, `2_mcp` and `2_recording` inside each assistant's submenu, `1_add`, `2_page` and
+`2_recording` inside the AI Browser Chat one) are the running order of the menu — see
 [the dropdown](#the-dropdown-on-the-browser-tab) for the whole tree.
 
 Capturing is one CDP call, but two arguments matter:
@@ -3363,6 +3410,59 @@ done.
 **Not part of the repeat button.** The sixteen `navigation@2` candidates are element actions; a
 screenshot picks nothing, so folding it in would mean a button with no crosshair and a hole in
 the icon grid `check-manifest` enforces.
+
+### Browser video recording
+
+A silent video of a browser tab's viewport, with no OS screen capture: CDP `Page.startScreencast`
+supplies frames, and the chat view's webview encodes them with `MediaRecorder`
+(`ChatViewProvider.createRecordingEncoder`; MP4 where the editor has it, else WebM). The encoder
+sends the video back in chunks of about a second, each acknowledged by the host, and
+[src/browser/recording.ts](src/browser/recording.ts) writes them to the file. One recording per
+window, on the tab it started on: focus moving elsewhere or a tool pin does not move it, and a
+share that takes the tab away from the assistant stops it. **The encoder lives in the chat view**,
+so nothing can be recorded where the chat cannot run.
+
+- **Where it is.** While a recording runs, the browser tab's toolbar shows Pause / Resume at
+  `navigation@0` and Stop at `navigation@0.1`, gated on `aiBrowser.recordingState` (`idle`,
+  `starting`, `recording`, `paused`, `stopping`). The dropdown has "Record Video ▸"
+  (`aiBrowser.recordingMenu`, `2_recording@1`, hidden while `aiBrowser.recordingActive`) listing
+  the three quality presets. The Claude Code and Codex submenus have "Copy Recording Prompt for …"
+  (`2_recording`): a prompt on the clipboard telling the assistant how to use the
+  `browser_recording_*` tools, behind a modal like Connect's paste prompt. The AI Browser Chat
+  submenu has "Record Page to AI Browser Chat".
+- **Quality** ([src/browser/recordingQuality.ts](src/browser/recordingQuality.ts)): Balanced
+  1080p / 6 Mbps, High 1440p / 12 Mbps (the default), Maximum 4K / 24 Mbps. The default is
+  `globalState` `aiBrowser.recording.quality`, set in the chat's settings and published as
+  `aiBrowser.recordingQuality`. **Each preset is two commands** (`…` and `…Default`, the latter's
+  title marked `*`), swapped by that key, since a menu title is static. A preset picked from the
+  menu applies to that recording only. The six are hidden from the palette.
+- **MCP:** `browser_recording_start` (`destination` `chat` or `clipboard`; `chat` by default for
+  the chat's own agents, `clipboard` for others), then `browser_recording_pause` / `_resume` /
+  `_stop` / `_status` with the id the start returned, scoped to the MCP session that started it.
+  No video bytes are returned, only metadata and the file path.
+- **Limits, and both keep the video:** 10 active minutes (pauses do not count) and 256 MB. Either
+  goes through `_limit`, which stops the recording as Stop does and sets `limitReached`
+  (`'duration'` or `'size'`). **The size limit used to throw in the chunk handler into `_fail`,
+  which deletes the file** — everything recorded was lost at about 170 s of a busy page at the
+  default 12 Mbps. The stop is now asked for at least 16 MB, or four chunks, before the limit, so
+  the encoder's final flush still fits; a chunk that would still cross 256 MB is acknowledged and
+  dropped with every chunk after it (a file that ends early plays, one with a gap does not), and
+  `durationSeconds` is clamped to where the cut fell.
+- **Delivery** is decided at start, never at stop: `chat` adds a video chip to the draft of the
+  chat tab chosen at start; `clipboard` copies the file path. **The confirmation is the status
+  bar** (`confirm()`) — it used to be a toast over the page just recorded, which paused it (#10).
+  A toast with "Open video" / "Save as…" comes only when neither delivery worked, since then
+  nothing else leads to the file.
+- **Files** go in `~/.ai-browser/projects/<id>/captures/<uuid>.mp4|webm`, or `shared/` with no
+  project, `0600`, recorded for the cleanup panel; kept until cleaned there. A failed recording
+  removes its file.
+- **Failures** (encoder lost, an acknowledgement error, an encoder error) are an error
+  notification. A tab closed, or its CDP session closed, while the recording is still `starting`
+  is a quiet cancel — it used to read "Browser recording failed: Recording is still starting.".
+  The user commands go through `userRecording` in `extension.ts`: an error the recording already
+  reported (`recordingErrorReported`) is not reported again — VS Code otherwise adds its generic
+  "command failed" toast (#194) — and a refusal made before any recording existed goes to the
+  status bar.
 
 ### Not built yet
 
@@ -3748,6 +3848,23 @@ label carries a `leadsAway` substring next to its submit word (an id `backoffice
 `back`). Counting every typeless button again would bring back the false success #451 removed, and
 a miss costs an offer where a false success costs a password.
 
+**An attempt the page answered and kept its form for is over, and moving on ends it.** A button
+with no submit word — an arrow icon, `ログイン`, `Accedi` — only arms the removal capture and
+starts no watch, so a rejected guess stayed armed with its own request already sent; a later
+route change found "a request after the user acted" (the rejected one) and offered the guess as
+an update — #233's outcome, reached past #308. Now an armed attempt (`arm`) ends while its form
+still shows once the page has answered (fetch/XHR, not beacons) and gone quiet for 4 s, and in
+any case 12 s after it started, the watch's own limit. A click that does not submit ends every
+attempt whose form still shows if it leaves, leads away, is in another root, or comes after the
+answer — unless it presses again what sent it (`retries`: the arming button or the form's
+default button). Measured in Chrome 153, compiled script in its isolated world, trusted input:
+rejected icon, Japanese, Italian and formless attempts followed by Forgot, Sign up, a menu, a
+logo, an eye then a menu, or a route change 6 s later now capture nothing (all were `gone`
+before); Log in, an icon, ログイン, Enter on a typeless icon default button, a 2.5 s chained
+profile fetch, an eye during a 2 s request, retyping and pressing again are still captured.
+**Lost, knowingly:** a success the page takes more than 4 s after its last answer to show (a
+"redirecting in 5 s" page), and a slow sign-in begun after an unrelated fetch was answered.
+
 **Every captured value must be one the user's own input left in its field** — provenance per
 value, not per form. `trustedValues` keeps, for each field, the value it held after its last
 *trusted* `input` event. A password whose value has changed since — `browser_fill`, the page's
@@ -3812,7 +3929,20 @@ within the 15 s window, before the site redrew its form, was written and never r
 **A two-step sign-in carries its username across.** The username-only first step is reported on
 its own (`kind: 'username'`) and remembered per origin for ten minutes, so a password-only second
 page — usually a different document, where Firefox's own memory (`mockUsernameOnlyField`) is gone —
-still saves the right account. Bitwarden's own code flags this case as lost.
+still saves the right account. Bitwarden's own code flags this case as lost. **Every first step
+replaces the remembered username, and a sign-in that worked uses it up.** Remembering only typed
+usernames and never forgetting kept alice through a switch to bob — filled by Fill Saved Login or
+chosen in an account chooser, so not typed — and bob's new password went out as alice's. A first
+step with no typed username now clears the page's memory and sends an empty `kind:'username'`
+report, which the watcher reads as "forget" (`UsernameSteps` in `vaultData.ts`); an outcome of
+`gone` in the page and a success in the watcher forget it too, which covers a chooser with no
+username step. **And a first step of unknown account blocks the single-login update**: the empty
+step is kept as `''` (`UsernameSteps.unknownAccount`), the submission carries `accountUnknown`,
+and `decideSave` then answers `unknownAccount` rather than "update the single login saved for
+the origin" — with only alice saved, bob's password chosen through a fill was otherwise offered
+as alice's update. **Still open:** a chooser with *no* username step at all cannot be told from
+alice signing in again on a password-only page, so there the single-login rule still applies;
+the offer names the account.
 
 **Save or update** (`decideSave` in `vaultData.ts`, under test): the never list says nothing; the
 same username with the same password only bumps `lastUsed`; the same username with another
@@ -4083,7 +4213,14 @@ other password) asks once which side wins, counted on the same de-duplicated row
 applies. **Duplicate rows keep the newest** (`updated`), not the first, and are counted in the
 summary: Chrome stores a login per URL path, so an old and a new row for one account are an
 ordinary export, and the first-wins version installed the stale password while the counters no
-longer summed to the file. Logins are indexed by origin and username in a `Map`; the linear
+longer summed to the file. **But only where the file says when.** Chrome, Safari, Bitwarden and
+1Password CSVs carry no dates, and each row was stamped with the import's time, so comparing equal
+stamps kept the first row while the summary said "(the newest used)". Undated rows are passed to
+the merge as `undated`; a pair that cannot be ordered (either undated, or equal dates) keeps the
+**first** row — Chrome sorts its export by site, so position says nothing about age, and "first"
+is a rule the user can check — and when the passwords differ the account is reported in
+`MergeReport.undecided`, counted in the summary, and named (up to five) in a modal asking the
+user to check those passwords. Logins are indexed by origin and username in a `Map`; the linear
 searches they replaced took 18 s for 60 000 rows, inside the lock, blocking every extension in the
 host (now under 50 ms, conflict count included). Passkeys merge by RP and credential id, keeping the higher counter — going
 backwards reads to a relying party as a cloned authenticator.
@@ -4123,7 +4260,15 @@ leaf, under test):
   open a quote that swallowed the next real input — whose password then went out unredacted.
   Comments, CDATA and raw-text elements (`script`, `style`, `xmp`, `iframe`, `noembed`,
   `noframes`, `noscript`, `plaintext`) are copied through unscanned, and a tag is read with its
-  quotes honoured rather than cut at the first `>`.
+  quotes honoured rather than cut at the first `>`. **The end of a raw-text element is found by a
+  case-insensitive search for ASCII `</name`** (`rawTextClose`), not `html.toLowerCase().indexOf`:
+  lowering the document once per element was quadratic (20 000 `<style>` tags held the host
+  4.8 s, now 9 ms), and lowering is not length-preserving (`İ` becomes two code units), so the
+  index it found landed past the end tag and copied the next input's value through. **And a quote
+  opens a value only where the tokenizer would read one** (`tagEnd`, the attribute states cut
+  down): `<div a'="x">` is a legal attribute name, and `<div ='>` is the attribute `='` — an `=`
+  before any name character starts a name — and reading either quote as a value swallowed the
+  following password input.
 - **Every tool that takes a selector refuses one that compares `value`** (`comparesFieldValue`):
   `input[type=password][value^="a"]` matching or not is a one-character oracle, and an exact
   `[value="…"]` a dictionary attack. The selector is **tokenised first**: comments removed — CSS
@@ -4188,7 +4333,7 @@ to it will be added to 'Explorer'"), so without a guard an older VS Code showed 
 left after all. The view therefore carries `when: !aiBrowser.chatUnsupported`, set at activation
 below 1.106 (`supportsSecondarySidebar` in `chatView.ts`), and the same key hides the chat's nine
 commands from the palette (New Chat, Chat History, Refresh Agents and the six "Add … to AI
-Browser Chat"), since `aiBrowser.chat.focus` does not exist there. A key is set at
+Browser Chat") and Chat Settings and Record Page to AI Browser Chat as well, since `aiBrowser.chat.focus` does not exist there. A key is set at
 activation and the view can resolve first, so `_blocked()` refuses below 1.106 as well — no CLI
 starts there whichever lands first. Both assistants'
 own extensions add a left activity bar copy for those versions, gated on a context key of the
@@ -4881,7 +5026,12 @@ looked for, none listed, or a listing that failed. **A row whose name is exactly
 chosen over the one kept** from earlier keystrokes: `/review` typed letter by letter kept
 `/review-pr`, chosen at `/r`, and Enter inserted that while the toolbar's own `/review` — listed
 first, since it takes precedence — sat above it (#412). A row picked with an arrow stays while it
-is exact too.
+is exact too. **Typed, a chat command matches by its name alone and is never the row chosen by
+default.** Its description was searched too, so "Our API has POST /start" or "do it all /over"
+matched Clear conversation, it became the first row, and Enter cleared an idle tab without a
+question instead of sending the message. It is chosen only when its name is exactly what was
+typed or an arrow key picked it (`paletteArrowPick`). The palette opened from the button still
+searches descriptions.
 
 **The inline palette closes whenever the box is rewritten under it** — a send, another chat, a
 recalled message, queued messages given back — and `renderPalette` checks that the typed `/…` is
@@ -4959,6 +5109,11 @@ folder* section of `chatView.ts`.
 
 - **Git footer**: beside the working path, the branch dropdown searches local and known remote
   branches, switches or creates a branch, and deletes local branches with `git branch -d`.
+  **Enter in the branch search switches only to the branch named exactly**; anything else typed
+  creates that branch, and an empty box does nothing. It used to check out the first branch whose
+  name *contained* the text: any branch on an empty box, and `experiment-old` for "exp" while the
+  row offered to create "exp". A row picked with ↓ has the focus, and Enter there is that row's
+  own button.
   The combined **Commit** trigger with numeric staged/unstaged counters stays accessible and opens the changes panel on hover
   or click. It shows Staged and Unstaged groups, changed/deleted totals, and per-file and group
   Stage (+) / Unstage (undo) actions. Unstage changes only the index, including renames and an
@@ -4978,6 +5133,19 @@ folder* section of `chatView.ts`.
   banner or extra success entry is added to the chat. Failures remain visible with an explicit
   action to send their diagnostics to the current chat for repair; no repair turn starts automatically. See `gitAccess.ts`, `gitIndex.ts`,
   `gitCommit.ts`, `commitMessage.ts`, and `_commitWorkdir` in `chatView.ts`.
+- **The footer's Git state is read only for a view on screen, never in a blocked window, and one
+  read at a time.** `git status` runs the repository's own `filter.<driver>.clean` commands from
+  `.git/config`, which `core.fsmonitor=false` does not stop, and it used to run on every document
+  opened or closed, theme or extension change — in Restricted Mode too, the chat never opened.
+  `_readWorkdirGit` refuses where `_blocked()` does (#208) and still answers the view, whose
+  refresh button waits for a reply. `_gitEventRefresh` starts nothing while the view is hidden or
+  absent — it marks the read owed (`_gitStale`) and runs it when the view is shown — and turns a
+  burst of events into one read after 300 ms. `_refreshWorkdirGit` keeps one read per folder in
+  flight, with one rerun for calls that arrive meanwhile; the view gets a fresh read on `ready`,
+  and `workdirGit` is never queued for a view that is not ready, or the replies piled up in
+  `_queued` for the life of a window whose chat was never opened. The footer's actions — index,
+  branch — ask `_blocked()` **before** taking the Git lock as well, since taking it runs
+  `git rev-parse` in the folder.
 - **The folder belongs to the conversation** (`StoredChat.folder`), absent meaning the window's
   own — its first local folder, else the home directory with no project, as before. Each tab can
   work in another project. `ChatTab.cwd` / `projectRoot` hand it to the session, so the approval
@@ -5168,6 +5336,14 @@ toolbar; at most 30, prompts up to 20 000 characters.
   host checks what it saves (`validToolbarSkill` in `toolbarText.ts`) and answers `toolbarSaved`
   (the editor closes) or `toolbarError` (it stays, with the reason): a name taken by another
   toolbar skill, a malformed parameter, a preset that does not fit its type.
+- **The editor outlives the view losing focus.** A blur of the webview (a click into a file,
+  Cmd+Tab, the editor's own native colour picker) or the view being hidden closes menus and
+  questions, never a form holding unsaved input: the skill editor, the Chat Settings panel, and
+  the parameters popover while it holds the GitHub form or a skill's parameters
+  (`formHoldingInput`, `paramsFormAnchor`). Reopening any of them rebuilds it from stored state,
+  so closing it there threw the text away (#464's class). The anchor keeps its `active` mark, so
+  a second press still closes the form; Escape, its own buttons and a press elsewhere in the view
+  close it as before.
 - **The icon list is the font's own**: `@vscode/codicons/dist/codicon.csv` bundled as text
   (esbuild's `text` loader), searchable, so nothing offered fails to draw.
 - **Three colours** (asked for, one at first, then one each for the label, the border and the
@@ -5584,7 +5760,8 @@ another, even if by asking".
 setting change; nothing while the server is not running):
 
 - **Claude**: `--mcp-config <file>`, a JSON file naming `ai-browser` with its URL and bearer
-  token, in the private temp directory (`chat/mcp-<host pid>-<uuid>.json`, `0600`). **One file
+  token, in the private directory (`~/.ai-browser/shared/runtime/chat/mcp-<host pid>-<uuid>.json`,
+  `0600`). **One file
   per CLI process**, written as it starts and removed when it exits. The first version wrote one
   per session, cached it, and swept files a day old — so a tab open for more than a day had its
   file removed by another window's sweep, and the next process it started (a model change, a
@@ -5685,6 +5862,21 @@ its tooltip. Categories, as `agentProtocol.ts` sorts the questions (`claudeAppro
     resolved), so `<project>/homelink/.zshrc` is outside when `homelink` leads to `~`.
   - **A Codex patch's move destination** (`move_path`, in either shape) is a path it writes, and a
     patch whose paths are not known is outside — the card names every path.
+  - **A dangling symlink is followed too.** `realpath` fails on a link whose target does not
+    exist yet, and taking the name as written read `<project>/dangling -> ../outside/x` as
+    inside, so a Write through it created the file outside with no card. `realish` resolves a
+    path that does not fully resolve one component at a time, as the kernel does: each link,
+    a dangling one included, is followed from the link's real folder; a name that does not
+    exist ends the walk with the rest as written (a new file is normal); a loop, more than 40
+    links, a file used as a folder or any other error counts as outside.
+- **Every Claude Code tool that runs a command is Terminal's, not only `Bash`.** 2.1.301 also
+  has `PowerShell` (its permission rule reads `command`) and `Monitor`. Filed under Other tools,
+  they escaped Terminal's Deny and Ask, ran unasked under Other tools' Auto, and on Ask the card
+  showed the model's description instead of the command. `claudeApproval` reads any non-MCP tool
+  whose input has a string `command` as a command, the card titled with the whole command.
+  `SandboxNetworkAccess` (`{ host }`) is Internet's, "Network access: <host>", as Codex's
+  `networkApprovalContext` is. Whatever still falls to Other tools shows its arguments, with the
+  model's description above them, never in their place.
 - **A server gets its row the first time an agent asks about one of its tools** (`noteServer`,
   at most 30, kept per workspace), since the servers are each CLI's own configuration and nothing
   lists them up front. Its name is the key, so a name over 80 characters is not listed rather
@@ -5929,6 +6121,12 @@ once enough are closed, and only a window restore is cut to the new limit.
 - **Closing a tab stops what it runs** — its turn and its agents — and keeps the chat in the
   history. A tab that is working asks first, inside the strip ("… is still working. Closing it
   stops its reply and 1 agent."), never in a modal.
+- **The view closing ends each tab's work with `close('view')`, which does not mark the tab
+  closed.** The same `ChatTab` objects are shown again when the view is resolved again, and
+  `_closed` is reset only by `start()`, so a tab the view let go of came back closed for good: a
+  generated title was dropped and a first send that failed was never saved (#459's survival, in
+  every path but the restart it was fixed for). A chat deleted while the view is closed is still
+  never written back: deleting discards the tab.
 - **New Chat** (title bar, and the strip's "+") opens a tab beside the one in front.
 - **A chat from the history** is brought to the front if a tab has it, shown in the tab in front
   if that one is empty, and otherwise opened in a new tab — opening one must not end a
@@ -6040,6 +6238,34 @@ takes it) and goes to the agent as an image block — base64 for Claude, a `data
 the tab explicitly; **Page address** is the URL and title (`pageTitle` + `plainInPrompt`, since
 the title is page-chosen text going into a prompt); **File** is the path only, since both agents
 read files themselves.
+
+**Files pasted into the message box are attached too** (`paste` in `chat.ts`,
+`clipboardFiles.ts`; `_pasteFile` in `chatView.ts`, rules in `pastedFiles.ts`, leaf). A paste
+that carries files is taken over: its plain text, if any, still goes into the box, and each file
+is read in the view and posted as base64 with the tab and chat it was pasted into. Details that
+matter:
+
+- **The host checks everything the view sends**: the tab and chat must still match (a paste
+  answered after the tab moved on is refused, #368's rule), the base64 must be canonical and
+  decode to at most 64 MB (`pastedFileLimit`, checked in the view before reading too), and the
+  name is reduced to a leaf with no control or reserved characters (`pastedFileName`, cut by
+  code point, not by UTF-16 unit — #373 — and to 200 UTF-8 bytes, since the host adds a 37-byte
+  UUID and a name is at most 255 bytes: 180 CJK characters failed with `ENAMETOOLONG`).
+- **The file is written to `projects/<id>/files`** under the private root, exclusively, with a
+  UUID prefix, and recorded for the cleanup panel. **Nothing sweeps these automatically**: the
+  path is handed to the agent and may be read long after; they go with the panel's Clean
+  project / Delete all, which protects the current draft's attachments. **Those are matched
+  through `comparablePath`** (`temporaryFiles.ts`): on Windows `Uri.fsPath` lowercases the drive
+  letter while paths built from `os.homedir()` keep it upper case, so a plain `===` never matched
+  and the cleanup deleted the draft's own files. The file system there ignores case, so the
+  whole path is folded, not only the drive letter.
+- **PNG, JPEG, GIF and WebP go to the agent as an image block** as well as a path; any other
+  type — SVG included — is a file the agent reads itself.
+- Sending is held while a paste is still being attached, so a message cannot go out without
+  the file it was written around.
+- **Known and left:** an office application (Excel, Word, Numbers) copies a picture of the
+  selection beside its text, and both are attached; a file over 64 MB is refused with a line
+  above the box.
 
 **Clicking a chip opens what it attaches**, as a tab of the active editor group, among the other
 editors, and as a preview so the next chip reuses it — asked for. It opened `Beside` at first,
@@ -8371,6 +8597,101 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
      its chip label only. A transcript goes into the message.
 483. **An answer acted on in a phase it does not belong to** → `done` after the recording was
      discarded with Escape sent it anyway. Act on an event only in the phase that asked for it.
+484. **Recognising a command tool by its name** → `PowerShell` and `Monitor` run commands as surely
+     as `Bash` does, yet were filed under Other tools: Terminal's Deny did not cover them, Other
+     tools' Auto ran them unasked, and the card showed the model's description instead of the
+     command. Classify by what the input carries (a `command`), and never show a description in
+     place of the arguments.
+485. **`realpath` failing read as "the rest is just a name"** → a dangling symlink inside the project
+     pointing out of it resolved to `<project>/<name>`, so a Write through it landed outside while
+     "Files in the project" on Auto approved it. When a component does not resolve, `lstat` it:
+     follow a link, take only ENOENT as "new file", and treat everything else as outside.
+486. **Caching a rejected setup promise** → one failure creating the `--mcp-config` directory left
+     every later Claude session of the extension host without the browser tools, with nothing
+     saying why. A failure is retried on the next start, not remembered.
+487. **Reading a repository's Git state on editor events without asking whether the chat may run** →
+     `git status` runs the repository's `filter.*.clean` commands, which `core.fsmonitor=false`
+     does not stop, so opening any document in a Restricted Mode window ran code from the
+     untrusted folder's `.git/config`. Refuse where `_blocked()` does, on every Git path, the
+     read-only ones included.
+488. **Starting processes per editor event for a view nobody is looking at, and queueing the answer**
+     → every document opened or closed started three git processes, and each `workdirGit` reply
+     was kept in `_queued` for a view that was never opened, for the life of the window. Read
+     only for a visible, ready view, debounce, keep one read per folder in flight, and never queue
+     a snapshot.
+489. **Comparing a `Uri.fsPath` with a path built from `os.homedir()` as strings** → on Windows one
+     has a lowercase drive letter and the other an uppercase one, so a draft's attachment never
+     matched its own file and the temporary-file cleanup deleted it. Compare through one
+     normalisation (`comparablePath`), case-folded on win32.
+490. **Marking a tab closed when only its view went away** → the provider reuses the same tabs when the
+     view is resolved again, and `_closed` was reset only by `start()`, so generated titles were
+     dropped and a failed first send was never saved, in every tab, from then on. The view closing
+     calls `close('view')`, which leaves the flag alone.
+491. **Closing every popup on blur, unsaved forms included** → the skill editor, Chat Settings and the
+     GitHub and parameters forms are rebuilt from stored state when reopened, so a click into a
+     file, Cmd+Tab, a collapsed side bar or the editor's native colour picker threw away what was
+     typed (#464's class). Keep a form holding input open on blur and visibility loss; close only
+     menus and questions there.
+492. **Enter in a search box acting on the first row that merely contains the text** → the branch
+     search checked out any branch on an empty box, and `experiment-old` for a new name "exp"
+     whose create row was on screen. Act only on an exact match or a row picked with the keys;
+     otherwise create, or do nothing (#397, #441, #445).
+493. **Matching a destructive command by its description in the typed palette** → "/start" or "/over"
+     mid-sentence found Clear conversation, made it the default row, and Enter cleared the tab
+     instead of sending. Typed chat commands match by name only and are chosen only by an exact
+     name or an arrow key.
+494. **Writing a line back in our own spelling because it belongs to us** → the unattended repair
+     rewrote the header, `http_headers` and every sub-table header on each port move, which
+     changes none of them, so the user's comments on those lines and the inline table's spacing
+     went every time, while the doc comment promised to touch only the lines that are wrong.
+     Compare by meaning, and only write a line that differs.
+495. **A hand-written trim where git's own rule was meant** → `[ \t]+$` stripped a trailing tab that
+     git keeps as part of the pattern, so `config.toml<TAB>` read as protecting the token-bearing
+     file while `git check-ignore` said it did not (#196's direction). Git drops unescaped
+     trailing spaces and nothing else.
+496. **Taking "it parsed" for "it is a config"** → a `.mcp.json` holding a JSON array was rebuilt into
+     `[]` and reported as written (#113), a string `mcpServers` was spread into index keys, and
+     the repair left `null` holes in an `mcpServers` array. Refuse any shape the writer cannot
+     rebuild, as it refuses a parse error.
+497. **A size limit enforced by throwing in the write path** → the throw went to `_fail`, which removes
+     the file and shows an error, so a recording reaching 256 MB (about 170 s of a busy page at
+     12 Mbps) lost everything, while the time limit stopped and kept it. A limit ends the
+     recording; it does not fail it. Stop early enough for the final flush to fit, and
+     acknowledge and drop past it.
+498. **A success toast after work the user started from the page** → "Video recorded…" and "Recording
+     prompt copied" landed on the browser tab they came from and paused it (#10). The status bar
+     for a confirmation, a modal for a paste.
+499. **The source closing during startup read as a failed stop** → `stop()` refuses while `starting`,
+     so closing the tab during a start produced "Browser recording failed: Recording is still
+     starting.". Closing the page there is a cancel.
+500. **A label read through a call that also needs layout** → `extractElementData` for a report
+     heading threw on box-less elements (`<area>`) and took a working Add down with it. Read only
+     what the label needs.
+501. **Commands contributed without a `category`, menu-only commands left in the palette** → the
+     palette listed bare "Balanced · 1080p *" rows and two identical "Record page prompt"
+     entries, and two chat commands ran `aiBrowser.chat.focus` below 1.106, where it does not
+     exist. `check-manifest` now requires a category; gate or hide the rest.
+502. **An armed capture with no way to end it but typing** → a sign-in button with no submit word
+     arms the removal capture and starts no watch, so after a rejection the next route change
+     counted the rejected request as "sent after the user acted", and the guess was offered as an
+     update. End an attempt once the page answers and keeps its form, and on any click that moves
+     on.
+503. **A memory that only a match can set** → the two-step username was remembered when typed and
+     never cleared, so an account switched by a fill or a chooser saved the next password under
+     the previous account. Every step replaces it; a sign-in that worked uses it up.
+504. **"Newest" decided by a stamp the importer invented** → undated CSV rows all got the import's
+     time, so the first duplicate won while the summary said "the newest used". Only real dates
+     order rows; the rest are named to the user.
+505. **Lowercasing a copy to search the original** → quadratic per element, and `toLowerCase` changes
+     length, so an index from the copy pointed elsewhere in the original and copied a password
+     value through unscanned. Search the original case-insensitively.
+506. **A quote read as a delimiter where it is a name character** → `<div a'="x">` and `<div ='>`
+     opened a "value" that ran past the next password input. A quote opens a value only where
+     the tokenizer's attribute states would read one — after an `=` that follows a name.
+507. **"Not newest" for a password-only sign-in read as "the only login"** → with one login saved
+     for the origin, a password whose first step carried no typed username (a fill, an account
+     chooser) was offered as that login's update — another account's password. A first step of
+     unknown account blocks the single-login rule.
 
 ## Special cases and non-obvious decisions
 
@@ -8970,7 +9291,11 @@ git keeps as part of the pattern, and it treated only four literal negations as 
 `config.toml` followed by `!config.*` read as protective. It now reads every `!` line it cannot
 model as re-including the file and strips trailing whitespace only — and a clean "not ignored"
 from `git check-ignore` refuses the write regardless of what the model says. Breaks-silently
-#196.
+#196. **Trailing whitespace is trimmed the way git trims it**: unescaped spaces only
+(`trim_trailing_spaces` in git's `dir.c`). Stripping `[ \t]+` read `config.toml<TAB>` as covered
+while `git check-ignore` answers "not ignored", the leaking direction; a tab stays part of the
+pattern, and `config.toml\ ` keeps its escaped space and names another file. Measured with git
+2.54.
 
 **A `.gitignore` does nothing for a file git already tracks**, and teams do commit
 `.codex/config.toml` for shared settings. So `writeCodexProjectConfig` asks

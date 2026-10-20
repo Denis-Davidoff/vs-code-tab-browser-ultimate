@@ -35,10 +35,13 @@ function harness(options: { holdReady?: boolean; holdFirstFrame?: boolean; holdC
 	const panels: any[] = [], channels: any[] = [], clients: any[] = [];
 	const storageProjects: (string | undefined)[] = [];
 	const trackedProjects: (string | undefined)[] = [];
-	const state = { allowed: true, clipboard: '', holdFrame: false, holdStop: false, failAck: false, closeDuringStop: false, quality: 'high' };
+	const state = { allowed: true, clipboard: '', holdFrame: false, holdStop: false, failAck: false, closeDuringStop: false, quality: 'high',
+		confirmed: [] as string[], toasts: [] as string[] };
 	const commands: { method: string; params: any }[] = [];
 	const window: any = { browserTabs: [], activeBrowserTab: undefined, onDidCloseBrowserTab: closedTab.event,
-		showInformationMessage: async () => undefined, showErrorMessage: async () => undefined };
+		showInformationMessage: async (message: string) => { state.toasts.push(message); },
+		showWarningMessage: async (message: string) => { state.toasts.push(message); },
+		showErrorMessage: async (message: string) => { state.toasts.push(message); } };
 	const tab: any = { url: 'https://recording.test', startCDPSession: () => {
 		const closed = new Events();
 		const channel: any = { onDidClose: closed.event, closed: false, close: async () => { channel.closed = true; closed.fire(); } };
@@ -65,10 +68,13 @@ function harness(options: { holdReady?: boolean; holdFirstFrame?: boolean; holdC
 		const panel: any = { onDidDispose: disposed.event, disposed: false,
 			dispose: () => { if (!panel.disposed) { panel.disposed = true; disposed.fire(); } },
 			reply: (message: any, values: object = {}) => messages.fire({ type: 'reply', seq: message.seq, ...values }),
+			chunk: (seq: number, data: Buffer) => messages.fire({ type: 'chunk', seq, data: data.toString('base64') }),
+			acks: [] as number[],
 		};
 		const webview: any = {
 			onDidReceiveMessage: messages.event, asWebviewUri: (value: any) => value.fsPath,
 			postMessage: async (message: any) => {
+				if (message.type === 'chunkAck') { panel.acks.push(message.seq); }
 				if (message.type === 'init') { queueMicrotask(() => panel.reply(message, { mime: 'video/mp4' })); }
 				if (message.type === 'frame') {
 					if (state.holdFrame) { panel.frame = message; }
@@ -119,6 +125,7 @@ function harness(options: { holdReady?: boolean; holdFirstFrame?: boolean; holdC
 				case 'node:path': return path;
 				case '../core/cdp': return { CDPClient: Client };
 				case '../core/uuid': return { generateUuid: randomUUID };
+				case '../core/notify': return { confirm: (message: string) => { state.confirmed.push(message); } };
 				case '../core/temporaryFiles': return { trackTemporaryFile: async (_file: string, project?: string) => { trackedProjects.push(project); }, temporaryProject: () => '/project-b' };
 				case '../core/safeFiles': return { projectTempDirectory: async (project?: string) => { storageProjects.push(project); return root; } };
 				case './shareRegistry': return { callerKey: (caller: any) => caller.sessionId ?? caller.kind };
@@ -129,7 +136,7 @@ function harness(options: { holdReady?: boolean; holdFirstFrame?: boolean; holdC
 	});
 	const recording = new exported.BrowserRecording({ extensionUri: uri(root), globalState: { get: () => state.quality } }, browser);
 	recording.createEncoder = () => { const panel = window.createWebviewPanel(); panel.webview.html = ''; return panel; };
-	return { recording, tab, window, panels, channels, clients, state, closedTab, commands, storageProjects, trackedProjects,
+	return { recording, exported, tab, window, panels, channels, clients, state, closedTab, commands, storageProjects, trackedProjects,
 		cleanup: () => { recording.dispose(); fs.rmSync(root, { recursive: true, force: true }); } };
 }
 
@@ -317,4 +324,67 @@ test('an unknown caller chat never falls back to another chat project', async ()
   assert.deepEqual(h.trackedProjects, [undefined]);
   await h.recording.control('stop');
  } finally { h.cleanup(); }
+});
+
+test('reaching the size limit stops the recording and keeps what was written', async () => {
+	const h = harness();
+	try {
+		await h.recording.start(); const run = h.recording._active;
+		// Close to the limit without writing hundreds of megabytes.
+		run.result.bytes = h.exported.maxRecordingBytes - 1000;
+		const before = fs.statSync(run.file).size;
+		h.panels[0].chunk(1, Buffer.alloc(2000, 1));
+		await until(() => !h.recording._active);
+		assert.equal(run.result.state, 'completed'); assert.equal(run.result.limitReached, 'size');
+		assert.ok(fs.existsSync(run.file));
+		// The chunk past the limit, and the encoder's final flush after it, were dropped — and acknowledged.
+		assert.equal(fs.statSync(run.file).size, before);
+		assert.deepEqual(h.panels[0].acks, [1, 99]);
+		assert.equal(h.state.toasts.length, 0); assert.match(h.state.confirmed.at(-1)!, /256 MB limit/);
+	} finally { h.cleanup(); }
+});
+
+test('approaching the size limit stops early so the final flush still fits', async () => {
+	const h = harness();
+	try {
+		await h.recording.start(); const run = h.recording._active;
+		run.result.bytes = h.exported.maxRecordingBytes - 17 * 1024 * 1024;
+		h.panels[0].chunk(1, Buffer.alloc(2 * 1024 * 1024, 1));
+		await until(() => !h.recording._active);
+		assert.equal(run.result.state, 'completed'); assert.equal(run.result.limitReached, 'size');
+		assert.equal(fs.statSync(run.file).size, 2 * 1024 * 1024 + Buffer.byteLength('encoded video'));
+	} finally { h.cleanup(); }
+});
+
+test('a completed recording confirms in the status bar, not in a toast', async () => {
+	const h = harness();
+	try {
+		await h.recording.start(); await h.recording.control('stop');
+		assert.equal(h.state.toasts.length, 0); assert.match(h.state.confirmed.at(-1)!, /Video recorded/);
+	} finally { h.cleanup(); }
+});
+
+test('closing the tab while the recording is starting cancels quietly', async () => {
+	const h = harness({ holdFirstFrame: true });
+	try {
+		const start = h.recording.start();
+		await until(() => !!h.recording._active?.session && h.recording._active.parts.length >= 3);
+		const file = h.recording._active.file;
+		h.window.browserTabs = []; h.closedTab.fire(h.tab);
+		const error = await start.then(() => assert.fail('start should reject'), (e: unknown) => e);
+		assert.match(String(error), /closed while the recording was starting/);
+		assert.equal(h.exported.recordingErrorReported(error), true);
+		assert.equal(h.state.toasts.length, 0); assert.equal(h.recording._active, undefined); assert.ok(!fs.existsSync(file));
+	} finally { h.cleanup(); }
+});
+
+test('a refusal before any recording exists is left for the caller to report', async () => {
+	const h = harness();
+	try {
+		await h.recording.start();
+		const error = await h.recording.start().then(() => assert.fail('second start should reject'), (e: unknown) => e);
+		assert.match(String(error), /already in progress/);
+		assert.equal(h.exported.recordingErrorReported(error), false);
+		await h.recording.control('stop');
+	} finally { h.cleanup(); }
 });

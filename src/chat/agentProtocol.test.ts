@@ -661,6 +661,69 @@ suite('approvals', () => {
 		}
 	});
 
+	test('follows a dangling symlink to where a write would land', () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'outside-'));
+		const away = fs.mkdtempSync(path.join(os.tmpdir(), 'away-'));
+		try {
+			fs.mkdirSync(path.join(root, 'src'));
+			// Its target does not exist yet, so `realpath` fails on it — and a
+			// Write through it creates the file outside the project.
+			fs.symlinkSync(path.join(away, 'x'), path.join(root, 'dangling'));
+			assert.strictEqual(outsideProject(root, 'dangling'), true);
+			assert.strictEqual(claudeApproval('d1', { tool_name: 'Write', input: { file_path: path.join(root, 'dangling') } }, root).what, 'outside');
+			// A relative one, resolved against the link's own directory.
+			fs.symlinkSync(path.relative(path.join(root, 'src'), path.join(away, 'y')), path.join(root, 'src', 'rel'));
+			assert.strictEqual(outsideProject(root, 'src/rel'), true);
+			// Through a dangling link to a missing directory, deeper down.
+			fs.symlinkSync(path.join(away, 'missing-dir'), path.join(root, 'gone'));
+			assert.strictEqual(outsideProject(root, 'gone/new/file.txt'), true);
+			// A dangling link that stays inside is inside.
+			fs.symlinkSync('src/not-yet.ts', path.join(root, 'inner'));
+			assert.strictEqual(outsideProject(root, 'inner'), false);
+			// `..` in a link counts from the real directory, not the name it was reached by.
+			fs.mkdirSync(path.join(away, 'deep'));
+			fs.symlinkSync(path.join(away, 'deep'), path.join(root, 'deeplink'));
+			fs.symlinkSync('../escape.txt', path.join(away, 'deep', 'up'));
+			assert.strictEqual(outsideProject(root, 'deeplink/up'), true);
+			// A new file under an existing folder is inside, however deep.
+			assert.strictEqual(outsideProject(root, 'src/a/b/new.ts'), false);
+			// A loop never resolves: outside.
+			fs.symlinkSync(path.join(root, 'loop-b'), path.join(root, 'loop-a'));
+			fs.symlinkSync(path.join(root, 'loop-a'), path.join(root, 'loop-b'));
+			assert.strictEqual(outsideProject(root, 'loop-a'), true);
+			assert.strictEqual(outsideProject(root, 'loop-a/x.txt'), true);
+			// A file used as a folder cannot be written through: outside, the cautious side.
+			fs.writeFileSync(path.join(root, 'plain.txt'), '');
+			assert.strictEqual(outsideProject(root, 'plain.txt/x'), true);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+			fs.rmSync(away, { recursive: true, force: true });
+		}
+	});
+
+	test('files every command-running tool under the terminal, and shows its command', () => {
+		// 2.1.301 runs commands through PowerShell and Monitor as well as Bash.
+		const command = 'Remove-Item -Recurse build\nWrite-Output done';
+		assert.deepStrictEqual(claudeApproval('c1', { tool_name: 'PowerShell', input: { command, description: 'Clean the build' }, description: 'Clean the build' }, '/w'), {
+			id: 'c1', what: 'command', title: command, detail: 'PowerShell — Clean the build',
+		});
+		assert.deepStrictEqual(claudeApproval('c2', { tool_name: 'Monitor', input: { command: 'tail -f log' } }, '/w'), {
+			id: 'c2', what: 'command', title: 'tail -f log', detail: 'Monitor',
+		});
+		// An MCP tool with a `command` argument is still its server's.
+		assert.strictEqual(claudeApproval('c3', { tool_name: 'mcp__ai-browser__browser_click', input: { command: 'x' } }, '/w').what, 'browser');
+		assert.strictEqual(claudeApproval('c4', { tool_name: 'mcp__shell__run', input: { command: 'ls' } }, '/w').what, 'mcp');
+		// The sandbox asking for the network is the internet's, as Codex's is.
+		assert.deepStrictEqual(claudeApproval('c5', { tool_name: 'SandboxNetworkAccess', input: { host: 'registry.npmjs.org' } }, '/w'), {
+			id: 'c5', what: 'web', title: 'Network access: registry.npmjs.org', detail: 'host: registry.npmjs.org',
+		});
+		// Anything else shows its arguments, the description beside them, never instead.
+		assert.deepStrictEqual(claudeApproval('c6', { tool_name: 'Frobnicate', input: { target: 'all' }, description: 'Harmless, honestly' }, '/w'), {
+			id: 'c6', what: 'other', title: 'Frobnicate', detail: 'Harmless, honestly\n\ntarget: all',
+		});
+		assert.strictEqual(claudeApproval('c7', { tool_name: 'Frobnicate', input: { target: 'all' } }, '/w').detail, 'target: all');
+	});
+
 	test('reads where a Codex patch moves a file, and a patch with no paths', () => {
 		assert.deepStrictEqual(codexPatchPaths([{ path: '/w/a.txt', kind: { type: 'update', move_path: '/home/u/.zshrc' } }]), ['/w/a.txt', '/home/u/.zshrc']);
 		assert.deepStrictEqual(codexPatchPaths({ '/w/a.txt': { update: {}, move_path: '/etc/x' } }), ['/w/a.txt', '/etc/x']);

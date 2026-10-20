@@ -615,71 +615,84 @@
 			{
 				"command": "aiBrowser.recording.start",
 				"title": "%command.recording.start.title%",
+				"category": "%displayName%",
 				"icon": "$(device-camera-video)",
 				"enablement": "!aiBrowser.recordingActive"
 			},
 			{
 				"command": "aiBrowser.recording.startChat",
 				"title": "%command.recording.startChat.title%",
+				"category": "%displayName%",
 				"icon": "$(device-camera-video)",
 				"enablement": "!aiBrowser.recordingActive"
 			},
 			{
 				"command": "aiBrowser.recording.startClaude",
 				"title": "%command.recording.startClaude.title%",
+				"category": "%displayName%",
 				"icon": "$(copy)"
 			},
 			{
 				"command": "aiBrowser.recording.startCodex",
 				"title": "%command.recording.startCodex.title%",
+				"category": "%displayName%",
 				"icon": "$(copy)"
 			},
 			{
 				"command": "aiBrowser.recording.pause",
 				"title": "%command.recording.pause.title%",
+				"category": "%displayName%",
 				"icon": "$(debug-pause)",
 				"enablement": "aiBrowser.recordingState == recording"
 			},
 			{
 				"command": "aiBrowser.recording.resume",
 				"title": "%command.recording.resume.title%",
+				"category": "%displayName%",
 				"icon": "$(debug-continue)",
 				"enablement": "aiBrowser.recordingState == paused"
 			},
 			{
 				"command": "aiBrowser.recording.stop",
 				"title": "%command.recording.stop.title%",
+				"category": "%displayName%",
 				"icon": "$(debug-stop)",
 				"enablement": "aiBrowser.recordingState == recording || aiBrowser.recordingState == paused"
 			},
 			{
 				"command": "aiBrowser.recording.balanced",
-				"title": "Balanced · 1080p",
+				"title": "%command.recording.balanced.title%",
+				"category": "%displayName%",
 				"enablement": "!aiBrowser.recordingActive"
 			},
 			{
 				"command": "aiBrowser.recording.balancedDefault",
-				"title": "Balanced · 1080p *",
+				"title": "%command.recording.balancedDefault.title%",
+				"category": "%displayName%",
 				"enablement": "!aiBrowser.recordingActive"
 			},
 			{
 				"command": "aiBrowser.recording.high",
-				"title": "High · 1440p",
+				"title": "%command.recording.high.title%",
+				"category": "%displayName%",
 				"enablement": "!aiBrowser.recordingActive"
 			},
 			{
 				"command": "aiBrowser.recording.highDefault",
-				"title": "High · 1440p *",
+				"title": "%command.recording.highDefault.title%",
+				"category": "%displayName%",
 				"enablement": "!aiBrowser.recordingActive"
 			},
 			{
 				"command": "aiBrowser.recording.maximum",
-				"title": "Maximum · 4K",
+				"title": "%command.recording.maximum.title%",
+				"category": "%displayName%",
 				"enablement": "!aiBrowser.recordingActive"
 			},
 			{
 				"command": "aiBrowser.recording.maximumDefault",
-				"title": "Maximum · 4K *",
+				"title": "%command.recording.maximumDefault.title%",
+				"category": "%displayName%",
 				"enablement": "!aiBrowser.recordingActive"
 			}
 		],
@@ -1133,6 +1146,54 @@
 				{
 					"command": "aiBrowser.chat.keepAwakeActive",
 					"when": "!aiBrowser.chatUnsupported && aiBrowser.keepAwakeActive"
+				},
+				{
+					"command": "aiBrowser.chat.settings",
+					"when": "!aiBrowser.chatUnsupported"
+				},
+				{
+					"command": "aiBrowser.recording.startChat",
+					"when": "!aiBrowser.chatUnsupported && !aiBrowser.chatBlocked && !aiBrowser.recordingActive"
+				},
+				{
+					"command": "aiBrowser.recording.start",
+					"when": "!aiBrowser.recordingActive"
+				},
+				{
+					"command": "aiBrowser.recording.pause",
+					"when": "aiBrowser.recordingState == recording"
+				},
+				{
+					"command": "aiBrowser.recording.resume",
+					"when": "aiBrowser.recordingState == paused"
+				},
+				{
+					"command": "aiBrowser.recording.stop",
+					"when": "aiBrowser.recordingState == recording || aiBrowser.recordingState == paused"
+				},
+				{
+					"command": "aiBrowser.recording.balanced",
+					"when": "false"
+				},
+				{
+					"command": "aiBrowser.recording.balancedDefault",
+					"when": "false"
+				},
+				{
+					"command": "aiBrowser.recording.high",
+					"when": "false"
+				},
+				{
+					"command": "aiBrowser.recording.highDefault",
+					"when": "false"
+				},
+				{
+					"command": "aiBrowser.recording.maximum",
+					"when": "false"
+				},
+				{
+					"command": "aiBrowser.recording.maximumDefault",
+					"when": "false"
 				}
 			],
 			"aiBrowser.claudeMenu": [

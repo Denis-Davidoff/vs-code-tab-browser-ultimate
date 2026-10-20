@@ -55,7 +55,13 @@ const usageProbeWaitMs = 8_000;
 let configDir: Promise<string | undefined> | undefined;
 
 function browserConfigDir(): Promise<string | undefined> {
-	configDir ??= privateTempDirectory('shared', 'runtime', 'chat').catch(() => undefined);
+	// A failure is not cached: one transient error (a full disk, a mount not
+	// there yet) left every later Claude session of the extension host
+	// without the browser tools, and nothing said so.
+	configDir ??= privateTempDirectory('shared', 'runtime', 'chat').catch(() => {
+		configDir = undefined;
+		return undefined;
+	});
 	return configDir;
 }
 

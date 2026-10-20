@@ -23,6 +23,18 @@ export interface TemporaryStorage {
 }
 export function temporaryProject(): string | undefined { return currentProject(); }
 
+/**
+ * A path in the one spelling every comparison here uses. On Windows the two
+ * sides disagree on the drive letter alone: VS Code's `Uri.fsPath` lowercases
+ * it (`c:\Users\…`) while paths built from `os.homedir()` keep it upper case
+ * (`C:\Users\…`), so a draft's attachment never matched its own file and
+ * "Clean project" or "Delete all" removed it. The file system there ignores
+ * case, so the whole path is folded, not just the drive.
+ */
+export function comparablePath(file: string, platform: NodeJS.Platform = process.platform): string {
+ return platform === 'win32' ? path.win32.resolve(file).toLowerCase() : path.resolve(file);
+}
+
 interface RecordFile { file: string; project?: string; pid: number }
 let inventory: (() => Promise<string>) | undefined;
 let currentProject: () => string | undefined = () => undefined;
@@ -78,7 +90,8 @@ export async function temporaryStorage(options: {
     if (!(await fs.lstat(index)).isFile()) { continue; }
     const entry: RecordFile = JSON.parse(await fs.readFile(index, 'utf8'));
     if (typeof entry.file !== 'string' || !path.isAbsolute(entry.file) || (!Number.isInteger(entry.pid) || entry.pid <= 0) || (entry.project !== undefined && typeof entry.project !== 'string')) { continue; }
-    records.set(entry.file, entry); metadata.set(entry.file, index);
+    const key = comparablePath(entry.file);
+    records.set(key, entry); metadata.set(key, index);
    } catch { /* Incomplete or old record. */ }
   }
  }
@@ -131,7 +144,7 @@ export async function temporaryStorage(options: {
  const projects = new Set([...options.projects, ...[...records.values()].flatMap(record => record.project ? [record.project] : [])]);
  for (const project of projects) { candidates.push({ directory: path.join(project, '.ai-browser'), pattern: /^(element|chat)-[a-z0-9-]+\.md$/, project, base: project }); }
  const result: TemporaryStorage = { project: options.project, projectFiles: 0, projectBytes: 0, folders: [], files: 0, bytes: 0, deleted: 0, skipped: 0, errors: 0, busy: options.busy };
- const protectedFiles = new Set(options.protectedFiles?.map(file => path.resolve(file)));
+ const protectedFiles = new Set(options.protectedFiles?.map(file => comparablePath(file)));
  for (const candidate of candidates) {
   if (!await realDirectory(candidate.directory)) { continue; }
   // A linked workspace root or any linked descendant is outside the cleanup scope.
@@ -144,11 +157,12 @@ export async function temporaryStorage(options: {
    try {
     const stat = await fs.lstat(file);
     if (!stat.isFile() || stat.isSymbolicLink()) { continue; }
-    const record = records.get(file);
+    const key = comparablePath(file);
+    const record = records.get(key);
     if (candidate.trackedOnly && !record) { continue; }
     const owner = record?.project ?? candidate.project;
     const servicePid = candidate.service ? Number(/^mcp-(\d+)-/.exec(name)?.[1]) : undefined;
-    const protectedFile = Date.now() - stat.mtimeMs < 60_000 || !!options.busy || !!options.protect?.(file) || protectedFiles.has(file)
+    const protectedFile = Date.now() - stat.mtimeMs < 60_000 || !!options.busy || !!options.protect?.(file) || protectedFiles.has(key)
      || (record && record.pid !== process.pid && running(record.pid))
      || (servicePid !== undefined && running(servicePid))
      // Isolated request folders may still be the working directory of a live CLI.
@@ -156,7 +170,7 @@ export async function temporaryStorage(options: {
     const selected = options.cleanup === 'all' || (options.cleanup === 'project' && !!options.project && owner === options.project);
     if (selected && !protectedFile) {
      await fs.unlink(file); result.deleted++;
-     const index = metadata.get(file);
+     const index = metadata.get(key);
      if (index) { await fs.unlink(index).catch(() => {}); }
      continue;
     }
@@ -172,10 +186,10 @@ export async function temporaryStorage(options: {
   }
  }
  if (options.cleanup && !options.busy) {
-  for (const [file, index] of metadata) {
-   const record = records.get(file)!;
+  for (const [key, index] of metadata) {
+   const record = records.get(key)!;
    if (options.cleanup === 'project' && record.project !== options.project) { continue; }
-   if (await fs.lstat(file).then(() => true, () => false)) { continue; }
+   if (await fs.lstat(record.file).then(() => true, () => false)) { continue; }
    await fs.unlink(index).catch(() => {});
   }
  }

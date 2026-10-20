@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { CDPClient } from '../core/cdp';
 import { generateUuid } from '../core/uuid';
+import { confirm } from '../core/notify';
 import { projectTempDirectory } from '../core/safeFiles';
 import type { BrowserController } from './browserController';
 import { callerKey, type CallerIdentity } from './shareRegistry';
@@ -22,7 +23,33 @@ export interface RecordingResult {
 	attachedToChat?: boolean;
 	delivery: 'chat' | 'clipboard';
 	clipboardCopied?: boolean;
+	/** Set when the recording was stopped by one of its limits rather than by a stop. */
+	limitReached?: 'duration' | 'size';
 	error?: string;
+}
+
+/** Active (unpaused) seconds a recording may run before it is stopped and kept. */
+export const maxRecordingSeconds = 600;
+/** Bytes a recording file may reach before it is stopped and kept. */
+export const maxRecordingBytes = 256 * 1024 * 1024;
+/**
+ * How far below {@link maxRecordingBytes} a stop is asked for, at least: the
+ * encoder still flushes up to a second of video after the stop, and that has to
+ * fit, or the end of the recording is what gets dropped.
+ */
+const sizeStopMargin = 16 * 1024 * 1024;
+
+/**
+ * Errors a recording has already reported to the user itself — a failure
+ * notification, or a start cancelled quietly because its tab went away — so a
+ * command wrapper must not report them a second time.
+ */
+const reportedErrors = new WeakSet<object>();
+export function recordingErrorReported(error: unknown): boolean {
+	return typeof error === 'object' && error !== null && reportedErrors.has(error);
+}
+function markReported(error: unknown): void {
+	if (typeof error === 'object' && error !== null) { reportedErrors.add(error); }
 }
 
 /** A destination captured at start, never whichever chat happens to be active at stop. */
@@ -51,6 +78,15 @@ interface Run {
 	activeSince?: number;
 	elapsed: number;
 	busyFrame: boolean;
+	/** The largest chunk written, which sizes the margin before the size limit. */
+	largestChunk: number;
+	/**
+	 * Set once a chunk would have taken the file past the size limit. Every
+	 * chunk from then on is acknowledged and dropped: appending a later chunk
+	 * after a missing one would corrupt the container, while a file that simply
+	 * ends early still plays.
+	 */
+	cutAtSeconds?: number;
 	profile: { width: number; height: number; bitrate: number };
 	stop?: Promise<RecordingResult>;
 }
@@ -89,7 +125,7 @@ export class BrowserRecording implements vscode.Disposable {
 		const panel = this.createEncoder(result.id);
 		const project = caller?.chatId ? this.project?.(caller.chatId) : temporaryProject();
 		const profile = recordingProfiles[readRecordingQuality(quality ?? this._context.globalState?.get(recordingQualityKey))];
-		const run: Run = { result, caller: caller ? { ...caller } : undefined, tab, panel, profile, parts: [], pending: new Map(), next: 0, elapsed: 0, busyFrame: false, attach };
+		const run: Run = { result, caller: caller ? { ...caller } : undefined, tab, panel, profile, parts: [], pending: new Map(), next: 0, elapsed: 0, busyFrame: false, largestChunk: 0, attach };
 		this._active = run;
 		let rejectStartup!: (error: Error) => void;
 		const cancelled = new Promise<never>((_, reject) => { rejectStartup = reject; });
@@ -120,10 +156,22 @@ export class BrowserRecording implements vscode.Disposable {
 				} else if (message?.type === 'chunk') {
 					if (run.fd === undefined || typeof message.data !== 'string' || message.data.length > 24 * 1024 * 1024) { throw new Error('Invalid video chunk.'); }
 					const data = Buffer.from(message.data, 'base64');
-					if (run.result.bytes + data.length > 256 * 1024 * 1024) { throw new Error('Recording exceeded the 256 MB limit.'); }
-					fs.writeFileSync(run.fd, data);
-					run.result.bytes += data.length;
+					if (run.cutAtSeconds === undefined && run.result.bytes + data.length > maxRecordingBytes) {
+						// The size limit ends the recording the way the time limit does: what
+						// is written is kept. This chunk and every later one are dropped.
+						run.cutAtSeconds = this._seconds(run);
+					}
+					if (run.cutAtSeconds === undefined) {
+						fs.writeFileSync(run.fd, data);
+						run.result.bytes += data.length;
+						run.largestChunk = Math.max(run.largestChunk, data.length);
+					}
+					// Acknowledged even when dropped: the encoder waits for each
+					// acknowledgement and fails the recording when one never comes.
 					void panel.webview.postMessage({ type: 'chunkAck', seq: message.seq });
+					if (run.cutAtSeconds !== undefined || run.result.bytes >= maxRecordingBytes - Math.max(sizeStopMargin, 4 * run.largestChunk)) {
+						this._limit(run, 'size');
+					}
 				} else if (message?.type === 'error') { throw new Error(String(message.error)); }
 				else if (message?.type === 'save') { void this.save(result.id).catch(error => vscode.window.showErrorMessage(String(error))); }
 			} catch (error) { this._fail(run, error); }
@@ -151,9 +199,22 @@ export class BrowserRecording implements vscode.Disposable {
 			}), 'Opening the browser session'));
 			this._assertActive(run);
 			run.client = new CDPClient(channel);
-			run.parts.push(channel.onDidClose(() => {
-				if (this._active === run && result.state !== 'stopping') { void this.stop().catch(error => this._fail(run, error)); }
-			}));
+			// The page going away while the recording is still starting is a
+			// cancel, not a failure: there is no video yet, and an error toast
+			// saying "Recording is still starting." would describe nothing the
+			// user did wrong. Once recording, the same events stop and keep it.
+			const sourceLost = (why: string) => {
+				if (this._active !== run || result.state === 'stopping') { return; }
+				if (result.state === 'starting') {
+					const error = new Error(why);
+					markReported(error);
+					rejectStartup(error);
+					this._fail(run, error, false);
+					return;
+				}
+				void this.stop().catch(error => this._fail(run, error));
+			};
+			run.parts.push(channel.onDidClose(() => sourceLost('The browser session closed while the recording was starting.')));
 			run.session = await starting(bounded(run.client.attachToPage(), 'Attaching to the browser page'));
 			await starting(this._send(run, 'Page.enable'));
 			if (!this._browser.canRecordTab(tab, caller)) { throw new Error('The browser tab assignment changed while recording was starting.'); }
@@ -164,11 +225,12 @@ export class BrowserRecording implements vscode.Disposable {
 				void this._frame(run, params).then(accepted => { if (accepted) { first(); } }, error => this._fail(run, error));
 			}));
 			run.parts.push(vscode.window.onDidCloseBrowserTab(closed => {
-				if (closed === tab) { void this.stop().catch(error => this._fail(run, error)); }
+				if (closed === tab) { sourceLost('The browser tab was closed while the recording was starting.'); }
 			}));
 			if (caller) { run.parts.push(this._browser.onDidChangeShare(() => {
-				try { if (!this._browser.canRecordTab(tab, caller)) { void this.stop().catch(error => this._fail(run, error)); } }
-				catch { void this.stop().catch(error => this._fail(run, error)); }
+				let allowed = false;
+				try { allowed = this._browser.canRecordTab(tab, caller); } catch { /* read as revoked */ }
+				if (!allowed) { sourceLost('The browser tab assignment changed while the recording was starting.'); }
 			})); }
 			await starting(this._screencast(run));
 			await bounded(starting(firstFrame), 'Receiving the first video frame');
@@ -178,12 +240,17 @@ export class BrowserRecording implements vscode.Disposable {
 			this._publish();
 			const timer = setInterval(() => {
 				this._changed.fire(this.current);
-				if (this._seconds(run) >= 600) { void this.stop().catch(error => this._fail(run, error)); }
+				if (this._seconds(run) >= maxRecordingSeconds) { this._limit(run, 'duration'); }
 			}, 1000);
 			run.parts.push(new vscode.Disposable(() => clearInterval(timer)));
 			return this._snapshot(run);
 		} catch (error) {
-			this._fail(run, error);
+			// A run that has already ended reported itself — a failure toast, or a
+			// quiet cancel — so whatever this await threw is not news to the user.
+			// A tab closed before the listeners above were in place surfaces here as
+			// whatever step it broke; that is the same quiet cancel.
+			if (this._active === run) { this._fail(run, error, !this._tabGone(tab)); }
+			markReported(error);
 			throw error;
 		} finally {
 			// The recording outlives a successfully completed start call.
@@ -255,6 +322,12 @@ export class BrowserRecording implements vscode.Disposable {
 			run.result.file = run.file;
 			run.result.state = 'completed';
 			run.result.durationSeconds = typeof encoded.duration === 'number' && encoded.duration > 0 ? encoded.duration : this._seconds(run);
+			// The encoder's own duration covers chunks the size limit dropped; the
+			// file ends about where the first dropped chunk began.
+			if (run.cutAtSeconds !== undefined) {
+				run.result.durationSeconds = Math.min(run.result.durationSeconds, run.cutAtSeconds);
+				run.result.limitReached ??= 'size';
+			}
 			try { run.result.attachedToChat = run.attach?.({ ...run.result }, vscode.Uri.file(run.file)) ?? false; }
 			catch { run.result.attachedToChat = false; }
 			if (!run.result.attachedToChat) {
@@ -262,15 +335,28 @@ export class BrowserRecording implements vscode.Disposable {
 				catch { run.result.clipboardCopied = false; }
 			}
 			this._release(run);
-			const delivery = run.result.attachedToChat ? vscode.l10n.t('Attached to the chat draft.')
-				: run.result.clipboardCopied ? vscode.l10n.t('File path copied to clipboard.') : vscode.l10n.t('Could not copy the file path.');
-			void vscode.window.showInformationMessage(vscode.l10n.t('Video recorded: {0} · {1}s · {2} MB. {3}',
-				path.basename(run.file), run.result.durationSeconds.toFixed(1), (run.result.bytes / 1024 / 1024).toFixed(1), delivery),
-				vscode.l10n.t('Open video'), vscode.l10n.t('Save as…')).then(action => {
-					if (action === vscode.l10n.t('Save as…')) { return this.save(run.result.id); }
-					if (action === vscode.l10n.t('Open video')) { return vscode.commands.executeCommand('vscode.open', vscode.Uri.file(run.file!)); }
-					return undefined;
-				}).then(undefined, error => { void vscode.window.showErrorMessage(String(error)); });
+			const limit = run.result.limitReached === 'size' ? vscode.l10n.t(' Stopped at the 256 MB limit; the video so far is kept.')
+				: run.result.limitReached === 'duration' ? vscode.l10n.t(' Stopped at the 10-minute limit; the video so far is kept.') : '';
+			const summary = vscode.l10n.t('Video recorded: {0} · {1}s · {2} MB.',
+				path.basename(run.file), run.result.durationSeconds.toFixed(1), (run.result.bytes / 1024 / 1024).toFixed(1)) + limit;
+			if (run.result.attachedToChat || run.result.clipboardCopied) {
+				// A confirmation, so the status bar: a toast here lands on the very page
+				// that was just recorded and pauses it (breaks-silently #10). The video
+				// is reachable from what was delivered — the chat chip opens it, and
+				// the path is on the clipboard.
+				confirm(summary + ' ' + (run.result.attachedToChat ? vscode.l10n.t('Attached to the chat draft.') : vscode.l10n.t('File path copied to clipboard.')));
+			} else {
+				// The one fallback: nothing could deliver the video, so these buttons
+				// are the only way to it. A notification for what did not happen is
+				// what the rule allows.
+				const file = run.file;
+				void vscode.window.showWarningMessage(summary + ' ' + vscode.l10n.t('Could not copy the file path.'),
+					vscode.l10n.t('Open video'), vscode.l10n.t('Save as…')).then(action => {
+						if (action === vscode.l10n.t('Save as…')) { return this.save(run.result.id); }
+						if (action === vscode.l10n.t('Open video')) { return vscode.commands.executeCommand('vscode.open', vscode.Uri.file(file)); }
+						return undefined;
+					}).then(undefined, error => { void vscode.window.showErrorMessage(String(error)); });
+			}
 			return { ...run.result };
 		} catch (error) { this._fail(run, error); throw error; }
 	}
@@ -297,6 +383,21 @@ export class BrowserRecording implements vscode.Disposable {
 			await ack();
 			return true;
 		} finally { run.busyFrame = false; }
+	}
+
+	/**
+	 * Stops a recording that reached one of its limits and keeps the video, the
+	 * same way for both: a limit is the end of the recording, not a failure.
+	 * Idempotent — chunks keep arriving while the stop runs.
+	 */
+	private _limit(run: Run, reason: 'duration' | 'size'): void {
+		if (this._active !== run || run.stop || (run.result.state !== 'recording' && run.result.state !== 'paused')) { return; }
+		run.result.limitReached = reason;
+		void this.stop().catch(error => this._fail(run, error));
+	}
+
+	private _tabGone(tab: vscode.BrowserTab): boolean {
+		try { return !(vscode.window.browserTabs ?? []).includes(tab); } catch { return false; }
 	}
 
 	private _sourceGone(run: Run): boolean {
@@ -344,6 +445,10 @@ export class BrowserRecording implements vscode.Disposable {
 		this._changed.fire(this.current);
 	}
 	private _fail(run: Run, error: unknown, notify = true): void {
+		// Marked before the early return: a run that already failed has reported
+		// its failure, and an error that follows from it (`_finish` meeting a
+		// disposed encoder) must not be reported a second time by the command.
+		markReported(error);
 		if (this._active !== run) { return; }
 		this._clockPause(run);
 		run.result.state = 'failed';

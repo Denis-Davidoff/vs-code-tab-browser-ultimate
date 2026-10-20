@@ -1569,26 +1569,87 @@ export function outsideProject(root: string | undefined, file: string): boolean 
 	}
 	const base = realish(path.resolve(root));
 	const full = realish(path.resolve(root, target));
+	if (base === undefined || full === undefined) {
+		return true;
+	}
 	const rel = path.relative(base, full);
 	return rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel);
 }
 
-/** A path with its longest existing part resolved to where it really is, and the rest as written. */
-function realish(full: string): string {
-	const rest: string[] = [];
-	let current = full;
-	for (;;) {
-		try {
-			return path.join(fs.realpathSync.native(current), ...rest.reverse());
-		} catch {
-			const parent = path.dirname(current);
-			if (parent === current) {
-				return full;
-			}
-			rest.push(path.basename(current));
-			current = parent;
-		}
+/** How many symlinks one path may pass through before it counts as a loop — the kernel's own order of magnitude. */
+const symlinkHops = 40;
+
+/**
+ * Where a write to `full` would really land: resolved component by component,
+ * as the kernel does, so a symlink anywhere on the way is followed — **a
+ * dangling one included**. `realpath` fails on a link whose target does not
+ * exist yet, and taking its name as written read `<project>/dangling ->
+ * ../outside/x` as inside the project while a Write through it creates the
+ * file outside. So a component that does not resolve is `lstat`ed: a link is
+ * read and its target resolved in its place (relative to the link's real
+ * directory, which is what the kernel resolves it against), a name that does
+ * not exist ends the walk with the rest as written (a new file is normal), and
+ * anything else — a loop, too many hops, an error that is not "no such file",
+ * a file used as a directory — answers `undefined`, which the caller reads as
+ * outside: the cautious side.
+ */
+function realish(full: string): string | undefined {
+	try {
+		return fs.realpathSync.native(full);
+	} catch {
+		// Something on the way does not exist or does not resolve; walk it.
 	}
+	const split = (from: string): string[] => from.split(process.platform === 'win32' ? /[\\/]/ : '/').filter(p => p && p !== '.');
+	const parts = (from: string): string[] => split(from.slice(path.parse(from).root.length));
+	const realRoot = (of: string): string | undefined => {
+		try {
+			return fs.realpathSync.native(path.parse(of).root);
+		} catch {
+			return undefined;
+		}
+	};
+	let resolved = realRoot(full);
+	const pending = parts(full);
+	let hops = 0;
+	while (resolved !== undefined && pending.length) {
+		const part = pending.shift() as string;
+		if (part === '..') {
+			// `resolved` is a real path, so its parent is too.
+			resolved = path.dirname(resolved);
+			continue;
+		}
+		const next = path.join(resolved, part);
+		try {
+			resolved = fs.realpathSync.native(next);
+			continue;
+		} catch {
+			// Look at what is there instead.
+		}
+		let stat: fs.Stats;
+		try {
+			stat = fs.lstatSync(next);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') {
+				return path.join(next, ...pending);
+			}
+			return undefined;
+		}
+		if (!stat.isSymbolicLink() || ++hops > symlinkHops) {
+			return undefined;
+		}
+		let link: string;
+		try {
+			link = fs.readlinkSync(next);
+		} catch {
+			return undefined;
+		}
+		if (path.isAbsolute(link)) {
+			resolved = realRoot(link);
+		}
+		// Not normalised: `..` in a link is taken against the real directory, as the kernel does.
+		pending.unshift(...(path.isAbsolute(link) ? parts(link) : split(link)));
+	}
+	return resolved;
 }
 
 /**
@@ -1672,6 +1733,19 @@ export function claudeApproval(id: string, request: Record<string, unknown>, roo
 		const command = typeof input.command === 'string' ? input.command : '';
 		return { id, what: 'command', title: whole(command) || 'Bash', detail: description };
 	}
+	if (!mcp && tool === 'SandboxNetworkAccess') {
+		// The sandbox asking to open the network for a host is Codex's
+		// `networkApprovalContext` in Claude Code's words: the Internet category.
+		const host = typeof input.host === 'string' ? input.host : '';
+		return { id, what: 'web', title: host ? `Network access: ${whole(host)}` : tool, detail: description ?? argumentLines(input) };
+	}
+	if (!mcp && typeof input.command === 'string' && !claudeEditTools.has(tool) && !claudeWebTools.has(tool) && tool !== 'AskUserQuestion') {
+		// Bash is not the only tool that runs a command: 2.1.301 has `PowerShell`
+		// (its permission rule reads `command`) and `Monitor`. Under Other tools
+		// they escaped the Terminal category's Deny and Ask, and the card showed
+		// the model's description of the command instead of the command (#380).
+		return { id, what: 'command', title: whole(input.command) || tool, detail: description ? `${tool} — ${description}` : tool };
+	}
 	if (mcp) {
 		const [, server, name] = mcp;
 		const args = argumentLines(input);
@@ -1713,7 +1787,10 @@ export function claudeApproval(id: string, request: Record<string, unknown>, roo
 	if (outside) {
 		return { id, what: 'outside', title: file ?? blocked ?? name, detail: name };
 	}
-	return { id, what: 'other', title: name, detail: description ?? argumentLines(input) };
+	// The arguments are what Allow runs, so they are always shown; the model's
+	// description goes above them, never in their place (#380).
+	const args = argumentLines(input);
+	return { id, what: 'other', title: name, detail: description && args ? `${description}\n\n${args}` : description ?? args };
 }
 
 /** What the model reads when the user leaves its questions unanswered. */

@@ -12,8 +12,8 @@ import { codexEntries, codexRangeDeletable, codexServersElsewhere, codexUntermin
 import { lockPath, withLock } from '../core/fileLock';
 import { serverName } from './mcpClientState';
 import {
-	codexOurTables, codexRetiredTables, codexTableLines, removeCodexTables, repairClaudeJson,
-	repairCodexToml,
+	codexOurTables, codexRetiredTables, codexTableLines, parseClaudeConfig, removeCodexTables,
+	repairClaudeJson, repairCodexToml,
 	spliceCodexTables, type Endpoint,
 } from './mcpRepair';
 import type { McpServer } from './mcpServer';
@@ -219,7 +219,8 @@ export function codexEntryName(folder: vscode.WorkspaceFolder): string {
  *
  * Absent is `{}` and safe to write. Unparsable is `undefined`, and the caller
  * must give up: rewriting a broken file would delete every other MCP server the
- * project has configured.
+ * project has configured. So is a file that parses into something other than a
+ * config (`parseClaudeConfig`).
  */
 export async function readClaudeConfig(uri: vscode.Uri): Promise<Record<string, any> | undefined> {
 	// `readConfig`, not `readText`: this is a *destructive* reader — whatever it
@@ -234,15 +235,13 @@ export async function readClaudeConfig(uri: vscode.Uri): Promise<Record<string, 
 	if (read.kind === 'unreadable') {
 		return undefined; // refuse, exactly as for unparsable
 	}
-	if (read.kind === 'absent' || read.text.trim() === '') {
+	if (read.kind === 'absent') {
 		return {};
 	}
-	try {
-		const parsed = JSON.parse(read.text);
-		return typeof parsed === 'object' && parsed !== null ? parsed : undefined;
-	} catch {
-		return undefined;
-	}
+	// Parsed *and* shaped like a config, or refused: a top-level array, or an
+	// `mcpServers` that is not an object, used to be accepted here, rewritten
+	// into `[]` or index keys, and reported as "Wrote .mcp.json".
+	return parseClaudeConfig(read.text);
 }
 
 export async function writeClaudeConfig(

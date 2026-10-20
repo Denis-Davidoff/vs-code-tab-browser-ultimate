@@ -23,7 +23,9 @@
  * control named `id` or `elements` shadows those properties on the form
  * (`[LegacyOverrideBuiltIns]`); `captureOnSubmit` also reports the field it
  * captured; `formHasModifiedFields` no longer accepts `value !== defaultValue`
- * as a modification (see there). Added around the port, for this extension:
+ * as a modification (see there); `captureOnSubmit` remembers a username-only
+ * step only when the user typed it, and a later step without one forgets it.
+ * Added around the port, for this extension:
  * the report to the extension, the submit triggers, the outcome watch, the
  * fill, and an uninstall for when the session that installed it goes.
  *
@@ -148,6 +150,9 @@ const state = { // LoginFormState, one per document
   intent: new WeakMap(),
 };
 const trusted = el => el instanceof HTMLInputElement && state.trustedValues.get(el) === el.value;
+// Not upstream: what the last captureOnSubmit made of a username-only form —
+// 'typed', 'untrusted', or null when the form was not one.
+let usernameStep = null;
 
 // ---- NewPasswordModel.sys.mjs ----
 const loginRegex =
@@ -409,10 +414,15 @@ function onInput(aEvent) { // observer.handleInput, capture phase
 function captureOnSubmit(form, { ignoreConnect = false } = {}) { // _maybeSendFormInteractionMessage(+Continue)
   let { usernameField, newPasswordField, oldPasswordField } = getFormFields(form, true, { ignoreConnect });
   if (newPasswordField == null) { // Need at least 1 valid password field to do anything.
-    if (usernameField && trusted(usernameField)) { // username-only form. Record the username field but not sending prompt.
+    if (usernameField) { // username-only form. Record the username field but not sending prompt.
       // PORT: only a username the user typed — a script filling step one must
-      // not choose the account the password of step two is saved under.
-      state.mockUsernameOnlyField = { name: usernameField.name, value: usernameField.value };
+      // not choose the account the password of step two is saved under. And a
+      // step one without one forgets the account before it: kept, a typed alice
+      // outlived a switch to bob put in by a fill or an account chooser, and
+      // bob's new password was offered as an update of alice.
+      const typed = !!usernameField.value && trusted(usernameField);
+      state.mockUsernameOnlyField = typed ? { name: usernameField.name, value: usernameField.value } : null;
+      usernameStep = typed ? 'typed' : 'untrusted';
     }
     return null;
   }
@@ -570,7 +580,14 @@ function watchOutcome(field, root, removed) {
   // removed — left the last report sent still reading "password shown", and
   // the identical report of its return was suppressed: the watcher, which
   // withdraws an offer only on a report, never heard the form come back.
-  const outcome = result => { watching = null; lastReport = ''; send({ type: 'outcome', result }); };
+  const outcome = result => {
+    watching = null; lastReport = '';
+    // A sign-in that worked has used up the first step's username: the next
+    // password on this document — after "switch account" through a chooser
+    // with no username step at all — belongs to whoever is chosen then.
+    if (result === 'gone') state.mockUsernameOnlyField = null;
+    send({ type: 'outcome', result });
+  };
   const tick = () => {
     if (stopped || generation !== watchGeneration) return;
     if (goneSince) {
@@ -585,7 +602,9 @@ function watchOutcome(field, root, removed) {
   };
   setTimeout(tick, removed ? 0 : 250);
 }
-let lastUsernameSent = '';
+// null until a first step has been reported: the extension may remember an
+// account from an earlier document, so the first clear always goes out.
+let lastUsernameSent = null;
 function describe(form, fields, ignoreConnect) {
   const { usernameField, newPasswordField, oldPasswordField } = fields;
   const username = usernameField?.value ?? '';
@@ -599,15 +618,22 @@ function describe(form, fields, ignoreConnect) {
   return { kind: 'login', username, password: newPasswordField.value, newPassword: '' };
 }
 function capture(form, options = {}) {
+  usernameStep = null;
   const fields = captureOnSubmit(form, options);
   if (!fields) {
     // The first step of a two-step sign-in. Remembered only when the user
     // typed it: a page calling requestSubmit() on a field it filled itself
-    // must not choose which account the next password is saved under.
-    const remembered = state.mockUsernameOnlyField?.value;
-    if (remembered && remembered !== lastUsernameSent && state.fieldModificationsByRootElement.get(form.rootElement)) {
+    // must not choose which account the next password is saved under. A first
+    // step with no typed username is reported too, empty, so the extension
+    // forgets the account it remembered from an earlier one.
+    const remembered = usernameStep === 'typed' ? state.mockUsernameOnlyField.value : '';
+    if (usernameStep === 'typed' && remembered !== lastUsernameSent
+        && state.fieldModificationsByRootElement.get(form.rootElement)) {
       lastUsernameSent = remembered;
       send({ type: 'submit', kind: 'username', username: remembered, password: '', newPassword: '' });
+    } else if (usernameStep === 'untrusted' && lastUsernameSent !== '') {
+      lastUsernameSent = '';
+      send({ type: 'submit', kind: 'username', username: '', password: '', newPassword: '' });
     }
     return;
   }
@@ -627,11 +653,112 @@ function capture(form, options = {}) {
 // has fully arrived, which can be after the page has already removed the form.
 let lastRequestAt = -1;
 const sentKinds = new Set(['fetch', 'xmlhttprequest', 'beacon']);
+// The page's latest fetch and XHR requests, with when each went out and when
+// its answer had fully arrived (performance.now time, as the intents are).
+// Bounded. Not beacons: an analytics ping sent on every click is answered at
+// once and says nothing about the sign-in.
+const answers = [];
 const noteRequests = entries => {
+  let any = false;
   for (const entry of entries) {
-    if (sentKinds.has(entry.initiatorType)) lastRequestAt = Math.max(lastRequestAt, entry.startTime);
+    if (!sentKinds.has(entry.initiatorType)) continue;
+    lastRequestAt = Math.max(lastRequestAt, entry.startTime);
+    if (entry.initiatorType === 'beacon') continue;
+    answers.push({ start: entry.startTime, end: entry.responseEnd || entry.startTime + entry.duration });
+    if (answers.length > 64) answers.shift();
+    any = true;
   }
+  if (any) scheduleSweep();
 };
+/** When the latest request the page sent at or after t was answered, or -1 when none has been. */
+function lastAnswerSince(t) {
+  let last = -1;
+  for (const answer of answers) {
+    if (answer.start >= t && answer.end > last) last = answer.end;
+  }
+  return last;
+}
+/** A snapshot's password field still drawn on the page: the form the user acted on is still there. */
+const formShown = elements => elements.some(el => hasBeenTypePassword(el) && el.isConnected && isRendered(el));
+/**
+ * Not upstream: **an attempt the page has answered, and kept its form for, is
+ * over.** The removal capture is armed by any button — a single-page app's
+ * "Log in" is as often an arrow icon or a label in any language — and a
+ * rejected guess leaves it armed with its request already sent. The next route
+ * change, minutes later, then removed the form and found "a request after the
+ * user acted": the rejected one. The guess went out as a sign-in, the empty
+ * route read as success, and the user was offered "Update password?" with it.
+ *
+ * So an intent ends while its form is still showing once the page has answered
+ * and gone quiet for answeredKeepsMs — a success removes its form well before
+ * that, and any further request (a profile fetch after the sign-in) restarts
+ * the wait — and in any case after intentLimitMs, the outcome watch's own
+ * limit, which also covers a page polling too often ever to go quiet. A
+ * success the page takes longer than either to show loses its offer; the
+ * other way round it lost a password.
+ */
+const answeredKeepsMs = 4000;
+const intentLimitMs = 12000;
+let sweepTimer = 0;
+function scheduleSweep() {
+  if (!stopped && !sweepTimer) sweepTimer = setTimeout(sweepIntents, 500);
+}
+teardown.push(() => clearTimeout(sweepTimer));
+function sweepIntents() {
+  sweepTimer = 0;
+  if (stopped) return;
+  if (requests) noteRequests(requests.takeRecords());
+  const now = performance.now();
+  let again = false;
+  for (const [root, elements] of state.snapshots) {
+    const armedAt = state.intent.get(root);
+    if (armedAt === undefined) continue;
+    if (!formShown(elements)) {
+      // Gone or hidden: the removal capture decides. Looked at a while longer
+      // in case it is drawn again.
+      if (now - armedAt < intentLimitMs) again = true;
+      continue;
+    }
+    const answered = lastAnswerSince(armedAt);
+    if (now - armedAt >= intentLimitMs || (answered >= 0 && now - answered >= answeredKeepsMs)) {
+      state.intent.delete(root);
+    } else {
+      again = true;
+    }
+  }
+  if (again) scheduleSweep();
+}
+/**
+ * The user acted to submit what is in root: Enter, a click on a button. An
+ * intent not yet answered keeps the moment it was first armed — Enter arms it,
+ * then the browser's own click on the default button and the submit event do
+ * again, and a show-password eye pressed while the request is out must not
+ * move it past the request it is waiting for.
+ */
+function arm(root, button) {
+  if (requests) noteRequests(requests.takeRecords());
+  const armedAt = state.intent.get(root);
+  if (armedAt === undefined || lastAnswerSince(armedAt) >= 0) {
+    state.intent.set(root, performance.now());
+    if (button) armedBy.set(root, button); else armedBy.delete(root);
+  }
+  scheduleSweep();
+}
+// The button whose click armed each root's intent, if a click did.
+const armedBy = new WeakMap();
+/**
+ * Pressing again what sent the attempt: the button that armed it, or the
+ * form's default button — the one Enter clicks. Not any button in the form: a
+ * show-password eye there is how a user looks at a rejected guess.
+ */
+function retries(button, root) {
+  if (armedBy.get(root) === button) return true;
+  if (!(root instanceof HTMLFormElement) || button.form !== root) return false;
+  for (const el of formElementsGetter.call(root)) {
+    if ((el.localName === 'button' || el.localName === 'input') && (el.type === 'submit' || el.type === 'image')) return el === button;
+  }
+  return false;
+}
 let requests;
 try {
   requests = new PerformanceObserver(list => noteRequests(list.getEntries()));
@@ -687,7 +814,7 @@ listen(globalThis, 'submit', e => {
   const form = e.target;
   if (!(form instanceof HTMLFormElement)) return;
   const root = outermostForm(form);
-  state.intent.set(root, performance.now());
+  arm(root);
   capture(formLikeFor(root));
 }, true);
 listen(globalThis, 'click', e => {
@@ -731,11 +858,34 @@ listen(globalThis, 'click', e => {
     endWatch();
     state.intent.delete(root);
   }
-  if (leaving || (!submits && leadsAway.test(label))) return;
+  // The same for an attempt that is not watched, only armed — a button with no
+  // submit word, which arms the removal capture and starts no watch. Moving on
+  // while its form still shows — a link, "Forgot password?", "Sign up", a
+  // button elsewhere on the page, or any click once the page has answered the
+  // attempt and kept the form — means the page rejected it. Left armed, the
+  // next route change removed the form, the rejected request counted as "a
+  // request after the user acted", and the guess was offered as an update.
+  // Only a click inside the same root keeps it: before any answer, any button
+  // (a show-password eye while the request is out); after one, only pressing
+  // again what sent it, which arms a new attempt.
+  let movedOn = false;
+  if (!submits && !resubmits) {
+    if (requests) noteRequests(requests.takeRecords());
+    const away = leaving || leadsAway.test(label);
+    for (const [armedRoot, elements] of state.snapshots) {
+      const armedAt = state.intent.get(armedRoot);
+      if (armedAt === undefined || !formShown(elements)) continue;
+      if (away || armedRoot !== root || (lastAnswerSince(armedAt) >= 0 && !retries(button, root))) {
+        state.intent.delete(armedRoot);
+        if (armedRoot === root) movedOn = true;
+      }
+    }
+  }
+  if (leaving || movedOn || (!submits && leadsAway.test(label))) return;
   // Any other button arms the removal capture — a single-page app's "Log in"
   // is as often a type=button labelled in any language, or an arrow icon —
   // and the request it has to be followed by is what tells it from a toggle.
-  state.intent.set(root, performance.now());
+  arm(root, button);
   if (submits) capture(formLikeFor(root));
 }, true);
 listen(globalThis, 'keydown', e => {
@@ -743,7 +893,7 @@ listen(globalThis, 'keydown', e => {
   const field = e.composedPath()[0];
   if (!isPasswordFieldType(field) && !isUsernameFieldType(field)) return;
   const formLike = createFromField(field);
-  state.intent.set(formLike.rootElement, performance.now());
+  arm(formLike.rootElement);
   capture(formLike);
 }, true);
 

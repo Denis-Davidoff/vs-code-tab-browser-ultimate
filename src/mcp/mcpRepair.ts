@@ -83,18 +83,11 @@ function urlCarriesToken(configured: string, token: string): boolean {
 export function repairClaudeJson(text: string, endpoint: Endpoint): Repair {
 	const unchanged: Repair = { text, changed: false, collapsed: [] };
 
-	let parsed: any;
-	try {
-		parsed = text.trim() === '' ? {} : JSON.parse(text);
-	} catch {
-		return unchanged;
-	}
-	if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-		return unchanged;
-	}
-
-	const servers = parsed.mcpServers;
-	if (typeof servers !== 'object' || servers === null) {
+	const parsed = parseClaudeConfig(text);
+	// Absent `mcpServers` is fine for Connect, which adds it, and nothing to do
+	// here, which never creates an entry.
+	const servers = parsed?.mcpServers;
+	if (!isPlainObject(servers)) {
 		return unchanged;
 	}
 
@@ -163,6 +156,42 @@ export function repairClaudeJson(text: string, endpoint: Endpoint): Repair {
 	const indent = /^[ \t]+(?=")/m.exec(text)?.[0] ?? 2;
 	const next = `${JSON.stringify(parsed, null, indent).replace(/\n/g, newline)}${newline}`;
 	return { text: next, changed: true, collapsed };
+}
+
+/**
+ * `.mcp.json` as an object both writers may rebuild the file from, or
+ * `undefined` for anything else — unparsable, or parsed into a shape that is
+ * not a config. An empty file is `{}`.
+ *
+ * **A shape it cannot model is refused like a parse error**, and the reason is
+ * #113's rule: a refusal must not look like success. Connect took any parsed
+ * non-null value, so a top-level array came back, had `mcpServers` set on it as
+ * a property `JSON.stringify` does not write, and `[]` was written while the
+ * command said "Wrote .mcp.json". An `mcpServers` that is a string or an array
+ * was spread into index keys (`"0": "h"`) and the user's value rewritten into
+ * that. The repair had refused the array at the top level and accepted one
+ * under `mcpServers`, where `delete` left `null` holes in it; both writers now
+ * ask this one question.
+ */
+export function parseClaudeConfig(text: string): Record<string, any> | undefined {
+	let parsed: unknown;
+	try {
+		parsed = text.trim() === '' ? {} : JSON.parse(text);
+	} catch {
+		return undefined;
+	}
+	if (!isPlainObject(parsed)) {
+		return undefined;
+	}
+	if (Object.prototype.hasOwnProperty.call(parsed, 'mcpServers') && !isPlainObject(parsed.mcpServers)) {
+		return undefined;
+	}
+	return parsed;
+}
+
+/** A JSON object: not `null`, not an array. */
+function isPlainObject(value: unknown): value is Record<string, any> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /** Deep equality of two parsed JSON values, ignoring key order. */
@@ -541,7 +570,15 @@ export function spliceCodexTables(
  *
  *   - the header, if the entry is under a name from an older release;
  *   - `url`, which is the line that goes stale;
- *   - `http_headers`, added if the credentials were riding in the URL instead.
+ *   - `http_headers`, added if the credentials were riding in the URL instead,
+ *     or rewritten if its authorization is not ours.
+ *
+ * A line that is already right is not written out again, even in our own
+ * spelling: the header, `url`, `http_headers` and every sub-table header used
+ * to be, so a comment on any of them (`[mcp_servers.x] # managed`,
+ * `http_headers = {…} # rotated`) and the inline table's spacing went on every
+ * port move. A line that *is* rewritten keeps its indentation, and a header or
+ * a one-line value keeps its comment.
  *
  * Three things that each corrupt a config if got wrong:
  *
@@ -638,18 +675,56 @@ export function repairCodexToml(
 		}
 	};
 
-	/** Marks a key's whole value range for replacement by `with`. */
+	/**
+	 * Replaces line `at` with `wth`, unless that is the line already there.
+	 *
+	 * Every edit goes through this, so a line that would be written back as it
+	 * is never counts as one: the "nothing changed" answer below rests on it.
+	 */
+	const setLine = (at: number, wth: string[]): void => {
+		if (wth.length === 1 && wth[0] === lines[at]) {
+			return;
+		}
+		replace.set(at, wth);
+	};
+
+	/**
+	 * Marks a key's whole value range for replacement by `with`.
+	 *
+	 * The line keeps its indentation and, for a value on one line, the comment
+	 * after it: `url = "…" # this window` loses only the address. A value that
+	 * spans lines is replaced whole, its comments with it — finding a comment
+	 * inside one would take the scanner this leaf module cannot import.
+	 */
 	const replaceValue = (entry: CodexEntry, key: string, wth: string[]): void => {
 		const from = entry.valueLines.get(key);
 		if (from === undefined) {
 			return;
 		}
 		const to = entry.valueEndLines.get(key) ?? from + 1;
-		replace.set(from, wth);
+		const indent = indentOf(lines[from]);
+		const tail = to === from + 1 ? commentTail(lines[from]) : '';
+		setLine(from, wth.map((line, at) => `${indent}${line}${at === 0 ? tail : ''}`));
 		for (let line = from + 1; line < to; line++) {
 			remove.add(line);
 		}
 	};
+
+	/**
+	 * **The header is rewritten only when the name changes.** It used to be
+	 * written out fresh on every repair, so a comment on it —
+	 * `[mcp_servers.ai-browser] # managed`, `[… .env_http_headers] # from
+	 * 1Password` — was lost on every port move, which changes nothing about
+	 * the name. Renamed, it keeps its indentation and its comment.
+	 */
+	const renaming = canonical !== source;
+	const title = (entry: CodexEntry, wanted: string): string => {
+		const line = lines[entry.firstLine];
+		return renaming ? `${indentOf(line)}${wanted}${headerTail(line)}` : line;
+	};
+
+	const wanted = `Bearer ${endpoint.token}`;
+	const isAuthorization = (key: string) => stripQuotes(key).toLowerCase() === 'authorization';
 
 	// Everything the canonical entry needs to know about itself, gathered
 	// before the loop so the sub-table and its parent can be decided together.
@@ -688,28 +763,34 @@ export function repairCodexToml(
 			// second, urlless server.
 			// An array-of-tables block keeps its double brackets, or the rename
 			// turns one element of an array into a table of its own.
-			const renamed = entry.arrayTable
+			const head = title(entry, entry.arrayTable
 				? `[[mcp_servers.${canonical}.${suffix}]]`
-				: `[mcp_servers.${canonical}.${suffix}]`;
-			replace.set(entry.firstLine, [renamed]);
+				: `[mcp_servers.${canonical}.${suffix}]`);
 
 			if (entry === headerSubTable) {
 				// Only the authorization is ours to set; every other header the
 				// user put here stays exactly as written.
-				const existing = [...entry.valueLines.keys()]
-					.find(key => stripQuotes(key).toLowerCase() === 'authorization');
-				const line = `${existing ?? 'Authorization'} = "Bearer ${endpoint.token}"`;
+				const existing = [...entry.valueLines.keys()].find(isAuthorization);
+				const line = `${existing ?? 'Authorization'} = "${wanted}"`;
 				if (existing) {
-					replaceValue(entry, existing, [line]);
+					if (entry.values.get(existing) !== wanted) {
+						replaceValue(entry, existing, [line]);
+					}
+					setLine(entry.firstLine, [head]);
 				} else {
-					replace.set(entry.firstLine, [`[mcp_servers.${canonical}.${suffix}]`, line]);
+					setLine(entry.firstLine, [head, line]);
 				}
+			} else {
+				setLine(entry.firstLine, [head]);
 			}
 			continue;
 		}
 
 		const url = `url = "${endpoint.url}"`;
-		const header = `[mcp_servers.${canonical}]`;
+		const header = title(entry, `[mcp_servers.${canonical}]`);
+		// Compared by meaning, as `codexAlreadyCorrect` does: a correct `url` in
+		// another quoting is not rewritten into ours.
+		const urlStale = entry.values.get('url') !== endpoint.url;
 
 		// **Dotted keys are `http_headers` too.** `http_headers.Authorization =
 		// "Bearer …"` is plain TOML for the same table, and the branches below
@@ -719,18 +800,19 @@ export function repairCodexToml(
 		// start (item 175). Edited in place instead, the way the sub-table is.
 		const dottedHeaders = [...entry.valueLines.keys()].filter(key => key.startsWith('http_headers.'));
 		if (dottedHeaders.length > 0 && !entry.valueLines.has('http_headers')) {
-			const authorization = dottedHeaders.find(key =>
-				stripQuotes(key.slice('http_headers.'.length)).toLowerCase() === 'authorization');
-			const line = `${authorization ?? 'http_headers.Authorization'} = "Bearer ${endpoint.token}"`;
+			const authorization = dottedHeaders.find(key => isAuthorization(key.slice('http_headers.'.length)));
+			const line = `${authorization ?? 'http_headers.Authorization'} = "${wanted}"`;
 			const added = authorization ? [] : [line];
-			if (authorization) {
+			if (authorization && entry.values.get(authorization) !== wanted) {
 				replaceValue(entry, authorization, [line]);
 			}
 			if (entry.valueLines.has('url')) {
-				replace.set(entry.firstLine, [header]);
-				replaceValue(entry, 'url', [url, ...added]);
+				setLine(entry.firstLine, [header]);
+				if (urlStale || added.length > 0) {
+					replaceValue(entry, 'url', [url, ...added]);
+				}
 			} else {
-				replace.set(entry.firstLine, [header, url, ...added]);
+				setLine(entry.firstLine, [header, url, ...added]);
 			}
 			continue;
 		}
@@ -741,6 +823,10 @@ export function repairCodexToml(
 			? [...headerSubTable.values].map(([key, value]) => ({ key, value: JSON.stringify(value) }))
 			: [];
 		const headers = `http_headers = ${mergeAuthorization(inlineHeaders, carried, endpoint.token)}`;
+		// **Rewritten only when the merge would change what it means.** Written
+		// out on every repair, the line lost its comment (`# rotated`) and its
+		// spacing on each port move, which never changes the token.
+		const headersStale = inlineHeadersStale(inlineHeaders, carried, endpoint.token);
 
 		if (!entry.valueLines.has('url')) {
 			// **No `url` key does not mean no credentials**, and emitting
@@ -757,33 +843,48 @@ export function repairCodexToml(
 			// distinguishes, and for the same reasons; only where `url` goes
 			// differs, since there is no existing line to replace.
 			if (entry.valueLines.has('http_headers')) {
-				replace.set(entry.firstLine, [header, url]);
-				replaceValue(entry, 'http_headers', [headers]);
+				setLine(entry.firstLine, [header, url]);
+				if (headersStale) {
+					replaceValue(entry, 'http_headers', [headers]);
+				}
 			} else if (headerSubTable) {
 				// The credentials are in the sub-table, which is kept and updated
 				// in place. An inline table as well is the ambiguous shape the
 				// branch below avoids — and, being the same key, does not parse.
-				replace.set(entry.firstLine, [header, url]);
+				setLine(entry.firstLine, [header, url]);
 			} else {
-				replace.set(entry.firstLine, [header, url, headers]);
+				setLine(entry.firstLine, [header, url, headers]);
 			}
 			continue;
 		}
 
-		replace.set(entry.firstLine, [header]);
+		setLine(entry.firstLine, [header]);
 		if (entry.valueLines.has('http_headers')) {
-			replaceValue(entry, 'url', [url]);
-			replaceValue(entry, 'http_headers', [headers]);
+			if (urlStale) {
+				replaceValue(entry, 'url', [url]);
+			}
+			if (headersStale) {
+				replaceValue(entry, 'http_headers', [headers]);
+			}
 		} else if (headerSubTable) {
 			// The credentials live in the sub-table, which is being kept and
 			// updated in place. Adding an inline table as well would be the
 			// ambiguous shape this branch exists to avoid.
-			replaceValue(entry, 'url', [url]);
+			if (urlStale) {
+				replaceValue(entry, 'url', [url]);
+			}
 		} else {
 			// Credentials were in the URL path, the form written before Codex
 			// turned out to accept a static header. Move them across.
 			replaceValue(entry, 'url', [url, headers]);
 		}
+	}
+
+	// Nothing to write is nothing changed — whatever the file's newlines. The
+	// join below normalises them, so comparing its output with the input would
+	// call a mixed-newline file "repaired" with no line edited.
+	if (!refusedRange && remove.size === 0 && replace.size === 0) {
+		return unchanged;
 	}
 
 	const out: string[] = [];
@@ -879,6 +980,89 @@ interface Pair {
 function stripQuotes(raw: string): string {
 	const value = raw.trim();
 	return /^(".*"|'.*')$/.test(value) ? value.slice(1, -1) : value;
+}
+
+/** A line's leading spaces and tabs. */
+function indentOf(line: string): string {
+	return /^[ \t]*/.exec(line)?.[0] ?? '';
+}
+
+/** One TOML key segment: bare, basic-quoted or literal-quoted. */
+const headerKey = String.raw`(?:[A-Za-z0-9_-]+|"(?:[^"\\]|\\.)*"|'[^']*')`;
+const headerWithTail = new RegExp(
+	String.raw`^\s*\[\[?\s*${headerKey}(?:\s*\.\s*${headerKey})*\s*\]\]?(\s*#.*)?$`);
+
+/**
+ * The comment after a table header's closing bracket, with the space before
+ * it, or `''`.
+ *
+ * Written out here rather than taken from `codexToml.ts`, which this leaf
+ * module may not import as a value. Only ever asked of a line `codexEntries`
+ * already read as a header, and the worst a miss costs is the comment.
+ */
+function headerTail(line: string): string {
+	return headerWithTail.exec(line)?.[1] ?? '';
+}
+
+/**
+ * The comment after a one-line `key = value`, with the space before it, or
+ * `''`.
+ *
+ * A `#` inside a string is content, so strings are skipped — basic ones with
+ * their escapes, literal ones without, and both triple-quoted forms. Whatever
+ * this returns begins with `#`, so even a misreading appends a comment and
+ * never anything that parses as part of the value.
+ */
+function commentTail(line: string): string {
+	let quote: string | undefined;
+	for (let i = 0; i < line.length; i++) {
+		const ch = line[i];
+		if (quote) {
+			if (ch === '\\' && quote[0] === '"') {
+				i++;
+			} else if (line.startsWith(quote, i)) {
+				// A triple-quoted string may end in up to two extra quotes.
+				let end = i + quote.length;
+				while (quote.length === 3 && line[end] === quote[0] && end < i + 5) {
+					end++;
+				}
+				i = end - 1;
+				quote = undefined;
+			}
+			continue;
+		}
+		if (line.startsWith('"""', i) || line.startsWith('\'\'\'', i)) {
+			quote = line.slice(i, i + 3);
+			i += 2;
+		} else if (ch === '"' || ch === '\'') {
+			quote = ch;
+		} else if (ch === '#') {
+			let from = i;
+			while (from > 0 && (line[from - 1] === ' ' || line[from - 1] === '\t')) {
+				from--;
+			}
+			return line.slice(from);
+		}
+	}
+	return '';
+}
+
+/**
+ * Whether `mergeAuthorization` would change what the inline table means: its
+ * first authorization is not our bearer token, or a carried key is missing.
+ * The same first-match rule the merge and `codexAlreadyCorrect` use.
+ */
+function inlineHeadersStale(existing: string | undefined, carried: readonly Pair[], token: string): boolean {
+	if (existing === undefined) {
+		return true;
+	}
+	const pairs = parseInlineTable(existing);
+	const sameKey = (a: string, b: string) => stripQuotes(a).toLowerCase() === stripQuotes(b).toLowerCase();
+	const authorization = pairs.find(pair => sameKey(pair.key, 'authorization'));
+	if (authorization === undefined || stripQuotes(authorization.value) !== `Bearer ${token}`) {
+		return true;
+	}
+	return carried.some(pair => !pairs.some(have => sameKey(have.key, pair.key)));
 }
 
 /**

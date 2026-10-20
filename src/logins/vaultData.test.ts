@@ -8,7 +8,7 @@ import { suite, test } from 'node:test';
 import {
 	countConflicts, decideSave, emptyVault, matchLogins, mergeVault, newRevision, originOf, parseVault, passkeysFor,
 	revisionTime,
-	putLogin, rpIdMatchesHost, serializeVault, setNeverSave, toStandardBase64,
+	putLogin, rpIdMatchesHost, serializeVault, setNeverSave, toStandardBase64, UsernameSteps,
 	type LoginEntry, type PasskeyEntry, type Vault,
 } from './vaultData.ts';
 
@@ -76,6 +76,16 @@ suite('matchLogins', () => {
 });
 
 suite('decideSave', () => {
+	test('a password with no username after a first step of unknown account updates nothing', () => {
+		// alice is the only login saved; bob was chosen by a fill or a chooser, so the
+		// first step carried no typed username. "The single login" would be alice.
+		const origin = 'https://a.test';
+		const saved = login(origin, 'alice', 'alice-pw');
+		assert.deepStrictEqual(decideSave(vaultOf(saved), origin, '', 'bob-pw', undefined, true),
+			{ kind: 'none', reason: 'unknownAccount' });
+		assert.deepStrictEqual(decideSave(vaultOf(saved), origin, '', 'bob-pw'), { kind: 'update', entry: saved });
+	});
+
 
 	const origin = 'https://a.test';
 
@@ -268,5 +278,94 @@ suite('mergeVault', () => {
 			logins: [login('https://a.test', 'x', 'first'), login('https://a.test', 'x', 'second')],
 		}, 'replace', 0);
 		assert.deepStrictEqual(merged.vault.logins.map(e => e.password), ['first']);
+	});
+
+	test('undated rows of one account with different passwords: the first is used, and the account is named', () => {
+		// A Chrome CSV has no dates: every row is stamped with the import's time,
+		// and those equal stamps used to decide "the newest" — keeping the first
+		// row while the summary claimed the newest had been used.
+		const old = login('https://a.test', 'me@x', 'OLD-pass', { updated: 500 });
+		const current = login('https://a.test', 'Me@x', 'NEW-pass', { updated: 500 });
+		const other = login('https://b.test', 'y', 'p', { updated: 500 });
+		const undated = new Set([old, current, other]);
+		const merged = mergeVault(emptyVault(), { logins: [old, other, current], undated }, 'replace', 0);
+		assert.deepStrictEqual(merged.vault.logins.map(e => e.password), ['OLD-pass', 'p']);
+		assert.strictEqual(merged.duplicates, 1);
+		assert.deepStrictEqual(merged.undecided, [{ origin: 'https://a.test', username: 'me@x' }]);
+	});
+
+	test('undated repeats with the same password are not undecided', () => {
+		const a = login('https://a.test', 'x', 'same', { title: 'one' });
+		const b = login('https://a.test', 'x', 'same', { title: 'two' });
+		const merged = mergeVault(emptyVault(), { logins: [a, b], undated: new Set([a, b]) }, 'replace', 0);
+		assert.deepStrictEqual([merged.duplicates, merged.undecided.length], [1, 0]);
+	});
+
+	test('a dated row and an undated one cannot be ordered; nor can two equal dates', () => {
+		const dated = login('https://a.test', 'x', 'dated', { updated: 900 });
+		const undatedRow = login('https://a.test', 'x', 'undated', { updated: 1_000 });
+		const mixed = mergeVault(emptyVault(), { logins: [dated, undatedRow], undated: new Set([undatedRow]) }, 'replace', 0);
+		assert.deepStrictEqual([mixed.vault.logins[0].password, mixed.undecided.length], ['dated', 1],
+			'the import time stamped on the undated row is not a date');
+
+		const same = mergeVault(emptyVault(), {
+			logins: [login('https://a.test', 'x', 'one', { updated: 7 }), login('https://a.test', 'x', 'two', { updated: 7 })],
+		}, 'replace', 0);
+		assert.deepStrictEqual([same.vault.logins[0].password, same.undecided.length], ['one', 1]);
+	});
+
+	test('dated rows are still ordered by date, and are not undecided', () => {
+		const merged = mergeVault(emptyVault(), {
+			logins: [login('https://a.test', 'x', 'stale', { updated: 10 }), login('https://a.test', 'x', 'current', { updated: 60 })],
+		}, 'replace', 0);
+		assert.deepStrictEqual([merged.vault.logins[0].password, merged.undecided.length], ['current', 0]);
+	});
+
+	test('the conflict count sees the same undated choice as the merge', () => {
+		const vault = vaultOf(login('https://a.test', 'x', 'NEW'));
+		const first = login('https://a.test', 'x', 'OLD', { updated: 5 });
+		const second = login('https://a.test', 'x', 'NEW', { updated: 5 });
+		const undated = new Set([first, second]);
+		assert.strictEqual(countConflicts(vault, [first, second], undated), 1, 'the first row is the one compared');
+		const merged = mergeVault(vault, { logins: [first, second], undated }, 'keep', 0);
+		assert.deepStrictEqual([merged.kept, merged.undecided.length], [1, 1]);
+	});
+});
+
+suite('UsernameSteps', () => {
+
+	test('a first step remembers its username for the second, for a while', () => {
+		const steps = new UsernameSteps(1_000);
+		steps.note('https://a.test', 'alice', 0);
+		assert.strictEqual(steps.recall('https://a.test', 999), 'alice');
+		assert.strictEqual(steps.recall('https://a.test', 1_000), undefined);
+		assert.strictEqual(steps.recall('https://b.test', 10), undefined);
+	});
+
+	test('a first step with no typed username forgets the account before it', () => {
+		// alice typed, then bob put in by Fill Saved Login or an account chooser:
+		// bob's password must not be lent alice's name.
+		const steps = new UsernameSteps(600_000);
+		steps.note('https://a.test', 'alice', 0);
+		steps.note('https://a.test', '', 5_000);
+		assert.strictEqual(steps.recall('https://a.test', 6_000), undefined);
+		assert.strictEqual(steps.unknownAccount('https://a.test', 6_000), true);
+		assert.strictEqual(steps.unknownAccount('https://a.test', 605_001), false);
+		steps.note('https://a.test', 'carol', 7_000);
+		assert.strictEqual(steps.unknownAccount('https://a.test', 7_001), false);
+	});
+
+	test('a sign-in that worked uses the username up', () => {
+		const steps = new UsernameSteps(600_000);
+		steps.note('https://a.test', 'alice', 0);
+		steps.forget('https://a.test');
+		assert.strictEqual(steps.recall('https://a.test', 1), undefined);
+	});
+
+	test('a later typed username replaces the earlier one', () => {
+		const steps = new UsernameSteps(600_000);
+		steps.note('https://a.test', 'alice', 0);
+		steps.note('https://a.test', 'bob', 1);
+		assert.strictEqual(steps.recall('https://a.test', 2), 'bob');
 	});
 });

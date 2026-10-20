@@ -16,7 +16,7 @@ import { canHandOver, cleanUpReports, publishAssistantContext, type AssistantId 
 import { LastElementAction, type ElementActionId } from './elements/lastAction';
 import { localHosts, normalizeAddress } from './core/webUrl';
 import { BrowserController } from './browser/browserController';
-import { BrowserRecording } from './browser/recording';
+import { BrowserRecording, recordingErrorReported } from './browser/recording';
 import { recordingQualityKey, readRecordingQuality } from './browser/recordingQuality';
 import { ChatViewProvider, chatBlocked, chatBlockedContextKey, chatUnsupportedContextKey, chatViewId, supportsSecondarySidebar } from './chat/chatView';
 import { McpLifecycle } from './mcp/mcpLifecycle';
@@ -212,11 +212,22 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(browser);
 	const recording = new BrowserRecording(context, browser);
 	context.subscriptions.push(recording);
-	context.subscriptions.push(vscode.commands.registerCommand('aiBrowser.recording.start', () => recording.start(undefined, 'clipboard')));
+	// The user's own recording commands. A failure the recording reported itself
+	// (a failure notification, or a start cancelled because its tab closed) is
+	// not reported again; anything refused before a recording existed goes to
+	// the status bar. Letting the rejection out of the command instead added
+	// VS Code's generic "command failed" toast over the page (#10, #194).
+	const userRecording = (run: () => Promise<unknown>) => async () => {
+		try { await run(); }
+		catch (error) {
+			if (!recordingErrorReported(error)) { refuse(plainInLabel(error instanceof Error ? error.message : String(error), 300)); }
+		}
+	};
+	context.subscriptions.push(vscode.commands.registerCommand('aiBrowser.recording.start', userRecording(() => recording.start(undefined, 'clipboard'))));
 	void vscode.commands.executeCommand('setContext', 'aiBrowser.recordingQuality', readRecordingQuality(context.globalState.get(recordingQualityKey)));
 	for (const quality of ['balanced', 'high', 'maximum'] as const) {
 		for (const suffix of ['', 'Default']) {
-			context.subscriptions.push(vscode.commands.registerCommand(`aiBrowser.recording.${quality}${suffix}`, () => recording.start(undefined, 'clipboard', undefined, quality)));
+			context.subscriptions.push(vscode.commands.registerCommand(`aiBrowser.recording.${quality}${suffix}`, userRecording(() => recording.start(undefined, 'clipboard', undefined, quality))));
 		}
 	}
 
@@ -232,11 +243,18 @@ export function activate(context: vscode.ExtensionContext) {
 				+ 'If the server or page is unavailable, ask me to connect MCP or share the page using the AI Browser menu. '
 				+ 'Wait for my request to record before starting a recording.'
 			);
-			void vscode.window.showInformationMessage(vscode.l10n.t('Recording prompt copied. Paste it into Claude Code or Codex.'));
+			// Modal, like the paste prompt after Connect (`askToPaste`) and Translate
+			// Page: the paste is the one step left, and a toast would stay up over
+			// the browser tab this menu was opened on and pause it (#10).
+			await vscode.window.showInformationMessage(
+				command === 'startClaude'
+					? vscode.l10n.t('Paste into the Claude Code chat; it records the page when you ask it to.')
+					: vscode.l10n.t('Paste into the Codex chat; it records the page when you ask it to.'),
+				{ modal: true, detail: vscode.l10n.t('The prompt is on your clipboard.') });
 		}));
 	}
 	for (const action of ['pause', 'resume', 'stop'] as const) {
-		context.subscriptions.push(vscode.commands.registerCommand(`aiBrowser.recording.${action}`, () => recording.control(action)));
+		context.subscriptions.push(vscode.commands.registerCommand(`aiBrowser.recording.${action}`, userRecording(() => recording.control(action))));
 	}
 
 	const mcp = new McpLifecycle(context, browser, context.extension.packageJSON.version ?? '0.0.0', recording);
@@ -509,10 +527,10 @@ export function activate(context: vscode.ExtensionContext) {
 	recording.destination = chatId => chat.recordingDestination(chatId);
 	recording.project = chatId => chat.recordingProject(chatId);
 	recording.createEncoder = id => chat.createRecordingEncoder(id);
-	context.subscriptions.push(vscode.commands.registerCommand('aiBrowser.recording.startChat', async () => {
+	context.subscriptions.push(vscode.commands.registerCommand('aiBrowser.recording.startChat', userRecording(async () => {
 		await vscode.commands.executeCommand(`${chatViewId}.focus`);
 		return recording.start(undefined, 'chat');
-	}));
+	})));
 	// The element entries of "AI Browser Chat ▸" are toolbar actions like the
 	// assistants' Add entries: each records itself, and has a `repeat.chat.*`
 	// twin for the primary button and the chord.

@@ -492,8 +492,16 @@ export class ChatTab {
 		this._post();
 	}
 
-	/** Ends what runs, saves, and lets the session go — the tab closing, or the view. */
-	public close(): void {
+	/**
+	 * Ends what runs, saves, and lets the session go — the tab closing, or the
+	 * view. `'view'`: the view went away and the tab stays in the provider's list,
+	 * to be shown again when the view is resolved again. It is not marked
+	 * `_closed` then: that flag is reset only by `start()`, so a tab the view let
+	 * go of came back for good as closed — a generated title was dropped
+	 * (`applyGeneratedTitle`) and a first send that failed was never saved. A
+	 * chat deleted meanwhile is still covered: deleting it discards the tab.
+	 */
+	public close(reason: 'tab' | 'view' = 'tab'): void {
 		// A prompt still waiting was sent to the CLI: it goes into the chat
 		// before the turn is ended and the chat saved, or the history lacked a
 		// message the resumed session has (the save used to come first).
@@ -502,7 +510,9 @@ export class ChatTab {
 		void this._save();
 		this._dropSession();
 		this._host.released(this._chat.id);
-		this._closed = true;
+		if (reason === 'tab') {
+			this._closed = true;
+		}
 		// Ended by the user closing it, or the view: nothing finished to read.
 		this._unseen = false;
 		this._wasBusy = false;
@@ -818,10 +828,10 @@ export class ChatTab {
 		this._restartTimer = setTimeout(() => {
 			this._restartTimer = undefined;
 			// Not `_closed`: a tab the view let go of when it was closed is
-			// reused when the view comes back, and `_closed` is reset only by
-			// `start()` — so a reference added or a folder trusted after that
-			// never reached Claude Code. A tab really closed holds no session,
-			// which the check below already covers.
+			// reused when the view comes back, and before `close('view')` it was
+			// left marked closed — so a reference added or a folder trusted after
+			// that never reached Claude Code. A tab really closed holds no
+			// session, which the check below already covers.
 			if (!this._restartForDirs) {
 				return;
 			}

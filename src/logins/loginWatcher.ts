@@ -15,7 +15,7 @@ import {
 	type PasskeyMessage, type PasskeyRequestMessage, type PasskeyVerdictWord,
 } from './passkeyGate';
 import { isBrowserApiGranted } from '../setup/proposedApi';
-import { originOf, type PasskeyEntry } from './vaultData';
+import { originOf, UsernameSteps, type PasskeyEntry } from './vaultData';
 
 /*
  * The CDP half of saved logins and passkeys.
@@ -114,6 +114,8 @@ export interface SuccessfulSubmit {
 	readonly password: string;
 	/** For a change-password form: the password it replaced. */
 	readonly previousPassword?: string;
+	/** A first step just went out with no username the user typed: the account is not known. */
+	readonly accountUnknown?: boolean;
 }
 
 export interface PasskeyRequest extends PasskeyRequestMessage {
@@ -166,7 +168,7 @@ export class WatchedTab implements vscode.Disposable {
 	private readonly _fields = new Map<string, FrameFields>();
 	private readonly _pending = new Map<string, PendingSubmit>();
 	private readonly _recent = new Map<string, { origin: string; until: number }>();
-	private readonly _usernames = new Map<string, { username: string; at: number }>();
+	private readonly _usernames = new UsernameSteps(usernameMemoryMs);
 	private readonly _subscriptions: vscode.Disposable[] = [];
 	private _mainFrameId: string | undefined;
 	private _authenticatorId: string | undefined;
@@ -429,9 +431,10 @@ export class WatchedTab implements vscode.Disposable {
 		}
 		if (message.type === 'submit') {
 			if (message.kind === 'username') {
-				if (message.username) {
-					this._usernames.set(context.origin, { username: message.username, at: Date.now() });
-				}
+				// An empty username is the page saying a first step went out with
+				// none the user typed: the remembered account is no longer the one
+				// signing in, and is forgotten rather than lent to the next password.
+				this._usernames.note(context.origin, message.username, Date.now());
 				return;
 			}
 			const existing = this._pending.get(context.frameId);
@@ -498,15 +501,17 @@ export class WatchedTab implements vscode.Disposable {
 		}
 		const { message } = pending;
 		let username = message.username;
+		const accountUnknown = !username && this._usernames.unknownAccount(pending.origin, Date.now());
 		if (!username) {
 			// The second step of a sign-in that asked for the username on a
 			// page of its own. Without this the password arrives alone and
 			// can only update a login, never save one with its account.
-			const remembered = this._usernames.get(pending.origin);
-			if (remembered && Date.now() - remembered.at < usernameMemoryMs) {
-				username = remembered.username;
-			}
+			username = this._usernames.recall(pending.origin, Date.now()) ?? '';
 		}
+		// A sign-in that worked has used the first step's username up. Kept, it
+		// went on naming the next password on this site for ten minutes — after a
+		// switch of account through a chooser that has no username step at all.
+		this._usernames.forget(pending.origin);
 		const password = message.kind === 'login' ? message.password : message.newPassword;
 		if (!password) {
 			return;
@@ -518,6 +523,7 @@ export class WatchedTab implements vscode.Disposable {
 			username,
 			password,
 			...(message.kind === 'change' && message.password ? { previousPassword: message.password } : {}),
+			...(accountUnknown ? { accountUnknown } : {}),
 		});
 	}
 

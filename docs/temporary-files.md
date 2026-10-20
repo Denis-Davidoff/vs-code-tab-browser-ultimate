@@ -9,6 +9,7 @@ project ownership and producer process IDs, never captured content.
 | Screenshots and materialized image attachments | ~/.ai-browser/projects/<id>/captures or shared/captures | Existing automatic 24-hour sweep; manual cleanup supported |
 | Browser videos | ~/.ai-browser/projects/<id>/captures or shared/captures | Kept until manual cleanup; Save as creates an independent copy |
 | Voice capture | ~/.ai-browser/projects/<id>/captures or shared/captures | Recorder normally removes its file; abandoned files can be cleaned |
+| Files pasted into the chat | ~/.ai-browser/projects/<id>/files or shared/files | Never swept automatically (an agent may read the path later); manual cleanup supported, current draft protected |
 | Element reports and chat exports | <project>/.ai-browser or ~/.ai-browser/projects/<id>/reports / shared/reports | Existing five-hour report sweep; manual cleanup supports known report names |
 | Claude MCP connection files | ~/.ai-browser/shared/runtime/chat | Existing stale-process sweep; manual cleanup only after owner process exits |
 | Isolated title/branch/commit request instructions | ~/.ai-browser/shared/runtime / isolated request folders | Normally removed in finally; abandoned instructions older than 24 hours can be cleaned |

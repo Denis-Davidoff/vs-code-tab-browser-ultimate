@@ -249,7 +249,7 @@ export function isNeverSave(vault: Vault, origin: string): boolean {
 
 /** What a submitted form means against what is already saved. */
 export type SaveDecision =
-	| { readonly kind: 'none'; readonly reason: 'neverSave' | 'unchanged' | 'empty' }
+	| { readonly kind: 'none'; readonly reason: 'neverSave' | 'unchanged' | 'empty' | 'unknownAccount' }
 	| { readonly kind: 'save' }
 	| { readonly kind: 'update'; readonly entry: LoginEntry };
 
@@ -277,6 +277,7 @@ export function decideSave(
 	username: string,
 	password: string,
 	previousPassword?: string,
+	accountUnknown = false,
 ): SaveDecision {
 	if (!password) {
 		return { kind: 'none', reason: 'empty' };
@@ -306,6 +307,12 @@ export function decideSave(
 
 	if (forOrigin.some(entry => entry.password === password)) {
 		return { kind: 'none', reason: 'unchanged' };
+	}
+	// A first step that went out with a username nobody typed — a fill, an
+	// account chooser — says the account is not known. "The single login of the
+	// origin" is then a guess, and it offered bob's password as alice's update.
+	if (accountUnknown) {
+		return { kind: 'none', reason: 'unknownAccount' };
 	}
 	if (forOrigin.length === 1) {
 		return { kind: 'update', entry: forOrigin[0] };
@@ -482,23 +489,43 @@ export interface MergeReport {
 	readonly kept: number;
 	/** Rows of the import that repeated an origin and username already in it, and were not used. */
 	readonly duplicates: number;
+	/**
+	 * Accounts the file holds more than once with different passwords and no
+	 * dates to say which is newer — the **first** such row was used. A CSV from
+	 * Chrome, Safari, Bitwarden or 1Password carries no dates at all, so for
+	 * those "the newest" is not something the merge can know, and the user is
+	 * told which accounts to check.
+	 */
+	readonly undecided: readonly { readonly origin: string; readonly username: string }[];
 }
 
 const loginKey = (origin: string, username: string) => `${origin}\n${username.toLocaleLowerCase()}`;
 
 /**
  * The logins of an import that the merge will consider: one per origin and
- * username — **the most recently changed** — plus how many were set aside.
+ * username — **the most recently changed, where the rows say when** — plus how
+ * many were set aside, and the accounts that could not be decided.
  *
- * Not the first: a file with the same account twice (Chrome keeps one per
- * path) put whichever came first into the vault, which could be the stale one
- * while the file also held the current password. Rows without a date keep
- * their order. Shared by {@link countConflicts} and {@link mergeVault}, so the
- * question the user is asked and the merge that applies the answer see the
- * same rows. Indexed, not searched: the file may hold a million rows.
+ * Not simply the first: a file with the same account twice (Chrome keeps one
+ * per path) put whichever came first into the vault, which could be the stale
+ * one while the file also held the current password. But only a row with a
+ * date of its own can be compared: `undated` names the rows that had none, and
+ * were given the import's time to be stored with. Comparing those stamps — all
+ * equal — kept the first row while the summary claimed "the newest used". A
+ * pair that cannot be ordered (either row undated, or two equal dates) keeps
+ * the **first** row in the file — the CSV layouts read here are not in date
+ * order (Chrome sorts by site), so no position is evidence of age, and the
+ * first is at least the rule the file's reader can check — and, when the two
+ * passwords differ, the account is reported as `undecided`. Shared by
+ * {@link countConflicts} and {@link mergeVault}, so the question the user is
+ * asked and the merge that applies the answer see the same rows. Indexed, not
+ * searched: the file may hold a million rows.
  */
-function distinctLogins(incoming: readonly LoginEntry[]): { logins: LoginEntry[]; duplicates: number } {
+function distinctLogins(incoming: readonly LoginEntry[], undated?: ReadonlySet<LoginEntry>): {
+	logins: LoginEntry[]; duplicates: number; undecided: LoginEntry[];
+} {
 	const chosen = new Map<string, LoginEntry>();
+	const undecided = new Set<string>();
 	let duplicates = 0;
 	for (const entry of incoming) {
 		const key = loginKey(entry.origin, entry.username);
@@ -508,11 +535,20 @@ function distinctLogins(incoming: readonly LoginEntry[]): { logins: LoginEntry[]
 			continue;
 		}
 		duplicates++;
-		if (entry.updated > held.updated) {
-			chosen.set(key, entry);
+		const ordered = !undated?.has(entry) && !undated?.has(held) && entry.updated !== held.updated;
+		if (ordered) {
+			if (entry.updated > held.updated) {
+				chosen.set(key, entry);
+			}
+		} else if (entry.password !== held.password) {
+			undecided.add(key);
 		}
 	}
-	return { logins: [...chosen.values()], duplicates };
+	return {
+		logins: [...chosen.values()],
+		duplicates,
+		undecided: [...undecided].map(key => chosen.get(key)!),
+	};
 }
 
 /** Saved logins by origin and username, for lookups that would otherwise scan the vault per row. */
@@ -533,9 +569,9 @@ function indexLogins(logins: readonly LoginEntry[]): Map<string, number> {
  * the vault and `me@x` in a file are one account, and comparing them exactly
  * imported a second copy without asking which password wins.
  */
-export function countConflicts(vault: Vault, incoming: readonly LoginEntry[]): number {
+export function countConflicts(vault: Vault, incoming: readonly LoginEntry[], undated?: ReadonlySet<LoginEntry>): number {
 	const index = indexLogins(vault.logins);
-	return distinctLogins(incoming).logins.filter(entry => {
+	return distinctLogins(incoming, undated).logins.filter(entry => {
 		const at = index.get(loginKey(entry.origin, entry.username));
 		return at !== undefined && vault.logins[at].password !== entry.password;
 	}).length;
@@ -552,7 +588,11 @@ export function countConflicts(vault: Vault, incoming: readonly LoginEntry[]): n
  */
 export function mergeVault(
 	vault: Vault,
-	incoming: { logins: readonly LoginEntry[]; passkeys?: readonly PasskeyEntry[]; neverSave?: readonly string[] },
+	incoming: {
+		logins: readonly LoginEntry[]; passkeys?: readonly PasskeyEntry[]; neverSave?: readonly string[];
+		/** Rows that carried no date of their own: see {@link distinctLogins}. */
+		undated?: ReadonlySet<LoginEntry>;
+	},
 	policy: ConflictPolicy,
 	now: number,
 ): MergeReport {
@@ -562,7 +602,7 @@ export function mergeVault(
 	let kept = 0;
 	const logins = [...vault.logins];
 	const index = indexLogins(logins);
-	const distinct = distinctLogins(incoming.logins);
+	const distinct = distinctLogins(incoming.logins, incoming.undated);
 	for (const entry of distinct.logins) {
 		const key = loginKey(entry.origin, entry.username);
 		const at = index.get(key);
@@ -607,5 +647,56 @@ export function mergeVault(
 	}
 
 	const neverSave = [...new Set([...vault.neverSave, ...(incoming.neverSave ?? [])])];
-	return { vault: { ...vault, logins, passkeys, neverSave }, added, updated, unchanged, kept, duplicates: distinct.duplicates };
+	return {
+		vault: { ...vault, logins, passkeys, neverSave }, added, updated, unchanged, kept, duplicates: distinct.duplicates,
+		undecided: distinct.undecided.map(entry => ({ origin: entry.origin, username: entry.username })),
+	};
+}
+
+/**
+ * The username of a two-step sign-in's first step, per origin, for a second
+ * step that asks for the password alone — usually on a document of its own,
+ * where the page script's own memory is gone.
+ *
+ * **Every first step replaces the memory, and one with no username the user
+ * typed clears it.** Remembering only the typed ones, and never forgetting,
+ * kept the last account typed for ten minutes through every later first step:
+ * sign in as alice by typing, switch account with bob's username put in by
+ * Fill Saved Login or a site's own account chooser — not typed, so not
+ * remembered — type bob's new password, and it was offered as an update of
+ * alice. A second step after a first step we cannot vouch for has no username;
+ * that costs an offer its account name, never a password the wrong account.
+ */
+export class UsernameSteps {
+	/** `username: ''` records a first step whose account is not known. */
+	private readonly _byOrigin = new Map<string, { username: string; at: number }>();
+	private readonly _ttlMs: number;
+
+	constructor(ttlMs: number) {
+		this._ttlMs = ttlMs;
+	}
+
+	/** A first step was submitted on `origin`, with this username — `''` when none the user typed. */
+	public note(origin: string, username: string, now: number): void {
+		// Kept as `''` rather than forgotten: the next password on this origin
+		// must not be taken for the single saved login's (`accountUnknown`).
+		this._byOrigin.set(origin, { username, at: now });
+	}
+
+	/** A sign-in on `origin` worked: its first step's username is used up. */
+	public forget(origin: string): void {
+		this._byOrigin.delete(origin);
+	}
+
+	/** The username of the latest first step on `origin`, while it is recent. */
+	public recall(origin: string, now: number): string | undefined {
+		const remembered = this._byOrigin.get(origin);
+		return remembered && remembered.username && now - remembered.at < this._ttlMs ? remembered.username : undefined;
+	}
+
+	/** Whether the latest recent first step on `origin` carried no username the user typed. */
+	public unknownAccount(origin: string, now: number): boolean {
+		const remembered = this._byOrigin.get(origin);
+		return !!remembered && !remembered.username && now - remembered.at < this._ttlMs;
+	}
 }

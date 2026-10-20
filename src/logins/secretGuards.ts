@@ -213,6 +213,27 @@ function pinsPlainElement(whole: string): boolean {
 const rawText = new Set(['script', 'style', 'xmp', 'iframe', 'noembed', 'noframes', 'noscript', 'plaintext']);
 
 /**
+ * The end tag of each raw-text element, found without regard to ASCII case —
+ * `</STYLE` closes a `<style>` as `</style` does.
+ *
+ * A search, not `html.toLowerCase().indexOf(…)`: lowercasing the whole document
+ * once per raw-text element made a page of many `<style>` tags quadratic (2.5 MB
+ * with 20 000 of them held the extension host for 4.8 s), and lowercasing it
+ * once outside the loop is wrong too — `toLowerCase` is not length-preserving
+ * (`'İ'` becomes two code units), so an index found in the lowered copy points
+ * past the tag in the original. `i` without `u` folds ASCII letters only, which
+ * is how HTML compares tag names: under `u`, `ſ` (U+017F) would read as `s`.
+ */
+const rawTextEnd = new Map([...rawText].map(name => [name, new RegExp(`</${name}`, 'gi')]));
+
+/** Where the end tag of raw-text element `name` begins at or after `from`, or -1. */
+function rawTextClose(html: string, name: string, from: number): number {
+	const pattern = rawTextEnd.get(name)!;
+	pattern.lastIndex = from;
+	return pattern.exec(html)?.index ?? -1;
+}
+
+/**
  * The same markup with the `value` attribute removed from every input that
  * holds a secret.
  *
@@ -267,7 +288,7 @@ export function redactSecretValues(html: string): string {
 				result += html.slice(i);
 				break;
 			}
-			const closing = html.toLowerCase().indexOf(`</${name}`, i);
+			const closing = rawTextClose(html, name, i);
 			const stop = closing === -1 ? html.length : closing;
 			result += html.slice(i, stop);
 			i = stop;
@@ -276,19 +297,48 @@ export function redactSecretValues(html: string): string {
 	return result;
 }
 
-/** Index just past the `>` that closes a start tag begun before `from`, quotes honoured. */
+/**
+ * Index just past the `>` that closes a start tag begun before `from`, quotes
+ * honoured — **only a quote that opens a value**, right after `=`. A quote
+ * anywhere else is part of an attribute name (`<div a'="x">` is legal, and
+ * `outerHTML` writes it back as it is): read as an opening quote, it ran on to
+ * the next `'` in the document, past the `>`, and swallowed the password input
+ * after it into this tag, unredacted.
+ */
 function tagEnd(html: string, from: number): number {
-	let quote: string | undefined;
+	// The tokenizer's own attribute states, cut down to what finds the `>`. An
+	// `=` before any name character starts a *name* (`<div ='>` is the
+	// attribute `='`), so it opens no value; treating every `=` as one let that
+	// quote swallow the next password input too.
+	let state: 'before' | 'name' | 'afterName' | 'beforeValue' | 'unquoted' | '"' | '\'' = 'before';
 	for (let at = from; at < html.length; at++) {
 		const char = html[at];
-		if (quote) {
-			if (char === quote) {
-				quote = undefined;
+		const space = char === ' ' || char === '\t' || char === '\n' || char === '\r' || char === '\f';
+		if (state === '"' || state === '\'') {
+			if (char === state) {
+				state = 'before';
 			}
-		} else if (char === '"' || char === '\'') {
-			quote = char;
-		} else if (char === '>') {
+			continue;
+		}
+		if (char === '>') {
 			return at + 1;
+		}
+		switch (state) {
+			case 'before':
+				state = space || char === '/' ? 'before' : 'name';
+				break;
+			case 'name':
+				state = space ? 'afterName' : char === '/' ? 'before' : char === '=' ? 'beforeValue' : 'name';
+				break;
+			case 'afterName':
+				state = space ? 'afterName' : char === '/' ? 'before' : char === '=' ? 'beforeValue' : 'name';
+				break;
+			case 'beforeValue':
+				state = space ? 'beforeValue' : char === '"' || char === '\'' ? char : 'unquoted';
+				break;
+			case 'unquoted':
+				state = space ? 'before' : 'unquoted';
+				break;
 		}
 	}
 	return html.length;

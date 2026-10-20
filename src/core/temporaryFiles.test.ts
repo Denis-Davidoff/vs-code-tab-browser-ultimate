@@ -3,7 +3,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { test } from 'node:test';
-import { configureTemporaryFiles, trackTemporaryFile, temporaryStorage } from './temporaryFiles.ts';
+import { comparablePath, configureTemporaryFiles, trackTemporaryFile, temporaryStorage } from './temporaryFiles.ts';
 
 async function harness() {
  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'temp-storage-test-'));
@@ -203,5 +203,24 @@ test('manual cleanup removes legacy captures younger than a day after handoff gr
   const result = await temporaryStorage({ ...h.options, cleanup: 'all' });
   assert.equal(result.deleted, 1); assert.equal(result.skipped, 0);
   await assert.rejects(fs.stat(file), { code: 'ENOENT' });
+ } finally { await h.cleanup(); }
+});
+
+test('a draft attachment matches its file however the path is spelled', async () => {
+ // VS Code's `Uri.fsPath` lowercases a Windows drive letter while paths built
+ // from `os.homedir()` keep it upper case: compared as strings, a draft's own
+ // file was never protected and "Clean project" deleted it.
+ assert.equal(comparablePath('c:\\Users\\Me\\AppData\\shot.png', 'win32'), comparablePath('C:\\Users\\Me\\AppData\\shot.png', 'win32'));
+ assert.equal(comparablePath('C:\\Users\\Me\\..\\Me\\Shot.PNG', 'win32'), comparablePath('c:\\users\\me\\shot.png', 'win32'));
+ assert.notEqual(comparablePath('C:\\a\\one.png', 'win32'), comparablePath('C:\\a\\two.png', 'win32'));
+ // Elsewhere case is meaningful and only the spelling is normalised.
+ assert.equal(comparablePath('/tmp/a/../b/x.png', 'linux'), '/tmp/b/x.png');
+ assert.notEqual(comparablePath('/tmp/X.png', 'linux'), comparablePath('/tmp/x.png', 'linux'));
+ const h = await harness();
+ try {
+  const draft = await h.write('screenshots', 'draft.png');
+  const spelled = path.join(path.dirname(draft), '..', 'screenshots', path.basename(draft));
+  const result = await temporaryStorage({ ...h.options, cleanup: 'all', protectedFiles: [spelled] });
+  assert.equal(result.deleted, 0); assert.equal(result.skipped, 1); await fs.stat(draft);
  } finally { await h.cleanup(); }
 });

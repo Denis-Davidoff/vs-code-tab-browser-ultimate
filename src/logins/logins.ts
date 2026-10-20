@@ -501,7 +501,7 @@ class LoginsFeature implements WatcherHandlers, vscode.Disposable {
 		if (!vault) {
 			return;
 		}
-		const decision = decideSave(vault, submit.origin, submit.username, submit.password, submit.previousPassword);
+		const decision = decideSave(vault, submit.origin, submit.username, submit.password, submit.previousPassword, submit.accountUnknown);
 		if (decision.kind === 'none') {
 			if (decision.reason === 'unchanged') {
 				const used = vault.logins.find(e => e.origin === submit.origin && e.password === submit.password
@@ -1291,7 +1291,7 @@ class LoginsFeature implements WatcherHandlers, vscode.Disposable {
 			return;
 		}
 
-		let incoming: { logins: LoginEntry[]; passkeys: PasskeyEntry[]; neverSave: string[] };
+		let incoming: { logins: LoginEntry[]; passkeys: PasskeyEntry[]; neverSave: string[]; undated?: Set<LoginEntry> };
 		let skipped = 0;
 		if (isSealed(text)) {
 			const opened = await this._unsealInteractively(text);
@@ -1310,6 +1310,11 @@ class LoginsFeature implements WatcherHandlers, vscode.Disposable {
 			const now = Date.now();
 			skipped = read.skipped;
 			const logins: LoginEntry[] = [];
+			// Rows with no date of their own (every row of a Chrome, Safari,
+			// Bitwarden or 1Password export) are stored with the import's time,
+			// and that stamp must not be read as an age when two rows name one
+			// account: see `distinctLogins`.
+			const undated = new Set<LoginEntry>();
 			for (const row of read.logins) {
 				// The first of the row's addresses that is a web page. A bare
 				// `example.com` is a site written without its scheme; anything with
@@ -1323,15 +1328,19 @@ class LoginsFeature implements WatcherHandlers, vscode.Disposable {
 					skipped++;
 					continue;
 				}
-				logins.push({
+				const entry: LoginEntry = {
 					id: newId(), origin, username: row.username, password: row.password,
 					created: row.created ?? now, updated: row.updated ?? row.created ?? now,
 					...(row.lastUsed ? { lastUsed: row.lastUsed } : {}),
 					...(row.title ? { title: row.title } : {}),
 					...(row.note ? { note: row.note } : {}),
-				});
+				};
+				if (row.updated === undefined && row.created === undefined) {
+					undated.add(entry);
+				}
+				logins.push(entry);
 			}
-			incoming = { logins, passkeys: [], neverSave: [] };
+			incoming = { logins, passkeys: [], neverSave: [], undated };
 		}
 
 		const current = await this._read();
@@ -1339,7 +1348,7 @@ class LoginsFeature implements WatcherHandlers, vscode.Disposable {
 			return;
 		}
 		let policy: 'replace' | 'keep' = 'keep';
-		const conflicts = countConflicts(current, incoming.logins);
+		const conflicts = countConflicts(current, incoming.logins, incoming.undated);
 		if (conflicts > 0) {
 			const replace = vscode.l10n.t("Use the imported passwords");
 			const keep = vscode.l10n.t("Keep the saved passwords");
@@ -1356,11 +1365,29 @@ class LoginsFeature implements WatcherHandlers, vscode.Disposable {
 			return { vault: merged.vault, result: merged };
 		});
 		if (report) {
-			confirm(report.duplicates > 0
-				? vscode.l10n.t("Imported: {0} new, {1} updated, {2} already saved, {3} kept as they were, {4} skipped, {5} repeated in the file (the newest used)",
-					report.added, report.updated, report.unchanged, report.kept, skipped, report.duplicates)
-				: vscode.l10n.t("Imported: {0} new, {1} updated, {2} already saved, {3} kept as they were, {4} skipped",
-					report.added, report.updated, report.unchanged, report.kept, skipped));
+			// "The newest used" only where the file could say which was newest:
+			// an account repeated with different passwords and no dates is
+			// counted apart, and named, since the first row was simply taken.
+			confirm(report.duplicates === 0
+				? vscode.l10n.t("Imported: {0} new, {1} updated, {2} already saved, {3} kept as they were, {4} skipped",
+					report.added, report.updated, report.unchanged, report.kept, skipped)
+				: report.undecided.length === 0
+					? vscode.l10n.t("Imported: {0} new, {1} updated, {2} already saved, {3} kept as they were, {4} skipped, {5} repeated in the file (the newest used)",
+						report.added, report.updated, report.unchanged, report.kept, skipped, report.duplicates)
+					: vscode.l10n.t("Imported: {0} new, {1} updated, {2} already saved, {3} kept as they were, {4} skipped, {5} repeated in the file — for {6} accounts with different passwords and no dates, the first row used",
+						report.added, report.updated, report.unchanged, report.kept, skipped, report.duplicates, report.undecided.length));
+			if (report.undecided.length > 0) {
+				// A question of which password is current, which only the user can
+				// answer: modal, like the conflict question before the merge, and
+				// gone with one click rather than left over a browser page.
+				const named = report.undecided.slice(0, 5)
+					.map(account => inBody(`${shownUsername(account.username)} · ${account.origin}`)).join('\n');
+				const more = report.undecided.length > 5
+					? '\n' + vscode.l10n.t("and {0} more", report.undecided.length - 5) : '';
+				void vscode.window.showWarningMessage(
+					vscode.l10n.t("{0} accounts appear more than once in the file with different passwords, and the file has no dates to tell which is newer. The first row for each was used. Check that these passwords are current:", report.undecided.length),
+					{ modal: true, detail: named + more });
+			}
 		}
 	}
 

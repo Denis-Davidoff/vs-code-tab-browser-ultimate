@@ -138,6 +138,56 @@ suite('redactSecretValues', () => {
 		assert.ok(!redactSecretValues('<input type="text" name="password" value="s3cret">').includes('s3cret'));
 	});
 
+	test('a raw-text end tag is found in any ASCII case, at its own index', () => {
+		const html = '<STYLE>a{}</StYlE><input type="password" value="s3cret"><script>x</SCRIPT><input type=password value=s4>';
+		const out = redactSecretValues(html);
+		assert.ok(!out.includes('s3cret') && !out.includes('s4'), out);
+		assert.ok(out.startsWith('<STYLE>a{}</StYlE><input type="password">'), out);
+	});
+
+	test('text that changes length when lowercased does not move the end of a raw-text element', () => {
+		// 'İ'.toLowerCase() is two code units. Searching a lowered copy put the
+		// end of the style twenty units late, inside the input after it, and the
+		// rest of that tag — its value included — was copied through unscanned.
+		const html = 'İ'.repeat(20) + '<style>a{}</style><input type="password" value="s3cret">';
+		const out = redactSecretValues(html);
+		assert.ok(!out.includes('s3cret'), out);
+		assert.strictEqual(out, 'İ'.repeat(20) + '<style>a{}</style><input type="password">');
+	});
+
+	test('a long-s is not an s: only ASCII case is folded in a tag name', () => {
+		// `</ſtyle>` does not close a style element; its text stays raw text.
+		const html = '<style>a{}</ſtyle><input type="password" value="s3cret"></style><input type="password" value="s4">';
+		const out = redactSecretValues(html);
+		assert.ok(out.includes('value="s3cret"'), 'inside the style, so not a tag');
+		assert.ok(!out.includes('s4'), out);
+	});
+
+	test('many raw-text elements are each found in one pass', () => {
+		// Lowercasing the document per element made this quadratic; it is linear
+		// now. Checked for correctness, not timed: every value is redacted.
+		let html = '<div>';
+		for (let n = 0; n < 5000; n++) {
+			html += `<style>a{}</style><input type="password" value="v${n}x">`;
+		}
+		const out = redactSecretValues(html + '</div>');
+		assert.ok(!/value="v\d+x"/.test(out));
+		assert.strictEqual(out.split('<style>a{}</style><input type="password">').length, 5001);
+	});
+
+	test('a quote in an attribute name opens nothing', () => {
+		// Only a quote right after `=` begins a value. Read as one, the quote in
+		// the name ran on to the next quote in the document, past the input.
+		const html = '<div a\'="x"></div><input type="password" value="hunter2" b\'="y">';
+		const out = redactSecretValues(html);
+		assert.ok(!out.includes('hunter2'), out);
+		assert.ok(!redactSecretValues('<input type = \'password\' data-x = "a>b" value = \'s3cret\'>').includes('s3cret'));
+		// An `=` before any name character starts a name, as the tokenizer reads it.
+		const named = '<div =\'=""></div><input type="password" value="hunter2"><p title=\'x\'>';
+		assert.ok(!redactSecretValues(named).includes('hunter2'));
+		assert.ok(!redactSecretValues('<div a="1"b=\'2\'/></div><input type=password value=hunter2>').includes('hunter2'));
+	});
+
 	test('markup with no secret is returned unchanged', () => {
 		const html = '<div><input type="search" value="query"> <p>value="x"</p><input name="passengers" value="2"></div>';
 		assert.strictEqual(redactSecretValues(html), html);

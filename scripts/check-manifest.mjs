@@ -55,6 +55,18 @@ for (const id of commands.keys()) {
 	}
 }
 
+/*
+ * Every command carries the `AI Browser` category: without it the palette lists
+ * a bare "Record Video" or "Balanced · 1080p" with nothing saying whose it is.
+ * Commands that only make sense in a menu are hidden with `commandPalette` and
+ * `when: false`, not left uncategorised.
+ */
+for (const [id, command] of commands) {
+	if (!command.category) {
+		problems.push(`command ${id} has no category`);
+	}
+}
+
 /* icon paths must resolve, and every icon file must be referenced */
 const referenced = new Set();
 /*
