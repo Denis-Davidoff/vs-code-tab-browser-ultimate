@@ -872,7 +872,7 @@
 			"explorer/context": [
 				{
 					"command": "aiBrowser.chat.attachExplorerResources",
-					"group": "7_modification@50",
+					"group": "8_aiBrowser@1",
 					"when": "resourceScheme == file && !aiBrowser.chatUnsupported && !aiBrowser.chatBlocked"
 				}
 			],
