@@ -671,7 +671,7 @@ export class McpServer implements vscode.Disposable {
 					+ 'Returns a recording id immediately after capture starts. The user can pause or stop in the browser toolbar. '
 					+ 'Use browser_recording_status with that id to retrieve the finished file after a toolbar stop. '
 					+ 'AI Browser Chat clients attach to the chat draft selected at start; external clients copy the file path to the clipboard. '
-					+ 'destination overrides this choice. One recording at a time, up to 10 active minutes or 256 MB; reaching either limit stops the recording and keeps the video (limitReached says which). '
+					+ 'destination overrides this choice. One recording at a time, up to the length set in the user\'s Chat Settings (5 active minutes unless changed, 10 s to 1 h; maxSeconds in the result) and a size limit that follows from it; reaching either limit stops the recording and keeps the video (limitReached says which). '
 					+ 'Keep the browser visible for smooth capture. Video is not sent as native model input.',
 				inputSchema: schema({ destination: { type: 'string', enum: ['chat', 'clipboard'], description: 'chat attaches to the AI Browser Chat draft selected at start; clipboard copies the local file path on completion.' } }),
 				run: async (args, caller, signal) => {

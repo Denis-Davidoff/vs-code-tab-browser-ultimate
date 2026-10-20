@@ -539,6 +539,8 @@ export type VoiceEvent =
 
 export interface ChatViewState {
 	readonly recordingQuality?: RecordingQuality;
+	/** How long a recording may run, in active seconds (Chat Settings, 10 s to 1 h). */
+	readonly recordingSeconds?: number;
 	readonly featureAi?: FeatureAiSettings;
 	readonly sleep?: SleepState;
 	readonly voice: VoiceAvailability;
@@ -654,7 +656,7 @@ export type HostToView =
 	| { readonly type: 'focusInput' }
 	/** The view's title bar cup: open the keep-awake popup. */
 	| { readonly type: 'openSettings' }
-	| { readonly type: 'featureAiSaved'; readonly settings?: FeatureAiSettings; readonly recordingQuality?: RecordingQuality; readonly error?: string }
+	| { readonly type: 'featureAiSaved'; readonly settings?: FeatureAiSettings; readonly recordingQuality?: RecordingQuality; readonly recordingSeconds?: number; readonly error?: string }
 	| { readonly type: 'openSleep' }
 	/** Queued messages given back by Stop: added to what is in the message box, not sent. */
 	| { readonly type: 'restoreDraft'; readonly chatId: string; readonly text: string }
@@ -784,7 +786,7 @@ export type ViewToHost =
 	| { readonly type: 'gitIndexAction'; readonly folder: string; readonly tabId: string; readonly action: 'stage' | 'unstage'; readonly path?: string }
 	| { readonly type: 'openGitDiff'; readonly folder: string; readonly tabId: string; readonly path: string; readonly staged: boolean }
 	| { readonly type: 'fixGitCommit' | 'dismissGitCommit'; readonly folder: string; readonly id: string; readonly tabId: string }
-	| { readonly type: 'saveFeatureAi'; readonly settings: FeatureAiSettings; readonly recordingQuality?: RecordingQuality }
+	| { readonly type: 'saveFeatureAi'; readonly settings: FeatureAiSettings; readonly recordingQuality?: RecordingQuality; readonly recordingSeconds?: number }
 	| { readonly type: 'gitBranchName'; readonly id: number; readonly folder: string; readonly tabId: string }
 	| { readonly type: 'gitBranchAction'; readonly folder: string; readonly action: 'switch' | 'create' | 'delete'; readonly name: string; readonly remote?: boolean }
 	| { readonly type: 'restoreBranchStash'; readonly folder: string }

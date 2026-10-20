@@ -256,6 +256,11 @@ export function activate(context: vscode.ExtensionContext) {
 	}
 	for (const action of ['pause', 'resume', 'stop'] as const) {
 		context.subscriptions.push(vscode.commands.registerCommand(`aiBrowser.recording.${action}`, userRecording(() => recording.control(action))));
+		// The same Stop, drawn red: the toolbar swaps the two every second in a
+		// recording's last 30 s (`aiBrowser.recordingEnding`).
+		if (action === 'stop') {
+			context.subscriptions.push(vscode.commands.registerCommand('aiBrowser.recording.stopEnding', userRecording(() => recording.control('stop'))));
+		}
 	}
 
 	const mcp = new McpLifecycle(context, browser, context.extension.packageJSON.version ?? '0.0.0', recording);

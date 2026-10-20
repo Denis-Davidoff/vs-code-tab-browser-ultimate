@@ -3,7 +3,7 @@ import { aiFeatures, defaultFeaturePrompts, featurePromptLimit, readFeatureAiSet
 import { createRecordingEncoder } from './recording';
 import { clipboardFiles, fileBase64 } from './clipboardFiles';
 import { pastedFileLimit } from '../src/chat/pastedFiles';
-import { recordingProfiles, readRecordingQuality, type RecordingQuality } from '../src/browser/recordingQuality';
+import { maxRecordingSeconds, minRecordingSeconds, readRecordingQuality, readRecordingSeconds, recordingProfiles, type RecordingQuality } from '../src/browser/recordingQuality';
 import { localFileLink } from '../src/chat/fileLinks';
 import { sleepMinutes, sleepHours, type SleepChoice } from '../src/power/sleepProtocol';
 /*---------------------------------------------------------------------------------------------
@@ -954,11 +954,12 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
         case 'featureAiSaved':
             featureSettingsSaving = false;
             if (!message.error && message.settings) { featureSettingsDraft = readFeatureAiSettings(message.settings); }
-            if (!message.error) { videoQualityDraft = readRecordingQuality(message.recordingQuality); }
+            if (!message.error) { videoQualityDraft = readRecordingQuality(message.recordingQuality); videoSecondsDraft = readRecordingSeconds(message.recordingSeconds); }
             featureSettingsStatus.textContent = message.error ? `Could not save settings: ${message.error}` : 'Settings saved.';
             featureSettingsSave.disabled = false;
             for (const select of featureSettingsPanel.querySelectorAll('select')) {
                 if (select.dataset.field === 'recordingQuality') { select.value = videoQualityDraft; select.disabled = false; continue; }
+                if (select.dataset.field === 'recordingUnit') { select.value = lengthFields(videoSecondsDraft ?? 300).unit; select.disabled = false; continue; }
                 const choice = featureSettingsDraft[select.dataset.feature as AiFeature];
                 select.value = select.dataset.field === 'agent' ? choice.agent : choice.effort;
                 select.disabled = false;
@@ -968,6 +969,9 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
                 field.value = featureSettingsDraft[feature].prompt ?? defaultFeaturePrompts[feature]; field.disabled = false;
             }
             for (const reset of featureSettingsPanel.querySelectorAll<HTMLButtonElement>('.feature-prompt-reset')) { reset.disabled = false; }
+            for (const length of featureSettingsPanel.querySelectorAll<HTMLInputElement>('input[data-field="recordingSeconds"]')) {
+                length.value = String(lengthFields(videoSecondsDraft ?? 300).value); length.disabled = false; length.removeAttribute('aria-invalid');
+            }
             return;
 		case 'openSleep':
 			buildSleepPopup(); renderSleep(); openSleepPopup();
@@ -7521,6 +7525,13 @@ featureSettingsStatus.setAttribute('role', 'status');
 const featureSettingsSave = button(['Save'], { class: 'feature-settings-save' });
 let featureSettingsDraft: FeatureAiSettings = readFeatureAiSettings(undefined);
 let videoQualityDraft: RecordingQuality = 'high';
+/** The maximum video length being edited, in seconds; `undefined` while what is typed is out of range. */
+let videoSecondsDraft: number | undefined = 300;
+
+/** The length as the two fields show it: whole minutes when it is one, else seconds. */
+function lengthFields(seconds: number): { value: number; unit: 'min' | 's' } {
+	return seconds % 60 === 0 ? { value: seconds / 60, unit: 'min' } : { value: seconds, unit: 's' };
+}
 
 let temporaryStorageState: TemporaryStorage | undefined;
 let temporaryStorageBusy = false;
@@ -7561,7 +7572,7 @@ function createTemporarySettings(): HTMLElement {
 function openFeatureSettings(): void {
 	if (!state) { return; }
 	closePopups(featureSettingsPanel);
-	if (!featureSettingsSaving) { featureSettingsDraft = readFeatureAiSettings(state.featureAi); videoQualityDraft = readRecordingQuality(state.recordingQuality); }
+	if (!featureSettingsSaving) { featureSettingsDraft = readFeatureAiSettings(state.featureAi); videoQualityDraft = readRecordingQuality(state.recordingQuality); videoSecondsDraft = readRecordingSeconds(state.recordingSeconds); }
 	featureSettingsStatus.textContent = featureSettingsSaving ? 'Saving…' : '';
 	featureSettingsSave.disabled = featureSettingsSaving;
 	const close = button([icon('close')], { title: 'Close settings', class: 'ghost' });
@@ -7600,9 +7611,33 @@ function openFeatureSettings(): void {
 	}
 	quality.value = videoQualityDraft;
 	quality.addEventListener('change', () => { videoQualityDraft = readRecordingQuality(quality.value); featureSettingsStatus.textContent = 'Unsaved changes.'; });
+	// The maximum length: a number and its unit, 10 s to 1 h. Out of range,
+	// Save is held back with the reason rather than quietly clamping.
+	const shown = lengthFields(videoSecondsDraft ?? 300);
+	const length = el('input'); length.type = 'number'; length.min = '1'; length.step = '1';
+	length.dataset.field = 'recordingSeconds'; length.value = String(shown.value);
+	length.setAttribute('aria-label', 'Maximum video length'); length.disabled = featureSettingsSaving;
+	const unit = el('select'); unit.dataset.field = 'recordingUnit';
+	unit.setAttribute('aria-label', 'Maximum video length unit'); unit.disabled = featureSettingsSaving;
+	for (const [value, label] of [['s', 'seconds'], ['min', 'minutes']] as const) {
+		const option = el('option', { text: label }); option.value = value; unit.append(option);
+	}
+	unit.value = shown.unit;
+	const lengthChanged = () => {
+		const value = Number(length.value);
+		const seconds = length.value.trim() && Number.isFinite(value) ? Math.round(value * (unit.value === 'min' ? 60 : 1)) : NaN;
+		const inRange = seconds >= minRecordingSeconds && seconds <= maxRecordingSeconds;
+		videoSecondsDraft = inRange ? seconds : undefined;
+		length.setAttribute('aria-invalid', String(!inRange));
+		featureSettingsSave.disabled = featureSettingsSaving || !inRange;
+		featureSettingsStatus.textContent = inRange ? 'Unsaved changes.' : 'The maximum length is 10 seconds to 1 hour.';
+	};
+	length.addEventListener('input', lengthChanged); unit.addEventListener('change', lengthChanged);
 	videoContent.append(el('div', { class: 'feature-settings-row' }, el('strong', { text: 'Video recording' }),
-		el('label', {}, el('span', { text: 'Quality' }), quality)),
-		el('p', { text: 'High is the default. Maximum preserves more detail and creates larger files. Resolution is limited by the source page. Changes apply to the next recording and are shared across projects.' }));
+		el('label', {}, el('span', { text: 'Quality' }), quality),
+		el('label', { class: 'video-length' }, el('span', { text: 'Maximum length' }), el('span', { class: 'video-length-fields' }, length, unit))),
+		el('p', { text: 'High is the default. Maximum preserves more detail and creates larger files. Resolution is limited by the source page.' }),
+		el('p', { text: 'A recording stops by itself at the maximum length — 5 minutes unless you change it, from 10 seconds up to 1 hour; paused time does not count. In its last 30 seconds the Stop button on the browser tab blinks red and the status bar counts down. Changes apply to the next recording and are shared across projects.' }));
 	const content = el('div', { class: 'feature-settings-content' });
 	content.id = 'feature-ai-content';
 	content.setAttribute('role', 'tabpanel');
@@ -7694,11 +7729,12 @@ function openFeatureSettings(): void {
 }
 featureSettingsSave.addEventListener('click', () => {
 	if (featureSettingsSaving) { return; }
+	if (videoSecondsDraft === undefined) { return; }
 	featureSettingsSaving = true;
 	featureSettingsSave.disabled = true;
-	for (const field of featureSettingsPanel.querySelectorAll<HTMLSelectElement | HTMLTextAreaElement | HTMLButtonElement>('select, textarea, .feature-prompt-reset')) { field.disabled = true; }
+	for (const field of featureSettingsPanel.querySelectorAll<HTMLSelectElement | HTMLTextAreaElement | HTMLButtonElement | HTMLInputElement>('select, textarea, .feature-prompt-reset, input[data-field="recordingSeconds"]')) { field.disabled = true; }
 	featureSettingsStatus.textContent = 'Saving…';
-	post({ type: 'saveFeatureAi', settings: featureSettingsDraft, recordingQuality: videoQualityDraft });
+	post({ type: 'saveFeatureAi', settings: featureSettingsDraft, recordingQuality: videoQualityDraft, recordingSeconds: videoSecondsDraft });
 });
 featureSettingsPanel.addEventListener('keydown', event => {
 	if (event.key === 'Escape' && !event.isComposing) { event.stopPropagation(); closePopups(); input.focus(); }

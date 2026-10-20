@@ -26,6 +26,7 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 - $(settings-gear) **Chat Settings** — the gear at the top of the chat: change the system prompts behind commit messages, branch names and chat titles, and clean up temporary files.
 
 ## 0.7.19 — 2026-10-20
+- **Choose how long a video may be**: Chat Settings → Video recording has a maximum length, 5 minutes unless you change it, from 10 seconds up to 1 hour. In the last 30 seconds the Stop button on the browser tab blinks red and the status bar counts down; at the limit the recording stops and keeps the video. The size limit now grows with the length, so a long recording is no longer cut at 256 MB.
 - **The empty chat shows what to try**: keep awake, View Mode, commits and branches, video recording, page markers and Chat Settings, each in one line above **Show changelog**.
 - **"Prompt is too long" retries itself**: Claude Code compacts the conversation after that error, and the chat sends the prompt again after 5, 15 and 30 seconds. Stop cancels the wait.
 - **An empty annotation is deleted without a confirmation.**

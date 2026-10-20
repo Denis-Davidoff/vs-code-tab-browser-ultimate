@@ -3448,14 +3448,28 @@ so nothing can be recorded where the chat cannot run.
   the chat's own agents, `clipboard` for others), then `browser_recording_pause` / `_resume` /
   `_stop` / `_status` with the id the start returned, scoped to the MCP session that started it.
   No video bytes are returned, only metadata and the file path.
-- **Limits, and both keep the video:** 10 active minutes (pauses do not count) and 256 MB. Either
-  goes through `_limit`, which stops the recording as Stop does and sets `limitReached`
+- **Limits, and both keep the video:** a maximum length set in Chat Settings → Video recording
+  (`aiBrowser.recording.maxSeconds` in `globalState`, read through `readRecordingSeconds`: 5 min by
+  default, 10 s to 1 h, active time only — pauses do not count), and a size limit that follows
+  from it (`recordingByteLimit`: the preset's bitrate for that long, half again for a busy page,
+  never below 256 MB — a fixed 256 MB stopped a High recording at under three minutes whatever
+  the length said). Both are taken at start, like the quality, and `maxSeconds` is in the result
+  the MCP tools return. The view refuses a length out of range (Save held back with the reason);
+  the host clamps what it is sent anyway. Either limit goes through `_limit`, which stops the
+  recording as Stop does and sets `limitReached`
   (`'duration'` or `'size'`). **The size limit used to throw in the chunk handler into `_fail`,
   which deletes the file** — everything recorded was lost at about 170 s of a busy page at the
   default 12 Mbps. The stop is now asked for at least 16 MB, or four chunks, before the limit, so
   the encoder's final flush still fits; a chunk that would still cross 256 MB is acknowledged and
   dropped with every chunk after it (a file that ends early plays, one with a gap does not), and
   `durationSeconds` is clamped to where the cut fell.
+- **The last 30 seconds are announced, never with a toast** (`recordingWarningSeconds`, `_warn`
+  on the second's tick): the Stop button on the browser tab blinks red — a toolbar icon is static,
+  so it is two commands, `aiBrowser.recording.stop` and `aiBrowser.recording.stopEnding` (a red
+  square, `media/icons/stop-ending-*.svg`, hidden from the palette), swapped by the
+  `aiBrowser.recordingEnding` context key every second — and the status bar counts down
+  "Recording stops in N s". Paused, the clock stands still and so does the warning; a stop, a
+  limit or a failure clears both (`_quiet`, from `_release`).
 - **Delivery** is decided at start, never at stop: `chat` adds a video chip to the draft of the
   chat tab chosen at start; `clipboard` copies the file path. **The confirmation is the status
   bar** (`confirm()`) — it used to be a toast over the page just recorded, which paused it (#10).

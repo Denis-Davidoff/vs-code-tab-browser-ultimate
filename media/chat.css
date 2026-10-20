@@ -4550,6 +4550,10 @@ body.vscode-high-contrast-light .context-pie {
 .feature-settings-row > strong { grid-column: 1 / -1; }
 .feature-settings-row label { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .feature-settings-row select { width: 100%; min-width: 0; padding: 5px; color: var(--vscode-dropdown-foreground); background: var(--vscode-dropdown-background); border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border)); border-radius: 3px; }
+.video-length-fields { display: flex; gap: 6px; min-width: 0; }
+.video-length-fields input { width: 5em; min-width: 0; padding: 5px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); border-radius: 3px; }
+.video-length-fields input[aria-invalid="true"] { border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground)); }
+.video-length-fields select { flex: 1 1 auto; }
 .feature-settings-content .feature-settings-note, .feature-settings-status { font-size: 11px; color: var(--vscode-descriptionForeground); }
 .feature-settings-save { padding: 5px 14px; border: 0; border-radius: 3px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); cursor: pointer; }
 .feature-settings-save:hover { background: var(--vscode-button-hoverBackground); }

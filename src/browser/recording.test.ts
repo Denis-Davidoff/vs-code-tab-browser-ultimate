@@ -6,7 +6,8 @@ import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { ModuleKind, ScriptTarget, transpileModule } from 'typescript';
-import { recordingProfiles, recordingQualityKey, readRecordingQuality } from './recordingQuality.ts';
+import * as recordingQuality from './recordingQuality.ts';
+const { recordingQualityKey, recordingSecondsKey } = recordingQuality;
 
 const source = fs.readFileSync(path.resolve('src/browser/recording.ts'), 'utf8');
 const compiled = transpileModule(source, { compilerOptions: { module: ModuleKind.CommonJS, target: ScriptTarget.ES2022 } }).outputText;
@@ -35,13 +36,14 @@ function harness(options: { holdReady?: boolean; holdFirstFrame?: boolean; holdC
 	const panels: any[] = [], channels: any[] = [], clients: any[] = [];
 	const storageProjects: (string | undefined)[] = [];
 	const trackedProjects: (string | undefined)[] = [];
-	const state = { allowed: true, clipboard: '', holdFrame: false, holdStop: false, failAck: false, closeDuringStop: false, quality: 'high',
-		confirmed: [] as string[], toasts: [] as string[] };
+	const state = { allowed: true, clipboard: '', holdFrame: false, holdStop: false, failAck: false, closeDuringStop: false, quality: 'high', maxSeconds: undefined as unknown,
+		confirmed: [] as string[], toasts: [] as string[], contexts: [] as [string, unknown][], countdown: [] as string[] };
 	const commands: { method: string; params: any }[] = [];
 	const window: any = { browserTabs: [], activeBrowserTab: undefined, onDidCloseBrowserTab: closedTab.event,
 		showInformationMessage: async (message: string) => { state.toasts.push(message); },
 		showWarningMessage: async (message: string) => { state.toasts.push(message); },
-		showErrorMessage: async (message: string) => { state.toasts.push(message); } };
+		showErrorMessage: async (message: string) => { state.toasts.push(message); },
+		setStatusBarMessage: (message: string) => { state.countdown.push(message); return { dispose() {} }; } };
 	const tab: any = { url: 'https://recording.test', startCDPSession: () => {
 		const closed = new Events();
 		const channel: any = { onDidClose: closed.event, closed: false, close: async () => { channel.closed = true; closed.fire(); } };
@@ -58,7 +60,8 @@ function harness(options: { holdReady?: boolean; holdFirstFrame?: boolean; holdC
 	const uri = (fsPath: string) => ({ fsPath, toString: () => fsPath });
 	const vscode = {
 		EventEmitter: Events,
-		window, commands: { executeCommand: async () => undefined }, l10n: { t: (message: string) => message },
+		window, commands: { executeCommand: async (command: string, key: string, value: unknown) => { if (command === 'setContext') { state.contexts.push([key, value]); } } },
+		l10n: { t: (message: string, ...args: unknown[]) => message.replace(/\{(\d)\}/g, (_m, i) => String(args[Number(i)])) },
 		env: { clipboard: { writeText: async (text: string) => { state.clipboard = text; } } },
 		Uri: { file: uri, joinPath: (_root: any, ...parts: string[]) => uri(parts.join('/')) },
 		ViewColumn: { Beside: 2 }, Disposable: class { dispose: () => void; constructor(dispose: () => void) { this.dispose = dispose; } },
@@ -129,12 +132,12 @@ function harness(options: { holdReady?: boolean; holdFirstFrame?: boolean; holdC
 				case '../core/temporaryFiles': return { trackTemporaryFile: async (_file: string, project?: string) => { trackedProjects.push(project); }, temporaryProject: () => '/project-b' };
 				case '../core/safeFiles': return { projectTempDirectory: async (project?: string) => { storageProjects.push(project); return root; } };
 				case './shareRegistry': return { callerKey: (caller: any) => caller.sessionId ?? caller.kind };
-				case './recordingQuality': return { recordingProfiles, recordingQualityKey, readRecordingQuality };
+				case './recordingQuality': return recordingQuality;
 				default: throw new Error(`Unexpected dependency: ${name}`);
 			}
 		},
 	});
-	const recording = new exported.BrowserRecording({ extensionUri: uri(root), globalState: { get: () => state.quality } }, browser);
+	const recording = new exported.BrowserRecording({ extensionUri: uri(root), globalState: { get: (key: string) => key === recordingQualityKey ? state.quality : key === recordingSecondsKey ? state.maxSeconds : undefined } }, browser);
 	recording.createEncoder = () => { const panel = window.createWebviewPanel(); panel.webview.html = ''; return panel; };
 	return { recording, exported, tab, window, panels, channels, clients, state, closedTab, commands, storageProjects, trackedProjects,
 		cleanup: () => { recording.dispose(); fs.rmSync(root, { recursive: true, force: true }); } };
@@ -331,7 +334,7 @@ test('reaching the size limit stops the recording and keeps what was written', a
 	try {
 		await h.recording.start(); const run = h.recording._active;
 		// Close to the limit without writing hundreds of megabytes.
-		run.result.bytes = h.exported.maxRecordingBytes - 1000;
+		run.result.bytes = run.maxBytes - 1000;
 		const before = fs.statSync(run.file).size;
 		h.panels[0].chunk(1, Buffer.alloc(2000, 1));
 		await until(() => !h.recording._active);
@@ -340,7 +343,7 @@ test('reaching the size limit stops the recording and keeps what was written', a
 		// The chunk past the limit, and the encoder's final flush after it, were dropped — and acknowledged.
 		assert.equal(fs.statSync(run.file).size, before);
 		assert.deepEqual(h.panels[0].acks, [1, 99]);
-		assert.equal(h.state.toasts.length, 0); assert.match(h.state.confirmed.at(-1)!, /256 MB limit/);
+		assert.equal(h.state.toasts.length, 0); assert.match(h.state.confirmed.at(-1)!, /\d+ MB limit/);
 	} finally { h.cleanup(); }
 });
 
@@ -348,7 +351,7 @@ test('approaching the size limit stops early so the final flush still fits', asy
 	const h = harness();
 	try {
 		await h.recording.start(); const run = h.recording._active;
-		run.result.bytes = h.exported.maxRecordingBytes - 17 * 1024 * 1024;
+		run.result.bytes = run.maxBytes - 17 * 1024 * 1024;
 		h.panels[0].chunk(1, Buffer.alloc(2 * 1024 * 1024, 1));
 		await until(() => !h.recording._active);
 		assert.equal(run.result.state, 'completed'); assert.equal(run.result.limitReached, 'size');
@@ -386,5 +389,45 @@ test('a refusal before any recording exists is left for the caller to report', a
 		assert.match(String(error), /already in progress/);
 		assert.equal(h.exported.recordingErrorReported(error), false);
 		await h.recording.control('stop');
+	} finally { h.cleanup(); }
+});
+
+test('the maximum length comes from Chat Settings, 5 minutes unless set, and the size limit follows it', async () => {
+	const h = harness();
+	try {
+		await h.recording.start(); const run = h.recording._active;
+		assert.equal(run.maxSeconds, 300); assert.equal(run.result.maxSeconds, 300);
+		assert.equal(run.maxBytes, recordingQuality.recordingByteLimit(300, recordingQuality.recordingProfiles.high.bitrate));
+		await h.recording.control('stop');
+		h.state.maxSeconds = 3600; h.state.quality = 'maximum';
+		await h.recording.start(); const long = h.recording._active;
+		assert.equal(long.maxSeconds, 3600);
+		assert.ok(long.maxBytes > 10 * 1024 * 1024 * 1024, 'an hour at 4K gets room for an hour');
+		await h.recording.control('stop');
+		h.state.maxSeconds = 2; // below the minimum, as a hand-edited value could be
+		await h.recording.start(); assert.equal(h.recording._active.maxSeconds, 10);
+		await h.recording.control('stop');
+	} finally { h.cleanup(); }
+});
+
+test('the last 30 seconds blink the Stop button and count down in the status bar, and a stop clears both', async () => {
+	const h = harness();
+	try {
+		h.state.maxSeconds = 60;
+		await h.recording.start(); const run = h.recording._active;
+		run.elapsed = 10_000; h.recording._warn(run);
+		assert.ok(!h.state.contexts.some(([key]) => key === 'aiBrowser.recordingEnding'), 'nothing before the last 30 s');
+		run.elapsed = 35_000; h.recording._warn(run);
+		assert.deepEqual(h.state.contexts.filter(([key]) => key === 'aiBrowser.recordingEnding').at(-1), ['aiBrowser.recordingEnding', true]);
+		assert.match(h.state.countdown.at(-1)!, /stops in 2\d s — the 1 min limit/);
+		h.recording._warn(run);
+		assert.deepEqual(h.state.contexts.filter(([key]) => key === 'aiBrowser.recordingEnding').at(-1), ['aiBrowser.recordingEnding', false], 'it blinks');
+		h.recording._warn(run);
+		await h.recording.control('pause'); h.recording._warn(run);
+		assert.deepEqual(h.state.contexts.filter(([key]) => key === 'aiBrowser.recordingEnding').at(-1), ['aiBrowser.recordingEnding', false], 'paused, the clock stands still');
+		await h.recording.control('resume'); h.recording._warn(run);
+		await h.recording.control('stop');
+		assert.deepEqual(h.state.contexts.filter(([key]) => key === 'aiBrowser.recordingEnding').at(-1), ['aiBrowser.recordingEnding', false]);
+		assert.equal(h.state.toasts.length, 0, 'never a toast over the page');
 	} finally { h.cleanup(); }
 });

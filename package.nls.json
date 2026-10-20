@@ -86,6 +86,7 @@
 	"command.recording.pause.title": "Pause Browser Recording",
 	"command.recording.resume.title": "Resume Browser Recording",
 	"command.recording.stop.title": "Stop Browser Recording",
+	"command.recording.stopEnding.title": "Stop Browser Recording (the length limit is near)",
 	"command.recording.balanced.title": "Balanced · 1080p",
 	"command.recording.balancedDefault.title": "Balanced · 1080p *",
 	"command.recording.high.title": "High · 1440p",

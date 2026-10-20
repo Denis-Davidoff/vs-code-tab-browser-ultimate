@@ -8,7 +8,7 @@ import { tidyTranscript, voiceChipLabel, voiceLocalePattern, voiceMaxSeconds, vo
 import { privateTempDirectory, projectTempDirectory, legacyPrivateTempDirectory, writeExclusive } from '../core/safeFiles';
 import { pastedFileLimit, pastedFileName, pastedImageType } from './pastedFiles';
 import type { BrowserRecording, RecordingDestination, RecordingEncoder } from '../browser/recording';
-import { readRecordingQuality, recordingQualityKey } from '../browser/recordingQuality';
+import { readRecordingQuality, readRecordingSeconds, recordingQualityKey, recordingSecondsKey } from '../browser/recordingQuality';
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -674,6 +674,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			sleep: this._sleep.state,
 			featureAi: readFeatureAiSettings(this._context.globalState.get(featureAiKey)),
 			recordingQuality: readRecordingQuality(this._context.globalState.get(recordingQualityKey)),
+			recordingSeconds: readRecordingSeconds(this._context.globalState.get(recordingSecondsKey)),
 			voice: this._voiceAvailability(),
 			blocked: this._blocked(),
 			detecting: this._registry.detecting,
@@ -799,8 +800,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 					const recordingQuality = readRecordingQuality(message.recordingQuality ?? this._context.globalState.get(recordingQualityKey));
 					await this._context.globalState.update(recordingQualityKey, recordingQuality);
 					await vscode.commands.executeCommand('setContext', 'aiBrowser.recordingQuality', recordingQuality);
+					// Read through the same clamp the recording uses: the view checks the
+					// range too, but what it sends is not trusted.
+					const recordingSeconds = readRecordingSeconds(message.recordingSeconds ?? this._context.globalState.get(recordingSecondsKey));
+					await this._context.globalState.update(recordingSecondsKey, recordingSeconds);
 					this._postMessage({ type: 'state', state: this._state() });
-					this._postMessage({ type: 'featureAiSaved', settings, recordingQuality });
+					this._postMessage({ type: 'featureAiSaved', settings, recordingQuality, recordingSeconds });
 				} catch (error) {
 					this._postMessage({ type: 'featureAiSaved', error: error instanceof Error ? error.message : String(error) });
 				}

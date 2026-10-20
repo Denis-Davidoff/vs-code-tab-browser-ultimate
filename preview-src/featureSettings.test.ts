@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { createContext, runInContext } from 'node:vm';
 import { transpileModule, ScriptTarget } from 'typescript';
 import { aiFeatures, defaultFeaturePrompts, featurePromptLimit, readFeatureAiSettings, type FeatureAiSettings } from '../src/chat/featureAi.ts';
-import { recordingProfiles, readRecordingQuality, type RecordingQuality } from '../src/browser/recordingQuality.ts';
+import { maxRecordingSeconds, minRecordingSeconds, recordingProfiles, readRecordingQuality, readRecordingSeconds, type RecordingQuality } from '../src/browser/recordingQuality.ts';
 
 // Exercise the actual handlers with delayed host replies; no model or VS Code process is started.
 class Element {
@@ -44,7 +44,8 @@ function harness() {
 		state: { featureAi: readFeatureAiSettings(undefined), recordingQuality: 'high' as RecordingQuality, agents: [] },
 		featureSettingsPanel: panel, featureSettingsSave: save, featureSettingsStatus: status,
 		featureSettingsSaving: false, featureSettingsDraft: readFeatureAiSettings(undefined),
-		videoQualityDraft: 'high' as RecordingQuality, recordingProfiles, readRecordingQuality,
+		videoQualityDraft: 'high' as RecordingQuality, videoSecondsDraft: 300 as number | undefined, recordingProfiles, readRecordingQuality,
+		readRecordingSeconds, minRecordingSeconds, maxRecordingSeconds,
 		readFeatureAiSettings, aiFeatures, defaultFeaturePrompts, featurePromptLimit, createTemporarySettings: () => new Element('div'), input: { focus() {} }, closePopups() {},
 		el(tag: string, props: { class?: string } = {}, ...children: (Element | string)[]) { const node = new Element(tag); node.className = props.class ?? ''; node.append(...children); return node; },
 		button: (children: (Element | string)[], props: { class?: string } = {}) => { const node = new Element('button'); node.className = props.class ?? ''; node.append(...children); return node; }, icon: () => new Element('i'),
@@ -56,7 +57,9 @@ function harness() {
 	const listener = source.match(/featureSettingsSave.addEventListener\('click', \(\) => \{[\s\S]*?\n\}\);/)?.[0];
 	const acknowledgement = source.split("case 'featureAiSaved':")[1]?.split('return;')[0];
 	assert.ok(open && listener && acknowledgement);
-	execute(open + '\n' + listener);
+	const lengthFields = source.match(/function lengthFields\([\s\S]*?\n\}/)?.[0];
+	assert.ok(lengthFields);
+	execute(lengthFields + '\n' + open + '\n' + listener);
 	return { scope, panel, save, status, posts, open: () => execute('openFeatureSettings();'),
 		ack(settings?: FeatureAiSettings, error?: string, recordingQuality?: RecordingQuality) { scope.message = { settings, error, recordingQuality }; execute(acknowledgement); } };
 }
@@ -146,4 +149,25 @@ test('custom system prompts survive save/reopen and can be restored independentl
  assert.equal(fields[0].value, defaultFeaturePrompts.commitMessage);
  assert.equal(ui.scope.featureSettingsDraft.commitMessage.prompt, undefined);
  assert.equal(fields[1].value, defaultFeaturePrompts.branchName);
+});
+
+test('the maximum video length is saved in seconds, and a length out of range holds Save back', () => {
+	const h = harness();
+	h.open();
+	const length = (function find(node: Element): Element | undefined {
+		for (const child of node.children) {
+			if (child instanceof Element) { if (child.dataset.field === 'recordingSeconds') { return child; } const inner = find(child); if (inner) { return inner; } }
+		}
+		return undefined;
+	})(h.panel)!;
+	assert.equal(length.value, '5', 'five minutes by default');
+	length.value = '0.1'; length.events.input();
+	assert.equal(h.save.disabled, true);
+	assert.match(h.status.textContent, /10 seconds to 1 hour/);
+	h.save.events.click();
+	assert.equal(h.posts.length, 0, 'nothing out of range is sent');
+	length.value = '60'; length.events.input();
+	assert.equal(h.save.disabled, false);
+	h.save.events.click();
+	assert.equal((h.posts.at(-1) as { recordingSeconds?: number }).recordingSeconds, 3600);
 });

@@ -8,7 +8,7 @@ import { confirm } from '../core/notify';
 import { projectTempDirectory } from '../core/safeFiles';
 import type { BrowserController } from './browserController';
 import { callerKey, type CallerIdentity } from './shareRegistry';
-import { recordingProfiles, recordingQualityKey, readRecordingQuality, type RecordingQuality } from './recordingQuality';
+import { formatRecordingSeconds, minRecordingBytes, readRecordingQuality, readRecordingSeconds, recordingByteLimit, recordingProfiles, recordingQualityKey, recordingSecondsKey, type RecordingQuality } from './recordingQuality';
 
 export interface RecordingResult {
 	id: string;
@@ -25,15 +25,29 @@ export interface RecordingResult {
 	clipboardCopied?: boolean;
 	/** Set when the recording was stopped by one of its limits rather than by a stop. */
 	limitReached?: 'duration' | 'size';
+	/** The time limit this recording was started with, in active seconds. */
+	maxSeconds?: number;
 	error?: string;
 }
 
-/** Active (unpaused) seconds a recording may run before it is stopped and kept. */
-export const maxRecordingSeconds = 600;
-/** Bytes a recording file may reach before it is stopped and kept. */
-export const maxRecordingBytes = 256 * 1024 * 1024;
 /**
- * How far below {@link maxRecordingBytes} a stop is asked for, at least: the
+ * The time limit (active, unpaused seconds) is set in Chat Settings
+ * (`recordingSecondsKey`, 10 s to 1 h, 5 min by default) and the size limit
+ * follows from it and the preset (`recordingByteLimit`); both are taken at
+ * start, as the quality is. Reaching either stops the recording and keeps it.
+ */
+/**
+ * The last seconds of the time limit, in which the user is warned: the Stop
+ * button on the browser tab blinks red (`aiBrowser.recordingEnding`, swapped
+ * every second between two Stop commands, since a toolbar icon is static) and
+ * the status bar counts down. Never a toast: it would pause the page being
+ * recorded (breaks-silently #10).
+ */
+export const recordingWarningSeconds = 30;
+/** The size limit a recording gets at the least, kept for callers and tests. */
+export const maxRecordingBytes = minRecordingBytes;
+/**
+ * How far below the size limit a stop is asked for, at least: the
  * encoder still flushes up to a second of video after the stop, and that has to
  * fit, or the end of the recording is what gets dropped.
  */
@@ -80,6 +94,12 @@ interface Run {
 	busyFrame: boolean;
 	/** The largest chunk written, which sizes the margin before the size limit. */
 	largestChunk: number;
+	/** The limits taken at start: active seconds, and the bytes that go with them. */
+	maxSeconds: number;
+	maxBytes: number;
+	/** In the last {@link recordingWarningSeconds}: which of the two Stop icons is up, and the countdown line. */
+	blink?: boolean;
+	countdown?: vscode.Disposable;
 	/**
 	 * Set once a chunk would have taken the file past the size limit. Every
 	 * chunk from then on is acknowledged and dropped: appending a later chunk
@@ -125,7 +145,10 @@ export class BrowserRecording implements vscode.Disposable {
 		const panel = this.createEncoder(result.id);
 		const project = caller?.chatId ? this.project?.(caller.chatId) : temporaryProject();
 		const profile = recordingProfiles[readRecordingQuality(quality ?? this._context.globalState?.get(recordingQualityKey))];
-		const run: Run = { result, caller: caller ? { ...caller } : undefined, tab, panel, profile, parts: [], pending: new Map(), next: 0, elapsed: 0, busyFrame: false, largestChunk: 0, attach };
+		const maxSeconds = readRecordingSeconds(this._context.globalState?.get(recordingSecondsKey));
+		const maxBytes = recordingByteLimit(maxSeconds, profile.bitrate);
+		result.maxSeconds = maxSeconds;
+		const run: Run = { result, caller: caller ? { ...caller } : undefined, tab, panel, profile, parts: [], pending: new Map(), next: 0, elapsed: 0, busyFrame: false, largestChunk: 0, attach, maxSeconds, maxBytes };
 		this._active = run;
 		let rejectStartup!: (error: Error) => void;
 		const cancelled = new Promise<never>((_, reject) => { rejectStartup = reject; });
@@ -156,7 +179,7 @@ export class BrowserRecording implements vscode.Disposable {
 				} else if (message?.type === 'chunk') {
 					if (run.fd === undefined || typeof message.data !== 'string' || message.data.length > 24 * 1024 * 1024) { throw new Error('Invalid video chunk.'); }
 					const data = Buffer.from(message.data, 'base64');
-					if (run.cutAtSeconds === undefined && run.result.bytes + data.length > maxRecordingBytes) {
+					if (run.cutAtSeconds === undefined && run.result.bytes + data.length > run.maxBytes) {
 						// The size limit ends the recording the way the time limit does: what
 						// is written is kept. This chunk and every later one are dropped.
 						run.cutAtSeconds = this._seconds(run);
@@ -169,7 +192,7 @@ export class BrowserRecording implements vscode.Disposable {
 					// Acknowledged even when dropped: the encoder waits for each
 					// acknowledgement and fails the recording when one never comes.
 					void panel.webview.postMessage({ type: 'chunkAck', seq: message.seq });
-					if (run.cutAtSeconds !== undefined || run.result.bytes >= maxRecordingBytes - Math.max(sizeStopMargin, 4 * run.largestChunk)) {
+					if (run.cutAtSeconds !== undefined || run.result.bytes >= run.maxBytes - Math.max(sizeStopMargin, 4 * run.largestChunk)) {
 						this._limit(run, 'size');
 					}
 				} else if (message?.type === 'error') { throw new Error(String(message.error)); }
@@ -240,7 +263,8 @@ export class BrowserRecording implements vscode.Disposable {
 			this._publish();
 			const timer = setInterval(() => {
 				this._changed.fire(this.current);
-				if (this._seconds(run) >= maxRecordingSeconds) { this._limit(run, 'duration'); }
+				if (this._seconds(run) >= run.maxSeconds) { this._limit(run, 'duration'); }
+				else { this._warn(run); }
 			}, 1000);
 			run.parts.push(new vscode.Disposable(() => clearInterval(timer)));
 			return this._snapshot(run);
@@ -335,8 +359,8 @@ export class BrowserRecording implements vscode.Disposable {
 				catch { run.result.clipboardCopied = false; }
 			}
 			this._release(run);
-			const limit = run.result.limitReached === 'size' ? vscode.l10n.t(' Stopped at the 256 MB limit; the video so far is kept.')
-				: run.result.limitReached === 'duration' ? vscode.l10n.t(' Stopped at the 10-minute limit; the video so far is kept.') : '';
+			const limit = run.result.limitReached === 'size' ? vscode.l10n.t(' Stopped at the {0} MB limit; the video so far is kept.', Math.round(run.maxBytes / 1024 / 1024))
+				: run.result.limitReached === 'duration' ? vscode.l10n.t(' Stopped at the {0} limit; the video so far is kept.', formatRecordingSeconds(run.maxSeconds)) : '';
 			const summary = vscode.l10n.t('Video recorded: {0} · {1}s · {2} MB.',
 				path.basename(run.file), run.result.durationSeconds.toFixed(1), (run.result.bytes / 1024 / 1024).toFixed(1)) + limit;
 			if (run.result.attachedToChat || run.result.clipboardCopied) {
@@ -460,7 +484,34 @@ export class BrowserRecording implements vscode.Disposable {
 		if (run.file) { try { fs.unlinkSync(run.file); } catch { /* no partial file to publish */ } }
 		if (notify) { void vscode.window.showErrorMessage(vscode.l10n.t('Browser recording failed: {0}', run.result.error)); }
 	}
+	/**
+	 * The countdown of a recording's last seconds, run on the second's tick.
+	 * Paused, the clock stands still and so does the warning: the Stop button is
+	 * shown plain and the countdown line goes, until the recording resumes.
+	 */
+	private _warn(run: Run): void {
+		const left = Math.ceil(run.maxSeconds - this._seconds(run));
+		if (this._active !== run || run.stop || run.result.state !== 'recording' || left > recordingWarningSeconds || left <= 0) {
+			this._quiet(run);
+			return;
+		}
+		run.blink = !run.blink;
+		void vscode.commands.executeCommand('setContext', 'aiBrowser.recordingEnding', run.blink);
+		run.countdown?.dispose();
+		run.countdown = vscode.window.setStatusBarMessage?.(vscode.l10n.t('$(record) Recording stops in {0} s — the {1} limit set in Chat Settings', left, formatRecordingSeconds(run.maxSeconds)), 1500);
+	}
+
+	private _quiet(run: Run): void {
+		run.countdown?.dispose();
+		run.countdown = undefined;
+		if (run.blink !== undefined) {
+			run.blink = undefined;
+			void vscode.commands.executeCommand('setContext', 'aiBrowser.recordingEnding', false);
+		}
+	}
+
 	private _release(run: Run): void {
+		this._quiet(run);
 		if (run.fd !== undefined) { try { fs.closeSync(run.fd); } catch { /* already closed */ } run.fd = undefined; }
 		for (const pending of run.pending.values()) { pending.reject(new Error('Recording has ended.')); }
 		run.pending.clear();

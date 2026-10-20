@@ -158,6 +158,7 @@
 		"onCommand:aiBrowser.recording.pause",
 		"onCommand:aiBrowser.recording.resume",
 		"onCommand:aiBrowser.recording.stop",
+		"onCommand:aiBrowser.recording.stopEnding",
 		"onCommand:aiBrowser.chat.settings",
 		"onCommand:aiBrowser.recording.balanced",
 		"onCommand:aiBrowser.recording.balancedDefault",
@@ -708,6 +709,16 @@
 				"enablement": "aiBrowser.recordingState == recording || aiBrowser.recordingState == paused"
 			},
 			{
+				"command": "aiBrowser.recording.stopEnding",
+				"title": "%command.recording.stopEnding.title%",
+				"category": "%displayName%",
+				"icon": {
+					"light": "media/icons/stop-ending-light.svg",
+					"dark": "media/icons/stop-ending-dark.svg"
+				},
+				"enablement": "aiBrowser.recordingState == recording || aiBrowser.recordingState == paused"
+			},
+			{
 				"command": "aiBrowser.recording.balanced",
 				"title": "%command.recording.balanced.title%",
 				"category": "%displayName%",
@@ -1044,7 +1055,12 @@
 				},
 				{
 					"command": "aiBrowser.recording.stop",
-					"when": "activeEditor == 'workbench.editor.browser' && (aiBrowser.recordingState == recording || aiBrowser.recordingState == paused)",
+					"when": "activeEditor == 'workbench.editor.browser' && (aiBrowser.recordingState == recording || aiBrowser.recordingState == paused) && !aiBrowser.recordingEnding",
+					"group": "navigation@0.1"
+				},
+				{
+					"command": "aiBrowser.recording.stopEnding",
+					"when": "activeEditor == 'workbench.editor.browser' && (aiBrowser.recordingState == recording || aiBrowser.recordingState == paused) && aiBrowser.recordingEnding",
 					"group": "navigation@0.1"
 				}
 			],
@@ -1140,6 +1156,10 @@
 				}
 			],
 			"commandPalette": [
+				{
+					"command": "aiBrowser.recording.stopEnding",
+					"when": "false"
+				},
 				{
 					"command": "aiBrowser.newTab",
 					"when": "false"

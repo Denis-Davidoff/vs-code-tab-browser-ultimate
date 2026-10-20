@@ -90,8 +90,9 @@ then restores the clipboard. It does not request OS screen recording access.
 
 ## Changelog
 
-**0.7.19** — The empty chat lists the features worth trying, one line each, above the
-changelog. A prompt Claude Code refuses as too long is sent again after it compacts. Annotation
+**0.7.19** — A maximum video length in Chat Settings (5 minutes by default, 10 seconds to 1 hour),
+with the Stop button blinking red and a countdown in the status bar for the last 30 seconds. The
+empty chat lists the features worth trying, one line each, above the changelog. A prompt Claude Code refuses as too long is sent again after it compacts. Annotation
 markers keep their elements across a reload, and an empty note is deleted without a question.
 
 **0.7.18** — Page annotations: numbered notes pinned to elements, attached to the chat and
