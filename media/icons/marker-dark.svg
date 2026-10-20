@@ -1,0 +1,5 @@
+<svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
+	<!-- Add Annotation Marker: a map pin (theme grey) holding the overlay's blue marker -->
+	<path d="M8 14.8C8 14.8 3 9.9 3 6.4A5 5 0 0 1 13 6.4C13 9.9 8 14.8 8 14.8Z" fill="none" stroke="#C5C5C5" stroke-width="1.2" stroke-linejoin="round"/>
+	<circle cx="8" cy="6.4" r="2.4" fill="#2563EB"/>
+</svg>

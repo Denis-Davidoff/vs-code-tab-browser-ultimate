@@ -432,16 +432,16 @@ class ClaudeSession implements AgentSession {
 		return this._process?.exited ? undefined : this._control;
 	}
 
-	public async send(input: TurnInput, model: string, effort: string | undefined): Promise<void> {
+	public async send(input: TurnInput, model: string, effort: string | undefined): Promise<boolean> {
 		if (this._disposed) {
-			return;
+			return false;
 		}
 		// Before anything below looks at the process: two sends that both wait
 		// here resume in order, and the second then finds the process the first
 		// started rather than starting another.
 		const dir = this._browserServer() ? await browserConfigDir() : undefined;
 		if (this._disposed) {
-			return;
+			return false;
 		}
 		// A different model or effort needs a new process — but never in the
 		// middle of a turn, where the message joins the running one instead.
@@ -482,6 +482,7 @@ class ClaudeSession implements AgentSession {
 			parent_tool_use_id: null,
 			session_id: this._sessionId ?? '',
 		});
+		return true;
 	}
 
 	/**

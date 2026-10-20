@@ -543,15 +543,15 @@ class CodexSession implements AgentSession {
 		return this._root;
 	}
 
-	public send(input: TurnInput, model: string, effort: string | undefined): Promise<void> {
+	public send(input: TurnInput, model: string, effort: string | undefined): Promise<boolean> {
 		const run = this._queue.then(() => this._send(input, model, effort));
-		this._queue = run.catch(() => { /* reported to this send's caller */ });
+		this._queue = run.then(() => undefined, () => { /* reported to this send's caller */ });
 		return run;
 	}
 
-	private async _send(input: TurnInput, model: string, effort: string | undefined): Promise<void> {
+	private async _send(input: TurnInput, model: string, effort: string | undefined): Promise<boolean> {
 		if (this._disposed) {
-			return;
+			return false;
 		}
 		// `/compact` is Codex's own command in its TUI, and the app-server's is a
 		// request of its own, `thread/compact/start` — sent to the model as text
@@ -562,7 +562,7 @@ class CodexSession implements AgentSession {
 		if (compact && this._running) {
 			await this._turnEnded();
 			if (this._disposed) {
-				return;
+				return false;
 			}
 		}
 		const items: unknown[] = [];
@@ -586,12 +586,12 @@ class CodexSession implements AgentSession {
 		if (this._running && (this._stopping || this._compactTurn)) {
 			await this._turnEnded();
 			if (this._disposed) {
-				return;
+				return false;
 			}
 		}
 		if (this._running && this._turnId && this._threadId) {
 			await this._backend.request('turn/steer', { threadId: this._threadId, expectedTurnId: this._turnId, input: items });
-			return;
+			return true;
 		}
 
 		this._running = true;
@@ -603,12 +603,12 @@ class CodexSession implements AgentSession {
 			// dispose this session — or Stop. Nothing may start after that.
 			if (this._disposed || this._stopRequested) {
 				this._finishStartup();
-				return;
+				return false;
 			}
 			const threadId = await this._thread(model);
 			if (this._disposed || this._stopRequested) {
 				this._finishStartup();
-				return;
+				return false;
 			}
 			if (compact) {
 				// Answered with `{}`: the turn's id arrives with `turn/started`, which
@@ -632,7 +632,7 @@ class CodexSession implements AgentSession {
 					}, compactStartWaitMs);
 					watch.unref?.();
 				}
-				return;
+				return true;
 			}
 			const started = await this._backend.request('turn/start', { threadId, input: items, model, effort: effort ?? null, summary: 'auto' }) as { turn?: { id?: unknown } };
 			const turnId = typeof started?.turn?.id === 'string' ? started.turn.id : undefined;
@@ -648,11 +648,12 @@ class CodexSession implements AgentSession {
 					this._stopping = true;
 					this._turnId = turnId;
 				}
-				return;
+				return false;
 			}
 			if (turnId && this._running) {
 				this._turnId = turnId;
 			}
+			return true;
 		} catch (err) {
 			this._running = false;
 			this._compacting = false;

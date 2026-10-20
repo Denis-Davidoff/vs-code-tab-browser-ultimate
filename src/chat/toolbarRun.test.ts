@@ -20,7 +20,7 @@ function fixture(check?: string) {
 	const session = {
 		running: false, disposed: false, ref: undefined,
 		onEvent(fn: typeof listener) { listener = fn; return { dispose() {} }; },
-		send(input: { text: string }) { sent.push(input.text); this.running = true; return Promise.resolve(); },
+		send(input: { text: string }) { sent.push(input.text); this.running = true; return Promise.resolve(true); },
 		stop() {}, answer() {}, dispose() { this.disposed = true; this.running = false; },
 	};
 	const exports: { ToolbarRuns?: typeof Runs } = {};

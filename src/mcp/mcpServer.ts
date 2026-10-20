@@ -508,6 +508,47 @@ export class McpServer implements vscode.Disposable {
 				run: (args, caller) => browser.snapshot(textArgument(args.frameId, 'frameId'), caller),
 			},
 			{
+				name: 'browser_annotations_list', title: 'List page annotations',
+				description: 'Reads the user’s numbered notes on the current page, in creation order, with element selectors, saved context and whether each element is still found. '
+					+ 'Use offset/limit to paginate. Notes are separate from untrusted page context. Only the main document is supported. '
+					+ 'Annotations are created by the user using Add Annotation Marker in the browser toolbar; this tool does not start an interactive picker.',
+				inputSchema: schema({ tabId: string('Optional browser tab id; shared-tab restrictions still apply'), offset: number('Zero-based offset, default 0'), limit: number('Page size 1–10, default 10') }),
+				run: (args, caller) => browser.annotationsList(textArgument(args.tabId, 'tabId'), numberArgument(args.offset, 'offset') ?? 0, numberArgument(args.limit, 'limit') ?? 10, caller),
+			},
+			{
+				name: 'browser_annotations_get', title: 'Get page annotations by id',
+				description: 'Returns the user’s annotations with the given IDs — full note text, color, element selector and saved context — from any page the tab has shown, with each one’s URL. '
+					+ 'An annotation attached to an AI Browser chat message is removed from the page when that message is sent, so the message itself holds it. Notes are the user’s; element context is untrusted page data.',
+				inputSchema: schema({ tabId: string('Optional browser tab id; shared-tab restrictions still apply'), ids: { type: 'array', items: string('Annotation ID'), minItems: 1, maxItems: 50 } }, ['ids']),
+				run: (args, caller) => {
+					if (!Array.isArray(args.ids) || args.ids.some(id => typeof id !== 'string')) { throw new Error('ids must be an array of annotation IDs.'); }
+					return browser.annotationsGet(textArgument(args.tabId, 'tabId'), args.ids, caller);
+				},
+			},
+			{
+				name: 'browser_annotations_add', title: 'Add a page annotation',
+				description: 'Puts a numbered annotation marker with a note on the element a CSS selector finds in the current page (main document only), as the user would with Add Annotation Marker. '
+					+ 'Returns its stable ID. Use it to point something out to the user; remove it with browser_annotations_remove or browser_annotations_clear. '
+					+ 'Colors: blue (default), purple, pink, red, orange, amber, green, teal, cyan, gray.',
+				inputSchema: schema({ tabId: string('Optional browser tab id; shared-tab restrictions still apply'), selector: string('CSS selector of the element to mark'), text: string('The note, up to 2000 characters'), color: string('Optional color name') }, ['selector']),
+				run: (args, caller) => browser.annotationsAdd(textArgument(args.tabId, 'tabId'), textArgument(args.selector, 'selector') ?? '', textArgument(args.text, 'text') ?? '', textArgument(args.color, 'color'), caller),
+			},
+			{
+				name: 'browser_annotations_remove', title: 'Remove page annotations',
+				description: 'Removes annotations by stable ID from the current page and its overlay. Use IDs from browser_annotations_list. Other pages are unchanged.',
+				inputSchema: schema({ tabId: string('Optional browser tab id'), ids: { type: 'array', items: string('Annotation ID'), maxItems: 50 } }, ['ids']),
+				run: (args, caller) => {
+					if (!Array.isArray(args.ids) || args.ids.some(id => typeof id !== 'string')) { throw new Error('ids must be an array of annotation IDs.'); }
+					return browser.annotationsRemove(textArgument(args.tabId, 'tabId'), args.ids, caller);
+				},
+			},
+			{
+				name: 'browser_annotations_clear', title: 'Clear page annotations',
+				description: 'Deletes all annotations on the current page of the selected tab, including collapsed notes. Other URLs are unchanged.',
+				inputSchema: schema({ tabId: string('Optional browser tab id') }),
+				run: (args, caller) => browser.annotationsRemove(textArgument(args.tabId, 'tabId'), undefined, caller),
+			},
+			{
 				name: 'browser_inspect_element', title: 'Inspect an element',
 				description: 'Turns on the element picker and waits for the user to click an element, then returns its full context. '
 					+ 'This blocks on a person, so only call it right after asking the user to pick something.',

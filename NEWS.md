@@ -14,6 +14,13 @@ src/chat/news.ts — see "The AI Browser chat" in CLAUDE.md.
 
 Browse, debug and test your pages in VS Code's own browser — and let Claude Code or Codex see them, click through them and take screenshots, right inside the editor.
 
+## 0.7.18 — 2026-10-20
+- **Page annotations**: **Add Annotation Marker** pins a numbered note to an element you click. A new note is attached to the chat tab in front, and sending the message removes its markers from the page. The browser menu can remove every marker or copy a prompt that hands the notes to your assistant; assistants read, add and remove notes through the `browser_annotations_*` tools.
+- **View Mode** in the chat's approval menu: **Minimal** shows only your messages and the replies, each message's tool calls and thinking folded under one line that says what the agent is doing now; **Compact** folds every tool call; **Standard** shows them open.
+- **One repeat button** on the browser tab: it repeats your last action, a copy or a marker, and `Cmd`/`Ctrl` + `Alt` + `C` runs it.
+- **Attach from the editor**: files and folders from the Explorer or an editor tab, and the selected text, go to the chat with **Attach to AI Browser Chat**. **Share page** attaches the browser tab and follows it while it stays in the draft.
+- **Switch branches safely** from the chat footer: fetch and fast-forward, stash, commit or discard a dirty worktree first, and come back with **Return & Apply Stash**. Clicking a changed file opens its diff.
+
 ## 0.7.17 — 2026-10-20
 - **Record a video of a browser page** from the tab's toolbar: Balanced 1080p, High 1440p or Maximum 4K, with pause, resume and stop. The video goes into the AI Browser Chat draft or its path to the clipboard; Claude Code and Codex can record through the `browser_recording_*` tools. Reaching the 10-minute or 256 MB limit now stops the recording and keeps the video.
 - **Paste files into the chat**: files and images on the clipboard are attached when pasted into the message box; PNG, JPEG, GIF and WebP also go to the agent as images.

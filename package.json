@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate",
 	"displayName": "AI Browser🏆 Claude + Codex",
 	"description": "Embedded browser tab with AI capabilities, Claude and Codex integration",
-	"version": "0.7.17",
+	"version": "0.7.18",
 	"enabledApiProposals": [
 		"externalUriOpener",
 		"browser"
@@ -107,6 +107,7 @@
 		"onCommand:aiBrowser.repeat.element",
 		"onCommand:aiBrowser.repeat.cssPath",
 		"onCommand:aiBrowser.repeat.xpath",
+		"onCommand:aiBrowser.repeat.annotate",
 		"onCommand:aiBrowser.repeat.claude.element",
 		"onCommand:aiBrowser.repeat.claude.cssPath",
 		"onCommand:aiBrowser.repeat.claude.xpath",
@@ -133,6 +134,9 @@
 		"onCommand:aiBrowser.logins.import",
 		"onCommand:aiBrowser.logins.export",
 		"onCommand:aiBrowser.translatePage",
+		"onCommand:aiBrowser.annotatePage",
+		"onCommand:aiBrowser.clearAnnotations",
+		"onCommand:aiBrowser.copyAnnotationPrompt",
 		"onView:aiBrowser.chat",
 		"onCommand:aiBrowser.chat.newChat",
 		"onCommand:aiBrowser.chat.history",
@@ -339,6 +343,27 @@
 				"icon": "$(whole-word)"
 			},
 			{
+				"command": "aiBrowser.annotatePage",
+				"title": "%command.annotatePage.title%",
+				"category": "%displayName%",
+				"icon": {
+					"light": "media/icons/marker-light.svg",
+					"dark": "media/icons/marker-dark.svg"
+				}
+			},
+			{
+				"command": "aiBrowser.clearAnnotations",
+				"title": "%command.clearAnnotations.title%",
+				"category": "%displayName%",
+				"icon": "$(clear-all)"
+			},
+			{
+				"command": "aiBrowser.copyAnnotationPrompt",
+				"title": "%command.copyAnnotationPrompt.title%",
+				"category": "%displayName%",
+				"icon": "$(copy)"
+			},
+			{
 				"command": "aiBrowser.repeat.element",
 				"title": "%command.copyElement.title%",
 				"category": "%displayName%",
@@ -363,6 +388,15 @@
 				"icon": {
 					"light": "media/icons/crosshair-grape-light.svg",
 					"dark": "media/icons/crosshair-grape-dark.svg"
+				}
+			},
+			{
+				"command": "aiBrowser.repeat.annotate",
+				"title": "%command.annotatePage.title%",
+				"category": "%displayName%",
+				"icon": {
+					"light": "media/icons/marker-light.svg",
+					"dark": "media/icons/marker-dark.svg"
 				}
 			},
 			{
@@ -851,10 +885,23 @@
 						"title": "Codex Executable",
 						"markdownDescription": "%configuration.chat.codexPath.description%"
 					},
+					"aiBrowser.chat.viewMode": {
+						"type": "string",
+						"enum": ["minimal", "compact", "standard"],
+						"enumDescriptions": [
+							"%configuration.chat.viewMode.minimal%",
+							"%configuration.chat.viewMode.compact%",
+							"%configuration.chat.viewMode.standard%"
+						],
+						"default": "compact",
+						"title": "View Mode",
+						"markdownDescription": "%configuration.chat.viewMode.description%"
+					},
 					"aiBrowser.chat.collapseToolCalls": {
 						"type": "boolean",
 						"default": true,
 						"title": "Fold Tool Calls",
+						"markdownDeprecationMessage": "%configuration.chat.collapseToolCalls.deprecated%",
 						"markdownDescription": "%configuration.chat.collapseToolCalls.description%"
 					},
 					"aiBrowser.chat.voiceLanguage": {
@@ -915,6 +962,11 @@
 					"command": "aiBrowser.repeat.xpath",
 					"group": "navigation@2",
 					"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'xpath'"
+				},
+				{
+					"command": "aiBrowser.repeat.annotate",
+					"group": "navigation@2",
+					"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'annotate'"
 				},
 				{
 					"command": "aiBrowser.repeat.claude.element",
@@ -1034,6 +1086,20 @@
 					"group": "2_translate@1"
 				},
 				{
+					"command": "aiBrowser.annotatePage",
+					"group": "2_annotations@1"
+				},
+				{
+					"command": "aiBrowser.clearAnnotations",
+					"group": "2_annotations@2",
+					"when": "aiBrowser.pageHasAnnotations"
+				},
+				{
+					"command": "aiBrowser.copyAnnotationPrompt",
+					"group": "2_annotations@3",
+					"when": "aiBrowser.pageHasAnnotations"
+				},
+				{
 					"group": "2_recording@1",
 					"when": "!aiBrowser.recordingActive",
 					"submenu": "aiBrowser.recordingMenu"
@@ -1089,6 +1155,18 @@
 				{
 					"command": "aiBrowser.repeat.xpath",
 					"when": "false"
+				},
+				{
+					"command": "aiBrowser.repeat.annotate",
+					"when": "false"
+				},
+				{
+					"command": "aiBrowser.clearAnnotations",
+					"when": "aiBrowser.pageHasAnnotations"
+				},
+				{
+					"command": "aiBrowser.copyAnnotationPrompt",
+					"when": "aiBrowser.pageHasAnnotations"
 				},
 				{
 					"command": "aiBrowser.repeat.claude.element",
@@ -1477,6 +1555,12 @@
 				"key": "ctrl+alt+c",
 				"mac": "cmd+alt+c",
 				"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'xpath'"
+			},
+			{
+				"command": "aiBrowser.repeat.annotate",
+				"key": "ctrl+alt+c",
+				"mac": "cmd+alt+c",
+				"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'annotate'"
 			},
 			{
 				"command": "aiBrowser.repeat.claude.element",

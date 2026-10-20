@@ -291,6 +291,15 @@ export interface ToolEntry {
 	agent?: AgentInfo;
 }
 
+/**
+ * How much of a turn's work the thread shows (`aiBrowser.chat.viewMode`):
+ * `standard` every tool call unfolded, `compact` every call folded, `minimal`
+ * only the prompts and the replies — each turn's tool calls, thinking and
+ * answered approvals folded under one line that counts them and says what the
+ * agent is doing now, opened per turn.
+ */
+export type ChatViewMode = 'minimal' | 'compact' | 'standard';
+
 export type ChatEntry =
 	| {
 		readonly kind: 'user'; readonly text: string; readonly attachments: readonly string[]; readonly at?: number;
@@ -374,7 +383,7 @@ export interface ChatSummary {
 	readonly updatedAt: number;
 }
 
-export type AttachmentKind = 'screenshot' | 'element' | 'page' | 'sharedPage' | 'selection' | 'file' | 'voice' | 'video';
+export type AttachmentKind = 'screenshot' | 'element' | 'page' | 'sharedPage' | 'selection' | 'file' | 'voice' | 'video' | 'annotation';
 
 /** What the composer shows for an attachment; the content stays in the host. */
 export interface AttachmentChip {
@@ -569,7 +578,9 @@ export interface ChatViewState {
 	readonly toolbarRuns: Readonly<Record<string, ToolbarRun>>;
 	/** The toolbar skills run in the background from this chat, as rows of its agents list. */
 	readonly skillAgents: readonly ToolEntry[];
-	/** `aiBrowser.chat.collapseToolCalls`: tool calls start folded. */
+	/** `aiBrowser.chat.viewMode`: how much of a turn's work the thread shows; see `ChatViewMode`. */
+	readonly viewMode: ChatViewMode;
+	/** Tool calls start folded: every mode but Standard. */
 	readonly collapseTools: boolean;
 	/**
 	 * How full the tab in front's context is, once its agent has said — and
@@ -732,8 +743,8 @@ export type ViewToHost =
 	| { readonly type: 'copy'; readonly text: string }
 	/** The composer's browser button: a new browser tab, nothing else. */
 	| { readonly type: 'openBrowser' }
-	/** The approval menu's Compact switch: `aiBrowser.chat.collapseToolCalls`, tool calls start folded. */
-	| { readonly type: 'setCollapseTools'; readonly collapse: boolean }
+	/** The approval menu's View Mode: `aiBrowser.chat.viewMode`. */
+	| { readonly type: 'setViewMode'; readonly mode: ChatViewMode }
 	/** A file a tool row names (Read, an edit), clicked: opened in an editor tab, whatever kind of file. */
 	| { readonly type: 'openFile'; readonly path: string }
 	/** A link in a reply clicked: the built-in browser, or the system one with ⌘/Ctrl held. */

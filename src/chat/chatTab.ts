@@ -636,7 +636,7 @@ export class ChatTab {
 	public async send(
 		text: string, attachments: readonly Attachment[],
 		agent: AgentId, model: string, effort: string | undefined, backend: AgentBackend, step?: SkillStep,
-	): Promise<void> {
+	): Promise<boolean> {
 		// A voice message is part of what the user says: what the chat shows and keeps is the
 		// transcript; what the agent reads is it said to be one; the rest stay attachments.
 		const voices = attachments.filter(a => a.spoken !== undefined);
@@ -693,9 +693,14 @@ export class ChatTab {
 		const chat = this._chat;
 		const session = this._ensureSession(backend);
 		chat.stats.turns++;
+		let delivered = true;
 		try {
-			await session.send({ text: prompt, images }, model, effort);
+			// A session that gave the message up on the way — disposed, or stopped
+			// before any turn began — resolves without throwing; only `true` means
+			// an agent has it (what deleting the sent annotations waits for).
+			delivered = await session.send({ text: prompt, images }, model, effort);
 		} catch (err) {
+			delivered = false;
 			// Only into the chat it was sent from: by now the user may have moved
 			// to another one, which this failure is nothing to do with.
 			if (this._session === session && this._chat === chat) {
@@ -721,6 +726,7 @@ export class ChatTab {
 		if (!this._discarded && ((chat === this._chat && !this._closed) || this._host.inHistory(chat.id))) {
 			await this._save(chat);
 		}
+		return delivered;
 	}
 
 	private _post(): void {

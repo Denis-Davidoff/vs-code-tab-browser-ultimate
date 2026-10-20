@@ -32,7 +32,7 @@ import { sleepMinutes, sleepHours, type SleepChoice } from '../src/power/sleepPr
  */
 
 import type {
-	AgentId, AgentQuestion, AgentUsage, ApprovalEntry, UsageAlert, ToolbarParam, ToolbarResult, ToolbarRun, ToolbarSkill, ApprovalKind, ApprovalMode, AttachmentKind, ChatCommand, ChatEntry, ChatStats, ChatSummary, ChatTabStatus, ChatTabSummary, ChatViewState, HostToView, RepoMode, ToolEntry, ViewToHost, VoiceEvent, WorkdirFolder, GitBranchState, WorkdirGitStatus,
+	AgentId, AgentQuestion, AgentUsage, ApprovalEntry, UsageAlert, ToolbarParam, ToolbarResult, ToolbarRun, ToolbarSkill, ApprovalKind, ApprovalMode, AttachmentKind, ChatCommand, ChatEntry, ChatStats, ChatSummary, ChatTabStatus, ChatTabSummary, ChatViewMode, ChatViewState, HostToView, RepoMode, ToolEntry, ViewToHost, VoiceEvent, WorkdirFolder, GitBranchState, WorkdirGitStatus,
 } from '../src/chat/chatProtocol';
 import { baseName, searchPaths } from './fileRank';
 // Every codicon the bundled font has, one per line (`name,char,code`); bundled
@@ -1416,7 +1416,7 @@ function turnsOf(entries: readonly ChatEntry[]): Turn[] {
  */
 let renderedChat = '';
 let rendered: { sig: string; node: HTMLElement }[] = [];
-let turnNodes: { root: HTMLElement; rows: HTMLElement; tail: HTMLElement }[] = [];
+let turnNodes: { root: HTMLElement; summary: HTMLElement; rows: HTMLElement; tail: HTMLElement }[] = [];
 const spacer = el('div', { class: 'spacer' });
 let workingNode: HTMLElement | undefined;
 
@@ -1509,12 +1509,17 @@ function renderThread(s: ChatViewState): void {
 		let nodes = turnNodes[t];
 		if (!nodes) {
 			const root = el('section', { class: 'turn' });
+			const summary = el('div', { class: 'turn-summary' });
 			const rows = el('div', { class: 'rows' });
 			const tail = el('div', { class: 'turn-tail' });
-			root.append(rows, tail);
+			root.append(summary, rows, tail);
 			threadInner.append(root);
-			nodes = turnNodes[t] = { root, rows, tail };
+			nodes = turnNodes[t] = { root, summary, rows, tail };
 		}
+		// Minimal: the turn's work folds under its summary line unless opened.
+		const folded = s.viewMode === 'minimal' && turn.prompt >= 0
+			&& turn.rows.some(i => isBackground(s.entries[i])) && !toggled.get(turnKey(turn));
+		nodes.root.classList.toggle('minimal-folded', folded);
 		const indices = turn.prompt >= 0 ? [turn.prompt, ...turn.rows] : turn.rows;
 		for (const i of indices) {
 			const entry = s.entries[i];
@@ -1540,6 +1545,10 @@ function renderThread(s: ChatViewState): void {
 			}
 			rendered[i] = { sig, node };
 		}
+		for (const i of turn.rows) {
+			rendered[i]?.node.classList.toggle('background', isBackground(s.entries[i]));
+		}
+		renderSummary(nodes.summary, s, turn, t === lastTurn);
 		renderTail(nodes.tail, s, turn, t === lastTurn);
 	});
 	renderPendingSends(s);
@@ -1612,6 +1621,106 @@ let commandsSignature = '';
 
 function keyOf(entry: ChatEntry, i: number): string {
 	return entry.kind === 'tool' ? `tool:${entry.id}` : entry.kind === 'approval' ? `approval:${entry.id}` : `${entry.kind}:${i}`;
+}
+
+/**
+ * Minimal mode's split of a turn: the replies, errors, notices and a question
+ * still waiting stay in view; tool calls, thinking and answered approvals are
+ * the turn's work, folded under its summary line.
+ */
+function isBackground(entry: ChatEntry | undefined): boolean {
+	return entry?.kind === 'tool' || entry?.kind === 'thinking' || (entry?.kind === 'approval' && entry.status !== 'pending');
+}
+
+function turnKey(turn: Turn): string {
+	return `turn:${turn.prompt}`;
+}
+
+function plural(count: number, one: string, many = `${one}s`): string {
+	return `${count} ${count === 1 ? one : many}`;
+}
+
+/**
+ * Minimal mode's line under a prompt (asked for): how much work the turn did —
+ * tool calls, agents, thinking, approvals, and its tokens once it ends — with
+ * a chevron; a click opens that turn as Compact shows it, another folds it
+ * back. While the turn runs, a second line under it names the latest piece of
+ * work, the way its own row would title it, and is replaced by the next. The
+ * button is built once and its text set in place, so a post between a press
+ * and its release does not lose the click (#365).
+ */
+function renderSummary(box: HTMLElement, s: ChatViewState, turn: Turn, last: boolean): void {
+	const work = s.viewMode === 'minimal' && turn.prompt >= 0
+		? turn.rows.map(i => s.entries[i]).filter(isBackground) : [];
+	if (!work.length) {
+		if (box.firstChild) {
+			box.replaceChildren();
+			delete box.dataset.sig;
+		}
+		return;
+	}
+	const tools = work.filter((e): e is ToolEntry => e.kind === 'tool');
+	const agents = tools.filter(t => t.tool === 'agent').length;
+	const calls = tools.length - agents;
+	const thoughts = work.filter(e => e.kind === 'thinking').length;
+	const approvals = work.filter(e => e.kind === 'approval').length;
+	const prompt = s.entries[turn.prompt];
+	const parts = [
+		calls && plural(calls, 'tool call'),
+		agents && plural(agents, 'agent'),
+		thoughts && plural(thoughts, 'thought'),
+		approvals && plural(approvals, 'approval'),
+		prompt?.kind === 'user' && prompt.tokensIn !== undefined && `↑ ${compact(prompt.tokensIn)} ↓ ${compact(prompt.tokensOut ?? 0)}`,
+	].filter(Boolean).join(' · ');
+	const open = toggled.get(turnKey(turn)) === true;
+	const running = last && s.running;
+	let head = box.querySelector<HTMLButtonElement>(':scope > .turn-summary-head');
+	if (!head) {
+		head = button([icon('chevron-right', 'chevron'), el('span', { class: 'turn-summary-text' })], { class: 'turn-summary-head' });
+		head.addEventListener('click', () => {
+			const key = box.dataset.key;
+			if (key) {
+				toggled.set(key, toggled.get(key) !== true);
+				render();
+			}
+		});
+		box.replaceChildren(head);
+	}
+	box.dataset.key = turnKey(turn);
+	box.classList.toggle('open', open);
+	head.setAttribute('aria-expanded', String(open));
+	head.title = open ? 'Fold this message\'s work' : 'Show this message\'s tool calls and thinking';
+	const text = head.querySelector('.turn-summary-text')!;
+	if (text.textContent !== parts) {
+		text.textContent = parts;
+	}
+	// The latest piece of work, while the turn runs and its work is folded.
+	const latest = running && !open ? work[work.length - 1] : undefined;
+	const sig = latest ? JSON.stringify(latest.kind === 'thinking' ? [latest.kind, latest.endedAt === undefined] : latest) : '';
+	if (box.dataset.sig === sig) {
+		return;
+	}
+	box.dataset.sig = sig;
+	box.querySelector(':scope > .turn-summary-now')?.remove();
+	if (!latest) {
+		return;
+	}
+	const now = el('div', { class: 'turn-summary-now' });
+	if (latest.kind === 'tool') {
+		// Plain colour, never the shimmer: `background-clip: text` draws nothing
+		// inside a parent that clips for its ellipsis (#360).
+		now.append(icon(toolIcons[latest.tool], 'tool-icon'), el('span', {}, ...toolTitle(latest)));
+	} else if (latest.kind === 'thinking') {
+		const active = latest.endedAt === undefined;
+		now.append(icon('lightbulb', 'tool-icon'), el('span', { text: active ? 'Thinking' : `Thought for ${duration((latest.endedAt ?? latest.startedAt) - latest.startedAt)}` }));
+	} else if (latest.kind === 'approval') {
+		now.append(icon('shield', 'tool-icon'), el('span', { text: latest.title }));
+	}
+	// The file name in a title is a link elsewhere; here the line is only a label.
+	for (const link of now.querySelectorAll('.file-link')) {
+		link.classList.remove('file-link');
+	}
+	box.append(now);
 }
 
 /** The line under a turn: the live "Working…" while it runs, "Worked for …" once it is done. */
@@ -2272,7 +2381,7 @@ function renderApproveToggle(s: ChatViewState): void {
 	].filter(item => item.count > 0);
 	const uniform = counts.length === 1;
 	const text = counts.map(item => uniform ? item.label : `${item.label} ${item.count}`).join(' • ');
-	const title = `Approvals — what the agents may do without asking:\n${rows.map(r => `${r.label}: ${modeLabels[modeOf(s, r.key)]}`).join('\n')}\nCompact (tool calls start folded): ${s.collapseTools ? 'On' : 'Off'}\nClick to change: Auto runs it, Ask asks, Deny refuses.`;
+	const title = `Approvals — what the agents may do without asking:\n${rows.map(r => `${r.label}: ${modeLabels[modeOf(s, r.key)]}`).join('\n')}\nView mode: ${viewModeLabels[s.viewMode]}\nClick to change: Auto runs it, Ask asks, Deny refuses.`;
 	const shown = JSON.stringify([text, title]);
 	if (approveToggle.dataset.shown !== shown) {
 		approveToggle.dataset.shown = shown;
@@ -2331,19 +2440,19 @@ function renderApprovalMenu(s: ChatViewState, force = false): void {
 			...rows.map(r => row(r.key, r.label, r.hint)),
 			el('div', { class: 'approval-note', text: 'Auto runs it without asking, Deny refuses it without asking. For this project, in every tab. Your own Claude Code and Codex rules still decide first.' }),
 			el('div', { class: 'approval-sep' }),
-			compactRow());
+			viewModeRow());
 		if (focused?.key) {
 			approvalPopup.querySelector<HTMLElement>(`[data-key="${CSS.escape(focused.key)}"][data-mode="${focused.mode}"]`)?.focus();
 		}
 	}
-	for (const b of approvalPopup.querySelectorAll<HTMLElement>('.compact-seg')) {
-		const on = (b.dataset.compact === 'on') === s.collapseTools;
+	for (const b of approvalPopup.querySelectorAll<HTMLElement>('.view-seg')) {
+		const on = b.dataset.view === s.viewMode;
 		b.classList.toggle('on', on);
 		b.setAttribute('aria-pressed', String(on));
 	}
 	const modes = new Set(rows.map(r => modeOf(s, r.key)));
 	const all: ApprovalMode | undefined = modes.size === 1 ? [...modes][0] : undefined;
-	for (const b of approvalPopup.querySelectorAll<HTMLElement>('.mode-seg:not(.compact-seg)')) {
+	for (const b of approvalPopup.querySelectorAll<HTMLElement>('.mode-seg:not(.view-seg)')) {
 		const current = b.dataset.key === 'all' ? all : modeOf(s, b.dataset.key ?? '');
 		const on = current === b.dataset.mode;
 		b.classList.toggle('on', on);
@@ -2351,24 +2460,31 @@ function renderApprovalMenu(s: ChatViewState, force = false): void {
 	}
 }
 
+const viewModeLabels: Record<ChatViewMode, string> = { minimal: 'Minimal', compact: 'Compact', standard: 'Standard' };
+const viewModeHints: Record<ChatViewMode, string> = {
+	minimal: 'Only your messages and the replies. Each message\'s tool calls and thinking fold under one line — click it to see them.',
+	compact: 'Every tool call shown, folded — click a row to see its input and output.',
+	standard: 'Every tool call shown unfolded, with its input and output.',
+};
+
 /**
- * Compact: tool calls start folded, their input and output shown only when a
- * row is clicked — asked for, in this menu. It is `aiBrowser.chat.collapseToolCalls`
- * ("Fold Tool Calls"), written by the host, so the switch and Settings agree;
- * rows the user opened or closed keep that.
+ * View Mode — asked for, replacing the Compact switch: Minimal, Compact and
+ * Standard. It is `aiBrowser.chat.viewMode`, written by the host, so the menu
+ * and Settings agree; rows the user opened or closed keep that.
  */
-function compactRow(): HTMLElement {
-	const seg = (value: 'off' | 'on', text: string) => {
-		const b = button([el('span', { text })], { class: 'mode-seg compact-seg' });
-		b.dataset.compact = value;
-		b.addEventListener('click', () => post({ type: 'setCollapseTools', collapse: value === 'on' }));
+function viewModeRow(): HTMLElement {
+	const seg = (mode: ChatViewMode) => {
+		const b = button([el('span', { text: viewModeLabels[mode] })], { class: 'mode-seg view-seg', title: viewModeHints[mode] });
+		b.dataset.view = mode;
+		b.setAttribute('aria-label', viewModeLabels[mode]);
+		b.addEventListener('click', () => post({ type: 'setViewMode', mode }));
 		return b;
 	};
-	const group = el('span', { class: 'mode-segs' }, seg('off', 'Off'), seg('on', 'On'));
+	const group = el('span', { class: 'mode-segs' }, seg('minimal'), seg('compact'), seg('standard'));
 	group.setAttribute('role', 'group');
-	group.setAttribute('aria-label', 'Compact');
-	return el('div', { class: 'approval-row', title: 'Tool calls start folded — click a row to see its input and output. The same as the Fold Tool Calls setting.' },
-		el('span', { class: 'approval-row-label', text: 'Compact' }), group);
+	group.setAttribute('aria-label', 'View mode');
+	return el('div', { class: 'approval-row view-row', title: 'How much of the agents\' work the chat shows. The same as the View Mode setting.' },
+		el('span', { class: 'approval-row-label', text: 'View Mode' }), group);
 }
 
 approveToggle.addEventListener('click', () => {
@@ -3286,6 +3402,7 @@ function attachmentIcon(kind: AttachmentKind): string {
 		case 'file': return 'file';
 		case 'voice': return 'mic';
 		case 'video': return 'device-camera-video';
+		case 'annotation': return 'comment';
 	}
 }
 
@@ -6609,6 +6726,7 @@ const attachItems: { kind: AttachmentKind; icon: string; label: string; needsTab
 	{ kind: 'element', icon: 'inspect', label: 'Element from the page…', needsTab: true },
 	{ kind: 'page', icon: 'link', label: 'Page address', needsTab: true },
 	{ kind: 'sharedPage', icon: 'link-external', label: 'Share page', needsTab: true },
+	{ kind: 'annotation', icon: 'comment-add', label: 'Add annotation…', needsTab: true },
 	{ kind: 'file', icon: 'file', label: 'File…', needsTab: false },
 ];
 

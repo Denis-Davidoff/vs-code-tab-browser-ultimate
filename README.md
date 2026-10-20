@@ -40,6 +40,13 @@ there is not the problem, the missing API is. **Measured by reading the shipped 
 
 [![Step-by-step setup: install, enable the browser API, open a page, connect Claude Code or Codex](ai-browser-instruct.jpg)](https://raw.githubusercontent.com/Denis-Davidoff/vs-code-tab-browser-ultimate/main/ai-browser-instruct.jpg)
 
+## Page annotations
+
+**Add Annotation Marker** on the browser tab pins a numbered note to an element you click. Each new
+note is attached to the AI Browser chat tab in front, and assistants read, add and remove notes
+through the `browser_annotations_*` MCP tools. Sending the message removes its markers from the
+page. Details: [CLAUDE.md](CLAUDE.md#page-annotations).
+
 ## Browser video recording
 
 Record the visible browser page without granting the operating system screen recording access.
@@ -82,6 +89,13 @@ profile, checks MCP, toolbar commands, pause timing, chat attachments and clipbo
 then restores the clipboard. It does not request OS screen recording access.
 
 ## Changelog
+
+**0.7.18** — Page annotations: numbered notes pinned to elements, attached to the chat and
+removed from the page once the message is sent, with `browser_annotations_*` tools for the
+assistants. A View Mode for the chat — Minimal, Compact or Standard. One repeat button on the
+browser tab for the last action, a copy or a marker. Files, folders and editor selections
+attached from VS Code, and a shared page that follows its tab. Safe branch switching with
+stash, commit or discard first, and diffs from the Git footer.
 
 **0.7.17** — Video recording of browser pages (three quality presets, pause and stop on the tab,
 `browser_recording_*` tools for the assistants; both limits keep the video). Files pasted into the
@@ -255,7 +269,7 @@ the editor: the page you are looking at is the page your agent reads and drives.
 - 📸 **Screenshots that paste as pictures.** The visible area or the whole scrollable page, on
   the system clipboard as a real PNG — `Cmd`/`Ctrl` + `V` into a chat, an issue or a document.
 - ⌨️ **One key repeats what you did last.** The toolbar's right-hand button and
-  `Cmd`/`Ctrl` + `Alt` + `C` both run the action you used last, whichever of the sixteen it was.
+  `Cmd`/`Ctrl` + `Alt` + `C` both run the action you used last, whichever of the seventeen it was.
 - 🔌 **An MCP server, with nothing to install.** No package, no separate process to babysit: the
   extension starts a local server on activation, and one command configures Claude Code, Codex
   or VS Code's own chat to use it.
@@ -329,7 +343,8 @@ Open a page — `Cmd`/`Ctrl` + click a localhost url a dev server printed, or ru
 - **a globe**, which opens a menu holding everything the extension does;
 - **a crosshair**, which repeats the entry you used last. Its colour says which one: red for the
   element, blue for the css path, purple for the css path + location, green for the xpath, with a
-  ring around it when the destination is Claude Code or Codex rather than the clipboard.
+  ring around it when the destination is Claude Code, Codex or the AI Browser chat rather than the
+  clipboard. After **Add Annotation Marker** it is a map pin instead, and adds another marker.
 
 `Cmd`/`Ctrl` + `Alt` + `C` runs whatever that second button shows, and is inert outside a
 browser tab. Every entry except Open New Browser Tab is also in the command palette under
@@ -348,6 +363,8 @@ The menu, in order:
 | Copy Screenshot (Visible Area) | a PNG of what is on screen, on the clipboard |
 | Copy Screenshot (Full Page) | the whole scrollable page, truncated past 16384 device pixels |
 | Translate Page… | asks for a language and copies a prompt to paste into your assistant, which translates the page in place — [CLAUDE.md](CLAUDE.md#translating-a-page-through-an-assistant) |
+| Add Annotation Marker | pin a note to an element you click — [Page annotations](#page-annotations) |
+| Remove All Annotation Markers / Copy Annotation Prompt | only while the page has markers: clear them, or copy a prompt that hands the notes to your assistant |
 | Claude Code ▸ | a submenu: the same four picks handed to the Claude Code chat, plus Connect and Share Tab |
 | Codex ▸ | the same, for Codex |
 | AI Browser Chat ▸ | the same four picks, plus a screenshot and the page address, added to this extension's own chat |
@@ -356,7 +373,7 @@ The menu, in order:
 | Share Tab with All Assistants / Stop Sharing Tab | [CLAUDE.md](CLAUDE.md#mcp-the-browser-exposed-to-claude-code-codex-and-vs-code-chat) |
 
 Everything belonging to one assistant lives in that assistant's submenu, which is what keeps the
-top level at seventeen rows. The four **Add** entries there appear only for an assistant whose
+top level at twenty-one rows. The four **Add** entries there appear only for an assistant whose
 extension is actually installed and can take a report in this window — Claude Code's need a local
 folder open, and neither works in a remote window; **Connect** and **Share Tab** are always there, because an
 assistant driven from a terminal through `.mcp.json` needs them and has no extension to detect.

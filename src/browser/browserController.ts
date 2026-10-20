@@ -18,7 +18,10 @@ import {
 } from './shareRegistry';
 import type { ClientKind } from '../mcp/mcpProtocol';
 import { translatorSource } from '../translate/translateScript';
-import { isLanguageCode, maxSingleSegment, type Replacement } from '../translate/translateText';
+import { isLanguageCode, maxSingleSegment, pageTitle, type Replacement } from '../translate/translateText';
+import { plainInLabel } from '../core/notifyText';
+import { PageAnnotations, type AnnotationChange } from './pageAnnotations';
+import type { PageAnnotation } from './annotationData';
 
 /**
  * What the browser can do, expressed without transport or CDP detail.
@@ -1162,6 +1165,7 @@ export class BrowserController implements vscode.Disposable {
 	 * nothing left to dispose it.
 	 */
 	private _disposed = false;
+	private readonly _annotations = new PageAnnotations();
 
 	constructor() {
 		// The share has to notice a closed tab even when no tool is running, or
@@ -2049,6 +2053,7 @@ export class BrowserController implements vscode.Disposable {
 	 * "you were never given one" are different answers — see the registry.
 	 */
 	private _loseTab(tab: vscode.BrowserTab): void {
+		this._annotations.close(tab);
 		// The cleanup is unconditional, and used to sit behind the early return
 		// below: closing an ordinary tab — the common case — left its
 		// `TabSession` undisposed and still counting against the session limit,
@@ -2795,6 +2800,78 @@ export class BrowserController implements vscode.Disposable {
 				atBottom: el.scrollTop + el.clientHeight >= el.scrollHeight - 1,
 			};
 		})()`, frameId)));
+	}
+
+	/**
+	 * User action: annotations always follow the user's tab, never an agent's pin.
+	 * The picker waits for a click, so the page must be on screen (#355); the
+	 * tab is returned so the confirmation can name it.
+	 */
+	public async annotatePage(): Promise<vscode.BrowserTab> {
+		requireGrant();
+		const tab = this.focusedTab ?? this.userTab;
+		if (!tab) { throw new Error('Open a page in the integrated browser first.'); }
+		if (!this.onScreen(tab)) {
+			throw new Error(`"${plainInLabel(pageTitle(tab.title, tab.url), 60)}" is not on screen — bring its tab to the front, then add a marker.`);
+		}
+		await this._annotations.start(tab);
+		return tab;
+	}
+
+	/**
+	 * Whether `tab` is in front of the user: the focused browser tab, or a
+	 * browser editor visible in some group — `window.tabGroups` models no browser
+	 * input, so it is a visible tab with `input: undefined` (the heuristic of
+	 * `LoginWatcher.tabInFront`, erring towards "visible").
+	 */
+	public onScreen(tab: vscode.BrowserTab): boolean {
+		if (this.focusedTab === tab) { return true; }
+		try { return vscode.window.tabGroups.all.some(group => group.activeTab !== undefined && group.activeTab.input === undefined); }
+		catch { return true; }
+	}
+
+	/** The notes stored for the page the tab is showing, if it was ever annotated. */
+	public annotationsOf(tab: vscode.BrowserTab): { url: string; records: readonly PageAnnotation[]; agentMade: ReadonlySet<string> } | undefined {
+		return this._annotations.current(tab);
+	}
+
+	/** User action: removes every marker on the page the user's tab shows. */
+	public async clearPageAnnotations(tab: vscode.BrowserTab): Promise<number> {
+		requireGrant();
+		const result = await this._annotations.remove(tab, undefined) as { removed?: number };
+		return result.removed ?? 0;
+	}
+
+	/** User action from the chat's "+": the tab the chat resolved, on screen. */
+	public async annotateTab(tab: vscode.BrowserTab): Promise<void> {
+		requireGrant();
+		await this._annotations.start(tab);
+	}
+
+	public onDidChangeAnnotations(listener: (change: AnnotationChange) => void): vscode.Disposable {
+		return new vscode.Disposable(this._annotations.onDidChange(listener).dispose);
+	}
+
+	/** User action (a chat tab closing): no caller, so no share or pin applies. */
+	public removeAnnotations(tab: vscode.BrowserTab, ids: readonly string[]): Promise<void> {
+		return this._annotations.removeEverywhere(tab, ids);
+	}
+
+	public async annotationsGet(tabId: string | undefined, ids: readonly string[], caller: CallerIdentity): Promise<unknown> {
+		return this._withNamedTab(caller, tabId, async (_session, tab) => this._annotations.get(tab, ids));
+	}
+
+	public async annotationsAdd(tabId: string | undefined, selector: string, text: string, color: string | undefined, caller: CallerIdentity): Promise<unknown> {
+		refuseValueProbe(selector);
+		return this._withNamedTab(caller, tabId, (_session, tab) => this._annotations.add(tab, selector, text, color));
+	}
+
+	public async annotationsList(tabId: string | undefined, offset: number, limit: number, caller: CallerIdentity): Promise<unknown> {
+		return this._withNamedTab(caller, tabId, (_session, tab) => this._annotations.list(tab, offset, limit));
+	}
+
+	public async annotationsRemove(tabId: string | undefined, ids: readonly string[] | undefined, caller: CallerIdentity): Promise<unknown> {
+		return this._withNamedTab(caller, tabId, (_session, tab) => this._annotations.remove(tab, ids));
 	}
 
 	/**
@@ -3574,6 +3651,7 @@ export class BrowserController implements vscode.Disposable {
 	public dispose(): void {
 		// First, so an open still in flight sees it when it lands.
 		this._disposed = true;
+		this._annotations.dispose();
 
 		// Anything queued for a session slot is released rather than left to its
 		// timeout: the open it is waiting for will refuse the moment it lands, and

@@ -174,7 +174,7 @@ test('a voice message is the user\'s words: kept as the entry\'s text, sent as i
 	const prompts: string[] = [];
 	const session = {
 		running: false, onEvent: () => ({ dispose() {} }),
-		send: async (input: { text: string }) => { prompts.push(input.text); },
+		send: async (input: { text: string }) => { prompts.push(input.text); return true; },
 		stop() {}, dispose() {},
 	};
 	const backend = { openSession: () => session };

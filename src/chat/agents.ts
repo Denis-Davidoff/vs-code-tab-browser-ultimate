@@ -37,9 +37,11 @@ export interface AgentSession extends vscode.Disposable {
 	readonly running: boolean;
 	/**
 	 * Sends a message. While a turn is running it is added to that turn — Codex
-	 * steers it, Claude Code queues it — rather than refused.
+	 * steers it, Claude Code queues it — rather than refused. Resolves whether
+	 * the message reached the agent: `false` when the session gave it up on the
+	 * way — disposed, or stopped before any turn began — without throwing.
 	 */
-	send(input: TurnInput, model: string, effort: string | undefined): Promise<void>;
+	send(input: TurnInput, model: string, effort: string | undefined): Promise<boolean>;
 	stop(): void;
 	/**
 	 * Stops one agent this conversation started — by its row id, and the

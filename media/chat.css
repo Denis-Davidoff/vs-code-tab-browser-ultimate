@@ -273,6 +273,92 @@ button {
 	display: none;
 }
 
+/* View Mode "Minimal": a turn's tool calls, thinking and answered approvals
+   fold under one summary line below the prompt; the replies stay. The
+   timeline's connecting line goes with them — rows hidden in between left
+   it running to nothing. */
+.turn.minimal-folded .rows > .row.background {
+	display: none;
+}
+
+.turn.minimal-folded .rows > .row::after {
+	display: none;
+}
+
+.turn-summary:empty {
+	display: none;
+}
+
+.turn-summary {
+	padding: 2px 0 4px;
+	font-size: 0.92em;
+	color: var(--fg-3);
+}
+
+.turn-summary-head {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	max-width: 100%;
+	min-width: 0;
+	padding: 2px 8px 2px 4px;
+	border: 1px solid var(--border);
+	border-radius: 999px;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	text-align: left;
+	cursor: pointer;
+}
+
+.turn-summary-head:hover {
+	color: var(--fg-2);
+	background: var(--surface);
+}
+
+.turn-summary-head .chevron {
+	transition: transform 0.15s;
+}
+
+.turn-summary.open .turn-summary-head .chevron {
+	transform: rotate(90deg);
+}
+
+.turn-summary-text {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.turn-summary-now {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+	margin: 4px 0 0 6px;
+	padding-left: 10px;
+	border-left: 1px solid var(--border);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.turn-summary-now > span {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.turn-summary-now .verb {
+	margin-right: 4px;
+	color: var(--fg-2);
+}
+
+.turn-summary-now .mono {
+	font-family: var(--mono);
+	font-size: var(--mono-size);
+}
+
 .working,
 .worked {
 	padding: 6px 0 2px 18px;
@@ -3179,6 +3265,17 @@ body.vscode-high-contrast-light .context-pie {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
+}
+
+/* View Mode has three choices where the categories have three short ones:
+   its label keeps its words, and the choices wrap under it when the menu is
+   too narrow for both. */
+.approval-row.view-row {
+	flex-wrap: wrap;
+}
+
+.approval-row.view-row .approval-row-label {
+	flex: none;
 }
 
 .mode-segs {

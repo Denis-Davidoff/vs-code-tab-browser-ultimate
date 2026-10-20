@@ -126,7 +126,8 @@ cloned repository could switch autofill on for its own dev server (breaks-silent
 | `aiBrowser.chat.tabLimit` | `10` | how many conversations stay open as tabs, 1 to 30 — see [Tabs](#tabs-several-conversations-at-once) |
 | `aiBrowser.chat.claudePath` | `""` | the `claude` executable; empty searches — see [Finding the CLIs](#finding-the-clis) |
 | `aiBrowser.chat.codexPath` | `""` | the `codex` executable, the same way |
-| `aiBrowser.chat.collapseToolCalls` | `true` | tool calls in the chat start folded — see [The design](#the-design-and-where-each-part-came-from); also the Compact switch in the chat's approval menu |
+| `aiBrowser.chat.viewMode` | `compact` | how much of the agents' work the chat shows: `minimal`, `compact` (tool calls folded) or `standard` (unfolded) — see [View modes](#view-modes-minimal-compact-standard); also the View Mode row of the chat's approval menu |
+| `aiBrowser.chat.collapseToolCalls` | `true` | deprecated by `viewMode`, and read only while that is unset: `false` is Standard, anything else Compact |
 
 The two paths are `application`-scoped for a sharper reason than the logins ones: each names a program
 to run, so a workspace that could set it would be code execution from a cloned repository the
@@ -1127,6 +1128,10 @@ Copy Screenshot (Visible Area) / (Full Page)                    2_shot@1..2
 ─────
 Translate Page…                                                 2_translate@1
 ─────
+Add Annotation Marker                                           2_annotations@1
+Remove All Annotation Markers                                   2_annotations@2  when pageHasAnnotations
+Copy Annotation Prompt                                          2_annotations@3  when pageHasAnnotations
+─────
 Claude Code ▸                                                   3_assistant@1
     Add Element / CSS Path / CSS Path + Location / XPath        1_add@1..4   when <a>Installed
     ─────
@@ -1152,7 +1157,10 @@ Share Tab with All Assistants                                   4_share@1
 Stop Sharing Tab                                                4_share@2   when tabShared
 ```
 
-That is eighteen rows — seventeen before Record Video. While a recording runs, Pause / Resume
+That is twenty-one rows — eighteen before the annotation group. Beside the dropdown there is
+exactly **one** more button, the repeat button of the last action — an element copy or Add
+Annotation Marker. A standalone marker button (`navigation@3`) stood beside it for a while and
+was removed on request: with a copy action remembered, the toolbar showed two extra buttons. While a recording runs, Pause / Resume
 (`navigation@0`) and Stop (`navigation@0.1`) stand before the dropdown (`navigation@1`); see
 [Browser video recording](#browser-video-recording). The menu had eighteen before the submenus, and a flat one would have
 had twenty-one once the fourth element kind was added. The `group` prefixes put the
@@ -1322,8 +1330,8 @@ button. Extensions cannot: `menusExtensionPoint.ts` builds an extension's submen
 `{ submenu, icon, title, group, order, when }` and never sets that flag, and the manifest
 schema accepts only `submenu` / `when` / `group`.
 
-So instead: **sixteen** primary buttons in `navigation@2` — the four copies plus the same four
-for each assistant and for the AI Browser chat — each with a `when` on the `aiBrowser.lastElementAction` context key, so
+So instead: **seventeen** primary buttons in `navigation@2` — the four copies plus the same four
+for each assistant and for the AI Browser chat, and Add Annotation Marker ([Page annotations](#page-annotations)) — each with a `when` on the `aiBrowser.lastElementAction` context key, so
 exactly one is ever visible. The dropdown sits *before* them in `navigation@1`. The Add buttons
 carry the extra condition `aiBrowser.claudeInstalled` / `codexInstalled`, so a button never runs
 into an assistant that is not there — **and the context key falls back to the Copy twin** while
@@ -1334,7 +1342,7 @@ chevron and the chord did nothing. The memento keeps the real choice, so reinsta
 Add button back; `LastElementAction.refresh` runs on `extensions.onDidChange` (breaks-silently
 #223).
 
-The sixteen action ids (`element`, `cssPath`, `cssLocation`, `xpath` and `<destination>:<kind>`, the destination `claude`, `codex` or `chat`)
+The seventeen action ids (`element`, `cssPath`, `cssLocation`, `xpath`, `<destination>:<kind>` with the destination `claude`, `codex` or `chat`, and `annotate`)
 are compared
 verbatim in `when` clauses, which makes them **part of the manifest's contract** — renaming one
 in `lastAction.ts` alone silently removes a button. Add commands reuse the crosshair colour of
@@ -1347,18 +1355,18 @@ evaluated before activation, so without it the context key is unset on a fresh w
 toolbar shows a lone chevron with no primary button. Two visually adjacent buttons is as close
 as an extension gets — they are not fused into one control the way Run/Debug is.
 
-**One chord drives whichever tool is active:** `Ctrl+Alt+C` / `Cmd+Alt+C`. Since the sixteen
+**One chord drives whichever tool is active:** `Ctrl+Alt+C` / `Cmd+Alt+C`. Since the seventeen
 `when` conditions are mutually exclusive, exactly one binding can match, so the key always runs
 what the right-hand icon shows.
 
-**The chord sits on sixteen `repeat.*` delegate commands, not on the commands in the
+**The chord sits on seventeen `repeat.*` delegate commands, not on the commands in the
 dropdown**, and that split is not decorative. VS Code prints a command's keybinding beside
 **every** menu item that invokes it, with no way to opt out — so binding the dropdown commands
 directly put `Cmd+Alt+C` on every row of the menu. Each delegate shares its twin's icon and
 title, is the one contributed to `editor/title`, and is hidden from the command palette with
-`commandPalette` + `when: false` so the same sixteen actions do not appear twice there.
+`commandPalette` + `when: false` so the same seventeen actions do not appear twice there.
 
-`check-manifest` holds this together: one chord across the sixteen, conditions matching the
+`check-manifest` holds this together: one chord across the seventeen, conditions matching the
 buttons exactly, no dropdown command carrying *that* chord, no other command taking it on any
 platform (compared per platform, not as a `key|mac` pair — #257), and every delegate mirroring its
 twin's icon. The chord rules are scoped to the `repeat.*` bindings —
@@ -3215,7 +3223,7 @@ which the rest of the report is read as Markdown.
 
 Two dropdown entries — visible area and full page — in a group of their own (`2_shot`), which
 is what puts a separator around them. Group names sort alphabetically, so the numeric prefixes
-(`0_start`, `1_copy`, `2_recording`, `2_shot`, `2_translate`, `3_assistant`, `3_logins`, `4_share` at the
+(`0_start`, `1_copy`, `2_annotations`, `2_recording`, `2_shot`, `2_translate`, `3_assistant`, `3_logins`, `4_share` at the
 top level, `1_add`, `2_mcp` and `2_recording` inside each assistant's submenu, `1_add`, `2_page` and
 `2_recording` inside the AI Browser Chat one) are the running order of the menu — see
 [the dropdown](#the-dropdown-on-the-browser-tab) for the whole tree.
@@ -3407,7 +3415,7 @@ capture keeps the frames consistent with *each other*, not with a page that is n
 Bringing the tab to the front (`Page.bringToFront`) would take focus from the user, so it is not
 done.
 
-**Not part of the repeat button.** The sixteen `navigation@2` candidates are element actions; a
+**Not part of the repeat button.** The seventeen `navigation@2` candidates are element actions and Add Annotation Marker; a
 screenshot picks nothing, so folding it in would mean a button with no crosshair and a hole in
 the icon grid `check-manifest` enforces.
 
@@ -3496,6 +3504,109 @@ together, so it is recorded rather than done.
 
 **Plain-text hand-over** — `claude-vscode.editor.open(undefined, prompt)` opens a new Claude Code
 conversation with a prompt, but Codex has no equivalent, so reports go as files for both.
+
+## Page annotations
+
+**Add Annotation Marker** (`aiBrowser.annotatePage`, in the extension dropdown, and the toolbar's
+repeat button once it is the last action) starts a one-element picker in the user's browser tab; Escape cancels. There is no
+toolbar inside the page. Notes collapse to numbered circles. Their compact header contains
+number, tag, copy-selector, delete and add-marker ("+", starts picking another element; the note
+collapses) icons, followed only by a text area. There is no collapse button: Escape and focus
+leaving the note collapse it. Clicking the
+number opens a ten-color palette; the stored color applies to the marker and card border.
+Deletion from the icon requires a native VS Code confirmation; cancellation leaves host and page
+unchanged. MCP removal is a separate explicit tool action and does not open this user dialog.
+Copy goes through the host clipboard; renderer requests must identify a stored annotation, not arbitrary
+clipboard text. Creation requires trusted input events; no page text is used as HTML.
+
+`PageAnnotations` owns a dedicated CDP channel per annotated tab. It uses a named isolated world
+and filters binding events by session and execution context. `annotationScript.ts` draws a closed
+Shadow DOM overlay, tracks scroll/layout, and excludes editable/form/script text from element
+snippets. `annotationData.ts` bounds and validates renderer data (50 notes per URL, 2000 characters
+per note). Host records are keyed by exact URL within a tab and restored after reload/SPA return;
+they last until the tab or extension window closes, without disk persistence in this first version.
+Numbers increase per tab and never shift when another note is removed. A live element reference
+is retained while connected; only unique strong locators with matching tag/text may reattach.
+Weak paths or missing elements remain explicitly unresolved (amber markers).
+
+MCP tools `browser_annotations_add` (a CSS selector, a note, a colour name; checked by
+`refuseValueProbe` like every selector tool), `browser_annotations_list` (offset/limit, maximum 10 notes per page),
+`browser_annotations_get` (stable IDs, any URL of the tab), `browser_annotations_remove` (stable IDs), and `browser_annotations_clear` operate on the current
+URL, through the existing named-tab/caller-sharing restrictions. Saved element context is marked
+as untrusted page data and kept separate from note text. Inner iframe/shadow-root element picking
+is not supported in this version. Reload initialization, closing during setup, invalid bindings,
+clipboard isolation, editing, numbering, and removal have focused tests.
+
+**A new annotation is attached to the AI Browser chat tab in front and bound to it** (asked for).
+`PageAnnotations.onDidChange` reports each store change with the ids `created` and `removed`
+(plain listeners, not an `EventEmitter`, so `pageAnnotations.test.ts` needs no vscode runtime);
+`ChatViewProvider._onAnnotations` attaches a `kind: 'annotation'` chip (`comment` icon) to
+`_active` for every created id and records the binding in `_annotationLinks`. Details:
+
+- **The chip follows the note**: the page sends `change` on every keystroke, and the chip's label
+  and text are rebuilt in place, keeping its `@N` (`preserveAttachmentReference`), as live page
+  chips are. A click opens the whole text — note, element, ID — as a plain-text tab (#371).
+- **Closing the chat tab deletes its annotations** (`_dropAnnotationsOf`, run from `_removeTab`:
+  the × on the tab and deleting a chat from the history). The binding outlives the chip:
+  removing it with × does not unbind it.
+- **Sending a message deletes the annotations attached to it** (asked for:
+  `_removeSentAnnotations`, after `ChatTab.send` reports the agent took it). `AgentSession.send`
+  resolves whether the message reached the agent: both backends give a message up *without
+  throwing* when the session is disposed or stopped before any turn begins — a Stop, Clear or
+  the view closing during a cold Codex start — and reading only "did it throw" deleted the notes
+  of a message no agent ever saw, the chat keeping just their 120-character labels (review
+  finding). A failed or abandoned send keeps the markers. `browser_annotations_get`'s description
+  says the same, rather than telling an agent to fetch a chat-attached annotation by its ID. The message carries the
+  note and the element, so the marker has done its job; the store's `removed` then takes the
+  chips other chat tabs hold and drops the links. The chip's prompt text says so and no longer
+  points at `browser_annotations_get`, which would find nothing for an annotation already gone. `removeEverywhere` takes them off
+  the overlay when on the page in front and out of the store for pages the tab has left.
+- **An annotation deleted on the page, by MCP, or with its browser tab removes the chip**
+  (`removed`; `close(tab)` reports every stored record as removed).
+- Only ids *new to the store* are attached — a hydrate after navigation sends no `change`, and a
+  `change` that merely edits never re-attaches. Nothing is attached while the chat is blocked.
+- **The chat's "+" has *Add annotation…*** (`kind: 'annotation'` in `_makeAttachment`): it
+  refuses a page not on screen, attaches every note already stored for the page in front to the
+  chat tab it was pressed in (`annotationsOf` → `_attachAnnotation`, one chip per tab, skipped
+  where that tab has one), then starts the picker; the new note arrives through `_onAnnotations`.
+  An annotation can therefore have chips in several chat tabs (`chipIds`); only the first tab to
+  take it binds it, and only closing that tab deletes it — or sending any message that carries one
+  of its chips, from whichever tab (see the sending bullet above).
+- **Add Annotation Marker is a repeatable action of the toolbar's primary button**: `annotate` in
+  `ElementActionId`, the seventeenth `navigation@2` candidate, with an `aiBrowser.repeat.annotate`
+  twin carrying the `Cmd+Alt+C` chord. Both carry `media/icons/marker-{light,dark}.svg` — a
+  map pin in the theme grey holding the overlay's blue marker — a light/dark pair like the
+  crosshairs, so it reads as a toolbar action of the same family (asked for). It has no button of its own: the toolbar carries one repeat button beside the
+  dropdown, never two (asked for — a standalone `navigation@3` marker button was removed). It is no element pick, so it is outside the crosshair grid; `check-manifest`
+  checks only its twin, chord and condition.
+- **Review fixes, each a rule:** an assistant's marker is skipped by "+" too (`agentMade` is
+  checked in `_attachAnnotation`, not only in `_fire`), so no chat tab binds or deletes it;
+  `list` / `get` carry `author: "user" | "assistant"` and say an assistant's note is not the
+  user's instruction, as does Copy Annotation Prompt — a page-misled agent could otherwise plant
+  instructions for the next one; closing the owning chat tab takes the annotation's chips out of
+  every other tab before its link goes (`_dropAnnotationsOf`), since the store's later "removed"
+  finds no link; Add Annotation Marker refuses a page that is not on screen
+  (`BrowserController.onScreen`, #355) and names the page in its confirmation; Remove All names
+  the page and address in its modal (#259); Copy Annotation Prompt runs inside
+  `McpLifecycle.withServer` and refuses a remote window, like Translate Page (#225).
+- **An assistant's marker is not the user's note** (`browser_annotations_add`): its id is minted
+  host-side and put in `agentMade` before the page reports the change, so `_fire` leaves it out of
+  `created` and the chat attaches nothing and binds nothing — closing a chat tab never deletes it.
+  The page script answers `{ error }` rather than throwing, since `_evaluate` would replace a
+  thrown message with a generic one.
+- **The dropdown's annotation group** (`2_annotations`): Add Annotation Marker, then — only while
+  `aiBrowser.pageHasAnnotations` — Remove All Annotation Markers (a modal asks first; the page in
+  front only) and Copy Annotation Prompt (the notes handed to an assistant by tab id, like
+  Translate Page's prompt, behind the paste modal). The key is republished on every store change
+  and on `onDidChangeActiveBrowserTab`; `PageAnnotations` fires a change with nothing created or
+  removed when the tab moves to another URL (`_fireUrl`), or the key would describe the page
+  before.
+- **A note collapses when focus leaves it** — to the page, to VS Code, or the window losing focus
+  (`focusout`, then `shadow.activeElement` and `document.hasFocus()` a tick later, since focus
+  moving between the note's own controls also fires it). The number button keeps its colour on
+  hover (`.head .number:hover`); the header's grey hover is for the icon buttons.
+- `browser_annotations_get` (ids, optional `tabId`) returns records by ID from **any** URL the
+  tab has shown, with each one's `url` and the IDs it did not find.
 
 ## Translating a page through an assistant
 
@@ -4552,8 +4663,7 @@ thread's running total and replaces the figure — measured: two short Codex tur
   (`_tokenOffset`) instead of taking the chat's totals backwards. An *equal* total is a repeat,
   not a reset, or one duplicated event would double the count.
 
-**Every tool call starts folded** — `aiBrowser.chat.collapseToolCalls`, the approval menu's
-Compact switch, is on by default (asked for); switched off, a call with something to show — a
+**Every tool call starts folded** — View Mode Compact, the default (asked for); in Standard a call with something to show — a
 command, an edit, an MCP tool's IN / OUT — opens by default. Reads never have a body. **A folded
 row still says what the call does** (asked for): a line under its title (`toolSummary`) — a
 command's own description (Claude Code's Bash `description`, Codex's parsed actions), an MCP
@@ -4643,6 +4753,34 @@ minus `frame-src`, plus `img-src data:` for screenshot thumbnails.
 webview's script says `ready` is lost**, not queued by VS Code, so `_postMessage` holds
 non-state messages until then — a title-bar command reveals a view that was never opened and
 posts in the same breath.
+
+### View modes: Minimal, Compact, Standard
+
+Asked for, replacing the Compact switch: **View Mode** in the approval menu's foot, the setting
+`aiBrowser.chat.viewMode` (`ChatViewMode` in the protocol). **Standard** is what Compact off was —
+every tool call unfolded; **Compact** what Compact on was — every call folded, the default;
+**Minimal** shows only the prompts and the replies.
+
+- **Minimal folds a turn's work under one line below its prompt** (`renderSummary`): "2 tool
+  calls · 1 agent · 3 thoughts · 1 approval · ↑ 35k ↓ 812", a chevron before it. A click opens
+  that turn as Compact shows it and another folds it back (`turn:<prompt index>` in `toggled`, so
+  per chat, as a row's own choice is). The work is tool calls, agents, thinking and **answered**
+  approvals (`isBackground`); replies, notices, errors and a question still waiting stay in view —
+  a pending card must be answerable. A turn with no work has no line.
+- **While the turn runs, a second line names the latest piece of work** — the way its own row
+  would title it ("Running `npm run lint`", "Thinking", "Read README.md") — and the next replaces
+  it; it goes when the turn ends or the turn is opened. **Plain colour, never the shimmer**:
+  `background-clip: text` drew nothing inside the line's ellipsis-clipping parent, so only the
+  icon showed (#360's trap, met again in harness). File names there are labels, not links.
+- **The rows are still rendered and hidden by class** (`.turn.minimal-folded .row.background`),
+  so opening a turn is instant and keyed rendering is untouched; the timeline's connecting line
+  is switched off in a folded turn, where hidden rows left it running to nothing. The summary's
+  button is built once and its text set in place (#365).
+- **The setting is read with `inspect`** (`readViewMode`): `get` answers the declared default and
+  would hide the older `aiBrowser.chat.collapseToolCalls`, which is still read while View Mode is
+  unset — `false` as Standard, anything else Compact — so nobody's choice changed. A value outside
+  the three is not a choice. The menu writes `viewMode` (`setViewMode` → `_setViewMode`) where it
+  is in force: the workspace when a workspace value of either setting would shadow a user one.
 
 ### The two protocols — measured, not documented
 
@@ -5914,14 +6052,11 @@ its tooltip. Categories, as `agentProtocol.ts` sorts the questions (`claudeAppro
 - **A choice changes the menu's buttons in place** — rebuilt each time, the clicked button was
   replaced and keyboard focus fell to the page (#365); it is rebuilt only when its rows change,
   and focus then goes back to the same button.
-- **The menu's foot carries a Compact switch** (asked for): Off · On for
-  `aiBrowser.chat.collapseToolCalls` ("Fold Tool Calls") — on, tool calls start folded; on by
-  default, so a value that is not `false` reads as on. It is the
-  setting itself, written by the host (`setCollapseTools` → `_setCollapseTools`) where it is in
-  force — the workspace when a workspace value would shadow a user one — so the switch and
-  Settings never disagree, and the change comes back as a state post. The button's tooltip names
-  its state. Its segments share `.mode-seg`'s look and are kept out of the mode loop
-  (`:not(.compact-seg)`), which otherwise unmarked them for having no category key.
+- **The menu's foot carries View Mode** (asked for, replacing an Off · On Compact switch):
+  Minimal · Compact · Standard, see [View modes](#view-modes-minimal-compact-standard). Its
+  segments share `.mode-seg`'s look and are kept out of the mode loop (`:not(.view-seg)`), which
+  otherwise unmarked them for having no category key; its label does not shrink and the choices
+  wrap under it in a narrow menu (`.view-row`) — beside three choices it was cut to "View …".
 - A Codex `item/permissions/requestApproval` (a broader sandbox profile) is still refused with
   `-32601`: answering it means building a granted profile, not a yes.
 
@@ -8721,6 +8856,10 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
      for the origin, a password whose first step carried no typed username (a fill, an account
      chooser) was offered as that login's update — another account's password. A first step of
      unknown account blocks the single-login rule.
+508. **"It did not throw" read as "it was delivered"** → both chat backends give a message up
+     without throwing when the session is disposed or stopped before a turn begins, so deleting a
+     sent message's annotations on a send that merely returned removed the user's notes for a
+     message no agent saw. `AgentSession.send` answers whether the message reached the agent.
 
 ## Special cases and non-obvious decisions
 

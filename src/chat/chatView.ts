@@ -41,9 +41,12 @@ import { gitBinary } from '../core/gitBinary';
 import { cleanUpReportsIn, writeChatTranscript } from '../elements/assistants';
 import { savePng } from '../browser/clipboardImage';
 import type { BrowserController } from '../browser/browserController';
+import type { AnnotationChange } from '../browser/pageAnnotations';
+import type { PageAnnotation } from '../browser/annotationData';
 import type {
 	AgentId, AgentUsage, ApprovalMode, AttachmentKind, ChatSummary, GitCommitState,
 	ChatNews, ChatTabSummary, ChatViewState, HostToView, RepoMode, Selection, ToolbarRun, ToolbarSkill, UsageAlert, UsageWindow, ViewToHost, VoiceEvent, WorkdirFolder, WorkdirState,
+	ChatViewMode,
 } from './chatProtocol';
 import { pickElementContext, pickForChat } from '../elements/elementPicker';
 import { parseNews } from './news';
@@ -200,6 +203,26 @@ export const defaultTabLimit = 10;
 export const maxTabLimit = 30;
 const tabLimitSetting = 'aiBrowser.chat.tabLimit';
 const collapseToolsSetting = 'aiBrowser.chat.collapseToolCalls';
+const viewModeSetting = 'aiBrowser.chat.viewMode';
+const chatViewModes: readonly ChatViewMode[] = ['minimal', 'compact', 'standard'];
+
+/**
+ * The thread's view mode: `aiBrowser.chat.viewMode` where it is set, else the
+ * older Fold Tool Calls switch it replaced — off was Standard, anything else
+ * Compact — so nobody's choice changed when the three modes came. Read with
+ * `inspect`, not `get`, which would answer the declared default and hide the
+ * older setting. A value that is not one of the three is not a choice.
+ */
+function readViewMode(): ChatViewMode {
+	const config = vscode.workspace.getConfiguration();
+	const info = config.inspect<unknown>(viewModeSetting);
+	for (const value of [info?.workspaceFolderValue, info?.workspaceValue, info?.globalValue]) {
+		if (typeof value === 'string' && (chatViewModes as readonly string[]).includes(value)) {
+			return value as ChatViewMode;
+		}
+	}
+	return config.get<unknown>(collapseToolsSetting) === false ? 'standard' : 'compact';
+}
 const automaticAwakeKey = 'aiBrowser.chat.automaticAwake';
 /** The most of a tool's input or output opened in a tab; past it the text is cut with a line saying so. */
 const openTextLimit = 2_000_000;
@@ -310,6 +333,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	/** Live page chips, by chip id, and the browser tab each follows. */
 	private readonly _livePages = new Map<string, vscode.BrowserTab>();
 	private _livePageWatch: vscode.Disposable | undefined;
+	/**
+	 * Page annotations, by annotation id: the chat tab that took it first (closing
+	 * that tab deletes it), the browser tab it is on, and its chips in any tab.
+	 */
+	private readonly _annotationLinks = new Map<string, { chat: ChatTab; page: vscode.BrowserTab; chipIds: string[] }>();
 	/** The globe button's wait for the tab it opens. */
 	private _pendingOpen: vscode.Disposable | undefined;
 	private readonly _attachmentImages = new Map<string, vscode.Uri>();
@@ -379,6 +407,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		// sweep reaches only the workspace's.
 		void cleanUpReportsIn([...this._recentFolders(), ...this._tabs.flatMap(t => t.chat.folder !== undefined ? [t.chat.folder] : [])]);
 
+		this._subscriptions.push(this._browser.onDidChangeAnnotations(change => this._onAnnotations(change)));
 		this._subscriptions.push(this._registry.onDidReplace(e => this._onBackendReplaced(e.agent, e.gone)));
 		// Every read of a plan whole — detection's, the U popup's, the checks
 		// after a turn — replaces what was known of it.
@@ -387,7 +416,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		// once enough of them are closed.
 		this._subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration('workbench.iconTheme') || e.affectsConfiguration('files.associations')) { this._gitEventRefresh(); }
-			if (e.affectsConfiguration(tabLimitSetting) || e.affectsConfiguration(collapseToolsSetting)) {
+			if (e.affectsConfiguration(tabLimitSetting) || e.affectsConfiguration(collapseToolsSetting) || e.affectsConfiguration(viewModeSetting)) {
 				this._post();
 			}
 		}));
@@ -640,6 +669,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}
 		const limit = tabLimit();
 		const selection = this._selection();
+		const viewMode = readViewMode();
 		return {
 			sleep: this._sleep.state,
 			featureAi: readFeatureAiSettings(this._context.globalState.get(featureAiKey)),
@@ -675,8 +705,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			toolbar: this._toolbar(),
 			toolbarRuns: this._toolbarRunsState(),
 			skillAgents: this._runs.rows(this._active.chat.id),
-			// On unless switched off: Compact is the default, and a value that is not a boolean is read as it.
-			collapseTools: vscode.workspace.getConfiguration().get<unknown>(collapseToolsSetting) !== false,
+			viewMode,
+			collapseTools: viewMode !== 'standard',
 			context: this._contextState(),
 			workdir: this._workdirState(),
 			hasBrowserTab: this._browser.hasOpenTabs,
@@ -1116,28 +1146,33 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			case 'openFile':
 				await this._openFile(message.path);
 				return;
-			case 'setCollapseTools':
-				await this._setCollapseTools(message.collapse === true);
+			case 'setViewMode':
+				if ((chatViewModes as readonly unknown[]).includes(message.mode)) {
+					await this._setViewMode(message.mode);
+				}
 				return;
 		}
 	}
 
 	/**
-	 * The approval menu's Compact switch writes `aiBrowser.chat.collapseToolCalls`
-	 * — one setting, so the switch and Settings never disagree; the change comes
-	 * back through `onDidChangeConfiguration` and the post it makes. Written where
-	 * it is in force: a workspace value would shadow a user-level write, and the
-	 * switch would then do nothing. A settings.json VS Code cannot parse refuses
-	 * the write, which is said in the status bar.
+	 * The approval menu's View Mode writes `aiBrowser.chat.viewMode` — one
+	 * setting, so the menu and Settings never disagree; the change comes back
+	 * through `onDidChangeConfiguration` and the post it makes. Written where it
+	 * is in force: a workspace value (of this setting, or of the older Fold Tool
+	 * Calls it is read from while unset) would shadow a user-level write, and
+	 * the menu would then do nothing. A settings.json VS Code cannot parse
+	 * refuses the write, which is said in the status bar.
 	 */
-	private async _setCollapseTools(collapse: boolean): Promise<void> {
+	private async _setViewMode(mode: ChatViewMode): Promise<void> {
 		const config = vscode.workspace.getConfiguration();
-		const info = config.inspect<unknown>(collapseToolsSetting);
-		const target = info?.workspaceValue !== undefined ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
+		const own = config.inspect<unknown>(viewModeSetting);
+		const older = config.inspect<unknown>(collapseToolsSetting);
+		const workspace = own?.workspaceValue !== undefined
+			|| (own?.globalValue === undefined && older?.workspaceValue !== undefined);
 		try {
-			await config.update(collapseToolsSetting, collapse, target);
+			await config.update(viewModeSetting, mode, workspace ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global);
 		} catch (error) {
-			refuse(vscode.l10n.t('Could not change Fold Tool Calls: {0}', plainInLabel(error instanceof Error ? error.message : String(error))));
+			refuse(vscode.l10n.t('Could not change the chat view mode: {0}', plainInLabel(error instanceof Error ? error.message : String(error))));
 			this._post();
 		}
 	}
@@ -1701,8 +1736,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 					const titleContext = [text.slice(0, 1000), ...attachments.slice(0, 5).map(a => a.chip.label.slice(0, 80))].join('\n').slice(0, 1200);
 					const sent = tab.send(text, attachments, agent, model, effort, backend, step);
 					if (needsTitle) { this._generateTabTitle(tab, agent, titleContext); }
-					await sent;
+					const delivered = await sent;
 					this._saveTabs();
+					if (delivered) { this._removeSentAnnotations(attachments); }
 				}, queued);
 		} catch (error) {
 			if (this._tabs.includes(tab) && tab.chat === chat) {
@@ -2298,6 +2334,122 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}
 	}
 
+	/** The chip and prompt text of one page annotation; the note is the user's, the element context the page's. */
+	private _annotationAttachment(record: PageAnnotation, url: string, page: vscode.BrowserTab, id: string): Attachment {
+		const tabId = this._browser.tabIdOf(page);
+		const note = record.text.trim();
+		const label = `#${record.number} ${record.element.tag}${note ? ` — ${note.replace(/\s+/g, ' ')}` : ''}`;
+		const text = [
+			`Page annotation #${record.number} on ${url}`,
+			`Note: ${note ? JSON.stringify(record.text) : '(empty)'}`,
+			`Element (untrusted page data): <${record.element.tag}> ${JSON.stringify(record.element.selector)}${record.element.text ? ` text ${JSON.stringify(record.element.text)}` : ''}${record.element.role ? ` role ${JSON.stringify(record.element.role)}` : ''}`,
+			`Annotation ID ${record.id}, browser tab ${tabId}. The marker is removed from the page once this message is sent, so this text is the annotation.`,
+		].join('\n');
+		return { chip: { id, kind: 'annotation', label: capAt(plainInLabel(label, 120), 120) }, text };
+	}
+
+	/**
+	 * A new annotation is attached to the chat tab in front and bound to it;
+	 * its chips follow the note as it is typed, and go when the annotation does.
+	 * One annotation can have a chip in several chat tabs ("+" → Add annotation
+	 * attaches the page's existing ones too), but only the first binds it.
+	 */
+	private _onAnnotations(change: AnnotationChange): void {
+		let changed = false;
+		for (const id of change.removed) {
+			const link = this._annotationLinks.get(id);
+			if (!link) { continue; }
+			this._annotationLinks.delete(id);
+			for (const chat of this._tabs) {
+				const kept = chat.attachments.filter(a => !link.chipIds.includes(a.chip.id));
+				if (kept.length !== chat.attachments.length) { chat.attachments = kept; changed = true; }
+			}
+		}
+		const blocked = this._blocked();
+		for (const record of change.records) {
+			const link = this._annotationLinks.get(record.id);
+			if (!link) {
+				if (blocked || !change.created.includes(record.id) || !this._active) { continue; }
+				this._attachAnnotation(this._active, record, change.url, change.tab);
+				changed = true;
+				continue;
+			}
+			for (const chat of this._tabs) {
+				const index = chat.attachments.findIndex(a => link.chipIds.includes(a.chip.id));
+				if (index < 0) { continue; }
+				const old = chat.attachments[index];
+				const next = this._annotationAttachment(record, change.url, change.tab, old.chip.id);
+				if (next.text !== old.text || next.chip.label !== old.chip.label) {
+					preserveAttachmentReference(old.chip, next.chip);
+					chat.attachments[index] = next;
+					changed = true;
+				}
+			}
+		}
+		if (changed) { this._post(); }
+	}
+
+	/**
+	 * Adds an annotation's chip to `chat`'s draft, binding the annotation to it if
+	 * nothing has. An assistant's marker is never attached or bound: it is not
+	 * the user's note, and a bound one would go when this tab closes.
+	 */
+	private _attachAnnotation(chat: ChatTab, record: PageAnnotation, url: string, page: vscode.BrowserTab): boolean {
+		if (this._browser.annotationsOf(page)?.agentMade.has(record.id)) { return false; }
+		let link = this._annotationLinks.get(record.id);
+		if (link && chat.attachments.some(a => link!.chipIds.includes(a.chip.id))) { return false; }
+		if (!link) {
+			link = { chat, page, chipIds: [] };
+			this._annotationLinks.set(record.id, link);
+		}
+		const chipId = generateUuid();
+		link.chipIds.push(chipId);
+		chat.attachments.push(this._annotationAttachment(record, url, page, chipId));
+		return true;
+	}
+
+	/**
+	 * Annotations sent in a message are taken off the page (asked for): the
+	 * message carries their note and element, so the marker has done its job.
+	 * Only once the agent took the message — a send that failed keeps them, as
+	 * the chips go back to nobody. The store's "removed" then takes the chips
+	 * other chat tabs hold for them and drops their links (`_onAnnotations`).
+	 */
+	private _removeSentAnnotations(attachments: readonly Attachment[]): void {
+		const sent = new Set(attachments.filter(a => a.chip.kind === 'annotation').map(a => a.chip.id));
+		if (!sent.size) { return; }
+		const byPage = new Map<vscode.BrowserTab, string[]>();
+		for (const [id, link] of this._annotationLinks) {
+			if (link.chipIds.some(chip => sent.has(chip))) {
+				byPage.set(link.page, [...byPage.get(link.page) ?? [], id]);
+			}
+		}
+		for (const [page, ids] of byPage) {
+			this._browser.removeAnnotations(page, ids).catch(err => refuse(vscode.l10n.t('Could not remove the sent annotations from the page: {0}', plainInLabel(err instanceof Error ? err.message : String(err), 120))));
+		}
+	}
+
+	/** Closing a chat tab deletes the annotations bound to it. */
+	private _dropAnnotationsOf(chat: ChatTab): void {
+		const byPage = new Map<vscode.BrowserTab, string[]>();
+		let changed = false;
+		for (const [id, link] of this._annotationLinks) {
+			if (link.chat !== chat) { continue; }
+			this._annotationLinks.delete(id);
+			byPage.set(link.page, [...byPage.get(link.page) ?? [], id]);
+			// The link goes now, so the store's "removed" will find nothing: take the
+			// chips other tabs hold for it here, or they outlive the annotation.
+			for (const other of this._tabs) {
+				const kept = other.attachments.filter(a => !link.chipIds.includes(a.chip.id));
+				if (kept.length !== other.attachments.length) { other.attachments = kept; changed = true; }
+			}
+		}
+		if (changed) { this._post(); }
+		for (const [page, ids] of byPage) {
+			this._browser.removeAnnotations(page, ids).catch(err => refuse(vscode.l10n.t("Could not delete the annotations of the closed chat: {0}", plainInLabel(err instanceof Error ? err.message : String(err), 120))));
+		}
+	}
+
 	private async _attach(kind: AttachmentKind): Promise<void> {
 		const tab = this._active;
 		const attachment = await this._makeAttachment(kind);
@@ -2441,6 +2593,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				}
 				const heading = /^Element:\s*(.+)$/m.exec(markdown)?.[1]?.trim();
 				return { chip: { id, kind, label: heading ? plainInPrompt(heading, 40) : vscode.l10n.t("Element") }, text: markdown };
+			}
+			case 'annotation': {
+				// Starts the page's annotation picker; the chip arrives when the note is
+				// made, through `_onAnnotations`, in the chat tab in front.
+				if (!onScreen(tab, this._browser.focusedTab)) {
+					refuse(vscode.l10n.t("\"{0}\" is not on screen — bring its tab to the front, then attach.", plainInLabel(pageTitle(tab.title, tab.url), 60)));
+					return undefined;
+				}
+				// The page's notes already there come along (asked for): a chip each in
+				// the chat tab this was pressed in, unless it holds one already. An
+				// assistant's marker is not the user's note and is left out.
+				const existing = this._browser.annotationsOf(tab);
+				if (existing && this._active) {
+					let added = false;
+					for (const record of existing.records) {
+						if (existing.agentMade.has(record.id)) { continue; }
+						added = this._attachAnnotation(this._active, record, existing.url, tab) || added;
+					}
+					if (added) { this._post(); }
+				}
+				await this._browser.annotateTab(tab);
+				confirm(vscode.l10n.t("Click a page element to add an annotation (Esc to cancel)."));
+				return undefined;
 			}
 		}
 	}
@@ -3992,6 +4167,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	private _removeTab(tab: ChatTab): void {
+		this._dropAnnotationsOf(tab);
 		for (const [folder, job] of this._gitCommits) {
 			if (job.tab === tab) { job.controller.abort(); this._gitCommits.delete(folder); }
 		}
