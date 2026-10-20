@@ -76,10 +76,13 @@ const pathToken = /^(?:~|\.{1,2}|[\p{L}\p{N}_@+.-]+)?(?:[\\/][\p{L}\p{N}_@+.-]+)
 /**
  * Whether a token of a message names a file, so it gets an icon in front.
  * Anywhere: a path with a `/` whose last part has an extension (`src/a.ts`,
- * `./x.json`, `src/chat/`), or a name the theme knows on its own (`package.json`,
- * `dockerfile`). In inline code (`code`), also a bare name with an extension
- * the theme or a language knows (`chat.ts`) — in prose that would put an icon
- * before "Node.js".
+ * `./x.json`, `src/chat/`), or a dotted name the theme knows (`package.json`).
+ * Extensionless names need a path or inline code: theme associations such as
+ * `version` and `changelog` also match ordinary prose.
+ * Markdown document names are also recognized by extension in prose, even if
+ * the theme only has a special association for README.md. Inline code also
+ * accepts a bare name with an extension the theme or a language knows
+ * (`chat.ts`) — in prose that would put an icon before "Node.js".
  */
 export function namesFile(table: FileIconTable, token: string, code: boolean): boolean {
 	if (token.length > 260 || !pathToken.test(token) || !/\p{L}/u.test(token)) { return false; }
@@ -89,7 +92,7 @@ export function namesFile(table: FileIconTable, token: string, code: boolean): b
 	const name = trimmed.split(/[\\/]/).pop()?.toLowerCase() ?? '';
 	if (!name || name === '.' || name === '..') { return false; }
 	if (folder) { return slash || code; }
-	if (own(table.fileNames, name)) { return true; }
+	if (own(table.fileNames, name)) { return slash || code || name.includes('.'); }
 	const dot = name.indexOf('.', 1);
 	const known = (() => {
 		for (let at = name.indexOf('.'); at >= 0; at = name.indexOf('.', at + 1)) {
@@ -98,5 +101,6 @@ export function namesFile(table: FileIconTable, token: string, code: boolean): b
 		}
 		return false;
 	})();
-	return known ? slash || code : slash && dot > 0 && dot < name.length - 1;
+	const markdown = /\.(?:md|markdown|mdown|mkdn|mkd)$/.test(name);
+	return known ? slash || code || markdown : slash && dot > 0 && dot < name.length - 1;
 }

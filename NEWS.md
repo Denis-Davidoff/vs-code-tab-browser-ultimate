@@ -20,10 +20,17 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 
 - $(coffee) **Keep awake** — the cup at the top of the chat keeps the computer from sleeping for the time you pick, or until the agents and their sub-agents have finished.
 - $(eye) **View Mode** — Minimal, Compact or Standard in the approval menu: how much of the agents' work, their tool calls and thinking, the chat shows.
+- $(files) **Chats across tabs and windows** — open chats with the top +; right-click tabs to move them between the sidebar, tabs and windows, keeping sessions, drafts and attachments. View chats side by side on one or multiple screens.
 - $(git-commit) **Commits and branches** — at the bottom right of the chat: commit in a couple of clicks with a generated message, and switch or create branches with a generated name.
 - $(device-camera-video) **Record video** — record a browser tab from its toolbar, up to 4K, straight into the chat or to the clipboard.
 - $(location) **Page markers** — pin notes to several elements right in the browser and hand them to the agent as one prompt.
 - $(settings-gear) **Chat Settings** — the gear at the top of the chat: change the system prompts behind commit messages, branch names and chat titles, and clean up temporary files.
+
+## 0.8.2 — 2026-10-20
+- **Chats across tabs and windows**: open chats in the sidebar, editor tabs or separate windows, and view several at once across screens. The top **+** offers a location; the tab-strip **+** adds a neighbouring chat.
+- **Move live chats**: right-click a chat tab to move it between open views, or from the sidebar into a new tab or window, keeping its session, draft and attachments. Empty source panels close after a move. Drag tabs to reorder them.
+- **Restore and find your chats**: chat tabs return after restarting VS Code. Panels have stable names such as **AI Browser #2**; history finds a conversation already open elsewhere and offers to move it back to the sidebar instead of opening a duplicate.
+- **More precise file icons**: ordinary prose that matches a theme's special file names no longer receives file icons.
 
 ## 0.8.1 — 2026-10-20
 - **File icons throughout the chat**: attachments, local file links, read/edit tool rows and file names in messages use your selected file icon theme and refresh when the theme or file associations change.

@@ -77,7 +77,7 @@ export interface AgentBackend extends vscode.Disposable {
 	generateTitle?(model: ChatModel, context: string, signal: AbortSignal, purpose?: 'branch', systemPrompt?: string): Promise<string | undefined>;
 	models(): Promise<ChatModel[]>;
 	/** The skills and commands it offers, read again from the CLI; kept as `knownCommands`. */
-	commands(): Promise<ChatCommand[]>;
+	commands(cwd?: string, ownSettings?: boolean): Promise<ChatCommand[]>;
 	/** The last list `commands()` (or, for Claude Code, `models()`) read; undefined before one. */
 	readonly knownCommands: readonly ChatCommand[] | undefined;
 	/**
@@ -169,50 +169,36 @@ export class AgentRegistry implements vscode.Disposable {
 	}
 
 	/** Each available agent's skills and commands, for the "/" palette. */
-	public get commands(): Partial<Record<AgentId, readonly ChatCommand[]>> {
+	public get commands(): Partial<Record<AgentId, readonly ChatCommand[]>> { return this.commandsFor(this._cwd()); }
+
+	/** Project command lists belong to a requesting folder, not a shared backend. */
+	public commandsFor(cwd: string): Partial<Record<AgentId, readonly ChatCommand[]>> {
 		const out: Partial<Record<AgentId, readonly ChatCommand[]>> = {};
-		for (const [id, { backend }] of this._backends) {
-			if (backend.knownCommands && this._agents.some(a => a.id === id && a.available)) {
-				out[id] = backend.knownCommands;
-			}
+		for (const agent of this._agents) {
+			const commands = this._commandLists.get(`${agent.id}\0${cwd}`);
+			if (agent.available && commands) { out[agent.id] = commands; }
 		}
 		return out;
 	}
 
-	/** When each agent's skills were last listed, and for which working directory. */
-	private readonly _commandsAsked = new Map<AgentId, { at: number; cwd: string }>();
+	private readonly _commandLists = new Map<string, readonly ChatCommand[]>();
+	private readonly _commandsAsked = new Map<string, number>();
 
-	/**
-	 * Lists an agent's skills again — the palette opened, and one may have been
-	 * added since. At most every 10 s per agent: for Claude Code each listing is
-	 * a short-lived CLI process. A failure keeps the list there was. The working
-	 * directory is the tab in front's, which can be another project than the
-	 * last listing's — its own skills then — so a new folder is always due.
-	 */
-	public async refreshCommands(id: AgentId): Promise<void> {
+	public async refreshCommands(id: AgentId, cwd = this._cwd(), ownSettings = this._ownSettings()): Promise<void> {
 		const entry = this._backends.get(id);
-		const asked = this._commandsAsked.get(id);
-		const last = asked?.at ?? 0;
-		const cwd = this._cwd();
-		// Not for an agent detection found unusable: listing would start its CLI
-		// (Codex's app-server, a Claude probe) for a list the getter drops. A
-		// stamp in the future — a clock moved back — is due, not fresh (#224).
+		const key = `${id}\0${cwd}`;
+		const last = this._commandsAsked.get(key);
 		const now = Date.now();
-		if (!entry || this._disposed || (now >= last && now - last < 10_000 && asked?.cwd === cwd)
-			|| !this._agents.some(a => a.id === id && a.available)) {
-			return;
-		}
-		this._commandsAsked.set(id, { at: Date.now(), cwd });
-		const before = JSON.stringify(entry.backend.knownCommands);
+		if (!entry || this._disposed || (last !== undefined && now >= last && now - last < 10_000)
+			|| !this._agents.some(agent => agent.id === id && agent.available)) { return; }
+		this._commandsAsked.set(key, now);
 		try {
-			await entry.backend.commands();
-		} catch {
-			return;
-		}
-		// The same backend still, or the list belongs to a copy no longer in use.
-		if (!this._disposed && this._backends.get(id) === entry && JSON.stringify(entry.backend.knownCommands) !== before) {
-			this._onDidChange.fire();
-		}
+			const commands = await entry.backend.commands(cwd, ownSettings);
+			if (this._disposed || this._backends.get(id) !== entry) { return; }
+			const before = this._commandLists.get(key);
+			this._commandLists.set(key, commands);
+			if (JSON.stringify(before) !== JSON.stringify(commands)) { this._onDidChange.fire(); }
+		} catch { this._commandsAsked.delete(key); }
 	}
 
 	public get detecting(): boolean {
@@ -320,6 +306,8 @@ export class AgentRegistry implements vscode.Disposable {
 
 		const detail = describeBinary(binary) + (about.choice === 'pinned' ? ' (picked for this project)' : '');
 		const before = entry.backend.knownCommands;
+		const commandsCwd = this._cwd();
+		const ownSettings = this._ownSettings();
 		try {
 			const models = await entry.backend.models();
 			if (this._disposed) {
@@ -331,10 +319,13 @@ export class AgentRegistry implements vscode.Disposable {
 			// Claude Code's come with the models (models() just replaced the list);
 			// Codex's are one more call, made on every detection so a Refresh
 			// finds a skill added since. The throttle starts from a real listing.
-			if (entry.backend.knownCommands === before) {
-				await entry.backend.commands().catch(() => undefined);
+			const commands = entry.backend.knownCommands === before
+				? await entry.backend.commands(commandsCwd, ownSettings).catch(() => undefined)
+				: entry.backend.knownCommands;
+			if (commands) {
+				this._commandLists.set(`${id}\0${commandsCwd}`, [...commands]);
+				this._commandsAsked.set(`${id}\0${commandsCwd}`, Date.now());
 			}
-			this._commandsAsked.set(id, { at: Date.now(), cwd: this._cwd() });
 			return { id, name, available: true, models, detail, ...about };
 		} catch (err) {
 			return { id, name, available: false, models: [], detail, ...about, problem: err instanceof Error ? err.message : String(err) };
@@ -347,6 +338,7 @@ export class AgentRegistry implements vscode.Disposable {
 			return;
 		}
 		this._backends.delete(id);
+		for (const key of this._commandLists.keys()) { if (key.startsWith(`${id}\0`)) { this._commandLists.delete(key); this._commandsAsked.delete(key); } }
 		this._onDidReplace.fire({ agent: id, gone });
 		entry.backend.dispose();
 	}

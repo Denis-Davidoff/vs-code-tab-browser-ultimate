@@ -1,3 +1,4 @@
+import { chatTabDragType, parseChatTabTransfer } from './tabDrag';
 import type { TemporaryStorage } from '../src/core/temporaryFiles';
 import { aiFeatures, defaultFeaturePrompts, featureAgent, featurePromptLimit, readFeatureAiSettings, type AiFeature, type FeatureAiSettings, type FeatureEffort } from '../src/chat/featureAi';
 import { createRecordingEncoder } from './recording';
@@ -41,6 +42,7 @@ import { baseName, searchPaths } from './fileRank';
 import codiconCsv from '@vscode/codicons/dist/codicon.csv';
 
 interface ViewState {
+	panel?: ChatViewState['panel'];
 	/** Before tabs: the one draft there was. Read once, into the first conversation shown. */
 	draft?: string;
 	/** The unsent draft of each open conversation, by chat id. */
@@ -809,7 +811,8 @@ function saveDraft(): void {
 	if (draftChat) {
 		drafts[draftChat] = currentDraft();
 	}
-	vscode.setState({ drafts });
+	vscode.setState({ drafts, panel: state?.panel ?? savedView?.panel });
+	post({ type: 'saveDrafts', drafts });
 }
 
 /**
@@ -818,6 +821,9 @@ function saveDraft(): void {
  * dropped, or the view state would grow with every chat ever started.
  */
 function followDraft(s: ChatViewState): void {
+	// Prune departed background chats even when the selected conversation is unchanged.
+	const openChats = new Set(s.tabs.map(tab => tab.chatId));
+	for (const id of Object.keys(drafts)) { if (!openChats.has(id)) { delete drafts[id]; } }
 	if (s.chatId === draftChat) {
 		draftTab = s.activeTab;
 		return;
@@ -846,7 +852,8 @@ function followDraft(s: ChatViewState): void {
 			delete drafts[id];
 		}
 	}
-	vscode.setState({ drafts });
+	vscode.setState({ drafts, panel: state?.panel ?? savedView?.panel });
+	post({ type: 'saveDrafts', drafts });
 	autosize();
 }
 
@@ -886,6 +893,7 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 		case 'state':
 			state = message.state;
 			render();
+			vscode.setState({ drafts, panel: state.panel });
 			return;
 		case 'localLinkInfo': {
 			const pending = pendingLocalLinkMenu;
@@ -1059,6 +1067,32 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 		case 'openSleep':
 			buildSleepPopup(); renderSleep(); openSleepPopup();
 			return;
+		case 'hydrateDrafts':
+			Object.assign(drafts, message.drafts);
+			return;
+		case 'setTabDraft':
+			drafts[message.chatId] = message.text;
+			if (state?.chatId === message.chatId) {
+				fromHistory = false; historyAt = inputHistory.length; input.value = message.text;
+				autosize(); saveDraft(); renderSend(); input.focus();
+			}
+			return;
+		case 'readTabDraft': {
+			saveDraft();
+			const tab = state?.tabs.find(tab => tab.id === message.tabId && tab.chatId === message.chatId);
+			post({ type: 'tabDraft', request: message.request,
+				draft: tab ? (message.tabId === draftTab ? currentDraft() : drafts[message.chatId] ?? '') : undefined });
+			return;
+		}
+		case 'historyChatOpen':
+			openMenu(tabAdd, [
+				{ icon: 'arrow-right', label: 'Move here', description: `Move the live chat from ${message.source}.`, run: () => post({ type: 'resolveHistoryChat', id: message.id, action: 'move' }) },
+				{ icon: 'link-external', label: `Show in ${message.source}`, run: () => post({ type: 'resolveHistoryChat', id: message.id, action: 'show' }) },
+			], 'This chat is already open');
+			return;
+		case 'chooseNewChatLocation':
+			chooseNewChatLocation();
+			return;
 		case 'focusInput':
 			// Not while a tab is being renamed: the host asks for this on every tab
 			// selection, and a reply that arrives after the double-click closed
@@ -1155,7 +1189,14 @@ interface TabNode {
 const tabNodes = new Map<string, TabNode>();
 const tabRow = el('div', { class: 'tab-row' });
 const tabAdd = button([icon('add')], { class: 'ghost round tab-add', title: 'New chat' });
-tabAdd.addEventListener('click', () => post({ type: 'newTab' }));
+function chooseNewChatLocation(): void {
+	openMenu(tabAdd, [
+		{ icon: 'comment-discussion', label: 'Here in chat', run: () => post({ type: 'newTab', location: 'here' }) },
+		{ icon: 'files', label: 'In a new tab', run: () => post({ type: 'newTab', location: 'tab' }) },
+		{ icon: 'link-external', label: 'In a new window', run: () => post({ type: 'newTab', location: 'window' }) },
+	], 'Open new chat');
+}
+tabAdd.addEventListener('click', () => post({ type: 'newTab', location: 'here' }));
 const tabConfirm = el('div', { class: 'tab-confirm' });
 /** The first click of a possible double-click, by tab; see the label's click handler. */
 let firstClick: { readonly id: string; readonly at: number } | undefined;
@@ -1163,6 +1204,88 @@ const doubleClickMs = 600;
 tabConfirm.hidden = true;
 let confirmShown = '';
 let frontTab: string | undefined;
+let draggedChatTab: { id: string; draft: string } | undefined;
+let chatTabDragEnded = -Infinity;
+
+function clearTabDropMarks(): void {
+	for (const { root } of tabNodes.values()) { root.classList.remove('drop-before', 'drop-after'); }
+}
+
+function makeTabDraggable(node: TabNode): void {
+	const { root } = node;
+	root.draggable = true;
+	root.addEventListener('dragstart', event => {
+		if (!event.dataTransfer || editingTab || node.close.contains(event.target as Node)) { event.preventDefault(); return; }
+		saveDraft();
+		draggedChatTab = { id: node.tab.id, draft: node.tab.id === draftTab ? currentDraft() : drafts[node.tab.chatId] ?? '' };
+		event.dataTransfer.effectAllowed = 'move';
+		event.dataTransfer.setData(chatTabDragType, JSON.stringify({ source: state?.surfaceId, id: node.tab.id, token: state?.dragToken }));
+		post({ type: 'beginTabDrag', id: node.tab.id, draft: draggedChatTab.draft });
+		root.classList.add('dragging');
+		closePopups();
+	});
+	root.addEventListener('dragover', event => {
+		if (!draggedChatTab) { return; }
+		event.preventDefault();
+		event.stopPropagation();
+		if (event.dataTransfer) { event.dataTransfer.dropEffect = 'move'; }
+		clearTabDropMarks();
+		const rect = root.getBoundingClientRect();
+		if (draggedChatTab.id !== node.tab.id) { root.classList.add(event.clientX >= rect.left + rect.width / 2 ? 'drop-after' : 'drop-before'); }
+		if (event.clientX < tabRow.getBoundingClientRect().left + 24) { tabRow.scrollLeft -= 12; }
+		if (event.clientX > tabRow.getBoundingClientRect().right - 24) { tabRow.scrollLeft += 12; }
+	});
+	root.addEventListener('dragleave', () => root.classList.remove('drop-before', 'drop-after'));
+	root.addEventListener('drop', event => {
+		if (!draggedChatTab) { return; }
+		event.preventDefault();
+		event.stopPropagation();
+		if (draggedChatTab.id !== node.tab.id) {
+			const rect = root.getBoundingClientRect();
+			post({ type: 'placeTab', id: draggedChatTab.id, target: node.tab.id, after: event.clientX >= rect.left + rect.width / 2 });
+		}
+		clearTabDropMarks();
+	});
+	root.addEventListener('dragend', () => {
+		draggedChatTab = undefined;
+		chatTabDragEnded = performance.now();
+		root.classList.remove('dragging');
+		clearTabDropMarks();
+	});
+}
+
+tabRow.addEventListener('dragover', event => {
+	if (!draggedChatTab) { return; }
+	event.preventDefault();
+	if (event.dataTransfer) { event.dataTransfer.dropEffect = 'move'; }
+});
+tabRow.addEventListener('drop', event => {
+	if (!draggedChatTab) { return; }
+	event.preventDefault();
+	const last = state?.tabs.at(-1);
+	if (last && last.id !== draggedChatTab.id) { post({ type: 'placeTab', id: draggedChatTab.id, target: last.id, after: true }); }
+	clearTabDropMarks();
+});
+// Cross-webview drags carry an opaque token; the source host retains the draft.
+app.addEventListener('dragover', event => {
+	if (draggedChatTab || !event.dataTransfer?.types.includes(chatTabDragType)) { return; }
+	event.preventDefault();
+	event.dataTransfer.dropEffect = 'move';
+	app.classList.add('receiving-chat-tab');
+});
+app.addEventListener('dragleave', event => {
+	if (!event.relatedTarget || !app.contains(event.relatedTarget as Node)) { app.classList.remove('receiving-chat-tab'); }
+});
+app.addEventListener('drop', event => {
+	app.classList.remove('receiving-chat-tab');
+	if (draggedChatTab || !event.dataTransfer?.types.includes(chatTabDragType)) { return; }
+	event.preventDefault();
+	event.stopPropagation();
+	const transfer = parseChatTabTransfer(event.dataTransfer.getData(chatTabDragType));
+	if (transfer) { post({ type: 'acceptTabDrop', ...transfer }); }
+});
+
+
 
 function renderTabs(s: ChatViewState): void {
 	if (closingTab && !s.tabs.some(t => t.id === closingTab && (t.busy || t.queued || t.skillRuns))) {
@@ -1177,6 +1300,7 @@ function renderTabs(s: ChatViewState): void {
 	const open = new Set(s.tabs.map(t => t.id));
 	for (const [id, node] of tabNodes) {
 		if (!open.has(id)) {
+			if (draggedChatTab?.id === id) { draggedChatTab = undefined; chatTabDragEnded = performance.now(); }
 			node.root.remove();
 			tabNodes.delete(id);
 		}
@@ -1234,7 +1358,32 @@ function tabNode(t: ChatTabSummary): TabNode {
 	const close = button([icon('close')], { class: 'tab-close' });
 	const root = el('div', { class: 'tab' }, label, close);
 	const node: TabNode = { root, label, close, tab: t, shown: '' };
+	makeTabDraggable(node);
+	root.addEventListener('contextmenu', event => {
+		event.preventDefault();
+		event.stopPropagation();
+		const destinations = (state?.chatSurfaces ?? []).filter(surface => surface.id !== state?.surfaceId);
+		const draft = () => {
+			saveDraft();
+			return node.tab.id === draftTab ? currentDraft() : drafts[node.tab.chatId] ?? '';
+		};
+		const items: MenuItem[] = state?.panel ? [] : [
+			{ icon: 'link-external', label: 'Move to a new window', run: () => post({ type: 'moveTabToNew', id: node.tab.id, location: 'window', draft: draft() }) },
+			{ icon: 'files', label: 'Move to a new tab', run: () => post({ type: 'moveTabToNew', id: node.tab.id, location: 'tab', draft: draft() }) },
+		];
+		items.push(...destinations.map(surface => ({
+			icon: 'arrow-right', label: surface.label, description: surface.description,
+			run: () => {
+				saveDraft();
+				post({ type: 'moveTabTo', id: node.tab.id, target: surface.id,
+					draft: node.tab.id === draftTab ? currentDraft() : drafts[node.tab.chatId] ?? '' });
+			},
+		})));
+		openMenu(label, items.length ? items : [{ label: 'No other chat is open', disabled: true, run: () => {} }],
+			`Move chat to · ${(state?.chatSurfaces ?? []).length} open views`);
+	});
 	label.addEventListener('click', event => {
+		if (performance.now() - chatTabDragEnded < 250) { return; }
 		// The second click of a double-click can land on another tab: the
 		// first one selects this tab, the strip's widths move, and the pointer is
 		// over a neighbour by the time it clicks again. The double-click belongs
@@ -1285,7 +1434,7 @@ function fillTab(node: TabNode, agent: string | undefined): void {
 		agentsOf(t) ? el('span', { class: 'tab-agents', text: String(agentsOf(t)), title: `${agentsOf(t)} agent${agentsOf(t) === 1 ? '' : 's'} working` }) : undefined,
 	];
 	node.label.replaceChildren(...parts.filter((p): p is HTMLElement => !!p));
-	node.label.title = `${agent ? `${t.title} — ${agent}` : t.title}\nDouble-click to rename`;
+	node.label.title = `${agent ? `${t.title} — ${agent}` : t.title}\nDouble-click to rename. Drag to reorder. Right-click to move to another chat view.`;
 	node.close.title = t.busy ? 'Close (stops what it is doing)' : 'Close';
 }
 
@@ -4564,7 +4713,7 @@ function closePopups(except?: HTMLElement, keep?: HTMLElement): void {
 			popup.classList.remove('open');
 		}
 	}
-	for (const pill of [effortButton, agentPill, modelPill, plusButton, usageButton, approveToggle, slashButton, workdirButton, branchButton, commitButton, contextButton]) {
+	for (const pill of [tabAdd, effortButton, agentPill, modelPill, plusButton, usageButton, approveToggle, slashButton, workdirButton, branchButton, commitButton, contextButton]) {
 		pill.classList.remove('active');
 	}
 	// A skill button is a popup's anchor too; the mark only tells a second
@@ -4572,7 +4721,7 @@ function closePopups(except?: HTMLElement, keep?: HTMLElement): void {
 	for (const { button } of skillButtons.values()) {
 		button.classList.remove('active');
 	}
-	for (const link of document.querySelectorAll('.link.active')) {
+	for (const link of document.querySelectorAll('.link.active, .tab-label.active')) {
 		link.classList.remove('active');
 	}
 }
@@ -4592,6 +4741,7 @@ function openAbove(popup: HTMLElement, anchor: HTMLElement, align: 'left' | 'rig
 	// `#app`, and the two only coincide when nothing else is laid out around it.
 	const box = app.getBoundingClientRect();
 	const rect = anchor.getBoundingClientRect();
+	popup.style.maxHeight = '';
 	popup.style.top = '';
 	popup.style.bottom = `${box.bottom - rect.top + 6}px`;
 	if (align === 'left') {
@@ -4602,6 +4752,17 @@ function openAbove(popup: HTMLElement, anchor: HTMLElement, align: 'left' | 'rig
 		popup.style.left = '';
 	}
 	popup.classList.add('open');
+	// Top-of-chat anchors need the menu below them; #app clips menus above it.
+	const above = Math.max(0, rect.top - box.top - 14);
+	const below = Math.max(0, box.bottom - rect.bottom - 14);
+	const height = popup.getBoundingClientRect().height;
+	if (height > above && below > above) {
+		popup.style.bottom = '';
+		popup.style.top = `${rect.bottom - box.top + 6}px`;
+		popup.style.maxHeight = `${Math.min(height, below)}px`;
+	} else if (height > above) {
+		popup.style.maxHeight = `${above}px`;
+	}
 	// Kept inside the view: `#app` clips what overflows it, and a menu opened
 	// from a pill near a narrow side bar's right edge lost its right side —
 	// with the agent menu's gear, the one way into the agent settings, in it.
@@ -4617,7 +4778,7 @@ function closeMenuOverPanel(): boolean {
 		return false;
 	}
 	menu.classList.remove('open', 'over-panel');
-	for (const link of document.querySelectorAll('.link.active')) {
+	for (const link of document.querySelectorAll('.link.active, .tab-label.active')) {
 		link.classList.remove('active');
 	}
 	return true;

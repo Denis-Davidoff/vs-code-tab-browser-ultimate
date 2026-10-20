@@ -184,6 +184,7 @@ export class CodexBackend implements AgentBackend {
 	}
 
 	private _skills: ChatCommand[] | undefined;
+	private readonly _projectSkills = new Map<string, readonly ChatCommand[]>();
 
 	public get knownCommands(): readonly ChatCommand[] | undefined {
 		return this._skills;
@@ -193,11 +194,14 @@ export class CodexBackend implements AgentBackend {
 	 * `skills/list` for the project folder, re-scanned from disk
 	 * (`forceReload`) so a skill added since shows up.
 	 */
-	public commands(): Promise<ChatCommand[]> {
+	public skillsFor(cwd: string): readonly ChatCommand[] { return this._projectSkills.get(cwd) ?? []; }
+
+	public commands(cwd = this._cwd()): Promise<ChatCommand[]> {
 		return this._held(async () => {
 			await this.ready();
-			const skills = codexSkills(await this.request('skills/list', { cwds: [this._cwd()], forceReload: true }));
+			const skills = codexSkills(await this.request('skills/list', { cwds: [cwd], forceReload: true }));
 			this._skills = skills;
+			this._projectSkills.set(cwd, skills);
 			return skills;
 		});
 	}
@@ -570,7 +574,7 @@ class CodexSession implements AgentSession {
 			items.push({ type: 'text', text: input.text, text_elements: [] });
 			// A `$skill` the message names goes with it as a `skill` item, the way
 			// Codex's own composer sends it.
-			items.push(...codexSkillItems(input.text, this._backend.knownCommands ?? []));
+			items.push(...codexSkillItems(input.text, this._backend.skillsFor(this._cwd)));
 		}
 		for (const image of input.images) {
 			items.push({ type: 'image', url: `data:${image.mediaType};base64,${image.base64}` });

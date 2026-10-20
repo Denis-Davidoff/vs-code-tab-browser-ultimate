@@ -285,9 +285,14 @@ export class ChatTab {
 	/** `failures` when the last message was sent, so only what went wrong after it counts. */
 	private _failuresBefore = 0;
 
-	constructor(private readonly _host: TabHost, chat: StoredChat) {
+	constructor(private _host: TabHost, chat: StoredChat) {
 		this._chat = chat;
 		this._failed = endedInError(chat);
+	}
+
+	/** Move the live session to another chat surface without closing it. */
+	public moveTo(host: TabHost): void {
+		this._host = host;
 	}
 
 	public get chat(): StoredChat {

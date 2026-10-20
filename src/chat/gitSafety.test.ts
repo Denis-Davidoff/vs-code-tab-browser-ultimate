@@ -132,7 +132,7 @@ test('background toolbar skills use the same Git launch guard as composer sends'
 	const host = {
 		_tabs: [tab], _active: tab, _disposed: false, _gitAccess: access, _blocked: () => false,
 		_toolbar: () => [{ id: 'skill', name: 'skill', agents: 'all', params: [], result: 'silent' }],
-		_registry: { detecting: false, commands: {}, backend: () => ({}) },
+		_registry: { detecting: false, commandsFor: () => ({}), backend: () => ({}) },
 		_selection: () => ({ agent: 'codex', model: 'selected' }), _chatSkillTabs: new Map(),
 		_runs: { isRunning: () => false, start() { started = true; } }, _untrusted: () => false,
 	};

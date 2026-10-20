@@ -1,0 +1,41 @@
+import { readChatPanelIdentity, type ChatPanelIdentity } from './chatPanelState';
+
+export interface SavedChatPanel { panel: ChatPanelIdentity; drafts: Record<string, string> }
+interface Storage {
+	get<T>(key: string): T | undefined;
+	update(key: string, value: unknown): PromiseLike<void>;
+}
+const key = 'aiBrowser.chat.panelCatalog';
+
+/** Reserve hidden editors before VS Code lazily invokes their serializers. */
+export class ChatPanelCatalog {
+	readonly panels = new Map<string, SavedChatPanel>();
+	private _highWater = 1;
+	private _saved = '';
+	constructor(private readonly _storage: Storage) {
+		const saved = _storage.get<{ highWater?: number; panels?: unknown[] }>(key);
+		if (Number.isSafeInteger(saved?.highWater) && saved!.highWater! > 0) { this._highWater = saved!.highWater!; }
+		for (const entry of Array.isArray(saved?.panels) ? saved.panels : []) {
+			const panel = readChatPanelIdentity(entry);
+			if (!panel || this.panels.has(panel.id)) { continue; }
+			const raw = (entry as SavedChatPanel).drafts;
+			const drafts = Object.fromEntries(Object.entries(raw && typeof raw === 'object' ? raw : {}).filter(([, value]) => typeof value === 'string'));
+			this.panels.set(panel.id, { panel, drafts });
+			this._highWater = Math.max(this._highWater, panel.number);
+		}
+	}
+	get highWater(): number { return this._highWater; }
+	remember(panel: ChatPanelIdentity, drafts: Record<string, string>): void {
+		this._highWater = Math.max(this._highWater, panel.number);
+		this.panels.set(panel.id, { panel, drafts: { ...drafts } });
+		this._persist();
+	}
+	forget(id: string): void { this.panels.delete(id); this._persist(); }
+	private _persist(): void {
+		const value = { highWater: this._highWater, panels: [...this.panels.values()] };
+		const json = JSON.stringify(value);
+		if (json === this._saved) { return; }
+		this._saved = json;
+		void this._storage.update(key, value).then(undefined, () => { this._saved = ''; });
+	}
+}

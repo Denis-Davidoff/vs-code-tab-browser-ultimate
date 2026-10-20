@@ -280,8 +280,8 @@ export class ClaudeBackend implements AgentBackend {
 	 * session: a second `initialize` on a running conversation is not
 	 * something the CLI is known to take.
 	 */
-	public async commands(): Promise<ChatCommand[]> {
-		const commands = await this._withProbe(async control => claudeCommands(await control.request('initialize')));
+	public async commands(cwd?: string, ownSettings?: boolean): Promise<ChatCommand[]> {
+		const commands = await this._withProbe(async control => claudeCommands(await control.request('initialize')), cwd, ownSettings);
 		this._commands = commands;
 		return commands;
 	}
@@ -333,8 +333,8 @@ export class ClaudeBackend implements AgentBackend {
 		return usage;
 	}
 
-	private async _withProbe<T>(use: (control: ControlChannel) => Promise<T>): Promise<T> {
-		const probe = this._probe();
+	private async _withProbe<T>(use: (control: ControlChannel) => Promise<T>, cwd?: string, ownSettings?: boolean): Promise<T> {
+		const probe = this._probe(cwd, ownSettings);
 		try {
 			return await use(probe.control);
 		} finally {
@@ -342,10 +342,10 @@ export class ClaudeBackend implements AgentBackend {
 		}
 	}
 
-	private _probe(): { control: ControlChannel; close: () => void } {
+	private _probe(cwd = this._cwd(), ownSettings = this._ownSettings()): { control: ControlChannel; close: () => void } {
 		// The skills listing starts a process in the tab in front's folder, and a
 		// `SessionStart` hook runs on that alone — measured, with nothing sent.
-		const process = new JsonLineProcess(this._binary, this._ownSettings() ? args : [...args, ...projectSettingsOff], this._cwd());
+		const process = new JsonLineProcess(this._binary, ownSettings ? args : [...args, ...projectSettingsOff], cwd);
 		const control = new ControlChannel(process);
 		return {
 			control,

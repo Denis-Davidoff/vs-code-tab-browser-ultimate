@@ -323,20 +323,20 @@ export class GeminiBackend implements AgentBackend {
 		return models;
 	}
 
-	public async commands(): Promise<ChatCommand[]> {
-		const { commands } = await this._probe();
+	public async commands(cwd?: string): Promise<ChatCommand[]> {
+		const { commands } = await this._probe(cwd);
 		this._commands = commands;
 		return commands;
 	}
 
-	private async _probe(): Promise<{ models: ChatModel[]; commands: ChatCommand[] }> {
+	private async _probe(cwd = this._cwd()): Promise<{ models: ChatModel[]; commands: ChatCommand[] }> {
 		if (this._disposed) {
 			throw new Error('Closed.');
 		}
 		let commands: ChatCommand[] = [];
 		let heard: (() => void) | undefined;
 		const listed = new Promise<void>(resolve => { heard = resolve; });
-		const connection = await connect(this._binary, this._cwd(), false, params => {
+		const connection = await connect(this._binary, cwd, false, params => {
 			const update = params.update as Record<string, unknown> | undefined;
 			if (update?.sessionUpdate === 'available_commands_update') {
 				commands = geminiCommands(update);
@@ -344,7 +344,7 @@ export class GeminiBackend implements AgentBackend {
 			}
 		}, (id, params) => connection.respond(id, geminiApprovalAnswer(params, false)), () => heard?.());
 		try {
-			const session = await connection.request('session/new', { cwd: this._cwd(), mcpServers: [] }).catch(err => {
+			const session = await connection.request('session/new', { cwd, mcpServers: [] }).catch(err => {
 				if (signedOut(err)) {
 					throw new Error(vscode.l10n.t("Gemini CLI is not signed in ({0}). Sign in with “Open Gemini CLI in Terminal” (the command palette), then press Refresh Agents.", err.message.trim().replace(/\.$/, '')));
 				}

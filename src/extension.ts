@@ -603,6 +603,9 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(chat, vscode.window.registerWebviewViewProvider(chatViewId, chat, {
 		webviewOptions: { retainContextWhenHidden: true },
 	}));
+	context.subscriptions.push(vscode.window.registerWebviewPanelSerializer('aiBrowser.chat.window', {
+		deserializeWebviewPanel: async (panel, state) => { chat.restoreChatPanel(panel, state); },
+	}));
 	configureTemporaryFiles(() => privateTempDirectory('inventory'), () => chat.temporaryProject);
 	recording.destination = chatId => chat.recordingDestination(chatId);
 	recording.project = chatId => chat.recordingProject(chatId);
@@ -626,7 +629,7 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('aiBrowser.chat.newChat', async () => {
 			await revealChat();
-			chat.newChat();
+			await chat.newChat();
 		}),
 		vscode.commands.registerCommand('aiBrowser.chat.settings', async () => {
 			await revealChat();

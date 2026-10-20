@@ -545,7 +545,17 @@ export type VoiceEvent =
 	| { readonly phase: 'cancelled' }
 	| { readonly phase: 'error'; readonly message: string };
 
+export interface ChatSurface {
+	readonly id: string;
+	readonly label: string;
+	readonly description: string;
+}
+
 export interface ChatViewState {
+	readonly panel?: import('./chatPanelState').ChatPanelIdentity;
+	readonly surfaceId?: string;
+	readonly dragToken?: string;
+	readonly chatSurfaces?: readonly ChatSurface[];
 	readonly recordingQuality?: RecordingQuality;
 	/** How long a recording may run, in active seconds (Chat Settings, 10 s to 1 h). */
 	readonly recordingSeconds?: number;
@@ -682,6 +692,11 @@ export type HostToView =
 	/** A toolbar skill refused, with the reason: the editor stays open and shows it. */
 	| { readonly type: 'toolbarError'; readonly message: string }
 	/** The selected file icon theme for file names in the conversation; absent with none selected. */
+	| { readonly type: 'historyChatOpen'; readonly id: string; readonly source: string }
+	| { readonly type: 'readTabDraft'; readonly request: string; readonly tabId: string; readonly chatId: string }
+	| { readonly type: 'hydrateDrafts'; readonly drafts: Readonly<Record<string, string>> }
+	| { readonly type: 'setTabDraft'; readonly chatId: string; readonly text: string }
+	| { readonly type: 'chooseNewChatLocation' }
 	| { readonly type: 'fileIcons'; readonly table?: import('./fileIconTable').FileIconTable }
 	| { readonly type: 'gitIndexResult'; readonly folder: string; readonly error?: string }
 	| { readonly type: 'gitBranchNameResult'; readonly id: number; readonly name?: string; readonly error?: string }
@@ -733,9 +748,17 @@ export type ViewToHost =
 	/** The usage line closed: not shown again until its percentage grows. */
 	| { readonly type: 'dismissUsageAlert'; readonly alert: UsageAlert }
 	| { readonly type: 'openChat'; readonly id: string }
+	| { readonly type: 'resolveHistoryChat'; readonly id: string; readonly action: 'move' | 'show' }
+	| { readonly type: 'saveDrafts'; readonly drafts: Readonly<Record<string, string>> }
+	| { readonly type: 'tabDraft'; readonly request: string; readonly draft?: string }
 	| { readonly type: 'deleteChat'; readonly id: string }
-	| { readonly type: 'newChat' }
-	| { readonly type: 'newTab' }
+	| { readonly type: 'newChat'; readonly location?: 'here' | 'tab' | 'window' }
+	| { readonly type: 'newTab'; readonly location?: 'here' | 'tab' | 'window' }
+	| { readonly type: 'placeTab'; readonly id: string; readonly target: string; readonly after: boolean }
+	| { readonly type: 'beginTabDrag'; readonly id: string; readonly draft: string }
+	| { readonly type: 'acceptTabDrop'; readonly source: string; readonly id: string; readonly token: string }
+	| { readonly type: 'moveTabTo'; readonly id: string; readonly target: string; readonly draft: string }
+	| { readonly type: 'moveTabToNew'; readonly id: string; readonly draft: string; readonly location: 'tab' | 'window' }
 	| { readonly type: 'selectTab'; readonly id: string }
 	| { readonly type: 'closeTab'; readonly id: string }
 	/** A tab renamed by double-click; the chat keeps the name, and the first message no longer sets one. */

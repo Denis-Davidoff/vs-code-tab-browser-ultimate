@@ -1,3 +1,5 @@
+import { ChatPanelCatalog } from './chatPanelCatalog';
+import { readChatPanelIdentity, type ChatPanelIdentity } from './chatPanelState';
 import { comparablePath, trackTemporaryFile, temporaryStorage } from '../core/temporaryFiles';
 import { featureAgent, featureAiKey, defaultFeaturePrompts, featureEffort, readFeatureAiSettings, type AiFeature } from './featureAi';
 import { availableBranchName, titleModel } from './autoTitle';
@@ -316,9 +318,36 @@ interface GitCommitJob {
 	proposedMessage?: string;
 }
 
+interface ChatServices {
+	registry: AgentRegistry;
+	git: GitAccess;
+	panels: ChatPanelCatalog;
+	runs: ToolbarRuns;
+	views: Set<ChatViewProvider>;
+}
+
 export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
+	private static readonly _surfaces = new Map<string, ChatViewProvider>();
+	private static _nextSurface = 0;
+	private static _sharedServices?: ChatServices;
+	private readonly _surfaceId = generateUuid();
+	private readonly _surfaceNumber: number = 1;
+	private readonly _dragToken = generateUuid();
+	private _surfaceSignature = '';
+	private readonly _draftRequests = new Map<string, { resolve: (draft: string) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout>; tab: ChatTab; chatId: string }>();
+	private _tabDrag?: { id: string; chatId: string; draft: string; at: number };
 	private readonly _sleep: SleepControl;
-	private _view: vscode.WebviewView | undefined;
+	private _view: Pick<vscode.WebviewView, 'webview' | 'visible' | 'onDidChangeVisibility' | 'onDidDispose'> | undefined;
+	private readonly _attachmentScheme = `${attachmentScheme}-${generateUuid()}`;
+	private static _openingWindow = false;
+	private _panel?: vscode.WebviewPanel;
+	private readonly _windows = new Set<vscode.WebviewPanel>();
+	private readonly _pendingPanels = new Map<string, ChatViewProvider>();
+	private readonly _savedDrafts = new Map<string, string>();
+	private _draftSaveTimer?: ReturnType<typeof setTimeout>;
+	private _shuttingDown = false;
+	private _lifetimeOwner?: ChatViewProvider;
+	private readonly _services: ChatServices;
 	private _viewReady = false;
 	private _queued: HostToView[] = [];
 	private readonly _registry: AgentRegistry;
@@ -359,7 +388,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private readonly _runs = new ToolbarRuns({
 		approvalMode: key => this._approvalPolicy()[key] ?? 'ask',
 		noteServer: server => this._noteServer(server),
-		changed: () => this._post(),
+		changed: () => { for (const view of this._services.views) { view._post(); } },
 		ended: (skill, end) => this._skillEnded(skill, end),
 	});
 	/** What is known of each agent's plan limits; see `_noteLimits`. */
@@ -382,13 +411,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		private readonly _browser: BrowserController,
 		private readonly _browserServer: () => BrowserServer | undefined = () => undefined,
 		private readonly _recording?: BrowserRecording,
+		private readonly _detachedChat?: StoredChat,
+		_transfer?: { tab: ChatTab; services: ChatServices },
+		private readonly _restoredPanel?: ChatPanelIdentity,
 	) {
-		this._registry = new AgentRegistry(() => this._cwd(), id => this._agentBinaries()[id], _browserServer, () => !this._untrusted(this._cwd()));
+		if (_restoredPanel) {
+			this._surfaceNumber = _restoredPanel.number;
+			ChatViewProvider._nextSurface = Math.max(ChatViewProvider._nextSurface, _restoredPanel.number);
+		} else if (_detachedChat) { this._surfaceNumber = ++ChatViewProvider._nextSurface; }
+		const shared = _transfer?.services ?? ChatViewProvider._sharedServices;
+		this._registry = shared?.registry ?? new AgentRegistry(() => this._cwd(), id => this._agentBinaries()[id], _browserServer, () => !this._untrusted(this._cwd()));
 		void sweepBrowserConfigs().catch(() => { /* swept with the temp directory */ });
-		this._subscriptions.push(this._registry, this._registry.onDidChange(() => this._post()));
+		if (shared) { this._runs = shared.runs; this._gitAccess = shared.git; }
+		this._services = shared ?? { registry: this._registry, git: this._gitAccess, panels: new ChatPanelCatalog(_context.workspaceState), runs: this._runs, views: new Set() };
+		this._services.views.add(this);
+		ChatViewProvider._sharedServices = this._services;
+		ChatViewProvider._nextSurface = Math.max(ChatViewProvider._nextSurface, this._services.panels.highWater);
+		if (_restoredPanel) {
+			for (const [id, draft] of Object.entries(this._services.panels.panels.get(_restoredPanel.id)?.drafts ?? {})) { this._savedDrafts.set(id, draft); }
+		}
+		this._subscriptions.push(this._registry.onDidChange(() => this._post()));
 		if (_recording) { this._subscriptions.push(_recording.onDidChange(() => this._postRecording())); }
 		this._remembered = _context.globalState.get<RememberedSelection>(selectionKey) ?? { models: {}, efforts: {} };
-		this._restoreTabs();
+		if (_restoredPanel) {
+			this._restoreTabs();
+		} else if (_detachedChat) {
+			this._active = _transfer?.tab ?? new ChatTab(this._tabHost, _detachedChat);
+			this._tabs.push(this._active);
+		} else {
+			this._restoreTabs();
+		}
 		const savedStashes = _context.workspaceState.get<Record<string, { hash: string; branch: string }[]>>('aiBrowser.branchStashes') ?? {};
 		for (const [folder, entries] of Object.entries(savedStashes)) {
 			if (!Array.isArray(entries)) { continue; }
@@ -439,13 +491,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}));
 		// …and the suggested page the editor tab in front, which a switch to a
 		// non-text editor or between groups changes without that event.
-		this._subscriptions.push(vscode.window.tabGroups.onDidChangeTabs(() => this._post()));
+		this._subscriptions.push(vscode.window.tabGroups.onDidChangeTabs(event => {
+			if (!this._shuttingDown) {
+				for (const tab of event.closed) {
+					for (const pending of this._pendingPanels.values()) {
+						if (tab.label === pending._surfaceLabel() && tab.input instanceof vscode.TabInputWebview && tab.input.viewType.endsWith('aiBrowser.chat.window')) { pending.dispose(); }
+					}
+				}
+			}
+			this._post();
+		}));
 		this._subscriptions.push(vscode.window.tabGroups.onDidChangeTabGroups(() => this._post()));
 		// Changing a document's language fires close/open events in VS Code.
 		this._subscriptions.push(vscode.workspace.onDidOpenTextDocument(() => this._gitEventRefresh()));
 		this._subscriptions.push(vscode.workspace.onDidCloseTextDocument(() => this._gitEventRefresh()));
 		this._subscriptions.push(vscode.extensions.onDidChange(() => { this._gitEventRefresh(); this._postFileIcons(); }));
-		this._subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(attachmentScheme, {
+		this._subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(this._attachmentScheme, {
 			// An editor restored after a reload asks for a chip this window never
 			// held, and gets a sentence rather than an empty page.
 			provideTextDocumentContent: uri => uri.path.startsWith('/git-diff-empty/') ? '' : this._attachmentTexts.get(uri.query)
@@ -475,6 +536,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				// The menu then only learns of tabs on the next state change.
 			}
 		}
+		ChatViewProvider._surfaces.set(this._surfaceId, this);
+		if (!this._panelIdentity) { this._restorePendingPanels(); }
 	}
 
 	/**
@@ -559,15 +622,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			const needsView = !this._viewReady;
 			this._postMessage({ type: 'recording', id, message: { type: 'open' } });
 			if (needsView) {
-				await vscode.commands.executeCommand(`${chatViewId}.focus`);
+				await this._focusView();
 				await vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
 			}
 		}).catch(error => messages.fire({ type: 'error', error: String(error) }));
 		return host;
 	}
 
+	private async _focusView(): Promise<void> {
+		if (!this._panel && this._panelIdentity) { await this._materializePanel(); }
+		if (this._panel) { this._panel.reveal(); }
+		else { await vscode.commands.executeCommand(`${chatViewId}.focus`); }
+	}
+
 	public resolveWebviewView(view: vscode.WebviewView): void {
+		this._bindView(view);
+	}
+
+	private _bindView(view: NonNullable<ChatViewProvider['_view']>): void {
 		this._view = view;
+		for (const surface of ChatViewProvider._surfaces.values()) { surface._post(); }
 		this._viewReady = false;
 		const media = vscode.Uri.joinPath(this._context.extensionUri, 'media');
 		// With the icon theme's folder from the start: adding it at the first
@@ -586,6 +660,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		view.onDidDispose(() => {
 			if (this._view === view) {
 				this._view = undefined;
+				for (const surface of ChatViewProvider._surfaces.values()) { surface._post(); }
 				this._viewReady = false;
 				this._videoEncoder?.host.dispose();
 				// Nothing can show what a conversation does once its view is gone,
@@ -600,7 +675,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				// The toolbar's background runs too: their button and its question
 				// went with the view. The skills sent into the chat ended with their
 				// tabs' turns, the user's doing — not told.
-				this._runs.viewClosed();
+				for (const tab of this._tabs) { this._runs.stopChat(tab.chat.id); }
 				this._chatSkillTabs.clear();
 				// A recording nobody can see is not left listening to the microphone.
 				this._voiceCancel();
@@ -686,6 +761,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private _voiceAttached?: { tab: ChatTab; chipId: string };
 	/** The title bar shows an empty or a filled cup, by context key. */
 	private _publishSleep(): void {
+		if (this._panelIdentity) { return; }
 		const on = this._sleep.state.mode !== 'off' || this._sleep.state.automaticActive === true;
 		if (on !== this._sleepShown) {
 			this._sleepShown = on;
@@ -694,14 +770,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	private _post(): void {
+		if (this._disposed) { return; }
 		if (this._postTimer) {
 			return;
 		}
 		this._postTimer = setTimeout(() => {
 			this._postTimer = undefined;
+			const signature = `${this._surfaceLabel()}|${this._tabs.length}|${this._active.chat.title}|${this._active.chat.folder ?? ''}`;
+			if (signature !== this._surfaceSignature) {
+				this._surfaceSignature = signature;
+				if (this._panel) { this._panel.title = this._surfaceLabel(); }
+				for (const surface of ChatViewProvider._surfaces.values()) { if (surface !== this) { surface._post(); } }
+			}
 			this._postMessage({ type: 'state', state: this._state() });
 			this._saveTabs();
 		}, postDelayMs);
+	}
+
+	private _surfaceLabel(): string {
+		return this._panelIdentity ? `AI Browser #${this._surfaceNumber}` : 'AI Browser (sidebar)';
 	}
 
 	private _state(): ChatViewState {
@@ -714,6 +801,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		const selection = this._selection();
 		const viewMode = readViewMode();
 		return {
+			panel: this._panelIdentity,
+			surfaceId: this._surfaceId,
+			dragToken: this._dragToken,
+			chatSurfaces: [...ChatViewProvider._surfaces.values()].filter(surface => (!!surface._view || !!surface._panelIdentity) && !surface._disposed).map(surface => ({
+				id: surface._surfaceId, label: surface._surfaceLabel(),
+				description: `${surface._active.chat.title} · ${surface._tabs.length} chats · ${surface._active.chat.folder ?? surface._windowCwd()}`,
+			})),
 			sleep: this._sleep.state,
 			featureAi: readFeatureAiSettings(this._context.globalState.get(featureAiKey)),
 			recordingQuality: readRecordingQuality(this._context.globalState.get(recordingQualityKey)),
@@ -746,7 +840,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			tabLimit: limit,
 			approvals: { policy: this._approvalPolicy(), servers: this._approvalServers() },
 			switchTo: this._switchTo,
-			commands: this._registry.commands,
+			commands: this._registry.commandsFor(this._cwd()),
 			toolbar: this._toolbar(),
 			toolbarRuns: this._toolbarRunsState(),
 			skillAgents: this._runs.rows(this._active.chat.id),
@@ -776,7 +870,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}
 		const agent = tab.chat.agent;
 		// Gemini CLI's `/compress` is not among the commands it handles over ACP.
-		const canCompact = agent === 'codex' || (agent === 'claude' && !!this._registry.commands.claude?.some(c => c.name === 'compact'));
+		const canCompact = agent === 'codex' || (agent === 'claude' && !!this._registry.commandsFor(this._cwd()).claude?.some(c => c.name === 'compact'));
 		return { used: stats.contextTokens, window: stats.contextWindow, compacted: stats.contextCompacted, canCompact };
 	}
 
@@ -880,6 +974,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				// drawn with its icons once rather than drawn and then drawn again;
 				// the fresh read below changes nothing in the view when it is equal.
 				if (this._fileIconTable) { void this._view?.webview.postMessage({ type: 'fileIcons', table: this._fileIconTable } satisfies HostToView); }
+				this._postMessage({ type: 'hydrateDrafts', drafts: Object.fromEntries(this._savedDrafts) });
 				this._postMessage({ type: 'state', state: this._state() });
 				const queued = this._queued;
 				this._queued = [];
@@ -1012,7 +1107,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				return;
 			case 'listCommands':
 				if (!this._blocked() && isAgentId(message.agent) && !this._registry.detecting) {
-					await this._registry.refreshCommands(message.agent);
+					await this._registry.refreshCommands(message.agent, this._cwd(), !this._untrusted(this._cwd()));
 				}
 				return;
 			case 'select':
@@ -1118,7 +1213,32 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				}
 				return;
 			case 'newTab':
-				this.newChat();
+				await this.newChat(message.location);
+				return;
+			case 'placeTab':
+				this._placeTab(message.id, message.target, message.after);
+				return;
+			case 'beginTabDrag': {
+				const tab = this._tabs.find(t => t.id === message.id);
+				if (tab && typeof message.draft === 'string') { this._tabDrag = { id: tab.id, chatId: tab.chat.id, draft: message.draft, at: Date.now() }; }
+				return;
+			}
+			case 'acceptTabDrop':
+				this._acceptTabDrop(message.source, message.id, message.token);
+				return;
+			case 'moveTabTo': {
+				const destination = ChatViewProvider._surfaces.get(message.target);
+				if (destination && !destination._view && destination._panelIdentity) { await destination._focusView(); }
+				const tab = this._tabs.find(t => t.id === message.id);
+				if (destination && tab && typeof message.draft === 'string' && this._moveTabInto(tab, destination, message.draft)) {
+					await destination._focusView();
+				}
+				return;
+			}
+			case 'moveTabToNew':
+				if (!this._panelIdentity && (message.location === 'tab' || message.location === 'window')) {
+					await this._detachTab(message.id, typeof message.draft === 'string' ? message.draft : '', message.location);
+				}
 				return;
 			case 'selectTab':
 				this._selectTab(message.id);
@@ -1176,6 +1296,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			case 'dismissUsageAlert':
 				this._dismissUsageAlert(message.alert);
 				return;
+			case 'saveDrafts': {
+				if (!message.drafts || typeof message.drafts !== 'object') { return; }
+				this._savedDrafts.clear();
+				for (const tab of this._tabs) {
+					const draft = Object.prototype.hasOwnProperty.call(message.drafts, tab.chat.id) ? message.drafts[tab.chat.id] : undefined;
+					if (typeof draft === 'string') { this._savedDrafts.set(tab.chat.id, draft); }
+				}
+				clearTimeout(this._draftSaveTimer);
+				this._draftSaveTimer = setTimeout(() => { this._draftSaveTimer = undefined; this._saveTabs(); }, 150);
+				return;
+			}
+			case 'tabDraft': {
+				const pending = this._draftRequests.get(message.request);
+				if (!pending) { return; }
+				this._draftRequests.delete(message.request); clearTimeout(pending.timer);
+				if (typeof message.draft === 'string' && this._tabs.includes(pending.tab) && pending.tab.chat.id === pending.chatId) { pending.resolve(message.draft); }
+				else { pending.reject(new Error('The source chat changed before its draft was read.')); }
+				return;
+			}
+			case 'resolveHistoryChat':
+				await this._resolveHistoryChat(message.id, message.action);
+				return;
 			case 'openChat':
 				this._openChat(message.id);
 				return;
@@ -1183,7 +1325,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				await this._deleteChat(message.id);
 				return;
 			case 'newChat':
-				this.newChat();
+				await this.newChat(message.location);
 				return;
 			case 'copy':
 				await vscode.env.clipboard.writeText(message.text);
@@ -1529,7 +1671,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			refuse(filled.error);
 			return;
 		}
-		const commands = this._registry.commands[agent] ?? [];
+		const commands = this._registry.commandsFor(tab.cwd)[agent] ?? [];
 		const steps = filled.steps.map(step => ({ ...step, text: adaptSigils(step.text, commands) }));
 		// The parameters as given, for the placeholders of the skill's notification.
 		const stringValues: Record<string, string> = {};
@@ -2561,7 +2703,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		// The chat tab it was asked from, or the one in front if that one closed meanwhile.
 		(this._tabs.includes(tab) ? tab : this._active).attachments.push(attachment);
 		this._post();
-		await vscode.commands.executeCommand(`${chatViewId}.focus`);
+		await this._focusView();
 		this._postMessage({ type: 'focusInput' });
 	}
 
@@ -2728,7 +2870,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				// Plain text, not Markdown: the text is page-written — an element's id, a
 				// page title — and a Markdown editor turns `[x](command:…)` in it into a
 				// link that runs a command on Cmd+click, the sink of #124 and #132.
-				const uri = vscode.Uri.from({ scheme: attachmentScheme, path: `/${fileSafe(attachment.chip.label)}.txt`, query: id });
+				const uri = vscode.Uri.from({ scheme: this._attachmentScheme, path: `/${fileSafe(attachment.chip.label)}.txt`, query: id });
 				await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri), options);
 			}
 		} catch (err) {
@@ -2751,7 +2893,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			: text;
 		const id = `text-${generateUuid()}`;
 		remember(this._attachmentTexts, id, body);
-		const uri = vscode.Uri.from({ scheme: attachmentScheme, path: `/${fileSafe(name)}.txt`, query: id });
+		const uri = vscode.Uri.from({ scheme: this._attachmentScheme, path: `/${fileSafe(name)}.txt`, query: id });
 		try {
 			await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri), { preview: true, viewColumn: vscode.ViewColumn.Active });
 		} catch (err) {
@@ -2775,7 +2917,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		const side = (label: string, text: string) => {
 			const id = `text-${generateUuid()}`;
 			remember(this._attachmentTexts, id, text);
-			return vscode.Uri.from({ scheme: attachmentScheme, path: `/${base} (${label}).txt`, query: id });
+			return vscode.Uri.from({ scheme: this._attachmentScheme, path: `/${base} (${label}).txt`, query: id });
 		};
 		const left = side('before', before);
 		const right = side('after', after);
@@ -2968,10 +3110,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 * shown in the tab in front if that one is empty, and otherwise in a new tab
 	 * beside it — opening one must not end a conversation that is working.
 	 */
+	/** A conversation has one owner across every chat surface in this extension host. */
+	private _findOpenChat(id: string): { surface: ChatViewProvider; tab: ChatTab } | undefined {
+		const local = this._tabs.find(tab => tab.chat.id === id);
+		if (local) { return { surface: this, tab: local }; }
+		for (const surface of ChatViewProvider._surfaces.values()) {
+			if (surface === this || surface._disposed) { continue; }
+			const tab = surface._tabs.find(candidate => candidate.chat.id === id);
+			if (tab) { return { surface, tab }; }
+		}
+		return undefined;
+	}
+
 	private _openChat(id: string): void {
-		const open = this._tabs.find(t => t.chat.id === id);
+		const open = this._findOpenChat(id);
 		if (open) {
-			this._selectTab(open.id);
+			if (open.surface !== this && !this._panelIdentity) {
+				this._postMessage({ type: 'historyChatOpen', id, source: open.surface._surfaceLabel() });
+				return;
+			}
+			open.surface._selectTab(open.tab.id);
+			if (open.surface !== this) { void open.surface._focusView().catch(error => this._fail(error)); }
 			return;
 		}
 		const stored = this._history().find(c => c.id === id);
@@ -2995,17 +3154,44 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		this._post();
 	}
 
+	private _readTabDraft(tab: ChatTab): Promise<string> {
+		if (!this._viewReady) { return Promise.resolve(this._savedDrafts.get(tab.chat.id) ?? ''); }
+		return new Promise((resolve, reject) => {
+			const request = generateUuid();
+			const timer = setTimeout(() => { this._draftRequests.delete(request); reject(new Error('Could not read the draft from the source chat.')); }, 10_000);
+			this._draftRequests.set(request, { resolve, reject, timer, tab, chatId: tab.chat.id });
+			this._postMessage({ type: 'readTabDraft', request, tabId: tab.id, chatId: tab.chat.id });
+		});
+	}
+
+	private async _resolveHistoryChat(id: string, action: 'move' | 'show'): Promise<void> {
+		if (action !== 'move' && action !== 'show') { return; }
+		const open = this._findOpenChat(id);
+		if (!open) { this._openChat(id); return; }
+		if (action === 'show' || open.surface === this) {
+			open.surface._selectTab(open.tab.id);
+			await open.surface._focusView();
+			return;
+		}
+		const draft = await open.surface._readTabDraft(open.tab);
+		if (this._disposed) { return; }
+		const current = this._findOpenChat(id);
+		if (current?.surface !== open.surface || current.tab !== open.tab) { this._openChat(id); return; }
+		if (open.surface._moveTabInto(open.tab, this, draft)) { await this._focusView(); }
+	}
+
 	private async _deleteChat(id: string): Promise<void> {
 		try {
 			await this._context.workspaceState.update(historyKey, this._history().filter(c => c.id !== id));
 		} catch {
 			// Best effort, as above.
 		}
-		const tab = this._tabs.find(t => t.chat.id === id);
-		if (tab) {
+		const open = this._findOpenChat(id);
+		if (open) {
+			const { tab, surface } = open;
 			// Not saved on the way out: that would write the deleted chat back.
 			tab.discard();
-			this._removeTab(tab);
+			surface._removeTab(tab);
 		}
 		this.showHistory(true);
 	}
@@ -3064,7 +3250,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	private _busyGitFolders(): string[] {
-		return this._tabs.filter(t => t.busy || this._repoBusy.has(t) || this._runs.runningIn(t.chat.id) > 0).map(t => t.cwd);
+		return [...this._services.views].flatMap(view => view._tabs.filter(t => t.busy || view._repoBusy.has(t) || this._runs.runningIn(t.chat.id) > 0).map(t => t.cwd));
 	}
 
 	private async _withGitMutation<T>(folder: string, work: () => Promise<T>): Promise<T> {
@@ -3185,7 +3371,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			const api = (await extension.activate()).getAPI(1);
 			if (!await api.openRepository(vscode.Uri.file(root))) { throw new Error('The Git extension could not open this repository.'); }
 			const emptyId = generateUuid();
-			const empty = vscode.Uri.from({ scheme: attachmentScheme, path: `/git-diff-empty/${path.basename(file.path)}`, query: emptyId });
+			const empty = vscode.Uri.from({ scheme: this._attachmentScheme, path: `/git-diff-empty/${path.basename(file.path)}`, query: emptyId });
 			const sideUri = (side: ReturnType<typeof gitDiffSides>['before']) => {
 				if (!side) { return empty; }
 				const uri = vscode.Uri.file(path.join(root, side.path));
@@ -3361,7 +3547,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			if (this._blocked()) { throw new Error('Git branch actions are unavailable in this window.'); }
 			release = await this._gitAccess.mutate(folder, () => this._busyGitFolders());
 			if (this._blocked()) { throw new Error('Git branch actions are unavailable in this window.'); }
-			const sharing = () => this._tabs.filter(t => this._workdir(t) === folder);
+			const sharing = () => [...this._services.views].flatMap(view => view._tabs.filter(t => view._workdir(t) === folder));
 			const working = () => sharing().some(t => t.busy || this._repoBusy.has(t) || this._runs.runningIn(t.chat.id) > 0);
 			if (working()) { throw new Error('Wait for agents working in this folder to finish.'); }
 			const git = await gitBinary();
@@ -3395,7 +3581,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				const preview = async (content: string) => {
 					const id = generateUuid();
 					remember(this._attachmentTexts, id, content);
-					const uri = vscode.Uri.from({ scheme: attachmentScheme, path: '/branch-changes.txt', query: id });
+					const uri = vscode.Uri.from({ scheme: this._attachmentScheme, path: '/branch-changes.txt', query: id });
 					const doc = await vscode.workspace.openTextDocument(uri);
 					await vscode.window.showTextDocument(doc, { preview: true });
 				};
@@ -3564,7 +3750,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		// The "/" palette lists the skills of the project in front.
 		const agent = tab.started ? tab.chat.agent : this._selection(tab).agent;
 		if (agent && !this._registry.detecting) {
-			void this._registry.refreshCommands(agent).catch(() => undefined);
+			void this._registry.refreshCommands(agent, this._cwd(), !this._untrusted(this._cwd())).catch(() => undefined);
 		}
 		return tab;
 	}
@@ -3678,7 +3864,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}
 		if (!attached) { return; }
 		this._post();
-		await vscode.commands.executeCommand(`${chatViewId}.focus`);
+		await this._focusView();
 		this._postMessage({ type: 'focusInput' });
 	}
 
@@ -3756,7 +3942,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}
 		this._active.attachments.push(attachment);
 		this._post();
-		await vscode.commands.executeCommand(`${chatViewId}.focus`);
+		await this._focusView();
 		this._postMessage({ type: 'focusInput' });
 	}
 
@@ -4120,7 +4306,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}
 		// A new chat on a copy works in the same copy, so pushing or removing it
 		// waits for every tab in it — and the background skills started there.
-		const sharing = this._tabs.filter(t => t.chat.folder === folder);
+		const sharing = [...this._services.views].flatMap(view => view._tabs.filter(t => t.chat.folder === folder));
 		const working = sharing.some(t => t.busy || this._repoBusy.has(t) || this._runs.runningIn(t.chat.id) > 0);
 		switch (action) {
 			case 'changes':
@@ -4161,9 +4347,76 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 	/* ------------------------------------------------------------ tabs */
 
+	private get _panelIdentity(): ChatPanelIdentity | undefined {
+		return this._restoredPanel ?? (this._detachedChat ? { id: this._surfaceId, number: this._surfaceNumber } : undefined);
+	}
+
+	private get _tabsStorageKey(): string {
+		const panel = this._panelIdentity;
+		return panel ? `${openTabsKey}.panel.${panel.id}` : openTabsKey;
+	}
+
+	/** VS Code restores the editor's placement; we restore only its chat state. */
+	private _restorePendingPanels(): void {
+		for (const saved of this._services.panels.panels.values()) {
+			const pending = new ChatViewProvider(this._context, this._browser, this._browserServer, undefined, undefined, undefined, saved.panel);
+			pending._lifetimeOwner = this;
+			this._pendingPanels.set(saved.panel.id, pending);
+		}
+	}
+
+	private _bindPanel(panel: vscode.WebviewPanel, state?: unknown): void {
+		const owner = this._lifetimeOwner ?? this;
+		this._panel = panel;
+		if (this._panelIdentity) { owner._pendingPanels.delete(this._panelIdentity.id); }
+		const raw = state && typeof state === 'object' ? (state as { drafts?: unknown }).drafts : undefined;
+		if (raw && typeof raw === 'object') {
+			for (const tab of this._tabs) {
+				const draft = (raw as Record<string, unknown>)[tab.chat.id];
+				if (typeof draft === 'string') { this._savedDrafts.set(tab.chat.id, draft); }
+			}
+		}
+		panel.title = this._surfaceLabel();
+		owner._windows.add(panel);
+		panel.onDidDispose(() => { owner._windows.delete(panel); this.dispose(); });
+		this._bindView({ webview: panel.webview, get visible() { return panel.visible; },
+			onDidDispose: panel.onDidDispose, onDidChangeVisibility: listener => panel.onDidChangeViewState(() => listener()) });
+	}
+
+	private _nativePanelTab(): vscode.Tab | undefined {
+		return vscode.window.tabGroups.all.flatMap(group => group.tabs).find(tab => tab.label === this._surfaceLabel()
+			&& tab.input instanceof vscode.TabInputWebview && tab.input.viewType.endsWith('aiBrowser.chat.window'));
+	}
+
+	/** Reveal a pending editor using public APIs, replacing its unrevived placeholder. */
+	private async _materializePanel(): Promise<void> {
+		if (this._panel) { return; }
+		const old = this._nativePanelTab();
+		const panel = vscode.window.createWebviewPanel('aiBrowser.chat.window', this._surfaceLabel(), old?.group.viewColumn ?? vscode.ViewColumn.Active, { retainContextWhenHidden: true });
+		this._bindPanel(panel);
+		if (old) { await vscode.window.tabGroups.close(old, true); }
+	}
+
+	private _closeEmptyPanel(): void {
+		if (this._panel) { this._panel.dispose(); return; }
+		const old = this._nativePanelTab();
+		this.dispose();
+		if (old) { void vscode.window.tabGroups.close(old, true); }
+	}
+
+	public restoreChatPanel(panel: vscode.WebviewPanel, state: unknown): void {
+		const identity = readChatPanelIdentity(state) ?? { id: generateUuid(), number: ChatViewProvider._nextSurface + 1 };
+		const existing = [...this._services.views].find(view => view._panelIdentity?.id === identity.id);
+		if (existing?._panel) { if (existing._panel !== panel) { panel.dispose(); } return; }
+		const restored = existing ?? this._pendingPanels.get(identity.id)
+			?? new ChatViewProvider(this._context, this._browser, this._browserServer, undefined, undefined, undefined, identity);
+		restored._lifetimeOwner = this;
+		restored._bindPanel(panel, state);
+	}
+
 	/** The open tabs as they were when the window closed; at least one, empty if nothing was open. */
 	private _restoreTabs(): void {
-		const saved = this._context.workspaceState.get<{ ids?: unknown; fresh?: unknown; active?: unknown; names?: unknown; folders?: unknown; repos?: unknown }>(openTabsKey);
+		const saved = this._context.workspaceState.get<{ ids?: unknown; fresh?: unknown; active?: unknown; names?: unknown; folders?: unknown; repos?: unknown }>(this._tabsStorageKey);
 		const repos = saved?.repos && typeof saved.repos === 'object' ? saved.repos as Record<string, { copy?: unknown; references?: unknown }> : {};
 		const names = saved?.names && typeof saved.names === 'object' ? saved.names as Record<string, unknown> : {};
 		const folders = saved?.folders && typeof saved.folders === 'object' ? saved.folders as Record<string, unknown> : {};
@@ -4171,6 +4424,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		const fresh = new Set(strings(saved?.fresh));
 		const history = this._history();
 		for (const id of strings(saved?.ids)) {
+			if (this._findOpenChat(id)) { continue; }
 			const stored = history.find(c => c.id === id);
 			if (this._tabs.length >= tabLimit()) {
 				break;
@@ -4214,6 +4468,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 * chat id (`fresh`), so a draft written in it survives a reload.
 	 */
 	private _saveTabs(): void {
+		const identity = this._panelIdentity;
+		if (identity) { this._services.panels.remember(identity, Object.fromEntries(this._savedDrafts)); }
 		const value = {
 			ids: this._tabs.map(t => t.chat.id),
 			fresh: this._tabs.filter(t => !t.started).map(t => t.chat.id),
@@ -4232,7 +4488,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			return;
 		}
 		this._tabsSaved = json;
-		this._context.workspaceState.update(openTabsKey, value).then(undefined, () => { /* a convenience */ });
+		this._context.workspaceState.update(this._tabsStorageKey, value).then(undefined, () => { /* a convenience */ });
 	}
 
 	/** A new tab beside the one in front, and in front; refused past `tabLimit()`. */
@@ -4256,6 +4512,135 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		this._post();
 		this._postMessage({ type: 'focusInput' });
 		return tab;
+	}
+
+	private _placeTab(id: string, target: string, after: boolean): void {
+		const from = this._tabs.find(t => t.id === id);
+		const to = this._tabs.find(t => t.id === target);
+		if (!from || !to || from === to) { return; }
+		this._tabs.splice(this._tabs.indexOf(from), 1);
+		this._tabs.splice(this._tabs.indexOf(to) + (after ? 1 : 0), 0, from);
+		this._post();
+	}
+
+	/** Move the actual tab, including its live session, instead of reopening history. */
+	private async _detachTab(id: string, draft: string, location: 'tab' | 'window' = 'tab'): Promise<void> {
+		const tab = this._tabs.find(t => t.id === id);
+		if (!tab) { return; }
+		if (!this._canMoveTab(tab)) { return; }
+		let panel: vscode.WebviewPanel | undefined;
+		let detached: ChatViewProvider | undefined;
+		const chat = tab.chat;
+		try {
+			const command = 'workbench.action.moveEditorToNewWindow';
+			if (location === 'window' && !(await vscode.commands.getCommands(true)).includes(command)) {
+				refuse(vscode.l10n.t("This version of VS Code does not support separate chat windows."));
+				return;
+			}
+			if (this._disposed || !this._tabs.includes(tab) || tab.chat !== chat || !this._canMoveTab(tab)) { return; }
+			panel = vscode.window.createWebviewPanel('aiBrowser.chat.window', tab.chat.title || 'AI Browser Chat', vscode.ViewColumn.Active, { retainContextWhenHidden: true });
+			if (location === 'window') {
+				// Move the empty editor first so a failed command leaves the live chat in its source.
+				panel.reveal();
+				await vscode.commands.executeCommand(command);
+				if (this._disposed || !this._tabs.includes(tab) || tab.chat !== chat || !this._canMoveTab(tab)) { panel.dispose(); return; }
+			}
+			detached = new ChatViewProvider(this._context, this._browser, this._browserServer, undefined, tab.chat,
+				{ tab, services: this._services });
+			const opened = panel;
+			const destination = detached;
+			destination._panel = opened;
+			const owner = this._lifetimeOwner ?? this;
+			destination._lifetimeOwner = owner;
+			owner._windows.add(opened);
+			opened.onDidDispose(() => {
+				owner._windows.delete(opened); destination.dispose();
+			});
+			destination._bindView({ webview: opened.webview, get visible() { return opened.visible; },
+				onDidDispose: opened.onDidDispose, onDidChangeVisibility: listener => opened.onDidChangeViewState(() => listener()) });
+			if (!this._moveTabInto(tab, destination, draft)) { detached._tabs = []; opened.dispose(); }
+		} catch (error) {
+			// A failed setup must not close a tab still owned by the source.
+			if (detached && this._tabs.includes(tab)) { detached._tabs = []; }
+			panel?.dispose();
+			detached?.dispose();
+			this._fail(error);
+		}
+	}
+
+	private _canMoveTab(tab: ChatTab): boolean {
+		// A launch still awaiting detection or a queue drain must settle in its source.
+		if (this._registry.detecting || (this._draining.has(tab) && this._draining.get(tab) === undefined)
+			|| [...this._chatSkillTabs.values()].some(runs => runs.some(run => run.tab === tab && run.sending))) {
+			refuse(vscode.l10n.t("Wait for the pending message to start before moving this chat."));
+			return false;
+		}
+		// A Git mutation or recording still belongs to this surface until it ends.
+		if (this._repoBusy.has(tab) || [...this._gitCommits.values()].some(job => job.tab === tab && (job.state.phase === 'generating' || job.state.phase === 'committing')) || this._voice?.tab === tab) {
+			refuse(vscode.l10n.t("Finish the current Git operation or recording before moving this chat."));
+			return false;
+		}
+		return true;
+	}
+
+	private _acceptTabDrop(sourceId: string, id: string, token: string): void {
+		const source = ChatViewProvider._surfaces.get(sourceId);
+		const drag = source?._tabDrag;
+		if (!source || !drag || source._dragToken !== token || drag.id !== id || Date.now() - drag.at > 120_000) { return; }
+		const tab = source._tabs.find(t => t.id === id && t.chat.id === drag.chatId);
+		if (tab && source._moveTabInto(tab, this, drag.draft)) { source._tabDrag = undefined; }
+	}
+
+	private _moveTabInto(tab: ChatTab, destination: ChatViewProvider, draft: string): boolean {
+		if (destination === this || destination._disposed || !destination._view || !this._tabs.includes(tab) || !this._canMoveTab(tab)) { return false; }
+		const attached = destination._tabs.includes(tab);
+		if (!attached && destination._tabs.length >= tabLimit()) {
+			refuse(vscode.l10n.t("The destination chat has reached its tab limit.")); return false;
+		}
+		if (!attached && destination._tabs.some(t => t.chat.id === tab.chat.id)) {
+			refuse(vscode.l10n.t("This conversation is already open in the destination chat.")); return false;
+		}
+		if (destination._services !== this._services) { return false; }
+		if (!attached) { destination._tabs.splice(destination._tabs.indexOf(destination._active) + 1, 0, tab); }
+		// Transfer only after the destination exists. Do not call close or _removeTab:
+		// those stop the session, discard annotations and cancel outstanding work.
+		tab.moveTo(destination._tabHost);
+		clearTimeout(this._draining.get(tab));
+		this._draining.delete(tab);
+		for (const [skill, runs] of this._chatSkillTabs) {
+			const moved = runs.filter(run => run.tab === tab);
+			if (moved.length) { destination._chatSkillTabs.set(skill, [...destination._chatSkillTabs.get(skill) ?? [], ...moved]); }
+			const remaining = runs.filter(run => run.tab !== tab);
+			if (remaining.length) { this._chatSkillTabs.set(skill, remaining); } else { this._chatSkillTabs.delete(skill); }
+		}
+		for (const [annotation, link] of this._annotationLinks) {
+			if (link.chat === tab) { destination._annotationLinks.set(annotation, link); this._annotationLinks.delete(annotation); }
+		}
+		for (const attachment of tab.attachments) {
+			const page = this._livePages.get(attachment.chip.id);
+			if (page) { destination._livePages.set(attachment.chip.id, page); this._livePages.delete(attachment.chip.id); }
+		}
+		if (destination._livePages.size) { destination._watchLivePages(); }
+		const at = this._tabs.indexOf(tab);
+		this._tabs.splice(at, 1);
+		const closeSource = !this._tabs.length && !!this._panelIdentity;
+		if (!this._tabs.length && !closeSource) { this._tabs.push(new ChatTab(this._tabHost, newChat(this._remembered.agent ?? 'claude'))); }
+		if (!closeSource && this._active === tab) { this._active = this._tabs[Math.min(at, this._tabs.length - 1)]; this._switchTo = undefined; }
+		this._savedDrafts.delete(tab.chat.id);
+		destination._savedDrafts.set(tab.chat.id, draft);
+		destination._active = tab;
+		destination._switchTo = undefined;
+		// Send the selected chat before its draft, including to an already-ready view.
+		destination._postMessage({ type: 'state', state: destination._state() });
+		destination._postMessage({ type: 'setTabDraft', chatId: tab.chat.id, text: draft });
+		destination._drainQueues();
+		destination._post();
+		destination._saveTabs();
+		// Commit the transfer before disposing the empty source: disposal must never
+		// close the moved tab or its shared backend. VS Code closes an empty auxiliary window.
+		if (closeSource) { this._closeEmptyPanel(); }
+		else { this._post(); this._saveTabs(); }
+		return true;
 	}
 
 	private _selectTab(id: string): void {
@@ -4455,9 +4840,49 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		await this._send(prompt.text, tab.id, [attachment]);
 	}
 
-	/** The title bar's New Chat, and the tab strip's "+": a new tab. */
-	public newChat(): void {
-		this._addTab(this._remembered.agent ?? this._selection().agent ?? 'claude');
+	/** The title-bar command asks for a location; the tab-strip plus opens here directly. */
+	public async newChat(location?: 'here' | 'tab' | 'window'): Promise<void> {
+		if (location === undefined) {
+			this._postMessage({ type: 'chooseNewChatLocation' });
+			return;
+		}
+		const agent = this._remembered.agent ?? this._selection().agent ?? 'claude';
+		if (location === 'here') { this._addTab(agent); return; }
+		if ((location !== 'window' && location !== 'tab') || ChatViewProvider._openingWindow) { return; }
+		ChatViewProvider._openingWindow = true;
+		let panel: vscode.WebviewPanel | undefined;
+		try {
+			const command = 'workbench.action.moveEditorToNewWindow';
+			if (location === 'window' && !(await vscode.commands.getCommands(true)).includes(command)) {
+				refuse(vscode.l10n.t("This version of VS Code does not support separate chat windows."));
+				return;
+			}
+			const chat = newChat(agent);
+			chat.folder = this._active.chat.folder;
+			chat.copy = this._active.chat.copy;
+			chat.references = this._active.chat.references;
+			const detached = new ChatViewProvider(this._context, this._browser, this._browserServer, undefined, chat);
+			try {
+				panel = vscode.window.createWebviewPanel('aiBrowser.chat.window', 'AI Browser Chat', vscode.ViewColumn.Active, { retainContextWhenHidden: true });
+			} catch (error) { detached.dispose(); throw error; }
+			const opened = panel;
+			detached._panel = opened;
+			const owner = this._lifetimeOwner ?? this;
+			detached._lifetimeOwner = owner;
+			owner._windows.add(opened);
+			opened.onDidDispose(() => { owner._windows.delete(opened); detached.dispose(); });
+			detached._bindView({
+				webview: opened.webview,
+				get visible() { return opened.visible; },
+				onDidDispose: opened.onDidDispose,
+				onDidChangeVisibility: listener => opened.onDidChangeViewState(() => listener()),
+			});
+			opened.reveal();
+			if (location === 'window') { await vscode.commands.executeCommand(command); }
+		} catch (error) {
+			panel?.dispose();
+			this._fail(error);
+		} finally { ChatViewProvider._openingWindow = false; }
 	}
 
 	private _agentBinaries(): Partial<Record<AgentId, string>> {
@@ -4542,8 +4967,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	public dispose(): void {
+		if (this._disposed) { return; }
+		if (this._tabs.length) { this._saveTabs(); }
+		this._shuttingDown = !this._panelIdentity;
+		clearTimeout(this._draftSaveTimer);
+		if (this._panelIdentity) {
+			const owner = this._lifetimeOwner;
+			owner?._pendingPanels.delete(this._panelIdentity.id);
+			if (!owner?._shuttingDown) { this._services.panels.forget(this._panelIdentity.id); }
+		}
+		for (const pending of [...this._pendingPanels.values()]) { pending.dispose(); }
+		for (const panel of this._windows) { panel.dispose(); }
 		this._videoEncoder?.host.dispose();
 		this._disposed = true;
+		for (const request of this._draftRequests.values()) { clearTimeout(request.timer); request.reject(new Error('The source chat was closed.')); }
+		this._draftRequests.clear();
+		ChatViewProvider._surfaces.delete(this._surfaceId);
+		for (const surface of ChatViewProvider._surfaces.values()) { surface._post(); }
 		for (const request of this._titleRequests.values()) { request.abort(); }
 		this._titleRequests.clear();
         for (const request of this._branchNameRequests.values()) { request.abort(); }
@@ -4554,8 +4994,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		this._livePageWatch?.dispose();
 		this._livePages.clear();
 		this._voiceCancel();
-		void vscode.commands.executeCommand('setContext', 'aiBrowser.keepAwakeActive', false);
-		this._runs.dispose();
+		if (!this._panelIdentity) { void vscode.commands.executeCommand('setContext', 'aiBrowser.keepAwakeActive', false); }
+		// Shared backends own live sessions of tabs moved into other surfaces.
+		this._services.views.delete(this);
+		if (!this._services.views.size) { this._runs.dispose(); }
 		for (const timer of this._usageChecks.values()) {
 			clearTimeout(timer);
 		}
@@ -4576,6 +5018,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		clearTimeout(this._postTimer);
 		this._postTimer = undefined;
 		this._subscriptions.forEach(s => s.dispose());
+		if (!this._services.views.size) { this._registry.dispose(); ChatViewProvider._sharedServices = undefined; }
 	}
 }
 

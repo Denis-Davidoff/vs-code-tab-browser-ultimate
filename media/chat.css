@@ -4711,3 +4711,10 @@ body.vscode-high-contrast-light .context-pie {
 .feature-prompt-field { grid-column: 1 / -1; }
 .feature-system-prompt { width: 100%; box-sizing: border-box; min-height: 120px; padding: 8px; resize: vertical; font: inherit; line-height: 1.45; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, var(--border)); border-radius: 4px; }
 .feature-prompt-reset { justify-self: start; grid-column: 1 / -1; }
+
+/* Dragging chat tabs: leave the source readable and mark the insertion edge. */
+.tab.dragging { opacity: .5; }
+.tab.drop-before { box-shadow: inset 2px 0 var(--accent); }
+.tab.drop-after { box-shadow: inset -2px 0 var(--accent); }
+
+.receiving-chat-tab .tab-strip { box-shadow: inset 0 -2px var(--accent); }

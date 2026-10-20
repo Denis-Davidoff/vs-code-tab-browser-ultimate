@@ -52,3 +52,26 @@ test('which tokens of a message name a file', () => {
 	assert.equal(namesFile(table, 'npm test', true), false);
 	assert.equal(namesFile(table, 'https://x.ts', true), false);
 });
+
+test('theme file names do not turn ordinary words into file references', () => {
+	const themed = { ...table, fileNames: { ...table.fileNames, version: 'generic', changelog: 'generic', readme: 'generic', 'readme.md': 'md', 'news.md': 'md' } };
+	for (const word of ['version', 'changelog', 'readme', 'VERSION', 'CHANGELOG']) {
+		assert.equal(namesFile(themed, word, false), false, word);
+		assert.equal(namesFile(themed, word, true), true, `inline code: ${word}`);
+		assert.equal(namesFile(themed, `./${word}`, false), true, `path: ${word}`);
+	}
+	for (const file of ['package.json', 'README.md', 'NEWS.md']) {
+		assert.equal(namesFile(themed, file, false), true, file);
+	}
+});
+
+test('Markdown file names in prose do not require a theme association for each name', () => {
+	const themed = { ...table, fileNames: { ...table.fileNames, 'readme.md': 'md' } };
+	for (const file of ['README.md', 'NEWS.md', 'CHANGELOG.md', 'notes.md']) {
+		assert.equal(namesFile(themed, file, false), true, file);
+		assert.equal(resolveFileIcon(themed, file)?.character, 'm', file);
+	}
+	for (const word of ['news', 'readme', 'changelog', 'Node.js']) {
+		assert.equal(namesFile(themed, word, false), false, word);
+	}
+});

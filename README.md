@@ -90,6 +90,12 @@ then restores the clipboard. It does not request OS screen recording access.
 
 ## Changelog
 
+**0.8.2** — Open chats in the sidebar, editor tabs or separate windows, and move them
+between views with their sessions, drafts and attachments intact. View chats side by side
+across screens, drag to reorder, and restore chat tabs after restarting VS Code. The top
+**+** offers a location; the tab-strip **+** adds a neighbouring chat. History finds chats
+already open elsewhere and offers to move them back to the sidebar.
+
 **0.8.1** — File names throughout the chat now show icons from your selected file icon
 theme, including attachments, file links and read/edit tool rows. Usage and context indicators
 use clockwise ring meters, and the composer has a darker surface below its toolbar. Generated

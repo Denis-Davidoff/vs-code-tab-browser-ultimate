@@ -6647,7 +6647,7 @@ once enough are closed, and only a window restore is cut to the new limit.
   generated title was dropped and a first send that failed was never saved (#459's survival, in
   every path but the restart it was fixed for). A chat deleted while the view is closed is still
   never written back: deleting discards the tab.
-- **New Chat** (title bar, and the strip's "+") opens a tab beside the one in front.
+- **New Chat** (title bar, and the strip's "+") asks in an inline menu: open a tab here, an independent editor tab, or a chat in a separate window.
 - **A chat from the history** is brought to the front if a tab has it, shown in the tab in front
   if that one is empty, and otherwise opened in a new tab — opening one must not end a
   conversation that is working.
@@ -9311,6 +9311,78 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
      'tab', 2)` returned `tabs`. Use raw matches only when there are no whole ones.
 
 ## Special cases and non-obvious decisions
+
+- **Surface coordination after review:** all providers share one `GitAccess`; busy-folder
+  checks enumerate every provider, so moving a running agent cannot bypass worktree locks.
+  Project command discovery takes the requesting cwd/settings explicitly and caches lists and
+  throttles by agent plus cwd; Codex skill items use the session's own project list. Transfers
+  use replacement `setTabDraft`, prune departed background drafts and restart queue draining
+  in the recipient (including the debounce between turns).
+- **Hidden editors reserve ownership before deserialization.** `ChatPanelCatalog` persists
+  panel identities, draft snapshots and a monotonic numbering high-water mark. The sidebar
+  eagerly creates pending providers from it, without starting sessions or rendering webviews;
+  serializers bind to those existing providers instead of reopening their conversations.
+  A pending owner can supply its draft for Move here before it becomes visible. Show existing
+  materializes its editor with public APIs in the old tab's group and closes the unrevived
+  placeholder. Normal panel close removes its catalog entry; extension shutdown preserves it.
+  Drafts are mirrored to the host as typed and flushed at shutdown, in addition to webview state.
+
+- **Panel persistence and single ownership:** `aiBrowser.chat.window` has an explicit activation
+  event and a `WebviewPanelSerializer`. The webview persists a stable panel UUID/number with
+  every draft write; host tab snapshots use `openTabsKey + '.panel.' + UUID`, never the sidebar
+  key. Restored panels keep their `AI Browser #N` name; VS Code restores their editor placement.
+  Fresh chat ids, names, folders, order and selection come back from the snapshot, started
+  conversations from history, and drafts from webview state. Requests interrupted by shutdown
+  resume only on the next user message. The sidebar restores first; each subsequent restore
+  skips conversations already owned by another provider (and repeated ids in its own snapshot).
+  History opened in the main sidebar offers **Move here** or **Show in AI Browser #N** for a
+  conversation already open elsewhere. Moving here first requests the source webview's draft,
+  then rechecks ownership before moving the existing tab. Other history requests focus the
+  existing owner rather than creating a second session. Explicitly closing the last source
+  panel after a successful transfer leaves the moved session in its destination; the sidebar
+  instead keeps a fresh tab. Panel disposal lets VS Code close an empty auxiliary window.
+
+- **Chat surfaces are identified inside one extension host, not across full VS Code windows.**
+  `ChatViewProvider._surfaces` lists live sidebar/panel views. Panels receive a stable creation
+  number and a title such as `AI Browser #2`, also used for the actual editor/window title.
+  State exposes those names, tab counts and folders for the tab context menu's move destinations.
+  All surfaces in the host share agent and toolbar services, permitting a live `ChatTab` to move
+  into an existing surface without disposing its backend. The target selects the moved tab and
+  sends that state before restoring its draft; posting a draft first loses it in a ready view
+  still showing another chat. The tab limit and duplicate-chat checks run before any mutation.
+  Cross-webview drags carry only surface/tab ids and an opaque token; the source retains the
+  draft and original chat id for up to two minutes. Accepted drops consume that pending drag.
+  Independent full VS Code windows run other extension hosts and are not enumerated here.
+
+- **Dragging chat tabs uses native drag events, without publishing a file or command URI.**
+  Dropping over a tab reorders the existing `ChatTab` objects and persists that order.
+  Releasing outside the chat never creates an editor or window. The main sidebar tab context
+  menu offers Move to a new window and Move to a new tab before existing chat destinations.
+  The editor opens in the active editor group; the extension does not select a group from
+  the OS drag destination. Drafts and attached/live-page chips move with the tab. `moveTo`
+  changes its host without closing its agent session. Providers sharing a moved session
+  share reference-counted agent/toolbar services: closing the old surface must not dispose
+  another surface's backend. The sidebar owns all panels' extension lifetime, not their
+  immediately preceding surface. Pending launches, Git mutations and microphone recordings
+  must settle before moving. Closing a moved tab still stops only that tab's work.
+
+- **Popup placement must account for top-of-chat anchors.** `openAbove` flips below
+  when there is insufficient room above and more below, and constrains tall menus
+  to the available space. Always clear its previous inline height limit before measuring.
+  Otherwise the New Chat menu above the tab strip is clipped by `#app`, leaving only a shadow.
+
+- **The title-bar New Chat command offers Here in chat, In a new tab and In a new window.**
+  The plus in the chat tab strip creates a local chat immediately beside the active tab.
+
+- **Independent chat tabs are webview editors; chat-only windows use the same editors moved with `workbench.action.moveEditorToNewWindow`.**
+  Check command availability before creating a panel. Each gets its own `ChatViewProvider`,
+  fresh conversation and inherited working folder/repository context; it shares saved history
+  but must not restore or overwrite the sidebar's `openTabsKey`. Attachment document schemes
+  are unique per provider, and attachment actions focus their own panel. The panel retains its
+  context while hidden; closing it disposes its provider, agents and any child chat windows.
+  Detached providers do not control the sidebar's keep-awake context key. Video recording is
+  unavailable there because the extension's recording destination/encoder belongs to the sidebar.
+  These panels contain our chat UI, never the legacy browser iframe.
 
 - **In a remote window this extension runs on the local machine, and the MCP features are
   refused there.** `extensionKind` is `["ui", "workspace"]`, inherited from upstream
