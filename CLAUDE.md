@@ -5114,10 +5114,29 @@ folder* section of `chatView.ts`.
   name *contained* the text: any branch on an empty box, and `experiment-old` for "exp" while the
   row offered to create "exp". A row picked with ↓ has the focus, and Enter there is that row's
   own button.
+  Switching is handled by `gitBranchSwitch.ts`: fetch/prune the selected remote or upstream,
+  reuse a matching tracking branch (ask for another local name on an upstream collision), then
+  switch and update with `merge --ff-only`. A failed fetch offers an explicit offline switch;
+  divergent histories leave the branch selected with a notice, without merge/rebase. Before
+  a local checkout, a deleted upstream disables remote updates but does not prevent switching;
+  a deleted remote selection still refuses and asks to refresh. Untracked symlink snapshots use
+  `lstat`/`readlink` (including dangling links), so confirmation checks detect link retargeting.
+  Before
+  switching a dirty worktree, offer **Stash & Switch**, **Commit All & Switch**, or confirmed
+  **Discard Changes & Switch**; Escape cancels. Commit previews staged/unstaged diffs and asks
+  for a message; stash includes untracked files and preserves its entry; discard removes only
+  confirmed untracked paths and retains ignored files. Dialogs revalidate HEAD, index and file
+  contents before mutation. Pending merge/rebase/conflicts and dirty submodules refuse the flow.
+  Unsaved editors must be saved first. Saved stashes are recorded in workspace state and the
+  branch popup offers **Return & Apply Stash**, restoring on the original branch with `--index`
+  only when the worktree is clean; the stash is kept even after successful application.
   The combined **Commit** trigger with numeric staged/unstaged counters stays accessible and opens the changes panel on hover
   or click. It shows Staged and Unstaged groups, changed/deleted totals, and per-file and group
   Stage (+) / Unstage (undo) actions. Unstage changes only the index, including renames and an
   unborn HEAD. Staging does not require a model; unavailable commit actions explain why.
+  Clicking a file opens `vscode.diff` through the built-in Git extension's public `toGitUri`
+  API: Staged compares HEAD with index, Unstaged compares index with the working file. Added
+  and deleted files use an empty side; renames use their original path on the left (`gitDiff.ts`).
   Mixed changes offer **Commit staged** or **Commit all changes**. An empty index first offers
   **Stage all files**; the host defaults to staged-only and never implicitly stages on that path.
   Commit generates a message using the chat's selected agent, model and effort, then runs

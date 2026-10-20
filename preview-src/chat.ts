@@ -441,7 +441,13 @@ function renderGitChanges(): void {
 				class: file.status === 'M' ? 'git-modified' : file.status === '?' ? 'git-changed' : '',
 				title: file.status === '?' ? 'New — file not yet tracked by Git' : file.status === 'M' ? 'Modified file' : file.status,
 			}, file.status === '?' ? 'N' : file.status);
-			gitPopupList.append(el('div', { class: 'git-changes-file' }, gitFileIcon(file), el('span', { class: file.status === 'D' ? 'git-file git-deleted' : 'git-file', title: name }, statusMark, '  ', name), move));
+			const open = button([statusMark, '  ', name], { class: file.status === 'D' ? 'git-file git-deleted git-file-open' : 'git-file git-file-open', title: `Open ${label.toLowerCase()} diff: ${name}` });
+			open.addEventListener('click', () => {
+				if (!gitFolder || !state) { return; }
+				gitPopupPinned = true;
+				post({ type: 'openGitDiff', folder: gitFolder, tabId: state.activeTab, path: file.path, staged: label === 'Staged' });
+			});
+			gitPopupList.append(el('div', { class: 'git-changes-file' }, gitFileIcon(file), open, move));
 		}
 	}
 	const note = (text: string) => gitPopupActions.append(el('div', { class: 'git-changes-hint' }, text));
@@ -523,6 +529,12 @@ branchSearch.spellcheck = false;
 const branchError = el('div', { class: 'git-branch-error' });
 branchError.setAttribute('role', 'status');
 const branchCreate = button([icon('add'), 'Create branch…'], { class: 'git-branch-create' });
+const branchRestoreStash = button(['Return & Apply Stash'], { class: 'git-branch-create' });
+branchRestoreStash.hidden = true;
+branchRestoreStash.addEventListener('click', () => {
+	if (!gitFolder || branchBusy) { return; }
+	post({ type: 'restoreBranchStash', folder: gitFolder });
+});
 const branchList = el('div', { class: 'palette-list git-branch-list' });
 const branchSearchRow = el('div', { class: 'git-branch-search-row' });
 const branchMagic = button([icon('sparkle')], { class: 'ghost round git-branch-magic', title: 'Generate branch name automatically' });
@@ -533,7 +545,7 @@ branchRefresh.setAttribute('aria-label', 'Refresh Git branches');
 branchRefresh.disabled = gitPending;
 branchRefresh.addEventListener('click', refreshGitStatus);
 branchSearchRow.append(clearableSearch(branchSearch), branchMagic, branchRefresh);
-branchPopup.append(branchSearchRow, branchError, branchCreate, branchList);
+branchPopup.append(branchSearchRow, branchError, branchRestoreStash, branchCreate, branchList);
 let branchNameSequence = 0;
 let branchNamePending: { id: number; tabId: string; folder: string; query: string } | undefined;
 branchMagic.addEventListener('click', () => {
@@ -560,6 +572,9 @@ function renderBranches(): void {
 	if (shape === branchRenderedShape) { return; }
 	branchRenderedShape = shape;
 	branchSearch.disabled = branchBusy;
+	branchRestoreStash.hidden = !branchState?.savedStash;
+	branchRestoreStash.disabled = branchBusy;
+	branchRestoreStash.textContent = branchState?.savedStash ? `Return to ${branchState.savedStash.branch} & Apply Stash` : 'Return & Apply Stash';
  branchMagic.disabled = branchBusy || !branchState || !!branchNamePending;
  branchMagic.classList.toggle('loading', !!branchNamePending);
  branchError.classList.toggle('generating', !!branchNamePending);
@@ -587,13 +602,23 @@ function renderBranches(): void {
 				remove.disabled = branchBusy;
 				remove.addEventListener('click', () => {
 					if (branchDeleting === branch.name) { runBranchAction('delete', branch.name); }
-					else { branchDeleting = branch.name; renderBranches(); }
+					else {
+						branchDeleting = branch.name;
+						renderBranches();
+						[...branchList.querySelectorAll<HTMLButtonElement>('.git-branch-delete')]
+							.find(button => button.getAttribute('aria-label') === `Delete local branch ${branch.name}`)?.focus();
+					}
 				});
 				row.append(remove);
 				if (branchDeleting === branch.name) {
 					const cancel = button(['Cancel'], { class: 'ghost' });
 					cancel.disabled = branchBusy;
-					cancel.addEventListener('click', () => { branchDeleting = undefined; renderBranches(); });
+					cancel.addEventListener('click', () => {
+						branchDeleting = undefined;
+						renderBranches();
+						[...branchList.querySelectorAll<HTMLButtonElement>('.git-branch-delete')]
+							.find(button => button.getAttribute('aria-label') === `Delete local branch ${branch.name}`)?.focus();
+					});
 					row.append(cancel);
 				}
 			}
@@ -628,18 +653,38 @@ branchSearch.addEventListener('keydown', event => {
 		const exact = branchState?.branches.find(b => b.name === branchSearch.value.trim());
 		if (exact) { if (exact.remote || exact.name !== branchState?.current) { runBranchAction('switch', exact.name, exact.remote); } }
 		else if (!branchCreate.disabled) { branchCreate.click(); }
-	} else if (event.key === 'ArrowDown') {
+	} else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
 		event.preventDefault();
-		branchList.querySelector<HTMLButtonElement>('.git-branch-select:not(:disabled)')?.focus();
+		const choices = [...branchList.querySelectorAll<HTMLButtonElement>('.git-branch-select:not(:disabled)')];
+		(event.key === 'ArrowDown' ? choices[0] : choices.at(-1))?.focus();
 	}
 });
 branchList.addEventListener('keydown', event => {
-	if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') { return; }
+	if (event.isComposing || !['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) { return; }
 	event.preventDefault();
+	const focused = document.activeElement as HTMLElement | null;
+	const row = focused?.closest('.git-branch-row');
+	if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+		const actions = [...(row?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [])];
+		const index = actions.indexOf(focused as HTMLButtonElement);
+		actions[Math.max(0, Math.min(actions.length - 1, index + (event.key === 'ArrowRight' ? 1 : -1)))]?.focus();
+		return;
+	}
 	const choices = [...branchList.querySelectorAll<HTMLButtonElement>('.git-branch-select:not(:disabled)')];
-	const index = choices.indexOf(document.activeElement as HTMLButtonElement);
+	if (event.key === 'Home' || event.key === 'End') {
+		(event.key === 'Home' ? choices[0] : choices.at(-1))?.focus();
+		return;
+	}
+	const index = choices.findIndex(choice => choice.closest('.git-branch-row') === row);
 	const next = index + (event.key === 'ArrowDown' ? 1 : -1);
 	if (next < 0) { branchSearch.focus(); } else { choices[Math.min(next, choices.length - 1)]?.focus(); }
+});
+branchPopup.addEventListener('keydown', event => {
+	if (event.isComposing || event.key !== 'Escape') { return; }
+	event.preventDefault();
+	event.stopPropagation();
+	closePopups();
+	branchButton.focus();
 });
 
 /** Adding or editing a toolbar skill: a panel over the chat. */
@@ -2214,7 +2259,7 @@ function questionForm(entry: ApprovalEntry, questions: readonly AgentQuestion[])
 	return node;
 }
 
-/** The approval modes, counted in Auto / Ask / Deny order; empty modes stay hidden. */
+/** A uniform mode shows its name; mixed modes show counts in Auto / Ask / Deny order. */
 function renderApproveToggle(s: ChatViewState): void {
 	const rows = approvalCategoryRows(s);
 	const modes = rows.map(r => modeOf(s, r.key));
@@ -2225,7 +2270,8 @@ function renderApproveToggle(s: ChatViewState): void {
 		{ mode: 'ask', label: 'Ask', count: modes.length - auto - deny },
 		{ mode: 'deny', label: 'Deny', count: deny },
 	].filter(item => item.count > 0);
-	const text = counts.map(item => `${item.label} ${item.count}`).join(' • ');
+	const uniform = counts.length === 1;
+	const text = counts.map(item => uniform ? item.label : `${item.label} ${item.count}`).join(' • ');
 	const title = `Approvals — what the agents may do without asking:\n${rows.map(r => `${r.label}: ${modeLabels[modeOf(s, r.key)]}`).join('\n')}\nCompact (tool calls start folded): ${s.collapseTools ? 'On' : 'Off'}\nClick to change: Auto runs it, Ask asks, Deny refuses.`;
 	const shown = JSON.stringify([text, title]);
 	if (approveToggle.dataset.shown !== shown) {
@@ -2234,7 +2280,7 @@ function renderApproveToggle(s: ChatViewState): void {
 		const parts = counts.map(item => {
 			const glyph = icon(glyphs[item.mode]); glyph.setAttribute('aria-hidden', 'true');
 			return el('span', { class: `mode-group mode-${item.mode}`, title: `${item.label}: ${item.count}` },
-				glyph, el('strong', { class: 'mode-count', text: String(item.count) }));
+				glyph, el('strong', { class: 'mode-count', text: uniform ? item.label : String(item.count) }));
 		});
 		approveToggle.replaceChildren(...parts);
 		approveToggle.title = title;

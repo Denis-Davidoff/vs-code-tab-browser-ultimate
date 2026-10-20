@@ -36,14 +36,16 @@ function production(name: string, context: Record<string, unknown>): (...args: a
 	return runInNewContext(transpileModule(`${body}\n${name};`, { compilerOptions: { module: ModuleKind.CommonJS, target: ScriptTarget.ES2022 } }).outputText, context);
 }
 function panel(staged: string[], unstaged: string[], available = true) {
-	const actions: { kind: string; path?: string }[] = [];
+	const actions: { kind: string; path?: string; staged?: boolean }[] = [];
 	const files: WorkdirGitStatus = { staged: staged.map(path => ({ path, status: 'M' })), unstaged: unstaged.map(path => ({ path, status: 'M' })), changed: new Set([...staged, ...unstaged]).size, deleted: 0 };
 	const list = new Node(), footer = new Node();
 	const popup = new Node(); popup.classList.contains = () => true;
 	const context = {
 		gitFiles: files, gitStagedCount: new Node(), gitUnstagedCount: new Node(), gitChanged: new Node(), gitDeleted: new Node(),
 		commitButton: new Node(), gitPopup: popup, gitPopupPressed: false, gitPopupShape: '', gitError: '', gitIndexPending: false, branchBusy: false,
-		state: { workdir: {}, selection: { agent: 'codex', model: 'selected' }, agents: [{ id: 'codex', available, models: available ? [{ id: 'selected' }] : [] }], running: false },
+		state: { activeTab: 'chat', workdir: {}, selection: { agent: 'codex', model: 'selected' }, agents: [{ id: 'codex', available, models: available ? [{ id: 'selected' }] : [] }], running: false },
+		gitFolder: '/repo', gitPopupPinned: false,
+		post: (message: { type: string; path: string; staged: boolean }) => actions.push({ kind: message.type, path: message.path, staged: message.staged }),
 		readFeatureAiSettings: () => ({ commitMessage: { agent: 'auto', effort: 'medium' } }),
 		gitFileIcon: () => new Node(),
 		gitPopupError: new Node(), gitPopupList: list, gitPopupActions: footer, el, button, icon: () => new Node(),
@@ -82,6 +84,15 @@ test('each group and each file has the correct stage or unstage action', () => {
 	assert.deepEqual(actions, [
 		{ kind: 'unstage', path: undefined }, { kind: 'stage', path: undefined },
 		{ kind: 'unstage', path: 'staged.txt' }, { kind: 'stage', path: 'unstaged.txt' },
+	]);
+});
+
+test('clicking the file opens the correct diff without staging or unstaging', () => {
+	const { list, actions } = panel(['same.txt'], ['same.txt']);
+	for (const row of nodes(list, 'git-changes-file')) { (row.children[1] as Node).click(); }
+	assert.deepEqual(actions, [
+		{ kind: 'openGitDiff', path: 'same.txt', staged: true },
+		{ kind: 'openGitDiff', path: 'same.txt', staged: false },
 	]);
 });
 

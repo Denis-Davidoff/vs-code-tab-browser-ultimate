@@ -440,6 +440,7 @@ export type RepoMode = 'copy' | 'clone' | 'reference';
 export interface GitBranchState {
  readonly current: string;
  readonly branches: readonly { name: string; remote: boolean }[];
+ readonly savedStash?: { readonly branch: string; readonly hash: string };
 }
 
 export interface FileThemeIcon {
@@ -768,10 +769,12 @@ export type ViewToHost =
 	/** The folder button opened: list the tab in front's working folder. */
 	| { readonly type: 'gitCommit'; readonly folder: string; readonly tabId: string; readonly scope?: 'staged' | 'all' }
 	| { readonly type: 'gitIndexAction'; readonly folder: string; readonly tabId: string; readonly action: 'stage' | 'unstage'; readonly path?: string }
+	| { readonly type: 'openGitDiff'; readonly folder: string; readonly tabId: string; readonly path: string; readonly staged: boolean }
 	| { readonly type: 'fixGitCommit' | 'dismissGitCommit'; readonly folder: string; readonly id: string; readonly tabId: string }
 	| { readonly type: 'saveFeatureAi'; readonly settings: FeatureAiSettings; readonly recordingQuality?: RecordingQuality }
 	| { readonly type: 'gitBranchName'; readonly id: number; readonly folder: string; readonly tabId: string }
 	| { readonly type: 'gitBranchAction'; readonly folder: string; readonly action: 'switch' | 'create' | 'delete'; readonly name: string; readonly remote?: boolean }
+	| { readonly type: 'restoreBranchStash'; readonly folder: string }
 	| { readonly type: 'refreshWorkdirGit' }
 	| { readonly type: 'listWorkdir' }
 	/** A file or folder of the working folder, by its path relative to it, attached to the message. */

@@ -32,6 +32,8 @@ import { GitAccess } from './gitAccess';
 import { changeGitIndex } from './gitIndex';
 import { commitChanges } from './gitCommit';
 import { branchCommand, parseGitBranches } from './gitBranchState';
+import { gitDiffSides } from './gitDiff';
+import { assertSwitchReady, switchAndUpdate, type SwitchResult } from './gitBranchSwitch';
 import { parseGitStatus } from './gitStatus';
 import { themedGitFiles } from './fileIconTheme';
 import { runGit } from './repoWork';
@@ -358,6 +360,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		if (_recording) { this._subscriptions.push(_recording.onDidChange(() => this._postRecording())); }
 		this._remembered = _context.globalState.get<RememberedSelection>(selectionKey) ?? { models: {}, efforts: {} };
 		this._restoreTabs();
+		const savedStashes = _context.workspaceState.get<Record<string, { hash: string; branch: string }[]>>('aiBrowser.branchStashes') ?? {};
+		for (const [folder, entries] of Object.entries(savedStashes)) {
+			if (!Array.isArray(entries)) { continue; }
+			const valid = entries.filter(entry => entry && /^[a-f0-9]{40,64}$/.test(entry.hash) && typeof entry.branch === 'string' && !entry.branch.startsWith('-') && !/[\0\r\n]/.test(entry.branch));
+			if (valid.length) { this._branchStashes.set(folder, valid); }
+		}
 		this._sleep = new SleepControl(
 			// A tab that has closed works no more, so a hold scoped to it ends.
 			tabId => (tabId === undefined ? this._tabs : this._tabs.filter(t => t.id === tabId))
@@ -394,7 +402,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		this._subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(attachmentScheme, {
 			// An editor restored after a reload asks for a chip this window never
 			// held, and gets a sentence rather than an empty page.
-			provideTextDocumentContent: uri => this._attachmentTexts.get(uri.query)
+			provideTextDocumentContent: uri => uri.path.startsWith('/git-diff-empty/') ? '' : this._attachmentTexts.get(uri.query)
 				?? vscode.l10n.t("This attachment was shown in an earlier session and is no longer available. Attach it again to see it."),
 		}));
 		// Trust granted while the view was showing its Restricted Mode notice:
@@ -875,6 +883,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			case 'gitIndexAction':
 				await this._changeGitIndex(message);
 				return;
+			case 'openGitDiff':
+				await this._openGitDiff(message);
+				return;
 			case 'gitCommit':
 				await this._commitWorkdir(message.folder, message.tabId, message.scope);
 				return;
@@ -887,6 +898,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
                 return;
 			case 'gitBranchAction':
 				await this._gitBranchAction(message);
+				return;
+			case 'restoreBranchStash':
+				await this._restoreBranchStash(message.folder);
 				return;
 			case 'refreshWorkdirGit':
 				await this._refreshWorkdirGit();
@@ -2900,10 +2914,43 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			]);
 			const status = parseGitStatus(output);
 			const decorated = this._view ? await themedGitFiles(status, this._view.webview, vscode.Uri.joinPath(this._context.extensionUri, 'media'), vscode.Uri.file(folder)) : status;
-			this._postMessage({ type: 'workdirGit', folder, status: decorated, branches: parseGitBranches(current, refs) });
+			this._postMessage({ type: 'workdirGit', folder, status: decorated, branches: { ...parseGitBranches(current, refs), savedStash: this._branchStashes.get(folder)?.at(-1) } });
 		} catch (error) {
 			this._postMessage({ type: 'workdirGit', folder, error: error instanceof Error ? error.message : String(error) });
 		}
+	}
+
+	private async _openGitDiff(message: Extract<ViewToHost, { type: 'openGitDiff' }>): Promise<void> {
+		const { folder, tabId, staged } = message;
+		const tab = this._tabs.find(t => t.id === tabId);
+		const current = () => !this._disposed && !this._blocked() && !!tab && tab === this._active && folder === this._workdir(tab);
+		if (typeof folder !== 'string' || typeof message.path !== 'string' || typeof staged !== 'boolean' || !current()) { return; }
+		try {
+			const git = await gitBinary();
+			if (!git) { throw new Error('Git is unavailable.'); }
+			const root = (await this._runWorkdirGit(git, ['rev-parse', '--show-toplevel'], folder)).trim();
+			const status = parseGitStatus(await this._runWorkdirGit(git, ['status', '--porcelain=v1', '-z', '--untracked-files=all'], folder));
+			const file = (staged ? status.staged : status.unstaged).find(f => f.path === message.path);
+			if (!file) { throw new Error('This file is no longer in that group. Refresh the Git changes.'); }
+			const extension = vscode.extensions.getExtension<{ getAPI(version: 1): {
+				toGitUri(uri: vscode.Uri, ref: string): vscode.Uri;
+				openRepository(uri: vscode.Uri): Promise<unknown>;
+			} }>('vscode.git');
+			if (!extension) { throw new Error('Enable the built-in Git extension to view diffs.'); }
+			const api = (await extension.activate()).getAPI(1);
+			if (!await api.openRepository(vscode.Uri.file(root))) { throw new Error('The Git extension could not open this repository.'); }
+			const emptyId = generateUuid();
+			const empty = vscode.Uri.from({ scheme: attachmentScheme, path: `/git-diff-empty/${path.basename(file.path)}`, query: emptyId });
+			const sideUri = (side: ReturnType<typeof gitDiffSides>['before']) => {
+				if (!side) { return empty; }
+				const uri = vscode.Uri.file(path.join(root, side.path));
+				return side.ref === undefined ? uri : api.toGitUri(uri, side.ref);
+			};
+			const sides = gitDiffSides(file, staged);
+			if (!current()) { return; }
+			await vscode.commands.executeCommand('vscode.diff', sideUri(sides.before), sideUri(sides.after),
+				`${file.path} (${staged ? 'Staged: HEAD ↔ Index' : 'Unstaged: Index ↔ Working Tree'})`, { preview: true });
+		} catch (error) { refuse(`Could not open diff: ${error instanceof Error ? error.message : String(error)}`); }
 	}
 
 	private async _changeGitIndex(message: Extract<ViewToHost, { type: 'gitIndexAction' }>): Promise<void> {
@@ -3054,6 +3101,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
  }
 
+	private readonly _branchStashes = new Map<string, NonNullable<SwitchResult['stash']>[]>();
+
 	private async _gitBranchAction(message: Extract<ViewToHost, { type: 'gitBranchAction' }>): Promise<void> {
 		const { folder, name, action, remote } = message;
 		const answer = (error?: string) => this._postMessage({ type: 'gitBranchResult', folder, action, error });
@@ -3082,7 +3131,59 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			if (folder !== this._workdir() || working()) { throw new Error('The working folder changed or an agent started. Try again when it is idle.'); }
 			// Branch switching must not execute hooks from a repository fetched from GitHub.
 			const args = ['-c', `core.hooksPath=${os.devNull}`];
-			await this._runWorkdirGit(git, [...args, ...branchCommand(action, name, remote)], folder);
+			if (action === 'switch') {
+				const root = (await this._runWorkdirGit(git, ['rev-parse', '--show-toplevel'], folder)).trim();
+				const dirtyEditors = () => vscode.workspace.textDocuments.filter(doc => doc.isDirty && doc.uri.scheme === 'file' && (() => {
+					const relative = path.relative(root, doc.uri.fsPath);
+					return !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`);
+				})());
+				if (dirtyEditors().length) {
+					if (await vscode.window.showWarningMessage('Save edited files before switching branches?', { modal: true, detail: 'Commit and Stash operate on files saved to disk.' }, 'Save & Continue') !== 'Save & Continue') { answer('Branch switch cancelled.'); return; }
+					if ((await Promise.all(dirtyEditors().map(doc => doc.save()))).some(saved => !saved)) { throw new Error('Some files could not be saved. Branch switch cancelled.'); }
+				}
+				const run = async (command: readonly string[]) => {
+					if (this._disposed || this._blocked() || folder !== this._workdir() || working()) { throw new Error('The working folder changed or is no longer idle. Try again.'); }
+					if (dirtyEditors().length) { throw new Error('An editor has unsaved changes. Save the file and try again.'); }
+					await this._assertGitFolder(folder);
+					return this._runWorkdirGit(git, [...args, ...command], root, 120_000);
+				};
+				const preview = async (content: string) => {
+					const id = generateUuid();
+					remember(this._attachmentTexts, id, content);
+					const uri = vscode.Uri.from({ scheme: attachmentScheme, path: '/branch-changes.txt', query: id });
+					const doc = await vscode.workspace.openTextDocument(uri);
+					await vscode.window.showTextDocument(doc, { preview: true });
+				};
+				const result = await switchAndUpdate(run, name, remote === true, {
+					changes: async () => {
+						const picked = await vscode.window.showQuickPick([
+							{ label: 'Stash & Switch', value: 'stash' as const, description: 'Include untracked files; keep the stash after switching' },
+							{ label: 'Commit All & Switch', value: 'commit' as const, description: 'Commit staged + unstaged changes and untracked files on the current branch' },
+							{ label: 'Discard Changes & Switch…', value: 'discard' as const, description: 'Permanently discard changes after confirmation' },
+						], { title: `Uncommitted changes — switch to ${name}`, placeHolder: 'Choose how to handle changes, or Escape to cancel', ignoreFocusOut: true });
+						return picked?.value;
+					},
+					commit: async content => {
+						await preview(content);
+						return vscode.window.showInputBox({ title: 'Commit All & Switch', prompt: 'Review the changes in the editor, then enter a commit message', ignoreFocusOut: true, validateInput: value => value.trim() ? undefined : 'Enter a commit message' });
+					},
+					discard: async content => {
+						await preview(content);
+						return await vscode.window.showWarningMessage('Discard all staged, unstaged and untracked changes before switching?', { modal: true, detail: 'Review the files in the editor. Untracked files will be deleted permanently. Ignored files are kept.' }, 'Discard Changes & Switch') === 'Discard Changes & Switch';
+					},
+					offline: async error => await vscode.window.showWarningMessage('Fetch failed. Switch using the local copy without updating?', { modal: true, detail: error }, 'Switch Without Updating') === 'Switch Without Updating',
+					localName: async existing => vscode.window.showInputBox({ title: 'Choose a local branch name', prompt: `${existing} already exists with a different upstream. Enter another name; the existing branch will be kept.`, ignoreFocusOut: true }),
+					stashed: async saved => {
+						this._branchStashes.set(folder, [...(this._branchStashes.get(folder) ?? []), saved]);
+						await this._context.workspaceState.update('aiBrowser.branchStashes', Object.fromEntries(this._branchStashes));
+					},
+				});
+				if (!result) { answer('Branch switch cancelled.'); return; }
+				if (result.note) { void vscode.window.showInformationMessage(result.note); }
+				if (result.stash) { confirm(`Stash saved for ${result.stash.branch}. Use “Return & Apply Stash” in the branches menu to restore it.`); }
+			} else {
+				await this._runWorkdirGit(git, [...args, ...branchCommand(action, name, remote)], folder);
+			}
 			if (action !== 'delete') {
 				const current = (await this._runWorkdirGit(git, ['symbolic-ref', '--short', 'HEAD'], folder)).trim();
 				for (const tab of sharing()) { tab.updateCopyBranch(current); }
@@ -3093,9 +3194,52 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		} catch (error) {
 			answer(error instanceof Error ? error.message : String(error));
 		} finally {
-			release?.();
+			// Switching can succeed even if updating the selected branch fails.
+			try {
+				if (action === 'switch' && release && !this._disposed && !this._blocked()) {
+					const git = await gitBinary();
+					if (git) {
+						const current = await this._runWorkdirGit(git, ['symbolic-ref', '--short', 'HEAD'], folder).then(s => s.trim(), () => '');
+						if (current) { for (const tab of this._tabs.filter(t => this._workdir(t) === folder)) { tab.updateCopyBranch(current); } }
+					}
+				}
+			} finally { release?.(); }
 			if (folder === this._workdir()) { await this._refreshWorkdirGit(); }
 		}
+	}
+
+	private async _restoreBranchStash(folder: string): Promise<void> {
+		if (folder !== this._workdir()) { return; }
+		const entries = this._branchStashes.get(folder);
+		if (!entries?.length) { return; }
+		const saved = entries.length === 1 ? entries[0] : (await vscode.window.showQuickPick(entries.map(entry => ({ label: entry.branch, description: entry.hash.slice(0, 10), entry })), { title: 'Return & Apply Stash', placeHolder: 'Choose the saved changes to restore' }))?.entry;
+		if (!saved) { return; }
+		try {
+			await this._withGitMutation(folder, async () => {
+				const binary = await gitBinary();
+				if (!binary) { throw new Error('Git is unavailable.'); }
+				const root = (await this._runWorkdirGit(binary, ['rev-parse', '--show-toplevel'], folder)).trim();
+				const git = async (args: readonly string[]) => {
+					if (this._disposed || this._blocked() || folder !== this._workdir()) { throw new Error('The working folder changed.'); }
+					if (vscode.workspace.textDocuments.some(doc => doc.isDirty && doc.uri.scheme === 'file' && (() => {
+						const relative = path.relative(root, doc.uri.fsPath);
+						return !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`);
+					})())) { throw new Error('Save edited files before restoring the stash.'); }
+					await this._assertGitFolder(folder);
+					return this._runWorkdirGit(binary, ['-c', `core.hooksPath=${os.devNull}`, ...args], root);
+				};
+				await assertSwitchReady(git);
+				if ((await git(['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignore-submodules=none'])).length) { throw new Error('Commit, stash or discard current changes before restoring the saved stash.'); }
+				await git(['rev-parse', '--verify', `${saved.hash}^{commit}`]);
+				await git(['switch', '--no-overwrite-ignore', '--no-recurse-submodules', '--no-guess', saved.branch, '--']);
+				for (const tab of this._tabs.filter(t => this._workdir(t) === folder)) { tab.updateCopyBranch(saved.branch); }
+				await git(['stash', 'apply', '--index', saved.hash]);
+				this._branchStashes.set(folder, (this._branchStashes.get(folder) ?? []).filter(entry => entry.hash !== saved.hash));
+				await this._context.workspaceState.update('aiBrowser.branchStashes', Object.fromEntries(this._branchStashes));
+				confirm('Stash applied on the original branch; the stash entry was kept as a backup.');
+			});
+		} catch (error) { refuse(`Could not restore stash: ${error instanceof Error ? error.message : String(error)}. The stash was kept.`); }
+		finally { await this._refreshWorkdirGit(); }
 	}
 
 	private _workdirState(): WorkdirState {

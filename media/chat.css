@@ -4361,6 +4361,7 @@ body.vscode-high-contrast-light .context-pie {
 .git-branch-row-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .git-branch-create { margin: 4px 8px; overflow-wrap: anywhere; }
 .git-branch-select:hover, .git-branch-create:hover { background: var(--vscode-list-hoverBackground); }
+.git-branch-popup button:focus-visible { background: var(--vscode-list-focusBackground, var(--vscode-list-hoverBackground)); color: var(--vscode-list-focusForeground, var(--fg)); }
 .git-branch-select:disabled, .git-branch-create:disabled { opacity: .55; cursor: default; }
 .git-branch-delete { color: var(--vscode-gitDecoration-deletedResourceForeground, #f14c4c); flex: none; }
 .git-branch-error { color: var(--vscode-errorForeground, #f14c4c); white-space: pre-wrap; overflow-wrap: anywhere; padding: 0 12px; font-size: 11px; }
@@ -4390,6 +4391,8 @@ body.vscode-high-contrast-light .context-pie {
 .git-changes-group { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; padding: 2px 4px; }
 .git-changes-file { display: flex; align-items: center; gap: 6px; padding: 1px 4px; }
 .git-changes-file .git-file { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-file-open { border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; border-radius: 3px; }
+.git-file-open:hover, .git-file-open:focus-visible { background: var(--vscode-list-hoverBackground); }
 .git-changes-file .round, .git-changes-group .round { flex: none; }
 .git-changes-actions { display: flex; flex-direction: column; flex: none; gap: 6px; padding: 10px 12px; border-top: 1px solid var(--border-strong); max-height: 210px; overflow: auto; }
 .git-changes-hint { color: var(--fg-3); font-size: 11px; line-height: 1.4; }
