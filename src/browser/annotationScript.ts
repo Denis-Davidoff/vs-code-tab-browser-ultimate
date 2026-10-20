@@ -51,7 +51,7 @@ export const annotationSource = String.raw`(() => {
    for(const [color,name] of colors){const swatch=button('',()=>{record.color=color;root.style.setProperty('--annotation-color',color);for(const b of palette.children)b.setAttribute('aria-pressed',b.title===name?'true':'false');palette.hidden=true;send('change');label.focus();});swatch.title=name;swatch.style.background=color;swatch.setAttribute('aria-label',name);swatch.setAttribute('aria-pressed',(record.color||colors[0][0])===color?'true':'false');palette.append(swatch);}
    const head=document.createElement('div');head.className='head';
    const tag=document.createElement('span');tag.className='tag';tag.textContent=record.element.tag;
-   const copy=iconButton('Copy CSS selector','M9 9h11v12H9z M5 16H3V3h12v2',()=>send('copy',record.id));copy.disabled=!record.element.selector;
+   const copy=iconButton('Copy annotation (note, element and page)','M9 9h11v12H9z M5 16H3V3h12v2',()=>send('copy',record.id));
    const remove=iconButton('Delete annotation','M3 6h18 M9 6V3h6v3 M6 6l1 15h10l1-15 M10 10v7 M14 10v7',()=>send('requestDelete',record.id));
    const addMore=iconButton('Add annotation marker','M12 5v14 M5 12h14',()=>{collapse(record);if(records.length<50){setMode(true);mount();}});
    head.append(label,tag,copy,remove,addMore);

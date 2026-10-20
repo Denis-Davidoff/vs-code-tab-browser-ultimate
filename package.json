@@ -1,8 +1,8 @@
 {
 	"name": "tab-browser-ultimate",
-	"displayName": "AI Browser🏆 Claude + Codex",
-	"description": "Embedded browser tab with AI capabilities, Claude and Codex integration",
-	"version": "0.7.19",
+	"displayName": "AI Browser🏆 Claude + Codex + Gemini",
+	"description": "Embedded browser tab with AI capabilities, Claude, Codex and Gemini integration",
+	"version": "0.8.0",
 	"enabledApiProposals": [
 		"externalUriOpener",
 		"browser"
@@ -30,6 +30,13 @@
 		"ai",
 		"si",
 		"browser",
+		"gemini",
+		"gemini cli",
+		"gemini chat",
+		"gemini ai",
+		"gemini si",
+		"gemini mcp",
+		"gemini browser",
 		"super intelligence",
 		"artificial intelligence",
 		"superintelligence",
@@ -93,6 +100,8 @@
 		"onStartupFinished",
 		"onCommand:aiBrowser.connectClaudeCode",
 		"onCommand:aiBrowser.connectCodex",
+		"onCommand:aiBrowser.connectGemini",
+		"onCommand:aiBrowser.openGeminiCli",
 		"onCommand:aiBrowser.checkMcpConnection",
 		"onCommand:aiBrowser.enableBrowserApi",
 		"onCommand:aiBrowser.statusMenu",
@@ -118,6 +127,7 @@
 		"onCommand:aiBrowser.stopSharingTab",
 		"onCommand:aiBrowser.shareTabWithClaudeCode",
 		"onCommand:aiBrowser.shareTabWithCodex",
+		"onCommand:aiBrowser.shareTabWithGemini",
 		"onCommand:aiBrowser.copyElementCssLocation",
 		"onCommand:aiBrowser.addCssLocationToClaudeCode",
 		"onCommand:aiBrowser.addCssLocationToCodex",
@@ -234,6 +244,18 @@
 				"title": "%command.connectCodex.title%",
 				"category": "%displayName%",
 				"icon": "$(plug)"
+			},
+			{
+				"command": "aiBrowser.connectGemini",
+				"title": "%command.connectGemini.title%",
+				"category": "%displayName%",
+				"icon": "$(plug)"
+			},
+			{
+				"command": "aiBrowser.openGeminiCli",
+				"title": "%command.openGeminiCli.title%",
+				"category": "%displayName%",
+				"icon": "$(terminal)"
 			},
 			{
 				"command": "aiBrowser.checkMcpConnection",
@@ -535,6 +557,11 @@
 			{
 				"command": "aiBrowser.shareTabWithCodex",
 				"title": "%command.shareTabWithCodex.title%",
+				"category": "%displayName%"
+			},
+			{
+				"command": "aiBrowser.shareTabWithGemini",
+				"title": "%command.shareTabWithGemini.title%",
 				"category": "%displayName%"
 			},
 			{
@@ -896,6 +923,13 @@
 						"title": "Codex Executable",
 						"markdownDescription": "%configuration.chat.codexPath.description%"
 					},
+					"aiBrowser.chat.geminiPath": {
+						"type": "string",
+						"default": "",
+						"scope": "application",
+						"title": "Gemini CLI Executable",
+						"markdownDescription": "%configuration.chat.geminiPath.description%"
+					},
 					"aiBrowser.chat.viewMode": {
 						"type": "string",
 						"enum": [
@@ -1131,6 +1165,10 @@
 				{
 					"submenu": "aiBrowser.codexMenu",
 					"group": "3_assistant@2"
+				},
+				{
+					"submenu": "aiBrowser.geminiMenu",
+					"group": "3_assistant@2.5"
 				},
 				{
 					"submenu": "aiBrowser.chatMenu",
@@ -1432,6 +1470,20 @@
 					"group": "2_recording"
 				}
 			],
+			"aiBrowser.geminiMenu": [
+				{
+					"command": "aiBrowser.connectGemini",
+					"group": "2_mcp@1"
+				},
+				{
+					"command": "aiBrowser.shareTabWithGemini",
+					"group": "2_mcp@2"
+				},
+				{
+					"command": "aiBrowser.openGeminiCli",
+					"group": "3_terminal@1"
+				}
+			],
 			"aiBrowser.loginsMenu": [
 				{
 					"command": "aiBrowser.logins.fill",
@@ -1535,6 +1587,10 @@
 			{
 				"id": "aiBrowser.codexMenu",
 				"label": "%submenu.codexMenu.label%"
+			},
+			{
+				"id": "aiBrowser.geminiMenu",
+				"label": "%submenu.geminiMenu.label%"
 			},
 			{
 				"id": "aiBrowser.chatMenu",

@@ -15,7 +15,7 @@ import type { SleepChoice, SleepState } from '../power/sleepProtocol';
  * it from the bundle. Anything with a value here would end up in both runtimes.
  */
 
-export type AgentId = 'claude' | 'codex';
+export type AgentId = 'claude' | 'codex' | 'gemini';
 
 export interface ChatModel {
 	readonly id: string;
@@ -553,6 +553,11 @@ export interface ChatViewState {
 	readonly entries: readonly ChatEntry[];
 	readonly running: boolean;
 	readonly attachments: readonly AttachmentChip[];
+	/**
+	 * What could be attached and is not yet: the text editor and the browser tab
+	 * the user has open, drawn dashed with a "+" — see `acceptSuggestion`.
+	 */
+	readonly suggestions: readonly AttachmentChip[];
 	readonly hasBrowserTab: boolean;
 	/** The `browser` proposal is granted; without it no tab can be attached, open or not. */
 	readonly browserApi: boolean;
@@ -713,6 +718,7 @@ export type ViewToHost =
 	| { readonly type: 'attach'; readonly kind: AttachmentKind }
 	| { readonly type: 'pasteFile'; readonly id: string; readonly tabId: string; readonly chatId: string; readonly name: string; readonly mime: string; readonly base64: string }
 	| { readonly type: 'removeAttachment'; readonly id: string }
+	| { readonly type: 'acceptSuggestion'; readonly id: string }
 	| { readonly type: 'usage' }
 	/** The usage line closed: not shown again until its percentage grows. */
 	| { readonly type: 'dismissUsageAlert'; readonly alert: UsageAlert }
@@ -726,6 +732,12 @@ export type ViewToHost =
 	| { readonly type: 'renameTab'; readonly id: string; readonly title: string }
 	/** The answer to `switchTo`. */
 	| { readonly type: 'switchAgent'; readonly choice: 'newTab' | 'replace' | 'continue' | 'cancel' }
+	/**
+	 * "Ask another agent" under a reply: the prompt that reply answers, sent to
+	 * another agent and model in a new tab. `index` is the reply's place in the
+	 * entries of `chatId`, the chat in front when it was pressed.
+	 */
+	| { readonly type: 'secondOpinion'; readonly chatId: string; readonly index: number; readonly agent: AgentId; readonly model: string }
 	/** One agent of the conversation in front, by its row id. */
 	| { readonly type: 'stopAgent'; readonly id: string }
 	/** An approval card answered; for a question, `allow` with the answers, or no `allow` to skip it. */

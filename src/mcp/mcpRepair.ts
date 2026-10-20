@@ -81,6 +81,21 @@ function urlCarriesToken(configured: string, token: string): boolean {
  * every other server the project has.
  */
 export function repairClaudeJson(text: string, endpoint: Endpoint): Repair {
+	return repairJsonServers(text, endpoint, 'claude');
+}
+
+/**
+ * The same repair for Gemini CLI's `.gemini/settings.json`, whose `mcpServers`
+ * has the same shape except the address: a streamable-HTTP server is `httpUrl`
+ * there (`url` is SSE) and there is no `type`. Gemini reads its settings with
+ * comments allowed; a file holding them does not parse here and is left
+ * alone, as an unparsable `.mcp.json` is.
+ */
+export function repairGeminiJson(text: string, endpoint: Endpoint): Repair {
+	return repairJsonServers(text, endpoint, 'gemini');
+}
+
+function repairJsonServers(text: string, endpoint: Endpoint, shape: 'claude' | 'gemini'): Repair {
 	const unchanged: Repair = { text, changed: false, collapsed: [] };
 
 	const parsed = parseClaudeConfig(text);
@@ -119,12 +134,14 @@ export function repairClaudeJson(text: string, endpoint: Endpoint): Repair {
 			delete headers[key];
 		}
 	}
-	const merged = {
-		...base,
-		type: 'http',
-		url: endpoint.url,
-		headers: { ...headers, Authorization: `Bearer ${endpoint.token}` },
-	};
+	const merged: Record<string, unknown> = shape === 'claude'
+		? { ...base, type: 'http', url: endpoint.url, headers: { ...headers, Authorization: `Bearer ${endpoint.token}` } }
+		: { ...base, httpUrl: endpoint.url, headers: { ...headers, Authorization: `Bearer ${endpoint.token}` } };
+	if (shape === 'gemini') {
+		// One address per server: our entry is HTTP, and a `url` beside it is SSE.
+		delete merged.url;
+		delete merged.type;
+	}
 
 	for (const name of ours) {
 		if (name !== source) {
@@ -223,7 +240,9 @@ function claudeEntryIsOurs(entry: any, token: string): boolean {
 	if (typeof authorization === 'string' && authorization.includes(token)) {
 		return true;
 	}
-	return typeof entry.url === 'string' && urlCarriesToken(entry.url, token);
+	// `httpUrl`: Gemini CLI's spelling of the same address.
+	return (typeof entry.url === 'string' && urlCarriesToken(entry.url, token))
+		|| (typeof entry.httpUrl === 'string' && urlCarriesToken(entry.httpUrl, token));
 }
 
 /* ------------------------------------------------------------------------ Codex */

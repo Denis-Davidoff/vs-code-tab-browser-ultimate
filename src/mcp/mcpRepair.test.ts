@@ -9,7 +9,7 @@ import { codexEntries, codexRangeDeletable, codexUnterminated } from './codexTom
 import { codexEntryCarriesToken } from './mcpClientState.ts';
 import {
 	codexRetiredTables, codexOurTables, mergeAuthorization, parseClaudeConfig, parseInlineTable,
-	removeCodexTables, repairClaudeJson, repairCodexToml, spliceCodexTables,
+	removeCodexTables, repairClaudeJson, repairCodexToml, repairGeminiJson, spliceCodexTables,
 } from './mcpRepair.ts';
 
 const token = 'ourtoken0000000000000000000000000000000000000000000000000000abcd';
@@ -1613,5 +1613,42 @@ suite('parseClaudeConfig refuses a shape it cannot rebuild the file from', () =>
 
 	test('the repair still refuses a top-level array', () => {
 		assert.strictEqual(repairClaudeJson('[]\n', endpoint).changed, false);
+	});
+});
+
+suite('repairGeminiJson', () => {
+	const endpoint = { url: 'http://127.0.0.1:43112/mcp', token, name: 'ai-browser' };
+
+	test('moves our entry to the new port, as httpUrl, keeping the rest of the settings', () => {
+		const text = JSON.stringify({
+			security: { auth: { selectedType: 'gemini-api-key' } },
+			mcpServers: {
+				'ai-browser': { httpUrl: 'http://127.0.0.1:43110/mcp', headers: { Authorization: `Bearer ${token}`, 'X-Org': 'a' }, timeout: 5000 },
+				other: { command: 'node', args: ['x.js'] },
+			},
+		}, null, 2) + '\n';
+		const repaired = repairGeminiJson(text, endpoint);
+		assert.ok(repaired.changed);
+		const parsed = JSON.parse(repaired.text);
+		assert.deepStrictEqual(parsed.mcpServers['ai-browser'], {
+			httpUrl: endpoint.url, headers: { 'X-Org': 'a', Authorization: `Bearer ${token}` }, timeout: 5000,
+		});
+		assert.deepStrictEqual(parsed.mcpServers.other, { command: 'node', args: ['x.js'] });
+		assert.deepStrictEqual(parsed.security, { auth: { selectedType: 'gemini-api-key' } });
+	});
+
+	test('a correct entry, another workspace\'s entry and a file with comments are left alone', () => {
+		const correct = JSON.stringify({ mcpServers: { 'ai-browser': { httpUrl: endpoint.url, headers: { Authorization: `Bearer ${token}` } } } });
+		assert.strictEqual(repairGeminiJson(correct, endpoint).changed, false);
+		const theirs = JSON.stringify({ mcpServers: { 'ai-browser': { httpUrl: 'http://127.0.0.1:43110/mcp', headers: { Authorization: `Bearer ${foreign}` } } } });
+		assert.strictEqual(repairGeminiJson(theirs, endpoint).changed, false);
+		const commented = `// settings\n{ "mcpServers": { "ai-browser": { "httpUrl": "http://127.0.0.1:1/mcp", "headers": { "Authorization": "Bearer ${token}" } } } }`;
+		assert.strictEqual(repairGeminiJson(commented, endpoint).changed, false);
+	});
+
+	test('our entry under a url carrying the token becomes an httpUrl entry with a header', () => {
+		const text = JSON.stringify({ mcpServers: { 'ai-browser': { url: `http://127.0.0.1:43110/mcp/${token}` } } });
+		const parsed = JSON.parse(repairGeminiJson(text, endpoint).text);
+		assert.deepStrictEqual(parsed.mcpServers['ai-browser'], { httpUrl: endpoint.url, headers: { Authorization: `Bearer ${token}` } });
 	});
 });

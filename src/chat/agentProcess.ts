@@ -41,8 +41,9 @@ export class JsonLineProcess implements vscode.Disposable {
 	/** Fires once, with the reason when the process did not exit cleanly. */
 	public readonly onExit = this._onExit.event;
 
-	constructor(binary: string, args: readonly string[], cwd: string) {
-		const env = { ...process.env };
+	/** `extraEnv`: added to the inherited environment, after `CLAUDECODE` is taken out. */
+	constructor(binary: string, args: readonly string[], cwd: string, extraEnv: Readonly<Record<string, string>> = {}) {
+		const env = { ...process.env, ...extraEnv };
 		delete env.CLAUDECODE;
 		delete env.CLAUDE_CODE_ENTRYPOINT;
 
@@ -75,6 +76,13 @@ export class JsonLineProcess implements vscode.Disposable {
 	public send(message: unknown): void {
 		if (!this._exited) {
 			this._child.stdin.write(JSON.stringify(message) + '\n');
+		}
+	}
+
+	/** Closes stdin: a CLI serving one object per line ends there on its own. */
+	public endInput(): void {
+		if (!this._exited) {
+			this._child.stdin.end();
 		}
 	}
 

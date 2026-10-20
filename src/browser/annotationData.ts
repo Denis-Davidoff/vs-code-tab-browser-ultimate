@@ -9,6 +9,23 @@ export interface PageAnnotation {
 
 export const annotationColors = ['#2563eb', '#7c3aed', '#be185d', '#b91c1c', '#c2410c', '#a16207', '#15803d', '#0f766e', '#0369a1', '#475569'] as const;
 
+/**
+ * One annotation as the copy icon on its note puts it on the clipboard: the note
+ * itself first — that is what the user wrote and expects to paste — then the
+ * element it is pinned to and the page, so it still means something pasted into
+ * a chat. The icon used to copy the bare CSS selector, which read as the button
+ * doing nothing.
+ */
+export function annotationClipboardText(record: PageAnnotation, url: string): string {
+	const element = `<${record.element.tag}>${record.element.selector ? ` ${record.element.selector}` : ''}${record.element.text ? ` — "${record.element.text}"` : ''}`;
+	return [
+		record.text.trim() || '(empty note)',
+		'',
+		`Annotation #${record.number} on ${url}`,
+		`Element: ${element}`,
+	].join('\n');
+}
+
 /** Treat the renderer binding as an untrusted boundary, even in our isolated world. */
 export function parseAnnotations(value: unknown): PageAnnotation[] {
 	if (!Array.isArray(value) || value.length > 50) { throw new Error('Invalid annotation list.'); }

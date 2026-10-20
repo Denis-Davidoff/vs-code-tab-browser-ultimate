@@ -6,6 +6,7 @@
 import { execFile } from 'child_process';
 import * as crypto from 'crypto';
 import { promises as fs } from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { codexEntries, codexRangeDeletable, codexServersElsewhere, codexUnterminated } from './codexToml';
@@ -13,16 +14,18 @@ import { lockPath, withLock } from '../core/fileLock';
 import { serverName } from './mcpClientState';
 import {
 	codexOurTables, codexRetiredTables, codexTableLines, parseClaudeConfig, removeCodexTables,
-	repairClaudeJson, repairCodexToml,
+	repairClaudeJson, repairCodexToml, repairGeminiJson,
 	spliceCodexTables, type Endpoint,
 } from './mcpRepair';
 import type { McpServer } from './mcpServer';
-import { confirm } from '../core/notify';
+import { confirm, refuse } from '../core/notify';
 import { plainInLabel, plainInNotification, plainInPrompt } from '../core/notifyText';
-import { withConfigTomlRule } from './gitignoreRule';
+import { withFileRule } from './gitignoreRule';
 import { workspaceIsRemoteFromHost } from '../setup/proposedApi';
 import { writeFileAtomic } from '../core/safeFiles';
 import { gitBinary } from '../core/gitBinary';
+import { chooseAgentBinary } from '../chat/agentBinary';
+import { geminiPath, geminiTrustsFolder } from '../chat/geminiAgent';
 
 /**
  * Three clients, three places to configure, and only one of them has an API.
@@ -191,12 +194,14 @@ export function codexProjectIsGlobal(folder: vscode.WorkspaceFolder): boolean {
 	if (folder.uri.scheme !== 'file') {
 		return false;
 	}
-	const fold = (p: string) => {
-		const resolved = path.resolve(p);
-		return process.platform === 'darwin' || process.platform === 'win32'
-			? resolved.toLowerCase() : resolved;
-	};
-	return fold(codexProjectConfigUri(folder).fsPath) === fold(codexGlobalConfigUri().fsPath);
+	return foldPath(codexProjectConfigUri(folder).fsPath) === foldPath(codexGlobalConfigUri().fsPath);
+}
+
+/** A path as it compares on this platform: resolved, case-folded where the filesystem usually ignores case. */
+function foldPath(p: string): string {
+	const resolved = path.resolve(p);
+	return process.platform === 'darwin' || process.platform === 'win32'
+		? resolved.toLowerCase() : resolved;
 }
 
 /**
@@ -562,13 +567,13 @@ export async function writeCodexProjectConfig(
  * written now. `false` means it could not be read or written, and the caller
  * decides whether the token may still go in (see `writeCodexProjectConfig`).
  */
-async function keepTokenOutOfGit(folder: vscode.WorkspaceFolder): Promise<boolean> {
-	const marker = vscode.Uri.joinPath(folder.uri, '.codex', '.gitignore');
+async function keepTokenOutOfGit(folder: vscode.WorkspaceFolder, dir = '.codex', file = 'config.toml'): Promise<boolean> {
+	const marker = vscode.Uri.joinPath(folder.uri, dir, '.gitignore');
 	const read = await readConfig(marker);
 	if (read.kind === 'unreadable') {
 		return false;
 	}
-	const next = read.kind === 'absent' ? 'config.toml\n' : withConfigTomlRule(read.text);
+	const next = read.kind === 'absent' ? `${file}\n` : withFileRule(read.text, file);
 	if (next === undefined) {
 		return true; // already ignored by this file
 	}
@@ -949,7 +954,7 @@ function scopeNote(shared: SharedPage | undefined): string {
 		// sentence, and naming a title nobody can find is worse than naming
 		// none.
 		: vscode.l10n.t(" The tools follow whichever browser tab you are looking at;"
-			+ " run \"Share Tab with Claude Code\" or \"Share Tab with Codex\" from a tab to give one away.");
+			+ " run \"Share Tab with Claude Code\", \"Share Tab with Codex\" or \"Share Tab with Gemini CLI\" from a tab to give one away.");
 }
 
 export async function connectClaudeCode(server: McpServer, shared?: SharedPage): Promise<void> {
@@ -1145,6 +1150,232 @@ export async function connectCodex(server: McpServer, shared?: SharedPage): Prom
 	await askToPaste(
 		vscode.l10n.t("Paste into the Codex chat to finish connecting to the browser."),
 		vscode.l10n.t("The prompt is on your clipboard. Paste it into a new Codex conversation."));
+}
+
+/* ------------------------------------------------------------------- Gemini CLI */
+
+export function geminiConfigUri(folder: vscode.WorkspaceFolder): vscode.Uri {
+	return vscode.Uri.joinPath(folder.uri, '.gemini', 'settings.json');
+}
+
+/**
+ * Is this folder's `.gemini/settings.json` Gemini CLI's *user* settings — is
+ * the workspace the home directory? Then the file is `~/.gemini/settings.json`,
+ * which Gemini loads in every project (and it reads no project settings at
+ * `~` at all), so writing our entry there hands this window's bearer token to
+ * every `gemini` on the machine — rule 3 of the security model, broken by the
+ * one click meant to scope it. Connect refuses there and the repair passes it
+ * over. The same comparison as {@link codexProjectIsGlobal}.
+ */
+export function geminiProjectIsGlobal(folder: vscode.WorkspaceFolder): boolean {
+	return folder.uri.scheme === 'file'
+		&& foldPath(geminiConfigUri(folder).fsPath) === foldPath(path.join(os.homedir(), '.gemini', 'settings.json'));
+}
+
+/**
+ * Writes our entry into the project `.gemini/settings.json`, which is what
+ * Connect Gemini uses: `mcpServers.ai-browser = { httpUrl, headers }` —
+ * `httpUrl` is Gemini's streamable HTTP, `url` there would be SSE.
+ *
+ * Built on the Codex project writer's rules, because the file carries the same
+ * bearer token inside the repository: refused in Restricted Mode (the checks
+ * run git), through a symlink in the workspace, and for a file git tracks — a
+ * team that commits `.gemini/settings.json` for its shared settings would get
+ * the token in a commit. A `.gemini/.gitignore` naming `settings.json` goes in
+ * first, and git has the last word on whether it is ignored. The rest of the
+ * file is kept: every other setting and server is read back and written out,
+ * and a file that does not parse as JSON is refused rather than rewritten —
+ * Gemini allows comments in it, which `JSON.parse` does not, and rebuilding
+ * such a file would drop the user's settings.
+ */
+export async function writeGeminiProjectConfig(
+	folder: vscode.WorkspaceFolder,
+	server: McpServer,
+): Promise<'written' | 'unparsable' | 'busy'> {
+	const uri = geminiConfigUri(folder);
+	const url = server.url;
+	if (!url) {
+		throw new Error(serverStoppedMessage);
+	}
+	if (geminiProjectIsGlobal(folder)) {
+		throw new Error(vscode.l10n.t("in the home directory it is Gemini CLI's user settings, loaded in every project"));
+	}
+	if (!vscode.workspace.isTrusted) {
+		throw new Error(vscode.l10n.t(
+			"the workspace is not trusted, and checking that git will not commit the token means running git here, which runs the repository's own hooks"));
+	}
+	await refuseWorkspaceLink(folder, ['.gemini', '.gemini/settings.json', '.gemini/.gitignore']);
+	if (await isTrackedByGit(folder, '.gemini/settings.json')) {
+		throw new Error(vscode.l10n.t(
+			"it is tracked by git, and the entry would put this workspace's bearer token in a committed file"));
+	}
+	const ruleInPlace = await keepTokenOutOfGit(folder, '.gemini', 'settings.json');
+	const verdict = await gitIgnoreVerdict(folder, '.gemini/settings.json');
+	if (ruleInPlace ? verdict === 'notIgnored' : verdict !== 'ignored' && verdict !== 'noRepository') {
+		throw new Error(ruleInPlace
+			? vscode.l10n.t("git does not ignore it despite .gemini/.gitignore, and this workspace's bearer token could be committed")
+			: vscode.l10n.t("its .gitignore rule could not be written, and without it this workspace's bearer token could be committed"));
+	}
+	let outcome: 'written' | 'unparsable' = 'unparsable';
+	const took = await withLock(lockPath(configLockName(uri)), async () => {
+		const config = await readClaudeConfig(uri);
+		if (config === undefined) {
+			return;
+		}
+		config.mcpServers = { ...(config.mcpServers ?? {}) };
+		config.mcpServers[serverName] = { httpUrl: url, headers: { Authorization: `Bearer ${server.token}` } };
+		if (server.url !== url) {
+			throw new Error(serverStoppedMessage);
+		}
+		await writeText(uri, `${JSON.stringify(config, null, 2)}\n`);
+		outcome = 'written';
+	});
+	return took ? outcome : 'busy';
+}
+
+/** The command that adds us to Gemini CLI's project settings, for when writing the file failed. */
+export function geminiCliCommand(server: McpServer): string {
+	return `gemini mcp add --scope project --transport http ${serverName} ${server.url} `
+		+ `--header "Authorization: Bearer ${server.token}"`;
+}
+
+/**
+ * Connects Gemini CLI by writing the project `.gemini/settings.json` — for a
+ * `gemini` the user runs in a terminal; the AI Browser chat's own Gemini is
+ * handed the server at every start and needs none of this.
+ *
+ * **Gemini reads a project's settings only in a folder it trusts** (folder
+ * trust is on by default since 0.6x; measured: an untrusted folder connected
+ * none of its MCP servers). Like Codex's trust, that is Gemini's own registry,
+ * so it is said rather than detected.
+ */
+export async function connectGemini(server: McpServer, shared?: SharedPage): Promise<void> {
+	if (refuseRemoteWorkspace(shared)) {
+		return;
+	}
+	const folder = workspaceFolder();
+	if (!folder) {
+		await vscode.env.clipboard.writeText(geminiCliCommand(server));
+		vscode.window.showWarningMessage(vscode.l10n.t(
+			"No folder is open, so there is no `.gemini/settings.json` to write. The `gemini mcp add` command is on your clipboard instead — run it in the project folder.")
+			+ scopeNote(shared));
+		return;
+	}
+	if (geminiProjectIsGlobal(folder)) {
+		// No `gemini mcp add` fallback either: at `~` its project scope is the same user file.
+		refuse(vscode.l10n.t(
+			"This window's folder is your home directory, so `.gemini/settings.json` here is Gemini CLI's user settings, loaded in every project — the entry was not written. Open a project folder and connect from there.")
+			+ scopeNote(shared));
+		return;
+	}
+	let outcome: Awaited<ReturnType<typeof writeGeminiProjectConfig>>;
+	try {
+		outcome = await writeGeminiProjectConfig(folder, server);
+	} catch (err) {
+		await vscode.env.clipboard.writeText(geminiCliCommand(server));
+		vscode.window.showErrorMessage(vscode.l10n.t(
+			"Could not write .gemini/settings.json ({0}). The `gemini mcp add` command is on your clipboard instead.",
+			err instanceof Error ? err.message : String(err)) + scopeNote(shared));
+		return;
+	}
+	if (outcome !== 'written') {
+		await vscode.env.clipboard.writeText(geminiCliCommand(server));
+		vscode.window.showErrorMessage((outcome === 'busy'
+			? vscode.l10n.t("Another window is writing `.gemini/settings.json`, so it was left alone — try again in a moment.")
+			: vscode.l10n.t("`.gemini/settings.json` could not be read or parsed as JSON (comments included), so it was left alone — rewriting it would drop your other settings."))
+			+ vscode.l10n.t(" The `gemini mcp add` command is on your clipboard instead.") + scopeNote(shared));
+		return;
+	}
+	await vscode.env.clipboard.writeText(connectionPrompt(serverName, '.gemini/settings.json', shared));
+	confirm(vscode.l10n.t(
+		"Wrote .gemini/settings.json, prompt copied — start `gemini` in this folder, then paste it.") + scopeNote(shared));
+	await finishGeminiConnect(folder);
+}
+
+/**
+ * The step after the write, semi-automatic: Gemini CLI is asked whether it
+ * trusts the folder (`geminiTrustsFolder`, its own verdict, no prompt sent),
+ * and the modal says what is left — then opens a terminal running `gemini`
+ * there on one click.
+ *
+ * **Untrusted is where this earns its place.** Gemini reads a project's
+ * settings — and connects its MCP servers — only in a folder it trusts, so the
+ * file just written would be ignored in silence. Its own trust question is the
+ * right place for that decision: it lists the folder's commands, MCP servers
+ * and hooks, records the answer in its own registry, and restarts itself with
+ * them loaded. This extension never writes that registry
+ * (`~/.gemini/trustedFolders.json`): a malformed one stops `gemini` starting
+ * at all, and the decision is the user's, in Gemini's words.
+ */
+async function finishGeminiConnect(folder: vscode.WorkspaceFolder): Promise<void> {
+	const binary = (await chooseAgentBinary('gemini').catch(() => undefined))?.chosen?.path;
+	if (!binary || folder.uri.scheme !== 'file') {
+		await askToPaste(
+			vscode.l10n.t("Paste into Gemini CLI to finish connecting to the browser."),
+			vscode.l10n.t("The prompt is on your clipboard. Start `gemini` in this folder first: it reads its settings only when it starts, and only in a folder it trusts."));
+		return;
+	}
+	const state = await vscode.window.withProgress(
+		{ location: vscode.ProgressLocation.Window, title: vscode.l10n.t("$(sync~spin) Asking Gemini CLI about this folder…") },
+		() => geminiTrustsFolder(binary, folder.uri.fsPath));
+	const open = vscode.l10n.t("Open Gemini CLI Here");
+	const [message, detail] = state === 'untrusted'
+		? [vscode.l10n.t("Gemini CLI does not trust this folder yet, so it would ignore the settings just written — the browser tools with them."),
+			vscode.l10n.t("A terminal will open running `gemini` in {0}. Choose “Trust folder” in the question it asks — it lists what the folder brings and restarts with it. Then paste the prompt: it is on your clipboard.", folder.name)]
+		: state === 'signedOut'
+			? [vscode.l10n.t("Gemini CLI is not signed in yet, so it cannot use the settings just written."),
+				vscode.l10n.t("A terminal will open running `gemini` in {0}. Sign in there — and choose “Trust folder” if it asks. Then paste the prompt: it is on your clipboard.", folder.name)]
+			: state === 'unknown'
+				? [vscode.l10n.t("Paste into Gemini CLI to finish connecting to the browser."),
+					vscode.l10n.t("Gemini CLI could not be asked whether it trusts this folder. Open it here: it says what it needs — a sign-in, trusting the folder, or a fix to its settings. Then paste the prompt: it is on your clipboard.")]
+				: [vscode.l10n.t("Paste into Gemini CLI to finish connecting to the browser."),
+					vscode.l10n.t("The prompt is on your clipboard. Gemini reads its settings only when it starts: open it here, or restart the one you have running in this folder.")];
+	const choice = await vscode.window.showInformationMessage(message, { modal: true, detail }, open);
+	if (choice === open) {
+		openGeminiTerminal(binary, folder.uri.fsPath);
+	}
+}
+
+/**
+ * A terminal running `gemini` in `cwd` — the binary itself as the terminal's
+ * process, so nothing is typed into a shell and no path needs quoting. The
+ * binary's folder goes first on `PATH`, as for the chat's processes: an npm
+ * install is a `#!/usr/bin/env node` script. The terminal closes with it.
+ */
+export function openGeminiTerminal(binary: string, cwd: string): void {
+	try {
+		const terminal = vscode.window.createTerminal({
+			name: 'Gemini CLI',
+			cwd,
+			shellPath: binary,
+			env: { PATH: geminiPath(binary) },
+			iconPath: new vscode.ThemeIcon('star-full'),
+		});
+		terminal.show();
+	} catch (err) {
+		// The command, so a terminal of the user's own can run it instead.
+		void vscode.env.clipboard.writeText(`cd ${JSON.stringify(cwd)} && ${JSON.stringify(binary)}`);
+		vscode.window.showErrorMessage(vscode.l10n.t(
+			"Could not open a terminal for Gemini CLI ({0}). The command is on your clipboard — run it in a terminal.",
+			err instanceof Error ? err.message : String(err)));
+	}
+}
+
+/** "Open Gemini CLI in Terminal": in the window's folder, or the home directory with none. */
+export async function openGeminiHere(): Promise<void> {
+	if (workspaceIsRemoteFromHost()) {
+		vscode.window.showWarningMessage(vscode.l10n.t(
+			"This window's folder is on a remote machine ({0}); Gemini CLI would run on this one. Open the folder locally.", vscode.env.remoteName ?? 'remote'));
+		return;
+	}
+	const binary = (await chooseAgentBinary('gemini').catch(() => undefined))?.chosen?.path;
+	if (!binary) {
+		vscode.window.showWarningMessage(vscode.l10n.t(
+			"Gemini CLI was not found. Install it (`npm install -g @google/gemini-cli` or `brew install gemini-cli`), or set aiBrowser.chat.geminiPath."));
+		return;
+	}
+	const folder = workspaceFolder();
+	openGeminiTerminal(binary, folder?.uri.scheme === 'file' ? folder.uri.fsPath : (process.env.HOME ?? process.env.USERPROFILE ?? '/'));
 }
 
 /* ----------------------------------------------------------------------- prune */
@@ -1948,6 +2179,20 @@ export async function repairConfigs(
 		if (!codexProjectIsGlobal(folder)) {
 			await apply(codexProjectConfigUri(folder), '.codex/config.toml',
 				rewriteCodex(serverName, new Set()));
+		}
+
+		// Gemini CLI's project settings, repaired like `.mcp.json`: by token, never
+		// created, a file with comments (which does not parse here) left alone.
+		// Not at `~`, where the file is Gemini's user settings: keeping an entry
+		// there alive keeps the token in every project (`geminiProjectIsGlobal`).
+		if (!geminiProjectIsGlobal(folder)) {
+			await apply(geminiConfigUri(folder), '.gemini/settings.json', text => {
+				const repaired = repairGeminiJson(text, endpoint(server, serverName, url));
+				return {
+					text: repaired.text, changed: repaired.changed,
+					removed: [], repaired: repaired.changed, refused: false,
+				};
+			});
 		}
 	}
 

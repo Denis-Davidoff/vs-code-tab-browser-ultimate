@@ -8,10 +8,15 @@
  * imports at all, so `npm test` can load it.
  */
 
-/** Lines in `.codex/.gitignore` that ignore `config.toml` beside it. */
-const covering = new Set(['config.toml', '/config.toml', '*', '/*', '*.toml', '/*.toml']);
-/** Lines that un-ignore it again. */
-const negating = new Set(['!config.toml', '!/config.toml', '!*.toml', '!/*.toml']);
+/**
+ * Lines in a `.gitignore` that ignore `file` beside it: the name, `*`, and the
+ * extension's wildcard, each with or without the leading `/`. Used for
+ * `.codex/.gitignore` (`config.toml`) and `.gemini/.gitignore` (`settings.json`).
+ */
+function covering(file: string): Set<string> {
+	const ext = /\.[^.]+$/.exec(file)?.[0];
+	return new Set([file, `/${file}`, '*', '/*', ...(ext ? [`*${ext}`, `/*${ext}`] : [])]);
+}
 
 /**
  * A `.gitignore` line with its trailing spaces removed, the way git removes
@@ -55,6 +60,12 @@ function trimTrailingSpaces(line: string): string {
  * redundant line rather than a token in a commit.
  */
 export function ignoresConfigToml(gitignore: string): boolean {
+	return ignoresFile(gitignore, 'config.toml');
+}
+
+/** `ignoresConfigToml` for any file name in the `.gitignore`'s own directory. */
+export function ignoresFile(gitignore: string, file: string): boolean {
+	const covers = covering(file);
 	let ignored = false;
 	for (const raw of gitignore.split(/\r?\n/)) {
 		// Git keeps leading spaces as part of the pattern, so ` config.toml`
@@ -62,9 +73,9 @@ export function ignoresConfigToml(gitignore: string): boolean {
 		// covered that git leaves free for `git add`. At the other end it drops
 		// only what `trimTrailingSpaces` drops.
 		const line = trimTrailingSpaces(raw);
-		if (covering.has(line)) {
+		if (covers.has(line)) {
 			ignored = true;
-		} else if (negating.has(line) || line.startsWith('!')) {
+		} else if (line.startsWith('!')) {
 			// **Any negation we cannot read counts as one that re-includes the
 			// file.** `!config.*`, `!*`, `!c*` all do, and only the literal four
 			// were modelled, so the rule above them was trusted. The cost of the
@@ -80,10 +91,15 @@ export function ignoresConfigToml(gitignore: string): boolean {
  * ignores it. Keeps the file's newline style and every existing line.
  */
 export function withConfigTomlRule(gitignore: string): string | undefined {
-	if (ignoresConfigToml(gitignore)) {
+	return withFileRule(gitignore, 'config.toml');
+}
+
+/** `withConfigTomlRule` for any file name. */
+export function withFileRule(gitignore: string, file: string): string | undefined {
+	if (ignoresFile(gitignore, file)) {
 		return undefined;
 	}
 	const newline = /\r\n/.test(gitignore) ? '\r\n' : '\n';
 	const base = gitignore === '' || gitignore.endsWith('\n') ? gitignore : gitignore + newline;
-	return `${base}config.toml${newline}`;
+	return `${base}${file}${newline}`;
 }

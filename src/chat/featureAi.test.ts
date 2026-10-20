@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { transpileModule, ModuleKind, ScriptTarget } from 'typescript';
-import { aiFeatures, defaultFeaturePrompts, featurePromptLimit, featureAiKey, featureEffort, readFeatureAiSettings } from './featureAi.ts';
+import { aiFeatures, defaultFeaturePrompts, featureAgent, featurePromptLimit, featureAiKey, featureEffort, readFeatureAiSettings } from './featureAi.ts';
 import { titleModel } from './autoTitle.ts';
 import type { ChatModel } from './chatProtocol.ts';
 
@@ -36,7 +36,7 @@ function method(name: string) {
 	const match = new RegExp(`private ${name}\\([\\s\\S]*?\\n\\t\\}`).exec(source)?.[0];
 	assert.ok(match);
 	const code = transpileModule(`({ ${match.replace('private ', '')} })`, { compilerOptions: { module: ModuleKind.CommonJS, target: ScriptTarget.ES2022 } }).outputText;
-	return runInNewContext(code, { featureAiKey, defaultFeaturePrompts, featureEffort, readFeatureAiSettings, titleModel, AbortController })[name];
+	return runInNewContext(code, { featureAgent, featureAiKey, defaultFeaturePrompts, featureEffort, readFeatureAiSettings, titleModel, AbortController })[name];
 }
 
 test('feature routing follows Auto, supports a different agent and keeps lightweight naming models', () => {
@@ -117,4 +117,16 @@ test('system prompts validate stored input and independently fall back to defaul
  assert.equal(value.branchName.prompt, undefined); assert.equal(value.commitMessage.prompt, undefined);
  assert.equal(readFeatureAiSettings({ chatTitle: { prompt: 'bad\0prompt' } }).chatTitle.prompt, undefined);
  assert.equal(readFeatureAiSettings({ chatTitle: { prompt: 12 } }).chatTitle.prompt, undefined);
+});
+
+test('Auto runs a feature on the tab agent when it can, and falls back from Gemini CLI', () => {
+ const auto = { agent: 'auto', effort: 'minimum' } as const;
+ const all = () => true;
+ assert.equal(featureAgent(auto, 'codex', all), 'codex');
+ assert.equal(featureAgent(auto, 'gemini', all), 'claude');
+ assert.equal(featureAgent(auto, 'gemini', id => id === 'codex'), 'codex');
+ assert.equal(featureAgent(auto, 'claude', id => id === 'codex'), 'codex');
+ // Nothing that can do it: the tab's agent, which then refuses with a reason.
+ assert.equal(featureAgent(auto, 'gemini', id => id === 'gemini'), 'gemini');
+ assert.equal(featureAgent({ agent: 'codex', effort: 'minimum' }, 'gemini', all), 'codex');
 });

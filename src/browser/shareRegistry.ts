@@ -69,7 +69,7 @@ export type Resolution<T> =
 	/** Nothing was given to this caller; the caller follows the user. */
 	| { readonly kind: 'unassigned' };
 
-const kindOrder: readonly ClientKind[] = ['claude', 'codex', 'other'];
+const kindOrder: readonly ClientKind[] = ['claude', 'codex', 'gemini', 'other'];
 
 function keyOf(target: ShareTarget): string {
 	switch (target.scope) {
@@ -333,7 +333,7 @@ export function isShareTarget(value: unknown): value is ShareTarget {
 
 /** `Claude Code`, `Codex`, or something honest for a client that did not say. */
 export function assistantName(kind: ClientKind): string {
-	return kind === 'claude' ? 'Claude Code' : kind === 'codex' ? 'Codex' : 'another assistant';
+	return kind === 'claude' ? 'Claude Code' : kind === 'codex' ? 'Codex' : kind === 'gemini' ? 'Gemini CLI' : 'another assistant';
 }
 
 /** How a target reads in a menu row or a confirmation. */

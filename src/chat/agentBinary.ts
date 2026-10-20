@@ -56,9 +56,15 @@ export const bundledPin = 'bundled';
 
 const versionTimeoutMs = 5000;
 
-const extensionIds: Record<AgentId, string> = {
+/**
+ * The assistant's VS Code extension whose bundled CLI is a candidate. Gemini
+ * CLI's companion extension (`Google.gemini-cli-vscode-ide-companion`) carries
+ * no CLI — it runs `gemini` from a terminal — so there is none to look in.
+ */
+const extensionIds: Record<AgentId, string | undefined> = {
 	claude: 'anthropic.claude-code',
 	codex: 'openai.chatgpt',
+	gemini: undefined,
 };
 
 /** What detection found for one agent, and which copy it uses. */
@@ -115,11 +121,15 @@ export async function chooseAgentBinary(agent: AgentId, current?: string, pinned
 
 /** Every copy of the agent's CLI on this machine, each asked its version, newest first. */
 async function listAgentBinaries(agent: AgentId): Promise<AgentBinary[]> {
-	const name = agent === 'claude' ? 'claude' : 'codex';
+	const name = agent;
 	const home = os.homedir();
 	const common = agent === 'claude'
 		? [path.join(home, '.local', 'bin'), path.join(home, '.claude', 'local'), '/opt/homebrew/bin', '/usr/local/bin']
-		: [path.join(home, '.local', 'bin'), '/opt/homebrew/bin', '/usr/local/bin'];
+		: agent === 'gemini'
+			// An npm install: a global prefix of the user's own, or one of nvm's
+			// Node versions, which a VS Code started from the Dock has no `PATH` to.
+			? [path.join(home, '.local', 'bin'), path.join(home, '.npm-global', 'bin'), ...await nvmBins(home), '/opt/homebrew/bin', '/usr/local/bin']
+			: [path.join(home, '.local', 'bin'), '/opt/homebrew/bin', '/usr/local/bin'];
 
 	const found: { path: string; source: AgentBinary['source'] }[] = [];
 	// Absolute entries only. A relative one (`.`, `node_modules/.bin`) would be
@@ -157,10 +167,23 @@ async function listAgentBinaries(agent: AgentId): Promise<AgentBinary[]> {
 	return candidates.sort((a, b) => compareCliVersions(a.version, b.version));
 }
 
+/** `~/.nvm/versions/node/<version>/bin` for each Node version nvm has installed. */
+async function nvmBins(home: string): Promise<string[]> {
+	const root = path.join(process.env.NVM_DIR || path.join(home, '.nvm'), 'versions', 'node');
+	try {
+		return (await fs.readdir(root, { withFileTypes: true })).filter(e => e.isDirectory()).map(e => path.join(root, e.name, 'bin'));
+	} catch {
+		return [];
+	}
+}
+
 /** What the binary says for `--version`, or `undefined` when it says nothing usable in time. */
 function versionOf(file: string): Promise<string | undefined> {
 	return new Promise(resolve => {
-		execFile(file, ['--version'], { timeout: versionTimeoutMs, windowsHide: true }, (error, stdout) => {
+		// The binary's own folder first on `PATH`: an npm-installed CLI is a
+		// `#!/usr/bin/env node` script, and its `node` is next to it.
+		const env = { ...process.env, PATH: [path.dirname(file), process.env.PATH].filter(Boolean).join(path.delimiter) };
+		execFile(file, ['--version'], { timeout: versionTimeoutMs, windowsHide: true, env }, (error, stdout) => {
 			resolve(error ? undefined : parseCliVersion(String(stdout)));
 		});
 	});
@@ -183,7 +206,8 @@ export function describeBinary(binary: AgentBinary): string {
 
 /** The copy inside the assistant's own VS Code extension, if that is installed. */
 async function bundledBinary(agent: AgentId, name: string): Promise<string | undefined> {
-	const root = vscode.extensions.getExtension(extensionIds[agent])?.extensionPath;
+	const id = extensionIds[agent];
+	const root = id ? vscode.extensions.getExtension(id)?.extensionPath : undefined;
 	if (!root) {
 		return undefined;
 	}

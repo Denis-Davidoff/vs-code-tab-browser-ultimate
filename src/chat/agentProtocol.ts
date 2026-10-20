@@ -1964,6 +1964,407 @@ export function codexApprovalAnswer(method: string, params: Record<string, unkno
 	}
 }
 
+/* ---------------------------------------------------------------- gemini */
+
+/*
+ * Gemini CLI, driven over ACP — the Agent Client Protocol, `gemini --acp`:
+ * JSON-RPC 2.0 over stdio, one object per line. Measured on gemini-cli 0.64.0
+ * (2026-10-20), the samples in `agentProtocol.test.ts` are those answers.
+ *
+ * - `session/new { cwd, mcpServers }` answers with the session id, the models
+ *   (`models.availableModels[{ modelId, name, description }]`, `currentModelId`)
+ *   and the modes — so the model list costs no prompt. An
+ *   `available_commands_update` follows on its own.
+ * - `session/prompt` answers when the turn ends, with `stopReason` and the
+ *   turn's `usage`; everything in between is a `session/update` notification.
+ * - A tool that needs a yes is a `tool_call` (`status: pending`) and then a
+ *   `session/request_permission` request, answered with one of its options.
+ */
+
+/** The models `session/new` lists; `auto` (Gemini CLI routes per request) is the default. */
+export function geminiModels(session: unknown): ChatModel[] {
+	const models = isRecord(session) && isRecord(session.models) ? session.models : {};
+	const current = typeof models.currentModelId === 'string' ? models.currentModelId : undefined;
+	const out: ChatModel[] = [];
+	for (const m of Array.isArray(models.availableModels) ? models.availableModels : []) {
+		if (!isRecord(m) || typeof m.modelId !== 'string' || !m.modelId || out.some(o => o.id === m.modelId)) {
+			continue;
+		}
+		const label = typeof m.name === 'string' && m.name.trim() ? oneLine(m.name, 80) : m.modelId;
+		const description = typeof m.description === 'string' && m.description.trim() ? capText(m.description, 300) : undefined;
+		out.push({ id: m.modelId, label, ...(description ? { description } : {}), efforts: [], isDefault: m.modelId === current });
+	}
+	if (out.length && !out.some(m => m.isDefault)) {
+		out[0] = { ...out[0], isDefault: true };
+	}
+	return out;
+}
+
+/**
+ * Commands Gemini CLI handles itself over ACP, from `available_commands_update`.
+ * Only the top-level ones: `memory show` and the like are typed after their
+ * parent. `restore` is left out — it resets the conversation and its files to
+ * a checkpoint, under a chat that does not know it happened (the reason
+ * `hiddenClaudeCommands` exists). Custom `.toml` commands and skills are not
+ * handled over ACP in 0.64 (read in its source), so none are listed.
+ */
+export function geminiCommands(update: unknown): ChatCommand[] {
+	const list = isRecord(update) && Array.isArray(update.availableCommands) ? update.availableCommands : [];
+	const out: ChatCommand[] = [];
+	for (const c of list) {
+		if (!isRecord(c) || typeof c.name !== 'string') {
+			continue;
+		}
+		const name = c.name.trim();
+		if (!/^[a-z][\w:-]{0,60}$/i.test(name) || name === 'restore' || out.some(o => o.name === name)) {
+			continue;
+		}
+		const description = typeof c.description === 'string' ? capText(c.description, 500) : undefined;
+		out.push({ name, insert: `/${name}`, ...(description ? { description } : {}), group: 'builtin' });
+	}
+	return out;
+}
+
+/** `browser_state (ai-browser MCP Server)`: the tool and its server, as Gemini titles an MCP call with no arguments. */
+function geminiMcpTitle(title: string): { server: string; tool: string } | undefined {
+	const match = /^(.+?) \((.+) MCP Server\)$/.exec(title);
+	return match ? { tool: match[1], server: match[2] } : undefined;
+}
+
+/** Gemini's own spelling of an MCP tool's name: `generateValidName` in gemini-cli. */
+function geminiToolName(part: string): string {
+	return part.replace(/[^a-zA-Z0-9_\-.:]/g, '_');
+}
+
+/**
+ * Whether a Gemini tool call is an MCP tool, and whose. **Never from the title
+ * alone**: a shell command's title is the command, and an MCP tool with a
+ * `command` argument is titled by it too, so `rm -rf ~ # (ai-browser MCP Server)`
+ * read as the browser and Terminal's rule was skipped. What the model cannot
+ * write is the tool's kind (MCP tools are `other`) and the call's id,
+ * `<registered name>__call_<n>` (or `<name>-<ms>-<n>`), where an MCP tool is
+ * registered as `mcp_<server>_<tool>`. The title only splits that name into
+ * server and tool, and only when it agrees with it: `<tool> (<server> MCP
+ * Server)` with no arguments, `<tool>(<args>)` with them (then the server is
+ * what the id leaves). A name that cannot be split comes back with no server,
+ * which the approval menu asks about under Other tools.
+ */
+function geminiMcpCall(call: Record<string, unknown>): { server?: string; tool: string } | undefined {
+	if (call.kind !== undefined && call.kind !== 'other') {
+		return undefined;
+	}
+	const id = typeof call.toolCallId === 'string' ? call.toolCallId : '';
+	const name = /^(mcp_.+)(?:__call_\d+|-\d+-\d+)$/.exec(id)?.[1];
+	if (!name) {
+		return undefined;
+	}
+	const title = typeof call.title === 'string' ? call.title : '';
+	const titled = geminiMcpTitle(title);
+	if (titled && name === `mcp_${geminiToolName(titled.server)}_${geminiToolName(titled.tool)}`) {
+		return titled;
+	}
+	const ours = /^mcp_(ai-browser(?:-.+-[0-9a-f]{6})?)_((?:browser|editor)_[a-z_]+)$/.exec(name);
+	if (ours) {
+		return { server: ours[1], tool: ours[2] };
+	}
+	const tool = /^([A-Za-z0-9_.:-]+)\(/.exec(title)?.[1];
+	const suffix = tool ? `_${geminiToolName(tool)}` : '';
+	if (tool && name.endsWith(suffix) && name.length > 'mcp_'.length + suffix.length) {
+		return { server: name.slice('mcp_'.length, -suffix.length), tool };
+	}
+	return { tool: name };
+}
+
+/** The paths a Gemini tool call names: its `locations`, and the file of each diff. */
+function geminiPaths(call: Record<string, unknown>): string[] {
+	const out: string[] = [];
+	for (const location of Array.isArray(call.locations) ? call.locations : []) {
+		if (isRecord(location) && typeof location.path === 'string' && location.path) {
+			out.push(location.path);
+		}
+	}
+	for (const item of Array.isArray(call.content) ? call.content : []) {
+		if (isRecord(item) && item.type === 'diff' && typeof item.path === 'string' && item.path) {
+			out.push(item.path);
+		}
+	}
+	return [...new Set(out)];
+}
+
+/** The text items of a tool call's content, joined: a command's description, an MCP tool's result. */
+function geminiText(call: Record<string, unknown>): string {
+	const parts: string[] = [];
+	for (const item of Array.isArray(call.content) ? call.content : []) {
+		if (isRecord(item) && item.type === 'content' && isRecord(item.content) && item.content.type === 'text' && typeof item.content.text === 'string') {
+			parts.push(item.content.text);
+		}
+	}
+	return parts.join('\n');
+}
+
+/**
+ * A unified diff from the `diff` items of an edit — `{ path, oldText, newText }`,
+ * whole files. The lines both sides share at the start and the end are left out
+ * and the rest is one hunk: enough for the card's counts and its first lines,
+ * and for `diffSides` to rebuild the two halves of the change.
+ */
+function geminiDiff(call: Record<string, unknown>): { input?: string; added?: number; removed?: number } {
+	const diffs: string[] = [];
+	let added = 0;
+	let removed = 0;
+	for (const item of Array.isArray(call.content) ? call.content : []) {
+		if (!isRecord(item) || item.type !== 'diff' || typeof item.newText !== 'string') {
+			continue;
+		}
+		const before = typeof item.oldText === 'string' && item.oldText ? item.oldText.replace(/\r?\n$/, '').split(/\r?\n/) : [];
+		const after = item.newText ? item.newText.replace(/\r?\n$/, '').split(/\r?\n/) : [];
+		let start = 0;
+		while (start < before.length && start < after.length && before[start] === after[start]) {
+			start++;
+		}
+		let end = 0;
+		while (end < before.length - start && end < after.length - start && before[before.length - 1 - end] === after[after.length - 1 - end]) {
+			end++;
+		}
+		const gone = before.slice(start, before.length - end);
+		const come = after.slice(start, after.length - end);
+		removed += gone.length;
+		added += come.length;
+		const file = typeof item.path === 'string' ? item.path : '';
+		diffs.push([
+			`--- ${file}`, `+++ ${file}`,
+			`@@ -${start + 1},${gone.length} +${start + 1},${come.length} @@`,
+			...gone.map(line => `-${line}`), ...come.map(line => `+${line}`),
+		].join('\n'));
+	}
+	return diffs.length ? { input: clip(diffs.join('\n')), added, removed } : {};
+}
+
+/** A Gemini tool call as the chat's row. */
+function geminiTool(call: Record<string, unknown>): ToolStart {
+	const title = typeof call.title === 'string' ? call.title : '';
+	const paths = geminiPaths(call);
+	const mcp = geminiMcpCall(call);
+	if (mcp) {
+		return { kind: 'mcp', name: mcp.server ? `${mcp.server} · ${mcp.tool}` : mcp.tool };
+	}
+	switch (call.kind) {
+		case 'execute':
+			// `[current working directory …] (what it is for)`: the description is the summary.
+			return { kind: 'command', name: 'Terminal', detail: /\(([^()]*)\)\s*$/.exec(geminiText(call))?.[1] || undefined, input: title || undefined };
+		case 'read':
+			return { kind: 'read', name: 'Read', detail: paths[0] ?? (title || undefined) };
+		case 'edit':
+		case 'delete':
+		case 'move':
+			return { kind: 'edit', name: 'Edit', detail: paths.length === 1 ? paths[0] : paths.length ? `${paths.length} files` : title || undefined, ...geminiDiff(call) };
+		case 'search':
+			return { kind: 'search', name: 'Search', detail: title ? oneLine(title) : undefined };
+		case 'fetch':
+			return { kind: 'web', name: 'Fetch', detail: title ? oneLine(title) : undefined };
+		default:
+			return { kind: 'other', name: title ? oneLine(title, 80) : 'Tool' };
+	}
+}
+
+/**
+ * One `session/update` of Gemini CLI. Its text is streamed as
+ * `agent_message_chunk`, its thoughts as `agent_thought_chunk` (a whole
+ * thought at a time, `**Subject**\nbody`), a tool as `tool_call` then
+ * `tool_call_update`, and the context's fill as `usage_update { used, size }`
+ * after each request. A command's output is not sent (measured: a
+ * `run_shell_command` completes with empty `content`), so a command row shows
+ * its command alone. `user_message_chunk` is the history `session/load` replays,
+ * which the chat already has.
+ */
+export function geminiEvents(update: unknown): AgentEvent[] {
+	const u = isRecord(update) ? update : {};
+	switch (u.sessionUpdate) {
+		case 'agent_message_chunk':
+			return isRecord(u.content) && u.content.type === 'text' && typeof u.content.text === 'string' && u.content.text
+				? [{ type: 'text', text: u.content.text }]
+				: [];
+		case 'agent_thought_chunk':
+			return isRecord(u.content) && u.content.type === 'text' && typeof u.content.text === 'string' && u.content.text.trim()
+				? [{ type: 'thinking', text: `${u.content.text.trim()}\n\n` }]
+				: [];
+		case 'tool_call': {
+			if (typeof u.toolCallId !== 'string') {
+				return [];
+			}
+			const events: AgentEvent[] = [{ type: 'tool', id: u.toolCallId, tool: geminiTool(u) }];
+			// A replayed call arrives finished.
+			const done = geminiToolUpdate(u);
+			return done.status ? [...events, { type: 'toolUpdate', id: u.toolCallId, update: done }] : events;
+		}
+		case 'tool_call_update':
+			return typeof u.toolCallId === 'string' ? [{ type: 'toolUpdate', id: u.toolCallId, update: geminiToolUpdate(u) }] : [];
+		case 'usage_update': {
+			const used = typeof u.used === 'number' && u.used >= 0 ? u.used : undefined;
+			const window = typeof u.size === 'number' && u.size > 0 ? u.size : undefined;
+			return used !== undefined || window !== undefined ? [{ type: 'context', used, window }] : [];
+		}
+		default:
+			return [];
+	}
+}
+
+function geminiToolUpdate(u: Record<string, unknown>): ToolUpdate {
+	const status = u.status === 'completed' ? 'done' as const : u.status === 'failed' ? 'failed' as const : undefined;
+	const text = geminiText(u);
+	// A command's text is its working directory and description, never its
+	// output — except the reason it failed ("… was canceled by the user").
+	const output = u.kind === 'execute' && status !== 'failed' ? undefined : text || undefined;
+	const diff = u.kind === 'edit' || u.kind === 'delete' || u.kind === 'move' ? geminiDiff(u) : {};
+	return {
+		...(output !== undefined ? { output: clip(output) } : {}),
+		...(status ? { status } : {}),
+		...(diff.input !== undefined ? diff : {}),
+	};
+}
+
+/**
+ * The turn's end, from `session/prompt`'s answer: `stopReason` and `usage`
+ * (`inputTokens` with the cached part inside it, `cachedReadTokens`,
+ * `outputTokens`, `thoughtTokens`). The tokens are the turn's own; thinking
+ * counts as output, as Claude Code's does.
+ */
+export function geminiTurnEnd(result: unknown): AgentEvent[] {
+	const r = isRecord(result) ? result : {};
+	const usage = isRecord(r.usage) ? r.usage : undefined;
+	const events: AgentEvent[] = usage
+		? [{ type: 'tokens', input: num(usage.inputTokens), output: num(usage.outputTokens) + num(usage.thoughtTokens), cached: num(usage.cachedReadTokens), cumulative: false }]
+		: [];
+	switch (r.stopReason) {
+		case 'cancelled':
+			events.push({ type: 'turnEnd', error: 'Stopped.' });
+			break;
+		case 'max_tokens':
+			events.push({ type: 'turnEnd', error: 'The reply reached the model\'s output limit.' });
+			break;
+		case 'max_turn_requests':
+			events.push({ type: 'turnEnd', error: 'Gemini CLI reached its limit of model requests for one turn.' });
+			break;
+		case 'refusal':
+			events.push({ type: 'turnEnd', error: 'The model refused to answer.' });
+			break;
+		default:
+			events.push({ type: 'turnEnd' });
+	}
+	return events;
+}
+
+/** The command that opens `gemini` in a terminal, named in the advice below. */
+const geminiTerminalCommand = '“Open Gemini CLI in Terminal” (the command palette, or the Gemini CLI menu on a browser tab)';
+
+/**
+ * A Gemini CLI error as the chat says it: what happened, in Gemini's words,
+ * and what to do. `code` is the JSON-RPC error's: Gemini answers a failed turn
+ * with the HTTP status of the model request (429, 403, 404, 500 — read in its
+ * `acpSession.ts`, and measured: an unknown model is `500 "models/… is not
+ * found"`), and its own refusals with -32000 (credentials) or -32603, whose
+ * real text is in `data.details` — the message is only "Internal error".
+ */
+export function geminiErrorText(code: number | undefined, message: string, details?: string): string {
+	// Inside parentheses below, so without its own closing full stop.
+	const said = ((details && details.trim()) || message.trim() || 'Gemini CLI refused the request').replace(/\.$/, '');
+	if (code === -32000) {
+		return `Gemini CLI is not signed in, or its credentials were refused (${said}). Sign in with ${geminiTerminalCommand}, then send the message again.`;
+	}
+	if (code === 429 || /rate limit|quota|resource.?exhausted/i.test(said)) {
+		return `Gemini's rate limit or quota is used up (${said}). Wait a little and send the message again, or pick another model.`;
+	}
+	if (code === 404 || /not found|not supported for generateContent/i.test(said)) {
+		return `This model is not available to your Gemini account (${said}). Pick another model and send the message again.`;
+	}
+	if (code === 401 || code === 403) {
+		return `Gemini refused the request (${said}). The account or API key may not have access to this model: pick another, or sign in again with ${geminiTerminalCommand}.`;
+	}
+	if (code === 400) {
+		return `Gemini refused the request as invalid (${said}).`;
+	}
+	if (code !== undefined && code >= 500 && code < 600) {
+		return `Gemini's service failed (${said}). Send the message again in a moment; if it keeps failing, pick another model.`;
+	}
+	return said;
+}
+
+/**
+ * Why a `gemini` process could not start or ended, in words that say what to
+ * do. `reason` is `JsonLineProcess`'s: the exit and the last lines of stderr.
+ */
+export function geminiExitText(reason: string, starting: boolean): string {
+	reason = reason.trim().replace(/\.$/, '');
+	if (/env: .?node.?: No such file|node: (command )?not found/i.test(reason)) {
+		return `Gemini CLI needs Node.js 20 or later, and none was found next to it or on PATH (${reason}). Install Node.js, or set aiBrowser.chat.geminiPath to a copy that can run.`;
+	}
+	if (/ENOENT|EACCES/.test(reason)) {
+		return `Gemini CLI could not be started (${reason}). Refresh the agents, or set aiBrowser.chat.geminiPath.`;
+	}
+	return starting
+		? `Gemini CLI could not start (${reason}). If its settings are malformed it says so there: run ${geminiTerminalCommand} to see.`
+		: `Gemini CLI stopped (${reason}). The next message starts it again and resumes this conversation.`;
+}
+
+/**
+ * Gemini CLI's `session/request_permission`: `{ toolCall, options }`, the tool
+ * call shaped as its `tool_call` update was. Sorted into the approval menu's
+ * categories the way Claude Code's and Codex's are: a command by its `kind`,
+ * an MCP tool by its kind and call id, never its title alone (`geminiMcpCall`), a file by
+ * whether every path it names is inside the project.
+ */
+export function geminiApproval(id: string, params: Record<string, unknown>, root: string | undefined): ApprovalRequest {
+	const call = isRecord(params.toolCall) ? params.toolCall : {};
+	const title = typeof call.title === 'string' ? call.title : '';
+	const text = geminiText(call);
+	const mcp = geminiMcpCall(call);
+	if (mcp) {
+		// The arguments, as the title spells them, when the title is not just the tool's name.
+		const args = title && !geminiMcpTitle(title) && title !== mcp.tool ? { detail: whole(title) } : {};
+		return !mcp.server
+			? { id, what: 'other', title: oneLine(mcp.tool, 200), ...args }
+			: isBrowserServer(mcp.server)
+				? { id, what: 'browser', title: mcp.tool, ...args }
+				: { id, what: 'mcp', server: mcp.server, title: mcp.tool, ...args };
+	}
+	const paths = geminiPaths(call);
+	const outside = paths.some(file => outsideProject(root, file));
+	switch (call.kind) {
+		case 'execute':
+			return { id, what: 'command', title: whole(title) || 'Command', detail: text ? whole(text) : undefined };
+		case 'fetch':
+			return { id, what: 'web', title: whole(title) || 'Fetch', detail: text ? whole(text) : undefined };
+		case 'edit':
+		case 'delete':
+		case 'move':
+			// Nothing named is nothing "inside" can be promised for.
+			return { id, what: outside || !paths.length ? 'outside' : 'edit', title: paths.length ? paths.join('\n') : whole(title) || 'Edit', detail: title ? whole(title) : undefined };
+		default:
+			if (outside) {
+				return { id, what: 'outside', title: paths.join('\n'), detail: title ? whole(title) : undefined };
+			}
+			return { id, what: 'other', title: title ? oneLine(title, 200) : 'Tool', detail: text ? whole(text) : undefined };
+	}
+}
+
+/**
+ * The answer to a permission request: the option it offered for allowing once
+ * (`proceed_once`), or for rejecting (`cancel`). Never an "always" option —
+ * the approval menu keeps that choice — and, with no fitting option, the
+ * request's own `cancelled` outcome. Gemini has no "deny and go on": a reject
+ * is reported to the model as the tool cancelled by the user, and the turn
+ * goes on (measured).
+ */
+export function geminiApprovalAnswer(params: Record<string, unknown>, allow: boolean): Record<string, unknown> {
+	const options = Array.isArray(params.options) ? params.options.filter(isRecord) : [];
+	const pick = allow
+		? options.find(o => o.optionId === 'proceed_once') ?? options.find(o => o.kind === 'allow_once')
+		: options.find(o => o.kind === 'reject_once') ?? options.find(o => o.optionId === 'cancel') ?? options.find(o => o.kind === 'reject_always');
+	return typeof pick?.optionId === 'string'
+		? { outcome: { outcome: 'selected', optionId: pick.optionId } }
+		: { outcome: { outcome: 'cancelled' } };
+}
+
 /* --------------------------------------------------------------- helpers */
 
 function isRecord(value: unknown): value is Record<string, unknown> {

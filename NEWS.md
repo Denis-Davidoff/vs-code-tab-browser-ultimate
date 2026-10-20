@@ -16,7 +16,7 @@ the VSIX, so an edit reaches users with the next release. The format is read by
 src/chat/news.ts — see "The AI Browser chat" in CLAUDE.md.
 -->
 
-Browse, debug and test your pages in VS Code's own browser — and let Claude Code or Codex see them, click through them and take screenshots, right inside the editor.
+Browse, debug and test your pages in VS Code's own browser — and let Claude Code, Codex or Gemini CLI see them, click through them and take screenshots, right inside the editor.
 
 - $(coffee) **Keep awake** — the cup at the top of the chat keeps the computer from sleeping for the time you pick, or until the agents and their sub-agents have finished.
 - $(eye) **View Mode** — Minimal, Compact or Standard in the approval menu: how much of the agents' work, their tool calls and thinking, the chat shows.
@@ -24,6 +24,13 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 - $(device-camera-video) **Record video** — record a browser tab from its toolbar, up to 4K, straight into the chat or to the clipboard.
 - $(location) **Page markers** — pin notes to several elements right in the browser and hand them to the agent as one prompt.
 - $(settings-gear) **Chat Settings** — the gear at the top of the chat: change the system prompts behind commit messages, branch names and chat titles, and clean up temporary files.
+
+## 0.8.0 — 2026-10-20
+- **Gemini CLI in the chat**: a third agent beside Claude Code and Codex, driven through your own `gemini` and its sign-in. Models come from the CLI, tool calls and edits show as they do for the others, questions are asked in the chat, and a conversation reopened from the history picks up where it left off. If a model does not answer, the chat says so and suggests another.
+- **Connect Gemini CLI** writes `.gemini/settings.json` for a `gemini` you run in a terminal, keeps the token out of git, and opens Gemini where you can trust the folder. **Open Gemini CLI in Terminal** and **Share Tab with Gemini CLI** are in the new Gemini CLI submenu.
+- **Ask another agent**: a button under every reply sends the same question to another agent or model in a new tab, for an independent second opinion that does not see the first answer.
+- **Editor tools for the agents**: `editor_context` (what you have open and selected), `editor_reveal`, `editor_definition`, `editor_references` and `editor_symbols` let assistants navigate code through VS Code's language servers, inside the workspace only.
+- **The copy icon on an annotation note** now copies the note itself, with the element it is pinned to and the page, instead of only the element's CSS selector.
 
 ## 0.7.19 — 2026-10-20
 - **Choose how long a video may be**: Chat Settings → Video recording has a maximum length, 5 minutes unless you change it, from 10 seconds up to 1 hour. In the last 30 seconds the Stop button on the browser tab blinks red and the status bar counts down; at the limit the recording stops and keeps the video. The size limit now grows with the length, so a long recording is no longer cut at 256 MB.

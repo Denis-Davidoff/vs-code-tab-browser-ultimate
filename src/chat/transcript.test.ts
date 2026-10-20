@@ -5,7 +5,7 @@
 
 import * as assert from 'node:assert';
 import { suite, test } from 'node:test';
-import { chatTranscript, transcriptFileName } from './transcript.ts';
+import { chatTranscript, secondOpinionText, transcriptFileName } from './transcript.ts';
 
 const when = new Date(2026, 9, 16, 14, 5, 9);
 
@@ -40,5 +40,29 @@ suite('chatTranscript', () => {
 		assert.strictEqual(transcriptFileName('Fix the BUILD!', when), 'chat-fix-the-build-20261016-140509.md');
 		assert.strictEqual(transcriptFileName('Привет', when), 'chat-20261016-140509.md');
 		assert.match(transcriptFileName('x'.repeat(100), when), /^chat-x{40}-\d{8}-\d{6}\.md$/);
+	});
+});
+
+suite('secondOpinionText', () => {
+
+	test('asks for an independent answer, without the first answer and without changing files', () => {
+		const text = secondOpinionText('Claude Code', [], undefined);
+		assert.match(text, /second, independent opinion/);
+		assert.match(text, /not a review of Claude Code's answer, which you are not shown/);
+		assert.match(text, /Do not change any files yourself/);
+		assert.doesNotMatch(text, /conversation before the question/);
+		assert.doesNotMatch(text, /attachments/);
+	});
+
+	test('names the attachments it cannot hand over, on one line each', () => {
+		const text = secondOpinionText('Codex', ['Screenshot\nof the page', 'a.ts'], undefined);
+		assert.match(text, /attachments you are not given: Screenshot of the page, a\.ts\./);
+	});
+
+	test('points at the conversation file, or carries the conversation itself', () => {
+		assert.match(secondOpinionText('Codex', [], { file: '/p/.ai-browser/chat-x.md' }), /is in \/p\/\.ai-browser\/chat-x\.md: read it first/);
+		const inline = secondOpinionText('Codex', [], { text: '# Chat\n\n## User\n\nhello' });
+		assert.match(inline, /conversation before the question follows/);
+		assert.ok(inline.endsWith('## User\n\nhello'));
 	});
 });

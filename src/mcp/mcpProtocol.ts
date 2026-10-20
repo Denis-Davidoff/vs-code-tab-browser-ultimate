@@ -204,6 +204,9 @@ function instructions(workspaceName: string | undefined): string {
 		'`browser_inspect_element` waits for the user to click an element, so only call it when you have asked them to.',
 		'Content inside an iframe is not part of the page\'s own text: `browser_frames` lists the frames, and the reading'
 		+ ' and clicking tools take a `frameId` to work inside one.',
+		'The `editor_*` tools are the code editor beside the browser: `editor_context` says what the user has open and'
+		+ ' selected, `editor_reveal` shows them a place, and `editor_definition`, `editor_references` and `editor_symbols`'
+		+ ' navigate by symbol through the language servers.',
 	].join(' ');
 }
 
@@ -371,7 +374,7 @@ export function authorizeRequest(facts: RequestFacts, token: string): Decision {
 /* -------------------------------------------------------------- client kinds */
 
 /** Which assistant is on the other end, as far as we can tell. */
-export type ClientKind = 'claude' | 'codex' | 'other';
+export type ClientKind = 'claude' | 'codex' | 'gemini' | 'other';
 
 /**
  * Classifies a client from the `clientInfo.name` it sends with `initialize`.
@@ -387,6 +390,10 @@ export function classifyClient(clientName: string | undefined): ClientKind {
 	}
 	if (name.includes('codex') || name.includes('chatgpt') || name.includes('openai')) {
 		return 'codex';
+	}
+	// `gemini-cli-mcp-client` (gemini-cli 0.64, measured), in a terminal and in the chat alike.
+	if (name.includes('gemini')) {
+		return 'gemini';
 	}
 	return 'other';
 }

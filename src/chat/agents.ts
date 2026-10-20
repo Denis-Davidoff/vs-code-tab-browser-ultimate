@@ -9,6 +9,7 @@ import type { AgentEvent } from './agentProtocol';
 import type { AgentId, AgentUsage, ChatAgent, ChatCommand, ChatModel, QuestionAnswers } from './chatProtocol';
 import { ClaudeBackend } from './claudeAgent';
 import { CodexBackend } from './codexAgent';
+import { GeminiBackend } from './geminiAgent';
 
 /**
  * The agents the chat view can talk to, behind one interface.
@@ -106,9 +107,15 @@ export interface AgentBackend extends vscode.Disposable {
 export const agentNames: Record<AgentId, string> = {
 	claude: 'Claude Code',
 	codex: 'Codex',
+	gemini: 'Gemini CLI',
 };
 
-const agentIds: readonly AgentId[] = ['claude', 'codex'];
+const agentIds: readonly AgentId[] = ['claude', 'codex', 'gemini'];
+
+/** A value the view sent, checked to name one of the agents. */
+export function isAgentId(value: unknown): value is AgentId {
+	return typeof value === 'string' && (agentIds as readonly string[]).includes(value);
+}
 
 /**
  * Finds the agents installed on this machine and lists their models.
@@ -288,7 +295,10 @@ export class AgentRegistry implements vscode.Disposable {
 				id, name, available: false, models: [], ...about,
 				problem: configured
 					? vscode.l10n.t("aiBrowser.chat.{0}Path is set to {1}, which is not an executable file.", id, configured)
-					: vscode.l10n.t("{0} was not found. Install its CLI or its VS Code extension, or set aiBrowser.chat.{1}Path.", name, id),
+					: id === 'gemini'
+						// Its companion extension carries no CLI, so it is no way to install one.
+						? vscode.l10n.t("Gemini CLI was not found. Install it (`npm install -g @google/gemini-cli` or `brew install gemini-cli`), or set aiBrowser.chat.geminiPath.")
+						: vscode.l10n.t("{0} was not found. Install its CLI or its VS Code extension, or set aiBrowser.chat.{1}Path.", name, id),
 			};
 		}
 
@@ -301,7 +311,9 @@ export class AgentRegistry implements vscode.Disposable {
 			const seen = (usage: AgentUsage) => { if (!this._disposed) { this._onDidReadUsage.fire(usage); } };
 			const backend = id === 'claude'
 				? new ClaudeBackend(binary.path, this._cwd, this._browserServer, this._ownSettings, seen)
-				: new CodexBackend(binary.path, this._cwd, this._browserServer, seen);
+				: id === 'codex'
+					? new CodexBackend(binary.path, this._cwd, this._browserServer, seen)
+					: new GeminiBackend(binary.path, this._cwd, this._browserServer);
 			entry = { binary: binary.path, backend };
 			this._backends.set(id, entry);
 		}

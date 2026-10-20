@@ -307,6 +307,15 @@ async function showMenu(controller: BrowserController): Promise<void> {
 		run: () => vscode.commands.executeCommand('aiBrowser.connectCodex'),
 	});
 	items.push({
+		label: focused
+			? vscode.l10n.t("$(comment-discussion) Connect Gemini CLI and share this tab")
+			: vscode.l10n.t("$(comment-discussion) Connect Gemini CLI"),
+		detail: focused
+			? vscode.l10n.t("Writes .gemini/settings.json, copies the check prompt, and gives it the tab you are on")
+			: vscode.l10n.t("Writes .gemini/settings.json and copies the check prompt"),
+		run: () => vscode.commands.executeCommand('aiBrowser.connectGemini'),
+	});
+	items.push({
 		label: vscode.l10n.t("$(pulse) Check Connection"),
 		run: () => vscode.commands.executeCommand('aiBrowser.checkMcpConnection'),
 	});
@@ -390,6 +399,11 @@ async function showMenu(controller: BrowserController): Promise<void> {
 			label: vscode.l10n.t("$(link) Give this tab to Codex"),
 			description: page,
 			run: () => vscode.commands.executeCommand('aiBrowser.shareTabWithCodex'),
+		});
+		items.push({
+			label: vscode.l10n.t("$(link) Give this tab to Gemini CLI"),
+			description: page,
+			run: () => vscode.commands.executeCommand('aiBrowser.shareTabWithGemini'),
 		});
 		items.push({
 			label: alreadyShared

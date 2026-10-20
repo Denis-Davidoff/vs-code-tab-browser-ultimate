@@ -1,5 +1,5 @@
 import { comparablePath, trackTemporaryFile, temporaryStorage } from '../core/temporaryFiles';
-import { featureAiKey, defaultFeaturePrompts, featureEffort, readFeatureAiSettings, type AiFeature } from './featureAi';
+import { featureAgent, featureAiKey, defaultFeaturePrompts, featureEffort, readFeatureAiSettings, type AiFeature } from './featureAi';
 import { availableBranchName, titleModel } from './autoTitle';
 import { localFileLink } from './fileLinks';
 import { SleepControl } from '../power/sleepControl';
@@ -19,11 +19,11 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { AgentRegistry, agentNames, type BrowserServer } from './agents';
+import { AgentRegistry, agentNames, isAgentId, type BrowserServer } from './agents';
 import { sweepBrowserConfigs } from './claudeAgent';
 import { bundledPin } from './agentBinary';
 import { ChatTab, isHome, newChat, reopened, started, storedEntries, storedTextLimit, type Attachment, type SkillStep, type StoredChat, type TabHost } from './chatTab';
-import { chatTranscript, transcriptFileName } from './transcript';
+import { chatTranscript, secondOpinionText, transcriptFileName, type OpinionContext } from './transcript';
 import { diffSides } from './diffSides';
 import { listWorkdir, type WorkdirListing } from './workdir';
 import { compareUrl, parseRepo, repoSlug, validBranch, workBranchName, type RepoRef } from './githubRepo';
@@ -44,7 +44,7 @@ import type { BrowserController } from '../browser/browserController';
 import type { AnnotationChange } from '../browser/pageAnnotations';
 import type { PageAnnotation } from '../browser/annotationData';
 import type {
-	AgentId, AgentUsage, ApprovalMode, AttachmentKind, ChatSummary, GitCommitState,
+	AgentId, AgentUsage, ApprovalMode, AttachmentChip, AttachmentKind, ChatSummary, GitCommitState,
 	ChatNews, ChatTabSummary, ChatViewState, HostToView, RepoMode, Selection, ToolbarRun, ToolbarSkill, UsageAlert, UsageWindow, ViewToHost, VoiceEvent, WorkdirFolder, WorkdirState,
 	ChatViewMode,
 } from './chatProtocol';
@@ -249,7 +249,7 @@ const recentReposKey = 'aiBrowser.chat.recentRepos';
 const untrustedFoldersKey = 'aiBrowser.chat.untrustedFolders';
 const untrustedLimit = 200;
 /** A project's own configuration files, which the folder button names when it holds them back. */
-const projectConfigFiles = ['.claude/settings.json', '.claude/settings.local.json', '.mcp.json'];
+const projectConfigFiles = ['.claude/settings.json', '.claude/settings.local.json', '.mcp.json', '.gemini/settings.json'];
 /** A folder's listing is reused for this long: the button is opened again and again while a message is written. */
 const workdirListingMs = 15_000;
 /** Editor events come in bursts (a folder of files opened at once): one Git read for the lot. */
@@ -424,6 +424,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		// they go through `_gitEventRefresh`: debounced, and only while the view
 		// is on screen.
 		this._subscriptions.push(vscode.window.onDidChangeActiveColorTheme(() => this._gitEventRefresh()));
+		// The suggested file follows the text editor in front.
+		this._subscriptions.push(vscode.window.onDidChangeActiveTextEditor(() => this._post()));
+		// A selection there is suggested in its place. Every cursor move fires
+		// this, so the state is posted only when the selection itself changes.
+		let lastSelection: string | undefined;
+		this._subscriptions.push(vscode.window.onDidChangeTextEditorSelection(event => {
+			if (event.textEditor !== vscode.window.activeTextEditor) { return; }
+			const key = editorSelectionKey(event.textEditor);
+			if (key === lastSelection) { return; }
+			lastSelection = key;
+			this._post();
+		}));
+		// …and the suggested page the editor tab in front, which a switch to a
+		// non-text editor or between groups changes without that event.
+		this._subscriptions.push(vscode.window.tabGroups.onDidChangeTabs(() => this._post()));
+		this._subscriptions.push(vscode.window.tabGroups.onDidChangeTabGroups(() => this._post()));
 		// Changing a document's language fires close/open events in VS Code.
 		this._subscriptions.push(vscode.workspace.onDidOpenTextDocument(() => this._gitEventRefresh()));
 		this._subscriptions.push(vscode.workspace.onDidCloseTextDocument(() => this._gitEventRefresh()));
@@ -451,6 +467,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 					vscode.window.onDidOpenBrowserTab(() => this._post()),
 					vscode.window.onDidCloseBrowserTab(() => this._post()),
 					vscode.window.onDidChangeActiveBrowserTab(() => this._post()),
+					// The suggested page's chip names the page, which can change under it.
+					vscode.window.onDidChangeBrowserTabState(() => this._post()),
 				);
 			} catch {
 				// The menu then only learns of tabs on the next state change.
@@ -685,6 +703,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			entries: this._active.chat.entries,
 			running: this._active.running,
 			attachments: this._active.attachments.map(a => ({ ...a.chip, reference: attachmentReference(a.chip) })),
+			suggestions: this._suggestions().map(s => s.chip),
 			pendingSends: this._active.pendingSends,
 			tabs: this._tabs.map((tab): ChatTabSummary => ({
 				id: tab.id,
@@ -731,7 +750,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			return undefined;
 		}
 		const agent = tab.chat.agent;
-		const canCompact = agent === 'codex' || !!this._registry.commands.claude?.some(c => c.name === 'compact');
+		// Gemini CLI's `/compress` is not among the commands it handles over ACP.
+		const canCompact = agent === 'codex' || (agent === 'claude' && !!this._registry.commands.claude?.some(c => c.name === 'compact'));
 		return { used: stats.contextTokens, window: stats.contextWindow, compacted: stats.contextCompacted, canCompact };
 	}
 
@@ -961,7 +981,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				await this._trustWorkdir();
 				return;
 			case 'listCommands':
-				if (!this._blocked() && (message.agent === 'claude' || message.agent === 'codex') && !this._registry.detecting) {
+				if (!this._blocked() && isAgentId(message.agent) && !this._registry.detecting) {
 					await this._registry.refreshCommands(message.agent);
 				}
 				return;
@@ -1088,6 +1108,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			case 'switchAgent':
 				await this._switchAgent(message.choice);
 				return;
+			case 'secondOpinion':
+				await this._secondOpinion(message.chatId, message.index, message.agent, message.model);
+				return;
 			case 'setAgentBinary':
 				await this._setAgentBinary(message.agent, message.path);
 				return;
@@ -1105,6 +1128,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				this._livePages.delete(message.id);
 				this._post();
 				return;
+			case 'acceptSuggestion': {
+				// Taken from what is open now, not from what the chip showed: the
+				// suggestion is the editor or tab in front, and only that is accepted.
+				const suggestion = this._suggestions().find(s => s.chip.id === message.id);
+				const tab = this._active;
+				const attachment = suggestion && await suggestion.accept();
+				if (attachment && this._tabs.includes(tab)) {
+					tab.attachments.push(attachment);
+				}
+				this._post();
+				return;
+			}
 			case 'usage':
 				await this._usage();
 				return;
@@ -1766,7 +1801,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 	private _featureSelection(feature: AiFeature, tab: ChatTab, currentAgent = this._selection(tab).agent) {
 		const choice = readFeatureAiSettings(this._context.globalState.get(featureAiKey))[feature];
-		const agent = choice.agent === 'auto' ? currentAgent : choice.agent;
+		const agent = featureAgent(choice, currentAgent, id => this._registry.agents.some(a => a.id === id && a.available && a.models.length > 0));
 		const available = this._registry.agents.find(a => a.id === agent && a.available);
 		if (!available || !agent) { throw new Error('The agent selected for this feature is unavailable. Open Chat Settings to choose another.'); }
 		const selection = this._selection(tab);
@@ -2799,7 +2834,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private _dismissUsageAlert(alert: unknown): void {
 		const a = alert as Partial<UsageAlert> | undefined;
 		const agent = a?.agent;
-		if (agent !== 'claude' && agent !== 'codex') {
+		if (!isAgentId(agent)) {
 			return;
 		}
 		const shown: UsageAlert | undefined = typeof a?.label === 'string' && typeof a.percent === 'number' && Number.isFinite(a.percent)
@@ -3608,18 +3643,71 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				refuse(vscode.l10n.t("{0} is not there any more.", plainInLabel(uri.fsPath)));
 				continue;
 			}
-			const relative = folder ? path.relative(folder, uri.fsPath) : undefined;
-			const inProject = relative !== undefined && relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
-			const shown = inProject ? relative.split(path.sep).join('/') : undefined;
-			tab.attachments.push(directory
-				? { chip: { id: generateUuid(), kind: 'file', label: `${path.basename(uri.fsPath)}/` }, text: `Attached folder: ${uri.fsPath}${shown ? ` (${shown}/ in the project)` : ''}` }
-				: { chip: { id: generateUuid(), kind: 'file', label: path.basename(uri.fsPath) }, file: uri, text: `Attached file: ${uri.fsPath}${shown ? ` (${shown} in the project)` : ''}` });
+			tab.attachments.push(fileAttachment(uri, folder, directory));
 			attached++;
 		}
 		if (!attached) { return; }
 		this._post();
 		await vscode.commands.executeCommand(`${chatViewId}.focus`);
 		this._postMessage({ type: 'focusInput' });
+	}
+
+	/**
+	 * What the composer offers to attach without being asked: the file in the
+	 * text editor in front, and the browser tab the user last had in front as a
+	 * shared page. Each is left out while the tab in front already has it
+	 * attached, so removing the chip turns it back into a suggestion. Nothing is
+	 * offered where the chat refuses to run.
+	 */
+	private _suggestions(): { readonly chip: AttachmentChip; readonly accept: () => Attachment | undefined | Promise<Attachment | undefined> }[] {
+		if (!this._active || this._blocked()) {
+			return [];
+		}
+		const attached = this._active.attachments;
+		const out: { chip: AttachmentChip; accept: () => Attachment | undefined | Promise<Attachment | undefined> }[] = [];
+		const editor = vscode.window.activeTextEditor;
+		const uri = editor?.document.uri;
+		// Lines selected in the editor are offered instead of the whole file.
+		const selected = editor && editorSelectionKey(editor);
+		if (editor && selected) {
+			if (!attached.some(a => a.selectionKey === selected)) {
+				out.push({
+					chip: { id: `suggest:selection:${selected}`, kind: 'selection', label: selectionLabel(editor) },
+					accept: () => {
+						// What is selected now, not what the chip showed.
+						const current = vscode.window.activeTextEditor;
+						const attachment = current && selectionAttachment(current);
+						if (typeof attachment === 'string') {
+							refuse(attachment);
+							return undefined;
+						}
+						return attachment;
+					},
+				});
+			}
+		} else if (uri?.scheme === 'file' && !attached.some(a => a.file?.fsPath === uri.fsPath)) {
+			const folder = this._workdir(this._active);
+			out.push({
+				chip: { id: `suggest:file:${uri.toString()}`, kind: 'file', label: path.basename(uri.fsPath) },
+				accept: () => fileAttachment(uri, folder, false),
+			});
+		}
+		// The page only while a browser tab is the editor in front: the active
+		// group's active tab, which stays put while focus is in the chat. A
+		// browser editor has no `input` in `tabGroups` (the extension host models
+		// none for it), the heuristic `browserTabVisible` uses.
+		const front = vscode.window.tabGroups.activeTabGroup.activeTab;
+		if (isBrowserApiGranted() && front && front.input === undefined) {
+			const page = this._browser.focusedTab ?? this._browser.userTab;
+			if (page && ![...this._livePages].some(([id, tracked]) => tracked === page && attached.some(a => a.chip.id === id))) {
+				const title = plainInPrompt(pageTitle(page.title, page.url));
+				out.push({
+					chip: { id: `suggest:page:${this._browser.tabIdOf(page)}`, kind: 'sharedPage', label: title || page.url },
+					accept: () => this._makeAttachment('sharedPage', page),
+				});
+			}
+		}
+		return out;
 	}
 
 	/** A snapshot of the non-empty selections in VS Code's active text editor. */
@@ -3630,23 +3718,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			return;
 		}
 		if (!editor) { return; }
-		const selections = editor.selections.filter(selection => !selection.isEmpty);
-		if (!selections.length) { return; }
-		const source = editor.document.uri.scheme === 'file' ? editor.document.uri.fsPath : editor.document.uri.toString();
-		const parts = selections.map(selection => {
-			const first = selection.start.line + 1;
-			const last = selection.end.character === 0 && selection.end.line > selection.start.line ? selection.end.line : selection.end.line + 1;
-			return `Lines ${first}${last === first ? '' : `-${last}`}:\n${JSON.stringify(editor.document.getText(selection))}`;
-		});
-		const text = `Selected text from ${JSON.stringify(source)}:\n${parts.join('\n\n')}`;
-		if (Buffer.byteLength(text, 'utf8') > 1_000_000) {
-			refuse(vscode.l10n.t("The selection is too large to attach (maximum 1 MB)."));
+		const attachment = selectionAttachment(editor);
+		if (!attachment) { return; }
+		if (typeof attachment === 'string') {
+			refuse(attachment);
 			return;
 		}
-		const name = path.basename(editor.document.uri.path) || vscode.l10n.t("Untitled");
-		const firstLine = selections[0].start.line + 1;
-		const range = selections.length === 1 ? `:${firstLine}` : ` · ${selections.length} selections`;
-		this._active.attachments.push({ chip: { id: generateUuid(), kind: 'selection', label: `${name}${range}` }, text });
+		this._active.attachments.push(attachment);
 		this._post();
 		await vscode.commands.executeCommand(`${chatViewId}.focus`);
 		this._postMessage({ type: 'focusInput' });
@@ -4276,6 +4354,77 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}
 	}
 
+	/**
+	 * "Ask another agent" under a reply: the prompt that reply answers goes, as
+	 * the first message of a new tab, to the agent and model picked — asked for,
+	 * one at a time; a second opinion more is another press. The conversation
+	 * before the prompt goes with it (`secondOpinionText`), the way "Continue
+	 * in …" hands one over; the first agent's answer does not. The new tab sits
+	 * beside the one it came from and works in its folder.
+	 */
+	private async _secondOpinion(chatId: string, index: number, agent: AgentId, model: string): Promise<void> {
+		if (this._blocked() || !isAgentId(agent) || typeof model !== 'string' || !Number.isInteger(index)) {
+			return;
+		}
+		const from = this._tabs.find(t => t.chat.id === chatId);
+		const entries = from?.chat.entries;
+		if (!from || entries?.[index]?.kind !== 'assistant') {
+			return;
+		}
+		let at = index;
+		while (at >= 0 && entries[at].kind !== 'user') {
+			at--;
+		}
+		const prompt = entries[at];
+		if (prompt?.kind !== 'user') {
+			refuse(vscode.l10n.t("No question was found above this reply."));
+			return;
+		}
+		const target = this._registry.agents.find(a => a.id === agent && a.available);
+		if (!target?.models.some(m => m.id === model)) {
+			refuse(vscode.l10n.t("{0} is not available with that model.", agentNames[agent]));
+			return;
+		}
+		if (this._tabs.length >= tabLimit()) {
+			refuse(vscode.l10n.t("{0} chats are open — close one to open another.", this._tabs.length));
+			return;
+		}
+		const chat = from.chat;
+		const before = entries.slice(0, at);
+		let context: OpinionContext;
+		if (before.some(e => e.kind === 'user')) {
+			const now = new Date();
+			const markdown = chatTranscript(chat.title, agentNames[chat.agent], before, now);
+			try {
+				const file = await writeChatTranscript(markdown, transcriptFileName(chat.title, now), chat.folder);
+				// No folder to put a file in: the conversation itself, its newest part.
+				context = file ? { file } : { text: markdown.length > transcriptInlineLimit ? `${markdown.slice(-transcriptInlineLimit)}\n\n(Earlier parts left out.)` : markdown };
+			} catch (err) {
+				refuse(vscode.l10n.t("Could not write the conversation out for {0}: {1}", agentNames[agent], err instanceof Error ? err.message : String(err)));
+				return;
+			}
+		}
+		// The write is awaited: the tab may have closed or moved on meanwhile.
+		if (!this._tabs.includes(from) || from.chat !== chat) {
+			return;
+		}
+		const tab = this._addTab(agent, from);
+		if (!tab) {
+			return;
+		}
+		// What a fresh tab sends with is the remembered agent and its model, as
+		// when they are picked with the pills; the new tab has not started, so
+		// this is no switch of agent for a conversation.
+		this._select({ agent, model });
+		tab.rename(`${agentNames[agent]}: ${chat.title}`.slice(0, 80));
+		const attachment: Attachment = {
+			chip: { id: generateUuid(), kind: 'file', label: vscode.l10n.t("Second opinion on a question to {0}", agentNames[chat.agent]) },
+			file: context && 'file' in context ? vscode.Uri.file(context.file) : undefined,
+			text: secondOpinionText(agentNames[chat.agent], prompt.attachments, context),
+		};
+		await this._send(prompt.text, tab.id, [attachment]);
+	}
+
 	/** The title bar's New Chat, and the tab strip's "+": a new tab. */
 	public newChat(): void {
 		this._addTab(this._remembered.agent ?? this._selection().agent ?? 'claude');
@@ -4284,7 +4433,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private _agentBinaries(): Partial<Record<AgentId, string>> {
 		const stored = this._context.workspaceState.get<Record<string, unknown>>(agentBinariesKey) ?? {};
 		const pick = (id: AgentId) => typeof stored[id] === 'string' ? stored[id] as string : undefined;
-		return { claude: pick('claude'), codex: pick('codex') };
+		return { claude: pick('claude'), codex: pick('codex'), gemini: pick('gemini') };
 	}
 
 	/**
@@ -4294,7 +4443,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 * new copy at its next message, by its `ref`, as after a Refresh.
 	 */
 	private async _setAgentBinary(agent: AgentId, file: string | undefined): Promise<void> {
-		if (agent !== 'claude' && agent !== 'codex') {
+		if (!isAgentId(agent)) {
 			return;
 		}
 		// Only one of the copies detection found: the view names a path, it does not get to invent one.
@@ -4444,4 +4593,68 @@ function remember<T>(map: Map<string, T>, key: string, value: T): void {
 	while (map.size > openedAttachmentLimit) {
 		map.delete(map.keys().next().value!);
 	}
+}
+
+/** A file or folder as an attachment: its path, and where it sits in the project when it does. */
+/** The editor's non-empty selections, in document order. */
+function nonEmptySelections(editor: vscode.TextEditor): vscode.Selection[] {
+	return editor.selections.filter(selection => !selection.isEmpty)
+		.sort((a, b) => a.start.compareTo(b.start));
+}
+
+/** A selection's lines, 1-based; a selection ending at a line's start does not take that line. */
+function selectionLines(selection: vscode.Selection): { readonly first: number; readonly last: number } {
+	const first = selection.start.line + 1;
+	const last = selection.end.character === 0 && selection.end.line > selection.start.line ? selection.end.line : selection.end.line + 1;
+	return { first, last };
+}
+
+/** Which selection this is, or `undefined` with nothing selected. */
+function editorSelectionKey(editor: vscode.TextEditor): string | undefined {
+	const selections = nonEmptySelections(editor);
+	if (!selections.length) { return undefined; }
+	const ranges = selections.map(s => `${s.start.line}.${s.start.character}-${s.end.line}.${s.end.character}`).join(',');
+	return `${editor.document.uri.toString()}#${ranges}`;
+}
+
+/** The chip's words: the file's name, then the lines selected. */
+function selectionLabel(editor: vscode.TextEditor): string {
+	const name = path.basename(editor.document.uri.path) || vscode.l10n.t("Untitled");
+	const selections = nonEmptySelections(editor);
+	if (selections.length !== 1) {
+		return vscode.l10n.t("{0} · {1} selections", name, selections.length);
+	}
+	const { first, last } = selectionLines(selections[0]);
+	return first === last
+		? vscode.l10n.t("{0} · line {1}", name, first)
+		: vscode.l10n.t("{0} · lines {1}–{2}", name, first, last);
+}
+
+/**
+ * A snapshot of the editor's selected text as an attachment, quoted so it stays data in the
+ * prompt; `undefined` with nothing selected, a refusal's text when it is over 1 MB.
+ */
+function selectionAttachment(editor: vscode.TextEditor): Attachment | string | undefined {
+	const selections = nonEmptySelections(editor);
+	const key = editorSelectionKey(editor);
+	if (!selections.length || !key) { return undefined; }
+	const source = editor.document.uri.scheme === 'file' ? editor.document.uri.fsPath : editor.document.uri.toString();
+	const parts = selections.map(selection => {
+		const { first, last } = selectionLines(selection);
+		return `Lines ${first}${last === first ? '' : `-${last}`}:\n${JSON.stringify(editor.document.getText(selection))}`;
+	});
+	const text = `Selected text from ${JSON.stringify(source)}:\n${parts.join('\n\n')}`;
+	if (Buffer.byteLength(text, 'utf8') > 1_000_000) {
+		return vscode.l10n.t("The selection is too large to attach (maximum 1 MB).");
+	}
+	return { chip: { id: generateUuid(), kind: 'selection', label: selectionLabel(editor) }, text, selectionKey: key };
+}
+
+function fileAttachment(uri: vscode.Uri, folder: string | undefined, directory: boolean): Attachment {
+	const relative = folder ? path.relative(folder, uri.fsPath) : undefined;
+	const inProject = relative !== undefined && relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
+	const shown = inProject ? relative.split(path.sep).join('/') : undefined;
+	return directory
+		? { chip: { id: generateUuid(), kind: 'file', label: `${path.basename(uri.fsPath)}/` }, text: `Attached folder: ${uri.fsPath}${shown ? ` (${shown}/ in the project)` : ''}` }
+		: { chip: { id: generateUuid(), kind: 'file', label: path.basename(uri.fsPath) }, file: uri, text: `Attached file: ${uri.fsPath}${shown ? ` (${shown} in the project)` : ''}` };
 }

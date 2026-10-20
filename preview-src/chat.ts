@@ -1,5 +1,5 @@
 import type { TemporaryStorage } from '../src/core/temporaryFiles';
-import { aiFeatures, defaultFeaturePrompts, featurePromptLimit, readFeatureAiSettings, type AiFeature, type FeatureAiSettings, type FeatureEffort } from '../src/chat/featureAi';
+import { aiFeatures, defaultFeaturePrompts, featureAgent, featurePromptLimit, readFeatureAiSettings, type AiFeature, type FeatureAiSettings, type FeatureEffort } from '../src/chat/featureAi';
 import { createRecordingEncoder } from './recording';
 import { clipboardFiles, fileBase64 } from './clipboardFiles';
 import { pastedFileLimit } from '../src/chat/pastedFiles';
@@ -32,7 +32,7 @@ import { sleepMinutes, sleepHours, type SleepChoice } from '../src/power/sleepPr
  */
 
 import type {
-	AgentId, AgentQuestion, AgentUsage, ApprovalEntry, UsageAlert, ToolbarParam, ToolbarResult, ToolbarRun, ToolbarSkill, ApprovalKind, ApprovalMode, AttachmentKind, ChatCommand, ChatEntry, ChatStats, ChatSummary, ChatTabStatus, ChatTabSummary, ChatViewMode, ChatViewState, HostToView, RepoMode, ToolEntry, ViewToHost, VoiceEvent, WorkdirFolder, GitBranchState, WorkdirGitStatus,
+	AgentId, AgentQuestion, AgentUsage, ApprovalEntry, UsageAlert, ToolbarParam, ToolbarResult, ToolbarRun, ToolbarSkill, ApprovalKind, ApprovalMode, AttachmentChip, AttachmentKind, ChatCommand, ChatEntry, ChatStats, ChatSummary, ChatTabStatus, ChatTabSummary, ChatViewMode, ChatViewState, HostToView, RepoMode, ToolEntry, ViewToHost, VoiceEvent, WorkdirFolder, GitBranchState, WorkdirGitStatus,
 } from '../src/chat/chatProtocol';
 import { baseName, searchPaths } from './fileRank';
 // Every codicon the bundled font has, one per line (`name,char,code`); bundled
@@ -409,7 +409,7 @@ function renderGitChanges(): void {
 	const commit = state?.workdir.commit;
 	const committing = commit?.phase === 'generating' || commit?.phase === 'committing';
 	const commitChoice = readFeatureAiSettings(state?.featureAi).commitMessage;
-	const commitAgentId = commitChoice.agent === 'auto' ? state?.selection.agent : commitChoice.agent;
+	const commitAgentId = featureAgent(commitChoice, state?.selection.agent, id => !!state?.agents.some(a => a.id === id && a.available && a.models.length > 0));
 	const commitAgent = state?.agents.find(a => a.id === commitAgentId && a.available);
 	const modelAvailable = !!commitAgent?.models.length;
 	const busyReason = committing ? commit?.message ?? 'Committing…' : gitIndexPending ? 'Updating Git changes…' : branchBusy ? 'Switching branch…' : state?.running ? 'Wait for the agent to finish before changing Git files.' : '';
@@ -1910,7 +1910,7 @@ function welcome(s: ChatViewState): HTMLElement {
 	box.append(lead);
 	box.append(el('div', { class: 'welcome-hint', text: available.length
 		? `Ask ${available.map(a => a.name).join(' or ')} below. Use + to attach a screenshot, an element or the page address.`
-		: s.detecting ? 'Looking for Claude Code and Codex…' : 'No agent is available yet.' }));
+		: s.detecting ? 'Looking for Claude Code, Codex and Gemini CLI…' : 'No agent is available yet.' }));
 	for (const agent of s.agents.filter(a => !a.available && a.problem)) {
 		box.append(el('div', { class: 'welcome-problem', text: `${agent.name}: ${agent.problem}` }));
 	}
@@ -1972,6 +1972,43 @@ function welcome(s: ChatViewState): HTMLElement {
 	return box;
 }
 
+/**
+ * "Ask another agent", beside a reply's copy button: one agent and model, and
+ * the question this reply answers goes to it in a new tab. Another opinion is
+ * another press. The conversation's own agent and model are not offered —
+ * they gave this answer. Every reply has it, while the turn runs too: what is
+ * sent is the question, not the reply.
+ */
+function opinionButton(index: number): HTMLButtonElement {
+	const b = button([icon('comment-discussion')], { class: 'copy-button message-copy opinion-button', title: 'Ask another agent — in a new tab' });
+	b.setAttribute('aria-label', 'Ask another agent');
+	b.addEventListener('click', event => {
+		event.stopPropagation();
+		const s = state;
+		if (!s) {
+			return;
+		}
+		const items: MenuItem[] = [];
+		for (const agent of s.agents.filter(a => a.available)) {
+			for (const model of agent.models) {
+				const own = agent.id === s.selection.agent && model.id === s.selection.model;
+				items.push({
+					icon: agent.id === 'claude' ? 'sparkle' : agent.id === 'gemini' ? 'star-full' : 'hubot',
+					label: `${agent.name} · ${model.label}`,
+					description: own ? 'This conversation' : undefined,
+					disabled: own,
+					run: () => post({ type: 'secondOpinion', chatId: s.chatId, index, agent: agent.id, model: model.id }),
+				});
+			}
+		}
+		if (!items.length) {
+			items.push({ label: s.detecting ? 'Looking for agents…' : 'No agent is available', disabled: true, run: () => { } });
+		}
+		openMenu(b, items, 'Ask another agent — opens a new tab');
+	});
+	return b;
+}
+
 function entryNode(entry: ChatEntry, i: number): HTMLElement {
 	switch (entry.kind) {
 		case 'user':
@@ -1980,10 +2017,11 @@ function entryNode(entry: ChatEntry, i: number): HTMLElement {
 			// Copies the reply as it came, Markdown and all; shown on hover.
 			const copy = copyButton(() => entry.text, 'Copy reply');
 			copy.classList.add('message-copy');
+			const opinion = opinionButton(i);
 			// Beside the Markdown, not in it: as its last child the button took the
 			// `.markdown > :last-child` rule, and every reply kept its last block's
 			// bottom margin.
-			return el('div', { class: 'row assistant' }, el('div', { class: 'markdown' }, renderMarkdown(entry.text)), copy);
+			return el('div', { class: 'row assistant' }, el('div', { class: 'markdown' }, renderMarkdown(entry.text)), opinion, copy);
 		}
 		case 'thinking':
 			return thinkingNode(entry, i);
@@ -2457,7 +2495,7 @@ function renderApprovalMenu(s: ChatViewState, force = false): void {
 			row('all', 'All', 'Every category at once', true),
 			el('div', { class: 'approval-sep' }),
 			...rows.map(r => row(r.key, r.label, r.hint)),
-			el('div', { class: 'approval-note', text: 'Auto runs it without asking, Deny refuses it without asking. For this project, in every tab. Your own Claude Code and Codex rules still decide first.' }),
+			el('div', { class: 'approval-note', text: 'Auto runs it without asking, Deny refuses it without asking. For this project, in every tab. Your own Claude Code, Codex and Gemini CLI rules still decide first.' }),
 			el('div', { class: 'approval-sep' }),
 			viewModeRow());
 		if (focused?.key) {
@@ -3338,13 +3376,16 @@ function renderAttachments(s: ChatViewState): void {
 	// The state is posted every 40 ms while any tab streams; rebuilding the
 	// chips each time swallowed a click on one whose press outlasted a post,
 	// and took keyboard focus off it.
-	const shown = JSON.stringify(s.attachments.map(c => [c.id, c.kind, c.label, c.reference, c.thumbnail?.length]));
+	const shown = JSON.stringify([
+		s.attachments.map(c => [c.id, c.kind, c.label, c.reference, c.thumbnail?.length]),
+		s.suggestions.map(c => [c.id, c.kind, c.label]),
+	]);
 	if (shown === attachmentsShown) {
 		return;
 	}
 	attachmentsShown = shown;
 	attachmentsRow.replaceChildren(...s.attachments.map(chip => {
-		const remove = button([icon('close')], { class: 'chip-remove', title: 'Remove' });
+		const remove = button([icon('close')], { class: 'chip-remove', title: 'Remove — an open file or page goes back to being a suggestion' });
 		remove.addEventListener('click', () => post({ type: 'removeAttachment', id: chip.id }));
 		let thumb: HTMLElement = icon(attachmentIcon(chip.kind));
 		if (chip.thumbnail) {
@@ -3368,7 +3409,9 @@ function renderAttachments(s: ChatViewState): void {
 		], { class: 'chip-reference', title: `Insert reference ${reference}` }) : undefined;
 		referenceButton?.addEventListener('mousedown', event => event.preventDefault());
 		referenceButton?.addEventListener('click', () => { if (reference) { insertAttachmentReference(reference); } });
-		const root = el('span', { class: 'chip' }, insert, open, referenceButton, remove);
+		// The remove button leads, as the "+" of a suggestion does, so the two
+		// read as one control that turns a chip on and off.
+		const root = el('span', { class: 'chip' }, remove, insert, open, referenceButton);
 		root.addEventListener('contextmenu', event => {
 			event.preventDefault();
 			openMenu(root, [
@@ -3379,8 +3422,22 @@ function renderAttachments(s: ChatViewState): void {
 			], chip.label);
 		});
 		return root;
-	}));
-	attachmentsRow.hidden = !s.attachments.length;
+	}), ...s.suggestions.map(suggestionChip));
+	attachmentsRow.hidden = !s.attachments.length && !s.suggestions.length;
+}
+
+/**
+ * What could be attached and is not: the file or the browser tab the user has
+ * open, dashed, with a "+" where an attached chip has its remove button. The
+ * "+" attaches it; removing the attached chip brings the suggestion back.
+ */
+function suggestionChip(chip: AttachmentChip): HTMLElement {
+	const what = chip.kind === 'sharedPage' ? 'the page open in the browser' : 'the file open in the editor';
+	const add = button([icon('add')], { class: 'chip-remove chip-add', title: `Attach ${what}` });
+	add.addEventListener('mousedown', event => event.preventDefault());
+	add.addEventListener('click', () => post({ type: 'acceptSuggestion', id: chip.id }));
+	return el('span', { class: 'chip suggested', title: `Suggested: ${chip.label} — press + to attach ${what}` },
+		add, icon(attachmentIcon(chip.kind)), el('span', { class: 'chip-label', text: chip.label }));
 }
 
 // A selection is remembered per draft; without one, references append to the message.
@@ -3454,7 +3511,7 @@ function renderSelectors(s: ChatViewState): void {
 	const agent = s.agents.find(a => a.id === s.selection.agent);
 	setPill(agentPill, agent?.name ?? (s.detecting ? 'Looking…' : 'No agent'));
 	agentPill.disabled = !s.agents.some(a => a.available);
-	agentPill.title = `Agent — who answers: Claude Code or Codex${agent?.detail ? `\n${agent.name} ${agent.detail}` : ''}\nClick to pick another; the gear in its menu picks which installed copy.`;
+	agentPill.title = `Agent — who answers: Claude Code, Codex or Gemini CLI${agent?.detail ? `\n${agent.name} ${agent.detail}` : ''}\nClick to pick another; the gear in its menu picks which installed copy.`;
 
 	const model = agent?.models.find(m => m.id === s.selection.model);
 	setPill(modelPill, model?.label ?? 'Model');
@@ -4551,8 +4608,11 @@ interface MenuAction {
 	readonly run: () => void;
 }
 
-/** `keep`: the panel the menu is opened from inside, which stays open under it. */
-function openMenu(anchor: HTMLElement, items: MenuItem[], heading?: string, action?: MenuAction, keep?: HTMLElement): void {
+/**
+ * `keep`: the panel the menu is opened from inside, which stays open under it.
+ * `note`: a warning under the heading, in the chart orange.
+ */
+function openMenu(anchor: HTMLElement, items: MenuItem[], heading?: string, action?: MenuAction, keep?: HTMLElement, note?: string): void {
 	if (menu.classList.contains('open') && anchor.classList.contains('active')) {
 		closePopups();
 		return;
@@ -4569,6 +4629,7 @@ function openMenu(anchor: HTMLElement, items: MenuItem[], heading?: string, acti
 	}
 	menu.replaceChildren(
 		heading ? el('div', { class: 'menu-heading' }, el('span', { text: heading }), headingAction) : '',
+		note ? el('div', { class: 'menu-note', text: note }) : '',
 		...items.map(item => {
 			const b = button([
 				item.icon ? icon(item.icon, 'menu-icon') : el('span', { class: 'menu-icon' }),
@@ -4609,13 +4670,13 @@ agentPill.addEventListener('click', () => {
 		return;
 	}
 	openMenu(agentPill, s.agents.map(a => ({
-		icon: a.id === 'claude' ? 'sparkle' : 'hubot',
+		icon: a.id === 'claude' ? 'sparkle' : a.id === 'gemini' ? 'star-full' : 'hubot',
 		label: a.name,
 		description: a.available ? a.detail?.split(':')[0] : a.problem,
 		checked: a.id === s.selection.agent,
 		disabled: !a.available,
 		run: () => post({ type: 'select', selection: { agent: a.id } }),
-	})), 'Agent', { icon: 'gear', title: 'Which Claude Code and Codex apps to use', run: openAgentApps });
+	})), 'Agent', { icon: 'gear', title: 'Which Claude Code, Codex and Gemini CLI apps to use', run: openAgentApps });
 });
 
 /* agent apps */
@@ -4738,7 +4799,12 @@ modelPill.addEventListener('click', () => {
 		description: m.description,
 		checked: m.id === s.selection.model,
 		run: () => post({ type: 'select', selection: { agent: agent.id, model: m.id } }),
-	})), `${agent.name} models`);
+	})), `${agent.name} models`, undefined, undefined,
+	// Measured: a model Gemini CLI lists, Auto's pick included, can go
+	// unanswered for an account while the CLI retries in silence.
+	agent.id === 'gemini'
+		? 'Not every model listed here may work for your account: some can be unavailable or overloaded for reasons outside AI Browser. If no reply comes, pick another model.'
+		: undefined);
 });
 
 /* the browser button */
@@ -6522,7 +6588,7 @@ function openSkillEditor(skill?: ToolbarSkill): void {
 		(stepList.lastElementChild?.querySelector('.form-prompt') as HTMLTextAreaElement | null)?.focus();
 	});
 
-	const agents = selectField<ToolbarSkill['agents']>([['all', 'All agents'], ['claude', 'Claude Code only'], ['codex', 'Codex only']], editorAgents);
+	const agents = selectField<ToolbarSkill['agents']>([['all', 'All agents'], ['claude', 'Claude Code only'], ['codex', 'Codex only'], ['gemini', 'Gemini CLI only']], editorAgents);
 	agents.addEventListener('change', () => { editorAgents = agents.value as ToolbarSkill['agents']; });
 
 	const results: readonly (readonly [ToolbarResult, string, string])[] = [

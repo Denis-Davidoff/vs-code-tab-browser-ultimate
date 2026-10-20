@@ -217,6 +217,10 @@ suite('classifyClient', () => {
 		assert.strictEqual(classifyClient('claude-ai'), 'claude');
 	});
 
+	test('recognises Gemini CLI by the name its MCP client gives (0.64, measured)', () => {
+		assert.strictEqual(classifyClient('gemini-cli-mcp-client'), 'gemini');
+	});
+
 	test('recognises Codex under each of its names', () => {
 		assert.strictEqual(classifyClient('codex'), 'codex');
 		assert.strictEqual(classifyClient('Codex CLI'), 'codex');

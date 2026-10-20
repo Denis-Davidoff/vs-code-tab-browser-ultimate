@@ -25,11 +25,33 @@ export function readFeatureAiSettings(value: unknown): FeatureAiSettings {
 		const raw = record[feature];
 		const choice = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
 		return [feature, {
+			// Gemini CLI writes no commit messages, branch names or titles here (no one-shot text request yet).
 			agent: choice.agent === 'claude' || choice.agent === 'codex' ? choice.agent : 'auto',
 			effort: choice.effort === 'medium' || choice.effort === 'maximum' ? choice.effort : 'minimum',
 			...(typeof choice.prompt === 'string' && choice.prompt.trim() && choice.prompt.length <= featurePromptLimit && !choice.prompt.includes('\0') ? { prompt: choice.prompt.trim() } : {}),
 		}];
 	})) as unknown as FeatureAiSettings;
+}
+
+/** The agents that can write commit messages, branch names and titles: Gemini CLI has no one-shot text request yet. */
+export const featureAgents: readonly AgentId[] = ['claude', 'codex'];
+
+/**
+ * The agent a feature runs on. A choice made in Chat Settings is taken as it
+ * is; **Auto** is the tab's agent when that one can do it, and otherwise the
+ * first of {@link featureAgents} that is available — so a Gemini tab still gets
+ * its commit message and title, from Claude Code or Codex, instead of a button
+ * that promises Gemini and then fails. Shared by the host and the view, so the
+ * button names the agent that will run.
+ */
+export function featureAgent(choice: FeatureAiChoice, current: AgentId | undefined, available: (agent: AgentId) => boolean): AgentId | undefined {
+	if (choice.agent !== 'auto') {
+		return choice.agent;
+	}
+	if (current && featureAgents.includes(current) && available(current)) {
+		return current;
+	}
+	return featureAgents.find(available) ?? current;
 }
 
 /** Map the three UI levels to the actual levels supported by a model. */

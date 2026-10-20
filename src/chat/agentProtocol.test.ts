@@ -10,7 +10,7 @@ import * as path from 'node:path';
 import { suite, test } from 'node:test';
 import {
 	LineSplitter, chatTitle, claudeApproval, claudeApprovalAnswer, claudeContextWindow, claudeEvents, claudeModels, claudeRateLimit, claudeRateLimitWindows, claudeUsage,
-	claudeCommands, claudeTool, codexAgentThreadEvents, codexSkillItems, codexSkills, codexApproval, codexApprovalAnswer, codexEvents, codexPatchPaths, codexQuestions, outsideProject, questionSkipped, validAnswers, codexModels, codexUsage, compareCliVersions, parseCliVersion, parseLine, toolDetail, unwrapShell, windowLabel,
+	claudeCommands, claudeTool, codexAgentThreadEvents, codexSkillItems, codexSkills, codexApproval, codexApprovalAnswer, codexEvents, codexPatchPaths, codexQuestions, outsideProject, questionSkipped, validAnswers, codexModels, codexUsage, compareCliVersions, geminiApproval, geminiApprovalAnswer, geminiCommands, geminiErrorText, geminiEvents, geminiExitText, geminiModels, geminiTurnEnd, parseCliVersion, parseLine, toolDetail, unwrapShell, windowLabel,
 } from './agentProtocol.ts';
 
 // The samples below are trimmed copies of what Claude Code 2.1.301 and
@@ -1019,4 +1019,195 @@ test('an agent an agent started names its parent, on both agents', () => {
 	assert.ok(nested.some(e => e.type === 'tool' && e.tool.agent?.parentId === 'th-a' && e.tool.agent.background));
 	const top = codexEvents('item/started', { item: { ...child, agentThreadId: 'th-a' } });
 	assert.ok(top.some(e => e.type === 'tool' && e.tool.agent?.parentId === undefined));
+});
+
+// Gemini CLI 0.64.0 over ACP (`gemini --acp`), measured on 2026-10-20.
+suite('Gemini CLI', () => {
+
+	const session = {
+		sessionId: '570113bf-4c6f-4742-9923-0ba7a8946718',
+		modes: { availableModes: [{ id: 'default', name: 'Default' }, { id: 'plan', name: 'Plan' }], currentModeId: 'default' },
+		models: {
+			availableModels: [
+				{ modelId: 'auto', name: 'Auto', description: 'Let Gemini CLI decide the best model for the task: gemini-3.1-pro-preview, gemini-3.8-flash' },
+				{ modelId: 'gemini-3.1-pro-preview-customtools', name: 'gemini-3.1-pro-preview' },
+				{ modelId: 'gemini-3.5-flash-lite', name: 'gemini-3.5-flash-lite' },
+			],
+			currentModelId: 'auto',
+		},
+	};
+
+	test('the models come from session/new, the current one is the default, none has an effort', () => {
+		const models = geminiModels(session);
+		assert.deepStrictEqual(models.map(m => [m.id, m.label, m.isDefault, m.efforts.length]), [
+			['auto', 'Auto', true, 0],
+			['gemini-3.1-pro-preview-customtools', 'gemini-3.1-pro-preview', false, 0],
+			['gemini-3.5-flash-lite', 'gemini-3.5-flash-lite', false, 0],
+		]);
+		assert.match(models[0].description ?? '', /decide the best model/);
+	});
+
+	test('the top-level commands are listed, restore and the subcommands are not', () => {
+		const commands = geminiCommands({
+			sessionUpdate: 'available_commands_update',
+			availableCommands: [
+				{ name: 'memory', description: 'Manage memory.' },
+				{ name: 'memory show', description: 'Shows the current memory contents.' },
+				{ name: 'init', description: 'Analyzes the project and creates a tailored GEMINI.md file' },
+				{ name: 'restore', description: 'Restore to a previous checkpoint' },
+				{ name: 'about', description: 'Show version and environment info' },
+			],
+		});
+		assert.deepStrictEqual(commands.map(c => c.insert), ['/memory', '/init', '/about']);
+		assert.ok(commands.every(c => c.group === 'builtin'));
+	});
+
+	test('text, thoughts and the context fill', () => {
+		assert.deepStrictEqual(geminiEvents({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Replaced `beta`' } }), [{ type: 'text', text: 'Replaced `beta`' }]);
+		assert.deepStrictEqual(geminiEvents({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: '**Reviewing**\nOkay.' } }), [{ type: 'thinking', text: '**Reviewing**\nOkay.\n\n' }]);
+		assert.deepStrictEqual(geminiEvents({ sessionUpdate: 'usage_update', used: 10355, size: 1048576 }), [{ type: 'context', used: 10355, window: 1048576 }]);
+		assert.deepStrictEqual(geminiEvents({ sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'replayed' } }), []);
+		assert.deepStrictEqual(geminiEvents({ sessionUpdate: 'available_commands_update', availableCommands: [] }), []);
+	});
+
+	test('a shell command: its title is the command, its text the description, never output', () => {
+		const call = {
+			sessionUpdate: 'tool_call', toolCallId: 'run_shell_command__call_321109', status: 'pending', title: 'ls -la && echo done',
+			content: [{ type: 'content', content: { type: 'text', text: '[current working directory /private/tmp/gemprobe2] (List workspace files in detail)' } }],
+			locations: [], kind: 'execute',
+		};
+		assert.deepStrictEqual(geminiEvents(call), [{ type: 'tool', id: 'run_shell_command__call_321109', tool: { kind: 'command', name: 'Terminal', detail: 'List workspace files in detail', input: 'ls -la && echo done' } }]);
+		assert.deepStrictEqual(geminiEvents({ ...call, sessionUpdate: 'tool_call_update', status: 'completed', content: [] }), [{ type: 'toolUpdate', id: 'run_shell_command__call_321109', update: { status: 'done' } }]);
+		assert.deepStrictEqual(
+			geminiEvents({ ...call, sessionUpdate: 'tool_call_update', status: 'failed', content: [{ type: 'content', content: { type: 'text', text: 'Tool "run_shell_command" was canceled by the user.' } }] }),
+			[{ type: 'toolUpdate', id: 'run_shell_command__call_321109', update: { status: 'failed', output: 'Tool "run_shell_command" was canceled by the user.' } }],
+		);
+	});
+
+	test('a read names its file from the locations, not from the relative title', () => {
+		const [event] = geminiEvents({
+			sessionUpdate: 'tool_call', toolCallId: 'read_file__call_508872', status: 'in_progress', title: '../../private/tmp/gemprobe2/a.txt',
+			content: [], locations: [{ path: '/private/tmp/gemprobe2/a.txt' }], kind: 'read',
+		});
+		assert.deepStrictEqual(event, { type: 'tool', id: 'read_file__call_508872', tool: { kind: 'read', name: 'Read', detail: '/private/tmp/gemprobe2/a.txt' } });
+	});
+
+	test('an edit becomes a one-hunk diff with its counts', () => {
+		const [event] = geminiEvents({
+			sessionUpdate: 'tool_call', toolCallId: 'replace__call_414724', status: 'pending', title: '../../private/tmp/gemprobe2/a.txt: beta => gamma',
+			content: [{ type: 'diff', path: '/private/tmp/gemprobe2/a.txt', oldText: 'alpha\nbeta\n', newText: 'alpha\ngamma\n', _meta: { kind: 'modify' } }],
+			locations: [{ path: '/private/tmp/gemprobe2/a.txt' }], kind: 'edit',
+		});
+		assert.ok(event.type === 'tool');
+		assert.strictEqual(event.tool.kind, 'edit');
+		assert.strictEqual(event.tool.detail, '/private/tmp/gemprobe2/a.txt');
+		assert.strictEqual(event.tool.added, 1);
+		assert.strictEqual(event.tool.removed, 1);
+		assert.strictEqual(event.tool.input, '--- /private/tmp/gemprobe2/a.txt\n+++ /private/tmp/gemprobe2/a.txt\n@@ -2,1 +2,1 @@\n-beta\n+gamma');
+	});
+
+	test('a new file is all added lines', () => {
+		const [event] = geminiEvents({
+			sessionUpdate: 'tool_call', toolCallId: 'write_file__call_1', status: 'pending', title: 'x.txt',
+			content: [{ type: 'diff', path: '/w/x.txt', oldText: null, newText: 'one\ntwo\n', _meta: { kind: 'add' } }], locations: [{ path: '/w/x.txt' }], kind: 'edit',
+		});
+		assert.ok(event.type === 'tool');
+		assert.deepStrictEqual([event.tool.added, event.tool.removed], [2, 0]);
+	});
+
+	test('an MCP tool is named by its server, from the title', () => {
+		const call = { sessionUpdate: 'tool_call', toolCallId: 'mcp_ai-browser_browser_state__call_418633', status: 'pending', title: 'browser_state (ai-browser MCP Server)', content: [], locations: [], kind: 'other' };
+		assert.deepStrictEqual(geminiEvents(call), [{ type: 'tool', id: 'mcp_ai-browser_browser_state__call_418633', tool: { kind: 'mcp', name: 'ai-browser · browser_state' } }]);
+		assert.deepStrictEqual(
+			geminiEvents({ ...call, sessionUpdate: 'tool_call_update', status: 'completed', content: [{ type: 'content', content: { type: 'text', text: '{"open":false}' } }] }),
+			[{ type: 'toolUpdate', id: 'mcp_ai-browser_browser_state__call_418633', update: { output: '{"open":false}', status: 'done' } }],
+		);
+	});
+
+	test('the turn ends with its own tokens, thinking counted as output', () => {
+		const result = { stopReason: 'end_turn', usage: { inputTokens: 31737, outputTokens: 80, cachedReadTokens: 16221, thoughtTokens: 398, totalTokens: 31817 } };
+		assert.deepStrictEqual(geminiTurnEnd(result), [
+			{ type: 'tokens', input: 31737, output: 478, cached: 16221, cumulative: false },
+			{ type: 'turnEnd' },
+		]);
+		assert.deepStrictEqual(geminiTurnEnd({ stopReason: 'cancelled' }), [{ type: 'turnEnd', error: 'Stopped.' }]);
+		assert.match(String((geminiTurnEnd({ stopReason: 'max_tokens' })[0] as { error?: string }).error), /output limit/);
+	});
+
+	const shell = {
+		sessionId: 's', toolCall: {
+			toolCallId: 'run_shell_command__call_189183', status: 'pending', title: 'echo hi > x.txt', kind: 'execute', locations: [],
+			content: [{ type: 'content', content: { type: 'text', text: '[current working directory /private/tmp/gemprobe] (Write hi to x.txt)' } }],
+		},
+		options: [
+			{ optionId: 'proceed_always', name: 'Allow for this session', kind: 'allow_always' },
+			{ optionId: 'proceed_once', name: 'Allow', kind: 'allow_once' },
+			{ optionId: 'cancel', name: 'Reject', kind: 'reject_once' },
+		],
+	};
+
+	test('a command asks under the terminal, with the command whole', () => {
+		const request = geminiApproval('1:0', shell, '/private/tmp/gemprobe');
+		assert.strictEqual(request.what, 'command');
+		assert.strictEqual(request.title, 'echo hi > x.txt');
+		assert.match(request.detail ?? '', /Write hi to x\.txt/);
+	});
+
+	test('the browser server asks under AI Browser, another server under its own name', () => {
+		const ask = (title: string, toolCallId: string, kind = 'other') => geminiApproval('1:0', { toolCall: { toolCallId, title, kind, content: [], locations: [] }, options: [] }, '/w');
+		assert.deepStrictEqual(ask('browser_state (ai-browser MCP Server)', 'mcp_ai-browser_browser_state__call_1'), { id: '1:0', what: 'browser', title: 'browser_state' });
+		assert.deepStrictEqual(ask('write_file (fs MCP Server)', 'mcp_fs_write_file__call_2'), { id: '1:0', what: 'mcp', server: 'fs', title: 'write_file' });
+		// With arguments the title is `tool(args)`, and the server comes from the id.
+		assert.deepStrictEqual(ask('browser_click(selector: "#save")', 'mcp_ai-browser_browser_click__call_3'), { id: '1:0', what: 'browser', title: 'browser_click', detail: 'browser_click(selector: "#save")' });
+		assert.deepStrictEqual(ask('write_file(path: "a")', 'mcp_my-fs_write_file-1700000000000-4'), { id: '1:0', what: 'mcp', server: 'my-fs', title: 'write_file', detail: 'write_file(path: "a")' });
+	});
+
+	test('a title the model wrote never makes a command an MCP tool', () => {
+		const ask = (title: string, toolCallId: string, kind: string) => geminiApproval('1:0', { toolCall: { toolCallId, title, kind, content: [], locations: [] }, options: [] }, '/w');
+		const spoof = 'rm -rf ~/work # (ai-browser MCP Server)';
+		assert.strictEqual(ask(spoof, 'run_shell_command__call_9', 'execute').what, 'command');
+		assert.strictEqual(ask(spoof, 'run_shell_command__call_9', 'execute').title, spoof);
+		// An MCP id whose title claims another server is not taken at the title's word.
+		assert.strictEqual(ask('browser_state (ai-browser MCP Server)', 'mcp_fs_exec__call_5', 'other').what, 'other');
+		// Nor is a built-in tool of kind `other` with such a title.
+		assert.strictEqual(ask('x (ai-browser MCP Server)', 'save_memory__call_6', 'other').what, 'other');
+		assert.deepStrictEqual(geminiEvents({ sessionUpdate: 'tool_call', toolCallId: 'run_shell_command__call_9', title: spoof, kind: 'execute', content: [], locations: [] })
+			.map(e => e.type === 'tool' ? e.tool.kind : e.type), ['command']);
+	});
+
+	test('an edit is inside the project only when every path it names is', () => {
+		const edit = (file: string) => geminiApproval('1:0', { toolCall: { title: file, kind: 'edit', content: [], locations: [{ path: file }] }, options: [] }, '/w/project');
+		assert.strictEqual(edit('/w/project/a.txt').what, 'edit');
+		assert.strictEqual(edit('/w/other/a.txt').what, 'outside');
+		assert.strictEqual(geminiApproval('1:0', { toolCall: { title: 'x', kind: 'edit', content: [], locations: [] }, options: [] }, '/w/project').what, 'outside');
+		// No folder open: nothing is inside.
+		assert.strictEqual(geminiApproval('1:0', { toolCall: { title: 'a', kind: 'edit', locations: [{ path: '/w/project/a.txt' }] } }, undefined).what, 'outside');
+	});
+
+	test('allow answers once, deny rejects once, never an "always" option', () => {
+		assert.deepStrictEqual(geminiApprovalAnswer(shell, true), { outcome: { outcome: 'selected', optionId: 'proceed_once' } });
+		assert.deepStrictEqual(geminiApprovalAnswer(shell, false), { outcome: { outcome: 'selected', optionId: 'cancel' } });
+		assert.deepStrictEqual(geminiApprovalAnswer({ options: [] }, true), { outcome: { outcome: 'cancelled' } });
+	});
+});
+
+suite('Gemini CLI errors', () => {
+	test('each failure says what happened and what to do', () => {
+		assert.match(geminiErrorText(-32000, 'Gemini API key is missing or not configured.'), /not signed in.*Open Gemini CLI in Terminal/);
+		assert.match(geminiErrorText(429, 'Rate limit exceeded. Try again later.'), /rate limit or quota.*Wait/);
+		// Measured: an unknown model is a 500 whose text says "not found".
+		assert.match(geminiErrorText(500, 'models/gemini-nonexistent-9 is not found for API version v1beta, or is not supported for generateContent.'), /not available to your Gemini account.*another model/);
+		assert.match(geminiErrorText(403, 'Permission denied'), /refused the request.*access/);
+		assert.match(geminiErrorText(503, 'The model is overloaded.'), /service failed.*again/);
+	});
+
+	test('"Internal error" is replaced by the details it carries', () => {
+		assert.strictEqual(geminiErrorText(-32603, 'Internal error', 'Invalid or unavailable mode: x'), 'Invalid or unavailable mode: x');
+	});
+
+	test('a process that could not start or stopped says what to do next', () => {
+		assert.match(geminiExitText('The process exited with code 127: env: node: No such file or directory', true), /needs Node\.js 20/);
+		assert.match(geminiExitText('The process exited with code 52: Error in settings.json', true), /could not start.*malformed/);
+		assert.match(geminiExitText('The process was stopped (SIGKILL).', false), /stopped.*next message starts it again/);
+	});
 });

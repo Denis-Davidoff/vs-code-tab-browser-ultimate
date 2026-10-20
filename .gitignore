@@ -19,6 +19,7 @@ vscode-marketplace/*.vsix
 # server that can drive the developer's browser.
 .mcp.json
 .codex/
+.gemini/
 
 # The chat view's bundle, built like index.js
 media/chat.js

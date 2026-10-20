@@ -1,4 +1,4 @@
-# 🚀 First integrated browser for VS Code editor with Claude Code and Codex support 🎆
+# 🚀 First integrated browser for VS Code editor with Claude Code, Codex and Gemini CLI support 🎆
 
 **VS Code's own browser tab, wired to your AI assistant: click an element and it becomes a
 prompt, or hand the whole browser over and let the agent drive it.**
@@ -20,7 +20,8 @@ still pending it reads **Restart to finish**. Any element command run before the
 status bar and points at the same button.
 
 A permanent **AI Browser** button stays in the status bar: clicking it opens a menu with Open
-URL, Open File, Connect Claude Code, Connect Codex, Check Connection and Settings.
+URL, Open File, Connect Claude Code, Connect Codex, Connect Gemini CLI, Check Connection and
+Settings.
 
 **A full quit is required — Reload Window is not enough**, because `argv.json` is only read when
 the process starts.
@@ -129,8 +130,8 @@ the editor: the page you are looking at is the page your agent reads and drives.
 - ⌨️ **One key repeats what you did last.** The toolbar's right-hand button and
   `Cmd`/`Ctrl` + `Alt` + `C` both run the action you used last, whichever of the sixteen it was.
 - 🔌 **An MCP server, with nothing to install.** No package, no separate process to babysit: the
-  extension starts a local server on activation, and one command configures Claude Code, Codex
-  or VS Code's own chat to use it.
+  extension starts a local server on activation, and one command configures Claude Code, Codex,
+  Gemini CLI or VS Code's own chat to use it.
 - 🤖 **Then the agent drives the page itself.** Nineteen tools: snapshot what is clickable, read
   the html or the text, inspect an element, click, fill fields, wait for a render, screenshot,
   navigate — then read the console to see what its own change actually did.
@@ -148,8 +149,9 @@ the editor: the page you are looking at is the page your agent reads and drives.
    screenshots at the top, and a submenu per assistant holding its hand-overs, its Connect and
    its Share Tab.
 3. To let an assistant drive the page: same dropdown → **Connect Claude Code** or
-   **Connect Codex**, then restart Claude Code / start a new Codex conversation, because
-   neither re-reads its config while running.
+   **Connect Codex** (Gemini CLI has its own submenu with **Connect Gemini CLI**), then restart
+   Claude Code / start a new Codex conversation / start `gemini` again, because none of them
+   re-reads its config while running.
 
 ## What this build does
 

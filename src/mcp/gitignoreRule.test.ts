@@ -5,7 +5,7 @@
 
 import * as assert from 'node:assert';
 import { suite, test } from 'node:test';
-import { ignoresConfigToml, withConfigTomlRule } from './gitignoreRule.ts';
+import { ignoresConfigToml, ignoresFile, withConfigTomlRule, withFileRule } from './gitignoreRule.ts';
 
 suite('ignoresConfigToml', () => {
 
@@ -75,5 +75,19 @@ suite('withConfigTomlRule', () => {
 
 	test('leaves a file that already covers it alone', () => {
 		assert.strictEqual(withConfigTomlRule('config.toml\n'), undefined);
+	});
+});
+
+suite('.gemini/.gitignore', () => {
+	test('settings.json is covered by its name, *, or *.json, and a negation puts it back', () => {
+		assert.ok(ignoresFile('settings.json\n', 'settings.json'));
+		assert.ok(ignoresFile('/*.json\n', 'settings.json'));
+		assert.ok(!ignoresFile('*.toml\n', 'settings.json'));
+		assert.ok(!ignoresFile('*\n!settings.json\n', 'settings.json'));
+	});
+
+	test('the rule is appended once, keeping what is there', () => {
+		assert.strictEqual(withFileRule('tmp/', 'settings.json'), 'tmp/\nsettings.json\n');
+		assert.strictEqual(withFileRule('settings.json\n', 'settings.json'), undefined);
 	});
 });

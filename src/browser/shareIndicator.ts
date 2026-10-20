@@ -88,11 +88,14 @@ const separator = '\u2009';
 const assistantGlyphs: Record<ClientKind, string> = {
 	claude: '🟠',
 	codex: '🟦',
+	// No build ever wrote this one into a title; it is here because the map is per kind.
+	gemini: '🔷',
 	other: '🟣',
 };
 
 /** Every glyph the suffix can be made of — the contract `stripMarker` reverses. */
-const glyphs = [sharedMarker, inUseMarker, ...Object.values(assistantGlyphs)];
+// The glyphs an older build could have written: Gemini's was never written, so it is not stripped.
+const glyphs = [sharedMarker, inUseMarker, assistantGlyphs.claude, assistantGlyphs.codex, assistantGlyphs.other];
 
 /**
  * The page title without our marker.

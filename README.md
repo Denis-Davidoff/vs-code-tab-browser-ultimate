@@ -1,12 +1,12 @@
-# 🚀 First integrated browser for VS Code editor with Claude Code and Codex support 🎆
+# 🚀 First integrated browser for VS Code editor with Claude Code, Codex and Gemini CLI support 🎆
 
 - **VS Code's built-in browser**, not a webview: every tab is a real Chromium page in its own
   isolated Electron process.
-- **Your assistants, your way:** keep the Claude Code and Codex extensions you already use, or
-  switch to the **AI Browser chat** — both agents in one panel, up to 10 chats at once, more
+- **Your assistants, your way:** keep the Claude Code and Codex extensions or the Gemini CLI you
+  already use, or switch to the **AI Browser chat** — all three agents in one panel, up to 10 chats at once, more
   deeply wired into the browser.
-- **A built-in MCP server** that connects the browser to Claude Code, Codex or any other
-  assistant that speaks MCP.
+- **A built-in MCP server** that connects the browser to Claude Code, Codex, Gemini CLI or any
+  other assistant that speaks MCP.
 - **Pick an element on the page** and send its address or metadata straight to Claude Code or
   Codex.
 - **Full DevTools for every tab.**
@@ -89,6 +89,13 @@ profile, checks MCP, toolbar commands, pause timing, chat attachments and clipbo
 then restores the clipboard. It does not request OS screen recording access.
 
 ## Changelog
+
+**0.8.0** — Gemini CLI joins the chat as a third agent, driven over ACP through your own
+`gemini`, with **Connect Gemini CLI** writing `.gemini/settings.json` (token kept out of git),
+**Open Gemini CLI in Terminal** and **Share Tab with Gemini CLI**. **Ask another agent** under a
+reply sends the same question to another agent or model in a new tab for a second opinion. New
+`editor_*` MCP tools let assistants see what is open and selected, show a place, and find
+definitions, references and symbols through VS Code's language servers.
 
 **0.7.19** — A maximum video length in Chat Settings (5 minutes by default, 10 seconds to 1 hour),
 with the Stop button blinking red and a countdown in the status bar for the last 30 seconds. The
@@ -276,15 +283,15 @@ the editor: the page you are looking at is the page your agent reads and drives.
 - ⌨️ **One key repeats what you did last.** The toolbar's right-hand button and
   `Cmd`/`Ctrl` + `Alt` + `C` both run the action you used last, whichever of the seventeen it was.
 - 🔌 **An MCP server, with nothing to install.** No package, no separate process to babysit: the
-  extension starts a local server on activation, and one command configures Claude Code, Codex
-  or VS Code's own chat to use it.
+  extension starts a local server on activation, and one command configures Claude Code, Codex,
+  Gemini CLI or VS Code's own chat to use it.
 - 🤖 **Then the agent drives the page itself.** Nineteen tools: snapshot what is clickable, read
   the html or the text, inspect an element, click, fill fields, scroll, wait for a render,
   screenshot, navigate — then read the console to see what its own change actually did. Reading,
   clicking, filling, scrolling and waiting work inside embedded frames too, frames from other
   sites included.
 - 🌐 **Translate a page with your own assistant.** Pick a language, paste the prompt it copies into
-  Claude Code, Codex or any agent connected to the MCP server, and the page's text is replaced in
+  Claude Code, Codex, Gemini CLI or any agent connected to the MCP server, and the page's text is replaced in
   place — no translation service, and text the page re-renders keeps its translation; new text
   needs another run.
 - 👀 **In your session, not a fresh one.** Same cookies, same dev server, same logged-in state,
@@ -360,7 +367,7 @@ The menu, in order:
 | Entry | Result |
 | --- | --- |
 | Open New Browser Tab | an empty browser tab |
-| Connect Claude Code / Connect Codex | writes the assistant's config and shares this tab with it — the same entries as in the submenus below |
+| Connect Claude Code / Connect Codex | writes the assistant's config and shares this tab with it — the same entries as in the submenus below; Connect Gemini CLI is in its own submenu |
 | Copy Element | the full context as Markdown — element, url, html path, outer html, dimensions, matched css |
 | Copy CSS Path | `#main > div > li:nth-of-type(2)` |
 | Copy CSS Path + Location | the page and the selector on one line, wrapped as inline code: `http://localhost:3000/a/b → #main > div > li:nth-of-type(2)` |
@@ -372,6 +379,7 @@ The menu, in order:
 | Remove All Annotation Markers / Copy Annotation Prompt | only while the page has markers: clear them, or copy a prompt that hands the notes to your assistant |
 | Claude Code ▸ | a submenu: the same four picks handed to the Claude Code chat, plus Connect and Share Tab |
 | Codex ▸ | the same, for Codex |
+| Gemini CLI ▸ | Connect Gemini CLI, Share Tab with Gemini CLI and Open Gemini CLI in Terminal — Gemini has no VS Code chat to hand a pick to, so there are no Add entries |
 | AI Browser Chat ▸ | the same four picks, plus a screenshot and the page address, added to this extension's own chat |
 | Check Connection | the mcp server, [CLAUDE.md](CLAUDE.md#mcp-the-browser-exposed-to-claude-code-codex-and-vs-code-chat) |
 | Logins and Passkeys ▸ | fill a saved login, save the one on the page, manage, import, export — [CLAUDE.md](CLAUDE.md#saved-logins-and-passkeys) |

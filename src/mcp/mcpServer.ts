@@ -11,6 +11,8 @@ import type { BrowserRecording } from '../browser/recording';
 import { modelFrameLimits } from '../browser/screenshotFrames';
 import { defaultSegmentChars, maxSegmentChars, parseReplacements, segmentBudget } from '../translate/translateText';
 import { generateUuid } from '../core/uuid';
+import { EditorTools } from '../editor/editorTools';
+import { lineArgument } from '../editor/editorText';
 import {
 	authorizeRequest, classifyClient, dispatch, initializeClientName, invalidRequest,
 	invalidRequestReason, isNotification, normalisePath, number, parseError, schema, string,
@@ -57,6 +59,7 @@ const frameIdArgument = string('Optional frame id from browser_frames, to act in
 export interface ClientSet {
 	readonly claude: boolean;
 	readonly codex: boolean;
+	readonly gemini: boolean;
 }
 
 export class McpServer implements vscode.Disposable {
@@ -76,6 +79,7 @@ export class McpServer implements vscode.Disposable {
 	private readonly _calls = new Map<string, AbortController>();
 
 	private readonly _tools: readonly Tool[];
+	private readonly _editor = new EditorTools();
 
 	/**
 	 * When an authorized client last talked to us.
@@ -162,7 +166,7 @@ export class McpServer implements vscode.Disposable {
 	/** Which assistants have called recently. */
 	public get clients(): ClientSet {
 		const fresh = (kind: ClientKind) => Date.now() - (this._lastByKind.get(kind) ?? 0) < clientIdleMs;
-		return { claude: fresh('claude'), codex: fresh('codex') };
+		return { claude: fresh('claude'), codex: fresh('codex'), gemini: fresh('gemini') };
 	}
 
 	private _noteActivity(kind: ClientKind | undefined): void {
@@ -750,6 +754,94 @@ export class McpServer implements vscode.Disposable {
 					textArgument(args.frameId, 'frameId'),
 					caller),
 			},
+			...this._editorTools(),
+		];
+	}
+
+	/**
+	 * The editor beside the browser: what the user has open, showing them a
+	 * place, and navigating by symbol through the language servers. See
+	 * `src/editor/editorTools.ts`; every path is a workspace file.
+	 */
+	private _editorTools(): Tool[] {
+		const editor = this._editor;
+		const required = (value: unknown, name: string): string => {
+			const text = textArgument(value, name)?.trim();
+			if (!text) {
+				throw new Error(`\`${name}\` is required.`);
+			}
+			return text;
+		};
+		const line = (value: unknown, name: string, optional: boolean): number | undefined => {
+			if (optional && (value === undefined || value === null)) {
+				return undefined;
+			}
+			const n = lineArgument(value);
+			if (n === undefined) {
+				throw new Error(`\`${name}\` must be a line number, 1 or more.`);
+			}
+			return n;
+		};
+		const occurrence = (value: unknown): number | undefined => {
+			const n = numberArgument(value, 'occurrence');
+			if (n !== undefined && !(Number.isInteger(n) && n >= 1)) {
+				throw new Error('`occurrence` must be 1 or more.');
+			}
+			return n;
+		};
+		const symbolArgs = {
+			path: string('A workspace file, relative to the workspace folder (as editor_context and these tools write it) or absolute'),
+			line: number('The 1-based line the symbol is on'),
+			symbol: string('The symbol\'s text as it appears on that line, e.g. a function or variable name'),
+			occurrence: number('Which appearance of the symbol on that line, when it appears more than once; default 1'),
+		};
+		return [
+			{
+				name: 'editor_context', title: 'Editor context',
+				description: 'What the user has open in the editor: the active file (or, while they are in a browser tab or a chat, '
+					+ 'the one they had last), its cursor, the selected text, its errors and warnings, and the other open files. '
+					+ 'Call it when the user says "this", "here" or "the selected code", rather than guessing.',
+				inputSchema: schema({}),
+				run: () => Promise.resolve(editor.context()),
+			},
+			{
+				name: 'editor_reveal', title: 'Show a place in the editor',
+				description: 'Opens a workspace file at a line (or a range of lines, selected) for the user to see — without '
+					+ 'taking focus, and never over the browser tab they are looking at. Use it to point at the code you are '
+					+ 'talking about. Only files inside the workspace can be shown.',
+				inputSchema: schema({
+					path: string('A workspace file, relative to the workspace folder or absolute'),
+					line: number('The 1-based line to show; default 1'),
+					endLine: number('The last line of the range to select; default the same line'),
+				}, ['path']),
+				run: args => editor.reveal(required(args.path, 'path'), line(args.line, 'line', true), line(args.endLine, 'endLine', true)),
+			},
+			{
+				name: 'editor_definition', title: 'Go to definition',
+				description: 'Where a symbol is defined, from the language server — the same answer as the editor\'s "Go to '
+					+ 'Definition", so it follows imports, re-exports, overloads and interfaces where a text search cannot. '
+					+ 'Name the symbol by its text and the line it is on.',
+				inputSchema: schema(symbolArgs, ['path', 'line', 'symbol']),
+				run: args => editor.definition(required(args.path, 'path'), line(args.line, 'line', false)!, required(args.symbol, 'symbol'), occurrence(args.occurrence)),
+			},
+			{
+				name: 'editor_references', title: 'Find references',
+				description: 'Every reference to a symbol across the workspace, from the language server — calls, imports and '
+					+ 'uses, not lines that merely contain the same word. Name the symbol by its text and a line it is on.',
+				inputSchema: schema({
+					...symbolArgs,
+					includeDeclaration: { type: 'boolean', description: 'Also list the declaration itself; default true' },
+				}, ['path', 'line', 'symbol']),
+				run: args => editor.references(required(args.path, 'path'), line(args.line, 'line', false)!, required(args.symbol, 'symbol'),
+					occurrence(args.occurrence), args.includeDeclaration !== false),
+			},
+			{
+				name: 'editor_symbols', title: 'Find symbols',
+				description: 'Classes, functions, methods and other symbols in the workspace whose name matches a query, from the '
+					+ 'language servers — a starting point for editor_definition and editor_references when the file is not known.',
+				inputSchema: schema({ query: string('The name, or part of it') }, ['query']),
+				run: args => editor.symbols(required(args.query, 'query')),
+			},
 		];
 	}
 
@@ -761,6 +853,7 @@ export class McpServer implements vscode.Disposable {
 		this._server?.close();
 		this._server = undefined;
 		this._port = undefined;
+		this._editor.dispose();
 	}
 }
 

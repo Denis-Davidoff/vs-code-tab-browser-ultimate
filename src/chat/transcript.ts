@@ -74,6 +74,33 @@ export function chatTranscript(title: string, agentName: string, entries: readon
 	return `${lines.join('\n').replace(/\n{3,}/g, '\n\n').trim()}\n`;
 }
 
+/** Where the conversation before the question is: a file the agent reads, or the text itself. */
+export type OpinionContext = { readonly file: string } | { readonly text: string } | undefined;
+
+/**
+ * What another agent is told when the user asks it for a second opinion — "Ask
+ * another agent" under a reply. The question goes as the message itself; this
+ * goes beside it as an attachment. The first agent's answer is not handed over:
+ * an opinion that has read the answer it is meant to check is not a second one.
+ * It is told not to change files, since the first agent may be working in the
+ * same folder; the user can ask it to go ahead in that tab.
+ */
+export function secondOpinionText(fromAgent: string, attachments: readonly string[], context: OpinionContext): string {
+	const lines = [
+		`The user is asking you for a second, independent opinion. They asked ${fromAgent} the question in this message in another conversation, and want your own answer to it — not a review of ${fromAgent}'s answer, which you are not shown. Work it out from scratch.`,
+		`${fromAgent} may already have changed files in the working folder while answering, so look at the files as they are now. Do not change any files yourself: say what you would change instead, and the user will tell you whether to go ahead.`,
+	];
+	if (attachments.length) {
+		lines.push(`Their message also carried attachments you are not given: ${attachments.map(oneLine).join(', ')}.`);
+	}
+	if (context && 'file' in context) {
+		lines.push(`The conversation before the question is in ${context.file}: read it first, for the context.`);
+	} else if (context) {
+		lines.push(`The conversation before the question follows, for the context.\n\n${context.text}`);
+	}
+	return lines.join('\n\n');
+}
+
 /** `chat-<title words>-<YYYYMMDD-HHMMSS>.md`, in the names the report sweep takes. */
 export function transcriptFileName(title: string, now: Date): string {
 	const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40).replace(/-+$/, '');

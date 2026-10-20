@@ -74,6 +74,8 @@ export interface Attachment {
 	 * under the attachments' "treat as data" header; `text` is what the agent is given.
 	 */
 	readonly spoken?: string;
+	/** Which editor selection a `selection` chip was taken from, so the composer does not suggest it again. */
+	readonly selectionKey?: string;
 }
 
 /** What a tab needs from the view that holds it. */
@@ -774,12 +776,14 @@ export class ChatTab {
 			this._pending = [pending];
 			this._flushWaiting();
 		}
-		if (running && agent === 'claude') {
+		if (running && (agent === 'claude' || agent === 'gemini')) {
 			// Taken into the running turn, or answered by a turn of its own right
 			// after it — Claude Code decides, and says which only by doing it (see
 			// `ClaudeSession.send`). Shown as waiting until then, and put into the
 			// conversation where it was taken in; pushed now, it sat in the middle
-			// of the reply still streaming, which went on below it.
+			// of the reply still streaming, which went on below it. Gemini CLI
+			// cannot take a message into a running turn at all: `GeminiSession`
+			// holds it and sends it as a turn of its own (`autoTurn`) right after.
 			if (!this._waiting.length) {
 				this._boundary = false;
 			}
@@ -814,6 +818,15 @@ export class ChatTab {
 			// Only into the chat it was sent from: by now the user may have moved
 			// to another one, which this failure is nothing to do with.
 			if (this._session === session && this._chat === chat) {
+				// A message that waited for its turn and never got one — Gemini CLI's
+				// queue, let go when its process ended — goes into the conversation
+				// here, with its reason after it; left waiting, the flush after the
+				// turn put it in later, below the error, reading as sent.
+				const waited = this._waiting.findIndex(w => w.entry === entry);
+				if (waited >= 0) {
+					this._waiting.splice(waited, 1);
+					this._push(entry);
+				}
 				this._push({ kind: 'error', text: err instanceof Error ? err.message : String(err) });
 				// No turn began, so none will end and take this prompt's place in
 				// the queue: left there, the tab read as working — a confirmation
@@ -918,7 +931,9 @@ export class ChatTab {
 	 * not be the one that reads them.
 	 */
 	public restartSession(now = false): void {
-		if (!this._session || this._chat.agent !== 'claude') {
+		// Gemini CLI decides on folder trust when its process starts, as Claude
+		// Code does on its settings; Codex reads both per thread.
+		if (!this._session || this._chat.agent === 'codex') {
 			return;
 		}
 		if (now && !this.busy && !this._waiting.length) {
@@ -1018,9 +1033,10 @@ export class ChatTab {
 
 	private _onAgentEvent(event: AgentEvent): void {
 		const chat = this._chat;
-		if (this._waiting.length) {
+		if (this._waiting.length && chat.agent === 'claude') {
 			// A tool's result is the boundary where Claude Code takes a waiting
 			// message in; the output after it is the answer that includes it.
+			// Gemini CLI never does: its waiting message is a turn of its own.
 			if (event.type === 'toolUpdate' && (event.update.output !== undefined || event.update.status) && !event.update.agent) {
 				this._boundary = true;
 			} else if (this._boundary && (event.type === 'text' || event.type === 'thinking' || event.type === 'tool')) {

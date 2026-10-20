@@ -20,7 +20,7 @@ import { BrowserRecording, recordingErrorReported } from './browser/recording';
 import { recordingQualityKey, readRecordingQuality } from './browser/recordingQuality';
 import { ChatViewProvider, chatBlocked, chatBlockedContextKey, chatUnsupportedContextKey, chatViewId, supportsSecondarySidebar } from './chat/chatView';
 import { McpLifecycle } from './mcp/mcpLifecycle';
-import { connectClaudeCode, connectCodex, type SharedPage } from './mcp/mcpSetup';
+import { connectClaudeCode, connectCodex, connectGemini, openGeminiHere, type SharedPage } from './mcp/mcpSetup';
 import { everyone, forKind, isShareTarget, targetName, type ShareTarget } from './browser/shareRegistry';
 import { checkConnection } from './mcp/mcpCheck';
 import { copyScreenshot } from './browser/screenshot';
@@ -60,12 +60,14 @@ const copyCssPathCommand = 'aiBrowser.copyElementCssPath';
 const copyCssLocationCommand = 'aiBrowser.copyElementCssLocation';
 const connectClaudeCommand = 'aiBrowser.connectClaudeCode';
 const connectCodexCommand = 'aiBrowser.connectCodex';
+const connectGeminiCommand = 'aiBrowser.connectGemini';
 const checkMcpCommand = 'aiBrowser.checkMcpConnection';
 const enableBrowserApiCommand = 'aiBrowser.enableBrowserApi';
 const shareTabCommand = 'aiBrowser.shareTab';
 const stopSharingTabCommand = 'aiBrowser.stopSharingTab';
 const shareWithClaudeCommand = 'aiBrowser.shareTabWithClaudeCode';
 const shareWithCodexCommand = 'aiBrowser.shareTabWithCodex';
+const shareWithGeminiCommand = 'aiBrowser.shareTabWithGemini';
 
 const openerId = 'aiBrowser.open';
 
@@ -309,6 +311,10 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(vscode.commands.registerCommand(connectCodexCommand,
 		() => mcp.withServer(async server =>
 			connectCodex(server, await giveFocusedTab(forKind('codex'))))));
+	context.subscriptions.push(vscode.commands.registerCommand('aiBrowser.openGeminiCli', () => openGeminiHere()));
+	context.subscriptions.push(vscode.commands.registerCommand(connectGeminiCommand,
+		() => mcp.withServer(async server =>
+			connectGemini(server, await giveFocusedTab(forKind('gemini'))))));
 	context.subscriptions.push(vscode.commands.registerCommand(checkMcpCommand,
 		() => mcp.withServer(server => checkConnection(server, browser))));
 
@@ -368,6 +374,8 @@ export function activate(context: vscode.ExtensionContext) {
 		() => share(forKind('claude'))));
 	context.subscriptions.push(vscode.commands.registerCommand(shareWithCodexCommand,
 		() => share(forKind('codex'))));
+	context.subscriptions.push(vscode.commands.registerCommand(shareWithGeminiCommand,
+		() => share(forKind('gemini'))));
 
 	context.subscriptions.push(vscode.commands.registerCommand(stopSharingTabCommand,
 		async (argument?: unknown) => {

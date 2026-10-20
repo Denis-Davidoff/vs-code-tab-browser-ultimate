@@ -9,6 +9,7 @@ vscode.proposed.*.d.ts
 .gitignore
 .mcp.json
 .codex/**
+.gemini/**
 .ai-browser/**
 # Claude Code's own per-machine settings (permission rules among them); git ignores
 # them, vsce does not.

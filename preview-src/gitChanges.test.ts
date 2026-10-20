@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { transpileModule, ModuleKind, ScriptTarget } from 'typescript';
 import type { WorkdirGitStatus } from '../src/chat/chatProtocol.ts';
+import { featureAgent } from '../src/chat/featureAi.ts';
 
 class Node {
 	children: (Node | string)[] = [];
@@ -47,6 +48,7 @@ function panel(staged: string[], unstaged: string[], available = true) {
 		gitFolder: '/repo', gitPopupPinned: false,
 		post: (message: { type: string; path: string; staged: boolean }) => actions.push({ kind: message.type, path: message.path, staged: message.staged }),
 		readFeatureAiSettings: () => ({ commitMessage: { agent: 'auto', effort: 'medium' } }),
+		featureAgent,
 		gitFileIcon: () => new Node(),
 		gitPopupError: new Node(), gitPopupList: list, gitPopupActions: footer, el, button, icon: () => new Node(),
 		commitGitFiles: (scope: string) => actions.push({ kind: scope }),

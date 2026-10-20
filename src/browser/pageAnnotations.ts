@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { CDPClient } from '../core/cdp';
 import { annotationSource } from './annotationScript';
-import { annotationColors, parseAnnotations, type PageAnnotation } from './annotationData';
+import { annotationClipboardText, annotationColors, parseAnnotations, type PageAnnotation } from './annotationData';
 import { randomUUID } from 'crypto';
 import { confirm, refuse } from '../core/notify';
 
@@ -160,8 +160,10 @@ export class PageAnnotations implements vscode.Disposable {
 							this._fire(tab, message.url, before, records, connection.agentMade);
 						} else if (message.type === 'copy' && message.url === connection.url) {
 							const record = connection.pages.get(message.url)?.find(record => record.id === message.id);
-							if (record?.element.selector) {
-								void vscode.env.clipboard.writeText(record.element.selector).then(() => confirm('Element selector copied.'), () => refuse('Could not copy the element selector.'));
+							if (record) {
+								void vscode.env.clipboard.writeText(annotationClipboardText(record, message.url)).then(
+									() => confirm(`Annotation #${record.number} copied to the clipboard.`),
+									() => refuse('Could not copy the annotation.'));
 							}
 						} else if (message.type === 'requestDelete' && message.url === connection.url && typeof message.id === 'string') {
 							void this._confirmRemove(tab, connection, message.id);

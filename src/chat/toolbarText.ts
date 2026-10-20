@@ -87,7 +87,7 @@ export function validToolbarSkill(raw: unknown): ToolbarSkill | string {
 	if (typeof notify === 'string') {
 		return notify;
 	}
-	const agents = raw.agents === 'claude' || raw.agents === 'codex' ? raw.agents : 'all';
+	const agents = raw.agents === 'claude' || raw.agents === 'codex' || raw.agents === 'gemini' ? raw.agents : 'all';
 	const icon = typeof raw.icon === 'string' && iconShape.test(raw.icon) ? raw.icon : 'sparkle';
 	const colors = validColors(raw.colors, raw.color);
 	const label = text(raw.label, toolbarLimits.label);

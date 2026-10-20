@@ -7,7 +7,7 @@ import * as assert from 'node:assert';
 import { suite, test } from 'node:test';
 import {
 	bestState, claudeClientState, claudeLocalScopeShadows, codexClientState, codexOurEntries,
-	codexStrangers,
+	codexStrangers, geminiClientState,
 } from './mcpClientState.ts';
 import { codexEntries } from './codexToml.ts';
 
@@ -393,5 +393,22 @@ suite('claudeLocalScopeShadows', () => {
 		assert.deepStrictEqual(claudeLocalScopeShadows('{ not json', folder, token), []);
 		assert.deepStrictEqual(claudeLocalScopeShadows('{}', folder, token), []);
 		assert.deepStrictEqual(claudeLocalScopeShadows(localConfig(null), folder, token), []);
+	});
+});
+
+suite('geminiClientState', () => {
+	const url = 'http://127.0.0.1:43112/mcp';
+	const token = 'tok000000000000000000000000000000000000000000000000000000000000';
+	const file = (entry: unknown) => JSON.stringify({ mcpServers: { 'ai-browser': entry } });
+
+	test('reads the address from httpUrl', () => {
+		assert.strictEqual(geminiClientState(file({ httpUrl: url, headers: { Authorization: `Bearer ${token}` } }), url, token), 'thisServer');
+		assert.strictEqual(geminiClientState(file({ httpUrl: 'http://127.0.0.1:43110/mcp', headers: { Authorization: `Bearer ${token}` } }), url, token), 'wrongPort');
+		assert.strictEqual(geminiClientState(file({ httpUrl: url, headers: { Authorization: 'Bearer other' } }), url, token), 'staleToken');
+	});
+
+	test('a url (SSE) entry is not this server, and no file is none', () => {
+		assert.strictEqual(geminiClientState(file({ url, headers: { Authorization: 'Bearer x' } }), url, token), 'otherServer');
+		assert.strictEqual(geminiClientState('', url, token), 'none');
 	});
 });

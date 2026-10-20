@@ -9,10 +9,10 @@ import { codexEntries } from './codexToml';
 import { workspaceIsRemoteFromHost } from '../setup/proposedApi';
 import {
 	claudeClientState, claudeLocalScopeShadows, codexClientState, codexOurEntries,
-	codexStrangers, serverName, type ClientState,
+	codexStrangers, geminiClientState, serverName, type ClientState,
 } from './mcpClientState';
 import {
-	claudeConfigUri, claudeLocalConfigUri, codexGlobalConfigUri, codexProjectConfigUri, codexProjectIsGlobal,
+	claudeConfigUri, claudeLocalConfigUri, codexGlobalConfigUri, codexProjectConfigUri, codexProjectIsGlobal, geminiConfigUri,
 	workspaceFolder,
 } from './mcpSetup';
 import type { BrowserController } from '../browser/browserController';
@@ -112,12 +112,14 @@ export async function checkConnection(server: McpServer, browser: BrowserControl
 	const codexProject = folder && !codexProjectIsGlobal(folder)
 		? await readText(codexProjectConfigUri(folder)) : '';
 	const codexGlobal = await readText(codexGlobalConfigUri());
+	const geminiText = folder ? await readText(geminiConfigUri(folder)) : '';
 
 	// Codex's own precedence: project first, then global.
 	const codexFiles = [codexEntries(codexProject), codexEntries(codexGlobal)];
 
 	const claude = claudeClientState(claudeText, url, server.token);
 	const codex = codexClientState(codexFiles, url, server.urlWithToken, server.token);
+	const gemini = geminiClientState(geminiText, url, server.token);
 	const duplicates = codexOurEntries(codexFiles, url);
 	const strangers = codexStrangers(codexFiles, server.token);
 	const shadows = folder
@@ -130,6 +132,7 @@ export async function checkConnection(server: McpServer, browser: BrowserControl
 	const callers = [
 		server.clients.claude ? 'Claude Code' : undefined,
 		server.clients.codex ? 'Codex' : undefined,
+		server.clients.gemini ? 'Gemini CLI' : undefined,
 	].filter(Boolean) as string[];
 
 	const lines = [
@@ -143,6 +146,7 @@ export async function checkConnection(server: McpServer, browser: BrowserControl
 		'',
 		vscode.l10n.t("Claude Code: {0}", describe(claude)),
 		vscode.l10n.t("Codex: {0}", describe(codex)),
+		vscode.l10n.t("Gemini CLI (.gemini/settings.json): {0}", describe(gemini)),
 		vscode.l10n.t("VS Code chat: registered automatically, no config file"),
 	];
 
@@ -225,6 +229,18 @@ export async function checkConnection(server: McpServer, browser: BrowserControl
 				? vscode.l10n.t("Connect Codex and share this tab")
 				: vscode.l10n.t("Connect Codex"),
 			run: () => vscode.commands.executeCommand('aiBrowser.connectCodex'),
+		});
+	}
+
+	// Offered only for an entry that is there and wrong: Gemini CLI is the
+	// assistant people least often have, and a third button for "none" in
+	// every report is noise. The palette and the menus still have Connect.
+	if (gemini !== 'thisServer' && gemini !== 'none') {
+		actions.push({
+			label: browser.focusedTab
+				? vscode.l10n.t("Connect Gemini CLI and share this tab")
+				: vscode.l10n.t("Connect Gemini CLI"),
+			run: () => vscode.commands.executeCommand('aiBrowser.connectGemini'),
 		});
 	}
 

@@ -67,6 +67,19 @@ export function isSameServer(configured: string, url: string): boolean {
  * is why it is checked before the URL is judged.
  */
 export function claudeClientState(text: string, url: string, token: string): ClientState {
+	return jsonClientState(text, url, token, 'url');
+}
+
+/**
+ * State of Gemini CLI's `.gemini/settings.json`: the same `mcpServers` shape,
+ * with the address in `httpUrl` (streamable HTTP; `url` there is SSE, which
+ * this server does not speak, so an entry with only `url` is another server).
+ */
+export function geminiClientState(text: string, url: string, token: string): ClientState {
+	return jsonClientState(text, url, token, 'httpUrl');
+}
+
+function jsonClientState(text: string, url: string, token: string, field: 'url' | 'httpUrl'): ClientState {
 	let parsed: any;
 	try {
 		parsed = JSON.parse(text);
@@ -82,7 +95,7 @@ export function claudeClientState(text: string, url: string, token: string): Cli
 		return 'disabled';
 	}
 
-	const configured = typeof entry.url === 'string' ? entry.url : '';
+	const configured = typeof entry[field] === 'string' ? entry[field] : '';
 	if (!isSameServer(configured, url)) {
 		return claudeEntryCarriesToken(entry, token) ? 'wrongPort' : 'otherServer';
 	}
@@ -278,7 +291,8 @@ export function claudeEntryCarriesToken(entry: any, token: string): boolean {
 	if (typeof authorization === 'string' && authorization.includes(token)) {
 		return true;
 	}
-	return typeof entry.url === 'string' && entry.url.endsWith(`/${token}`);
+	return (typeof entry.url === 'string' && entry.url.endsWith(`/${token}`))
+		|| (typeof entry.httpUrl === 'string' && entry.httpUrl.endsWith(`/${token}`));
 }
 
 /**

@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { transpileModule, ModuleKind, ScriptTarget } from 'typescript';
-import { annotationColors, parseAnnotations } from './annotationData.ts';
+import { annotationClipboardText, annotationColors, parseAnnotations } from './annotationData.ts';
 
 function fixture() {
 	const clipboard: string[] = [];
@@ -50,7 +50,7 @@ function fixture() {
 	runInNewContext(transpileModule(readFileSync('src/browser/pageAnnotations.ts', 'utf8'), { compilerOptions: { module: ModuleKind.CommonJS, target: ScriptTarget.ES2022 } }).outputText, {
 		exports, setTimeout, clearTimeout, AbortController,
 		require: (name: string) => name === '../core/cdp' ? { CDPClient: class { constructor(channel: any) { return channel; } } }
-			: name === './annotationData' ? { parseAnnotations, annotationColors }
+			: name === './annotationData' ? { parseAnnotations, annotationColors, annotationClipboardText }
 				: name === 'crypto' ? { randomUUID: () => '00000000-0000-0000-0000-0000000000aa' } : name === './annotationScript' ? { annotationSource: '__api' }
 				: name === '../core/notify' ? { confirm() {}, refuse() {} }
 					: name === 'vscode' ? { env: { clipboard: { writeText: async (text: string) => { clipboard.push(text); } } },
@@ -114,7 +114,7 @@ test('closing a tab during channel acquisition cancels and closes a channel arri
 	assert.equal(client.isClosed, true); annotations.dispose();
 });
 
-test('copy uses the stored selector and refuses foreign context clipboard requests', async () => {
+test('copy uses the stored note and selector and refuses foreign context clipboard requests', async () => {
 	const { annotations, client, tab, clipboard } = fixture();
 	try {
 		await annotations.start(tab); client.change([note(1)]);
@@ -123,7 +123,7 @@ test('copy uses the stored selector and refuses foreign context clipboard reques
 		client.emit('Runtime.bindingCalled', request); assert.equal(clipboard.length, 0);
 		client.emit('Runtime.bindingCalled', { ...request, executionContextId: 42 });
 		await new Promise(resolve => setTimeout(resolve, 0));
-		assert.deepEqual(clipboard, ['#save']);
+		assert.deepEqual(clipboard, [`Please change this\n\nAnnotation #1 on ${client.url}\nElement: <button> #save — "Save"`]);
 	} finally { annotations.dispose(); }
 });
 

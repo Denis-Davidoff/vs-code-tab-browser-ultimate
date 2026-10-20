@@ -126,6 +126,7 @@ cloned repository could switch autofill on for its own dev server (breaks-silent
 | `aiBrowser.chat.tabLimit` | `10` | how many conversations stay open as tabs, 1 to 30 — see [Tabs](#tabs-several-conversations-at-once) |
 | `aiBrowser.chat.claudePath` | `""` | the `claude` executable; empty searches — see [Finding the CLIs](#finding-the-clis) |
 | `aiBrowser.chat.codexPath` | `""` | the `codex` executable, the same way |
+| `aiBrowser.chat.geminiPath` | `""` | the `gemini` executable, the same way — see [Gemini CLI over ACP](#gemini-cli-over-acp) |
 | `aiBrowser.chat.viewMode` | `compact` | how much of the agents' work the chat shows: `minimal`, `compact` (tool calls folded) or `standard` (unfolded) — see [View modes](#view-modes-minimal-compact-standard); also the View Mode row of the chat's approval menu |
 | `aiBrowser.chat.collapseToolCalls` | `true` | deprecated by `viewMode`, and read only while that is unset: `false` is Standard, anything else Compact |
 
@@ -158,6 +159,7 @@ not kinds of code:
 | `translate/` | Translate Page |
 | `chat/` | the AI Browser chat and the agents behind it |
 | `power/` | keeping the computer awake from the chat: the window's vote, the shared daemon, the OS lock |
+| `editor/` | the code editor for the MCP tools: `editorTools` (`editor_context`, `editor_reveal`, the language features), `editorText` |
 
 Rules that come with it:
 
@@ -210,6 +212,8 @@ difference, in `browserController.js`, was a doc comment whose link had been upd
 - [src/core/safeFiles.ts](src/core/safeFiles.ts) — the private temp directory, exclusive creates and atomic config writes (leaf, under test)
 - [src/mcp/gitignoreRule.ts](src/mcp/gitignoreRule.ts) — whether `.codex/.gitignore` keeps the token file out of git (leaf, under test)
 - [src/mcp/mcpServer.ts](src/mcp/mcpServer.ts) — HTTP transport, tools, client attribution
+- [src/editor/editorTools.ts](src/editor/editorTools.ts) — the `editor_*` MCP tools: what the user has open, showing a place, definitions, references, symbols
+- [src/editor/editorText.ts](src/editor/editorText.ts) — their paths, columns and cut lines (leaf, under test)
 - [src/browser/screenshot.ts](src/browser/screenshot.ts) — Copy Screenshot (Visible Area / Full Page), the toolbar's capture
 - [src/browser/clipboardImage.ts](src/browser/clipboardImage.ts) — a PNG onto the system clipboard, per platform
 - [src/browser/screenshotFrames.ts](src/browser/screenshotFrames.ts) — how `browser_screenshot` is cut into frames for a model (leaf, under test)
@@ -255,6 +259,7 @@ difference, in `browserController.js`, was a doc comment whose link had been upd
 - [src/chat/usageAlert.ts](src/chat/usageAlert.ts) — the plan-limit line above the chat: which limit, when it shows, what closing it means, when the plan is asked for (leaf, under test)
 - [src/chat/claudeAgent.ts](src/chat/claudeAgent.ts) — Claude Code over `stream-json` and its control channel
 - [src/chat/codexAgent.ts](src/chat/codexAgent.ts) — Codex over `codex app-server` JSON-RPC
+- [src/chat/geminiAgent.ts](src/chat/geminiAgent.ts) — Gemini CLI over ACP (`gemini --acp`), one process per conversation
 - [src/chat/voiceText.ts](src/chat/voiceText.ts) — voice messages as text: the helper's stdout read, the chip and the prompt line a transcript becomes (leaf, under test)
 - [src/chat/voiceRecorder.ts](src/chat/voiceRecorder.ts) — one voice message: the helper process, its events, its file removed
 - [native/voice/voice.swift](native/voice/voice.swift) — the voice helper: records from the microphone, transcribes on the device (macOS 26+); built into `bin/ai-browser-voice`
@@ -1140,6 +1145,8 @@ Claude Code ▸                                                   3_assistant@1
     ─────
     Copy Recording Prompt for Claude Code                       2_recording
 Codex ▸                                                         3_assistant@2
+Gemini CLI ▸                                                    3_assistant@2.5
+    Connect Gemini CLI / Share Tab with Gemini CLI              2_mcp@1..2
 AI Browser Chat ▸                                               3_assistant@3   when !chatUnsupported && !chatBlocked
     Add Element / CSS Path / CSS Path + Location / XPath        1_add@1..4
     ─────
@@ -3107,6 +3114,56 @@ reach frames either, as their known limits say. There is no way to navigate a fr
 purpose: `browser_navigate` refuses anything but http/https for the top page, and a frame
 navigation would be a second door around that rule.
 
+### The editor tools: `editor_*`
+
+The server's agents work on code as much as on pages, and the editor is right beside the
+browser. Five tools in [src/editor/editorTools.ts](src/editor/editorTools.ts), one `EditorTools`
+per server instance:
+
+| Tool | What it answers |
+|---|---|
+| `editor_context` | the active text editor — or, while a browser tab or the chat has focus, the one the user had last (`_last`, from `onDidChangeActiveTextEditor`), marked `focused: false` — with its cursor, the line it is on, the selection's text (cut at 20 000 characters), its errors and warnings, and the open files (the browser editor by its label, `tabGroups` having no input for it) |
+| `editor_reveal` | opens a workspace file at a line or a range, selected, `preserveFocus` and as a preview |
+| `editor_definition` | `vscode.executeDefinitionProvider` — what "Go to Definition" answers |
+| `editor_references` | `vscode.executeReferenceProvider`, at most 100, with the total |
+| `editor_symbols` | `vscode.executeWorkspaceSymbolProvider`, workspace files only, at most 100 |
+
+Decisions, each with its reason:
+
+- **A symbol is named by its text and its line, not by a column** (`symbolColumn`): a model
+  counts columns badly and names reliably. A whole identifier wins over a substring
+  (`userTab` in `userTabs`), and `occurrence` picks among repeats on one line. A symbol not on
+  the line is refused with the line's text, so the model can correct itself.
+- **Language features beat grep where it matters**: imports and re-exports, overloads, methods
+  through an interface, two unrelated symbols of one name. `editor_symbols` exists because the
+  other two need a starting position, and the model often has only a name.
+- **A language that has never answered is asked again while it answers nothing**
+  (`warmUpRetryMs`, up to ~25 s, the first call per language only). Measured in a fresh window:
+  the TypeScript server answered its first definition request about 15 s after the file opened,
+  and before that every provider returns an empty list — which read as "no definition". After a
+  language has answered once, an empty answer is taken as it is.
+- **Only workspace files**, resolved against each folder's own URI (so a remote window keeps
+  its scheme) and, for local files, on real paths — a symlink leading out is refused. An agent's
+  arguments can come from a page it read, and putting `~/.ssh/id_rsa` on screen during a screen
+  share is a leak even with nothing written. Measured: `/etc/hosts` and `../../../../etc/hosts`
+  refused. A definition or reference the language server finds *outside* (a library's `.d.ts`)
+  is still reported by path, line and text — that text is public — marked `outsideWorkspace`.
+  `editor_context` names an active file outside the workspace and reads nothing of it.
+- **`editor_reveal` never covers the page being read.** When the active group shows a browser
+  tab (`input === undefined`, the heuristic `browserTabVisible` uses), the file opens in another
+  group showing a text editor, else beside. `preserveFocus`, so the user's typing is not taken.
+- Every provider call is bounded (`providerTimeoutMs`, 20 s) with a sentence the model can act
+  on. In the approval menu these tools are AI Browser's, as `mcp__ai-browser__*` always is.
+
+Verified inside VS Code itself — an isolated instance (`--user-data-dir`, `--extensionTestsPath`
+running the compiled module against this repository): the context with a selection, a definition
+across files, three references (declaration, import, call), two symbols, a reveal, and the two
+refusals above. Redo it that way after touching the module; `npm test` covers only `editorText`.
+
+**Not built:** call hierarchy, hover/type information, rename, code actions. Hover would be the
+next one worth having (a type without reading the file); rename and code actions change code,
+which the agents already do through their own edit tools with the approval menu in front.
+
 ### Lifecycle
 
 [src/mcp/mcpLifecycle.ts](src/mcp/mcpLifecycle.ts) keeps the server's disposables **apart from
@@ -3524,7 +3581,8 @@ conversation with a prompt, but Codex has no equivalent, so reports go as files 
 **Add Annotation Marker** (`aiBrowser.annotatePage`, in the extension dropdown, and the toolbar's
 repeat button once it is the last action) starts a one-element picker in the user's browser tab; Escape cancels. There is no
 toolbar inside the page. Notes collapse to numbered circles. Their compact header contains
-number, tag, copy-selector, delete and add-marker ("+", starts picking another element; the note
+number, tag, copy (the whole annotation: note, element, selector and page —
+`annotationClipboardText`; it copied the bare selector, which read as doing nothing), delete and add-marker ("+", starts picking another element; the note
 collapses) icons, followed only by a text area. There is no collapse button: Escape and focus
 leaving the note collapse it. Clicking the
 number opens a ten-color palette; the stored color applies to the marker and card border.
@@ -4883,6 +4941,211 @@ Each of these cost a measurement and each would be wrong if guessed:
 - **Claude's usage method is marked as unstable by Claude Code itself** — its SDK names it
   `usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET`. `claudeUsage` reads two shapes and
   reports an error rather than throwing on a third.
+
+### Gemini CLI over ACP
+
+The third agent. **Driven over ACP, the Agent Client Protocol: `gemini --acp`**, JSON-RPC 2.0
+one object per line — the protocol Zed and the other ACP clients use. The readers are the
+*gemini* section of `agentProtocol.ts` (under test, on samples recorded from gemini-cli 0.64.0
+on 2026-10-20), the process and the session [src/chat/geminiAgent.ts](src/chat/geminiAgent.ts).
+Verified end to end against the real CLI through the compiled backend and a stubbed `vscode`:
+detection (~450 ms), a turn calling an injected MCP server and a shell command, a message queued
+behind a turn, Stop mid-reply, Stop during the start, a conversation reopened with
+`session/load`, a denied command — and no `gemini` process left after any of them.
+
+**Not the "Gemini CLI Companion" extension.** `Google.gemini-cli-vscode-ide-companion` is no
+chat and carries no CLI: it runs a loopback MCP server through which a `gemini` started in a
+terminal sees the open files and shows diffs. It registers no command another extension could
+hand a file to, so there is no "Add Element to Gemini" — the chat is the only way in. It is
+also why `extensionIds.gemini` in `agentBinary.ts` is `undefined`.
+
+| | Gemini CLI |
+|---|---|
+| launch | `gemini --acp [--skip-trust]`, env `GEMINI_CLI_NO_RELAUNCH=true`, the binary's folder first on `PATH` |
+| shape | one process per conversation; `initialize`, then `session/new { cwd, mcpServers }` or `session/load { sessionId, cwd, mcpServers }`, then `session/prompt` per turn |
+| models | `session/new` → `models.availableModels[{ modelId, name, description }]`, `currentModelId` (`auto`); **no efforts** over ACP |
+| model change | `session/set_model` on the live session, no restart |
+| text / thinking | `session/update`: `agent_message_chunk`, `agent_thought_chunk` (a whole thought, `**Subject**\nbody`) |
+| tools | `tool_call` (`kind` read / edit / execute / search / fetch / other, `title`, `locations`, `content` with `{ type: 'diff', path, oldText, newText }`), then `tool_call_update` |
+| approval | request `session/request_permission { toolCall, options }`, answered `{ outcome: { outcome: 'selected', optionId } }` |
+| tokens | `session/prompt`'s answer: `usage { inputTokens, cachedReadTokens, outputTokens, thoughtTokens }`, **per turn** |
+| context | `usage_update { used, size }` after each request |
+| commands | `available_commands_update`, right after `session/new`: six built-ins |
+| stop | notification `session/cancel`; the prompt answers `stopReason: 'cancelled'` |
+| plan usage | none over ACP — the `U` popup says so |
+
+Each of these cost a measurement:
+
+- **`gemini` relaunches itself, and both processes ignore SIGTERM.** The npm binary starts a
+  child `node --max-old-space-size=…`, and a SIGTERM to the one spawned left both running
+  (measured). `GEMINI_CLI_NO_RELAUNCH=true` keeps it to one process, which SIGTERM ends;
+  closing stdin ends it too (`JsonLineProcess.endInput`), which is what `dispose` does first.
+- **The npm install is a `#!/usr/bin/env node` script**, and VS Code started from the Dock has
+  no nvm `node` on its `PATH`. The binary's folder goes first on `PATH` for the chat's process
+  and for `--version` (in `agentBinary.ts`, for every agent — harmless for native binaries), and
+  the search looks in each `~/.nvm/versions/node/*/bin` and `~/.npm-global/bin`. Checked with
+  `PATH=/usr/bin:/bin`: found, version read.
+- **A second `session/prompt` during a turn aborts the first** (read in its source:
+  `pendingPrompt?.abort()`), so there is no steering. A message sent while Gemini works waits in
+  `GeminiSession._queue` and goes as a turn of its own the moment the running one ends,
+  announced with `autoTurn` — the shape `ChatTab` already has for Claude Code's messages
+  answered by a turn of their own, so a Gemini mid-turn message takes the `_waiting` path. It
+  never takes the *tool-boundary* flush, which is Claude Code's alone: Gemini never folds a
+  message into a running turn. Stop ends the running turn only; the queue still goes, as for
+  Claude Code.
+- **In a folder Gemini does not trust, the MCP servers handed to `session/new` are never
+  connected** — measured: no request reached the server, and the model answered that the tool
+  did not exist. Its project settings, commands and hooks are not loaded there either.
+  So trust is decided per process, and there are three answers (`Trust` in `geminiAgent.ts`):
+  - **a folder the user picked** — `--skip-trust`, trusted for that process only. Picking it is
+    the consent, as it is for Claude Code; every feature works at once, nothing is asked, and
+    Gemini's own registry is not written.
+  - **a repository fetched from GitHub and not trusted yet** — trust **forbidden** with
+    `GEMINI_CLI_TRUST_WORKSPACE=false`, which Gemini reads before its registry. Leaving the flag
+    out was not enough, and that was a hole: the clone sits under the home directory, and a home
+    trusted in Gemini covers it, so its hooks loaded. Measured after the fix: a held-back session
+    in a folder Gemini trusts connected no MCP server. The tab says so once (`_warnedUntrusted`);
+    the folder button's "Trust this repository's settings…" restarts the session
+    (`restartSession` covers Gemini — trust is decided at the process's start).
+  - **Gemini's own verdict** — only for `geminiTrustsFolder` (below).
+- **Detection's probe forbids trust** too, so listing models loads nothing of the folder's own
+  configuration. `session/new` answers the models without a prompt, so detection costs nothing.
+- **Whether Gemini trusts a folder is asked of Gemini** (`geminiTrustsFolder`): ACP has no such
+  question, but `session/set_mode` to `autoEdit` is refused in an untrusted folder with
+  "Cannot enable privileged approval modes in an untrusted folder" (`error.data.details`), and
+  accepted in a trusted one — measured both ways, ~450 ms, no prompt, the mode put back to
+  `default`. Its rules — a parent's entry, VS Code's workspace trust when the companion is
+  connected, the environment — are Gemini's to apply, so nothing of them is re-implemented.
+- **Signed out is `session/new` refused with JSON-RPC -32000** ("Gemini API key is missing or
+  not configured", measured with an empty `HOME`). The CLI keeps an API key it was given in the
+  OS keychain, so a missing `GEMINI_API_KEY` in the environment does not mean signed out.
+- **A shell command's output is never sent**: `run_shell_command` completes with empty
+  `content`, and the `content` it starts with is `[current working directory …] (description)`,
+  which becomes the row's summary, not its output. A failed command's text is the reason
+  ("… was canceled by the user"), and is shown.
+- **A read's `title` is a path relative to the extension host's directory**
+  (`../../private/tmp/…`), so the row names `locations[0].path` instead.
+- **An edit carries whole files** (`oldText` / `newText`, `null` for a new file); `geminiDiff`
+  turns each into one unified hunk — shared lines at both ends left out — for the card's counts
+  and for `diffSides`.
+- **An MCP call is told by its kind and its call id, never by its title alone**
+  (`geminiMcpCall`). The title is what the model can write: a shell command is titled by the
+  command and an MCP tool with a `command` argument by that, so `rm -rf ~ # (ai-browser MCP
+  Server)` once read as the browser and skipped Terminal's rule (breaks-silently #511). An MCP
+  tool is `kind: 'other'` and its id is `<registered name>__call_<n>` (or `<name>-<ms>-<n>`)
+  with the name `mcp_<server>_<tool>`, which only Gemini writes. The title then splits that
+  name, and only when it agrees with it: `<tool> (<server> MCP Server)` with no arguments,
+  `<tool>(<args>)` with them, the server being what the id leaves; our own tools are
+  recognised by their `browser_` / `editor_` names. A name that cannot be split is asked under
+  Other tools. `ai-browser` is the AI Browser category, as for the other two.
+- **There is no "deny and go on"**: Reject (`cancel`) and the request's `cancelled` outcome both
+  reach the model as the tool cancelled by the user, and the turn carries on (measured). Allow
+  is always `proceed_once`, never an "always" option: the approval menu keeps that choice.
+- **Stop answers the open questions itself.** ACP leaves it to the client to answer pending
+  permission requests as `cancelled` after `session/cancel`; without it the turn waited on them
+  (measured: a Stop with a question open never ended).
+- **`session/load` replays the conversation as updates**, which the chat already has, so they
+  are dropped while it runs (`_replaying`). A session Gemini no longer has starts a new one with
+  a notice rather than refusing the message.
+- **Commands**: over ACP, Gemini 0.64 handles only its built-ins; custom `.toml` commands and
+  skills are not (read in its source), so the palette lists the top-level built-ins and leaves
+  out `/restore`, which resets the conversation under a chat that does not know.
+- **Gemini is an MCP client kind of its own** (`ClientKind` `gemini`): it introduces itself
+  as `gemini-cli-mcp-client` (measured on a real session; `gemini mcp list` says
+  `mcp-test-client`, which stays `other`). So "Share Tab with Gemini CLI" binds both a `gemini`
+  in a terminal and the chat's own Gemini, and a tab given to Claude Code or Codex binds neither.
+  Its share glyph is never written into a page, so it is kept out of `stripMarker`'s set.
+- **Not built for Gemini**: commit messages, branch names and titles (`generateCommitMessage`,
+  `generateTitle` — Chat Settings does not offer it, and **Auto** on a Gemini tab runs them on
+  Claude Code or Codex instead: `featureAgent` in `featureAi.ts`, shared by host and view, so the
+  button names the agent that will run — breaks-silently #513), compacting (`/compress` is not handled
+  over ACP, so the pie is not clickable), `--add-dir` references (`readDirs` is ignored), the
+  element hand-over (no command to take one, see above) and "Copy Recording Prompt" for it.
+
+#### When Gemini fails, the chat says what to do
+
+Every failure reaches the user as a sentence with a next step, and each one was produced
+against the real CLI (gemini-cli 0.64) through the compiled backend:
+
+| Failure | How it arrives | What the chat says |
+|---|---|---|
+| not signed in | `session/new` → -32000 "Gemini API key is missing…" (empty `HOME`) | not signed in; sign in with **Open Gemini CLI in Terminal**, then Refresh Agents / send again |
+| unknown or unavailable model | `session/set_model` accepts anything; the prompt fails with **500** "models/… is not found" | this model is not available to your account; pick another |
+| rate limit or quota | the prompt fails with **429** (read in `acpSession.ts`) | wait and send again, or pick another model |
+| 401 / 403, 400, 5xx | the prompt fails with the HTTP status | refused (access) / invalid / service failed — with the next step |
+| Gemini's own refusal | -32603 "Internal error", the real text in `data.details` | the details, never "Internal error" |
+| no `node` for the npm script | exit 127 "env: node: No such file or directory" (`PATH=/usr/bin:/bin`) | needs Node.js 20+; install it or set `aiBrowser.chat.geminiPath` |
+| process ended mid-turn | the exit, from `JsonLineProcess` (SIGKILL in the test) | Gemini CLI stopped; the next message starts it again and resumes |
+| messages waiting behind that turn | `GeminiSession` queue | each refused: "Not sent: … Send it again." — shown with the message, never as sent |
+| empty or blocked response | Gemini ends it as an ordinary `end_turn` (read in its source) | ended the turn without a reply; send again, rephrase, or another model |
+| a model that does not answer | nothing at all: Gemini retries the request itself, up to 10 times at ~60 s each (`fetch failed sending request`, visible only with `--debug`); measured 2026-10-20 with `gemini-3.8-flash`, which Auto picks, while `gemini-3-flash-preview` answered in 8 s | after 45 s with no update (`silenceNoticeMs`): it may be retrying silently; wait, or Stop and pick a model by name |
+
+The silent case is also said up front: **the Gemini model menu carries a note in the chart
+orange** (`openMenu`'s `note`, `.menu-note`) that not every listed model may work for the
+account, for reasons outside AI Browser, and to pick another if no reply comes (asked for).
+
+`geminiErrorText` / `geminiExitText` in `agentProtocol.ts` hold the wording (tested); `userError`
+in `geminiAgent.ts` routes every `RpcError` through them. **A queued message that never went
+out is refused, not resolved `false`**, and `ChatTab.send` moves its waiting entry into the
+conversation before the error: left in `_waiting`, the flush after the turn put it in later,
+below the error, reading as sent. Connect's trust probe tells **signed out** apart too
+(`GeminiFolderState`), and its modal then says to sign in in the terminal it opens; a probe that
+gets no answer at all (`unknown`) still offers the terminal, where Gemini shows its own reason.
+
+#### Connect Gemini CLI
+
+For a `gemini` the user runs in a terminal; the chat's own Gemini is handed the server at every
+start and needs none of it. `aiBrowser.connectGemini` writes the project
+**`.gemini/settings.json`**: `mcpServers.ai-browser = { httpUrl, headers: { Authorization } }` —
+`httpUrl` is Gemini's streamable HTTP, `url` there is SSE. Checked with `gemini mcp list`, which
+reports the entry `Connected` with our header. It is in the status bar menu, the palette, and a
+"Gemini CLI ▸" submenu of the dropdown (`aiBrowser.geminiMenu`, `3_assistant@2.5`: Connect,
+Share Tab); not in `0_start`, which stays the two assistants most people have.
+
+- **The Codex project writer's rules, because it is the same token in the repository**:
+  refused in Restricted Mode (the checks run git), through a symlink in the workspace
+  (`.gemini`, `.gemini/settings.json`, `.gemini/.gitignore`), and for a file git tracks — a team
+  committing `.gemini/settings.json` would commit the token. A `.gemini/.gitignore` naming
+  `settings.json` goes in first (`keepTokenOutOfGit(folder, '.gemini', 'settings.json')`,
+  `ignoresFile` / `withFileRule` in `gitignoreRule.ts`, generalised from the `config.toml` ones),
+  and `git check-ignore` has the last word.
+- **Refused when the workspace is the home directory** (`geminiProjectIsGlobal`): there
+  `.gemini/settings.json` is Gemini's *user* settings, loaded in every project, so the entry would
+  hand this window's token to every `gemini` on the machine (breaks-silently #512). No `gemini mcp
+  add` fallback either — at `~` its project scope is the same file — and the repair passes it over.
+- **The rest of the file is kept**, every setting and every other server; it is the user's whole
+  Gemini configuration for the project, not an MCP file. **A file with comments is refused**:
+  Gemini reads settings with comments allowed, `JSON.parse` does not, and rebuilding such a file
+  would drop them with everything around. The `gemini mcp add --scope project --transport http
+  … --header "Authorization: Bearer …"` command goes on the clipboard instead (checked against
+  `gemini mcp add --help`, 0.64).
+- **The startup repair covers it** (`repairGeminiJson`, the `.mcp.json` repair with `httpUrl` for
+  `url`): our entry is found by its token, moved to the new port, never created. `url` and
+  `type` are dropped from our own entry, since a server has one address. A file with comments is
+  left alone. `claudeEntryIsOurs` and `claudeEntryCarriesToken` read `httpUrl` too, and still
+  agree.
+- **Check Connection reports it** (`geminiClientState`) and lists Gemini among recent callers; it
+  offers "Connect Gemini CLI" only for an entry that is there and wrong, not for none.
+- **The step after the write is semi-automatic** (`finishGeminiConnect`). Gemini reads a
+  project's settings — and connects its MCP servers — only in a folder it trusts, and only when
+  it starts, so the file just written can be ignored in silence. Gemini is asked
+  (`geminiTrustsFolder`, under `ProgressLocation.Window`), and the modal says what is left:
+  untrusted — "Gemini CLI does not trust this folder yet…", a terminal will open, choose
+  "Trust folder" there, then paste; trusted or unknown — paste, after starting `gemini` here.
+  Either way one button, **Open Gemini CLI Here**, opens it.
+- **The decision is made in Gemini's own trust question, never by writing its registry.** That
+  question lists what the folder brings (commands, MCP servers, hooks, skills), records the
+  answer in `~/.gemini/trustedFolders.json`, and restarts Gemini with them loaded (read in its
+  `FolderTrustDialog`). Writing that file ourselves was the alternative and was rejected: it is
+  Gemini's format (keys are normalised — the live file holds `/users/m5` lower-cased), a
+  malformed one stops `gemini` starting anywhere (`FatalConfigError`), and the consent would be
+  in our words instead of Gemini's.
+- **The terminal runs the binary itself** (`openGeminiTerminal`: `createTerminal` with
+  `shellPath` = the `gemini` found by `chooseAgentBinary`, its folder first on `PATH`), so
+  nothing is typed into a shell and no path is quoted; it closes when `gemini` exits. The
+  companion extension's terminal variables reach it like any terminal's. **Open Gemini CLI in
+  Terminal** (`aiBrowser.openGeminiCli`, palette and the Gemini submenu) does the same on its
+  own, in the window's folder; refused in a remote window, where the binary is on this machine.
 
 ### The context pie and compacting
 
@@ -6364,6 +6627,41 @@ exit code, the file read or edited, an agent with its report fenced. Thinking an
 out. The two options that open a tab are disabled at the limit. The files are swept with the
 reports (`chat-*.md` is in the sweep's name pattern); by then the agent has read the file.
 
+### Asking another agent: a second opinion in a new tab
+
+Asked for: a user who does not trust one agent's answer — a bug, the wrong design, a weak
+review — asks another. A button beside every reply's copy button (`opinionButton`,
+`comment-discussion`) opens a menu of every available agent and model; picking one
+(`secondOpinion` → `_secondOpinion`) opens a **new tab** beside the conversation, in its folder,
+with that agent and model, and sends it the question the reply answers. **One agent per press,
+asked for**: another opinion is another press, another tab. Decisions, each with its reason:
+
+- **A tab, not a background run** (asked which, and chosen): a second opinion is a conversation
+  the user wants to continue — "why not B?", "go ahead" — and a tab has its own approvals,
+  model, Stop and history. A toolbar-style background run would show only a report.
+- **What is sent is the question, never the first answer**: the user entry above the reply
+  (`at`, walked back from `index`), as the new tab's own message. The conversation *before* it
+  goes along like "Continue in …" (`chatTranscript` of `entries.slice(0, at)`, written to
+  `.ai-browser/` or inline without a folder); the first agent's answer does not — an opinion that
+  has read the answer it is meant to check is not a second one. So the button works under every
+  reply, a running turn's included. The prompt's own attachments are named, not carried (a sent
+  chip keeps only its label).
+- **The framing is an attachment** (`secondOpinionText`, leaf, tested): independent answer, the
+  folder may already hold the first agent's edits, and **no file changes** — say what to change,
+  and the user says "go ahead" in that tab. Two agents writing one folder at once is the failure
+  it avoids.
+- **The model is set the way the pills set it** (`_select` after `_addTab`): a fresh tab sends
+  with the remembered agent and its model, so picking a model here also makes it that agent's
+  remembered model — the same effect as choosing it in the model pill.
+- The conversation's own agent and model are listed but disabled ("This conversation"). The tab
+  is named `<agent>: <title>` so the opinions can be told apart in the strip. The tab limit
+  refuses in the status bar, like New Chat.
+
+Verified: the framing under `npm test`, the build and typecheck. **Not run inside VS Code yet.**
+**Not built:** a council — several agents at once and a synthesis of their answers (designed in
+conversation: review merged and verified, plans compared with their disagreements shown, a judge
+not among the participants). This is its first, manual step.
+
 ### Sending during a turn: added to it, or queued after it
 
 Asked for: Enter while an agent works adds the message to the running turn; **⌘Enter**
@@ -6425,6 +6723,29 @@ takes it) and goes to the agent as an image block — base64 for Claude, a `data
 the tab explicitly; **Page address** is the URL and title (`pageTitle` + `plainInPrompt`, since
 the title is page-chosen text going into a prompt), plus one line naming the tab by our id (`tabIdOf`) and how the `ai-browser` tools reach it — tools named by suffix (#144), a `browser_state` check before acting because caller pins and sharing override focus, `browser_select_tab` when needed (or a user assignment when sharing prevents selection), and a plain "the server is off" when it is not running (`_tabNote`); **Share page** starts with the same URL, title and MCP note but follows the selected browser tab while it remains in the draft; **the globe button attaches the tab it opens as a page address, and the chip follows it too** — the first `onDidOpenBrowserTab` within 15 s of the press goes to the chat tab it was pressed in (`_awaitOpenedPage`), and tracked attachments have their address, title and active-or-not rebuilt under the same chip id on `onDidChangeBrowserTabState` / `onDidChangeActiveBrowserTab` until the message is sent or the chip removed (`_livePages`, `_refreshLivePages`); `preserveAttachmentReference` carries the existing `@N` to each refreshed chip; closing the browser tab removes its tracked page chips from all chat drafts and refreshes the chat, and the panel opens no tab, so attaches nothing; **File** is the path only, since both agents
 read files themselves.
+
+**What is open is offered, not attached** (asked for): the file in the text editor in front
+(`activeTextEditor`, `file` scheme) and the browser tab in front — only while the active editor
+group's active tab *is* a browser editor (`tabGroups.activeTabGroup.activeTab` with no `input`,
+which stays put while focus is in the chat), as a Share page; `userTab` alone kept offering a page
+after the user had switched to a file appear in the composer as **suggestions** — dashed chips
+(`.chip.suggested`) with a leading **+** and no remove button (`_suggestions`, `state.suggestions`).
+**Lines selected in that editor are offered instead of the file** (asked for): a `selection` chip
+named `<file> · lines N–M` (`line N`, or `N selections` for several), built by `selectionAttachment`
+— the same snapshot "Attach Selection to AI Browser Chat" takes, and the same label. Attached, it
+carries `selectionKey` (the document and its ranges), so the same selection is not suggested
+again. `onDidChangeTextEditorSelection` fires on every cursor move, so it posts the state only
+when that key changes.
+The **+** posts `acceptSuggestion`, and the host attaches what is open *now*, not what the chip
+showed: a file through `fileAttachment` (the Explorer entry's text), a page through
+`_makeAttachment('sharedPage')`, which follows its tab. A suggestion is left out while the tab in
+front already holds it — the same file, or a live page chip on the same browser tab — so an
+attached chip's **X** turns it back into a suggestion. **Every attached chip's X now leads**, where
+the suggestion's + is, so the two read as one on/off control. The state is re-posted on
+`onDidChangeActiveTextEditor`, `onDidChangeBrowserTabState` and `tabGroups.onDidChangeTabs` /
+`onDidChangeTabGroups`; nothing is suggested where the chat
+is blocked. A browser editor in front clears the file suggestion (`activeTextEditor` is `undefined`
+there), and a focus in the chat view keeps it (the editor stays active).
 
 VS Code Explorer's file/folder context menu and a file editor tab's context menu have **Attach to AI Browser Chat**
 (`aiBrowser.chat.attachExplorerResources`). It accepts the Explorer's whole multi-selection,
@@ -8904,6 +9225,20 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
      without a word: the prompt was never sent again, its error had been held back for the retry,
      and the tab read as working for up to 30 s. Whatever lets a session go ends what waits on it
      (#341's rule), with the error that wait was standing in for.
+511. **Classifying a tool call by a title the model writes** → Gemini titles a shell command by the
+     command, so `… # (ai-browser MCP Server)` was filed as the browser, and AI Browser's Auto ran
+     it with no card. Decide by what the CLI sets (kind, call id); use the title only to split it.
+512. **A project path that is a user path at `~`** → `<home>/.gemini/settings.json` is Gemini's user
+     settings, so Connect Gemini put the token into every project. Codex had the guard
+     (`codexProjectIsGlobal`); every new per-project writer needs its own.
+513. **"Auto" resolved to an agent that cannot do the job** → a Gemini tab's Commit button named
+     Gemini, took the Git lock and then failed, and titles were dropped. Resolve Auto among the
+     agents that have the capability, in the host and the view alike.
+514. **Reporting a failure from both the exit handler and the awaiting caller** → a Gemini process
+     that ended during its handshake ended the turn in `_processEnded` and rejected `send()` too,
+     so the chat showed the error twice. The exit handler ends only a turn whose prompt went out.
+515. **Falling back from whole-word matches to raw ones by index** → `symbolColumn('tab, tabs',
+     'tab', 2)` returned `tabs`. Use raw matches only when there are no whole ones.
 
 ## Special cases and non-obvious decisions
 
@@ -9559,6 +9894,10 @@ the per-project global name and back on every start; `Check Connection` read the
 that shape Connect skips the removal, the repair makes one pass over the global file under the
 bare `ai-browser` name, the check reads it once, and the writer locks it under the global URI so
 it takes the repair's lock. Breaks-silently #157.
+
+**`.gemini/` is in both as well, and was missing from them once**: Connect Gemini CLI pressed in
+this repository wrote `.gemini/settings.json`, its own `.gemini/.gitignore` kept `git status`
+clean, and `npm run package` put the token into the VSIX (breaks-silently #75, a fourth time).
 
 **`.codex/` is in both of *this* repository's ignore files for the same reason, and it had to be
 added when Connect Codex moved to the project file.** It writes `.codex/config.toml` with the same bearer token, and that path was
