@@ -25,6 +25,12 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 - $(location) **Page markers** — pin notes to several elements right in the browser and hand them to the agent as one prompt.
 - $(settings-gear) **Chat Settings** — the gear at the top of the chat: change the system prompts behind commit messages, branch names and chat titles, and clean up temporary files.
 
+## 0.8.1 — 2026-10-20
+- **File icons throughout the chat**: attachments, local file links, read/edit tool rows and file names in messages use your selected file icon theme and refresh when the theme or file associations change.
+- **Usage and context ring meters** fill clockwise around their letters; the usage indicator turns into a red disc when a plan limit is reached.
+- **A darker chat composer** separates the message box from its toolbar.
+- **Conventional commit subjects**: generated messages use `type(TASK-ID): summary`, taking the task ID from the branch name or recent commits when available, without inventing one.
+
 ## 0.8.0 — 2026-10-20
 - **Gemini CLI in the chat**: a third agent beside Claude Code and Codex, driven through your own `gemini` and its sign-in. Models come from the CLI, tool calls and edits show as they do for the others, questions are asked in the chat, and a conversation reopened from the history picks up where it left off. If a model does not answer, the chat says so and suggests another.
 - **Connect Gemini CLI** writes `.gemini/settings.json` for a `gemini` you run in a terminal, keeps the token out of git, and opens Gemini where you can trust the folder. **Open Gemini CLI in Terminal** and **Share Tab with Gemini CLI** are in the new Gemini CLI submenu.

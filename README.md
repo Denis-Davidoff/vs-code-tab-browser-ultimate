@@ -90,6 +90,12 @@ then restores the clipboard. It does not request OS screen recording access.
 
 ## Changelog
 
+**0.8.1** — File names throughout the chat now show icons from your selected file icon
+theme, including attachments, file links and read/edit tool rows. Usage and context indicators
+use clockwise ring meters, and the composer has a darker surface below its toolbar. Generated
+commit subjects use conventional commit format with a task ID from the branch or recent
+commits when available.
+
 **0.8.0** — Gemini CLI joins the chat as a third agent, driven over ACP through your own
 `gemini`, with **Connect Gemini CLI** writing `.gemini/settings.json` (token kept out of git),
 **Open Gemini CLI in Terminal** and **Share Tab with Gemini CLI**. **Ask another agent** under a
