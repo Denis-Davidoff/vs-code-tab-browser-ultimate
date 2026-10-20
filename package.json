@@ -145,6 +145,8 @@
 		"onCommand:aiBrowser.chat.addXPath",
 		"onCommand:aiBrowser.chat.addScreenshot",
 		"onCommand:aiBrowser.chat.addPage",
+		"onCommand:aiBrowser.chat.attachExplorerResources",
+		"onCommand:aiBrowser.chat.attachEditorSelection",
 		"onCommand:aiBrowser.recording.start",
 		"onCommand:aiBrowser.recording.startChat",
 		"onCommand:aiBrowser.recording.startClaude",
@@ -577,6 +579,18 @@
 				"category": "%displayName%"
 			},
 			{
+				"command": "aiBrowser.chat.attachExplorerResources",
+				"title": "%command.chat.attachExplorerResources.title%",
+				"category": "%displayName%",
+				"icon": "$(attach)"
+			},
+			{
+				"command": "aiBrowser.chat.attachEditorSelection",
+				"title": "%command.chat.attachEditorSelection.title%",
+				"category": "%displayName%",
+				"icon": "$(code)"
+			},
+			{
 				"command": "aiBrowser.chat.newChat",
 				"title": "%command.chat.newChat.title%",
 				"category": "%displayName%",
@@ -855,6 +869,27 @@
 			}
 		],
 		"menus": {
+			"explorer/context": [
+				{
+					"command": "aiBrowser.chat.attachExplorerResources",
+					"group": "7_modification@50",
+					"when": "resourceScheme == file && !aiBrowser.chatUnsupported && !aiBrowser.chatBlocked"
+				}
+			],
+			"editor/context": [
+				{
+					"command": "aiBrowser.chat.attachEditorSelection",
+					"group": "1_modification@50",
+					"when": "editorHasSelection && !aiBrowser.chatUnsupported && !aiBrowser.chatBlocked"
+				}
+			],
+			"editor/title/context": [
+				{
+					"command": "aiBrowser.chat.attachExplorerResources",
+					"group": "1_modification@50",
+					"when": "resourceScheme == file && !aiBrowser.chatUnsupported && !aiBrowser.chatBlocked"
+				}
+			],
 			"editor/title": [
 				{
 					"submenu": "aiBrowser.elementMenu",

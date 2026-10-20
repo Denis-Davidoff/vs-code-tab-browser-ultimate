@@ -13,6 +13,11 @@ export function attachmentReference(chip: AttachmentChip): string {
 	return reference;
 }
 
+/** A refreshed chip is still the same logical attachment in the user's draft. */
+export function preserveAttachmentReference(previous: AttachmentChip, next: AttachmentChip): void {
+	references.set(next, attachmentReference(previous));
+}
+
 /** Explicitly bind each short reference to its content, including image-only attachments. */
 export function attachmentContext(attachments: readonly { chip: AttachmentChip; text?: string; image?: unknown }[]): string {
 	if (!attachments.length) { return ''; }

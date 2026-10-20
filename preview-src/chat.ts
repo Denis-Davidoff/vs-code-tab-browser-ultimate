@@ -3235,6 +3235,8 @@ function attachmentIcon(kind: AttachmentKind): string {
 		case 'screenshot': return 'device-camera';
 		case 'element': return 'inspect';
 		case 'page': return 'link';
+		case 'sharedPage': return 'link-external';
+		case 'selection': return 'code';
 		case 'file': return 'file';
 		case 'voice': return 'mic';
 		case 'video': return 'device-camera-video';
@@ -6560,6 +6562,7 @@ const attachItems: { kind: AttachmentKind; icon: string; label: string; needsTab
 	{ kind: 'screenshot', icon: 'device-camera', label: 'Screenshot of the page', needsTab: true },
 	{ kind: 'element', icon: 'inspect', label: 'Element from the page…', needsTab: true },
 	{ kind: 'page', icon: 'link', label: 'Page address', needsTab: true },
+	{ kind: 'sharedPage', icon: 'link-external', label: 'Share page', needsTab: true },
 	{ kind: 'file', icon: 'file', label: 'File…', needsTab: false },
 ];
 

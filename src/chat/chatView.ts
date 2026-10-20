@@ -14,7 +14,7 @@ import { readRecordingQuality, recordingQualityKey } from '../browser/recordingQ
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { attachmentReference } from './attachmentReferences';
+import { attachmentReference, preserveAttachmentReference } from './attachmentReferences';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -234,6 +234,8 @@ const gitEventDebounceMs = 300;
  * an untitled one is not — closing it would ask to save what was only shown.
  */
 const attachmentScheme = 'ai-browser-attachment';
+/** How long the globe button waits for the browser tab it opens, to attach it. */
+const livePageWaitMs = 15_000;
 /** Texts and images of chips opened recently, by chip id; a chip's content never changes. */
 const openedAttachmentLimit = 30;
 /** A conversation handed over in the message itself, with no folder to write it to: its newest part. */
@@ -303,6 +305,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	/** NEWS.md from the installed extension, read once; see `news.ts`. */
 	private _news: ChatNews | undefined;
 	private readonly _attachmentTexts = new Map<string, string>();
+	/** Live page chips, by chip id, and the browser tab each follows. */
+	private readonly _livePages = new Map<string, vscode.BrowserTab>();
+	private _livePageWatch: vscode.Disposable | undefined;
+	/** The globe button's wait for the tab it opens. */
+	private _pendingOpen: vscode.Disposable | undefined;
 	private readonly _attachmentImages = new Map<string, vscode.Uri>();
 	private readonly _tabHost: TabHost = {
 		cwd: () => this._windowCwd(),
@@ -342,10 +349,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	constructor(
 		private readonly _context: vscode.ExtensionContext,
 		private readonly _browser: BrowserController,
-		browserServer: () => BrowserServer | undefined = () => undefined,
+		private readonly _browserServer: () => BrowserServer | undefined = () => undefined,
 		private readonly _recording?: BrowserRecording,
 	) {
-		this._registry = new AgentRegistry(() => this._cwd(), id => this._agentBinaries()[id], browserServer, () => !this._untrusted(this._cwd()));
+		this._registry = new AgentRegistry(() => this._cwd(), id => this._agentBinaries()[id], _browserServer, () => !this._untrusted(this._cwd()));
 		void sweepBrowserConfigs().catch(() => { /* swept with the temp directory */ });
 		this._subscriptions.push(this._registry, this._registry.onDidChange(() => this._post()));
 		if (_recording) { this._subscriptions.push(_recording.onDidChange(() => this._postRecording())); }
@@ -1046,6 +1053,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				return;
 			case 'removeAttachment':
 				this._active.attachments = this._active.attachments.filter(a => a.chip.id !== message.id);
+				this._livePages.delete(message.id);
 				this._post();
 				return;
 			case 'usage':
@@ -1082,6 +1090,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				// The toolbar's own "Open New Browser Tab": an empty tab of the
 				// built-in browser, or the panel when the user chose it — the
 				// command already decides that (see "The dropdown on the browser tab").
+				this._awaitOpenedPage(this._active);
 				await vscode.commands.executeCommand('aiBrowser.newTab');
 				return;
 			case 'localLinkInfo':
@@ -2151,6 +2160,130 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}
 	}
 
+	/**
+	 * One line for a page-address attachment: which tab it came from, by the id
+	 * `browser_tabs` lists, and how the `ai-browser` tools reach it. Tool names
+	 * by suffix, since each client puts its own prefix on them (#144); the
+	 * agent must check its actual target: caller-specific pins and assignments
+	 * can override the tab in front.
+	 */
+	private _tabNote(tab: vscode.BrowserTab): string {
+		if (!this._browserServer()) {
+			return 'Browser tools: the ai-browser MCP server is off (aiBrowser.mcp.enabled), so the page cannot be read or driven from here.';
+		}
+		const id = this._browser.tabIdOf(tab);
+		const active = this._browser.focusedTab === tab ? 'active' : 'not active';
+		return `Browser tab ${id} (${active}). ai-browser MCP tools: names end in browser_state, browser_snapshot, browser_click… Check browser_state before acting; pins or sharing may target another tab. If needed, use browser_select_tab with "${id}"; if sharing prevents selection, ask the user to assign this tab.`;
+	}
+
+	/** A page-address attachment for `tab`, under the chip id given. */
+	private _pageAttachment(tab: vscode.BrowserTab, id: string, kind: 'page' | 'sharedPage' = 'page'): Attachment {
+		const title = plainInPrompt(pageTitle(tab.title, tab.url));
+		return {
+			chip: { id, kind, label: title || tab.url },
+			text: `The page the user is looking at: ${tab.url}${title ? ` — "${title}"` : ''}\n${this._tabNote(tab)}`,
+		};
+	}
+
+	/** Keeps a draft attachment synchronized with its browser tab. */
+	private _trackLivePage(id: string, page: vscode.BrowserTab): void {
+		this._livePages.set(id, page);
+		this._watchLivePages();
+	}
+
+	/**
+	 * The globe button: the browser tab it opens is attached to the chat tab it
+	 * was pressed in as a page address, and the chip follows that page — its
+	 * address, title and whether it is the active tab — until the message is
+	 * sent or the chip removed. The tab is the first one opened within
+	 * {@link livePageWaitMs} of the press; the panel opens none, and then nothing
+	 * is attached.
+	 */
+	private _awaitOpenedPage(chat: ChatTab): void {
+		this._pendingOpen?.dispose();
+		this._pendingOpen = undefined;
+		if (!isBrowserApiGranted()) {
+			return;
+		}
+		let opened: vscode.Disposable | undefined;
+		try {
+			opened = vscode.window.onDidOpenBrowserTab(page => {
+				done.dispose();
+				const target = this._tabs.includes(chat) ? chat : this._active;
+				const attachment = this._pageAttachment(page, generateUuid());
+				target.attachments.push(attachment);
+				this._trackLivePage(attachment.chip.id, page);
+				this._post();
+			});
+		} catch {
+			return;
+		}
+		const timer = setTimeout(() => done.dispose(), livePageWaitMs);
+		const done = new vscode.Disposable(() => {
+			clearTimeout(timer);
+			opened?.dispose();
+			if (this._pendingOpen === done) { this._pendingOpen = undefined; }
+		});
+		this._pendingOpen = done;
+	}
+
+	/** Subscribes, once, to what changes a live page chip. */
+	private _watchLivePages(): void {
+		if (this._livePageWatch) {
+			return;
+		}
+		try {
+			this._livePageWatch = vscode.Disposable.from(
+				vscode.window.onDidChangeBrowserTabState(() => this._refreshLivePages()),
+				vscode.window.onDidChangeActiveBrowserTab(() => this._refreshLivePages()),
+				vscode.window.onDidCloseBrowserTab(page => {
+					let changed = false;
+					for (const [id, tracked] of this._livePages) {
+						if (tracked !== page) { continue; }
+						this._livePages.delete(id);
+						for (const chat of this._tabs) {
+							const index = chat.attachments.findIndex(a => a.chip.id === id);
+							if (index !== -1) {
+								chat.attachments.splice(index, 1);
+								changed = true;
+							}
+						}
+					}
+					if (changed) {
+						this._post();
+					}
+				}),
+			);
+		} catch {
+			// The grant went away; the chips simply stop following.
+		}
+	}
+
+	/** Rebuilds every live page chip still waiting in a draft, and forgets the rest. */
+	private _refreshLivePages(): void {
+		let changed = false;
+		for (const [id, page] of this._livePages) {
+			const holder = this._tabs.find(t => t.attachments.some(a => a.chip.id === id));
+			if (!holder) {
+				// Sent, removed, or its chat tab closed.
+				this._livePages.delete(id);
+				continue;
+			}
+			const index = holder.attachments.findIndex(a => a.chip.id === id);
+			const old = holder.attachments[index];
+			const kind = old.chip.kind === 'sharedPage' ? 'sharedPage' : 'page';
+			const next = this._pageAttachment(page, id, kind);
+			if (next.text !== old.text || next.chip.label !== old.chip.label) {
+				preserveAttachmentReference(old.chip, next.chip);
+				holder.attachments[index] = next;
+				changed = true;
+			}
+		}
+		if (changed) {
+			this._post();
+		}
+	}
+
 	private async _attach(kind: AttachmentKind): Promise<void> {
 		const tab = this._active;
 		const attachment = await this._makeAttachment(kind);
@@ -2225,8 +2358,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			await this._recording.start(undefined, 'chat');
 			return undefined;
 		}
-		if (kind === 'voice') {
-			// Recorded with the microphone button, never asked for through "+".
+		if (kind === 'voice' || kind === 'selection') {
+			// Created by their dedicated controls, never asked for through "+".
 			return undefined;
 		}
 		if (kind === 'file') {
@@ -2260,12 +2393,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}
 
 		switch (kind) {
-			case 'page': {
-				const title = plainInPrompt(pageTitle(tab.title, tab.url));
-				return {
-					chip: { id, kind, label: title || tab.url },
-					text: `The page the user is looking at: ${tab.url}${title ? ` — "${title}"` : ''}`,
-				};
+			case 'page':
+				return this._pageAttachment(tab, id);
+			case 'sharedPage': {
+				const attachment = this._pageAttachment(tab, id, 'sharedPage');
+				this._trackLivePage(id, tab);
+				return attachment;
 			}
 			case 'screenshot': {
 				if (!onScreen(tab, this._browser.focusedTab)) {
@@ -3131,6 +3264,70 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		this._postMessage({ type: 'focusInput' });
 	}
 
+	/** Files or folders selected through VS Code Explorer's context menu. */
+	public async attachExplorerResources(resources: readonly vscode.Uri[]): Promise<void> {
+		const blocked = this._blocked();
+		if (blocked) {
+			refuse(blocked);
+			return;
+		}
+		const unique = [...new Map(resources.filter(uri => uri.scheme === 'file').map(uri => [uri.fsPath, uri])).values()];
+		if (!unique.length) { return; }
+		const tab = this._active;
+		const folder = this._workdir(tab);
+		let attached = 0;
+		for (const uri of unique) {
+			let directory: boolean;
+			try {
+				directory = (await fs.promises.stat(uri.fsPath)).isDirectory();
+			} catch {
+				refuse(vscode.l10n.t("{0} is not there any more.", plainInLabel(uri.fsPath)));
+				continue;
+			}
+			const relative = folder ? path.relative(folder, uri.fsPath) : undefined;
+			const inProject = relative !== undefined && relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
+			const shown = inProject ? relative.split(path.sep).join('/') : undefined;
+			tab.attachments.push(directory
+				? { chip: { id: generateUuid(), kind: 'file', label: `${path.basename(uri.fsPath)}/` }, text: `Attached folder: ${uri.fsPath}${shown ? ` (${shown}/ in the project)` : ''}` }
+				: { chip: { id: generateUuid(), kind: 'file', label: path.basename(uri.fsPath) }, file: uri, text: `Attached file: ${uri.fsPath}${shown ? ` (${shown} in the project)` : ''}` });
+			attached++;
+		}
+		if (!attached) { return; }
+		this._post();
+		await vscode.commands.executeCommand(`${chatViewId}.focus`);
+		this._postMessage({ type: 'focusInput' });
+	}
+
+	/** A snapshot of the non-empty selections in VS Code's active text editor. */
+	public async attachEditorSelection(editor: vscode.TextEditor | undefined): Promise<void> {
+		const blocked = this._blocked();
+		if (blocked) {
+			refuse(blocked);
+			return;
+		}
+		if (!editor) { return; }
+		const selections = editor.selections.filter(selection => !selection.isEmpty);
+		if (!selections.length) { return; }
+		const source = editor.document.uri.scheme === 'file' ? editor.document.uri.fsPath : editor.document.uri.toString();
+		const parts = selections.map(selection => {
+			const first = selection.start.line + 1;
+			const last = selection.end.character === 0 && selection.end.line > selection.start.line ? selection.end.line : selection.end.line + 1;
+			return `Lines ${first}${last === first ? '' : `-${last}`}:\n${JSON.stringify(editor.document.getText(selection))}`;
+		});
+		const text = `Selected text from ${JSON.stringify(source)}:\n${parts.join('\n\n')}`;
+		if (Buffer.byteLength(text, 'utf8') > 1_000_000) {
+			refuse(vscode.l10n.t("The selection is too large to attach (maximum 1 MB)."));
+			return;
+		}
+		const name = path.basename(editor.document.uri.path) || vscode.l10n.t("Untitled");
+		const firstLine = selections[0].start.line + 1;
+		const range = selections.length === 1 ? `:${firstLine}` : ` · ${selections.length} selections`;
+		this._active.attachments.push({ chip: { id: generateUuid(), kind: 'selection', label: `${name}${range}` }, text });
+		this._post();
+		await vscode.commands.executeCommand(`${chatViewId}.focus`);
+		this._postMessage({ type: 'focusInput' });
+	}
+
 	/* ------------------------------------------------------------ GitHub repositories */
 
 	/** What a tab's GitHub operation is doing, while one runs: one at a time per tab. */
@@ -3849,6 +4046,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         this._branchNameRequests.clear();
 		for (const job of this._gitCommits.values()) { job.controller.abort(); }
 		this._sleep.dispose();
+		this._pendingOpen?.dispose();
+		this._livePageWatch?.dispose();
+		this._livePages.clear();
 		this._voiceCancel();
 		void vscode.commands.executeCommand('setContext', 'aiBrowser.keepAwakeActive', false);
 		this._runs.dispose();

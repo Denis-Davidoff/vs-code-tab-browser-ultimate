@@ -1,6 +1,6 @@
 import * as assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { attachmentContext, attachmentReference } from './attachmentReferences.ts';
+import { attachmentContext, attachmentReference, preserveAttachmentReference } from './attachmentReferences.ts';
 import type { AttachmentChip } from './chatProtocol.ts';
 
 function chip(id: string, kind: AttachmentChip['kind'] = 'file'): AttachmentChip {
@@ -20,6 +20,19 @@ test('references stay stable across removal, reordering, and queued sends', () =
 	assert.ok(context.includes(`${a} — file: same label\n/project/one.ts`));
 	assert.ok(attachmentContext([{ chip: second }]).includes(b));
 	assert.notEqual(attachmentReference(chip('three')), a);
+});
+
+test('navigation keeps a typed reference bound to the refreshed page content', () => {
+	const original = chip('live-page', 'sharedPage');
+	const typed = attachmentReference(original);
+	const refreshed = { ...original, label: 'Destination page' };
+	preserveAttachmentReference(original, refreshed);
+	const updatedAgain = { ...refreshed, label: 'Updated title' };
+	preserveAttachmentReference(refreshed, updatedAgain);
+	assert.equal(attachmentReference(updatedAgain), typed);
+	assert.ok(attachmentContext([{ chip: updatedAgain, text: 'https://example.com/destination' }])
+		.includes(`${typed} — sharedPage: Updated title\nhttps://example.com/destination`));
+	assert.notEqual(attachmentReference(chip('another-page', 'sharedPage')), typed);
 });
 
 test('image references correspond to image order even among text attachments', () => {

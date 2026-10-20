@@ -571,6 +571,11 @@ export function activate(context: vscode.ExtensionContext) {
 		// the pick, not before, so the page stays where the click is wanted.
 		vscode.commands.registerCommand('aiBrowser.chat.addScreenshot', () => chat.addFromBrowser('screenshot')),
 		vscode.commands.registerCommand('aiBrowser.chat.addPage', () => chat.addFromBrowser('page')),
+		vscode.commands.registerCommand('aiBrowser.chat.attachExplorerResources', async (resource?: vscode.Uri, selected?: readonly vscode.Uri[]) => {
+			const resources = selected?.length ? selected : resource ? [resource] : [];
+			await chat.attachExplorerResources(resources);
+		}),
+		vscode.commands.registerCommand('aiBrowser.chat.attachEditorSelection', () => chat.attachEditorSelection(vscode.window.activeTextEditor)),
 	);
 
 }

@@ -55,6 +55,8 @@
 	"command.chat.addXPath.title": "Add XPath to AI Browser Chat",
 	"command.chat.addScreenshot.title": "Add Screenshot to AI Browser Chat",
 	"command.chat.addPage.title": "Add Page Address to AI Browser Chat",
+	"command.chat.attachExplorerResources.title": "Attach to AI Browser Chat",
+	"command.chat.attachEditorSelection.title": "Attach Selection to AI Browser Chat",
 	"submenu.chatMenu.label": "AI Browser Chat",
 	"command.chat.newChat.title": "New Chat",
 	"command.chat.history.title": "Chat History",

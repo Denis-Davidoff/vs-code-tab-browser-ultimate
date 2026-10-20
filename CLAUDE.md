@@ -6236,8 +6236,18 @@ From the `+` menu, all held in the host until the message is sent: **Screenshot*
 takes it) and goes to the agent as an image block — base64 for Claude, a `data:` URL for Codex;
 **Element** is the Copy Element Markdown, through `pickElementContext`, which hands the picker
 the tab explicitly; **Page address** is the URL and title (`pageTitle` + `plainInPrompt`, since
-the title is page-chosen text going into a prompt); **File** is the path only, since both agents
+the title is page-chosen text going into a prompt), plus one line naming the tab by our id (`tabIdOf`) and how the `ai-browser` tools reach it — tools named by suffix (#144), a `browser_state` check before acting because caller pins and sharing override focus, `browser_select_tab` when needed (or a user assignment when sharing prevents selection), and a plain "the server is off" when it is not running (`_tabNote`); **Share page** starts with the same URL, title and MCP note but follows the selected browser tab while it remains in the draft; **the globe button attaches the tab it opens as a page address, and the chip follows it too** — the first `onDidOpenBrowserTab` within 15 s of the press goes to the chat tab it was pressed in (`_awaitOpenedPage`), and tracked attachments have their address, title and active-or-not rebuilt under the same chip id on `onDidChangeBrowserTabState` / `onDidChangeActiveBrowserTab` until the message is sent or the chip removed (`_livePages`, `_refreshLivePages`); `preserveAttachmentReference` carries the existing `@N` to each refreshed chip; closing the browser tab removes its tracked page chips from all chat drafts and refreshes the chat, and the panel opens no tab, so attaches nothing; **File** is the path only, since both agents
 read files themselves.
+
+VS Code Explorer's file/folder context menu and a file editor tab's context menu have **Attach to AI Browser Chat**
+(`aiBrowser.chat.attachExplorerResources`). It accepts the Explorer's whole multi-selection,
+deduplicates local file URIs, attaches files or folders to the active draft with an absolute path
+and, when applicable, their path inside the conversation's project, then reveals and focuses the
+chat. Missing entries are reported and skipped (`ChatViewProvider.attachExplorerResources`).
+An editor selection has its own context entry, **Attach Selection to AI Browser Chat**
+(`aiBrowser.chat.attachEditorSelection`), shown only for a non-empty selection. It snapshots all
+non-empty cursors' selections with the document name and line ranges, JSON-quotes their text so it
+stays data in the prompt, refuses more than 1 MB, attaches one `selection` chip, and reveals the chat.
 
 **Files pasted into the message box are attached too** (`paste` in `chat.ts`,
 `clipboardFiles.ts`; `_pasteFile` in `chatView.ts`, rules in `pastedFiles.ts`, leaf). A paste

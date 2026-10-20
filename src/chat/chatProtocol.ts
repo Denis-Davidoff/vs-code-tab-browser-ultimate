@@ -374,7 +374,7 @@ export interface ChatSummary {
 	readonly updatedAt: number;
 }
 
-export type AttachmentKind = 'screenshot' | 'element' | 'page' | 'file' | 'voice' | 'video';
+export type AttachmentKind = 'screenshot' | 'element' | 'page' | 'sharedPage' | 'selection' | 'file' | 'voice' | 'video';
 
 /** What the composer shows for an attachment; the content stays in the host. */
 export interface AttachmentChip {
