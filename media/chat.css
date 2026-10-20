@@ -1290,6 +1290,38 @@ body.vscode-light .code-block pre {
 	color: var(--vscode-textLink-foreground);
 }
 
+/* The features worth trying, listed above the changelog link. */
+.welcome-features {
+	max-width: 320px;
+	margin: 14px auto 0;
+	padding: 0;
+	list-style: none;
+	text-align: left;
+	font-size: 0.9em;
+	line-height: var(--line);
+}
+
+.welcome-feature {
+	display: flex;
+	gap: 8px;
+	align-items: flex-start;
+}
+
+.welcome-feature + .welcome-feature {
+	margin-top: 6px;
+}
+
+.welcome .welcome-feature .welcome-feature-icon {
+	flex: none;
+	margin-top: 2px;
+	color: var(--vscode-textLink-foreground);
+}
+
+.welcome-feature-title {
+	font-weight: 600;
+	color: var(--fg);
+}
+
 /* A single link below the welcome text. */
 .news-toggle {
 	display: block;

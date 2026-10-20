@@ -1910,6 +1910,21 @@ function welcome(s: ChatViewState): HTMLElement {
 	for (const agent of s.agents.filter(a => !a.available && a.problem)) {
 		box.append(el('div', { class: 'welcome-problem', text: `${agent.name}: ${agent.problem}` }));
 	}
+	if (s.news?.features?.length) {
+		// What is worth trying first, between the hint and the changelog link.
+		const list = el('ul', { class: 'welcome-features' });
+		for (const feature of s.news.features) {
+			const text = el('span', { class: 'welcome-feature-text' });
+			inline(text, feature.text);
+			list.append(el('li', { class: 'welcome-feature' },
+				icon(/^[a-z0-9-]+$/.test(feature.icon) ? feature.icon : 'star', 'welcome-feature-icon'),
+				el('span', {},
+					el('span', { class: 'welcome-feature-title', text: feature.title }),
+					el('span', { text: ' — ' }),
+					text)));
+		}
+		box.append(list);
+	}
 	if (s.news?.entries.length) {
 		const link = el('a', { class: 'news-toggle', text: 'Show changelog' });
 		link.href = '#changelog';

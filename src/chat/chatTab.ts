@@ -9,7 +9,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { chatTitle, toolOutputLimit, validAnswers, type AgentEvent } from './agentProtocol';
-import { agentNames, type AgentBackend, type AgentSession, type TurnImage } from './agents';
+import { agentNames, type AgentBackend, type AgentSession, type TurnImage, type TurnInput } from './agents';
 import type { AgentId, RepoCopy, RepoReference, ApprovalEntry, ApprovalMode, AttachmentChip, PendingSend, ChatEntry, ChatStats, ChatTabStatus, ToolEntry, UsageWindow } from './chatProtocol';
 import { generateUuid } from '../core/uuid';
 import { stepGate, withNextDecision } from './toolbarText';
@@ -189,6 +189,17 @@ export function reopened(stored: StoredChat): StoredChat {
 	return { ...stored, entries: stored.entries.map(settled), stats: { ...stored.stats } };
 }
 
+/** A prompt the chat has sent and is waiting on a turn for. */
+interface Pending {
+	entry?: UserEntry; base?: TokenBase; startedAt?: number; step?: SkillStep; asked?: string;
+	/** What was sent, to send again after a "Prompt is too long" (`tooLongRetryMs`). */
+	resend?: { input: TurnInput; model: string; effort: string | undefined };
+	retries?: number;
+}
+
+/** The waits before a prompt refused as too long goes again, asked for: 5, 15, 30 s. */
+export const tooLongRetryMs = [5000, 15000, 30000] as const;
+
 export class ChatTab {
 	public readonly id = generateUuid();
 	private _chat: StoredChat;
@@ -224,7 +235,9 @@ export class ChatTab {
 	 * steers the running turn instead and is not queued.
 	 */
 	/** Turns waiting to end, oldest first; a turn the CLI started on its own has no `entry`. */
-	private _pending: { entry?: UserEntry; base?: TokenBase; startedAt?: number; step?: SkillStep; asked?: string }[] = [];
+	private _pending: Pending[] = [];
+	/** A prompt the CLI refused as too long, sent again once it has compacted (`tooLongRetryMs`). */
+	private _retry: { timer: ReturnType<typeof setTimeout>; done: Pending; chat: StoredChat; error: string } | undefined;
 	/**
 	 * Queued skill prompts whose check has passed, by queue id. A prompt with
 	 * a check goes out only from here: if the step before it never had a turn
@@ -239,7 +252,7 @@ export class ChatTab {
 	 * shows it as waiting, and puts it where it was taken in — before the output
 	 * that follows a tool's result, or at the start of its own turn.
 	 */
-	private _waiting: { readonly id: string; readonly entry: UserEntry }[] = [];
+	private _waiting: { readonly id: string; readonly entry: UserEntry; readonly pending: Pending }[] = [];
 	/** A tool's result came after the oldest waiting prompt was sent: the next output is its taking in. */
 	private _boundary = false;
 	private _flushTimer: ReturnType<typeof setTimeout> | undefined;
@@ -280,7 +293,9 @@ export class ChatTab {
 	}
 
 	public get running(): boolean {
-		return this._session?.running ?? false;
+		// Waiting to send a too-long prompt again counts: Stop is up for it,
+		// and a queued message waits behind it.
+		return (this._session?.running ?? false) || this._retry !== undefined;
 	}
 
 	/** Agents of this conversation still working. */
@@ -463,7 +478,96 @@ export class ChatTab {
 	}
 
 	public stop(): void {
+		if (this._retry) {
+			this._cancelRetry();
+			this._chat.entries.push({ kind: 'notice', text: vscode.l10n.t("Stopped.") });
+			this._post();
+		}
 		this._session?.stop();
+	}
+
+	private _cancelRetry(): void {
+		if (this._retry) {
+			clearTimeout(this._retry.timer);
+			this._retry = undefined;
+		}
+	}
+
+	/**
+	 * The session a retry waits on is gone — a replaced backend, a session let
+	 * go: the prompt cannot go again, so the error it was given stands. Left
+	 * waiting, the timer found no session and returned in silence, the prompt
+	 * lost after "sending it again", the tab reading as working until it fired.
+	 */
+	private _abandonRetry(): void {
+		const retry = this._retry;
+		if (!retry) {
+			return;
+		}
+		this._cancelRetry();
+		if (this._chat === retry.chat) {
+			retry.chat.entries.push({ kind: 'error', text: retry.error });
+		}
+	}
+
+	/**
+	 * Sends a prompt Claude Code refused as too long once more. The CLI compacts
+	 * the conversation on its own right after that error, so the same prompt a
+	 * few seconds later usually goes through (asked for: 5, 15 and 30 s, then
+	 * the error stands). A compaction still running when the time comes uses the
+	 * next wait; a new message, Stop, another chat or closing the tab ends it.
+	 */
+	private _scheduleRetry(done: Pending, chat: StoredChat, error: string): boolean {
+		const attempt = done.retries ?? 0;
+		if (!done.resend || !done.entry || attempt >= tooLongRetryMs.length) {
+			return false;
+		}
+		const delay = tooLongRetryMs[attempt];
+		const next: Pending = { ...done, retries: attempt + 1 };
+		this._cancelRetry();
+		this._retry = { done: next, chat, error, timer: setTimeout(() => void this._fireRetry(), delay) };
+		chat.entries.push({ kind: 'notice', text: vscode.l10n.t("The prompt is too long for the context. Claude Code compacts the conversation; sending it again in {0} s (try {1} of {2}).", delay / 1000, attempt + 1, tooLongRetryMs.length) });
+		return true;
+	}
+
+	private async _fireRetry(): Promise<void> {
+		const retry = this._retry;
+		this._retry = undefined;
+		if (!retry || this._closed || this._discarded || this._chat !== retry.chat) {
+			return;
+		}
+		const { done, chat } = retry;
+		const session = this._session;
+		if (!session) {
+			// Let go of meanwhile: nothing to send it on, and the error stands.
+			chat.entries.push({ kind: 'error', text: retry.error });
+			this._post();
+			return;
+		}
+		if (session.running || this._pending.length) {
+			// Still compacting: wait the next step, or give up past the last —
+			// with the error the prompt was given, since this try never went.
+			if (!this._scheduleRetry(done, chat, retry.error)) {
+				chat.entries.push({ kind: 'error', text: retry.error });
+			}
+			this._post();
+			return;
+		}
+		this._failed = false;
+		this._pending = [{ ...done, base: this._tokenBase(), startedAt: Date.now() }];
+		this._post();
+		let delivered = false;
+		try {
+			delivered = await session.send(done.resend!.input, done.resend!.model, done.resend!.effort);
+		} catch (err) {
+			if (this._session === session && this._chat === chat) {
+				this._push({ kind: 'error', text: err instanceof Error ? err.message : String(err) });
+			}
+		}
+		if (!delivered && !session.running) {
+			this._pending = this._pending.filter(p => p.entry !== done.entry);
+		}
+		this._post();
 	}
 
 	public push(entry: ChatEntry): void {
@@ -502,6 +606,7 @@ export class ChatTab {
 	 * chat deleted meanwhile is still covered: deleting it discards the tab.
 	 */
 	public close(reason: 'tab' | 'view' = 'tab'): void {
+		this._cancelRetry();
 		// A prompt still waiting was sent to the CLI: it goes into the chat
 		// before the turn is ended and the chat saved, or the history lacked a
 		// message the resumed session has (the save used to come first).
@@ -520,6 +625,7 @@ export class ChatTab {
 
 	/** Lets the session go without saving: the chat was deleted. */
 	public discard(): void {
+		this._cancelRetry();
 		this._discarded = true;
 		this._pending = [];
 		this._dropSession();
@@ -651,6 +757,8 @@ export class ChatTab {
 			}
 			this._chat.createdAt = Date.now();
 		}
+		// A new message takes the place of a too-long prompt waiting to go again.
+		this._cancelRetry();
 		this._textBreak = false;
 		this._failed = false;
 		this._unseen = false;
@@ -661,8 +769,9 @@ export class ChatTab {
 		// next prompt is the one queued now, whatever was taken out since.
 		const asked = step ? this._queued.find(q => q.step?.chain === step.chain)?.step?.check : undefined;
 		const running = this._session?.running ?? false;
+		const pending: Pending = { entry, base: this._tokenBase(), startedAt: entry.at, step, asked };
 		if (!running) {
-			this._pending = [{ entry, base: this._tokenBase(), startedAt: entry.at, step, asked }];
+			this._pending = [pending];
 			this._flushWaiting();
 		}
 		if (running && agent === 'claude') {
@@ -674,7 +783,7 @@ export class ChatTab {
 			if (!this._waiting.length) {
 				this._boundary = false;
 			}
-			this._waiting.push({ id: generateUuid(), entry });
+			this._waiting.push({ id: generateUuid(), entry, pending });
 			this._post();
 		} else {
 			if (running) {
@@ -689,6 +798,7 @@ export class ChatTab {
 		const sent = asked ? withNextDecision(said, asked) : said;
 		const prompt = [sent, attachmentContext(context)].filter(Boolean).join('\n\n');
 		const images = attachments.map(a => a.image).filter((i): i is TurnImage => !!i);
+		pending.resend = { input: { text: prompt, images }, model, effort };
 
 		const chat = this._chat;
 		const session = this._ensureSession(backend);
@@ -698,7 +808,7 @@ export class ChatTab {
 			// A session that gave the message up on the way — disposed, or stopped
 			// before any turn began — resolves without throwing; only `true` means
 			// an agent has it (what deleting the sent annotations waits for).
-			delivered = await session.send({ text: prompt, images }, model, effort);
+			delivered = await session.send(pending.resend.input, model, effort);
 		} catch (err) {
 			delivered = false;
 			// Only into the chat it was sent from: by now the user may have moved
@@ -1005,7 +1115,9 @@ export class ChatTab {
 					this._flushWaiting();
 				}
 				if (!this._pending.length) {
-					this._pending.push({ entry: taken?.entry, base: this._tokenBase(), startedAt: now });
+					// A message answered by a turn of its own keeps what was sent, so a
+					// "Prompt is too long" for it goes again like any other prompt's.
+					this._pending.push({ entry: taken?.entry, base: this._tokenBase(), startedAt: now, resend: taken?.pending.resend });
 				}
 				break;
 			}
@@ -1180,14 +1292,17 @@ export class ChatTab {
 				} else {
 					this._pending = [];
 				}
-				if (event.error) {
+				// Too long for the context: Claude Code compacts on its own, and the
+				// same prompt goes again shortly — the error only once that is over.
+				const retrying = !!event.tooLong && !!done && this._chat === chat && !this._closed && this._scheduleRetry(done, chat, event.error ?? '');
+				if (event.error && !retrying) {
 					chat.entries.push(event.error === 'Stopped.'
 						? { kind: 'notice', text: vscode.l10n.t("Stopped.") }
 						: { kind: 'error', text: event.error });
 				}
 				// After the turn's own error, so the line saying a skill stopped reads
 				// as what followed from it.
-				if (done?.step) { this._stepEnded = { done, error: event.error }; }
+				if (done?.step && !retrying) { this._stepEnded = { done, error: event.error }; }
 				chat.updatedAt = now;
 				void this._save();
 				break;
@@ -1296,6 +1411,7 @@ export class ChatTab {
 	}
 
 	private _dropSession(): void {
+		this._abandonRetry();
 		this._stepEnded = undefined;
 		this._cancelApprovals();
 		// Not answered, and not lost: shown where the conversation stands.
@@ -1320,6 +1436,7 @@ export class ChatTab {
 		}
 		// Cut off by something other than the user: marked like an error.
 		this._failed ||= this.busy;
+		this._abandonRetry();
 		this._flushWaiting();
 		this._endTurnHere();
 		this._cancelApprovals();

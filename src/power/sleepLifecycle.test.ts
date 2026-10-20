@@ -11,13 +11,14 @@ import type { TabHost } from '../chat/chatTab.ts';
 
 const nativeRequire = createRequire(resolve('package.json'));
 /** Exercise production modules with the VS Code host replaced, without a running editor or CLI. */
-function load<T>(file: string, dependencies: Record<string, unknown> = {}): T {
+function load<T>(file: string, dependencies: Record<string, unknown> = {}, globals: Record<string, unknown> = {}): T {
 	const source = readFileSync(resolve(file), 'utf8');
 	const code = transpileModule(source, { compilerOptions: { module: ModuleKind.CommonJS, target: ScriptTarget.ES2022 } }).outputText;
 	const exports = {};
 	runInNewContext(code, {
 		exports, setTimeout, clearTimeout, setInterval, clearInterval, process, Buffer,
 		require: (name: string) => Object.hasOwn(dependencies, name) ? dependencies[name] : nativeRequire(name),
+		...globals,
 	});
 	return exports as T;
 }
@@ -195,4 +196,109 @@ test('a voice message is the user\'s words: kept as the entry\'s text, sent as i
 	assert.ok(prompt.indexOf('Voice message from the user') >= 0 && prompt.indexOf('Voice message from the user') < header, 'the voice is before the data header');
 	assert.ok(prompt.indexOf('The page: http://x') > header, 'other attachments stay under it');
 	assert.equal(tab.chat.title.startsWith('и проверь'), true);
+});
+
+test('a prompt Claude Code refuses as too long goes again after 5, 15 and 30 s, then the error stands', async () => {
+	const timers: { fn: () => void; ms: number }[] = [];
+	const fake = { setTimeout: (fn: () => void, ms: number) => { const t = { fn, ms }; timers.push(t); return t; }, clearTimeout: (t: unknown) => { const i = timers.indexOf(t as never); if (i >= 0) { timers.splice(i, 1); } } };
+	const { ChatTab: Tab, newChat: fresh } = load<typeof import('../chat/chatTab.ts')>('src/chat/chatTab.ts', {
+		vscode: { ...vscode, l10n: { t: (text: string, ...args: unknown[]) => text.replace(/\{(\d)\}/g, (_m, i) => String(args[Number(i)])) } },
+		'./agentProtocol': protocol, './agents': { agentNames: { claude: 'Claude Code' } },
+		'../core/uuid': { generateUuid: () => 'test-chat' }, './toolbarText': {},
+		'./attachmentReferences': load('src/chat/attachmentReferences.ts'),
+	}, fake);
+	const sent: string[] = [];
+	let fire: (event: AgentEvent) => void = () => {};
+	const session = {
+		running: false, onEvent: (fn: (event: AgentEvent) => void) => { fire = fn; return { dispose() {} }; },
+		send: async (input: { text: string }) => { sent.push(input.text); return true; },
+		stop() {}, dispose() {},
+	};
+	const host: TabHost = {
+		cwd: () => '/tmp', projectRoot: () => undefined, ownSettings: () => true,
+		changed() {}, limits() {}, turnEnded() {}, save: async () => {}, inHistory: () => false,
+		approvalMode: () => 'ask', noteServer() {}, released() {},
+	};
+	const tab = new Tab(host, fresh('claude'));
+	await tab.send('fix it', [], 'claude', 'm', undefined, { openSession: () => session } as never);
+	const tooLong: AgentEvent = { type: 'turnEnd', error: 'Prompt is too long', tooLong: true };
+	for (const [i, ms] of [5000, 15000, 30000].entries()) {
+		fire(tooLong);
+		assert.equal(timers.at(-1)?.ms, ms, `try ${i + 1} waits ${ms} ms`);
+		assert.equal(tab.running, true, 'Stop stays up while it waits');
+		assert.ok(!tab.chat.entries.some(e => e.kind === 'error'), 'no error while a try is left');
+		timers.pop()!.fn();
+		await new Promise(resolve => setImmediate(resolve));
+		assert.equal(sent.length, i + 2);
+		assert.equal(sent.at(-1), 'fix it');
+	}
+	fire(tooLong);
+	assert.equal(timers.length, 0, 'no fourth try');
+	assert.equal(tab.chat.entries.filter(e => e.kind === 'user').length, 1, 'the prompt is shown once');
+	assert.ok(tab.chat.entries.at(-1)?.kind === 'error');
+
+	// Stop during the wait ends it.
+	await tab.send('again', [], 'claude', 'm', undefined, { openSession: () => session } as never);
+	fire(tooLong);
+	assert.equal(timers.length, 1);
+	tab.stop();
+	assert.equal(timers.length, 0);
+	assert.equal(tab.running, false);
+});
+
+/** A Claude tab on a fake session and fake timers, for the "Prompt is too long" retry. */
+function retryHarness() {
+	const timers: { fn: () => void; ms: number }[] = [];
+	const fake = { setTimeout: (fn: () => void, ms: number) => { const t = { fn, ms }; timers.push(t); return t; }, clearTimeout: (t: unknown) => { const i = timers.indexOf(t as never); if (i >= 0) { timers.splice(i, 1); } } };
+	const { ChatTab: Tab, newChat: fresh } = load<typeof import('../chat/chatTab.ts')>('src/chat/chatTab.ts', {
+		vscode: { ...vscode, l10n: { t: (text: string, ...args: unknown[]) => text.replace(/\{(\d)\}/g, (_m, i) => String(args[Number(i)])) } },
+		'./agentProtocol': protocol, './agents': { agentNames: { claude: 'Claude Code' } },
+		'../core/uuid': { generateUuid: () => 'test-chat' }, './toolbarText': {},
+		'./attachmentReferences': load('src/chat/attachmentReferences.ts'),
+	}, fake);
+	const sent: string[] = [];
+	let fire: (event: AgentEvent) => void = () => {};
+	const session = {
+		running: false, onEvent: (fn: (event: AgentEvent) => void) => { fire = fn; return { dispose() {} }; },
+		send: async (input: { text: string }) => { sent.push(input.text); return true; },
+		stop() {}, dispose() {},
+	};
+	const host: TabHost = {
+		cwd: () => '/tmp', projectRoot: () => undefined, ownSettings: () => true,
+		changed() {}, limits() {}, turnEnded() {}, save: async () => {}, inHistory: () => false,
+		approvalMode: () => 'ask', noteServer() {}, released() {},
+	};
+	const tab = new Tab(host, fresh('claude'));
+	const backend = { openSession: () => session } as never;
+	return { tab, timers, sent, session, backend, fire: (event: AgentEvent) => fire(event) };
+}
+
+const tooLongEnd: AgentEvent = { type: 'turnEnd', error: 'Prompt is too long', tooLong: true };
+
+test('a too-long prompt waiting to go again ends with its error when the backend is replaced', async () => {
+	const h = retryHarness();
+	await h.tab.send('fix it', [], 'claude', 'm', undefined, h.backend);
+	h.fire(tooLongEnd);
+	assert.equal(h.timers.length, 1);
+	assert.equal(h.tab.running, true);
+	h.tab.backendReplaced('claude', false);
+	assert.equal(h.timers.length, 0, 'the wait is over');
+	assert.equal(h.tab.running, false, 'nothing reads as working any more');
+	assert.ok(h.tab.chat.entries.some(e => e.kind === 'error' && e.text === 'Prompt is too long'), 'the error the prompt was given stands');
+	assert.equal(h.sent.length, 1, 'not sent again');
+});
+
+test('a message Claude Code answers with a turn of its own goes again when that turn is too long', async () => {
+	const h = retryHarness();
+	await h.tab.send('first', [], 'claude', 'm', undefined, h.backend);
+	h.session.running = true;
+	await h.tab.send('second', [], 'claude', 'm', undefined, h.backend);
+	h.session.running = false;
+	h.fire({ type: 'turnEnd' });
+	h.fire({ type: 'autoTurn' });
+	h.fire(tooLongEnd);
+	assert.equal(h.timers.at(-1)?.ms, 5000, 'a retry is waiting');
+	h.timers.pop()!.fn();
+	await new Promise(resolve => setImmediate(resolve));
+	assert.equal(h.sent.at(-1), 'second');
 });

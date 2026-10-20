@@ -204,8 +204,11 @@ export class PageAnnotations implements vscode.Disposable {
 		if (!record) { return; }
 		connection.deletionPending = true;
 		try {
-			const choice = await vscode.window.showWarningMessage(`Delete annotation #${record.number}?`, { modal: true, detail: record.text || 'This annotation will be removed from the page.' }, 'Delete');
-			if (choice !== 'Delete') { return; }
+			// An empty note has nothing to lose: it goes without a question (asked for).
+			if (record.text.trim()) {
+				const choice = await vscode.window.showWarningMessage(`Delete annotation #${record.number}?`, { modal: true, detail: record.text }, 'Delete');
+				if (choice !== 'Delete') { return; }
+			}
 			if (this._disposed || connection.disposed || connection.url !== url || this._connections.get(tab) !== connection) { return; }
 			await this.remove(tab, [id]);
 		} catch (error) { refuse(error instanceof Error ? error.message : String(error)); }

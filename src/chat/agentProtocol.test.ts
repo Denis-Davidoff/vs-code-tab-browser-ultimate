@@ -813,6 +813,9 @@ suite('skills and commands', () => {
 		const result = { type: 'result', subtype: 'success', is_error: true, result: text, terminal_reason: 'prompt_too_long' };
 		const end = claudeEvents(result).find(e => e.type === 'turnEnd');
 		assert.ok(end && end.type === 'turnEnd' && end.error?.startsWith(text) && end.error.includes('/compact'));
+		assert.equal(end.type === 'turnEnd' && end.tooLong, true, 'marked so the chat sends it again');
+		const other = claudeEvents({ type: 'result', subtype: 'error_during_execution', is_error: true, result: 'boom' }).find(e => e.type === 'turnEnd');
+		assert.equal(other?.type === 'turnEnd' && other.tooLong, undefined);
 	});
 
 	test('Claude Code: a built-in keeps its own parentheses', () => {

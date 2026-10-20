@@ -2,8 +2,12 @@
 
 <!--
 This file is shown in the AI Browser chat whenever a chat is empty: the first
-paragraph below as the introduction, then the newest six entries as "What's
-new", smallest print. Keep the introduction to one or two sentences.
+paragraph below as the introduction, then the features listed under it, then
+the newest six entries as "What's new", smallest print. Keep the introduction
+to one or two sentences.
+
+A feature is a bullet before the first entry, written exactly
+`- $(codicon) **Name** — one short line`; any other bullet there is skipped.
 
 An entry is a level-two heading — `## <version> — <date>` — followed by a
 bullet list; inline `code`, **bold**, *italics* and [links](https://…) work.
@@ -13,6 +17,19 @@ src/chat/news.ts — see "The AI Browser chat" in CLAUDE.md.
 -->
 
 Browse, debug and test your pages in VS Code's own browser — and let Claude Code or Codex see them, click through them and take screenshots, right inside the editor.
+
+- $(coffee) **Keep awake** — the cup at the top of the chat keeps the computer from sleeping for the time you pick, or until the agents and their sub-agents have finished.
+- $(eye) **View Mode** — Minimal, Compact or Standard in the approval menu: how much of the agents' work, their tool calls and thinking, the chat shows.
+- $(git-commit) **Commits and branches** — at the bottom right of the chat: commit in a couple of clicks with a generated message, and switch or create branches with a generated name.
+- $(device-camera-video) **Record video** — record a browser tab from its toolbar, up to 4K, straight into the chat or to the clipboard.
+- $(location) **Page markers** — pin notes to several elements right in the browser and hand them to the agent as one prompt.
+- $(settings-gear) **Chat Settings** — the gear at the top of the chat: change the system prompts behind commit messages, branch names and chat titles, and clean up temporary files.
+
+## 0.7.19 — 2026-10-20
+- **The empty chat shows what to try**: keep awake, View Mode, commits and branches, video recording, page markers and Chat Settings, each in one line above **Show changelog**.
+- **"Prompt is too long" retries itself**: Claude Code compacts the conversation after that error, and the chat sends the prompt again after 5, 15 and 30 seconds. Stop cancels the wait.
+- **An empty annotation is deleted without a confirmation.**
+- **Annotation markers stay on their elements after a reload**, elements without an id included, instead of piling up in the top right corner.
 
 ## 0.7.18 — 2026-10-20
 - **Page annotations**: **Add Annotation Marker** pins a numbered note to an element you click. A new note is attached to the chat tab in front, and sending the message removes its markers from the page. The browser menu can remove every marker or copy a prompt that hands the notes to your assistant; assistants read, add and remove notes through the `browser_annotations_*` tools.

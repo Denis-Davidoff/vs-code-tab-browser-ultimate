@@ -33,9 +33,9 @@ export const annotationSource = String.raw`(() => {
  }
  function resolve(record){
   const known=targets.get(record.id);if(known&&known.isConnected)return known;
-  if(!record.element.strong)return undefined;
+  if(!record.element.selector)return undefined;
   try{const matches=document.querySelectorAll(record.element.selector);const el=matches[0];
-   if(matches.length===1&&el.localName===record.element.tag&&snippet(el)===record.element.text){targets.set(record.id,el);return el;}
+   if(matches.length===1&&el.localName===record.element.tag&&(record.element.strong||snippet(el)===record.element.text)){targets.set(record.id,el);return el;}
   }catch{} return undefined;
  }
  function setMode(value){mode=value;highlight.hidden=true;}

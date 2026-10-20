@@ -10,7 +10,9 @@
  * skipped, the first heading is the file's title, the paragraph before the
  * first `## ` is the introduction, and each `## ` heading starts an entry
  * whose `-` / `*` bullets are its items (an indented line continues the item
- * above it). Anything else is ignored rather than refused — a typo in a news
+ * above it). Bullets before the first entry are the features the empty chat
+ * lists, each written `$(icon) **Name** — what it does`; one in any other shape
+ * is skipped. Anything else is ignored rather than refused — a typo in a news
  * file must not cost the chat its welcome. A leaf module, under test.
  */
 
@@ -23,6 +25,7 @@ export function parseNews(markdown: string, limit = newsEntryLimit): ChatNews {
 	const text = markdown.replace(/<!--[\s\S]*?(-->|$)/g, '');
 	const intro: string[] = [];
 	const entries: { title: string; items: string[] }[] = [];
+	const features: { icon: string; title: string; text: string }[] = [];
 	let introDone = false;
 
 	for (const raw of text.split(/\r?\n/)) {
@@ -47,6 +50,20 @@ export function parseNews(markdown: string, limit = newsEntryLimit): ChatNews {
 			}
 			continue;
 		}
+		const bullet = /^\s{0,3}[-*+]\s+(.*)$/.exec(line);
+		if (bullet) {
+			const feature = /^\$\(([a-z0-9-]+)\)\s+\*\*([^*]+)\*\*\s+[—–-]\s+(\S.*)$/.exec(bullet[1].trim());
+			if (feature) {
+				features.push({ icon: feature[1], title: feature[2].trim(), text: feature[3].trim() });
+			}
+			introDone = introDone || intro.length > 0;
+			continue;
+		}
+		if (/^\s+\S/.test(line) && features.length) {
+			const last = features[features.length - 1];
+			last.text += ` ${line.trim()}`;
+			continue;
+		}
 		if (!introDone) {
 			if (line.trim()) {
 				intro.push(line.trim());
@@ -58,6 +75,7 @@ export function parseNews(markdown: string, limit = newsEntryLimit): ChatNews {
 
 	return {
 		intro: intro.join(' '),
+		features,
 		entries: entries.filter(e => e.title && e.items.length).slice(0, Math.max(0, limit)),
 	};
 }

@@ -94,7 +94,7 @@ test('a tab the view lets go of is not left closed for when the view comes back'
 	const close = method('src/chat/chatTab.ts', 'close');
 	const tab = (): any => ({
 		_closed: false, _unseen: true, _wasBusy: true, _chat: { id: 'c' },
-		_flushWaiting() {}, _endTurnHere() {}, _save() { return Promise.resolve(); }, _dropSession() {},
+		_flushWaiting() {}, _cancelRetry() {}, _endTurnHere() {}, _save() { return Promise.resolve(); }, _dropSession() {},
 		_host: { released() {} },
 	});
 	const viewClosed = tab();

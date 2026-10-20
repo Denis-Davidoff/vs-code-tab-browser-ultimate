@@ -567,7 +567,7 @@ export type AgentEvent =
 	/** Claude Code began a turn of its own — an agent it started has finished, and it is answering that. */
 	| { readonly type: 'autoTurn' }
 	| { readonly type: 'session'; readonly id: string }
-	| { readonly type: 'turnEnd'; readonly error?: string }
+	| { readonly type: 'turnEnd'; readonly error?: string; readonly tooLong?: boolean }
 	| { readonly type: 'tokens'; readonly input: number; readonly output: number; readonly cached: number; readonly costUsd?: number; readonly cumulative: boolean }
 	| { readonly type: 'limits'; readonly windows: readonly UsageWindow[]; readonly usingCredits?: boolean }
 	/**
@@ -764,7 +764,10 @@ export function claudeEvents(message: Record<string, unknown>, tasks?: Map<strin
 				events.push({ type: 'context', window });
 			}
 			const failed = message.is_error === true || (typeof message.subtype === 'string' && message.subtype !== 'success');
-			events.push({ type: 'turnEnd', error: failed ? resultError(message) : undefined });
+			// Over the context: Claude Code compacts on its own right after this
+			// error, so the chat sends the prompt again (`ChatTab`, `tooLongRetryMs`).
+			const tooLong = failed && message.terminal_reason === 'prompt_too_long';
+			events.push(tooLong ? { type: 'turnEnd', error: resultError(message), tooLong: true } : { type: 'turnEnd', error: failed ? resultError(message) : undefined });
 			return events;
 		}
 

@@ -90,6 +90,10 @@ then restores the clipboard. It does not request OS screen recording access.
 
 ## Changelog
 
+**0.7.19** — The empty chat lists the features worth trying, one line each, above the
+changelog. A prompt Claude Code refuses as too long is sent again after it compacts. Annotation
+markers keep their elements across a reload, and an empty note is deleted without a question.
+
 **0.7.18** — Page annotations: numbered notes pinned to elements, attached to the chat and
 removed from the page once the message is sent, with `browser_annotations_*` tools for the
 assistants. A View Mode for the chat — Minimal, Compact or Standard. One repeat button on the

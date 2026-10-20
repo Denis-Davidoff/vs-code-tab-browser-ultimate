@@ -187,3 +187,14 @@ test('an assistant\'s marker is added by selector and is not reported as the use
 		await assert.rejects(annotations.add(tab, '#missing', 'x', undefined), /No element/);
 	} finally { annotations.dispose(); }
 });
+
+test('an empty note (blank after trim) is deleted without asking', async () => {
+	const { annotations, client, tab, deletion } = fixture();
+	try {
+		await annotations.start(tab); client.change([{ ...note(1), text: '  \n ' }]);
+		client.emit('Runtime.bindingCalled', { name: '__aiBrowserAnnotationChanged', executionContextId: 42,
+			payload: JSON.stringify({ type: 'requestDelete', url: client.url, id: note(1).id }) });
+		await new Promise(resolve => setTimeout(resolve, 0));
+		assert.equal(deletion.asked, 0); assert.equal((await annotations.list(tab, 0, 10)).total, 0);
+	} finally { annotations.dispose(); }
+});

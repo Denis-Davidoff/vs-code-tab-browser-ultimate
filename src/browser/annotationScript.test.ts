@@ -34,10 +34,18 @@ function page() {
 		fire(type: string, extra: any = {}) { for (const fn of this.listeners.get(type) ?? []) { fn({ isTrusted: true, stopPropagation() {}, ...extra }); } }
 	}
 	const all = (node: Element): Element[] => [node, ...node.children.flatMap(all)];
+	const positional = (node: Element): string => {
+		const parts: string[] = [];
+		for (let at: Element | undefined = node; at; at = at.parentElement) {
+			const index = (at.parentElement?.children ?? [at]).filter(sibling => sibling.localName === at!.localName).indexOf(at) + 1;
+			parts.unshift(`${at.localName}:nth-of-type(${index})`);
+		}
+		return parts.join(' > ');
+	};
 	document = {
 		documentElement: new Element('html'), createElement: (tag: string) => new Element(tag),
 		createElementNS: (_ns: string, tag: string) => new Element(tag),
-		querySelectorAll: (selector: string) => all(document.documentElement).filter(node => selector === `#${node.id}`),
+		querySelectorAll: (selector: string) => all(document.documentElement).filter(node => selector === `#${node.id}` || selector === positional(node)),
 		createTreeWalker: (root: Element) => {
 			const entries = all(root).filter(node => node.data).map(node => ({ parentElement: node, data: node.data })); let index = 0;
 			return { nextNode: () => entries[index++] };
@@ -94,15 +102,20 @@ test('toolbar lives outside the page; trusted selection creates editable notes a
 	assert.equal(p.ticks.size, 0); assert.equal(p.windowEvents.size, 0);
 });
 
-test('rehydration keeps live targets but never guesses weak selectors in a new document', () => {
+test('rehydration keeps live targets and reattaches a weak path only with the same tag and text', () => {
 	const p = page();
 	try {
 		p.target.id = ''; p.api.start({ records: [], nextNumber: 1 }); p.pick();
 		const record = p.api.collect().records[0]; assert.equal(record.element.strong, false);
 		p.api.start({ records: [record], nextNumber: 2 }); assert.equal(p.api.collect().records[0].elementFound, true);
-		const other = page();
-		try { other.api.hydrate({ records: [record], nextNumber: 2 }); assert.equal(other.api.collect().records[0].elementFound, false); }
-		finally { other.api.dispose(); }
+		// A reload: the same document again, a new script. The marker goes back on its element.
+		const reloaded = page();
+		try { reloaded.target.id = ''; reloaded.api.hydrate({ records: [record], nextNumber: 2 }); assert.equal(reloaded.api.collect().records[0].elementFound, true); }
+		finally { reloaded.api.dispose(); }
+		// The same position holding other text is another element, and stays unresolved.
+		const changed = page();
+		try { changed.target.id = ''; changed.target.textContent = 'Cancel'; changed.api.hydrate({ records: [record], nextNumber: 2 }); assert.equal(changed.api.collect().records[0].elementFound, false); }
+		finally { changed.api.dispose(); }
 		p.target.remove(); assert.equal(p.api.collect().records[0].elementFound, false);
 	} finally { p.api.dispose(); }
 });

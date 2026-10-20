@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate",
 	"displayName": "AI Browser🏆 Claude + Codex",
 	"description": "Embedded browser tab with AI capabilities, Claude and Codex integration",
-	"version": "0.7.18",
+	"version": "0.7.19",
 	"enabledApiProposals": [
 		"externalUriOpener",
 		"browser"
@@ -887,7 +887,11 @@
 					},
 					"aiBrowser.chat.viewMode": {
 						"type": "string",
-						"enum": ["minimal", "compact", "standard"],
+						"enum": [
+							"minimal",
+							"compact",
+							"standard"
+						],
 						"enumDescriptions": [
 							"%configuration.chat.viewMode.minimal%",
 							"%configuration.chat.viewMode.compact%",

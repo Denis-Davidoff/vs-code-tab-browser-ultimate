@@ -34,13 +34,24 @@ suite('parseNews', () => {
 	});
 
 	test('an unclosed comment hides the rest rather than leaking authoring notes', () => {
-		assert.deepStrictEqual(parseNews('Intro\n<!-- never closed\n## 1.0\n- x'), { intro: 'Intro', entries: [] });
+		assert.deepStrictEqual(parseNews('Intro\n<!-- never closed\n## 1.0\n- x'), { intro: 'Intro', features: [], entries: [] });
+	});
+
+	test('bullets before the first entry are features; one in another shape is skipped', () => {
+		const news = parseNews('Intro.\n\n- $(coffee) **Keep awake** — the cup\n  at the top\n- no icon here\n- $(eye) **View Mode** - how much\n\n## 1.0\n- x');
+		assert.strictEqual(news.intro, 'Intro.');
+		assert.deepStrictEqual(news.features, [
+			{ icon: 'coffee', title: 'Keep awake', text: 'the cup at the top' },
+			{ icon: 'eye', title: 'View Mode', text: 'how much' },
+		]);
+		assert.deepStrictEqual(news.entries, [{ title: '1.0', items: ['x'] }]);
 	});
 
 	test('the shipped NEWS.md parses into an introduction and at least one entry', () => {
 		// `npm test` runs from the repository root.
 		const news = parseNews(fs.readFileSync('NEWS.md', 'utf8'));
 		assert.ok(news.intro.length > 20, news.intro);
+		assert.ok(news.features.length >= 1, 'the shipped features');
 		assert.ok(news.entries.length >= 1 && news.entries.length <= 6);
 		assert.ok(news.entries.every(e => e.items.length > 0));
 	});

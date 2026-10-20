@@ -3515,7 +3515,7 @@ collapses) icons, followed only by a text area. There is no collapse button: Esc
 leaving the note collapse it. Clicking the
 number opens a ten-color palette; the stored color applies to the marker and card border.
 Deletion from the icon requires a native VS Code confirmation; cancellation leaves host and page
-unchanged. MCP removal is a separate explicit tool action and does not open this user dialog.
+unchanged. A note that is empty once trimmed is deleted without the question (asked for). MCP removal is a separate explicit tool action and does not open this user dialog.
 Copy goes through the host clipboard; renderer requests must identify a stored annotation, not arbitrary
 clipboard text. Creation requires trusted input events; no page text is used as HTML.
 
@@ -3527,7 +3527,9 @@ per note). Host records are keyed by exact URL within a tab and restored after r
 they last until the tab or extension window closes, without disk persistence in this first version.
 Numbers increase per tab and never shift when another note is removed. A live element reference
 is retained while connected; only unique strong locators with matching tag/text may reattach.
-Weak paths or missing elements remain explicitly unresolved (amber markers).
+After a reload a strong locator reattaches when it finds one element of the recorded tag; a
+positional path also needs the same text (#509). What still does not resolve stays explicitly
+unresolved (amber markers, stacked at the top right).
 
 MCP tools `browser_annotations_add` (a CSS selector, a note, a colour name; checked by
 `refuseValueProbe` like every selector tool), `browser_annotations_list` (offset/limit, maximum 10 notes per page),
@@ -4528,8 +4530,11 @@ brings back.
 
 **An empty chat shows NEWS.md.** The root `NEWS.md` holds an introduction — the paragraph before
 the first entry — and entries, each a `## <version> — <date>` heading over a bullet list, newest
-first. The welcome shows the introduction under the title, centred in the panel, and the newest
-six entries below it in small print as "What's new". The file is read once from the installed
+first. The welcome shows the introduction under the title, centred in the panel, then **the
+features worth trying** (asked for) — bullets placed between the introduction and the first entry,
+each written exactly `- $(codicon) **Name** — one line`, drawn as icon, bold name, dash and text
+above "Show changelog"; a bullet of any other shape there is skipped, and an icon name that is not
+a plain codicon id draws `star` — and the newest six entries in small print as "What's new". The file is read once from the installed
 extension (`extensionUri`), not from a workspace, so it always describes the build that is
 running; it ships in the VSIX like README.md, and a change reaches users with the next release.
 [src/chat/news.ts](src/chat/news.ts) reads it (leaf, under test, including a test that the shipped
@@ -5133,6 +5138,20 @@ lists in stream-json mode too, or start a new chat. It is reached by a long conv
 in a tab — a toolbar skill sent into the chat goes to the tab it was pressed in, whatever that
 tab holds — and not by a fresh one: a new session in this repository starts at about 229k
 tokens, CLAUDE.md being most of it, and every model the CLI offers here has a 1M window.
+
+**A prompt refused as too long goes again on its own** (asked for): Claude Code compacts the
+conversation right after that error, so the same prompt usually fits a few seconds later. The
+result carries `tooLong` (`claudeEvents`), and `ChatTab._scheduleRetry` sends what was sent —
+`Pending.resend`, the prompt with its attachments, model and effort — after 5, 15 and 30 s
+(`tooLongRetryMs`), a notice saying so in place of the error; past the third try the error and
+its advice stand. The prompt is shown once. While it waits the tab reads as running, so Stop is
+up and a queued message waits behind it; Stop, a new message, another chat in the tab or closing
+it ends the wait. A compaction still running when the time comes uses the next wait. A step of a
+toolbar skill is judged only on its last try. **A session let go of during the wait ends it with the
+prompt's own error** (`_abandonRetry`, from `_onBackendReplaced` and `_dropSession`): left to fire,
+the timer found no session and returned in silence, the prompt lost after "sending it again" and
+the tab reading as working until then (#510). A Claude message sent mid-turn and answered by a
+turn of its own keeps what was sent too (`_waiting[].pending`), so it is retried like any other.
 
 **It opens two ways.** From the button it has its own search box. **Typed in the message box** —
 `/` or `$` at the start of the box or after white space, anywhere in the text and for either
@@ -8860,6 +8879,17 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
      without throwing when the session is disposed or stopped before a turn begins, so deleting a
      sent message's annotations on a send that merely returned removed the user's notes for a
      message no agent saw. `AgentSession.send` answers whether the message reached the agent.
+
+509. **A weak positional path never tried after a reload** → only an id, `data-testid` or
+     `aria-label` locator reattached a page annotation, so every marker on an element without one
+     came back "not found" and stacked in the top right corner of the page after each reload. A
+     positional path is tried too, and taken only when it matches one element of the same tag and
+     text; a strong locator needs only the tag, so an element whose text changes keeps its marker.
+510. **A timer waiting on a session nobody cancels when the session goes** → a replaced backend
+     dropped the session under a "Prompt is too long" retry, and the timer, finding none, returned
+     without a word: the prompt was never sent again, its error had been held back for the retry,
+     and the tab read as working for up to 30 s. Whatever lets a session go ends what waits on it
+     (#341's rule), with the error that wait was standing in for.
 
 ## Special cases and non-obvious decisions
 

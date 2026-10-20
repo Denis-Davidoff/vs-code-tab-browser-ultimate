@@ -405,6 +405,8 @@ export interface Selection {
 /** NEWS.md, as the empty chat shows it: the introduction and the newest entries. */
 export interface ChatNews {
 	readonly intro: string;
+	/** The features an empty chat lists above "Show changelog": a codicon, a name, one line. */
+	readonly features: readonly { readonly icon: string; readonly title: string; readonly text: string }[];
 	readonly entries: readonly { readonly title: string; readonly items: readonly string[] }[];
 }
 
