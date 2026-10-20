@@ -5151,10 +5151,20 @@ Share Tab); not in `0_start`, which stays the two assistants most people have.
 
 Asked for: a small pie beside `U` that fills as the conversation's context window does, and a
 click that runs the agent's own compaction where it has one. `renderContext` in `chat.ts` draws it
-(a `conic-gradient` ring, the share set as `--fill` through the CSSOM, which the CSP allows);
+(the share set as `--fill` through the CSSOM, which the CSP allows);
 `ChatStats.contextTokens` / `contextWindow` hold the figures, so a chat reopened from the history
 shows its last known fill. Warning colour from 80 %, error colour from 95 %. It appears once the
 agent has reported a size.
+
+**The pie and `U` are one mark, the ring meter** (asked for): `ringMeter(mark?)` / `setRingFill`
+in `chat.ts`, `.ring-meter` in `chat.css` — a hollow circle whose arc fills clockwise from the
+top, 0 to 360°, over a faint track, with an optional mark in its middle (the usage button's `U`,
+the context's `C`; both the same size, asked for). The arc is a `conic-gradient` on `::before`, cut to a ring by a
+`radial-gradient` mask (`--ring-width`), so the middle stays transparent for the mark. Its colour
+is `--ring-color` and the track `--ring-track`, both separate from `color`, so the track and the
+mark stay neutral while the arc takes the level's colour — setting `color` instead tinted the
+track. On `U` the arc is the nearest plan limit's share in `usageColor`; reached or spending
+credits, the whole mark is the red disc. The plan-limit line keeps the plain `.u-mark`.
 
 - **The tooltip says how much is used and how much is left** — tokens and share of the window,
   asked for — and is drawn by the view (`hoverTip`, from `data-tip`), as the toolbar skills' are,

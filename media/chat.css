@@ -1449,6 +1449,12 @@ body.vscode-light .code-block pre {
 	height: 28px;
 }
 
+/* Send / Stop and the mic sit 2 px higher and 4 px further right than the column (asked
+   for); a transform, so the queue button below them stays where it is. */
+.input-actions > .send-slot:nth-child(-n + 2) {
+	transform: translate(4px, -2px);
+}
+
 .input-wrap {
 	min-width: 0;
 	position: relative;
@@ -1688,20 +1694,13 @@ body.vscode-light .code-block pre {
 }
 
 /*
- * The usage button in the colour of the limit closest to running out — set as
- * `--usage-color` by `renderUsageLevel` — kept on hover, where `.ghost` would
- * turn it the plain foreground. A limit reached, or credits being spent: a
- * saturated red disc.
+ * The usage button's ring fills with the limit closest to running out, in its
+ * colour — set as `--usage-color` by `renderUsageLevel`. A limit reached, or
+ * credits being spent: a saturated red disc.
  */
 .usage-button.level,
 .usage-button.level:hover {
-	color: var(--usage-color, var(--fg));
-}
-
-.usage-button.limit-full .u-mark {
-	background: #e5141f;
-	border-color: #e5141f;
-	color: #fff;
+	color: var(--fg);
 }
 
 /*
@@ -1771,23 +1770,61 @@ body.vscode-light .code-block pre {
 	flex: none;
 }
 
-.usage-button .u-mark {
-	width: var(--toolbar-round-mark-size);
-	height: var(--toolbar-round-mark-size);
-	border-width: 1.5px;
-	font-size: 10px;
+/* The usage button's ring takes the level's colour; the U inside stays the foreground. */
+.usage-button .ring-meter {
+	--ring-color: var(--usage-color, currentColor);
 }
 
-/* The context pie fills clockwise from the top. */
-.context-pie {
-	display: inline-block;
-	box-sizing: border-box;
-	width: calc(var(--toolbar-round-mark-size) * 0.9);
-	height: calc(var(--toolbar-round-mark-size) * 0.9);
-	border-radius: 50%;
-	border: 1.5px solid currentColor;
-	background: conic-gradient(currentColor var(--fill, 0%), transparent 0);
+.usage-button.limit-full .ring-meter {
+	background: #e5141f;
+	color: #fff;
+	--ring-color: #e5141f;
+	--ring-track: #e5141f;
 }
+
+/*
+ * A ring meter: a hollow circle whose arc fills clockwise from the top, 0 to
+ * 360° (`--fill`, a percentage set through the CSSOM), over a faint track, with
+ * an optional mark in its middle. The arc is `--ring-color`, else the text
+ * colour; the mark keeps the text colour. Used for the context window and for
+ * the plan's usage (with the U inside).
+ */
+.ring-meter {
+	--ring-width: 1.5px;
+	position: relative;
+	flex: none;
+	display: inline-flex;
+	box-sizing: border-box;
+	align-items: center;
+	justify-content: center;
+	width: var(--toolbar-round-mark-size);
+	height: var(--toolbar-round-mark-size);
+	border-radius: 50%;
+	font-size: 10px;
+	font-weight: 700;
+	line-height: 1;
+}
+
+.ring-meter::before {
+	content: '';
+	position: absolute;
+	inset: 0;
+	border-radius: 50%;
+	background: conic-gradient(
+		var(--ring-color, currentColor) var(--fill, 0%),
+		var(--ring-track, color-mix(in srgb, currentColor 30%, transparent)) 0);
+	-webkit-mask: radial-gradient(farthest-side, transparent calc(100% - var(--ring-width)), #000 calc(100% - var(--ring-width) + 0.5px));
+	mask: radial-gradient(farthest-side, transparent calc(100% - var(--ring-width)), #000 calc(100% - var(--ring-width) + 0.5px));
+}
+
+.ring-meter > .ring-mark {
+	position: relative;
+}
+
+.ring-meter > .ring-mark.codicon {
+	font-size: calc(var(--toolbar-round-mark-size) * 0.55);
+}
+
 
 /* A dark neutral keeps the 25% landmark visible on a light background. */
 body.vscode-light .context-pie,

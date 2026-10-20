@@ -171,7 +171,8 @@ const effortBox = el('label', { class: 'effort', title: 'Effort' }, effortRange,
 const effortButton = button([], { class: 'pill effort-button', title: 'Effort' });
 effortButton.hidden = true;
 const usageTitle = "Usage — your plan's limits for each agent, and this chat's tokens and cost";
-const usageButton = button([el('span', { class: 'u-mark', text: 'U' })], { class: 'ghost round usage-button', title: usageTitle });
+const usageRing = ringMeter(el('span', { class: 'ring-mark', text: 'U' }));
+const usageButton = button([usageRing], { class: 'ghost round usage-button', title: usageTitle });
 const agentsButton = button([], { class: 'pill agents-button', title: 'Agents' });
 /** How full the conversation's context is, as a pie that fills; a click compacts it. */
 const sleepPopup = el('div', { class: 'popup sleep-popup' });
@@ -179,7 +180,8 @@ const featureSettingsPanel = el('div', { class: 'popup feature-settings' });
 featureSettingsPanel.setAttribute('role', 'dialog');
 featureSettingsPanel.tabIndex = -1;
 featureSettingsPanel.setAttribute('aria-label', 'Chat Settings');
-const contextPie = el('span', { class: 'context-pie' });
+const contextPie = ringMeter(el('span', { text: 'C' }));
+contextPie.classList.add('context-pie');
 const contextButton = button([contextPie], { class: 'ghost round context-button' });
 contextButton.hidden = true;
 const sendButton = button([icon('arrow-up')], { class: 'send', title: 'Send' });
@@ -3564,7 +3566,27 @@ function contextColor(share: number | undefined): string {
 	return stops[stops.length - 1][1];
 }
 
-/** The pie fills with context usage; unknown/compacted usage remains empty and grey. */
+/**
+ * A hollow ring whose arc fills clockwise from the top, with an optional mark
+ * (a letter, a codicon) in its middle — `.ring-meter` in chat.css.
+ */
+function ringMeter(mark?: HTMLElement): HTMLElement {
+	if (mark) {
+		mark.classList.add('ring-mark');
+	}
+	return el('span', { class: 'ring-meter' }, ...(mark ? [mark] : []));
+}
+
+/** How much of the ring is drawn, 0 to 1; unknown draws the track alone. Set only when it changes. */
+function setRingFill(ring: HTMLElement, share: number | undefined): void {
+	const value = share === undefined || !Number.isFinite(share) ? 0 : Math.max(0, Math.min(1, share));
+	const fill = `${Math.round(value * 1000) / 10}%`;
+	if (ring.style.getPropertyValue('--fill') !== fill) {
+		ring.style.setProperty('--fill', fill);
+	}
+}
+
+/** The ring fills with context usage; unknown/compacted usage remains empty and grey. */
 function renderContext(s: ChatViewState): void {
 	const c = s.context;
 	contextButton.hidden = !c;
@@ -3577,8 +3599,8 @@ function renderContext(s: ChatViewState): void {
 	// Just compacted (Claude Code): the size before is all that is known, and
 	// the pie stays empty until the next reply reports the new one.
 	const share = c.window && !c.compacted ? Math.min(1, c.used / c.window) : undefined;
-	contextPie.style.setProperty('--fill', `${share === undefined ? 0 : Math.round(share * 1000) / 10}%`);
-	contextPie.style.color = contextColor(share);
+	setRingFill(contextPie, share);
+	contextPie.style.setProperty('--ring-color', contextColor(share));
 	// Not `disabled`: a disabled button gets no pointer events, so the tooltip
 	// saying how full the context is — and why it cannot be compacted now —
 	// would never show. Marked instead, and the click refuses.
@@ -6935,6 +6957,7 @@ function renderUsageLevel(s: ChatViewState): void {
 	}
 	usageButton.classList.toggle('level', !!u);
 	usageButton.classList.toggle('limit-full', full);
+	setRingFill(usageRing, u ? u.percent / 100 : undefined);
 	const name = u && agentName(s, s.selection.agent);
 	const title = !u ? usageTitle
 		: `${usageTitle}
