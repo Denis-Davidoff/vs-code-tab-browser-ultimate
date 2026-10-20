@@ -5584,7 +5584,11 @@ folder* section of `chatView.ts`.
   Mixed changes offer **Commit staged** or **Commit all changes**. An empty index first offers
   **Stage all files**; the host defaults to staged-only and never implicitly stages on that path.
   Commit generates a message using the chat's selected agent, model and effort, then runs
-  `git commit`. The text request runs separately without tools or conversation history. A changed
+  `git commit`. The text request runs separately without tools or conversation history. The default
+  prompt asks for a subject `type(TASK-ID): summary` — a conventional type, the ticket key only when
+  the branch name or recent subjects carry one (never invented), else `type: summary` — and the
+  context names the branch for that (`commitContext`'s `Branch:` line). The prompt is written twice,
+  `defaultFeaturePrompts` and `instructions` in `commitMessage.ts`; change both. A changed
   index or HEAD during generation cancels the commit. Managed-copy ownership is checked before
   Git discovery and every footer Git command. Mutations reserve the canonical per-worktree Git
   directory before checking busy agents: root folders, subdirectories and symlink aliases share

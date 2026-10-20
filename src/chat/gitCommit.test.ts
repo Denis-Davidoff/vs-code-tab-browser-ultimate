@@ -137,3 +137,8 @@ test('explicit staged scope never silently adds unstaged files; explicit all sco
   assert.equal((await git(['status', '--porcelain'])).trim(), '');
  });
 });
+
+test('commit context names the branch, where a task ID usually is', () => {
+	assert.match(commitContext('M\ta.ts', 'diff', 'feat: x', 'feature/ABC-123-login\nignored'), /^Branch: feature\/ABC-123-login\n\n/);
+	assert.doesNotMatch(commitContext('M\ta.ts', 'diff', 'feat: x', ''), /Branch:/);
+});

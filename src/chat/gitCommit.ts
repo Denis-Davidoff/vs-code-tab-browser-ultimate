@@ -2,9 +2,11 @@
 export type CommitGit = (args: readonly string[]) => Promise<string>;
 export type CommitScope = 'smart' | 'staged' | 'all';
 
-export function commitContext(files: string, diff: string, history: string): string {
+export function commitContext(files: string, diff: string, history: string, branch = ''): string {
 	const limit = 120_000;
-	const header = `Recent commit subjects (style only):\n${history.slice(0, 2000)}\n\nStaged files:\n${files.slice(0, 20_000)}\n\nStaged diff:\n`;
+	// The branch is where a task ID usually is (feature/ABC-123-…); it is data, like the rest.
+	const branchLine = branch.trim() ? `Branch: ${branch.trim().split('\n')[0].slice(0, 200)}\n\n` : '';
+	const header = `${branchLine}Recent commit subjects (style and task IDs only):\n${history.slice(0, 2000)}\n\nStaged files:\n${files.slice(0, 20_000)}\n\nStaged diff:\n`;
 	const room = limit - header.length - 80;
 	return header + diff.slice(0, room) + (diff.length > room ? '\n[Diff truncated; summarize only the changes shown.]' : '');
 }
@@ -29,14 +31,15 @@ export async function commitChanges(git: CommitGit, generate: (context: string) 
 		return `${ref.trim()}\n${hash.trim()}`;
 	};
 	const originalHead = await head();
-	const [diff, history] = await Promise.all([
+	const [diff, history, branch] = await Promise.all([
 		git(['diff', '--cached', '--no-relative', '--no-ext-diff', '--no-textconv', '--no-color', '--unified=3']),
 		git(['log', '-5', '--format=%s']).catch(() => ''),
+		git(['symbolic-ref', '--quiet', '--short', 'HEAD']).catch(() => ''),
 	]);
 	guard();
 	if ((await git(['write-tree'])).trim() !== tree) { throw new Error('The staged files changed while reading the diff. Press Commit again.'); }
 	phase('generating');
-	const message = await generate(commitContext(files, diff, history));
+	const message = await generate(commitContext(files, diff, history, branch));
 	guard();
 	if ((await git(['write-tree'])).trim() !== tree || await head() !== originalHead) {
 		throw new Error('The staged files or branch changed while the message was being generated. Review the changes and press Commit again.');
