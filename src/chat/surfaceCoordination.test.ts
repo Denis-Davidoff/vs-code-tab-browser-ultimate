@@ -68,6 +68,19 @@ test('hidden panel identities, drafts and allocation high-water survive cold sta
 	assert.equal(restarted.panels.has(closed.id), false);
 });
 
+test('a new panel takes the lowest free number from #2', () => {
+	const values = new Map<string, any>();
+	const storage = { get: (key: string) => values.get(key), update: async (key: string, value: unknown) => { values.set(key, JSON.parse(JSON.stringify(value))); } };
+	const panels = catalog(storage);
+	assert.equal(panels.freeNumber([]), 2);
+	panels.remember({ id: 'abcdef01-1234-4567-8901-abcdef012345', number: 2 }, {});
+	panels.remember({ id: 'abcdef02-1234-4567-8901-abcdef012345', number: 4 }, {});
+	assert.equal(panels.freeNumber([]), 3);
+	assert.equal(panels.freeNumber([3]), 5);
+	panels.forget('abcdef01-1234-4567-8901-abcdef012345');
+	assert.equal(panels.freeNumber([3]), 2);
+});
+
 test('pending panels own their conversations before any serializer is invoked', async () => {
 	const identity = { id: 'abcdef01-1234-4567-8901-abcdef012345', number: 7 };
 	const surfaces = new Map<string, any>();

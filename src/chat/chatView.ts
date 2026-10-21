@@ -336,7 +336,6 @@ function pushKey(action: string, branch: string, remote: string, target: string,
 
 export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
 	private static readonly _surfaces = new Map<string, ChatViewProvider>();
-	private static _nextSurface = 0;
 	private static _sharedServices?: ChatServices;
 	private readonly _surfaceId = generateUuid();
 	private readonly _surfaceNumber: number = 1;
@@ -423,18 +422,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		_transfer?: { tab: ChatTab; services: ChatServices },
 		private readonly _restoredPanel?: ChatPanelIdentity,
 	) {
-		if (_restoredPanel) {
-			this._surfaceNumber = _restoredPanel.number;
-			ChatViewProvider._nextSurface = Math.max(ChatViewProvider._nextSurface, _restoredPanel.number);
-		} else if (_detachedChat) { this._surfaceNumber = ++ChatViewProvider._nextSurface; }
+		if (_restoredPanel) { this._surfaceNumber = _restoredPanel.number; }
 		const shared = _transfer?.services ?? ChatViewProvider._sharedServices;
 		this._registry = shared?.registry ?? new AgentRegistry(() => this._cwd(), id => this._agentBinaries()[id], _browserServer, () => !this._untrusted(this._cwd()));
 		void sweepBrowserConfigs().catch(() => { /* swept with the temp directory */ });
 		if (shared) { this._runs = shared.runs; this._gitAccess = shared.git; }
 		this._services = shared ?? { registry: this._registry, git: this._gitAccess, panels: new ChatPanelCatalog(_context.workspaceState), runs: this._runs, views: new Set() };
+		if (!_restoredPanel && _detachedChat) { this._surfaceNumber = this._freeSurfaceNumber(); }
 		this._services.views.add(this);
 		ChatViewProvider._sharedServices = this._services;
-		ChatViewProvider._nextSurface = Math.max(ChatViewProvider._nextSurface, this._services.panels.highWater);
 		if (_restoredPanel) {
 			for (const [id, draft] of Object.entries(this._services.panels.panels.get(_restoredPanel.id)?.drafts ?? {})) { this._savedDrafts.set(id, draft); }
 		}
@@ -809,6 +805,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		const limit = tabLimit();
 		const selection = this._selection();
 		const viewMode = readViewMode();
+		this._active.attachmentReferences.assign(this._active.attachments.map(a => a.chip));
 		return {
 			panel: this._panelIdentity,
 			surfaceId: this._surfaceId,
@@ -1955,7 +1952,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 						return;
 					}
 					if (!given) {
-						tab.attachments = [];
+						tab.takeDraftAttachments();
 					}
 					// Only the tab in front's card: a queued message going out in another
 					// tab must not close the question the user is reading here.
@@ -2042,7 +2039,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			return;
 		}
 		void this._rememberInput(text);
-		tab.attachments = [];
+		tab.takeDraftAttachments();
 		tab.enqueue(text, attachments);
 	}
 
@@ -2168,8 +2165,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		if (!queued.length) {
 			return;
 		}
+		tab.attachmentReferences.assign(tab.attachments.map(a => a.chip));
+		const texts = queued.map(q => tab.attachmentReferences.restore(q.attachments.map(a => a.chip), q.text));
 		tab.attachments.push(...queued.flatMap(q => q.attachments));
-		this._postMessage({ type: 'restoreDraft', chatId: tab.chat.id, text: queued.map(q => q.text).filter(Boolean).join('\n\n') });
+		this._postMessage({ type: 'restoreDraft', chatId: tab.chat.id, text: texts.filter(Boolean).join('\n\n') });
 	}
 
 	/** A message whose tab went away before it could be sent: kept in the chat in front, to send again. */
@@ -2555,6 +2554,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			const kind = old.chip.kind === 'sharedPage' ? 'sharedPage' : 'page';
 			const next = this._pageAttachment(page, id, kind);
 			if (next.text !== old.text || next.chip.label !== old.chip.label) {
+				holder.attachmentReferences.assign(holder.attachments.map(a => a.chip));
 				preserveAttachmentReference(old.chip, next.chip);
 				holder.attachments[index] = next;
 				changed = true;
@@ -2611,6 +2611,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				const old = chat.attachments[index];
 				const next = this._annotationAttachment(record, change.url, change.tab, old.chip.id);
 				if (next.text !== old.text || next.chip.label !== old.chip.label) {
+					chat.attachmentReferences.assign(chat.attachments.map(a => a.chip));
 					preserveAttachmentReference(old.chip, next.chip);
 					chat.attachments[index] = next;
 					changed = true;
@@ -4524,6 +4525,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 	/* ------------------------------------------------------------ tabs */
 
+	/** #1 is the side bar; a new panel takes the lowest number no live or saved panel holds. */
+	private _freeSurfaceNumber(): number {
+		const live = [...this._services.views].filter(view => view !== this && !view._disposed && view._panelIdentity).map(view => view._surfaceNumber);
+		return this._services.panels.freeNumber(live);
+	}
+
 	private get _panelIdentity(): ChatPanelIdentity | undefined {
 		return this._restoredPanel ?? (this._detachedChat ? { id: this._surfaceId, number: this._surfaceNumber } : undefined);
 	}
@@ -4582,7 +4589,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	public restoreChatPanel(panel: vscode.WebviewPanel, state: unknown): void {
-		const identity = readChatPanelIdentity(state) ?? { id: generateUuid(), number: ChatViewProvider._nextSurface + 1 };
+		const identity = readChatPanelIdentity(state) ?? { id: generateUuid(), number: this._freeSurfaceNumber() };
 		const existing = [...this._services.views].find(view => view._panelIdentity?.id === identity.id);
 		if (existing?._panel) { if (existing._panel !== panel) { panel.dispose(); } return; }
 		const restored = existing ?? this._pendingPanels.get(identity.id)

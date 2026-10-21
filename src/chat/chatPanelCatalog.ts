@@ -25,6 +25,14 @@ export class ChatPanelCatalog {
 		}
 	}
 	get highWater(): number { return this._highWater; }
+	/** The lowest panel number nobody holds: #1 is the side bar's, and a closed panel's number is reused. */
+	freeNumber(taken: Iterable<number>): number {
+		const used = new Set(taken);
+		for (const saved of this.panels.values()) { used.add(saved.panel.number); }
+		let number = 2;
+		while (used.has(number)) { number++; }
+		return number;
+	}
 	remember(panel: ChatPanelIdentity, drafts: Record<string, string>): void {
 		this._highWater = Math.max(this._highWater, panel.number);
 		this.panels.set(panel.id, { panel, drafts: { ...drafts } });

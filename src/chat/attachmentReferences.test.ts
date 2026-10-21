@@ -1,6 +1,6 @@
 import * as assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { attachmentContext, attachmentReference, preserveAttachmentReference } from './attachmentReferences.ts';
+import { AttachmentReferenceScope, attachmentContext, attachmentReference, preserveAttachmentReference } from './attachmentReferences.ts';
 import type { AttachmentChip } from './chatProtocol.ts';
 
 function chip(id: string, kind: AttachmentChip['kind'] = 'file'): AttachmentChip {
@@ -46,4 +46,46 @@ test('image references correspond to image order even among text attachments', (
 	assert.ok(context.includes(`${attachmentReference(c)} — screenshot: same label\nAttached image #2`));
 	assert.ok(context.includes('https://example.com'));
 	assert.equal(attachmentContext([]), '');
+});
+
+
+test('each draft starts at one while queued messages retain their references', () => {
+	const queued = [chip('queued-one'), chip('queued-two')];
+	const draft = new AttachmentReferenceScope();
+	draft.assign(queued);
+	assert.deepEqual(queued.map(attachmentReference), ['@1', '@2']);
+	const next = chip('next-message');
+	new AttachmentReferenceScope().assign([next]);
+	assert.equal(attachmentReference(next), '@1');
+	assert.ok(attachmentContext(queued.map(chip => ({ chip }))).includes('@2 — file:'));
+	assert.deepEqual(queued.map(attachmentReference), ['@1', '@2']);
+});
+
+test('removing all chips does not reuse a typed reference within the same draft', () => {
+	const draft = new AttachmentReferenceScope();
+	const first = chip('removed');
+	draft.assign([first]);
+	draft.assign([]);
+	const second = chip('replacement');
+	draft.assign([second]);
+	assert.equal(attachmentReference(first), '@1');
+	assert.equal(attachmentReference(second), '@2');
+	const refreshed = { ...second, label: 'Refreshed' };
+	preserveAttachmentReference(second, refreshed);
+	draft.assign([refreshed, chip('third')]);
+	assert.equal(attachmentReference(refreshed), '@2');
+});
+
+
+test('returning queued messages to a draft remaps colliding references and their text', () => {
+	const draft = new AttachmentReferenceScope();
+	draft.assign([chip('current')]);
+	const first = chip('queued-first');
+	const second = chip('queued-second');
+	new AttachmentReferenceScope().assign([first]);
+	new AttachmentReferenceScope().assign([second]);
+	assert.equal(draft.restore([first], 'See @1 and @10'), 'See @2 and @10');
+	assert.equal(draft.restore([second], 'Compare @1'), 'Compare @3');
+	assert.equal(attachmentReference(first), '@2');
+	assert.equal(attachmentReference(second), '@3');
 });

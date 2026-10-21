@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { attachmentContext, attachmentReference } from './attachmentReferences';
+import { AttachmentReferenceScope, attachmentContext, attachmentReference } from './attachmentReferences';
 import { realpathSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -197,10 +197,22 @@ interface Pending {
 	/** What was sent, to send again after a "Prompt is too long" (`tooLongRetryMs`). */
 	resend?: { input: TurnInput; model: string; effort: string | undefined };
 	retries?: number;
+	retryMode?: 'resend' | 'continue';
+	retryCancelled?: boolean;
 }
 
 /** The waits before a prompt refused as too long goes again, asked for: 5, 15, 30 s. */
 export const tooLongRetryMs = [5000, 15000, 30000] as const;
+
+/** Additional attempts after a terminal capacity/service error, never while streaming. */
+export const transientRetryMs = [5000, 15000, 60000] as const;
+const continueAfterError = 'Continue the last user request from where you stopped after the temporary service error. Use the existing conversation and account for actions already completed; inspect their results before repeating any actions. Finish the remaining work.';
+
+/** Match temporary service failures, not authentication, quota, or user interruption. */
+export function transientTurnError(error: string): boolean {
+	if (/\b(?:quota|billing|credits?|usage limit|usage_limit|insufficient_quota|authentication|unauthorized|forbidden)\b|\b(?:401|403)\b|rate limit.{0,40}(?:resets?|hours?|days?)|hit your.{0,20}limit/i.test(error)) { return false; }
+	return /\bat capacity\b|\boverloaded\b|\boverloaded_error\b|\bserver.{0,12}busy\b|\btemporar(?:y|ily) unavailable\b|\bservice unavailable\b|\b(?:429|500|502|503|504)\b|\brate[ _-]?limit(?:ed|_error)?\b|\btoo many requests\b|\binternal server error\b|\bconnection (?:reset|failed|closed)\b|\b(?:ECONNRESET|ETIMEDOUT)\b|\b(?:request|connection) timed? ?out\b/i.test(error);
+}
 
 export class ChatTab {
 	public readonly id = generateUuid();
@@ -209,6 +221,16 @@ export class ChatTab {
 	private _sessionEvents: vscode.Disposable | undefined;
 	/** Held until the message they go with is sent. */
 	public attachments: Attachment[] = [];
+	public attachmentReferences = new AttachmentReferenceScope();
+
+	/** Freeze this message's references before starting a fresh draft. */
+	public takeDraftAttachments(): Attachment[] {
+		const attachments = this.attachments;
+		this.attachmentReferences.assign(attachments.map(a => a.chip));
+		this.attachments = [];
+		this.attachmentReferences = new AttachmentReferenceScope();
+		return attachments;
+	}
 	/** Set while `_endTurnHere` ends a turn the chat is letting go of. */
 	private _abandoning = false;
 	/** Set between two messages of one turn, so the next text starts a new block. */
@@ -238,7 +260,7 @@ export class ChatTab {
 	 */
 	/** Turns waiting to end, oldest first; a turn the CLI started on its own has no `entry`. */
 	private _pending: Pending[] = [];
-	/** A prompt the CLI refused as too long, sent again once it has compacted (`tooLongRetryMs`). */
+	/** A terminal failure waiting for another attempt; Stop cancels the timer. */
 	private _retry: { timer: ReturnType<typeof setTimeout>; done: Pending; chat: StoredChat; error: string } | undefined;
 	/**
 	 * Queued skill prompts whose check has passed, by queue id. A prompt with
@@ -302,7 +324,7 @@ export class ChatTab {
 	}
 
 	public get running(): boolean {
-		// Waiting to send a too-long prompt again counts: Stop is up for it,
+		// Waiting to recover a failed turn counts: Stop is up for it,
 		// and a queued message waits behind it.
 		return (this._session?.running ?? false) || this._retry !== undefined;
 	}
@@ -354,6 +376,7 @@ export class ChatTab {
 
 	/** Held for after the running turn; `send` it when the tab is idle again — the provider does. */
 	public enqueue(text: string, attachments: Attachment[], step?: SkillStep, background?: QueuedRun): void {
+		new AttachmentReferenceScope().assign(attachments.map(a => a.chip));
 		this._queued.push({ id: generateUuid(), text, attachments, step, background });
 		this._post();
 	}
@@ -519,6 +542,8 @@ export class ChatTab {
 	}
 
 	public stop(): void {
+		// A failed start request may reject after Stop, without a terminal event.
+		for (const pending of this._pending) { pending.retryCancelled = true; }
 		if (this._retry) {
 			this._cancelRetry();
 			this._chat.entries.push({ kind: 'notice', text: vscode.l10n.t("Stopped.") });
@@ -551,23 +576,20 @@ export class ChatTab {
 		}
 	}
 
-	/**
-	 * Sends a prompt Claude Code refused as too long once more. The CLI compacts
-	 * the conversation on its own right after that error, so the same prompt a
-	 * few seconds later usually goes through (asked for: 5, 15 and 30 s, then
-	 * the error stands). A compaction still running when the time comes uses the
-	 * next wait; a new message, Stop, another chat or closing the tab ends it.
-	 */
-	private _scheduleRetry(done: Pending, chat: StoredChat, error: string): boolean {
+	/** Retry a rejected prompt, or continue a turn ended by a temporary service failure. */
+	private _scheduleRetry(done: Pending, chat: StoredChat, error: string, mode = done.retryMode ?? 'resend'): boolean {
 		const attempt = done.retries ?? 0;
-		if (!done.resend || !done.entry || attempt >= tooLongRetryMs.length) {
+		const delays = mode === 'continue' ? transientRetryMs : tooLongRetryMs;
+		if (!done.resend || !done.entry || done.retryCancelled || attempt >= delays.length || this._abandoning || this._discarded) {
 			return false;
 		}
-		const delay = tooLongRetryMs[attempt];
-		const next: Pending = { ...done, retries: attempt + 1 };
+		const delay = delays[attempt];
+		const next: Pending = { ...done, retries: attempt + 1, retryMode: mode };
 		this._cancelRetry();
 		this._retry = { done: next, chat, error, timer: setTimeout(() => void this._fireRetry(), delay) };
-		chat.entries.push({ kind: 'notice', text: vscode.l10n.t("The prompt is too long for the context. Claude Code compacts the conversation; sending it again in {0} s (try {1} of {2}).", delay / 1000, attempt + 1, tooLongRetryMs.length) });
+		chat.entries.push({ kind: 'notice', text: mode === 'continue'
+			? vscode.l10n.t("Temporary service error: {0}\nContinuing this conversation in {1} s (try {2} of {3}).", error, delay / 1000, attempt + 1, delays.length)
+			: vscode.l10n.t("The prompt is too long for the context. Claude Code compacts the conversation; sending it again in {0} s (try {1} of {2}).", delay / 1000, attempt + 1, delays.length) });
 		return true;
 	}
 
@@ -586,6 +608,11 @@ export class ChatTab {
 			return;
 		}
 		if (session.running || this._pending.length) {
+			if (done.retryMode === 'continue') {
+				// Never steer a live turn or count waiting for it as an attempt.
+				this._retry = { ...retry, timer: setTimeout(() => void this._fireRetry(), 1000) };
+				return;
+			}
 			// Still compacting: wait the next step, or give up past the last —
 			// with the error the prompt was given, since this try never went.
 			if (!this._scheduleRetry(done, chat, retry.error)) {
@@ -595,18 +622,26 @@ export class ChatTab {
 			return;
 		}
 		this._failed = false;
-		this._pending = [{ ...done, base: this._tokenBase(), startedAt: Date.now() }];
+		this._textBreak = true;
+		const pending = { ...done, base: this._tokenBase(), startedAt: Date.now() };
+		this._pending = [pending];
 		this._post();
 		let delivered = false;
 		try {
-			delivered = await session.send(done.resend!.input, done.resend!.model, done.resend!.effort);
+			const input = done.retryMode === 'continue'
+				? { text: done.asked ? withNextDecision(continueAfterError, done.asked) : continueAfterError, images: [] }
+				: done.resend!.input;
+			delivered = await session.send(input, done.resend!.model, done.resend!.effort);
 		} catch (err) {
-			if (this._session === session && this._chat === chat) {
-				this._push({ kind: 'error', text: err instanceof Error ? err.message : String(err) });
+			if (this._session === session && this._chat === chat && !pending.retryCancelled && this._pending.includes(pending)) {
+				const error = err instanceof Error ? err.message : String(err);
+				if (session.running || done.retryMode !== 'continue' || !transientTurnError(error) || !this._scheduleRetry(done, chat, error)) {
+					this._push({ kind: 'error', text: error });
+				}
 			}
 		}
 		if (!delivered && !session.running) {
-			this._pending = this._pending.filter(p => p.entry !== done.entry);
+			this._pending = this._pending.filter(p => p !== pending);
 		}
 		this._post();
 	}
@@ -786,6 +821,7 @@ export class ChatTab {
 		text: string, attachments: readonly Attachment[],
 		agent: AgentId, model: string, effort: string | undefined, backend: AgentBackend, step?: SkillStep,
 	): Promise<boolean> {
+		new AttachmentReferenceScope().assign(attachments.map(a => a.chip));
 		// A voice message is part of what the user says: what the chat shows and keeps is the
 		// transcript; what the agent reads is it said to be one; the rest stay attachments.
 		const voices = attachments.filter(a => a.spoken !== undefined);
@@ -1358,7 +1394,9 @@ export class ChatTab {
 				}
 				// Too long for the context: Claude Code compacts on its own, and the
 				// same prompt goes again shortly — the error only once that is over.
-				const retrying = !!event.tooLong && !!done && this._chat === chat && !this._closed && this._scheduleRetry(done, chat, event.error ?? '');
+				const mode = event.tooLong ? 'resend'
+					: (chat.agent === 'claude' || chat.agent === 'codex') && event.error && transientTurnError(event.error) ? 'continue' : undefined;
+				const retrying = !!mode && !!done && this._chat === chat && !this._closed && this._scheduleRetry(done, chat, event.error ?? '', mode);
 				if (event.error && !retrying) {
 					chat.entries.push(event.error === 'Stopped.'
 						? { kind: 'notice', text: vscode.l10n.t("Stopped.") }

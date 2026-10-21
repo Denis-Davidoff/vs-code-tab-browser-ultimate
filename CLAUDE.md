@@ -4609,7 +4609,9 @@ What is built, and what is not yet:
 ### The layout, as asked for
 
 Bottom to top: a toolbar row — `+`, the browser button, the agent pill, the model pill, the effort
-slider, the approval button ([approvals](#approvals-and-the-browser-tools)) and, pushed right, the agents button (only while the chat has agents — see
+slider (fixed width, no visible effort text; an immediate hover/focus tooltip names the current
+level and a soft silver-grey/sky-blue/pale-violet thumb indicates increasing effort, with yellow for Max and
+peach-orange for Ultra/Super/Extreme), the approval button ([approvals](#approvals-and-the-browser-tools)) and, pushed right, the agents button (only while the chat has agents — see
 [Agents the agent starts](#agents-the-agent-starts)), the context pie ([below](#the-context-pie-and-compacting)), `U` (coloured by how much of the plan is used, [below](#the-plan-limit-line-and-the-colour-of-u)) — then the message box with, in a column at its right, Send / Stop, the microphone under it ([voice messages](#voice-messages)) and the queue button while a turn runs, then the conversation, and above it, under the tabs, the plan-limit line while a limit is 90 % used or credits are spent. The
 browser button (icon only, a globe — `codicon-globe`, the same mark as the extension's own
 status bar item and toolbar dropdown; `codicon-browser` reads as a window) opens a new browser
@@ -5618,6 +5620,19 @@ prompt's own error** (`_abandonRetry`, from `_onBackendReplaced` and `_dropSessi
 the timer found no session and returned in silence, the prompt lost after "sending it again" and
 the tab reading as working until then (#510). A Claude message sent mid-turn and answered by a
 turn of its own keeps what was sent too (`_waiting[].pending`), so it is retried like any other.
+
+**Temporary Claude/Codex service failures continue the same conversation automatically.**
+Only a terminal `turnEnd` with a capacity/overload, temporary throttling, or service/network
+error schedules this recovery; streamed notices and the CLI's own retries do not. Thinking is
+settled first. There are at most three additional attempts, after 5, 15 and 60 seconds
+(`transientRetryMs`). Each sends a continuation instruction in the existing session, retaining
+the chosen model and effort, and asks the agent to account for completed actions before
+repeating them. No duplicate user bubble or attachments are added. A notice shows the error,
+delay and attempt; the final error stands after exhaustion. Stop, a new message, switching the
+conversation in the tab, closing it, or losing its backend cancels the wait. Waiting keeps Stop
+available and holds the queue; a running turn is never steered by an automatic continuation.
+Authentication, billing/quota failures and user interruption are not retried. An explicitly
+paused queue stays paused. Context-too-long recovery above still resends the original input.
 
 **It opens two ways.** From the button it has its own search box. **Typed in the message box** —
 `/` or `$` at the start of the box or after white space, anywhere in the text and for either
@@ -6757,6 +6772,21 @@ chat belong to the agent just switched away from (#335).
 
 ### Tabs: several conversations at once
 
+At webview widths of 1000 CSS pixels and above, the same tab strip becomes a 252 px left
+sidebar with a vertical, scrollable list. Its header toggle collapses it to a 52 px rail;
+`ViewState.chatDrawerCollapsed` retains that preference alongside drafts across reloads.
+A footer button moves the sidebar left or right; `ViewState.chatDrawerSide` retains
+its side (left by default). Collapse sits beside Chats, toward the conversation (right in the left sidebar, left in
+the right sidebar). Move left/right stays at the bottom. Both controls remain available
+in the collapsed rail. Move left/right uses an arrow icon; Collapse/Expand uses a chevron pointing toward the window edge to collapse and toward
+the conversation to expand. Both have a
+tooltip and an accessible label describing the current action.
+The conversation and the entire footer share a 696 px outer column with 12 px side padding
+(672 px of content), centered in the remaining space. Below 1000 px the strip returns to
+the top and the chat fills the surface. Existing tab nodes are reused; reordering follows
+the list's vertical or horizontal axis, and horizontal width animations run only below
+the breakpoint. Overlays stay attached to `#app`, outside `.chat-main`.
+
 Asked for: "сразу в 2-3-4-5 окнах". The view holds up to `aiBrowser.chat.tabLimit` (10 unless
 set) conversations as tabs in a strip above the thread; one is in front and **the others go on
 working** — a reply streams, a background agent finishes, in a tab nobody is looking at. A tab
@@ -6778,7 +6808,7 @@ once enough are closed, and only a window restore is cut to the new limit.
 | Mark | When |
 |---|---|
 | a pulsing ring, in the warning colour | an approval in the tab waits for an answer — it outranks working, since the agent is stopped on the user and the tab may not be the one in front |
-| the working star, turning | a turn or an agent of the tab runs (`busy`) — the glyph of the working line, turned by the same 120 ms timer, still under reduced motion |
+| an orbit spinner with a pulsing central dot | a turn or an agent of the tab runs (`busy`); CSS animates it independently of the working line, and stays still under reduced motion. Tab marks reset the shared `.working` margin/padding so the indicator stays vertically centered |
 | green dot | the work ended while nobody was looking at the tab |
 | orange dot | the work ended in an error: an error entry or a failed agent since the last message, or the backend replaced under a running turn |
 | nothing | finished and read — asked for; a grey square said nothing a plain tab does not — or nothing has been sent from the tab |
@@ -6798,7 +6828,18 @@ once enough are closed, and only a window restore is cut to the new limit.
   entry is an error.
 
 - **The tab in front is wider than the others** (130–260 px against 56–140 px), and the width
-  changes with a transition — asked for. That needs the element to survive the switch, so the
+  changes with a transition — asked for. **The tab left and the tab chosen move together**, one
+  linear animation each, started in the same frame (asked for, after a `calc-size()` version
+  that kept their sum exact was turned down as more than wanted): `animateTabSwitch` measures
+  both tabs before and after the class change, holds each at its old width with the CSS limits
+  lifted — `min-width` / `max-width` do not transition and would clamp the width at once — and
+  lets both go to the new width under `.resizing` (`width .25s linear`). The inline styles are
+  removed on `transitionend` or after 400 ms, and a switch made during another ends the first
+  (`tabResizeEnds`) after measuring where it had got to. Transitioning the limits themselves was
+  the first version: each tab met its own title's width at a different moment, so the two moved
+  out of step. Both now start and end on the same frame (measured in headless Chrome); their sum
+  still changes when the two titles differ in length. That needs the element to survive the
+  switch, so the
   strip is **keyed**: one element per open tab, updated in place, its label refilled only when
   what it shows changes, and moved only when out of order (re-inserting ends a transition). It
   used to be rebuilt whenever anything in it changed, which also lost clicks (#365) and keyboard
@@ -9501,7 +9542,8 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
   use replacement `setTabDraft`, prune departed background drafts and restart queue draining
   in the recipient (including the debounce between turns).
 - **Hidden editors reserve ownership before deserialization.** `ChatPanelCatalog` persists
-  panel identities, draft snapshots and a monotonic numbering high-water mark. The sidebar
+  panel identities and draft snapshots (its stored `highWater` is no longer used to number
+  panels). The sidebar
   eagerly creates pending providers from it, without starting sessions or rendering webviews;
   serializers bind to those existing providers instead of reopening their conversations.
   A pending owner can supply its draft for Move here before it becomes visible. Show existing
@@ -9527,6 +9569,10 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
 - **Chat surfaces are identified inside one extension host, not across full VS Code windows.**
   `ChatViewProvider._surfaces` lists live sidebar/panel views. Panels receive a stable creation
   number and a title such as `AI Browser #2`, also used for the actual editor/window title.
+  **#1 is always the side bar, and a new panel takes the lowest free number from #2** (asked
+  for: no counting upwards). `_freeSurfaceNumber` → `ChatPanelCatalog.freeNumber` treats a
+  number as taken while a live panel or a saved one (kept for restore at shutdown) holds it, so
+  a closed panel's number goes back into use; a restored panel keeps the number it had.
   State exposes those names, tab counts and folders for the tab context menu's move destinations.
   All surfaces in the host share agent and toolbar services, permitting a live `ChatTab` to move
   into an existing surface without disposing its backend. The target selects the moved tab and

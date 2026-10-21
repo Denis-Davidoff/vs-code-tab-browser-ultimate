@@ -90,6 +90,12 @@ then restores the clipboard. It does not request OS screen recording access.
 
 ## Changelog
 
+**0.8.4** — A wide-screen chat layout from 1000 px: a centered conversation and composer,
+with tabs in a collapsible sidebar on either side. Attachment references start at `@1` for
+each new message. Claude and Codex automatically continue after temporary service errors,
+with up to three retries after 5, 15 and 60 seconds. Chat tabs have a centered orbit spinner
+and smoother switching animations; closed chat panels release their display numbers for reuse.
+
 **0.8.3** — Publish, push and pull the current branch from the chat's Branches window,
 through VS Code's Git extension and your GitHub sign-in, with a button for a pull request. New
 `chat_*` MCP tools report the chat's tabs, plan limits and agents, and let the chat's own agents

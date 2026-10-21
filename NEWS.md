@@ -26,6 +26,13 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 - $(location) **Page markers** — pin notes to several elements right in the browser and hand them to the agent as one prompt.
 - $(settings-gear) **Chat Settings** — the gear at the top of the chat: change the system prompts behind commit messages, branch names and chat titles, and clean up temporary files.
 
+## 0.8.4 — 2026-10-21
+- **Wide-screen chat**: from 1000 px, the conversation, composer and footer share a centered 672 px content column. Tabs become a scrollable sidebar that can be collapsed or moved left or right; both choices survive a reload.
+- **Attachment references restart for each message**: new drafts start at `@1`, while existing references stay stable when attachments are removed or refreshed. Returning queued messages to the draft updates their references together with the text.
+- **Automatic recovery from temporary service errors**: once a Claude or Codex turn has stopped, the chat tries to continue the same conversation after 5, 15 and 60 seconds, up to three attempts. Stop, a new message or closing the chat cancels the wait.
+- **Clearer tab activity**: a centered orbit spinner with a pulsing dot replaces the low-sitting star; it stays still under reduced motion. Switching tabs animates their widths together.
+- **Reusable panel numbers**: new chat panels take the lowest available number from #2; the sidebar remains #1 and restored panels keep their numbers.
+
 ## 0.8.3 — 2026-10-21
 - **Publish, Push and Pull** in the Branches window: one row for the current branch shows how far it is ahead or behind, and goes through VS Code's Git extension, so your GitHub sign-in answers for https remotes. Never forced; a pull only fast-forwards; a push to the default branch or while agents work asks first. A **pull request** button opens GitHub's compare page.
 - **Chat tools for the agents**: `chat_state`, `chat_usage` and `chat_agents` report the chat's tabs, plan limits and running agents; the chat's own agents can keep the computer awake, pause or resume their tab's queue, and stop one of their agents. The controls are a new **Chat control** approval category, Ask by default. A paused queue shows **Resume** above it.

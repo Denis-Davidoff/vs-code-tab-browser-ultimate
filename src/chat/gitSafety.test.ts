@@ -110,7 +110,9 @@ test('a blocked composer send preserves its text and attachments instead of star
 	const release = await access.mutate('/repo', () => []);
 	const attachments = [{ chip: { label: 'keep attachment' } }];
 	let started = false, restored = '';
-	const tab = { id: 'tab', chat: {}, cwd: '/repo/sub', started: true, attachments, push() {}, async send() { started = true; } };
+	const tab = { id: 'tab', chat: {}, cwd: '/repo/sub', started: true, attachments, push() {},
+		takeDraftAttachments() { const draft = this.attachments; this.attachments = []; return draft; },
+		async send() { started = true; } };
 	const host = {
 		_tabs: [tab], _active: tab, _disposed: false, _gitAccess: access, _blocked: () => false,
 		_registry: { detecting: false, backend: () => ({}) }, _selection: () => ({ agent: 'codex', model: 'selected' }),

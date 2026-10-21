@@ -47,6 +47,9 @@ interface ViewState {
 	draft?: string;
 	/** The unsent draft of each open conversation, by chat id. */
 	drafts?: Record<string, string>;
+	/** Wide-screen chat navigation preference, retained across webview reloads. */
+	chatDrawerCollapsed?: boolean;
+	chatDrawerSide?: 'left' | 'right';
 }
 
 interface VsCodeApi {
@@ -169,10 +172,8 @@ const effortRange = el('input', { class: 'effort-range' });
 effortRange.type = 'range';
 effortRange.min = '0';
 effortRange.step = '1';
-const effortLabel = el('span', { class: 'effort-label' });
-const effortBox = el('label', { class: 'effort', title: 'Effort' }, effortRange, effortLabel);
-const effortButton = button([], { class: 'pill effort-button', title: 'Effort' });
-effortButton.hidden = true;
+effortRange.setAttribute('aria-label', 'Reasoning effort');
+const effortBox = el('label', { class: 'effort' }, effortRange);
 const usageTitle = "Usage — your plan's limits for each agent, and this chat's tokens and cost";
 const usageRing = ringMeter(el('span', { class: 'ring-mark', text: 'U' }));
 const usageButton = button([usageRing], { class: 'ghost round usage-button', title: usageTitle });
@@ -200,7 +201,7 @@ queueButton.addEventListener('click', () => send('queue'));
 const approveToggle = button([], { class: 'pill approve-toggle' });
 
 // Settings and tools get deliberate rows in a narrow composer.
-const toolbarSettings = el('div', { class: 'toolbar-settings' }, agentPill, modelPill, effortBox, effortButton, approveToggle);
+const toolbarSettings = el('div', { class: 'toolbar-settings' }, agentPill, modelPill, effortBox, approveToggle);
 const toolbarAttachments = el('span', { class: 'toolbar-attachments' }, plusButton, browserButton, slashButton);
 const toolbarEnd = el('span', { class: 'toolbar-end' }, agentsButton, contextButton, usageButton);
 const toolbar = el('div', { class: 'toolbar' }, toolbarAttachments, toolbarSettings, toolbarEnd);
@@ -317,7 +318,7 @@ commitDismiss.addEventListener('click', () => answerCommit('dismissGitCommit'));
 const footer = el('div', { class: 'footer' }, questionDock, switchCard, skillBar, composer, workdirFooter, commitNotice);
 workdirSummary.addEventListener('click', () => workdirButton.click());
 /** One tab per open conversation, above the thread. */
-const tabStrip = el('div', { class: 'tab-strip' });
+const tabStrip = el('nav', { class: 'tab-strip' });
 /**
  * A plan limit near its end, reached, or credits being spent, for the agent of
  * the tab in front: a line between the tabs and the thread. Built once and
@@ -883,7 +884,8 @@ const agentsPanel = el('div', { class: 'history-panel agents-panel' });
 /** Which copy of each agent's CLI this project uses: opened from the gear in the agent menu. */
 const agentAppsPanel = el('div', { class: 'history-panel agent-apps' });
 
-app.append(featureSettingsPanel, sleepPopup, tabStrip, usageAlertBar, thread, blocked, footer, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel);
+const chatMain = el('main', { class: 'chat-main' }, usageAlertBar, thread, blocked, footer);
+app.append(featureSettingsPanel, sleepPopup, tabStrip, chatMain, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel);
 
 /* ---------------------------------------------------------------- state */
 
@@ -902,6 +904,8 @@ const toggledByChat = new Map<string, Map<string, boolean>>();
 const scrollByChat = new Map<string, number | 'bottom'>();
 
 const savedView = vscode.getState();
+let chatDrawerCollapsed = savedView?.chatDrawerCollapsed ?? false;
+let chatDrawerSide: 'left' | 'right' = savedView?.chatDrawerSide === 'right' ? 'right' : 'left';
 const drafts: Record<string, string> = { ...(savedView?.drafts ?? {}) };
 /** The conversation whose draft the box holds, and the tab it is in. */
 let draftChat: string | undefined;
@@ -916,7 +920,7 @@ function saveDraft(): void {
 	if (draftChat) {
 		drafts[draftChat] = currentDraft();
 	}
-	vscode.setState({ drafts, panel: state?.panel ?? savedView?.panel });
+	vscode.setState({ drafts, chatDrawerCollapsed, chatDrawerSide, panel: state?.panel ?? savedView?.panel });
 	post({ type: 'saveDrafts', drafts });
 }
 
@@ -957,7 +961,7 @@ function followDraft(s: ChatViewState): void {
 			delete drafts[id];
 		}
 	}
-	vscode.setState({ drafts, panel: state?.panel ?? savedView?.panel });
+	vscode.setState({ drafts, chatDrawerCollapsed, chatDrawerSide, panel: state?.panel ?? savedView?.panel });
 	post({ type: 'saveDrafts', drafts });
 	autosize();
 }
@@ -998,7 +1002,7 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 		case 'state':
 			state = message.state;
 			render();
-			vscode.setState({ drafts, panel: state.panel });
+			vscode.setState({ drafts, chatDrawerCollapsed, chatDrawerSide, panel: state.panel });
 			return;
 		case 'localLinkInfo': {
 			const pending = pendingLocalLinkMenu;
@@ -1301,8 +1305,51 @@ interface TabNode {
 }
 
 const tabNodes = new Map<string, TabNode>();
+const wideChat = matchMedia('(min-width: 1000px)');
 const tabRow = el('div', { class: 'tab-row' });
-const tabAdd = button([icon('add')], { class: 'ghost round tab-add', title: 'New chat' });
+tabRow.id = 'chat-tab-list';
+const drawerToggle = button([], { class: 'ghost round chat-drawer-toggle' });
+drawerToggle.setAttribute('aria-controls', tabRow.id);
+const drawerSideToggle = button([], { class: 'ghost round chat-drawer-side-toggle' });
+const drawerHeader = el('div', { class: 'chat-drawer-header' },
+	el('span', { class: 'chat-drawer-title', text: 'Chats' }), drawerToggle);
+const drawerFooter = el('div', { class: 'chat-drawer-footer' }, drawerSideToggle);
+function updateChatDrawer(): void {
+	app.classList.toggle('chat-drawer-collapsed', chatDrawerCollapsed);
+	app.classList.toggle('chat-drawer-right', chatDrawerSide === 'right');
+	const nextSide = chatDrawerSide === 'left' ? 'right' : 'left';
+	const sideLabel = `Move chat sidebar to the ${nextSide}`;
+	drawerSideToggle.title = sideLabel;
+	drawerSideToggle.setAttribute('aria-label', sideLabel);
+	drawerSideToggle.replaceChildren(icon(`arrow-${nextSide}`));
+	const label = chatDrawerCollapsed ? 'Expand chat sidebar' : 'Collapse chat sidebar';
+	drawerToggle.title = label;
+	drawerToggle.setAttribute('aria-label', label);
+	drawerToggle.setAttribute('aria-expanded', String(!chatDrawerCollapsed));
+	const toggleDirection = chatDrawerCollapsed ? nextSide : chatDrawerSide;
+	drawerToggle.replaceChildren(icon(`chevron-${toggleDirection}`));
+	// The narrow strip remains horizontal regardless of the drawer preference.
+	tabStrip.setAttribute('aria-label', wideChat.matches ? 'Chat sidebar' : 'Open chats');
+	if (wideChat.matches && !chatDrawerCollapsed) {
+		requestAnimationFrame(() => tabNodes.get(state?.activeTab ?? '')?.root.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
+	}
+}
+drawerSideToggle.addEventListener('click', () => {
+	chatDrawerSide = chatDrawerSide === 'left' ? 'right' : 'left';
+	updateChatDrawer();
+	saveDraft();
+});
+drawerToggle.addEventListener('click', () => {
+	chatDrawerCollapsed = !chatDrawerCollapsed;
+	updateChatDrawer();
+	saveDraft();
+});
+wideChat.addEventListener('change', () => {
+	for (const { root } of tabNodes.values()) { tabResizeEnds.get(root)?.(); }
+	updateChatDrawer();
+});
+updateChatDrawer();
+const tabAdd = button([icon('add'), el('span', { class: 'tab-add-label', text: 'New chat' })], { class: 'ghost round tab-add', title: 'New chat' });
 function chooseNewChatLocation(): void {
 	openMenu(tabAdd, [
 		{ icon: 'comment-discussion', label: 'Here in chat', run: () => post({ type: 'newTab', location: 'here' }) },
@@ -1325,6 +1372,11 @@ function clearTabDropMarks(): void {
 	for (const { root } of tabNodes.values()) { root.classList.remove('drop-before', 'drop-after'); }
 }
 
+/** Reordering follows the visible list's axis. */
+function tabDropAfter(event: DragEvent, rect: DOMRect): boolean {
+	return wideChat.matches ? event.clientY >= rect.top + rect.height / 2 : event.clientX >= rect.left + rect.width / 2;
+}
+
 function makeTabDraggable(node: TabNode): void {
 	const { root } = node;
 	root.draggable = true;
@@ -1345,9 +1397,15 @@ function makeTabDraggable(node: TabNode): void {
 		if (event.dataTransfer) { event.dataTransfer.dropEffect = 'move'; }
 		clearTabDropMarks();
 		const rect = root.getBoundingClientRect();
-		if (draggedChatTab.id !== node.tab.id) { root.classList.add(event.clientX >= rect.left + rect.width / 2 ? 'drop-after' : 'drop-before'); }
-		if (event.clientX < tabRow.getBoundingClientRect().left + 24) { tabRow.scrollLeft -= 12; }
-		if (event.clientX > tabRow.getBoundingClientRect().right - 24) { tabRow.scrollLeft += 12; }
+		if (draggedChatTab.id !== node.tab.id) { root.classList.add(tabDropAfter(event, rect) ? 'drop-after' : 'drop-before'); }
+		const bounds = tabRow.getBoundingClientRect();
+		if (wideChat.matches) {
+			if (event.clientY < bounds.top + 24) { tabRow.scrollTop -= 12; }
+			if (event.clientY > bounds.bottom - 24) { tabRow.scrollTop += 12; }
+		} else {
+			if (event.clientX < bounds.left + 24) { tabRow.scrollLeft -= 12; }
+			if (event.clientX > bounds.right - 24) { tabRow.scrollLeft += 12; }
+		}
 	});
 	root.addEventListener('dragleave', () => root.classList.remove('drop-before', 'drop-after'));
 	root.addEventListener('drop', event => {
@@ -1356,7 +1414,7 @@ function makeTabDraggable(node: TabNode): void {
 		event.stopPropagation();
 		if (draggedChatTab.id !== node.tab.id) {
 			const rect = root.getBoundingClientRect();
-			post({ type: 'placeTab', id: draggedChatTab.id, target: node.tab.id, after: event.clientX >= rect.left + rect.width / 2 });
+			post({ type: 'placeTab', id: draggedChatTab.id, target: node.tab.id, after: tabDropAfter(event, rect) });
 		}
 		clearTabDropMarks();
 	});
@@ -1409,7 +1467,7 @@ function renderTabs(s: ChatViewState): void {
 		editingTab = undefined;
 	}
 	if (!tabStrip.contains(tabRow)) {
-		tabStrip.replaceChildren(tabRow, tabConfirm);
+		tabStrip.replaceChildren(drawerHeader, tabRow, tabConfirm, drawerFooter);
 	}
 	const open = new Set(s.tabs.map(t => t.id));
 	for (const [id, node] of tabNodes) {
@@ -1419,6 +1477,8 @@ function renderTabs(s: ChatViewState): void {
 			tabNodes.delete(id);
 		}
 	}
+	const switching = frontTab !== undefined && s.activeTab !== frontTab;
+	const tabsBefore = switching ? tabWidths() : undefined;
 	s.tabs.forEach((summary, i) => {
 		const node = tabNodes.get(summary.id) ?? tabNode(summary);
 		const pending = node.pendingTitle;
@@ -1434,6 +1494,7 @@ function renderTabs(s: ChatViewState): void {
 			fillTab(node, agent);
 		}
 		node.root.classList.toggle('active', t.id === s.activeTab);
+		node.label.setAttribute('aria-current', t.id === s.activeTab ? 'page' : 'false');
 		node.root.classList.toggle('running', t.running);
 		// Moved only when out of place: re-inserting an element ends its transition.
 		if (tabRow.children[i] !== node.root) {
@@ -1446,10 +1507,72 @@ function renderTabs(s: ChatViewState): void {
 		tabRow.append(tabAdd);
 	}
 	renderTabConfirm(s);
+	if (tabsBefore && frontTab) {
+		animateTabSwitch(tabsBefore, [frontTab, s.activeTab]);
+	}
 	if (s.activeTab !== frontTab) {
 		frontTab = s.activeTab;
 		// After the width has settled, or it scrolls to where the tab was going.
 		setTimeout(() => tabNodes.get(s.activeTab)?.root.scrollIntoView({ block: 'nearest', inline: 'nearest' }), 340);
+	}
+}
+
+function tabWidths(): Map<string, number> {
+	const widths = new Map<string, number>();
+	for (const [id, node] of tabNodes) {
+		if (node.root.isConnected) { widths.set(id, node.root.getBoundingClientRect().width); }
+	}
+	return widths;
+}
+
+/** Ends a tab's switch animation early, letting go of its held width. */
+const tabResizeEnds = new WeakMap<HTMLElement, () => void>();
+
+/**
+ * The tab left and the tab chosen change width together: each is held at the
+ * width it had, then both are let go to their new width in the same frame, with
+ * one linear transition. Transitioning the CSS limits instead clamped each tab
+ * against its own title at a different moment, so the two moved out of step.
+ */
+function animateTabSwitch(before: Map<string, number>, ids: string[]): void {
+	const nodes = ids.map(id => ({ id, root: tabNodes.get(id)?.root }))
+		.filter((n): n is { id: string; root: HTMLElement } => !!n.root?.isConnected);
+	// A switch still under way gives up its held widths first, so both are measured free.
+	for (const { root } of nodes) { tabResizeEnds.get(root)?.(); }
+	if (wideChat.matches || matchMedia('(prefers-reduced-motion: reduce)').matches) { return; }
+	const moving = nodes.flatMap(({ id, root }) => {
+		const from = before.get(id);
+		const to = root.getBoundingClientRect().width;
+		return from === undefined || Math.abs(from - to) < 0.5 ? [] : [{ root, from, to }];
+	});
+	for (const { root, from } of moving) {
+		const style = root.style;
+		style.transition = 'none';
+		style.flexShrink = '0';
+		// The limits do not transition, so they are lifted while the width moves.
+		style.minWidth = '0';
+		style.maxWidth = 'none';
+		style.width = `${from}px`;
+	}
+	void tabRow.offsetWidth; // the held widths are laid out before the transition starts
+	for (const { root, to } of moving) {
+		const style = root.style;
+		root.classList.add('resizing');
+		style.transition = '';
+		style.width = `${to}px`;
+		const end = (): void => {
+			root.removeEventListener('transitionend', onEnd);
+			clearTimeout(timer);
+			tabResizeEnds.delete(root);
+			root.classList.remove('resizing');
+			style.transition = style.width = style.minWidth = style.maxWidth = style.flexShrink = '';
+		};
+		const onEnd = (event: TransitionEvent): void => {
+			if (event.target === root && event.propertyName === 'width') { end(); }
+		};
+		const timer = setTimeout(end, 400);
+		root.addEventListener('transitionend', onEnd);
+		tabResizeEnds.set(root, end);
 	}
 }
 
@@ -1657,11 +1780,11 @@ function renderTabConfirm(s: ChatViewState): void {
 }
 
 /**
- * The mark in front of a tab's title: the working star while it works (the
- * glyph of the working line, turned by the same timer), a green dot for work
+ * The mark in front of a tab's title: a CSS orbit spinner while it works,
+ * a green dot for work
  * finished out of sight, an orange one for work that ended in an error, and
  * nothing once it is finished and read — nor before the first message. A tab whose
- * agent waits for an approval shows a pulsing ring instead of the star: the
+ * agent waits for an approval shows a pulsing warning ring instead of the spinner: the
  * work is stopped on the user, and the tab may not be the one in front.
  */
 const tabMarks: Record<ChatTabStatus, string> = {
@@ -1681,7 +1804,6 @@ function tabMark(status: ChatTabStatus | undefined): HTMLElement | undefined {
 	return el('span', {
 		class: `tab-mark ${status}`,
 		title: tabMarks[status],
-		text: status === 'working' ? glyphs[glyphAt] : undefined,
 	});
 }
 
@@ -2238,7 +2360,7 @@ let glyphAt = 0;
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 setInterval(() => {
 	const agentsLine = threadInner.querySelector('.agents-running .working-glyph');
-	if (reducedMotion.matches || (!workingNode && !agentsLine && !tabStrip.querySelector('.tab-mark.working'))) {
+	if (reducedMotion.matches || (!workingNode && !agentsLine)) {
 		return;
 	}
 	glyphAt = (glyphAt + 1) % glyphs.length;
@@ -2246,9 +2368,6 @@ setInterval(() => {
 		if (glyph) {
 			glyph.textContent = glyphs[glyphAt];
 		}
-	}
-	for (const mark of tabStrip.querySelectorAll('.tab-mark.working')) {
-		mark.textContent = glyphs[glyphAt];
 	}
 }, 120);
 
@@ -3901,17 +4020,20 @@ function renderSelectors(s: ChatViewState): void {
 
 	const efforts = model?.efforts ?? [];
 	effortBox.hidden = !efforts.length;
-	effortButton.hidden = !efforts.length;
 	if (efforts.length) {
 		effortRange.max = String(efforts.length - 1);
 		effortRange.value = String(Math.max(0, efforts.indexOf(s.selection.effort ?? '')));
-		effortLabel.textContent = labelOf(s.selection.effort ?? efforts[0]);
-		setPill(effortButton, effortLabel.textContent);
-		effortBox.title = `Effort — how hard the model thinks before it answers: ${efforts.map(labelOf).join(' · ')}\nMore effort is slower and uses more of your plan.`;
-		effortButton.title = effortBox.title;
-		effortButton.classList.toggle('max', effortRange.value === effortRange.max);
-		effortBox.classList.toggle('max', effortRange.value === effortRange.max);
+		updateEffortAppearance(efforts[Number(effortRange.value)]);
 	}
+}
+
+/** Fixed geometry: only the thumb colour and immediate tooltip change with effort. */
+function updateEffortAppearance(effort: string): void {
+	const label = labelOf(effort);
+	effortRange.setAttribute('aria-valuetext', label);
+	effortBox.dataset.effort = effort;
+	effortBox.dataset.tip = `Effort: ${label}\nMore effort takes longer and uses more of your plan.`;
+	if (hoverTip.anchor === effortBox) { hoverTip.show(effortBox); }
 }
 
 function labelOf(effort: string): string {
@@ -4079,8 +4201,7 @@ effortRange.addEventListener('input', () => {
 	const efforts = agent?.models.find(m => m.id === s.model)?.efforts ?? [];
 	const effort = efforts[Number(effortRange.value)];
 	if (effort) {
-		effortLabel.textContent = labelOf(effort);
-		effortBox.classList.toggle('max', effortRange.value === effortRange.max);
+		updateEffortAppearance(effort);
 		post({ type: 'select', selection: { agent: s.agent, model: s.model, effort } });
 	}
 });
@@ -4102,7 +4223,7 @@ function scheduleToolbarLayout(): void {
 		if (!width) { return; }
 		const style = getComputedStyle(toolbar);
 		const shape = JSON.stringify([width, style.font, agentPill.textContent, modelPill.textContent,
-			effortLabel.textContent, effortButton.hidden, approveToggle.textContent,
+			effortBox.hidden, approveToggle.textContent,
 			agentsButton.textContent, agentsButton.hidden, contextButton.hidden]);
 		if (shape === toolbarLayoutShape) { return; }
 		toolbarLayoutShape = shape;
@@ -4842,7 +4963,7 @@ function closePopups(except?: HTMLElement, keep?: HTMLElement): void {
 			popup.classList.remove('open');
 		}
 	}
-	for (const pill of [tabAdd, effortButton, agentPill, modelPill, plusButton, usageButton, approveToggle, slashButton, workdirButton, branchButton, commitButton, contextButton]) {
+	for (const pill of [tabAdd, agentPill, modelPill, plusButton, usageButton, approveToggle, slashButton, workdirButton, branchButton, commitButton, contextButton]) {
 		pill.classList.remove('active');
 	}
 	// A skill button is a popup's anchor too; the mark only tells a second
@@ -4970,7 +5091,7 @@ document.addEventListener('mousedown', event => {
 		}
 		return;
 	}
-	if (![workdirSummary, gitRefreshSlot, effortButton, featureSettingsPanel, sleepPopup, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillBar, historyPanel, agentsPanel, agentAppsPanel, plusButton, usageButton, usageAlertText, agentsButton, agentPill, modelPill, approveToggle, slashButton, workdirButton, branchButton, commitButton, contextButton].some(n => n.contains(target))) {
+	if (![workdirSummary, gitRefreshSlot, effortBox, featureSettingsPanel, sleepPopup, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillBar, historyPanel, agentsPanel, agentAppsPanel, plusButton, usageButton, usageAlertText, agentsButton, agentPill, modelPill, approveToggle, slashButton, workdirButton, branchButton, commitButton, contextButton].some(n => n.contains(target))) {
 		closePopups();
 	}
 });
@@ -5067,15 +5188,6 @@ function openMenu(anchor: HTMLElement, items: MenuItem[], heading?: string, acti
 	openAbove(menu, anchor, 'left', keep);
 }
 
-effortButton.addEventListener('click', () => {
-	const selection = state?.selection;
-	const model = state?.agents.find(a => a.id === selection?.agent)?.models.find(m => m.id === selection?.model);
-	if (!selection || !model?.efforts.length) { return; }
-	openMenu(effortButton, model.efforts.map(effort => ({
-		label: labelOf(effort), checked: effort === (selection.effort ?? model.efforts[0]),
-		run: () => post({ type: 'select', selection: { ...selection, effort } }),
-	})), 'Effort — how hard the model thinks');
-});
 
 agentPill.addEventListener('click', () => {
 	const s = state;
@@ -6504,7 +6616,13 @@ const hoverTip = (() => {
 				return;
 			}
 			api.anchor = anchor;
-			node.textContent = text;
+			if (anchor === effortBox) {
+				const value = el('strong', { text: effortRange.getAttribute('aria-valuetext') ?? '' });
+				value.style.color = getComputedStyle(anchor).getPropertyValue('--effort-colour');
+				node.replaceChildren('Effort: ', value, '\nMore effort takes longer and uses more of your plan.');
+			} else {
+				node.textContent = text;
+			}
 			if (!node.isConnected) {
 				app.append(node);
 			}
@@ -6543,6 +6661,11 @@ const hoverTip = (() => {
 hoverTip.attach(gitRefreshSlot);
 hoverTip.attach(branchMagic);
 hoverTip.attach(contextButton);
+// Effort is shown immediately, including while dragging or changing it with the keyboard.
+effortBox.addEventListener('mouseenter', () => hoverTip.show(effortBox));
+effortBox.addEventListener('mouseleave', () => hoverTip.hide());
+effortRange.addEventListener('focus', () => hoverTip.show(effortBox));
+effortRange.addEventListener('blur', () => hoverTip.hide());
 hoverTip.attach(skillAddButton);
 hoverTip.attach(skillExpandButton);
 

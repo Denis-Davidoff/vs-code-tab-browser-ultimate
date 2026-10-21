@@ -2,13 +2,41 @@ import type { AttachmentChip } from './chatProtocol';
 
 // Stable for the attachment's lifetime, including removal of other chips and queued sends.
 const references = new WeakMap<AttachmentChip, string>();
-let nextReference = 1;
+/** One allocator per draft; keep it even when individual chips are removed. */
+export class AttachmentReferenceScope {
+	private nextReference = 1;
+
+	/** Merge a returned queued message into a draft without duplicate references. */
+	public restore(chips: readonly AttachmentChip[], text: string): string {
+		const renamed = new Map<string, string>();
+		for (const chip of chips) {
+			const previous = attachmentReference(chip);
+			const next = `@${this.nextReference++}`;
+			references.set(chip, next);
+			renamed.set(previous, next);
+		}
+		return text.replace(/@\d+\b/g, reference => renamed.get(reference) ?? reference);
+	}
+
+	public assign(chips: readonly AttachmentChip[]): void {
+		// Restored or refreshed attachments keep their already typed references.
+		for (const chip of chips) {
+			const reference = references.get(chip);
+			if (reference) { this.nextReference = Math.max(this.nextReference, Number(reference.slice(1)) + 1); }
+		}
+		for (const chip of chips) {
+			if (!references.has(chip)) { references.set(chip, `@${this.nextReference++}`); }
+		}
+	}
+}
+
+const fallbackScope = new AttachmentReferenceScope();
 
 export function attachmentReference(chip: AttachmentChip): string {
 	let reference = references.get(chip);
 	if (!reference) {
-		reference = `@${nextReference++}`;
-		references.set(chip, reference);
+		fallbackScope.assign([chip]);
+		reference = references.get(chip)!;
 	}
 	return reference;
 }
@@ -21,6 +49,7 @@ export function preserveAttachmentReference(previous: AttachmentChip, next: Atta
 /** Explicitly bind each short reference to its content, including image-only attachments. */
 export function attachmentContext(attachments: readonly { chip: AttachmentChip; text?: string; image?: unknown }[]): string {
 	if (!attachments.length) { return ''; }
+	new AttachmentReferenceScope().assign(attachments.map(a => a.chip));
 	let image = 0;
 	const entries = attachments.map(a => {
 		const imageLabel = a.image ? `\nAttached image #${++image} in this message.` : '';

@@ -1631,13 +1631,10 @@ body.vscode-light .code-block pre {
 
 .toolbar-settings { gap: 2px; justify-content: center; justify-self: center; max-width: 100%; }
 .toolbar-attachments { flex: none; width: max-content; }
-.toolbar-settings .effort-button { display: none; }
 
 .toolbar.compact-effort .toolbar-settings > .pill { min-width: 0; }
 .toolbar.compact-effort .toolbar-settings > .pill:nth-child(1) { flex: 0 1 auto; max-width: 90px; }
 .toolbar.compact-effort .toolbar-settings > .pill:nth-child(2) { flex: 0 1 auto; max-width: 130px; }
-.toolbar.compact-effort .effort { display: none; }
-.toolbar.compact-effort .effort-button:not([hidden]) { display: inline-flex; flex: none; }
 .toolbar.compact-effort .approve-toggle { flex: none; }
 
 .toolbar.stacked { grid-template-columns: auto minmax(0, 1fr); gap: 4px; }
@@ -1913,10 +1910,19 @@ body.vscode-high-contrast-light .context-pie {
 	display: none;
 }
 
-.effort.max .effort-label,
-.effort-button.max .pill-label {
-	color: var(--vscode-charts-purple, var(--fg));
-}
+/* A soft silver grey → sky blue → pale violet scale; exceptional levels turn warm. */
+.effort { --effort-colour: #bfc5ce; flex: none; }
+.effort[data-effort="none"],
+.effort[data-effort="minimal"] { --effort-colour: #bfc5ce; }
+.effort[data-effort="low"] { --effort-colour: #d8e9fb; }
+.effort[data-effort="medium"] { --effort-colour: #acd1f5; }
+.effort[data-effort="high"] { --effort-colour: #b8c5ef; }
+.effort[data-effort="xhigh"] { --effort-colour: #c9b7e8; }
+.effort[data-effort="max"],
+.effort[data-effort="maximum"] { --effort-colour: #efd28e; }
+.effort[data-effort^="ultra"],
+.effort[data-effort^="super"],
+.effort[data-effort="extreme"] { --effort-colour: #edbc90; }
 
 .effort-range {
 	-webkit-appearance: none;
@@ -1934,17 +1940,15 @@ body.vscode-high-contrast-light .context-pie {
 	width: 12px;
 	height: 12px;
 	border-radius: 50%;
-	background: var(--fg-2);
+	background: var(--effort-colour);
 	border: 2px solid var(--surface);
+	transition: background-color .18s ease, box-shadow .18s ease;
 	box-shadow: 0 0 0 1px var(--border-strong);
 }
 
-.effort-range:hover::-webkit-slider-thumb {
-	background: var(--fg);
-}
-
-.effort-label {
-	min-width: 34px;
+.effort-range:hover::-webkit-slider-thumb,
+.effort-range:focus-visible::-webkit-slider-thumb {
+	box-shadow: 0 0 0 1px var(--effort-colour), 0 0 7px color-mix(in srgb, var(--effort-colour) 45%, transparent);
 }
 
 .send {
@@ -2492,8 +2496,10 @@ body.vscode-high-contrast-light .context-pie {
 }
 
 /*
- * The tab in front is wider than the others, and gets there smoothly: the
- * element is kept across a switch (see `renderTabs`), so its limits transition.
+ * The tab in front is wider than the others. The switch is animated from
+ * script (`animateTabSwitch`): both tabs' widths are measured before and after,
+ * then run one linear transition started in the same frame, so the tab left and
+ * the tab chosen move together.
  */
 .tab {
 	flex: 0 1 auto;
@@ -2504,7 +2510,11 @@ body.vscode-high-contrast-light .context-pie {
 	border-radius: 6px 6px 0 0;
 	color: var(--fg-3);
 	border-bottom: 2px solid transparent;
-	transition: min-width .28s cubic-bezier(.4, 0, .2, 1), max-width .28s cubic-bezier(.4, 0, .2, 1), color .15s ease;
+	transition: color .15s ease;
+}
+
+.tab.resizing {
+	transition: width .25s linear, color .15s ease;
 }
 
 .tab:hover {
@@ -2581,10 +2591,46 @@ body.vscode-high-contrast-light .context-pie {
 }
 
 .tab-mark.working {
-	/* Symbol glyphs sit below the visual centre of the text line. */
+	/* Reset the spacing of the conversation's shared .working class. */
+	position: relative;
+	width: 12px;
+	height: 12px;
+	margin: 0;
+	padding: 0;
+	gap: 0;
 	transform: translateY(-1px);
 	color: var(--accent);
-	font-size: 11px;
+}
+
+
+.tab-mark.working::before {
+	content: '';
+	position: absolute;
+	inset: 0;
+	box-sizing: border-box;
+	border: 2px solid color-mix(in srgb, currentColor 20%, transparent);
+	border-top-color: currentColor;
+	border-right-color: currentColor;
+	border-radius: 50%;
+	animation: tab-orbit .85s linear infinite;
+}
+
+.tab-mark.working::after {
+	content: '';
+	width: 3px;
+	height: 3px;
+	border-radius: 50%;
+	background: currentColor;
+	animation: tab-spark .85s ease-in-out infinite alternate;
+}
+
+@keyframes tab-orbit {
+	to { transform: rotate(360deg); }
+}
+
+@keyframes tab-spark {
+	from { opacity: .35; transform: scale(.65); }
+	to { opacity: 1; transform: scale(1); }
 }
 
 .tab-mark.unread::before,
@@ -3357,6 +3403,8 @@ body.vscode-high-contrast-light .context-pie {
 		transition: none;
 	}
 
+	.tab-mark.working::before,
+	.tab-mark.working::after,
 	.tab-mark.waiting::before,
 	.row.approval.pending::before {
 		animation: none;
@@ -4767,4 +4815,164 @@ body.vscode-high-contrast-light .context-pie {
 
 .pending-resume:hover {
 	background: var(--soft-2);
+}
+
+/* The same conversation and navigation become two columns on a wide surface. */
+.chat-main {
+	display: flex;
+	flex-direction: column;
+	flex: 1;
+	min-width: 0;
+	min-height: 0;
+}
+
+.chat-drawer-header,
+.chat-drawer-footer,
+.tab-add-label {
+	display: none;
+}
+
+@media (min-width: 1000px) {
+	#app {
+		--chat-content-width: 696px;
+		--chat-drawer-width: 252px;
+		flex-direction: row;
+	}
+
+	.thread { scrollbar-gutter: stable both-edges; }
+
+	.thread-inner,
+	.footer {
+		width: 100%;
+		max-width: var(--chat-content-width);
+		margin-inline: auto;
+		padding-inline: 12px;
+		box-sizing: border-box;
+	}
+
+	.tab-strip {
+		display: flex;
+		flex-direction: column;
+		width: var(--chat-drawer-width);
+		min-width: 0;
+		min-height: 0;
+		box-sizing: border-box;
+		border-bottom: 0;
+		border-right: 1px solid var(--border);
+		background: color-mix(in srgb, var(--fg) 2%, var(--bg));
+	}
+
+	.chat-drawer-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		flex: none;
+		gap: 8px;
+		min-height: 44px;
+		padding: 12px 10px 8px;
+		box-sizing: border-box;
+	}
+
+	.chat-drawer-title {
+		font-weight: 600;
+		color: var(--fg-2);
+	}
+
+	.chat-drawer-footer {
+		display: flex;
+		flex: none;
+		margin-top: auto;
+		padding: 8px;
+		border-top: 1px solid var(--border);
+	}
+
+	.chat-drawer-header .ghost,
+	.chat-drawer-footer .ghost {
+		flex: none;
+		gap: 5px;
+		padding: 5px 7px;
+		height: 30px;
+		border: 1px solid var(--border-strong);
+		border-radius: 6px;
+		color: var(--fg-2);
+		white-space: nowrap;
+		font-size: 12px;
+	}
+
+	.tab-row {
+		flex: 1;
+		min-height: 0;
+		flex-direction: column;
+		align-items: stretch;
+		gap: 4px;
+		padding: 4px 8px 12px;
+		overflow-x: hidden;
+		overflow-y: auto;
+		scrollbar-width: thin;
+	}
+
+	.tab-row::-webkit-scrollbar {
+		display: block;
+		width: 6px;
+	}
+
+	.tab,
+	.tab.active {
+		flex: none;
+		min-width: 0;
+		max-width: none;
+		min-height: 36px;
+		border: 1px solid transparent;
+		border-radius: 6px;
+	}
+
+	.tab.active {
+		background: var(--vscode-list-activeSelectionBackground, var(--soft-2));
+		color: var(--vscode-list-activeSelectionForeground, var(--fg));
+		border-color: var(--border-strong);
+	}
+
+	.tab-label {
+		min-height: 34px;
+		padding: 6px 4px 6px 8px;
+		box-sizing: border-box;
+	}
+
+	.tab-add.ghost {
+		justify-content: flex-start;
+		height: 34px;
+		border-radius: 6px;
+		gap: 8px;
+		margin: 4px 0 0;
+		padding: 8px;
+	}
+
+	.tab-add-label { display: inline; }
+
+	.tab.drop-before { box-shadow: inset 0 2px var(--accent); }
+	.tab.drop-after { box-shadow: inset 0 -2px var(--accent); }
+	.receiving-chat-tab .tab-strip { box-shadow: inset -2px 0 var(--accent); }
+
+	.chat-drawer-right .tab-strip {
+		order: 1;
+		border-right: 0;
+		border-left: 1px solid var(--border);
+	}
+
+	.receiving-chat-tab.chat-drawer-right .tab-strip { box-shadow: inset 2px 0 var(--accent); }
+
+	#app.chat-drawer-collapsed { --chat-drawer-width: 52px; }
+	.chat-drawer-right .chat-drawer-header { flex-direction: row-reverse; }
+	.chat-drawer-footer { justify-content: flex-end; padding-inline: 10px; }
+	.chat-drawer-right .chat-drawer-footer { justify-content: flex-start; }
+	.chat-drawer-collapsed .chat-drawer-footer { padding-inline: 8px; }
+	.chat-drawer-footer .ghost { width: 30px; padding: 0; }
+	.chat-drawer-collapsed .chat-drawer-header { padding: 8px; }
+	.chat-drawer-collapsed .chat-drawer-title,
+	.chat-drawer-collapsed .tab-row,
+	.chat-drawer-collapsed .tab-confirm { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.effort-range::-webkit-slider-thumb { transition: none; }
 }

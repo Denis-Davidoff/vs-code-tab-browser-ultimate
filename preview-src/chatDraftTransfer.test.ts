@@ -11,7 +11,7 @@ const receive = source.slice(start, source.indexOf("case 'readTabDraft':", start
 
 test('a background tab can leave and return with an edited draft without reviving or appending old text', () => {
 	const context: any = { draftChat: 'A', draftTab: 'tab-A', drafts: { B: 'old B' }, input: { value: '', focus() {} },
-		fromHistory: false, paletteMode: undefined, inputHistory: [], savedView: {}, state: {},
+		fromHistory: false, paletteMode: undefined, inputHistory: [], savedView: {}, state: {}, chatDrawerCollapsed: false, chatDrawerSide: 'left',
 		autosize() {}, renderSend() {}, post() {}, vscode: { setState() {} },
 		currentDraft() { return context.input.value; }, saveDraft() { context.drafts[context.state.chatId] = context.input.value; } };
 	const execute = (code: string) => runInNewContext(transpileModule(`(() => { ${code} })()`, { compilerOptions: { target: ScriptTarget.ES2022 } }).outputText, context);
