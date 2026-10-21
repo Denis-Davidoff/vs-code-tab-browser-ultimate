@@ -264,6 +264,8 @@ export class ChatTab {
 	private _lastTurnEnd = 0;
 	/** Added to a cumulative token report; see the `tokens` case. Per session. */
 	private _tokenOffset: TokenBase = { input: 0, output: 0, cached: 0 };
+	/** The models that answered the turn now ending, from its `tokens` event, until `turnEnd` puts them on its prompt. */
+	private _turnModels: readonly string[] | undefined;
 	/*
 	 * The tab's mark (`status`). Worked out here, on every change, because the
 	 * moment that matters — the work ending — is a change between two of them:
@@ -1249,6 +1251,7 @@ export class ChatTab {
 				if (event.costUsd !== undefined) {
 					chat.stats.costUsd = (chat.stats.costUsd ?? 0) + event.costUsd;
 				}
+				this._turnModels = event.models;
 				break;
 			case 'limits':
 				this._host.limits(chat.agent, event.windows, event.usingCredits);
@@ -1294,8 +1297,13 @@ export class ChatTab {
 				// The oldest prompt still waiting is the one this turn answered.
 				const done = this._pending.shift();
 				this._host.turnEnded(chat.agent, this._turnWeight(done?.base, done?.startedAt ?? done?.entry?.at, now));
+				const models = this._turnModels;
+				this._turnModels = undefined;
 				if (done?.entry && done.entry.at !== undefined) {
 					done.entry.workedMs = now - (done.startedAt ?? done.entry.at);
+					if (models?.length) {
+						done.entry.models = models;
+					}
 					const base = done.base;
 					const st = chat.stats;
 					// Shown only when the agent reported anything: a turn that

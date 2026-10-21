@@ -307,6 +307,8 @@ export type ChatEntry =
 		readonly attachmentFiles?: readonly (string | null)[];
 		/** Set when the turn ends: how long it took and what it cost in tokens. */
 		workedMs?: number; tokensIn?: number; tokensOut?: number; tokensCached?: number;
+		/** The models that answered the turn when they were not the one picked — what Gemini's Auto chose. */
+		models?: readonly string[];
 	}
 	| { readonly kind: 'assistant'; text: string }
 	| { readonly kind: 'thinking'; text: string; readonly startedAt: number; endedAt?: number }

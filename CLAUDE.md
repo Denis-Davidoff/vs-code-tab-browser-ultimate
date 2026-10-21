@@ -5127,7 +5127,11 @@ against the real CLI (gemini-cli 0.64) through the compiled backend:
 |---|---|---|
 | not signed in | `session/new` → -32000 "Gemini API key is missing…" (empty `HOME`) | not signed in; sign in with **Open Gemini CLI in Terminal**, then Refresh Agents / send again |
 | unknown or unavailable model | `session/set_model` accepts anything; the prompt fails with **500** "models/… is not found" | this model is not available to your account; pick another |
-| rate limit or quota | the prompt fails with **429** (read in `acpSession.ts`) | wait and send again, or pick another model |
+| rate limit or quota | the prompt fails with **429**, always as "Rate limit exceeded. Try again later." — `acpSession.ts` rewrites every 429, the day's quota (`TerminalQuotaError`) included | wait and send again; if it keeps failing the day's quota may be spent, pick another model |
+| model quota used up | *read in 0.64, not produced*: a 499 / 503 whose text matches Gemini's own `TerminalQuotaError` test (`exhausted your capacity`, `capacity exceeded`, `MODEL_CAPACITY_EXHAUSTED`), often with "Your quota will reset after …" | the quota for this model is used up (until it resets after …); pick another model |
+| context full | *read, not produced*: `stopReason: "max_tokens"`, which 0.64 sends for `ContextWindowWillOverflow` — **not** the output limit, as this table's code once said | the conversation no longer fits the context window; start a new chat |
+| turn limit or loop | *read, not produced*: `stopReason: "max_turn_requests"`, for `MaxSessionTurns` and `LoopDetected` alike | limit reached or the model repeating itself; send again, rephrase, or another model |
+| fatal exit 41 / 52 / 55 | *read, not produced*: `FatalAuthenticationError`, `FatalConfigError`, `FatalUntrustedWorkspaceError` in 0.64's core | not signed in / its settings cannot be read / the folder is not trusted — each with where to fix it |
 | 401 / 403, 400, 5xx | the prompt fails with the HTTP status | refused (access) / invalid / service failed — with the next step |
 | Gemini's own refusal | -32603 "Internal error", the real text in `data.details` | the details, never "Internal error" |
 | no `node` for the npm script | exit 127 "env: node: No such file or directory" (`PATH=/usr/bin:/bin`) | needs Node.js 20+; install it or set `aiBrowser.chat.geminiPath` |
@@ -5147,6 +5151,68 @@ conversation before the error: left in `_waiting`, the flush after the turn put 
 below the error, reading as sent. Connect's trust probe tells **signed out** apart too
 (`GeminiFolderState`), and its modal then says to sign in in the terminal it opens; a probe that
 gets no answer at all (`unknown`) still offers the terminal, where Gemini shows its own reason.
+
+#### What Gemini Code Assist does, and what was taken from it
+
+Google's own extension (`Google.geminicodeassist` 2.104.0, read 2026-10-21, nothing run) was
+studied for ways of driving Gemini we lack. **It has no private channel**: its agent mode is
+gemini-cli's **A2A server** (`@google/gemini-cli-a2a-server`, core 0.53 inside it), started with
+VS Code's own node (`ELECTRON_RUN_AS_NODE=1`) and spoken to over loopback HTTP by its Go language
+server `cloudcode_cli`. Its A2A commands are the same four built-ins ACP lists (`init`,
+`memory`, `restore`, `extensions`); custom `.toml` commands and skills are absent on both. Its
+environment variables (`GEMINI_FOLDER_TRUST`, `CHECKPOINTING`, `CUSTOM_IGNORE_FILE_PATHS` for
+`.aiexclude`, `GEMINI_YOLO_MODE`, `USE_CCPA`) are read by the A2A server only — **none of them
+appears in the 0.64 CLI bundle**, so setting them for `gemini --acp` does nothing. Our
+`GEMINI_CLI_TRUST_WORKSPACE` stays the way. (Its `GEMINI_IPC_SECRET` is generated and never
+checked by the server.)
+
+Taken: the quota and exit-code wording, the corrected stop reasons above, and the model Auto
+chose (below).
+
+**`SURFACE` was taken and then removed** — Gemini Code Assist sets it to `vscode`, and it
+looked like a telemetry label. In 0.64 it is also the User-Agent of every model request
+(`createContentGenerator` → `determineSurface2`): unset, a `gemini` started from the extension
+host sees `VSCODE_PID` (present in every VS Code process, checked with `ps eww`) and sends
+`CloudCodeVSCode/… (aidev_client; …; proxy_client=geminicli)`; set to anything else it sends
+`GeminiCLI/<version>/<model> (…; <surface>)`. The model list was the same both ways, but what
+the service does differently per client is unmeasured, so the chat leaves it unset and keeps
+the identity it always had. Do not add it back without measuring quotas and model access on a
+real account.
+
+**Deliberately not taken**, each for a reason found in 0.64's source:
+
+- **Gemini's own "always" options** (`proceed_always` "Allow for this session",
+  `proceed_always_tool` / `_server` for MCP). Answering one makes Gemini stop asking for that
+  tool for the rest of the process, so a later change of the approval menu back to Ask or Deny
+  would not reach it. The menu is the one authority; `geminiApprovalAnswer` keeps answering
+  `proceed_once`.
+- **Plan mode** (`session/set_mode` `plan`, offered by `session/new`). It is not "read-only":
+  `plan.toml` denies every tool by default and asks about MCP tools only with a
+  `readOnlyHint`, so the browser tools stop working, and it brings its own
+  `enter_plan_mode` / `exit_plan_mode` workflow. Our Deny already refuses writes per category.
+- **The A2A server itself**: a second package to pin, a port and a secret, an older core, and
+  nothing ACP lacks but MCP server status, the tool list and `userTier`.
+- **Deleting `~/.gemini/oauth_creds.json` on exit 41**, which Gemini Code Assist does: they are
+  the user's own credentials.
+- **Progress heartbeats on long MCP tools** (their `openFileDiff` sends `notifications/message`
+  every second): our MCP server answers on one POST with no stream, so there is nothing to send
+  them on.
+
+**Worth measuring next: the IDE companion protocol.** `GEMINI_CLI_IDE_SERVER_PORT` /
+`GEMINI_CLI_IDE_AUTH_TOKEN` give Gemini the open files, cursor and selection
+(`ide/contextUpdate`) and an editable diff in VS Code (`openDiff` → `ide/diffAccepted` with the
+user's edits) — something none of the three agents has here. In 0.64 `ideMode` comes from the
+`ide.enabled` setting and is not forced off under `--acp`, but whether it works there is
+unmeasured.
+
+**What Auto chose is shown.** `session/prompt`'s answer carries `_meta.quota.model_usage`, the
+model each request of the turn ran on (measured on 0.64:
+`[{ model: "gemini-3-flash-preview", token_count: { input_tokens, output_tokens } }]`), and it is
+the only place Auto's choice is reported. `geminiTurnEnd(result, chosen)` passes the names on
+the `tokens` event only when they are not the model picked in the chat, `ChatTab` puts them on
+the prompt (`UserEntry.models`) at the turn's end, and the view writes them beside "Worked for
+…" (`.worked-model`). A turn on a named model shows nothing extra. The Auto case itself is not
+measured: on this account Auto's pick did not answer (the silent-retry row above).
 
 #### Connect Gemini CLI
 

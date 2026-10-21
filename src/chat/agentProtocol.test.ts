@@ -1131,7 +1131,16 @@ suite('Gemini CLI', () => {
 			{ type: 'turnEnd' },
 		]);
 		assert.deepStrictEqual(geminiTurnEnd({ stopReason: 'cancelled' }), [{ type: 'turnEnd', error: 'Stopped.' }]);
-		assert.match(String((geminiTurnEnd({ stopReason: 'max_tokens' })[0] as { error?: string }).error), /output limit/);
+		// The models the turn ran on (`_meta.quota.model_usage`), only when they are not the one picked.
+		const routed = { ...result, _meta: { quota: { model_usage: [{ model: 'gemini-3-flash-preview', token_count: {} }, { model: 'gemini-3-flash-preview' }] } } };
+		assert.deepStrictEqual((geminiTurnEnd(routed, 'auto')[0] as { models?: string[] }).models, ['gemini-3-flash-preview']);
+		assert.deepStrictEqual((geminiTurnEnd(routed)[0] as { models?: string[] }).models, ['gemini-3-flash-preview']);
+		assert.strictEqual((geminiTurnEnd(routed, 'gemini-3-flash-preview')[0] as { models?: string[] }).models, undefined);
+		assert.strictEqual((geminiTurnEnd({ ...result, _meta: { quota: { model_usage: 'x' } } }, 'auto')[0] as { models?: string[] }).models, undefined);
+		// `max_tokens` is Gemini's `ContextWindowWillOverflow`, not the output limit.
+		assert.match(String((geminiTurnEnd({ stopReason: 'max_tokens' })[0] as { error?: string }).error), /context window.*new chat/);
+		// `max_turn_requests` is the turn limit or a loop Gemini detected.
+		assert.match(String((geminiTurnEnd({ stopReason: 'max_turn_requests' })[0] as { error?: string }).error), /limit of model requests, or found the model repeating/);
 	});
 
 	const shell = {
@@ -1201,13 +1210,27 @@ suite('Gemini CLI errors', () => {
 		assert.match(geminiErrorText(503, 'The model is overloaded.'), /service failed.*again/);
 	});
 
+	test('a used-up model quota is told apart from a short rate limit', () => {
+		// The words `TerminalQuotaError` is recognised by in Gemini CLI 0.64; over ACP they survive as a 499 or 503.
+		const quota = geminiErrorText(503, 'You have exhausted your capacity on this model. Your quota will reset after 3h20m15s.');
+		assert.match(quota, /quota for this Gemini model is used up until it resets after 3h20m15s.*Pick another model/);
+		assert.match(geminiErrorText(499, 'MODEL_CAPACITY_EXHAUSTED'), /used up for now/);
+		// A 429 is always "Rate limit exceeded" over ACP, so it may be the day's quota too.
+		assert.match(geminiErrorText(429, 'Rate limit exceeded. Try again later.'), /day's quota/);
+	});
+
 	test('"Internal error" is replaced by the details it carries', () => {
 		assert.strictEqual(geminiErrorText(-32603, 'Internal error', 'Invalid or unavailable mode: x'), 'Invalid or unavailable mode: x');
 	});
 
 	test('a process that could not start or stopped says what to do next', () => {
 		assert.match(geminiExitText('The process exited with code 127: env: node: No such file or directory', true), /needs Node\.js 20/);
-		assert.match(geminiExitText('The process exited with code 52: Error in settings.json', true), /could not start.*malformed/);
+		assert.match(geminiExitText('The process exited with code 1: something else', true), /could not start.*malformed/);
+		// Gemini CLI's fatal exit codes: 41 credentials, 52 settings, 55 an untrusted folder.
+		assert.match(geminiExitText('The process exited with code 41: COMPUTE_ADC failed', true), /not signed in.*Open Gemini CLI in Terminal/);
+		assert.match(geminiExitText('The process exited with code 52: Error in settings.json', true), /could not read its settings/);
+		assert.match(geminiExitText('The process exited with code 55.', false), /does not trust/);
+		assert.doesNotMatch(geminiExitText('The process exited with code 410.', false), /not signed in/);
 		assert.match(geminiExitText('The process was stopped (SIGKILL).', false), /stopped.*next message starts it again/);
 	});
 });

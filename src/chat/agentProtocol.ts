@@ -568,7 +568,8 @@ export type AgentEvent =
 	| { readonly type: 'autoTurn' }
 	| { readonly type: 'session'; readonly id: string }
 	| { readonly type: 'turnEnd'; readonly error?: string; readonly tooLong?: boolean }
-	| { readonly type: 'tokens'; readonly input: number; readonly output: number; readonly cached: number; readonly costUsd?: number; readonly cumulative: boolean }
+	/** `models`: the models that actually answered the turn, when they are not the one picked (Gemini's Auto). */
+	| { readonly type: 'tokens'; readonly input: number; readonly output: number; readonly cached: number; readonly costUsd?: number; readonly cumulative: boolean; readonly models?: readonly string[] }
 	| { readonly type: 'limits'; readonly windows: readonly UsageWindow[]; readonly usingCredits?: boolean }
 	/**
 	 * How full the conversation's context window is: `used` tokens the next
@@ -2228,22 +2229,35 @@ function geminiToolUpdate(u: Record<string, unknown>): ToolUpdate {
  * (`inputTokens` with the cached part inside it, `cachedReadTokens`,
  * `outputTokens`, `thoughtTokens`). The tokens are the turn's own; thinking
  * counts as output, as Claude Code's does.
+ *
+ * `_meta.quota.model_usage` names each model a request of the turn ran on (read
+ * in 0.64's `acpSession.ts`, `buildPromptResponse`) — with Auto, the model it
+ * chose, which nothing else reports. Passed on only when it is not simply
+ * `chosen`, the model picked in the chat, so a turn on a named model adds nothing.
  */
-export function geminiTurnEnd(result: unknown): AgentEvent[] {
+export function geminiTurnEnd(result: unknown, chosen?: string): AgentEvent[] {
 	const r = isRecord(result) ? result : {};
 	const usage = isRecord(r.usage) ? r.usage : undefined;
+	const quota = isRecord(r._meta) && isRecord(r._meta.quota) ? r._meta.quota : undefined;
+	const used = [...new Set((Array.isArray(quota?.model_usage) ? quota.model_usage : [])
+		.map(u => isRecord(u) && typeof u.model === 'string' ? oneLine(u.model, 80) : '')
+		.filter(Boolean))].slice(0, 4);
+	const models = used.length && used.some(m => m !== chosen) ? { models: used } : {};
 	const events: AgentEvent[] = usage
-		? [{ type: 'tokens', input: num(usage.inputTokens), output: num(usage.outputTokens) + num(usage.thoughtTokens), cached: num(usage.cachedReadTokens), cumulative: false }]
+		? [{ type: 'tokens', input: num(usage.inputTokens), output: num(usage.outputTokens) + num(usage.thoughtTokens), cached: num(usage.cachedReadTokens), cumulative: false, ...models }]
 		: [];
 	switch (r.stopReason) {
 		case 'cancelled':
 			events.push({ type: 'turnEnd', error: 'Stopped.' });
 			break;
+		// Read in 0.64's `acpSession.ts`: `max_tokens` is `ContextWindowWillOverflow`
+		// — the next request would not fit the context window — not the output limit.
 		case 'max_tokens':
-			events.push({ type: 'turnEnd', error: 'The reply reached the model\'s output limit.' });
+			events.push({ type: 'turnEnd', error: 'The conversation no longer fits the model\'s context window, so Gemini CLI stopped the turn. Start a new chat.' });
 			break;
+		// Both `MaxSessionTurns` and `LoopDetected` end the turn this way.
 		case 'max_turn_requests':
-			events.push({ type: 'turnEnd', error: 'Gemini CLI reached its limit of model requests for one turn.' });
+			events.push({ type: 'turnEnd', error: 'Gemini CLI stopped the turn: it reached its limit of model requests, or found the model repeating itself. Send the message again, rephrase it, or pick another model.' });
 			break;
 		case 'refusal':
 			events.push({ type: 'turnEnd', error: 'The model refused to answer.' });
@@ -2271,8 +2285,16 @@ export function geminiErrorText(code: number | undefined, message: string, detai
 	if (code === -32000) {
 		return `Gemini CLI is not signed in, or its credentials were refused (${said}). Sign in with ${geminiTerminalCommand}, then send the message again.`;
 	}
+	// Gemini CLI's own test for a quota that waiting does not fix (`TerminalQuotaError`
+	// in 0.64; Gemini Code Assist reads the same words). Over ACP it survives only
+	// as a 499 or 503 — a 429 is rewritten to "Rate limit exceeded" whatever it was.
+	if (/exhausted your capacity|capacity exceeded|MODEL_CAPACITY_EXHAUSTED|quota will reset/i.test(said)) {
+		const reset = /reset after ([^.()]{1,60})/i.exec(said)?.[1]?.trim();
+		return `The quota for this Gemini model is used up${reset ? ` until it resets after ${reset}` : ' for now'} (${said}). Pick another model and send the message again.`;
+	}
 	if (code === 429 || /rate limit|quota|resource.?exhausted/i.test(said)) {
-		return `Gemini's rate limit or quota is used up (${said}). Wait a little and send the message again, or pick another model.`;
+		// Gemini CLI sends every 429 as this one sentence, so it may be the day's quota as well as a short limit.
+		return `Gemini's rate limit or quota is used up (${said}). Wait a little and send the message again; if it keeps failing, the day's quota for this model may be spent — pick another model.`;
 	}
 	if (code === 404 || /not found|not supported for generateContent/i.test(said)) {
 		return `This model is not available to your Gemini account (${said}). Pick another model and send the message again.`;
@@ -2300,6 +2322,15 @@ export function geminiExitText(reason: string, starting: boolean): string {
 	}
 	if (/ENOENT|EACCES/.test(reason)) {
 		return `Gemini CLI could not be started (${reason}). Refresh the agents, or set aiBrowser.chat.geminiPath.`;
+	}
+	// Gemini CLI's fatal exit codes (`FatalError` subclasses in 0.64's core).
+	switch (/exited with code (\d+)/.exec(reason)?.[1]) {
+		case '41':
+			return `Gemini CLI is not signed in, or its credentials were refused (${reason}). Sign in with ${geminiTerminalCommand}, then send the message again.`;
+		case '52':
+			return `Gemini CLI could not read its settings (${reason}). Fix the settings file it names — run ${geminiTerminalCommand} to see it — then send the message again.`;
+		case '55':
+			return `Gemini CLI refused to run in a folder it does not trust (${reason}). Trust it in Gemini CLI (${geminiTerminalCommand}) — or, for a repository the chat fetched, with “Trust this repository's settings…” under the folder button — then send the message again.`;
 	}
 	return starting
 		? `Gemini CLI could not start (${reason}). If its settings are malformed it says so there: run ${geminiTerminalCommand} to see.`

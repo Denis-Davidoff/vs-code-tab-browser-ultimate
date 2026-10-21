@@ -1983,13 +1983,15 @@ function renderTail(tail: HTMLElement, s: ChatViewState, turn: Turn, last: boole
 	const text = worked !== undefined ? `${workedPhrase(p?.at)} for ${duration(worked)}` : '';
 	// Tokens only when the agent reported them for this turn: ↑ sent, ↓ received.
 	const tokens = p?.tokensIn !== undefined ? `↑ ${compact(p.tokensIn)}  ↓ ${compact(p.tokensOut ?? 0)}` : '';
+	// The model that answered, when it is not the one picked — what Gemini's Auto chose.
+	const models = Array.isArray(p?.models) ? p.models.filter(m => typeof m === 'string').join(', ') : '';
 	// The turn is over and agents it (or an earlier one) started still work:
 	// said at the very bottom, under "Worked for …" (asked for).
 	const runningAgents = last ? agentRows(s).filter(a => a.status === 'running') : [];
 	const agents = runningAgents.length;
 	// How long the background work has gone on: since the first of them started.
 	const agentsSince = agents ? Math.min(...runningAgents.map(a => a.startedAt)) : 0;
-	const sig = `${text}|${tokens}|${agents}|${agentsSince}`;
+	const sig = `${text}|${tokens}|${models}|${agents}|${agentsSince}`;
 	if (tail.dataset.sig !== sig) {
 		tail.dataset.sig = sig;
 		// A square where the working star was: the same slot, so the line does
@@ -1999,6 +2001,7 @@ function renderTail(tail: HTMLElement, s: ChatViewState, turn: Turn, last: boole
 				? el('div', { class: 'worked' },
 					el('span', { class: 'working-glyph done', text: '■' }),
 					el('span', { class: 'worked-text', text }),
+					models ? el('span', { class: 'worked-model', text: models, title: `Answered by ${models} — the model chosen for this turn` }) : undefined,
 					tokens ? el('span', {
 						class: 'worked-tokens', text: tokens,
 						title: `${(p?.tokensIn ?? 0).toLocaleString()} tokens sent${p?.tokensCached ? `, ${p.tokensCached.toLocaleString()} of them from the cache` : ''}; ${(p?.tokensOut ?? 0).toLocaleString()} received`,

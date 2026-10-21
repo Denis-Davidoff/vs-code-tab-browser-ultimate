@@ -81,7 +81,15 @@ function processArgs(trust: Trust): string[] {
 	return ['--acp', ...(trust === true ? ['--skip-trust'] : [])];
 }
 
-/** What a chat process is started with; see the comment above. */
+/**
+ * What a chat process is started with; see the comment above. **`SURFACE` is
+ * deliberately not set**: in 0.64 it is not only telemetry — `createContentGenerator`
+ * builds the User-Agent of every model request from it. Unset, Gemini CLI sees
+ * `VSCODE_PID` (inherited from VS Code's processes) and identifies as
+ * `CloudCodeVSCode/… proxy_client=geminicli`; any other value makes it
+ * `GeminiCLI/<version>/<model> (…; <surface>)`, and what the service does
+ * differently for that is unmeasured.
+ */
 function processEnv(binary: string, trust: Trust): Record<string, string> {
 	return {
 		GEMINI_CLI_NO_RELAUNCH: 'true',
@@ -484,7 +492,7 @@ class GeminiSession implements AgentSession {
 		connection.request('session/prompt', { sessionId: this._sessionId, prompt }, null).then(
 			result => {
 				if (this._connection === connection) {
-					this._finishTurn(geminiTurnEnd(result));
+					this._finishTurn(geminiTurnEnd(result, this._model));
 				}
 			},
 			err => {
