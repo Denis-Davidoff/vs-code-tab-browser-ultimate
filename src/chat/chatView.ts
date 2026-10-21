@@ -276,6 +276,7 @@ const postDelayMs = 40;
 const tabTitleLimit = 80;
 
 interface RememberedSelection {
+	ultracode?: boolean;
 	agent?: AgentId;
 	models: Partial<Record<AgentId, string>>;
 	/** Keyed by `<agent>:<model>`, so each model keeps its own position. */
@@ -379,6 +380,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private _pendingOpen: vscode.Disposable | undefined;
 	private readonly _attachmentImages = new Map<string, vscode.Uri>();
 	private readonly _tabHost: TabHost = {
+		ultracodeDefault: () => this._context.globalState.get<RememberedSelection>(selectionKey)?.ultracode ?? this._remembered.ultracode ?? false,
 		cwd: () => this._windowCwd(),
 		projectRoot: () => vscode.workspace.workspaceFolders?.find(f => f.uri.scheme === 'file')?.uri.fsPath,
 		ownSettings: folder => !this._untrusted(folder),
@@ -1842,7 +1844,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}
 		const remembered = this._remembered.efforts[`${agent.id}:${model.id}`];
 		const effort = model.efforts.includes(remembered) ? remembered : model.defaultEffort ?? model.efforts[0];
-		return { agent: agent.id, model: model.id, effort };
+		return { agent: agent.id, model: model.id, effort,
+			ultracode: agent.id === 'claude' && model.efforts.includes('xhigh') ? tab.chat.ultracode ?? false : undefined };
 	}
 
 	private _select(selection: Selection): void {
@@ -1853,6 +1856,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		// the answer.
 		const switching = !!selection.agent && selection.agent !== before.agent && this._active.started;
 		const next: RememberedSelection = {
+			ultracode: selection.agent === 'claude' && typeof selection.ultracode === 'boolean' ? selection.ultracode : this._context.globalState.get<RememberedSelection>(selectionKey)?.ultracode ?? this._remembered.ultracode,
 			agent: switching ? this._remembered.agent : selection.agent ?? this._remembered.agent,
 			models: { ...this._remembered.models },
 			efforts: { ...this._remembered.efforts },
@@ -1862,6 +1866,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}
 		if (selection.agent && selection.model && selection.effort) {
 			next.efforts[`${selection.agent}:${selection.model}`] = selection.effort;
+		}
+		if (!switching && selection.agent === 'claude' && typeof selection.ultracode === 'boolean') {
+			this._active.chat.ultracode = selection.ultracode;
+			void this._save(this._active.chat);
+			this._saveTabs();
 		}
 		this._remembered = next;
 		void this._context.globalState.update(selectionKey, next).then(undefined, () => { /* best effort */ });
@@ -1916,7 +1925,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		if (!queued) {
 			void this._rememberInput(text);
 		}
-		const { agent, model, effort } = this._selection(tab);
+		const { agent, model, effort, ultracode } = this._selection(tab);
 		const backend = agent && this._registry.backend(agent);
 		if (!agent || !model || !backend) {
 			const problems = this._registry.agents.map(a => a.problem).filter(Boolean);
@@ -1961,7 +1970,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 					}
 					const needsTitle = !tab.started && !tab.chat.named;
 					const titleContext = [text.slice(0, 1000), ...attachments.slice(0, 5).map(a => a.chip.label.slice(0, 80))].join('\n').slice(0, 1200);
-					const sent = tab.send(text, attachments, agent, model, effort, backend, step);
+					const sent = tab.send(text, attachments, agent, model, effort, backend, step, ultracode);
 					if (needsTitle) { this._generateTabTitle(tab, agent, titleContext); }
 					const delivered = await sent;
 					this._saveTabs();
@@ -4600,8 +4609,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 	/** The open tabs as they were when the window closed; at least one, empty if nothing was open. */
 	private _restoreTabs(): void {
-		const saved = this._context.workspaceState.get<{ ids?: unknown; fresh?: unknown; active?: unknown; names?: unknown; folders?: unknown; repos?: unknown }>(this._tabsStorageKey);
+		const saved = this._context.workspaceState.get<{ ids?: unknown; fresh?: unknown; active?: unknown; names?: unknown; folders?: unknown; repos?: unknown; ultracodes?: unknown }>(this._tabsStorageKey);
 		const repos = saved?.repos && typeof saved.repos === 'object' ? saved.repos as Record<string, { copy?: unknown; references?: unknown }> : {};
+		const ultracodes = saved?.ultracodes && typeof saved.ultracodes === 'object' ? saved.ultracodes as Record<string, unknown> : {};
 		const names = saved?.names && typeof saved.names === 'object' ? saved.names as Record<string, unknown> : {};
 		const folders = saved?.folders && typeof saved.folders === 'object' ? saved.folders as Record<string, unknown> : {};
 		const strings = (value: unknown) => Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : [];
@@ -4640,6 +4650,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				this._tabs.push(new ChatTab(this._tabHost, chat));
 			}
 		}
+		for (const tab of this._tabs) {
+			const mode = ultracodes[tab.chat.id];
+			if (typeof mode === 'boolean') { tab.chat.ultracode = mode; }
+		}
 		if (!this._tabs.length) {
 			this._tabs.push(new ChatTab(this._tabHost, newChat(this._remembered.agent ?? 'claude')));
 		}
@@ -4656,6 +4670,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		if (identity) { this._services.panels.remember(identity, Object.fromEntries(this._savedDrafts)); }
 		const value = {
 			ids: this._tabs.map(t => t.chat.id),
+			ultracodes: Object.fromEntries(this._tabs.map(t => [t.chat.id, t.chat.ultracode])),
 			fresh: this._tabs.filter(t => !t.started).map(t => t.chat.id),
 			// A tab renamed before anything was sent from it has no history entry to
 			// keep its name in.
@@ -4873,7 +4888,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	private _rememberAgent(agent: AgentId): void {
-		this._remembered = { ...this._remembered, agent };
+		this._remembered = { ...this._remembered, agent,
+			ultracode: this._context.globalState.get<RememberedSelection>(selectionKey)?.ultracode ?? this._remembered.ultracode };
 		this._context.globalState.update(selectionKey, this._remembered).then(undefined, () => { /* best effort */ });
 	}
 

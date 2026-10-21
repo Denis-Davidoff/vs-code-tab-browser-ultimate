@@ -46,3 +46,33 @@ test('tab reordering uses vertical midpoints in the sidebar and horizontal midpo
 	assert.equal(dropAfter(nearBottom, rect), true);
 	assert.equal(dropAfter(nearRight, rect), false);
 });
+
+test('compact tab metadata retains identity and reports status and capped agent counts', async () => {
+	const { readFileSync } = await import('node:fs');
+	const { runInNewContext } = await import('node:vm');
+	const { transpileModule } = await import('typescript');
+	const source = readFileSync('preview-src/chat.ts', 'utf8');
+	const body = /function fillTab\([\s\S]*?\n\}/.exec(source)![0];
+	const element = (_tag: string, props: { class?: string; text?: string; [key: string]: unknown } = {}, ...children: unknown[]) => ({
+		...props, children, attributes: {} as Record<string, string>,
+		setAttribute(name: string, value: string) { this.attributes[name] = value; },
+		removeAttribute(name: string) { delete this.attributes[name]; },
+	});
+	const fill = runInNewContext(transpileModule(body + '\nfillTab;', {}).outputText, {
+		el: element, icon: (name: string) => element('i', { icon: name }),
+		tabMark: (status: string) => element('span', { status }),
+		tabMarks: { working: 'Working', waiting: 'Waiting', read: 'Finished', unread: 'Unread', failed: 'Failed' },
+		agentsOf: (t: { agents: number; skillRuns: number }) => t.agents + t.skillRuns,
+	});
+	for (const status of ['working', 'waiting', 'read', 'unread', 'failed']) {
+		const children: ReturnType<typeof element>[] = [];
+		const label = { title: '', setAttribute() {}, replaceChildren(...nodes: typeof children) { children.push(...nodes); } };
+		const tab = { title: 'A named task', status, agents: 101, skillRuns: 3 };
+		fill({ tab, label, close: {}, compactNumber: 7 }, 'Claude');
+		assert.equal(children[0].class, `tab-compact status-${status}`);
+		assert.equal((children[0].children[0] as { text: string }).text, '7');
+		assert.equal(children.at(-1)?.text, '99+');
+		assert.match(label.title, /A named task — Claude/);
+		assert.match(label.title, /104 agents running/);
+	}
+});

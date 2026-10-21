@@ -64,7 +64,8 @@ function fixture(agent: 'codex' | 'claude' = 'codex') {
 		await Promise.resolve(); await Promise.resolve();
 		return timer.delay;
 	};
-	return { tab, session, sent, timers, event, end, start, tick, transientTurnError };
+	return { tab, session, sent, timers, event, end, start, tick, transientTurnError, host,
+		makeTab: (chat = newChat(agent)) => new ChatTab(host, chat) };
 }
 
 for (const agent of ['codex', 'claude'] as const) {
@@ -178,4 +179,100 @@ test('automatic continuation preserves an explicitly paused queue', async () => 
 	await f.tick(); f.end();
 	assert.equal(f.tab.paused?.by, 'user');
 	assert.equal(f.tab.busy, false);
+});
+
+test('Ultracode survives automatic continuation without changing effort', async () => {
+	const f = fixture('claude');
+	await f.tab.send('Complete the task', [], 'claude', 'chosen-model', 'low', {} as AgentBackend, undefined, true);
+	assert.equal(f.sent[0].input.ultracode, true);
+	f.end(capacity); await f.tick();
+	assert.equal(f.sent[1].input.ultracode, true);
+	assert.equal(f.sent[1].effort, 'low');
+});
+
+test('Claude launches Ultracode independently and preserves tool approval settings', async () => {
+	class Emitter<T> {
+		private listeners: ((event: T) => void)[] = [];
+		event = (listener: (event: T) => void) => { this.listeners.push(listener); return { dispose() {} }; };
+		fire(event: T) { this.listeners.forEach(fn => fn(event)); }
+		dispose() {}
+	}
+	const processes: FakeProcess[] = [];
+	class FakeProcess {
+		readonly messages = new Emitter<Record<string, unknown>>();
+		readonly exits = new Emitter<string>();
+		onMessage = this.messages.event;
+		onExit = this.exits.event;
+		exited = false;
+		readonly args: string[];
+		constructor(_binary: string, args: string[]) { this.args = args; processes.push(this); }
+		send() {}
+		dispose() { this.exited = true; }
+	}
+	const { ClaudeBackend } = load<typeof import('./claudeAgent.ts')>('src/chat/claudeAgent.ts', {
+		vscode: { EventEmitter: Emitter, l10n: { t: (text: string) => text } },
+		'./agentProtocol': protocol, './agentProcess': { JsonLineProcess: FakeProcess },
+		'./autoTitle': {}, './commitMessage': {}, '../core/safeFiles': {},
+		'../core/uuid': {}, '../core/chatCapability': {},
+	});
+	const backend = new ClaudeBackend('unused-test-binary', () => '/tmp');
+	const session = backend.openSession('/tmp');
+	try {
+		await session.send({ text: 'Task', images: [], ultracode: true }, 'opus', 'low');
+		const first = processes[0];
+		assert.equal(first.args.filter(arg => arg === '--settings').length, 1);
+		const settings = JSON.parse(first.args[first.args.indexOf('--settings') + 1]);
+		assert.equal(settings.ultracode, true);
+		assert.ok(settings.permissions.ask.length > 0, 'workflow mode retains mandatory approval rules');
+		assert.equal(first.args[first.args.indexOf('--effort') + 1], 'low');
+		first.messages.fire({ type: 'result', subtype: 'success', result: '' });
+		await session.send({ text: 'Next task', images: [], ultracode: false }, 'opus', 'low');
+		assert.equal(processes.length, 2, 'changing only Ultracode restarts an idle process');
+		assert.equal(first.exited, true);
+		const second = processes[1];
+		assert.equal(JSON.parse(second.args[second.args.indexOf('--settings') + 1]).ultracode, false);
+		assert.equal(second.args[second.args.indexOf('--effort') + 1], 'low');
+	} finally { backend.dispose(); }
+});
+
+
+test('each chat snapshots the latest UltraCode default and retains its own setting', () => {
+	const f = fixture('claude');
+	let defaultMode = true;
+	f.host.ultracodeDefault = () => defaultMode;
+	const first = f.makeTab();
+	assert.equal(first.chat.ultracode, true);
+	defaultMode = false;
+	const second = f.makeTab();
+	assert.equal(second.chat.ultracode, false);
+	assert.equal(first.chat.ultracode, true, 'changing the default does not change an existing tab');
+	first.chat.ultracode = false;
+	defaultMode = true;
+	const restored = f.makeTab(JSON.parse(JSON.stringify(first.chat)));
+	assert.equal(restored.chat.ultracode, false, 'saved false is not replaced by a true default');
+	first.start({ ...second.chat });
+	assert.equal(first.chat.ultracode, false, 'opening another conversation keeps its own mode');
+});
+
+test('toggling UltraCode updates only the active chat and the default for future tabs', () => {
+	const source = readFileSync('src/chat/chatView.ts', 'utf8');
+	const method = /private _select\([\s\S]*?\n\t\}/.exec(source)![0].replace('private ', '');
+	let saved: { ultracode?: boolean } = { ultracode: false };
+	const select = runInNewContext(transpileModule(`({ ${method} })`, { compilerOptions: { target: ScriptTarget.ES2022 } }).outputText, { selectionKey: 'selection' })._select;
+	const first = { chat: { ultracode: false }, started: false };
+	const second = { chat: { ultracode: false }, started: false };
+	const host = {
+		_active: first, _remembered: { models: {}, efforts: {}, ultracode: false },
+		_context: { globalState: { get: () => saved, update: async (_key: string, value: typeof saved) => { saved = value; } } },
+		_selection: () => ({ agent: 'claude' }), _save: async () => {}, _saveTabs() {}, _post() {},
+	};
+	select.call(host, { agent: 'claude', ultracode: true });
+	assert.equal(first.chat.ultracode, true);
+	assert.equal(second.chat.ultracode, false);
+	assert.equal(saved.ultracode, true);
+	host._active = second;
+	select.call(host, { agent: 'claude', ultracode: false });
+	assert.equal(first.chat.ultracode, true);
+	assert.equal(second.chat.ultracode, false);
+	assert.equal(saved.ultracode, false);
 });

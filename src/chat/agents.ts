@@ -26,6 +26,8 @@ export interface TurnImage {
 }
 
 export interface TurnInput {
+	/** Claude-only workflow toggle, independent of reasoning effort. */
+	readonly ultracode?: boolean;
 	readonly text: string;
 	readonly images: readonly TurnImage[];
 }

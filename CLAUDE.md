@@ -6770,10 +6770,29 @@ switch — see [Tabs](#tabs-several-conversations-at-once). "Started" means *the
 something* (`started`), not "has entries" — a notice is an entry too, and counting it made the new
 chat belong to the agent just switched away from (#335).
 
+The round checkbox next to effort controls Claude Ultracode separately from effort. Its thin
+ring contains a translucent grey ✦ when off and a yellow ✦ when on; the tooltip highlights
+UltraCode in bold yellow. It is
+shown for Claude models advertising `xhigh` support, requires Claude Code 2.1.284 or later,
+and stores its value per conversation, including fresh tabs restored after reload. The last
+explicit toggle is also the global default inherited once by new tabs; changing it in one
+tab never changes existing tabs. New tabs in another surface read the current global default. The session launch merges `ultracode` into
+its existing `--settings` JSON, preserving the mandatory Chat control approval rules;
+`--effort` still receives the chosen reasoning level. Like effort, a change restarts an
+idle process with `--resume`, never interrupts current work or background agents, and is
+preserved when automatically continuing after a temporary error. No settings files change.
+
 ### Tabs: several conversations at once
 
 At webview widths of 1000 CSS pixels and above, the same tab strip becomes a 252 px left
-sidebar with a vertical, scrollable list. Its header toggle collapses it to a 52 px rail;
+sidebar with a vertical, scrollable list. Its header toggle collapses it to a 52 px rail
+that keeps the tabs as 36 px tiles. A tab keeps its own number and border colour for its
+node lifetime, even after reordering. The center shows a chat icon before work starts,
+the activity spinner while working, a waiting ring for approvals, a check when finished,
+or an error icon; a corner badge counts agents and background skill runs (capped at 99+).
+The active tile has a tinted background and a stronger frame. Titles/statuses remain in
+tooltips and accessible labels. Double-click to rename expands the drawer; the compact
+context menu also offers Close chat, expanding it for any required stop confirmation.
 `ViewState.chatDrawerCollapsed` retains that preference alongside drafts across reloads.
 A footer button moves the sidebar left or right; `ViewState.chatDrawerSide` retains
 its side (left by default). Collapse sits beside Chats, toward the conversation (right in the left sidebar, left in

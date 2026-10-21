@@ -379,7 +379,7 @@ export class ClaudeBackend implements AgentBackend {
 class ClaudeSession implements AgentSession {
 	private _process: JsonLineProcess | undefined;
 	private _control: ControlChannel | undefined;
-	private _launched: { model: string; effort: string | undefined } | undefined;
+	private _launched: { model: string; effort: string | undefined; ultracode?: boolean } | undefined;
 	private _sessionId: string | undefined;
 	/** Task id to the call it belongs to, from `task_started`; read for `task_updated`. */
 	private readonly _tasks = new Map<string, string>();
@@ -453,17 +453,17 @@ class ClaudeSession implements AgentSession {
 		}
 		// A different model or effort needs a new process — but never in the
 		// middle of a turn, where the message joins the running one instead.
-		const changed = this._launched?.model !== model || this._launched?.effort !== effort;
+		const changed = this._launched?.model !== model || this._launched?.effort !== effort || this._launched?.ultracode !== input.ultracode;
 		if (this._process && !this.running && !this._agents.size && changed) {
 			this._stopProcess();
 		} else if (this._process && changed && this._agents.size && !this._toldWaiting) {
 			// A restart would end the agents still working; the change waits for
 			// them, and the user is told rather than left to wonder.
 			this._toldWaiting = true;
-			this._onEvent.fire({ type: 'notice', text: vscode.l10n.t("The new model or effort applies once the background agents have finished.") });
+			this._onEvent.fire({ type: 'notice', text: vscode.l10n.t("The new model, effort or Ultracode setting applies once the background agents have finished.") });
 		}
 		if (!this._process || this._process.exited) {
-			this._start(model, effort, dir);
+			this._start(model, effort, dir, input.ultracode);
 		}
 
 		const content: unknown[] = input.images.map(image => ({
@@ -553,9 +553,13 @@ class ClaudeSession implements AgentSession {
 		}
 	}
 
-	private _start(model: string, effort: string | undefined, dir: string | undefined): void {
+	private _start(model: string, effort: string | undefined, dir: string | undefined, ultracode?: boolean): void {
 		const config = this._writeBrowserConfig(dir);
 		const launch = [...args, '--model', model];
+		if (typeof ultracode === 'boolean') {
+			const settingsAt = launch.indexOf('--settings') + 1;
+			launch[settingsAt] = JSON.stringify({ ...JSON.parse(launch[settingsAt]), ultracode });
+		}
 		if (effort) {
 			launch.push('--effort', effort);
 		}
@@ -584,7 +588,7 @@ class ClaudeSession implements AgentSession {
 			(id, request) => { if (process === this._process) { this._onEvent.fire({ type: 'approval', request: claudeApproval(id, request, this._root) }); } },
 			id => { if (process === this._process) { this._onEvent.fire({ type: 'approvalDone', id }); } },
 		);
-		this._launched = { model, effort };
+		this._launched = { model, effort, ultracode };
 		this._processCost = this._sessionId ? this._sessionCost : 0;
 
 		process.onMessage(message => {

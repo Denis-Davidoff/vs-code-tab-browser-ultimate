@@ -4459,7 +4459,7 @@ body.vscode-high-contrast-light .context-pie {
 	color: var(--fg-3);
 	font-size: 11px;
 }
-.workdir-status .workdir-button { flex: none; }
+.workdir-status .workdir-button { flex: none; margin-left: 2px; }
 .workdir-summary {
 	display: flex;
 	align-items: center;
@@ -4686,7 +4686,7 @@ body.vscode-high-contrast-light .context-pie {
 .git-current-check { color: var(--vscode-gitDecoration-addedResourceForeground, #73c991); }
 .git-branch-select.current:disabled { opacity: 1; font-weight: 600; background: color-mix(in srgb, var(--vscode-gitDecoration-addedResourceForeground, #73c991) 13%, transparent); }
 
-.git-refresh-slot { display: inline-flex; flex: none; }
+.git-refresh-slot { display: inline-flex; flex: none; margin-right: 5px; }
 
 .git-branch-search-row { display: flex; align-items: center; gap: 4px; padding-right: 6px; }
 .git-branch-search-row .palette-search-field { flex: 1; min-width: 0; }
@@ -4828,7 +4828,8 @@ body.vscode-high-contrast-light .context-pie {
 
 .chat-drawer-header,
 .chat-drawer-footer,
-.tab-add-label {
+.tab-add-label,
+.tab-compact {
 	display: none;
 }
 
@@ -4969,10 +4970,135 @@ body.vscode-high-contrast-light .context-pie {
 	.chat-drawer-footer .ghost { width: 30px; padding: 0; }
 	.chat-drawer-collapsed .chat-drawer-header { padding: 8px; }
 	.chat-drawer-collapsed .chat-drawer-title,
-	.chat-drawer-collapsed .tab-row,
 	.chat-drawer-collapsed .tab-confirm { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
 	.effort-range::-webkit-slider-thumb { transition: none; }
+}
+
+/* Claude's workflow mode is a separate round checkbox, not an effort stop. */
+.ultracode-toggle {
+	position: relative;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex: none;
+	width: 24px;
+	height: 26px;
+	cursor: pointer;
+}
+.ultracode-toggle[hidden] { display: none; }
+.ultracode-input {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	margin: 0;
+	opacity: 0;
+	cursor: pointer;
+}
+.ultracode-indicator {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 14px;
+	height: 14px;
+	border-radius: 50%;
+	border: 1px solid var(--fg-faint);
+	background: var(--soft);
+	pointer-events: none;
+}
+.ultracode-symbol {
+	font-size: 12px;
+	line-height: 1;
+	color: var(--fg-3);
+	opacity: .45;
+}
+.ultracode-input:checked + .ultracode-indicator .ultracode-symbol {
+	color: #efd28e;
+	opacity: 1;
+}
+.ultracode-tip-name { color: #efd28e; font-weight: 700; }
+.ultracode-input:focus-visible + .ultracode-indicator {
+	outline: 2px solid var(--accent);
+	outline-offset: 3px;
+}
+
+
+/* Collapsing the drawer retains the live chats as compact identity/status tiles. */
+@media (min-width: 1000px) {
+	.chat-drawer-collapsed .tab-row {
+		padding: 4px 6px 10px;
+		align-items: center;
+		gap: 8px;
+		scrollbar-width: none;
+	}
+	.chat-drawer-collapsed .tab-row::-webkit-scrollbar { display: none; }
+	.chat-drawer-collapsed .tab {
+		position: relative;
+		width: 36px;
+		height: 36px;
+		min-height: 36px;
+		box-sizing: border-box;
+		border-color: color-mix(in srgb, var(--tab-identity) 65%, transparent);
+		border-radius: 8px;
+	}
+	.chat-drawer-collapsed .tab.active {
+		border-color: var(--tab-identity);
+		background: color-mix(in srgb, var(--tab-identity) 20%, var(--bg));
+
+	}
+	.chat-drawer-collapsed .tab-label {
+		position: relative;
+		width: 100%;
+		height: 34px;
+		min-height: 0;
+		padding: 0;
+	}
+	.chat-drawer-collapsed .tab-label > .tab-mark,
+	.chat-drawer-collapsed .tab-title,
+	.chat-drawer-collapsed .tab-close,
+	.chat-drawer-collapsed .tab-add-label { display: none; }
+	.chat-drawer-collapsed .tab-compact {
+		position: absolute;
+		inset: 0;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		color: var(--fg-2);
+	}
+	.chat-drawer-collapsed .tab-compact-number {
+		position: absolute;
+		top: 1px;
+		left: 3px;
+		font-size: 8px;
+		line-height: 10px;
+		color: var(--tab-identity);
+		font-variant-numeric: tabular-nums;
+	}
+	.chat-drawer-collapsed .tab-compact .working { transform: none; }
+	.chat-drawer-collapsed .tab-compact.status-unread { color: var(--ok); }
+	.chat-drawer-collapsed .tab-compact.status-failed { color: var(--warn); }
+	.chat-drawer-collapsed .tab-agents {
+		position: absolute;
+		right: 0;
+		bottom: 0;
+		z-index: 1;
+		min-width: 12px;
+		height: 12px;
+		padding: 0 2px;
+		border-radius: 4px;
+		background: var(--elevated, var(--bg));
+		color: var(--fg);
+		font-size: 9px;
+		line-height: 12px;
+		font-variant-numeric: tabular-nums;
+	}
+	.chat-drawer-collapsed .tab-add.ghost {
+		width: 36px;
+		justify-content: center;
+		padding: 0;
+		margin: 0;
+	}
 }

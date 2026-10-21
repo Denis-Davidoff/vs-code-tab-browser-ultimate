@@ -33,6 +33,8 @@ const storedToolLimit = 4_000;
 const restartQuietMs = 2_500;
 
 export interface StoredChat {
+	/** This conversation owns its workflow mode, independent of new-tab defaults. */
+	ultracode?: boolean;
 	id: string;
 	title: string;
 	/** Whose conversation this is. Fixed by the first message; see `started`. */
@@ -80,6 +82,7 @@ export interface Attachment {
 
 /** What a tab needs from the view that holds it. */
 export interface TabHost {
+	ultracodeDefault?(): boolean;
 	/** Where the agents work when the conversation picked no folder of its own. */
 	cwd(): string;
 	/** The project folder then, undefined when no local folder is open; see `AgentBackend.openSession`. */
@@ -310,6 +313,7 @@ export class ChatTab {
 	private _failuresBefore = 0;
 
 	constructor(private _host: TabHost, chat: StoredChat) {
+		chat.ultracode ??= this._host.ultracodeDefault?.() ?? false;
 		this._chat = chat;
 		this._failed = endedInError(chat);
 	}
@@ -629,7 +633,7 @@ export class ChatTab {
 		let delivered = false;
 		try {
 			const input = done.retryMode === 'continue'
-				? { text: done.asked ? withNextDecision(continueAfterError, done.asked) : continueAfterError, images: [] }
+				? { text: done.asked ? withNextDecision(continueAfterError, done.asked) : continueAfterError, images: [], ultracode: done.resend!.input.ultracode }
 				: done.resend!.input;
 			delivered = await session.send(input, done.resend!.model, done.resend!.effort);
 		} catch (err) {
@@ -665,6 +669,7 @@ export class ChatTab {
 		this.close();
 		this._closed = false;
 		this._discarded = false;
+		chat.ultracode ??= this._host.ultracodeDefault?.() ?? false;
 		this._chat = chat;
 		this._unseen = false;
 		this._failed = endedInError(chat);
@@ -819,7 +824,7 @@ export class ChatTab {
 
 	public async send(
 		text: string, attachments: readonly Attachment[],
-		agent: AgentId, model: string, effort: string | undefined, backend: AgentBackend, step?: SkillStep,
+		agent: AgentId, model: string, effort: string | undefined, backend: AgentBackend, step?: SkillStep, ultracode?: boolean,
 	): Promise<boolean> {
 		new AttachmentReferenceScope().assign(attachments.map(a => a.chip));
 		// A voice message is part of what the user says: what the chat shows and keeps is the
@@ -880,7 +885,7 @@ export class ChatTab {
 		const sent = asked ? withNextDecision(said, asked) : said;
 		const prompt = [sent, attachmentContext(context)].filter(Boolean).join('\n\n');
 		const images = attachments.map(a => a.image).filter((i): i is TurnImage => !!i);
-		pending.resend = { input: { text: prompt, images }, model, effort };
+		pending.resend = { input: { text: prompt, images, ...(agent === 'claude' ? { ultracode } : {}) }, model, effort };
 
 		const chat = this._chat;
 		const session = this._ensureSession(backend);

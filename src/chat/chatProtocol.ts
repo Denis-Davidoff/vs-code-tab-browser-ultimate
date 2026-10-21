@@ -410,6 +410,7 @@ export interface Selection {
 	readonly agent?: AgentId;
 	readonly model?: string;
 	readonly effort?: string;
+	readonly ultracode?: boolean;
 }
 
 /** NEWS.md, as the empty chat shows it: the introduction and the newest entries. */

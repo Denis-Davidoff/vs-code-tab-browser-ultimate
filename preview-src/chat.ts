@@ -174,6 +174,12 @@ effortRange.min = '0';
 effortRange.step = '1';
 effortRange.setAttribute('aria-label', 'Reasoning effort');
 const effortBox = el('label', { class: 'effort' }, effortRange);
+const ultracodeInput = el('input', { class: 'ultracode-input' });
+ultracodeInput.type = 'checkbox';
+ultracodeInput.setAttribute('aria-label', 'Ultracode — automatic workflows');
+const ultracodeBox = el('label', { class: 'ultracode-toggle' }, ultracodeInput,
+	el('span', { class: 'ultracode-indicator' }, el('span', { class: 'ultracode-symbol', text: '✦' })));
+ultracodeBox.hidden = true;
 const usageTitle = "Usage — your plan's limits for each agent, and this chat's tokens and cost";
 const usageRing = ringMeter(el('span', { class: 'ring-mark', text: 'U' }));
 const usageButton = button([usageRing], { class: 'ghost round usage-button', title: usageTitle });
@@ -201,7 +207,7 @@ queueButton.addEventListener('click', () => send('queue'));
 const approveToggle = button([], { class: 'pill approve-toggle' });
 
 // Settings and tools get deliberate rows in a narrow composer.
-const toolbarSettings = el('div', { class: 'toolbar-settings' }, agentPill, modelPill, effortBox, approveToggle);
+const toolbarSettings = el('div', { class: 'toolbar-settings' }, agentPill, modelPill, effortBox, ultracodeBox, approveToggle);
 const toolbarAttachments = el('span', { class: 'toolbar-attachments' }, plusButton, browserButton, slashButton);
 const toolbarEnd = el('span', { class: 'toolbar-end' }, agentsButton, contextButton, usageButton);
 const toolbar = el('div', { class: 'toolbar' }, toolbarAttachments, toolbarSettings, toolbarEnd);
@@ -1295,6 +1301,7 @@ let editingTab: string | undefined;
  * changed — a rebuild between a press and its release loses the click (#365).
  */
 interface TabNode {
+	readonly compactNumber: number;
 	readonly root: HTMLElement;
 	readonly label: HTMLButtonElement;
 	readonly close: HTMLButtonElement;
@@ -1304,6 +1311,7 @@ interface TabNode {
 	pendingTitle?: { readonly title: string; readonly until: number };
 }
 
+let nextCompactTabNumber = 1;
 const tabNodes = new Map<string, TabNode>();
 const wideChat = matchMedia('(min-width: 1000px)');
 const tabRow = el('div', { class: 'tab-row' });
@@ -1330,7 +1338,7 @@ function updateChatDrawer(): void {
 	drawerToggle.replaceChildren(icon(`chevron-${toggleDirection}`));
 	// The narrow strip remains horizontal regardless of the drawer preference.
 	tabStrip.setAttribute('aria-label', wideChat.matches ? 'Chat sidebar' : 'Open chats');
-	if (wideChat.matches && !chatDrawerCollapsed) {
+	if (wideChat.matches) {
 		requestAnimationFrame(() => tabNodes.get(state?.activeTab ?? '')?.root.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
 	}
 }
@@ -1594,7 +1602,9 @@ function tabNode(t: ChatTabSummary): TabNode {
 	const label = button([], { class: 'tab-label' });
 	const close = button([icon('close')], { class: 'tab-close' });
 	const root = el('div', { class: 'tab' }, label, close);
-	const node: TabNode = { root, label, close, tab: t, shown: '' };
+	const compactNumber = nextCompactTabNumber++;
+	root.style.setProperty('--tab-identity', `hsl(${(compactNumber * 137.508) % 360} 55% 67%)`);
+	const node: TabNode = { root, label, close, tab: t, shown: '', compactNumber };
 	makeTabDraggable(node);
 	root.addEventListener('contextmenu', event => {
 		event.preventDefault();
@@ -1616,8 +1626,10 @@ function tabNode(t: ChatTabSummary): TabNode {
 					draft: node.tab.id === draftTab ? currentDraft() : drafts[node.tab.chatId] ?? '' });
 			},
 		})));
+		const compact = wideChat.matches && chatDrawerCollapsed;
+		if (compact) { items.push({ icon: 'close', label: 'Close chat', run: () => node.close.click() }); }
 		openMenu(label, items.length ? items : [{ label: 'No other chat is open', disabled: true, run: () => {} }],
-			`Move chat to · ${(state?.chatSurfaces ?? []).length} open views`);
+			compact ? node.tab.title : `Move chat to · ${(state?.chatSurfaces ?? []).length} open views`);
 	});
 	label.addEventListener('click', event => {
 		if (performance.now() - chatTabDragEnded < 250) { return; }
@@ -1665,13 +1677,22 @@ function agentsOf(t: ChatTabSummary): number {
 
 function fillTab(node: TabNode, agent: string | undefined): void {
 	const t = node.tab;
+	const compactMark = t.status === 'working' || t.status === 'waiting' ? tabMark(t.status)
+		: icon(t.status === 'failed' ? 'error' : t.status === 'read' || t.status === 'unread' ? 'check' : 'comment');
+	compactMark?.removeAttribute('title');
+	const compact = el('span', { class: `tab-compact status-${t.status ?? 'new'}` },
+		el('span', { class: 'tab-compact-number', text: String(node.compactNumber) }), compactMark);
+	compact.setAttribute('aria-hidden', 'true');
 	const parts: (HTMLElement | undefined)[] = [
+		compact,
 		tabMark(t.status),
 		el('span', { class: 'tab-title', text: t.title }),
-		agentsOf(t) ? el('span', { class: 'tab-agents', text: String(agentsOf(t)), title: `${agentsOf(t)} agent${agentsOf(t) === 1 ? '' : 's'} working` }) : undefined,
+		agentsOf(t) ? el('span', { class: 'tab-agents', text: agentsOf(t) > 99 ? '99+' : String(agentsOf(t)), title: `${agentsOf(t)} agent${agentsOf(t) === 1 ? '' : 's'} working` }) : undefined,
 	];
 	node.label.replaceChildren(...parts.filter((p): p is HTMLElement => !!p));
-	node.label.title = `${agent ? `${t.title} — ${agent}` : t.title}\nDouble-click to rename. Drag to reorder. Right-click to move to another chat view.`;
+	const description = `${agent ? `${t.title} — ${agent}` : t.title}\n${t.status ? tabMarks[t.status] : 'New chat'}${agentsOf(t) ? ` · ${agentsOf(t)} agent${agentsOf(t) === 1 ? '' : 's'} running` : ''}`;
+	node.label.setAttribute('aria-label', description);
+	node.label.title = `${description}\nDouble-click to rename. Drag to reorder. Right-click for chat actions.`;
 	node.close.title = t.busy ? 'Close (stops what it is doing)' : 'Close';
 }
 
@@ -1681,6 +1702,9 @@ function fillTab(node: TabNode, agent: string | undefined): void {
  * once, so it does not flick back for the 40 ms until the host's state says so.
  */
 function startRename(node: TabNode): void {
+	if (wideChat.matches && chatDrawerCollapsed) {
+		chatDrawerCollapsed = false; updateChatDrawer(); saveDraft();
+	}
 	if (editingTab === node.tab.id) {
 		return;
 	}
@@ -1751,6 +1775,9 @@ function cancelClosing(): void {
 
 function renderTabConfirm(s: ChatViewState): void {
 	const closing = closingTab ? s.tabs.find(t => t.id === closingTab) : undefined;
+	if (closing && wideChat.matches && chatDrawerCollapsed) {
+		chatDrawerCollapsed = false; updateChatDrawer(); saveDraft();
+	}
 	const shown = closing ? JSON.stringify([closing.id, closing.title, closing.agents, closing.skillRuns, closing.busy, closing.queued]) : '';
 	if (shown === confirmShown) {
 		return;
@@ -4018,6 +4045,10 @@ function renderSelectors(s: ChatViewState): void {
 	modelPill.disabled = !agent?.models.length;
 	modelPill.title = `Model — which of the agent's models answers${model?.description ? `\n${model.label}: ${model.description}` : ''}`;
 
+	ultracodeBox.hidden = s.selection.agent !== 'claude' || s.selection.ultracode === undefined;
+	ultracodeInput.checked = s.selection.ultracode === true;
+	ultracodeBox.dataset.tip = `UltraCode: ${ultracodeInput.checked ? 'On' : 'Off'}\nLet Claude organize dynamic workflows and subagents at the selected effort. May use more of your plan. Requires Claude Code 2.1.284 or later. Changes apply to the next message once the current work finishes.`;
+	if (hoverTip.anchor === ultracodeBox) { hoverTip.show(ultracodeBox); }
 	const efforts = model?.efforts ?? [];
 	effortBox.hidden = !efforts.length;
 	if (efforts.length) {
@@ -4195,6 +4226,11 @@ function renderSend(): void {
 	sendButton.disabled = !stop && (!hasContent || !canSend());
 }
 
+ultracodeInput.addEventListener('change', () => {
+	if (!state || ultracodeBox.hidden) { return; }
+	post({ type: 'select', selection: { ...state.selection, ultracode: ultracodeInput.checked } });
+});
+
 effortRange.addEventListener('input', () => {
 	const s = state?.selection ?? {};
 	const agent = state?.agents.find(a => a.id === s.agent);
@@ -4223,7 +4259,7 @@ function scheduleToolbarLayout(): void {
 		if (!width) { return; }
 		const style = getComputedStyle(toolbar);
 		const shape = JSON.stringify([width, style.font, agentPill.textContent, modelPill.textContent,
-			effortBox.hidden, approveToggle.textContent,
+			effortBox.hidden, ultracodeBox.hidden, approveToggle.textContent,
 			agentsButton.textContent, agentsButton.hidden, contextButton.hidden]);
 		if (shape === toolbarLayoutShape) { return; }
 		toolbarLayoutShape = shape;
@@ -5091,7 +5127,7 @@ document.addEventListener('mousedown', event => {
 		}
 		return;
 	}
-	if (![workdirSummary, gitRefreshSlot, effortBox, featureSettingsPanel, sleepPopup, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillBar, historyPanel, agentsPanel, agentAppsPanel, plusButton, usageButton, usageAlertText, agentsButton, agentPill, modelPill, approveToggle, slashButton, workdirButton, branchButton, commitButton, contextButton].some(n => n.contains(target))) {
+	if (![workdirSummary, gitRefreshSlot, effortBox, ultracodeBox, featureSettingsPanel, sleepPopup, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillBar, historyPanel, agentsPanel, agentAppsPanel, plusButton, usageButton, usageAlertText, agentsButton, agentPill, modelPill, approveToggle, slashButton, workdirButton, branchButton, commitButton, contextButton].some(n => n.contains(target))) {
 		closePopups();
 	}
 });
@@ -6320,9 +6356,10 @@ function renderWorkdir(s: ChatViewState): void {
 		: 'Working folder: none, the home directory — choose a folder for the agent to work in, and its files to add to the message';
 	workdirButton.classList.toggle('picked', w.picked);
 	const currentProject = !w.copy && !w.noProject && !!w.current && w.workspace.some(folder => folder.path === w.current?.path);
-	const mode = w.copy ? 'GitHub' : w.noProject || !w.current ? 'Home' : currentProject ? 'Current' : 'External';
+	const mode = w.copy ? 'Git' : w.noProject || !w.current ? 'Home' : currentProject ? '' : 'Ext';
 	const location = w.copy ? `${w.copy.repo} · ${w.copy.branch}` : w.current?.path ?? 'Home directory · no project';
 	workdirMode.textContent = mode;
+	workdirMode.hidden = !mode;
 	workdirLocationText.textContent = location;
 	workdirLocation.classList.toggle('path-tail', !!w.current && !w.copy);
 	const detail = w.copy
@@ -6331,7 +6368,7 @@ function renderWorkdir(s: ChatViewState): void {
 	const references = w.references.length ? `\nGitHub references: ${w.references.map(r => r.repo).join(', ')}` : '';
 	const summary = `${detail}${references}${w.busy ? `\n${w.busy}…` : ''}`;
 	workdirSummary.title = summary;
-	workdirSummary.setAttribute('aria-label', `${mode}: ${location}. Click to change working folder or GitHub mode`);
+	workdirSummary.setAttribute('aria-label', `${mode ? `${mode}: ` : ''}${location}. Click to change working folder or GitHub mode`);
 	workdirButton.title = summary;
 	workdirButton.setAttribute('aria-label', 'Change working folder or GitHub mode');
 	workdirFooter.classList.toggle('github-mode', !!w.copy);
@@ -6620,6 +6657,8 @@ const hoverTip = (() => {
 				const value = el('strong', { text: effortRange.getAttribute('aria-valuetext') ?? '' });
 				value.style.color = getComputedStyle(anchor).getPropertyValue('--effort-colour');
 				node.replaceChildren('Effort: ', value, '\nMore effort takes longer and uses more of your plan.');
+			} else if (anchor === ultracodeBox) {
+				node.replaceChildren(el('strong', { class: 'ultracode-tip-name', text: 'UltraCode' }), text.slice('UltraCode'.length));
 			} else {
 				node.textContent = text;
 			}
@@ -6661,6 +6700,9 @@ const hoverTip = (() => {
 hoverTip.attach(gitRefreshSlot);
 hoverTip.attach(branchMagic);
 hoverTip.attach(contextButton);
+hoverTip.attach(ultracodeBox);
+ultracodeInput.addEventListener('focus', () => hoverTip.show(ultracodeBox));
+ultracodeInput.addEventListener('blur', () => hoverTip.hide());
 // Effort is shown immediately, including while dragging or changing it with the keyboard.
 effortBox.addEventListener('mouseenter', () => hoverTip.show(effortBox));
 effortBox.addEventListener('mouseleave', () => hoverTip.hide());
