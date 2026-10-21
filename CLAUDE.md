@@ -212,6 +212,8 @@ difference, in `browserController.js`, was a doc comment whose link had been upd
 - [src/core/safeFiles.ts](src/core/safeFiles.ts) — the private temp directory, exclusive creates and atomic config writes (leaf, under test)
 - [src/mcp/gitignoreRule.ts](src/mcp/gitignoreRule.ts) — whether `.codex/.gitignore` keeps the token file out of git (leaf, under test)
 - [src/mcp/mcpServer.ts](src/mcp/mcpServer.ts) — HTTP transport, tools, client attribution
+- [src/mcp/chatTools.ts](src/mcp/chatTools.ts) — the `chat_*` tools: the AI Browser chat's tabs, agents and limits, and controls for its own agents
+- [src/core/chatCapability.ts](src/core/chatCapability.ts) — the in-memory `X-AI-Browser-Chat` value that stands for a conversation (leaf)
 - [src/editor/editorTools.ts](src/editor/editorTools.ts) — the `editor_*` MCP tools: what the user has open, showing a place, definitions, references, symbols
 - [src/editor/editorText.ts](src/editor/editorText.ts) — their paths, columns and cut lines (leaf, under test)
 - [src/browser/screenshot.ts](src/browser/screenshot.ts) — Copy Screenshot (Visible Area / Full Page), the toolbar's capture
@@ -250,6 +252,7 @@ difference, in `browserController.js`, was a doc comment whose link had been upd
 - [src/chat/workdir.ts](src/chat/workdir.ts) — the working folder's files for the folder button: a walk that reads `.gitignore` (leaf, under test)
 - [preview-src/fileRank.ts](preview-src/fileRank.ts) — searching those files in the view (leaf, under test)
 - [src/chat/githubRepo.ts](src/chat/githubRepo.ts) — a GitHub repository as typed: owner and name, branch names, addresses (leaf, under test)
+- [src/chat/gitExtension.ts](src/chat/gitExtension.ts) — VS Code's Git extension for publish, push and fetch: its askpass signs in to a remote
 - [src/chat/repoWork.ts](src/chat/repoWork.ts) — the git work behind it: the clone in storage, separate copies, read-only checkouts, push
 - [src/core/gitBinary.ts](src/core/gitBinary.ts) — a `git` that can be run without the macOS install dialog, for Connect Codex and the chat
 - [src/chat/chatProtocol.ts](src/chat/chatProtocol.ts) — the messages between the chat's webview and the host (types only, read by both builds)
@@ -794,7 +797,10 @@ Every case above is in [src/setup/argvJson.test.ts](src/setup/argvJson.test.ts).
 on the browser tab is gated on `activeEditor == 'workbench.editor.browser'`, so before this the
 MCP commands had no home outside the command palette — the limitation recorded under
 [The dropdown on the browser tab](#the-dropdown-on-the-browser-tab). The menu holds, in order:
-*Open* (Open URL / Open File), *Page* (Translate page…, only while any browser tab is open — not
+*Open* (Open URL / Open File), *Chat* (New chat / Chat in a new tab / Chat in a new window — the
+three places the chat's own New Chat offers, through `aiBrowser.chat.newChat` with a location
+argument; "here" reveals the side bar chat first, since a new tab in a hidden view reads as
+nothing happening; left out below VS Code 1.106), *Page* (Translate page…, only while any browser tab is open — not
 gated on focus: the row names the tab the command will take, and the command asks only when none
 can be told apart), *Setup* (the enable entry
 while it is relevant), *Assistants*, *Logins and passkeys*, *Shared tabs*, then Settings. The
@@ -3164,6 +3170,57 @@ refusals above. Redo it that way after touching the module; `npm test` covers on
 **Not built:** call hierarchy, hover/type information, rename, code actions. Hover would be the
 next one worth having (a type without reading the file); rename and code actions change code,
 which the agents already do through their own edit tools with the approval menu in front.
+
+### The chat tools: `chat_*`
+
+Asked for: the chat's state over MCP, and a few controls for its own agents — then, after
+review, cut down to what is safe without machinery (asked for: "remove methods or limit what they
+pass"). Seven tools in [src/mcp/chatTools.ts](src/mcp/chatTools.ts), answered by
+`ChatViewProvider.mcpControl()` across every chat surface of the extension host:
+
+| Tool | Who | What |
+|---|---|---|
+| `chat_state` | anyone with the token | every tab's status, agent, counts (agents, background skills, queued), whether its queue is paused, the keep-awake state; **title and last reply only for the caller's own tab** (`own: true`) |
+| `chat_usage` | anyone | plan limits last reported per agent, credits; the caller's own context fill |
+| `chat_agents` | the chat's own agents | their own tab's agents, newest first, at most 30, each with the **last paragraph it said, 600 characters at most** — never whole reports |
+| `chat_keep_awake` | the chat's own agents | a timer (rounded up to the popup's choices), until the agents finish (`tab` = their own, or `window`), or off — **off for every surface** |
+| `chat_pause` / `chat_resume` | the chat's own agents | hold or release **their own** tab's queue |
+| `chat_stop_agent` | the chat's own agents | one running agent or background skill run **of their own tab** |
+
+Decisions, each with its reason:
+
+- **No tab id goes in or out.** An agent sees and acts on its own conversation only: stopping
+  or pausing the one beside it is not something a card showing an opaque id lets the user
+  judge, and other conversations' titles and replies are not the agent's to read.
+- **"The chat's own agents" is a value minted in memory** (`src/core/chatCapability.ts`): the
+  CLIs send it as `X-AI-Browser-Chat`, the server maps it back to a chat id. It used to be the
+  chat id itself, which is in `workspaceState` and outlives the window, so any program could
+  write the header. The value reaches a running Claude Code's `--mcp-config` file (0600), so it
+  keeps out a caller with a token and no shell and a stale value from an earlier window — **not
+  the user's own code with a shell**, which can `kill` a CLI anyway. Recording destinations
+  (`caller.chatId`) go through the same mapping.
+- **The four that act are their own approval category, "Chat control"** (`chatControlTools` in
+  `agentProtocol.ts`, written twice, a test reading `chatTools.ts` holds the copies together),
+  Ask unless set. Gemini's fallback recognises `chat_` names by the call id, and a Codex
+  question whose tool name cannot be read is filed here too. **Claude Code is started with
+  `--settings` holding `ask` rules for them**: its own rules run before it asks us, and a user's
+  `allow` for `mcp__ai-browser` would otherwise run them with no card. An `ask` outranks an
+  `allow` — measured on 2.1.301 with `--allowedTools`, and with `--setting-sources=user`.
+- **Pause holds the queue; it stops nothing** (`ChatTab.pause`, `readyForQueued`). A CLI has no
+  pause, only Stop, and Stop plus "continue" would cut a turn mid-work. The turn running goes to
+  its end; nothing queued — messages, a skill's next prompts, a skill queued for after the turn
+  — goes out, and ⌘Enter on an idle paused tab queues rather than sends. The hold is said above
+  the queue with a **Resume** button (`queuePaused`, `resumeQueue`); a new conversation in the tab
+  clears it. **A paused queue does not hold "until the agents finish"** awake, or it would hold
+  the computer for good. Background runs already going are not held.
+- **Keep-awake uses the `SleepControl` of the caller's surface**, since `working(tabId)` looks at
+  its own tabs; `chat_state` names any other surface holding the computer (`alsoHeldBy`).
+- **Text is cut by code point** (`capAt`): a lone surrogate is refused by Codex's JSON reader.
+
+Verified: the category and the Gemini fallback under `npm test`; the compiled tools through
+`dispatch` with a stubbed chat (reads and refusals for an outside caller, own-tab arguments, a
+stray `tabId` ignored, the capability round trip). **Not run inside VS Code yet**: `mcpControl`
+against live tabs, and the Resume row.
 
 ### Lifecycle
 
@@ -5722,6 +5779,64 @@ folder* section of `chatView.ts`.
   banner or extra success entry is added to the chat. Failures remain visible with an explicit
   action to send their diagnostics to the current chat for repair; no repair turn starts automatically. See `gitAccess.ts`, `gitIndex.ts`,
   `gitCommit.ts`, `commitMessage.ts`, and `_commitWorkdir` in `chatView.ts`.
+- **Publish, Push and Pull live in the Branches window**, a row under its search for the current
+  branch (`renderBranchSync`, `_gitRemoteAction`). Its state comes from the same `for-each-ref`
+  the list reads (`branchRefFormat`: upstream, its remote, `[ahead N, behind M]`, `[gone]`) and
+  `git config --get-regexp '^remote\..*\.url$'`, so it costs no network and may lag the remote
+  until the next fetch. Rules, each deliberate:
+  - **The network goes through VS Code's Git extension** (`gitExtension.ts`, the `vscode.git`
+    API's `push` / `fetch`), asked for: its `GIT_ASKPASS` answers an https remote through the
+    editor's GitHub sign-in, where our own git (`GIT_TERMINAL_PROMPT=0`) can only fail. Its
+    progress goes to the Source Control view, and an API call raises no toast — the error is
+    thrown to us (`gitExtensionErrorText`). There is no fallback to our git: a disabled extension
+    (`git.enabled: false`) is refused with that setting named. A working folder the extension
+    has not opened is opened (`openRepository`), which adds it to the Source Control view. **The
+    repository is matched by real path** (`gitRepositoryFor(root, folder)`): `rev-parse
+    --show-toplevel` resolves a symlink (`/tmp` is `/private/tmp`) while the extension keeps the
+    path it was given, and a plain comparison failed every action in such a folder.
+  - **A push that resolved is not a push that landed.** The extension hands a failure to the push
+    error handlers first, and the GitHub extension's takes PermissionDenied and a secret-scanning
+    refusal (GH009) — its own dialog, then "handled", so `push()` resolves. After every push and
+    publish the remote-tracking ref is compared with the SHA pushed (`_pushLanded`; for a publish
+    `<branch>@{upstream}` — git refuses the `refs/heads/<branch>@{upstream}` spelling).
+  - **Errors carry git's words.** The extension marks every "failed to push some refs" as
+    `PushRejected` — a pre-push hook, a protected branch, a size limit — so "pull first" is said
+    only for `(fetch first)` / `non-fast-forward`, with git's lines under it; an error the
+    extension could not classify is shown by its stderr, never as "Failed to execute git".
+  - **The refspec is spelled out**, `refs/heads/<b>:refs/heads/<upstream>`, and a full ref cannot
+    read as an option. The upstream's name is `%(upstream:remoteref)`, not the tracking ref's
+    tail, which a custom fetch refspec maps elsewhere. **A branch tracking another name is
+    asked about** (`git switch -c feat origin/develop` tracks `develop`): plain `git push` with
+    `push.default=simple` refuses that, so the window never assumes it. Publish is `-u <remote>` with the same name; the remote is the one picked, else
+    `origin`, else the only one (`publishRemote`), a select appearing only with several.
+  - **Never forced; a pull is fetch plus our own `merge --ff-only`** with hooks off, as on a
+    switch — the extension's `pull` would merge or rebase as the user's config says. Diverged is
+    shown and left to the user. A pull that moved nothing says "already up to date", not "Updated".
+  - **Asked first, inside the window**: a push to the remote's default branch (`HEAD` of the
+    remote, else `main`/`master`), to a branch of another name, and while agents work in the
+    folder. The host answers `confirm` with a `confirmKey` naming the push and the question
+    (`pushKey`), nothing done; the view resends it as `confirmed`, and the host asks again unless
+    the push it would make now has the same key — a yes given about `feat` is no yes for `main`
+    after an agent switched branches. Cancel is the default.
+  - **A push does not wait for agents** (it reads HEAD and changes no file) but holds the Git
+    lock with no busy list; a pull waits like a switch. **Refused in a folder whose settings are
+    held back** (`_untrusted`): the extension runs the repository's `pre-push` hook (#443), and in
+    Restricted Mode with every other footer Git path (#208).
+  - **The pull request button** is GitHub's compare page (`pullRequestUrl`, `pull/new` without
+    a known default branch), only for a published, non-default branch whose remote `parseRepo`
+    accepts — another host gets none — and each path segment of a branch name is encoded on its
+    own (`branchPath`): `encodeURI` left `#`, so `fix#12` opened `pull/new/fix`. **Credentials are
+    taken out of a remote url before the state leaves the host** (`parseRemoteUrls`), since the
+    branch state goes to the webview, which needs only host and path.
+  - **↑ / ↓ walk the whole window in one order** (`branchNavItems`): the sync row's buttons,
+    Return & Apply Stash, Create, then each branch's switch button; ← / → stay within a row
+    (a branch's delete and Cancel). Hidden or disabled buttons are skipped, the remote select is
+    left to Tab — arrows on a select change its value. The popup's own handler reads the key's
+    `target`, never `document.activeElement`: ↓ in the search box focuses the first item and
+    the event then bubbles to it, which moved focus a second step. The rows are full width and
+    the window's text is 12px, as is the Commit window's (`.git-changes-popup`).
+  Verified: parsing against a real repository under `npm test`, the build and typecheck. **Not
+  run inside VS Code yet**, nor against a real remote.
 - **The footer's Git state is read only for a view on screen, never in a blocked window, and one
   read at a time.** `git status` runs the repository's own `filter.<driver>.clean` commands from
   `.git/config`, which `core.fsmonitor=false` does not stop, and it used to run on every document
@@ -6433,6 +6548,7 @@ its tooltip. Categories, as `agentProtocol.ts` sorts the questions (`claudeAppro
 |---|---|---|
 | Internet (`web`) | `WebFetch`, `WebSearch` | network access for a command (`networkApprovalContext`) |
 | AI Browser (`browser`) | `mcp__ai-browser__*` | the `ai-browser` server's tools |
+| Chat control (`chat`) | `mcp__ai-browser__chat_keep_awake` / `_pause` / `_resume` / `_stop_agent` (also an `ask` rule at launch) | the same four of that server; one whose name cannot be read |
 | Terminal (`command`) | `Bash` | a command, and input to a running one (`writeStdin`) |
 | Files in the project (`edit`) | `Edit` / `Write` / `MultiEdit` / `NotebookEdit` inside the folder | a patch whose files are all inside |
 | Files outside the project (`outside`) | any file tool on a path outside the folder, or whose `blocked_path` is; an absolute or `~` `Glob` / `Grep` pattern; an edit tool naming no file | a patch writing outside — its files or where a move takes one (`move_path`) —, with a `grantRoot`, or naming no file at all |

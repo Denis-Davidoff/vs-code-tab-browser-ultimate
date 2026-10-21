@@ -20,6 +20,7 @@ import { BrowserRecording, recordingErrorReported } from './browser/recording';
 import { recordingQualityKey, readRecordingQuality } from './browser/recordingQuality';
 import { ChatViewProvider, chatBlocked, chatBlockedContextKey, chatUnsupportedContextKey, chatViewId, supportsSecondarySidebar } from './chat/chatView';
 import { McpLifecycle } from './mcp/mcpLifecycle';
+import { ChatControlPort } from './mcp/chatTools';
 import { connectClaudeCode, connectCodex, connectGemini, openGeminiHere, type SharedPage } from './mcp/mcpSetup';
 import { everyone, forKind, isShareTarget, targetName, type ShareTarget } from './browser/shareRegistry';
 import { checkConnection } from './mcp/mcpCheck';
@@ -265,7 +266,9 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	}
 
-	const mcp = new McpLifecycle(context, browser, context.extension.packageJSON.version ?? '0.0.0', recording);
+	// The chat is created further down; its `chat_*` tools find it through this.
+	const chatPort = new ChatControlPort();
+	const mcp = new McpLifecycle(context, browser, context.extension.packageJSON.version ?? '0.0.0', recording, chatPort);
 	context.subscriptions.push(mcp);
 	mcp.apply();
 
@@ -607,6 +610,7 @@ export function activate(context: vscode.ExtensionContext) {
 		deserializeWebviewPanel: async (panel, state) => { chat.restoreChatPanel(panel, state); },
 	}));
 	configureTemporaryFiles(() => privateTempDirectory('inventory'), () => chat.temporaryProject);
+	chatPort.target = ChatViewProvider.mcpControl();
 	recording.destination = chatId => chat.recordingDestination(chatId);
 	recording.project = chatId => chat.recordingProject(chatId);
 	recording.createEncoder = id => chat.createRecordingEncoder(id);
@@ -627,9 +631,14 @@ export function activate(context: vscode.ExtensionContext) {
 	}
 	const revealChat = () => vscode.commands.executeCommand(`${chatViewId}.focus`);
 	context.subscriptions.push(
-		vscode.commands.registerCommand('aiBrowser.chat.newChat', async () => {
-			await revealChat();
-			await chat.newChat();
+		// A location comes from the status bar menu; the title bar passes none and
+		// asks. "Here" is a tab of the side bar's chat, so the view is revealed
+		// first — a new tab in a hidden view looks like nothing happened. A tab or
+		// a window is an editor of its own and leaves the side bar as it is.
+		vscode.commands.registerCommand('aiBrowser.chat.newChat', async (location?: unknown) => {
+			const where = location === 'here' || location === 'tab' || location === 'window' ? location : undefined;
+			if (where !== 'tab' && where !== 'window') { await revealChat(); }
+			await chat.newChat(where);
 		}),
 		vscode.commands.registerCommand('aiBrowser.chat.settings', async () => {
 			await revealChat();

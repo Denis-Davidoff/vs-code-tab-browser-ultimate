@@ -1,4 +1,5 @@
 import { privateTempDirectory } from '../core/safeFiles';
+import { chatCapability } from '../core/chatCapability';
 import { requestCommitMessage } from './commitMessage';
 import { requestTitle } from './autoTitle';
 /*---------------------------------------------------------------------------------------------
@@ -136,7 +137,7 @@ export class CodexBackend implements AgentBackend {
 			// no such tool, or asked in plain text and slept waiting for a reply).
 			// An older CLI that does not know the feature starts the thread anyway.
 			features: { default_mode_request_user_input: true },
-			...(server ? { mcp_servers: { 'ai-browser': { url: server.url, http_headers: { Authorization: `Bearer ${server.token}`, ...(chatId ? { 'X-AI-Browser-Chat': chatId } : {}) } } } } : {}),
+			...(server ? { mcp_servers: { 'ai-browser': { url: server.url, http_headers: { Authorization: `Bearer ${server.token}`, ...(chatId ? { 'X-AI-Browser-Chat': chatCapability(chatId) } : {}) } } } } : {}),
 		};
 	}
 

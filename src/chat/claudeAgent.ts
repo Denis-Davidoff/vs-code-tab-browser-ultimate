@@ -1,4 +1,5 @@
 import { requestCommitMessage } from './commitMessage';
+import { chatCapability } from '../core/chatCapability';
 import { requestTitle } from './autoTitle';
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
@@ -9,7 +10,7 @@ import { promises as fs, writeFileSync } from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { JsonLineProcess, withTimeout } from './agentProcess';
-import { claudeApproval, claudeApprovalAnswer, claudeCommands, claudeEvents, claudeModels, claudeUsage, type AgentEvent } from './agentProtocol';
+import { chatControlTools, claudeApproval, claudeApprovalAnswer, claudeCommands, claudeEvents, claudeModels, claudeUsage, type AgentEvent } from './agentProtocol';
 import type { AgentBackend, AgentSession, BrowserServer, TurnInput } from './agents';
 import type { AgentUsage, ChatCommand, ChatModel, QuestionAnswers } from './chatProtocol';
 import { existingPrivateTempDirectory, privateTempDirectory } from '../core/safeFiles';
@@ -40,7 +41,14 @@ import { generateUuid } from '../core/uuid';
 // `--thinking-display summarized` is what makes thinking visible at all: without
 // it no `thinking` block is streamed, even when the model thinks. Measured on
 // Sonnet 5.5 and on Haiku 4.5, which has no adaptive thinking and still takes it.
-const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--thinking-display', 'summarized', '--permission-mode', 'default', '--permission-prompt-tool', 'stdio'];
+//
+// `--settings` with `ask` rules for our Chat control tools: Claude Code checks
+// its own rules before asking us, and a user's `allow` for `mcp__ai-browser`
+// (the whole server) would run them with no card, past the approval menu's
+// category. An `ask` rule outranks an `allow` — measured on 2.1.301, with
+// `--allowedTools` and with `--setting-sources=user` alike.
+const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--thinking-display', 'summarized', '--permission-mode', 'default', '--permission-prompt-tool', 'stdio',
+	'--settings', JSON.stringify({ permissions: { ask: [...chatControlTools].map(tool => `mcp__ai-browser__${tool}`) } })];
 
 const controlTimeoutMs = 20_000;
 /** How long detection's process is kept for the plan's usage after the models are in. */
@@ -538,7 +546,7 @@ class ClaudeSession implements AgentSession {
 		}
 		const file = path.join(dir, `mcp-${process.pid}-${generateUuid()}.json`);
 		try {
-			writeFileSync(file, JSON.stringify({ mcpServers: { 'ai-browser': { type: 'http', url: server.url, headers: { Authorization: `Bearer ${server.token}`, ...(server.chatId ? { 'X-AI-Browser-Chat': server.chatId } : {}) } } } }), { mode: 0o600, flag: 'wx' });
+			writeFileSync(file, JSON.stringify({ mcpServers: { 'ai-browser': { type: 'http', url: server.url, headers: { Authorization: `Bearer ${server.token}`, ...(server.chatId ? { 'X-AI-Browser-Chat': chatCapability(server.chatId) } : {}) } } } }), { mode: 0o600, flag: 'wx' });
 			return file;
 		} catch {
 			return undefined;

@@ -34,7 +34,7 @@ import { sleepMinutes, sleepHours, type SleepChoice } from '../src/power/sleepPr
  */
 
 import type {
-	AgentId, AgentQuestion, AgentUsage, ApprovalEntry, UsageAlert, ToolbarParam, ToolbarResult, ToolbarRun, ToolbarSkill, ApprovalKind, ApprovalMode, AttachmentChip, AttachmentKind, ChatCommand, ChatEntry, ChatStats, ChatSummary, ChatTabStatus, ChatTabSummary, ChatViewMode, ChatViewState, HostToView, RepoMode, ToolEntry, ViewToHost, VoiceEvent, WorkdirFolder, GitBranchState, WorkdirGitStatus,
+	AgentId, AgentQuestion, AgentUsage, ApprovalEntry, UsageAlert, ToolbarParam, ToolbarResult, ToolbarRun, ToolbarSkill, ApprovalKind, ApprovalMode, AttachmentChip, AttachmentKind, ChatCommand, ChatEntry, ChatStats, ChatSummary, ChatTabStatus, ChatTabSummary, ChatViewMode, ChatViewState, HostToView, RepoMode, ToolEntry, ViewToHost, VoiceEvent, WorkdirFolder, GitBranchState, GitRemoteAction, WorkdirGitStatus,
 } from '../src/chat/chatProtocol';
 import { baseName, searchPaths } from './fileRank';
 // Every codicon the bundled font has, one per line (`name,char,code`); bundled
@@ -513,17 +513,18 @@ function renderGitChanges(): void {
 			move.setAttribute('aria-label', `${action === 'stage' ? 'Stage' : 'Unstage'} ${file.path}`);
 			move.disabled = !!busyReason;
 			move.addEventListener('click', () => changeGitFiles(action, file.path));
+			// The letter stands at the right, before the stage button, as in Source Control.
 			const statusMark = el('span', {
-				class: file.status === 'M' ? 'git-modified' : file.status === '?' ? 'git-changed' : '',
+				class: `git-status-letter ${file.status === 'M' ? 'git-modified' : file.status === '?' ? 'git-changed' : file.status === 'D' ? 'git-deleted' : ''}`,
 				title: file.status === '?' ? 'New — file not yet tracked by Git' : file.status === 'M' ? 'Modified file' : file.status,
 			}, file.status === '?' ? 'N' : file.status);
-			const open = button([statusMark, '  ', name], { class: file.status === 'D' ? 'git-file git-deleted git-file-open' : 'git-file git-file-open', title: `Open ${label.toLowerCase()} diff: ${name}` });
+			const open = button([name], { class: file.status === 'D' ? 'git-file git-deleted git-file-open' : 'git-file git-file-open', title: `Open ${label.toLowerCase()} diff: ${name}` });
 			open.addEventListener('click', () => {
 				if (!gitFolder || !state) { return; }
 				gitPopupPinned = true;
 				post({ type: 'openGitDiff', folder: gitFolder, tabId: state.activeTab, path: file.path, staged: label === 'Staged' });
 			});
-			gitPopupList.append(el('div', { class: 'git-changes-file' }, gitFileIcon(file), open, move));
+			gitPopupList.append(el('div', { class: 'git-changes-file' }, gitFileIcon(file), open, statusMark, move));
 		}
 	}
 	const note = (text: string) => gitPopupActions.append(el('div', { class: 'git-changes-hint' }, text));
@@ -621,7 +622,9 @@ branchRefresh.setAttribute('aria-label', 'Refresh Git branches');
 branchRefresh.disabled = gitPending;
 branchRefresh.addEventListener('click', refreshGitStatus);
 branchSearchRow.append(clearableSearch(branchSearch), branchMagic, branchRefresh);
-branchPopup.append(branchSearchRow, branchError, branchRestoreStash, branchCreate, branchList);
+/** The current branch against its remote: Publish, Push, Pull, and the pull request page. */
+const branchSync = el('div', { class: 'git-branch-sync' });
+branchPopup.append(branchSearchRow, branchSync, branchError, branchRestoreStash, branchCreate, branchList);
 let branchNameSequence = 0;
 let branchNamePending: { id: number; tabId: string; folder: string; query: string } | undefined;
 branchMagic.addEventListener('click', () => {
@@ -635,6 +638,86 @@ let branchState: GitBranchState | undefined;
 let branchBusy = false;
 let branchDeleting: string | undefined;
 let branchRenderedShape = "";
+/** A push the host asked about first; Push sends it again with `confirmed`. */
+let remoteConfirm: { action: GitRemoteAction; remote?: string; text: string; key: string } | undefined;
+/** The remote picked to publish to, where there are several. */
+let publishRemoteChoice: string | undefined;
+function runRemoteAction(action: GitRemoteAction, remote?: string, confirmed?: string): void {
+	if (!gitFolder || branchBusy) { return; }
+	branchBusy = true;
+	remoteConfirm = undefined;
+	branchError.textContent = action === 'publish' ? 'Publishing branch…' : action === 'push' ? 'Pushing…' : 'Pulling…';
+	post({ type: 'gitRemoteAction', folder: gitFolder, action, ...(remote ? { remote } : {}), ...(confirmed ? { confirmed } : {}) });
+	renderBranches();
+}
+function renderBranchSync(): void {
+	branchSync.replaceChildren();
+	const current = branchState?.current;
+	if (!branchState || !current) { branchSync.hidden = true; return; }
+	branchSync.hidden = false;
+	if (remoteConfirm) {
+		const confirmation = remoteConfirm;
+		const no = button(['Cancel'], { class: 'primary' });
+		const yes = button([confirmation.action === 'publish' ? 'Publish' : 'Push'], { class: 'ghost' });
+		no.addEventListener('click', () => { remoteConfirm = undefined; renderBranches(); branchSearch.focus(); });
+		yes.addEventListener('click', () => runRemoteAction(confirmation.action, confirmation.remote, confirmation.key));
+		branchSync.append(el('div', { class: 'git-branch-sync-text wrap' }, confirmation.text), el('div', { class: 'git-branch-sync-actions form-actions' }, yes, no));
+		return;
+	}
+	const remotes = branchState.remotes ?? [];
+	const upstream = branchState.upstream;
+	const actions = el('div', { class: 'git-branch-sync-actions' });
+	const action = (label: string, iconName: string, tip: string, run: () => void) => {
+		const b = button([icon(iconName), label], { class: 'git-branch-sync-button', title: tip });
+		b.disabled = branchBusy;
+		b.addEventListener('click', run);
+		actions.append(b);
+		return b;
+	};
+	let text: string;
+	if (!upstream || upstream.gone) {
+		if (!remotes.length) {
+			branchSync.append(el('div', { class: 'git-branch-sync-text muted' }, `${current} · no remote to publish to`));
+			return;
+		}
+		text = upstream?.gone ? `${current} · its branch on ${upstream.remote} was deleted` : `${current} · not published`;
+		const names = remotes.map(r => r.name);
+		const preset = upstream?.gone && names.includes(upstream.remote) ? upstream.remote : names.includes('origin') ? 'origin' : names[0];
+		if (!publishRemoteChoice || !names.includes(publishRemoteChoice)) { publishRemoteChoice = preset; }
+		if (names.length > 1) {
+			const select = el('select', { class: 'git-branch-remote' });
+			select.setAttribute('aria-label', 'Remote to publish to');
+			for (const name of names) {
+				const option = el('option', {}, name);
+				option.value = name;
+				option.selected = name === publishRemoteChoice;
+				select.append(option);
+			}
+			select.disabled = branchBusy;
+			select.addEventListener('change', () => { publishRemoteChoice = select.value; });
+			actions.append(select);
+		}
+		action('Publish branch', 'cloud-upload', `Push ${current} and set its upstream`, () => runRemoteAction('publish', publishRemoteChoice));
+	} else {
+		const target = `${upstream.remote}/${upstream.branch}`;
+		const counts = [upstream.ahead ? `↑${upstream.ahead}` : '', upstream.behind ? `↓${upstream.behind}` : ''].filter(Boolean).join(' ');
+		text = `${target}${counts ? ` · ${counts}` : ' · up to date'}`;
+		if (upstream.ahead && upstream.behind) {
+			text += ' · diverged — merge or rebase yourself';
+		} else if (upstream.ahead) {
+			action('Push', 'arrow-up', `Push ${upstream.ahead} commit${upstream.ahead === 1 ? '' : 's'} to ${target}`, () => runRemoteAction('push'));
+		} else if (upstream.behind) {
+			action('Pull', 'arrow-down', `Fetch and fast-forward to ${target}`, () => runRemoteAction('pull'));
+		}
+		if (branchState.pullRequest) {
+			const url = branchState.pullRequest;
+			const pr = action('Pull request', 'git-pull-request', `Open the pull request page on GitHub — ${isMacView ? '⌘' : 'Ctrl'}-click for the system browser`, () => undefined);
+			pr.disabled = false;
+			pr.addEventListener('click', event => { post({ type: 'openLink', url, external: isMacView ? event.metaKey : event.ctrlKey }); });
+		}
+	}
+	branchSync.append(el('div', { class: 'git-branch-sync-text', title: text }, text), actions);
+}
 function runBranchAction(action: 'switch' | 'create' | 'delete', name: string, remote = false): void {
 	if (!gitFolder || branchBusy) { return; }
 	branchBusy = true;
@@ -644,9 +727,10 @@ function runBranchAction(action: 'switch' | 'create' | 'delete', name: string, r
 }
 function renderBranches(): void {
 	const query = branchSearch.value.trim();
-	const shape = JSON.stringify([branchState, query, branchBusy, branchDeleting, gitPending, !!branchNamePending]);
+	const shape = JSON.stringify([branchState, query, branchBusy, branchDeleting, gitPending, !!branchNamePending, remoteConfirm]);
 	if (shape === branchRenderedShape) { return; }
 	branchRenderedShape = shape;
+	renderBranchSync();
 	branchSearch.disabled = branchBusy;
 	branchRestoreStash.hidden = !branchState?.savedStash;
 	branchRestoreStash.disabled = branchBusy;
@@ -707,6 +791,7 @@ branchButton.addEventListener('click', () => {
 	if (branchPopup.classList.contains('open')) { closePopups(); return; }
 	branchSearch.value = '';
 	branchDeleting = undefined;
+	remoteConfirm = undefined;
 	branchError.textContent = '';
 	renderBranches();
 	openAbove(branchPopup, branchButton, 'right');
@@ -731,27 +816,47 @@ branchSearch.addEventListener('keydown', event => {
 		else if (!branchCreate.disabled) { branchCreate.click(); }
 	} else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
 		event.preventDefault();
-		const choices = [...branchList.querySelectorAll<HTMLButtonElement>('.git-branch-select:not(:disabled)')];
+		const choices = branchNavItems();
 		(event.key === 'ArrowDown' ? choices[0] : choices.at(-1))?.focus();
 	}
 });
-branchList.addEventListener('keydown', event => {
+/**
+ * Everything ↑ / ↓ walks in the branches window, top to bottom: the current
+ * branch's Publish / Push / Pull / Pull request, Return & Apply Stash, Create,
+ * then each branch row's switch button. One order, so the keys reach every
+ * action and not only the list. A remote select is left to Tab — arrows on it
+ * change its value.
+ */
+function branchNavItems(): HTMLButtonElement[] {
+	return [...branchPopup.querySelectorAll<HTMLButtonElement>(
+		'.git-branch-sync button, .git-branch-create, .git-branch-select',
+	)].filter(b => !b.disabled && !b.hidden && b.offsetParent !== null);
+}
+branchPopup.addEventListener('keydown', event => {
 	if (event.isComposing || !['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) { return; }
+	// The key's own target, never `document.activeElement`: ↓ in the search box
+	// focuses the first item and the event then bubbles here, where the active
+	// element is already that item — reading it moved the focus a second step.
+	// The search box has its own keys; a select's arrows change its value.
+	const focused = event.target;
+	if (!(focused instanceof HTMLButtonElement) || !branchPopup.contains(focused)) { return; }
 	event.preventDefault();
-	const focused = document.activeElement as HTMLElement | null;
-	const row = focused?.closest('.git-branch-row');
 	if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+		// Across one row: a branch's switch and delete buttons, or Cancel beside a pending delete.
+		const row = focused.closest('.git-branch-row, .git-branch-sync-actions');
 		const actions = [...(row?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [])];
 		const index = actions.indexOf(focused as HTMLButtonElement);
 		actions[Math.max(0, Math.min(actions.length - 1, index + (event.key === 'ArrowRight' ? 1 : -1)))]?.focus();
 		return;
 	}
-	const choices = [...branchList.querySelectorAll<HTMLButtonElement>('.git-branch-select:not(:disabled)')];
+	const choices = branchNavItems();
 	if (event.key === 'Home' || event.key === 'End') {
 		(event.key === 'Home' ? choices[0] : choices.at(-1))?.focus();
 		return;
 	}
-	const index = choices.findIndex(choice => choice.closest('.git-branch-row') === row);
+	// A delete or Cancel button walks from its row's switch button.
+	const anchor = focused.closest('.git-branch-row')?.querySelector<HTMLButtonElement>('.git-branch-select') ?? focused;
+	const index = choices.indexOf(anchor);
 	const next = index + (event.key === 'ArrowDown' ? 1 : -1);
 	if (next < 0) { branchSearch.focus(); } else { choices[Math.min(next, choices.length - 1)]?.focus(); }
 });
@@ -964,6 +1069,15 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
      if (branchPopup.classList.contains('open')) { branchSearch.focus(); }
     } else { closePopups(); branchButton.focus(); }
    }
+   return;
+  }
+  case 'gitRemoteResult': {
+   if (message.folder !== gitFolder) { return; }
+   branchBusy = false;
+   branchError.textContent = message.error ?? '';
+   remoteConfirm = message.confirm ? { action: message.action, ...(message.action === 'publish' && publishRemoteChoice ? { remote: publishRemoteChoice } : {}), text: message.confirm, key: message.confirmKey ?? '' } : undefined;
+   renderBranches();
+   if (remoteConfirm && branchPopup.classList.contains('open')) { branchSync.querySelector<HTMLButtonElement>('button.primary')?.focus(); }
    return;
   }
   case 'gitIndexResult': {
@@ -1809,12 +1923,22 @@ function renderPendingSends(s: ChatViewState): void {
 	if (threadInner.lastElementChild !== pendingBox) {
 		threadInner.append(pendingBox);
 	}
-	const shown = JSON.stringify(s.pendingSends);
+	const shown = JSON.stringify([s.pendingSends, s.queuePaused, s.activeTab]);
 	if (shown === pendingShown) {
 		return;
 	}
 	pendingShown = shown;
-	pendingBox.replaceChildren(...s.pendingSends.map(p => {
+	// Held by `chat_pause`: said above the queue, or nothing would say why it
+	// does not go out. Shown with an empty queue too — a message queued now waits.
+	const paused: HTMLElement[] = [];
+	if (s.queuePaused) {
+		const tabId = s.activeTab;
+		const resume = button([icon('debug-continue'), el('span', { text: 'Resume' })], { class: 'pending-resume', title: 'Send what is queued once the tab is idle' });
+		resume.addEventListener('click', () => post({ type: 'resumeQueue', tabId }));
+		paused.push(el('div', { class: 'pending-note queue-paused' }, icon('debug-pause'),
+			el('span', { text: `Queue paused by ${s.queuePaused.by} — nothing queued goes out until it is resumed` }), resume));
+	}
+	pendingBox.replaceChildren(...paused, ...s.pendingSends.map(p => {
 		const bubble = el('div', { class: 'bubble' });
 		if (p.attachments.length) {
 			bubble.append(el('div', { class: 'bubble-attachments' }, ...p.attachments.map(label => el('span', { class: 'chip small', text: label }))));
@@ -2274,6 +2398,7 @@ function entryNode(entry: ChatEntry, i: number): HTMLElement {
 const approvalLabels: Record<ApprovalKind, { icon: string; ask: string }> = {
 	web: { icon: 'cloud', ask: 'Go to the internet?' },
 	browser: { icon: 'globe', ask: 'Use the browser?' },
+	chat: { icon: 'comment-discussion', ask: 'Control the chat?' },
 	command: { icon: 'terminal', ask: 'Run this command?' },
 	edit: { icon: 'edit', ask: 'Change this file?' },
 	outside: { icon: 'folder-opened', ask: 'Use a file outside the project?' },
@@ -2297,6 +2422,7 @@ function approvalKeyOf(entry: { readonly what: string; readonly server?: string 
 const approvalRows: readonly { readonly key: string; readonly label: string; readonly hint: string }[] = [
 	{ key: 'web', label: 'Internet', hint: 'Fetching pages and searching the web (Claude Code); network access for a command (Codex)' },
 	{ key: 'browser', label: 'AI Browser', hint: "This window's browser tools: reading, clicking, filling, screenshots" },
+	{ key: 'chat', label: 'Chat control', hint: 'Stopping an agent, pausing a chat\'s queue, keeping the computer awake' },
 	{ key: 'command', label: 'Terminal', hint: 'Shell commands, and input to a command already running' },
 	{ key: 'edit', label: 'Files in the project', hint: 'Writing and editing files inside the open folder' },
 	{ key: 'outside', label: 'Files outside the project', hint: 'Reading or writing files outside the open folder, or write access under another folder' },

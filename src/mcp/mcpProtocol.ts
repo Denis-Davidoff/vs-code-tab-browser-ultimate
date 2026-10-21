@@ -207,6 +207,9 @@ function instructions(workspaceName: string | undefined): string {
 		'The `editor_*` tools are the code editor beside the browser: `editor_context` says what the user has open and'
 		+ ' selected, `editor_reveal` shows them a place, and `editor_definition`, `editor_references` and `editor_symbols`'
 		+ ' navigate by symbol through the language servers.',
+		'The `chat_*` tools are the AI Browser chat: `chat_state`, `chat_agents` and `chat_usage` read its tabs, the agents'
+		+ ' at work and the plan\'s limits; the chat\'s own agents can also keep the computer awake, pause and resume a'
+		+ ' tab\'s queue, and stop one agent.',
 	].join(' ');
 }
 

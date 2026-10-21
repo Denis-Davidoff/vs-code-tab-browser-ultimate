@@ -5,52 +5,79 @@ import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { transpileModule, ModuleKind, ScriptTarget } from 'typescript';
 
-test('branch keyboard navigation reaches rows and actions and Escape restores focus', () => {
+test('branch keyboard navigation walks actions and rows top to bottom, and Escape restores focus', () => {
  const source = readFileSync(resolve('preview-src/chat.ts'), 'utf8');
  const start = source.indexOf("branchSearch.addEventListener('keydown'");
  const end = source.indexOf('/** Adding or editing a toolbar skill', start);
  assert.ok(start >= 0 && end > start);
- const handlers: Record<string, (event: any) => void> = {};
+ // Several handlers may listen for one event on one element; each is called.
+ const handlers: Record<string, ((event: any) => void)[]> = {};
  const doc: { activeElement: any } = { activeElement: undefined };
- const control = (name: string) => ({
-  name, focus() { doc.activeElement = this; },
-  addEventListener(type: string, handler: (event: any) => void) { handlers[`${name}:${type}`] = handler; },
- });
- const search = { ...control('search'), value: '' };
- const first = control('first'), remove = control('remove'), cancel = control('cancel'), last = control('last');
- const firstRow = { querySelectorAll: () => [first, remove, cancel] };
- const lastRow = { querySelectorAll: () => [last] };
- Object.assign(first, { closest: () => firstRow });
- Object.assign(remove, { closest: () => firstRow });
- Object.assign(cancel, { closest: () => firstRow });
- Object.assign(last, { closest: () => lastRow });
+ class HTMLButtonElement {
+  disabled = false; hidden = false; offsetParent = {};
+  readonly name: string;
+  constructor(name: string) { this.name = name; }
+  focus() { doc.activeElement = this; }
+  closest(_: string): any { return undefined; }
+  addEventListener(type: string, handler: (event: any) => void) { (handlers[`${this.name}:${type}`] ??= []).push(handler); }
+ }
+ const search = Object.assign(new HTMLButtonElement('search'), { value: '' });
+ const push = new HTMLButtonElement('push'), pr = new HTMLButtonElement('pr'), create = new HTMLButtonElement('create');
+ const first = new HTMLButtonElement('first'), remove = new HTMLButtonElement('remove'), cancel = new HTMLButtonElement('cancel');
+ const last = new HTMLButtonElement('last'), hiddenStash = new HTMLButtonElement('stash');
+ hiddenStash.hidden = true;
+ const syncRow = { querySelectorAll: () => [push, pr], querySelector: () => undefined };
+ const firstRow = { querySelectorAll: () => [first, remove, cancel], querySelector: () => first };
+ const lastRow = { querySelectorAll: () => [last], querySelector: () => last };
+ for (const [button, row] of [[push, syncRow], [pr, syncRow], [first, firstRow], [remove, firstRow], [cancel, firstRow], [last, lastRow]] as const) {
+  button.closest = (selector: string) => selector.includes('.git-branch-row') && row !== syncRow ? row
+   : selector.includes('git-branch-sync-actions') && row === syncRow ? row : undefined;
+ }
  let closed = false;
+ const popup = Object.assign(new HTMLButtonElement('popup'), {
+  querySelectorAll: () => [push, pr, hiddenStash, create, first, last],
+  contains: (node: unknown) => node !== search,
+ });
  const context = {
-  document: doc, branchSearch: search,
-  branchList: { ...control('list'), querySelectorAll: () => [first, last] },
-  branchPopup: control('popup'), branchButton: control('button'),
+  document: doc, branchSearch: search, HTMLButtonElement,
+  branchList: new HTMLButtonElement('list'), branchPopup: popup, branchButton: new HTMLButtonElement('button'),
+  branchCreate: create, branchState: undefined,
   closePopups() { closed = true; },
  };
  runInNewContext(transpileModule(source.slice(start, end), {
   compilerOptions: { module: ModuleKind.CommonJS, target: ScriptTarget.ES2022 },
  }).outputText, context);
- function key(target: string, value: string, isComposing = false) {
+ // A key goes to the focused element and bubbles up to the popup, as in the
+ // page: ↓ in the search box focused the first item and the popup's handler,
+ // reading the active element, moved it a second step.
+ function key(_: string, value: string, isComposing = false) {
   let prevented = false, stopped = false;
-  handlers[`${target}:keydown`]({ key: value, isComposing,
-   preventDefault() { prevented = true; }, stopPropagation() { stopped = true; },
-  });
+  const target = doc.activeElement;
+  const path = target === popup ? ['popup'] : [target.name, 'popup'];
+  for (const name of path) {
+   for (const handler of handlers[`${name}:keydown`] ?? []) {
+    handler({ key: value, isComposing, target, preventDefault() { prevented = true; }, stopPropagation() { stopped = true; } });
+   }
+   if (stopped) { break; }
+  }
   return { prevented, stopped };
  }
  search.focus();
- key('search', 'ArrowDown'); assert.equal(doc.activeElement, first);
- key('list', 'ArrowRight'); assert.equal(doc.activeElement, remove);
- key('list', 'ArrowRight'); assert.equal(doc.activeElement, cancel);
- key('list', 'ArrowLeft'); assert.equal(doc.activeElement, remove);
- key('list', 'ArrowDown'); assert.equal(doc.activeElement, last);
- key('list', 'Home'); assert.equal(doc.activeElement, first);
- key('list', 'End'); assert.equal(doc.activeElement, last);
- key('list', 'ArrowUp'); assert.equal(doc.activeElement, first);
- key('list', 'ArrowUp'); assert.equal(doc.activeElement, search);
+ key('search', 'ArrowDown'); assert.equal(doc.activeElement, push);
+ key('popup', 'ArrowRight'); assert.equal(doc.activeElement, pr);
+ key('popup', 'ArrowDown'); assert.equal(doc.activeElement, create, 'the hidden stash row is skipped');
+ key('popup', 'ArrowDown'); assert.equal(doc.activeElement, first);
+ key('popup', 'ArrowRight'); assert.equal(doc.activeElement, remove);
+ key('popup', 'ArrowRight'); assert.equal(doc.activeElement, cancel);
+ key('popup', 'ArrowLeft'); assert.equal(doc.activeElement, remove);
+ key('popup', 'ArrowDown'); assert.equal(doc.activeElement, last, 'down from a row\'s delete goes to the next row');
+ key('popup', 'Home'); assert.equal(doc.activeElement, push);
+ key('popup', 'End'); assert.equal(doc.activeElement, last);
+ key('popup', 'ArrowUp'); assert.equal(doc.activeElement, first);
+ key('popup', 'ArrowUp'); assert.equal(doc.activeElement, create);
+ key('popup', 'ArrowUp'); assert.equal(doc.activeElement, pr);
+ key('popup', 'ArrowUp'); assert.equal(doc.activeElement, push);
+ key('popup', 'ArrowUp'); assert.equal(doc.activeElement, search);
  key('search', 'ArrowUp'); assert.equal(doc.activeElement, last);
  key('popup', 'Escape', true); assert.equal(closed, false);
  assert.deepEqual(key('popup', 'Escape'), { prevented: true, stopped: true });

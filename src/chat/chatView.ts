@@ -5,6 +5,7 @@ import { featureAgent, featureAiKey, defaultFeaturePrompts, featureEffort, readF
 import { availableBranchName, titleModel } from './autoTitle';
 import { localFileLink } from './fileLinks';
 import { SleepControl } from '../power/sleepControl';
+import { sleepHours, sleepMinutes, type SleepChoice } from '../power/sleepProtocol';
 import { VoiceRecording, voiceHelperPath, voiceUnavailable } from './voiceRecorder';
 import { tidyTranscript, voiceChipLabel, voiceLocalePattern, voiceMaxSeconds, voicePromptText, type HelperLine } from './voiceText';
 import { privateTempDirectory, projectTempDirectory, legacyPrivateTempDirectory, writeExclusive } from '../core/safeFiles';
@@ -28,12 +29,13 @@ import { ChatTab, isHome, newChat, reopened, started, storedEntries, storedTextL
 import { chatTranscript, secondOpinionText, transcriptFileName, type OpinionContext } from './transcript';
 import { diffSides } from './diffSides';
 import { listWorkdir, type WorkdirListing } from './workdir';
-import { compareUrl, parseRepo, repoSlug, validBranch, workBranchName, type RepoRef } from './githubRepo';
+import { compareUrl, parseRepo, pullRequestUrl, repoSlug, validBranch, workBranchName, type RepoRef } from './githubRepo';
 import { cloneInto, copyChanges, isEmptyFolder, isOurWorktree, makeCopy, makeReference, pushCopy, removeCopy, storedCopyRepo, removeStoredCopy, managedCopy } from './repoWork';
 import { GitAccess } from './gitAccess';
 import { changeGitIndex } from './gitIndex';
 import { commitChanges } from './gitCommit';
-import { branchCommand, parseGitBranches } from './gitBranchState';
+import { branchCommand, branchRefFormat, parseGitBranches, publishRemote, pushesDefaultBranch } from './gitBranchState';
+import { gitExtensionErrorText, gitRepositoryFor } from './gitExtension';
 import { gitDiffSides } from './gitDiff';
 import { assertSwitchReady, switchAndUpdate, type SwitchResult } from './gitBranchSwitch';
 import { parseGitStatus } from './gitStatus';
@@ -49,7 +51,7 @@ import type { PageAnnotation } from '../browser/annotationData';
 import type {
 	AgentId, AgentUsage, ApprovalMode, AttachmentChip, AttachmentKind, ChatSummary, GitCommitState,
 	ChatNews, ChatTabSummary, ChatViewState, HostToView, RepoMode, Selection, ToolbarRun, ToolbarSkill, UsageAlert, UsageWindow, ViewToHost, VoiceEvent, WorkdirFolder, WorkdirState,
-	ChatViewMode,
+	ChatViewMode, ToolEntry,
 } from './chatProtocol';
 import { pickElementContext, pickForChat } from '../elements/elementPicker';
 import { parseNews } from './news';
@@ -60,6 +62,7 @@ import { hostIsRemote, isBrowserApiGranted, workspaceIsRemoteFromHost } from '..
 import { pageTitle } from '../translate/translateText';
 import { generateUuid } from '../core/uuid';
 import { runRowPrefix, ToolbarRuns, type SkillEnd } from './toolbarRun';
+import type { ChatControl } from '../mcp/chatTools';
 import { adaptSigils, fillPrompt, notificationText, toolbarLimits, validToolbarSkill } from './toolbarText';
 import { closeAlert, closestLimit, currentLimits, mergeLimits, nextReset, readClosedAlerts, settleClosed, usageAlertFor, usageCheckDue, type ClosedAlerts, type LimitState, type TurnWeight } from './usageAlert';
 
@@ -190,7 +193,7 @@ const approvalPolicyKey = 'aiBrowser.chat.approvalPolicy';
 const approvalServersKey = 'aiBrowser.chat.approvalServers';
 const autoApproveKey = 'aiBrowser.chat.autoApprove';
 /** The menu's fixed categories, in its order; MCP servers come between `outside` and `other`. */
-export const approvalCategories = ['web', 'browser', 'command', 'edit', 'outside', 'other'] as const;
+export const approvalCategories = ['web', 'browser', 'chat', 'command', 'edit', 'outside', 'other'] as const;
 const approvalModes: readonly ApprovalMode[] = ['auto', 'ask', 'deny'];
 /** Servers listed in the menu at most: one row each, and each is an agent's own config. */
 const approvalServerLimit = 30;
@@ -326,6 +329,11 @@ interface ChatServices {
 	views: Set<ChatViewProvider>;
 }
 
+/** What a push question is about: a yes counts only for the same push and the same question. */
+function pushKey(action: string, branch: string, remote: string, target: string, question: string): string {
+	return JSON.stringify([action, branch, remote, target, question]);
+}
+
 export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
 	private static readonly _surfaces = new Map<string, ChatViewProvider>();
 	private static _nextSurface = 0;
@@ -448,9 +456,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			if (valid.length) { this._branchStashes.set(folder, valid); }
 		}
 		this._sleep = new SleepControl(
-			// A tab that has closed works no more, so a hold scoped to it ends.
+			// A tab that has closed works no more, so a hold scoped to it ends; nor
+			// does a queue held by `chat_pause`, or it would hold the computer for good.
 			tabId => (tabId === undefined ? this._tabs : this._tabs.filter(t => t.id === tabId))
-				.some(t => t.busy || t.waiting || t.queuedCount > 0 || this._runs.runningIn(t.chat.id) > 0),
+				.some(t => t.busy || t.waiting || (t.queuedCount > 0 && !t.paused) || this._runs.runningIn(t.chat.id) > 0),
 			() => { this._publishSleep(); this._post(); },
 			hostIsRemote() ? "Sleep prevention requires a local VS Code window." : undefined,
 		);
@@ -824,6 +833,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			attachments: this._active.attachments.map(a => ({ ...a.chip, reference: attachmentReference(a.chip) })),
 			suggestions: this._suggestions().map(s => s.chip),
 			pendingSends: this._active.pendingSends,
+			...(this._active.paused ? { queuePaused: { by: this._active.paused.by } } : {}),
 			tabs: this._tabs.map((tab): ChatTabSummary => ({
 				id: tab.id,
 				chatId: tab.chat.id,
@@ -1079,6 +1089,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			case 'gitBranchAction':
 				await this._gitBranchAction(message);
 				return;
+			case 'gitRemoteAction':
+				await this._gitRemoteAction(message);
+				return;
 			case 'restoreBranchStash':
 				await this._restoreBranchStash(message.folder);
 				return;
@@ -1135,6 +1148,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				for (const tab of this._tabs) {
 					tab.unqueue(message.id);
 				}
+				return;
+			case 'resumeQueue':
+				// By id: the post that showed another tab may be behind the click.
+				this._tabs.find(t => t.id === message.tabId)?.resume();
+				this._drainQueues();
 				return;
 			case 'stop': {
 				const tab = this._active;
@@ -2013,8 +2031,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			this._notSent(text);
 			return;
 		}
-		// Nothing to wait for: no turn, nothing queued or waiting before it.
-		if (!tab.running && !tab.busy && !tab.pendingSends.length) {
+		// Nothing to wait for: no turn, nothing queued or waiting before it —
+		// and no hold: a paused queue keeps what is queued, this message too.
+		if (!tab.running && !tab.busy && !tab.pendingSends.length && !tab.paused) {
 			void this._send(text, tab.id).catch(err => this._fail(err));
 			return;
 		}
@@ -3338,14 +3357,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		try {
 			const git = await gitBinary();
 			if (!git) { throw new Error('Git is unavailable'); }
-			const [output, current, refs] = await Promise.all([
+			const [output, current, refs, urls] = await Promise.all([
 				this._runWorkdirGit(git, ['--no-optional-locks', 'status', '--porcelain=v1', '-z', '--untracked-files=all'], folder, 15_000),
 				this._runWorkdirGit(git, ['symbolic-ref', '--quiet', 'HEAD'], folder, 15_000).catch(() => ''),
-				this._runWorkdirGit(git, ['for-each-ref', '--sort=refname', '--format=%(refname)%00%(symref)', 'refs/heads/', 'refs/remotes/'], folder, 15_000),
+				this._runWorkdirGit(git, ['for-each-ref', '--sort=refname', `--format=${branchRefFormat}`, 'refs/heads/', 'refs/remotes/'], folder, 15_000),
+				// Exit 1 is "no remote at all", which is an answer, not a failure.
+				this._runWorkdirGit(git, ['config', '--get-regexp', '^remote\\..*\\.url$'], folder, 15_000).catch(() => ''),
 			]);
 			const status = parseGitStatus(output);
 			const decorated = this._view ? await themedGitFiles(status, this._view.webview, vscode.Uri.joinPath(this._context.extensionUri, 'media'), vscode.Uri.file(folder)) : status;
-			this._postMessage({ type: 'workdirGit', folder, status: decorated, branches: { ...parseGitBranches(current, refs), savedStash: this._branchStashes.get(folder)?.at(-1) } });
+			const branches = parseGitBranches(current, refs, urls);
+			this._postMessage({ type: 'workdirGit', folder, status: decorated, branches: { ...branches, ...this._pullRequestFor(branches), savedStash: this._branchStashes.get(folder)?.at(-1) } });
 		} catch (error) {
 			this._postMessage({ type: 'workdirGit', folder, error: error instanceof Error ? error.message : String(error) });
 		}
@@ -3531,6 +3553,161 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
    if (this._branchNameRequests.get(tab) === controller) { this._branchNameRequests.delete(tab); }
   }
  }
+
+	/**
+	 * The pull request page for the current branch: published, not gone, not
+	 * the remote's default branch, and on a github.com remote. Only an address
+	 * `parseRepo` accepts — one carrying credentials, or another host, gives none.
+	 */
+	private _pullRequestFor(branches: ReturnType<typeof parseGitBranches>): { pullRequest?: string } {
+		const upstream = branches.upstream;
+		if (!upstream || upstream.gone) { return {}; }
+		const remote = branches.remotes?.find(r => r.name === upstream.remote);
+		const repo = remote && parseRepo(remote.url);
+		if (!repo || pushesDefaultBranch(upstream.branch, remote.defaultBranch)) { return {}; }
+		return { pullRequest: pullRequestUrl(repo, upstream.branch, remote.defaultBranch) };
+	}
+
+	/**
+	 * Publish, push or pull of the current branch, from the Branches window.
+	 * The network half goes through VS Code's Git extension — its askpass is
+	 * what lets an https remote sign in (see `gitExtension.ts`); the decisions
+	 * and the fast-forward are ours.
+	 *
+	 * - **Never forced.** A pull is `--ff-only`, as on a branch switch, and
+	 *   diverged histories are left to the user. A push is checked to have
+	 *   landed (`_pushLanded`), since the extension can resolve one that did not.
+	 * - **Asked first, in the window**: a push to the remote's default branch,
+	 *   to a branch of another name, and while agents work in the folder (what
+	 *   is pushed is HEAD as it is now). The host answers `confirm` with a key
+	 *   naming the push; the view sends the key back, and a yes counts only
+	 *   for the same push.
+	 * - **A push does not wait for the agents**: it changes no file. A pull
+	 *   does, like a switch. Either holds the Git lock, so our own commit or
+	 *   switch cannot interleave.
+	 * - **Refused in a folder whose settings are held back**: the extension
+	 *   runs the repository's `pre-push` hook, and a repository fetched from
+	 *   GitHub that the user has not trusted must not run code (#443).
+	 */
+	private async _gitRemoteAction(message: Extract<ViewToHost, { type: 'gitRemoteAction' }>): Promise<void> {
+		const { folder, action } = message;
+		const answer = (result: { error?: string; confirm?: string; confirmKey?: string } = {}) => this._postMessage({ type: 'gitRemoteResult', folder, action, ...result });
+		if (typeof folder !== 'string' || folder !== this._workdir() || !['publish', 'push', 'pull'].includes(action)
+			|| (message.remote !== undefined && (typeof message.remote !== 'string' || !message.remote || message.remote.startsWith('-') || /[\0\r\n]/.test(message.remote)))) {
+			answer({ error: 'Invalid Git action or working folder.' }); return;
+		}
+		let release: (() => void) | undefined;
+		try {
+			if (this._blocked()) { throw new Error('Git is unavailable in this window.'); }
+			if (this._untrusted(folder)) {
+				throw new Error('This repository\'s settings are held back, so its Git hooks must not run. Trust them from the folder button first.');
+			}
+			const sharing = () => [...this._services.views].flatMap(view => view._tabs.filter(t => view._workdir(t) === folder));
+			const working = () => sharing().some(t => t.busy || this._repoBusy.has(t) || this._runs.runningIn(t.chat.id) > 0);
+			// A pull rewrites files under the agents; a push only reads HEAD.
+			release = await this._gitAccess.mutate(folder, action === 'pull' ? () => this._busyGitFolders() : () => []);
+			if (this._blocked()) { throw new Error('Git is unavailable in this window.'); }
+			const git = await gitBinary();
+			if (!git) { throw new Error('Git is unavailable.'); }
+			const [current, refs, urls] = await Promise.all([
+				this._runWorkdirGit(git, ['symbolic-ref', '--quiet', 'HEAD'], folder).catch(() => ''),
+				this._runWorkdirGit(git, ['for-each-ref', `--format=${branchRefFormat}`, 'refs/heads/', 'refs/remotes/'], folder),
+				this._runWorkdirGit(git, ['config', '--get-regexp', '^remote\\..*\\.url$'], folder).catch(() => ''),
+			]);
+			const state = parseGitBranches(current, refs, urls);
+			const branch = state.current;
+			if (!branch) { throw new Error('No branch is checked out (detached HEAD).'); }
+			const remotes = (state.remotes ?? []).map(r => r.name);
+			const upstream = state.upstream && !state.upstream.gone ? state.upstream : undefined;
+			const root = (await this._runWorkdirGit(git, ['rev-parse', '--show-toplevel'], folder)).trim();
+			if (action === 'publish') {
+				if (!remotes.length) { throw new Error('This repository has no remote. Add one (git remote add origin <url>) to publish.'); }
+				if (upstream) { throw new Error(`${branch} is already published to ${upstream.remote}/${upstream.branch}. Refresh the branch list.`); }
+				const remote = publishRemote(remotes, message.remote);
+				if (!remote) { throw new Error(message.remote ? `There is no remote named ${message.remote}.` : 'Choose the remote to publish to.'); }
+				const defaultBranch = state.remotes?.find(r => r.name === remote)?.defaultBranch;
+				// A yes answers the question shown, about this push: asked again
+				// for any other — HEAD moved to another branch, another remote.
+				const ask = this._pushQuestion(branch, remote, branch, defaultBranch, working());
+				if (ask && message.confirmed !== pushKey(action, branch, remote, branch, ask)) {
+					answer({ confirm: ask, confirmKey: pushKey(action, branch, remote, branch, ask) }); return;
+				}
+				const sha = (await this._runWorkdirGit(git, ['rev-parse', '--verify', `refs/heads/${branch}`], folder)).trim();
+				const repository = await gitRepositoryFor(root, folder);
+				await repository.push(remote, `refs/heads/${branch}:refs/heads/${branch}`, true);
+				// `<branch>@{upstream}`: the `refs/heads/` spelling is refused ("no such branch").
+				await this._pushLanded(git, folder, `${branch}@{upstream}`, sha, remote);
+				confirm(`Published ${branch} to ${remote}.`);
+			} else if (action === 'push') {
+				if (!upstream) { throw new Error(`${branch} is not published yet. Refresh the branch list.`); }
+				if (upstream.ahead === 0) { throw new Error('There is nothing to push.'); }
+				const defaultBranch = state.remotes?.find(r => r.name === upstream.remote)?.defaultBranch;
+				const ask = this._pushQuestion(branch, upstream.remote, upstream.branch, defaultBranch, working());
+				if (ask && message.confirmed !== pushKey(action, branch, upstream.remote, upstream.branch, ask)) {
+					answer({ confirm: ask, confirmKey: pushKey(action, branch, upstream.remote, upstream.branch, ask) }); return;
+				}
+				const sha = (await this._runWorkdirGit(git, ['rev-parse', '--verify', `refs/heads/${branch}`], folder)).trim();
+				const repository = await gitRepositoryFor(root, folder);
+				// Spelled out rather than `git push` alone, whose target follows
+				// `push.default`; a branch tracking another name is asked about
+				// first (`_pushQuestion`), as `simple` would refuse it.
+				await repository.push(upstream.remote, `refs/heads/${branch}:refs/heads/${upstream.branch}`, false);
+				await this._pushLanded(git, folder, upstream.tracking ?? `refs/remotes/${upstream.remote}/${upstream.branch}`, sha, upstream.remote);
+				confirm(`Pushed ${branch} to ${upstream.remote}/${upstream.branch}.`);
+			} else {
+				if (!upstream) { throw new Error(`${branch} has no upstream to pull from.`); }
+				if (working()) { throw new Error('Wait for agents working in this folder to finish.'); }
+				const before = (await this._runWorkdirGit(git, ['rev-parse', '--verify', 'HEAD'], folder)).trim();
+				const repository = await gitRepositoryFor(root, folder);
+				await repository.fetch({ remote: upstream.remote, ref: upstream.branch });
+				if (folder !== this._workdir() || working()) { throw new Error('The working folder changed or an agent started. Try again when it is idle.'); }
+				// Our own git, with no hooks (as on a branch switch), and only a fast-forward:
+				// `pull` would merge or rebase as the user's config says.
+				await this._runWorkdirGit(git, ['-c', `core.hooksPath=${os.devNull}`, '-c', 'merge.autoStash=false', 'merge', '--ff-only', '--no-edit', '--no-overwrite-ignore', '@{upstream}'], root, 120_000);
+				const after = (await this._runWorkdirGit(git, ['rev-parse', '--verify', 'HEAD'], folder)).trim();
+				// Nothing new is not an update — a fetch refspec that does not
+				// cover the branch leaves the tracking ref where it was, too.
+				confirm(after === before ? `${branch} is already up to date with ${upstream.remote}/${upstream.branch}.` : `Updated ${branch} from ${upstream.remote}/${upstream.branch}.`);
+			}
+			answer();
+		} catch (error) {
+			// The extension's `GitError` carries git's stderr whether or not it
+			// recognised the failure; without it, only "Failed to execute git".
+			const fromGit = error as { gitErrorCode?: string; stderr?: string } | undefined;
+			const text = fromGit?.gitErrorCode !== undefined || fromGit?.stderr ? gitExtensionErrorText(error)
+				: error instanceof Error ? (/divergent|Not possible to fast-forward/i.test(error.message) ? 'The branch and its upstream have diverged. Merge or rebase them yourself; only fast-forwards are done here.' : error.message) : String(error);
+			answer({ error: text });
+		} finally {
+			release?.();
+			if (folder === this._workdir()) { await this._refreshWorkdirGit(); }
+		}
+	}
+
+	/**
+	 * A push resolving is not a push that landed: the Git extension hands a
+	 * failure to the push error handlers first, and the GitHub extension's
+	 * takes PermissionDenied and a secret-scanning refusal (GH009) — showing
+	 * its own dialog and answering as handled, so `push()` resolves with
+	 * nothing on the remote. The remote-tracking ref is what git moves on a
+	 * push that did.
+	 */
+	private async _pushLanded(git: string, folder: string, tracking: string, sha: string, remote: string): Promise<void> {
+		const landed = (await this._runWorkdirGit(git, ['rev-parse', '--verify', '--quiet', tracking], folder).catch(() => '')).trim();
+		if (landed !== sha) {
+			throw new Error(`The push did not reach ${remote}. VS Code's GitHub or Git extension may have said why; this push changed nothing on the remote.`);
+		}
+	}
+
+	/** The question a push asks first, or undefined when it goes ahead. */
+	private _pushQuestion(branch: string, remote: string, target: string, defaultBranch: string | undefined, agentsWorking: boolean): string | undefined {
+		const reasons: string[] = [];
+		if (pushesDefaultBranch(target, defaultBranch)) { reasons.push(`This pushes ${branch} straight to ${remote}/${target}, the default branch.`); }
+		// `git switch -c feat origin/develop` tracks `develop`: plain `git push`
+		// (`push.default=simple`) refuses this, so it is asked, never assumed.
+		else if (target !== branch) { reasons.push(`This pushes ${branch} to ${remote}/${target}, a branch of another name.`); }
+		if (agentsWorking) { reasons.push('Agents are working in this folder; only what is committed now is pushed.'); }
+		return reasons.length ? reasons.join(' ') : undefined;
+	}
 
 	private readonly _branchStashes = new Map<string, NonNullable<SwitchResult['stash']>[]>();
 
@@ -4964,6 +5141,216 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		// and a process spawned in a missing folder fails as "spawn … ENOENT",
 		// which reads as the agent not being installed, for every tab.
 		return folder !== undefined && isDirectory(folder) ? folder : this._windowCwd();
+	}
+
+	/* ------------------------------------------------------------ chat_* MCP tools */
+
+	/**
+	 * The chat as the `chat_*` MCP tools see it — every surface of this extension
+	 * host, since a conversation can be in the side bar or in any chat panel.
+	 * See `src/mcp/chatTools.ts` for who may call what. No chat id is ever put in
+	 * an answer: it is what entitles a caller to act.
+	 */
+	public static mcpControl(): ChatControl {
+		const lastMessageChars = 600;
+		const agentRowLimit = 30;
+		const surfaces = () => [...ChatViewProvider._surfaces.values()].filter(s => !s._disposed);
+		const find = (tabId: string): { surface: ChatViewProvider; tab: ChatTab } => {
+			for (const surface of surfaces()) {
+				const tab = surface._tabs.find(t => t.id === tabId);
+				if (tab) {
+					return { surface, tab };
+				}
+			}
+			throw new Error('The conversation this call came from is no longer open in a tab.');
+		};
+		const iso = (at: number | undefined) => at === undefined ? undefined : new Date(at).toISOString();
+		const sleepOf = (surface: ChatViewProvider) => {
+			const s = surface._sleep.state;
+			return {
+				mode: s.mode,
+				active: s.active,
+				...(s.mode === 'timer' ? { until: iso(s.until) } : {}),
+				...(s.mode === 'agents' ? { scope: s.scope ?? 'window' } : {}),
+				...(s.automatic ? { automatic: true, automaticActive: s.automaticActive === true } : {}),
+				...(s.error ? { error: s.error } : {}),
+			};
+		};
+		/** The surface's own choice, and whether any surface holds the computer awake. */
+		const keepAwakeOf = (surface: ChatViewProvider) => {
+			const others = surfaces().filter(s => s !== surface && s._sleep.state.mode !== 'off')
+				.map(s => ({ surface: s._surfaceLabel(), ...sleepOf(s) }));
+			return { ...sleepOf(surface), ...(others.length ? { alsoHeldBy: others } : {}) };
+		};
+		const agentRow = (row: ToolEntry) => {
+			const info = row.agent;
+			const now = Date.now();
+			return {
+				id: row.id,
+				name: row.name,
+				status: row.status,
+				origin: info?.origin === 'toolbar' ? 'toolbar skill' : 'agent',
+				...(info?.type ? { type: info.type } : {}),
+				...(info?.model ? { model: info.model } : {}),
+				...(info?.background ? { background: true } : {}),
+				...(info?.parentId ? { parentId: info.parentId } : {}),
+				startedAt: iso(row.startedAt),
+				...(row.endedAt ? { endedAt: iso(row.endedAt) } : {}),
+				seconds: Math.round(((row.endedAt ?? now) - row.startedAt) / 1000),
+				...(info?.tokens !== undefined ? { tokens: info.tokens } : {}),
+				...(info?.toolUses !== undefined ? { toolUses: info.toolUses } : {}),
+				...(row.status === 'running' && info?.lastTool ? { onTool: info.lastTool } : {}),
+				...(info?.waiting ? { waitingForUser: info.waiting.title } : {}),
+				// Only the last thing it said, short (asked for): a list of agents
+				// is a status, and whole reports pushed a busy chat past what a
+				// client takes from one tool (25 000 tokens for Claude Code).
+				...(info?.summary ? { lastMessage: lastMessage(info.summary) } : {}),
+			};
+		};
+		const lastMessage = (text: string) => {
+			const paragraphs = text.trim().split(/\n\s*\n/);
+			return capAt(paragraphs[paragraphs.length - 1].trim(), lastMessageChars);
+		};
+		const lastReply = (tab: ChatTab) => {
+			for (let i = tab.chat.entries.length - 1; i >= 0; i--) {
+				const entry = tab.chat.entries[i];
+				if (entry.kind === 'assistant' && entry.text.trim()) {
+					return lastMessage(entry.text);
+				}
+			}
+			return undefined;
+		};
+		/** Newest first, so a cut keeps what is happening now. */
+		const listed = (rows: ToolEntry[]) => rows.slice(-agentRowLimit).reverse().map(agentRow);
+		const rowsOf = (surface: ChatViewProvider, tab: ChatTab): ToolEntry[] => [
+			...tab.chat.entries.filter((e): e is ToolEntry => e.kind === 'tool' && e.tool === 'agent'),
+			...surface._runs.rows(tab.chat.id),
+		].sort((a, b) => a.startedAt - b.startedAt);
+		const queueOf = (tab: ChatTab) => ({
+			queued: tab.queuedCount,
+			...(tab.paused ? { paused: { by: tab.paused.by, since: iso(tab.paused.at) } } : {}),
+		});
+		return {
+			tabOf: chatId => {
+				for (const surface of surfaces()) {
+					const tab = surface._tabs.find(t => t.chat.id === chatId);
+					if (tab) {
+						return tab.id;
+					}
+				}
+				return undefined;
+			},
+			// Every tab by its state alone; the conversation — title, last
+			// reply — only for the caller's own.
+			state: ownTab => {
+				const all = surfaces();
+				const own = ownTab ? all.find(s => s._tabs.some(t => t.id === ownTab)) : undefined;
+				const sidebar = own ?? all.find(s => !s._panelIdentity) ?? all[0];
+				return {
+					tabs: all.flatMap(surface => surface._tabs.map(tab => ({
+						...(tab.id === ownTab ? { own: true, title: tab.title ?? 'New chat', ...(lastReply(tab) ? { lastMessage: lastReply(tab) } : {}) } : {}),
+						surface: surface._surfaceLabel(),
+						inFront: surface._active === tab,
+						...(tab.started ? { agent: tab.chat.agent } : {}),
+						status: tab.status ?? 'new',
+						running: tab.running,
+						agentsRunning: tab.agentsRunning,
+						backgroundSkills: surface._runs.runningIn(tab.chat.id),
+						...queueOf(tab),
+					}))),
+					...(sidebar ? { keepAwake: keepAwakeOf(sidebar) } : {}),
+					...(ownTab ? {} : { note: all.length ? 'This caller is not one of the chat\'s own agents: it sees no conversation and cannot act.' : 'The chat has no open tabs in this window.' }),
+				};
+			},
+			agents: ownTab => {
+				const { surface, tab } = find(ownTab);
+				const rows = rowsOf(surface, tab);
+				return { agents: listed(rows), ...(rows.length > agentRowLimit ? { note: `The newest ${agentRowLimit} of ${rows.length}.` } : {}) };
+			},
+			usage: ownTab => {
+				const all = surfaces();
+				const own = ownTab ? find(ownTab) : undefined;
+				const ordered = own ? [own.surface, ...all.filter(s => s !== own.surface)] : all;
+				const registry = ordered[0]?._registry;
+				const now = Date.now();
+				const agents = (registry?.agents ?? []).filter(a => a.available).map(a => {
+					const known = ordered.map(s => currentLimits(s._limits.get(a.id), now)).find(l => l !== undefined);
+					return {
+						agent: a.id,
+						...(known ? {
+							limits: known.windows.map(w => ({ label: w.label, usedPercent: w.usedPercent, ...(w.resetsAt ? { resetsAt: iso(w.resetsAt) } : {}) })),
+							usingCredits: known.usingCredits,
+						} : { limits: [], note: 'Not reported yet: the CLI reports its limits during a turn.' }),
+					};
+				});
+				const stats = own?.tab.started ? own.tab.chat.stats : undefined;
+				return {
+					agents,
+					...(stats?.contextTokens !== undefined ? { context: {
+						agent: own!.tab.chat.agent,
+						usedTokens: stats.contextTokens,
+						...(stats.contextWindow ? { windowTokens: stats.contextWindow, usedPercent: Math.round(stats.contextTokens / stats.contextWindow * 100) } : {}),
+						...(stats.contextCompacted ? { compacted: true } : {}),
+					} } : {}),
+				};
+			},
+			keepAwake: (ownTab, request) => {
+				// The surface holding the caller's tab: a hold on that tab is
+				// judged against the tabs of the surface it belongs to.
+				const surface = find(ownTab).surface;
+				if (request.mode === 'off') {
+					// Off is off for the window: a hold another surface carries
+					// would otherwise go on under an answer saying it ended.
+					for (const each of surfaces()) {
+						each._sleep.choose({ mode: 'off' });
+					}
+					return { keepAwake: keepAwakeOf(surface) };
+				}
+				let choice: SleepChoice;
+				if (request.mode === 'timer') {
+					const offered = [...sleepMinutes, ...sleepHours.map(h => h * 60)].sort((a, b) => a - b);
+					const minutes = offered.find(m => m >= request.minutes);
+					if (minutes === undefined) {
+						throw new Error(`At most ${offered[offered.length - 1] / 60} hours can be asked for.`);
+					}
+					choice = { mode: 'timer', minutes };
+				} else {
+					choice = request.scope === 'tab' ? { mode: 'agents', scope: 'tab', tabId: ownTab } : { mode: 'agents', scope: 'window' };
+				}
+				surface._sleep.choose(choice);
+				return { keepAwake: keepAwakeOf(surface) };
+			},
+			pause: ownTab => {
+				const { tab } = find(ownTab);
+				const changed = tab.pause('an agent');
+				const notes = [
+					...(changed ? [] : ['The queue was paused already.']),
+					...(tab.running ? ['The turn running goes on to its end; nothing queued goes out until chat_resume.'] : []),
+				];
+				return { ...queueOf(tab), running: tab.running, ...(notes.length ? { note: notes.join(' ') } : {}) };
+			},
+			resume: ownTab => {
+				const { surface, tab } = find(ownTab);
+				const changed = tab.resume();
+				surface._drainQueues();
+				return { ...(changed ? {} : { note: 'The queue was not paused.' }), ...queueOf(tab) };
+			},
+			stopAgent: async (ownTab, rowId) => {
+				const { surface, tab } = find(ownTab);
+				const row = rowsOf(surface, tab).find(r => r.id === rowId);
+				if (!row) {
+					throw new Error(`None of your agents has the id ${JSON.stringify(rowId)}: chat_agents lists them.`);
+				}
+				if (row.status !== 'running') {
+					throw new Error(`That agent is not running (it is ${row.status}).`);
+				}
+				const stopped = rowId.startsWith(runRowPrefix) ? surface._runs.stopRow(rowId) : await tab.stopAgent(rowId);
+				if (!stopped) {
+					throw new Error('The agent could not be stopped; the chat says why.');
+				}
+				return { id: rowId, stopping: true, note: 'Asked to stop; chat_agents shows it as stopped once its CLI reports it.' };
+			},
+		};
 	}
 
 	public dispose(): void {

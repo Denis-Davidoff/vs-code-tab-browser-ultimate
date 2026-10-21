@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { chatCapability } from '../core/chatCapability';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { JsonLineProcess, withTimeout } from './agentProcess';
@@ -105,7 +106,7 @@ function mcpServers(server: BrowserServer | undefined): unknown[] {
 	}
 	const headers = [{ name: 'Authorization', value: `Bearer ${server.token}` }];
 	if (server.chatId) {
-		headers.push({ name: 'X-AI-Browser-Chat', value: server.chatId });
+		headers.push({ name: 'X-AI-Browser-Chat', value: chatCapability(server.chatId) });
 	}
 	return [{ type: 'http', name: 'ai-browser', url: server.url, headers }];
 }

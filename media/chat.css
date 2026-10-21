@@ -4574,13 +4574,14 @@ body.vscode-high-contrast-light .context-pie {
 
 .git-branch-button { display: flex; align-items: center; gap: 4px; min-width: 0; max-width: 150px; font-size: 11px; padding: 4px; }
 .git-branch-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.git-branch-popup { width: min(380px, calc(100% - 16px)); max-height: min(480px, 65vh); }
+.git-branch-popup { width: min(380px, calc(100% - 16px)); max-height: min(480px, 65vh); font-size: 12px; }
+.git-branch-popup .palette-search { font-size: 12px; }
 .git-branch-list { min-height: 0; overflow: auto; padding: 0 8px 8px; }
 .git-branch-row { display: flex; align-items: center; gap: 4px; }
-.git-branch-select, .git-branch-create { display: flex; align-items: center; gap: 8px; border: 0; background: transparent; color: var(--fg); font: inherit; padding: 7px 6px; text-align: left; cursor: pointer; border-radius: 4px; }
+.git-branch-select, .git-branch-create { display: flex; align-items: center; gap: 8px; border: 0; background: transparent; color: var(--fg); font: inherit; padding: 5px 6px; text-align: left; cursor: pointer; border-radius: 4px; }
 .git-branch-select { flex: 1; min-width: 0; }
 .git-branch-row-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.git-branch-create { margin: 4px 8px; overflow-wrap: anywhere; }
+.git-branch-create { box-sizing: border-box; width: calc(100% - 16px); margin: 2px 8px; overflow-wrap: anywhere; }
 .git-branch-select:hover, .git-branch-create:hover { background: var(--vscode-list-hoverBackground); }
 .git-branch-popup button:focus-visible { background: var(--vscode-list-focusBackground, var(--vscode-list-hoverBackground)); color: var(--vscode-list-focusForeground, var(--fg)); }
 .git-branch-select:disabled, .git-branch-create:disabled { opacity: .55; cursor: default; }
@@ -4588,6 +4589,16 @@ body.vscode-high-contrast-light .context-pie {
 .git-branch-error { color: var(--vscode-errorForeground, #f14c4c); white-space: pre-wrap; overflow-wrap: anywhere; padding: 0 12px; font-size: 11px; }
 .git-branch-error.generating { color: var(--warn); }
 .git-branch-error:empty { display: none; }
+.git-branch-sync { display: flex; flex-direction: column; align-items: stretch; gap: 2px; margin: 2px 8px 4px; padding: 4px; border-radius: 6px; background: color-mix(in srgb, var(--fg) 5%, transparent); }
+.git-branch-sync[hidden] { display: none; }
+.git-branch-sync-text { padding: 2px 6px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-branch-sync-text.muted { opacity: .7; }
+.git-branch-sync-text.wrap { white-space: normal; }
+.git-branch-sync-actions { display: flex; flex-direction: column; align-items: stretch; gap: 0; }
+.git-branch-sync-actions.form-actions { flex-direction: row; justify-content: flex-end; gap: 4px; padding: 2px; }
+.git-branch-sync-button { display: flex; align-items: center; gap: 8px; width: 100%; box-sizing: border-box; border: 0; border-radius: 4px; background: transparent; color: var(--fg); font: inherit; padding: 5px 6px; text-align: left; cursor: pointer; }
+.git-branch-sync-button:hover { background: var(--vscode-list-hoverBackground); }
+.git-branch-remote { margin: 2px 6px; font: inherit; color: var(--fg); background: var(--vscode-dropdown-background); border: 1px solid var(--vscode-dropdown-border, transparent); border-radius: 4px; padding: 2px 4px; }
 .git-branch-empty { padding: 12px 6px; color: var(--fg-3); }
 
 .git-status > .round { flex: none; }
@@ -4605,7 +4616,7 @@ body.vscode-high-contrast-light .context-pie {
 .git-staged-count, .git-unstaged-count { font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 10px; }
 .git-staged-count { color: var(--vscode-gitDecoration-addedResourceForeground, #73c991); border-left: 1px solid var(--border-strong); padding-left: 5px; }
 .git-unstaged-count { color: var(--vscode-gitDecoration-modifiedResourceForeground, #e2c08d); }
-.git-changes-popup { width: min(400px, calc(100% - 16px)); max-height: min(560px, 70vh); }
+.git-changes-popup { width: min(400px, calc(100% - 16px)); max-height: min(560px, 70vh); font-size: 12px; }
 .git-changes-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex: none; padding: 10px 12px 6px; }
 .git-change-totals { display: flex; gap: 8px; font-size: 11px; }
 .git-changes-list { overflow: auto; min-height: 0; padding: 0 8px 6px; }
@@ -4615,6 +4626,7 @@ body.vscode-high-contrast-light .context-pie {
 .git-file-open { border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; border-radius: 3px; }
 .git-file-open:hover, .git-file-open:focus-visible { background: var(--vscode-list-hoverBackground); }
 .git-changes-file .round, .git-changes-group .round { flex: none; }
+.git-status-letter { flex: none; width: 1.4em; text-align: center; font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; font-weight: 600; }
 .git-changes-actions { display: flex; flex-direction: column; flex: none; gap: 6px; padding: 10px 12px; border-top: 1px solid var(--border-strong); max-height: 210px; overflow: auto; }
 .git-changes-hint { color: var(--fg-3); font-size: 11px; line-height: 1.4; }
 .git-changes-commit { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--border-strong); border-radius: 5px; color: var(--fg); background: var(--vscode-button-secondaryBackground, var(--soft)); font: inherit; cursor: pointer; }
@@ -4732,3 +4744,27 @@ body.vscode-high-contrast-light .context-pie {
 .tab.drop-after { box-shadow: inset -2px 0 var(--accent); }
 
 .receiving-chat-tab .tab-strip { box-shadow: inset 0 -2px var(--accent); }
+
+/* `chat_pause` holds the tab's queue: the row says so and lets the user release it. */
+.pending-note.queue-paused {
+	margin: 4px 2px;
+	color: var(--vscode-editorWarning-foreground, var(--fg-2));
+}
+
+.pending-resume {
+	display: inline-flex;
+	align-items: center;
+	gap: 3px;
+	margin-left: auto;
+	padding: 1px 6px;
+	border: 1px solid var(--soft-2);
+	border-radius: 4px;
+	background: transparent;
+	color: var(--fg);
+	cursor: pointer;
+	font-size: inherit;
+}
+
+.pending-resume:hover {
+	background: var(--soft-2);
+}

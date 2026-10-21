@@ -82,9 +82,27 @@ export function workBranchName(now: Date, unique: string): string {
 	return `ai-browser/${stamp}-${unique.replace(/[^a-z0-9]/gi, '').slice(0, 6).toLowerCase()}`;
 }
 
+/**
+ * A branch name in a GitHub path, each `/`-separated segment encoded:
+ * `encodeURI` leaves `#` and `?`, which git allows in a branch name, so
+ * `fix#12` opened `pull/new/fix` with `#12` as a fragment.
+ */
+function branchPath(name: string): string {
+	return name.split('/').map(encodeURIComponent).join('/');
+}
+
 /** The page that opens a pull request from `head` into `base`. */
 export function compareUrl(repo: RepoRef, base: string, head: string): string {
-	return `https://github.com/${repo.owner}/${repo.name}/compare/${encodeURI(base)}...${encodeURI(head)}?expand=1`;
+	return `https://github.com/${repo.owner}/${repo.name}/compare/${branchPath(base)}...${branchPath(head)}?expand=1`;
+}
+
+/**
+ * The page that opens a pull request for `head`: the compare page against
+ * `base` when the remote's default branch is known, else GitHub's own
+ * `pull/new`, which picks the default branch itself.
+ */
+export function pullRequestUrl(repo: RepoRef, head: string, base?: string): string {
+	return base ? compareUrl(repo, base, head) : `https://github.com/${repo.owner}/${repo.name}/pull/new/${branchPath(head)}`;
 }
 
 /** `origin/main` from `git symbolic-ref --short refs/remotes/origin/HEAD`, as `main`. */

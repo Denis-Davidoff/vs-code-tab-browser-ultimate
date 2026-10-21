@@ -26,6 +26,12 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 - $(location) **Page markers** — pin notes to several elements right in the browser and hand them to the agent as one prompt.
 - $(settings-gear) **Chat Settings** — the gear at the top of the chat: change the system prompts behind commit messages, branch names and chat titles, and clean up temporary files.
 
+## 0.8.3 — 2026-10-21
+- **Publish, Push and Pull** in the Branches window: one row for the current branch shows how far it is ahead or behind, and goes through VS Code's Git extension, so your GitHub sign-in answers for https remotes. Never forced; a pull only fast-forwards; a push to the default branch or while agents work asks first. A **pull request** button opens GitHub's compare page.
+- **Chat tools for the agents**: `chat_state`, `chat_usage` and `chat_agents` report the chat's tabs, plan limits and running agents; the chat's own agents can keep the computer awake, pause or resume their tab's queue, and stop one of their agents. The controls are a new **Chat control** approval category, Ask by default. A paused queue shows **Resume** above it.
+- **New chats from the status bar**: the AI Browser menu opens a chat here, in a new tab or in a new window.
+- **Gemini shows which model Auto chose** beside "Worked for …", and tells a used-up model quota apart from a rate limit, a full context window from a turn limit, and explains its sign-in, settings and folder-trust exits.
+
 ## 0.8.2 — 2026-10-20
 - **Chats across tabs and windows**: open chats in the sidebar, editor tabs or separate windows, and view several at once across screens. The top **+** offers a location; the tab-strip **+** adds a neighbouring chat.
 - **Move live chats**: right-click a chat tab to move it between open views, or from the sidebar into a new tab or window, keeping its session, draft and attachments. Empty source panels close after a move. Drag tabs to reorder them.

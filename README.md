@@ -90,6 +90,13 @@ then restores the clipboard. It does not request OS screen recording access.
 
 ## Changelog
 
+**0.8.3** — Publish, push and pull the current branch from the chat's Branches window,
+through VS Code's Git extension and your GitHub sign-in, with a button for a pull request. New
+`chat_*` MCP tools report the chat's tabs, plan limits and agents, and let the chat's own agents
+keep the computer awake, pause their queue or stop one of their agents, behind a new Chat
+control approval category. The status bar menu opens new chats, and Gemini shows the model
+Auto chose and explains quota, context and exit errors.
+
 **0.8.2** — Open chats in the sidebar, editor tabs or separate windows, and move them
 between views with their sessions, drafts and attachments intact. View chats side by side
 across screens, drag to reorder, and restore chat tabs after restarting VS Code. The top

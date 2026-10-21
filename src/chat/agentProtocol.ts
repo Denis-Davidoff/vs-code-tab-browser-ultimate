@@ -1691,6 +1691,20 @@ function isBrowserServer(name: string): boolean {
 }
 
 /**
+ * Our server's tools that act on the chat rather than on the page: they stop
+ * an agent, hold a queue, keep the computer awake. Filed under a category of
+ * their own, "Chat control", or AI Browser on Auto would let an agent stop
+ * the conversations beside it without a card. The names are `chatToolNames`
+ * in `src/mcp/chatTools.ts`, written twice since a leaf may not import it.
+ */
+export const chatControlTools: ReadonlySet<string> = new Set(['chat_keep_awake', 'chat_pause', 'chat_resume', 'chat_stop_agent']);
+
+/** The category of one of our own server's tools. */
+function ourServerWhat(tool: string): 'chat' | 'browser' {
+	return chatControlTools.has(tool) ? 'chat' : 'browser';
+}
+
+/**
  * What a question shows must be what the answer allows, so a command and a
  * tool's arguments are shown whole, line breaks included — the card scrolls.
  * Folding lines into one read `echo done` + `rm -rf build` as one harmless
@@ -1766,7 +1780,7 @@ export function claudeApproval(id: string, request: Record<string, unknown>, roo
 			return { id, what: 'other', title: tool, detail: args };
 		}
 		return isBrowserServer(server)
-			? { id, what: 'browser', title: name, detail: args }
+			? { id, what: ourServerWhat(name), title: name, detail: args }
 			: { id, what: 'mcp', server, title: name, detail: args };
 	}
 	if (claudeWebTools.has(tool)) {
@@ -1882,10 +1896,13 @@ export function codexApproval(id: string, method: string, params: Record<string,
 			}
 			const server = typeof params.serverName === 'string' ? params.serverName : '';
 			const message = typeof params.message === 'string' ? params.message : '';
-			const name = /tool "([^"]+)"/.exec(message)?.[1] ?? (typeof meta.tool_title === 'string' ? meta.tool_title : 'Tool');
+			const named = /tool "([^"]+)"/.exec(message)?.[1];
+			const name = named ?? (typeof meta.tool_title === 'string' ? meta.tool_title : 'Tool');
 			const args = argumentLines(meta.tool_params);
+			// Our tool with no name to read is filed under Chat control: a title
+			// says nothing for sure, and the stricter category costs a card.
 			return isBrowserServer(server)
-				? { id, what: 'browser', title: name, detail: args }
+				? { id, what: named ? ourServerWhat(named) : 'chat', title: name, detail: args }
 				: { id, what: 'mcp', server, title: name, detail: args };
 		}
 		case 'item/tool/requestUserInput': {
@@ -2064,7 +2081,7 @@ function geminiMcpCall(call: Record<string, unknown>): { server?: string; tool: 
 	if (titled && name === `mcp_${geminiToolName(titled.server)}_${geminiToolName(titled.tool)}`) {
 		return titled;
 	}
-	const ours = /^mcp_(ai-browser(?:-.+-[0-9a-f]{6})?)_((?:browser|editor)_[a-z_]+)$/.exec(name);
+	const ours = /^mcp_(ai-browser(?:-.+-[0-9a-f]{6})?)_((?:browser|editor|chat)_[a-z_]+)$/.exec(name);
 	if (ours) {
 		return { server: ours[1], tool: ours[2] };
 	}
@@ -2355,7 +2372,7 @@ export function geminiApproval(id: string, params: Record<string, unknown>, root
 		return !mcp.server
 			? { id, what: 'other', title: oneLine(mcp.tool, 200), ...args }
 			: isBrowserServer(mcp.server)
-				? { id, what: 'browser', title: mcp.tool, ...args }
+				? { id, what: ourServerWhat(mcp.tool), title: mcp.tool, ...args }
 				: { id, what: 'mcp', server: mcp.server, title: mcp.tool, ...args };
 	}
 	const paths = geminiPaths(call);

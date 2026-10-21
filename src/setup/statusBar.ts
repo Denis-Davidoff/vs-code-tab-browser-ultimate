@@ -8,6 +8,7 @@ import type { BrowserController, ShareView } from '../browser/browserController'
 import { inUseMarker, sharedMarker, stripMarker } from '../browser/shareIndicator';
 import { plainInLabel, plainInMarkdown } from '../core/notifyText';
 import { normalizeAddress } from '../core/webUrl';
+import { supportsSecondarySidebar } from '../chat/chatView';
 import { pageTitle } from '../translate/translateText';
 import {
 	browserApiState, integratedBrowserCommand, onDidChangeGrantState,
@@ -247,6 +248,27 @@ async function showMenu(controller: BrowserController): Promise<void> {
 			label: vscode.l10n.t("$(file) Open File…"),
 			detail: vscode.l10n.t("Preview a local HTML file"),
 			run: () => openFile(),
+		});
+	}
+
+	// The same three places the chat's own New Chat offers. Below VS Code 1.106
+	// there is no chat view to reveal, so the section is left out there.
+	if (supportsSecondarySidebar(vscode.version)) {
+		items.push({ label: vscode.l10n.t("Chat"), kind: vscode.QuickPickItemKind.Separator });
+		items.push({
+			label: vscode.l10n.t("$(comment-discussion) New chat"),
+			detail: vscode.l10n.t("A new tab in the AI Browser chat, shown in the side bar"),
+			run: () => vscode.commands.executeCommand('aiBrowser.chat.newChat', 'here'),
+		});
+		items.push({
+			label: vscode.l10n.t("$(files) Chat in a new tab"),
+			detail: vscode.l10n.t("An editor tab of its own"),
+			run: () => vscode.commands.executeCommand('aiBrowser.chat.newChat', 'tab'),
+		});
+		items.push({
+			label: vscode.l10n.t("$(link-external) Chat in a new window"),
+			detail: vscode.l10n.t("A separate window holding only the chat"),
+			run: () => vscode.commands.executeCommand('aiBrowser.chat.newChat', 'window'),
 		});
 	}
 

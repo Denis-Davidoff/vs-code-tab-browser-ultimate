@@ -3,11 +3,13 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { chatOfCapability } from '../core/chatCapability';
 import * as http from 'http';
 import * as net from 'net';
 import * as vscode from 'vscode';
 import { BrowserController } from '../browser/browserController';
 import type { BrowserRecording } from '../browser/recording';
+import { chatTools, type ChatControlPort } from './chatTools';
 import { modelFrameLimits } from '../browser/screenshotFrames';
 import { defaultSegmentChars, maxSegmentChars, parseReplacements, segmentBudget } from '../translate/translateText';
 import { generateUuid } from '../core/uuid';
@@ -124,6 +126,8 @@ export class McpServer implements vscode.Disposable {
 		 */
 		sessionKinds: Map<string, ClientKind>,
 		private readonly _recording?: BrowserRecording,
+		/** The AI Browser chat, filled in once it exists; see `chatTools.ts`. */
+		private readonly _chat?: ChatControlPort,
 	) {
 		this._sessionKinds = sessionKinds;
 		this._tools = this._buildTools();
@@ -360,9 +364,11 @@ export class McpServer implements vscode.Disposable {
 		// 🔗 — "nobody has picked this up" — while that very client drove the
 		// page, which is the one thing the marker exists to tell apart. An
 		// unrecognised assistant is `other` everywhere else here too.
-		const caller: Caller = { kind: kind ?? 'other', sessionId,
-			...(typeof req.headers['x-ai-browser-chat'] === 'string' ? { chatId: req.headers['x-ai-browser-chat'] } : {}),
-		};
+		// The header carries a value minted for a conversation, never its id:
+		// one this host did not mint names no chat (`chatCapability.ts`).
+		const capability = req.headers['x-ai-browser-chat'];
+		const chatId = typeof capability === 'string' ? chatOfCapability(capability) : undefined;
+		const caller: Caller = { kind: kind ?? 'other', sessionId, ...(chatId ? { chatId } : {}) };
 
 		// **A call the client gave up on is cancelled here too.** The MCP
 		// client sends `notifications/cancelled` when its user presses Esc, and
@@ -755,6 +761,7 @@ export class McpServer implements vscode.Disposable {
 					caller),
 			},
 			...this._editorTools(),
+			...(this._chat ? chatTools(this._chat) : []),
 		];
 	}
 

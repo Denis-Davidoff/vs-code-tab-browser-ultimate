@@ -455,7 +455,39 @@ export class ChatTab {
 
 	/** Messages are queued, and the turn they wait for has ended: the provider may send the next. */
 	public get readyForQueued(): boolean {
-		return this._queued.length > 0 && !this.busy && !this._waiting.length && !this.waiting;
+		return this._queued.length > 0 && !this._paused && !this.busy && !this._waiting.length && !this.waiting;
+	}
+
+	/**
+	 * The queue is held: the turn running goes on to its end, and nothing queued
+	 * — messages, a skill's next prompts, a skill queued for after the turn —
+	 * goes out until `resume`. A CLI has no pause, only Stop, so this is the
+	 * pause that loses nothing. Set from `chat_pause` or the queue's own row.
+	 */
+	private _paused: { readonly by: string; readonly at: number } | undefined;
+
+	public get paused(): { readonly by: string; readonly at: number } | undefined {
+		return this._paused;
+	}
+
+	/** Answers whether anything changed. */
+	public pause(by: string): boolean {
+		if (this._paused) {
+			return false;
+		}
+		this._paused = { by, at: Date.now() };
+		this._post();
+		return true;
+	}
+
+	/** Answers whether anything changed; the provider drains the queue on the post. */
+	public resume(): boolean {
+		if (!this._paused) {
+			return false;
+		}
+		this._paused = undefined;
+		this._post();
+		return true;
 	}
 
 	public get busy(): boolean {
@@ -602,6 +634,8 @@ export class ChatTab {
 		this._unseen = false;
 		this._failed = endedInError(chat);
 		this._restartForDirs = false;
+		// The hold was on the conversation the queue belonged to.
+		this._paused = undefined;
 		this._post();
 	}
 

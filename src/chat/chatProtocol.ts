@@ -323,7 +323,7 @@ export type ChatEntry =
  * edits inside the project, files outside it, another MCP server's tools
  * (`mcp`, one category per server), and anything else.
  */
-export type ApprovalKind = 'web' | 'browser' | 'command' | 'edit' | 'outside' | 'mcp' | 'other' | 'question';
+export type ApprovalKind = 'web' | 'browser' | 'chat' | 'command' | 'edit' | 'outside' | 'mcp' | 'other' | 'question';
 
 /**
  * A question with choices the agent asks the user in the middle of a turn —
@@ -462,7 +462,28 @@ export interface GitBranchState {
  readonly current: string;
  readonly branches: readonly { name: string; remote: boolean }[];
  readonly savedStash?: { readonly branch: string; readonly hash: string };
+ /** The current branch's upstream, from refs already fetched; absent when it has none. */
+ readonly upstream?: GitHeadUpstream;
+ /** The repository's remotes, with the default branch where `refs/remotes/<name>/HEAD` names one. */
+ readonly remotes?: readonly { readonly name: string; readonly url: string; readonly defaultBranch?: string }[];
+ /** GitHub's page for a pull request from the published current branch, when its remote is github.com. */
+ readonly pullRequest?: string;
 }
+
+export interface GitHeadUpstream {
+ readonly remote: string;
+ /** The branch on the remote, which need not share the local name. */
+ readonly branch: string;
+ readonly ahead: number;
+ readonly behind: number;
+ /** The upstream ref was pruned: deleted on the remote. */
+ readonly gone: boolean;
+ /** The remote-tracking ref, `refs/remotes/<remote>/<branch>` unless a fetch refspec maps it elsewhere. */
+ readonly tracking?: string;
+}
+
+/** Publish, push or pull of the current branch, through VS Code's Git extension. */
+export type GitRemoteAction = 'publish' | 'push' | 'pull';
 
 export interface FileThemeIcon {
  readonly image?: string;
@@ -596,6 +617,8 @@ export interface ChatViewState {
 	 * sent when the turn ends (`queue`).
 	 */
 	readonly pendingSends: readonly PendingSend[];
+	/** The tab's queue is held (`chat_pause`): nothing queued goes out until it is resumed. */
+	readonly queuePaused?: { readonly by: string };
 	/** The approval menu: each category's mode, and the MCP servers an agent has asked about. Per workspace. */
 	readonly approvals: { readonly policy: ApprovalPolicy; readonly servers: readonly string[] };
 	/** Another agent was picked for a conversation that has started: the view asks what to do. */
@@ -703,6 +726,8 @@ export type HostToView =
 	| { readonly type: 'gitIndexResult'; readonly folder: string; readonly error?: string }
 	| { readonly type: 'gitBranchNameResult'; readonly id: number; readonly name?: string; readonly error?: string }
 	| { readonly type: 'gitBranchResult'; readonly folder: string; readonly action: 'switch' | 'create' | 'delete'; readonly error?: string }
+	/** `confirm`: nothing was done; ask the user this, and send the action again with `confirmed`. */
+	| { readonly type: 'gitRemoteResult'; readonly folder: string; readonly action: GitRemoteAction; readonly error?: string; readonly confirm?: string; /** What the question was about; sent back as `confirmed`. */ readonly confirmKey?: string }
 	| { readonly type: 'workdirGit'; readonly folder: string; readonly status?: WorkdirGitStatus; readonly branches?: GitBranchState; readonly error?: string }
 	/**
 	 * The files and folders of `folder`, relative and `/`-separated, a folder
@@ -735,6 +760,7 @@ export type ViewToHost =
 	| { readonly type: 'send'; readonly text: string; readonly tabId?: string; readonly mode?: 'queue' }
 	/** A queued message taken back before it was sent. */
 	| { readonly type: 'unqueue'; readonly id: string }
+	| { readonly type: 'resumeQueue'; readonly tabId: string }
 	/** The "/" menu: the tab in front starts over; its conversation stays in the history. */
 	| { readonly type: 'clearChat' }
 	/** The context pie: compact the tab's conversation with the agent's own command. */
@@ -837,6 +863,7 @@ export type ViewToHost =
 	| { readonly type: 'gitBranchName'; readonly id: number; readonly folder: string; readonly tabId: string }
 	| { readonly type: 'gitBranchAction'; readonly folder: string; readonly action: 'switch' | 'create' | 'delete'; readonly name: string; readonly remote?: boolean }
 	| { readonly type: 'restoreBranchStash'; readonly folder: string }
+	| { readonly type: 'gitRemoteAction'; readonly folder: string; readonly action: GitRemoteAction; readonly remote?: string; /** The `confirmKey` of the question answered: one about another push is asked again. */ readonly confirmed?: string }
 	| { readonly type: 'refreshWorkdirGit' }
 	| { readonly type: 'listWorkdir' }
 	/** A file or folder of the working folder, by its path relative to it, attached to the message. */

@@ -9,7 +9,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { suite, test } from 'node:test';
 import {
-	LineSplitter, chatTitle, claudeApproval, claudeApprovalAnswer, claudeContextWindow, claudeEvents, claudeModels, claudeRateLimit, claudeRateLimitWindows, claudeUsage,
+	LineSplitter, chatControlTools, chatTitle, claudeApproval, claudeApprovalAnswer, claudeContextWindow, claudeEvents, claudeModels, claudeRateLimit, claudeRateLimitWindows, claudeUsage,
 	claudeCommands, claudeTool, codexAgentThreadEvents, codexSkillItems, codexSkills, codexApproval, codexApprovalAnswer, codexEvents, codexPatchPaths, codexQuestions, outsideProject, questionSkipped, validAnswers, codexModels, codexUsage, compareCliVersions, geminiApproval, geminiApprovalAnswer, geminiCommands, geminiErrorText, geminiEvents, geminiExitText, geminiModels, geminiTurnEnd, parseCliVersion, parseLine, toolDetail, unwrapShell, windowLabel,
 } from './agentProtocol.ts';
 
@@ -1169,6 +1169,35 @@ suite('Gemini CLI', () => {
 		// With arguments the title is `tool(args)`, and the server comes from the id.
 		assert.deepStrictEqual(ask('browser_click(selector: "#save")', 'mcp_ai-browser_browser_click__call_3'), { id: '1:0', what: 'browser', title: 'browser_click', detail: 'browser_click(selector: "#save")' });
 		assert.deepStrictEqual(ask('write_file(path: "a")', 'mcp_my-fs_write_file-1700000000000-4'), { id: '1:0', what: 'mcp', server: 'my-fs', title: 'write_file', detail: 'write_file(path: "a")' });
+	});
+
+	test('our chat_* tools that act ask under Chat control, the ones that read under AI Browser', () => {
+		const gemini = (tool: string) => geminiApproval('1:0', { toolCall: { toolCallId: `mcp_ai-browser_${tool}__call_1`, title: `${tool} (ai-browser MCP Server)`, kind: 'other', content: [], locations: [] }, options: [] }, '/w').what;
+		const claude = (tool: string) => claudeApproval('r', { tool_name: `mcp__ai-browser__${tool}`, input: {} }, '/w').what;
+		const codexMcp = { threadId: 't', turnId: 'u', serverName: 'ai-browser', mode: 'form', _meta: { codex_approval_kind: 'mcp_tool_call', tool_title: 'Pause' }, requestedSchema: {} };
+		const codex = (message: string) => codexApproval('1', 'mcpServer/elicitation/request', { ...codexMcp, message })?.what;
+		for (const tool of ['chat_keep_awake', 'chat_pause', 'chat_resume', 'chat_stop_agent']) {
+			assert.strictEqual(claude(tool), 'chat', tool);
+			assert.strictEqual(gemini(tool), 'chat', tool);
+			assert.strictEqual(codex(`Allow the ai-browser MCP server to run tool "${tool}"?`), 'chat', tool);
+		}
+		for (const tool of ['chat_state', 'chat_agents', 'chat_usage']) {
+			assert.strictEqual(claude(tool), 'browser', tool);
+			assert.strictEqual(gemini(tool), 'browser', tool);
+		}
+		// A Gemini call whose title cannot be split is still ours by its id.
+		assert.strictEqual(geminiApproval('1:0', { toolCall: { toolCallId: 'mcp_ai-browser_chat_keep_awake-17000-1', title: '{"mode": "off"}', kind: 'other', content: [], locations: [] }, options: [] }, '/w').what, 'chat');
+		// A Codex question whose tool cannot be read takes the stricter category.
+		assert.strictEqual(codex('Allow this tool?'), 'chat');
+		// Another server's tool of the same name is that server's.
+		assert.strictEqual(claudeApproval('r', { tool_name: 'mcp__team__chat_pause', input: {} }, '/w').what, 'mcp');
+	});
+
+	test('the acting tools are the same list in chatTools.ts', () => {
+		// Written twice: a leaf may not import chatTools.ts, which imports mcpProtocol.
+		const source = fs.readFileSync('src/mcp/chatTools.ts', 'utf8');
+		const listed = /chatToolNames = \[([^\]]*)\]/.exec(source)?.[1].match(/'[^']+'/g)?.map(s => s.slice(1, -1)) ?? [];
+		assert.deepStrictEqual([...listed].sort(), [...chatControlTools].sort());
 	});
 
 	test('a title the model wrote never makes a command an MCP tool', () => {
