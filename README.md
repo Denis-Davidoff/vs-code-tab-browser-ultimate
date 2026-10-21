@@ -90,6 +90,12 @@ then restores the clipboard. It does not request OS screen recording access.
 
 ## Changelog
 
+**0.8.5** — Claude Ultracode gets its own round toggle beside effort, remembered per chat;
+new tabs inherit the last chosen state. A collapsed sidebar keeps chats visible as compact,
+colour-bordered tiles with status icons and agent counts. Effort uses a fixed-width slider
+with a soft colour scale and an immediate tooltip. The folder footer has shorter labels
+and refined spacing.
+
 **0.8.4** — A wide-screen chat layout from 1000 px: a centered conversation and composer,
 with tabs in a collapsible sidebar on either side. Attachment references start at `@1` for
 each new message. Claude and Codex automatically continue after temporary service errors,

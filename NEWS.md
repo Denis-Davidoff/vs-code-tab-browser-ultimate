@@ -26,6 +26,12 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 - $(location) **Page markers** — pin notes to several elements right in the browser and hand them to the agent as one prompt.
 - $(settings-gear) **Chat Settings** — the gear at the top of the chat: change the system prompts behind commit messages, branch names and chat titles, and clean up temporary files.
 
+## 0.8.5 — 2026-10-21
+- **Claude Ultracode, separate from effort**: a round star checkbox beside the slider turns automatic workflows on or off without changing reasoning effort. Each chat keeps its own choice across reloads and moves; new tabs inherit the last explicitly chosen state. Available for supported Claude models; requires Claude Code 2.1.284 or later.
+- **Chats stay visible in the collapsed sidebar**: compact 36 px tiles keep a number and coloured border, show a spinner, waiting, completion or error indicator, and display running agent counts in a corner badge. Hover for the title and status, right-click for chat actions, or double-click to expand and rename.
+- **Effort without layout jumps**: only the fixed-width slider is shown. An immediate tooltip highlights the current effort in bold and in the thumb's colour. Colours progress from silver grey through sky blue to pale violet, with yellow or orange for exceptional levels.
+- **A cleaner folder footer**: the current workspace folder has no Current label, external folders use Ext, and GitHub working copies use Git. Folder and Git refresh buttons have refined spacing.
+
 ## 0.8.4 — 2026-10-21
 - **Wide-screen chat**: from 1000 px, the conversation, composer and footer share a centered 672 px content column. Tabs become a scrollable sidebar that can be collapsed or moved left or right; both choices survive a reload.
 - **Attachment references restart for each message**: new drafts start at `@1`, while existing references stay stable when attachments are removed or refreshed. Returning queued messages to the draft updates their references together with the text.
