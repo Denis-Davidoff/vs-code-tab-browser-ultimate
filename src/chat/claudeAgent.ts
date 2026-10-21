@@ -83,6 +83,27 @@ function browserConfigDir(): Promise<string | undefined> {
  * but a session that started its next process from a cached path then failed
  * with "MCP config file not found" on every message (the first version).
  */
+/**
+ * The same `--mcp-config` file for a `claude --resume` the chat hands to a
+ * terminal: that process is not ours, so without it the conversation loses the
+ * browser tools the moment it moves. No chat capability — the terminal is the
+ * user's own session, not the chat's agent. The caller removes it when the
+ * terminal closes; the sweep catches it after this extension host is gone.
+ */
+export async function writeTerminalBrowserConfig(server: BrowserServer, tabId?: string): Promise<string | undefined> {
+	const dir = await browserConfigDir();
+	if (!dir) {
+		return undefined;
+	}
+	const file = path.join(dir, `mcp-${process.pid}-${generateUuid()}.json`);
+	try {
+		writeFileSync(file, JSON.stringify({ mcpServers: { 'ai-browser': { type: 'http', url: server.url, headers: { Authorization: `Bearer ${server.token}`, ...(tabId ? { 'X-AI-Browser-Tab': tabId } : {}) } } } }), { mode: 0o600, flag: 'wx' });
+		return file;
+	} catch {
+		return undefined;
+	}
+}
+
 export async function sweepBrowserConfigs(): Promise<void> {
 	const dir = await existingPrivateTempDirectory('shared', 'runtime', 'chat');
 	if (!dir) {

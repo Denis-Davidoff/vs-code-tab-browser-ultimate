@@ -1,4 +1,5 @@
 import { chatTabDragType, parseChatTabTransfer } from './tabDrag';
+import { historyPeriodRange, type HistoryPeriod } from './historyPeriod';
 import type { TemporaryStorage } from '../src/core/temporaryFiles';
 import { aiFeatures, defaultFeaturePrompts, featureAgent, featurePromptLimit, readFeatureAiSettings, type AiFeature, type FeatureAiSettings, type FeatureEffort } from '../src/chat/featureAi';
 import { createRecordingEncoder } from './recording';
@@ -1626,6 +1627,9 @@ function tabNode(t: ChatTabSummary): TabNode {
 					draft: node.tab.id === draftTab ? currentDraft() : drafts[node.tab.chatId] ?? '' });
 			},
 		})));
+		if (node.tab.canResumeInTerminal) {
+			items.push({ icon: 'terminal', label: 'Continue in terminal', disabled: node.tab.busy || !!node.tab.queued || !!node.tab.skillRuns, run: () => post({ type: 'resumeInTerminal', id: node.tab.chatId }) });
+		}
 		const compact = wideChat.matches && chatDrawerCollapsed;
 		if (compact) { items.push({ icon: 'close', label: 'Close chat', run: () => node.close.click() }); }
 		openMenu(label, items.length ? items : [{ label: 'No other chat is open', disabled: true, run: () => {} }],
@@ -3074,7 +3078,7 @@ function promptNode(entry: Extract<ChatEntry, { kind: 'user' }>, i: number): HTM
 		bubble.append(el('div', { class: 'bubble-attachments' },
 			...entry.attachments.map((label, index) => {
 				const file = entry.attachmentFiles?.[index];
-				return el('span', { class: 'chip small' }, file ? themeFileIcon(file) : undefined, label);
+				return el('span', { class: 'chip small', title: label }, file ? themeFileIcon(file) : undefined, el('span', { class: 'chip-label', text: label }));
 			})));
 	}
 	if (entry.text) {
@@ -5370,7 +5374,24 @@ modelPill.addEventListener('click', () => {
 
 /* the browser button */
 
-browserButton.addEventListener('click', () => post({ type: 'openBrowser' }));
+// Asks where the page opens: the editor's own browser, or Google Chrome — whose
+// tabs the browser tools then drive the same way.
+function browserMenuItems(): MenuItem[] {
+	const items: MenuItem[] = [
+		{ icon: 'globe', label: 'Google Chrome', run: () => post({ type: 'openBrowser', where: 'chrome' }) },
+	];
+	if (state?.nativeBrowser && state.nativeBrowser !== 'unsupported') {
+		items.push({ icon: 'window', label: 'VS Code Browser',
+			description: state.nativeBrowser === 'granted' ? 'Open inside the editor'
+				: state.nativeBrowser === 'awaitingRestart' ? 'Quit and reopen the editor to finish setup'
+					: 'Enable native tabs — requires quitting and reopening the editor',
+			run: () => post({ type: 'openBrowser', where: 'vscode' }),
+		});
+	}
+	return items;
+}
+
+browserButton.addEventListener('click', () => openMenu(browserButton, browserMenuItems(), 'Open a new tab in'));
 
 /* ---------------------------------------------------------------- the "/" palette */
 
@@ -5458,6 +5479,13 @@ function commandGroup(c: ChatCommand): string {
 function chatActions(s: ChatViewState): PaletteItem[] {
 	const tab = s.tabs.find(t => t.id === s.activeTab);
 	const items: PaletteItem[] = [];
+	if (tab?.canResumeInTerminal) {
+		items.push({ key: 'chat:terminal', group: 'Chat', name: 'terminal', label: 'Continue in terminal', icon: 'terminal',
+			detail: 'Continue this session in a terminal tab; this chat tab closes',
+			disabled: tab.busy || !!tab.queued || !!tab.skillRuns, haystack: 'terminal resume continue cli',
+			run: () => post({ type: 'resumeInTerminal', id: tab.chatId }),
+		});
+	}
 	// Always listed, disabled while there is nothing to act on — hidden, they
 	// read as gone in a new tab, the first place a palette is opened.
 	const canClear = s.entries.length > 0 || !!tab?.busy || !!tab?.skillRuns;
@@ -7397,15 +7425,15 @@ plusButton.addEventListener('click', () => {
 	// Without the grant no tab can be seen at all, so "open a page" would send
 	// the user the wrong way (Recipe, step 3: two guards, two messages).
 	const pageProblem = !state?.browserApi
-		? 'Browser API not enabled — use "Enable Browser API" in the status bar'
+		? 'Open Google Chrome or VS Code Browser first'
 		: !state.hasBrowserTab ? 'Open a page in the browser first' : undefined;
-	openMenu(plusButton, attachItems.map(item => ({
+	openMenu(plusButton, [...browserMenuItems(), ...attachItems.map(item => ({
 		icon: item.icon,
 		label: item.label,
 		description: item.needsTab ? pageProblem : undefined,
 		disabled: item.needsTab && !!pageProblem,
 		run: () => post({ type: 'attach', kind: item.kind }),
-	})), 'Attach');
+	}))], 'Attach');
 });
 
 /* "U" */
@@ -8017,14 +8045,43 @@ function panelHead(title: string): HTMLElement {
 	return el('div', { class: 'history-head' }, el('span', { class: 'panel-title' }, back, el('span', { text: title })), close);
 }
 
+let historyAgentFilter = '';
+let historyPeriodFilter: HistoryPeriod = 'all';
+
 function fillHistory(chats: readonly ChatSummary[]): void {
 	const header = panelHead('History');
+	const agents = new Map(state?.agents.map(agent => [agent.id, agent.name]));
+	for (const chat of chats) {
+		if (!agents.has(chat.agent)) { agents.set(chat.agent, chat.agent); }
+	}
+	const filter = selectField<string>([['', 'All agents'], ...agents], historyAgentFilter);
+	filter.setAttribute('aria-label', 'Filter history by agent');
+	filter.addEventListener('change', () => {
+		historyAgentFilter = filter.value;
+		fillHistory(chats);
+		historyPanel.querySelector<HTMLSelectElement>('.history-filter select')?.focus();
+	});
+	const filters = el('label', { class: 'history-filter' }, el('span', { text: 'Agent' }), filter);
+	const period = selectField<HistoryPeriod>([
+		['all', 'All time'], ['today', 'Today'], ['yesterday', 'Yesterday'],
+		['week', 'This week'], ['month', 'This month'], ['lastMonth', 'Last month'],
+	], historyPeriodFilter);
+	period.setAttribute('aria-label', 'Filter history by period');
+	period.addEventListener('change', () => {
+		historyPeriodFilter = period.value as HistoryPeriod;
+		fillHistory(chats);
+		historyPanel.querySelector<HTMLSelectElement>('.history-period-filter select')?.focus();
+	});
+	const periodFilters = el('label', { class: 'history-filter history-period-filter' }, el('span', { text: 'Period' }), period);
+	const [start, end] = historyPeriodRange(historyPeriodFilter);
+	const visibleChats = chats.filter(chat => (!historyAgentFilter || chat.agent === historyAgentFilter)
+		&& chat.updatedAt >= start && chat.updatedAt < end);
 
 	const list = el('div', { class: 'history-list' });
-	if (!chats.length) {
-		list.append(el('div', { class: 'history-empty', text: 'No chats yet.' }));
+	if (!visibleChats.length) {
+		list.append(el('div', { class: 'history-empty', text: chats.length ? 'No chats match these filters.' : 'No chats yet.' }));
 	}
-	for (const chat of chats) {
+	for (const chat of visibleChats) {
 		const open = button([
 			el('span', { class: 'history-title', text: chat.title }),
 			el('span', { class: 'history-meta', text: `${state?.agents.find(a => a.id === chat.agent)?.name ?? chat.agent} · ${ago(chat.updatedAt)}` }),
@@ -8036,9 +8093,12 @@ function fillHistory(chats: readonly ChatSummary[]): void {
 		});
 		const remove = button([icon('trash')], { class: 'ghost round history-delete', title: 'Delete' });
 		remove.addEventListener('click', () => post({ type: 'deleteChat', id: chat.id }));
-		list.append(el('div', { class: 'history-row' }, open, remove));
+		const terminal = button([icon('terminal')], { class: 'ghost round history-delete', title: 'Continue in terminal' });
+		terminal.hidden = !chat.canResumeInTerminal;
+		terminal.addEventListener('click', () => { closePopups(); post({ type: 'resumeInTerminal', id: chat.id }); });
+		list.append(el('div', { class: 'history-row' }, open, terminal, remove));
 	}
-	historyPanel.replaceChildren(header, list);
+	historyPanel.replaceChildren(header, filters, periodFilters, list);
 }
 
 function ago(at: number): string {

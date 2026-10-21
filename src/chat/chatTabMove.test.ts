@@ -211,7 +211,7 @@ test('history opening switches to the existing owner instead of duplicating a ch
 	const tab = { id: 'other-tab', chat: { id: 'conversation' } };
 	const owner = { _tabs: [tab], _selectTab(id: string) { calls.push(id); }, async _focusView() { calls.push('focus'); } };
 	const host: any = { _panelIdentity: {}, _tabs: [], _history() { assert.fail('must not reopen history'); } };
-	const context = { ChatViewProvider: { _surfaces: new Map([['owner', owner]]) } };
+	const context = { ChatViewProvider: { _terminalSessions: new Map(), _surfaces: new Map([['owner', owner]]) } };
 	host._findOpenChat = method('_findOpenChat', context);
 	method('_openChat', context).call(host, tab.chat.id);
 	assert.deepEqual(calls, ['other-tab', 'focus']);
@@ -224,7 +224,7 @@ test('the main sidebar offers to move a history chat here instead of switching w
 	const owner = { _tabs: [tab], _surfaceLabel: () => 'AI Browser #2', _selectTab() { assert.fail('must ask before switching'); } };
 	const messages: any[] = [];
 	const host: any = { _tabs: [], _postMessage(message: any) { messages.push(message); } };
-	const context = { ChatViewProvider: { _surfaces: new Map([['owner', owner]]) } };
+	const context = { ChatViewProvider: { _terminalSessions: new Map(), _surfaces: new Map([['owner', owner]]) } };
 	host._findOpenChat = method('_findOpenChat', context);
 	method('_openChat', context).call(host, tab.chat.id);
 	assert.equal(messages[0].type, 'historyChatOpen');
@@ -254,4 +254,179 @@ test('failed window creation keeps the live chat in the source', async () => {
 	assert.equal(source._tabs[0], tab);
 	assert.equal(calls.includes('move'), false);
 	assert.ok(calls.includes('error'));
+});
+
+for (const agent of ['claude', 'codex', 'gemini']) {
+	test(`terminal handoff resumes ${agent} without shell interpolation and prevents duplicates`, async () => {
+		let options: any;
+		let onClose: ((t: unknown) => void) | undefined;
+		let disposed = false;
+		let shows = 0;
+		let closes = 0;
+		const terminals = new Map();
+		const terminal = { show() { shows++; } };
+		const chat = { id: 'chat', agent, title: 'Task', ref: 'session-id', folder: '/task folder' };
+		const host: any = {
+			_blocked: () => undefined, _untrusted: () => false,
+			_history: () => [chat], _windowCwd: () => '/fallback',
+			_registry: { agents: [{ id: agent, binary: '/cli path/agent' }] },
+			_runs: { runningIn: () => 0 },
+			_closeTab() { closes++; },
+		};
+		const tab = { id: 'tab', chat, cwd: '/task folder', busy: false, queuedCount: 0 };
+		host._findOpenChat = () => ({ tab, surface: host });
+		const resume = method('_resumeInTerminal', {
+			ChatViewProvider: { _terminalSessions: terminals }, isAgentId: () => true, JsonLineProcess: { stopped: async () => undefined },
+			agentNames: { [agent]: agent }, geminiPath: () => '/cli path',
+			fs: { existsSync: () => true, statSync: () => ({ isDirectory: () => true }) },
+			vscode: { TerminalLocation: { Editor: 2 }, ThemeIcon: class {}, l10n: { t: (s: string) => s },
+				window: { createTerminal(o: unknown) { options = o; return terminal; },
+					onDidCloseTerminal(fn: (t: unknown) => void) { onClose = fn; return { dispose() { disposed = true; } }; },
+					showInformationMessage() {}, showWarningMessage() {} } },
+		});
+		tab.busy = true;
+		await resume.call(host, 'chat');
+		assert.equal(Boolean(options), false);
+		tab.busy = false;
+		await resume.call(host, 'chat');
+		assert.equal(options.cwd, '/task folder');
+		assert.equal(options.shellPath, '/cli path/agent');
+		assert.deepEqual(Array.from(options.shellArgs), agent === 'codex' ? ['resume', 'session-id'] : ['--resume', 'session-id']);
+		assert.equal(options.location, 2);
+		assert.equal(options.env.CLAUDECODE, null);
+		assert.equal(closes, 1);
+		await resume.call(host, 'chat');
+		assert.equal(closes, 1);
+		assert.equal(shows, 2);
+		onClose?.(terminal);
+		assert.equal(terminals.size, 0);
+		assert.equal(disposed, true);
+		// The history entry works even when no chat tab is open.
+		host._findOpenChat = () => undefined;
+		await resume.call(host, 'chat');
+		assert.equal(options.cwd, '/task folder');
+		assert.equal(closes, 1);
+	});
+}
+
+test('a conversation owned by a terminal cannot be reopened in chat', () => {
+	let shown = false;
+	const context = { ChatViewProvider: { _terminalSessions: new Map([['chat', { show() { shown = true; } }]]) },
+		vscode: { l10n: { t: (s: string) => s }, window: { showInformationMessage() {} } } };
+	method('_openChat', context).call({ _findOpenChat() { assert.fail('must not reopen'); } }, 'chat');
+	assert.equal(shown, true);
+});
+
+
+test('Chrome open attaches the returned new tab instead of pages discovered while connecting', async () => {
+	const oldPage = { url: 'https://private.test' }, newPage = { url: 'about:blank' };
+	const chat = { attachments: [] as any[] }, otherChat = { attachments: [] as any[] };
+	let disposed = false;
+	const host: any = { _active: chat, _tabs: [chat, otherChat], _pendingOpen: { dispose() { disposed = true; } },
+		_awaitOpenedPage() { assert.fail('Chrome must not attach the first discovered page'); },
+		_pageAttachment(page: unknown) { return { page, chip: { id: 'attachment' } }; },
+		_trackLivePage(_id: string, page: unknown) { assert.equal(page, newPage); }, _post() {},
+	};
+	const open = method('_openBrowser', {
+		tabSource: { all: [oldPage, newPage] }, generateUuid: () => 'attachment',
+		vscode: { commands: { async executeCommand(command: string) {
+			assert.equal(command, 'aiBrowser.openInChrome'); host._active = otherChat; return newPage;
+		} } },
+	});
+	await open.call(host, 'chrome');
+	assert.equal(disposed, true);
+	assert.equal(chat.attachments[0].page, newPage);
+	assert.equal(otherChat.attachments.length, 0);
+});
+
+test('Chrome attachments use the browser visibility check with a text editor active', async () => {
+	const page = { title: 'Chrome', url: 'https://example.test' };
+	const attach = method('_makeAttachment', {
+		tabSource: { available: () => true }, generateUuid: () => 'attachment',
+		refuse() { assert.fail('visible Chrome must not be refused'); }, confirm() {},
+		pageTitle: (title: string) => title, plainInPrompt: (text: string) => text,
+		pickElementContext: async (tab: unknown) => { assert.equal(tab, page); return 'Element: Button'; },
+		vscode: { l10n: { t: (s: string) => s }, window: { tabGroups: { all: [{ activeTab: { input: {} } }] } } },
+	});
+	let annotations = 0;
+	const host = { _browser: { userTab: page, focusedTab: undefined,
+		onScreen(tab: unknown) { assert.equal(tab, page); return true; },
+		async capture(_full: boolean, tab: unknown) { assert.equal(tab, page); return { png: { toString: () => 'png' }, url: page.url }; },
+		annotationsOf: () => undefined, async annotateTab(tab: unknown) { assert.equal(tab, page); annotations++; },
+	} };
+	assert.equal((await attach.call(host, 'screenshot')).chip.thumbnail, 'data:image/png;base64,png');
+	assert.equal((await attach.call(host, 'element')).text, 'Element: Button');
+	await attach.call(host, 'annotation');
+	assert.equal(annotations, 1);
+});
+
+test('a blocked Codex terminal handoff leaves the chat open and can be retried after other work finishes', async () => {
+	let released = false, closes = 0, terminals = 0;
+	const chat = { id: 'chat', agent: 'codex', title: 'Task', ref: 'thread', folder: '/task' };
+	const host: any = { _blocked: () => undefined, _untrusted: () => false,
+		_registry: { agents: [{ id: 'codex', binary: '/codex' }], backend: () => ({ release: async () => released }) },
+		_runs: { runningIn: () => 0 }, _closeTab() { closes++; },
+	};
+	host._findOpenChat = () => ({ tab: { id: 'tab', chat, cwd: '/task', busy: false, queuedCount: 0 }, surface: host });
+	const resume = method('_resumeInTerminal', {
+		ChatViewProvider: { _terminalSessions: new Map() }, isAgentId: () => true,
+		JsonLineProcess: { stopped: async () => undefined }, agentNames: { codex: 'Codex' }, geminiPath: () => '/bin',
+		fs: { existsSync: () => true, statSync: () => ({ isDirectory: () => true }) },
+		vscode: { TerminalLocation: { Editor: 2 }, ThemeIcon: class {}, l10n: { t: (s: string) => s }, window: {
+			showInformationMessage() {}, createTerminal() { terminals++; return { show() {} }; },
+			onDidCloseTerminal() { return { dispose() {} }; },
+		} },
+	});
+	await resume.call(host, 'chat');
+	assert.equal(closes, 0); assert.equal(terminals, 0);
+	released = true;
+	await resume.call(host, 'chat');
+	assert.equal(closes, 1); assert.equal(terminals, 1);
+});
+
+
+test('explicit Share Tab chooses the user Chrome tab even without a native focused tab', async () => {
+	const source = readFileSync('src/extension.ts', 'utf8');
+	const body = /const share = async \(target: ShareTarget\) => \{[\s\S]*?\n\t\};/.exec(source)![0];
+	const page = { url: 'https://chrome.test' };
+	let assigned: unknown;
+	const share = runInNewContext(transpileModule(`${body}\nshare;`, {
+		compilerOptions: { target: ScriptTarget.ES2022 },
+	}).outputText, {
+		tabSource: { available: () => true }, browser: { focusedTab: undefined, userTab: page,
+			async shareTab(tab: unknown, target: unknown) { assert.equal(tab, page); assigned = target; return { label: 'Codex', url: page.url }; },
+		}, vscode: { l10n: { t: (s: string) => s } }, plainInLabel: (s: string) => s, confirm() {},
+		refuse() { assert.fail('Chrome tab must be shareable'); },
+	});
+	const target = { kind: 'codex' };
+	await share(target);
+	assert.equal(assigned, target);
+});
+
+
+test('waiting for a native tab ignores Chrome pages discovered in the meantime', () => {
+	let listener: (page: any) => void = () => {};
+	const chrome = { chrome: true }, native = { chrome: false };
+	const chat = { attachments: [] as any[] };
+	let unsubscribed = false;
+	class Disposable {
+		private readonly fn: () => void;
+		constructor(fn: () => void) { this.fn = fn; }
+		dispose() { this.fn(); }
+	}
+	const wait = method('_awaitOpenedPage', {
+		tabSource: { isChrome: (page: any) => page.chrome, onDidOpen(fn: (page: any) => void) {
+			listener = fn; return { dispose() { unsubscribed = true; } };
+		} }, vscode: { Disposable }, setTimeout: () => 1, clearTimeout() {}, livePageWaitMs: 100,
+		generateUuid: () => 'attachment',
+	});
+	const host = { _pendingOpen: undefined, _tabs: [chat], _active: chat,
+		_pageAttachment(page: unknown) { return { page, chip: { id: 'attachment' } }; },
+		_trackLivePage() {}, _post() {},
+	};
+	wait.call(host, chat);
+	listener(chrome);
+	assert.equal(chat.attachments.length, 0); assert.equal(unsubscribed, false);
+	listener(native);
+	assert.equal(chat.attachments[0].page, native); assert.equal(unsubscribed, true);
 });

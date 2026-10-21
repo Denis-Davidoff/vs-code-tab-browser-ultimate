@@ -1,94 +1,99 @@
 # 🚀 First integrated browser for VS Code editor with Claude Code, Codex and Gemini CLI support 🎆
 
-- **VS Code's built-in browser**, not a webview: every tab is a real Chromium page in its own
-  isolated Electron process.
-- **Your assistants, your way:** keep the Claude Code and Codex extensions or the Gemini CLI you
+- 🌐 **VS Code’s built-in browser or Google Chrome:** work in a native browser tab inside the
+  editor where available, or let your assistant drive Google Chrome without a Chrome extension.
+- 🤖 **Your assistants, your way:** keep the Claude Code and Codex extensions or the Gemini CLI you
   already use, or switch to the **AI Browser chat** — all three agents in one panel, up to 10 chats at once, more
   deeply wired into the browser.
-- **A built-in MCP server** that connects the browser to Claude Code, Codex, Gemini CLI or any
+- 🔌 **A built-in MCP server** that connects the browser to Claude Code, Codex, Gemini CLI or any
   other assistant that speaks MCP.
-- **Pick an element on the page** and send its address or metadata straight to Claude Code or
+- 🎯 **Pick an element on the page** and send its address or metadata straight to Claude Code or
   Codex.
-- **Full DevTools for every tab.**
-- **Per-assistant tab access:** share a tab with one assistant and it sees and drives that tab
+- 🛠️ **Full DevTools for every tab.**
+- 🔗 **Per-assistant tab access:** share a tab with one assistant and it sees and drives that tab
   only, while the others stay hidden from it.
-- **A password manager for sites:** it offers to save a login after a sign-in that worked and
+- 🔑 **A password manager for sites:** it offers to save a login after a sign-in that worked and
   fills it back, with passkeys too, all kept in VS Code's secret storage.
-- **Translate, modify and restore content on the page:** your assistant rewrites all of its
+- 🌍 **Translate, modify and restore content on the page:** your assistant rewrites all of its
   text in place — translate it, stress-test the layout with long labels, try new copy, or mask
   personal data before a screenshot. Only the open page changes; a reload restores it.
 
-## Which editors this works on
+## 🌐 Browser options by editor
 
-The browser features are built on VS Code's own browser tab, reached through the `browser` API
-proposal. An editor that does not ship that proposal cannot run them — installing the extension
-there is not the problem, the missing API is. **Measured by reading the shipped builds on
-2026-09-09**, ordered by how much work each one takes:
+AI Browser works with **VS Code’s native browser** and **Google Chrome**. In editors that
+expose the `browser` API, pages can open directly inside the editor. In other editors, use
+Google Chrome with the same browser tools for your assistant.
 
-| Editor | Version tested | Browser features | How to install | Then |
+The native browser availability below was checked in shipped builds on **2026-09-09**;
+it may change in newer releases. Google Chrome is also an option in the editors with native tabs.
+
+| Editor | Version checked | VS Code Browser | Google Chrome | How to install |
 |---|---|---|---|---|
-| **VSCodium** | 1.135 | ✅ yes | Open VSX, one click | Enable Browser API, quit and reopen |
-| **Devin** (Windsurf) | 1.126 | ✅ yes | Open VSX, one click | Enable Browser API, quit and reopen |
-| **VS Code** | 1.137 | ✅ yes | **the `.vsix` by hand** | Enable Browser API, quit and reopen |
-| **Cursor** | 3.19.19 | ❌ no | — | nothing helps — the API is absent |
-| **Antigravity IDE** | 1.107 | ❌ no | — | nothing helps — base predates the API |
-| **Kiro** | 1.0.437 | ❌ no | — | nothing helps — has the browser, not the API |
-| **Trae** | 1.107.1 | ❌ no | — | nothing helps — base predates the API |
-| **Theia IDE** | 1.75 | ❌ no | — | nothing helps — not a VS Code build |
+| **VSCodium** | 1.135 | ✅ | ✅ | Open VSX |
+| **Devin** (Windsurf) | 1.126 | ✅ | ✅ | Open VSX |
+| **VS Code** | 1.137 | ✅ | ✅ | Install the `.vsix` |
+| **Cursor** | 3.19.19 | — | ✅ | Open VSX or `.vsix` |
+| **Antigravity IDE** | 1.107 | — | ✅ | Open VSX or `.vsix` |
+| **Kiro** | 1.0.437 | — | ✅ | Open VSX or `.vsix` |
+| **Trae** | 1.107.1 | — | ✅ | Install the `.vsix` |
+
+In the chat’s **+** menu or browser button, choose **Google Chrome** or **VS Code Browser**.
+The native option appears where available and offers to enable it if needed; then quit and
+reopen the editor. Chrome and agents work without this setup. Alternatively, for Chrome,
+choose **Open Google Chrome for your agent** in the status bar menu, select your assistant,
+and paste the copied prompt into its chat. Chrome needs to be installed on the same computer,
+and this mode runs from a local editor window.
 
 **Setup at a glance** — the whole path in eight numbered steps; click the picture for full size:
 
 [![Step-by-step setup: install, enable the browser API, open a page, connect Claude Code or Codex](ai-browser-instruct.jpg)](https://raw.githubusercontent.com/Denis-Davidoff/vs-code-tab-browser-ultimate/main/ai-browser-instruct.jpg)
 
-## Page annotations
+## 💻 Continue a chat in a terminal
+
+Choose **Continue in terminal** from a chat tab's right-click menu or the chat command
+picker, or use the terminal button beside a conversation in **History**. Claude Code,
+Codex and Gemini CLI open in a VS Code editor terminal tab, resuming the saved session
+in its original folder. Finish the running turn and any queued messages first.
+The chat tab closes and remains in history. Repeating the action focuses its existing
+terminal; close that terminal before reopening the conversation in chat.
+The chat transcript does not import messages subsequently written in the terminal.
+Browser access in the CLI uses its own MCP configuration.
+
+## 📍 Page annotations
 
 **Add Annotation Marker** on the browser tab pins a numbered note to an element you click. Each new
 note is attached to the AI Browser chat tab in front, and assistants read, add and remove notes
 through the `browser_annotations_*` MCP tools. Sending the message removes its markers from the
 page. Details: [CLAUDE.md](CLAUDE.md#page-annotations).
 
-## Browser video recording
+## 🎥 Browser video recording
 
-Record the visible browser page without granting the operating system screen recording access.
-The extension receives page frames through CDP and encodes them with the editor's built-in
-`MediaRecorder`: MP4 when supported, otherwise WebM. Recordings are silent. The chat's top
-settings button has a **Video recording** tab: **Balanced · 1080p** (6 Mbps), **High · 1440p**
-(12 Mbps, default), or **Maximum · 4K** (24 Mbps). Source frames use lossless PNG; the source
-page limits the actual resolution. Changes apply to the next recording and are shared across
-projects. Higher quality produces larger files. Capture frequency depends on the editor;
-smooth 30 fps is not guaranteed.
+Record the browser page without OS screen recording permission. Videos are silent,
+saved as MP4 when supported or WebM otherwise. Choose **1080p**, **1440p** (default)
+or **4K** in **Chat Settings → Video recording**.
 
-- **AI Browser Chat:** choose **Record the browser page** under **+**, or the recording action
-  under **AI Browser Chat** in the browser tab's extension menu. Stop attaches the video to that
-  conversation's draft. Open the attachment to preview it; its context menu offers **Save video as…**.
-- **Claude Code / Codex extensions:** choose the recording action under the corresponding
-  assistant in the browser menu. Stop copies the file path and shows a notification with the
-  duration, size, **Open video** and **Save as…** actions.
-- **MCP:** `browser_recording_start` returns an `id`. Use `browser_recording_pause`,
-  `browser_recording_resume`, `browser_recording_stop`, or `browser_recording_status` with that id.
-  The extension's chat clients attach to their own conversation; external clients copy the path.
-  Optional `destination: "chat" | "clipboard"` overrides delivery. Status also returns the
-  completed result after a stop from the toolbar, including the file path and delivery outcome.
+- **AI Browser Chat:** select **+ → Record the browser page**. Stop attaches the video
+  to your draft; open it to preview or choose **Save video as…** to keep it.
+- **Claude Code / Codex extensions:** start from the assistant’s browser menu. Stop copies
+  the file path and offers **Open video** and **Save as…**.
+- **MCP:** use `browser_recording_start`, `browser_recording_pause`,
+  `browser_recording_resume`, `browser_recording_stop` and `browser_recording_status`.
 
-During recording, **Pause / Resume** and **Stop** appear in the browser tab's top toolbar.
-The chat also shows a recording notice and timer above the message box, with adjacent pause
-and stop buttons. The notice follows recording, paused and saving states.
-Pausing stops CDP capture and excludes the pause from the video. Keep the browser visible;
-encoding runs inside the chat webview without opening a separate recording tab, and continues
-when the chat is hidden. The chat view is initialized if it has not been opened yet.
-One recording can run at a time, for up to ten active minutes and 256 MB.
+Use **Pause / Resume** and **Stop** in the chat or native browser toolbar. Keep the page
+visible while recording. Files are temporary until saved; agents receive a file reference.
+For limits, settings and technical details, see [CLAUDE.md](CLAUDE.md#browser-video-recording).
 
-Videos are kept as local temporary files; use **Save as…** to keep a permanent copy. Chat
-attachments provide a file reference to the agent, not native video input. MCP returns metadata
-and the path rather than transferring video bytes. This mode records the page viewport, not
-the editor chrome or desktop.
+## 📝 Changelog
 
-To run the local end-to-end recording smoke test after `npm run compile`, use
-`node scripts/check-recording.mjs [path-to-editor-executable]`. It opens an isolated editor
-profile, checks MCP, toolbar commands, pause timing, chat attachments and clipboard delivery,
-then restores the clipboard. It does not request OS screen recording access.
+**0.8.7** — Chrome and agents work without the native Browser API. The chat’s **+** and
+browser menus offer Chrome and, where available, native tabs with one-click API setup.
+Chrome opens attach the requested tab; sharing, screenshots, element picks and video recording
+work with Chrome. A Codex chat stays open when another conversation prevents terminal handover.
+The README has a clearer browser comparison and a shorter recording guide.
 
-## Changelog
+**0.8.6** — The browser tools can drive Google Chrome, with no Chrome extension. A chat moved
+to the terminal keeps the browser tools and the tab it was working on. Chat history can be
+filtered by period. A "Prompt is too long" hit during auto-compacting is retried.
 
 **0.8.5** — Claude Ultracode gets its own round toggle beside effort, remembered per chat;
 new tabs inherit the last chosen state. A collapsed sidebar keeps chats visible as compact,
@@ -256,35 +261,36 @@ and 1Password.
 instead of base64 text, which overflowed the tool output limit, and a full page arrives as a
 sequence of frames sized for the model to read.
 
-## How to install
+## 📦 How to install
 
-**Not sure about your editor?** Run **AI Browser: Enable Integrated Browser API**, or pick it
-under *Setup* in the status bar menu, and it says which of the three answers applies. The rule is
-a VS Code 1.112 or newer base with the `browser` proposal left in — a fork's own version number
-tells you nothing (Cursor reports 1.128 and still lacks it).
+Choose the browser you want to use: **native tabs inside the editor** or **Google Chrome**.
+For native tabs, run **AI Browser: Enable Integrated Browser API** (also under *Setup* in the
+status bar menu) to check your editor and enable access. For Chrome, choose
+**Open Google Chrome for your agent** in the status bar menu; no Browser API setup is needed.
 
 > **The fastest way in is the VSIX in this repository:**
 > [**tab-browser-ultimate.vsix**](https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/raw/main/tab-browser-ultimate.vsix)
 > → **Extensions: Install from VSIX…**. It is the current build.
 >
 > [**Open VSX**](https://open-vsx.org/extension/DenysDavydov/tab-browser-ultimate) carries the
-> same build, and is the one-click route on VSCodium, Devin, Cursor, Windsurf and Theia —
-> installing is not the same as the browser features working, see the table above. The
+> same build, and is the one-click route on VSCodium, Devin, Cursor and Windsurf —
+> see the table above for the browser option in each editor. The
 > [**VS Code Marketplace**](https://marketplace.visualstudio.com/items?itemName=DenysDavydov.tab-browser-ultimate-promo)
 > entry is the guide and the download link, not the extension itself — the Marketplace does not
 > accept an extension that declares API proposals. See [Installing](#installing) below.
 >
-> On a supported editor there is **one step after installing**: the extension declares two API
+> For native browser tabs there is **one step after installing**: the extension declares two API
 > proposals (`externalUriOpener`, `browser`) and an editor only grants those to an extension
 > named with `--enable-proposed-api`. Click the orange **Enable Browser API** button in the
 > status bar and it writes that for you — see
 > [Enabling the browser API](CLAUDE.md#enabling-the-grant-in-one-click).
 
-Press `Cmd`/`Ctrl` + `Shift` + `P` to open the command palette, run **AI Browser: Show**, enter
-the url you want — then work with the elements on the page exactly as below.
+For native tabs, press `Cmd`/`Ctrl` + `Shift` + `P` to open the command palette, run
+**AI Browser: Show**, and enter the URL. For Google Chrome, use the status bar action above
+and ask your assistant to open the page.
 
-**VS Code's own browser tab, wired to your AI assistant: click an element and it becomes a
-prompt, or hand the whole browser over and let the agent drive it.**
+**Your browser, wired to your AI assistant: use native editor tabs or Google Chrome and let
+the agent drive the page. In native tabs, you can also pick an element and send it as a prompt.**
 
 Front-end work is a loop: look at the page, find the element, describe it to the assistant,
 check what changed. Screenshots lose the markup, hand-copied class names go stale, and a
@@ -343,31 +349,31 @@ the editor: the page you are looking at is the page your agent reads and drives.
 
 It started as a standalone copy of the Simple Browser extension that ships with VS Code,
 repackaged so it can be built, installed and extended on its own. That panel is still in here
-(`aiBrowser.useIntegratedBrowser: false`), but everything above is built against the editor's
-own browser.
+(`aiBrowser.useIntegratedBrowser: false`). The native tab toolbar uses the editor’s own browser;
+the assistant’s browser tools work with both native tabs and Google Chrome.
 
-## Working in the AI Browser chat
+## 💬 Working in the AI Browser chat
 
-- **Refer to an attachment** with `@1`, `@2`, and so on. Type **@** in the message box to find an
+- 📎 **Refer to an attachment** with `@1`, `@2`, and so on. Type **@** in the message box to find an
   attached file, page, element or screenshot by name or number; select with the arrow keys and
   Enter / Tab, or click. Clicking a chip's icon or `@N` inserts the reference at the caret (or at
   the end if no position is set). Its name opens the attachment; right-click offers both actions.
-- **Build a quick-skill toolbar** with the wand button above the message box. Drag skill buttons
+- 🪄 **Build a quick-skill toolbar** with the wand button above the message box. Drag skill buttons
   to change their saved order. If the row overflows, the arrow button expands or collapses the
   list; dragging works in the expanded list too. In a skill's editor, **Add next prompt** creates
   another step: it waits for the preceding prompt, its sub-agents and the parent's follow-up to
   finish. A check between steps must pass before the next one runs.
-- **Open local links in replies**: files open in editor tabs, including a line or column when
+- 📂 **Open local links in replies**: files open in editor tabs, including a line or column when
   specified. Folders inside the VS Code workspace are revealed in Explorer; other folders open
   in Finder, File Explorer or your system file manager. Right-click offers the relevant choices.
-- **Automatic titles** use a single short background request after the first prompt, on an
+- 🏷️ **Automatic titles** use a single short background request after the first prompt, on an
   available lightweight model with minimum effort. Only a bounded fragment of that prompt and
   attachment names is sent, without the chat history or attachment contents. Manual names are
   preserved; if no suitable model is available or the request fails, the first-line title stays.
-- **Clean up GitHub copies** from the folder menu after switching to another folder and waiting
+- 🧹 **Clean up GitHub copies** from the folder menu after switching to another folder and waiting
   for work in the copy to finish. Deleting a managed copy loses changes that were not pushed.
   Clones in user-picked folders cannot be deleted through this action.
-- **Read the indicators**: Mode counts are Auto (green), Ask (yellow) and Deny (red), with zero
+- 📊 **Read the indicators**: Mode counts are Auto (green), Ask (yellow) and Deny (red), with zero
   counts hidden. The context pie blends from grey to white at 25%, green at 50%, yellow at 75%,
   orange at 90% and red at 100%; the neutral colour adapts to light themes. Click it to request
   context compaction. Menus and popups also close when you click outside the chat panel.
@@ -378,7 +384,7 @@ Visual Studio Code Marketplace link: https://marketplace.visualstudio.com/items?
 
 Open VSX Registry link: https://open-vsx.org/extension/DenysDavydov/task-runner-ultimate
 
-## The toolbar on the browser tab
+## 🛠️ The toolbar on the browser tab
 
 Open a page — `Cmd`/`Ctrl` + click a localhost url a dev server printed, or run
 **AI Browser: Show** — and the browser tab gets two buttons of its own:
@@ -406,7 +412,7 @@ The menu, in order:
 | Copy Screenshot (Visible Area) | a PNG of what is on screen, on the clipboard |
 | Copy Screenshot (Full Page) | the whole scrollable page, truncated past 16384 device pixels |
 | Translate Page… | asks for a language and copies a prompt to paste into your assistant, which translates the page in place — [CLAUDE.md](CLAUDE.md#translating-a-page-through-an-assistant) |
-| Add Annotation Marker | pin a note to an element you click — [Page annotations](#page-annotations) |
+| Add Annotation Marker | pin a note to an element you click — [Page annotations](#-page-annotations) |
 | Remove All Annotation Markers / Copy Annotation Prompt | only while the page has markers: clear them, or copy a prompt that hands the notes to your assistant |
 | Claude Code ▸ | a submenu: the same four picks handed to the Claude Code chat, plus Connect and Share Tab |
 | Codex ▸ | the same, for Codex |
@@ -455,9 +461,10 @@ forwarded port offers to open here, and every other url still goes to your syste
 
 It is not on the VS Code Marketplace: the Marketplace does not accept an extension that declares
 API proposals. Install [`tab-browser-ultimate.vsix`](tab-browser-ultimate.vsix) from this
-repository with **Extensions: Install from VSIX…**, then run **AI Browser: Enable Integrated
-Browser API** and quit the editor completely. [CLAUDE.md](CLAUDE.md) has the detail, including
-which editors can work at all.
+repository with **Extensions: Install from VSIX…**. For native tabs, run **AI Browser: Enable
+Integrated Browser API** and quit and reopen the editor. To use Google Chrome, choose
+**Open Google Chrome for your agent** in the status bar menu. See the
+[browser options by editor](#-browser-options-by-editor) above and [CLAUDE.md](CLAUDE.md) for details.
 
 ## License
 

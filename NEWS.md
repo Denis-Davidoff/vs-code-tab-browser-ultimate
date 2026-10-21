@@ -26,6 +26,18 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 - $(location) **Page markers** — pin notes to several elements right in the browser and hand them to the agent as one prompt.
 - $(settings-gear) **Chat Settings** — the gear at the top of the chat: change the system prompts behind commit messages, branch names and chat titles, and clean up temporary files.
 
+## 0.8.7 — 2026-10-21
+- **Chrome without native Browser API setup**: use Google Chrome and agents immediately. The chat’s **+** and browser menus also offer native tabs where available, with an action to enable the API and instructions to quit and reopen the editor.
+- **Chrome tab fixes**: opening Chrome attaches the requested new tab instead of an existing page. Sharing, screenshots, element picks, annotations and video recording now handle Chrome tabs without relying on native browser events.
+- **Codex terminal handover waits for release**: if another Codex conversation is still working, the chat stays open. Retry **Continue in terminal** after that work finishes.
+- **Clearer README**: separate native browser and Chrome columns, updated installation options, and a shorter video recording guide.
+
+## 0.8.6 — 2026-10-21
+- **Google Chrome for the browser tools**: every assistant on the MCP server can drive Chrome over its own DevTools connection, with no Chrome extension. The globe button asks where to open a page, and the status bar menu opens Chrome for Claude Code, Codex or Gemini with a ready prompt.
+- **Moving a chat to the terminal keeps the browser**: the terminal's Claude Code or Codex gets the browser tools and starts on the tab the chat was working on, Chrome included.
+- **History by period**: filter past chats by today, yesterday, this week, this month or last month.
+- **"Prompt is too long" during auto-compacting is retried**: the message goes again after Claude Code compacts, instead of stopping with the error.
+
 ## 0.8.5 — 2026-10-21
 - **Claude Ultracode, separate from effort**: a round star checkbox beside the slider turns automatic workflows on or off without changing reasoning effort. Each chat keeps its own choice across reloads and moves; new tabs inherit the last explicitly chosen state. Available for supported Claude models; requires Claude Code 2.1.284 or later.
 - **Chats stay visible in the collapsed sidebar**: compact 36 px tiles keep a number and coloured border, show a spinner, waiting, completion or error indicator, and display running agent counts in a corner badge. Hover for the title and status, right-click for chat actions, or double-click to expand and rename.

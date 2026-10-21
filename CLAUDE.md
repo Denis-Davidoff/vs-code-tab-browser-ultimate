@@ -203,6 +203,8 @@ difference, in `browserController.js`, was a doc comment whose link had been upd
 - [src/elements/assistants.ts](src/elements/assistants.ts) — handing reports to Claude Code and Codex
 - [src/elements/lastAction.ts](src/elements/lastAction.ts) — which element command the toolbar button repeats
 - [src/browser/browserController.ts](src/browser/browserController.ts) — what the browser can do, for MCP
+- [src/browser/tabSource.ts](src/browser/tabSource.ts) — every tab the tools can act on: the built-in browser's and Chrome's, shaped like the `vscode.window` members
+- [src/browser/chromeBrowser.ts](src/browser/chromeBrowser.ts) — Google Chrome over its own DevTools WebSocket, each tab a `vscode.BrowserTab`
 - [src/browser/shareRegistry.ts](src/browser/shareRegistry.ts) — who works on which tab (leaf, under test)
 - [src/browser/shareIndicator.ts](src/browser/shareIndicator.ts) — the share glyphs, and reading a marker an older build wrote (leaf, under test)
 - [src/mcp/mcpProtocol.ts](src/mcp/mcpProtocol.ts) — JSON-RPC dispatch and the auth decision (leaf, under test)
@@ -797,13 +799,15 @@ Every case above is in [src/setup/argvJson.test.ts](src/setup/argvJson.test.ts).
 on the browser tab is gated on `activeEditor == 'workbench.editor.browser'`, so before this the
 MCP commands had no home outside the command palette — the limitation recorded under
 [The dropdown on the browser tab](#the-dropdown-on-the-browser-tab). The menu holds, in order:
-*Open* (Open URL / Open File), *Chat* (New chat / Chat in a new tab / Chat in a new window — the
+*Open* (Open URL / Open File), *AI Browser Chat* (New chat / Chat in a new tab / Chat in a new window — the
 three places the chat's own New Chat offers, through `aiBrowser.chat.newChat` with a location
 argument; "here" reveals the side bar chat first, since a new tab in a hidden view reads as
 nothing happening; left out below VS Code 1.106), *Page* (Translate page…, only while any browser tab is open — not
 gated on focus: the row names the tab the command will take, and the command asks only when none
 can be told apart), *Setup* (the enable entry
-while it is relevant), *Assistants*, *Logins and passkeys*, *Shared tabs*, then Settings. The
+while it is relevant), *External agents — our MCP tools for their extensions and terminal CLIs* (Connect your
+agent, Open Google Chrome for your agent, Check Connection: the two groups were asked for, so the
+chat's own entries and the ones for outside agents read apart), *Logins and passkeys*, *Shared tabs*, then Settings. The
 dropdown carries the same Translate entry as `2_translate`; the two are one list to a user, so a
 change to one is a change to both.
 
@@ -3534,6 +3538,62 @@ done.
 screenshot picks nothing, so folding it in would mean a button with no crosshair and a hole in
 the icon grid `check-manifest` enforces.
 
+### Google Chrome, with no extension
+
+Asked for as "the simplest way": the same `browser_*` tools drive Google Chrome, for every
+assistant on the MCP server (the chat's, Claude Code's, Codex's, Gemini's). No Chrome extension,
+no native messaging — Chrome's own DevTools WebSocket, which is the browser-level channel
+`CDPClient` was written for. The chat's globe button asks where to open: VS Code browser or
+Google Chrome; `aiBrowser.openInChrome` (palette, optional URL) does the second.
+
+- **Which Chrome** (`ChromeBrowser._connect`): the user's own when remote debugging is on at
+  `chrome://inspect/#remote-debugging` — Chrome then writes `DevToolsActivePort` into its profile
+  folder, read for the port and the browser path — else a Chrome started by us with
+  `--remote-debugging-port=0 --user-data-dir=~/.ai-browser/chrome-profile`. Chrome 136+ refuses
+  the port flag on the default profile, so ours has its own logins. Refused in a remote window.
+- **Each tab is a `vscode.BrowserTab`** (`ChromeTab`) and each CDP session a WebSocket of its own
+  to the browser endpoint, scoped to the tab (`ChromeCDPSession`): `Target.getTargets` lists that
+  tab's page and **only the frame targets inside it** — an `iframe` whose `parentFrameId` is a
+  frame of the page's tree or of a frame already admitted, grown until nothing changes — and
+  `Target.attachToTarget` refuses anything else; `setDiscoverTargets` / `setAutoAttach` on the
+  browser channel are refused outright. The first version listed every `iframe` in the browser,
+  so an assistant given one tab could list and read the payment and sign-in frames of the user's
+  other tabs (review finding; measured after the fix with two tabs, each with a cross-site frame:
+  each lists its own, attaching the other's is refused). The trees are read with questions of the
+  session's own (ids from 2 000 000 000, never passed on), so `attachToPage`, the frames and
+  everything above them run unchanged.
+- **`tabSource` replaces `vscode.window.browserTabs` / `activeBrowserTab` / `openBrowserTab` and
+  the four events in `BrowserController` and the chat**, and `tabSource.available()` replaces
+  `isBrowserApiGranted()` there: the grant, or a connected Chrome. **"Active" is the focused
+  built-in tab only**: CDP reports no focus, and a Chrome tab standing in as active outranked the
+  built-in tab the user last had in front for every later call (review finding). A Chrome tab
+  opened through us fires `onDidChangeActive`, and the controller records it as `_lastTab`, the
+  tab the user last turned to. `navigate(newTab)` opens in the browser the caller was already in.
+  A Chrome tab counts as on screen (`onScreen`), being a window of its own.
+- **The status bar menu has "Open Google Chrome for your agent"**, beside "Connect your agent" —
+  one row each, the agent (Claude Code, Codex, Gemini CLI) picked in a second QuickPick (asked for:
+  three rows apiece made the Assistants section the longest in the menu). Asked for first,
+  under *Assistants*): `aiBrowser.openChromeForAssistant` (not in `contributes.commands`; only the
+  menu runs it) opens a Chrome tab and puts a prompt on the clipboard naming it by our tab id, with
+  a `browser_select_tab` call to fix the tools on it, behind the paste modal.
+- **No Chrome installed** (`ChromeNotInstalledError`) is a warning with **Install Google Chrome**,
+  which opens `https://www.google.com/chrome/` — asked for. A notification, because it is a
+  decision (see [A notification pauses the built-in browser](#a-notification-pauses-the-built-in-browser)).
+- **The last-resort tab is a built-in one** (`_resolveTab`): with nothing shared, selected or
+  focused, a Chrome tab is never picked by being listed last — an attached Chrome lists the user's
+  own pages, and the tools would land on their mail. A Chrome tab is reached by selection, share,
+  or being opened through us (`_lastTab`).
+- **A Chrome of ours that does not answer is not launched over** (`profileInUse`, its
+  `SingletonLock` naming a live pid): a second launch hands its arguments to the first and exits,
+  and the deleted port file never came back. The socket is retried once with a longer wait first.
+  `closeTab` with Chrome gone drops the tab instead of starting Chrome to close it.
+- **Not converted yet**: the element and screenshot commands of the editor toolbar, logins,
+  translate's tab picker and the login status bar still read `vscode.window` directly,
+  so they see the built-in browser only. The MCP tools see both.
+- Verified: the compiled module against headless Chrome 153 with a stubbed `vscode` — a tab
+  opened, read through `CDPClient.attachToPage`, captured, closed and dropped from the list.
+  **Not run inside VS Code yet.**
+
 ### Browser video recording
 
 A silent video of a browser tab's viewport, with no OS screen capture: CDP `Page.startScreencast`
@@ -5023,6 +5083,7 @@ Each of these cost a measurement and each would be wrong if guessed:
   Measured: a session told to remember a word on Haiku answered it after a switch to Sonnet 5,
   under the same session id. The restart waits for the turn to end; a change made mid-turn takes
   effect at the next message.
+- **A thread another Codex holds cannot be resumed**: `thread/resume` fails with "thread … already has an active writer" while, say, `codex resume` in a terminal has it open. `CodexSession._thread` then calls `thread/fork` (same settings), switches the chat to the copy's id (a `session` event) and says so in a notice. **Not measured end to end**: the error text is from a user report; the fork's shape is from the 0.162 schema.
 - **Codex's `turn/start` answers before the turn ends**; the end is `turn/completed` with
   `status` `completed` / `failed` / `interrupted`. Stop took about 15 ms on both agents.
 - **Codex's own schema can be generated from the installed binary:**
@@ -5609,7 +5670,9 @@ tokens, CLAUDE.md being most of it, and every model the CLI offers here has a 1M
 
 **A prompt refused as too long goes again on its own** (asked for): Claude Code compacts the
 conversation right after that error, so the same prompt usually fits a few seconds later. The
-result carries `tooLong` (`claudeEvents`), and `ChatTab._scheduleRetry` sends what was sent —
+result carries `tooLong` (`claudeEvents`) — from `terminal_reason: 'prompt_too_long'`, or from
+the text alone (`promptTooLong`): a turn ended while Claude Code auto-compacts carried only
+"Prompt is too long", and no retry ran, and `ChatTab._scheduleRetry` sends what was sent —
 `Pending.resend`, the prompt with its attachments, model and effort — after 5, 15 and 30 s
 (`tooLongRetryMs`), a notice saying so in place of the error; past the third try the error and
 its advice stand. The prompt is shown once. While it waits the tab reads as running, so Stop is
@@ -9551,6 +9614,32 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
      so the chat showed the error twice. The exit handler ends only a turn whose prompt went out.
 515. **Falling back from whole-word matches to raw ones by index** → `symbolColumn('tab, tabs',
      'tab', 2)` returned `tabs`. Use raw matches only when there are no whole ones.
+516. **A closed Codex tab leaves its thread loaded** → the shared app-server outlives the tab by
+     `idleShutdownMs`, so the terminal hand-over's `codex resume` answered "This conversation is open
+     in another app". **`thread/unsubscribe` does not help**: measured on 0.163, it answers
+     `unsubscribed` and the thread stays in `thread/loaded/list` 45 s later. Only the app-server
+     exiting frees it, so `CodexBackend.release` ends it when nothing else works in it (no turn
+     running, no hold); the other tabs resume in a new one at their next message. With a turn
+     running elsewhere it leaves the chat open and asks the user to retry the hand-over once
+     that work finishes; it never starts a terminal while `release` returns false. Claude Code and Gemini have the same race with their own
+     per-conversation process, which a SIGTERM does not end at once: `_resumeInTerminal` closes the
+     tab, then awaits `JsonLineProcess.stopped()` — every process told to stop has exited, or 4 s —
+     before it creates the terminal.
+517. **A conversation handed to a terminal without the server the chat injected** → the chat gives
+     its CLIs the browser server at every start, a terminal's `claude --resume` / `codex resume`
+     got nothing, so the moved conversation saw neither the VS Code browser nor Chrome.
+     `_resumeInTerminal` passes it the same way: Claude a `0600` `--mcp-config` file (removed when
+     the terminal closes), Codex `-c` overrides with `env_http_headers` naming
+     `AI_BROWSER_MCP_AUTH`, set in the terminal's environment — the token never in argv.
+     `http_headers={}` clears a stale project entry's token. Gemini reads servers from settings
+     files only and is not covered; Connect Gemini CLI is its route.
+     **The tab goes along too** (`X-AI-Browser-Tab`): the controller remembers the tab each chat
+     conversation's agent last resolved (`tabIdForChat`, by `caller.chatId`), and the hand-over
+     sends its id — Claude in the config's `headers`, Codex through `env_http_headers` from
+     `AI_BROWSER_MCP_TAB`. The server reads it as `preferredTab` and seeds that session's pin
+     once (`_seeded`), so a later `browser_select_tab` still moves it and a share still wins.
+     Without it the terminal followed the VS Code tab in front, never the Chrome tab the chat had
+     been working on (the last-resort fallback is built-in only).
 
 ## Special cases and non-obvious decisions
 

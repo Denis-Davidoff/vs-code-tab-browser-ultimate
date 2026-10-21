@@ -6,7 +6,7 @@
 import * as vscode from 'vscode';
 import { CDPClient } from '../core/cdp';
 import { extractElementData, renderElementMarkdown } from '../elements/elementContext';
-import { isBrowserApiGranted } from '../setup/proposedApi';
+import { tabs as tabSource } from './tabSource';
 import { legacyMarkerRemoval, stripMarker, stripMarkerFromHtml } from './shareIndicator';
 import { comparesFieldValue, isSecretField, redactSecretValues } from '../logins/secretGuards';
 import { encodeJpeg } from './jpegEncode';
@@ -654,15 +654,14 @@ function whenNotAborted(
 
 /**
  * Refuses, in words a model can act on, when the `browser` proposal is not
- * ours to use. Every tool path reads `vscode.window.browserTabs` sooner or
+ * ours to use. Every tool path reads `tabSource.all` sooner or
  * later, and on a host that carries the proposal without granting it that
  * read throws a raw "CANNOT use API proposal" instead.
  */
 function requireGrant(): void {
-	if (!isBrowserApiGranted()) {
+	if (!tabSource.available()) {
 		throw new Error(
-			'The integrated browser is unavailable in this editor. It needs the `browser` API proposal; ' +
-			'the user can enable it with the "AI Browser: Enable Integrated Browser API" command.');
+			'No browser is available. The integrated browser needs the `browser` API proposal (the user can enable it with the "AI Browser: Enable Integrated Browser API" command), or the user can connect Google Chrome with "AI Browser: Open in Google Chrome".');
 	}
 }
 
@@ -1057,7 +1056,7 @@ export class BrowserController implements vscode.Disposable {
 	/**
 	 * The tab the tools last acted on.
 	 *
-	 * `vscode.window.activeBrowserTab` means "a browser editor is the active
+	 * `tabSource.active` means "a browser editor is the active
 	 * pane", nothing more — the extension host sets it from
 	 * `activeEditorPane?.input instanceof BrowserEditorInput` — so it goes
 	 * `undefined` the moment the user clicks into a file, which is the normal
@@ -1173,15 +1172,18 @@ export class BrowserController implements vscode.Disposable {
 		// the next call comes in. Guarded like every other use of the proposal:
 		// on a host without it, reading the event throws.
 		try {
-			if (isBrowserApiGranted()) {
-				this._tabWatch = vscode.window.onDidCloseBrowserTab(tab => this._loseTab(tab));
-				this._userFocus = vscode.window.activeBrowserTab;
-				this._focusWatch = vscode.window.onDidChangeActiveBrowserTab(tab => {
-					if (tab) {
-						this._userFocus = tab;
+			this._tabWatch = tabSource.onDidClose(tab => this._loseTab(tab));
+			this._userFocus = tabSource.active;
+			this._focusWatch = tabSource.onDidChangeActive(tab => {
+				if (tab) {
+					this._userFocus = tab;
+					// A Chrome tab the user just opened is the one they turned to,
+					// and the only way it enters the fallback: it is never `active`.
+					if (tabSource.isChrome(tab)) {
+						this._lastTab = tab;
 					}
-				});
-			}
+				}
+			});
 		} catch {
 			// No browser API here; there is nothing to share in the first place.
 		}
@@ -1195,6 +1197,10 @@ export class BrowserController implements vscode.Disposable {
 	 * mutates in place, so it is stable for as long as the tab is open.
 	 */
 	private readonly _tabIds = new Map<vscode.BrowserTab, string>();
+	/** Callers whose preferred tab has been applied, so it seeds a selection only once. */
+	private readonly _seeded = new Set<string>();
+	/** The tab each chat conversation's agent last worked on, for the terminal hand-over. */
+	private readonly _chatTabs = new Map<string, vscode.BrowserTab>();
 	private _nextTabId = 1;
 	/**
 	 * A few random characters in every id this window hands out (`tab-k3f-2`).
@@ -1229,9 +1235,19 @@ export class BrowserController implements vscode.Disposable {
 	 * open, which is the usual case, it is the only answer that can be right.
 	 */
 	private _resolveTab(caller?: CallerIdentity): vscode.BrowserTab | undefined {
-		const open = vscode.window.browserTabs ?? [];
+		const open = tabSource.all ?? [];
 
 		const key = caller ? callerKey(caller) : undefined;
+		// A preferred tab seeds the caller's selection once, so a later
+		// browser_select_tab still moves it; a closed one is ignored.
+		if (key && caller?.preferredTab && !this._seeded.has(key) && !this._pins.has(key)) {
+			// Bounded like the server's session map (256): an old entry only means a
+			// session that reappears is not seeded again, which is the safe direction.
+			if (this._seeded.size >= 256) { this._seeded.delete(this._seeded.values().next().value!); }
+			this._seeded.add(key);
+			const wanted = open.find(tab => this._idOf(tab) === caller.preferredTab);
+			if (wanted) { this._pins.set(key, { tab: wanted, caller }); }
+		}
 		const pinned = key ? this._pins.get(key)?.tab : undefined;
 		if (pinned) {
 			if (open.includes(pinned)) {
@@ -1242,7 +1258,7 @@ export class BrowserController implements vscode.Disposable {
 			this._pins.delete(key!);
 		}
 
-		const active = vscode.window.activeBrowserTab;
+		const active = tabSource.active;
 		if (active) {
 			this._lastTab = active;
 			return active;
@@ -1252,7 +1268,10 @@ export class BrowserController implements vscode.Disposable {
 			return this._lastTab;
 		}
 
-		this._lastTab = open.length > 0 ? open[open.length - 1] : undefined;
+		// The last resort is a built-in tab only: a Chrome the user attached
+		// lists their own pages, and nobody chose one of those for the tools.
+		const builtIn = open.filter(tab => !tabSource.isChrome(tab));
+		this._lastTab = builtIn.length > 0 ? builtIn[builtIn.length - 1] : undefined;
 		return this._lastTab;
 	}
 
@@ -1276,7 +1295,7 @@ export class BrowserController implements vscode.Disposable {
 		readonly paused?: ShareTarget;
 		readonly target?: ShareTarget;
 	} {
-		const open = vscode.window.browserTabs ?? [];
+		const open = tabSource.all ?? [];
 		const resolution = this._shares.resolve(caller);
 
 		if (resolution.kind === 'paused') {
@@ -1285,6 +1304,7 @@ export class BrowserController implements vscode.Disposable {
 
 		if (resolution.kind === 'shared') {
 			if (open.includes(resolution.tab)) {
+				if (caller.chatId) { this._chatTabs.set(caller.chatId, resolution.tab); }
 				return { tab: resolution.tab, target: resolution.target };
 			}
 			// The resolve that *discovers* the closure — normally
@@ -1299,7 +1319,17 @@ export class BrowserController implements vscode.Disposable {
 			}
 		}
 
-		return { tab: this._resolveTab(caller) };
+		const tab = this._resolveTab(caller);
+		if (tab && caller.chatId) { this._chatTabs.set(caller.chatId, tab); }
+		return { tab };
+	}
+
+	/** Our id of the tab a chat conversation last worked on, while it is open. */
+	public tabIdForChat(chatId: string): string | undefined {
+		const tab = this._chatTabs.get(chatId);
+		if (!tab) { return undefined; }
+		if (!tabSource.all.includes(tab)) { this._chatTabs.delete(chatId); return undefined; }
+		return this._idOf(tab);
 	}
 
 	/**
@@ -1310,7 +1340,7 @@ export class BrowserController implements vscode.Disposable {
 	 * the caller falls back to {@link _resolveTab}.
 	 */
 	public get focusedTab(): vscode.BrowserTab | undefined {
-		return isBrowserApiGranted() ? vscode.window.activeBrowserTab : undefined;
+		return tabSource.available() ? tabSource.active : undefined;
 	}
 
 	/**
@@ -1322,7 +1352,7 @@ export class BrowserController implements vscode.Disposable {
 	 * tab away is nonsense.
 	 */
 	public get hasOpenTabs(): boolean {
-		return isBrowserApiGranted() && (vscode.window.browserTabs ?? []).length > 0;
+		return tabSource.available() && tabSource.all.length > 0;
 	}
 
 	/**
@@ -1336,11 +1366,11 @@ export class BrowserController implements vscode.Disposable {
 	 * can be told apart, so the caller asks rather than guesses.
 	 */
 	public get userTab(): vscode.BrowserTab | undefined {
-		if (!isBrowserApiGranted()) {
+		if (!tabSource.available()) {
 			return undefined;
 		}
-		const open = vscode.window.browserTabs ?? [];
-		const focused = vscode.window.activeBrowserTab;
+		const open = tabSource.all ?? [];
+		const focused = tabSource.active;
 		if (focused) {
 			this._userFocus = focused;
 			return focused;
@@ -1372,7 +1402,7 @@ export class BrowserController implements vscode.Disposable {
 
 	/** The id of a tab, minting one if this is the first time it is named. */
 	private _idOf(tab: vscode.BrowserTab): string {
-		this._identify(vscode.window.browserTabs ?? []);
+		this._identify(tabSource.all);
 		return this._tabIds.get(tab) ?? 'tab-0';
 	}
 
@@ -1402,7 +1432,7 @@ export class BrowserController implements vscode.Disposable {
 
 	/** A recording stays on its original tab; changing focus or a tool pin does not revoke access. */
 	public canRecordTab(tab: vscode.BrowserTab, caller?: CallerIdentity): boolean {
-		if (!isBrowserApiGranted() || !vscode.window.browserTabs.includes(tab)) { return false; }
+		if (!tabSource.available() || !tabSource.all.includes(tab)) { return false; }
 		if (!caller) { return true; }
 		const assignment = this._shares.resolve(caller);
 		return assignment.kind === 'unassigned' || (assignment.kind === 'shared' && assignment.tab === tab);
@@ -1580,7 +1610,7 @@ export class BrowserController implements vscode.Disposable {
 			slotHeld = true;
 			return TabSession.open(tab, abort.signal);
 		}).then(session => {
-			const open = vscode.window.browserTabs ?? [];
+			const open = tabSource.all ?? [];
 			if (this._disposed || !open.includes(tab)) {
 				// Nobody will ever read this one, so it closes itself rather
 				// than leaking: before the map, an open landing after `dispose`
@@ -1955,7 +1985,7 @@ export class BrowserController implements vscode.Disposable {
 		// this body past several CDP round-trips: two clicks queue up, and the
 		// second one's tab can be closed by the time its turn comes. Adopting it
 		// left the UI advertising a share on a tab that no longer existed.
-		if (!(vscode.window.browserTabs ?? []).includes(tab)) {
+		if (!tabSource.all.includes(tab)) {
 			throw new Error('That browser tab is no longer open.');
 		}
 
@@ -2078,7 +2108,7 @@ export class BrowserController implements vscode.Disposable {
 		// paused item would otherwise stay yellow in a window with no browser
 		// at all. The closing tab is filtered out explicitly rather than
 		// trusting `browserTabs` to have dropped it before the event fires.
-		const remaining = (vscode.window.browserTabs ?? []).filter(open => open !== tab);
+		const remaining = tabSource.all.filter(open => open !== tab);
 		const released = remaining.length === 0 ? this._shares.releasePaused() : [];
 		if (lost.length === 0 && released.length === 0) {
 			return;
@@ -2089,15 +2119,15 @@ export class BrowserController implements vscode.Disposable {
 
 	public async state(caller: CallerIdentity): Promise<unknown> {
 		await this._settle();
-		if (!isBrowserApiGranted()) {
+		if (!tabSource.available()) {
 			return {
 				available: false,
-				reason: 'The `browser` API proposal is not enabled. Ask the user to run '
+				reason: 'Open Google Chrome with "AI Browser: Open in Google Chrome", or enable native browser tabs with '
 					+ '"AI Browser: Enable Integrated Browser API".',
 			};
 		}
 
-		const open = vscode.window.browserTabs ?? [];
+		const open = tabSource.all ?? [];
 		this._identify(open);
 		// The tab *this caller* will act on, which is not the same thing as the
 		// focused editor, and not the same thing as another assistant's tab.
@@ -2137,21 +2167,21 @@ export class BrowserController implements vscode.Disposable {
 	 */
 	public async tabs(caller: CallerIdentity): Promise<unknown> {
 		await this._settle();
-		if (!isBrowserApiGranted()) {
+		if (!tabSource.available()) {
 			return {
 				available: false,
-				reason: 'The `browser` API proposal is not enabled. Ask the user to run '
+				reason: 'Open Google Chrome with "AI Browser: Open in Google Chrome", or enable native browser tabs with '
 					+ '"AI Browser: Enable Integrated Browser API".',
 			};
 		}
 
-		const open = vscode.window.browserTabs ?? [];
+		const open = tabSource.all ?? [];
 		this._identify(open);
 		const { tab: target, paused, target: assignment } = this._resolveForCaller(caller);
 		if (target) {
 			this._noteTabUse(target, caller);
 		}
-		const focused = vscode.window.activeBrowserTab;
+		const focused = tabSource.active;
 
 		// **An assigned caller sees its own tab and nothing else.** The other
 		// tabs used to be listed as context, on the reasoning that they are not
@@ -2197,9 +2227,8 @@ export class BrowserController implements vscode.Disposable {
 		// Before the share checks below, or a selection arriving mid-transition
 		// would be judged against a share that is halfway moved.
 		await this._settle();
-		if (!isBrowserApiGranted()) {
-			throw new Error('The integrated browser is unavailable in this editor. Ask the user to run '
-				+ '"AI Browser: Enable Integrated Browser API".');
+		if (!tabSource.available()) {
+			requireGrant();
 		}
 
 		const assignment = this._shares.resolve(caller);
@@ -2213,7 +2242,7 @@ export class BrowserController implements vscode.Disposable {
 				+ 'tab, or to stop sharing, from the AI Browser status bar menu.');
 		}
 
-		const open = vscode.window.browserTabs ?? [];
+		const open = tabSource.all ?? [];
 		this._identify(open);
 
 		if (id === 'auto') {
@@ -2277,9 +2306,8 @@ export class BrowserController implements vscode.Disposable {
 				'because other schemes would let this tool read local files.');
 		}
 
-		if (!isBrowserApiGranted()) {
-			throw new Error('The integrated browser is unavailable in this editor. Ask the user to run '
-				+ '"AI Browser: Enable Integrated Browser API".');
+		if (!tabSource.available()) {
+			requireGrant();
 		}
 
 		const assignment = this._shares.resolve(caller);
@@ -2328,7 +2356,8 @@ export class BrowserController implements vscode.Disposable {
 			// Nothing to drive, and nothing of this caller's to drop: sessions
 			// belong to tabs now, so the no-argument form would have closed
 			// every one of them — another assistant's console buffer with it.
-			const tab = await vscode.window.openBrowserTab(url, { preserveFocus: true });
+			// A new tab goes to the browser the caller was already working in.
+			const tab = await tabSource.open(url, { preserveFocus: true, where: tabSource.isChrome(this._resolveTab(caller)) ? 'chrome' : undefined });
 			// An explicit `newTab` selects the tab it just created, and it has
 			// to: the tab is opened with `preserveFocus`, so the *old* tab
 			// stays active and wins the focused-tab branch of `_resolveTab`,
@@ -2542,7 +2571,7 @@ export class BrowserController implements vscode.Disposable {
 		let tabClosed = false;
 		let waiting = false;
 		let cancelled = false;
-		const closeWatch = vscode.window.onDidCloseBrowserTab(gone => {
+		const closeWatch = tabSource.onDidClose(gone => {
 			if (gone === tab) {
 				tabClosed = true;
 				stop.abort();
@@ -2825,7 +2854,8 @@ export class BrowserController implements vscode.Disposable {
 	 * `LoginWatcher.tabInFront`, erring towards "visible").
 	 */
 	public onScreen(tab: vscode.BrowserTab): boolean {
-		if (this.focusedTab === tab) { return true; }
+		// Chrome is a window of its own, beside the editor rather than under it.
+		if (this.focusedTab === tab || tabSource.isChrome(tab)) { return true; }
 		try { return vscode.window.tabGroups.all.some(group => group.activeTab !== undefined && group.activeTab.input === undefined); }
 		catch { return true; }
 	}
@@ -2964,7 +2994,7 @@ export class BrowserController implements vscode.Disposable {
 		if (paused) {
 			throw new Error(shareLostMessage(paused));
 		}
-		const open = vscode.window.browserTabs ?? [];
+		const open = tabSource.all ?? [];
 		this._identify(open);
 		const tab = open.find(candidate => this._tabIds.get(candidate) === tabId);
 		if (!tab) {
@@ -3296,7 +3326,7 @@ export class BrowserController implements vscode.Disposable {
 		let session: TabSession | undefined;
 		let watch: vscode.Disposable | undefined;
 		try {
-			watch = vscode.window.onDidCloseBrowserTab(gone => {
+			watch = tabSource.onDidClose(gone => {
 				if (gone === tab) {
 					abort.abort();
 					session?.dispose();

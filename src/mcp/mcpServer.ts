@@ -368,7 +368,9 @@ export class McpServer implements vscode.Disposable {
 		// one this host did not mint names no chat (`chatCapability.ts`).
 		const capability = req.headers['x-ai-browser-chat'];
 		const chatId = typeof capability === 'string' ? chatOfCapability(capability) : undefined;
-		const caller: Caller = { kind: kind ?? 'other', sessionId, ...(chatId ? { chatId } : {}) };
+		const wantedTab = req.headers['x-ai-browser-tab'];
+		const preferredTab = typeof wantedTab === 'string' && /^tab-[a-z0-9]{1,12}-\d{1,9}$/.test(wantedTab) ? wantedTab : undefined;
+		const caller: Caller = { kind: kind ?? 'other', sessionId, ...(chatId ? { chatId } : {}), ...(preferredTab ? { preferredTab } : {}) };
 
 		// **A call the client gave up on is cancelled here too.** The MCP
 		// client sends `notifications/cancelled` when its user presses Esc, and

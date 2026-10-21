@@ -27,6 +27,23 @@ import { LineSplitter, parseLine } from './agentProtocol';
 const killGraceMs = 3000;
 
 export class JsonLineProcess implements vscode.Disposable {
+	/** Processes we have told to stop and that have not exited yet. */
+	private static readonly _stopping = new Map<JsonLineProcess, Promise<void>>();
+
+	/**
+	 * Settles once every process being stopped has exited, or after `limitMs`.
+	 * A CLI resumed elsewhere (the terminal hand-over) must not start while the
+	 * chat's own process for that session is still writing to it.
+	 */
+	public static stopped(limitMs = killGraceMs + 1000): Promise<void> {
+		const pending = [...JsonLineProcess._stopping.values()];
+		if (!pending.length) { return Promise.resolve(); }
+		return Promise.race([
+			Promise.all(pending).then(() => undefined),
+			new Promise<void>(resolve => setTimeout(resolve, limitMs)),
+		]);
+	}
+
 	private readonly _child: ChildProcessWithoutNullStreams;
 	private readonly _lines = new LineSplitter();
 	private _stderr = '';
@@ -94,6 +111,9 @@ export class JsonLineProcess implements vscode.Disposable {
 	public kill(): void {
 		if (!this._exited) {
 			this._killed = true;
+			if (!JsonLineProcess._stopping.has(this)) {
+				JsonLineProcess._stopping.set(this, new Promise<void>(resolve => this._child.once('exit', () => resolve())));
+			}
 			this._child.kill();
 			const timer = setTimeout(() => {
 				if (!this._exited) {
@@ -120,6 +140,7 @@ export class JsonLineProcess implements vscode.Disposable {
 			return;
 		}
 		this._exited = true;
+		JsonLineProcess._stopping.delete(this);
 		this._onExit.fire(reason);
 		this._onExit.dispose();
 	}

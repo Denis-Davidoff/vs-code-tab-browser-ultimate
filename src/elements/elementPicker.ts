@@ -10,6 +10,7 @@ import { plainInLabel } from '../core/notifyText';
 import { extractElementData, formatAncestor, renderElementMarkdown } from './elementContext';
 import { assistantName, handOver, type AssistantId } from './assistants';
 import { isBrowserApiGranted } from '../setup/proposedApi';
+import { tabs as tabSource } from '../browser/tabSource';
 import {
 	formatElementReport, formatPathReport, inlineCode, reportFileName, withLocation,
 	type PathKind,
@@ -643,13 +644,13 @@ function watchTabClose(
 
 	const subs: vscode.Disposable[] = [];
 	try {
-		subs.push(vscode.window.onDidCloseBrowserTab(gone => {
+		subs.push(tabSource.onDidClose(gone => {
 			if (gone === tab) {
 				onGone();
 			}
 		}));
-		subs.push(vscode.window.onDidChangeActiveBrowserTab(() => {
-			if (!(vscode.window.browserTabs ?? []).includes(tab)) {
+		subs.push(tabSource.onDidChangeActive(() => {
+			if (!tabSource.all.includes(tab)) {
 				onGone();
 			}
 		}));

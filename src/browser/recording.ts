@@ -7,6 +7,7 @@ import { generateUuid } from '../core/uuid';
 import { confirm } from '../core/notify';
 import { projectTempDirectory } from '../core/safeFiles';
 import type { BrowserController } from './browserController';
+import { tabs as tabSource } from './tabSource';
 import { callerKey, type CallerIdentity } from './shareRegistry';
 import { formatRecordingSeconds, minRecordingBytes, readRecordingQuality, readRecordingSeconds, recordingByteLimit, recordingProfiles, recordingQualityKey, recordingSecondsKey, type RecordingQuality } from './recordingQuality';
 
@@ -247,7 +248,7 @@ export class BrowserRecording implements vscode.Disposable {
 				if (session !== run.session) { return; }
 				void this._frame(run, params).then(accepted => { if (accepted) { first(); } }, error => this._fail(run, error));
 			}));
-			run.parts.push(vscode.window.onDidCloseBrowserTab(closed => {
+			run.parts.push(tabSource.onDidClose(closed => {
 				if (closed === tab) { sourceLost('The browser tab was closed while the recording was starting.'); }
 			}));
 			if (caller) { run.parts.push(this._browser.onDidChangeShare(() => {
@@ -421,11 +422,11 @@ export class BrowserRecording implements vscode.Disposable {
 	}
 
 	private _tabGone(tab: vscode.BrowserTab): boolean {
-		try { return !(vscode.window.browserTabs ?? []).includes(tab); } catch { return false; }
+		try { return !tabSource.all.includes(tab); } catch { return false; }
 	}
 
 	private _sourceGone(run: Run): boolean {
-		return !!run.client?.isClosed || !(vscode.window.browserTabs ?? []).includes(run.tab);
+		return !!run.client?.isClosed || !tabSource.all.includes(run.tab);
 	}
 	private async _ackFrame(run: Run, sessionId: number): Promise<void> {
 		const noLongerCapturing = () => this._active !== run || !['starting', 'recording'].includes(run.result.state) || this._sourceGone(run);

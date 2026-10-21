@@ -381,6 +381,7 @@ export interface ApprovalEntry {
 }
 
 export interface ChatSummary {
+	readonly canResumeInTerminal?: boolean;
 	readonly id: string;
 	readonly title: string;
 	readonly agent: AgentId;
@@ -603,6 +604,7 @@ export interface ChatViewState {
 	readonly hasBrowserTab: boolean;
 	/** The `browser` proposal is granted; without it no tab can be attached, open or not. */
 	readonly browserApi: boolean;
+	readonly nativeBrowser?: 'granted' | 'grantMissing' | 'awaitingRestart' | 'unsupported';
 	/** Absent until NEWS.md has been read, or when it could not be. */
 	readonly news?: ChatNews;
 	/** The user hid "What's new", and no entry has been added since. */
@@ -664,6 +666,7 @@ export interface PendingSend {
 }
 
 export interface ChatTabSummary {
+	readonly canResumeInTerminal?: boolean;
 	readonly id: string;
 	readonly chatId: string;
 	readonly title: string;
@@ -780,6 +783,7 @@ export type ViewToHost =
 	| { readonly type: 'resolveHistoryChat'; readonly id: string; readonly action: 'move' | 'show' }
 	| { readonly type: 'saveDrafts'; readonly drafts: Readonly<Record<string, string>> }
 	| { readonly type: 'tabDraft'; readonly request: string; readonly draft?: string }
+	| { readonly type: 'resumeInTerminal'; readonly id: string }
 	| { readonly type: 'deleteChat'; readonly id: string }
 	| { readonly type: 'newChat'; readonly location?: 'here' | 'tab' | 'window' }
 	| { readonly type: 'newTab'; readonly location?: 'here' | 'tab' | 'window' }
@@ -820,7 +824,7 @@ export type ViewToHost =
 	/** Through the host: `navigator.clipboard` in a webview depends on the host granting it. */
 	| { readonly type: 'copy'; readonly text: string }
 	/** The composer's browser button: a new browser tab, nothing else. */
-	| { readonly type: 'openBrowser' }
+	| { readonly type: 'openBrowser'; readonly where?: 'vscode' | 'chrome' }
 	/** The approval menu's View Mode: `aiBrowser.chat.viewMode`. */
 	| { readonly type: 'setViewMode'; readonly mode: ChatViewMode }
 	/** A file a tool row names (Read, an edit), clicked: opened in an editor tab, whatever kind of file. */

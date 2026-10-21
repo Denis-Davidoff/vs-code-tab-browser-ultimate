@@ -30,7 +30,7 @@ async function until(condition: () => boolean): Promise<void> {
 	assert.fail('Expected lifecycle transition did not happen.');
 }
 
-function harness(options: { holdReady?: boolean; holdFirstFrame?: boolean; holdChannel?: boolean } = {}) {
+function harness(options: { holdReady?: boolean; holdFirstFrame?: boolean; holdChannel?: boolean; chrome?: boolean; nativeUnavailable?: boolean } = {}) {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'recording-test-'));
 	const changedShare = new Events(), closedTab = new Events();
 	const panels: any[] = [], channels: any[] = [], clients: any[] = [];
@@ -52,9 +52,16 @@ function harness(options: { holdReady?: boolean; holdFirstFrame?: boolean; holdC
 		return new Promise(resolve => { channel.deliver = () => resolve(channel); });
 	} };
 	window.browserTabs = [tab]; window.activeBrowserTab = tab;
+	const chromeTabs = [tab];
+	const tabSource = { get all() { return options.chrome ? chromeTabs : window.browserTabs; }, onDidClose: closedTab.event };
+	if (options.nativeUnavailable) {
+		for (const key of ['browserTabs', 'activeBrowserTab', 'onDidCloseBrowserTab']) {
+			Object.defineProperty(window, key, { get() { throw new Error('CANNOT use API proposal'); } });
+		}
+	} else if (options.chrome) { window.browserTabs = []; window.activeBrowserTab = undefined; }
 	const browser = {
-		recordingTab: () => window.activeBrowserTab,
-		canRecordTab: (source: any) => state.allowed && window.browserTabs.includes(source),
+		recordingTab: () => options.chrome ? tab : window.activeBrowserTab,
+		canRecordTab: (source: any) => state.allowed && tabSource.all.includes(source),
 		tabIdOf: () => 'tab-A', onDidChangeShare: changedShare.event,
 	};
 	const uri = (fsPath: string) => ({ fsPath, toString: () => fsPath });
@@ -131,6 +138,7 @@ function harness(options: { holdReady?: boolean; holdFirstFrame?: boolean; holdC
 				case '../core/notify': return { confirm: (message: string) => { state.confirmed.push(message); } };
 				case '../core/temporaryFiles': return { trackTemporaryFile: async (_file: string, project?: string) => { trackedProjects.push(project); }, temporaryProject: () => '/project-b' };
 				case '../core/safeFiles': return { projectTempDirectory: async (project?: string) => { storageProjects.push(project); return root; } };
+				case './tabSource': return { tabs: tabSource };
 				case './shareRegistry': return { callerKey: (caller: any) => caller.sessionId ?? caller.kind };
 				case './recordingQuality': return recordingQuality;
 				default: throw new Error(`Unexpected dependency: ${name}`);
@@ -139,7 +147,7 @@ function harness(options: { holdReady?: boolean; holdFirstFrame?: boolean; holdC
 	});
 	const recording = new exported.BrowserRecording({ extensionUri: uri(root), globalState: { get: (key: string) => key === recordingQualityKey ? state.quality : key === recordingSecondsKey ? state.maxSeconds : undefined } }, browser);
 	recording.createEncoder = () => { const panel = window.createWebviewPanel(); panel.webview.html = ''; return panel; };
-	return { recording, exported, tab, window, panels, channels, clients, state, closedTab, commands, storageProjects, trackedProjects,
+	return { recording, exported, tab, window, chromeTabs, panels, channels, clients, state, closedTab, commands, storageProjects, trackedProjects,
 		cleanup: () => { recording.dispose(); fs.rmSync(root, { recursive: true, force: true }); } };
 }
 
@@ -431,3 +439,23 @@ test('the last 30 seconds blink the Stop button and count down in the status bar
 		assert.equal(h.state.toasts.length, 0, 'never a toast over the page');
 	} finally { h.cleanup(); }
 });
+
+for (const nativeUnavailable of [true, false]) {
+	test(`Chrome recording acknowledges frames and stops on close (native API unavailable: ${nativeUnavailable})`, async () => {
+		const h = harness({ chrome: true, nativeUnavailable });
+		try {
+			await h.recording.start();
+			await until(() => h.commands.some(c => c.method === 'Page.screencastFrameAck'));
+			const before = h.commands.filter(c => c.method === 'Page.screencastFrameAck').length;
+			h.clients[0].frame();
+			await until(() => h.commands.filter(c => c.method === 'Page.screencastFrameAck').length > before);
+			await h.recording.control('pause');
+			assert.equal((await h.recording.control('resume')).state, 'recording');
+			const run = h.recording._active;
+			h.chromeTabs.length = 0;
+			h.closedTab.fire(h.tab);
+			await until(() => !h.recording._active);
+			assert.equal(run.result.state, 'completed');
+		} finally { h.cleanup(); }
+	});
+}

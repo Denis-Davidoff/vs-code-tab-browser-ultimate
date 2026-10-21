@@ -401,30 +401,13 @@ export async function enableBrowserApi(): Promise<void> {
 	const host = await hostInfo();
 
 	if (state === 'unsupported') {
-		// Cursor and Kiro land here. Editing argv.json would be a no-op, so it
-		// is not even offered; the setting that does help is.
-		//
-		// A grant may already be sitting in the file from before this was
-		// detected properly, and saying so matters: the user restarted for it
-		// and is entitled to know it was not their mistake.
-		// Only worth mentioning when the path is actually this editor's; see
-		// `HostInfo.resolved`.
-		const stale = host.resolved && ((await readArgv(argvUri(host))) ?? '').includes(id);
-		const usePanel = vscode.l10n.t("Use the webview panel");
-		const choice = await vscode.window.showWarningMessage(
-			vscode.l10n.t("{0} does not support the integrated browser API", host.name),
-			{
-				modal: true,
-				detail: vscode.l10n.t("This editor ships no `browser` API proposal — the API is not in its build at all, so neither `--enable-proposed-api` nor a restart can provide it. The element tools, screenshots and MCP browser tools need VS Code 1.112 or newer; VSCodium and Devin work too.\n\nWhat does work here is the built-in webview panel: \"AI Browser: Show\".{0}",
-					stale
-						? vscode.l10n.t("\n\nNote: \"enable-proposed-api\" in {0} already names this extension. It is harmless, and you can remove that entry.", argvUri(host).fsPath)
-						: ''),
-			},
-			usePanel);
-		if (choice === usePanel) {
-			await vscode.workspace.getConfiguration('aiBrowser')
-				.update('useIntegratedBrowser', false, vscode.ConfigurationTarget.Global);
-			await vscode.commands.executeCommand('aiBrowser.show');
+		// Keep Chrome available without attempting to grant an absent native API.
+		const openChrome = vscode.l10n.t("Open Google Chrome");
+		const choice = await vscode.window.showInformationMessage(
+			vscode.l10n.t("Native browser tabs are not available in {0}. Use Google Chrome with your agents and browser tools.", host.name),
+			openChrome);
+		if (choice === openChrome) {
+			await vscode.commands.executeCommand('aiBrowser.openInChrome');
 		}
 		return;
 	}

@@ -34,7 +34,7 @@ class EventEmitter<T> {
 const vscode = { EventEmitter, l10n: { t: (text: string) => text } };
 const protocol = load<typeof import('../chat/agentProtocol.ts')>('src/chat/agentProtocol.ts');
 const { CodexBackend } = load<typeof import('../chat/codexAgent.ts')>('src/chat/codexAgent.ts', {
-	vscode, './agentProtocol': protocol, './agentProcess': {}, './autoTitle': { requestTitle: async () => undefined },
+	vscode, './agentProtocol': protocol, './agentProcess': { JsonLineProcess: { stopped: async () => undefined } }, './autoTitle': { requestTitle: async () => undefined },
 	'./commitMessage': { requestCommitMessage: async () => 'test commit' },
 	'../core/safeFiles': { privateTempDirectory: async () => '/unused-test-runtime' },
 	'../core/chatCapability': load('src/core/chatCapability.ts'),
@@ -302,4 +302,22 @@ test('a message Claude Code answers with a turn of its own goes again when that 
 	h.timers.pop()!.fn();
 	await new Promise(resolve => setImmediate(resolve));
 	assert.equal(h.sent.at(-1), 'second');
+});
+
+
+test('Codex handoff refuses shutdown while another session works, then releases when idle', async () => {
+	const backend = new CodexBackend('unused', () => '/tmp');
+	let stopped = false;
+	const process = { dispose() { stopped = true; } };
+	Object.assign(backend, { _process: process });
+	const other = { running: true, backgroundWork: false };
+	const all = (backend as unknown as { _all: Set<unknown> })._all;
+	all.add(other);
+	assert.equal(await backend.release('thread'), false);
+	assert.equal(stopped, false);
+	other.running = false;
+	assert.equal(await backend.release('thread'), true);
+	assert.equal(stopped, true);
+	all.clear();
+	backend.dispose();
 });

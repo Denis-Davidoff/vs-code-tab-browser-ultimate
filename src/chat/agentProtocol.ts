@@ -767,7 +767,7 @@ export function claudeEvents(message: Record<string, unknown>, tasks?: Map<strin
 			const failed = message.is_error === true || (typeof message.subtype === 'string' && message.subtype !== 'success');
 			// Over the context: Claude Code compacts on its own right after this
 			// error, so the chat sends the prompt again (`ChatTab`, `tooLongRetryMs`).
-			const tooLong = failed && message.terminal_reason === 'prompt_too_long';
+			const tooLong = failed && promptTooLong(message);
 			events.push(tooLong ? { type: 'turnEnd', error: resultError(message), tooLong: true } : { type: 'turnEnd', error: failed ? resultError(message) : undefined });
 			return events;
 		}
@@ -978,10 +978,21 @@ function resultText(content: unknown): string {
 	return '';
 }
 
+/**
+ * Over the context. `terminal_reason` says so on 2.1.301; a result that ends a
+ * turn Claude Code is auto-compacting carries only the text, so that is read too.
+ */
+function promptTooLong(message: Record<string, unknown>): boolean {
+	if (message.terminal_reason === 'prompt_too_long') { return true; }
+	const text = typeof message.result === 'string' ? message.result
+		: Array.isArray(message.errors) ? message.errors.map(String).join('\n') : '';
+	return /^\s*prompt is too long\b/i.test(text);
+}
+
 function resultError(message: Record<string, unknown>): string {
 	// A conversation past the model's context: the CLI says so and stops, and
 	// every later message in it fails the same way until it is shortened.
-	const tooLong = message.terminal_reason === 'prompt_too_long'
+	const tooLong = promptTooLong(message)
 		? ' Send /compact to have the agent shorten this conversation, or start a new chat.'
 		: '';
 	if (typeof message.result === 'string' && message.result) {

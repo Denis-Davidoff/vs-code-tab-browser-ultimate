@@ -25,8 +25,10 @@ import { connectClaudeCode, connectCodex, connectGemini, openGeminiHere, type Sh
 import { everyone, forKind, isShareTarget, targetName, type ShareTarget } from './browser/shareRegistry';
 import { checkConnection } from './mcp/mcpCheck';
 import { copyScreenshot } from './browser/screenshot';
+import { chrome, chromeDownloadUrl, ChromeNotInstalledError } from './browser/chromeBrowser';
+import { tabs as tabSource } from './browser/tabSource';
 import {
-	enableBrowserApi, integratedBrowserCommand, isBrowserApiGranted, shouldUseIntegratedBrowser, setOwnExtensionKind, workspaceIsRemoteFromHost,
+	enableBrowserApi, hostIsRemote, integratedBrowserCommand, isBrowserApiGranted, shouldUseIntegratedBrowser, setOwnExtensionKind, workspaceIsRemoteFromHost,
 } from './setup/proposedApi';
 import { confirm, refuse } from './core/notify';
 import { plainInLabel, plainInNotification, plainInPrompt } from './core/notifyText';
@@ -143,6 +145,12 @@ export function activate(context: vscode.ExtensionContext) {
 			return openInIntegratedBrowser(asAddress(url));
 		}
 
+		if (!isBrowserApiGranted() && !hostIsRemote()
+			&& vscode.workspace.getConfiguration('aiBrowser').get<boolean>('useIntegratedBrowser', true)) {
+			await vscode.commands.executeCommand('aiBrowser.openInChrome', asAddress(url));
+			return;
+		}
+
 		if (!url) {
 			url = await vscode.window.showInputBox({
 				placeHolder: vscode.l10n.t("https://example.com"),
@@ -190,6 +198,37 @@ export function activate(context: vscode.ExtensionContext) {
 		return vscode.commands.executeCommand(showCommand);
 	}));
 
+	// Google Chrome over its own DevTools endpoint: the user's Chrome when remote
+	// debugging is on at chrome://inspect, else a Chrome with a profile of ours.
+	// Opening a tab is what connects it; from then on every `browser_*` tool sees
+	// its tabs beside the built-in browser's. Refused in a remote window, where
+	// Chrome would start on the wrong machine.
+	context.subscriptions.push(chrome);
+	context.subscriptions.push(vscode.commands.registerCommand('aiBrowser.openInChrome', async (url?: unknown) => {
+		if (hostIsRemote()) {
+			refuse(vscode.l10n.t('Google Chrome can only be driven from a local window.'));
+			return undefined;
+		}
+		const address = typeof url === 'string' ? (normalizeAddress(url) ?? url) : '';
+		try {
+			return await chrome.openTab(address);
+		} catch (error) {
+			// A decision for the user, so a notification: say what is missing and
+			// offer the one step that fixes it.
+			if (error instanceof ChromeNotInstalledError) {
+				const install = vscode.l10n.t('Install Google Chrome');
+				const answer = await vscode.window.showWarningMessage(
+					vscode.l10n.t('Google Chrome is not installed on this computer. Install it to open pages in Chrome.'), install);
+				if (answer === install) {
+					await vscode.env.openExternal(vscode.Uri.parse(chromeDownloadUrl));
+				}
+				return undefined;
+			}
+			void vscode.window.showErrorMessage(vscode.l10n.t('Could not open Google Chrome: {0}', plainInNotification((error as Error).message)));
+			return undefined;
+		}
+	}));
+
 	// The toolbar's primary button repeats whichever of these ran last, so every
 	// one of them records itself.
 	const lastAction = new LastElementAction(context.globalState);
@@ -216,6 +255,34 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(browser);
 	const recording = new BrowserRecording(context, browser);
 	context.subscriptions.push(recording);
+
+	// "Open Google Chrome for Claude Code / Codex / Gemini CLI" in the status bar
+	// menu: a Chrome tab opened, and a prompt naming it by our tab id on the
+	// clipboard. Not in `contributes.commands`: only the menu runs it, like
+	// `cancelElementPick`.
+	const assistantNames = { claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini CLI' } as const;
+	context.subscriptions.push(vscode.commands.registerCommand('aiBrowser.openChromeForAssistant', async (who?: unknown) => {
+		if (who !== 'claude' && who !== 'codex' && who !== 'gemini') {
+			return;
+		}
+		const tab = await vscode.commands.executeCommand<vscode.BrowserTab | undefined>('aiBrowser.openInChrome');
+		if (!tab) {
+			return;
+		}
+		const name = assistantNames[who];
+		const tabId = browser.tabIdOf(tab);
+		await vscode.env.clipboard.writeText([
+			`A Google Chrome tab has been opened for you to work in. In the AI Browser tools it is tab ${tabId}.`,
+			'Use the tools of the ai-browser MCP server; their names end in browser_state, browser_tabs, browser_select_tab, browser_navigate, browser_snapshot, browser_click, browser_fill, browser_text, browser_screenshot (your client adds a prefix to them).',
+			`Call browser_state first, then browser_select_tab with "${tabId}" so the tools act on that Chrome tab, and browser_navigate to open a page in it.`,
+			`If you have no ai-browser tools, tell me to run "AI Browser: Connect ${name}" and restart your session. Do not add or edit any MCP configuration yourself.`,
+			'Then wait for my request.',
+		].join('\n'));
+		// Modal, like the paste prompt after Connect: the paste is the one step left.
+		await vscode.window.showInformationMessage(
+			vscode.l10n.t('Paste into the {0} chat; it works in the Chrome tab that just opened.', name),
+			{ modal: true, detail: vscode.l10n.t('The prompt is on your clipboard.') });
+	}));
 	// The user's own recording commands. A failure the recording reported itself
 	// (a failure notification, or a start cancelled because its tab closed) is
 	// not reported again; anything refused before a recording existed goes to
@@ -294,7 +361,7 @@ export function activate(context: vscode.ExtensionContext) {
 	// written long before there is a page — assigns nothing and says what the
 	// alternative is.
 	const giveFocusedTab = async (target: ShareTarget): Promise<SharedPage | undefined> => {
-		const tab = browser.focusedTab;
+		const tab = browser.userTab;
 		if (!tab) {
 			return undefined;
 		}
@@ -340,15 +407,14 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(browser.onDidChangeShare(publishShareContext));
 
 	const share = async (target: ShareTarget) => {
-		if (!isBrowserApiGranted()) {
-			refuse(vscode.l10n.t("Sharing a tab needs the integrated browser API — see the AI Browser status bar item."));
+		if (!tabSource.available()) {
+			refuse(vscode.l10n.t("Open Google Chrome or a native browser tab before sharing a page."));
 			return;
 		}
-		// The focused tab, never the resolved one: this is a user gesture, and
-		// "this tab" can only mean the one they are looking at.
-		const tab = browser.focusedTab;
+		// Use the user’s tab, including the Chrome tab last opened through us.
+		const tab = browser.userTab;
 		if (!tab) {
-			refuse(vscode.l10n.t("Open a page in the integrated browser and run this from that tab."));
+			refuse(vscode.l10n.t("Open a browser page and select the tab to share."));
 			return;
 		}
 		try {
@@ -470,6 +536,9 @@ export function activate(context: vscode.ExtensionContext) {
 			// So the Uri keeps `toString(true)`, the better of the two, and a
 			// caller that needs an exact address passes the string.
 			await openInIntegratedBrowser(typeof url === 'string' ? url : url.toString(true));
+		} else if (!isBrowserApiGranted() && !hostIsRemote()
+			&& vscode.workspace.getConfiguration('aiBrowser').get<boolean>('useIntegratedBrowser', true)) {
+			await vscode.commands.executeCommand('aiBrowser.openInChrome', asAddress(url));
 		} else {
 			manager.show(url, showOptions);
 		}

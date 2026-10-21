@@ -51,6 +51,11 @@ export interface CallerIdentity {
 	readonly sessionId?: string;
 	/** Set by the extension's own chat clients, never inferred from the agent's name. */
 	readonly chatId?: string;
+	/**
+	 * A tab id the client asked to start on (`X-AI-Browser-Tab`): the tab a
+	 * chat conversation was working on when it was moved to a terminal.
+	 */
+	readonly preferredTab?: string;
 }
 
 /** One assignment, for the UI to render and for the user to undo. */

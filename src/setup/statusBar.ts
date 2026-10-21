@@ -15,18 +15,8 @@ import {
 	shouldUseIntegratedBrowser, type BrowserApiState,
 } from './proposedApi';
 
-/*
- * Two status bar items, with different jobs.
- *
- *   - `AI Browser` is permanent and opens a menu. Everything the extension can
- *     do from outside a browser tab lives there, which is not decoration: the
- *     dropdown on the tab is gated on `activeEditor == 'workbench.editor.browser'`,
- *     so before this the MCP commands had no home but the command palette.
- *   - `Enable Browser API` appears only while that is the one thing standing
- *     between the user and every browser feature, and hides itself the moment
- *     it is not. It carries a warning background, which is the only attention
- *     mechanism the API actually offers (see `pulse`).
- */
+/* AI Browser opens the main menu. The optional native browser setup item is
+ * informational: Chrome and agents do not need the browser API grant. */
 
 /** Highest of the left-hand items, so it does not drift behind language tools. */
 const priority = 1000;
@@ -52,14 +42,9 @@ export function registerStatusBar(context: vscode.ExtensionContext, controller: 
 	enable.command = 'aiBrowser.enableBrowserApi';
 	context.subscriptions.push(enable);
 
-	let pulsed = false;
 	const refresh = async () => {
 		const state = await browserApiState();
 		applyState(enable, state);
-		if (state === 'grantMissing' && !pulsed) {
-			pulsed = true;
-			context.subscriptions.push(pulse(enable));
-		}
 	};
 
 	void refresh();
@@ -69,30 +54,13 @@ export function registerStatusBar(context: vscode.ExtensionContext, controller: 
 		() => showMenu(controller)));
 }
 
-/**
- * Shows the item only while it has something actionable to say.
- *
- * The `unsupported` case is explained in the menu instead — see `showMenu`.
- *
- * `granted` hides it — a permanent badge for a solved problem is noise. So does
- * `unsupported`: on Cursor the button could never do anything but apologise,
- * and it would say so in every window forever. That case is reachable from the
- * menu, where the user went looking for it.
- */
+/** Only remind about a restart after the user has chosen to enable native tabs. */
 function applyState(item: vscode.StatusBarItem, state: BrowserApiState): void {
-	if (state === 'grantMissing') {
-		item.text = '$(alert) Enable Browser API';
-		item.tooltip = new vscode.MarkdownString(vscode.l10n.t(
-			"**The integrated browser API is off.**\n\nElement tools, screenshots and the MCP browser tools need it. Click to add this extension to `argv.json` — then quit and reopen the editor."));
-		item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
-		item.show();
-		return;
-	}
 	if (state === 'awaitingRestart') {
 		item.text = '$(debug-restart) Restart to finish';
 		item.tooltip = new vscode.MarkdownString(vscode.l10n.t(
 			"**`argv.json` is set, this window is not.**\n\nIt is read when the process starts, so the editor has to be fully quit and reopened — Reload Window is not enough."));
-		item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+		item.backgroundColor = undefined;
 		item.show();
 		return;
 	}
@@ -125,7 +93,7 @@ function applyShareState(item: vscode.StatusBarItem, shares: ShareView): void {
 			'\n\n',
 			vscode.l10n.t("They will not fall back to another page on their own — give them a tab again, or stop sharing."),
 		].join(''));
-		item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+		item.backgroundColor = undefined;
 		return;
 	}
 
@@ -223,9 +191,8 @@ async function showMenu(controller: BrowserController): Promise<void> {
 	const state = await browserApiState();
 	const items: MenuItem[] = [];
 
-	// Read before the QuickPick is shown: a focused browser tab is what "share
-	// this tab" means, and clicking the status bar does not move focus.
-	const focused = controller.focusedTab;
+	// Resolve before showing the menu, including the Chrome tab opened by the user.
+	const focused = controller.userTab;
 	// **Two different facts, and the menu used only one of them.** "Nothing is
 	// focused" is the ordinary state while somebody reads a file, and it is
 	// what the entries below check; "no browser tab exists" is the state where
@@ -254,7 +221,7 @@ async function showMenu(controller: BrowserController): Promise<void> {
 	// The same three places the chat's own New Chat offers. Below VS Code 1.106
 	// there is no chat view to reveal, so the section is left out there.
 	if (supportsSecondarySidebar(vscode.version)) {
-		items.push({ label: vscode.l10n.t("Chat"), kind: vscode.QuickPickItemKind.Separator });
+		items.push({ label: vscode.l10n.t("AI Browser Chat"), kind: vscode.QuickPickItemKind.Separator });
 		items.push({
 			label: vscode.l10n.t("$(comment-discussion) New chat"),
 			detail: vscode.l10n.t("A new tab in the AI Browser chat, shown in the side bar"),
@@ -290,52 +257,50 @@ async function showMenu(controller: BrowserController): Promise<void> {
 		items.push({ label: vscode.l10n.t("Setup"), kind: vscode.QuickPickItemKind.Separator });
 		items.push({
 			label: state === 'grantMissing'
-				? vscode.l10n.t("$(alert) Enable Browser API")
+				? vscode.l10n.t("$(browser) Enable native browser")
 				: state === 'awaitingRestart'
 					? vscode.l10n.t("$(debug-restart) Restart to finish enabling the API")
-					// An editor that cannot ever provide the API still owes the
-					// user a reason. The warning item stays hidden here — it
-					// would apologise in every window forever — but this menu
-					// is opened deliberately, so the explanation belongs in it.
-					// Without it the experience is "nothing works and nothing
-					// says why", which is how Trae was reported.
-					: vscode.l10n.t("$(circle-slash) Why are the browser tools unavailable?"),
-			detail: vscode.l10n.t("Element tools, screenshots and the MCP browser tools need the browser API"),
+					: vscode.l10n.t("$(circle-slash) Native browser availability"),
+			detail: vscode.l10n.t("This setup is for native editor tabs. Google Chrome and agents work without it"),
 			run: () => vscode.commands.executeCommand('aiBrowser.enableBrowserApi'),
 		});
 	}
 
-	items.push({ label: vscode.l10n.t("Assistants"), kind: vscode.QuickPickItemKind.Separator });
+	items.push({ label: vscode.l10n.t("External agents — our MCP tools for their extensions and terminal CLIs"), kind: vscode.QuickPickItemKind.Separator });
 	// The label says "and share this tab" only when there *is* a tab to share:
 	// the command shares whatever is focused and shares nothing otherwise, so
 	// with no browser tab open the longer label promised something it could not
 	// do.
+	// One row per action, the agent asked for afterwards: three Connect rows and
+	// three Chrome rows made the menu twice as long as everything else in it.
+	const agents = [
+		{ who: 'claude', name: 'Claude Code', connect: 'aiBrowser.connectClaudeCode' },
+		{ who: 'codex', name: 'Codex', connect: 'aiBrowser.connectCodex' },
+		{ who: 'gemini', name: 'Gemini CLI', connect: 'aiBrowser.connectGemini' },
+	] as const;
+	const pickAgent = async (title: string) => (await vscode.window.showQuickPick(
+		agents.map(agent => ({ label: agent.name, agent })), { title, ignoreFocusOut: true }))?.agent;
 	items.push({
 		label: focused
-			? vscode.l10n.t("$(comment-discussion) Connect Claude Code and share this tab")
-			: vscode.l10n.t("$(comment-discussion) Connect Claude Code"),
+			? vscode.l10n.t("$(comment-discussion) Connect your agent and share this tab")
+			: vscode.l10n.t("$(comment-discussion) Connect your agent"),
+		description: vscode.l10n.t("Claude Code, Codex, Gemini CLI"),
 		detail: focused
-			? vscode.l10n.t("Writes its config, copies the check prompt, and gives it the tab you are on")
-			: vscode.l10n.t("Writes its config and copies the check prompt"),
-		run: () => vscode.commands.executeCommand('aiBrowser.connectClaudeCode'),
+			? vscode.l10n.t("Writes its config, copies the check prompt, and gives it the tab you are on — the AI Browser chat needs none of this")
+			: vscode.l10n.t("Writes its config and copies the check prompt — the AI Browser chat needs none of this"),
+		run: async () => {
+			const agent = await pickAgent(vscode.l10n.t("Connect which agent? (its own extension or terminal CLI)"));
+			if (agent) { await vscode.commands.executeCommand(agent.connect); }
+		},
 	});
 	items.push({
-		label: focused
-			? vscode.l10n.t("$(comment-discussion) Connect Codex and share this tab")
-			: vscode.l10n.t("$(comment-discussion) Connect Codex"),
-		detail: focused
-			? vscode.l10n.t("Writes its config, copies the check prompt, and gives it the tab you are on")
-			: vscode.l10n.t("Writes its config and copies the check prompt"),
-		run: () => vscode.commands.executeCommand('aiBrowser.connectCodex'),
-	});
-	items.push({
-		label: focused
-			? vscode.l10n.t("$(comment-discussion) Connect Gemini CLI and share this tab")
-			: vscode.l10n.t("$(comment-discussion) Connect Gemini CLI"),
-		detail: focused
-			? vscode.l10n.t("Writes .gemini/settings.json, copies the check prompt, and gives it the tab you are on")
-			: vscode.l10n.t("Writes .gemini/settings.json and copies the check prompt"),
-		run: () => vscode.commands.executeCommand('aiBrowser.connectGemini'),
+		label: vscode.l10n.t("$(globe) Open Google Chrome for your agent"),
+		description: vscode.l10n.t("Claude Code, Codex, Gemini CLI"),
+		detail: vscode.l10n.t("Opens a Chrome tab and copies a prompt that hands it to the agent"),
+		run: async () => {
+			const agent = await pickAgent(vscode.l10n.t("Open Google Chrome for which agent?"));
+			if (agent) { await vscode.commands.executeCommand('aiBrowser.openChromeForAssistant', agent.who); }
+		},
 	});
 	items.push({
 		label: vscode.l10n.t("$(pulse) Check Connection"),

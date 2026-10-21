@@ -486,6 +486,30 @@ export class CodexBackend implements AgentBackend {
 		this._process?.send({ jsonrpc: '2.0', id, error: { code: -32601, message: `${method} is not supported by AI Browser.` } });
 	}
 
+	/**
+	 * Lets go of a thread so another Codex — `codex resume` in a terminal — can
+	 * write to it. `thread/unsubscribe` is not enough: measured on 0.163, the
+	 * thread stays in `thread/loaded/list` after it, 45 s later included, and
+	 * the terminal still reads "open in another app". Only the app-server
+	 * exiting frees it, so it is ended when nothing else is working in it; the
+	 * other tabs' threads are resumed in a new one at their next message
+	 * (`_loadedIn` against `generation`). With another turn running it cannot
+	 * be ended, and the answer is `false`.
+	 */
+	public async release(_threadId: string): Promise<boolean> {
+		if (!this._process) {
+			return true;
+		}
+		// Background agents outlive their turn, and stopping the server under
+		// them would leave their rows running with nothing to end them.
+		const busy = this._holds > 0 || this._pending.size > 0 || [...this._all].some(s => s.running || s.backgroundWork);
+		if (busy) { return false; }
+		this._cancelIdle();
+		this._shutdown();
+		await JsonLineProcess.stopped();
+		return true;
+	}
+
 	public dispose(): void {
 		this._disposed = true;
 		this._cancelIdle();
@@ -537,6 +561,11 @@ class CodexSession implements AgentSession {
 
 	public get running(): boolean {
 		return this._running;
+	}
+
+	/** Agents of this conversation still working after its turn ended. */
+	public get backgroundWork(): boolean {
+		return this._backgroundAgents.size > 0 || this._agentTurns.size > 0;
 	}
 
 	public answer(id: string, allow: boolean, answers?: QuestionAnswers): void {
@@ -698,7 +727,23 @@ class CodexSession implements AgentSession {
 			return this._threadId;
 		}
 		if (this._threadId) {
-			await this._backend.request('thread/resume', { threadId: this._threadId, cwd: this._cwd, ...threadSettings(this._root), config: this._backend.threadConfig(this._chatId) });
+			try {
+				await this._backend.request('thread/resume', { threadId: this._threadId, cwd: this._cwd, ...threadSettings(this._root), config: this._backend.threadConfig(this._chatId) });
+			} catch (error) {
+				// Another Codex — usually `codex resume` in a terminal — holds the
+				// thread, and the app-server refuses a second writer. Fork it: the
+				// copy has the whole conversation and is ours alone.
+				if (!/active writer/i.test(String((error as Error)?.message ?? error))) {
+					throw error;
+				}
+				const forked = await this._backend.request('thread/fork', { threadId: this._threadId, cwd: this._cwd, ...threadSettings(this._root), config: this._backend.threadConfig(this._chatId) }) as { thread?: { id?: unknown } };
+				if (typeof forked?.thread?.id !== 'string') {
+					throw error;
+				}
+				this._threadId = forked.thread.id;
+				this.emit({ type: 'session', id: forked.thread.id });
+				this.emit({ type: 'notice', text: 'This conversation is open in another Codex (a terminal, perhaps), which holds it. It continues here as a copy; the other one is left as it is.' });
+			}
 		} else {
 			const started = await this._backend.request('thread/start', { cwd: this._cwd, model, ...threadSettings(this._root), config: this._backend.threadConfig(this._chatId) }) as { thread?: { id?: unknown } };
 			if (typeof started?.thread?.id !== 'string') {
