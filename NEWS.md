@@ -26,6 +26,24 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 - $(location) **Page markers** — pin notes to several elements right in the browser and hand them to the agent as one prompt.
 - $(settings-gear) **Chat Settings** — the gear at the top of the chat: change the system prompts behind commit messages, branch names and chat titles, and clean up temporary files.
 
+## 0.8.9 — 2026-10-22
+- **Safer reconnects**: automatic Chrome reconnection keeps command receipts and late operation results. After an editor restart, uncertain outgoing messages return to drafts for review instead of being silently sent again. Another editor profile's rejection no longer discards the authorized profile's resume key.
+- **Stable conversation targeting**: asynchronous footer answers and project attachments are discarded if their original conversation was replaced, instead of reaching the replacement chat.
+- **Subtasks settle after failures**: usage-limit and non-retrying child-thread errors end the agent row and its timer. Quiet agents are checked against the backend after two minutes; connection failures show **No response** without pretending the task succeeded or killing live work.
+- **Popups stay in view**: branch lists, menus and tooltips are constrained to the visible chat area, including narrow Chrome side panels. Positioning updates when the panel or popup content changes size, with scrolling for tall popups.
+- **Clear Chrome recording controls**: a recording bar above the composer shows elapsed time and offers Pause, Resume and Stop. Chrome's **Stop sharing** also finishes recording; disconnecting or closing the panel stops capture.
+- **Chrome footer actions**: usage and context, compacting, skills, working folders, Git branches and commits, and GitHub repositories use the selected Chrome conversation. Long operations do not block Stop, and project-attachment receipts survive reopening the side panel.
+
+## 0.8.8 — 2026-10-22
+- **The Chrome chat footer works with the editor**: usage and context, compacting, toolbar skills, working folders, Git branches and commits, and GitHub repositories. Requests stay bound to the selected Chrome conversation; native pickers and Git confirmations appear in VS Code, and long operations do not block Stop.
+- **Chat alongside websites in Chrome**: connect the AI Browser side panel to a local editor window with **Connect** and **Allow**. Send messages, stop generation, respond to approvals and choose a model without leaving Chrome.
+- **A conversation stays selected**: switching editor tabs does not change the conversation in Chrome. Drafts stay separate, pending sends retry without duplication, and mirrored editor tabs have an animated gradient underline with reduced-motion support.
+- **Page context from the + menu**: attach elements, visible-page screenshots, page addresses, shared pages, files and short screen or tab recordings. Clipboard files remain attached to their original conversation when switching chats.
+- **The same annotation overlay in Chrome**: edit numbered notes on page elements and let agents list, read, add or remove them through MCP. Access is granted per conversation; delivered user markers are removed after sending.
+- **Compatibility by feature**: different extension releases can work together. An incompatible optional function shows an update instruction while compatible functions stay available; unsupported outgoing attachments return to the draft.
+- **Chrome distribution**: matching icons with clearer toolbar artwork, English interface and help, store description and permission explanations, plus `npm run package-chrome` to build the ZIP.
+- **Stop cancels pending starts**: stopping while an asynchronous Git check is pending prevents the waiting message from starting afterward.
+
 ## 0.8.7 — 2026-10-21
 - **Chrome without native Browser API setup**: use Google Chrome and agents immediately. The chat’s **+** and browser menus also offer native tabs where available, with an action to enable the API and instructions to quit and reopen the editor.
 - **Chrome tab fixes**: opening Chrome attaches the requested new tab instead of an existing page. Sharing, screenshots, element picks, annotations and video recording now handle Chrome tabs without relying on native browser events.

@@ -65,6 +65,7 @@ export interface StoredChat {
 }
 
 export interface Attachment {
+	readonly chromeAnnotation?: { readonly tabId: number; readonly url: string; readonly id: string; readonly chatId: string };
 	readonly chip: AttachmentChip;
 	readonly text?: string;
 	readonly image?: TurnImage;
@@ -545,7 +546,12 @@ export class ChatTab {
 		this._unseen = false;
 	}
 
+	private _stopGeneration = 0;
+	/** Invalidates sends which have not reached a session yet, e.g. while waiting for Git. */
+	public get stopGeneration(): number { return this._stopGeneration; }
+
 	public stop(): void {
+		this._stopGeneration++;
 		// A failed start request may reject after Stop, without a terminal event.
 		for (const pending of this._pending) { pending.retryCancelled = true; }
 		if (this._retry) {

@@ -6,6 +6,9 @@ media/codicon.css.map
 
 # Build output
 out/
+chrome-extension/dist/
+chrome-extension/*.zip
+chrome-extension/*.zip.tmp
 node_modules/
 
 # Marketplace stub build artifacts

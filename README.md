@@ -48,6 +48,14 @@ and this mode runs from a local editor window.
 
 [![Step-by-step setup: install, enable the browser API, open a page, connect Claude Code or Codex](ai-browser-instruct.jpg)](https://raw.githubusercontent.com/Denis-Davidoff/vs-code-tab-browser-ultimate/main/ai-browser-instruct.jpg)
 
+The experimental **Chrome chat side panel** can display a live conversation and its
+settings from a local editor window, without chat tabs. See
+[installation and current limits](chrome-extension/README.md). It uses the same chat
+interface and editor theme, with messages, Stop, approvals, model selection and chat settings.
+Choose **Connect** in Chrome and **Allow** in the editor chat to pair without copying codes.
+
+See the [Privacy Policy](PRIVACY.md) for data handling, storage and provider sharing.
+
 ## 💻 Continue a chat in a terminal
 
 Choose **Continue in terminal** from a chat tab's right-click menu or the chat command
@@ -84,6 +92,25 @@ visible while recording. Files are temporary until saved; agents receive a file 
 For limits, settings and technical details, see [CLAUDE.md](CLAUDE.md#browser-video-recording).
 
 ## 📝 Changelog
+
+**0.8.9** — Popups and tooltips stay within the visible chat area, including narrow
+Chrome side panels, and adjust when the panel or content changes size. Chrome video
+recording has a timer and Pause/Resume/Stop controls above the composer; Chrome's
+Stop sharing control also ends recording. The Chrome footer supports usage and context,
+skills, working folders, Git branches and commits, and GitHub repositories, with
+conversation-bound action results and replay protection for project attachments.
+Reconnects preserve command receipts; uncertain sends after an editor restart return
+to drafts for review. Subtask failures settle their status, and a watchdog checks
+quiet agents without terminating genuinely active work.
+
+**0.8.8** — Continue an editor conversation in Chrome's side panel with quick pairing,
+conversation selection, separate drafts, messages, Stop, approvals and model settings.
+Attach page elements, screenshots, annotations, page links, files and short recordings;
+agents can manage enabled Chrome annotations through MCP. Mirrored editor tabs have an
+animated gradient underline. The Chrome footer supports usage, context, skills, working
+folders, Git branches and commits, and GitHub repositories. Compatibility is checked per feature, and the Chrome UI
+and help are in English. Includes matching Chrome icons, store listing text and
+`npm run package-chrome` for creating an installable ZIP.
 
 **0.8.7** — Chrome and agents work without the native Browser API. The chat’s **+** and
 browser menus offer Chrome and, where available, native tabs with one-click API setup.

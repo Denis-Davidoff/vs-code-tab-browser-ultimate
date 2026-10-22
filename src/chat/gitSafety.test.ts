@@ -146,3 +146,27 @@ test('background toolbar skills use the same Git launch guard as composer sends'
 	await run.call(host, 'skill', {}, 'tab');
 	assert.equal(started, true);
 });
+
+test('Stop cancels a Chrome send waiting behind a push, and a later send can still start', async () => {
+	const access = new GitAccess(async () => 'same-worktree');
+	// Push/publish can hold the Git lock while this conversation's agent runs.
+	const release = await access.mutate('/repo', () => []);
+	let running = true, launches = 0;
+	const tab = { id: 'tab', chat: {}, cwd: '/repo', started: true, _stopGeneration: 0, _pending: [],
+		get stopGeneration() { return this._stopGeneration; },
+		_session: { stop() { running = false; } },
+		push() {}, async send() { launches++; return true; } };
+	const host = { _tabs: [tab], _active: tab, _disposed: false, _gitAccess: access, _blocked: () => false,
+		_registry: { detecting: false, backend: () => ({}) }, _selection: () => ({ agent: 'codex', model: 'selected' }),
+		_saveTabs() {}, _removeSentAnnotations() {} };
+	const send = method(view, '_send');
+	const pending = send.call(host, 'Chrome follow-up', 'tab', []);
+	await Promise.resolve();
+	assert.equal(running, true, 'the running turn makes Stop available');
+	method('src/chat/chatTab.ts', 'stop').call(tab);
+	assert.equal(running, false);
+	release(); await pending;
+	assert.equal(launches, 0, 'a send which was still waiting must not restart the stopped agent');
+	await send.call(host, 'new message after Stop', 'tab', []);
+	assert.equal(launches, 1);
+});

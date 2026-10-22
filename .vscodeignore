@@ -2,6 +2,7 @@ src/**
 # The MPL-2.0 file ships in source form beside its compiled copy (MPL §3.2(a)).
 !src/logins/loginFormScript.ts
 preview-src/**
+chrome-extension/**
 tsconfig*.json
 **/*.tsbuildinfo
 esbuild*.mts

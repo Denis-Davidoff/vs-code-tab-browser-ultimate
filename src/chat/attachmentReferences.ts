@@ -41,6 +41,12 @@ export function attachmentReference(chip: AttachmentChip): string {
 	return reference;
 }
 
+/** Retain a validated reference from another surface's draft, including gaps after removal. */
+export function bindAttachmentReference(chip: AttachmentChip, reference: string): void {
+	if (!/^@[1-9][0-9]{0,5}$/.test(reference)) { throw new Error('Invalid attachment reference'); }
+	references.set(chip, reference);
+}
+
 /** A refreshed chip is still the same logical attachment in the user's draft. */
 export function preserveAttachmentReference(previous: AttachmentChip, next: AttachmentChip): void {
 	references.set(next, attachmentReference(previous));

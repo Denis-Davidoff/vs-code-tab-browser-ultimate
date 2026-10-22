@@ -1,4 +1,5 @@
 import { configureTemporaryFiles } from './core/temporaryFiles';
+import { registerChromeChat } from './chat/chromeChatSetup';
 import { privateTempDirectory } from './core/safeFiles';
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
@@ -679,6 +680,7 @@ export function activate(context: vscode.ExtensionContext) {
 		deserializeWebviewPanel: async (panel, state) => { chat.restoreChatPanel(panel, state); },
 	}));
 	configureTemporaryFiles(() => privateTempDirectory('inventory'), () => chat.temporaryProject);
+	registerChromeChat(context);
 	chatPort.target = ChatViewProvider.mcpControl();
 	recording.destination = chatId => chat.recordingDestination(chatId);
 	recording.project = chatId => chat.recordingProject(chatId);

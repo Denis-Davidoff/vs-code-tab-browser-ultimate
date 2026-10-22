@@ -154,7 +154,7 @@ async function pickLanguage(recent: readonly Language[], page: string): Promise<
 	const typed = await vscode.window.showInputBox({
 		title: vscode.l10n.t("Translate Page — {0}", page),
 		prompt: vscode.l10n.t("The language to translate into, in any spelling the assistant will understand"),
-		placeHolder: vscode.l10n.t("e.g. Georgian, Brazilian Portuguese, українська"),
+		placeHolder: vscode.l10n.t("e.g. Georgian, Brazilian Portuguese, Ukrainian"),
 		ignoreFocusOut: true,
 		validateInput: value => languageNameProblem(value),
 	});

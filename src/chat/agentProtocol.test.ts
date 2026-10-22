@@ -1266,3 +1266,19 @@ suite('Gemini CLI errors', () => {
 		assert.match(geminiExitText('The process was stopped (SIGKILL).', false), /stopped.*next message starts it again/);
 	});
 });
+
+test('Codex child failures and non-retrying errors settle the subtask with its actual reason', () => {
+  const message = 'You have hit your usage limit.';
+  for (const [method, params] of [
+    ['turn/completed', { turn: { status: 'failed', error: { message } } }],
+    ['error', { error: { message }, willRetry: false }],
+  ] as const) {
+    const [event] = codexAgentThreadEvents('child-thread', method, params);
+    assert.strictEqual(event.type, 'toolUpdate');
+    if (event.type === 'toolUpdate') {
+      assert.strictEqual(event.id, 'child-thread'); assert.strictEqual(event.update.status, 'failed');
+      assert.strictEqual(event.update.output, message);
+    }
+  }
+  assert.deepStrictEqual(codexAgentThreadEvents('child-thread', 'error', { error: { message: 'Retrying transport' }, willRetry: true }), []);
+});

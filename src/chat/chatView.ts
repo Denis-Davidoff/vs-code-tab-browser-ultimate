@@ -1,4 +1,9 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { chromeChatCommandFeature } from './chromeChatCompatibility';
 import { ChatPanelCatalog } from './chatPanelCatalog';
+import { ChatStateSurfaces, type ChatStateSurface } from './chatSurface';
+import type { ChromeElementAttachment } from './chromeChatProtocol';
+import { bindAttachmentReference } from './attachmentReferences';
 import { readChatPanelIdentity, type ChatPanelIdentity } from './chatPanelState';
 import { comparablePath, trackTemporaryFile, temporaryStorage } from '../core/temporaryFiles';
 import { featureAgent, featureAiKey, defaultFeaturePrompts, featureEffort, readFeatureAiSettings, type AiFeature } from './featureAi';
@@ -54,6 +59,7 @@ import { savePng } from '../browser/clipboardImage';
 import type { BrowserController } from '../browser/browserController';
 import { tabs as tabSource } from '../browser/tabSource';
 import type { AnnotationChange } from '../browser/pageAnnotations';
+import { chromeAnnotationSessions } from '../browser/chromeAnnotationSessions';
 import type { PageAnnotation } from '../browser/annotationData';
 import type {
 	AgentId, AgentUsage, ApprovalMode, AttachmentChip, AttachmentKind, ChatSummary, GitCommitState,
@@ -343,6 +349,170 @@ function pushKey(action: string, branch: string, remote: string, target: string,
 }
 
 export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
+	private static _chromeConnectionRequest?: { id: string; extensionId: string; finish: (source?: string) => void };
+
+	public static requestChromeConnection(id: string, extensionId: string, signal: AbortSignal): Promise<string | undefined> {
+		if (signal.aborted || this._chromeConnectionRequest) { return Promise.resolve(undefined); }
+		return new Promise(resolve => {
+			const aborted = () => finish();
+			const finish = (source?: string) => {
+				if (this._chromeConnectionRequest?.id !== id) { return; }
+				this._chromeConnectionRequest = undefined;
+				signal.removeEventListener('abort', aborted);
+				for (const view of this._surfaces.values()) { view._post(); }
+				resolve(source);
+			};
+			this._chromeConnectionRequest = { id, extensionId, finish };
+			signal.addEventListener('abort', aborted, { once: true });
+			for (const view of this._surfaces.values()) { view._post(); }
+		});
+	}
+	private readonly _stateSurfaces = new ChatStateSurfaces();
+	private _themeTokens?: Record<string, string>;
+
+	public static chromeSources(): { id: string; label: string; description: string }[] {
+		return [...this._surfaces.values()].filter(view => !view._disposed && !!view._view).map(view => ({
+			id: view._surfaceId, label: view._surfaceLabel(), description: view._active.chat.title,
+		}));
+	}
+
+	/** The panel holding a conversation, else the side bar's, else any open one: where a resumed Chrome goes. */
+	public static chromeSourceFor(chatId: string | undefined, holding = false): string | undefined {
+		const open = [...this._surfaces.values()].filter(view => !view._disposed && !!view._view);
+		const owner = (chatId ? open.find(view => view._tabs.some(tab => tab.chat.id === chatId)) : undefined)?._surfaceId;
+		if (holding) { return owner; }
+		return owner
+			?? open.find(view => !view._panelIdentity)?._surfaceId ?? open[0]?._surfaceId;
+	}
+
+	public static observeChromeSource(id: string, surface: ChatStateSurface): vscode.Disposable {
+		const view = this._surfaces.get(id);
+		if (!view || view._disposed || !view._view) { throw new Error('The source chat is no longer open'); }
+		return view._stateSurfaces.attach(surface, chatId => view._stateFor(chatId), () => view._post());
+	}
+
+	public static async commandChromeSource(id: string, chatId: string, message: ViewToHost, picked: readonly ChromeElementAttachment[] = [], reply?: (message: HostToView, chatId?: string) => void): Promise<void> {
+		const view = this._surfaces.get(id);
+		// Chrome addresses the conversation it shows, which need not be the tab in front.
+		const tab = view && !view._disposed && view._view ? view._tabs.find(t => t.chat.id === chatId) : undefined;
+		if (!view || !tab) {
+			throw new Error('This conversation was closed in the editor. Pick another one.');
+		}
+		const blocked = view._blocked();
+		if (blocked) { throw new Error(blocked); }
+		if (chromeChatCommandFeature(message) !== 'chat') {
+			await view._receiveChromeFooter(tab, message, reply); return;
+		}
+		if (message.type === 'send') {
+			const stopGeneration = tab.stopGeneration;
+			const attachments: Attachment[] = await Promise.all(picked.map(async element => {
+				const chip = { id: element.id, kind: element.kind ?? 'element' as const, label: element.label };
+				bindAttachmentReference(chip, element.reference);
+				if (!element.file) { return { chip, text: element.text, ...(element.annotation ? { chromeAnnotation: { ...element.annotation, chatId } } : {}) }; }
+				const data = Buffer.from(element.file.base64, 'base64');
+				if (data.toString('base64') !== element.file.base64) { throw new Error('Invalid attachment data.'); }
+				const project = view._workdir(tab);
+				const saved = await writeExclusive(await projectTempDirectory(project, 'files'), `${generateUuid()}-${pastedFileName(element.file.name)}`, data);
+				await trackTemporaryFile(saved, project);
+				const imageType = pastedImageType(element.file.name, element.file.mime);
+				return { chip, file: vscode.Uri.file(saved), text: `${element.text}\nAttached file: ${saved}`,
+					image: imageType ? { mediaType: imageType, base64: element.file.base64 } : undefined };
+			}));
+			if (!view._tabs.includes(tab) || tab.chat.id !== chatId) { throw new Error('The destination chat is no longer open.'); }
+			if (tab.stopGeneration !== stopGeneration) { throw new Error('The message was cancelled by Stop.'); }
+			const selection = view._selection(tab);
+			if (view._registry.detecting || !selection.agent || !selection.model || !view._registry.backend(selection.agent)) {
+				throw new Error('Wait for an available agent and model in the editor.');
+			}
+			// Chrome has its own draft: never consume the editor's unsent attachments.
+			void view._rememberInput(message.text);
+			if (message.mode === 'queue' || tab.pendingSends.length || tab.paused) {
+				tab.enqueue(message.text, attachments);
+				view._drainQueues();
+			} else {
+				// Acceptance must not block Stop or an approval while a CLI is starting.
+				void view._send(message.text, tab.id, attachments).catch(error => {
+					tab.push({ kind: 'error', text: error instanceof Error ? error.message : String(error) });
+					tab.push({ kind: 'notice', text: `Not sent: ${message.text}` });
+				});
+			}
+		} else if (message.type === 'stop') {
+			view._stopTab(tab);
+		} else if (message.type === 'select' && tab !== view._active) {
+			if (message.selection.agent && message.selection.agent !== view._selection(tab).agent && tab.started) {
+				throw new Error('Switch this conversation to another agent in the editor.');
+			}
+			view._asActive(tab, () => view._select(message.selection));
+		} else if (message.type === 'switchAgent' && tab !== view._active) {
+			throw new Error('Answer this in the editor.');
+		} else {
+			await view._receive(message);
+		}
+		view._postMessage({ type: 'state', state: view._state() });
+	}
+
+
+	private readonly _chromeCommand = new AsyncLocalStorage<{ tab: ChatTab; chatId: string; reply?: (message: HostToView, chatId?: string) => void }>();
+
+	/** Async request scope keeps folder/skill/Git actions bound to Chrome's conversation. */
+	private async _receiveChromeFooter(tab: ChatTab, message: ViewToHost, reply?: (message: HostToView, chatId?: string) => void): Promise<void> {
+		if ('tabId' in message && message.tabId !== undefined && message.tabId !== tab.id) { throw new Error('The destination conversation changed. Try again.'); }
+		const scope = { tab, chatId: tab.chat.id, reply };
+		await this._chromeCommand.run(scope, async () => {
+			const target = message.type === 'runToolbarSkill' ? { ...message, tabId: tab.id } : message;
+			if (target.type === 'refreshWorkdirGit') {
+				const folder = this._workdir(tab);
+				if (folder) { await this._readWorkdirGit(folder); }
+			} else if (target.type === 'attachPath') {
+				const folder = this._workdir(tab);
+				if (!folder || !target.path || /[\0\r\n]/.test(target.path)) { throw new Error('Invalid project path.'); }
+				const file = path.resolve(folder, target.path), relative = path.relative(folder, file);
+				if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) { throw new Error('Select a path inside the working folder.'); }
+				const stat = await fs.promises.stat(file);
+				if (!this._tabs.includes(tab) || tab.chat.id !== scope.chatId || this._workdir(tab) !== folder) { throw new Error('The destination conversation changed. Select the file again.'); }
+				reply?.({ type: 'chromeAttachment', label: `${path.basename(file)}${stat.isDirectory() ? '/' : ''}`, text: `Attached ${stat.isDirectory() ? 'folder' : 'file'}: ${file}` }, tab.chat.id);
+			} else { await this._receive(target); }
+		});
+		this._postMessage({ type: 'state', state: this._state() });
+		if (scope.tab !== tab) { reply?.({ type: 'focusInput' }, scope.tab.chat.id); }
+	}
+
+	/**
+	 * The state of one conversation of this panel as if it were in front, for a
+	 * surface pinned to it. Synchronous, so nothing else can see the swap; it
+	 * does not mark the tab read, since nobody in the editor is looking at it.
+	 */
+	private _stateFor(chatId?: string): ChatViewState {
+		const tab = chatId ? this._tabs.find(t => t.chat.id === chatId) : undefined;
+		if (!tab || tab === this._active) { return this._state(); }
+		return this._asActive(tab, () => this._state());
+	}
+
+	/**
+	 * Stop is for everything this tab was going to do: the queue does not go
+	 * out after it. What was queued comes back to the box, attachments with it,
+	 * to send or drop.
+	 */
+	private _stopTab(tab: ChatTab): void {
+		this._giveBackQueue(tab);
+		tab.stop();
+		// A skill sent into this tab was stopped by the user, not ended: no notification.
+		for (const run of [...this._chatSkillTabs.values()].flat()) {
+			if (run.tab === tab) {
+				run.stopped = true;
+			}
+		}
+		this._post();
+	}
+
+	private _peeking = false;
+	/** Runs a synchronous step with `tab` in front, then puts the real one back. */
+	private _asActive<T>(tab: ChatTab, run: () => T): T {
+		const active = this._active, peeking = this._peeking, switchTo = this._switchTo;
+		this._active = tab; this._peeking = true; this._switchTo = undefined;
+		try { return run(); }
+		finally { this._active = active; this._peeking = peeking; this._switchTo = this._switchTo ?? switchTo; }
+	}
 	private static readonly _terminalSessions = new Map<string, vscode.Terminal>();
 	private static readonly _surfaces = new Map<string, ChatViewProvider>();
 	private static _sharedServices?: ChatServices;
@@ -674,6 +844,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}, undefined, this._subscriptions);
 		view.onDidDispose(() => {
 			if (this._view === view) {
+				this._stateSurfaces.dispose();
 				this._view = undefined;
 				for (const surface of ChatViewProvider._surfaces.values()) { surface._post(); }
 				this._viewReady = false;
@@ -753,6 +924,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	private _postMessage(message: HostToView): void {
+		const command = this._chromeCommand?.getStore();
+		if (command && message.type !== 'state') {
+			if (this._tabs.includes(command.tab) && command.tab.chat.id === command.chatId) { command.reply?.(message, command.chatId); }
+			return;
+		}
+		if (message.type === 'state') {
+			const shown = message.state.chatId;
+			this._stateSurfaces.publish(chatId => !chatId || chatId === shown ? message.state : this._stateFor(chatId));
+		}
 		if (!this._view || !this._viewReady) {
 			// `workdirGit` is a snapshot, not an event: a stale one is worth
 			// nothing to a view that asks for its own on `ready`, and queued it
@@ -785,6 +965,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	private _post(): void {
+		if (this._chromeCommand?.getStore()) { this._chromeCommand.exit(() => this._post()); return; }
 		if (this._disposed) { return; }
 		if (this._postTimer) {
 			return;
@@ -807,16 +988,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	private _state(): ChatViewState {
+		if (this._chromeCommand?.getStore()) { return this._chromeCommand.exit(() => this._state()); }
 		// Whatever the tab in front finished is read once the view shows it. A
 		// view in another side bar container, or collapsed, is not looked at.
-		if (this._view?.visible) {
+		if (this._view?.visible && !this._peeking) {
 			this._active.seen();
 		}
+		const mirrored = this._stateSurfaces.chatIds(this._active.chat.id);
 		const limit = tabLimit();
 		const selection = this._selection();
 		const viewMode = readViewMode();
 		this._active.attachmentReferences.assign(this._active.attachments.map(a => a.chip));
 		return {
+			chromeConnectionRequest: ChatViewProvider._chromeConnectionRequest ? {
+				id: ChatViewProvider._chromeConnectionRequest.id, extensionId: ChatViewProvider._chromeConnectionRequest.extensionId,
+			} : undefined,
+			themeTokens: this._themeTokens,
+			themeKind: vscode.window.activeColorTheme.kind,
 			panel: this._panelIdentity,
 			surfaceId: this._surfaceId,
 			dragToken: this._dragToken,
@@ -853,7 +1041,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				busy: tab.busy,
 				queued: tab.queuedCount,
 				status: tab.status,
+				...(mirrored.has(tab.chat.id) ? { chrome: true } : {}),
 			})),
+			...(mirrored.has(this._active.chat.id) && !this._peeking ? { chromeMirror: true } : {}),
 			activeTab: this._active.id,
 			tabLimit: limit,
 			approvals: { policy: this._approvalPolicy(), servers: this._approvalServers() },
@@ -930,6 +1120,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 	private async _receive(message: ViewToHost): Promise<void> {
 		switch (message.type) {
+			case 'answerChromeConnection':
+				if (ChatViewProvider._chromeConnectionRequest?.id === message.id) {
+					ChatViewProvider._chromeConnectionRequest.finish(message.allow === true ? this._surfaceId : undefined);
+				}
+				return;
+			case 'reportTheme': {
+				if (!message.tokens || typeof message.tokens !== 'object') { return; }
+				this._themeTokens = Object.fromEntries(Object.entries(message.tokens).slice(0, 2000).filter(([key, value]) =>
+					/^--vscode-[a-zA-Z0-9-]+$/.test(key) && typeof value === 'string' && value.length < 500 && !/[;{}]/.test(value) && !/url\(/i.test(value)));
+				this._post(); return;
+			}
 			case 'controlRecording':
 				await this._recording?.control(message.action);
 				return;
@@ -1163,22 +1364,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				this._tabs.find(t => t.id === message.tabId)?.resume();
 				this._drainQueues();
 				return;
-			case 'stop': {
-				const tab = this._active;
-				// Stop is for everything this tab was going to do: the queue does
-				// not go out after it. What was queued comes back to the box,
-				// attachments with it, to send or drop.
-				this._giveBackQueue(tab);
-				tab.stop();
-				// A skill sent into this tab was stopped by the user, not ended: no notification.
-				for (const run of [...this._chatSkillTabs.values()].flat()) {
-					if (run.tab === tab) {
-						run.stopped = true;
-					}
-				}
-				this._post();
+			case 'stop':
+				this._stopTab(this._active);
 				return;
-			}
 			case 'openDiff':
 				await this._openDiff(message.name, message.diff);
 				return;
@@ -1840,7 +2028,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 * lists or an effort the model does not take falls back rather than being
 	 * sent to a CLI that would refuse it.
 	 */
-	private _selection(tab = this._active): Selection {
+	private _selection(tab = (this._chromeCommand?.getStore()?.tab ?? this._active)): Selection {
 		const agents = this._registry.agents;
 		const available = agents.filter(a => a.available);
 		const agent = tab.started
@@ -1916,6 +2104,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			return;
 		}
 		const chat = tab.chat;
+		const stopGeneration = tab.stopGeneration;
 		// Sent while the agents were still being looked for: wait for the answer
 		// rather than refuse. Refusing lost the message — the webview clears its
 		// draft on send — and told the user to install an agent that was there.
@@ -1925,6 +2114,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			// been replaced, or been given another chat from the history. Sent
 			// anyway, the message went into a conversation it was not written for,
 			// or started a CLI for a tab nothing showed or could stop (#339).
+			if (tab.stopGeneration !== stopGeneration) { return; }
 			if (!this._tabs.includes(tab) || tab.chat !== chat) {
 				if (step && this._tabs.includes(tab)) {
 					tab.dropSteps(step.chain);
@@ -1967,7 +2157,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}
 		try {
 			await this._gitAccess.launch(tab.cwd,
-				() => !this._disposed && this._tabs.includes(tab) && tab.chat === chat,
+				() => !this._disposed && this._tabs.includes(tab) && tab.chat === chat && tab.stopGeneration === stopGeneration,
 				async () => {
 					const attachments = given ?? tab.attachments;
 					if (!text.trim() && !attachments.length) {
@@ -1990,6 +2180,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 					if (delivered) { this._removeSentAnnotations(attachments); }
 				}, queued);
 		} catch (error) {
+			if (tab.stopGeneration !== stopGeneration) { return; }
 			if (this._tabs.includes(tab) && tab.chat === chat) {
 				tab.push({ kind: 'error', text: error instanceof Error ? error.message : String(error) });
 				if (step) { tab.stepNotSent(step, 'Git is updating the repository'); }
@@ -2686,6 +2877,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 * other chat tabs hold for them and drops their links (`_onAnnotations`).
 	 */
 	private _removeSentAnnotations(attachments: readonly Attachment[]): void {
+		for (const item of attachments) {
+			if (item.chromeAnnotation) {
+				try { void chromeAnnotationSessions.removeSent(item.chromeAnnotation).catch(error => refuse(`Could not remove the sent Chrome annotation: ${String(error)}`)); }
+				catch (error) { refuse(`Could not remove the sent Chrome annotation: ${String(error)}`); }
+			}
+		}
 		const sent = new Set(attachments.filter(a => a.chip.kind === 'annotation').map(a => a.chip.id));
 		if (!sent.size) { return; }
 		const byPage = new Map<vscode.BrowserTab, string[]>();
@@ -3113,7 +3310,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 	private async _usage(): Promise<void> {
 		const agents = this._registry.agents.filter(a => a.available);
-		const stats = this._active.started ? { ...this._active.chat.stats } : undefined;
+		const stats = (this._chromeCommand?.getStore()?.tab ?? this._active).started ? { ...(this._chromeCommand?.getStore()?.tab ?? this._active).chat.stats } : undefined;
 		this._postMessage({ type: 'usage', usage: [], stats, loading: true });
 		const usage = await Promise.all(agents.map(async a => {
 			const backend = this._registry.backend(a.id);
@@ -3358,7 +3555,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	/** The folder the tab in front works in; undefined is the home directory, with no project. */
-	private _workdir(tab = this._active): string | undefined {
+	private _workdir(tab = (this._chromeCommand?.getStore()?.tab ?? this._active)): string | undefined {
+		const command = this._chromeCommand?.getStore();
+		if (command?.tab === tab && (!this._tabs.includes(tab) || tab.chat.id !== command.chatId)) { return undefined; }
 		return tab.chat.folder ?? this._workspaceFolders()[0]?.path;
 	}
 
@@ -3493,7 +3692,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				this._runWorkdirGit(git, ['config', '--get-regexp', '^remote\\..*\\.url$'], folder, 15_000).catch(() => ''),
 			]);
 			const status = parseGitStatus(output);
-			const decorated = this._view ? await themedGitFiles(status, this._view.webview, vscode.Uri.joinPath(this._context.extensionUri, 'media'), vscode.Uri.file(folder)) : status;
+			const decorated = this._view && !this._chromeCommand?.getStore() ? await themedGitFiles(status, this._view.webview, vscode.Uri.joinPath(this._context.extensionUri, 'media'), vscode.Uri.file(folder)) : status;
 			const branches = parseGitBranches(current, refs, urls);
 			this._postMessage({ type: 'workdirGit', folder, status: decorated, branches: { ...branches, ...this._pullRequestFor(branches), savedStash: this._branchStashes.get(folder)?.at(-1) } });
 		} catch (error) {
@@ -3504,7 +3703,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private async _openGitDiff(message: Extract<ViewToHost, { type: 'openGitDiff' }>): Promise<void> {
 		const { folder, tabId, staged } = message;
 		const tab = this._tabs.find(t => t.id === tabId);
-		const current = () => !this._disposed && !this._blocked() && !!tab && tab === this._active && folder === this._workdir(tab);
+		const current = () => !this._disposed && !this._blocked() && !!tab && tab === (this._chromeCommand?.getStore()?.tab ?? this._active) && folder === this._workdir(tab);
 		if (typeof folder !== 'string' || typeof message.path !== 'string' || typeof staged !== 'boolean' || !current()) { return; }
 		try {
 			const git = await gitBinary();
@@ -3539,7 +3738,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		const tab = this._tabs.find(t => t.id === message.tabId);
 		let error: string | undefined;
 		try {
-			if (!tab || tab !== this._active || typeof folder !== 'string' || this._workdir(tab) !== folder
+			if (!tab || tab !== (this._chromeCommand?.getStore()?.tab ?? this._active) || typeof folder !== 'string' || this._workdir(tab) !== folder
 				|| !['stage', 'unstage'].includes(action) || (message.path !== undefined && typeof message.path !== 'string')) {
 				throw new Error('The working folder changed. Open Git changes again.');
 			}
@@ -3548,7 +3747,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			if (!git) { throw new Error('Git is unavailable.'); }
 			await this._withGitMutation(folder, async () => {
 				const current = () => {
-					if (!this._tabs.includes(tab) || tab !== this._active || this._workdir(tab) !== folder) {
+					if (!this._tabs.includes(tab) || tab !== (this._chromeCommand?.getStore()?.tab ?? this._active) || this._workdir(tab) !== folder) {
 						throw new Error('The working folder changed. Open Git changes again.');
 					}
 				};
@@ -3567,7 +3766,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 	private async _commitWorkdir(folder: string, tabId: string, scope: 'staged' | 'all' = 'staged'): Promise<void> {
 		const tab = this._tabs.find(t => t.id === tabId);
-		if (typeof folder !== 'string' || !tab || tab !== this._active || this._workdir(tab) !== folder || !['staged', 'all'].includes(scope)) { return; }
+		if (typeof folder !== 'string' || !tab || tab !== (this._chromeCommand?.getStore()?.tab ?? this._active) || this._workdir(tab) !== folder || !['staged', 'all'].includes(scope)) { return; }
 		const previous = this._gitCommits.get(folder)?.state.phase;
 		if (previous === 'generating' || previous === 'committing') { return; }
 		const job: GitCommitJob = {
@@ -3630,7 +3829,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private async _answerCommit(message: Extract<ViewToHost, { type: 'fixGitCommit' | 'dismissGitCommit' }>): Promise<void> {
 		const tab = this._tabs.find(t => t.id === message.tabId);
 		const job = this._gitCommits.get(message.folder);
-		if (!tab || tab !== this._active || this._workdir(tab) !== message.folder || !job || job.state.id !== message.id
+		if (!tab || tab !== (this._chromeCommand?.getStore()?.tab ?? this._active) || this._workdir(tab) !== message.folder || !job || job.state.id !== message.id
 			|| (job.state.phase !== 'error' && job.state.phase !== 'done')) { return; }
 		if (message.type === 'dismissGitCommit') {
 			this._gitCommits.delete(message.folder); this._post(); return;
@@ -3645,7 +3844,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
  private async _suggestBranchName(message: Extract<ViewToHost, { type: 'gitBranchName' }>): Promise<void> {
   const tab = this._tabs.find(t => t.id === message.tabId);
-  if (!tab || tab !== this._active || message.folder !== this._workdir(tab) || this._blocked()) { return; }
+  if (!tab || tab !== (this._chromeCommand?.getStore()?.tab ?? this._active) || message.folder !== this._workdir(tab) || this._blocked()) { return; }
   const controller = new AbortController();
   this._branchNameRequests.get(tab)?.abort();
   this._branchNameRequests.set(tab, controller);
@@ -4010,7 +4209,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 * same consent opening it as a VS Code window would be, and the chat refuses
 	 * in Restricted Mode as before.
 	 */
-	private async _setWorkdir(folder: string | undefined, remember = true, from: ChatTab = this._active): Promise<ChatTab | undefined> {
+	private async _setWorkdir(folder: string | undefined, remember = true, from: ChatTab = (this._chromeCommand?.getStore()?.tab ?? this._active)): Promise<ChatTab | undefined> {
 		const blocked = this._blocked();
 		if (blocked) {
 			refuse(blocked);
@@ -4031,8 +4230,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				folder = undefined;
 			}
 		}
+		if (this._chromeCommand?.getStore() && (!this._tabs.includes(from) || from.chat.id !== this._chromeCommand.getStore()!.chatId)) { throw new Error('The destination conversation was closed.'); }
 		// The tab asked for, unless it closed meanwhile (a clone takes minutes).
-		let tab = this._tabs.includes(from) ? from : this._active;
+		let tab = this._tabs.includes(from) ? from : (this._chromeCommand?.getStore()?.tab ?? this._active);
 		if (tab.chat.folder === folder && !tab.chat.copy) {
 			return tab;
 		}
@@ -4062,7 +4262,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 	/** "Choose folder…": the system's folder dialog — native, so it pauses no browser tab. */
 	private async _chooseWorkdir(): Promise<void> {
-		const current = this._workdir();
+		const from = this._chromeCommand?.getStore()?.tab ?? this._active;
+		const current = this._workdir(from);
 		const picked = await vscode.window.showOpenDialog({
 			canSelectFiles: false,
 			canSelectFolders: true,
@@ -4073,7 +4274,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		});
 		const uri = picked?.[0];
 		if (uri?.scheme === 'file') {
-			await this._setWorkdir(uri.fsPath);
+			await this._setWorkdir(uri.fsPath, true, from);
 		}
 	}
 
@@ -4401,7 +4602,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			answer(vscode.l10n.t("git was not found. Install it — on macOS, the Command Line Tools — and try again."));
 			return;
 		}
-		let tab = this._active;
+		let tab = (this._chromeCommand?.getStore()?.tab ?? this._active);
+		const command = this._chromeCommand?.getStore();
+		if (command && (!this._tabs.includes(tab) || tab.chat.id !== command.chatId)) { throw new Error('The destination conversation changed.'); }
 		if (this._repoBusy.has(tab)) {
 			answer(vscode.l10n.t("This tab is still busy with {0}.", this._repoBusy.get(tab)!));
 			return;
@@ -4446,7 +4649,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 					// Sent from meanwhile, or closed: the copy goes to a tab of its own.
 					let target = tab;
 					if (!this._tabs.includes(target) || target.started) {
-						const opened = this._addTab(target.chat.agent, this._tabs.includes(target) ? target : this._active);
+						const opened = this._addTab(target.chat.agent, this._tabs.includes(target) ? target : (this._chromeCommand?.getStore()?.tab ?? this._active));
 						if (!opened) {
 							throw new Error(vscode.l10n.t("No tab to work in the copy: it is at {0}.", made.path));
 						}
@@ -4539,7 +4742,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			await vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: `$(github) ${doing}…` }, work);
 		} catch (err) {
 			const reason = err instanceof Error ? err.message : String(err);
-			(this._tabs.includes(tab) ? tab : this._active).push({ kind: 'error', text: vscode.l10n.t("GitHub: {0} failed — {1}", doing, reason) });
+			(this._tabs.includes(tab) ? tab : (this._chromeCommand?.getStore()?.tab ?? this._active)).push({ kind: 'error', text: vscode.l10n.t("GitHub: {0} failed — {1}", doing, reason) });
 			refuse(vscode.l10n.t("GitHub: {0} failed.", doing));
 		} finally {
 			this._repoBusy.delete(tab);
@@ -4579,7 +4782,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}
 		const git = await gitBinary();
 		if (!git || unavailable()) { return; }
-		await this._withGitMutation(folder, () => this._repoWork(this._active, vscode.l10n.t("removing repository copy"), async () => {
+		await this._withGitMutation(folder, () => this._repoWork(this._chromeCommand?.getStore()?.tab ?? this._active, vscode.l10n.t("removing repository copy"), async () => {
 			await removeStoredCopy(git, this._repoStorage(), folder);
 			this._forgetCopy(folder);
 			this._listings.delete(folder);
@@ -4589,7 +4792,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 	/** The folder button's actions on a separate copy of the tab in front. */
 	private async _repoAction(action: unknown): Promise<void> {
-		const tab = this._active;
+		const tab = (this._chromeCommand?.getStore()?.tab ?? this._active);
 		const copy = tab.chat.copy;
 		const folder = tab.chat.folder;
 		const repo = copy && parseRepo(copy.repo);
@@ -4810,7 +5013,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 	/** A new tab beside the one in front, and in front; refused past `tabLimit()`. */
 	/** `beside`: the tab it is opened next to and takes its folder from; the one in front unless said. */
-	private _addTab(agent: AgentId, beside: ChatTab = this._active): ChatTab | undefined {
+	private _addTab(agent: AgentId, beside: ChatTab = this._chromeCommand?.getStore()?.tab ?? this._active): ChatTab | undefined {
 		if (this._tabs.length >= tabLimit()) {
 			refuse(vscode.l10n.t("{0} chats are open — close one to open another.", this._tabs.length));
 			return undefined;
@@ -4824,8 +5027,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		const tab = new ChatTab(this._tabHost, chat);
 		const at = this._tabs.indexOf(beside);
 		this._tabs.splice((at >= 0 ? at : this._tabs.indexOf(this._active)) + 1, 0, tab);
-		this._active = tab;
-		this._switchTo = undefined;
+		const command = this._chromeCommand?.getStore();
+		if (command) { command.tab = tab; command.chatId = tab.chat.id; } else { this._active = tab; this._switchTo = undefined; }
 		this._post();
 		this._postMessage({ type: 'focusInput' });
 		return tab;
@@ -5276,7 +5479,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 */
 	private _cwd(): string {
 		// `_active` is set by `_restoreTabs`, after the registry that asks this is made.
-		const folder = (this._active as ChatTab | undefined)?.cwd;
+		const folder = ((this._chromeCommand?.getStore()?.tab ?? this._active) as ChatTab | undefined)?.cwd;
 		// Not a folder that is gone — a chat from the history, a removed copy:
 		// detection, the skills listing and Codex's one app-server start here,
 		// and a process spawned in a missing folder fails as "spawn … ENOENT",
@@ -5496,6 +5699,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 	public dispose(): void {
 		if (this._disposed) { return; }
+		this._stateSurfaces.dispose();
 		if (this._tabs.length) { this._saveTabs(); }
 		this._shuttingDown = !this._panelIdentity;
 		clearTimeout(this._draftSaveTimer);

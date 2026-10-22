@@ -20,6 +20,7 @@ import type { ClientKind } from '../mcp/mcpProtocol';
 import { translatorSource } from '../translate/translateScript';
 import { isLanguageCode, maxSingleSegment, pageTitle, type Replacement } from '../translate/translateText';
 import { plainInLabel } from '../core/notifyText';
+import { chromeAnnotationSessions } from './chromeAnnotationSessions';
 import { PageAnnotations, type AnnotationChange } from './pageAnnotations';
 import type { PageAnnotation } from './annotationData';
 
@@ -2122,6 +2123,7 @@ export class BrowserController implements vscode.Disposable {
 		if (!tabSource.available()) {
 			return {
 				available: false,
+				annotationTabs: chromeAnnotationSessions.visible(caller),
 				reason: 'Open Google Chrome with "AI Browser: Open in Google Chrome", or enable native browser tabs with '
 					+ '"AI Browser: Enable Integrated Browser API".',
 			};
@@ -2144,6 +2146,7 @@ export class BrowserController implements vscode.Disposable {
 		const bounded = assignment !== undefined || paused !== undefined;
 		return {
 			available: true,
+			annotationTabs: chromeAnnotationSessions.visible(caller),
 			// Assigned callers are told how many other tabs exist, not what
 			// they are: the page they were given is their scope, and every
 			// other address in the window — one-time links, tokens in a query
@@ -2170,6 +2173,7 @@ export class BrowserController implements vscode.Disposable {
 		if (!tabSource.available()) {
 			return {
 				available: false,
+				annotationTabs: chromeAnnotationSessions.visible(caller),
 				reason: 'Open Google Chrome with "AI Browser: Open in Google Chrome", or enable native browser tabs with '
 					+ '"AI Browser: Enable Integrated Browser API".',
 			};
@@ -2203,6 +2207,7 @@ export class BrowserController implements vscode.Disposable {
 			...(assignment && open.length > visible.length
 				? { otherTabsInWindow: open.length - visible.length }
 				: {}),
+			annotationTabs: chromeAnnotationSessions.visible(caller),
 			tabs: visible.map(tab => ({
 				id: this._tabIds.get(tab),
 				url: tab.url,
@@ -2888,19 +2893,23 @@ export class BrowserController implements vscode.Disposable {
 	}
 
 	public async annotationsGet(tabId: string | undefined, ids: readonly string[], caller: CallerIdentity): Promise<unknown> {
+		if (tabId?.startsWith('chrome-annotations:')) { return chromeAnnotationSessions.forTab(tabId, caller).get(tabId, ids, caller); }
 		return this._withNamedTab(caller, tabId, async (_session, tab) => this._annotations.get(tab, ids));
 	}
 
 	public async annotationsAdd(tabId: string | undefined, selector: string, text: string, color: string | undefined, caller: CallerIdentity): Promise<unknown> {
 		refuseValueProbe(selector);
+		if (tabId?.startsWith('chrome-annotations:')) { return chromeAnnotationSessions.forTab(tabId, caller).add(tabId, selector, text, color, caller); }
 		return this._withNamedTab(caller, tabId, (_session, tab) => this._annotations.add(tab, selector, text, color));
 	}
 
 	public async annotationsList(tabId: string | undefined, offset: number, limit: number, caller: CallerIdentity): Promise<unknown> {
+		if (tabId?.startsWith('chrome-annotations:')) { return chromeAnnotationSessions.forTab(tabId, caller).list(tabId, offset, limit, caller); }
 		return this._withNamedTab(caller, tabId, (_session, tab) => this._annotations.list(tab, offset, limit));
 	}
 
 	public async annotationsRemove(tabId: string | undefined, ids: readonly string[] | undefined, caller: CallerIdentity): Promise<unknown> {
+		if (tabId?.startsWith('chrome-annotations:')) { return chromeAnnotationSessions.forTab(tabId, caller).remove(tabId, ids, caller); }
 		return this._withNamedTab(caller, tabId, (_session, tab) => this._annotations.remove(tab, ids));
 	}
 

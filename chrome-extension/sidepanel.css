@@ -1,0 +1,74 @@
+/* The conversation itself uses the original media/chat.css and shared renderer. */
+:root {
+  color-scheme: dark;
+  --vscode-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --vscode-font-size: 13px;
+  --vscode-editor-font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --vscode-editor-font-size: 12px;
+  --vscode-sideBar-background: #181818;
+  --vscode-editor-background: #1f1f1f;
+  --vscode-foreground: #cccccc;
+  --vscode-descriptionForeground: #9d9d9d;
+  --vscode-input-background: #313131;
+  --vscode-input-foreground: #cccccc;
+  --vscode-input-border: #3c3c3c;
+  --vscode-input-placeholderForeground: #989898;
+  --vscode-focusBorder: #0078d4;
+  --vscode-button-background: #0078d4;
+  --vscode-button-foreground: #ffffff;
+  --vscode-button-hoverBackground: #026ec1;
+  --vscode-button-secondaryBackground: #313131;
+  --vscode-button-secondaryHoverBackground: #3c3c3c;
+  --vscode-menu-background: #1f1f1f;
+  --vscode-editorWidget-background: #202020;
+  --vscode-dropdown-background: #313131;
+  --vscode-dropdown-foreground: #cccccc;
+  --vscode-dropdown-border: #3c3c3c;
+  --vscode-textLink-foreground: #4daafc;
+  --vscode-textLink-activeForeground: #4daafc;
+  --vscode-list-hoverBackground: #2a2d2e;
+  --vscode-list-activeSelectionBackground: #04395e;
+  --vscode-list-activeSelectionForeground: #ffffff;
+  --vscode-list-inactiveSelectionBackground: #37373d;
+  --vscode-textCodeBlock-background: #242424;
+  --vscode-errorForeground: #f48771;
+  --vscode-widget-shadow: #00000066;
+}
+[hidden] { display: none !important; }
+body { display: flex; flex-direction: column; }
+#app { flex: 1; min-height: 0; height: auto; }
+#app .tab-strip { display: none !important; }
+.chrome-shell { font: 12px/1.5 var(--vscode-font-family); color: var(--fg); }
+header.chrome-shell { display: flex; align-items: center; gap: 10px; padding: 6px 12px; border-bottom: 1px solid var(--border); flex: none; }
+#status { color: var(--fg-3); flex: 1; }
+#status[data-state="error"] { color: var(--bad); }
+#disconnect { border: none; background: transparent; color: var(--fg-3); cursor: pointer; font: inherit; }
+#pairing { padding: 24px 18px; overflow: auto; }
+#pairing h2 { font-size: 17px; font-weight: 600; }
+#extension-id { display: block; padding: 10px; margin: 12px 0; background: var(--surface); user-select: all; overflow-wrap: anywhere; }
+#pairing label { display: block; margin-top: 16px; }
+#pairing textarea { width: 100%; box-sizing: border-box; margin: 8px 0 12px; background: var(--surface); color: var(--fg); border: 1px solid var(--border); border-radius: 8px; padding: 10px; font: inherit; }
+#pairing button { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 6px; padding: 8px 12px; cursor: pointer; }
+#pairing button:disabled { opacity: .6; cursor: wait; }
+#manual-pairing { margin-top: 22px; }
+#manual-pairing > summary { cursor: pointer; color: var(--fg-3); }
+#editor-sources { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+#element-picker-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 12px; background: var(--soft); border-bottom: 1px solid var(--accent); }
+#element-picker-status { flex: 1; }
+#element-picker-controls button { cursor: pointer; color: var(--fg); background: var(--surface); border: 1px solid var(--border); border-radius: 5px; padding: 5px 8px; }
+.chrome-element-preview { width: min(720px, 85vw); max-height: 80vh; overflow: auto; color: var(--fg); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; }
+.chrome-element-preview pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 var(--mono); }
+#conversation { min-width: 0; max-width: 45%; flex: 0 1 auto; color: var(--fg); background: var(--surface); border: 1px solid var(--border); border-radius: 5px; padding: 3px 6px; }
+#mode { cursor: pointer; display: inline-flex; align-items: center; gap: 5px; flex: none; font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); color: var(--fg); }
+#mode::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+#mode[data-mode="full"] { color: var(--vscode-charts-green, #3fb950); }
+#mode[data-mode="limited"] { color: var(--vscode-charts-yellow, #d29922); }
+#mode-details { padding: 8px 12px; background: var(--soft); border-bottom: 1px solid var(--border); font-size: 12px; line-height: 1.45; }
+#mode-details p { margin: 0; }
+/* The same fixed yellow as the chat's plan-limit line: black text stays readable in every theme. */
+#mode-details[data-mode="limited"] { background: #ffd43b; color: #000; border-bottom-color: #e0b400; }
+#mode-details { display: flex; align-items: flex-start; gap: 8px; }
+#mode-details[hidden] { display: none; }
+#mode-details p { flex: 1; }
+#mode-close { flex: none; cursor: pointer; color: inherit; background: none; border: 0; padding: 0 2px; font-size: 13px; line-height: 1.45; opacity: 0.8; }
+#mode-close:hover { opacity: 1; }

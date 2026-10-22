@@ -48,6 +48,25 @@
 	--ease: cubic-bezier(.23, 1, .32, 1);
 }
 
+.chrome-connection-banner {
+	flex: none;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	margin: 10px 12px;
+	padding: 14px;
+	border: 1px solid var(--accent);
+	border-radius: var(--radius-lg);
+	background: var(--soft);
+	font-size: 12px;
+}
+.chrome-connection-banner[hidden] { display: none; }
+.chrome-connection-banner > span { color: var(--fg-2); }
+.chrome-connection-banner > code { color: var(--fg-3); overflow-wrap: anywhere; }
+.chrome-connection-actions { display: flex; gap: 8px; }
+.chrome-connection-actions button { padding: 6px 12px; border-radius: 6px; cursor: pointer; }
+.chrome-connection-actions .primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: 0; }
+
 html, body {
 	height: 100%;
 	margin: 0;
@@ -2006,6 +2025,7 @@ body.vscode-high-contrast-light .context-pie {
 /* ---------------------------------------------------------------- popups */
 
 .popup {
+	overflow-y: auto;
 	display: none;
 	position: absolute;
 	z-index: 30;
@@ -4392,6 +4412,9 @@ body.vscode-high-contrast-light .context-pie {
 
 /* The view's own tooltip (`hoverTip`), for buttons whose native one did not show. */
 .hover-tip {
+	box-sizing: border-box;
+	max-height: calc(100% - 8px);
+	overflow-y: auto;
 	position: absolute;
 	z-index: 60;
 	max-width: min(320px, calc(100% - 8px));
@@ -5117,5 +5140,45 @@ body.vscode-high-contrast-light .context-pie {
 		justify-content: center;
 		padding: 0;
 		margin: 0;
+	}
+}
+
+/* The conversation in front is also open in Chrome's side panel. */
+.chrome-mirror { display: flex; align-items: center; gap: 6px; padding: 4px 12px; font-size: 0.92em;
+	color: var(--vscode-descriptionForeground); border-bottom: 1px solid color-mix(in srgb, var(--vscode-foreground) 8%, transparent); }
+.chrome-mirror[hidden] { display: none; }
+/* A mirrored conversation stays marked even when another editor tab is selected. */
+.tab.chrome-mirrored {
+	position: relative;
+}
+.tab.chrome-mirrored,
+.chat-drawer-collapsed .tab.chrome-mirrored {
+	border-bottom-color: transparent;
+}
+.tab.chrome-mirrored::after {
+	content: '';
+	position: absolute;
+	left: 6px;
+	right: 6px;
+	bottom: -2px;
+	height: 2px;
+	border-radius: 999px;
+	pointer-events: none;
+	background: linear-gradient(90deg, #34d399, #22d3ee, #818cf8, #e879f9, #34d399);
+	background-size: 200% 100%;
+	animation: chrome-mirror-flow 4s linear infinite;
+}
+/* Drawer tabs use a 1px border instead of the horizontal strip's 2px border. */
+@media (min-width: 1000px) {
+	.tab.chrome-mirrored::after { bottom: -1px; }
+}
+@keyframes chrome-mirror-flow {
+	from { background-position: 0% 50%; }
+	to { background-position: 200% 50%; }
+}
+@media (prefers-reduced-motion: reduce) {
+	.tab.chrome-mirrored::after {
+		animation: none;
+		background-position: 50% 50%;
 	}
 }

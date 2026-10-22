@@ -82,10 +82,10 @@ test('editor events read nothing while the view is hidden, and a visible burst i
 });
 
 test('a Git snapshot is not queued for a view that is not there', () => {
-	const h = host({ _view: undefined, _viewReady: false });
+	const h = host({ _view: undefined, _viewReady: false, _stateSurfaces: { publish() {} } });
 	const post = method(view, '_postMessage');
 	post.call(h, { type: 'workdirGit', folder: '/repo' });
-	post.call(h, { type: 'state' });
+	post.call(h, { type: 'state', state: {} });
 	post.call(h, { type: 'openSleep' });
 	assert.deepEqual(h._queued, [{ type: 'openSleep' }]);
 });

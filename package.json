@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate",
 	"displayName": "AI Browser🏆 Claude + Codex + Gemini",
 	"description": "Embedded browser tab with AI capabilities, Claude, Codex and Gemini integration",
-	"version": "0.8.7",
+	"version": "0.8.9",
 	"enabledApiProposals": [
 		"externalUriOpener",
 		"browser"
@@ -151,6 +151,8 @@
 		"onCommand:aiBrowser.copyAnnotationPrompt",
 		"onView:aiBrowser.chat",
 		"onCommand:aiBrowser.chat.newChat",
+		"onCommand:aiBrowser.chat.connectChrome",
+		"onCommand:aiBrowser.chat.disconnectChrome",
 		"onCommand:aiBrowser.chat.history",
 		"onCommand:aiBrowser.chat.refreshAgents",
 		"onCommand:aiBrowser.chat.keepAwake",
@@ -665,6 +667,16 @@
 				"title": "%command.chat.newChat.title%",
 				"category": "%displayName%",
 				"icon": "$(add)"
+			},
+			{
+				"command": "aiBrowser.chat.connectChrome",
+				"title": "Connect Chrome Chat (Preview)",
+				"category": "%displayName%"
+			},
+			{
+				"command": "aiBrowser.chat.disconnectChrome",
+				"title": "Disconnect Chrome Chat",
+				"category": "%displayName%"
 			},
 			{
 				"command": "aiBrowser.chat.history",
@@ -1735,10 +1747,12 @@
 		"watch": "run-p -l watch-ext watch-webview watch-typecheck-webview",
 		"build-ext": "npm run clean-ext && tsc --project ./tsconfig.json",
 		"build-webview": "node ./esbuild.webview.mts",
+		"build-chrome": "node ./scripts/build-chrome.mjs",
+		"typecheck-chrome": "tsc --project ./chrome-extension/tsconfig.json --noEmit",
 		"watch-ext": "tsc --project ./tsconfig.json --watch",
 		"watch-webview": "node ./esbuild.webview.mts --watch",
 		"watch-typecheck-webview": "tsc --project ./preview-src/tsconfig.json --noEmit --watch",
-		"typecheck": "run-p -l typecheck-ext typecheck-webview typecheck-tests",
+		"typecheck": "run-p -l typecheck-ext typecheck-webview typecheck-tests typecheck-chrome",
 		"typecheck-ext": "tsc --project ./tsconfig.json --noEmit",
 		"typecheck-webview": "tsc --project ./preview-src/tsconfig.json --noEmit",
 		"typecheck-tests": "tsc --project ./tsconfig.test.json",
@@ -1749,7 +1763,8 @@
 		"verify-pat": "ovsx verify-pat DenysDavydov",
 		"download-api": "dts dev",
 		"vscode:prepublish": "npm run compile",
-		"clean-ext": "node -e \"require('fs').rmSync('out', { recursive: true, force: true })\""
+		"clean-ext": "node -e \"require('fs').rmSync('out', { recursive: true, force: true })\"",
+		"package-chrome": "node ./scripts/package-chrome.mjs"
 	},
 	"devDependencies": {
 		"@types/node": "24.x",
@@ -1760,7 +1775,8 @@
 		"esbuild": "^0.28.2",
 		"npm-run-all2": "^9.0.3",
 		"ovsx": "^1.1.1",
-		"typescript": "^5.9.3"
+		"typescript": "^5.9.3",
+		"yazl": "2.5.1"
 	},
 	"allowScripts": {
 		"esbuild@0.28.2": true

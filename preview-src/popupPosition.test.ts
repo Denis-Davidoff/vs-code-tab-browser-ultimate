@@ -11,7 +11,7 @@ function position(top: number, bottom: number, height: number) {
 	const popup = { style: { top: '', bottom: '', left: '', right: '', maxHeight: '1px' }, classList, getBoundingClientRect: () => ({ height, right: 300 }) };
 	const anchor = { classList, getBoundingClientRect: () => ({ top, bottom, left: 100, right: 124 }) };
 	const open = runInNewContext(transpileModule(`${body}\nopenAbove;`, { compilerOptions: { target: ScriptTarget.ES2022 } }).outputText, {
-		closePopups() {}, paramsPopup: {}, app: { getBoundingClientRect: () => ({ top: 20, bottom: 620, left: 20, right: 420 }) },
+		constrainOverlay() {}, closePopups() {}, paramsPopup: {}, app: { getBoundingClientRect: () => ({ top: 20, bottom: 620, left: 20, right: 420 }) },
 	});
 	open(popup, anchor, 'left');
 	return popup.style;

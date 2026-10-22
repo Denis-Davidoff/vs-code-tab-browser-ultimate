@@ -243,6 +243,8 @@ export type ToolKind = 'command' | 'read' | 'edit' | 'search' | 'web' | 'agent' 
  * it: some of it at the call, the rest from its progress and its end.
  */
 export interface AgentInfo {
+	/** Liveness is separate from task outcome: silence is not proof of failure. */
+	health?: 'responsive' | 'unresponsive';
 	/** `general-purpose`, `Explore`, … for Claude; the collab tool for Codex. */
 	type?: string;
 	model?: string;
@@ -577,6 +579,11 @@ export interface ChatSurface {
 }
 
 export interface ChatViewState {
+	readonly chromeConnectionRequest?: { readonly id: string; readonly extensionId: string };
+	/** The conversation in front is open in Chrome's side panel too. */
+	readonly chromeMirror?: boolean;
+	readonly themeTokens?: Readonly<Record<string, string>>;
+	readonly themeKind?: number;
 	readonly panel?: import('./chatPanelState').ChatPanelIdentity;
 	readonly surfaceId?: string;
 	readonly dragToken?: string;
@@ -683,6 +690,8 @@ export interface ChatTabSummary {
 	readonly queued: number;
 	/** The mark on the tab; absent while nothing has been sent from it. See `ChatTab.status`. */
 	readonly status?: ChatTabStatus;
+	/** Shown in Chrome's side panel: what is typed there appears here. */
+	readonly chrome?: boolean;
 }
 
 /**
@@ -704,6 +713,7 @@ export type HostToView =
 	| { readonly type: 'state'; readonly state: ChatViewState }
 	/** `refresh`: update an open panel in place; never open or close it. */
 	| { readonly type: 'history'; readonly chats: readonly ChatSummary[]; readonly refresh?: boolean }
+	| { readonly type: 'chromeAttachment'; readonly label: string; readonly text: string }
 	| { readonly type: 'usage'; readonly usage: readonly AgentUsage[]; readonly stats?: ChatStats; readonly loading: boolean }
 	| { readonly type: 'focusInput' }
 	/** The view's title bar cup: open the keep-awake popup. */
@@ -743,6 +753,8 @@ export type HostToView =
 	| { readonly type: 'voice'; readonly event: VoiceEvent };
 
 export type ViewToHost =
+	| { readonly type: 'answerChromeConnection'; readonly id: string; readonly allow: boolean }
+	| { readonly type: 'reportTheme'; readonly tokens: Readonly<Record<string, string>> }
 	| { readonly type: 'temporaryStorage'; readonly action: 'refresh' | 'all' | 'project'; readonly project?: string }
 	| { readonly type: 'controlRecording'; readonly action: 'pause' | 'resume' | 'stop' }
 	| { readonly type: 'recording'; readonly id: string; readonly message: any }

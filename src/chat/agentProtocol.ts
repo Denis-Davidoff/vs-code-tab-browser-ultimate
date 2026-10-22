@@ -1154,10 +1154,20 @@ export function codexAgentThreadEvents(threadId: string, method: string, params:
 			return item?.type === 'agentMessage' && typeof item.text === 'string' && item.text.trim()
 				? [{ type: 'toolUpdate', id: threadId, update: { agent: { summary: clip(item.text) } } }]
 				: [];
-		case 'turn/completed':
-			// An agent stopped on its own (`stopAgent`) ends here; the parent's
-			// `subAgentActivity` may say `interrupted` as well, and either ends the row.
-			return isRecord(p.turn) && p.turn.status === 'interrupted' ? [{ type: 'toolUpdate', id: threadId, update: { status: 'stopped' } }] : [];
+		case 'turn/completed': {
+			const turn = isRecord(p.turn) ? p.turn : {};
+			if (turn.status === 'failed') {
+				const message = isRecord(turn.error) && typeof turn.error.message === 'string' ? clip(turn.error.message) : 'The agent turn failed.';
+				return [{ type: 'toolUpdate', id: threadId, update: { status: 'failed', output: message, agent: { summary: message } } }];
+			}
+			return turn.status === 'interrupted' ? [{ type: 'toolUpdate', id: threadId, update: { status: 'stopped' } }] : [];
+		}
+		case 'error': {
+			// A recoverable transport retry is not a terminal agent failure.
+			if (p.willRetry === true) { return []; }
+			const message = isRecord(p.error) && typeof p.error.message === 'string' ? clip(p.error.message) : undefined;
+			return message ? [{ type: 'toolUpdate', id: threadId, update: { status: 'failed', output: message, agent: { summary: message } } }] : [];
+		}
 		case 'thread/tokenUsage/updated': {
 			const total = isRecord(p.tokenUsage) && isRecord(p.tokenUsage.total) ? p.tokenUsage.total : undefined;
 			return total && typeof total.totalTokens === 'number'

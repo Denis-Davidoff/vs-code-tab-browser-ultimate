@@ -95,6 +95,7 @@ test('closing a previous surface keeps shared backends until the last moved chat
 	let backendDisposals = 0, runDisposals = 0, tabCloses = 0;
 	const services = { views: new Set<unknown>(), panels: { forget() {} } };
 	const surface = () => ({ _windows: new Set(), _pendingPanels: new Map(), _titleRequests: new Map(), _branchNameRequests: new Map(), _gitCommits: new Map(),
+		_stateSurfaces: { dispose() {} },
 		_sleep: { dispose() {} }, _draftRequests: new Map(), _livePages: new Map(), _voiceCancel() {}, _detachedChat: {}, _panelIdentity: {}, _saveTabs() {}, _services: services,
 		_runs: { dispose() { runDisposals++; } }, _registry: { dispose() { backendDisposals++; } },
 		_usageChecks: new Map(), _draining: new Map(), _tabs: [{ close() { tabCloses++; } }], _subscriptions: [],

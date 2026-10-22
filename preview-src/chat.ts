@@ -1,4 +1,6 @@
+import { overlayBounds, fitOverlay } from './overlayPosition';
 import { chatTabDragType, parseChatTabTransfer } from './tabDrag';
+import { createVsCodeChatHost } from './chatHost';
 import { historyPeriodRange, type HistoryPeriod } from './historyPeriod';
 import type { TemporaryStorage } from '../src/core/temporaryFiles';
 import { aiFeatures, defaultFeaturePrompts, featureAgent, featurePromptLimit, readFeatureAiSettings, type AiFeature, type FeatureAiSettings, type FeatureEffort } from '../src/chat/featureAi';
@@ -42,27 +44,19 @@ import { baseName, searchPaths } from './fileRank';
 // as text by esbuild, so the icon picker lists exactly what can be drawn.
 import codiconCsv from '@vscode/codicons/dist/codicon.csv';
 
-interface ViewState {
-	panel?: ChatViewState['panel'];
-	/** Before tabs: the one draft there was. Read once, into the first conversation shown. */
-	draft?: string;
-	/** The unsent draft of each open conversation, by chat id. */
-	drafts?: Record<string, string>;
-	/** Wide-screen chat navigation preference, retained across webview reloads. */
-	chatDrawerCollapsed?: boolean;
-	chatDrawerSide?: 'left' | 'right';
-}
-
-interface VsCodeApi {
-	postMessage(message: ViewToHost): void;
-	getState(): ViewState | undefined;
-	setState(state: ViewState): void;
-}
-
-declare function acquireVsCodeApi(): VsCodeApi;
-
-const vscode = acquireVsCodeApi();
+const vscode = createVsCodeChatHost();
 const post = (message: ViewToHost) => vscode.postMessage(message);
+
+// Reuse the editor's actual theme tokens in the Chrome surface, including custom themes.
+if (!window.aiBrowserChatHost) {
+	const reportTheme = () => {
+		const style = getComputedStyle(document.body);
+		const tokens = Object.fromEntries(Array.from(style).filter(key => key.startsWith('--vscode-')).map(key => [key, style.getPropertyValue(key).trim()]));
+		post({ type: 'reportTheme', tokens });
+	};
+	new MutationObserver(reportTheme).observe(document.body, { attributes: true, attributeFilter: ['class', 'style'] });
+	queueMicrotask(reportTheme);
+}
 
 /* ---------------------------------------------------------------- dom */
 
@@ -136,6 +130,28 @@ const thread = el('div', { class: 'thread' });
 const threadInner = el('div', { class: 'thread-inner' });
 thread.append(threadInner);
 const blocked = el('div', { class: 'blocked' });
+const chromeConnectionBanner = el('div', { class: 'chrome-connection-banner' });
+chromeConnectionBanner.hidden = true;
+chromeConnectionBanner.setAttribute('role', 'alert');
+let chromeConnectionShown: string | undefined;
+function renderChromeConnection(request: ChatViewState['chromeConnectionRequest']): void {
+	chromeConnectionBanner.hidden = !request;
+	if (!request || request.id === chromeConnectionShown) { return; }
+	chromeConnectionShown = request.id;
+	const allow = button(['Allow'], { class: 'primary' });
+	const deny = button(['Deny'], { class: 'ghost' });
+	const answer = (yes: boolean) => {
+		allow.disabled = deny.disabled = true;
+		post({ type: 'answerChromeConnection', id: request.id, allow: yes });
+	};
+	allow.addEventListener('click', () => answer(true));
+	deny.addEventListener('click', () => answer(false));
+	chromeConnectionBanner.replaceChildren(
+		el('strong', { text: 'Connect Chrome to this chat panel?' }),
+		el('span', { text: 'Chrome will be able to read and send messages, choose a model and respond to approval requests. Use Disconnect Chrome Chat to revoke access.' }),
+		el('code', { text: request.extensionId }),
+		el('div', { class: 'chrome-connection-actions' }, allow, deny));
+}
 
 const attachmentsRow = el('div', { class: 'attachments' });
 const pasteStatus = el('div', { class: 'paste-status' });
@@ -336,6 +352,11 @@ const usageAlertClose = button([icon('close')], { class: 'usage-alert-close' });
 const usageAlertBar = el('div', { class: 'usage-alert' },
 	el('span', { class: 'u-mark', text: 'U' }), usageAlertText, usageAlertClose);
 usageAlertBar.hidden = true;
+/** The conversation in front is open in Chrome's side panel: what is typed there appears here. */
+const chromeMirrorLine = el('div', { class: 'chrome-mirror' }, icon('broadcast'),
+	el('span', { text: 'Connected from Google Chrome — messages sent there appear here. Closing the Chrome panel does not stop the agent.' }));
+chromeMirrorLine.hidden = true;
+chromeMirrorLine.setAttribute('role', 'status');
 usageAlertBar.setAttribute('role', 'status');
 
 const menu = el('div', { class: 'popup menu' });
@@ -891,7 +912,7 @@ const agentsPanel = el('div', { class: 'history-panel agents-panel' });
 /** Which copy of each agent's CLI this project uses: opened from the gear in the agent menu. */
 const agentAppsPanel = el('div', { class: 'history-panel agent-apps' });
 
-const chatMain = el('main', { class: 'chat-main' }, usageAlertBar, thread, blocked, footer);
+const chatMain = el('main', { class: 'chat-main' }, chromeConnectionBanner, chromeMirrorLine, usageAlertBar, thread, blocked, footer);
 app.append(featureSettingsPanel, sleepPopup, tabStrip, chatMain, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel);
 
 /* ---------------------------------------------------------------- state */
@@ -1008,6 +1029,7 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 		}
 		case 'state':
 			state = message.state;
+			renderChromeConnection(state.chromeConnectionRequest);
 			render();
 			vscode.setState({ drafts, chatDrawerCollapsed, chatDrawerSide, panel: state.panel });
 			return;
@@ -1269,6 +1291,7 @@ function render(): void {
 	renderSleep();
 	renderUsageLevel(state);
 	renderUsageAlert(state);
+	chromeMirrorLine.hidden = !state.chromeMirror;
 	renderAgents(state);
 	renderSkillBar(state);
 	renderPalette(state);
@@ -1503,6 +1526,7 @@ function renderTabs(s: ChatViewState): void {
 			fillTab(node, agent);
 		}
 		node.root.classList.toggle('active', t.id === s.activeTab);
+		node.root.classList.toggle('chrome-mirrored', t.chrome === true);
 		node.label.setAttribute('aria-current', t.id === s.activeTab ? 'page' : 'false');
 		node.root.classList.toggle('running', t.running);
 		// Moved only when out of place: re-inserting an element ends its transition.
@@ -1586,7 +1610,7 @@ function animateTabSwitch(before: Map<string, number>, ids: string[]): void {
 }
 
 function tabShown(t: ChatTabSummary, agent: string | undefined): string {
-	return JSON.stringify([t.title, t.status, t.agents, t.skillRuns, t.busy, agent]);
+	return JSON.stringify([t.title, t.status, t.agents, t.skillRuns, t.busy, agent, t.chrome]);
 }
 
 /**
@@ -1694,7 +1718,7 @@ function fillTab(node: TabNode, agent: string | undefined): void {
 		agentsOf(t) ? el('span', { class: 'tab-agents', text: agentsOf(t) > 99 ? '99+' : String(agentsOf(t)), title: `${agentsOf(t)} agent${agentsOf(t) === 1 ? '' : 's'} working` }) : undefined,
 	];
 	node.label.replaceChildren(...parts.filter((p): p is HTMLElement => !!p));
-	const description = `${agent ? `${t.title} — ${agent}` : t.title}\n${t.status ? tabMarks[t.status] : 'New chat'}${agentsOf(t) ? ` · ${agentsOf(t)} agent${agentsOf(t) === 1 ? '' : 's'} running` : ''}`;
+	const description = `${agent ? `${t.title} — ${agent}` : t.title}\n${t.status ? tabMarks[t.status] : 'New chat'}${agentsOf(t) ? ` · ${agentsOf(t)} agent${agentsOf(t) === 1 ? '' : 's'} running` : ''}${t.chrome ? ' · open in Google Chrome' : ''}`;
 	node.label.setAttribute('aria-label', description);
 	node.label.title = `${description}\nDouble-click to rename. Drag to reorder. Right-click for chat actions.`;
 	node.close.title = t.busy ? 'Close (stops what it is doing)' : 'Close';
@@ -5032,6 +5056,8 @@ function openAbove(popup: HTMLElement, anchor: HTMLElement, align: 'left' | 'rig
 	const box = app.getBoundingClientRect();
 	const rect = anchor.getBoundingClientRect();
 	popup.style.maxHeight = '';
+	popup.style.maxWidth = '';
+	popup.style.minWidth = '';
 	popup.style.top = '';
 	popup.style.bottom = `${box.bottom - rect.top + 6}px`;
 	if (align === 'left') {
@@ -5053,14 +5079,44 @@ function openAbove(popup: HTMLElement, anchor: HTMLElement, align: 'left' | 'rig
 	} else if (height > above) {
 		popup.style.maxHeight = `${above}px`;
 	}
-	// Kept inside the view: `#app` clips what overflows it, and a menu opened
-	// from a pill near a narrow side bar's right edge lost its right side —
-	// with the agent menu's gear, the one way into the agent settings, in it.
-	const overflow = popup.getBoundingClientRect().right - (box.right - 8);
-	if (align === 'left' && overflow > 0) {
-		popup.style.left = `${Math.max(8, rect.left - box.left - overflow)}px`;
-	}
+	constrainOverlay(popup);
 }
+
+/** Covers every popup path, including context menus and inline palettes. */
+function constrainOverlay(node: HTMLElement): void {
+	const appRect = app.getBoundingClientRect();
+	const viewport = window.visualViewport;
+	const bounds = overlayBounds(appRect, {
+		left: viewport?.offsetLeft ?? 0, top: viewport?.offsetTop ?? 0,
+		right: (viewport?.offsetLeft ?? 0) + (viewport?.width ?? window.innerWidth),
+		bottom: (viewport?.offsetTop ?? 0) + (viewport?.height ?? window.innerHeight),
+	}, node.classList.contains('hover-tip') ? 4 : 8);
+	if (node.offsetWidth > bounds.width) {
+		node.style.minWidth = '0'; node.style.maxWidth = `${bounds.width}px`;
+	}
+	if (node.offsetHeight > bounds.height) { node.style.maxHeight = `${bounds.height}px`; }
+	const position = fitOverlay(bounds, node.offsetLeft, node.offsetTop, node.offsetWidth, node.offsetHeight);
+	const left = `${position.left}px`, top = `${position.top}px`;
+	if (node.style.left !== left) { node.style.left = left; }
+	if (node.style.top !== top) { node.style.top = top; }
+	if (node.style.right) { node.style.right = ''; }
+	if (node.style.bottom) { node.style.bottom = ''; }
+}
+let overlayFrame: number | undefined;
+function scheduleOverlayLayout(): void {
+	if (overlayFrame !== undefined) { return; }
+	overlayFrame = requestAnimationFrame(() => {
+		overlayFrame = undefined;
+		for (const node of app.querySelectorAll<HTMLElement>('.popup.open, .hover-tip.open')) { constrainOverlay(node); }
+	});
+}
+const overlayResize = new ResizeObserver(scheduleOverlayLayout);
+overlayResize.observe(app);
+for (const node of app.querySelectorAll<HTMLElement>('.popup')) { overlayResize.observe(node); }
+new MutationObserver(scheduleOverlayLayout).observe(app, { subtree: true, childList: true, attributes: true, attributeFilter: ['class'] });
+window.addEventListener('resize', scheduleOverlayLayout);
+window.visualViewport?.addEventListener('resize', scheduleOverlayLayout);
+window.visualViewport?.addEventListener('scroll', scheduleOverlayLayout);
 
 /** A menu opened over a panel goes on its own, leaving the panel: true when there was one to close. */
 function closeMenuOverPanel(): boolean {
@@ -6671,6 +6727,7 @@ function renderSkillBar(s: ChatViewState): void {
 const hoverTip = (() => {
 	const node = el('div', { class: 'hover-tip' });
 	node.setAttribute('role', 'tooltip');
+	overlayResize.observe(node);
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	const api = {
 		anchor: undefined as HTMLElement | undefined,
@@ -6693,6 +6750,7 @@ const hoverTip = (() => {
 			if (!node.isConnected) {
 				app.append(node);
 			}
+			node.style.maxHeight = ''; node.style.maxWidth = '';
 			node.classList.add('open');
 			const box = app.getBoundingClientRect();
 			const r = anchor.getBoundingClientRect();
@@ -6702,6 +6760,7 @@ const hoverTip = (() => {
 			const above = r.top - box.top - h - 6;
 			node.style.left = `${Math.max(4, left)}px`;
 			node.style.top = `${above >= 4 ? above : r.bottom - box.top + 6}px`;
+			constrainOverlay(node);
 		},
 		hide(): void {
 			clearTimeout(timer);
@@ -7784,6 +7843,7 @@ function agentNumbers(a: ToolEntry): string {
 function agentLive(a: ToolEntry, part: string): string {
 	switch (part) {
 		case 'status':
+			if (a.status === 'running' && a.agent?.health === 'unresponsive') { return 'No response · Check connection or stop the agent'; }
 			return a.agent?.waiting ? 'Waiting for your answer' : a.status === 'running' && a.agent?.lastTool ? `Running · ${a.agent.lastTool}` : statusLabel(a);
 		case 'numbers':
 			return ` · ${agentNumbers(a)}`;
@@ -7825,7 +7885,7 @@ function agentsShape(agents: ToolEntry[]): string {
 	// Only the agents shown can say they have stopped: a stop still pending in
 	// another tab is not this list's to clear.
 	for (const id of stoppingAgents) {
-		if (agents.some(a => a.id === id && a.status !== 'running')) {
+		if (agents.some(a => a.id === id && (a.status !== 'running' || a.agent?.health === 'unresponsive'))) {
 			stoppingAgents.delete(id);
 		}
 	}
@@ -7949,7 +8009,7 @@ function fillAgents(agents: ToolEntry[], force = false): void {
 		el('span', { class: 'agent-head-end' }, selected.status === 'running' ? stopButton(selected) : undefined, close));
 	const info = selected.agent;
 	const body = el('div', { class: 'history-list agent-card' },
-		el('div', { class: 'agent-line', text: [statusLabel(selected), info?.type, modelName(info?.model), info?.background ? 'background' : undefined].filter(Boolean).join(' · ') }),
+		el('div', { class: 'agent-line', text: [agentLive(selected, 'status'), info?.type, modelName(info?.model), info?.background ? 'background' : undefined].filter(Boolean).join(' · ') }),
 		el('div', { class: 'agent-line', text: info?.origin === 'toolbar' ? 'Started from the toolbar' : spawnedBy(info?.type) }),
 		liveSpan('div', selected, 'card', 'agent-line'));
 	const report = info?.summary ?? (selected.status !== 'running' ? selected.output : undefined);
@@ -7968,7 +8028,7 @@ function fillAgents(agents: ToolEntry[], force = false): void {
 	}
 	body.append(report
 		? el('div', { class: 'agent-report markdown' }, renderMarkdown(report))
-		: el('div', { class: 'agent-report' }, el('span', { class: selected.status === 'running' ? 'shimmer' : 'faint', text: selected.status === 'running' ? 'Working…' : 'No report.' })));
+		: el('div', { class: 'agent-report' }, el('span', { class: selected.status === 'running' && info?.health !== 'unresponsive' ? 'shimmer' : 'faint', text: info?.health === 'unresponsive' && selected.status === 'running' ? 'The backend is not responding. Check the connection or retry Stop.' : selected.status === 'running' ? 'Working…' : 'No report.' })));
 	if (selected.input) {
 		body.append(fold(`agent-prompt:${selected.id}`, 'Prompt', el('div', { class: 'agent-prompt', text: selected.input })));
 	}

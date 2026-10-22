@@ -808,6 +808,54 @@ class CodexSession implements AgentSession {
 	/** Agent rows that outlive the main turn; a server exit must settle them too. */
 	private readonly _backgroundAgents = new Set<string>();
 
+
+	private readonly _agentActivity = new Map<string, { rowId: string; at: number; revision: number; checking: boolean; unresponsive?: boolean }>();
+	private _agentWatch?: ReturnType<typeof setInterval>;
+
+	/** Reconcile quiet agents; never kill a live long-running task on elapsed time alone. */
+	private async _checkAgent(threadId: string): Promise<void> {
+		const activity = this._agentActivity.get(threadId);
+		if (!activity || activity.checking || this._disposed) { return; }
+		activity.checking = true;
+		const revision = activity.revision;
+		try {
+			const answer = await this._backend.request('thread/read', { threadId, includeTurns: true }) as { thread?: { status?: { type?: string }; turns?: { id?: string; status?: string; error?: { message?: string } }[] } };
+			if (this._disposed || this._agentActivity.get(threadId) !== activity || activity.revision !== revision) { return; }
+			if (!answer.thread?.status?.type) { throw new Error('Agent status unavailable.'); }
+			const turn = answer.thread.turns?.at(-1);
+			if (turn?.status === 'failed' || turn?.status === 'interrupted') {
+				this.notifyAgent(threadId, 'turn/completed', { turn });
+			} else if (answer.thread?.status?.type === 'idle' && turn?.status === 'completed') {
+				this.emit({ type: 'toolUpdate', id: activity.rowId, update: { status: 'done' } });
+				this._agentTurns.delete(threadId);
+			} else if (answer.thread?.status?.type === 'systemError') {
+				this.emit({ type: 'toolUpdate', id: activity.rowId, update: { status: 'failed', output: 'The agent backend reported a system error.' } });
+				this._agentTurns.delete(threadId);
+			} else if (answer.thread?.status?.type === 'notLoaded') {
+				this.emit({ type: 'toolUpdate', id: activity.rowId, update: { status: 'stopped', output: 'The agent thread is no longer loaded.' } });
+				this._agentTurns.delete(threadId);
+			} else {
+				if (turn?.status === 'inProgress' && turn.id) { this._agentTurns.set(threadId, turn.id); }
+				activity.unresponsive = false;
+				this.emit({ type: 'toolUpdate', id: activity.rowId, update: { agent: { health: 'responsive' } } });
+			}
+		} catch {
+			if (!this._disposed && this._agentActivity.get(threadId) === activity && activity.revision === revision) {
+				activity.unresponsive = true;
+				this.emit({ type: 'toolUpdate', id: activity.rowId, update: { agent: { health: 'unresponsive' } } });
+			}
+		} finally { activity.checking = false; }
+	}
+
+	private _watchAgentHealth(threadId: string, rowId: string): void {
+		this._agentActivity.set(threadId, { rowId, at: Date.now(), revision: 0, checking: false });
+		this._agentWatch ??= setInterval(() => {
+			for (const [id, activity] of this._agentActivity) {
+				if (Date.now() - activity.at >= 120_000) { void this._checkAgent(id); }
+			}
+		}, 30_000);
+	}
+
 	/**
 	 * An agent's thread runs turns of its own; interrupting the one running stops
 	 * that agent and nothing else. Its `subAgentActivity` then reports it
@@ -815,14 +863,27 @@ class CodexSession implements AgentSession {
 	 */
 	public async stopAgent(_rowId: string, threadId: string | undefined): Promise<void> {
 		const turnId = threadId ? this._agentTurns.get(threadId) : undefined;
-		if (!threadId || !turnId) {
+		const tracked = !!threadId && this._agentActivity.has(threadId);
+		if (threadId && !turnId) { await this._checkAgent(threadId); }
+		const currentTurn = threadId ? this._agentTurns.get(threadId) : undefined;
+		if (!threadId || !currentTurn) {
+			if (tracked && threadId && !this._agentActivity.has(threadId)) { return; }
 			throw new Error(vscode.l10n.t("The agent is not running a turn right now."));
 		}
-		await this._backend.request('turn/interrupt', { threadId, turnId });
+		await this._backend.request('turn/interrupt', { threadId, turnId: currentTurn });
+		await this._checkAgent(threadId);
 	}
 
 	/** An event of an agent's own thread: the agent's row, never the reply. */
 	public notifyAgent(threadId: string, method: string, params: Record<string, unknown>): void {
+		const activity = this._agentActivity.get(threadId);
+		if (activity) {
+			activity.at = Date.now(); activity.revision++;
+			if (activity.unresponsive) {
+				activity.unresponsive = false;
+				this.emit({ type: 'toolUpdate', id: activity.rowId, update: { agent: { health: 'responsive' } } });
+			}
+		}
 		// An agent's patch is asked about in this conversation too.
 		this._noteChanges(method, params);
 		if (method === 'turn/started' || method === 'turn/completed') {
@@ -835,7 +896,9 @@ class CodexSession implements AgentSession {
 		}
 		this._watchAgent(method, params);
 		for (const event of codexAgentThreadEvents(threadId, method, params)) {
-			this.emit(event);
+			const ownUpdate = event.type === 'toolUpdate' && event.id === threadId;
+			if (ownUpdate && event.update.status) { this._agentTurns.delete(threadId); }
+			this.emit(ownUpdate && activity ? { ...event, id: activity.rowId } : event);
 		}
 	}
 
@@ -922,14 +985,23 @@ class CodexSession implements AgentSession {
 		if (!this._disposed) {
 			if (event.type === 'tool' && event.tool.kind === 'agent' && event.tool.agent?.background) {
 				this._backgroundAgents.add(event.id);
+				if (event.tool.agent.threadId) { this._watchAgentHealth(event.tool.agent.threadId, event.id); }
 			} else if (event.type === 'toolUpdate') {
-				if (event.update.status) { this._backgroundAgents.delete(event.id); }
+				if (event.update.status) {
+					this._backgroundAgents.delete(event.id);
+					for (const [id, activity] of this._agentActivity) { if (activity.rowId === event.id) { this._agentActivity.delete(id); this._agentTurns.delete(id); } }
+				}
 				else if (event.update.agent?.background) { this._backgroundAgents.add(event.id); }
 			} else if (event.type === 'agentStates') {
 				for (const state of event.states) {
-					if (state.status !== 'running') { this._backgroundAgents.delete(state.threadId); }
+					if (state.status !== 'running') {
+						const activity = this._agentActivity.get(state.threadId);
+						this._backgroundAgents.delete(activity?.rowId ?? state.threadId);
+						this._agentActivity.delete(state.threadId); this._agentTurns.delete(state.threadId);
+					}
 				}
 			}
+			if (!this._agentActivity.size) { clearInterval(this._agentWatch); this._agentWatch = undefined; }
 			this._onEvent.fire(event);
 		}
 	}
@@ -944,6 +1016,7 @@ class CodexSession implements AgentSession {
 		// rows are the tab's to end (`_endTurnHere`), not told from here.
 		this._interruptAgents();
 		this._backgroundAgents.clear();
+		this._agentActivity.clear(); clearInterval(this._agentWatch); this._agentWatch = undefined;
 		this._disposed = true;
 		this._releaseTurnWaiters();
 		this._onEvent.dispose();
