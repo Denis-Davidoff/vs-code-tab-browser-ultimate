@@ -811,7 +811,7 @@ export class McpServer implements vscode.Disposable {
 					+ 'the one they had last), its cursor, the selected text, its errors and warnings, and the other open files. '
 					+ 'Call it when the user says "this", "here" or "the selected code", rather than guessing.',
 				inputSchema: schema({}),
-				run: () => Promise.resolve(editor.context()),
+				run: () => editor.context(),
 			},
 			{
 				name: 'editor_reveal', title: 'Show a place in the editor',

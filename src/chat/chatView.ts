@@ -3362,7 +3362,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}
 		const args = chat.agent === 'codex' ? ['resume', chat.ref] : ['--resume', chat.ref];
 		// Preserve the chat's restriction on project hooks in untrusted managed copies.
-		if (chat.agent === 'claude' && this._untrusted(cwd)) { args.push('--setting-sources', 'user'); }
+		if (chat.agent === 'claude' && this._untrusted(cwd)) { args.push('--setting-sources=user', '--strict-mcp-config'); }
 		// The terminal CLI is not ours, so it gets the browser server the chat's
 		// own processes get at start; without it the conversation lost the browser
 		// tools on the move. Codex takes the token from the environment, never argv.
@@ -4834,9 +4834,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				}
 				await this._withGitMutation(folder, () => this._repoWork(tab, vscode.l10n.t("pushing {0}", copy.branch), async () => {
 					const message = capAt(tab.chat.title.replace(/\s+/g, ' ').trim() || 'Changes from the AI Browser chat', 72);
-					await pushCopy(git, folder, copy.base, copy.branch, message);
-					const url = compareUrl(repo, copy.base, copy.branch);
-					tab.push({ kind: 'notice', text: vscode.l10n.t("Pushed {0} to {1}. A pull request into {2}: {3}", copy.branch, copy.repo, copy.base, url) });
+					const pushed = await pushCopy(git, folder, copy.base, message);
+					const url = compareUrl(repo, copy.base, pushed);
+					tab.push({ kind: 'notice', text: vscode.l10n.t("Pushed {0} to {1}. A pull request into {2}: {3}", pushed, copy.repo, copy.base, url) });
 					await vscode.env.openExternal(vscode.Uri.parse(url));
 				}));
 				return;

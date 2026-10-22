@@ -1973,7 +1973,103 @@ window.addEventListener('blur', pressEnded);
 /** What the welcome was built from; see the empty-chat branch of `renderThread`. */
 let welcomeShown = '';
 
+let stickyFrame = 0;
+/** Shrinks each prompt stuck over its reply in step with the scroll, from its
+ *  whole height down to four lines; the room it lost is given to what follows it in the turn so the rows
+ *  below stay put (chat.css, `.prompt.shrunk`). */
+function fitStickyPrompts(): void {
+	stickyFrame = 0;
+	const top = thread.getBoundingClientRect().top;
+	for (const prompt of thread.querySelectorAll<HTMLElement>('.prompt')) {
+		if (prompt === openedPrompt) {
+			continue;
+		}
+		const content = prompt.querySelector<HTMLElement>('.prompt-content');
+		const turn = prompt.parentElement;
+		if (!content || !turn) {
+			continue;
+		}
+		const full = content.scrollHeight;
+		// Four whole lines of the text, whatever sits above it (attachments),
+		// so the last of them is never cut.
+		const text = content.querySelector<HTMLElement>('.bubble-text');
+		const lineOf = (node: HTMLElement) => parseFloat(getComputedStyle(node).lineHeight) || 18;
+		const min = Math.min(full, text
+			? text.offsetTop - content.offsetTop + lineOf(text) * 4
+			: lineOf(content) * 4);
+		const scrolled = Math.max(0, top - turn.getBoundingClientRect().top);
+		const height = Math.max(min, full - scrolled);
+		prompt.classList.toggle('compact', height < full && height <= min + 0.5);
+		if (height >= full) {
+			prompt.classList.remove('shrunk');
+			content.style.maxHeight = '';
+			turn.style.removeProperty('--prompt-room');
+		} else {
+			prompt.classList.add('shrunk');
+			content.style.maxHeight = `${height}px`;
+			turn.style.setProperty('--prompt-room', `${full - height}px`);
+		}
+	}
+}
+function scheduleStickyPrompts(): void {
+	if (!stickyFrame) {
+		stickyFrame = requestAnimationFrame(fitStickyPrompts);
+	}
+}
+// Fitted in the scroll event itself, not a frame later: a frame behind, the
+// prompt and the rows under it were out of step while the scroll was fast.
+thread.addEventListener('scroll', fitStickyPrompts, { passive: true });
+
+/** A prompt down to its four lines, opened by a click to at most half the
+ *  thread's height over the rows under it; the margin keeps the rows where they
+ *  were. It closes on a click elsewhere, or 3 s after the pointer leaves it; the wheel scrolls it alone, never the chat
+ *  behind it. */
+let openedPrompt: HTMLElement | undefined;
+/** The open message closes by itself 3 s after the pointer leaves it. */
+let promptLeaveTimer: ReturnType<typeof setTimeout> | undefined;
+function cancelPromptLeave(): void {
+	if (promptLeaveTimer !== undefined) {
+		clearTimeout(promptLeaveTimer);
+		promptLeaveTimer = undefined;
+	}
+}
+function openPrompt(prompt: HTMLElement): void {
+	const content = prompt.querySelector<HTMLElement>('.prompt-content');
+	if (!content) {
+		return;
+	}
+	collapsePrompt();
+	const full = content.scrollHeight;
+	const height = Math.min(full, thread.clientHeight / 2);
+	openedPrompt = prompt;
+	prompt.classList.add('open');
+	content.style.maxHeight = `${height}px`;
+	prompt.parentElement?.style.setProperty('--prompt-room', `${full - height}px`);
+	content.scrollTop = 0;
+}
+function collapsePrompt(): void {
+	cancelPromptLeave();
+	const prompt = openedPrompt;
+	if (!prompt) {
+		return;
+	}
+	openedPrompt = undefined;
+	prompt.classList.remove('open');
+	const content = prompt.querySelector<HTMLElement>('.prompt-content');
+	if (content) {
+		content.scrollTop = 0;
+	}
+	fitStickyPrompts();
+}
+document.addEventListener('mousedown', event => {
+	if (openedPrompt && !openedPrompt.contains(event.target as Node)) {
+		collapsePrompt();
+	}
+}, true);
+window.addEventListener('resize', scheduleStickyPrompts);
+
 function renderThread(s: ChatViewState): void {
+	scheduleStickyPrompts();
 	const atBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 60;
 	let stick = atBottom;
 	let restore: number | undefined;
@@ -3146,8 +3242,9 @@ approveToggle.addEventListener('click', () => {
 /**
  * A turn's prompt. Sticky inside its turn: while its reply scrolls, it stays at
  * the top, and the next turn's prompt pushes it away — the Claude Code panel's
- * `.message.stickyHeader`. Text and attachments share a four-line preview;
- * hovering reveals the content in a bounded scroll area.
+ * `.message.stickyHeader`. Shown whole in place; once stuck to the top it
+ * shrinks with the scroll down to a four-line preview (`fitStickyPrompts`),
+ * and hovering reveals the content in a bounded scroll area.
  */
 function promptNode(entry: Extract<ChatEntry, { kind: 'user' }>): HTMLElement {
 	const bubble = el('div', { class: 'bubble' });
@@ -3170,10 +3267,41 @@ function promptNode(entry: Extract<ChatEntry, { kind: 'user' }>): HTMLElement {
 		copy.classList.add('message-copy');
 		bubble.append(copy);
 	}
-	// Every collapsed preview starts at the beginning, even after scrolling.
-	bubble.addEventListener('mouseleave', () => { content.scrollTop = 0; });
-	content.addEventListener('blur', () => { content.scrollTop = 0; });
-	return el('div', { class: 'prompt' }, bubble);
+	const prompt = el('div', { class: 'prompt' }, bubble);
+	bubble.addEventListener('click', event => {
+		if ((event.target as HTMLElement).closest('button') || !window.getSelection()?.isCollapsed) {
+			return;
+		}
+		if (prompt === openedPrompt) {
+			return;
+		}
+		if (prompt.classList.contains('compact')) {
+			openPrompt(prompt);
+		}
+	});
+	prompt.addEventListener('mouseenter', () => {
+		if (prompt === openedPrompt) {
+			cancelPromptLeave();
+		}
+	});
+	prompt.addEventListener('mouseleave', () => {
+		if (prompt === openedPrompt) {
+			cancelPromptLeave();
+			promptLeaveTimer = setTimeout(() => {
+				if (prompt === openedPrompt) {
+					collapsePrompt();
+				}
+			}, 3000);
+		}
+	});
+	// overscroll-behavior holds the chat only while the text itself scrolls; an
+	// open message that fits needs the wheel stopped here.
+	content.addEventListener('wheel', event => {
+		if (prompt === openedPrompt && content.scrollHeight <= content.clientHeight) {
+			event.preventDefault();
+		}
+	}, { passive: false });
+	return prompt;
 }
 
 function thinkingNode(entry: Extract<ChatEntry, { kind: 'thinking' }>, i: number): HTMLElement {

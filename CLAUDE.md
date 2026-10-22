@@ -9640,6 +9640,23 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
      once (`_seeded`), so a later `browser_select_tab` still moves it and a share still wins.
      Without it the terminal followed the VS Code tab in front, never the Chrome tab the chat had
      been working on (the last-resort fallback is built-in only).
+518. **A real-path boundary checked on the tool path and not on the editor's own buffer** →
+     `editor_reveal` and the language tools resolve symlinks (`_realInside`), while
+     `editor_context` asked only `getWorkspaceFolder`, so a file opened through a workspace
+     symlink to `~/.ssh/config` handed its current line and selection to the model.
+     `_readableInside` applies the real-path test there too; an outside file gets metadata only.
+519. **Pushing the branch a record names instead of the one checked out** → `pushCopy` committed on
+     the current `HEAD` and pushed `copy.branch`, so after an agent or a terminal switched branches
+     in the copy, Push reported success and opened a compare page while the new commit stayed
+     local. It reads `symbolic-ref HEAD`, refuses a detached one, and returns what it pushed.
+520. **Emptying a send queue whose composer has already let go of the text** → the Chrome side
+     panel cleared its outbox on Disconnect and on every new connection, and the composer had
+     cleared the text and chips at send, so undelivered messages were gone.
+     `returnOutboxToDrafts` gives them back first.
+521. **A test that lifts functions out of a file and runs them in a sandbox** → when the lifted
+     function starts calling a new helper, the test fails with `ReferenceError` while the product
+     works (`prepareChromeMessage`, `chromeFooter.test.ts`). Lift the helper too, not a stub,
+     so the test still exercises the real path.
 
 ## Special cases and non-obvious decisions
 

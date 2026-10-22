@@ -16,11 +16,16 @@ function fixture(events: unknown[] = []) {
     forEachChild(node, visit);
   };
   visit(ast);
-  const poll = ast.statements.find(node => isFunctionDeclaration(node) && node.name?.text === 'pollFooterEvents')!.getText(ast);
+  const declared = (name: string) => ast.statements.find(node => isFunctionDeclaration(node) && node.name?.text === name)!.getText(ast);
+  const poll = declared('pollFooterEvents');
+  // postMessage hands every message to prepareChromeMessage, which forwards
+  // anything but a send at once; its send path is tested in chromeDelivery.test.ts.
+  const prepare = declared('prepareChromeMessage');
   const sent: any[] = [], emitted: any[] = [], attached: any[] = [], feedback: string[] = [];
   const latest = { chatId: 'chat-B', view: { tabs: [{ chatId: 'chat-A' }, { chatId: 'chat-B' }] } };
   const context = createContext({ latest, active: {}, generation: 1, footerCursor: 0,
     chromeChatCapabilities, chromeChatCommandFeature, chromeChatFeatureError, chromeChatFooterCommands,
+    pendingSends: new Set(), annotations: { async poll() {} },
     supported: new Set(Object.values(chromeChatFooterCommands).flat()), passive: new Set(['ready']),
     async persistOutbox() {}, supportsFeature: () => true, bridgeHeaders: () => ({}), AbortSignal,
     enqueueChromeMessage: (...args: unknown[]) => sent.push(args),
@@ -28,7 +33,7 @@ function fixture(events: unknown[] = []) {
     async addChromeAttachment(...args: unknown[]) { attached.push(args); },
     async fetch() { return { ok: true, async json() { return { cursor: events.length, events }; } }; },
   });
-  runInNewContext(transpileModule(`const host = { ${post} }; function post(message) { host.postMessage(message); }\n${poll}`, {
+  runInNewContext(transpileModule(`const host = { ${post} }; function post(message) { host.postMessage(message); }\n${prepare}\n${poll}`, {
     compilerOptions: { target: ScriptTarget.ES2022 },
   }).outputText, context);
   return { context, sent, emitted, attached, feedback };

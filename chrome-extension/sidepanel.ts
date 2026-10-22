@@ -589,6 +589,18 @@ async function reconcileDelivery(session: string | undefined): Promise<void> {
   if (outboxSession !== session) { outboxSession = session; await persistOutbox(); }
 }
 
+/**
+ * Gives every queued outgoing message back to its draft. The composer cleared
+ * the text and chips at send, so dropping the queue — a Disconnect, a new
+ * connection code — would otherwise lose them for good.
+ */
+function returnOutboxToDrafts(): boolean {
+  const pending = outbox.splice(0);
+  for (const command of pending) { persisted.delete(command.id); restoreCommandDraft(command); }
+  persisted.clear();
+  return pending.length > 0;
+}
+
 function reset(): void {
   controlChromeRecording('stop');
   emit({ type: 'recordingStatus', seconds: 0 });
@@ -651,7 +663,7 @@ async function requestQuickConnection(url: string, current: number): Promise<voi
         await saveResume(typeof key === 'string' && /^[a-f0-9]{64}$/.test(key) ? { key } : undefined);
         await outboxWrite.catch(() => {});
         if (current !== generation || attempt.controller.signal.aborted) { return; }
-        outbox = []; persisted.clear();
+        returnOutboxToDrafts(); await persistOutbox().catch(() => {});
         await chrome.storage.session.set({ connection, outbox });
         if (current !== generation || attempt.controller.signal.aborted) { return; }
         quickAttempt = undefined;
@@ -829,8 +841,7 @@ pairing.addEventListener('submit', event => {
       if (!connection || connection.extensionId !== chrome.runtime.id) { throw new Error('Paste a valid connection code for this Chrome extension.'); }
       const problem = editorCompatibility(connection); if (problem) { throw new Error(problem); }
       const current = ++generation;
-      outbox = []; persisted.clear();
-      await outboxWrite.catch(() => {});
+      returnOutboxToDrafts(); await persistOutbox().catch(() => {});
       await chrome.storage.session.set({ connection, outbox });
       if (current !== generation) { return; }
       code.value = ''; connect(connection);
@@ -839,10 +850,12 @@ pairing.addEventListener('submit', event => {
   })();
 });
 disconnect.addEventListener('click', () => {
-  reset(); outbox = []; persisted.clear(); status.textContent = 'Disconnected from editor';
+  reset();
+  const returned = returnOutboxToDrafts();
+  status.textContent = returned ? 'Disconnected from editor. Messages not yet delivered were returned to their drafts.' : 'Disconnected from editor';
   // A deliberate disconnect forgets the grant: the next connection asks in the editor again.
   void saveResume(undefined);
-  void outboxWrite.catch(() => {}).then(() => chrome.storage.session.remove(['connection', 'outbox']));
+  void persistOutbox().catch(() => {}).then(() => chrome.storage.session.remove(['connection']));
 });
 const initialGeneration = generation;
 void chrome.storage.session.get(['connection', 'draftState', 'outbox', 'elementDrafts', 'annotationTabs', 'footerPosition', 'outboxSession']).then(saved => {

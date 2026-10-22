@@ -123,6 +123,8 @@ button {
 .thread {
 	flex: 1;
 	overflow-y: auto;
+	/* The stuck prompt changes size under the scroll; anchoring would fight it. */
+	overflow-anchor: none;
 	overscroll-behavior: contain;
 }
 
@@ -184,22 +186,31 @@ button {
 	overflow: hidden;
 }
 
-.prompt-content {
-	max-height: 4lh;
-	overflow: hidden;
-}
-
 .prompt-content .bubble-text {
 	display: block;
 	-webkit-line-clamp: unset;
 }
 
-.bubble:hover > .prompt-content,
-.prompt-content:focus-visible {
-	max-height: max(4lh, 50vh);
+/* In its place the prompt is shown whole. Once it is stuck to the top over its
+   reply, chat.ts (fitStickyPrompts) shrinks it with the scroll, to four lines
+   at most; the room it lost, added above what follows it, keeps the rows below where they were, so they do
+   not jump while it shrinks. It is not opened on hover: a scroll area there
+   took the wheel from the chat. */
+.prompt.shrunk .prompt-content { overflow: hidden; }
+/* The room a shrunk prompt lost, given to the rows below it rather than to its own
+   margin: a sticky box's margin counts against its turn, so a margin made the
+   prompt leave the top while the turn's last rows were still on screen. */
+/* On .rows by name: the turn's summary line sits between the prompt and the
+   rows and is usually hidden, and a margin on a hidden box gives nothing. */
+.turn > .rows { margin-top: var(--prompt-room, 0px); }
+.prompt.compact .bubble { cursor: pointer; }
+.prompt.open .bubble { cursor: auto; }
+.prompt.open .prompt-content {
 	overflow-y: auto;
+	/* The wheel scrolls the open message only, never the chat behind it. */
 	overscroll-behavior-y: contain;
 }
+
 
 .bubble-attachments .chip-label { max-width: none; min-width: 0; }
 
