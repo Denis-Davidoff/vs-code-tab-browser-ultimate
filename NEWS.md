@@ -18,13 +18,14 @@ src/chat/news.ts — see "The AI Browser chat" in CLAUDE.md.
 
 Browse, debug and test your pages in VS Code's own browser — and let Claude Code, Codex or Gemini CLI see them, click through them and take screenshots, right inside the editor.
 
-- $(coffee) **Keep awake** — the cup at the top of the chat keeps the computer from sleeping for the time you pick, or until the agents and their sub-agents have finished.
-- $(eye) **View Mode** — Minimal, Compact or Standard in the approval menu: how much of the agents' work, their tool calls and thinking, the chat shows.
-- $(files) **Chats across tabs and windows** — open chats with the top +; right-click tabs to move them between the sidebar, tabs and windows, keeping sessions, drafts and attachments. View chats side by side on one or multiple screens.
-- $(git-commit) **Commits and branches** — at the bottom right of the chat: commit in a couple of clicks with a generated message, and switch or create branches with a generated name.
-- $(device-camera-video) **Record video** — record a browser tab from its toolbar, up to 4K, straight into the chat or to the clipboard.
-- $(location) **Page markers** — pin notes to several elements right in the browser and hand them to the agent as one prompt.
-- $(settings-gear) **Chat Settings** — the gear at the top of the chat: change the system prompts behind commit messages, branch names and chat titles, and clean up temporary files.
+- $(extensions) **Chrome extension** — a full 1:1 mirror of your chat, right in Chrome alongside any website. [Download ZIP](https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/raw/refs/heads/main/chrome-extension/ai-browser-chrome-0.5.0.zip) while Chrome Web Store approval is pending.
+- $(coffee) **Keep awake** — use the cup at the top to prevent sleep for a set time or until all agents and sub-agents finish.
+- $(eye) **View Mode** — choose Minimal, Compact or Standard in the approval menu to control how much work, tool use and thinking is shown.
+- $(files) **Chats across tabs and windows** — open chats with the top +; right-click tabs to move them between the sidebar, tabs and windows with drafts and attachments intact. View chats side by side across screens.
+- $(git-commit) **Commits and branches** — bottom right: commit with a generated message, switch branches or create one with a generated name.
+- $(device-camera-video) **Record video** — record browser tabs from their toolbar, up to 4K, into the chat or clipboard.
+- $(location) **Page markers** — pin notes to page elements and send them to the agent as one prompt.
+- $(settings-gear) **Chat Settings** — use the gear at the top to edit prompts for commit messages, branch names and chat titles, or clean up temporary files.
 
 ## 0.8.9 — 2026-10-22
 - **Safer reconnects**: automatic Chrome reconnection keeps command receipts and late operation results. After an editor restart, uncertain outgoing messages return to drafts for review instead of being silently sent again. Another editor profile's rejection no longer discards the authorized profile's resume key.

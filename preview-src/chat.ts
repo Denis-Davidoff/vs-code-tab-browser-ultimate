@@ -2433,6 +2433,37 @@ setInterval(() => {
  * in that file, not here. Until it has been read, or if it cannot be, the welcome
  * says what the agents can do with what is available.
  */
+function showChromeInstall(trigger: HTMLElement): void {
+	const heading = el('h2', { class: 'news-dialog-title', text: 'Install AI Browser for Chrome' });
+	heading.id = 'chrome-install-title';
+	const close = button([icon('close')], { class: 'ghost round', title: 'Close installation guide' });
+	close.setAttribute('aria-label', 'Close installation guide');
+	const steps = el('ol', { class: 'news-items' });
+	for (const text of [
+		'Download the ZIP and extract it to a folder you will keep.',
+		'Open chrome://extensions in Chrome and enable Developer mode.',
+		'Click Load unpacked and select the extracted folder containing manifest.json.',
+		'Open AI Browser from Chrome’s Extensions menu and click Connect.',
+		'Click Allow in your VS Code chat. If several editor windows are open, choose one in Chrome first.',
+	]) { steps.append(el('li', { text })); }
+	const dialog = el('dialog', { class: 'news-dialog' },
+		el('div', { class: 'news-dialog-header' }, heading, close),
+		el('div', { class: 'news' }, steps));
+	dialog.setAttribute('aria-labelledby', heading.id);
+	close.addEventListener('click', () => dialog.close());
+	dialog.addEventListener('click', event => {
+		const bounds = dialog.getBoundingClientRect();
+		if (event.target === dialog && (event.clientX < bounds.left || event.clientX > bounds.right
+			|| event.clientY < bounds.top || event.clientY > bounds.bottom)) { dialog.close(); }
+	});
+	dialog.addEventListener('close', () => {
+		dialog.remove();
+		if (trigger.isConnected) { trigger.focus(); }
+	}, { once: true });
+	document.body.append(dialog);
+	dialog.showModal();
+}
+
 function welcome(s: ChatViewState): HTMLElement {
 	const available = s.agents.filter(a => a.available);
 	const box = el('div', { class: 'welcome' },
@@ -2453,6 +2484,28 @@ function welcome(s: ChatViewState): HTMLElement {
 		for (const feature of s.news.features) {
 			const text = el('span', { class: 'welcome-feature-text' });
 			inline(text, feature.text);
+			if (feature.title === 'Chrome extension') {
+				// ZIP downloads belong in the system browser.
+				for (const link of text.querySelectorAll<HTMLElement>('[role="link"]')) {
+					const url = link.title.split('\n')[0];
+					if (!/^https:\/\/github\.com\/Denis-Davidoff\/vs-code-tab-browser-ultimate\/raw\/.+\.zip$/.test(url)) { continue; }
+					link.title = 'Download Chrome extension ZIP';
+					link.classList.add('welcome-feature-link');
+					const download = (event: Event) => {
+						event.preventDefault();
+						event.stopImmediatePropagation();
+						post({ type: 'openLink', url, external: true });
+					};
+					link.addEventListener('click', download, { capture: true });
+					link.addEventListener('keydown', event => {
+						if (event.key === 'Enter') { download(event); }
+					}, { capture: true });
+				}
+				const install = button(['How to install'], { class: 'welcome-feature-link' });
+				install.setAttribute('aria-haspopup', 'dialog');
+				install.addEventListener('click', () => showChromeInstall(install));
+				text.append(' ', install);
+			}
 			list.append(el('li', { class: 'welcome-feature' },
 				icon(/^[a-z0-9-]+$/.test(feature.icon) ? feature.icon : 'star', 'welcome-feature-icon'),
 				el('span', {},
@@ -2545,7 +2598,7 @@ function opinionButton(index: number): HTMLButtonElement {
 function entryNode(entry: ChatEntry, i: number): HTMLElement {
 	switch (entry.kind) {
 		case 'user':
-			return promptNode(entry, i);
+			return promptNode(entry);
 		case 'assistant': {
 			// Copies the reply as it came, Markdown and all; shown on hover.
 			const copy = copyButton(() => entry.text, 'Copy reply');
@@ -3093,34 +3146,33 @@ approveToggle.addEventListener('click', () => {
 /**
  * A turn's prompt. Sticky inside its turn: while its reply scrolls, it stays at
  * the top, and the next turn's prompt pushes it away — the Claude Code panel's
- * `.message.stickyHeader`. Long prompts are clamped; a click shows all of it.
+ * `.message.stickyHeader`. Text and attachments share a four-line preview;
+ * hovering reveals the content in a bounded scroll area.
  */
-function promptNode(entry: Extract<ChatEntry, { kind: 'user' }>, i: number): HTMLElement {
-	const key = keyOf(entry, i);
+function promptNode(entry: Extract<ChatEntry, { kind: 'user' }>): HTMLElement {
 	const bubble = el('div', { class: 'bubble' });
+	const content = el('div', { class: 'prompt-content' });
+	content.tabIndex = 0;
+	content.setAttribute('aria-label', 'Prompt and attachments');
+	bubble.append(content);
 	if (entry.attachments.length) {
-		bubble.append(el('div', { class: 'bubble-attachments' },
+		content.append(el('div', { class: 'bubble-attachments' },
 			...entry.attachments.map((label, index) => {
 				const file = entry.attachmentFiles?.[index];
-				return el('span', { class: 'chip small', title: label }, file ? themeFileIcon(file) : undefined, el('span', { class: 'chip-label', text: label }));
+				const kind = entry.attachmentKinds?.[index];
+				const attachmentIconNode = (file ? themeFileIcon(file) : undefined) ?? (kind ? icon(attachmentIcon(kind)) : undefined);
+				return el('span', { class: 'chip small', title: label }, attachmentIconNode, el('span', { class: 'chip-label', text: label }));
 			})));
 	}
 	if (entry.text) {
-		bubble.append(el('div', { class: 'bubble-text' }, ...withFileIcons(markCommands(entry.text, knownCommands(state)))));
+		content.append(el('div', { class: 'bubble-text' }, ...withFileIcons(markCommands(entry.text, knownCommands(state)))));
 		const copy = copyButton(() => entry.text, 'Copy prompt');
 		copy.classList.add('message-copy');
 		bubble.append(copy);
 	}
-	bubble.classList.toggle('expanded', toggled.get(key) === true);
-	bubble.addEventListener('click', () => {
-		// A drag that selected text ends in a click too; it is a selection, not
-		// a request to fold the prompt.
-		if (window.getSelection()?.toString()) {
-			return;
-		}
-		toggled.set(key, !bubble.classList.contains('expanded'));
-		bubble.classList.toggle('expanded');
-	});
+	// Every collapsed preview starts at the beginning, even after scrolling.
+	bubble.addEventListener('mouseleave', () => { content.scrollTop = 0; });
+	content.addEventListener('blur', () => { content.scrollTop = 0; });
 	return el('div', { class: 'prompt' }, bubble);
 }
 
@@ -4027,8 +4079,8 @@ function attachmentIcon(kind: AttachmentKind): string {
 	switch (kind) {
 		case 'screenshot': return 'device-camera';
 		case 'element': return 'inspect';
-		case 'page': return 'link';
-		case 'sharedPage': return 'link-external';
+		case 'page': return 'globe';
+		case 'sharedPage': return 'globe';
 		case 'selection': return 'code';
 		case 'file': return 'file';
 		case 'voice': return 'mic';

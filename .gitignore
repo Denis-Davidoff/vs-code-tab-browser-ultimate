@@ -8,6 +8,7 @@ media/codicon.css.map
 out/
 chrome-extension/dist/
 chrome-extension/*.zip
+!chrome-extension/ai-browser-chrome-0.5.0.zip
 chrome-extension/*.zip.tmp
 node_modules/
 

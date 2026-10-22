@@ -173,7 +173,6 @@ button {
 	border: 1px solid color-mix(in srgb, var(--vscode-charts-yellow, #cca700) 35%, var(--border-strong));
 	background: var(--surface);
 	line-height: var(--line);
-	cursor: pointer;
 }
 
 .bubble-text {
@@ -185,9 +184,21 @@ button {
 	overflow: hidden;
 }
 
-.bubble.expanded .bubble-text {
-	-webkit-line-clamp: unset;
+.prompt-content {
+	max-height: 4lh;
+	overflow: hidden;
+}
+
+.prompt-content .bubble-text {
 	display: block;
+	-webkit-line-clamp: unset;
+}
+
+.bubble:hover > .prompt-content,
+.prompt-content:focus-visible {
+	max-height: max(4lh, 50vh);
+	overflow-y: auto;
+	overscroll-behavior-y: contain;
 }
 
 .bubble-attachments .chip-label { max-width: none; min-width: 0; }
@@ -1366,6 +1377,21 @@ body.vscode-light .code-block pre {
 .welcome-feature-title {
 	font-weight: 600;
 	color: var(--fg);
+}
+
+.welcome-feature-link {
+	padding: 0;
+	border: none;
+	background: transparent;
+	font: inherit;
+	color: var(--vscode-textLink-foreground);
+	text-decoration: underline;
+	text-underline-offset: 2px;
+	cursor: pointer;
+}
+
+.welcome-feature-link:hover {
+	color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground));
 }
 
 /* A single link below the welcome text. */

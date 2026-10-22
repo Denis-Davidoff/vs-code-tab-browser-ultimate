@@ -854,7 +854,8 @@ export class ChatTab {
 		this._unseen = false;
 		this._failuresBefore = failures(this._chat);
 		const entry: UserEntry = { kind: 'user', text: shown, attachments: attachments.map(a => `${attachmentReference(a.chip)} ${a.chip.label}`),
-			...(attachments.some(a => a.chip.iconName) ? { attachmentFiles: attachments.map(a => a.chip.iconName ?? null) } : {}), at: Date.now() };
+			...(attachments.some(a => a.chip.iconName) ? { attachmentFiles: attachments.map(a => a.chip.iconName ?? null) } : {}),
+			...(attachments.length ? { attachmentKinds: attachments.map(a => a.chip.kind) } : {}), at: Date.now() };
 		// A skill prompt followed by one with a check asks the agent to judge it;
 		// the chat shows the prompt as written, the instruction is ours. The
 		// next prompt is the one queued now, whatever was taken out since.

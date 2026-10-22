@@ -307,6 +307,8 @@ export type ChatEntry =
 		readonly kind: 'user'; readonly text: string; readonly attachments: readonly string[]; readonly at?: number;
 		/** Beside `attachments`, by index: the file name each chip carries (`AttachmentChip.iconName`), `null` for none. */
 		readonly attachmentFiles?: readonly (string | null)[];
+		/** Attachment kinds by index, for icons in sent prompts. */
+		readonly attachmentKinds?: readonly AttachmentKind[];
 		/** Set when the turn ends: how long it took and what it cost in tokens. */
 		workedMs?: number; tokensIn?: number; tokensOut?: number; tokensCached?: number;
 		/** The models that answered the turn when they were not the one picked — what Gemini's Auto chose. */
