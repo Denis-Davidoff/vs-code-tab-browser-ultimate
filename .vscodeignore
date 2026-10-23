@@ -28,3 +28,6 @@ PUBLISHING.md
 media/icon.svg
 # The voice helper ships compiled (bin/ai-browser-voice); its Swift source does not.
 native/**
+
+# Separate hosted application
+exchange-server/**

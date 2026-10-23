@@ -257,6 +257,8 @@ difference, in `browserController.js`, was a doc comment whose link had been upd
 - [src/chat/gitExtension.ts](src/chat/gitExtension.ts) — VS Code's Git extension for publish, push and fetch: its askpass signs in to a remote
 - [src/chat/repoWork.ts](src/chat/repoWork.ts) — the git work behind it: the clone in storage, separate copies, read-only checkouts, push
 - [src/core/gitBinary.ts](src/core/gitBinary.ts) — a `git` that can be run without the macOS install dialog, for Connect Codex and the chat
+- [src/chat/exchangeChat.ts](src/chat/exchangeChat.ts) — one chat shared with a hosted Exchange server over an outgoing WebSocket
+- [src/chat/exchangeProtocol.ts](src/chat/exchangeProtocol.ts) — the two remote commands, the server address rule, the text-only snapshot (leaf, under test)
 - [src/chat/chatProtocol.ts](src/chat/chatProtocol.ts) — the messages between the chat's webview and the host (types only, read by both builds)
 - [src/chat/agents.ts](src/chat/agents.ts) — the agent interface, and detecting which agents are installed
 - [src/chat/agentBinary.ts](src/chat/agentBinary.ts) — where `claude` and `codex` are, and which copy to use
@@ -7378,6 +7380,64 @@ and tokens. The panel was checked in headless Chrome: hidden with no agents, a c
 landing with a state post between press and release, a 3 006-character selection and the scroll
 surviving posts, ↑ in a wrapped draft moving the caret.
 
+### Sharing a chat with Exchange
+
+`exchange-server/` is a separate hosted application (Next.js, NestJS, PostgreSQL; its own
+[README](exchange-server/README.md) is the reference for running it and for protocol v1). The
+extension's half is **AI Browser: Connect Chat to Exchange**: one chat of one surface, observed
+as a `ChatStateSurface` like Chrome's, published as a text-only snapshot over a WebSocket the
+extension opens, and driven back by exactly two commands, `chat.send` and `chat.stop`, through
+`ChatViewProvider.commandChromeSource`. `exchange-server/**` is in `.vscodeignore`.
+
+- **A website message is an editor message.** It goes through `_send`, so every approval
+  category on Auto answers yes without a card: a website session can run commands in the
+  workspace. Approvals themselves are never answered remotely; the snapshot says one waits.
+- **The website's `chat.command` is the chat's own UI, narrowed by `exchangeRefusal`** in
+  `chatView.ts`. It refuses `setApprovalMode` (a remote Auto for every category would run
+  commands with no card, and the choice is stored per workspace), `deleteChat`, `openChat`,
+  `temporaryStorage`, `resumeInTerminal`, `setAgentBinary`, `openAgentSetting` and `openFile`,
+  and an inner tab or chat id that is not the shared conversation's. `ExchangeSurface` checks
+  only the outer `chatId`, so a new message type with an `id` must be added there too.
+- **The Chrome extension never copies through the page's DOM.** Its annotation Copy tries
+  `navigator.clipboard` in the page and otherwise a field in the side panel's own document
+  (`copyInPanel`, which `clipboardWrite` lets copy without focus): a `<textarea>` appended to
+  the page let its `MutationObserver` read the note and its `copy` listener rewrite it.
+- **A pick started from the website is answered by the website's click, by coordinates**
+  (`src/browser/remotePick.ts`, a leaf registry). Element and annotation picks register for
+  their tab; `remoteInput` hands a left click on that tab to them instead of dispatching it:
+  `DOM.getNodeForLocation` on the picker's own session for an element, the page script's
+  `pickAt(x, y)` (`elementsFromPoint`, our overlay skipped) for an annotation. Waiting for input
+  on the page left the pick to be finished in the local VS Code browser, where the shared tab is
+  usually a hidden tab behind the website itself. In headless Chrome a CDP click does finish an
+  inspect pick, so the cause in the editor is not pinned down; the coordinate path does not depend
+  on it. A handler that declines (no annotation pick under way) lets the click reach the page.
+  **The website sends pointer moves** (`action: 'move'`, a mouse only, at most every 120 ms and
+  never with more than two commands in flight), dispatched as `mouseMoved`: the inspect overlay
+  and the annotation picker highlight from it, and the page gets its own hover.
+- **Close from the website** (`action: 'close'`, the × button) closes the shared tab: the
+  built-in browser's with `tab.close()` (`remoteInput`), and for a Chrome source the stream is
+  stopped and the selection cleared (`exchangeBrowser.ts`). There is no DevTools action: one was
+  built and removed, and the protocol refuses `devtools` (`remoteBrowserProtocol.test.ts`).
+- **The stream relay refuses the way the chat relay does** (`Refused` in `stream-relay.ts`):
+  4001 on `/ws/stream-agent` and 1008 on `/ws/stream-browser` for evidence, 1011 for a check
+  that failed. It closed 4001 on any error, so one database hiccup stopped streaming for good.
+- **Refused in an untrusted workspace**; plaintext only to loopback (`exchangeServerUrl`); the
+  key in SecretStorage, the address and point ID in workspaceState; nothing reconnects after a
+  window reload.
+- **Only close code 4001 stops the client for good** (refused key, revoked or deleted point,
+  connection replaced). Every other close reconnects with backoff. It was 1008 for all of them,
+  and the relay also sent 1008 for a snapshot it could not parse and for a queue overflow, so a
+  slow database read as "your key was revoked" and disconnected for good. A failure *while*
+  checking the key (the database, the session store) is 1011, not 4001: only evidence refuses
+  (`Refused` in `relay.ts`). The relay keeps 1008 for a refused `/ws/browser`.
+- **The client's frame limit is the relay's `maxPayload` (8 MB for chat, 2.1 MB for the stream relay), in bytes.** The protocol limits
+  `text` in UTF-16 units (64 000), and 64 000 Cyrillic characters are 128 000+ UTF-8 bytes: a
+  128 000-byte limit closed the socket on a valid command, the relay timed out after 30 s, and a
+  retry did the same. Compare frames in bytes against the relay's own limit.
+
+Not run inside VS Code against a live server yet beyond the README's manual steps; the smoke test
+(`npm run test:smoke` in `exchange-server/`) covers the relay with a fake agent.
+
 ### Keeping the computer awake
 
 The cup in the chat view's title bar — beside New Chat, Chat History and Refresh Agents —
@@ -9657,6 +9717,16 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
      function starts calling a new helper, the test fails with `ReferenceError` while the product
      works (`prepareChromeMessage`, `chromeFooter.test.ts`). Lift the helper too, not a stub,
      so the test still exercises the real path.
+522. **One close code for "revoked" and "transient"** → the Exchange relay closed an agent with
+     1008 for a revoked key and for a bad message or a full queue alike, and the client stopped
+     for good on any 1008. Give a permanent refusal its own code (4001).
+523. **A size limit in one unit on the server and another on the client** → 64 000 UTF-16 units
+     pass the relay and exceed 128 000 UTF-8 bytes; the client dropped the connection on a valid
+     command. Bound frames in bytes, by the receiver's real limit.
+524. **A pick that waits for input on a page the viewer is not looking at** → Element and
+     Annotation pressed on the Exchange website armed the picker on the shared tab, and the
+     website's click never finished it, so the pick was done in the local VS Code browser
+     instead. Resolve a remote pick from the click's coordinates (`remotePick.ts`).
 
 ## Special cases and non-obvious decisions
 

@@ -4865,8 +4865,22 @@ body.vscode-high-contrast-light .context-pie {
 
 /* Dragging chat tabs: leave the source readable and mark the insertion edge. */
 .tab.dragging { opacity: .5; }
-.tab.drop-before { box-shadow: inset 2px 0 var(--accent); }
-.tab.drop-after { box-shadow: inset -2px 0 var(--accent); }
+.tab.drop-before,
+.tab.drop-after { position: relative; }
+.tab.drop-before::before,
+.tab.drop-after::before {
+	content: '';
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	width: 2px;
+	border-radius: 0;
+	background: var(--accent);
+	pointer-events: none;
+	z-index: 1;
+}
+.tab.drop-before::before { left: 0; }
+.tab.drop-after::before { right: 0; }
 
 .receiving-chat-tab .tab-strip { box-shadow: inset 0 -2px var(--accent); }
 
@@ -5027,8 +5041,16 @@ body.vscode-high-contrast-light .context-pie {
 
 	.tab-add-label { display: inline; }
 
-	.tab.drop-before { box-shadow: inset 0 2px var(--accent); }
-	.tab.drop-after { box-shadow: inset 0 -2px var(--accent); }
+	.tab.drop-before::before,
+	.tab.drop-after::before {
+		left: 0;
+		right: 0;
+		bottom: auto;
+		width: auto;
+		height: 2px;
+	}
+	.tab.drop-before::before { top: 0; }
+	.tab.drop-after::before { top: auto; bottom: 0; }
 	.receiving-chat-tab .tab-strip { box-shadow: inset -2px 0 var(--accent); }
 
 	.chat-drawer-right .tab-strip {
@@ -5205,9 +5227,27 @@ body.vscode-high-contrast-light .context-pie {
 	background-size: 200% 100%;
 	animation: chrome-mirror-flow 4s linear infinite;
 }
-/* Drawer tabs use a 1px border instead of the horizontal strip's 2px border. */
+/* In the drawer, mark the edge facing the conversation. */
 @media (min-width: 1000px) {
-	.tab.chrome-mirrored::after { bottom: -1px; }
+	.tab.chrome-mirrored::after {
+		top: 6px;
+		bottom: 6px;
+		left: auto;
+		right: -1px;
+		width: 2px;
+		height: auto;
+		background-image: linear-gradient(180deg, #34d399, #22d3ee, #818cf8, #e879f9, #34d399);
+		background-size: 100% 200%;
+		animation-name: chrome-mirror-flow-vertical;
+	}
+	.chat-drawer-right .tab.chrome-mirrored::after {
+		left: -1px;
+		right: auto;
+	}
+}
+@keyframes chrome-mirror-flow-vertical {
+	from { background-position: 50% 0%; }
+	to { background-position: 50% 200%; }
 }
 @keyframes chrome-mirror-flow {
 	from { background-position: 0% 50%; }
@@ -5219,3 +5259,27 @@ body.vscode-high-contrast-light .context-pie {
 		background-position: 50% 50%;
 	}
 }
+
+/* Remote workspace settings use the chat's existing theme tokens. */
+.server-settings h3 { margin: 0 0 8px; font-size: 14px; font-weight: 600; }
+.server-connection-form { display: flex; flex-direction: column; gap: 14px; margin: 18px 0; }
+.server-connection-form label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--fg-2); }
+.server-connection-form input { box-sizing: border-box; width: 100%; min-width: 0; padding: 8px 10px; font: inherit; color: var(--fg); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius); outline: none; }
+.server-connection-form input:focus { border-color: var(--accent); }
+.server-connection-form input::placeholder { color: var(--fg-faint); }
+.server-key-status { font-size: 10px; color: var(--fg-3); }
+.server-connection-status { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; padding: 5px 9px; border: 1px solid var(--border); border-radius: 5px; color: var(--fg-3); background: var(--soft); }
+.server-connection-status::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.server-connection-status[data-status="connected"] { color: var(--ok); }
+.server-connection-status[data-status="connecting"], .server-connection-status[data-status="reconnecting"] { color: var(--vscode-textLink-foreground, var(--accent)); }
+.server-connection-status[data-status="error"], .server-settings .server-connection-error { color: var(--bad); }
+.server-connection-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+.server-connection-actions button { min-height: 30px; padding: 6px 12px; border-radius: 6px; cursor: pointer; }
+.server-connection-actions button:disabled { opacity: .5; cursor: default; }
+
+.remote-folder-dialog { width: min(480px, calc(100% - 32px)); }
+.remote-folder-dialog form, .remote-folder-dialog label { display: flex; flex-direction: column; gap: 12px; }
+.remote-folder-dialog h2 { margin: 0; font-size: 16px; }
+.remote-folder-dialog input { width: 100%; box-sizing: border-box; padding: 8px; color: var(--fg); background: var(--bg); border: 1px solid var(--border-strong); border-radius: 4px; }
+.remote-folder-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.remote-folder-actions button { padding: 6px 12px; cursor: pointer; color: var(--fg); background: var(--soft); border: 1px solid var(--border-strong); border-radius: 4px; }

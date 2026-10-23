@@ -59,7 +59,7 @@ export function chromeChatSnapshot(state: ChatViewState, editorVersion?: string)
 		entries: state.entries,
 		canSend: true,
 		canAttachElements: true,
-		view: { ...state, dragToken: undefined, chatSurfaces: [], panel: undefined, chromeConnectionRequest: undefined, chromeMirror: undefined,
+		view: { ...state, exchangeConnection: undefined, dragToken: undefined, chatSurfaces: [], panel: undefined, chromeConnectionRequest: undefined, chromeMirror: undefined,
 			tabs: state.tabs, attachments: [], suggestions: [],
 			voice: { ...state.voice, available: false },
 			agents: state.agents?.map(({ copies: _copies, binary: _binary, pinned: _pinned, ...agent }) => agent) ?? [],
@@ -137,6 +137,9 @@ export function readChromeChatCommand(value: unknown): ChromeChatCommand | undef
 	if (raw.attachments !== undefined && (!attachments || m.type !== 'send')) { return undefined; }
 	let message: ViewToHost;
 	switch (m.type) {
+		case 'openAttachment':
+			if (typeof m.id !== 'string' || m.id.length > 200 || typeof m.entry !== 'number' || !Number.isSafeInteger(m.entry) || m.entry < 0) { return undefined; }
+			message = { type: 'openAttachment', id: m.id, entry: m.entry }; break;
 		case 'setViewMode':
 			if (m.mode !== 'minimal' && m.mode !== 'compact' && m.mode !== 'standard') { return undefined; }
 			message = { type: 'setViewMode', mode: m.mode }; break;

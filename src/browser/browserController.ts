@@ -3,8 +3,10 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { takeRemotePick } from './remotePick';
 import * as vscode from 'vscode';
 import { CDPClient } from '../core/cdp';
+import type { RemoteBrowserInput } from './remoteBrowserProtocol';
 import { extractElementData, renderElementMarkdown } from '../elements/elementContext';
 import { tabs as tabSource } from './tabSource';
 import { legacyMarkerRemoval, stripMarker, stripMarkerFromHtml } from './shareIndicator';
@@ -924,6 +926,89 @@ function literal(value: unknown): string {
 }
 
 export class BrowserController implements vscode.Disposable {
+
+	/** Explicit human remote control, independent of assistants' tab assignments. */
+	public async remoteTabs(): Promise<{id:string;title:string;url:string}[]> {
+		await this._settle(); requireGrant();
+		const tabs=tabSource.all ?? []; this._identify(tabs);
+		return tabs.slice(0,100).map(tab=>({id:this._idOf(tab),title:(stripMarker(tab.title)??'').slice(0,2000),url:tab.url.slice(0,16000)}));
+	}
+	private async _remoteTab(id:string): Promise<vscode.BrowserTab> {
+		await this._settle(); requireGrant();
+		if(!vscode.workspace.isTrusted)throw new Error('Trust this workspace before remote browser control.');
+		const tabs=tabSource.all ?? [];this._identify(tabs);
+		const tab=tabs.find(t=>this._idOf(t)===id);
+		if(!tab)throw new Error('The selected browser tab was closed. Select another tab.');
+		return tab;
+	}
+	public remoteTab(id:string):Promise<vscode.BrowserTab> { return this._remoteTab(id); }
+	public async remoteStream(id:string,frame:(data:string,width:number,height:number)=>void):Promise<vscode.Disposable> {
+		const tab=await this._remoteTab(id),release=this._hold(tab);
+		let session:TabSession;
+		try{session=await this._sessionFor(tab);}catch(error){release();throw error;}
+		let closed=false,busy=false,lastFrame=0;
+		const send=async(method:string,params?:object)=>{
+			let timeout:ReturnType<typeof setTimeout>|undefined;
+			try{return await Promise.race([session.client.send(method,params,session.sessionId),new Promise<never>((_,reject)=>{timeout=setTimeout(()=>reject(new Error('Browser did not respond')),5000);})]);}
+			finally{clearTimeout(timeout);}
+		};
+		const listener=session.client.on('Page.screencastFrame',(event,sessionId)=>{
+			if(sessionId!==session.sessionId)return;
+			void send('Page.screencastFrameAck',{sessionId:event.sessionId}).catch(()=>{});
+			if(closed || Date.now()-lastFrame<100)return;
+			const width=event.metadata?.deviceWidth,height=event.metadata?.deviceHeight;
+			if(typeof event.data==='string' && event.data.length<2_000_000 && Number.isFinite(width)&&width>0&&Number.isFinite(height)&&height>0){lastFrame=Date.now();frame(event.data,width,height);}
+		});
+		try{await send('Page.startScreencast',{format:'jpeg',quality:60,maxWidth:1440,maxHeight:1000,everyNthFrame:1});}catch{/* Screenshot fallback also supports browsers without screencast. */}
+		const tick=async()=>{
+			if(closed||busy||Date.now()-lastFrame<1500)return;busy=true;
+			try{
+				await this._remoteTab(id);
+				const metrics=await send('Page.getLayoutMetrics');
+				const viewport=metrics.cssLayoutViewport ?? metrics.layoutViewport;
+				const {data}=await send('Page.captureScreenshot',{format:'jpeg',quality:60,captureBeyondViewport:false,clip:{x:viewport.pageX,y:viewport.pageY,width:viewport.clientWidth,height:viewport.clientHeight,scale:Math.min(1,1440/viewport.clientWidth,1000/viewport.clientHeight)}});
+				if(!closed&&typeof data==='string'&&data.length<2_000_000){lastFrame=Date.now();frame(data,viewport.clientWidth,viewport.clientHeight);}
+			}catch{/* A closed tab is reported by the next tabs refresh. */}finally{busy=false;}
+		};
+		const timer=setInterval(()=>void tick(),500);void tick();
+		return new vscode.Disposable(()=>{closed=true;clearInterval(timer);listener.dispose();void send('Page.stopScreencast').catch(()=>{});release();});
+	}
+	public async remoteInput(id:string,input:RemoteBrowserInput):Promise<void> {
+		const tab=await this._remoteTab(id);
+		if(input.action==='close'){await tab.close();return;}
+		const release=this._hold(tab);
+		try{
+			const session=await this._sessionFor(tab);
+			const send=async(method:string,params?:object)=>{
+				let timeout:ReturnType<typeof setTimeout>|undefined;
+				try{return await Promise.race([session.client.send(method,params,session.sessionId),new Promise<never>((_,reject)=>{timeout=setTimeout(()=>reject(new Error('Browser action timed out; check the page before retrying.')),5000);})]);}
+				finally{clearTimeout(timeout);}
+			};
+			if(input.action==='navigate'){await send('Page.navigate',{url:input.url});return;}
+			if(input.action==='reload'){await send('Page.reload');return;}
+			if(input.action==='back'||input.action==='forward'){
+				const history=await send('Page.getNavigationHistory');const entry=history.entries[history.currentIndex+(input.action==='back'?-1:1)];
+				if(entry)await send('Page.navigateToHistoryEntry',{entryId:entry.id});return;
+			}
+			if(input.action==='text'){await send('Input.insertText',{text:input.text});return;}
+			if(input.action==='key'){
+				const codes:Record<string,number>={Backspace:8,Tab:9,Enter:13,Escape:27,Delete:46,ArrowLeft:37,ArrowUp:38,ArrowRight:39,ArrowDown:40,Home:36,End:35,PageUp:33,PageDown:34};
+				const key={key:input.key,windowsVirtualKeyCode:codes[input.key]??input.key.toUpperCase().charCodeAt(0),modifiers:input.modifiers};
+				await send('Input.dispatchKeyEvent',{type:'keyDown',...key});await send('Input.dispatchKeyEvent',{type:'keyUp',...key});return;
+			}
+			if(input.action!=='click'&&input.action!=='scroll'&&input.action!=='move')return;
+			const metrics=await send('Page.getLayoutMetrics');const viewport=metrics.cssLayoutViewport ?? metrics.layoutViewport;
+			const x=Math.min(viewport.clientWidth-1,input.x*viewport.clientWidth),y=Math.min(viewport.clientHeight-1,input.y*viewport.clientHeight);
+			// A pointer move from the viewer: the inspect overlay and the annotation picker highlight from it.
+			if(input.action==='move'){await send('Input.dispatchMouseEvent',{type:'mouseMoved',x,y,button:'none'});return;}
+			if(input.action==='scroll'){await send('Input.dispatchMouseEvent',{type:'mouseWheel',x,y,deltaX:input.deltaX,deltaY:input.deltaY});return;}
+			// A pick waiting on this tab takes the click by its coordinates (remotePick.ts).
+			if(input.button==='left'&&await takeRemotePick(tab,x,y))return;
+			await send('Input.dispatchMouseEvent',{type:'mouseMoved',x,y,button:'none'});
+			await send('Input.dispatchMouseEvent',{type:'mousePressed',x,y,button:input.button,clickCount:input.count});
+			await send('Input.dispatchMouseEvent',{type:'mouseReleased',x,y,button:input.button,clickCount:input.count});
+		}finally{release();}
+	}
 
 	/**
 	 * One CDP session per tab, not one for the window.
@@ -2841,14 +2926,14 @@ export class BrowserController implements vscode.Disposable {
 	 * The picker waits for a click, so the page must be on screen (#355); the
 	 * tab is returned so the confirmation can name it.
 	 */
-	public async annotatePage(): Promise<vscode.BrowserTab> {
+	public async annotatePage(mode: 'element' | 'point' = 'element'): Promise<vscode.BrowserTab> {
 		requireGrant();
 		const tab = this.focusedTab ?? this.userTab;
 		if (!tab) { throw new Error('Open a page in the integrated browser first.'); }
 		if (!this.onScreen(tab)) {
 			throw new Error(`"${plainInLabel(pageTitle(tab.title, tab.url), 60)}" is not on screen — bring its tab to the front, then add a marker.`);
 		}
-		await this._annotations.start(tab);
+		await this._annotations.start(tab, mode);
 		return tab;
 	}
 
@@ -2878,9 +2963,9 @@ export class BrowserController implements vscode.Disposable {
 	}
 
 	/** User action from the chat's "+": the tab the chat resolved, on screen. */
-	public async annotateTab(tab: vscode.BrowserTab): Promise<void> {
+	public async annotateTab(tab: vscode.BrowserTab, mode: 'element' | 'point' = 'element'): Promise<void> {
 		requireGrant();
-		await this._annotations.start(tab);
+		await this._annotations.start(tab, mode);
 	}
 
 	public onDidChangeAnnotations(listener: (change: AnnotationChange) => void): vscode.Disposable {

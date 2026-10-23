@@ -277,6 +277,7 @@ const twins = {
 	'aiBrowser.repeat.chat.cssLocation': 'aiBrowser.chat.addCssLocation',
 	'aiBrowser.repeat.chat.xpath': 'aiBrowser.chat.addXPath',
 	'aiBrowser.repeat.annotate': 'aiBrowser.annotatePage',
+	'aiBrowser.repeat.annotateAnywhere': 'aiBrowser.annotateAnywhere',
 };
 for (const [delegate, twin] of Object.entries(twins)) {
 	if (!commands.has(delegate)) {

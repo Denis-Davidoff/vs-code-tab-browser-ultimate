@@ -65,6 +65,7 @@ export interface StoredChat {
 }
 
 export interface Attachment {
+	readonly exchangeAnnotation?: { readonly tabId: string; readonly id: string };
 	readonly chromeAnnotation?: { readonly tabId: number; readonly url: string; readonly id: string; readonly chatId: string };
 	readonly chip: AttachmentChip;
 	readonly text?: string;
@@ -855,7 +856,10 @@ export class ChatTab {
 		this._failuresBefore = failures(this._chat);
 		const entry: UserEntry = { kind: 'user', text: shown, attachments: attachments.map(a => `${attachmentReference(a.chip)} ${a.chip.label}`),
 			...(attachments.some(a => a.chip.iconName) ? { attachmentFiles: attachments.map(a => a.chip.iconName ?? null) } : {}),
-			...(attachments.length ? { attachmentKinds: attachments.map(a => a.chip.kind) } : {}), at: Date.now() };
+			...(attachments.length ? {
+				attachmentKinds: attachments.map(a => a.chip.kind),
+				attachmentData: attachments.map(a => ({ chip: { ...a.chip }, text: a.text, file: a.file?.toString(), image: a.image })),
+			} : {}), at: Date.now() };
 		// A skill prompt followed by one with a check asks the agent to judge it;
 		// the chat shows the prompt as written, the instruction is ours. The
 		// next prompt is the one queued now, whatever was taken out since.

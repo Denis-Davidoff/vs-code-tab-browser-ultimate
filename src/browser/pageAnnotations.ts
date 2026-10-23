@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { onRemotePick } from './remotePick';
 import { CDPClient } from '../core/cdp';
 import { annotationSource } from './annotationScript';
 import { annotationClipboardText, annotationColors, parseAnnotations, type PageAnnotation } from './annotationData';
@@ -23,6 +24,8 @@ interface Connection {
 	/** Ids an assistant added over MCP: not "created" for the chat, which binds only the user's notes. */
 	agentMade: Set<string>;
 	disposed: boolean;
+	/** Set once a remote viewer's clicks are routed to this page's picker. */
+	remotePick?: boolean;
 }
 
 /**
@@ -191,12 +194,21 @@ export class PageAnnotations implements vscode.Disposable {
 		return promise;
 	}
 
-	public async start(tab: vscode.BrowserTab): Promise<void> {
+	public async start(tab: vscode.BrowserTab, mode: 'element' | 'point' = 'element'): Promise<void> {
 		const connection = await this._open(tab);
 		if (connection.boot) { await connection.boot; }
 		if (!connection.contextId) { await this._boot(connection); }
 		if ((connection.pages.get(connection.url)?.length ?? 0) >= 50) { throw new Error('This page already has 50 annotations. Remove a note before adding another.'); }
-		await this._evaluate(connection, `${annotationSource}.start(${JSON.stringify(this._data(connection))})`);
+		await this._evaluate(connection, `${annotationSource}.start(${JSON.stringify({ ...this._data(connection), mode })})`);
+		// A remote viewer's click picks by its coordinates: input sent to a page
+		// hidden behind another editor tab does not reach the picker (remotePick.ts).
+		if (!connection.remotePick) {
+			connection.remotePick = true;
+			connection.subscriptions.push(onRemotePick(tab, async (x, y) => {
+				if (connection.disposed || this._connections.get(tab) !== connection) { return false; }
+				return await this._evaluate(connection, `${annotationSource}.pickAt(${JSON.stringify(x)},${JSON.stringify(y)})`) === true;
+			}) as vscode.Disposable);
+		}
 	}
 
 	private async _confirmRemove(tab: vscode.BrowserTab, connection: Connection, id: string): Promise<void> {

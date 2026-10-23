@@ -29,6 +29,10 @@ function page() {
 		getRootNode() { return document; }
 		closest(_selector: string): Element | undefined { return ['script', 'style', 'noscript', 'input', 'textarea', 'select'].includes(this.localName) || this.isContentEditable ? this : this.parentElement?.closest(_selector); }
 		getBoundingClientRect() { return { left: 100, right: 280, top: 100, bottom: 140, width: 180, height: 40 }; }
+		captured?: number;
+		setPointerCapture(id: number) { this.captured = id; }
+		hasPointerCapture(id: number) { return this.captured === id; }
+		releasePointerCapture(_id: number) { this.captured = undefined; }
 		focus() { document.activeElement = this; }
 		addEventListener(type: string, fn: (event: any) => void) { const entries = this.listeners.get(type) ?? []; entries.push(fn); this.listeners.set(type, entries); }
 		fire(type: string, extra: any = {}) { for (const fn of this.listeners.get(type) ?? []) { fn({ isTrusted: true, stopPropagation() {}, ...extra }); } }
@@ -45,6 +49,7 @@ function page() {
 	document = {
 		documentElement: new Element('html'), createElement: (tag: string) => new Element(tag),
 		createElementNS: (_ns: string, tag: string) => new Element(tag),
+		elementsFromPoint: () => all(document.documentElement).filter(node => !node.shadow).reverse(),
 		querySelectorAll: (selector: string) => all(document.documentElement).filter(node => selector === `#${node.id}` || selector === positional(node)),
 		createTreeWalker: (root: Element) => {
 			const entries = all(root).filter(node => node.data).map(node => ({ parentElement: node, data: node.data })); let index = 0;
@@ -52,7 +57,7 @@ function page() {
 		},
 	};
 	const windowEvents = new Map<string, (event: any) => void>();
-	const window = { addEventListener: (name: string, handler: (event: any) => void) => windowEvents.set(name, handler), removeEventListener: (name: string) => windowEvents.delete(name) };
+	const window = { scrollX: 0, scrollY: 0, addEventListener: (name: string, handler: (event: any) => void) => { const previous = windowEvents.get(name); windowEvents.set(name, previous ? (event: any) => { previous(event); handler(event); } : handler); }, removeEventListener: (name: string) => windowEvents.delete(name) };
 	const ticks = new Set<() => void>(); const messages: any[] = [];
 	const location = { href: 'http://example.test/page' };
 	const context = { document, window, location, Element, NodeFilter: { SHOW_TEXT: 4 }, CSS: { escape: (value: string) => value },
@@ -65,12 +70,12 @@ function page() {
 	const target = new Element('button'); target.id = 'save'; target.textContent = 'Save'; body.append(target);
 	const shadow = document.documentElement.children.find((node: Element) => node.shadow)?.shadow!;
 	const find = (className: string) => all(shadow).find(node => node.className.split(' ').includes(className))!;
-	const pick = (element = target, trusted = true) => {
+	const pick = (element = target, trusted = true, clientX = 120, clientY = 110) => {
 		let prevented = false;
-		windowEvents.get('click')!({ target: element, isTrusted: trusted, composedPath: () => [element, body, document.documentElement], preventDefault() { prevented = true; }, stopImmediatePropagation() {} });
+		windowEvents.get('click')!({ target: element, clientX, clientY, isTrusted: trusted, composedPath: () => [element, body, document.documentElement], preventDefault() { prevented = true; }, stopImmediatePropagation() {} });
 		return prevented;
 	};
-	return { api, target, body, Element, messages, find, pick, ticks, windowEvents, location, shadow, all };
+	return { api, target, body, Element, messages, find, pick, ticks, windowEvents, location, shadow, all, window };
 }
 
 test('toolbar lives outside the page; trusted selection creates editable notes and stable numbered badges', () => {
@@ -127,5 +132,77 @@ test('SPA URL change hides old annotations and requests the new URL without copy
 		p.location.href = 'http://example.test/another'; for (const tick of p.ticks) { tick(); }
 		assert.equal(p.api.collect().records.length, 0);
 		assert.equal(p.messages.at(-1).type, 'navigate'); assert.equal(p.messages.at(-1).url, p.location.href);
+	} finally { p.api.dispose(); }
+});
+
+
+test('point annotations keep their page coordinates, stacked context and mode after restoration', () => {
+	const p = page();
+	try {
+		p.window.scrollY = 200;
+		p.api.start({ records: [], nextNumber: 1, mode: 'point' });
+		p.pick();
+		const record = p.api.collect().records[0];
+		assert.equal(record.point.x, 120);
+		assert.equal(record.point.y, 310);
+		assert.equal(record.point.elements[0].selector, '#save');
+		assert.equal(record.point.elements.some((el: any) => el.tag === 'body'), true);
+		assert.equal(p.find('note').style.top, '110px');
+		p.window.scrollY = 250;
+		for (const tick of p.ticks) { tick(); }
+		assert.equal(p.find('note').style.top, '60px');
+		p.target.remove();
+		p.api.hydrate({ records: [record], nextNumber: 2 });
+		assert.equal(p.api.collect().records[0].elementFound, true);
+		assert.equal(p.find('tag').textContent, 'Page point');
+	} finally { p.api.dispose(); }
+});
+
+
+function pointer(type: string, x: number, y: number, extra: any = {}) {
+	return { type, button: 0, pointerId: 1, clientX: x, clientY: y, isTrusted: true,
+		preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {}, ...extra };
+}
+
+test('dragging an anywhere marker preserves its note and refreshes context only on drop', () => {
+	const p = page();
+	try {
+		p.api.start({ records: [], nextNumber: 1, mode: 'point' }); p.pick();
+		const record = p.api.collect().records[0]; record.text = 'Keep this note';
+		p.api.hydrate({ records: [record], nextNumber: 2 });
+		const badge = p.find('badge'), changes = p.messages.length;
+		badge.fire('pointerdown', pointer('pointerdown', 125, 115));
+		p.windowEvents.get('pointermove')!(pointer('pointermove', 225, 215));
+		assert.equal(p.find('note').style.left, '220px');
+		assert.equal(p.messages.length, changes);
+		p.target.id = 'new-target'; p.target.textContent = 'New context';
+		p.windowEvents.get('pointerup')!(pointer('pointerup', 225, 215));
+		const moved = p.api.collect().records[0];
+		assert.equal(moved.id, record.id); assert.equal(moved.text, 'Keep this note');
+		assert.equal(moved.point.x, 220); assert.equal(moved.point.y, 210);
+		assert.equal(moved.element.selector, '#new-target');
+		assert.equal(moved.point.elements[0].text, 'New context');
+		assert.equal(p.messages.length, changes + 1);
+		badge.fire('click'); assert.equal(p.find('card').hidden, true);
+		assert.equal(badge.captured, undefined);
+	} finally { p.api.dispose(); }
+});
+
+test('anywhere drag cancellation restores coordinates and a simple click still opens the note', () => {
+	const p = page();
+	try {
+		p.api.start({ records: [], nextNumber: 1, mode: 'point' }); p.pick();
+		const record = p.api.collect().records[0];
+		p.api.hydrate({ records: [record], nextNumber: 2 });
+		const badge = p.find('badge'), changes = p.messages.length;
+		badge.fire('pointerdown', pointer('pointerdown', 125, 115));
+		p.windowEvents.get('pointermove')!(pointer('pointermove', 225, 215));
+		p.windowEvents.get('pointercancel')!(pointer('pointercancel', 225, 215));
+		assert.equal(p.api.collect().records[0].point.x, 120);
+		assert.equal(p.messages.length, changes);
+		badge.fire('click'); // Consume the synthetic click following a cancelled drag.
+		badge.fire('pointerdown', pointer('pointerdown', 125, 115));
+		p.windowEvents.get('pointerup')!(pointer('pointerup', 125, 115));
+		badge.fire('click'); assert.equal(p.find('card').hidden, false);
 	} finally { p.api.dispose(); }
 });

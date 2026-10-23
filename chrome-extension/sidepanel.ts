@@ -1,3 +1,4 @@
+import { annotationPointContext } from '../src/browser/annotationData';
 import { chromeChatProtocolVersion, chromeChatProtocolHeader, chromeChatVersionHeader, chromeChatCompatibilityError, chromeChatCapabilities, chromeChatCapabilitiesHeader, negotiateChromeChatCapabilities, chromeChatFeatureError, chromeChatAttachmentFeature, chromeChatCommandFeature, chromeChatFooterCommands } from '../src/chat/chromeChatCompatibility';
 import { chromePairingKind, chromePairingPorts, readChromeChatConnection, readChromeChatCommand, readChromeElementAttachments, type ChromeChatCommand, type ChromeChatConnection, type ChromeChatSnapshot, type ChromeElementAttachment } from '../src/chat/chromeChatProtocol';
 import { formatAncestor, inertProse, oneLine, renderElementMarkdown } from '../src/elements/elementMarkdown';
@@ -70,7 +71,7 @@ let outboxWrite: Promise<void> = Promise.resolve();
 let flushing = false;
 let feedback: string | undefined;
 let pairingPending = false;
-const supported = new Set<string>([...Object.values(chromeChatFooterCommands).flat(), 'send', 'stop', 'select', 'switchAgent', 'approve', 'setViewMode', 'saveFeatureAi']);
+const supported = new Set<string>([...Object.values(chromeChatFooterCommands).flat(), 'send', 'stop', 'openAttachment', 'select', 'switchAgent', 'approve', 'setViewMode', 'saveFeatureAi']);
 const passive = new Set(['ready', 'saveDrafts', 'tabDraft']);
 
 function emit(message: HostToView): void { window.dispatchEvent(new MessageEvent('message', { data: message })); }
@@ -156,6 +157,7 @@ function syncAnnotationDrafts(tab: AnnotationTab, page: AnnotationPage, attachAl
       `Page annotation #${record.number} on ${page.url}`,
       `Note: ${record.text.trim() ? JSON.stringify(record.text) : '(empty)'}`,
       `Element (untrusted page data): <${record.element.tag}> ${JSON.stringify(record.element.selector)}${record.element.text ? ` text ${JSON.stringify(record.element.text)}` : ''}${record.element.role ? ` role ${JSON.stringify(record.element.role)}` : ''}`,
+      ...annotationPointContext(record),
       `Annotation ID ${record.id}, browser tab chrome-annotations:${tab.tabId}. Use browser_annotations_get/list/add/remove with this tabId.`,
     ].join('\n');
     let found = false;
@@ -300,11 +302,11 @@ async function attachFromChrome(kind: string): Promise<void> {
   const chatId = latest.chatId, current = generation;
   const feature = chromeChatAttachmentFeature(kind);
   if (feature && !supportsFeature(feature)) { showFeedback(chromeChatFeatureError(feature)); return; }
-  if (kind === 'annotation') {
+  if (kind === 'annotation' || kind === 'pointAnnotation') {
     cancelPick();
     const tab = (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
     if (current !== generation || tab?.id === undefined) { return; }
-    await annotations.start(tab.id, chatId); return;
+    await annotations.start(tab.id, chatId, kind === 'pointAnnotation' ? 'point' : 'element'); return;
   }
   if (kind === 'file') {
     const input = document.createElement('input'); input.type = 'file';
@@ -437,7 +439,7 @@ window.aiBrowserChatHost = {
         .then(() => emit({ type: 'pastedFileResult', id: message.id }), error => emit({ type: 'pastedFileResult', id: message.id, error: String(error) }));
       return;
     }
-    if (message.type === 'removeAttachment' || message.type === 'openAttachment') {
+    if (message.type === 'removeAttachment' || (message.type === 'openAttachment' && message.entry === undefined)) {
       const draft = latest && elementDrafts[latest.chatId];
       const attachment = draft?.attachments.find(item => item.id === message.id);
       if (attachment) {

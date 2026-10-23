@@ -1,5 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { readFileSync } from 'node:fs';
+import { onRemotePick, takeRemotePick } from './remotePick.ts';
 import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { transpileModule, ModuleKind, ScriptTarget } from 'typescript';
@@ -49,7 +50,7 @@ function fixture() {
 	const exports: any = {};
 	runInNewContext(transpileModule(readFileSync('src/browser/pageAnnotations.ts', 'utf8'), { compilerOptions: { module: ModuleKind.CommonJS, target: ScriptTarget.ES2022 } }).outputText, {
 		exports, setTimeout, clearTimeout, AbortController,
-		require: (name: string) => name === '../core/cdp' ? { CDPClient: class { constructor(channel: any) { return channel; } } }
+		require: (name: string) => name === './remotePick' ? { onRemotePick, takeRemotePick } : name === '../core/cdp' ? { CDPClient: class { constructor(channel: any) { return channel; } } }
 			: name === './annotationData' ? { parseAnnotations, annotationColors, annotationClipboardText }
 				: name === 'crypto' ? { randomUUID: () => '00000000-0000-0000-0000-0000000000aa' } : name === './annotationScript' ? { annotationSource: '__api' }
 				: name === '../core/notify' ? { confirm() {}, refuse() {} }

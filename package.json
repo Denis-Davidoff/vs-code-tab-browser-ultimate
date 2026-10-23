@@ -147,11 +147,15 @@
 		"onCommand:aiBrowser.logins.export",
 		"onCommand:aiBrowser.translatePage",
 		"onCommand:aiBrowser.annotatePage",
+		"onCommand:aiBrowser.annotateAnywhere",
+		"onCommand:aiBrowser.repeat.annotateAnywhere",
 		"onCommand:aiBrowser.clearAnnotations",
 		"onCommand:aiBrowser.copyAnnotationPrompt",
 		"onView:aiBrowser.chat",
 		"onCommand:aiBrowser.chat.newChat",
 		"onCommand:aiBrowser.chat.connectChrome",
+		"onCommand:aiBrowser.chat.connectExchange",
+		"onCommand:aiBrowser.chat.disconnectExchange",
 		"onCommand:aiBrowser.chat.disconnectChrome",
 		"onCommand:aiBrowser.chat.history",
 		"onCommand:aiBrowser.chat.refreshAgents",
@@ -190,6 +194,16 @@
 	},
 	"contributes": {
 		"commands": [
+			{
+				"command": "aiBrowser.chat.connectExchange",
+				"title": "Connect Chat to Exchange",
+				"category": "AI Browser"
+			},
+			{
+				"command": "aiBrowser.chat.disconnectExchange",
+				"title": "Disconnect Chat from Exchange",
+				"category": "AI Browser"
+			},
 			{
 				"command": "aiBrowser.show",
 				"title": "Show",
@@ -385,6 +399,15 @@
 				}
 			},
 			{
+				"command": "aiBrowser.annotateAnywhere",
+				"title": "%command.annotateAnywhere.title%",
+				"category": "%displayName%",
+				"icon": {
+					"light": "media/icons/marker-light.svg",
+					"dark": "media/icons/marker-dark.svg"
+				}
+			},
+			{
 				"command": "aiBrowser.clearAnnotations",
 				"title": "%command.clearAnnotations.title%",
 				"category": "%displayName%",
@@ -426,6 +449,15 @@
 			{
 				"command": "aiBrowser.repeat.annotate",
 				"title": "%command.annotatePage.title%",
+				"category": "%displayName%",
+				"icon": {
+					"light": "media/icons/marker-light.svg",
+					"dark": "media/icons/marker-dark.svg"
+				}
+			},
+			{
+				"command": "aiBrowser.repeat.annotateAnywhere",
+				"title": "%command.annotateAnywhere.title%",
 				"category": "%displayName%",
 				"icon": {
 					"light": "media/icons/marker-light.svg",
@@ -1038,6 +1070,11 @@
 					"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'annotate'"
 				},
 				{
+					"command": "aiBrowser.repeat.annotateAnywhere",
+					"group": "navigation@2",
+					"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'annotateAnywhere'"
+				},
+				{
 					"command": "aiBrowser.repeat.claude.element",
 					"group": "navigation@2",
 					"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'claude:element' && aiBrowser.claudeInstalled"
@@ -1164,6 +1201,10 @@
 					"group": "2_annotations@1"
 				},
 				{
+					"command": "aiBrowser.annotateAnywhere",
+					"group": "2_annotations@1.5"
+				},
+				{
 					"command": "aiBrowser.clearAnnotations",
 					"group": "2_annotations@2",
 					"when": "aiBrowser.pageHasAnnotations"
@@ -1240,6 +1281,10 @@
 				},
 				{
 					"command": "aiBrowser.repeat.annotate",
+					"when": "false"
+				},
+				{
+					"command": "aiBrowser.repeat.annotateAnywhere",
 					"when": "false"
 				},
 				{
@@ -1661,6 +1706,12 @@
 				"key": "ctrl+alt+c",
 				"mac": "cmd+alt+c",
 				"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'annotate'"
+			},
+			{
+				"command": "aiBrowser.repeat.annotateAnywhere",
+				"key": "ctrl+alt+c",
+				"mac": "cmd+alt+c",
+				"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'annotateAnywhere'"
 			},
 			{
 				"command": "aiBrowser.repeat.claude.element",

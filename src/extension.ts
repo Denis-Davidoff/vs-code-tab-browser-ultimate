@@ -1,5 +1,6 @@
 import { configureTemporaryFiles } from './core/temporaryFiles';
 import { registerChromeChat } from './chat/chromeChatSetup';
+import { registerExchangeChat } from './chat/exchangeChat';
 import { privateTempDirectory } from './core/safeFiles';
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
@@ -592,6 +593,15 @@ export function activate(context: vscode.ExtensionContext) {
 	};
 	registerElementCommand('aiBrowser.annotatePage', 'annotate', annotate);
 	registerElementCommand('aiBrowser.repeat.annotate', 'annotate', annotate, true);
+	const annotateAnywhere = async () => {
+		try {
+			await browser.annotatePage('point');
+			confirm('Click anywhere on the page to add an annotation (Esc to cancel).');
+		} catch (error) { refuse(error instanceof Error ? error.message : String(error)); }
+	};
+	registerElementCommand('aiBrowser.annotateAnywhere', 'annotateAnywhere', annotateAnywhere);
+	registerElementCommand('aiBrowser.repeat.annotateAnywhere', 'annotateAnywhere', annotateAnywhere, true);
+
 	// "Remove All Annotation Markers" sits under Add Annotation Marker in the
 	// dropdown, only while the page in front has markers (`aiBrowser.pageHasAnnotations`).
 	context.subscriptions.push(vscode.commands.registerCommand('aiBrowser.clearAnnotations', async () => {
@@ -681,6 +691,7 @@ export function activate(context: vscode.ExtensionContext) {
 	}));
 	configureTemporaryFiles(() => privateTempDirectory('inventory'), () => chat.temporaryProject);
 	registerChromeChat(context);
+	registerExchangeChat(context, browser);
 	chatPort.target = ChatViewProvider.mcpControl();
 	recording.destination = chatId => chat.recordingDestination(chatId);
 	recording.project = chatId => chat.recordingProject(chatId);

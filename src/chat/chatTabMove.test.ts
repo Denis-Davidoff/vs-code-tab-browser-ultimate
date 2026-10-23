@@ -343,7 +343,7 @@ test('Chrome open attaches the returned new tab instead of pages discovered whil
 test('Chrome attachments use the browser visibility check with a text editor active', async () => {
 	const page = { title: 'Chrome', url: 'https://example.test' };
 	const attach = method('_makeAttachment', {
-		tabSource: { available: () => true }, generateUuid: () => 'attachment',
+		tabSource: { available: () => true }, generateUuid: () => 'attachment', ChatViewProvider: { _exchangeAnnotationOwners: new Map() },
 		refuse() { assert.fail('visible Chrome must not be refused'); }, confirm() {},
 		pageTitle: (title: string) => title, plainInPrompt: (text: string) => text,
 		pickElementContext: async (tab: unknown) => { assert.equal(tab, page); return 'Element: Button'; },

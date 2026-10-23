@@ -74,7 +74,7 @@ export function chromeChatAttachmentFeature(kind: string | undefined): ChromeCha
   switch (kind) {
     case 'screenshot': return 'screenshots';
     case 'file': return 'files';
-    case 'annotation': return 'annotations';
+    case 'pointAnnotation': case 'annotation': return 'annotations';
     case 'video': case 'page': case 'sharedPage': return kind;
     default: return 'elements';
   }

@@ -32,6 +32,21 @@ export class ChromeChatBridge implements ChatStateSurface {
 	private _driven?: boolean;
 	private readonly _annotations = new ChromeAnnotationSession(() => this._chats);
 	private _releaseAnnotations?: () => void;
+	private _presenceTimer?: ReturnType<typeof setTimeout>;
+	private _active = false;
+	get active(): boolean { return this._active; }
+
+	/** Snapshot polling is the panel heartbeat, including unchanged (304) snapshots. */
+	private _touchPresence(): void {
+		if (this._presenceTimer) { clearTimeout(this._presenceTimer); }
+		this._presenceTimer = setTimeout(() => {
+			this._presenceTimer = undefined;
+			this._active = false;
+			this._refresh?.();
+		}, 10_000);
+		this._presenceTimer.unref?.();
+		if (!this._active) { this._active = true; this._refresh?.(); }
+	}
 
 
 	constructor(private readonly _extensionId: string, private readonly _command?: (command: ChromeChatCommand, reply: (message: HostToView, chatId?: string) => void) => Promise<void>, private readonly _editorVersion = 'unknown', private readonly _delivery = new ChromeChatDelivery()) {
@@ -143,6 +158,7 @@ export class ChromeChatBridge implements ChatStateSurface {
 			response.writeHead(200).end(JSON.stringify({ cursor: this._delivery.sequence, events: this._delivery.events.filter(event => event.id > Number(eventMatch[1])) })); return;
 		}
 		if (!this._body || this._closed) { response.writeHead(503).end(); return; }
+		this._touchPresence();
 		const etag = `"${this._revision}"`;
 		response.setHeader('ETag', etag);
 		response.setHeader('Access-Control-Expose-Headers', 'ETag');
@@ -241,6 +257,8 @@ export class ChromeChatBridge implements ChatStateSurface {
 	close(): void {
 		if (this._closed) { return; }
 		this._closed = true;
+		if (this._presenceTimer) { clearTimeout(this._presenceTimer); this._presenceTimer = undefined; }
+		this._active = false;
 		this._releaseAnnotations?.();
 		this._body = undefined;
 		this._server.close();

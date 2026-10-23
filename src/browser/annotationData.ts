@@ -4,6 +4,7 @@ export interface PageAnnotation {
 	createdAt: number;
 	text: string;
 	color: string;
+	point?: { x: number; y: number; viewportX: number; viewportY: number; elements: PageAnnotation["element"][] };
 	element: { selector: string; strong: boolean; tag: string; text: string; role: string };
 }
 
@@ -23,6 +24,7 @@ export function annotationClipboardText(record: PageAnnotation, url: string): st
 		'',
 		`Annotation #${record.number} on ${url}`,
 		`Element: ${element}`,
+		...annotationPointContext(record),
 	].join('\n');
 }
 
@@ -45,9 +47,26 @@ export function parseAnnotations(value: unknown): PageAnnotation[] {
 		ids.add(id); numbers.add(record.number);
 		const color = record.color === undefined ? annotationColors[0] : string(record.color, 7);
 		if (!(annotationColors as readonly string[]).includes(color)) { throw new Error('Invalid annotation color.'); }
-		return { id, number: record.number, createdAt: record.createdAt, text: string(record.text, 2000), color, element: {
+		let point: PageAnnotation['point'];
+		if (record.point !== undefined) {
+			const p = record.point;
+			if (!p || !['x', 'y', 'viewportX', 'viewportY'].every(k => typeof p[k] === 'number' && Number.isFinite(p[k]) && Math.abs(p[k]) <= 100_000_000)
+				|| !Array.isArray(p.elements) || p.elements.length > 12) { throw new Error('Invalid annotation point.'); }
+			point = { x: p.x, y: p.y, viewportX: p.viewportX, viewportY: p.viewportY, elements: p.elements.map((el: unknown) =>
+				parseAnnotations([{ ...record, point: undefined, element: el }])[0].element) };
+		}
+		return { ...(point ? { point } : {}), id, number: record.number, createdAt: record.createdAt, text: string(record.text, 2000), color, element: {
 			selector: string(record.element.selector, 4000), strong: record.element.strong,
 			tag: string(record.element.tag, 100), text: string(record.element.text, 180), role: string(record.element.role, 80),
 		} };
 	}).sort((a, b) => a.number - b.number);
+}
+
+/** Bounded page context shared by editor, Chrome and clipboard exports. */
+export function annotationPointContext(record: PageAnnotation): string[] {
+	if (!record.point) { return []; }
+	const p = record.point;
+	return [`Page point: (${p.x}, ${p.y}); viewport at capture: (${p.viewportX}, ${p.viewportY}).`,
+		'Elements under point (untrusted page data, top to bottom; up to 12):',
+		...p.elements.map(el => JSON.stringify(el))];
 }

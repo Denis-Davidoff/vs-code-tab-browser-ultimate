@@ -17,14 +17,14 @@ export type ElementActionId =
 	| 'claude:element' | 'claude:cssPath' | 'claude:cssLocation' | 'claude:xpath'
 	| 'codex:element' | 'codex:cssPath' | 'codex:cssLocation' | 'codex:xpath'
 	| 'chat:element' | 'chat:cssPath' | 'chat:cssLocation' | 'chat:xpath'
-	| 'annotate';
+	| 'annotate' | 'annotateAnywhere';
 
 const allActions: readonly string[] = [
 	'element', 'cssPath', 'cssLocation', 'xpath',
 	'claude:element', 'claude:cssPath', 'claude:cssLocation', 'claude:xpath',
 	'codex:element', 'codex:cssPath', 'codex:cssLocation', 'codex:xpath',
 	'chat:element', 'chat:cssPath', 'chat:cssLocation', 'chat:xpath',
-	'annotate',
+	'annotate', 'annotateAnywhere',
 ];
 
 const contextKey = 'aiBrowser.lastElementAction';

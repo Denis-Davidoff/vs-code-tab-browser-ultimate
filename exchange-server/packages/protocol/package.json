@@ -1,0 +1,15 @@
+{
+  "name": "@exchange/protocol",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": "./dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test src/*.test.ts"
+  },
+  "dependencies": {
+    "zod": "^4.1.0"
+  }
+}

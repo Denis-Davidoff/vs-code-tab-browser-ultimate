@@ -2,7 +2,7 @@ import { annotationClipboardText, parseAnnotations, type PageAnnotation } from '
 
 interface OverlayApi {
   hydrate(data: { records: PageAnnotation[]; nextNumber: number }): void;
-  start(data: { records: PageAnnotation[]; nextNumber: number }): void;
+  start(data: { records: PageAnnotation[]; nextNumber: number; mode?: 'element' | 'point' }): void;
   collect(): { url: string; records: (PageAnnotation & { elementFound?: boolean })[] };
   add(selector: string, text: string, color: string, id: string): unknown;
   remove(ids: string[], url: string): void;
@@ -72,17 +72,17 @@ export class ChromeAnnotations {
     }
     return page;
   }
-  private async hydrate(tab: AnnotationTab, start: boolean): Promise<void> {
+  private async hydrate(tab: AnnotationTab, start: boolean, mode: 'element' | 'point' = 'element'): Promise<void> {
     const page = this.page(tab, tab.url);
     await chrome.scripting.executeScript({ target: { tabId: tab.tabId }, world: 'ISOLATED',
-      func: (url: string, records: PageAnnotation[], nextNumber: number, start: boolean) => {
+      func: (url: string, records: PageAnnotation[], nextNumber: number, start: boolean, mode: 'element' | 'point') => {
         if (location.href !== url) { throw new Error('The page navigated. Try again.'); }
         const api = (window as AnnotationWorld).__aiBrowserAnnotations;
         if (!api) { throw new Error('Annotations unavailable.'); }
-        if (start) { api.start({ records, nextNumber }); } else { api.hydrate({ records, nextNumber }); }
-      }, args: [tab.url, page.records, tab.nextNumber, start] });
+        if (start) { api.start({ records, nextNumber, mode }); } else { api.hydrate({ records, nextNumber }); }
+      }, args: [tab.url, page.records, tab.nextNumber, start, mode] });
   }
-  async start(tabId: number, chatId: string): Promise<void> {
+  async start(tabId: number, chatId: string, mode: 'element' | 'point' = 'element'): Promise<void> {
     await this.serial(tabId, async () => {
       const browserTab = await chrome.tabs.get(tabId);
       if (!browserTab.url || !/^https?:/.test(browserTab.url)) { throw new Error('Open a regular website in Chrome first.'); }
@@ -100,7 +100,7 @@ export class ChromeAnnotations {
       if (!tab.chatIds.includes(chatId)) { tab.chatIds.push(chatId); }
       const page = this.page(tab, tab.url);
       if (page.records.length >= 50) { throw new Error('This page already has 50 annotations. Remove a note first.'); }
-      await this.hydrate(tab, true);
+      await this.hydrate(tab, true, mode);
       this.changed(tab, page, true); await this.save();
     });
   }
@@ -127,7 +127,18 @@ export class ChromeAnnotations {
     for (const event of events) {
       const record = page.records.find(record => record.id === event.id);
       if (!record || event.url !== tab.url) { continue; }
-      if (event.type === 'copy') { await navigator.clipboard.writeText(annotationClipboardText(record, tab.url)); }
+      if (event.type === 'copy') {
+        // Clicking a page note focuses the page, leaving the side panel unfocused.
+        const copied = await chrome.scripting.executeScript({ target: { tabId: tab.tabId }, world: 'ISOLATED',
+          func: async (text: string, url: string) => {
+            if (location.href !== url) { throw new Error('The page changed before copying the annotation.'); }
+            // Never a field in the page's DOM: the page could read the note from it.
+            try { await navigator.clipboard.writeText(text); return true; } catch { return false; }
+          }, args: [annotationClipboardText(record, tab.url), tab.url] });
+        // The side panel is an extension page holding clipboardWrite, so its own
+        // document can copy without focus, and the page sees nothing of it.
+        if (copied[0]?.result !== true && !copyInPanel(annotationClipboardText(record, tab.url))) { throw new Error('Could not copy the annotation. Focus its page and try again.'); }
+      }
       if (event.type === 'requestDelete' && (!record.text.trim() || window.confirm(`Delete annotation #${record.number}?\n\n${record.text}`))) {
         await this.removeNow(tab, page.url, [record.id]);
       }
@@ -205,4 +216,16 @@ export class ChromeAnnotations {
     for (const page of tab.pages) { this.changed(tab, { ...page, records: [] }); }
     void this.save().catch(this.error);
   }
+}
+
+/** Copies through a field in the side panel's own document, never the page's. */
+function copyInPanel(text: string): boolean {
+  const field = document.createElement('textarea');
+  field.value = text;
+  field.setAttribute('readonly', '');
+  field.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;';
+  document.body.append(field);
+  try { field.select(); return document.execCommand('copy'); }
+  catch { return false; }
+  finally { field.remove(); }
 }

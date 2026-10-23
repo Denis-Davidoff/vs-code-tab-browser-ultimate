@@ -25,3 +25,13 @@ test('ten annotation colors round trip and arbitrary CSS color values are refuse
 	assert.equal(parseAnnotations([record()])[0].color, '#2563eb');
 	assert.throws(() => parseAnnotations([{ ...record(), color: 'url(x)' }]));
 });
+
+
+test('point context survives parsing and rejects oversized or malformed stacks', () => {
+	const point = { x: 12, y: 240, viewportX: 12, viewportY: 40, elements: [record().element] };
+	assert.deepEqual(parseAnnotations([{ ...record(), point }])[0].point, point);
+	for (const invalid of [{ ...point, x: NaN }, { ...point, elements: Array(13).fill(record().element) },
+		{ ...point, elements: [{ ...record().element, selector: 'x'.repeat(4001) }] }]) {
+		assert.throws(() => parseAnnotations([{ ...record(), point: invalid }]));
+	}
+});

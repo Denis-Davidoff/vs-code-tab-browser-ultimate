@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { onRemotePick } from '../browser/remotePick';
 import * as vscode from 'vscode';
 import { CDPClient } from '../core/cdp';
 import { confirm, refuse } from '../core/notify';
@@ -403,7 +404,25 @@ async function withPickedElement<T>(
 		}, sessionId);
 
 		waiting = true;
-		const { backendNodeId } = await client.once('Overlay.inspectNodeRequested', cts.token);
+		// A remote viewer's click is answered by its coordinates: the page is
+		// usually a hidden tab, and input sent to it does not finish the
+		// overlay's pick (see remotePick.ts).
+		const picker = client, pickSession = sessionId;
+		let answer: ((id: number) => void) | undefined;
+		const remote = new Promise<number>(resolve => { answer = resolve; });
+		const remoteClick = onRemotePick(tab, async (x, y) => {
+			const found = await picker.send('DOM.getNodeForLocation', { x: Math.round(x), y: Math.round(y), includeUserAgentShadowDOM: false, ignorePointerEventsNone: true }, pickSession);
+			if (typeof found?.backendNodeId !== 'number') { return false; }
+			answer?.(found.backendNodeId);
+			return true;
+		});
+		let backendNodeId: number;
+		try {
+			backendNodeId = await Promise.race([
+				client.once('Overlay.inspectNodeRequested', cts.token).then(event => event.backendNodeId as number),
+				remote,
+			]);
+		} finally { remoteClick.dispose(); }
 		waiting = false;
 		return await use(client, sessionId, backendNodeId);
 	} finally {

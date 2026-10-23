@@ -54,7 +54,7 @@ The **+** menu provides:
 - **Page address**: the page URL and title at the time of selection.
 - **Share page**: the selected tab's URL and title follow navigation until send.
   This does not enable remote debugging; page control requires a separate Chrome connection.
-- **Add annotation**: the same overlay as the main browser, with element highlighting,
+- **Add annotation to element**: the same overlay as the main browser, with element highlighting,
   numbered markers, editable notes (up to 2,000 characters), ten colors, copying,
   confirmed deletion and a button to add another marker. Esc cancels selection or
   collapses the card. Draft attachments follow note edits. Delivered markers are
@@ -81,7 +81,7 @@ files and videos are provided as local file references for the agent.
 Regular Chrome tabs support `browser_annotations_list`, `browser_annotations_get`,
 `browser_annotations_add`, `browser_annotations_remove` and `browser_annotations_clear`
 without remote debugging. Keep the connected side panel open and first choose
-**+ → Add annotation** in the intended conversation. An ID such as
+**+ → Add annotation to element** in the intended conversation. An ID such as
 `chrome-annotations:123` appears in the attachment and in `annotationTabs` from
 `browser_state` / `browser_tabs`. Pass it explicitly as `tabId`; these IDs only
 support annotation operations.
@@ -190,3 +190,7 @@ Run `npm run typecheck`, `npm run build-chrome`, `npm run compile` and
 Manual checks: connect and approve in the intended panel; deny, cancel and expire
 requests; select among multiple editor windows; receive replies; switch editor
 conversations; change settings; close and reopen the panel; revoke and reconnect.
+
+Use **Add annotation anywhere…** to pin a note to a page coordinate, including whitespace. Its chat attachment includes page and viewport coordinates and up to 12 elements under the point, ordered from top to bottom. The marker follows page scrolling. Both modes are also available in the VS Code Browser menu.
+
+Move an anywhere annotation by dragging its numbered marker or the **Page point** heading of an open note. Dropping refreshes the coordinates and underlying elements while keeping the note. Press **Esc** to cancel a move.

@@ -276,3 +276,16 @@ test('toggling UltraCode updates only the active chat and the default for future
 	assert.equal(second.chat.ultracode, false);
 	assert.equal(saved.ultracode, false);
 });
+
+ test('sent attachments retain serializable opening data after the composer is cleared', async () => {
+	const f = fixture();
+	const chip = { id: 'note', kind: 'annotation' as const, label: 'Note' };
+	await f.tab.send('Read it', [{ chip, text: 'Original note', file: { toString: () => 'file:///tmp/note.txt' } as any }], 'codex', 'chosen-model', undefined, {} as AgentBackend);
+	f.tab.attachments = [];
+	const entry = JSON.parse(JSON.stringify(f.tab.chat.entries.find(e => e.kind === 'user')));
+	assert.equal(entry.attachmentData[0].text, 'Original note');
+	assert.equal(entry.attachmentData[0].file, 'file:///tmp/note.txt');
+	assert.equal(entry.attachmentData[0].chip.id, 'note');
+	chip.label = 'Changed';
+	assert.equal(entry.attachmentData[0].chip.label, 'Note');
+});

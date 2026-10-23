@@ -309,6 +309,13 @@ export type ChatEntry =
 		readonly attachmentFiles?: readonly (string | null)[];
 		/** Attachment kinds by index, for icons in sent prompts. */
 		readonly attachmentKinds?: readonly AttachmentKind[];
+		/** Original attachment data, by index, for opening sent chips and restored history. */
+		readonly attachmentData?: readonly {
+			readonly chip: AttachmentChip;
+			readonly text?: string;
+			readonly file?: string;
+			readonly image?: { readonly mediaType: string; readonly base64: string };
+		}[];
 		/** Set when the turn ends: how long it took and what it cost in tokens. */
 		workedMs?: number; tokensIn?: number; tokensOut?: number; tokensCached?: number;
 		/** The models that answered the turn when they were not the one picked — what Gemini's Auto chose. */
@@ -392,7 +399,7 @@ export interface ChatSummary {
 	readonly updatedAt: number;
 }
 
-export type AttachmentKind = 'screenshot' | 'element' | 'page' | 'sharedPage' | 'selection' | 'file' | 'voice' | 'video' | 'annotation';
+export type AttachmentKind = 'screenshot' | 'element' | 'page' | 'sharedPage' | 'selection' | 'file' | 'voice' | 'video' | 'annotation' | 'pointAnnotation';
 
 /** What the composer shows for an attachment; the content stays in the host. */
 export interface AttachmentChip {
@@ -580,7 +587,20 @@ export interface ChatSurface {
 	readonly description: string;
 }
 
+export interface ExchangeConnectionState {
+	readonly url: string;
+	readonly pointId: string;
+	readonly hasKey: boolean;
+	readonly hasPassword?: boolean;
+	readonly status: 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'error';
+	readonly error?: string;
+}
+
 export interface ChatViewState {
+	/** Rendered through the remote workspace website. */
+	readonly remoteWorkspace?: boolean;
+	/** Local server settings; the connection key is never included. */
+	readonly exchangeConnection?: ExchangeConnectionState;
 	readonly chromeConnectionRequest?: { readonly id: string; readonly extensionId: string };
 	/** The conversation in front is open in Chrome's side panel too. */
 	readonly chromeMirror?: boolean;
@@ -716,6 +736,8 @@ export type HostToView =
 	/** `refresh`: update an open panel in place; never open or close it. */
 	| { readonly type: 'history'; readonly chats: readonly ChatSummary[]; readonly refresh?: boolean }
 	| { readonly type: 'chromeAttachment'; readonly label: string; readonly text: string }
+	| { readonly type: 'exchangeAttachment'; readonly id: string; readonly label?: string; readonly text?: string; readonly kind?: 'annotation'|'page'|'element'|'screenshot'; readonly file?: {readonly name:string;readonly mime:string;readonly base64:string}; readonly removed?: boolean }
+	| { readonly type: 'exchangeBrowser'; readonly message?: string }
 	| { readonly type: 'usage'; readonly usage: readonly AgentUsage[]; readonly stats?: ChatStats; readonly loading: boolean }
 	| { readonly type: 'focusInput' }
 	/** The view's title bar cup: open the keep-awake popup. */
@@ -755,6 +777,8 @@ export type HostToView =
 	| { readonly type: 'voice'; readonly event: VoiceEvent };
 
 export type ViewToHost =
+	| { readonly type: 'connectExchange'; readonly url: string; readonly pointId: string; readonly key?: string; readonly password?: string }
+	| { readonly type: 'disconnectExchange' }
 	| { readonly type: 'answerChromeConnection'; readonly id: string; readonly allow: boolean }
 	| { readonly type: 'reportTheme'; readonly tokens: Readonly<Record<string, string>> }
 	| { readonly type: 'temporaryStorage'; readonly action: 'refresh' | 'all' | 'project'; readonly project?: string }
@@ -825,7 +849,7 @@ export type ViewToHost =
 	/** `key`: a category key (see `ApprovalPolicy`), or `all` for every category at once. */
 	| { readonly type: 'setApprovalMode'; readonly key: string; readonly mode: ApprovalMode }
 	/** A chip in the composer clicked: its file, its image or its text, in an editor tab. */
-	| { readonly type: 'openAttachment'; readonly id: string }
+	| { readonly type: 'openAttachment'; readonly id: string; readonly entry?: number }
 	| { readonly type: 'saveAttachment'; readonly id: string }
 	/** A tool call's input or output, opened as a read-only text in an editor tab. */
 	| { readonly type: 'openText'; readonly name: string; readonly text: string }

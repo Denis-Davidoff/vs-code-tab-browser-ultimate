@@ -352,7 +352,7 @@ test('an external view failure cannot interrupt editor updates or other observer
 	surfaces.dispose();
 });
 
-test('a pinned surface keeps its conversation while the editor switches tabs, and follows it once it closes', () => {
+test('a pinned surface keeps its conversation while the editor switches tabs, and follows it once it closes', async () => {
 	const surfaces = new ChatStateSurfaces();
 	const tabs = [{ id: 'tab-1', chatId: 'chat-1', title: 'One' }, { id: 'tab-2', chatId: 'chat-2', title: 'Two' }];
 	let open = tabs, front = 'chat-1';
@@ -362,7 +362,9 @@ test('a pinned surface keeps its conversation while the editor switches tabs, an
 	};
 	const bridge = new ChromeChatBridge(extensionId, async () => {});
 	let changed = 0;
+	const config = await bridge.start();
 	surfaces.attach(bridge, stateFor, () => { changed++; });
+	await get(config);
 	assert.equal(bridge.chatId, 'chat-1');
 	assert.deepEqual([...surfaces.chatIds(front)], ['chat-1']);
 	(bridge as any)._chatId = 'chat-2'; (bridge as any)._refresh();
@@ -641,4 +643,37 @@ test('an authenticated but unavailable resume target returns 503 instead of revo
     }, 'POST', '/resume');
     assert.equal(response.status, 503);
   } finally { pairing.dispose(); }
+});
+
+
+test('Chrome presence expires after polling stops and returns on an unchanged snapshot', async () => {
+	const bridge = new ChromeChatBridge(extensionId);
+	const config = await bridge.start();
+	const surfaces = new ChatStateSurfaces();
+	let changes = 0;
+	const attachment = surfaces.attach(bridge, () => state(), () => { changes++; });
+	try {
+		assert.equal(surfaces.chatIds(state().chatId).size, 0);
+		assert.equal((await get(config, { Authorization: '' })).status, 401);
+		assert.equal(bridge.active, false);
+		const first = await get(config);
+		assert.equal(surfaces.chatIds(state().chatId).has(state().chatId), true);
+		await new Promise(resolve => setTimeout(resolve, 10_100));
+		assert.equal(bridge.active, false);
+		assert.equal(surfaces.chatIds(state().chatId).size, 0);
+		assert.equal((await get(config, { 'If-None-Match': first.headers.etag })).status, 304);
+		assert.equal(surfaces.chatIds(state().chatId).has(state().chatId), true);
+		assert.equal(changes, 4);
+	} finally { attachment.dispose(); bridge.close(); }
+});
+
+test('Chrome cannot configure server credentials or receive local server settings', () => {
+	const envelope = { id: 'request-1234', chatId: 'chat-1' };
+	assert.equal(readChromeChatCommand({ ...envelope, message: { type: 'connectExchange', url: 'https://server.example', pointId: 'point', key: 'secret' } }), undefined);
+	assert.equal(readChromeChatCommand({ ...envelope, message: { type: 'disconnectExchange' } }), undefined);
+	const snapshot = chromeChatSnapshot({ chatId: 'chat-1', entries: [], tabs: [], voice: {}, agents: [],
+		exchangeConnection: { url: 'https://private-server.example', pointId: 'private-point', hasKey: true, status: 'connected' },
+	});
+	assert.equal(snapshot.view.exchangeConnection, undefined);
+	assert.equal(JSON.stringify(snapshot).includes('private-server'), false);
 });

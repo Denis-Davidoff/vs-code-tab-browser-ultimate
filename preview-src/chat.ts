@@ -1269,6 +1269,7 @@ function render(): void {
 	if (!state) {
 		return;
 	}
+	serverSettingsRefresh?.();
 	renderVoice();
 	app.classList.toggle('is-blocked', !!state.blocked);
 	blocked.textContent = state.blocked ?? '';
@@ -3258,7 +3259,15 @@ function promptNode(entry: Extract<ChatEntry, { kind: 'user' }>): HTMLElement {
 				const file = entry.attachmentFiles?.[index];
 				const kind = entry.attachmentKinds?.[index];
 				const attachmentIconNode = (file ? themeFileIcon(file) : undefined) ?? (kind ? icon(attachmentIcon(kind)) : undefined);
-				return el('span', { class: 'chip small', title: label }, attachmentIconNode, el('span', { class: 'chip-label', text: label }));
+				const saved = entry.attachmentData?.[index];
+				const children = [attachmentIconNode, el('span', { class: 'chip-label', text: label })];
+				if (!saved) { return el('span', { class: 'chip small', title: label }, ...children); }
+				const open = button(children, { class: 'chip small', title: `Open ${label}` });
+				open.addEventListener('click', () => {
+					const entryIndex = state?.entries.indexOf(entry) ?? -1;
+					if (entryIndex >= 0) { post({ type: 'openAttachment', id: saved.chip.id, entry: entryIndex }); }
+				});
+				return open;
 			})));
 	}
 	if (entry.text) {
@@ -4213,7 +4222,7 @@ function attachmentIcon(kind: AttachmentKind): string {
 		case 'file': return 'file';
 		case 'voice': return 'mic';
 		case 'video': return 'device-camera-video';
-		case 'annotation': return 'comment';
+		case 'pointAnnotation': case 'annotation': return 'comment';
 	}
 }
 
@@ -5205,6 +5214,9 @@ function closePopups(except?: HTMLElement, keep?: HTMLElement): void {
 	for (const popup of [featureSettingsPanel, sleepPopup, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel]) {
 		if (popup !== except && popup !== keep) {
 			popup.classList.remove('open');
+			if (popup === featureSettingsPanel) {
+				for (const secret of popup.querySelectorAll<HTMLInputElement>('.server-settings input[type="password"]')) { secret.value = ''; }
+			}
 		}
 	}
 	for (const pill of [tabAdd, agentPill, modelPill, plusButton, usageButton, approveToggle, slashButton, workdirButton, branchButton, commitButton, contextButton]) {
@@ -5614,7 +5626,7 @@ modelPill.addEventListener('click', () => {
 // tabs the browser tools then drive the same way.
 function browserMenuItems(): MenuItem[] {
 	const items: MenuItem[] = [
-		{ icon: 'globe', label: 'Google Chrome', run: () => post({ type: 'openBrowser', where: 'chrome' }) },
+		{ icon: 'globe', label: 'Google Chrome', disabled: !!state?.remoteWorkspace, description: state?.remoteWorkspace ? 'Available only in the local VS Code chat' : undefined, run: () => post({ type: 'openBrowser', where: 'chrome' }) },
 	];
 	if (state?.nativeBrowser && state.nativeBrowser !== 'unsupported') {
 		items.push({ icon: 'window', label: 'VS Code Browser',
@@ -7656,7 +7668,8 @@ const attachItems: { kind: AttachmentKind; icon: string; label: string; needsTab
 	{ kind: 'element', icon: 'inspect', label: 'Element from the page…', needsTab: true },
 	{ kind: 'page', icon: 'link', label: 'Page address', needsTab: true },
 	{ kind: 'sharedPage', icon: 'link-external', label: 'Share page', needsTab: true },
-	{ kind: 'annotation', icon: 'comment-add', label: 'Add annotation…', needsTab: true },
+	{ kind: 'annotation', icon: 'comment-add', label: 'Add annotation to element…', needsTab: true },
+	{ kind: 'pointAnnotation', icon: 'comment-add', label: 'Add annotation anywhere…', needsTab: true },
 	{ kind: 'file', icon: 'file', label: 'File…', needsTab: false },
 ];
 
@@ -8514,6 +8527,69 @@ function createTemporarySettings(): HTMLElement {
  return temporaryStorageContent;
 }
 
+let serverSettingsRefresh: (() => void) | undefined;
+function createServerSettings(): HTMLElement {
+	const settings = state?.exchangeConnection;
+	const content = el('div', { class: 'feature-settings-content server-settings' });
+	if (!settings) { return content; }
+	const server = el('input'); server.type = 'text'; server.placeholder = 'https://your-server.example';
+	server.value = settings.url;
+	server.spellcheck = false; server.autocomplete = 'off';
+	server.setAttribute('aria-label', 'Server address');
+	const point = el('input'); point.type = 'text'; point.placeholder = 'Paste the connection ID';
+	point.value = settings.pointId; point.spellcheck = false; point.autocomplete = 'off';
+	point.setAttribute('aria-label', 'Connection ID');
+	const key = el('input'); key.type = 'password'; key.placeholder = 'Paste the connection key';
+	key.autocomplete = 'off'; key.spellcheck = false;
+	key.setAttribute('aria-label', 'Connection key');
+	const connectionStatus = el('div', { class: 'server-connection-status' });
+	connectionStatus.setAttribute('role', 'status');
+	const keyStatus = el('span', { class: 'server-key-status' });
+    const password = el('input'); password.type='password'; password.autocomplete='new-password'; password.placeholder='Optional · at least 12 characters';
+    const passwordStatus = el('span', { class: 'server-key-status' });
+    const clearPassword = button(['Remove workspace password'], {class:'ghost'}); let removePassword=false;
+    clearPassword.addEventListener('click',()=>{removePassword=true;password.value='';passwordStatus.textContent='Password will be removed when you save.';});
+	const error = el('p', { class: 'server-connection-error' }); error.setAttribute('role', 'alert');
+	const connect = button([icon('plug'), 'Save & connect'], { class: 'feature-settings-save' });
+	const disconnect = button(['Disconnect'], { class: 'ghost' });
+	let pending = false;
+	const edited = new Set<HTMLInputElement>();
+	const refresh = () => {
+		const saved = state?.exchangeConnection;
+		if (!saved) { return; }
+		if (!edited.has(server)) { server.value = saved.url; }
+		if (!edited.has(point)) { point.value = saved.pointId; }
+		const labels = { disconnected: 'Disconnected', connecting: 'Connecting…', connected: 'Connected', reconnecting: 'Reconnecting…', error: 'Connection failed' };
+		connectionStatus.textContent = labels[saved.status];
+		connectionStatus.dataset.status = saved.status;
+		keyStatus.textContent = saved.hasKey ? 'Key saved in VS Code SecretStorage.' : 'No key saved.';
+		passwordStatus.textContent = removePassword ? 'Password will be removed when you save.' : saved.hasPassword ? 'Encryption enabled. Leave blank to keep the saved password.' : 'Adds end-to-end encryption for chat, commands, and browser frames.';
+        clearPassword.hidden = !saved.hasPassword;
+		key.placeholder = saved.hasKey ? 'Leave blank to use the saved key' : 'Paste the connection key';
+		error.textContent = saved.error ?? ''; error.hidden = !saved.error;
+		connect.disabled = pending || saved.status === 'connecting' || !server.value.trim() || !point.value.trim() || (!key.value.trim() && !saved.hasKey);
+		disconnect.disabled = !pending && !['connecting', 'connected', 'reconnecting'].includes(saved.status);
+	};
+	serverSettingsRefresh = () => { pending = false; refresh(); };
+	for (const field of [server, point, key]) { field.addEventListener('input', () => { edited.add(field); refresh(); }); }
+	connect.addEventListener('click', () => {
+		if (connect.disabled) { return; }
+		pending = true;
+		post({ type: 'connectExchange', url: server.value, pointId: point.value, ...(key.value.trim() ? { key: key.value.trim() } : {}), ...(password.value ? {password:password.value} : removePassword ? {password:''} : {}) });
+		key.value = ''; password.value='';removePassword=false; refresh();
+	});
+	disconnect.addEventListener('click', () => { pending = false; post({ type: 'disconnectExchange' }); });
+	const form = el('div', { class: 'server-connection-form' },
+		el('label', {}, 'Server address', server), el('label', {}, 'Connection ID', point),
+		el('label', {}, 'Connection key', key, keyStatus), el('label', {}, 'Workspace password', password, passwordStatus), clearPassword);
+	content.append(el('h3', { text: 'AI Browser Server' }),
+		el('p', { text: 'Connect this chat to your AI Browser account to read and control it from the website.' }),
+		connectionStatus, form, error, el('div', { class: 'server-connection-actions' }, connect, disconnect),
+		el('p', { class: 'feature-settings-note', text: 'Create a connection once, then paste its server address, ID, and key here. The key is stored securely by VS Code. This workspace reconnects automatically after a reload when its chat panel opens. Disconnect pauses automatic reconnection and keeps the saved credentials.' }));
+	refresh();
+	return content;
+}
+
 function openFeatureSettings(): void {
 	if (!state) { return; }
 	closePopups(featureSettingsPanel);
@@ -8543,6 +8619,14 @@ function openFeatureSettings(): void {
 	temporaryTab.setAttribute('role', 'tab'); temporaryTab.setAttribute('aria-selected', 'false');
 	temporaryTab.setAttribute('aria-controls', 'temporary-files-content');
 	tabs.append(temporaryTab);
+	const serverTab = button(['Server connection'], { class: 'feature-settings-tab' });
+	serverTab.id = 'server-connection-tab'; serverTab.hidden = !state.exchangeConnection;
+	serverTab.setAttribute('role', 'tab'); serverTab.setAttribute('aria-selected', 'false');
+	serverTab.setAttribute('aria-controls', 'server-connection-content');
+	if (state.exchangeConnection) { tabs.append(serverTab); }
+	const serverContent = createServerSettings();
+	serverContent.id = 'server-connection-content'; serverContent.hidden = true;
+	serverContent.setAttribute('role', 'tabpanel'); serverContent.setAttribute('aria-labelledby', serverTab.id);
 	const temporaryContent = createTemporarySettings();
 	temporaryContent.id = 'temporary-files-content'; temporaryContent.hidden = true;
 	temporaryContent.setAttribute('role', 'tabpanel'); temporaryContent.setAttribute('aria-labelledby', temporaryTab.id);
@@ -8644,19 +8728,22 @@ function openFeatureSettings(): void {
 		content.append(row);
 	}
 	content.append(el('p', { class: 'feature-settings-note', text: "Commit messages use the selected agent's remembered chat model or its default. Branch names and chat titles use an available lightweight model. Effort is mapped to the levels supported by that model. Custom prompts apply to future requests; output format and length checks still apply. Empty prompts use the defaults. Settings are shared across projects." }));
-	const selectTab = (selected: 'ai' | 'video' | 'temporary') => {
+	const selectTab = (selected: 'ai' | 'video' | 'temporary' | 'server') => {
 		content.hidden = selected !== 'ai'; videoContent.hidden = selected !== 'video'; temporaryContent.hidden = selected !== 'temporary';
 		tab.setAttribute('aria-selected', String(selected === 'ai')); videoTab.setAttribute('aria-selected', String(selected === 'video'));
 		temporaryTab.setAttribute('aria-selected', String(selected === 'temporary'));
-		featureSettingsSave.hidden = selected === 'temporary';
+		serverContent.hidden = selected !== 'server'; serverTab.setAttribute('aria-selected', String(selected === 'server'));
+		featureSettingsSave.hidden = selected === 'temporary' || selected === 'server';
+		featureSettingsStatus.hidden = selected === 'server';
 	};
 	tab.addEventListener('click', () => selectTab('ai')); videoTab.addEventListener('click', () => selectTab('video'));
 	temporaryTab.addEventListener('click', () => {
 		selectTab('temporary');
 		if (!temporaryStorageBusy) { temporaryStorageBusy = true; renderTemporaryStorage(); post({ type: 'temporaryStorage', action: 'refresh' }); }
 	});
-	featureSettingsSave.hidden = false;
-	const sections = [tab, videoTab, temporaryTab];
+	serverTab.addEventListener('click', () => selectTab('server'));
+	featureSettingsSave.hidden = false; featureSettingsStatus.hidden = false;
+	const sections = [tab, videoTab, temporaryTab, ...(state.exchangeConnection ? [serverTab] : [])];
 	tabs.addEventListener('keydown', event => {
 		const index = sections.indexOf(document.activeElement as HTMLButtonElement);
 		if (index < 0 || !['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) { return; }
@@ -8667,7 +8754,7 @@ function openFeatureSettings(): void {
 	});
 	featureSettingsPanel.replaceChildren(heading,
 		el('div', { class: 'feature-settings-layout' }, tabs,
-			el('div', { class: 'feature-settings-main' }, content, videoContent, temporaryContent,
+			el('div', { class: 'feature-settings-main' }, content, videoContent, temporaryContent, serverContent,
 				el('div', { class: 'feature-settings-actions' }, featureSettingsStatus, featureSettingsSave))));
 	featureSettingsPanel.classList.add('open');
 	featureSettingsPanel.focus();

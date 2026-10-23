@@ -10,6 +10,8 @@ export interface ChatStateSurface {
 	 * editor does not move it.
 	 */
 	readonly chatId?: string;
+	/** False while an external view is no longer polling the editor. */
+	readonly active?: boolean;
 	/** Given a way to ask for a fresh state, e.g. after the surface changed its pin. */
 	bind?(refresh: () => void): void;
 }
@@ -46,7 +48,7 @@ export class ChatStateSurfaces {
 	}
 	/** Conversations some surface is showing — what the editor marks as mirrored. */
 	chatIds(fallback: string): Set<string> {
-		return new Set([...this._surfaces].map(surface => surface.chatId ?? fallback));
+		return new Set([...this._surfaces].filter(surface => surface.active !== false).map(surface => surface.chatId ?? fallback));
 	}
 	dispose(): void {
 		const surfaces = [...this._surfaces];

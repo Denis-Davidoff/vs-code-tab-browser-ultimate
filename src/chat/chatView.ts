@@ -1,3 +1,6 @@
+import type { ExchangeUiMessage } from './exchangeUiProtocol';
+import { exchangeConnection } from './exchangeConnection';
+import { annotationPointContext } from '../browser/annotationData';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { chromeChatCommandFeature } from './chromeChatCompatibility';
 import { ChatPanelCatalog } from './chatPanelCatalog';
@@ -344,6 +347,21 @@ interface ChatServices {
 }
 
 /** What a push question is about: a yes counts only for the same push and the same question. */
+/**
+ * What a website session may not do through `chat.command`. Approvals stay in
+ * the editor (a remote Auto would run commands with no card), and nothing may
+ * reach chats that were not shared, local files, terminals or the agent
+ * binaries. An inner id has to name the shared conversation itself.
+ */
+const exchangeForbidden = new Set<string>(['setApprovalMode', 'deleteChat', 'openChat', 'temporaryStorage', 'resumeInTerminal', 'setAgentBinary', 'openAgentSetting', 'openFile']);
+function exchangeRefusal(message: ExchangeUiMessage, tab: ChatTab, chatId: string): void {
+	if (exchangeForbidden.has(message.type)) { throw new Error('This action is available only in VS Code.'); }
+	const m = message as { type: string; id?: unknown; tabId?: unknown; chatId?: unknown };
+	if ((m.type === 'closeTab' || m.type === 'selectTab' || m.type === 'renameTab') && m.id !== tab.id) { throw new Error('This conversation is not shared.'); }
+	if (m.type === 'resumeQueue' && m.tabId !== tab.id) { throw new Error('This conversation is not shared.'); }
+	if (m.type === 'secondOpinion' && m.chatId !== chatId) { throw new Error('This conversation is not shared.'); }
+}
+
 function pushKey(action: string, branch: string, remote: string, target: string, question: string): string {
 	return JSON.stringify([action, branch, remote, target, question]);
 }
@@ -370,9 +388,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private readonly _stateSurfaces = new ChatStateSurfaces();
 	private _themeTokens?: Record<string, string>;
 
-	public static chromeSources(): { id: string; label: string; description: string }[] {
+	public static chromeSources(): { id: string; label: string; description: string; panelId: string }[] {
 		return [...this._surfaces.values()].filter(view => !view._disposed && !!view._view).map(view => ({
-			id: view._surfaceId, label: view._surfaceLabel(), description: view._active.chat.title,
+			id: view._surfaceId, label: view._surfaceLabel(), description: view._active.chat.title, panelId: view._panelIdentity?.id ?? 'sidebar',
 		}));
 	}
 
@@ -391,7 +409,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		return view._stateSurfaces.attach(surface, chatId => view._stateFor(chatId), () => view._post());
 	}
 
-	public static async commandChromeSource(id: string, chatId: string, message: ViewToHost, picked: readonly ChromeElementAttachment[] = [], reply?: (message: HostToView, chatId?: string) => void): Promise<void> {
+	public static async commandChromeSource(id: string, chatId: string, message: ViewToHost, picked: readonly ChromeElementAttachment[] = [], reply?: (message: HostToView, chatId?: string) => void, canonical?: (item:ChromeElementAttachment)=>Attachment|undefined): Promise<void> {
 		const view = this._surfaces.get(id);
 		// Chrome addresses the conversation it shows, which need not be the tab in front.
 		const tab = view && !view._disposed && view._view ? view._tabs.find(t => t.chat.id === chatId) : undefined;
@@ -406,6 +424,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		if (message.type === 'send') {
 			const stopGeneration = tab.stopGeneration;
 			const attachments: Attachment[] = await Promise.all(picked.map(async element => {
+				const canonicalItem=canonical?.(element);
+				if(canonicalItem){const chip={...canonicalItem.chip};bindAttachmentReference(chip,element.reference);return {...canonicalItem,chip};}
 				const chip = { id: element.id, kind: element.kind ?? 'element' as const, label: element.label };
 				bindAttachmentReference(chip, element.reference);
 				if (!element.file) { return { chip, text: element.text, ...(element.annotation ? { chromeAnnotation: { ...element.annotation, chatId } } : {}) }; }
@@ -438,13 +458,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			}
 		} else if (message.type === 'stop') {
 			view._stopTab(tab);
-		} else if (message.type === 'select' && tab !== view._active) {
-			if (message.selection.agent && message.selection.agent !== view._selection(tab).agent && tab.started) {
-				throw new Error('Switch this conversation to another agent in the editor.');
-			}
-			view._asActive(tab, () => view._select(message.selection));
-		} else if (message.type === 'switchAgent' && tab !== view._active) {
-			throw new Error('Answer this in the editor.');
+		} else if (message.type === 'select' || message.type === 'switchAgent') {
+			const scope = {tab, chatId, reply, remote: true};
+			await view._chromeCommand.run(scope, () => view._receive(message));
+			scope.chatId = scope.tab.chat.id;
+			view._postMessage({type:'state', state:view._state()});
+			if(scope.chatId!==chatId)reply?.({type:'focusInput'},scope.chatId);
+			return;
 		} else {
 			await view._receive(message);
 		}
@@ -452,12 +472,88 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 
-	private readonly _chromeCommand = new AsyncLocalStorage<{ tab: ChatTab; chatId: string; reply?: (message: HostToView, chatId?: string) => void }>();
+	/** The web client uses the same controller with its conversation in async request scope. */
+	private static readonly _exchangeAnnotationOwners=new Map<vscode.BrowserTab,{view:ChatViewProvider;chatId:string;reply:(message:HostToView,chatId?:string)=>void;ignored:Set<string>}>();
+	private readonly _exchangeDrafts=new Map<string,Map<string,Attachment>>();
+	public static releaseExchangeSource(id:string):void {
+		const view=this._surfaces.get(id);view?._exchangeDrafts.clear();
+		for(const [page,owner] of this._exchangeAnnotationOwners)if(owner.view._surfaceId===id)this._exchangeAnnotationOwners.delete(page);
+	}
+	public static async commandExchangeSource(id: string, chatId: string, message: ExchangeUiMessage, picked: readonly ChromeElementAttachment[] = [], reply?: (message: HostToView, chatId?: string) => void, browserTab?:vscode.BrowserTab): Promise<void> {
+		const view = this._surfaces.get(id);
+		const tab = view && !view._disposed && view._view ? view._tabs.find(t => t.chat.id === chatId) : undefined;
+		if (!view || !tab) { throw new Error('This conversation is no longer open in the editor.'); }
+		const blocked = view._blocked(); if (blocked) { throw new Error(blocked); }
+		exchangeRefusal(message, tab, chatId);
+		if (message.type === 'send') { await this.commandChromeSource(id, chatId, message, picked, reply,item=>view._exchangeDrafts.get(chatId)?.get(item.id)); return; }
+		if(message.type==='removeAttachment'){
+			view._exchangeDrafts.get(chatId)?.delete(message.id);
+			for(const owner of this._exchangeAnnotationOwners.values())if(owner.view===view&&owner.chatId===chatId)owner.ignored.add(message.id);
+			return;
+		}
+		if(message.type==='openBrowser'){
+			if(message.where==='chrome')throw new Error('Opening Chrome is available only in the local VS Code chat.');
+			await vscode.commands.executeCommand('workbench.action.browser.open');
+			reply?.({type:'exchangeBrowser'},chatId);return;
+		}
+		if(message.type==='openLink'){
+			if(!browserTab)throw new Error('Select a tab in the website Browser panel first.');
+			const url=new URL(message.url);if(!['http:','https:'].includes(url.protocol))throw new Error('Only HTTP and HTTPS links can open in the remote browser.');
+			await view._browser.remoteInput(view._browser.tabIdOf(browserTab),{action:'navigate',url:url.href});
+			reply?.({type:'exchangeBrowser'},chatId);return;
+		}
+		if(message.type==='chooseWorkdir')throw new Error('Enter the folder path in the website instead of opening a local folder dialog.');
+		if(message.type==='setWorkdir'&&message.path!==undefined){
+			if(/[\0\r\n]/.test(message.path))throw new Error('Enter an absolute folder path on the computer running VS Code.');
+			let folder=message.path.trim();
+			if(folder==='~'||folder.startsWith('~/'))folder=path.join(os.homedir(),folder.slice(1));
+			if(!folder||/[\0\r\n]/.test(folder)||!path.isAbsolute(folder))throw new Error('Enter an absolute folder path on the computer running VS Code.');
+			if(!isDirectory(folder))throw new Error('The folder does not exist on the computer running VS Code.');
+			message={type:'setWorkdir',path:folder};
+		}
+		if (message.type === 'closeTab') {
+			await view._receive(message); reply?.({type:'focusInput'}, view._active.chat.id); return;
+		}
+		const scope = {tab,chatId,reply,remote:true};
+		await view._chromeCommand.run(scope, async () => {
+			if (message.type === 'ready') {
+				reply?.({type:'inputHistory',items:view._inputHistory()},scope.chatId);
+				for(const item of view._exchangeDrafts.get(chatId)?.values()??[])reply?.({type:'exchangeAttachment',id:item.chip.id,label:item.chip.label,text:item.text,kind:'annotation'},chatId);
+			} else if (message.type === 'attach') {
+				if(!browserTab)throw new Error('Select a tab in the website Browser panel first.');
+				if(!['annotation','pointAnnotation','page','screenshot','element'].includes(message.kind))throw new Error('This attachment is available only in the local VS Code chat.');
+				if(message.kind==='annotation'||message.kind==='pointAnnotation'){
+					if(!reply)throw new Error('Remote annotation receiver is unavailable.');
+					const owner={view,chatId,reply,ignored:new Set<string>()};this._exchangeAnnotationOwners.set(browserTab,owner);
+					const existing=view._browser.annotationsOf(browserTab);
+					if(existing)view._syncExchangeAnnotations({tab:browserTab,url:existing.url,records:existing.records,created:[],removed:[]},owner);
+					try{await view._browser.annotateTab(browserTab,message.kind==='pointAnnotation'?'point':'element');}
+					catch(error){if(this._exchangeAnnotationOwners.get(browserTab)===owner)this._exchangeAnnotationOwners.delete(browserTab);throw error;}
+					reply({type:'exchangeBrowser',message:'Click the remote page to add an annotation.'},chatId);
+				}else{
+					if(message.kind==='element')reply?.({type:'exchangeBrowser',message:'Click an element in the remote page to attach it.'},chatId);
+					const item=await view._makeAttachment(message.kind,browserTab,true);
+					if(item){
+						const file=item.image?{name:'screenshot.png',mime:item.image.mediaType,base64:item.image.base64}:undefined;
+						if(file&&file.base64.length>5_333_336)throw new Error('Screenshot exceeds the 4 MB attachment limit.');
+						reply?.({type:'exchangeAttachment',id:item.chip.id,label:item.chip.label,text:item.text??item.chip.label,kind:message.kind==='screenshot'?'screenshot':message.kind==='page'?'page':'element',file},chatId);
+					}
+				}
+			} else if (message.type === 'history') { view.showHistory(); }
+			else if (chromeChatCommandFeature(message) !== 'chat') { await view._receiveChromeFooter(scope.tab,message,reply); }
+			else { await view._receive(message); }
+		});
+		if (scope.tab.chat.id !== scope.chatId) { scope.chatId = scope.tab.chat.id; }
+		if (scope.chatId !== chatId) { reply?.({type:'focusInput'},scope.chatId); }
+		view._post();
+	}
+
+	private readonly _chromeCommand = new AsyncLocalStorage<{ tab: ChatTab; chatId: string; remote?: boolean; reply?: (message: HostToView, chatId?: string) => void }>();
 
 	/** Async request scope keeps folder/skill/Git actions bound to Chrome's conversation. */
 	private async _receiveChromeFooter(tab: ChatTab, message: ViewToHost, reply?: (message: HostToView, chatId?: string) => void): Promise<void> {
 		if ('tabId' in message && message.tabId !== undefined && message.tabId !== tab.id) { throw new Error('The destination conversation changed. Try again.'); }
-		const scope = { tab, chatId: tab.chat.id, reply };
+		const scope = { tab, chatId: tab.chat.id, reply, remote: this._chromeCommand.getStore()?.remote };
 		await this._chromeCommand.run(scope, async () => {
 			const target = message.type === 'runToolbarSkill' ? { ...message, tabId: tab.id } : message;
 			if (target.type === 'refreshWorkdirGit') {
@@ -483,6 +579,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 * does not mark the tab read, since nobody in the editor is looking at it.
 	 */
 	private _stateFor(chatId?: string): ChatViewState {
+		if (this._chromeCommand?.getStore()) { return this._chromeCommand.exit(() => this._stateFor(chatId)); }
 		const tab = chatId ? this._tabs.find(t => t.chat.id === chatId) : undefined;
 		if (!tab || tab === this._active) { return this._state(); }
 		return this._asActive(tab, () => this._state());
@@ -508,10 +605,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private _peeking = false;
 	/** Runs a synchronous step with `tab` in front, then puts the real one back. */
 	private _asActive<T>(tab: ChatTab, run: () => T): T {
-		const active = this._active, peeking = this._peeking, switchTo = this._switchTo;
-		this._active = tab; this._peeking = true; this._switchTo = undefined;
+		const active = this._active, peeking = this._peeking;
+		this._active = tab; this._peeking = true;
 		try { return run(); }
-		finally { this._active = active; this._peeking = peeking; this._switchTo = this._switchTo ?? switchTo; }
+		finally { this._active = active; this._peeking = peeking; }
 	}
 	private static readonly _terminalSessions = new Map<string, vscode.Terminal>();
 	private static readonly _surfaces = new Map<string, ChatViewProvider>();
@@ -539,9 +636,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private readonly _registry: AgentRegistry;
 	/** The open conversations, in the order of their tabs; `_active` is the one shown. */
 	private _tabs: ChatTab[] = [];
-	private _active!: ChatTab;
+	private _frontActive!: ChatTab;
+	private get _active(): ChatTab { const scope = this._chromeCommand?.getStore(); return scope?.remote ? scope.tab : this._frontActive; }
+	private set _active(tab: ChatTab) { const scope = this._chromeCommand?.getStore(); if (scope?.remote) { scope.tab = tab; scope.chatId = tab.chat.id; } else { this._frontActive = tab; } }
 	/** The agent picked for a conversation that has started with another: asked about in the view. */
-	private _switchTo: AgentId | undefined;
+	private readonly _agentSwitches = new WeakMap<ChatTab, AgentId>();
+	private get _switchTo(): AgentId | undefined { return this._agentSwitches.get(this._active); }
+	private set _switchTo(agent: AgentId | undefined) { const tab = this._active; if (agent) { this._agentSwitches.set(tab, agent); } else { this._agentSwitches.delete(tab); } }
 	private _tabsSaved = '';
 	/** NEWS.md from the installed extension, read once; see `news.ts`. */
 	private _news: ChatNews | undefined;
@@ -615,6 +716,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		if (_restoredPanel) {
 			for (const [id, draft] of Object.entries(this._services.panels.panels.get(_restoredPanel.id)?.drafts ?? {})) { this._savedDrafts.set(id, draft); }
 		}
+		this._subscriptions.push(exchangeConnection.onDidChange(() => this._post()));
 		this._subscriptions.push(this._registry.onDidChange(() => this._post()));
 		if (_recording) { this._subscriptions.push(_recording.onDidChange(() => this._postRecording())); }
 		this._remembered = _context.globalState.get<RememberedSelection>(selectionKey) ?? { models: {}, efforts: {} };
@@ -1013,6 +1115,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				description: `${surface._active.chat.title} · ${surface._tabs.length} chats · ${surface._active.chat.folder ?? surface._windowCwd()}`,
 			})),
 			sleep: this._sleep.state,
+			exchangeConnection: exchangeConnection.state,
 			featureAi: readFeatureAiSettings(this._context.globalState.get(featureAiKey)),
 			recordingQuality: readRecordingQuality(this._context.globalState.get(recordingQualityKey)),
 			recordingSeconds: readRecordingSeconds(this._context.globalState.get(recordingSecondsKey)),
@@ -1120,6 +1223,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 	private async _receive(message: ViewToHost): Promise<void> {
 		switch (message.type) {
+			case 'connectExchange':
+				await exchangeConnection.connect({ url: message.url, pointId: message.pointId, key: message.key, password: message.password }, this._surfaceId);
+				return;
+			case 'disconnectExchange':
+				exchangeConnection.disconnect();
+				return;
 			case 'answerChromeConnection':
 				if (ChatViewProvider._chromeConnectionRequest?.id === message.id) {
 					ChatViewProvider._chromeConnectionRequest.finish(message.allow === true ? this._surfaceId : undefined);
@@ -1374,7 +1483,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				await this._openText(message.name, message.text);
 				return;
 			case 'openAttachment':
-				await this._openAttachment(message.id);
+				await this._openAttachment(message.id, message.entry);
 				return;
 			case 'saveAttachment': {
 				const attachment = this._active.attachments.find(a => a.chip.id === message.id);
@@ -2803,6 +2912,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			`Page annotation #${record.number} on ${url}`,
 			`Note: ${note ? JSON.stringify(record.text) : '(empty)'}`,
 			`Element (untrusted page data): <${record.element.tag}> ${JSON.stringify(record.element.selector)}${record.element.text ? ` text ${JSON.stringify(record.element.text)}` : ''}${record.element.role ? ` role ${JSON.stringify(record.element.role)}` : ''}`,
+      ...annotationPointContext(record),
 			`Annotation ID ${record.id}, browser tab ${tabId}. The marker is removed from the page once this message is sent, so this text is the annotation.`,
 		].join('\n');
 		return { chip: { id, kind: 'annotation', label: capAt(plainInLabel(label, 120), 120) }, text };
@@ -2815,6 +2925,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 * attaches the page's existing ones too), but only the first binds it.
 	 */
 	private _onAnnotations(change: AnnotationChange): void {
+		const remote=ChatViewProvider._exchangeAnnotationOwners.get(change.tab);
+		if(remote?.view===this)this._syncExchangeAnnotations(change,remote);
 		let changed = false;
 		for (const id of change.removed) {
 			const link = this._annotationLinks.get(id);
@@ -2829,6 +2941,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		for (const record of change.records) {
 			const link = this._annotationLinks.get(record.id);
 			if (!link) {
+				if(remote)continue;
 				if (blocked || !change.created.includes(record.id) || !this._active) { continue; }
 				this._attachAnnotation(this._active, record, change.url, change.tab);
 				changed = true;
@@ -2848,6 +2961,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			}
 		}
 		if (changed) { this._post(); }
+	}
+	private _syncExchangeAnnotations(change:AnnotationChange,owner:{chatId:string;reply:(message:HostToView,chatId?:string)=>void;ignored:Set<string>}):void {
+		if(this._disposed||!this._tabs.some(tab=>tab.chat.id===owner.chatId))return;
+		const drafts=this._exchangeDrafts.get(owner.chatId)??new Map<string,Attachment>();this._exchangeDrafts.set(owner.chatId,drafts);
+		for(const id of change.removed){if(drafts.delete(id))owner.reply({type:'exchangeAttachment',id,removed:true},owner.chatId);owner.ignored.delete(id);}
+		const assistant=this._browser.annotationsOf(change.tab)?.agentMade;
+		for(const record of change.records){
+			if(assistant?.has(record.id)||owner.ignored.has(record.id)||(!drafts.has(record.id)&&drafts.size>=8))continue;
+			const item={...this._annotationAttachment(record,change.url,change.tab,record.id),exchangeAnnotation:{tabId:this._browser.tabIdOf(change.tab),id:record.id}};
+			const previous=drafts.get(record.id);drafts.set(record.id,item);
+			if(previous?.text!==item.text||previous?.chip.label!==item.chip.label)owner.reply({type:'exchangeAttachment',id:record.id,label:item.chip.label,text:item.text,kind:'annotation'},owner.chatId);
+		}
 	}
 
 	/**
@@ -2878,6 +3003,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 */
 	private _removeSentAnnotations(attachments: readonly Attachment[]): void {
 		for (const item of attachments) {
+			if(item.exchangeAnnotation){
+				const annotation=item.exchangeAnnotation;
+				for(const [chatId,drafts] of this._exchangeDrafts)if(drafts.delete(item.chip.id)){
+					for(const owner of ChatViewProvider._exchangeAnnotationOwners.values())if(owner.view===this&&owner.chatId===chatId){owner.ignored.add(annotation.id);owner.reply({type:'exchangeAttachment',id:item.chip.id,removed:true},chatId);}
+				}
+				void this._browser.remoteTab(annotation.tabId).then(page=>this._browser.removeAnnotations(page,[annotation.id])).catch(()=>{});
+			}
 			if (item.chromeAnnotation) {
 				try { void chromeAnnotationSessions.removeSent(item.chromeAnnotation).catch(error => refuse(`Could not remove the sent Chrome annotation: ${String(error)}`)); }
 				catch (error) { refuse(`Could not remove the sent Chrome annotation: ${String(error)}`); }
@@ -2898,6 +3030,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 	/** Closing a chat tab deletes the annotations bound to it. */
 	private _dropAnnotationsOf(chat: ChatTab): void {
+		for(const item of this._exchangeDrafts.get(chat.chat.id)?.values()??[]){const note=item.exchangeAnnotation;if(note)void this._browser.remoteTab(note.tabId).then(page=>this._browser.removeAnnotations(page,[note.id])).catch(()=>{});}
+		this._exchangeDrafts.delete(chat.chat.id);
+		for(const [page,owner] of ChatViewProvider._exchangeAnnotationOwners)if(owner.view===this&&owner.chatId===chat.chat.id)ChatViewProvider._exchangeAnnotationOwners.delete(page);
 		const byPage = new Map<vscode.BrowserTab, string[]>();
 		let changed = false;
 		for (const [id, link] of this._annotationLinks) {
@@ -2984,7 +3119,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	/** `page`: the browser tab to attach from; the one the user last had in front when absent. */
-	private async _makeAttachment(kind: AttachmentKind, page?: vscode.BrowserTab): Promise<Attachment | undefined> {
+	private async _makeAttachment(kind: AttachmentKind, page?: vscode.BrowserTab, remote=false): Promise<Attachment | undefined> {
 		const id = generateUuid();
 		if (kind === 'video') {
 			if (!this._recording) { throw new Error('Video recording is unavailable.'); }
@@ -3034,7 +3169,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				return attachment;
 			}
 			case 'screenshot': {
-				if (!this._browser.onScreen(tab)) {
+				if (!remote && !this._browser.onScreen(tab)) {
 					refuse(vscode.l10n.t("\"{0}\" is not on screen — bring its tab to the front, then attach.", plainInLabel(pageTitle(tab.title, tab.url), 60)));
 					return undefined;
 				}
@@ -3050,7 +3185,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			case 'element': {
 				// A pick waits for a click on the page; on a page the user cannot
 				// see, that is a wait for something they cannot do.
-				if (!this._browser.onScreen(tab)) {
+				if (!remote && !this._browser.onScreen(tab)) {
 					refuse(vscode.l10n.t("\"{0}\" is not on screen — bring its tab to the front, then attach.", plainInLabel(pageTitle(tab.title, tab.url), 60)));
 					return undefined;
 				}
@@ -3061,7 +3196,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				const heading = /^Element:\s*(.+)$/m.exec(markdown)?.[1]?.trim();
 				return { chip: { id, kind, label: heading ? plainInPrompt(heading, 40) : vscode.l10n.t("Element") }, text: markdown };
 			}
+			case 'pointAnnotation':
 			case 'annotation': {
+				if(!remote)ChatViewProvider._exchangeAnnotationOwners.delete(tab);
 				// Starts the page's annotation picker; the chip arrives when the note is
 				// made, through `_onAnnotations`, in the chat tab in front.
 				if (!this._browser.onScreen(tab)) {
@@ -3080,8 +3217,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 					}
 					if (added) { this._post(); }
 				}
-				await this._browser.annotateTab(tab);
-				confirm(vscode.l10n.t("Click a page element to add an annotation (Esc to cancel)."));
+				await this._browser.annotateTab(tab, kind === 'pointAnnotation' ? 'point' : 'element');
+				confirm(kind === 'pointAnnotation' ? "Click anywhere on the page to add an annotation (Esc to cancel)." : "Click a page element to add an annotation (Esc to cancel).");
 				return undefined;
 			}
 		}
@@ -3095,8 +3232,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 * next chip reuses it. `Beside` was the first version and split the editor
 	 * area into a new group on every first click, which read as a separate window.
 	 */
-	private async _openAttachment(id: string): Promise<void> {
-		const attachment = this._active.attachments.find(a => a.chip.id === id);
+	private async _openAttachment(id: string, entryIndex?: number): Promise<void> {
+		const entry = Number.isInteger(entryIndex) ? this._active.chat.entries[entryIndex!] : undefined;
+		const saved = entry?.kind === 'user' ? entry.attachmentData?.find(a => a.chip.id === id) : undefined;
+		const attachment = entryIndex === undefined ? this._active.attachments.find(a => a.chip.id === id)
+			: saved ? { ...saved, file: saved.file ? vscode.Uri.parse(saved.file) : undefined } : undefined;
 		if (!attachment) {
 			return;
 		}
