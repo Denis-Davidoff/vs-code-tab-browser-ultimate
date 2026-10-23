@@ -1031,6 +1031,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			if (this._tabs.includes(command.tab) && command.tab.chat.id === command.chatId) { command.reply?.(message, command.chatId); }
 			return;
 		}
+		if (message.type === 'workdirGit') { this._stateSurfaces.broadcast(message); }
 		if (message.type === 'state') {
 			const shown = message.state.chatId;
 			this._stateSurfaces.publish(chatId => !chatId || chatId === shown ? message.state : this._stateFor(chatId));
@@ -3762,7 +3763,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 */
 	private _gitEventRefresh(): void {
 		if (this._disposed) { return; }
-		if (!this._view?.visible || !this._viewReady) {
+		if ((!this._view?.visible || !this._viewReady) && !this._stateSurfaces.watching()) {
 			this._gitStale = true;
 			return;
 		}
@@ -3782,7 +3783,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private _refreshWorkdirGit(): Promise<void> {
 		// Only for a view that can show it: the answer is not queued (see
 		// `_postMessage`), and `ready` asks for a fresh one.
-		if (this._disposed || !this._view || !this._viewReady) {
+		if (this._disposed || ((!this._view || !this._viewReady) && !this._stateSurfaces.watching())) {
 			this._gitStale = true;
 			return Promise.resolve();
 		}
@@ -3803,7 +3804,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 					await this._readWorkdirGit(folder);
 					// A rerun for a folder no longer in front, or for a view that has
 					// gone, would only spend processes.
-				} while (entry.again && !this._disposed && this._viewReady && folder === this._workdir());
+				} while (entry.again && !this._disposed && (this._viewReady || this._stateSurfaces.watching()) && folder === this._workdir());
 			} finally {
 				this._gitRefreshes.delete(folder);
 			}

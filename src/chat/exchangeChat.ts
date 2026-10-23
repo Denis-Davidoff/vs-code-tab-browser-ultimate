@@ -39,6 +39,10 @@ class ExchangeSurface implements ChatStateSurface {
 	get closed(): boolean { return this.stopped; }
 	constructor(private readonly config: Config, private readonly key: string, private readonly source: string, private readonly status: vscode.StatusBarItem, private readonly changed: (phase: ExchangeConnectionState['status'], error?: string) => void, private readonly cipher?: ExchangeCipher) { this.connect(); }
 	bind(refresh: () => void): void { this.refresh = refresh; }
+	event(message: HostToView): void {
+		if (this.stopped || !this.ready || !this.pinned || this.socket?.readyState !== 1) { return; }
+		this.socket.send(JSON.stringify({ type: 'chat.event', chatId: this.pinned, message }));
+	}
 	update(state: ChatViewState): void {
 		this.pinned = state.chatId;
 		this.chats = new Set([state.chatId,...state.tabs.map(tab => tab.chatId)]);

@@ -7414,6 +7414,12 @@ extension opens, and driven back by exactly two commands, `chat.send` and `chat.
   **The website sends pointer moves** (`action: 'move'`, a mouse only, at most every 120 ms and
   never with more than two commands in flight), dispatched as `mouseMoved`: the inspect overlay
   and the annotation picker highlight from it, and the page gets its own hover.
+- **Git state reaches the website on its own** (`ChatStateSurface.event`, `broadcast` in
+  `chatSurface.ts`): every `workdirGit` the editor posts — after a commit, a branch switch, an
+  editor event — is also sent as a `chat.event` for the pinned chat. It used to go only to the
+  editor's view, so the website saw Git only as the reply to its own refresh. An active remote
+  surface also counts as a viewer for `_gitEventRefresh` / `_refreshWorkdirGit`, so the read runs
+  with the editor's chat view hidden; Restricted Mode still refuses it (#208).
 - **Close from the website** (`action: 'close'`, the × button) closes the shared tab: the
   built-in browser's with `tab.close()` (`remoteInput`), and for a Chrome source the stream is
   stopped and the selection cleared (`exchangeBrowser.ts`). There is no DevTools action: one was

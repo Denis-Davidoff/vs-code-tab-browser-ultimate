@@ -1,4 +1,4 @@
-import type { ChatViewState } from './chatProtocol';
+import type { ChatViewState, HostToView } from './chatProtocol';
 
 /** A state consumer independent of VS Code's webview lifecycle. */
 export interface ChatStateSurface {
@@ -14,6 +14,12 @@ export interface ChatStateSurface {
 	readonly active?: boolean;
 	/** Given a way to ask for a fresh state, e.g. after the surface changed its pin. */
 	bind?(refresh: () => void): void;
+	/**
+	 * A snapshot message the editor sends on its own, such as `workdirGit` after a
+	 * commit or a branch switch. Without it a remote view saw Git state only as
+	 * the reply to a request of its own, and never a change made in the editor.
+	 */
+	event?(message: HostToView): void;
 }
 
 /** Builds the state of one conversation of the panel; absent is the tab in front. */
@@ -45,6 +51,17 @@ export class ChatStateSurfaces {
 				try { surface.close(); } catch { /* A failed external view must not break the editor. */ }
 			}
 		}
+	}
+	/** Hands a snapshot message to every surface that takes them. */
+	broadcast(message: HostToView): void {
+		for (const surface of this._surfaces) {
+			if (surface.active === false || !surface.event) { continue; }
+			try { surface.event(message); } catch { /* A failed external view must not break the editor. */ }
+		}
+	}
+	/** Whether some live surface takes snapshot messages: then the editor's Git state is being watched. */
+	watching(): boolean {
+		return [...this._surfaces].some(surface => surface.active !== false && !!surface.event);
 	}
 	/** Conversations some surface is showing — what the editor marks as mirrored. */
 	chatIds(fallback: string): Set<string> {
