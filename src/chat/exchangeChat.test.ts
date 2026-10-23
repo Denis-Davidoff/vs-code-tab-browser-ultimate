@@ -249,3 +249,31 @@ test('openBrowser does not require an already selected browser tab',async()=>{
   assert.equal(h.actions.length,1);assert.equal(h.actions[0].message.type,'openBrowser');
  }finally{h.shutdown();}
 });
+
+test('a relay that carries patches gets numbered snapshots and then patches; an older one only snapshots', async () => {
+ const state=(text:string)=>({chatId:'chat-1',entries:[{kind:'assistant',text:'a long earlier answer '.repeat(200)},{kind:'assistant',text}],running:true,tabs:[{id:'tab-1',chatId:'chat-1',title:'One'}],voice:{}});
+ for (const features of [['patch'],undefined]) {
+  const h=harness();
+  try{
+   await h.port.connect({url:'http://127.0.0.1:3000',pointId,key},'panel-1');
+   const socket=h.sockets[0];socket.emit('message',{data:JSON.stringify({type:'ready',version:1,...(features?{features}:{})})});await flush();
+   h.surface.update(state('one'));await delay(40);
+   h.surface.update(state('one two'));await delay(40);
+   const frames=socket.sent.map(s=>JSON.parse(s)).filter(m=>m.type==='chat.snapshot'||m.type==='chat.patch');
+   const last=frames.at(-1);
+   if(features){
+    assert.equal(last.type,'chat.patch');assert.equal(last.patch.entries.from,1);assert.equal(last.patch.entries.upsert[0].text,'one two');
+    const full=[...frames].reverse().find((m:any)=>m.type==='chat.snapshot');assert.ok(full.epoch);assert.equal(last.epoch,full.epoch);assert.equal(last.base,last.rev-1);
+    const resync=randomUUID();socket.emit('message',{data:JSON.stringify({type:'chat.resync',id:resync,chatId:'chat-1'})});await flush();
+    assert.equal(JSON.parse(socket.sent.at(-2)!).type,'chat.snapshot');assert.ok(socket.sent.at(-1)!.includes(resync));
+    // Patches stopped: a whole snapshot follows on its own, for the relay's cache.
+    h.surface.update(state('one two three'));await delay(40);
+    assert.equal(JSON.parse(socket.sent.at(-1)!).type,'chat.patch');
+    await delay(2100);
+    const trailing=JSON.parse(socket.sent.at(-1)!);assert.equal(trailing.type,'chat.snapshot');assert.equal(trailing.view.entries[1].text,'one two three');
+   }else{
+    assert.ok(frames.every((m:any)=>m.type==='chat.snapshot'&&m.epoch===undefined));
+   }
+  }finally{h.shutdown();}
+ }
+});

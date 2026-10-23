@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate",
 	"displayName": "AI Browser🏆 Claude + Codex + Gemini",
 	"description": "Embedded browser tab with AI capabilities, Claude, Codex and Gemini integration",
-	"version": "0.8.9",
+	"version": "0.8.10",
 	"enabledApiProposals": [
 		"externalUriOpener",
 		"browser"

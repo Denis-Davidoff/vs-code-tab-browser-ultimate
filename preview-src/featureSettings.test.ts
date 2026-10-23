@@ -49,6 +49,7 @@ function harness() {
 		readFeatureAiSettings, aiFeatures, defaultFeaturePrompts, featurePromptLimit, createTemporarySettings: () => new Element('div'), createServerSettings: () => new Element('div'), input: { focus() {} }, closePopups() {},
 		el(tag: string, props: { class?: string } = {}, ...children: (Element | string)[]) { const node = new Element(tag); node.className = props.class ?? ''; node.append(...children); return node; },
 		button: (children: (Element | string)[], props: { class?: string } = {}) => { const node = new Element('button'); node.className = props.class ?? ''; node.append(...children); return node; }, icon: () => new Element('i'),
+		gate: () => ({ s: 'on' }),
 		post(message: { settings: FeatureAiSettings; recordingQuality?: RecordingQuality }) { posts.push(message); }, message: {} as { settings?: FeatureAiSettings; recordingQuality?: RecordingQuality; error?: string },
 	};
 	const context = createContext(scope);

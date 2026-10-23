@@ -3,15 +3,19 @@ import {strict as assert} from 'node:assert';
 import {readFileSync} from 'node:fs';
 import {runInNewContext} from 'node:vm';
 import {transpileModule,ModuleKind,ScriptTarget} from 'typescript';
+import {controlOf,surfaceControls} from '../src/chat/core/commands.ts';
 function compile(source:string){return transpileModule(source,{compilerOptions:{module:ModuleKind.CommonJS,target:ScriptTarget.ES2022}}).outputText;}
 
 test('Chrome opening is disabled only in the server chat menu',()=>{
  const source=readFileSync('preview-src/chat.ts','utf8');
  const body=/function browserMenuItems\(\): MenuItem\[\] \{[\s\S]*?\n\}/.exec(source)![0];
- const context:any={state:{remoteWorkspace:true,nativeBrowser:'granted'},exports:{},post(){}};
+ const context:any={state:{nativeBrowser:'granted'},exports:{},post(){}};
  runInNewContext(compile(body+'\nexports.items=browserMenuItems;'),context);
- let items=context.exports.items();assert.equal(items[0].disabled,true);assert.equal(items[1].label,'VS Code Browser');assert.ok(!items[1].disabled);
- context.state={nativeBrowser:'granted'};items=context.exports.items();assert.equal(items[0].disabled,false);
+ const items=context.exports.items();assert.equal(items[0].command,'openBrowser.chrome');assert.equal(items[1].label,'VS Code Browser');assert.ok(!items[1].disabled);
+ // openMenu disables a row by its command: only the website's map refuses this one.
+ assert.equal(controlOf(surfaceControls('exchange'),'openBrowser.chrome').s,'off');
+ assert.equal(controlOf(surfaceControls('editor'),'openBrowser.chrome').s,'on');
+ assert.equal(controlOf(surfaceControls('chrome'),'openBrowser.chrome').s,'on');
 });
 test('remote folder picker sends a path for the same conversation and never opens the system picker',()=>{
  const source=readFileSync('preview-src/serverChatHost.ts','utf8');

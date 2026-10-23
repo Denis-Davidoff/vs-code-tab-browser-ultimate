@@ -1,3 +1,5 @@
+import {snapshotReplay} from './snapshotEvents';
+import {applyPatch,readPatch} from '../src/chat/core/sync';
 import { workspaceExchangeSocket } from '../src/core/exchangeCrypto';
 import type { ChatViewState, HostToView, ViewToHost } from '../src/chat/chatProtocol';
 import type { ChatDraftState } from './chatHost';
@@ -8,6 +10,7 @@ import { fileBase64 } from './clipboardFiles';
 type Snapshot = {type:'chat.snapshot';uiVersion?:number;chatId:string;view?:ChatViewState;messages?:{role:string;text:string}[]};
 const app = document.getElementById('app')!;
 const status = document.getElementById('status')!;
+// "Connected" is the normal state and says nothing worth a line of its own; only trouble is shown.
 const conversation = document.getElementById('conversation') as HTMLSelectElement;
 const pointId = new URL(location.href).searchParams.get('point') ?? '';
 const storageKey = `ai-browser:web:${pointId}`;
@@ -20,6 +23,8 @@ const eventQueue:HostToView[] = [];
 const attachments = new Map<string,ChromeElementAttachment[]>();
 const pending = new Map<string,{chatId:string;message?:ExchangeUiMessage;attachmentIds:string[];timer:ReturnType<typeof setTimeout>}>();
 let nextReference = 1;
+// Git state and the like, carried in each snapshot, for a viewer that connected after it changed.
+const replaySnapshots=snapshotReplay(message=>emit(message));
 function emit(message:HostToView):void {
   if (!rendererReady) { if(eventQueue.length<100)eventQueue.push(message); return; }
   window.dispatchEvent(new MessageEvent('message',{data:message}));
@@ -31,6 +36,17 @@ function connectionState(connected:boolean):void {
 window.addEventListener('message',event=>{
   if(event.origin===location.origin&&event.source===window.parent&&event.data?.type==='ai-browser-request-connection')connectionState(authenticated);
 });
+/** The agent's numbering of the snapshot on screen, for its patches (`chat.patch`). */
+let shownEpoch:string|undefined,shownRev=-1,resyncAt=0;
+let resyncTimer:ReturnType<typeof setTimeout>|undefined;
+function resync():void {
+  if(!latest||socket?.readyState!==WebSocket.OPEN)return;
+  // At most once a second — but a request inside that second is deferred, not dropped,
+  // or a second patch that did not fit would leave the view stale until the agent's next whole snapshot.
+  const wait=1000-(Date.now()-resyncAt);
+  if(wait>0){if(!resyncTimer)resyncTimer=setTimeout(()=>{resyncTimer=undefined;resync();},wait);return;}
+  resyncAt=Date.now();socket.send(JSON.stringify({type:'chat.resync',id:crypto.randomUUID(),chatId:latest.chatId}));
+}
 function render():void {
   if(!latest?.view || !rendererReady)return;
   document.getElementById("legacy")?.remove();
@@ -53,6 +69,7 @@ function render():void {
     blocked:!online?'Workspace offline. Reconnect your VS Code extension.':view.blocked,
     entries:feedback?[...view.entries,{kind:'notice',text:feedback}]:view.entries,
   }});
+  replaySnapshots(view.snapshotEvents);
 }
 function result(id:string,ok:boolean,error?:string):void {
   const item=pending.get(id);if(!item)return;
@@ -121,6 +138,7 @@ window.aiBrowserChatHost={
   postMessage(message:ViewToHost){
     if(message.type==='ready'){rendererReady=true;render();for(const event of eventQueue.splice(0))emit(event);if(latest)send({type:'ready'});return;}
     if(message.type==='saveDrafts'||message.type==='tabDraft'||message.type==='reportTheme')return;
+    if(message.type==='selectTab'){const tab=latest?.view?.tabs.find(t=>t.id===message.id);if(tab)pinConversation(tab.chatId);return;}
     if(message.type==='copy'){void copy(message.text).catch(error=>notice(String(error)));return;}
     if(message.type==='openLink'&&message.external&&/^https?:\/\//i.test(message.url)){window.open(message.url,'_blank','noopener,noreferrer');return;}
     if(message.type==='exportChat'&&latest?.view){
@@ -136,16 +154,17 @@ window.aiBrowserChatHost={
     send(message);
   },
 };
-conversation.addEventListener('change',()=>{
-  if(!latest||socket?.readyState!==WebSocket.OPEN)return;
+/** Shows another of the editor's conversations on the website (a pin); the editor's tab in front is left alone. */
+function pinConversation(chatId:string):void {
+  if(!latest||socket?.readyState!==WebSocket.OPEN||chatId===latest.chatId)return;
   const id=crypto.randomUUID();conversation.disabled=true;
   const timer=setTimeout(()=>result(id,false,'Could not switch conversations.'),10000);
-  pending.set(id,{chatId:latest.chatId,attachmentIds:[],timer});socket.send(JSON.stringify({type:'chat.pin',id,chatId:conversation.value}));
-});
-document.getElementById('new-chat')!.addEventListener('click',()=>send({type:'newTab',location:'here'}));
-document.getElementById('history')!.addEventListener('click',()=>send({type:'history'}));
-document.getElementById('settings')!.addEventListener('click',()=>emit({type:'openSettings'}));
-document.getElementById('awake')!.addEventListener('click',()=>emit({type:'openSleep'}));
+  pending.set(id,{chatId:latest.chatId,attachmentIds:[],timer});socket.send(JSON.stringify({type:'chat.pin',id,chatId}));
+}
+conversation.addEventListener('change',()=>pinConversation(conversation.value));
+// The renderer's own tab strip picks the conversation, as in Chrome; the select stays hidden.
+conversation.hidden=true;
+// New chat, history, keep-awake and settings are the renderer's own row now (`remoteBar` in chat.ts).
 /** Existing clients can keep reading/sending while the VSIX update is installed. */
 function renderLegacy(value:Snapshot):void {
   let panel=document.getElementById('legacy');
@@ -175,7 +194,13 @@ function connect():void {
       else if(value.type==='presence'){online=value.online;status.textContent=online?'Connected':'Workspace offline';connectionState(true);render();}
       else if(value.type==='chat.snapshot'){
         if(value.uiVersion!==1||!value.view){renderLegacy(value);return;}
-        const first=!latest;latest=value;feedback='';render();if(first&&rendererReady)send({type:'ready'});
+        clearTimeout(resyncTimer);resyncTimer=undefined;const first=!latest;latest=value;shownEpoch=typeof value.epoch==='string'?value.epoch:undefined;shownRev=typeof value.rev==='number'?value.rev:-1;feedback='';render();if(first&&rendererReady)send({type:'ready'});
+      }else if(value.type==='chat.patch'){
+        // A patch of the view on screen; one that does not fit asks for the whole snapshot.
+        const patch=readPatch(value.patch);
+        const view=patch&&latest?.view&&value.epoch===shownEpoch&&value.chatId===latest.chatId?applyPatch(latest.view as unknown as Record<string,unknown>,shownRev,patch):undefined;
+        if(view){latest={...latest!,...(value.top??{}),view:view as unknown as ChatViewState};shownRev=patch!.rev;render();}
+        else resync();
       }else if(value.type==='chat.event'){
         if(value.message?.type==='exchangeAttachment'){
           const item=value.message;

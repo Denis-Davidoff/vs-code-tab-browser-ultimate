@@ -7369,6 +7369,14 @@ show or stop them. An agent's `turn/started` that arrives before the parent's `s
 binds its thread is kept (`_unclaimedTurns`, bounded) and handed over at the binding, or that
 agent could not be stopped.
 
+**A Claude Code workflow is listed with the agents.** The `Workflow` tool's call is an agent
+row (`agent.type: 'workflow'`, background), named by its `name` or the script's `meta.name`, its
+description as the prompt; its task arrives as `task_type: 'local_workflow'` (read in the 2.1.309
+binary beside `local_agent`) with the same `task_started` / `task_progress` / `task_notification`,
+so it counts, shows time and tokens, and stops like an agent. The row carries a
+`type-hierarchy-sub` icon. **Not measured yet:** whether the workflow's own agents and phases
+reach stream-json; until then the card shows the workflow alone.
+
 **`stopped` is a fourth tool status**, drawn in the warning colour. The turn-end sweep uses it for
 a turn that ended with `Stopped.` too, where it used to say `failed`.
 
@@ -7379,6 +7387,112 @@ agent still running; after the review, a message sent during the automatic turn 
 and tokens. The panel was checked in headless Chrome: hidden with no agents, a click and a fold
 landing with a state post between press and release, a 3 006-character selection and the scroll
 surviving posts, ↑ in a wrapped draft moving the caret.
+
+### One command table for the three surfaces
+
+[src/chat/core/commands.ts](src/chat/core/commands.ts) (leaf, under test) has a row for every
+`ViewToHost` type saying what the Chrome side panel and the Exchange website do with it: `host`
+(forwarded and carried out), `local` (answered by the surface's own shim), `mixed` (some forms
+local or refused by the host), or `{ no }` with the reason. `satisfies Record<ViewToHost['type'], …>`
+fails the typecheck until a new type has its row, and a type with no row is refused remotely.
+
+- **The Chrome side panel forwards `forwardedTypes('chrome')`**, and `commandChromeSource` now
+  checks the same column on the host — before, the host had no allowlist for Chrome's `chat`
+  feature, and only the panel's own list stood between a crafted command and `_receive`.
+- **`exchangeRefusal` reads the website's column** (it replaced the `exchangeForbidden` denylist,
+  under which a new type was allowed by default). The website's own `history` request is not a
+  `ViewToHost` and passes.
+- **`commands.test.ts` freezes both forwarded sets** as reviewed literals: changing a row that
+  widens or narrows what a remote surface may do changes that diff, on purpose. It also checks
+  that the website reader can still produce every forwarded type and that each row's feature is
+  the one Chrome negotiates (`chromeChatCommandFeature`).
+- **The renderer shows the same table before anything is clicked.** Chrome's and the website's
+  states carry `surface` and `controls` (`surfaceControls`, only what is not on): a `{ no }` row is
+  a disabled control with the reason as its title, a `{ no, hide }` row (the microphone, recording)
+  is hidden — policy and destructive actions are disabled, what cannot work away from the
+  editor's machine is hidden. `post()` in `chat.ts` refuses a message whose control is not on and
+  shows the reason in a line above the thread (`controlRefusal`), so a refused action never reaches
+  a shim or the host. Menu rows take `command` (gated in `openMenu`), buttons `gateButton`. A form
+  of a `mixed` command is a control id of its own (`openBrowser.chrome`); this replaced the
+  renderer's reading of `remoteWorkspace`. The editor's own state has no map: everything is on.
+- **What leaves the editor is a classified list** (`viewFields` / `projectView` in
+  `chromeChatProtocol.ts`): every `ChatViewState` field is `shared`, `editor` or `override`, the
+  `satisfies` fails on a new field until it is classified, and an unclassified field is not
+  copied. The snapshot used to be `...state` with known fields blanked, so a new field holding a
+  path went to Chrome and the website by default.
+- **The last `workdirGit` per folder rides in every remote state** (`snapshotEvents`, kept by
+  `ChatStateSurfaces.broadcast`) and both shims hand it to the renderer once per change
+  (`preview-src/snapshotEvents.ts`, shared). Before, Chrome — which takes no pushed events —
+  never saw a Git change made in the editor, and a website viewer that connected after one saw
+  none until the next. The relay cannot cache events itself (encrypted envelopes are opaque).
+- **Settings kept for the whole window reach every chat surface at once**: approval modes answer
+  the waiting cards of every surface's tabs and redraw every menu, `newsHidden` redraws every
+  surface; each used to redraw only the surface it was changed in.
+- **Delays**: the website's extra coalescing is 16 ms (was 150 on top of the host's 40).
+- **Chrome long-polls the snapshot.** The panel sends `X-AI-Browser-Wait: 1000` with its ETag; the
+  bridge holds an unchanged request until a new revision, a delivered event or the bridge closing
+  (`_waiters` / `_wake`), at most `chromeChatMaxWaitMs`, and answers the header back. A panel that
+  sees it polls again at once; against an editor without it, every 250 ms (was 750). The loop also
+  carries the annotation sync and the footer events, which is why the hold is about a second and
+  not the 25 s a pure long-poll would use. **Listen for `close` on the response, not the
+  request**: a GET request emits `close` as soon as its body is read, which took every held
+  request off the wait list unanswered.
+- **A snapshot older than the one on screen is dropped in Chrome** (`shownRevision`): a command's
+  reply now carries the bridge's `revision`, a poll its ETag, and the two can land in either order
+  once a poll is held. The pin of another conversation and a new connection reset it.
+- **Chrome picks its conversation in the renderer's own tab strip**, not in a `<select>` of the
+  shell: `selectTab` is `local` for Chrome, and the side panel answers it with the pin
+  (`pinConversation`), so clicking a tab in Chrome changes what Chrome shows and leaves the editor's
+  tab in front alone. The strip reads the control map: the close button (`closeTab`), dragging
+  (`placeTab`), renaming (`renameTab`), "+" (`newTab`) and the move rows (`moveTabTo` /
+  `moveTabToNew`) disappear where they are not on. The old `<select>` is kept in the markup and
+  hidden. **The website does the same** (`pinConversation` in `serverChatHost.ts`, `chat.pin`):
+  its `selectTab` is `mixed` — the shim pins, and the host still accepts one naming the shared tab.
+- **"Open in Google Chrome" on a tab counts Chrome's bridges only** (`ChatStateSurface.kind`,
+  `chatIds(front, 'chrome')`). The Exchange website's surface is `active` while its relay socket is up,
+  viewers or not, so with it counted a tab stayed marked as shared in Chrome after Chrome was closed.
+- **The Chrome side panel offers the Chrome tab in front as a dashed suggestion**, as the editor offers
+  its browser tab (`pageSuggestion` in `sidepanel.ts`; `acceptSuggestion` is `local` for Chrome). The +
+  attaches it as a `sharedPage` that follows the tab; it is not offered while the draft holds that tab.
+  The page chip's text (`chromePageText`) says the page is in Google Chrome and names the `browser_*`
+  tools: told only "check browser_tabs", the agent did not see that "open the page" meant those tools.
+- **The view title's buttons are the renderer's on Chrome and the website** (`remoteBar` in
+  `chat.ts`, shown whenever `state.surface` names a remote surface): New chat (`newTab`), History
+  (`history`, the website's own request, hidden for Chrome by a form rule), Keep awake (`setSleep`)
+  and Chat settings (`saveFeatureAi`), each gated by the control map. The website's header kept
+  only its connection status; its four buttons and their wiring in `serverChatHost.ts` are gone.
+  **The bar sits in the shell's own header** when the page has a `#remote-actions` slot (both shells do), so it takes no row of its own, beside the connection status. The served copy is `apps/web/public/remote-chat/`, written by `exchange-server/scripts/build-chat.mjs` — edit `chat-assets/` and rebuild, or the page keeps the old header.
+  **Both shells used to hide the renderer's tab strip** (`#app .tab-strip { display: none }` in
+  `sidepanel.css` and `web-chat.css`) in favour of their `<select>`; those rules are removed, or
+  hiding the select would have left no way to switch conversations.
+- **Patches instead of whole states** ([src/chat/core/sync.ts](src/chat/core/sync.ts), leaf, under
+  test): `diffState` names the top-level fields that changed or went and the entries as a tail
+  from the first that differs; `applyPatch(prev, diffState(prev, next))` is `next`, checked on
+  3 000 random pairs. Computed **per surface, after projection** — `_state` and its side effects
+  (`seen()`, the `@N` references) are untouched, and no `editor` field can leave through a patch.
+  - **Chrome**: the panel names what it shows in `X-AI-Browser-Base: <epoch>:<rev>`; the bridge
+    keeps copies of its last four snapshots (`_published`) and answers `{ patch, top }` — the view
+    diffed, the snapshot's other fields whole, `entries` not twice — when that is under half the
+    snapshot, else the whole snapshot. A patch that does not apply empties the panel's base and it
+    polls again at once for the whole one. The epoch is per bridge, sent in the same header.
+  - **Exchange**: the relay announces `features: ['patch']` in its `ready`
+    (`RELAY_FEATURES` in `packages/protocol`); only then does the agent number its snapshots
+    (`epoch`, `rev`) and send `chat.patch` between them. A whole snapshot still goes at least every
+    2 s (`fullEveryMs`), **2 s after the last patch** (`trailing` — the relay caches whole snapshots only, so a burst ending in a patch left a viewer joining later, or a page from before the relay's upgrade that drops patches, on half a reply still "Working"), on `ready`, on the encrypted socket's sync and on `chat.resync` — what the
+    website sends when a patch does not fit (at most once a second; a request inside that second is deferred to its end, never dropped). The relay broadcasts patches
+    and never caches them, so a late viewer starts from the cached snapshot and converges at the
+    next whole one. A snapshot cut to fit 5 MB is never a base. An older relay announces nothing
+    and gets whole snapshots, as before; relay and web assets ship together, so an old website
+    never meets a patch. **`chat.resync` is answered by the agent itself** with `command.result`,
+    before the conversation checks.
+- **Both remote entry points start at one door**, `remoteScope` in
+  [src/chat/core/remoteScope.ts](src/chat/core/remoteScope.ts) (leaf, under test): the surface's
+  conversation (or `remoteGone`, worded per surface), then the chat's own `_blocked()`, then the
+  table's refusal — one order for `commandChromeSource` and `commandExchangeSource`, which keep
+  only what differs (Chrome's send and attachments; the website's browser, folder and annotation
+  forms, and `exchangeRefusal`'s check that an inner id names the shared conversation). The
+  surface's members are private, so the scope takes callbacks rather than a shape. Tests that lift
+  those methods out of `chatView.ts` are given `remoteScope` beside `remoteRefusal`.
 
 ### Sharing a chat with Exchange
 
@@ -9733,8 +9847,87 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
      Annotation pressed on the Exchange website armed the picker on the shared tab, and the
      website's click never finished it, so the pick was done in the local VS Code browser
      instead. Resolve a remote pick from the click's coordinates (`remotePick.ts`).
+525. **An agent's key press that reaches the user's clipboard** → `browser_press` sent Cmd/Ctrl+V
+     as CDP's `paste` command, so a prompt-injected agent could paste what the user had copied (a
+     password, a token) into a page and read it back. `keyDescription` refuses copy, cut and paste
+     shortcuts outright — without the command Chromium still pastes on Control+V natively on
+     Windows and Linux. Text goes in with `browser_type`.
 
 ## Special cases and non-obvious decisions
+
+### Native page actions inspired by Stagehand
+
+`src/browser/nativeActions.ts` independently implements the useful deterministic parts of
+Stagehand's locator/input approach, without adding a production dependency, Chrome extension,
+LLM client, or second agent. `TabSession` owns one `NativeActions`; `BrowserController` still
+resolves the caller's allowed tab through `_withSession`. MCP exposes:
+
+- `browser_click`: unique selector, native mouse events, optional `button`, `clickCount: 2`,
+  `smooth` and `humanize`. Unlike the previous `el.click()`, covered/disabled/ambiguous targets fail.
+- `browser_hover`: native pointer movement for hover menus; optional `smooth` and `humanize`.
+- `browser_press`: focus a unique selector and send a key or shortcut (`Enter`, `Shift+Tab`,
+  `Control+a`, `Meta+a`). Platform editing shortcuts include explicit CDP editing commands:
+  on macOS, sending the modifier and key alone did not perform Select All in headless Chrome.
+- `browser_type`: insert text at the caret/selection using `Input.insertText`; does not replace
+  the whole value. Optional `humanize` sends native per-grapheme key events with varied pauses
+  (up to 400 graphemes per call). Results never echo editable values. Chromium accepts at most
+  four UTF-16 units in a keyboard event's text buffer, so longer graphemes such as joined emoji
+  are inserted atomically with `Input.insertText` between their key-down/up events. No character
+  is split into surrogate halves. Before each character, verify the same element still has focus;
+  never refocus automatically after a page handler moved it somewhere else.
+- `browser_drag`: native left-button drag between two selectors in the same frame, with smooth
+  movement by default. Both endpoints must fit in its viewport. It does not synthesize HTML5
+  DataTransfer payloads or auto-scroll while dragging; callers must check the resulting state.
+
+The snapshot and action resolver support explicit `host >>> inner-selector` chains through
+open and closed author shadow roots. `browser_fill` uses the same pinned-element resolver.
+For each shadow boundary, `DOM.describeNode` supplies its backend root id and `DOM.resolveNode`
+exposes that root in the selected frame's execution context; no attachShadow monkey-patch or
+persistent page registry is needed. Browser-owned user-agent shadow roots are excluded.
+Snapshot discovery describes only the selected document and does not recurse into iframe
+documents; its internal DOM data is never returned directly. Resolved root objects are released
+after metadata extraction. Ordinary CSS remains ordinary CSS;
+`>>>` inside a quoted attribute or CSS function is not a shadow boundary. Snapshot traversal
+is bounded at 150 entries, 200 roots and 20000 visited elements, with a `truncated` flag.
+Editable content and field values are never used as snapshot labels, except button captions.
+
+Pointer coordinates are computed in each frame's viewport and projected through the content
+quad from `DOM.getBoxModel`, using an invertible projective transform. This handles scale,
+rotation, skew, CSS zoom and perspective in nested and site-isolated frames. CDP quads already
+include same-renderer ancestors, so apply a session's transform only when crossing into another
+renderer; adding every frame offset again is wrong. Map back into each parent's local viewport
+for hit-testing. Singular/edge-on transforms fail before mouse input.
+
+An OOPIF's DOM geometry can update before the compositor routes input using its new transform.
+Before pressing, verify a trusted native pointer move actually reached the pinned target with
+a transient pointermove probe, retrying only movement (up to five attempts). Remove the probe
+and release its object on every exit; never replay a press. An explicit sandbox without
+allow-scripts cannot run that callback, so sample stable geometry from the host after a short
+settling interval instead. This keeps native links usable in script-disabled frames without
+waiting on sandboxed page timers. Same-renderer actions need no compositor probe.
+
+Native actions serialize per tab session and use the existing scroll/screenshot gate. Each
+operation has a 15-second budget (humanized typing scales up to 55 seconds), and each
+CDP/readiness wait a 2.5-second bound. Remote element
+objects are pinned for an action and released afterwards, so a rerender cannot silently
+redirect input to a replacement node. Cancellation/errors release held keys or mouse buttons.
+An issued mutation is never retried automatically; inspect the page before retrying after a
+timeout. `smooth` interpolates pointer events over a bounded route; `humanize` uses a curved
+route, varied movement timing and brief click/drag pauses. Humanized typing pauses longer at
+word/punctuation boundaries. Both are optional, and neither adds deliberate typing mistakes,
+moves the OS cursor, installs a visible cursor overlay, or guarantees human indistinguishability.
+
+`nativeActions.test.ts` checks protocol sequences, cancellation, selector parsing and queueing.
+The opt-in `nativeActions.browser.test.ts` launches a disposable headless Chrome with CDP pipes
+and tests trusted events, transformed nested/site-isolated frames, open/closed shadow DOM,
+Unicode editing, script-disabled frames and dragging:
+
+```sh
+AI_BROWSER_TEST_CHROME='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' node --test src/browser/nativeActions.browser.test.ts
+```
+
+The browser test uses a temporary profile; its cross-origin fixture listens only on loopback.
+It does not touch the user's Chrome profile or expose a network debugging port.
 
 - **Surface coordination after review:** all providers share one `GitAccess`; busy-folder
   checks enumerate every provider, so moving a running agent cannot bypass worktree locks.

@@ -1,3 +1,4 @@
+import { surfaceControls } from './core/commands';
 import { chromeChatProtocolVersion, chromeChatCapabilities, readChromeChatCapabilities, type ChromeChatCapabilities } from './chromeChatCompatibility';
 import type { ChatEntry, ChatViewMode, ChatViewState, Selection, ViewToHost } from './chatProtocol';
 import type { FeatureAiSettings } from './featureAi';
@@ -49,6 +50,36 @@ export interface ChromeChatSnapshot {
 	};
 }
 
+/**
+ * What of the editor's state may leave it for Chrome and the website. Every
+ * field of `ChatViewState` has to be classified here — the `satisfies` makes a
+ * new field fail the typecheck until it is — so a field holding a path, a
+ * pairing request or a drag token cannot reach a remote surface by default, as
+ * it could while the snapshot was `...state` with known fields blanked.
+ * `override` fields are sent, rebuilt by `chromeChatSnapshot`.
+ */
+const viewFields = {
+	remoteWorkspace: 'shared', exchangeConnection: 'editor', chromeConnectionRequest: 'editor', chromeMirror: 'editor',
+	themeTokens: 'shared', themeKind: 'shared', panel: 'editor', surfaceId: 'shared', surface: 'override', controls: 'override',
+	dragToken: 'editor', chatSurfaces: 'override', recordingQuality: 'shared', recordingSeconds: 'shared', featureAi: 'shared',
+	sleep: 'shared', voice: 'override', blocked: 'shared', detecting: 'shared', agents: 'override', selection: 'shared',
+	chatId: 'shared', entries: 'shared', running: 'shared', attachments: 'override', suggestions: 'override',
+	hasBrowserTab: 'shared', browserApi: 'shared', nativeBrowser: 'shared', news: 'shared', newsHidden: 'shared',
+	tabs: 'shared', activeTab: 'shared', tabLimit: 'shared', pendingSends: 'shared', queuePaused: 'shared',
+	approvals: 'shared', switchTo: 'shared', commands: 'shared', toolbar: 'shared', toolbarRuns: 'shared',
+	skillAgents: 'shared', viewMode: 'shared', collapseTools: 'shared', context: 'shared', workdir: 'shared',
+	usage: 'shared', usageAlert: 'shared', snapshotEvents: 'shared',
+} as const satisfies Record<keyof ChatViewState, 'shared' | 'editor' | 'override'>;
+
+/** The shared fields of the state, by the classification above; nothing else is copied. */
+export function projectView(state: ChatViewState): ChatViewState {
+	const result: Record<string, unknown> = {};
+	for (const [key, kind] of Object.entries(viewFields)) {
+		if (kind === 'shared' && Object.prototype.hasOwnProperty.call(state, key)) { result[key] = (state as unknown as Record<string, unknown>)[key]; }
+	}
+	return result as unknown as ChatViewState;
+}
+
 export function chromeChatSnapshot(state: ChatViewState, editorVersion?: string): ChromeChatSnapshot {
 	return {
 		version: 1, protocolVersion: chromeChatProtocolVersion, capabilities: chromeChatCapabilities, editorVersion,
@@ -59,7 +90,7 @@ export function chromeChatSnapshot(state: ChatViewState, editorVersion?: string)
 		entries: state.entries,
 		canSend: true,
 		canAttachElements: true,
-		view: { ...state, exchangeConnection: undefined, dragToken: undefined, chatSurfaces: [], panel: undefined, chromeConnectionRequest: undefined, chromeMirror: undefined,
+		view: { ...projectView(state), surface: 'chrome', controls: surfaceControls('chrome'), chatSurfaces: [],
 			tabs: state.tabs, attachments: [], suggestions: [],
 			voice: { ...state.voice, available: false },
 			agents: state.agents?.map(({ copies: _copies, binary: _binary, pinned: _pinned, ...agent }) => agent) ?? [],

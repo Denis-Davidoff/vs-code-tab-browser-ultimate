@@ -322,6 +322,22 @@ suite('claudeEvents', () => {
 		assert.deepStrictEqual(claudeEvents({ type: 'system', subtype: 'task_progress' }), []);
 	});
 
+	test('a workflow is listed with the agents: its tool call names it, its task is a workflow', () => {
+		const call = claudeEvents({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'w1', name: 'Workflow',
+			input: { script: "export const meta = {\n  name: 'review-changes',\n  description: 'Review the diff',\n}\nphase('x')" } }] } });
+		const tool = call.find(e => e.type === 'tool');
+		assert.ok(tool && tool.type === 'tool');
+		assert.strictEqual(tool.tool.kind, 'agent');
+		assert.strictEqual(tool.tool.detail, 'review-changes');
+		assert.strictEqual(tool.tool.input, 'Review the diff');
+		assert.deepStrictEqual(tool.tool.agent, { type: 'workflow', background: true });
+		assert.deepStrictEqual(
+			claudeEvents({ type: 'system', subtype: 'task_started', task_id: 't1', tool_use_id: 'w1', task_type: 'local_workflow', is_backgrounded: true }),
+			[{ type: 'toolUpdate', id: 'w1', update: { agent: { type: 'workflow', background: true } } }]);
+		const named = claudeEvents({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'w2', name: 'Workflow', input: { name: 'find-flaky-tests' } }] } });
+		assert.ok(named.some(e => e.type === 'tool' && e.tool.detail === 'find-flaky-tests'));
+	});
+
 	test('a task that is not an agent is not read, and task_updated finds its row through the task map', () => {
 		const tasks = new Map<string, string>();
 		assert.deepStrictEqual(claudeEvents({ type: 'system', subtype: 'task_started', task_id: 'b1', tool_use_id: 'sh', task_type: 'local_bash', is_backgrounded: true }, tasks), []);

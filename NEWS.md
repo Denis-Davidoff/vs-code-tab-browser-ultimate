@@ -27,6 +27,12 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 - $(location) **Page markers** — pin notes to page elements and send them to the agent as one prompt.
 - $(settings-gear) **Chat Settings** — use the gear at the top to edit prompts for commit messages, branch names and chat titles, or clean up temporary files.
 
+## 0.8.10 — 2026-10-23
+- **More browser actions**: native hover, drag, keyboard shortcuts and text insertion join the MCP tools. Clicks support double and right clicks and refuse covered, disabled or ambiguous targets.
+- **Shadow DOM and transformed frames**: snapshots and actions reach open and closed author Shadow DOM. Pointer actions account for scaling, rotation, skew, CSS zoom and perspective in nested and cross-site iframes.
+- **Optional humanized input**: curved pointer movement, varied pauses and character-by-character Unicode typing, including joined emoji. Enable `humanize` per action; no additional model or browser plugin is needed.
+- **Safer input delivery**: native actions run in sequence per tab, use bounded waits and release held keys or mouse buttons on cancellation. Cross-process frames verify pointer targeting before a click, without replaying issued clicks.
+
 ## 0.8.9 — 2026-10-22
 - **Safer reconnects**: automatic Chrome reconnection keeps command receipts and late operation results. After an editor restart, uncertain outgoing messages return to drafts for review instead of being silently sent again. Another editor profile's rejection no longer discards the authorized profile's resume key.
 - **Stable conversation targeting**: asynchronous footer answers and project attachments are discarded if their original conversation was replaced, instead of reaching the replacement chat.

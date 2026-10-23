@@ -608,6 +608,18 @@ export interface ChatViewState {
 	readonly themeKind?: number;
 	readonly panel?: import('./chatPanelState').ChatPanelIdentity;
 	readonly surfaceId?: string;
+	/**
+	 * Which surface renders this state, and what is unavailable there
+	 * (`surfaceControls` in core/commands.ts). Absent: the editor, everything on.
+	 */
+	readonly surface?: import('./core/commands').SurfaceKind;
+	readonly controls?: import('./core/commands').ControlMap;
+	/**
+	 * The last snapshot message of each kind the editor broadcast (`workdirGit` per
+	 * folder), carried in the state of remote surfaces so a viewer that connects
+	 * later, and Chrome, which takes no pushed events, still show it.
+	 */
+	readonly snapshotEvents?: readonly HostToView[];
 	readonly dragToken?: string;
 	readonly chatSurfaces?: readonly ChatSurface[];
 	readonly recordingQuality?: RecordingQuality;

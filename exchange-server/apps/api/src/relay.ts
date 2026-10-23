@@ -7,7 +7,7 @@ import { and, eq } from "drizzle-orm";
 import {
   agentMessageSchema,
   commandSchema,
-  PROTOCOL_VERSION,
+  PROTOCOL_VERSION, RELAY_FEATURES,
 } from "@exchange/protocol";
 import { Services } from "./services.js";
 import { point } from "./schema.js";
@@ -205,6 +205,7 @@ export class Relay {
     send(ws, {
       type: "ready",
       version: PROTOCOL_VERSION,
+      features: RELAY_FEATURES,
       online: this.online(id),
       encryption: encryption ? JSON.parse(encryption) : null,
     });
@@ -253,7 +254,8 @@ export class Relay {
             if (event.type === "chat.snapshot") {
               this.snapshots.set(id, event);
               this.broadcast(id, event);
-            } else if (event.type === "chat.event") {
+            } else if (event.type === "chat.event" || event.type === "chat.patch") {
+              // A patch applies on top of the snapshot cached above; it is never cached itself.
               this.broadcast(id, event);
             } else {
               const item = this.pending.get(event.id);

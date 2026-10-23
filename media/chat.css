@@ -5283,3 +5283,19 @@ body.vscode-high-contrast-light .context-pie {
 .remote-folder-dialog input { width: 100%; box-sizing: border-box; padding: 8px; color: var(--fg); background: var(--bg); border: 1px solid var(--border-strong); border-radius: 4px; }
 .remote-folder-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .remote-folder-actions button { padding: 6px 12px; cursor: pointer; color: var(--fg); background: var(--soft); border: 1px solid var(--border-strong); border-radius: 4px; }
+
+/* A workflow in the agents list: it runs agents of its own. */
+.agent-row .agent-kind { flex: none; opacity: .75; margin-right: 2px; }
+
+/* A control this surface does not allow (state.controls): visible, not usable, its title says why. */
+.control-off { opacity: .45; cursor: default; }
+.control-refusal {
+	margin: 6px 12px 0; padding: 6px 10px; border-radius: 6px; cursor: pointer;
+	background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
+	color: var(--vscode-descriptionForeground); font-size: .92em;
+}
+
+/* The view title's buttons on surfaces with no VS Code title bar (Chrome, the website). */
+.remote-bar { display: flex; justify-content: flex-end; gap: 2px; padding: 4px 8px 0; flex: none; }
+.remote-bar[hidden] { display: none; }
+.remote-bar.in-shell { padding: 0; margin-left: auto; }

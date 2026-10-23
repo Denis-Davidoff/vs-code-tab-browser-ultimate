@@ -93,6 +93,13 @@ For limits, settings and technical details, see [CLAUDE.md](CLAUDE.md#browser-vi
 
 ## 📝 Changelog
 
+**0.8.10** — Agents gain native hover, drag, keyboard shortcuts and text insertion,
+plus double and right clicks. Browser snapshots and actions reach open and closed
+Shadow DOM; pointer actions handle scaled, rotated and perspective-transformed iframes,
+including nested frames from other sites. Optional humanized input adds curved pointer
+movement, varied pauses and character-by-character Unicode typing. Clicks refuse covered,
+disabled or ambiguous targets, and cancelled actions release held keys and mouse buttons.
+
 **0.8.9** — Popups and tooltips stay within the visible chat area, including narrow
 Chrome side panels, and adjust when the panel or content changes size. Chrome video
 recording has a timer and Pause/Resume/Stop controls above the composer; Chrome's

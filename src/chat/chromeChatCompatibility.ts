@@ -3,6 +3,22 @@ import type { ViewToHost } from './chatProtocol';
 export const chromeChatProtocolVersion = 2;
 export const chromeChatProtocolHeader = 'X-AI-Browser-Protocol';
 export const chromeChatVersionHeader = 'X-AI-Browser-Version';
+/**
+ * The panel asks the editor to hold an unchanged snapshot request for up to
+ * this long (ms), and the editor answers the header back when it did: a
+ * long-poll, so a change reaches Chrome at once. An editor without it answers
+ * at once and the panel falls back to polling.
+ */
+export const chromeChatWaitHeader = 'X-AI-Browser-Wait';
+export const chromeChatMaxWaitMs = 1500;
+/**
+ * Patches instead of whole snapshots: the panel names the revision it shows as
+ * `<epoch>:<revision>` in this header, and an editor that still holds that
+ * revision answers `{ patch, top }` (see `core/sync.ts`) rather than the whole
+ * snapshot. The epoch is the bridge's own, answered in the same header on every
+ * snapshot; an editor without it answers whole snapshots as before.
+ */
+export const chromeChatBaseHeader = 'X-AI-Browser-Base';
 
 function protocol(value: unknown): number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : 0;

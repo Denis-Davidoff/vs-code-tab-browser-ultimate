@@ -6,6 +6,7 @@
 import { takeRemotePick } from './remotePick';
 import * as vscode from 'vscode';
 import { CDPClient } from '../core/cdp';
+import { NativeActions, type ActionScope, type FrameOwner, type PointerOptions } from './nativeActions';
 import type { RemoteBrowserInput } from './remoteBrowserProtocol';
 import { extractElementData, renderElementMarkdown } from '../elements/elementContext';
 import { tabs as tabSource } from './tabSource';
@@ -152,6 +153,7 @@ function shareLostMessage(target: ShareTarget): string {
  * demand would report an empty log for everything that happened before.
  */
 class TabSession {
+	public readonly actions: NativeActions;
 
 	private readonly _console: ConsoleLine[] = [];
 	private readonly _subscriptions: vscode.Disposable[] = [];
@@ -170,7 +172,34 @@ class TabSession {
 	private constructor(
 		public readonly client: CDPClient,
 		public readonly sessionId: string,
-	) { }
+	) {
+		this.actions = new NativeActions({
+			send: (method, params, id) => client.send(method, params, id),
+			mainSessionId: sessionId,
+			scope: async frameId => frameId === undefined ? { sessionId } : this.frameScope(frameId),
+			owners: frameId => this._actionOwners(frameId),
+		});
+	}
+
+	/** Frame owners in parent document coordinates, including out-of-process frames. */
+	private async _actionOwners(frameId: string): Promise<FrameOwner[]> {
+		const frames = await this.frames(frameId);
+		const { frameTree } = await this.client.send('Page.getFrameTree', {}, this.sessionId);
+		const rootId = frameTree?.frame?.id;
+		const path: FrameOwner[] = [], seen = new Set<string>();
+		let id = frameId;
+		while (id !== rootId) {
+			if (seen.has(id) || seen.size >= 32) { throw new Error('The frame ancestry is invalid or too deep.'); }
+			seen.add(id);
+			const frame = frames.find(frame => frame.id === id);
+			if (!frame?.parentId) { throw new Error('The frame ancestry changed. Refresh browser_frames before acting.'); }
+			const parent: ActionScope = frame.parentId === rootId
+				? { sessionId: this.sessionId } : await this.frameScope(frame.parentId);
+			path.unshift({ frameId: id, parent });
+			id = frame.parentId;
+		}
+		return path;
+	}
 
 	/**
 	 * `signal` ends an open that is still in flight: the controller fires it when
@@ -706,7 +735,7 @@ function withFrameHint(value: object, frames: readonly { id: string; url: string
 		...value,
 		frames,
 		framesNote: 'This page embeds frames, and their content is not included above. Pass a frame id as frameId to '
-			+ 'browser_text, browser_snapshot, browser_html, browser_click, browser_fill, browser_scroll or browser_wait_for '
+			+ 'browser_text, browser_snapshot, browser_html, browser_click, browser_hover, browser_drag, browser_press, browser_type, browser_fill, browser_scroll or browser_wait_for '
 			+ 'to work inside one; browser_frames lists every frame, nested ones included.',
 	};
 }
@@ -2544,86 +2573,24 @@ export class BrowserController implements vscode.Disposable {
 	 * A compact list of things worth interacting with, for orientation.
 	 *
 	 * **Every selector it hands out is verified to resolve back to the element
-	 * it describes**, and that is not a refinement — it is the difference
-	 * between this tool being safe and being dangerous. `click` and `fill`
-	 * resolve a selector with `document.querySelector`, which returns the
-	 * *first* match. The old builder fell back to the bare tag name, so two
+	 * it describes**. The original click used the first document.querySelector
+	 * match; native actions now require uniqueness. The old builder fell back
+	 * to the bare tag name, so two
 	 * buttons with no `id` and no `name` were both reported as `button`, and an
 	 * agent told to press the second one pressed the first: asked for Delete,
 	 * it clicked Save. Nothing anywhere reported a problem — the click
 	 * succeeded, on the wrong element.
 	 *
-	 * So the builder tries a unique `id`, then `tag[name=…]`, then a positional
-	 * `:nth-of-type` path, and **checks each candidate with the same call
-	 * `click` will make** before accepting it. An element that cannot be
-	 * addressed — inside a shadow root, say — is listed with no `selector` at
-	 * all rather than with one that would act on something else.
+	 * The shared snapshot builder verifies uniqueness within each shadow root;
+	 * actions resolve every segment again through CDP, including closed roots.
 	 *
 	 * Classes are deliberately not used, for the reason given under the element
 	 * commands: utility-class frameworks make them long and unstable.
 	 */
-	public async snapshot(frameId: string | undefined, caller: CallerIdentity): Promise<unknown> {
+	public async snapshot(frameId: string | undefined, caller: CallerIdentity, signal?: AbortSignal): Promise<unknown> {
 		requireFrameId(frameId);
 		return this._withSession(caller, async session => {
-			const value = await evaluate(session, `(() => {
-				// The exact test the consumer performs, so a selector cannot pass
-				// here and pick a different element there.
-				const resolves = (sel, el) => {
-					try { return !!sel && document.querySelector(sel) === el; } catch (e) { return false; }
-				};
-				const idFor = (el) => el.id ? '#' + CSS.escape(el.id) : undefined;
-				const pathFor = (el) => {
-					const parts = [];
-					let node = el;
-					while (node && node.nodeType === 1) {
-						const byId = idFor(node);
-						// A duplicate id resolves to somebody else, so it is only an
-						// anchor when it actually points back at this node.
-						if (byId && document.querySelector(byId) === node) { parts.unshift(byId); break; }
-						const parent = node.parentElement;
-						let part = node.tagName.toLowerCase();
-						if (parent) {
-							const twins = Array.prototype.filter.call(parent.children, (c) => c.tagName === node.tagName);
-							if (twins.length > 1) { part += ':nth-of-type(' + (twins.indexOf(node) + 1) + ')'; }
-						}
-						parts.unshift(part);
-						if (!parent) { break; }
-						node = parent;
-					}
-					return parts.join(' > ');
-				};
-				const selectorFor = (el) => {
-					const byId = idFor(el);
-					if (resolves(byId, el)) { return byId; }
-					const name = el.getAttribute('name');
-					const byName = name ? el.tagName.toLowerCase() + '[name=' + JSON.stringify(name) + ']' : undefined;
-					if (resolves(byName, el)) { return byName; }
-					const path = pathFor(el);
-					return resolves(path, el) ? path : undefined;
-				};
-
-				const out = [];
-				const nodes = document.querySelectorAll('a[href], button, input, select, textarea, [role="button"], [role="link"], [contenteditable="true"]');
-				for (const el of nodes) {
-					const rect = el.getBoundingClientRect();
-					if (rect.width === 0 || rect.height === 0) { continue; }
-					// **A field's value is never its label.** An input has no
-					// innerText, so the chain used to fall through to value and
-					// hand the model whatever the user had typed — a password
-					// included, next to type "password". Only a button-like
-					// input shows its value as its caption; any other field says
-					// only that it holds something. Breaks-silently #211.
-					const buttonLike = el.tagName === 'INPUT' && /^(submit|button|reset)$/i.test(el.type);
-					const label = (el.getAttribute('aria-label') || el.innerText || (buttonLike ? el.value : '') || el.getAttribute('placeholder') || el.getAttribute('title') || '').trim().slice(0, 80);
-					const entry = { tag: el.tagName.toLowerCase(), type: el.getAttribute('type') || undefined, label };
-					if (!buttonLike && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && el.value) { entry.filled = true; }
-					const selector = selectorFor(el);
-					if (selector) { entry.selector = selector; }
-					out.push(entry);
-					if (out.length >= 150) { break; }
-				}
-				return { url: location.href, title: document.title, elements: out };
-			})()`, frameId);
+			const value = await session.actions.snapshot(frameId, signal);
 			// Nothing writes a marker into a page any more, but a page an older
 			// build reached can still be open with its observer re-applying one.
 			// This title is read from the page, so it is one of the two sites
@@ -3510,18 +3477,40 @@ export class BrowserController implements vscode.Disposable {
 		return { png: Buffer.from(data, 'base64'), clipped, url: tab.url };
 	}
 
-	public async click(selector: string, frameId: string | undefined, caller: CallerIdentity): Promise<unknown> {
+	public async click(selector: string, frameId: string | undefined, caller: CallerIdentity, options?: PointerOptions, signal?: AbortSignal): Promise<unknown> {
 		refuseValueProbe(selector);
 		requireFrameId(frameId);
-		return this._withSession(caller, async session => {
-			return evaluate(session, `(() => {
-				const el = document.querySelector(${literal(selector)});
-				if (!el) { throw new Error('No element matches ' + ${literal(selector)}); }
-				el.scrollIntoView({ block: 'center' });
-				el.click();
-				return 'clicked ' + (el.tagName.toLowerCase());
-			})()`, frameId);
-		});
+		return this._withSession(caller, (session, tab) => this._onScrollGate(tab,
+			() => session.actions.pointerAction('click', selector, frameId, options, signal)));
+	}
+
+	public async hover(selector: string, frameId: string | undefined, caller: CallerIdentity, smooth?: boolean, signal?: AbortSignal, humanize?: boolean): Promise<unknown> {
+		refuseValueProbe(selector);
+		requireFrameId(frameId);
+		return this._withSession(caller, (session, tab) => this._onScrollGate(tab,
+			() => session.actions.pointerAction('hover', selector, frameId, { smooth, humanize }, signal)));
+	}
+
+	public async press(selector: string, key: string, frameId: string | undefined, caller: CallerIdentity, signal?: AbortSignal): Promise<unknown> {
+		refuseValueProbe(selector);
+		requireFrameId(frameId);
+		return this._withSession(caller, (session, tab) => this._onScrollGate(tab,
+			() => session.actions.keyboardAction(selector, frameId, { key }, signal)));
+	}
+
+	public async type(selector: string, text: string, frameId: string | undefined, caller: CallerIdentity, signal?: AbortSignal, humanize?: boolean): Promise<unknown> {
+		refuseValueProbe(selector);
+		requireFrameId(frameId);
+		return this._withSession(caller, (session, tab) => this._onScrollGate(tab,
+			() => session.actions.keyboardAction(selector, frameId, { text }, signal, humanize)));
+	}
+
+	public async drag(selector: string, targetSelector: string, frameId: string | undefined, caller: CallerIdentity, smooth?: boolean, signal?: AbortSignal, humanize?: boolean): Promise<unknown> {
+		refuseValueProbe(selector);
+		refuseValueProbe(targetSelector);
+		requireFrameId(frameId);
+		return this._withSession(caller, (session, tab) => this._onScrollGate(tab,
+			() => session.actions.drag(selector, targetSelector, frameId, smooth, signal, humanize)));
 	}
 
 	/**
@@ -3553,14 +3542,12 @@ export class BrowserController implements vscode.Disposable {
 	 *   value (a mask, a trimmed email, a lowercased colour) took it, and says
 	 *   what it now reads rather than being reported as a failure.
 	 */
-	public async fill(selector: string, value: string, frameId: string | undefined, caller: CallerIdentity): Promise<unknown> {
+	public async fill(selector: string, value: string, frameId: string | undefined, caller: CallerIdentity, signal?: AbortSignal): Promise<unknown> {
 		refuseValueProbe(selector);
 		requireFrameId(frameId);
 		return this._withSession(caller, async session => {
-			const result = await evaluate(session, `(() => {
-				const el = document.querySelector(${literal(selector)});
-				if (!el) { throw new Error('No element matches ' + ${literal(selector)}); }
-				const value = ${literal(value)};
+			const result = await session.actions.onElement(selector, frameId, `function(value) {
+				const el = this;
 				const tag = el.tagName.toLowerCase();
 				el.focus();
 				if (el.isContentEditable) {
@@ -3638,7 +3625,7 @@ export class BrowserController implements vscode.Disposable {
 					attributes: { type: el.getAttribute('type') ?? '', name: el.getAttribute('name') ?? '',
 						id: el.getAttribute('id') ?? '', autocomplete: el.getAttribute('autocomplete') ?? '' },
 				};
-			})()`, frameId);
+			}`, [value], signal);
 			if (typeof result === 'string') {
 				return result;
 			}

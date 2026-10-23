@@ -1,3 +1,5 @@
+import { surfaceControls } from './core/commands';
+import { diffState } from './core/sync';
 import { exchangeCipher, encryptedExchangeSocket, type ExchangeCipher } from '../core/exchangeCrypto';
 import * as vscode from 'vscode';
 import type { BrowserController } from '../browser/browserController';
@@ -13,6 +15,9 @@ type Socket = { readyState: number; bufferedAmount: number; send(data: string): 
 const WebSocketCtor = (globalThis as any).WebSocket as (new (url: string) => Socket) | undefined;
 const secretKey = 'aiBrowser.exchange.key';
 /** The relay's `maxPayload`. A command's text is limited in UTF-16 units, so its UTF-8 frame can reach several times that. */
+/** A whole snapshot at least this often while patches flow; see `ExchangeChat.sendSnapshot`. */
+const fullEveryMs = 2000;
+const copy = (value: Record<string, unknown>) => JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
 const maxFrameBytes = 12 * 1024 * 1024;
 /** The relay's close code for a refused key, a revoked point or a replaced connection; every other close is transient. */
 const agentRefused = 4001;
@@ -36,6 +41,7 @@ class ExchangeSurface implements ChatStateSurface {
 	private readonly commands = new Map<string, { input: string; result: Promise<string> }>();
 	get chatId(): string | undefined { return this.pinned; }
 	get active(): boolean { return this.ready; }
+	readonly kind = 'exchange' as const;
 	get closed(): boolean { return this.stopped; }
 	constructor(private readonly config: Config, private readonly key: string, private readonly source: string, private readonly status: vscode.StatusBarItem, private readonly changed: (phase: ExchangeConnectionState['status'], error?: string) => void, private readonly cipher?: ExchangeCipher) { this.connect(); }
 	bind(refresh: () => void): void { this.refresh = refresh; }
@@ -43,19 +49,64 @@ class ExchangeSurface implements ChatStateSurface {
 		if (this.stopped || !this.ready || !this.pinned || this.socket?.readyState !== 1) { return; }
 		this.socket.send(JSON.stringify({ type: 'chat.event', chatId: this.pinned, message }));
 	}
+	/**
+	 * Patches between whole snapshots, once the relay says it carries them
+	 * (`ready.features`). `sent` is the view the website was last given, untrimmed;
+	 * a trimmed snapshot (over 5 MB) is never a base, since the website holds
+	 * fewer entries than it. A whole snapshot goes at least every
+	 * `fullEveryMs`, so a viewer that joined from the relay's cached snapshot, or
+	 * missed a patch, converges without asking — and it may ask (`chat.resync`).
+	 */
+	private patches = false;
+	private epoch = '';
+	private rev = 0;
+	private sent?: { value: Record<string, unknown>; at: number; chatId: string };
+	private view?: { value: Record<string, unknown>; trimmed: boolean; chatId: string; running: boolean };
+	private forceFull = false;
+	/**
+	 * A whole snapshot once patches stop: the relay caches whole snapshots only,
+	 * so a burst that ended in a patch left a viewer joining later (or a page
+	 * from before the relay's upgrade, which drops patches) on the older one —
+	 * half a reply, still "Working" — until the next change in the editor.
+	 */
+	private trailing?: ReturnType<typeof setTimeout>;
 	update(state: ChatViewState): void {
 		this.pinned = state.chatId;
 		this.chats = new Set([state.chatId,...state.tabs.map(tab => tab.chatId)]);
 		const full = chromeChatSnapshot(state);
-		const view = {...full.view,voice:{...full.view.voice,available:false,reason:'Microphone recording is available in VS Code.'}};
+		const view = {...full.view,surface:'exchange' as const,controls:surfaceControls('exchange'),voice:{...full.view.voice,available:false,reason:'Microphone recording is available in VS Code.'}};
 		let body = JSON.stringify({...JSON.parse(exchangeSnapshot(state)),uiVersion:1,view});
 		while (Buffer.byteLength(body)>5_000_000 && view.entries.length>1) { view.entries = view.entries.slice(Math.max(1,Math.floor(view.entries.length/4))); body = JSON.stringify({...JSON.parse(exchangeSnapshot(state)),uiVersion:1,view}); }
 		this.body = body;
-		if (!this.publish) { this.publish = setTimeout(() => { this.publish = undefined; this.sendSnapshot(); }, 150); }
+		this.view = { value: view as unknown as Record<string, unknown>, trimmed: view.entries.length !== full.view.entries.length, chatId: state.chatId, running: state.running };
+		if (!this.publish) { this.publish = setTimeout(() => { this.publish = undefined; this.sendSnapshot(); }, 16); }
 	}
 	private sendSnapshot(): void {
 		if (this.ready && this.body && this.socket?.readyState === 1) {
 			if (this.socket.bufferedAmount > maxFrameBytes * 2) { this.socket.close(); return; }
+			const view = this.view;
+			if (this.patches && view) {
+				const sent = this.sent;
+				const now = Date.now();
+				if (!this.forceFull && sent && !view.trimmed && sent.chatId === view.chatId && now - sent.at < fullEveryMs) {
+					const patch = diffState(sent.value, view.value, this.rev, this.rev + 1);
+					if (!patch) { return; }
+					const frame = JSON.stringify({ type: 'chat.patch', chatId: view.chatId, epoch: this.epoch, base: this.rev, rev: this.rev + 1, patch, top: { chatId: view.chatId, running: view.running, uiVersion: 1 } });
+					if (Buffer.byteLength(frame) * 2 < Buffer.byteLength(this.body)) {
+						this.rev++; this.sent = { value: copy(view.value), at: sent.at, chatId: view.chatId };
+						this.socket.send(frame);
+						clearTimeout(this.trailing);
+						this.trailing = setTimeout(() => { this.trailing = undefined; this.forceFull = true; this.sendSnapshot(); }, fullEveryMs);
+						return;
+					}
+				}
+				this.forceFull = false;
+				clearTimeout(this.trailing); this.trailing = undefined;
+				this.rev++;
+				this.socket.send(JSON.stringify({ ...JSON.parse(this.body), epoch: this.epoch, rev: this.rev }));
+				this.sent = view.trimmed ? undefined : { value: copy(view.value), at: now, chatId: view.chatId };
+				return;
+			}
 			this.socket.send(this.body);
 		}
 	}
@@ -63,7 +114,7 @@ class ExchangeSurface implements ChatStateSurface {
 		if (this.stopped || !WebSocketCtor) { return; }
 		this.status.text = '$(sync~spin) AI Browser Server';
 		this.changed('connecting');
-		const socket = this.socket = encryptedExchangeSocket(this.config.url + '/ws/agent',this.cipher,true,()=>this.sendSnapshot(),WebSocketCtor as unknown as typeof WebSocket);
+		const socket = this.socket = encryptedExchangeSocket(this.config.url + '/ws/agent',this.cipher,true,()=>{ this.forceFull = true; this.sendSnapshot(); },WebSocketCtor as unknown as typeof WebSocket);
 		this.handshake = setTimeout(() => socket.close(), 10000);
 		socket.addEventListener('open', () => socket.send(JSON.stringify({ type: 'auth', version: 1, pointId: this.config.pointId, key: this.key, encryption: this.cipher?.descriptor ?? null })));
 		socket.addEventListener('message', event => {
@@ -92,11 +143,17 @@ class ExchangeSurface implements ChatStateSurface {
 		if (value.type === 'ready') {
 			if (value.version !== 1) { throw new Error('Unsupported protocol'); }
 			clearTimeout(this.handshake); this.ready = true; this.retry = 1000;
+			this.patches = Array.isArray(value.features) && value.features.includes('patch');
+			this.epoch = globalThis.crypto.randomUUID().replace(/-/g, '').slice(0, 16); this.rev = 0; this.sent = undefined; this.forceFull = true;
 			this.status.text = '$(radio-tower) AI Browser Server: connected';
 			this.changed('connected');
 			this.refresh?.(); this.sendSnapshot(); return;
 		}
 		if (!this.ready) { throw new Error('Handshake required'); }
+		if (value.type === 'chat.resync' && typeof value.id === 'string') {
+			this.forceFull = true; this.sendSnapshot();
+			socket.send(JSON.stringify({ type: 'command.result', id: value.id, ok: true })); return;
+		}
 		const command = value.type === 'chat.command' ? readExchangeUiCommand(value) : value.type === 'chat.pin' && typeof value.id === 'string' && typeof value.chatId === 'string' ? {type:'chat.pin' as const,id:value.id,chatId:value.chatId} : readExchangeCommand(value);
 		if (!command) { throw new Error('Invalid remote command'); }
 		let accepted = this.commands.get(command.id);
@@ -129,7 +186,7 @@ class ExchangeSurface implements ChatStateSurface {
 	}
 	close(): void {
 		if (this.stopped) { return; }
-		this.stopped = true; this.ready = false;
+		this.stopped = true; this.ready = false; clearTimeout(this.trailing);
 		ChatViewProvider.releaseExchangeSource?.(this.source);
 		this.onClose?.();
 		clearTimeout(this.timer); clearTimeout(this.handshake); clearTimeout(this.publish);

@@ -30,3 +30,12 @@ https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/blob/main/src/log
 
 The behaviour of Bitwarden's browser extension (GPL-3.0) was studied when deciding when to offer
 saving a password and how to fill one. None of its code is included.
+
+## Stagehand — design reference
+
+Stagehand's MIT-licensed `packages/extension/understudy/locator.ts`, `selectorResolver.ts`,
+and `page.ts` were studied for native CDP input, shadow-root locators and mouse dragging:
+https://github.com/browserbase/stagehand/tree/main/packages/extension/understudy
+
+`src/browser/nativeActions.ts` is an independent implementation for AI Browser's tab-scoped
+CDP sessions. No Stagehand source, SDK, browser extension, model client or runtime is included.

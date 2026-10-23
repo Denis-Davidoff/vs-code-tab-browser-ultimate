@@ -876,6 +876,19 @@ export function claudeTool(name: string, input: unknown): ToolStart {
 				kind: 'agent', name, detail: str('description'), input: str('prompt'),
 				agent: { type: str('subagent_type'), background: i.run_in_background === true ? true : undefined },
 			};
+		case 'Workflow': {
+			// A workflow orchestrates agents in the background and is a task of its own
+			// (`task_type: local_workflow`), so it is listed with the agents. The script
+			// is not shown: its `meta.name` / `description` are what names it.
+			const script = str('script') ?? '';
+			const meta = (key: string) => new RegExp(`\\b${key}\\s*:\\s*(['"])([^'"\\n]{1,200})\\1`).exec(script.slice(0, 4000))?.[2];
+			const title = str('name') ?? meta('name') ?? (str('scriptPath')?.split('/').pop());
+			const description = str('description') ?? meta('description');
+			return {
+				kind: 'agent', name, detail: title ? oneLine(title) : 'Workflow', input: description,
+				agent: { type: 'workflow', background: true },
+			};
+		}
 		default:
 			return { kind: 'other', name, detail: toolDetail(input), input: jsonBody(input) };
 	}
@@ -899,7 +912,7 @@ export function claudeTool(name: string, input: unknown): ToolStart {
  * answer it.
  */
 /** The task types that are agents; anything else (`local_bash`, …) is not shown as one. */
-const agentTaskTypes = new Set(['local_agent', 'remote_agent']);
+const agentTaskTypes = new Set(['local_agent', 'remote_agent', 'local_workflow']);
 
 function claudeTaskEvents(message: Record<string, unknown>, tasks?: Map<string, string>): AgentEvent[] {
 	const id = typeof message.tool_use_id === 'string' ? message.tool_use_id : undefined;
@@ -921,7 +934,7 @@ function claudeTaskEvents(message: Record<string, unknown>, tasks?: Map<string, 
 				tasks?.set(taskId, id);
 			}
 			return id ? [{ type: 'toolUpdate', id, update: { agent: {
-				type: typeof message.subagent_type === 'string' ? message.subagent_type : undefined,
+				type: message.task_type === 'local_workflow' ? 'workflow' : typeof message.subagent_type === 'string' ? message.subagent_type : undefined,
 				background: message.is_backgrounded === true ? true : undefined,
 			} } }] : [];
 		case 'task_updated': {

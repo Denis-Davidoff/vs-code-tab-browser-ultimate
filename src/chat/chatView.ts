@@ -1,4 +1,6 @@
 import type { ExchangeUiMessage } from './exchangeUiProtocol';
+import { remoteRefusal } from './core/commands';
+import { remoteScope } from './core/remoteScope';
 import { exchangeConnection } from './exchangeConnection';
 import { annotationPointContext } from '../browser/annotationData';
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -348,14 +350,16 @@ interface ChatServices {
 
 /** What a push question is about: a yes counts only for the same push and the same question. */
 /**
- * What a website session may not do through `chat.command`. Approvals stay in
- * the editor (a remote Auto would run commands with no card), and nothing may
+ * What a website session may not do through `chat.command` is the website's
+ * column of `COMMANDS` (src/chat/core/commands.ts), checked in `remoteScope`
+ * with the other refusals both entry points share; this adds the checks that
+ * an inner id names the shared conversation. Approvals stay in the
+ * editor (a remote Auto would run commands with no card), and nothing may
  * reach chats that were not shared, local files, terminals or the agent
- * binaries. An inner id has to name the shared conversation itself.
+ * binaries. A type with no row is refused. An inner id has to name the shared
+ * conversation itself.
  */
-const exchangeForbidden = new Set<string>(['setApprovalMode', 'deleteChat', 'openChat', 'temporaryStorage', 'resumeInTerminal', 'setAgentBinary', 'openAgentSetting', 'openFile']);
 function exchangeRefusal(message: ExchangeUiMessage, tab: ChatTab, chatId: string): void {
-	if (exchangeForbidden.has(message.type)) { throw new Error('This action is available only in VS Code.'); }
 	const m = message as { type: string; id?: unknown; tabId?: unknown; chatId?: unknown };
 	if ((m.type === 'closeTab' || m.type === 'selectTab' || m.type === 'renameTab') && m.id !== tab.id) { throw new Error('This conversation is not shared.'); }
 	if (m.type === 'resumeQueue' && m.tabId !== tab.id) { throw new Error('This conversation is not shared.'); }
@@ -410,14 +414,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	public static async commandChromeSource(id: string, chatId: string, message: ViewToHost, picked: readonly ChromeElementAttachment[] = [], reply?: (message: HostToView, chatId?: string) => void, canonical?: (item:ChromeElementAttachment)=>Attachment|undefined): Promise<void> {
-		const view = this._surfaces.get(id);
-		// Chrome addresses the conversation it shows, which need not be the tab in front.
-		const tab = view && !view._disposed && view._view ? view._tabs.find(t => t.chat.id === chatId) : undefined;
-		if (!view || !tab) {
-			throw new Error('This conversation was closed in the editor. Pick another one.');
-		}
-		const blocked = view._blocked();
-		if (blocked) { throw new Error(blocked); }
+		// The website's `send` comes through here too, after its own check.
+		const { view, tab } = remoteScope('chrome', this._surfaces.get(id), v => !v._disposed && v._view ? v._tabs.find(t => t.chat.id === chatId) : undefined, v => v._blocked(), remoteRefusal('chrome', message.type));
 		if (chromeChatCommandFeature(message) !== 'chat') {
 			await view._receiveChromeFooter(tab, message, reply); return;
 		}
@@ -480,10 +478,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		for(const [page,owner] of this._exchangeAnnotationOwners)if(owner.view._surfaceId===id)this._exchangeAnnotationOwners.delete(page);
 	}
 	public static async commandExchangeSource(id: string, chatId: string, message: ExchangeUiMessage, picked: readonly ChromeElementAttachment[] = [], reply?: (message: HostToView, chatId?: string) => void, browserTab?:vscode.BrowserTab): Promise<void> {
-		const view = this._surfaces.get(id);
-		const tab = view && !view._disposed && view._view ? view._tabs.find(t => t.chat.id === chatId) : undefined;
-		if (!view || !tab) { throw new Error('This conversation is no longer open in the editor.'); }
-		const blocked = view._blocked(); if (blocked) { throw new Error(blocked); }
+		const { view, tab } = remoteScope('exchange', this._surfaces.get(id), v => !v._disposed && v._view ? v._tabs.find(t => t.chat.id === chatId) : undefined, v => v._blocked(), message.type === 'history' ? undefined : remoteRefusal('exchange', message.type));
 		exchangeRefusal(message, tab, chatId);
 		if (message.type === 'send') { await this.commandChromeSource(id, chatId, message, picked, reply,item=>view._exchangeDrafts.get(chatId)?.get(item.id)); return; }
 		if(message.type==='removeAttachment'){
@@ -502,8 +497,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			await view._browser.remoteInput(view._browser.tabIdOf(browserTab),{action:'navigate',url:url.href});
 			reply?.({type:'exchangeBrowser'},chatId);return;
 		}
-		if(message.type==='chooseWorkdir')throw new Error('Enter the folder path in the website instead of opening a local folder dialog.');
-		if(message.type==='setWorkdir'&&message.path!==undefined){
+				if(message.type==='setWorkdir'&&message.path!==undefined){
 			if(/[\0\r\n]/.test(message.path))throw new Error('Enter an absolute folder path on the computer running VS Code.');
 			let folder=message.path.trim();
 			if(folder==='~'||folder.startsWith('~/'))folder=path.join(os.homedir(),folder.slice(1));
@@ -1097,7 +1091,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		if (this._view?.visible && !this._peeking) {
 			this._active.seen();
 		}
-		const mirrored = this._stateSurfaces.chatIds(this._active.chat.id);
+		const mirrored = this._stateSurfaces.chatIds(this._active.chat.id, 'chrome');
 		const limit = tabLimit();
 		const selection = this._selection();
 		const viewMode = readViewMode();
@@ -1519,11 +1513,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 					policy[key] = message.mode;
 				}
 				await this._context.workspaceState.update(approvalPolicyKey, policy).then(undefined, () => { /* a convenience */ });
-				for (const tab of this._tabs) {
-					tab.approvalModesChanged();
+				// The policy is the workspace's, so every chat surface of the window
+				// answers its waiting cards and redraws its menu — not only this one.
+				for (const view of ChatViewProvider._surfaces.values()) {
+					for (const tab of view._tabs) {
+						tab.approvalModesChanged();
+					}
+					view._post();
 				}
 				this._runs.approvalModesChanged();
-				this._post();
 				return;
 			}
 			case 'stopAgent':
@@ -1668,7 +1666,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				} catch {
 					// Best effort: the choice is a convenience.
 				}
-				this._post();
+				// Kept in globalState: every chat surface shows it at once.
+				for (const view of ChatViewProvider._surfaces.values()) { view._post(); }
 				return;
 			case 'openBrowser':
 				if (message.where === 'vscode' && !isBrowserApiGranted()) {

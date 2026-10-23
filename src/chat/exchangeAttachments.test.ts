@@ -4,6 +4,8 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { transpileModule,ModuleKind,ScriptTarget } from 'typescript';
 import { setImmediate as flush } from 'node:timers/promises';
+import { remoteRefusal } from './core/commands.ts';
+import { remoteScope } from './core/remoteScope.ts';
 
 /** Use the real controller routing and annotation listener with independent local/remote tabs. */
 function harness(){
@@ -11,10 +13,10 @@ function harness(){
  const commands=source.slice(source.indexOf('\tprivate static readonly _exchangeAnnotationOwners'),source.indexOf('\n\tprivate readonly _chromeCommand'));
  const annotations=source.slice(source.indexOf('\tprivate _onAnnotations('),source.indexOf('\n\t/**\n\t * Adds an annotation'));
  const remove=source.slice(source.indexOf('\tprivate _removeSentAnnotations('),source.indexOf('\n\t/** Closing a chat tab'));
- const refusal=source.slice(source.indexOf('const exchangeForbidden'),source.indexOf('\nfunction pushKey('));
+ const refusal=source.slice(source.indexOf('function exchangeRefusal('),source.indexOf('\nfunction pushKey('));
  const exports:any={};
  const code=refusal+'class ChatViewProvider {static _surfaces=new Map();'+commands+annotations+remove+'} exports.Controller=ChatViewProvider;';
- runInNewContext(transpileModule(code,{compilerOptions:{module:ModuleKind.CommonJS,target:ScriptTarget.ES2022}}).outputText,{exports,URL,path:{isAbsolute:(value:string)=>value.startsWith('/'),join:(...parts:string[])=>parts.join('/')},os:{homedir:()=>'/home/user'},isDirectory:(value:string)=>value==='/project',vscode:{commands:{executeCommand:async(name:string)=>exports.nativeCalls.push(name)}},chromeChatCommandFeature:()=> 'chat'});
+ runInNewContext(transpileModule(code,{compilerOptions:{module:ModuleKind.CommonJS,target:ScriptTarget.ES2022}}).outputText,{exports,URL,path:{isAbsolute:(value:string)=>value.startsWith('/'),join:(...parts:string[])=>parts.join('/')},os:{homedir:()=>'/home/user'},isDirectory:(value:string)=>value==='/project',vscode:{commands:{executeCommand:async(name:string)=>exports.nativeCalls.push(name)}},chromeChatCommandFeature:()=> 'chat',remoteRefusal,remoteScope});
  exports.nativeCalls=[];const Controller=exports.Controller,view:any=new Controller(),events:any[]=[],calls:any[]=exports.nativeCalls;
  const localChat={chat:{id:'local-chat'},attachments:[]},remoteChat={chat:{id:'remote-chat'},attachments:[]};
  const page={id:'remote-page',url:'https://example.com',title:'Remote'};

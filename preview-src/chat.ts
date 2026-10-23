@@ -40,12 +40,51 @@ import type {
 	AgentId, AgentQuestion, AgentUsage, ApprovalEntry, UsageAlert, ToolbarParam, ToolbarResult, ToolbarRun, ToolbarSkill, ApprovalKind, ApprovalMode, AttachmentChip, AttachmentKind, ChatCommand, ChatEntry, ChatStats, ChatSummary, ChatTabStatus, ChatTabSummary, ChatViewMode, ChatViewState, HostToView, RepoMode, ToolEntry, ViewToHost, VoiceEvent, WorkdirFolder, GitBranchState, GitRemoteAction, WorkdirGitStatus,
 } from '../src/chat/chatProtocol';
 import { baseName, searchPaths } from './fileRank';
+import { controlOf, type Availability } from '../src/chat/core/commands';
 // Every codicon the bundled font has, one per line (`name,char,code`); bundled
 // as text by esbuild, so the icon picker lists exactly what can be drawn.
 import codiconCsv from '@vscode/codicons/dist/codicon.csv';
 
 const vscode = createVsCodeChatHost();
-const post = (message: ViewToHost) => vscode.postMessage(message);
+/**
+ * Every message goes through the surface's control map (`state.controls`, from
+ * the command table): what is unavailable here is never sent, and the reason is
+ * said instead. In the editor the map is empty and everything goes.
+ */
+const post = (message: ViewToHost) => {
+	const control = gate(message.type);
+	if (control.s !== 'on') {
+		refuseControl(control);
+		return;
+	}
+	vscode.postMessage(message);
+};
+
+/** What the surface rendering this view allows for a control id (a message type, or `<type>.<form>`). */
+function gate(id: string): Availability {
+	return controlOf(state?.controls, id);
+}
+
+/** Applies a control to a button: hidden, or marked unavailable with the reason as its tooltip. */
+function gateButton(b: HTMLElement, id: string): Availability {
+	const control = gate(id);
+	b.hidden = control.s === 'hidden' || b.hidden;
+	b.classList.toggle('control-off', control.s === 'off');
+	if (control.s === 'off') {
+		b.setAttribute('aria-disabled', 'true');
+		b.title = control.reason;
+	}
+	return control;
+}
+
+let refusalTimer: ReturnType<typeof setTimeout> | undefined;
+function refuseControl(control: Availability): void {
+	if (control.s !== 'off') { return; }
+	controlRefusal.textContent = control.reason;
+	controlRefusal.hidden = false;
+	clearTimeout(refusalTimer);
+	refusalTimer = setTimeout(() => { controlRefusal.hidden = true; }, 6000);
+}
 
 // Reuse the editor's actual theme tokens in the Chrome surface, including custom themes.
 if (!window.aiBrowserChatHost) {
@@ -356,6 +395,11 @@ usageAlertBar.hidden = true;
 const chromeMirrorLine = el('div', { class: 'chrome-mirror' }, icon('broadcast'),
 	el('span', { text: 'Connected from Google Chrome — messages sent there appear here. Closing the Chrome panel does not stop the agent.' }));
 chromeMirrorLine.hidden = true;
+/** Says why a control is unavailable on this surface (Chrome, the website), for a few seconds. */
+const controlRefusal = el('div', { class: 'control-refusal' });
+controlRefusal.hidden = true;
+controlRefusal.setAttribute('role', 'status');
+controlRefusal.addEventListener('click', () => { controlRefusal.hidden = true; });
 chromeMirrorLine.setAttribute('role', 'status');
 usageAlertBar.setAttribute('role', 'status');
 
@@ -912,7 +956,48 @@ const agentsPanel = el('div', { class: 'history-panel agents-panel' });
 /** Which copy of each agent's CLI this project uses: opened from the gear in the agent menu. */
 const agentAppsPanel = el('div', { class: 'history-panel agent-apps' });
 
-const chatMain = el('main', { class: 'chat-main' }, chromeConnectionBanner, chromeMirrorLine, usageAlertBar, thread, blocked, footer);
+const chatMain = el('main', { class: 'chat-main' }, chromeConnectionBanner, chromeMirrorLine, controlRefusal, usageAlertBar, thread, blocked, footer);
+/**
+ * The view title's own buttons for surfaces that have no VS Code title bar —
+ * the Chrome side panel and the website. One row in the renderer instead of a
+ * header written again by each shell, each button gated by the surface's
+ * control map. Absent in the editor, whose title bar carries the same commands.
+ */
+const remoteBar = el('div', { class: 'remote-bar' });
+function remoteButton(name: string, label: string): HTMLButtonElement {
+	const b = button([icon(name)], { class: 'ghost round', title: label });
+	b.setAttribute('aria-label', label);
+	b.dataset.label = label;
+	return b;
+}
+remoteBar.hidden = true;
+const remoteNew = remoteButton('add', 'New chat');
+remoteNew.addEventListener('click', () => post({ type: 'newTab', location: 'here' }));
+const remoteHistory = remoteButton('history', 'Chat history');
+// The website asks its host for the list; it is not one of the editor's messages.
+remoteHistory.addEventListener('click', () => { if (gate('history').s === 'on') { vscode.postMessage({ type: 'history' } as unknown as ViewToHost); } else { refuseControl(gate('history')); } });
+const remoteAwake = remoteButton('coffee', 'Keep the computer awake');
+remoteAwake.addEventListener('click', () => { if (gate('setSleep').s !== 'on') { refuseControl(gate('setSleep')); return; } buildSleepPopup(); renderSleep(); openSleepPopup(); });
+const remoteSettings = remoteButton('settings-gear', 'Chat settings');
+remoteSettings.addEventListener('click', () => { if (gate('saveFeatureAi').s !== 'on') { refuseControl(gate('saveFeatureAi')); return; } openFeatureSettings(); });
+remoteBar.append(remoteNew, remoteHistory, remoteAwake, remoteSettings);
+// A shell with a header of its own (the Chrome side panel, the Exchange website) gives the bar a
+// place in it (#remote-actions), so the chat keeps the height a row of its own would take.
+const remoteSlot = document.getElementById('remote-actions');
+if (remoteSlot) { remoteBar.classList.add('in-shell'); remoteSlot.append(remoteBar); }
+function renderRemoteBar(s: ChatViewState): void {
+	remoteBar.hidden = !s.surface || s.surface === 'editor';
+	if (remoteBar.hidden) { return; }
+	for (const [b, id] of [[remoteNew, 'newTab'], [remoteHistory, 'history'], [remoteAwake, 'setSleep'], [remoteSettings, 'saveFeatureAi']] as const) {
+		const control = gate(id);
+		b.hidden = control.s === 'hidden';
+		b.classList.toggle('control-off', control.s === 'off');
+		b.setAttribute('aria-disabled', String(control.s === 'off'));
+		b.title = control.s === 'off' ? control.reason : b.dataset.label ?? '';
+	}
+}
+
+if (!remoteSlot) { app.append(remoteBar); }
 app.append(featureSettingsPanel, sleepPopup, tabStrip, chatMain, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel);
 
 /* ---------------------------------------------------------------- state */
@@ -1266,6 +1351,7 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 });
 
 function render(): void {
+	if (state) { renderRemoteBar(state); }
 	if (!state) {
 		return;
 	}
@@ -1530,12 +1616,15 @@ function renderTabs(s: ChatViewState): void {
 		node.root.classList.toggle('chrome-mirrored', t.chrome === true);
 		node.label.setAttribute('aria-current', t.id === s.activeTab ? 'page' : 'false');
 		node.root.classList.toggle('running', t.running);
+		// What this surface allows on a tab (Chrome picks the conversation it shows, nothing more).
+		node.close.hidden = gate('closeTab').s !== 'on';
+		node.root.draggable = gate('placeTab').s === 'on';
 		// Moved only when out of place: re-inserting an element ends its transition.
 		if (tabRow.children[i] !== node.root) {
 			tabRow.insertBefore(node.root, tabRow.children[i] ?? null);
 		}
 	});
-	if (s.tabs.length >= s.tabLimit) {
+	if (s.tabs.length >= s.tabLimit || gate('newTab').s !== 'on') {
 		tabAdd.remove();
 	} else if (tabRow.lastElementChild !== tabAdd) {
 		tabRow.append(tabAdd);
@@ -1641,11 +1730,11 @@ function tabNode(t: ChatTabSummary): TabNode {
 			return node.tab.id === draftTab ? currentDraft() : drafts[node.tab.chatId] ?? '';
 		};
 		const items: MenuItem[] = state?.panel ? [] : [
-			{ icon: 'link-external', label: 'Move to a new window', run: () => post({ type: 'moveTabToNew', id: node.tab.id, location: 'window', draft: draft() }) },
-			{ icon: 'files', label: 'Move to a new tab', run: () => post({ type: 'moveTabToNew', id: node.tab.id, location: 'tab', draft: draft() }) },
+			{ icon: 'link-external', label: 'Move to a new window', command: 'moveTabToNew', run: () => post({ type: 'moveTabToNew', id: node.tab.id, location: 'window', draft: draft() }) },
+			{ icon: 'files', label: 'Move to a new tab', command: 'moveTabToNew', run: () => post({ type: 'moveTabToNew', id: node.tab.id, location: 'tab', draft: draft() }) },
 		];
 		items.push(...destinations.map(surface => ({
-			icon: 'arrow-right', label: surface.label, description: surface.description,
+			icon: 'arrow-right', label: surface.label, description: surface.description, command: 'moveTabTo',
 			run: () => {
 				saveDraft();
 				post({ type: 'moveTabTo', id: node.tab.id, target: surface.id,
@@ -1653,7 +1742,7 @@ function tabNode(t: ChatTabSummary): TabNode {
 			},
 		})));
 		if (node.tab.canResumeInTerminal) {
-			items.push({ icon: 'terminal', label: 'Continue in terminal', disabled: node.tab.busy || !!node.tab.queued || !!node.tab.skillRuns, run: () => post({ type: 'resumeInTerminal', id: node.tab.chatId }) });
+			items.push({ icon: 'terminal', label: 'Continue in terminal', command: 'resumeInTerminal', disabled: node.tab.busy || !!node.tab.queued || !!node.tab.skillRuns, run: () => post({ type: 'resumeInTerminal', id: node.tab.chatId }) });
 		}
 		const compact = wideChat.matches && chatDrawerCollapsed;
 		if (compact) { items.push({ icon: 'close', label: 'Close chat', run: () => node.close.click() }); }
@@ -1674,6 +1763,7 @@ function tabNode(t: ChatTabSummary): TabNode {
 		post({ type: 'selectTab', id: node.tab.id });
 	});
 	label.addEventListener('dblclick', () => {
+		if (gate('renameTab').s !== 'on') { return; }
 		const first = firstClick && performance.now() - firstClick.at < doubleClickMs ? tabNodes.get(firstClick.id) : undefined;
 		firstClick = undefined;
 		startRename(first ?? node);
@@ -3166,6 +3256,7 @@ function renderApprovalMenu(s: ChatViewState, force = false): void {
 				const b = button([el('span', { text: modeLabels[mode] })], { class: `mode-seg ${mode}` });
 				b.dataset.key = key;
 				b.dataset.mode = mode;
+				gateButton(b, 'setApprovalMode');
 				b.addEventListener('click', () => post({ type: 'setApprovalMode', key, mode }));
 				return b;
 			});
@@ -4908,6 +4999,7 @@ function renderVoice(): void {
 	setIcon(micButton, voicePhase === 'finishing' ? 'loading' : 'mic');
 	micButton.querySelector('.codicon')?.classList.toggle('codicon-modifier-spin', voicePhase === 'finishing');
 	const available = state?.voice.available ?? false;
+	micButton.hidden = gate('voiceStart').s === 'hidden';
 	micButton.setAttribute('aria-disabled', String(!available && voicePhase === 'idle'));
 	const max = state?.voice.maxSeconds ?? 300;
 	const finishing = voiceDownloading
@@ -5420,6 +5512,8 @@ interface MenuItem {
 	readonly disabled?: boolean;
 	/** A key or gesture that does the same, shown at the right of the row. */
 	readonly shortcut?: string;
+	/** The control it stands for: hidden, or disabled with the reason, where the surface does not allow it. */
+	readonly command?: string;
 	readonly run: () => void;
 }
 
@@ -5452,7 +5546,10 @@ function openMenu(anchor: HTMLElement, items: MenuItem[], heading?: string, acti
 	menu.replaceChildren(
 		heading ? el('div', { class: 'menu-heading' }, el('span', { text: heading }), headingAction) : '',
 		note ? el('div', { class: 'menu-note', text: note }) : '',
-		...items.map(item => {
+		...items.flatMap(item => {
+			const control = item.command ? gate(item.command) : { s: 'on' } as const;
+			if (control.s === 'hidden') { return []; }
+			if (control.s === 'off') { item = { ...item, disabled: true, description: control.reason }; }
 			const b = button([
 				item.icon ? icon(item.icon, 'menu-icon') : el('span', { class: 'menu-icon' }),
 				el('span', { class: 'menu-text' },
@@ -5469,7 +5566,7 @@ function openMenu(anchor: HTMLElement, items: MenuItem[], heading?: string, acti
 				}
 				item.run();
 			});
-			return b;
+			return [b];
 		}));
 	// Over a panel the menu is drawn above it: a panel sits over the popups.
 	menu.classList.toggle('over-panel', !!keep);
@@ -5489,7 +5586,7 @@ agentPill.addEventListener('click', () => {
 		checked: a.id === s.selection.agent,
 		disabled: !a.available,
 		run: () => post({ type: 'select', selection: { agent: a.id } }),
-	})), 'Agent', { icon: 'gear', title: 'Which Claude Code, Codex and Gemini CLI apps to use', run: openAgentApps });
+	})), 'Agent', gate('setAgentBinary').s === 'on' ? { icon: 'gear', title: 'Which Claude Code, Codex and Gemini CLI apps to use', run: openAgentApps } : undefined);
 });
 
 /* agent apps */
@@ -5626,7 +5723,7 @@ modelPill.addEventListener('click', () => {
 // tabs the browser tools then drive the same way.
 function browserMenuItems(): MenuItem[] {
 	const items: MenuItem[] = [
-		{ icon: 'globe', label: 'Google Chrome', disabled: !!state?.remoteWorkspace, description: state?.remoteWorkspace ? 'Available only in the local VS Code chat' : undefined, run: () => post({ type: 'openBrowser', where: 'chrome' }) },
+		{ icon: 'globe', label: 'Google Chrome', command: 'openBrowser.chrome', run: () => post({ type: 'openBrowser', where: 'chrome' }) },
 	];
 	if (state?.nativeBrowser && state.nativeBrowser !== 'unsupported') {
 		items.push({ icon: 'window', label: 'VS Code Browser',
@@ -5727,7 +5824,7 @@ function commandGroup(c: ChatCommand): string {
 function chatActions(s: ChatViewState): PaletteItem[] {
 	const tab = s.tabs.find(t => t.id === s.activeTab);
 	const items: PaletteItem[] = [];
-	if (tab?.canResumeInTerminal) {
+	if (tab?.canResumeInTerminal && gate('resumeInTerminal').s === 'on') {
 		items.push({ key: 'chat:terminal', group: 'Chat', name: 'terminal', label: 'Continue in terminal', icon: 'terminal',
 			detail: 'Continue this session in a terminal tab; this chat tab closes',
 			disabled: tab.busy || !!tab.queued || !!tab.skillRuns, haystack: 'terminal resume continue cli',
@@ -8174,6 +8271,7 @@ function fillAgents(agents: ToolEntry[], force = false): void {
 		for (const a of [...agents].reverse()) {
 			const row = button([
 				el('span', { class: `agent-dot ${a.status}` }),
+				...(a.agent?.type === 'workflow' ? [icon('type-hierarchy-sub', 'agent-kind')] : []),
 				el('span', { class: 'agent-text' },
 					el('span', { class: 'agent-title', text: agentTitle(a) }),
 					el('span', { class: 'agent-meta' },
@@ -8243,6 +8341,7 @@ function panelFooter(): HTMLElement {
 
 /** Codex names an agent by its path, `/root/<parent>/<agent>`; the one before it started it. */
 function spawnedBy(type: string | undefined): string {
+	if (type === 'workflow') { return 'Workflow started by the main agent — it runs its own agents in the background'; }
 	const path = type?.startsWith('/') ? type.split('/').filter(Boolean) : [];
 	return path.length > 2 ? `Spawned by ${path[path.length - 2].replace(/[_-]+/g, ' ')}` : 'Spawned by the main agent';
 }
@@ -8340,7 +8439,9 @@ function fillHistory(chats: readonly ChatSummary[]): void {
 			el('span', { class: 'history-meta', text: `${state?.agents.find(a => a.id === chat.agent)?.name ?? chat.agent} · ${ago(chat.updatedAt)}` }),
 		], { class: 'history-item', title: chat.title });
 		open.classList.toggle('current', chat.id === state?.chatId);
+		gateButton(open, 'openChat');
 		open.addEventListener('click', () => {
+			if (gate('openChat').s !== 'on') { refuseControl(gate('openChat')); return; }
 			closePopups();
 			post({ type: 'openChat', id: chat.id });
 		});
@@ -8348,6 +8449,8 @@ function fillHistory(chats: readonly ChatSummary[]): void {
 		remove.addEventListener('click', () => post({ type: 'deleteChat', id: chat.id }));
 		const terminal = button([icon('terminal')], { class: 'ghost round history-delete', title: 'Continue in terminal' });
 		terminal.hidden = !chat.canResumeInTerminal;
+		gateButton(remove, 'deleteChat');
+		gateButton(terminal, 'resumeInTerminal');
 		terminal.addEventListener('click', () => { closePopups(); post({ type: 'resumeInTerminal', id: chat.id }); });
 		list.append(el('div', { class: 'history-row' }, open, terminal, remove));
 	}
@@ -8737,6 +8840,8 @@ function openFeatureSettings(): void {
 		featureSettingsStatus.hidden = selected === 'server';
 	};
 	tab.addEventListener('click', () => selectTab('ai')); videoTab.addEventListener('click', () => selectTab('video'));
+	// Temporary files live on the editor's machine: the tab is gone where they cannot be managed.
+	temporaryTab.hidden = gate('temporaryStorage').s !== 'on';
 	temporaryTab.addEventListener('click', () => {
 		selectTab('temporary');
 		if (!temporaryStorageBusy) { temporaryStorageBusy = true; renderTemporaryStorage(); post({ type: 'temporaryStorage', action: 'refresh' }); }

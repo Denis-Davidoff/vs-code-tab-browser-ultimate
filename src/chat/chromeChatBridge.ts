@@ -1,4 +1,5 @@
-import { chromeChatProtocolVersion, chromeChatProtocolHeader, chromeChatVersionHeader, chromeChatCompatibilityError, chromeChatCapabilities, chromeChatCapabilitiesHeader, negotiateChromeChatCapabilities, chromeChatFeatureError, chromeChatAttachmentFeature, chromeChatCommandFeature } from './chromeChatCompatibility';
+import { chromeChatProtocolVersion, chromeChatProtocolHeader, chromeChatVersionHeader, chromeChatCompatibilityError, chromeChatCapabilities, chromeChatCapabilitiesHeader, negotiateChromeChatCapabilities, chromeChatFeatureError, chromeChatAttachmentFeature, chromeChatCommandFeature, chromeChatWaitHeader, chromeChatMaxWaitMs, chromeChatBaseHeader } from './chromeChatCompatibility';
+import { diffState } from './core/sync';
 import { ChromeAnnotationSession, chromeAnnotationSessions } from '../browser/chromeAnnotationSessions';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import * as http from 'node:http';
@@ -35,6 +36,18 @@ export class ChromeChatBridge implements ChatStateSurface {
 	private _presenceTimer?: ReturnType<typeof setTimeout>;
 	private _active = false;
 	get active(): boolean { return this._active; }
+	readonly kind = 'chrome' as const;
+	/**
+	 * Snapshot requests held open while nothing changed (long-poll): woken by a
+	 * new revision, a delivered event or the bridge closing, so a change reaches
+	 * the panel at once instead of at its next poll.
+	 */
+	private readonly _waiters = new Set<() => void>();
+	private _wake(): void { for (const wake of [...this._waiters]) { wake(); } }
+	/** Names this bridge's revisions: a panel's base from another bridge never matches. */
+	private readonly _epoch = randomBytes(8).toString('hex');
+	/** The last few published snapshots, as copies, for patches against them. */
+	private readonly _published = new Map<number, Record<string, unknown>>();
 
 	/** Snapshot polling is the panel heartbeat, including unchanged (304) snapshots. */
 	private _touchPresence(): void {
@@ -90,7 +103,13 @@ export class ChromeChatBridge implements ChatStateSurface {
 		// A pinned conversation closed in the editor: follow what the editor shows instead.
 		this._chatId = state.chatId;
 		const body = JSON.stringify({ ...chromeChatSnapshot(state, this._editorVersion), deliverySession: this._delivery.id, canSend: !!this._command, agentChrome: this._driven });
-		if (body !== this._body) { this._body = body; this._revision++; }
+		if (body !== this._body) {
+			this._body = body; this._revision++;
+			// A copy, not the live state: what was published must not move under a later diff.
+			this._published.set(this._revision, JSON.parse(body) as Record<string, unknown>);
+			for (const rev of this._published.keys()) { if (this._published.size > 4) { this._published.delete(rev); } }
+			this._wake();
+		}
 	}
 
 	private _handle(request: http.IncomingMessage, response: http.ServerResponse): void {
@@ -113,7 +132,7 @@ export class ChromeChatBridge implements ChatStateSurface {
 				response.writeHead(403).end(); return;
 			}
 			response.setHeader('Access-Control-Allow-Methods', commandRoute ? 'POST' : 'GET');
-			response.setHeader('Access-Control-Allow-Headers', `Authorization, If-None-Match, Content-Type, ${chromeChatProtocolHeader}, ${chromeChatVersionHeader}, ${chromeChatCapabilitiesHeader}`);
+			response.setHeader('Access-Control-Allow-Headers', `Authorization, If-None-Match, Content-Type, ${chromeChatWaitHeader}, ${chromeChatProtocolHeader}, ${chromeChatVersionHeader}, ${chromeChatCapabilitiesHeader}`);
 			response.writeHead(204).end(); return;
 		}
 		const authorization = Buffer.from(request.headers.authorization ?? '');
@@ -159,19 +178,56 @@ export class ChromeChatBridge implements ChatStateSurface {
 		}
 		if (!this._body || this._closed) { response.writeHead(503).end(); return; }
 		this._touchPresence();
-		const etag = `"${this._revision}"`;
-		response.setHeader('ETag', etag);
-		response.setHeader('Access-Control-Expose-Headers', 'ETag');
-		if (request.headers['if-none-match'] === etag) { response.writeHead(304).end(); return; }
-		response.setHeader('Content-Type', 'application/json; charset=utf-8');
-		response.writeHead(200).end(this._body);
+		const wait = Math.min(chromeChatMaxWaitMs, Math.max(0, Number(request.headers[chromeChatWaitHeader.toLowerCase()]) || 0));
+		response.setHeader('Access-Control-Expose-Headers', `ETag, ${chromeChatWaitHeader}, ${chromeChatBaseHeader}`);
+		const answer = () => {
+			if (response.destroyed || response.writableEnded) { return; }
+			const etag = `"${this._revision}"`;
+			response.setHeader('ETag', etag);
+			if (wait) { response.setHeader(chromeChatWaitHeader, String(wait)); }
+			if (this._closed || !this._body) { response.writeHead(503).end(); return; }
+			if (request.headers['if-none-match'] === etag) { response.writeHead(304).end(); return; }
+			response.setHeader('Content-Type', 'application/json; charset=utf-8');
+			response.setHeader(chromeChatBaseHeader, this._epoch);
+			response.writeHead(200).end(this._patchFor(request.headers[chromeChatBaseHeader.toLowerCase()]) ?? this._body);
+		};
+		// Nothing new: hold the request (an unchanged snapshot is the common case).
+		if (!wait || request.headers['if-none-match'] !== `"${this._revision}"`) { answer(); return; }
+		const events = this._delivery.sequence;
+		const done = () => { clearTimeout(timer); this._waiters.delete(wake); response.off('close', done); };
+		const wake = () => { if (this._delivery.sequence !== events || request.headers['if-none-match'] !== `"${this._revision}"` || this._closed) { done(); answer(); } };
+		const timer = setTimeout(() => { done(); answer(); }, wait);
+		this._waiters.add(wake);
+		// The response's close, not the request's: a GET request emits close once its body is read.
+		response.on('close', done);
+	}
+
+	/**
+	 * A patch from the revision the panel names to the current one, or
+	 * `undefined` for the whole snapshot: another epoch, a revision no longer
+	 * held, or a patch not much smaller than the snapshot. The view is diffed on
+	 * its own and the rest sent whole (`top`, small), so a streaming reply sends
+	 * its last entry once rather than the whole view.
+	 */
+	private _patchFor(header: string | string[] | undefined): string | undefined {
+		const match = typeof header === 'string' ? /^([0-9a-f]{16}):(\d{1,15})$/.exec(header) : null;
+		if (!match || match[1] !== this._epoch || !this._body) { return undefined; }
+		const base = this._published.get(Number(match[2]));
+		const current = this._published.get(this._revision);
+		if (!base || !current || Number(match[2]) === this._revision) { return undefined; }
+		const view = (v: Record<string, unknown>) => (v.view ?? {}) as Record<string, unknown>;
+		const patch = diffState(view(base), view(current), Number(match[2]), this._revision);
+		if (!patch) { return undefined; }
+		const { view: _view, entries: _entries, ...top } = current;
+		const body = JSON.stringify({ patch, top });
+		return body.length * 2 < this._body.length ? body : undefined;
 	}
 
 	private async _receiveCommand(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
 		const reply = (status: number, error?: string) => {
 			if (response.destroyed || response.writableEnded) { return; }
 			response.setHeader('Content-Type', 'application/json; charset=utf-8');
-			response.writeHead(status).end(JSON.stringify({ error, ...(status === 200 && this._body ? { snapshot: JSON.parse(this._body) } : {}) }));
+			response.writeHead(status).end(JSON.stringify({ error, ...(status === 200 && this._body ? { snapshot: JSON.parse(this._body), revision: this._revision } : {}) }));
 		};
 		if (!this._command) { reply(405, 'Sending is unavailable. Update the editor extension.'); return; }
 		let raw: unknown;
@@ -236,6 +292,7 @@ export class ChromeChatBridge implements ChatStateSurface {
 
 	private _publishEvent(event: { chatId: string; message?: HostToView; error?: string }): void {
 		this._delivery.events.push({ ...event, id: ++this._delivery.sequence });
+		this._wake();
 		// Answers survive a lost response; polling acknowledges by sequence, not by consuming them.
 		while (this._delivery.events.length > 128 || Buffer.byteLength(JSON.stringify(this._delivery.events)) > 4_000_000) { this._delivery.events.shift(); }
 	}
@@ -261,6 +318,7 @@ export class ChromeChatBridge implements ChatStateSurface {
 		this._active = false;
 		this._releaseAnnotations?.();
 		this._body = undefined;
+		this._wake();
 		this._server.close();
 		this._server.closeAllConnections();
 	}

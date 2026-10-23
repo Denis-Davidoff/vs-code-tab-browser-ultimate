@@ -4,6 +4,8 @@ import {readFileSync} from 'node:fs';
 import {runInNewContext} from 'node:vm';
 import {AsyncLocalStorage} from 'node:async_hooks';
 import {transpileModule,ModuleKind,ScriptTarget} from 'typescript';
+import { remoteRefusal } from './core/commands.ts';
+import { remoteScope } from './core/remoteScope.ts';
 
 function fixture(transport:'server'|'chrome') {
  const source=readFileSync('src/chat/chatView.ts','utf8');
@@ -15,7 +17,7 @@ function fixture(transport:'server'|'chrome') {
  const exports:any={};let serial=0;
  const makeTab=(id:string,agent='codex',started=true):any=>({id,chat:{id,agent,title:id,entries:[],folder:'/project'},attachments:[],started,start(chat:any){this.chat=chat;},push(){}});
  runInNewContext(transpileModule(code,{compilerOptions:{module:ModuleKind.CommonJS,target:ScriptTarget.ES2022}}).outputText,{
-  exports,selectionKey:'selection',chromeChatCommandFeature:()=> 'chat',exchangeRefusal(){},newChat:(agent:string)=>({id:`replacement-${++serial}`,agent,entries:[]}),tabLimit:()=>20,
+  exports,selectionKey:'selection',chromeChatCommandFeature:()=> 'chat',exchangeRefusal(){},remoteRefusal,remoteScope,newChat:(agent:string)=>({id:`replacement-${++serial}`,agent,entries:[]}),tabLimit:()=>20,
   chatTranscript:()=> 'Conversation transcript',transcriptFileName:()=> 'conversation.md',writeChatTranscript:async()=>'/project/conversation.md',agentNames:{codex:'Codex',claude:'Claude'},generateUuid:()=> 'attachment',vscode:{l10n:{t:(value:string)=>value},Uri:{file:(value:string)=>value}},
  });
  const View=exports.View,view=new View(),native=makeTab('native'),remote=makeTab('remote'),events:any[]=[];
