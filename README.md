@@ -93,6 +93,14 @@ For limits, settings and technical details, see [CLAUDE.md](CLAUDE.md#browser-vi
 
 ## 📝 Changelog
 
+**0.9.0** — The Exchange server shares a chat and a browser tab with a self-hosted website,
+end-to-end encrypted. From any device you can send messages, stop turns, pick elements and
+click through the page. The VS Code chat, the Chrome side panel and the website share one set
+of controls and receive updates as patches. Git state made in VS Code reaches the website
+straight away. Chrome and the website offer the current page as a one-click attachment. The
+website can open Google Chrome on the VS Code machine and labels each tab by browser. Agents
+can no longer send clipboard shortcuts. The Chrome extension is now 0.6.0.
+
 **0.8.10** — Agents gain native hover, drag, keyboard shortcuts and text insertion,
 plus double and right clicks. Browser snapshots and actions reach open and closed
 Shadow DOM; pointer actions handle scaled, rotated and perspective-transformed iframes,

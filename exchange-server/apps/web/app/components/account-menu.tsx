@@ -1,4 +1,5 @@
 "use client";
+import { Form, Input } from "./form";
 import { useEffect, useRef, useState } from "react";
 import QRCode from "qrcode";
 import { auth } from "./auth-client";
@@ -11,6 +12,7 @@ export function AccountMenu({
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [error, setError] = useState("");
+  const [errorField, setErrorField] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [setup, setSetup] = useState<{ qr: string; codes: string[] } | null>(
@@ -26,7 +28,8 @@ export function AccountMenu({
     modal?.addEventListener("close", clear);
     return () => modal?.removeEventListener("close", clear);
   }, []);
-  async function run(action: () => Promise<void>) {
+  async function run(field: string, action: () => Promise<void>) {
+    setErrorField(field);
     setBusy(true);
     setError("");
     setNotice("");
@@ -80,15 +83,13 @@ export function AccountMenu({
           </button>
         </div>
         <p className="account-email">{user.email}</p>
-        {error && (
-          <p role="alert" className="error">
-            {error}
-          </p>
-        )}
+
         {notice && <p role="status">{notice}</p>}
-        <form
+        <Form
+          error={errorField === "name" ? error : ""}
+          errorField="name"
           action={(form) =>
-            run(async () => {
+            run("name", async () => {
               const result = await auth.updateUser({
                 name: String(form.get("name")),
               });
@@ -99,7 +100,7 @@ export function AccountMenu({
         >
           <label>
             Display name
-            <input
+            <Input
               name="name"
               defaultValue={user.name}
               required
@@ -107,7 +108,7 @@ export function AccountMenu({
             />
           </label>
           <button disabled={busy}>Save profile</button>
-        </form>
+        </Form>
         <section className="account-security">
           <div className="security-heading">
             <Icon name="shield" />
@@ -158,9 +159,11 @@ export function AccountMenu({
               >
                 Download recovery codes
               </button>
-              <form
+              <Form
+                error={errorField === "code" ? error : ""}
+                errorField="code"
                 action={(form) =>
-                  run(async () => {
+                  run("code", async () => {
                     const result = await auth.twoFactor.verifyTotp({
                       code: String(form.get("code")),
                     });
@@ -173,7 +176,7 @@ export function AccountMenu({
               >
                 <label>
                   Authenticator code
-                  <input
+                  <Input
                     name="code"
                     inputMode="numeric"
                     autoComplete="one-time-code"
@@ -184,12 +187,14 @@ export function AccountMenu({
                 <button className="primary" disabled={busy}>
                   Verify and enable
                 </button>
-              </form>
+              </Form>
             </>
           ) : (
-            <form
+            <Form
+              error={errorField === "password" ? error : ""}
+              errorField="password"
               action={(form) =>
-                run(async () => {
+                run("password", async () => {
                   const password = String(form.get("password"));
                   if (user.twoFactorEnabled) {
                     const result = await auth.twoFactor.disable({ password });
@@ -217,7 +222,7 @@ export function AccountMenu({
             >
               <label>
                 Account password
-                <input
+                <Input
                   name="password"
                   type="password"
                   autoComplete="current-password"
@@ -227,7 +232,7 @@ export function AccountMenu({
               <button disabled={busy}>
                 {user.twoFactorEnabled ? "Disable 2FA" : "Set up authenticator"}
               </button>
-            </form>
+            </Form>
           )}
         </section>
       </dialog>

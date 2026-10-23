@@ -57,7 +57,7 @@ export const COMMANDS = {
 	unqueue: chat({ no: chromeEditor }, 'host'), resumeQueue: chat({ no: chromeEditor }, 'host'),
 	clearChat: chat({ no: chromeEditor }, 'host'), exportChat: chat({ no: chromeEditor }, 'mixed'),
 	attach: chat('local', 'mixed'), pasteFile: chat('local', 'local'), removeAttachment: chat('local', 'mixed'),
-	acceptSuggestion: chat('local', { no: editorOnly }), stopAgent: chat({ no: chromeEditor }, 'host'), secondOpinion: chat({ no: chromeEditor }, 'host'),
+	acceptSuggestion: chat('local', 'local'), stopAgent: chat({ no: chromeEditor }, 'host'), secondOpinion: chat({ no: chromeEditor }, 'host'),
 	refreshAgents: chat({ no: chromeEditor }, 'host'),
 
 	// Tabs and history.
@@ -148,7 +148,6 @@ const formRules: Readonly<Record<RemoteSurface, Readonly<Record<string, Availabi
 	// The website's own request for the history list (`history`, not a `ViewToHost`).
 	chrome: { history: { s: 'hidden' } },
 	exchange: {
-		'openBrowser.chrome': { s: 'off', reason: 'Opening Chrome is available only in the local VS Code chat.' },
 		'attach.file': { s: 'on' },
 	},
 };

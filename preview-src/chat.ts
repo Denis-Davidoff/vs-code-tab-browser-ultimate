@@ -124,7 +124,14 @@ function el<K extends keyof HTMLElementTagNameMap>(
 	return node;
 }
 
+function liquidLoader(extra = ''): HTMLElement {
+	const node = el('span', { class: `liquid-loader ${extra}`.trim() });
+	node.setAttribute('aria-hidden', 'true');
+	return node;
+}
+
 function icon(name: string, extra = ''): HTMLElement {
+	if (name === 'loading') { return liquidLoader(extra); }
 	return el('i', { class: `codicon codicon-${name} ${extra}`.trim() });
 }
 
@@ -810,6 +817,7 @@ function renderBranches(): void {
 	branchRestoreStash.textContent = branchState?.savedStash ? `Return to ${branchState.savedStash.branch} & Apply Stash` : 'Return & Apply Stash';
  branchMagic.disabled = branchBusy || !branchState || !!branchNamePending;
  branchMagic.classList.toggle('loading', !!branchNamePending);
+ setIcon(branchMagic, branchNamePending ? 'loading' : 'sparkle');
  branchError.classList.toggle('generating', !!branchNamePending);
 	branchCreate.textContent = query ? `+ Create “${query}” from ${branchState?.current || 'HEAD'}` : '+ Create a new branch (enter name above)';
 	branchCreate.disabled = branchBusy || !branchState || !query || !!branchState?.branches.some(b => !b.remote && b.name === query);
@@ -1926,7 +1934,7 @@ function renderTabConfirm(s: ChatViewState): void {
 }
 
 /**
- * The mark in front of a tab's title: a CSS orbit spinner while it works,
+ * The mark in front of a tab's title: a liquid-core loader while it works,
  * a green dot for work
  * finished out of sight, an orange one for work that ended in an error, and
  * nothing once it is finished and read — nor before the first message. A tab whose
@@ -1948,7 +1956,7 @@ function tabMark(status: ChatTabStatus | undefined): HTMLElement | undefined {
 		return undefined;
 	}
 	return el('span', {
-		class: `tab-mark ${status}`,
+		class: `tab-mark ${status}${status === 'working' ? ' liquid-loader' : ''}`,
 		title: tabMarks[status],
 	});
 }
@@ -2501,7 +2509,7 @@ function renderTail(tail: HTMLElement, s: ChatViewState, turn: Turn, last: boole
 
 /**
  * "2 agents running · 3m 12s", under a finished turn while agents the chat
- * started are still at work: the working star in front, so it reads as alive,
+ * started are still at work: the liquid core in front, so it reads as alive,
  * and a click opens the agents list. The time is since the first of them
  * started — how long the background work has gone on; a sum of their times
  * would run ahead of the clock. Built only when the count or that start
@@ -2510,7 +2518,7 @@ function renderTail(tail: HTMLElement, s: ChatViewState, turn: Turn, last: boole
 function agentsRunningLine(count: number, since: number): HTMLElement {
 	const label = `${count} agent${count === 1 ? '' : 's'} running`;
 	const line = button([
-		el('span', { class: 'working-glyph', text: glyphs[glyphAt] }),
+		liquidLoader('working-glyph'),
 		el('span', { class: 'shimmer agents-running-text', text: agentsRunningText(label, since) }),
 	], { class: 'agents-running', title: `${label} — show them` });
 	line.dataset.label = label;
@@ -2573,8 +2581,10 @@ function tickWorking(): void {
 	const phrase = workingNode.dataset.waiting ? 'Waiting for your answer' : workingPhrase();
 	const label = since ? `${phrase}… ${duration(Date.now() - since)}` : `${phrase}…`;
 	const text = workingNode.querySelector('.working-text');
-	if (text?.textContent !== label) {
-		workingNode.replaceChildren(el('span', { class: 'working-glyph', text: glyphs[glyphAt] }), el('span', { class: 'shimmer working-text', text: label }));
+	if (text) {
+		if (text.textContent !== label) { text.textContent = label; }
+	} else {
+		workingNode.replaceChildren(liquidLoader('working-glyph'), el('span', { class: 'shimmer working-text', text: label }));
 	}
 }
 setInterval(tickWorking, 1000);
@@ -2591,27 +2601,8 @@ setInterval(() => {
 	}
 }, 1000);
 
-/**
- * The mark in front of "Working…": a star that changes shape, there and back,
- * every 120 ms. A glyph rather than a spinner icon, because a turning circle
- * reads as "loading" and this is the agent working, which can take minutes.
- * Under reduced motion it stays on one shape.
- */
-const glyphs = ['·', '✢', '✳', '✶', '✻', '✽', '✻', '✶', '✳', '✢'];
-let glyphAt = 0;
+// CSS animates the shared liquid core without a JavaScript animation timer.
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
-setInterval(() => {
-	const agentsLine = threadInner.querySelector('.agents-running .working-glyph');
-	if (reducedMotion.matches || (!workingNode && !agentsLine)) {
-		return;
-	}
-	glyphAt = (glyphAt + 1) % glyphs.length;
-	for (const glyph of [workingNode?.querySelector('.working-glyph'), agentsLine]) {
-		if (glyph) {
-			glyph.textContent = glyphs[glyphAt];
-		}
-	}
-}, 120);
 
 /**
  * The empty chat: what AI Browser is, and what is new. Both come from NEWS.md
@@ -7800,7 +7791,7 @@ usageButton.addEventListener('click', () => {
 function renderUsage(usage: readonly AgentUsage[], stats: ChatStats | undefined, loading: boolean): void {
 	const sections: HTMLElement[] = [];
 	if (loading) {
-		sections.push(el('div', { class: 'usage-loading' }, el('span', { class: 'shimmer', text: 'Asking the agents…' })));
+		sections.push(el('div', { class: 'usage-loading' }, liquidLoader(), el('span', { class: 'shimmer', text: 'Asking the agents…' })));
 	}
 	for (const u of usage) {
 		const name = state?.agents.find(a => a.id === u.agent)?.name ?? u.agent;

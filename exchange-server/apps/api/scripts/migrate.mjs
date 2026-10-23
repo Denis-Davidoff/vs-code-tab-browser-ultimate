@@ -2,11 +2,17 @@ import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
+import {
+  databaseSchema,
+  migrationFolder,
+  migrateExistingSchema,
+} from "./migration-schema.mjs";
 
 async function main() {
   if (!process.env.DATABASE_URL)
     throw new Error("Set DATABASE_URL in exchange-server/.env");
   const target = new URL(process.env.DATABASE_URL);
+  const schema = databaseSchema(process.env.DATABASE_SCHEMA);
   console.log(
     `Migrating PostgreSQL at ${target.hostname}:${target.port || 5432}${target.pathname}`,
   );
@@ -14,14 +20,28 @@ async function main() {
     connectionString: process.env.DATABASE_URL,
     connectionTimeoutMillis: 5000,
   });
+  let folder;
   try {
     await client.connect();
-    await migrate(drizzle(client), {
-      migrationsFolder: fileURLToPath(new URL("../drizzle/", import.meta.url)),
-    });
+    if (schema !== "public") {
+      // A DBA must provision the schema and its dedicated role first. Never fall
+      // back to public if the schema is absent or inaccessible.
+      await client.query(`SET search_path TO "${schema}"`);
+      const result = await client.query("SELECT current_schema() AS name");
+      if (result.rows[0]?.name !== schema)
+        throw new Error(`Schema ${schema} is missing or inaccessible`);
+    }
+    folder = await migrationFolder(
+      fileURLToPath(new URL("../drizzle/", import.meta.url)),
+      schema,
+    );
+    if (schema === "public")
+      await migrate(drizzle(client), { migrationsFolder: folder.path });
+    else await migrateExistingSchema(client, folder.path, schema);
     console.log("Migrations applied successfully.");
   } finally {
     await client.end();
+    await folder?.cleanup();
   }
 }
 

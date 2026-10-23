@@ -1,4 +1,5 @@
 "use client";
+import { Form, Input } from "./components/form";
 import { useEffect, useState } from "react";
 import { Brand, ConnectionDiagram, Icon } from "./components/ui";
 import { auth } from "./components/auth-client";
@@ -25,6 +26,8 @@ export default function Page() {
     [busy, setBusy] = useState(false),
     [signup, setSignup] = useState(false),
     [serverAddress, setServerAddress] = useState("");
+  const [loginErrorField, setLoginErrorField] = useState<string>();
+  const [createError, setCreateError] = useState("");
   const [challenge, setChallenge] = useState(false);
   const [recovery, setRecovery] = useState(false);
   useEffect(() => {
@@ -48,6 +51,7 @@ export default function Page() {
     return () => clearInterval(timer);
   }, [session]);
   async function login(form: FormData) {
+    setLoginErrorField(undefined);
     setBusy(true);
     setError("");
     try {
@@ -66,10 +70,19 @@ export default function Page() {
         result.data.twoFactorRedirect
       )
         setChallenge(true);
-      if (result.error)
+      if (result.error) {
+        const code = result.error.code ?? "";
+        setLoginErrorField(
+          code.includes("PASSWORD")
+            ? "password"
+            : code.includes("EMAIL") || code.includes("USER_ALREADY_EXISTS")
+              ? "email"
+              : undefined,
+        );
         setError(
           result.error.message ?? "Unable to sign in. Please try again.",
         );
+      }
     } catch {
       setError("The server is unavailable. Please try again.");
     } finally {
@@ -78,7 +91,7 @@ export default function Page() {
   }
   async function create(form: FormData) {
     setBusy(true);
-    setError("");
+    setCreateError("");
     try {
       const response = await fetch("/api/points", {
         method: "POST",
@@ -96,7 +109,7 @@ export default function Page() {
       });
       await load();
     } catch (e) {
-      setError((e as Error).message);
+      setCreateError((e as Error).message);
     } finally {
       setBusy(false);
     }
@@ -158,7 +171,7 @@ export default function Page() {
       </header>
       {isPending ? (
         <section className="loading-state" role="status">
-          <span className="loading-dot" />
+          <span className="liquid-loader" aria-hidden="true" />
           Loading your workspace…
         </section>
       ) : !session ? (
@@ -230,13 +243,11 @@ export default function Page() {
             <div className="form-divider">
               <span>or continue with email</span>
             </div>
-            {error && (
-              <p role="alert" className="error">
-                {error}
-              </p>
-            )}
+
             {challenge ? (
-              <form
+              <Form
+                error={error}
+                errorField="code"
                 action={async (form) => {
                   setBusy(true);
                   setError("");
@@ -260,9 +271,11 @@ export default function Page() {
               >
                 <label>
                   {recovery ? "Recovery code" : "Authenticator code"}
-                  <input
+                  <Input
                     name="code"
                     autoComplete="one-time-code"
+                    inputMode={recovery ? "text" : "numeric"}
+                    pattern={recovery ? undefined : "[0-9]{6}"}
                     required
                     autoFocus
                   />
@@ -277,13 +290,13 @@ export default function Page() {
                 >
                   {recovery ? "Use authenticator" : "Use a recovery code"}
                 </button>
-              </form>
+              </Form>
             ) : (
-              <form action={login}>
+              <Form action={login} error={error} errorField={loginErrorField}>
                 {signup && (
                   <label>
                     Full name
-                    <input
+                    <Input
                       name="name"
                       placeholder="Your name"
                       required
@@ -294,7 +307,7 @@ export default function Page() {
                 )}
                 <label>
                   Email address
-                  <input
+                  <Input
                     name="email"
                     type="email"
                     placeholder="you@example.com"
@@ -304,14 +317,14 @@ export default function Page() {
                 </label>
                 <label>
                   Password
-                  <input
+                  <Input
                     name="password"
                     type="password"
                     placeholder={
                       signup ? "At least 8 characters" : "Enter your password"
                     }
                     required
-                    minLength={8}
+                    minLength={signup ? 8 : undefined}
                     autoComplete={signup ? "new-password" : "current-password"}
                   />
                 </label>
@@ -325,7 +338,7 @@ export default function Page() {
                       : "Sign in"}
                   <Icon name="arrow" size={17} />
                 </button>
-              </form>
+              </Form>
             )}
             <p className="auth-switch">
               {signup ? "Already have an account?" : "New to AI Browser?"}{" "}
@@ -384,8 +397,8 @@ export default function Page() {
                 <p>Give your computer a name to get started.</p>
               </div>
             </div>
-            <form action={create} className="inline">
-              <input
+            <Form action={create} error={createError} className="inline">
+              <Input
                 name="name"
                 aria-label="Connection name"
                 placeholder="e.g. Work MacBook"
@@ -396,7 +409,7 @@ export default function Page() {
                 <Icon name="plus" size={16} />
                 {busy ? "Creating…" : "Create connection"}
               </button>
-            </form>
+            </Form>
           </section>
           {credentials && (
             <ConnectionSetup

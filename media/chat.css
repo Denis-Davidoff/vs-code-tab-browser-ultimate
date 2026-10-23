@@ -1,3 +1,5 @@
+@import url("./liquid-loader.css");
+
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -423,7 +425,7 @@ button {
 	font-size: var(--vscode-chat-font-size, var(--vscode-font-size));
 }
 
-/* the changing star before "Working…" — fixed width, so the text does not move as it changes */
+/* Fixed space for the working indicator, so the label never shifts. */
 .working-glyph {
 	transform: translateX(-2px);
 	display: inline-block;
@@ -2677,36 +2679,6 @@ body.vscode-high-contrast-light .context-pie {
 }
 
 
-.tab-mark.working::before {
-	content: '';
-	position: absolute;
-	inset: 0;
-	box-sizing: border-box;
-	border: 2px solid color-mix(in srgb, currentColor 20%, transparent);
-	border-top-color: currentColor;
-	border-right-color: currentColor;
-	border-radius: 50%;
-	animation: tab-orbit .85s linear infinite;
-}
-
-.tab-mark.working::after {
-	content: '';
-	width: 3px;
-	height: 3px;
-	border-radius: 50%;
-	background: currentColor;
-	animation: tab-spark .85s ease-in-out infinite alternate;
-}
-
-@keyframes tab-orbit {
-	to { transform: rotate(360deg); }
-}
-
-@keyframes tab-spark {
-	from { opacity: .35; transform: scale(.65); }
-	to { opacity: 1; transform: scale(1); }
-}
-
 .tab-mark.unread::before,
 .tab-mark.failed::before {
 	content: '';
@@ -3609,14 +3581,6 @@ body.vscode-high-contrast-light .context-pie {
 
 .pending-note .codicon {
 	font-size: 12px;
-}
-
-.prompt.pending-send.steer .pending-note .codicon {
-	animation: spin 1.2s linear infinite;
-}
-
-@keyframes spin {
-	to { transform: rotate(360deg); }
 }
 
 .pending-remove {
@@ -5299,3 +5263,36 @@ body.vscode-high-contrast-light .context-pie {
 .remote-bar { display: flex; justify-content: flex-end; gap: 2px; padding: 4px 8px 0; flex: none; }
 .remote-bar[hidden] { display: none; }
 .remote-bar.in-shell { padding: 0; margin-left: auto; }
+
+/* Loading indicators keep their existing layout and status semantics. */
+.working-glyph.liquid-loader { --liquid-size: 18px; transform: translateX(-2px); }
+.tab-mark.working { --liquid-size: 12px; }
+.row.tool.running::before,
+.agent-dot.running {
+ background: linear-gradient(135deg, #ac9aff, #71e2e1);
+ animation: ai-liquid-core 3.6s ease-in-out infinite;
+}
+.agents-button.live .codicon,
+.prompt.pending-send.steer .pending-note .codicon { animation: none; }
+@media (prefers-reduced-motion: reduce) {
+ .row.tool.running::before, .agent-dot.running { animation: none; }
+}
+
+.agents-button.live .codicon { position: relative; width: 16px; height: 16px; }
+.agents-button.live .codicon::before {
+ content: ''; position: absolute; inset: 2px;
+ background: linear-gradient(135deg, #ac9aff, #71e2e1);
+ animation: ai-liquid-core 3.6s ease-in-out infinite;
+}
+.skill-button.running { animation: none; }
+.skill-button.running::before {
+ content: ''; width: 12px; height: 12px; flex: none;
+ background: linear-gradient(135deg, #ac9aff, #71e2e1);
+ animation: ai-liquid-core 3.6s ease-in-out infinite;
+}
+.skill-button.running .codicon { display: none; }
+@media (prefers-reduced-motion: reduce) {
+ .agents-button.live .codicon::before, .skill-button.running::before { animation: none; }
+}
+
+.usage-loading .liquid-loader { margin-right: 6px; }

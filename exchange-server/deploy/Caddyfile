@@ -1,0 +1,19 @@
+# Append to /etc/caddy/Caddyfile after installing the domain's certificate.
+aibrowser.tools, www.aibrowser.tools {
+  tls /etc/caddy/certs/aibrowser-origin.pem /etc/caddy/certs/aibrowser-origin.key {
+    client_auth {
+      mode require_and_verify
+      trust_pool file /etc/caddy/certs/cloudflare-origin-pull-ca.pem
+    }
+  }
+  @www host www.aibrowser.tools
+  redir @www https://aibrowser.tools{uri} permanent
+  encode zstd gzip
+  @api path /api/* /ws/*
+  handle @api {
+    reverse_proxy 127.0.0.1:3101
+  }
+  handle {
+    reverse_proxy 127.0.0.1:3100
+  }
+}

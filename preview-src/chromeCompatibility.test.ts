@@ -37,6 +37,7 @@ test('an old or newer incompatible editor shows which extension to update before
     assert.match(f.status.textContent, protocolVersion === undefined ? /Update the AI Browser extension for VS Code/ : /Update the AI Browser extension for Chrome/);
     assert.equal(f.context.compatible, false); assert.equal(f.counts().sends, 0); assert.equal(f.counts().renders, 0);
     assert.equal(f.queued.length, 1, 'pending messages survive an update requirement');
+    assert.equal(f.status.dataset.busy, 'false', 'an update requirement stops loading');
     assert.equal(f.context.generation, 1, 'the old polling generation is stopped');
   }
 });
@@ -46,6 +47,7 @@ test('compatible protocol versions enable chat even with different release numbe
   await f.context.poll(f.connection, 0);
   assert.equal(f.context.compatible, true); assert.equal(f.counts().renders, 1); assert.equal(f.counts().sends, 1);
   assert.match(f.status.title, /Chrome 0.5.0.*VS Code 0.8.7/);
+  assert.equal(f.status.dataset.busy, 'false', 'successful connection stops the connection loader');
 });
 
 test('pending commands cannot flush before the compatibility handshake succeeds', async () => {

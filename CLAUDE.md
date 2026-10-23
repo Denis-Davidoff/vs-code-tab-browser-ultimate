@@ -7456,6 +7456,16 @@ fails the typecheck until a new type has its row, and a type with no row is refu
   attaches it as a `sharedPage` that follows the tab; it is not offered while the draft holds that tab.
   The page chip's text (`chromePageText`) says the page is in Google Chrome and names the `browser_*`
   tools: told only "check browser_tabs", the agent did not see that "open the page" meant those tools.
+- **The website can open Google Chrome** (`openBrowser` with `where: 'chrome'` runs `aiBrowser.openInChrome`
+  on the editor's machine), and the Browser panel's tab list names each tab's browser: `remoteTabs` carries
+  `kind: 'chrome' | 'vscode'` (`tabSource.isChrome`), the relay's `browser.state` schema accepts it as optional,
+  and the select reads "Chrome · …" / "VS Code · …".
+- **The website offers the page its Browser panel streams as a dashed suggestion too**, built by the
+  host (`exchangePageSuggestion` in `exchangeChat.ts`): the shim cannot see which tab is selected, the
+  stream socket can (`ExchangeBrowser.selectedPage`, from its last listing, only while a viewer watches;
+  `onPage` republishes the snapshot when it changes). The shim answers `acceptSuggestion` itself with the
+  existing `attach` of kind `page`, which the host builds from that same tab, MCP note included; it is not
+  offered while the draft already holds a page.
 - **The view title's buttons are the renderer's on Chrome and the website** (`remoteBar` in
   `chat.ts`, shown whenever `state.surface` names a remote surface): New chat (`newTab`), History
   (`history`, the website's own request, hidden for Chrome by a form rule), Keep awake (`setSleep`)

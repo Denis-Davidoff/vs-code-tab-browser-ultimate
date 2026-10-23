@@ -32,12 +32,13 @@ test('same delivery session preserves pending commands for safe duplicate-suppre
 test('resume skips an unrelated profile rejection and reaches the authorized editor', async () => {
   const calls: string[] = [], connected: unknown[] = [];
   const connection = { extensionId: 'extension', url: 'owner' };
-  const context = createContext({ resumeLoaded: Promise.resolve(), resuming: false, active: undefined, quickAttempt: undefined,
+  const context = createContext({ status: { dataset: {}, textContent: '' }, resumeLoaded: Promise.resolve(), resuming: false, active: undefined, quickAttempt: undefined,
     resumeState: { key: 'grant', chatId: 'chat-1' }, generation: 0, chromePairingPorts: [1, 2], chromePairingKind: 'discovery', AbortSignal,
     pairingHeaders: () => ({}), editorCompatibility: () => undefined, readChromeChatConnection: (value: unknown) => value,
     chrome: { runtime: { id: 'extension' }, storage: { session: { async set() {} } } },
     connect: (value: unknown) => connected.push(value),
     async fetch(url: string) {
+      assert.equal((context.status as any).dataset.busy, 'true', 'resume shows the loading core while discovering and connecting');
       calls.push(url);
       if (url.endsWith('/discovery')) { return { ok: true, async json() { return { kind: 'discovery', version: 1 }; } }; }
       if (url.includes(':1/')) { return { status: 401, ok: false }; }

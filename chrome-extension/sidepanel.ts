@@ -671,6 +671,7 @@ function returnOutboxToDrafts(): boolean {
 }
 
 function reset(): void {
+  status.dataset.busy = 'false';
   controlChromeRecording('stop');
   emit({ type: 'recordingStatus', seconds: 0 });
   cancelPick(); shownRevision = -1; shownEpoch = undefined;
@@ -686,7 +687,7 @@ function bridgeHeaders(connection: ChromeChatConnection, json = false): Record<s
 }
 function requireUpdate(message: string): void {
   // Keep outgoing commands and drafts intact. Nothing retries until a fresh connection is compatible.
-  reset(); status.textContent = message; status.dataset.state = 'error';
+  reset(); status.dataset.busy = 'false'; status.textContent = message; status.dataset.state = 'error';
 }
 function editorCompatibility(peer: { protocolVersion?: unknown; editorVersion?: unknown; capabilities?: unknown }): string | undefined {
   return chromeChatCompatibilityError(peer.protocolVersion, chromeChatProtocolVersion, peer.editorVersion, chromeVersion)
@@ -711,7 +712,7 @@ async function requestQuickConnection(url: string, current: number): Promise<voi
     secret: Array.from(crypto.getRandomValues(new Uint8Array(32)), value => value.toString(16).padStart(2, '0')).join(''),
     controller: new AbortController() };
   quickAttempt = attempt; quickConnect.disabled = true; cancelConnect.hidden = false; editorSources.replaceChildren();
-  status.textContent = 'Click Allow in the editor chat.';
+  status.dataset.busy = 'true'; status.textContent = 'Click Allow in the editor chat.';
   const deadline = Date.now() + 90_000;
   const expired = setTimeout(() => attempt.controller.abort(), 90_000);
   try {
@@ -744,7 +745,7 @@ async function requestQuickConnection(url: string, current: number): Promise<voi
       await new Promise<void>(resolve => setTimeout(resolve, 500));
     }
   } catch (error) {
-    if (current === generation) { status.textContent = attempt.controller.signal.aborted ? 'The request timed out. Try again.' : error instanceof Error ? error.message : 'Could not connect.'; }
+    if (current === generation) { status.dataset.busy = 'false'; status.textContent = attempt.controller.signal.aborted ? 'The request timed out. Try again.' : error instanceof Error ? error.message : 'Could not connect.'; }
   } finally {
     clearTimeout(expired);
     if (quickAttempt === attempt) { cancelQuickAttempt(); }
@@ -755,7 +756,7 @@ quickConnect.addEventListener('click', () => {
   cancelQuickAttempt();
   const current = ++generation;
   quickConnect.disabled = true; cancelConnect.hidden = false; editorSources.replaceChildren();
-  status.textContent = 'Looking for an open editor…';
+  status.dataset.busy = 'true'; status.textContent = 'Looking for an open editor…';
   void Promise.all(chromePairingPorts.map(async port => {
     const url = `http://127.0.0.1:${port}`;
     try {
@@ -768,13 +769,13 @@ quickConnect.addEventListener('click', () => {
     if (current !== generation) { return; }
     const hosts = found.filter((host): host is { url: string; label: string; problem: string | undefined } => !!host);
     quickConnect.disabled = false; cancelConnect.hidden = true;
-    if (!hosts.length) { status.textContent = 'No editor found. Open a local window with an updated AI Browser extension and try again.'; return; }
+    if (!hosts.length) { status.dataset.busy = 'false'; status.textContent = 'No editor found. Open a local window with an updated AI Browser extension and try again.'; return; }
     if (hosts.length === 1) {
-      if (hosts[0].problem) { status.textContent = hosts[0].problem; status.dataset.state = 'error'; }
+      if (hosts[0].problem) { status.dataset.busy = 'false'; status.textContent = hosts[0].problem; status.dataset.state = 'error'; }
       else { void requestQuickConnection(hosts[0].url, current); }
       return;
     }
-    status.textContent = 'Choose an editor window:';
+    status.dataset.busy = 'false'; status.textContent = 'Choose an editor window:';
     for (const host of hosts) {
       const button = document.createElement('button'); button.type = 'button'; button.textContent = host.problem ? `${host.label} — ${host.problem}` : host.label; button.disabled = !!host.problem;
       button.addEventListener('click', () => void requestQuickConnection(host.url, current)); editorSources.append(button);
@@ -782,7 +783,7 @@ quickConnect.addEventListener('click', () => {
   });
 });
 cancelConnect.addEventListener('click', () => {
-  generation++; cancelQuickAttempt(); editorSources.replaceChildren(); status.textContent = 'Connection cancelled.';
+  generation++; cancelQuickAttempt(); editorSources.replaceChildren(); status.dataset.busy = 'false'; status.textContent = 'Connection cancelled.';
 });
 
 window.addEventListener('pagehide', cancelQuickAttempt);
@@ -892,14 +893,14 @@ async function poll(connection: ChromeChatConnection, current: number): Promise<
         latest = snapshot; shownRevision = Math.max(shownRevision, revision); shownEpoch = epoch && revision >= 0 ? epoch : undefined; render(); etag = response.headers.get('ETag') ?? undefined;
       }
     }
-    status.textContent = latest?.blocked ?? (latest?.running ? 'Working…' : 'Connected');
+    status.dataset.busy = 'false'; status.textContent = latest?.blocked ?? (latest?.running ? 'Working…' : 'Connected');
     status.dataset.state = latest?.blocked ? 'error' : 'connected';
     await pollFooterEvents(connection, current);
     if (current !== generation) { return; }
     failures = 0; void flush();
   } catch {
     if (current !== generation) { return; }
-    failures++; status.textContent = 'Editor unavailable · Reconnecting…'; status.dataset.state = 'error';
+    failures++; status.dataset.busy = 'true'; status.textContent = 'Editor unavailable · Reconnecting…'; status.dataset.state = 'error';
     // A restarted editor listens on a new port with a new key: the old address never comes back.
     if (failures >= 2) { void editorGone('The editor was closed or reloaded.'); return; }
   } finally { clearTimeout(timeout); }
@@ -909,11 +910,12 @@ function connect(connection: ChromeChatConnection, restoredCursor?: number): voi
   const cursor = restoredCursor ?? (footerSession && footerSession === connection.deliverySession ? footerCursor : 0);
   reset(); active = connection; footerSession = connection.deliverySession; footerCursor = cursor;
   pairing.hidden = true; app.hidden = true; disconnect.hidden = false;
-  status.textContent = 'Connecting…'; delete status.dataset.state;
+  status.dataset.busy = 'true'; status.textContent = 'Connecting…'; delete status.dataset.state;
   void poll(connection, generation);
 }
 pairing.addEventListener('submit', event => {
   event.preventDefault(); if (pairingPending) { return; } pairingPending = true;
+  status.dataset.busy = 'true'; status.textContent = 'Connecting…';
   void (async () => {
     try {
       const connection = readChromeChatConnection(JSON.parse(code.value.trim()));
@@ -924,14 +926,14 @@ pairing.addEventListener('submit', event => {
       await chrome.storage.session.set({ connection, outbox });
       if (current !== generation) { return; }
       code.value = ''; connect(connection);
-    } catch (error) { status.textContent = error instanceof Error ? error.message : 'Paste a valid connection code.'; status.dataset.state = 'error'; }
+    } catch (error) { status.dataset.busy = 'false'; status.textContent = error instanceof Error ? error.message : 'Paste a valid connection code.'; status.dataset.state = 'error'; }
     finally { pairingPending = false; }
   })();
 });
 disconnect.addEventListener('click', () => {
   reset();
   const returned = returnOutboxToDrafts();
-  status.textContent = returned ? 'Disconnected from editor. Messages not yet delivered were returned to their drafts.' : 'Disconnected from editor';
+  status.dataset.busy = 'false'; status.textContent = returned ? 'Disconnected from editor. Messages not yet delivered were returned to their drafts.' : 'Disconnected from editor';
   // A deliberate disconnect forgets the grant: the next connection asks in the editor again.
   void saveResume(undefined);
   void persistOutbox().catch(() => {}).then(() => chrome.storage.session.remove(['connection']));
@@ -959,9 +961,9 @@ void chrome.storage.session.get(['connection', 'draftState', 'outbox', 'elementD
   const position = saved.footerPosition as { token?: string; deliverySession?: string; cursor?: number } | undefined;
   const cursor = (position?.deliverySession ? position.deliverySession === connection?.deliverySession : position?.token === connection?.token) && Number.isSafeInteger(position?.cursor) && position!.cursor! >= 0 ? position!.cursor! : 0;
   if (connection?.extensionId === chrome.runtime.id) { connect(connection, cursor); }
-  else { void resumeOnce(); }
+  else { status.textContent = 'Connect to your editor'; status.dataset.busy = 'false'; void resumeOnce(); }
   watchForEditor();
-}).catch(() => { status.textContent = 'Session storage unavailable. Reload the extension.'; });
+}).catch(() => { status.dataset.busy = 'false'; status.textContent = 'Session storage unavailable. Reload the extension.'; });
 
 /* ------------------------------------------------------------ resume after the editor restarts */
 
@@ -982,7 +984,7 @@ async function saveResume(grant: ResumeGrant | undefined): Promise<void> {
 /** The editor went away: back to the Connect screen, and keep looking for it while a grant is remembered. */
 async function editorGone(reason: string): Promise<void> {
   reset();
-  status.textContent = resumeState ? `${reason} Reconnecting automatically when it is back…` : `${reason} Click Connect.`;
+  status.dataset.busy = String(!!resumeState); status.textContent = resumeState ? `${reason} Reconnecting automatically when it is back…` : `${reason} Click Connect.`;
   status.dataset.state = 'error';
   void resumeOnce();
 }
@@ -996,6 +998,7 @@ async function resumeOnce(): Promise<boolean> {
   await resumeLoaded;
   if (resuming || active || quickAttempt || !resumeState) { return false; }
   resuming = true;
+  status.dataset.busy = 'true'; status.textContent = 'Looking for your editor · Reconnecting…';
   const current = generation;
   try {
     const hosts = (await Promise.all(chromePairingPorts.map(async port => {

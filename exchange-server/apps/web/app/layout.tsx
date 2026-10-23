@@ -1,3 +1,4 @@
+import "../../../../media/liquid-loader.css";
 import "./chat-theme.css";
 import "./style.css";
 export const metadata = {

@@ -17,7 +17,7 @@ const storageKey = `ai-browser:web:${pointId}`;
 let draftState:ChatDraftState = {};
 try { draftState = JSON.parse(sessionStorage.getItem(storageKey) ?? '{}'); } catch { /* Storage can be unavailable. */ }
 let socket:WebSocket | undefined, latest:Snapshot | undefined, rendererReady = false, online = false;
-let authenticated=false;
+let authenticated=false, connecting=true;
 let feedback = '', retry:ReturnType<typeof setTimeout> | undefined, stopped = false;
 const eventQueue:HostToView[] = [];
 const attachments = new Map<string,ChromeElementAttachment[]>();
@@ -50,6 +50,7 @@ function resync():void {
 function render():void {
   if(!latest?.view || !rendererReady)return;
   document.getElementById("legacy")?.remove();
+  status.dataset.busy=String(connecting||(authenticated&&!online));
   app.hidden=false;
   document.getElementById("waiting")!.hidden=true;
   const view=latest.view;
@@ -65,7 +66,7 @@ function render():void {
     conversation.value=latest.chatId;conversation.dataset.signature=signature;
   }
   const local=attachments.get(latest.chatId)??[];
-  emit({type:'state',state:{...view,remoteWorkspace:true,attachments:local.map(item=>({id:item.id,label:item.label,kind:item.kind??'file',reference:item.reference,...(item.file&&/^image\/(png|jpeg|webp|gif)$/.test(item.file.mime)?{thumbnail:`data:${item.file.mime};base64,${item.file.base64}`}:{})})),
+  emit({type:'state',state:{...view,remoteWorkspace:true,suggestions:local.some(a=>a.kind==='page')?[]:view.suggestions??[],attachments:local.map(item=>({id:item.id,label:item.label,kind:item.kind??'file',reference:item.reference,...(item.file&&/^image\/(png|jpeg|webp|gif)$/.test(item.file.mime)?{thumbnail:`data:${item.file.mime};base64,${item.file.base64}`}:{})})),
     blocked:!online?'Workspace offline. Reconnect your VS Code extension.':view.blocked,
     entries:feedback?[...view.entries,{kind:'notice',text:feedback}]:view.entries,
   }});
@@ -149,6 +150,7 @@ window.aiBrowserChatHost={
     if(message.type==='chooseWorkdir'){chooseFolderPath();return;}
     if(message.type==='attach'&&message.kind==='file'){chooseFile();return;}
     if(message.type==='pasteFile'&&latest){addAttachment({label:message.name,text:`Attached file: ${message.name}`,kind:'file',file:{name:message.name,mime:message.mime,base64:message.base64}},latest.chatId);emit({type:'pastedFileResult',id:message.id});return;}
+    if(message.type==='acceptSuggestion'){if(message.id==='exchange-active-page')send({type:'attach',kind:'page'});return;}
     if(message.type==='removeAttachment'&&latest){attachments.set(latest.chatId,(attachments.get(latest.chatId)??[]).filter(a=>a.id!==message.id));send(message);render();return;}
     if(message.type==='openAttachment'&&message.entry===undefined&&latest){const item=(attachments.get(latest.chatId)??[]).find(a=>a.id===message.id);if(item){const dialog=document.createElement('dialog');const pre=document.createElement('pre');pre.textContent=item.text;const close=document.createElement('button');close.textContent='Close';close.onclick=()=>dialog.close();if(item.file&&/^image\/(png|jpeg|webp|gif)$/.test(item.file.mime)){const img=document.createElement('img');img.src=`data:${item.file.mime};base64,${item.file.base64}`;img.alt=item.label;img.style.maxWidth='100%';dialog.append(img);}dialog.append(pre,close);dialog.onclose=()=>dialog.remove();document.body.append(dialog);dialog.showModal();return;}}
     send(message);
@@ -179,19 +181,20 @@ function renderLegacy(value:Snapshot):void {
   }
   const thread=document.getElementById('legacy-messages')!;
   thread.replaceChildren(...(value.messages??[]).map(message=>{const node=document.createElement('p');node.textContent=message.text;node.className=message.role;return node;}));
-  status.textContent=online?'Connected · update available':'Workspace offline';
+  status.dataset.busy=String(!online||!latest);status.textContent=online?'Connected · update available':'Workspace offline';
 }
 
 function connect():void {
   if(stopped)return;
+  connecting=true;
   const base=new URL(location.href).searchParams.get('server')??`${location.protocol==='https:'?'wss:':'ws:'}//${location.host}`;
-  const ws=socket=workspaceExchangeSocket(base+'/ws/browser',pointId);status.textContent='Connecting…';
+  const ws=socket=workspaceExchangeSocket(base+'/ws/browser',pointId);status.dataset.busy='true';status.textContent='Connecting…';
   ws.onopen=()=>ws.send(JSON.stringify({type:'auth',version:1,pointId}));
   ws.onmessage=event=>{
     if(ws!==socket)return;
     try{const value=JSON.parse(event.data);
-      if(value.type==='ready'){authenticated=true;online=value.online;status.textContent=online?'Connected':'Workspace offline';connectionState(true);if(latest&&rendererReady)send({type:'ready'});}
-      else if(value.type==='presence'){online=value.online;status.textContent=online?'Connected':'Workspace offline';connectionState(true);render();}
+      if(value.type==='ready'){connecting=false;authenticated=true;online=value.online;status.dataset.busy=String(!online||!latest);status.textContent=online?'Connected':'Workspace offline';connectionState(true);if(latest&&rendererReady)send({type:'ready'});}
+      else if(value.type==='presence'){online=value.online;status.dataset.busy=String(!online||!latest);status.textContent=online?'Connected':'Workspace offline';connectionState(true);render();}
       else if(value.type==='chat.snapshot'){
         if(value.uiVersion!==1||!value.view){renderLegacy(value);return;}
         clearTimeout(resyncTimer);resyncTimer=undefined;const first=!latest;latest=value;shownEpoch=typeof value.epoch==='string'?value.epoch:undefined;shownRev=typeof value.rev==='number'?value.rev:-1;feedback='';render();if(first&&rendererReady)send({type:'ready'});
@@ -214,11 +217,11 @@ function connect():void {
       }else if(value.type==='command.result')result(value.id,value.ok,value.error);
     }catch{notice('The server returned an invalid response.');}
   };
-  ws.onclose=event=>{if(ws!==socket)return;authenticated=false;online=false;connectionState(false);status.textContent=event.code===1008?'Sign in again to reconnect.':'Disconnected. Reconnecting…';
+  ws.onclose=event=>{if(ws!==socket)return;authenticated=false;online=false;connecting=event.code!==1008&&!stopped;connectionState(false);status.dataset.busy=String(connecting);status.textContent=event.code===1008?'Sign in again to reconnect.':'Disconnected. Reconnecting…';
     for(const id of [...pending.keys()])result(id,false,'Connection lost. Check the chat before retrying.');render();
     if(!stopped&&event.code!==1008)retry=setTimeout(connect,2000);
   };
-  ws.onerror=()=>{status.textContent='Could not connect to the workspace.';};
+  ws.onerror=()=>{status.dataset.busy=String(!stopped);status.textContent='Could not connect to the workspace.';};
 }
 window.addEventListener('pagehide',()=>{stopped=true;clearTimeout(retry);socket?.close();for(const item of pending.values())clearTimeout(item.timer);});
 window.addEventListener('touchstart',event=>{if(event.target instanceof Element&&event.target.closest('input,textarea,select,[contenteditable="true"]'))return;const touch=event.touches[0];if(!touch)return;gesture={x:touch.clientX,y:touch.clientY};},{passive:true});

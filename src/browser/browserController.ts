@@ -957,10 +957,10 @@ function literal(value: unknown): string {
 export class BrowserController implements vscode.Disposable {
 
 	/** Explicit human remote control, independent of assistants' tab assignments. */
-	public async remoteTabs(): Promise<{id:string;title:string;url:string}[]> {
+	public async remoteTabs(): Promise<{id:string;title:string;url:string;kind:'chrome'|'vscode'}[]> {
 		await this._settle(); requireGrant();
 		const tabs=tabSource.all ?? []; this._identify(tabs);
-		return tabs.slice(0,100).map(tab=>({id:this._idOf(tab),title:(stripMarker(tab.title)??'').slice(0,2000),url:tab.url.slice(0,16000)}));
+		return tabs.slice(0,100).map(tab=>({id:this._idOf(tab),title:(stripMarker(tab.title)??'').slice(0,2000),url:tab.url.slice(0,16000),kind:tabSource.isChrome(tab)?'chrome' as const:'vscode' as const}));
 	}
 	private async _remoteTab(id:string): Promise<vscode.BrowserTab> {
 		await this._settle(); requireGrant();

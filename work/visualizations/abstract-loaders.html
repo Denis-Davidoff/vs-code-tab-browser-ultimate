@@ -1,0 +1,43 @@
+<style>
+#abstract-loaders{--a-bg:#171b29;--a-fg:#eeeaff;--a-muted:#a8acc4;--a-one:#ac9aff;--a-two:#71e2e1;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:8px 0;color-scheme:dark}
+#abstract-loaders .panel{background:var(--a-bg);border-radius:18px;padding:18px 12px;text-align:center;min-width:0;color:var(--a-fg);font:14px/1.5 system-ui,sans-serif}
+#abstract-loaders .stage{height:112px;display:grid;place-items:center;position:relative;overflow:hidden;color:var(--a-one)}
+#abstract-loaders h3{font:500 14px/1.5 system-ui,sans-serif;margin:8px 0 4px}#abstract-loaders p{font:400 12px/1.5 system-ui,sans-serif;margin:0;color:var(--a-muted);min-height:36px}
+#abstract-loaders .liquid{width:64px;height:64px;position:relative;filter:blur(.3px)}
+#abstract-loaders .liquid i{position:absolute;inset:8px;border-radius:43% 57% 65% 35% / 45% 38% 62% 55%;background:linear-gradient(135deg,#ac9aff,#71e2e1);animation:al-liquid 3.6s ease-in-out infinite;box-shadow:0 0 22px #ac9aff25}
+#abstract-loaders .liquid i:nth-child(2){inset:2px;background:transparent;border:1px solid #ac9aff60;animation-direction:reverse;animation-duration:5s}
+#abstract-loaders .ribbon{width:84px;height:64px;position:relative;perspective:200px}
+#abstract-loaders .ribbon i{position:absolute;inset:9px 0;border:3px solid var(--a-one);border-radius:50%;transform:rotate(-35deg) rotateY(55deg);animation:al-ribbon 3s ease-in-out infinite;box-shadow:0 0 12px #ac9aff25}
+#abstract-loaders .ribbon i:nth-child(2){border-color:var(--a-two);animation-delay:-1.5s}
+#abstract-loaders .breath{position:relative;width:80px;height:80px;display:grid;place-items:center}
+#abstract-loaders .breath i{position:absolute;width:24px;height:24px;border-radius:50%;border:1.5px solid var(--a-one);animation:al-breath 3s cubic-bezier(.2,.7,.3,1) infinite}
+#abstract-loaders .breath i:nth-child(2){animation-delay:-1s}#abstract-loaders .breath i:nth-child(3){animation-delay:-2s}
+#abstract-loaders .breath:after{content:'';width:10px;height:10px;border-radius:50%;background:var(--a-two);box-shadow:0 0 18px #71e2e180;animation:al-heart 3s ease-in-out infinite}
+#abstract-loaders .wave{height:52px;display:flex;gap:5px;align-items:center}
+#abstract-loaders .wave i{display:block;width:4px;height:14px;border-radius:4px;background:linear-gradient(var(--a-two),var(--a-one));animation:al-wave 1.6s ease-in-out infinite;animation-delay:calc(var(--n)*-.12s)}
+#abstract-loaders .dust{width:76px;height:76px;position:relative;animation:al-spin 12s linear infinite}
+#abstract-loaders .dust i{position:absolute;top:34px;left:34px;width:7px;height:7px;border-radius:50%;background:var(--a-one);--ang:calc(var(--n)*45deg);transform:rotate(var(--ang)) translateX(30px);animation:al-dust 2.8s ease-in-out infinite;animation-delay:calc(var(--n)*-.15s)}
+#abstract-loaders .dust i:nth-child(even){background:var(--a-two)}
+#abstract-loaders .prism{width:56px;height:56px;position:relative;perspective:180px;animation:al-prism-turn 5s ease-in-out infinite}
+#abstract-loaders .prism i{position:absolute;inset:4px;border:1.5px solid var(--a-one);border-radius:5px;transform:rotate(45deg) rotateY(40deg);animation:al-prism 2.8s ease-in-out infinite}
+#abstract-loaders .prism i:nth-child(2){inset:12px;border-color:var(--a-two);animation-delay:-.45s}#abstract-loaders .prism i:nth-child(3){inset:20px;background:var(--a-one);animation-delay:-.9s}
+@keyframes al-liquid{0%,100%{transform:rotate(0) scale(.9);border-radius:43% 57% 65% 35% / 45% 38% 62% 55%}50%{transform:rotate(180deg) scale(1.12);border-radius:65% 35% 38% 62% / 35% 60% 40% 65%}100%{transform:rotate(360deg) scale(.9)}}
+@keyframes al-ribbon{0%,100%{transform:rotate(-35deg) rotateY(55deg)}50%{transform:rotate(145deg) rotateY(-55deg)}}
+@keyframes al-breath{0%{transform:scale(.5);opacity:0}15%{opacity:.8}100%{transform:scale(3.1);opacity:0}}
+@keyframes al-heart{0%,100%{transform:scale(.75)}50%{transform:scale(1.2)}}
+@keyframes al-wave{0%,100%{transform:scaleY(.5);opacity:.45}50%{transform:scaleY(3);opacity:1}}
+@keyframes al-spin{to{transform:rotate(360deg)}}
+@keyframes al-dust{0%,100%{transform:rotate(var(--ang)) translateX(30px) scale(.7);opacity:.55}50%{transform:rotate(calc(var(--ang) + 70deg)) translateX(10px) scale(1.1);opacity:1}}
+@keyframes al-prism{0%,100%{transform:rotate(45deg) rotateY(35deg);opacity:.5}50%{transform:rotate(135deg) rotateY(-35deg);opacity:1}}
+@keyframes al-prism-turn{0%,100%{transform:rotate(-10deg)}50%{transform:rotate(10deg)}}
+@media(max-width:480px){#abstract-loaders{grid-template-columns:1fr}}
+@media(prefers-reduced-motion:reduce){#abstract-loaders *,#abstract-loaders *:after{animation-duration:12s!important}}
+</style>
+<div id="abstract-loaders" aria-label="Шесть абстрактных анимаций загрузки">
+<section class="panel"><div class="stage" role="img" aria-label="Жидкая градиентная форма плавно меняет очертания"><div class="liquid"><i></i><i></i></div></div><h3>1. Жидкое ядро</h3><p>Мягкое, живое, невесомое</p></section>
+<section class="panel"><div class="stage" role="img" aria-label="Две пространственные петли переплетаются"><div class="ribbon"><i></i><i></i></div></div><h3>2. Переплетение</h3><p>Две петли в непрерывном танце</p></section>
+<section class="panel"><div class="stage" role="img" aria-label="Тонкие круги расходятся от пульсирующего центра"><div class="breath"><i></i><i></i><i></i></div></div><h3>3. Дыхание</h3><p>Спокойные волны от светящегося центра</p></section>
+<section class="panel"><div class="stage" role="img" aria-label="Девять световых линий колеблются волной"><div class="wave"><i style="--n:0"></i><i style="--n:1"></i><i style="--n:2"></i><i style="--n:3"></i><i style="--n:4"></i><i style="--n:5"></i><i style="--n:6"></i><i style="--n:7"></i><i style="--n:8"></i></div></div><h3>4. Частота</h3><p>Текучий ритм световых линий</p></section>
+<section class="panel"><div class="stage" role="img" aria-label="Восемь частиц закручиваются к центру и расходятся"><div class="dust"><i style="--n:0"></i><i style="--n:1"></i><i style="--n:2"></i><i style="--n:3"></i><i style="--n:4"></i><i style="--n:5"></i><i style="--n:6"></i><i style="--n:7"></i></div></div><h3>5. Притяжение</h3><p>Частицы собираются и отпускают друг друга</p></section>
+<section class="panel"><div class="stage" role="img" aria-label="Вложенные ромбы вращаются в пространстве"><div class="prism"><i></i><i></i><i></i></div></div><h3>6. Призма</h3><p>Геометрия с ощущением глубины</p></section>
+</div>

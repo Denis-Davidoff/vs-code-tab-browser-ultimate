@@ -122,6 +122,7 @@ const stateSchema = z
             id: tabId,
             title: z.string().max(2000),
             url: z.string().max(16000),
+            kind: z.enum(["chrome", "vscode"]).optional(),
           })
           .strict(),
       )

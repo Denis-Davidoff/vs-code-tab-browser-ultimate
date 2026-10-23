@@ -3,7 +3,7 @@ import { diffState } from './core/sync';
 import { exchangeCipher, encryptedExchangeSocket, type ExchangeCipher } from '../core/exchangeCrypto';
 import * as vscode from 'vscode';
 import type { BrowserController } from '../browser/browserController';
-import type { ChatViewState, ExchangeConnectionState, HostToView } from './chatProtocol';
+import type { AttachmentChip, ChatViewState, ExchangeConnectionState, HostToView } from './chatProtocol';
 import { exchangeConnection, type ExchangeConnectionInput } from './exchangeConnection';
 import type { ChatStateSurface } from './chatSurface';
 import { ChatViewProvider, chatViewId } from './chatView';
@@ -23,9 +23,21 @@ const maxFrameBytes = 12 * 1024 * 1024;
 const agentRefused = 4001;
 interface Config { url: string; pointId: string; autoConnect?: boolean; panelId?: string }
 
+/** The id the website's shim answers locally by attaching its streamed page. */
+export const exchangePageSuggestionId = 'exchange-active-page';
+function exchangePageSuggestion(page: { title: string; url: string } | undefined): AttachmentChip[] {
+	if (!page || !/^https?:/i.test(page.url)) { return []; }
+	return [{ id: exchangePageSuggestionId, kind: 'page', label: (page.title || page.url).slice(0, 120) }];
+}
+
 class ExchangeSurface implements ChatStateSurface {
 	onClose?: () => void;
 	browserTab?: () => Promise<vscode.BrowserTab>;
+	/** The page the website's Browser panel streams, offered as a dashed suggestion. */
+	page?: () => { id: string; title: string; url: string } | undefined;
+	private last?: ChatViewState;
+	/** Rebuild the snapshot from the last state, after the streamed page changed. */
+	pageChanged(): void { if (this.last) { this.update(this.last); } }
 	private socket?: Socket;
 	private stopped = false;
 	private ready = false;
@@ -71,10 +83,10 @@ class ExchangeSurface implements ChatStateSurface {
 	 */
 	private trailing?: ReturnType<typeof setTimeout>;
 	update(state: ChatViewState): void {
-		this.pinned = state.chatId;
+		this.pinned = state.chatId; this.last = state;
 		this.chats = new Set([state.chatId,...state.tabs.map(tab => tab.chatId)]);
 		const full = chromeChatSnapshot(state);
-		const view = {...full.view,surface:'exchange' as const,controls:surfaceControls('exchange'),voice:{...full.view.voice,available:false,reason:'Microphone recording is available in VS Code.'}};
+		const view = {...full.view,surface:'exchange' as const,controls:surfaceControls('exchange'),voice:{...full.view.voice,available:false,reason:'Microphone recording is available in VS Code.'},suggestions:exchangePageSuggestion(this.page?.())};
 		let body = JSON.stringify({...JSON.parse(exchangeSnapshot(state)),uiVersion:1,view});
 		while (Buffer.byteLength(body)>5_000_000 && view.entries.length>1) { view.entries = view.entries.slice(Math.max(1,Math.floor(view.entries.length/4))); body = JSON.stringify({...JSON.parse(exchangeSnapshot(state)),uiVersion:1,view}); }
 		this.body = body;
@@ -311,7 +323,7 @@ export function registerExchangeChat(context: vscode.ExtensionContext, browser?:
 				const chat = ChatViewProvider.observeChromeSource(source, surface);
 				let media: {dispose():void} | undefined;
 				surface.onClose=()=>{media?.dispose();if(current===generation&&!disposed){connection=undefined;scheduleRestore();}};
-				if(browser){const {ExchangeBrowser}=await import('../browser/exchangeBrowser');if(!surface.closed&&current===generation){const remote=new ExchangeBrowser(url,pointId,key,browser,cipher);media=remote;surface.browserTab=()=>remote.selectedTab();}}
+				if(browser){const {ExchangeBrowser}=await import('../browser/exchangeBrowser');if(!surface.closed&&current===generation){const remote=new ExchangeBrowser(url,pointId,key,browser,cipher);media=remote;surface.browserTab=()=>remote.selectedTab();surface.page=()=>remote.selectedPage();remote.onPage=()=>surface.pageChanged();}}
 				if(current!==generation){media?.dispose();chat.dispose();return;}
 				connection={dispose(){media?.dispose();chat.dispose();}}; status.show();
 			}

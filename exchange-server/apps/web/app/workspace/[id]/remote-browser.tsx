@@ -15,7 +15,7 @@ import {
   previewZoomScroll,
 } from "../../components/preview-zoom";
 
-type Tab = { id: string; title: string; url: string };
+type Tab = { id: string; title: string; url: string; kind?: "chrome" | "vscode" };
 type Frame = { tabId: string; data: string; width: number; height: number };
 const keys = new Set([
   "Backspace",
@@ -557,11 +557,11 @@ export function RemoteBrowser({
       <div className="remote-browser-controls">
         <span
           className={`remote-browser-icon${online ? " online" : ""}`}
-          title={online ? "Browser connected" : "Browser offline"}
+          title={online ? pending ? "Waiting for browser…" : "Browser connected" : "Waiting for browser connection…"}
           role="img"
-          aria-label={online ? "Browser connected" : "Browser offline"}
+          aria-label={online ? pending ? "Waiting for browser…" : "Browser connected" : "Waiting for browser connection…"}
         >
-          <Icon name="globe" size={15} />
+          {!online || pending ? <span className="liquid-loader" aria-hidden="true" /> : <Icon name="globe" size={15} />}
         </span>
         <select
           aria-label="Remote browser tab"
@@ -576,10 +576,11 @@ export function RemoteBrowser({
           }}
         >
           <option value="" disabled>
-            Select a VS Code tab
+            Select a tab
           </option>
           {tabs.map((tab) => (
             <option key={tab.id} value={tab.id}>
+              {tab.kind === "chrome" ? "Chrome · " : "VS Code · "}
               {tab.title || tab.url}
             </option>
           ))}
@@ -749,7 +750,7 @@ export function RemoteBrowser({
           ) : (
             <div className="preview-placeholder">
               <div className="preview-symbol">
-                <Icon name="globe" size={26} />
+                {selected ? <span className="liquid-loader" style={{ "--liquid-size": "36px" } as React.CSSProperties} aria-hidden="true" /> : <Icon name="globe" size={26} />}
               </div>
               <h3>
                 {selected

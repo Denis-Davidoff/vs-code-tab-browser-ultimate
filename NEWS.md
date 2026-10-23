@@ -18,7 +18,7 @@ src/chat/news.ts — see "The AI Browser chat" in CLAUDE.md.
 
 Browse, debug and test your pages in VS Code's own browser — and let Claude Code, Codex or Gemini CLI see them, click through them and take screenshots, right inside the editor.
 
-- $(extensions) **Chrome extension** — a full 1:1 mirror of your chat, right in Chrome alongside any website. [Download ZIP](https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/raw/refs/heads/main/chrome-extension/ai-browser-chrome-0.5.0.zip) while Chrome Web Store approval is pending.
+- $(extensions) **Chrome extension** — a full 1:1 mirror of your chat, right in Chrome alongside any website. [Download ZIP](https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/raw/refs/heads/main/chrome-extension/ai-browser-chrome-0.6.0.zip) while Chrome Web Store approval is pending.
 - $(coffee) **Keep awake** — use the cup at the top to prevent sleep for a set time or until all agents and sub-agents finish.
 - $(eye) **View Mode** — choose Minimal, Compact or Standard in the approval menu to control how much work, tool use and thinking is shown.
 - $(files) **Chats across tabs and windows** — open chats with the top +; right-click tabs to move them between the sidebar, tabs and windows with drafts and attachments intact. View chats side by side across screens.
@@ -26,6 +26,14 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 - $(device-camera-video) **Record video** — record browser tabs from their toolbar, up to 4K, into the chat or clipboard.
 - $(location) **Page markers** — pin notes to page elements and send them to the agent as one prompt.
 - $(settings-gear) **Chat Settings** — use the gear at the top to edit prompts for commit messages, branch names and chat titles, or clean up temporary files.
+
+## 0.9.0 — 2026-10-23
+- **Exchange server**: share a chat and a browser tab with a self-hosted website, and send messages, stop turns, pick elements, add markers and click through the page from any device. The connection is encrypted end to end and opened from VS Code, so nothing has to listen on your machine.
+- **One chat on every surface**: the VS Code chat, the Chrome side panel and the website now follow the same rules. A control that a surface cannot use is greyed out with the reason, and updates arrive as small patches instead of whole states.
+- **Git state on the website**: commits, branch switches and staged changes made in VS Code appear on the website straight away.
+- **Attach the current page**: the Chrome side panel and the website offer the page you are looking at as a dashed suggestion. One click attaches it, together with a note telling the agent which `browser_*` tools reach it.
+- **Google Chrome from the website**: the website's globe menu can open Chrome on the VS Code machine. Its Browser panel now labels each tab as Chrome or VS Code.
+- **Fixes**: a chat tab no longer stays marked as shared in Chrome after Chrome is closed. Agents can no longer send copy, cut or paste shortcuts, which would have exposed your clipboard.
 
 ## 0.8.10 — 2026-10-23
 - **More browser actions**: native hover, drag, keyboard shortcuts and text insertion join the MCP tools. Clicks support double and right clicks and refuse covered, disabled or ambiguous targets.

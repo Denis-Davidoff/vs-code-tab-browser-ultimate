@@ -1,0 +1,43 @@
+/* AI Browser liquid core: shared by the extension, Chrome and Exchange UI. */
+.liquid-loader {
+	--liquid-size: 16px;
+	position: relative;
+	display: inline-block;
+	flex: none;
+	width: var(--liquid-size);
+	height: var(--liquid-size);
+	vertical-align: middle;
+	line-height: 1;
+}
+.liquid-loader::before,
+.liquid-loader::after {
+	content: '';
+	position: absolute;
+	box-sizing: border-box;
+	pointer-events: none;
+	border-radius: 43% 57% 65% 35% / 45% 38% 62% 55%;
+	animation: ai-liquid-core 3.6s ease-in-out infinite;
+}
+.liquid-loader::before {
+	inset: 15%;
+	background: linear-gradient(135deg, #ac9aff, #71e2e1);
+}
+.liquid-loader::after {
+	inset: 2%;
+	border: 1px solid #ac9aff;
+	opacity: .65;
+	animation-duration: 5s;
+	animation-direction: reverse;
+}
+@keyframes ai-liquid-core {
+	0% { transform: rotate(0deg) scale(.9); }
+	50% {
+		transform: rotate(180deg) scale(1.08);
+		border-radius: 65% 35% 38% 62% / 35% 60% 40% 65%;
+	}
+	100% { transform: rotate(360deg) scale(.9); }
+}
+@media (prefers-reduced-motion: reduce) {
+	.liquid-loader::before,
+	.liquid-loader::after { animation: none; }
+}

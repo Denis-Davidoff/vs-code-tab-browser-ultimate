@@ -1,4 +1,5 @@
 "use client";
+import { Form, Input } from "./form";
 import { useEffect, useState, type ReactNode } from "react";
 import {
   exchangeCipher,
@@ -70,13 +71,15 @@ export function WorkspaceGate({
             ? "Enter the workspace password set in VS Code. It stays in this browser tab."
             : ""}
         </p>
-        {error && (
+        {error && !loaded && (
           <p className="error" role="alert">
             {error}
           </p>
         )}
         {loaded && descriptor && (
-          <form
+          <Form
+            error={error}
+            errorField="password"
             action={async (form) => {
               setBusy(true);
               setError("");
@@ -97,7 +100,7 @@ export function WorkspaceGate({
           >
             <label>
               Workspace password
-              <input
+              <Input
                 type="password"
                 name="password"
                 autoComplete="off"
@@ -108,7 +111,7 @@ export function WorkspaceGate({
             <button className="primary" disabled={busy}>
               {busy ? "Unlocking…" : "Unlock workspace"}
             </button>
-          </form>
+          </Form>
         )}
       </section>
     </main>

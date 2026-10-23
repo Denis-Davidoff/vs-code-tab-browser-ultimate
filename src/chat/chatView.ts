@@ -487,8 +487,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			return;
 		}
 		if(message.type==='openBrowser'){
-			if(message.where==='chrome')throw new Error('Opening Chrome is available only in the local VS Code chat.');
-			await vscode.commands.executeCommand('workbench.action.browser.open');
+			// Chrome on the editor's machine: its tabs then appear in the website's Browser panel.
+			if(message.where==='chrome'){const page=await vscode.commands.executeCommand<vscode.BrowserTab|undefined>('aiBrowser.openInChrome');if(!page)throw new Error('Google Chrome could not be opened on the VS Code machine.');}
+			else await vscode.commands.executeCommand('workbench.action.browser.open');
 			reply?.({type:'exchangeBrowser'},chatId);return;
 		}
 		if(message.type==='openLink'){

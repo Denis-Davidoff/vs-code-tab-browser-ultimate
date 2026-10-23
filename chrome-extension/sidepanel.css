@@ -72,3 +72,7 @@ header.chrome-shell { display: flex; align-items: center; gap: 10px; padding: 6p
 #mode-details p { flex: 1; }
 #mode-close { flex: none; cursor: pointer; color: inherit; background: none; border: 0; padding: 0 2px; font-size: 13px; line-height: 1.45; opacity: 0.8; }
 #mode-close:hover { opacity: 1; }
+
+/* The connection core stays visible while starting, pairing or reconnecting. */
+.chrome-shell > .connection-spinner { display: none; }
+.chrome-shell:has(#status[data-busy="true"]) > .connection-spinner { display: inline-block; }

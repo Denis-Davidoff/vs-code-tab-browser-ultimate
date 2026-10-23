@@ -494,12 +494,7 @@ label {
   gap: 12px;
   color: var(--fg-3);
 }
-.loading-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--accent);
-}
+
 .dashboard-intro {
   display: flex;
   align-items: flex-end;
@@ -1828,4 +1823,42 @@ label {
   vertical-align: middle;
   margin-left: 8px;
   color: #8ab6d7;
+}
+
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.form-field input {
+  width: 100%;
+}
+.inline > .form-field {
+  flex: 1;
+}
+.inline {
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+.inline > .error {
+  flex-basis: 100%;
+}
+input[aria-invalid="true"] {
+  border-color: var(--vscode-inputValidation-errorBorder, #e56565);
+  background: var(--vscode-inputValidation-errorBackground, #351e24);
+}
+input[aria-invalid="true"]:focus {
+  outline: 2px solid var(--vscode-inputValidation-errorBorder, #e56565);
+  outline-offset: 2px;
+}
+.field-error {
+  color: var(--vscode-errorForeground, #f48771);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+@media (max-width: 760px) {
+  .inline > .form-field { width: 100%; }
 }

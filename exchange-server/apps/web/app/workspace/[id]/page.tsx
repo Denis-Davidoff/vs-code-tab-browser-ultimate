@@ -109,7 +109,7 @@ export default function Workspace({
           <span className="header-caption">
             <span
               className={
-                connected && online ? "status-dot online" : "status-dot"
+                !connected || !online ? "liquid-loader" : online ? "status-dot online" : "status-dot"
               }
             />
             {connected

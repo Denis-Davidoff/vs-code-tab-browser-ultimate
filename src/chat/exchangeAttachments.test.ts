@@ -64,11 +64,11 @@ test('a website session cannot change approvals or reach chats, files and termin
  assert.equal(h.calls.length,0);
 });
 
-test('opening a VS Code browser tab needs no selected remote tab; Chrome remains local only',async()=>{
+test('opening a VS Code browser tab or Chrome needs no selected remote tab',async()=>{
  const h=harness();await h.command({type:'openBrowser',where:'vscode'},null);
  assert.equal(h.calls[0],'workbench.action.browser.open');assert.equal(h.events[0].message.type,'exchangeBrowser');
- await assert.rejects(()=>h.command({type:'openBrowser',where:'chrome'},null),/only in the local/);
- assert.equal(h.calls.length,1);
+ await h.command({type:'openBrowser',where:'chrome'},null);
+ assert.equal(h.calls[1],'aiBrowser.openInChrome');assert.equal(h.events[1].message.type,'exchangeBrowser');
 });
 test('remote folder paths are validated before changing the conversation',async()=>{
  const h=harness();
