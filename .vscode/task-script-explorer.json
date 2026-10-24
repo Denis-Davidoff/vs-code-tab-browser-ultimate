@@ -1,6 +1,5 @@
 {
   "tasks": {
-    "Compile & Install": "npm run package && \"/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code\" \\   --install-extension ./tab-browser-ultimate.vsix --force",
-    "Deploy Server": "cd /Users/m5/dev/vscode-ai-browser && ./deploy-exchange.sh"
+    "Compile & Install": "npm run package && \"/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code\" \\   --install-extension ./tab-browser-ultimate.vsix --force"
   }
 }

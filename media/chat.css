@@ -2715,6 +2715,8 @@ button {
 	min-width: 130px;
 	max-width: 260px;
 	color: var(--fg);
+	/* A dark grey fill besides the underline; a mix of the text colour, so every theme gets one. */
+	background: color-mix(in srgb, var(--vscode-foreground) 13%, transparent);
 	border-bottom-color: var(--accent);
 }
 
