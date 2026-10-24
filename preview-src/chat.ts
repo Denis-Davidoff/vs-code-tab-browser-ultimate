@@ -182,7 +182,7 @@ thread.append(threadInner);
 const blocked = el('div', { class: 'blocked' });
 const chromeConnectionBanner = el('div', { class: 'chrome-connection-banner' });
 chromeConnectionBanner.hidden = true;
-chromeConnectionBanner.setAttribute('role', 'alert');
+chromeConnectionBanner.setAttribute('role', 'status');
 let chromeConnectionShown: string | undefined;
 function renderChromeConnection(request: ChatViewState['chromeConnectionRequest']): void {
 	chromeConnectionBanner.hidden = !request;
@@ -403,6 +403,7 @@ const tabStrip = el('nav', { class: 'tab-strip' });
  */
 const usageAlertText = el('span', { class: 'usage-alert-text' });
 const usageAlertClose = button([icon('close')], { class: 'usage-alert-close' });
+usageAlertClose.setAttribute('aria-label', 'Close plan-limit notice');
 const usageAlertBar = el('div', { class: 'usage-alert' },
 	el('span', { class: 'u-mark', text: 'U' }), usageAlertText, usageAlertClose);
 usageAlertBar.hidden = true;
@@ -8755,7 +8756,7 @@ function createServerSettings(): HTMLElement {
 	content.append(el('h3', { text: 'AI Browser Server' }),
 		el('p', { text: 'Connect this chat to your AI Browser account to read and control it from the website.' }),
 		connectionStatus, form, error, el('div', { class: 'server-connection-actions' }, connect, disconnect),
-		el('label',{},'Keep awake after someone connects',awake),
+		el('label',{class:'server-keep-awake'},'Keep awake after someone connects',awake),
 		el('p',{class:'feature-settings-note',text:'Applies on each new website connection. The timer starts again when another viewer joins and continues after disconnect. It prevents automatic system sleep; the display can still turn off. Saved immediately.'}),
 		el('p', { class: 'feature-settings-note', text: 'Create a connection once, then paste its server address, ID, and key here. The key is stored securely by VS Code. This workspace reconnects automatically after a reload when its chat panel opens. Disconnect pauses automatic reconnection and keeps the saved credentials.' }));
 	refresh();

@@ -304,8 +304,8 @@
 				"title": "%command.addElementToClaudeCode.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-red-claude-light.svg",
-					"dark": "media/icons/crosshair-red-claude-dark.svg"
+					"light": "media/icons/crosshair-red-light.svg",
+					"dark": "media/icons/crosshair-red-dark.svg"
 				}
 			},
 			{
@@ -313,8 +313,8 @@
 				"title": "%command.addCssPathToClaudeCode.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-blue-claude-light.svg",
-					"dark": "media/icons/crosshair-blue-claude-dark.svg"
+					"light": "media/icons/crosshair-blue-light.svg",
+					"dark": "media/icons/crosshair-blue-dark.svg"
 				}
 			},
 			{
@@ -322,8 +322,8 @@
 				"title": "%command.addCssLocationToClaudeCode.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-grape-claude-light.svg",
-					"dark": "media/icons/crosshair-grape-claude-dark.svg"
+					"light": "media/icons/crosshair-grape-light.svg",
+					"dark": "media/icons/crosshair-grape-dark.svg"
 				}
 			},
 			{
@@ -331,8 +331,8 @@
 				"title": "%command.addXPathToClaudeCode.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-green-claude-light.svg",
-					"dark": "media/icons/crosshair-green-claude-dark.svg"
+					"light": "media/icons/crosshair-green-light.svg",
+					"dark": "media/icons/crosshair-green-dark.svg"
 				}
 			},
 			{
@@ -340,8 +340,8 @@
 				"title": "%command.addElementToCodex.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-red-codex-light.svg",
-					"dark": "media/icons/crosshair-red-codex-dark.svg"
+					"light": "media/icons/crosshair-red-light.svg",
+					"dark": "media/icons/crosshair-red-dark.svg"
 				}
 			},
 			{
@@ -349,8 +349,8 @@
 				"title": "%command.addCssPathToCodex.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-blue-codex-light.svg",
-					"dark": "media/icons/crosshair-blue-codex-dark.svg"
+					"light": "media/icons/crosshair-blue-light.svg",
+					"dark": "media/icons/crosshair-blue-dark.svg"
 				}
 			},
 			{
@@ -358,8 +358,8 @@
 				"title": "%command.addCssLocationToCodex.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-grape-codex-light.svg",
-					"dark": "media/icons/crosshair-grape-codex-dark.svg"
+					"light": "media/icons/crosshair-grape-light.svg",
+					"dark": "media/icons/crosshair-grape-dark.svg"
 				}
 			},
 			{
@@ -367,8 +367,8 @@
 				"title": "%command.addXPathToCodex.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-green-codex-light.svg",
-					"dark": "media/icons/crosshair-green-codex-dark.svg"
+					"light": "media/icons/crosshair-green-light.svg",
+					"dark": "media/icons/crosshair-green-dark.svg"
 				}
 			},
 			{
@@ -478,8 +478,8 @@
 				"title": "%command.addElementToClaudeCode.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-red-claude-light.svg",
-					"dark": "media/icons/crosshair-red-claude-dark.svg"
+					"light": "media/icons/crosshair-red-light.svg",
+					"dark": "media/icons/crosshair-red-dark.svg"
 				}
 			},
 			{
@@ -487,8 +487,8 @@
 				"title": "%command.addCssPathToClaudeCode.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-blue-claude-light.svg",
-					"dark": "media/icons/crosshair-blue-claude-dark.svg"
+					"light": "media/icons/crosshair-blue-light.svg",
+					"dark": "media/icons/crosshair-blue-dark.svg"
 				}
 			},
 			{
@@ -496,8 +496,8 @@
 				"title": "%command.addCssLocationToClaudeCode.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-grape-claude-light.svg",
-					"dark": "media/icons/crosshair-grape-claude-dark.svg"
+					"light": "media/icons/crosshair-grape-light.svg",
+					"dark": "media/icons/crosshair-grape-dark.svg"
 				}
 			},
 			{
@@ -505,8 +505,8 @@
 				"title": "%command.addXPathToClaudeCode.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-green-claude-light.svg",
-					"dark": "media/icons/crosshair-green-claude-dark.svg"
+					"light": "media/icons/crosshair-green-light.svg",
+					"dark": "media/icons/crosshair-green-dark.svg"
 				}
 			},
 			{
@@ -514,8 +514,8 @@
 				"title": "%command.addElementToCodex.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-red-codex-light.svg",
-					"dark": "media/icons/crosshair-red-codex-dark.svg"
+					"light": "media/icons/crosshair-red-light.svg",
+					"dark": "media/icons/crosshair-red-dark.svg"
 				}
 			},
 			{
@@ -523,8 +523,8 @@
 				"title": "%command.addCssPathToCodex.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-blue-codex-light.svg",
-					"dark": "media/icons/crosshair-blue-codex-dark.svg"
+					"light": "media/icons/crosshair-blue-light.svg",
+					"dark": "media/icons/crosshair-blue-dark.svg"
 				}
 			},
 			{
@@ -532,8 +532,8 @@
 				"title": "%command.addCssLocationToCodex.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-grape-codex-light.svg",
-					"dark": "media/icons/crosshair-grape-codex-dark.svg"
+					"light": "media/icons/crosshair-grape-light.svg",
+					"dark": "media/icons/crosshair-grape-dark.svg"
 				}
 			},
 			{
@@ -541,8 +541,8 @@
 				"title": "%command.addXPathToCodex.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-green-codex-light.svg",
-					"dark": "media/icons/crosshair-green-codex-dark.svg"
+					"light": "media/icons/crosshair-green-light.svg",
+					"dark": "media/icons/crosshair-green-dark.svg"
 				}
 			},
 			{
@@ -550,8 +550,8 @@
 				"title": "%command.chat.addElement.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-red-chat-light.svg",
-					"dark": "media/icons/crosshair-red-chat-dark.svg"
+					"light": "media/icons/crosshair-red-light.svg",
+					"dark": "media/icons/crosshair-red-dark.svg"
 				}
 			},
 			{
@@ -559,8 +559,8 @@
 				"title": "%command.chat.addCssPath.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-blue-chat-light.svg",
-					"dark": "media/icons/crosshair-blue-chat-dark.svg"
+					"light": "media/icons/crosshair-blue-light.svg",
+					"dark": "media/icons/crosshair-blue-dark.svg"
 				}
 			},
 			{
@@ -568,8 +568,8 @@
 				"title": "%command.chat.addCssLocation.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-grape-chat-light.svg",
-					"dark": "media/icons/crosshair-grape-chat-dark.svg"
+					"light": "media/icons/crosshair-grape-light.svg",
+					"dark": "media/icons/crosshair-grape-dark.svg"
 				}
 			},
 			{
@@ -577,8 +577,8 @@
 				"title": "%command.chat.addXPath.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-green-chat-light.svg",
-					"dark": "media/icons/crosshair-green-chat-dark.svg"
+					"light": "media/icons/crosshair-green-light.svg",
+					"dark": "media/icons/crosshair-green-dark.svg"
 				}
 			},
 			{
@@ -641,8 +641,8 @@
 				"title": "%command.chat.addElement.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-red-chat-light.svg",
-					"dark": "media/icons/crosshair-red-chat-dark.svg"
+					"light": "media/icons/crosshair-red-light.svg",
+					"dark": "media/icons/crosshair-red-dark.svg"
 				}
 			},
 			{
@@ -650,8 +650,8 @@
 				"title": "%command.chat.addCssPath.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-blue-chat-light.svg",
-					"dark": "media/icons/crosshair-blue-chat-dark.svg"
+					"light": "media/icons/crosshair-blue-light.svg",
+					"dark": "media/icons/crosshair-blue-dark.svg"
 				}
 			},
 			{
@@ -659,8 +659,8 @@
 				"title": "%command.chat.addCssLocation.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-grape-chat-light.svg",
-					"dark": "media/icons/crosshair-grape-chat-dark.svg"
+					"light": "media/icons/crosshair-grape-light.svg",
+					"dark": "media/icons/crosshair-grape-dark.svg"
 				}
 			},
 			{
@@ -668,8 +668,8 @@
 				"title": "%command.chat.addXPath.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-green-chat-light.svg",
-					"dark": "media/icons/crosshair-green-chat-dark.svg"
+					"light": "media/icons/crosshair-green-light.svg",
+					"dark": "media/icons/crosshair-green-dark.svg"
 				}
 			},
 			{

@@ -84,7 +84,7 @@ export function AccountMenu({
         </div>
         <p className="account-email">{user.email}</p>
 
-        {notice && <p role="status">{notice}</p>}
+        {notice && <p className="notice is-info" role="status">{notice}</p>}
         <Form
           error={errorField === "name" ? error : ""}
           errorField="name"

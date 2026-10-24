@@ -20,6 +20,9 @@ function element<T extends HTMLElement>(id: string): T {
 const pairing = element<HTMLFormElement>('pairing');
 const code = element<HTMLTextAreaElement>('connection');
 const status = element('status');
+const connectionError = element('connection-error');
+function clearConnectionError(): void { connectionError.textContent = ''; code.removeAttribute('aria-invalid'); code.removeAttribute('aria-describedby'); }
+code.addEventListener('input', () => { if (code.hasAttribute('aria-invalid')) { clearConnectionError(); } });
 const app = element('app');
 const disconnect = element<HTMLButtonElement>('disconnect');
 const conversation = element<HTMLSelectElement>('conversation');
@@ -512,9 +515,12 @@ window.aiBrowserChatHost = {
           render(); void persistOutbox().catch(() => showFeedback('Could not save the attachment draft.'));
         } else {
           const dialog = document.createElement('dialog'); dialog.className = 'chrome-element-preview';
-          const close = document.createElement('button'); close.textContent = 'Close'; close.addEventListener('click', () => dialog.close());
+          const titleId = `preview-title-${message.id}`; dialog.setAttribute('aria-labelledby', titleId);
+          const title = document.createElement('h2'); title.id = titleId; title.textContent = attachment.label;
+          const close = document.createElement('button'); close.type = 'button'; close.className = 'preview-close'; close.textContent = 'Close'; close.addEventListener('click', () => dialog.close());
+          const head = document.createElement('div'); head.className = 'preview-head'; head.append(title, close);
           const text = document.createElement('pre'); text.textContent = attachment.text;
-          dialog.append(close, text);
+          dialog.append(head, text);
           if (attachment.file?.mime.startsWith('image/')) {
             const image = document.createElement('img'); image.src = `data:${attachment.file.mime};base64,${attachment.file.base64}`;
             image.alt = attachment.label; image.style.maxWidth = '100%'; dialog.append(image);
@@ -676,7 +682,7 @@ function returnOutboxToDrafts(): boolean {
 }
 
 function reset(): void {
-  status.dataset.busy = 'false';
+  status.dataset.busy = 'false'; delete status.dataset.state;
   controlChromeRecording('stop');
   emit({ type: 'recordingStatus', seconds: 0 });
   cancelPick(); shownRevision = -1; shownEpoch = undefined;
@@ -717,7 +723,7 @@ async function requestQuickConnection(url: string, current: number): Promise<voi
     secret: Array.from(crypto.getRandomValues(new Uint8Array(32)), value => value.toString(16).padStart(2, '0')).join(''),
     controller: new AbortController() };
   quickAttempt = attempt; quickConnect.disabled = true; cancelConnect.hidden = false; editorSources.replaceChildren();
-  status.dataset.busy = 'true'; status.textContent = 'Click Allow in the editor chat.';
+  status.dataset.busy = 'true'; delete status.dataset.state; status.textContent = 'Click Allow in the editor chat.';
   const deadline = Date.now() + 90_000;
   const expired = setTimeout(() => attempt.controller.abort(), 90_000);
   try {
@@ -750,7 +756,7 @@ async function requestQuickConnection(url: string, current: number): Promise<voi
       await new Promise<void>(resolve => setTimeout(resolve, 500));
     }
   } catch (error) {
-    if (current === generation) { status.dataset.busy = 'false'; status.textContent = attempt.controller.signal.aborted ? 'The request timed out. Try again.' : error instanceof Error ? error.message : 'Could not connect.'; }
+    if (current === generation) { status.dataset.busy = 'false'; status.textContent = attempt.controller.signal.aborted ? 'The request timed out. Try again.' : error instanceof Error ? error.message : 'Could not connect.'; status.dataset.state = 'error'; }
   } finally {
     clearTimeout(expired);
     if (quickAttempt === attempt) { cancelQuickAttempt(); }
@@ -761,7 +767,7 @@ quickConnect.addEventListener('click', () => {
   cancelQuickAttempt();
   const current = ++generation;
   quickConnect.disabled = true; cancelConnect.hidden = false; editorSources.replaceChildren();
-  status.dataset.busy = 'true'; status.textContent = 'Looking for an open editor…';
+  status.dataset.busy = 'true'; delete status.dataset.state; status.textContent = 'Looking for an open editor…';
   void Promise.all(chromePairingPorts.map(async port => {
     const url = `http://127.0.0.1:${port}`;
     try {
@@ -780,7 +786,7 @@ quickConnect.addEventListener('click', () => {
       else { void requestQuickConnection(hosts[0].url, current); }
       return;
     }
-    status.dataset.busy = 'false'; status.textContent = 'Choose an editor window:';
+    status.dataset.busy = 'false'; delete status.dataset.state; status.textContent = 'Choose an editor window:';
     for (const host of hosts) {
       const button = document.createElement('button'); button.type = 'button'; button.textContent = host.problem ? `${host.label} — ${host.problem}` : host.label; button.disabled = !!host.problem;
       button.addEventListener('click', () => void requestQuickConnection(host.url, current)); editorSources.append(button);
@@ -788,7 +794,7 @@ quickConnect.addEventListener('click', () => {
   });
 });
 cancelConnect.addEventListener('click', () => {
-  generation++; cancelQuickAttempt(); editorSources.replaceChildren(); status.dataset.busy = 'false'; status.textContent = 'Connection cancelled.';
+  generation++; cancelQuickAttempt(); editorSources.replaceChildren(); status.dataset.busy = 'false'; delete status.dataset.state; status.textContent = 'Connection cancelled.';
 });
 
 window.addEventListener('pagehide', cancelQuickAttempt);
@@ -920,7 +926,8 @@ function connect(connection: ChromeChatConnection, restoredCursor?: number): voi
 }
 pairing.addEventListener('submit', event => {
   event.preventDefault(); if (pairingPending) { return; } pairingPending = true;
-  status.dataset.busy = 'true'; status.textContent = 'Connecting…';
+  clearConnectionError();
+  status.dataset.busy = 'true'; delete status.dataset.state; status.textContent = 'Connecting…';
   void (async () => {
     try {
       const connection = readChromeChatConnection(JSON.parse(code.value.trim()));
@@ -931,7 +938,12 @@ pairing.addEventListener('submit', event => {
       await chrome.storage.session.set({ connection, outbox });
       if (current !== generation) { return; }
       code.value = ''; connect(connection);
-    } catch (error) { status.dataset.busy = 'false'; status.textContent = error instanceof Error ? error.message : 'Paste a valid connection code.'; status.dataset.state = 'error'; }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Paste a valid connection code.';
+      status.dataset.busy = 'false'; status.textContent = message; status.dataset.state = 'error';
+      // The same message beside the field, wired for assistive technology, and focus on the field.
+      connectionError.textContent = message; code.setAttribute('aria-invalid', 'true'); code.setAttribute('aria-describedby', 'connection-error'); code.focus();
+    }
     finally { pairingPending = false; }
   })();
 });

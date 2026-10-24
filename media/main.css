@@ -9,6 +9,8 @@
 	--input-padding-horizontal: 4px;
 	--input-margin-vertical: 4px;
 	--input-margin-horizontal: 0;
+	--ctl-h-sm: 24px;
+	--ctl-radius: 6px;
 }
 
 html, body {
@@ -44,7 +46,6 @@ button {
 	border: none;
 	padding: 3px;
 	text-align: center;
-	outline: none;
 	color: var(--vscode-icon-foreground);
 	background: none;
 	border-radius: 5px;
@@ -69,13 +70,38 @@ button:disabled {
 	flex: 1;
 }
 
+.url-input {
+	box-sizing: border-box;
+	height: var(--ctl-h-sm);
+	padding: 0 6px;
+	border: 1px solid var(--vscode-input-border, transparent);
+	border-radius: var(--ctl-radius);
+}
+
+.url-input:focus-visible {
+	border-color: var(--vscode-focusBorder);
+}
+
 .controls {
 	display: flex;
+	align-items: center;
+	gap: 4px;
+	margin-right: 4px;
 }
 
 .controls button {
 	display: flex;
-	margin-right: 0.3em;
+	align-items: center;
+	justify-content: center;
+	box-sizing: border-box;
+	width: var(--ctl-h-sm);
+	height: var(--ctl-h-sm);
+	padding: 0;
+	border-radius: var(--ctl-radius);
+}
+
+.controls button:active:not(:disabled) {
+	background: var(--vscode-toolbar-activeBackground, var(--vscode-toolbar-hoverBackground));
 }
 
 .content {
@@ -98,10 +124,10 @@ iframe {
 	bottom: 1em;
 	background: var(--vscode-editorWidget-background);
 	color: var(--vscode-editorWidget-foreground);
-	padding: 0.2em 0.2em;
+	padding: 2px 6px;
 	border-radius: 4px;
 
-	font-size: 8px;
+	font-size: 11px;
 	font-family: monospace;
 	user-select: none;
 	pointer-events: none;
@@ -111,8 +137,12 @@ iframe {
 	display: block;
 }
 
-/* Keep focus behavior without a visual outline on webview controls. */
-:focus,
-:focus-visible {
+/* Pointer focus draws nothing; keyboard focus gets the shared 1px ring. */
+:focus:not(:focus-visible) {
 	outline: none;
+}
+
+:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
 }

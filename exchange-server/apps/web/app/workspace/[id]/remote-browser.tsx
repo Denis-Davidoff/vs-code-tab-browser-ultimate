@@ -12,6 +12,8 @@ import { createPreviewScrollQueue } from "../../components/preview-scroll";
 import { Icon } from "../../components/ui";
 import {
   clampPreviewZoom,
+  maxPreviewZoom,
+  minPreviewZoom,
   previewPoint,
   previewZoomScroll,
 } from "../../components/preview-zoom";
@@ -181,7 +183,7 @@ export function RemoteBrowser({
       return;
     }
     const start = touch.current;
-    if (start && zoomRef.current === 1) {
+    if (start && zoomRef.current <= 1) {
       const dx = start.x - event.clientX,
         dy = start.y - event.clientY;
       // Keep the existing horizontal swipe to return to chat on a phone.
@@ -767,7 +769,7 @@ export function RemoteBrowser({
             type="button"
             aria-label="Zoom out"
             title="Zoom out"
-            disabled={!frame || zoom <= 1}
+            disabled={!frame || zoom <= minPreviewZoom}
             onClick={() => changeZoom(zoomRef.current / 1.2)}
           >
             −
@@ -776,7 +778,7 @@ export function RemoteBrowser({
             type="button"
             className="remote-browser-zoom-value"
             aria-label="Reset preview zoom"
-            title="Full width · pinch or Ctrl/⌘ + wheel to zoom"
+            title="Reset to full width · pinch or Ctrl/⌘ + wheel to zoom in or out"
             disabled={!frame}
             onClick={() => changeZoom(1)}
           >
@@ -786,7 +788,7 @@ export function RemoteBrowser({
             type="button"
             aria-label="Zoom in"
             title="Zoom in"
-            disabled={!frame || zoom >= 4}
+            disabled={!frame || zoom >= maxPreviewZoom}
             onClick={() => changeZoom(zoomRef.current * 1.2)}
           >
             +
@@ -806,7 +808,7 @@ export function RemoteBrowser({
       </form>
       <div className="remote-browser-content">
         {error && (
-          <div className="remote-browser-error" role="status">
+          <div className="remote-browser-error" role="alert">
             {error}
             <button
               type="button"

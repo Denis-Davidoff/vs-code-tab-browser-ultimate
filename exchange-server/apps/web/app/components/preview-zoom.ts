@@ -1,5 +1,9 @@
+/** 100% is the preview's full width; below it the page is shown smaller, centred. */
+export const minPreviewZoom = 0.25;
+export const maxPreviewZoom = 4;
+
 export function clampPreviewZoom(value: number): number {
-  return Number.isFinite(value) ? Math.max(1, Math.min(4, value)) : 1;
+  return Number.isFinite(value) ? Math.max(minPreviewZoom, Math.min(maxPreviewZoom, value)) : 1;
 }
 
 /** Preserve the image position under the finger/cursor while scaling. */

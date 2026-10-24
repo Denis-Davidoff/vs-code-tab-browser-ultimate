@@ -1246,7 +1246,7 @@ falls back to its Copy twin there: a remembered chat action otherwise refused on
 (#372, #223's shape). A path pick from the palette refuses a page that is not on screen, as the
 element and screenshot entries do. **Its four
 element entries are repeat-button actions like the assistants' Add entries**, a fourth
-destination with a pink ring (asked for, after they first shipped without): each records itself,
+destination (asked for, after they first shipped without), drawn with the kind's crosshair: each records itself,
 and `aiBrowser.repeat.chat.*` twins carry the primary button and the chord. Wherever the chat
 cannot run the context key falls back to the Copy twin, as it does for an assistant that is not
 installed. Screenshot and page address are not
@@ -1317,27 +1317,26 @@ glyph that VS Code recolours, so any colour baked into one is lost. A custom SVG
 `background-image` and keeps its own fills — but by the same token it cannot inherit
 `currentColor`, which is why everything here ships as a light/dark pair.
 
-**Each element icon encodes two things at once**, so the grid is 4 × 4 —
-`media/icons/crosshair-<dot>[-<destination>]-<theme>.svg`, thirty-two files:
+**One crosshair per element kind, whatever the destination** —
+`media/icons/crosshair-<dot>-<theme>.svg`, eight files:
 
-| kind → dot | destination → ring |
-|---|---|
-| element: red `#E03131` | Copy: theme grey |
-| CSS path: blue `#1971C2` | Claude Code: yellow — `#FFD43B` dark, `#A16207` light |
-| CSS path + location: grape `#AE3EC9` | Codex: blue-white — `#C5F6FA` dark, `#0E7490` light |
-| XPath: green `#2F9E44` | AI Browser Chat: pink — `#F783AC` dark, `#BE185D` light |
+| kind → dot |
+|---|
+| element: red `#E03131` |
+| CSS path: blue `#1971C2` |
+| CSS path + location: grape `#AE3EC9` |
+| XPath: green `#2F9E44` |
 
-The same kind keeps its dot across destinations; the same destination keeps its ring across
-kinds; and **no two kinds share a dot**, which `check-manifest` now asserts separately. The
-within-a-kind rule was there from the start and the across-kinds one was not, so a fourth kind
-could have been given blue and produced two toolbar buttons that say the same thing — the icon
-is the only label a primary button has. As with the globe, the light variant of each ring is that hue taken down to something
-readable — a pale yellow or a blue-white is invisible on a white background.
+Copy, Claude Code, Codex and the AI Browser chat share the kind's icon (asked for: the grid of
+sixteen, with a ring colour per destination, was more variety than it was worth). The dot is
+what tells the four kinds apart, so **no two kinds share a dot**, which `check-manifest`
+asserts, together with every destination using its kind's icon. The trade-off, accepted: the
+repeat button no longer shows *where* it sends — its tooltip, the command's title, does.
 
 **`npm run check-manifest` guards all of this**, because none of it produces a compile error:
 a menu item pointing at a missing command, a command with no activation event, an icon path
 with a typo, an icon file nobody references, two primary buttons sharing a `lastElementAction`,
-two kinds sharing a centre dot, this grid losing its shape, and a command with no `category` — a
+two kinds sharing a centre dot, a destination with an icon of its own, and a command with no `category` — a
 command that only makes sense in a menu is hidden with `commandPalette` / `when: false` instead,
 or the palette lists bare rows such as "Balanced · 1080p *". Run it after touching `package.json`
 or `media/icons`.
@@ -1365,8 +1364,8 @@ Add button back; `LastElementAction.refresh` runs on `extensions.onDidChange` (b
 The seventeen action ids (`element`, `cssPath`, `cssLocation`, `xpath`, `<destination>:<kind>` with the destination `claude`, `codex` or `chat`, and `annotate`)
 are compared
 verbatim in `when` clauses, which makes them **part of the manifest's contract** — renaming one
-in `lastAction.ts` alone silently removes a button. Add commands reuse the crosshair colour of
-the matching Copy command, so the button looks the same whichever destination it repeats. [src/elements/lastAction.ts](src/elements/lastAction.ts)
+in `lastAction.ts` alone silently removes a button. Add commands use the crosshair of the
+matching Copy command, so the button looks the same whichever destination it repeats. [src/elements/lastAction.ts](src/elements/lastAction.ts)
 keeps the context key and a memento in step — the memento because a context key does not
 survive a restart. Each command records itself before running, in `extension.ts`.
 
@@ -10018,8 +10017,9 @@ It does not touch the user's Chrome profile or expose a network debugging port.
 
 - **The liquid loader is generated, and it is an SVG inside the CSS.** `media/liquid-loader.css`
   is written by `node ./scripts/build-liquid-loader.mjs` — edit the script, never the file. The
-  shape (a 30 s loop: circle at 0 s, a fluid six-rayed form, a rounded hexagon for core and shell
-  at 12.6 s, held at neither) cannot be drawn with `border-radius`, so it is a SMIL-animated SVG
+  shape (a 40 s loop: circle at 0 s, a fluid six-rayed form, a rounded hexagon for core and shell
+  at 16.8 s, held at neither, then the core shrinking into a 2 px dot — a non-scaling round-capped
+  stroke, so twice the shell's line at every size — held 4 s, and growing back into the circle) cannot be drawn with `border-radius`, so it is a SMIL-animated SVG
   set as a `data:` background through `--liquid-loader-image` (core and shell) and
   `--liquid-core-image` (core alone, for the small status dots in `chat.css`). A `data:` URL keeps
   every surface on its plain `<span class="liquid-loader">` — the chat, the Chrome side panel and

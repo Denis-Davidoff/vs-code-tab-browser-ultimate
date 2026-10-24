@@ -93,7 +93,7 @@ export function ConnectionSetup({
           <Icon name="close" size={15} />
           Dismiss
         </button>
-        <span className="copy-feedback" role="status">
+        <span className="copy-feedback status-line is-success" role="status">
           {feedback}
         </span>
       </div>

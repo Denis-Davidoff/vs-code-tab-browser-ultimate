@@ -76,6 +76,7 @@
   --ok: var(--vscode-charts-green, #74c991);
   --bad: var(--vscode-errorForeground, #f85149);
   --warn: var(--vscode-editorWarning-foreground, #cca700);
+  --info: var(--vscode-editorInfo-foreground, #3794ff);
   --mono: var(--vscode-editor-font-family, monospace);
   --mono-size: calc(var(--vscode-editor-font-size, 12px) - 0.5px);
   --radius: 8px;
