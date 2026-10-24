@@ -1,3 +1,4 @@
+import { initTheme, getThemePreference, setThemePreference, type ThemePreference } from './uiTheme';
 import { overlayBounds, fitOverlay } from './overlayPosition';
 import { chatTabDragType, parseChatTabTransfer } from './tabDrag';
 import { createVsCodeChatHost } from './chatHost';
@@ -47,6 +48,7 @@ import { controlOf, type Availability } from '../src/chat/core/commands';
 // as text by esbuild, so the icon picker lists exactly what can be drawn.
 import codiconCsv from '@vscode/codicons/dist/codicon.csv';
 
+initTheme(!window.aiBrowserChatHost);
 const vscode = createVsCodeChatHost();
 /**
  * Every message goes through the surface's control map (`state.controls`, from
@@ -340,12 +342,15 @@ const workdirLocation = el('span', { class: 'workdir-location' }, workdirLocatio
 const workdirSummary = button([workdirMode, workdirLocation], { class: 'workdir-summary', title: 'Working folder' });
 const gitChanged = el('span', { class: 'git-changed' }, '+0');
 const gitDeleted = el('span', { class: 'git-deleted' }, '−0');
-const gitRefresh = button([icon('refresh')], { class: 'ghost round', title: 'Refresh Git status' });
-gitRefresh.setAttribute('aria-label', 'Refresh Git status');
+const gitRefresh = button([icon('refresh')], { class: 'ghost round', title: 'Fetch remote changes and refresh Git status' });
+gitRefresh.setAttribute('aria-label', 'Fetch remote changes and refresh Git status');
 const gitRefreshSlot = el('span', { class: 'git-refresh-slot' }, gitRefresh);
-gitRefreshSlot.dataset.tip = 'Refresh Git status';
+gitRefreshSlot.dataset.tip = 'Fetch remote changes and refresh Git status';
 const branchName = el('span', { class: 'git-branch-name' }, '…');
-const branchButton = button([icon('git-branch'), branchName, icon('chevron-down')], { class: 'ghost git-branch-button', title: 'Switch or manage Git branches' });
+const branchAhead = el('span', { class: 'git-branch-ahead' });
+const branchBehind = el('span', { class: 'git-branch-behind' });
+branchAhead.hidden = branchBehind.hidden = true;
+const branchButton = button([icon('git-branch'), branchName, branchAhead, branchBehind, icon('chevron-down')], { class: 'ghost git-branch-button', title: 'Switch or manage Git branches' });
 branchButton.setAttribute('aria-haspopup', 'dialog');
 branchButton.setAttribute('aria-expanded', 'false');
 const commitIcon = icon('git-commit');
@@ -358,18 +363,19 @@ const gitStatus = el('div', { class: 'git-status' }, branchButton, commitButton,
 gitStatus.hidden = true;
 let gitFolder: string | undefined;
 let gitPending = false;
-function refreshGitStatus(): void {
+function refreshGitStatus(fetch: 'auto' | 'force' = 'auto'): void {
  if (!gitFolder || gitPending) { return; }
  gitPending = true;
  gitRefresh.disabled = true;
  gitPopupRefresh.disabled = true;
  branchRefresh.disabled = true;
- post({ type: 'refreshWorkdirGit' });
+ post({ type: 'refreshWorkdirGit', fetch });
 }
-gitRefresh.addEventListener('click', refreshGitStatus);
-gitStatus.addEventListener('mouseenter', refreshGitStatus);
-commitButton.addEventListener('focus', refreshGitStatus);
+gitRefresh.addEventListener('click', () => refreshGitStatus('force'));
+gitStatus.addEventListener('mouseenter', () => refreshGitStatus());
+commitButton.addEventListener('focus', () => refreshGitStatus());
 setInterval(() => { if (!document.hidden) { refreshGitStatus(); } }, 15_000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { refreshGitStatus(); } });
 const workdirFooter = el('div', { class: 'workdir-status' }, workdirButton, workdirSummary, gitStatus);
 const commitNoticeText = el('span', { class: 'git-commit-notice-text' });
 const commitFix = button(['Fix with current model'], { class: 'git-commit-fix' });
@@ -427,7 +433,7 @@ commitButton.setAttribute('aria-controls', gitPopup.id);
 const gitPopupRefresh = button([icon('refresh')], { class: 'ghost round', title: 'Refresh Git changes' });
 gitPopupRefresh.setAttribute('aria-label', 'Refresh Git changes');
 gitPopupRefresh.disabled = gitPending;
-gitPopupRefresh.addEventListener('click', () => { gitPopupPinned = true; refreshGitStatus(); });
+gitPopupRefresh.addEventListener('click', () => { gitPopupPinned = true; refreshGitStatus('force'); });
 const gitPopupHeader = el('div', { class: 'git-changes-heading' }, el('strong', {}, 'Git changes'),
  el('div', { class: 'git-changes-heading-tools' }, el('span', { class: 'git-change-totals' }, gitChanged, gitDeleted), gitPopupRefresh));
 const gitPopupError = el('div', { class: 'git-branch-error' });
@@ -437,6 +443,7 @@ const gitPopupActions = el('div', { class: 'git-changes-actions' });
 gitPopup.append(gitPopupHeader, gitPopupError, gitPopupList, gitPopupActions);
 let gitFiles: WorkdirGitStatus | undefined;
 let gitError = '';
+let gitFetchError = '';
 let gitIndexPending = false;
 let gitPopupPinned = false;
 let gitPopupPressed = false;
@@ -702,7 +709,7 @@ branchMagic.setAttribute('aria-label', branchMagic.dataset.tip);
 const branchRefresh = button([icon('refresh')], { class: 'ghost round', title: 'Refresh Git branches' });
 branchRefresh.setAttribute('aria-label', 'Refresh Git branches');
 branchRefresh.disabled = gitPending;
-branchRefresh.addEventListener('click', refreshGitStatus);
+branchRefresh.addEventListener('click', () => refreshGitStatus('force'));
 branchSearchRow.append(clearableSearch(branchSearch), branchMagic, branchRefresh);
 /** The current branch against its remote: Publish, Push, Pull, and the pull request page. */
 const branchSync = el('div', { class: 'git-branch-sync' });
@@ -1224,11 +1231,26 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
    gitPopupRefresh.disabled = false;
    branchRefresh.disabled = false;
    gitFiles = message.status;
-   if (message.error) { gitError = message.error; }
+   if (message.error || message.fetchError) { gitError = message.error ?? message.fetchError ?? ''; }
    else if (!gitIndexPending) { gitError = ''; }
+   gitRefresh.title = message.fetchError ? `Fetch failed: ${message.fetchError}` : 'Fetch remote changes and refresh Git status';
+   gitRefreshSlot.dataset.tip = gitRefresh.title;
+   if (gitFetchError && branchError.textContent === `Remote data may be outdated: ${gitFetchError}`) { branchError.textContent = ''; }
+   gitFetchError = message.fetchError ?? '';
+   if (gitFetchError) { branchError.textContent = `Remote data may be outdated: ${gitFetchError}`; }
    branchState = message.branches;
    branchName.textContent = branchState ? branchState.current || 'Detached HEAD' : 'Git';
+   const upstream = branchState?.current && !branchState.upstream?.gone ? branchState.upstream : undefined;
+   const ahead = upstream?.ahead ?? 0, behind = upstream?.behind ?? 0;
+   branchAhead.textContent = ahead ? `+${ahead}` : '';
+   branchBehind.textContent = behind ? `−${behind}` : '';
+   branchAhead.hidden = !ahead;
+   branchBehind.hidden = !behind;
+   const remoteBranch = upstream ? `${upstream.remote}/${upstream.branch}` : '';
+   branchAhead.title = `${ahead} local commit${ahead === 1 ? '' : 's'} to push to ${remoteBranch}`;
+   branchBehind.title = `${behind} remote commit${behind === 1 ? '' : 's'} to pull from ${remoteBranch}`;
    branchButton.title = branchState ? `Current branch: ${branchState.current || 'Detached HEAD'} — switch or manage branches` : message.error ?? 'Git branches unavailable';
+   if (ahead || behind) { branchButton.title += ` — ${ahead} to push, ${behind} to pull (${remoteBranch}; last fetched state)`; }
    if (branchPopup.classList.contains('open')) { renderBranches(); }
    renderGitChanges();
    return;
@@ -3370,7 +3392,9 @@ function promptNode(entry: Extract<ChatEntry, { kind: 'user' }>): HTMLElement {
 				if (!saved) { return el('span', { class: 'chip small', title: label }, ...children); }
 				const open = button(children, { class: 'chip small', title: `Open ${label}` });
 				open.addEventListener('click', () => {
-					const entryIndex = state?.entries.indexOf(entry) ?? -1;
+					// By the chip's id, not by object identity: a row is kept while it is unchanged,
+					// and each state post brings new entry objects, so `indexOf(entry)` found nothing.
+					const entryIndex = state?.entries.findIndex(e => e.kind === 'user' && !!e.attachmentData?.some(d => d.chip.id === saved.chip.id)) ?? -1;
 					if (entryIndex >= 0) { post({ type: 'openAttachment', id: saved.chip.id, entry: entryIndex }); }
 				});
 				return open;
@@ -6748,6 +6772,8 @@ function renderWorkdir(s: ChatViewState): void {
 		branchBusy = false;
 		branchDeleting = undefined;
 		branchName.textContent = '…';
+		branchAhead.textContent = branchBehind.textContent = '';
+		branchAhead.hidden = branchBehind.hidden = true;
 		gitPending = false;
 		gitChanged.textContent = '…';
 		gitDeleted.textContent = '';
@@ -8917,7 +8943,15 @@ function openFeatureSettings(): void {
 			: (index + (event.key === 'ArrowDown' ? 1 : -1) + sections.length) % sections.length;
 		sections[next].click(); sections[next].focus();
 	});
+	const appearance = el('select');
+ appearance.setAttribute('aria-label', 'Color theme');
+ for (const [value, label] of [['system', window.aiBrowserChatHost ? 'Auto (device)' : 'Auto (VS Code)'], ['light', 'Light'], ['dark', 'Dark']]) {
+  const option = el('option', { text: label }); option.value = value; appearance.append(option);
+ }
+ appearance.value = getThemePreference();
+ appearance.addEventListener('change', () => setThemePreference(appearance.value as ThemePreference));
 	featureSettingsPanel.replaceChildren(heading,
+  el('label', { class: 'appearance-setting' }, el('span', { text: 'Color theme' }), appearance),
 		el('div', { class: 'feature-settings-layout' }, tabs,
 			el('div', { class: 'feature-settings-main' }, content, videoContent, temporaryContent, serverContent,
 				el('div', { class: 'feature-settings-actions' }, featureSettingsStatus, featureSettingsSave))));

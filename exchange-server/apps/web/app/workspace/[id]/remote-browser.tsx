@@ -7,6 +7,7 @@ import {
   type KeyboardEvent,
   type PointerEvent,
 } from "react";
+import { createPreviewVideo, supportsPreviewVideo } from "../../components/preview-video";
 import { createPreviewScrollQueue } from "../../components/preview-scroll";
 import { Icon } from "../../components/ui";
 import {
@@ -42,12 +43,22 @@ export function RemoteBrowser({
   onShowChat: () => void;
 }) {
   const socket = useRef<WebSocket | null>(null),
-    image = useRef<HTMLImageElement>(null),
+    image = useRef<HTMLCanvasElement>(null),
     viewport = useRef<HTMLDivElement>(null),
     stage = useRef<HTMLDivElement>(null);
+  const videoDecoder = useRef<ReturnType<typeof createPreviewVideo> | null>(null);
+  const videoSupported = useRef(false), relayVideo = useRef(false), videoFailed = useRef(false);
+  const [streamCodec, setStreamCodec] = useState("");
+  function watchBrowser() {
+    const ws = socket.current;
+    if (!ready.current || ws?.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: "browser.watch", active: activeRef.current && !document.hidden,
+      ...(videoSupported.current && relayVideo.current ? { video: "h264" } : {}) }));
+  }
   const selectedRef = useRef<string | null>(null),
     activeRef = useRef(active),
     ready = useRef(false);
+  const [connecting, setConnecting] = useState(true);
   const [online, setOnline] = useState(false),
     [tabs, setTabs] = useState<Tab[]>([]),
     [selected, setSelected] = useState<string | null>(null);
@@ -58,6 +69,8 @@ export function RemoteBrowser({
   const [pending, setPending] = useState(false);
   const [viewerCount, setViewerCount] = useState(0);
   const [zoom, setZoom] = useState(1);
+  const [fitView, setFitView] = useState(false);
+  const fitRef = useRef(false);
   const zoomRef = useRef(1);
   const commands = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const commandDone = useRef(new Map<string, (ok: boolean) => void>());
@@ -188,12 +201,15 @@ export function RemoteBrowser({
               rect.width / size.width,
               rect.height / size.height,
             );
-            scrollQueue.current?.enqueue(
-              p.x,
-              p.y,
-              (start.lastX - event.clientX) / scale,
-              (start.lastY - event.clientY) / scale,
-            );
+            const dy = start.lastY - event.clientY;
+            const rest = dy - scrollPreview(event.currentTarget, dy);
+            if (start.lastX !== event.clientX || rest)
+              scrollQueue.current?.enqueue(
+                p.x,
+                p.y,
+                (start.lastX - event.clientX) / scale,
+                rest / scale,
+              );
           }
         }
         start.panned = true;
@@ -276,19 +292,52 @@ export function RemoteBrowser({
     lastMove.current = now;
     input({ action: "move", ...p });
   }
+  /** Lays the remote page out at this preview's size, so it fills it with no bars. */
+  function sendFit() {
+    const box = viewport.current;
+    if (!fitRef.current || !box) return;
+    const clamp = (n: number) => Math.max(200, Math.min(4096, Math.round(n)));
+    input({ action: "fit", width: clamp(box.clientWidth), height: clamp(box.clientHeight) });
+  }
+  function toggleFit() {
+    const next = !fitRef.current;
+    fitRef.current = next;
+    setFitView(next);
+    if (next) sendFit();
+    else input({ action: "unfit" });
+  }
+  useEffect(() => {
+    const box = viewport.current;
+    if (!box || typeof ResizeObserver === "undefined") return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const observer = new ResizeObserver(() => {
+      clearTimeout(timer);
+      timer = setTimeout(sendFit, 300);
+    });
+    observer.observe(box);
+    return () => { clearTimeout(timer); observer.disconnect(); };
+  }, []);
+  /** Scrolls the preview box itself by up to `dy`; answers how much it moved. */
+  function scrollPreview(box: HTMLElement, dy: number): number {
+    const before = box.scrollTop,
+      max = Math.max(0, box.scrollHeight - box.clientHeight),
+      next = Math.max(0, Math.min(max, before + dy));
+    box.scrollTop = next;
+    return next - before;
+  }
   function input(value: Record<string, unknown>) {
     if (selectedRef.current)
       command("input", { tabId: selectedRef.current, input: value });
   }
   function point(clientX: number, clientY: number) {
     const img = image.current;
-    if (!img?.naturalWidth) return;
+    if (!img || !frameRef.current) return;
     return previewPoint(
       clientX,
       clientY,
       img.getBoundingClientRect(),
-      img.naturalWidth,
-      img.naturalHeight,
+      img.width,
+      img.height,
     );
   }
   function keyboard(event: KeyboardEvent<HTMLDivElement>) {
@@ -346,18 +395,23 @@ export function RemoteBrowser({
     activeRef.current = active;
     if (!active) {
       scrollQueue.current?.reset();
+      videoDecoder.current?.reset();
     }
-    if (ready.current && socket.current?.readyState === WebSocket.OPEN)
-      socket.current.send(
-        JSON.stringify({
-          type: "browser.watch",
-          active: active && !document.hidden,
-        }),
-      );
+    watchBrowser();
   }, [active]);
   useEffect(() => {
-    let stopped = false,
-      retry: ReturnType<typeof setTimeout> | undefined;
+    let stopped = false, accessDenied = false;
+    videoFailed.current = false; videoSupported.current = false; relayVideo.current = false;
+    videoDecoder.current = createPreviewVideo(() => image.current, value => {
+      if (value.tabId !== selectedRef.current || !activeRef.current || document.hidden) return;
+      frameRef.current = value; setFrame(value);
+      setStreamCodec("codec" in value ? "H.264" : "JPEG");
+    }, () => { videoFailed.current = true; videoSupported.current = false; watchBrowser(); });
+    void supportsPreviewVideo().then(supported => {
+      if (!stopped) { videoSupported.current = supported && !videoFailed.current; watchBrowser(); }
+    });
+    let handshake: ReturnType<typeof setTimeout> | undefined;
+    let retry: ReturnType<typeof setTimeout> | undefined;
     const clearCommands = () => {
       scrollQueue.current?.reset();
       commandDone.current.clear();
@@ -367,6 +421,10 @@ export function RemoteBrowser({
     };
     function connect() {
       if (stopped) return;
+      clearTimeout(retry);
+      clearTimeout(handshake);
+      setConnecting(true);
+      setError("");
       const base =
         process.env.NEXT_PUBLIC_EXCHANGE_WS_URL ??
         `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}`;
@@ -374,6 +432,7 @@ export function RemoteBrowser({
         base + "/ws/stream-browser",
         pointId,
       ));
+      handshake = setTimeout(() => { if (ws === socket.current) ws.close(); }, 10000);
       ws.onopen = () => {
         if (ws !== socket.current || stopped) return;
         ws.send(JSON.stringify({ type: "auth", version: 1, pointId }));
@@ -383,20 +442,19 @@ export function RemoteBrowser({
         try {
           const value = JSON.parse(event.data);
           if (value.type === "ready") {
+            clearTimeout(handshake);
+            setConnecting(false);
             ready.current = true;
+            relayVideo.current = Array.isArray(value.features) && value.features.includes("h264");
             setError("");
             setOnline(value.online);
-            ws.send(
-              JSON.stringify({
-                type: "browser.watch",
-                active: activeRef.current && !document.hidden,
-              }),
-            );
+            watchBrowser();
           } else if (value.type === "browser.presence") {
             setError("");
             setOnline(value.online);
             if (!value.online) {
               setFrame(null);
+              videoDecoder.current?.reset();
               frameRef.current = null;
               setTabs([]);
               selectedRef.current = null;
@@ -410,7 +468,11 @@ export function RemoteBrowser({
             if (value.error) setError(value.error);
             const changedTab = selectedRef.current !== value.selected;
             if (changedTab) {
+              // The extension puts the previous tab back; fitting is chosen per tab.
+              fitRef.current = false;
+              setFitView(false);
               setFrame(null);
+              videoDecoder.current?.reset();
               frameRef.current = null;
             }
             selectedRef.current = value.selected;
@@ -425,15 +487,15 @@ export function RemoteBrowser({
                 setAddress(tab.url);
               }
             }
-          } else if (value.type === "browser.frame") {
+          } else if (value.type === "browser.frame" || value.type === "browser.video") {
             if (
               value.tabId !== selectedRef.current ||
               !activeRef.current ||
               document.hidden
             )
               return;
-            frameRef.current = value;
-            setFrame(value);
+            if (value.type === "browser.video") { if (videoSupported.current) videoDecoder.current?.video(value); }
+            else void videoDecoder.current?.jpeg(value);
           } else if (value.type === "browser.result") {
             const timer = commands.current.get(value.id);
             if (timer) {
@@ -452,10 +514,14 @@ export function RemoteBrowser({
       };
       ws.onclose = (event) => {
         if (ws !== socket.current || stopped) return;
+        clearTimeout(handshake);
+        accessDenied = event.code === 4001 || event.code === 1008;
+        setConnecting(!accessDenied);
         ready.current = false;
         setViewerCount(0);
         setOnline(false);
         setFrame(null);
+        videoDecoder.current?.reset();
         frameRef.current = null;
         clearCommands();
         if (event.code === 4001 || event.code === 1008)
@@ -466,31 +532,45 @@ export function RemoteBrowser({
       };
       ws.onerror = () => {
         if (ws === socket.current && !stopped)
-          setError("Could not connect to the remote browser.");
+          ws.close();
       };
     }
+    const resume = () => {
+      if (document.hidden || stopped || accessDenied || socket.current?.readyState === WebSocket.CONNECTING) return;
+      const previous = socket.current;
+      socket.current = null;
+      previous?.close();
+      ready.current = false;
+      setOnline(false);
+      setViewerCount(0);
+      clearCommands();
+      connect();
+    };
+    const pageShow = (event: PageTransitionEvent) => { if (event.persisted) resume(); };
     const visibility = () => {
       if (document.hidden) {
         scrollQueue.current?.reset();
+        videoDecoder.current?.reset();
       }
+      if (!document.hidden) { resume(); return; }
       const ws = socket.current;
-      if (ready.current && ws?.readyState === WebSocket.OPEN)
-        ws.send(
-          JSON.stringify({
-            type: "browser.watch",
-            active: activeRef.current && !document.hidden,
-          }),
-        );
+      if (ws) watchBrowser();
     };
     document.addEventListener("visibilitychange", visibility);
+    window.addEventListener("online", resume);
+    window.addEventListener("pageshow", pageShow);
     connect();
     return () => {
       stopped = true;
       ready.current = false;
       clearTimeout(retry);
+      clearTimeout(handshake);
       clearCommands();
       socket.current?.close();
+      videoDecoder.current?.dispose(); videoDecoder.current = null;
       document.removeEventListener("visibilitychange", visibility);
+      window.removeEventListener("online", resume);
+      window.removeEventListener("pageshow", pageShow);
     };
   }, [pointId]);
   useEffect(() => {
@@ -517,12 +597,11 @@ export function RemoteBrowser({
           : event.deltaMode === 2
             ? node.clientHeight
             : 1;
-      scrollQueue.current?.enqueue(
-        p.x,
-        p.y,
-        event.deltaX * scale,
-        event.deltaY * scale,
-      );
+      // At full width the preview can be taller than its box: show the rest of it
+      // first, then scroll the page itself.
+      const deltaY = event.deltaY * scale - scrollPreview(node, event.deltaY * scale);
+      if (!event.deltaX && !deltaY) return;
+      scrollQueue.current?.enqueue(p.x, p.y, event.deltaX * scale, deltaY);
     };
     let gestureZoom = 1;
     const gestureStart = (event: Event) => {
@@ -568,6 +647,7 @@ export function RemoteBrowser({
       aria-label="Browser screen"
     >
       <div className="remote-browser-controls">
+        {frame && <span className="remote-stream-codec" title="Current preview codec">{streamCodec}</span>}
         <span className="remote-viewer-count" title="Active viewers of the selected tab" aria-label={`${selected ? viewerCount : 0} active viewers`}>
           <Icon name="eye" size={14} /> {selected ? viewerCount : 0}
         </span>
@@ -587,6 +667,7 @@ export function RemoteBrowser({
             setPending(true);
             setError("");
             setFrame(null);
+            videoDecoder.current?.reset();
             frameRef.current = null;
             command("select", { tabId: event.target.value });
           }}
@@ -695,7 +776,7 @@ export function RemoteBrowser({
             type="button"
             className="remote-browser-zoom-value"
             aria-label="Reset preview zoom"
-            title="Fit to window · pinch or Ctrl/⌘ + wheel to zoom"
+            title="Full width · pinch or Ctrl/⌘ + wheel to zoom"
             disabled={!frame}
             onClick={() => changeZoom(1)}
           >
@@ -709,6 +790,17 @@ export function RemoteBrowser({
             onClick={() => changeZoom(zoomRef.current * 1.2)}
           >
             +
+          </button>
+          <button
+            type="button"
+            className={fitView ? "remote-browser-fit active" : "remote-browser-fit"}
+            aria-pressed={fitView}
+            aria-label="Fit page to my view"
+            title={fitView ? "Page is laid out at this view's size · click to restore its size in VS Code" : "Fit to my view: lay the page out at this view's size (changes the tab in VS Code while you watch)"}
+            disabled={!selected}
+            onClick={toggleFit}
+          >
+            ⤢
           </button>
         </div>
       </form>
@@ -769,31 +861,32 @@ export function RemoteBrowser({
             }
           }}
         >
-          {frame ? (
+          <>
             <div
+              hidden={!frame}
               ref={stage}
               className="remote-browser-stage"
-              style={{ width: `${zoom * 100}%`, height: `${zoom * 100}%` }}
+              style={{ width: `${zoom * 100}%` }}
             >
-              <img
+              <canvas
                 ref={image}
-                src={`data:image/jpeg;base64,${frame.data}`}
-                alt="Live view of the selected VS Code browser tab"
-                draggable={false}
+                role="img"
+                aria-label="Live view of the selected VS Code browser tab"
               />
             </div>
-          ) : (
+          </>
+          {!frame && (
             <div className="preview-placeholder">
               <div className="preview-symbol">
-                {selected ? <span className="liquid-loader" style={{ "--liquid-size": "36px" } as React.CSSProperties} aria-hidden="true" /> : <Icon name="globe" size={26} />}
+                {selected || connecting ? <span className="liquid-loader" style={{ "--liquid-size": "36px" } as React.CSSProperties} aria-hidden="true" /> : <Icon name="globe" size={26} />}
               </div>
               <h3>
-                {selected
+                {connecting ? "Connecting…" : selected
                   ? "Connecting to your tab…"
                   : "Your browser, remotely"}
               </h3>
               <p>
-                {online
+                {connecting ? "Reconnecting to the remote browser…" : online
                   ? "Select an open VS Code browser tab to view and control it here."
                   : "The extension browser channel is offline. Install the updated extension, reload VS Code and reconnect its server connection."}
               </p>

@@ -1,3 +1,4 @@
+import { ThemeControl } from "./theme-control";
 import type { CSSProperties } from "react";
 
 export type IconName =
@@ -14,8 +15,14 @@ export type IconName =
   | "send"
   | "stop"
   | "close"
+  | "trash"
   | "google";
 const paths: Record<IconName, React.ReactNode> = {
+  trash: (
+    <>
+      <path d="M4 6.5h16M10 10.5v6M14 10.5v6M6 6.5l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 6.5v-3h6v3" />
+    </>
+  ),
   eye: (
     <>
       <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" />
@@ -110,10 +117,13 @@ export function Icon({
 }
 export function Brand() {
   return (
+    <>
     <a href="/" className="brand" aria-label="AI Browser home">
       <img src="/ai-browser.png" width="38" height="38" alt="" />
       <span>AI Browser</span>
     </a>
+    <ThemeControl />
+    </>
   );
 }
 export function ConnectionDiagram() {

@@ -1,6 +1,7 @@
 import "../../../../media/liquid-loader.css";
 import "./chat-theme.css";
 import "./style.css";
+import "../../../../media/appearance.css";
 export const metadata = {
   title: "AI Browser — Remote workspace",
   description:
@@ -8,7 +9,7 @@ export const metadata = {
 };
 export default function Layout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <body>{children}</body>
     </html>
   );

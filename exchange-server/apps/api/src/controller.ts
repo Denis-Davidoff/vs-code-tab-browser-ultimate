@@ -42,6 +42,7 @@ export class ApiController {
       ...row,
       protected: Boolean(encryption),
       online: this.relay.online(row.id),
+      address: this.relay.address(row.id) ?? null,
     }));
   }
   @Get("points/:id") async details(

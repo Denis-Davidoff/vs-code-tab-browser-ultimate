@@ -6,7 +6,8 @@ export type RemoteBrowserInput =
  | { action: 'text'; text: string }
  | { action: 'key'; key: string; modifiers: number }
  | { action: 'navigate'; url: string }
- | { action: 'reload' | 'back' | 'forward' | 'close' };
+ | { action: 'fit'; width: number; height: number }
+ | { action: 'reload' | 'back' | 'forward' | 'close' | 'unfit' };
 export const remoteKeys = ['Backspace','Tab','Enter','Escape','Delete','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End','PageUp','PageDown','a','c','v','x','z','y'];
 export function readRemoteBrowserInput(value: unknown): RemoteBrowserInput | undefined {
  if (!value || typeof value !== 'object' || Array.isArray(value)) return;
@@ -25,7 +26,11 @@ export function readRemoteBrowserInput(value: unknown): RemoteBrowserInput | und
    try { const url=new URL(v.url);if(!['http:','https:'].includes(url.protocol)||url.username||url.password)return; } catch { return; }
    keys=['action','url']; break;
   }
-  case 'reload': case 'back': case 'forward': case 'close': keys=['action'];break;
+  case 'fit': {
+   const size=(k:string)=>Number.isInteger(v[k])&&(v[k] as number)>=200&&(v[k] as number)<=4096;
+   if(!size('width')||!size('height')) return; keys=['action','width','height']; break;
+  }
+  case 'reload': case 'back': case 'forward': case 'close': case 'unfit': keys=['action'];break;
   default: return;
  }
  if(Object.keys(v).some(k=>!keys.includes(k))) return;

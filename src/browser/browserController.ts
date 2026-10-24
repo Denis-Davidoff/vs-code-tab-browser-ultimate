@@ -1,3 +1,4 @@
+import { createRemoteVideoEncoder, type RemoteVideoEncoder, type RemoteVideoChunk } from './remoteVideo';
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -971,6 +972,10 @@ export class BrowserController implements vscode.Disposable {
 		return tab;
 	}
 	public remoteTab(id:string):Promise<vscode.BrowserTab> { return this._remoteTab(id); }
+	public async remoteVideoEncoder(id: string, output: (chunk: RemoteVideoChunk) => void, failed: (error: Error) => void): Promise<RemoteVideoEncoder> {
+  const tab = await this._remoteTab(id);
+  return createRemoteVideoEncoder(await this._sessionFor(tab), output, failed);
+ }
 	public async remoteStream(id:string,frame:(data:string,width:number,height:number)=>void):Promise<vscode.Disposable> {
 		const tab=await this._remoteTab(id),release=this._hold(tab);
 		let session:TabSession;
@@ -1041,6 +1046,10 @@ export class BrowserController implements vscode.Disposable {
 				try{return await Promise.race([session.client.send(method,params,session.sessionId),new Promise<never>((_,reject)=>{timeout=setTimeout(()=>reject(new Error('Browser action timed out; check the page before retrying.')),5000);})]);}
 				finally{clearTimeout(timeout);}
 			};
+			// "Fit to my view": the remote viewer asked for the page to be laid out at its own size.
+			// Explicit and undone on 'unfit' or when the viewer stops watching this tab.
+			if(input.action==='fit'){await send('Emulation.setDeviceMetricsOverride',{width:input.width,height:input.height,deviceScaleFactor:0,mobile:false});return;}
+			if(input.action==='unfit'){await send('Emulation.clearDeviceMetricsOverride');return;}
 			if(input.action==='reload'){await send('Page.reload');return;}
 			if(input.action==='back'||input.action==='forward'){
 				const history=await send('Page.getNavigationHistory');const entry=history.entries[history.currentIndex+(input.action==='back'?-1:1)];

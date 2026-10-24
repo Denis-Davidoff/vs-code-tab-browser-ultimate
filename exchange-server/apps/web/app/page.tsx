@@ -14,6 +14,7 @@ type Point = {
   name: string;
   createdAt: string;
   online: boolean;
+  address?: string | null;
   protected?: boolean;
 };
 export default function Page() {
@@ -25,7 +26,8 @@ export default function Page() {
     ),
     [busy, setBusy] = useState(false),
     [signup, setSignup] = useState(false),
-    [serverAddress, setServerAddress] = useState("");
+    [serverAddress, setServerAddress] = useState(""),
+    [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [loginErrorField, setLoginErrorField] = useState<string>();
   const [createError, setCreateError] = useState("");
   const [challenge, setChallenge] = useState(false);
@@ -436,12 +438,17 @@ export default function Page() {
             ) : (
               points.map((point) => (
                 <article className="card point-card" key={point.id}>
+                  {/* The whole card opens the workspace; the controls sit above this link. */}
+                  <a
+                    className="point-open"
+                    href={"/workspace/" + point.id}
+                    aria-label={"Open workspace " + point.name}
+                  />
                   <div className="point-top">
                     <span className="point-icon">
-                      <Icon name="terminal" size={22} />
+                      <Icon name="terminal" size={18} />
                     </span>
                     <div className="point-identity">
-                      {" "}
                       <h2>
                         {point.name}
                         {point.protected && (
@@ -455,7 +462,17 @@ export default function Page() {
                         )}
                       </h2>
                       <p className="point-date">
-                        Created{" "}
+                        <span className={point.online ? "status-dot online" : "status-dot"} />
+                        {point.online ? "Online" : "Offline"}
+                        {point.address && (
+                          <>
+                            {" · "}
+                            <code className="point-address" title="Public IP address of the VS Code machine on this connection">
+                              {point.address}
+                            </code>
+                          </>
+                        )}
+                        {" · "}Created{" "}
                         {new Date(point.createdAt).toLocaleDateString("en-US", {
                           month: "short",
                           day: "numeric",
@@ -463,46 +480,56 @@ export default function Page() {
                         })}
                       </p>
                     </div>
-                    <span
-                      className={point.online ? "status is-online" : "status"}
-                    >
-                      <span
-                        className={
-                          point.online ? "status-dot online" : "status-dot"
-                        }
-                      />
-                      {point.online ? "Online" : "Offline"}
-                    </span>
+                    {confirmDelete === point.id ? (
+                      <div className="point-confirm" role="group" aria-label="Confirm deletion">
+                        <span>Delete?</span>
+                        <button
+                          className="point-confirm-yes"
+                          onClick={() => {
+                            setConfirmDelete(null);
+                            void remove(point.id);
+                          }}
+                        >
+                          Delete
+                        </button>
+                        <button autoFocus onClick={() => setConfirmDelete(null)}>
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        className="point-delete"
+                        title="Delete connection"
+                        aria-label={"Delete connection " + point.name}
+                        onClick={() => setConfirmDelete(point.id)}
+                      >
+                        <Icon name="trash" size={15} />
+                      </button>
+                    )}
                   </div>
-                  <details className="connection-details">
-                    <summary>Connection details</summary>
-                    <p>Server address</p>
-                    <code>{serverAddress}</code>
-                    <p>Connection ID</p>
-                    <code>{point.id}</code>
-                    <p>
-                      Use these values in Chat Settings → Server connection. To
-                      get a new key, select Rotate key.
-                    </p>
-                  </details>
-                  <a className="point-link" href={"/workspace/" + point.id}>
-                    Open workspace
-                    <Icon name="arrow" size={16} />
-                  </a>
-                  <div className="point-actions">
+                  <div className="point-footer">
+                    <details className="connection-details">
+                      <summary>Details</summary>
+                      <p>Server address</p>
+                      <code>{serverAddress}</code>
+                      <p>Connection ID</p>
+                      <code>{point.id}</code>
+                      <p>
+                        Use these values in Chat Settings → Server connection. To
+                        get a new key, select Rotate key.
+                      </p>
+                    </details>
                     <button
-                      className="text-button"
+                      className="text-button point-rotate"
                       onClick={() => void rotate(point.id)}
                     >
-                      <Icon name="key" size={14} />
+                      <Icon name="key" size={13} />
                       Rotate key
                     </button>
-                    <button
-                      className="text-button danger-text"
-                      onClick={() => void remove(point.id)}
-                    >
-                      Delete connection
-                    </button>
+                    <span className="point-go" aria-hidden="true">
+                      Open
+                      <Icon name="arrow" size={15} />
+                    </span>
                   </div>
                 </article>
               ))

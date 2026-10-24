@@ -84,7 +84,14 @@ const input = z.discriminatedUnion("action", [
         }),
     })
     .strict(),
-  z.object({ action: z.enum(["reload", "back", "forward", "close"]) }).strict(),
+  z
+    .object({
+      action: z.literal("fit"),
+      width: z.number().int().min(200).max(4096),
+      height: z.number().int().min(200).max(4096),
+    })
+    .strict(),
+  z.object({ action: z.enum(["reload", "back", "forward", "close", "unfit"]) }).strict(),
 ]);
 export const streamCommandSchema = z.discriminatedUnion("action", [
   z
@@ -144,6 +151,13 @@ const frameSchema = z
     height: z.number().positive().max(32000),
   })
   .strict();
+export const videoSchema = z.object({
+  type: z.literal("browser.video"), tabId,
+  codec: z.literal("avc1.420028"), streamId: z.string().min(1).max(100),
+  data: z.string().min(4).max(2_000_000).regex(/^[A-Za-z0-9+/]*={0,2}$/),
+  key: z.boolean(), timestamp: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  width: z.number().positive().max(32000), height: z.number().positive().max(32000),
+}).strict();
 const resultSchema = z
   .object({
     type: z.literal("browser.result"),
@@ -155,7 +169,7 @@ const resultSchema = z
 const send = (ws: WebSocket | undefined, value: unknown) => {
   if (ws?.readyState !== WebSocket.OPEN) return;
   if (
-    ((value as { type?: string; frame?: boolean })?.type === "browser.frame" ||
+    ((value as { type?: string; frame?: boolean })?.type === "browser.frame" || (value as { type?: string })?.type === "browser.video" ||
       (value as { frame?: boolean })?.frame === true) &&
     ws.bufferedAmount > 256_000
   )
@@ -176,6 +190,7 @@ export class StreamRelay {
   private readonly agents = new Map<string, WebSocket>();
   private readonly viewers = new Map<string, Set<WebSocket>>();
   private readonly watching = new WeakSet<WebSocket>();
+  private readonly videoViewers = new WeakSet<WebSocket>();
   private readonly states = new Map<string, unknown>();
   private readonly checks = new Map<WebSocket, () => Promise<boolean>>();
   private readonly pending = new Map<
@@ -244,6 +259,7 @@ export class StreamRelay {
     const message = {
       type: "browser.viewers",
       active: count > 0,
+      ...(count > 0 && [...(this.viewers.get(id) ?? [])].filter(viewer => this.watching.has(viewer) && viewer.readyState === WebSocket.OPEN).every(viewer => this.videoViewers.has(viewer)) ? { video: "h264" } : {}),
       count,
     };
     send(this.agents.get(id), message);
@@ -333,6 +349,7 @@ export class StreamRelay {
     send(ws, {
       type: "ready",
       version: 1,
+      features: ["h264"],
       online: this.agents.has(id),
       encryption: encryption ? JSON.parse(encryption) : null,
     });
@@ -379,8 +396,8 @@ export class StreamRelay {
         if (this.agents.get(id) !== ws) return;
         try {
           const message = JSON.parse(raw.toString());
-          if (message.type === "browser.frame") {
-            const frame = frameSchema.parse(message);
+          if (message.type === "browser.frame" || message.type === "browser.video") {
+            const frame = message.type === "browser.video" ? videoSchema.parse(message) : frameSchema.parse(message);
             for (const viewer of this.viewers.get(id) ?? [])
               if (this.watching.has(viewer)) send(viewer, frame);
           } else if (message.type === "browser.state") {
@@ -420,9 +437,11 @@ export class StreamRelay {
           const message = JSON.parse(raw.toString());
           if (message.type === "browser.watch") {
             const watch = z
-              .object({ type: z.literal("browser.watch"), active: z.boolean() })
+              .object({ type: z.literal("browser.watch"), active: z.boolean(), video: z.literal("h264").optional() })
               .strict()
               .parse(message);
+            if (watch.video === "h264") this.videoViewers.add(ws);
+            else this.videoViewers.delete(ws);
             if (watch.active) this.watching.add(ws);
             else this.watching.delete(ws);
             if (this.agents.has(id)) this.notify(id);

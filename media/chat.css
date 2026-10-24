@@ -1,4 +1,5 @@
 @import url("./liquid-loader.css");
+@import url("./appearance.css");
 
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
@@ -802,10 +803,12 @@ button {
 	background: var(--io-bg);
 }
 
-body.vscode-light .io,
-body.vscode-light .exec,
-body.vscode-high-contrast-light .io,
-body.vscode-high-contrast-light .exec {
+:root[data-theme="light"] .io,
+:root[data-theme="light"] .exec,
+:root:not([data-theme]) body.vscode-light .io,
+:root:not([data-theme]) body.vscode-light .exec,
+:root:not([data-theme]) body.vscode-high-contrast-light .io,
+:root:not([data-theme]) body.vscode-high-contrast-light .exec {
 	--io-bg: color-mix(in srgb, var(--code-bg), #000 5%);
 }
 
@@ -1046,7 +1049,8 @@ body.vscode-high-contrast-light .exec {
 	color: color-mix(in srgb, var(--vscode-charts-yellow, #cca700) var(--heading-yellow, 100%), var(--heading-top));
 }
 
-body.vscode-dark .markdown .heading {
+:root[data-theme="dark"] .markdown .heading,
+:root:not([data-theme]) body.vscode-dark .markdown .heading {
 	--heading-top: #fff;
 }
 
@@ -1226,11 +1230,13 @@ body.vscode-dark .markdown .heading {
 
 /* code a little brighter than the prose round it: towards white on a dark theme, towards black
    on a light one; a high-contrast theme keeps its own foreground */
-body.vscode-dark .code-block pre {
+:root[data-theme="dark"] .code-block pre,
+:root:not([data-theme]) body.vscode-dark .code-block pre {
 	color: color-mix(in srgb, var(--vscode-foreground) 70%, #fff);
 }
 
-body.vscode-light .code-block pre {
+:root[data-theme="light"] .code-block pre,
+:root:not([data-theme]) body.vscode-light .code-block pre {
 	color: color-mix(in srgb, var(--vscode-foreground) 75%, #000);
 }
 
@@ -1906,8 +1912,9 @@ body.vscode-light .code-block pre {
 
 
 /* A dark neutral keeps the 25% landmark visible on a light background. */
-body.vscode-light .context-pie,
-body.vscode-high-contrast-light .context-pie {
+:root[data-theme="light"] .context-pie,
+:root:not([data-theme]) body.vscode-light .context-pie,
+:root:not([data-theme]) body.vscode-high-contrast-light .context-pie {
 	--context-neutral: var(--fg);
 }
 
@@ -4683,7 +4690,10 @@ body.vscode-high-contrast-light .context-pie {
 .git-file { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; line-height: 1.6; }
 
 .git-branch-button { display: flex; align-items: center; gap: 4px; min-width: 0; max-width: 150px; font-size: 11px; padding: 4px; }
-.git-branch-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-branch-ahead, .git-branch-behind { flex: none; font-variant-numeric: tabular-nums; }
+.git-branch-ahead { color: var(--ok); }
+.git-branch-behind { color: var(--bad); }
+.git-branch-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .git-branch-popup { width: min(380px, calc(100% - 16px)); max-height: min(480px, 65vh); font-size: 12px; }
 .git-branch-popup .palette-search { font-size: 12px; }
 .git-branch-list { min-height: 0; overflow: auto; padding: 0 8px 8px; }
@@ -5100,10 +5110,10 @@ body.vscode-high-contrast-light .context-pie {
 	opacity: .45;
 }
 .ultracode-input:checked + .ultracode-indicator .ultracode-symbol {
-	color: #efd28e;
+	color: var(--premium-ink, #efd28e);
 	opacity: 1;
 }
-.ultracode-tip-name { color: #efd28e; font-weight: 700; }
+.ultracode-tip-name { color: var(--premium-ink, #efd28e); font-weight: 700; }
 .ultracode-input:focus-visible + .ultracode-indicator {
 	outline: 2px solid var(--accent);
 	outline-offset: 3px;
@@ -5317,3 +5327,27 @@ body.vscode-high-contrast-light .context-pie {
 }
 
 .usage-loading .liquid-loader { margin-right: 6px; }
+
+/* Soft status colors need stronger ink on a light canvas. */
+:root[data-theme="light"], :root[data-theme="light"] body, :root:not([data-theme]) body.vscode-light, :root:not([data-theme]) body.vscode-high-contrast-light {
+ --effort-minimal: #57606a; --effort-low: #386a94; --effort-medium: #245b91;
+ --effort-high: #4a559b; --effort-xhigh: #75469b; --effort-maximum: #806000; --effort-extreme: #995000;
+ --premium-ink: #806000;
+}
+.effort[data-effort="minimal"] { --effort-colour: var(--effort-minimal, #bfc5ce); }
+.effort[data-effort="low"] { --effort-colour: var(--effort-low, #d8e9fb); }
+.effort[data-effort="medium"] { --effort-colour: var(--effort-medium, #acd1f5); }
+.effort[data-effort="high"] { --effort-colour: var(--effort-high, #b8c5ef); }
+.effort[data-effort="xhigh"] { --effort-colour: var(--effort-xhigh, #c9b7e8); }
+.effort[data-effort="maximum"] { --effort-colour: var(--effort-maximum, #efd28e); }
+.effort[data-effort="extreme"] { --effort-colour: var(--effort-extreme, #edbc90); }
+.appearance-setting { display: flex; align-items: center; gap: 12px; padding: 12px 18px; border-bottom: 1px solid var(--border); color: var(--fg-2); }
+.appearance-setting select { margin-left: auto; padding: 6px 10px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface); color: var(--fg); font: inherit; }
+
+.effort { --effort-colour: var(--effort-minimal, #bfc5ce); }
+:root[data-theme="light"] .send.queue-button,
+:root:not([data-theme]) body.vscode-light .send.queue-button,
+:root:not([data-theme]) body.vscode-high-contrast-light .send.queue-button {
+ background: var(--vscode-button-background);
+}
+.appearance-setting { flex: none; }

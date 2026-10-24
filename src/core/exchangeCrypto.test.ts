@@ -157,3 +157,16 @@ test('encrypted Exchange connections accept relay viewer presence without exposi
  assert.equal(h.transports[0].readyState,1);
  h.agent.close();h.viewer.close();
 });
+
+test('H.264 packets stay encrypted and retain the droppable-media marker', async () => {
+ const h = await pair();
+ try {
+  const decoded: any[] = [];
+  h.viewer.onmessage = event => decoded.push(JSON.parse(event.data));
+  h.agent.send(JSON.stringify({ type: 'browser.video', tabId: 'a', codec: 'avc1.420028', streamId: 'stream-1', data: 'AAAAAQ==', key: true, timestamp: 100, width: 800, height: 600 }));
+  await waitFor(() => decoded.some(packet => packet.type === 'browser.video'));
+  const encrypted = h.transports[0].sent.filter(packet => packet.type === 'secure').at(-1);
+  assert.equal(encrypted.frame, true); assert.equal(JSON.stringify(encrypted).includes('AAAAAQ=='), false);
+  assert.equal(decoded.find(packet => packet.type === 'browser.video').codec, 'avc1.420028');
+ } finally { h.agent.close(); h.viewer.close(); }
+});

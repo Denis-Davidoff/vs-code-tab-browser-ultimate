@@ -132,3 +132,14 @@ test('an older stream disposed while a newer one runs does not stop the shared s
  first.dispose();second.dispose();assert.equal(stops(),1,'a repeated disposal changes nothing');
  const third=await h.controller.remoteStream('tab-1',()=>{});third.dispose();assert.equal(stops(),2,'the tab can be streamed again after the last one stopped');
 });
+
+test('fit to my view lays the page out at the viewer size and unfit restores it; bad sizes are refused',async()=>{
+ const {readRemoteBrowserInput}=await import('./remoteBrowserProtocol.ts');
+ assert.deepEqual(readRemoteBrowserInput({action:'fit',width:390,height:700}),{action:'fit',width:390,height:700});
+ for(const bad of [{action:'fit',width:100,height:700},{action:'fit',width:390.5,height:700},{action:'fit',width:390},{action:'fit',width:390,height:700,mobile:true},{action:'unfit',x:1}])assert.equal(readRemoteBrowserInput(bad),undefined);
+ const h=harness();
+ await h.controller.remoteInput('tab-1',{action:'fit',width:390,height:700});
+ assert.deepEqual(JSON.parse(JSON.stringify(h.calls.at(-1))),{method:'Emulation.setDeviceMetricsOverride',params:{width:390,height:700,deviceScaleFactor:0,mobile:false}});
+ await h.controller.remoteInput('tab-1',{action:'unfit'});
+ assert.equal(h.calls.at(-1)?.method,'Emulation.clearDeviceMetricsOverride');assert.equal(h.held(),0);
+});

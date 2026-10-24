@@ -781,7 +781,7 @@ export type HostToView =
 	| { readonly type: 'gitBranchResult'; readonly folder: string; readonly action: 'switch' | 'create' | 'delete'; readonly error?: string }
 	/** `confirm`: nothing was done; ask the user this, and send the action again with `confirmed`. */
 	| { readonly type: 'gitRemoteResult'; readonly folder: string; readonly action: GitRemoteAction; readonly error?: string; readonly confirm?: string; /** What the question was about; sent back as `confirmed`. */ readonly confirmKey?: string }
-	| { readonly type: 'workdirGit'; readonly folder: string; readonly status?: WorkdirGitStatus; readonly branches?: GitBranchState; readonly error?: string }
+	| { readonly type: 'workdirGit'; readonly folder: string; readonly status?: WorkdirGitStatus; readonly branches?: GitBranchState; readonly error?: string; readonly fetchError?: string }
 	/**
 	 * The files and folders of `folder`, relative and `/`-separated, a folder
 	 * ending with `/`; sent when the folder button asks, not with every state.
@@ -925,7 +925,7 @@ export type ViewToHost =
 	| { readonly type: 'gitBranchAction'; readonly folder: string; readonly action: 'switch' | 'create' | 'delete'; readonly name: string; readonly remote?: boolean }
 	| { readonly type: 'restoreBranchStash'; readonly folder: string }
 	| { readonly type: 'gitRemoteAction'; readonly folder: string; readonly action: GitRemoteAction; readonly remote?: string; /** The `confirmKey` of the question answered: one about another push is asked again. */ readonly confirmed?: string }
-	| { readonly type: 'refreshWorkdirGit' }
+	| { readonly type: 'refreshWorkdirGit'; readonly fetch?: 'auto' | 'force' }
 	| { readonly type: 'listWorkdir' }
 	/** A file or folder of the working folder, by its path relative to it, attached to the message. */
 	| { readonly type: 'attachPath'; readonly path: string }

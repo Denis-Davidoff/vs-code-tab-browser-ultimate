@@ -197,6 +197,12 @@ test("media relay authenticates, forwards selected-tab frames and inputs, stops 
   };
   agent.ws.send(JSON.stringify(frame));
   assert.deepEqual(await viewer.read("browser.frame"), frame);
+  viewer.ws.send(JSON.stringify({ type: "browser.watch", active: true, video: "h264" }));
+  assert.equal((await agent.read("browser.viewers")).video, "h264");
+  const video = { type: "browser.video", tabId: "tab-1", codec: "avc1.420028", streamId: "stream-1", key: true, timestamp: 100, data: "AAAAAQ==", width: 800, height: 600 };
+  agent.ws.send(JSON.stringify(video));
+  assert.deepEqual(await viewer.read("browser.video"), video);
+
   // A congested viewer drops images, while command acknowledgements remain reliable.
   let frameCount = 0;
   viewer.ws.on("message", (raw) => {
@@ -245,5 +251,22 @@ test("viewer counts track each active socket separately, including the same acco
     messages.length = 0;
     laptop.readyState = WebSocket.CLOSED; relay.notify("point");
     assert.ok(messages.every(message => message.count === 0 && !message.active));
+  } finally { relay.dispose(); }
+});
+
+
+test("video negotiation requires every active viewer and video packets are bounded", () => {
+  const { StreamRelay, videoSchema } = load(), relay = new StreamRelay({});
+  const messages = [], make = () => ({ readyState: WebSocket.OPEN, bufferedAmount: 0, send: raw => messages.push(JSON.parse(raw)) });
+  const agent = make(), modern = make(), legacy = make();
+  try {
+    relay.agents.set("point", agent); relay.viewers.set("point", new Set([modern, legacy]));
+    relay.watching.add(modern); relay.videoViewers.add(modern);
+    relay.notify("point"); assert.equal(messages[0].video, "h264"); messages.length = 0;
+    relay.watching.add(legacy); relay.notify("point"); assert.equal(messages[0].video, undefined); messages.length = 0;
+    relay.videoViewers.add(legacy); relay.notify("point"); assert.equal(messages[0].video, "h264");
+    const packet = { type: "browser.video", tabId: "a", codec: "avc1.420028", streamId: "s", data: "AAAAAQ==", key: true, timestamp: 1, width: 1440, height: 1000 };
+    assert.equal(videoSchema.safeParse(packet).success, true);
+    for (const invalid of [{ codec: "unknown" }, { data: "bad!" }, { timestamp: -1 }, { width: 0 }, { streamId: "" }]) assert.equal(videoSchema.safeParse({ ...packet, ...invalid }).success, false);
   } finally { relay.dispose(); }
 });

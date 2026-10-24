@@ -38,7 +38,7 @@ const localTimeoutMs = 60_000;
 export class GitError extends Error { }
 
 /** Runs git; rejects with the last lines of what it said on stderr. */
-export function runGit(git: string, args: readonly string[], cwd: string | undefined, timeoutMs = localTimeoutMs): Promise<string> {
+export function runGit(git: string, args: readonly string[], cwd: string | undefined, timeoutMs = localTimeoutMs, environment: NodeJS.ProcessEnv = {}): Promise<string> {
 	return new Promise((resolve, reject) => {
 		// `core.fsmonitor` off whatever a config says: it names a program git runs
 		// when it reads the index, and a worktree's `.git` is a file the agent
@@ -48,7 +48,7 @@ export function runGit(git: string, args: readonly string[], cwd: string | undef
 			timeout: timeoutMs,
 			maxBuffer: 64 * 1024 * 1024,
 			windowsHide: true,
-			env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', LC_ALL: 'C' },
+			env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', LC_ALL: 'C', ...environment },
 		}, (error, stdout, stderr) => {
 			if (error) {
 				const said = String(stderr).trim().split('\n').slice(-4).join('\n');

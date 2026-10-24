@@ -1,3 +1,4 @@
+import { GitFetchScheduler } from './gitFetch';
 import type { ExchangeUiMessage } from './exchangeUiProtocol';
 import { remoteRefusal } from './core/commands';
 import { remoteScope } from './core/remoteScope';
@@ -570,7 +571,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			const target = message.type === 'runToolbarSkill' ? { ...message, tabId: tab.id } : message;
 			if (target.type === 'refreshWorkdirGit') {
 				const folder = this._workdir(tab);
-				if (folder) { await this._readWorkdirGit(folder); }
+				if (folder) { await this._readWorkdirGit(folder, target.fetch); }
 			} else if (target.type === 'attachPath') {
 				const folder = this._workdir(tab);
 				if (!folder || !target.path || /[\0\r\n]/.test(target.path)) { throw new Error('Invalid project path.'); }
@@ -1444,7 +1445,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				await this._restoreBranchStash(message.folder);
 				return;
 			case 'refreshWorkdirGit':
-				await this._refreshWorkdirGit();
+				await this._refreshWorkdirGit(message.fetch);
 				return;
 			case 'listWorkdir':
 				await this._listWorkdir();
@@ -3759,9 +3760,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}
 	}
 
-	private async _runWorkdirGit(git: string, args: readonly string[], folder: string, timeoutMs?: number): Promise<string> {
+	private async _runWorkdirGit(git: string, args: readonly string[], folder: string, timeoutMs?: number, environment?: NodeJS.ProcessEnv): Promise<string> {
 		await this._assertGitFolder(folder);
-		return runGit(git, args, folder, timeoutMs);
+		return runGit(git, args, folder, timeoutMs, environment);
 	}
 
 	private async _gitWorktreeIdentity(folder: string): Promise<string> {
@@ -3790,7 +3791,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private _gitStale = false;
 	private _gitEventTimer: ReturnType<typeof setTimeout> | undefined;
 	/** The read under way for a folder, and whether another was asked for meanwhile. */
-	private readonly _gitRefreshes = new Map<string, { again: boolean; done: Promise<void> }>();
+	private readonly _gitRefreshes = new Map<string, { again: boolean; fetch?: 'auto' | 'force'; done: Promise<void> }>();
+	private static readonly _gitFetches = new GitFetchScheduler();
 
 	/**
 	 * An editor event that may change how the footer's files are drawn: every
@@ -3819,7 +3821,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 * it — which is what a caller that has just changed the index needs — and
 	 * is answered when that rerun is done.
 	 */
-	private _refreshWorkdirGit(): Promise<void> {
+	private _refreshWorkdirGit(fetch?: 'auto' | 'force'): Promise<void> {
 		// Only for a view that can show it: the answer is not queued (see
 		// `_postMessage`), and `ready` asks for a fresh one.
 		if (this._disposed || ((!this._view || !this._viewReady) && !this._stateSurfaces.watching())) {
@@ -3831,16 +3833,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		const running = this._gitRefreshes.get(folder);
 		if (running) {
 			running.again = true;
+			running.fetch = fetch === 'force' || running.fetch === 'force' ? 'force' : fetch ?? running.fetch;
 			return running.done;
 		}
 		this._gitStale = false;
-		const entry = { again: false, done: Promise.resolve() };
+		const entry: { again: boolean; fetch?: 'auto' | 'force'; done: Promise<void> } = { again: false, fetch, done: Promise.resolve() };
 		this._gitRefreshes.set(folder, entry);
 		entry.done = (async () => {
 			try {
 				do {
 					entry.again = false;
-					await this._readWorkdirGit(folder);
+					const requestedFetch = entry.fetch;
+					entry.fetch = undefined;
+					await this._readWorkdirGit(folder, requestedFetch);
 					// A rerun for a folder no longer in front, or for a view that has
 					// gone, would only spend processes.
 				} while (entry.again && !this._disposed && (this._viewReady || this._stateSurfaces.watching()) && folder === this._workdir());
@@ -3851,7 +3856,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		return entry.done;
 	}
 
-	private async _readWorkdirGit(folder: string): Promise<void> {
+	private async _readWorkdirGit(folder: string, fetch?: 'auto' | 'force'): Promise<void> {
 		// Restricted Mode, or a remote window: `git status` runs the repository's
 		// own `filter.<driver>.clean` commands from `.git/config`, which
 		// `core.fsmonitor=false` does not stop — code from a folder the user has
@@ -3864,6 +3869,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		try {
 			const git = await gitBinary();
 			if (!git) { throw new Error('Git is unavailable'); }
+			let fetchError: string | undefined;
+			if (fetch) {
+				try { await this._fetchWorkdirGit(git, folder, fetch === 'force'); }
+				catch (error) { fetchError = gitExtensionErrorText(error); }
+			}
 			const [output, current, refs, urls] = await Promise.all([
 				this._runWorkdirGit(git, ['--no-optional-locks', 'status', '--porcelain=v1', '-z', '--untracked-files=all'], folder, 15_000),
 				this._runWorkdirGit(git, ['symbolic-ref', '--quiet', 'HEAD'], folder, 15_000).catch(() => ''),
@@ -3874,10 +3884,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			const status = parseGitStatus(output);
 			const decorated = this._view && !this._chromeCommand?.getStore() ? await themedGitFiles(status, this._view.webview, vscode.Uri.joinPath(this._context.extensionUri, 'media'), vscode.Uri.file(folder)) : status;
 			const branches = parseGitBranches(current, refs, urls);
-			this._postMessage({ type: 'workdirGit', folder, status: decorated, branches: { ...branches, ...this._pullRequestFor(branches), savedStash: this._branchStashes.get(folder)?.at(-1) } });
+			this._postMessage({ type: 'workdirGit', folder, status: decorated, branches: { ...branches, ...this._pullRequestFor(branches), savedStash: this._branchStashes.get(folder)?.at(-1) }, ...(fetchError ? { fetchError } : {}) });
 		} catch (error) {
 			this._postMessage({ type: 'workdirGit', folder, error: error instanceof Error ? error.message : String(error) });
 		}
+	}
+
+	private async _fetchWorkdirGit(git: string, folder: string, force: boolean): Promise<void> {
+		if (this._disposed || this._blocked()) { return; }
+		if (this._untrusted(folder)) { throw new Error('Trust this repository before fetching remote changes.'); }
+		const root = (await this._runWorkdirGit(git, ['rev-parse', '--show-toplevel'], folder, 15_000)).trim();
+		const key = await fs.promises.realpath(root);
+		await ChatViewProvider._gitFetches.run(key, force, async () => {
+			if (this._disposed || this._blocked() || this._untrusted(folder)) { return; }
+			const remotes = await this._runWorkdirGit(git, ['remote'], folder, 15_000);
+			if (!remotes.trim()) { return; }
+			if (force) {
+				// An explicit click may ask VS Code to authenticate using its Git integration.
+				const repository = await gitRepositoryFor(root, folder);
+				for (const remote of remotes.trim().split('\n')) { await repository.fetch({ remote: remote.trim() }); }
+			} else {
+				// Periodic reads must not open sign-in dialogs. Existing helpers/SSH keys may authenticate.
+				await this._runWorkdirGit(git, ['-c', `core.hooksPath=${os.devNull}`, '-c', 'credential.interactive=false', 'fetch', '--all', '--prune', '--no-recurse-submodules', '--quiet'], folder, 20_000, { GIT_ASKPASS: '', SSH_ASKPASS: '', SSH_ASKPASS_REQUIRE: 'never' });
+			}
+		});
 	}
 
 	private async _openGitDiff(message: Extract<ViewToHost, { type: 'openGitDiff' }>): Promise<void> {

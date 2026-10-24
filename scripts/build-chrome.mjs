@@ -16,6 +16,7 @@ await build({
 await Promise.all(['manifest.json', 'sidepanel.html', 'sidepanel.css'].map(file => copyFile(`${source}${file}`, `${output}${file}`)));
 await copyFile(`${source}../media/chat.css`, `${output}chat.css`);
 await copyFile(`${source}../media/liquid-loader.css`, `${output}liquid-loader.css`);
+await copyFile(`${source}../media/appearance.css`, `${output}appearance.css`);
 await cp(`${source}icons/`, `${output}icons/`, { recursive: true });
 
 // Package the exact CDP overlay as a static content script: Chrome never evaluates a string.

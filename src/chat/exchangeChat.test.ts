@@ -290,3 +290,21 @@ test('each additional Exchange viewer renews awake protection, repeated presence
   assert.deepEqual(h.actions,[{viewerJoined:'panel-2'},{viewerJoined:'panel-2'},{viewerJoined:'panel-2'}]);
  }finally{h.shutdown();}
 });
+
+
+test('unchanged chat state is not resent after the checkpoint interval; explicit resync still sends it', async () => {
+ const h=harness();
+ try {
+  await h.port.connect({url:'http://127.0.0.1:3000',pointId,key},'panel-1');
+  const socket=h.sockets[0];socket.emit('message',{data:JSON.stringify({type:'ready',version:1,features:['patch']})});await delay(40);
+  const state={chatId:'chat-1',entries:[{kind:'assistant',text:'An unchanged answer'}],running:false,tabs:[{id:'tab-1',chatId:'chat-1',title:'One'}],voice:{}};
+  h.surface.update(state);await delay(40);
+  const count=()=>socket.sent.map(s=>JSON.parse(s)).filter(m=>m.type==='chat.snapshot'||m.type==='chat.patch').length;
+  const before=count();
+  // Age the last full snapshot without waiting for a timer or changing the message revision.
+  h.surface.sent.at-=3000;
+  h.surface.update(state);await delay(40);assert.equal(count(),before);
+  socket.emit('message',{data:JSON.stringify({type:'chat.resync',id:randomUUID(),chatId:'chat-1'})});await flush();
+  assert.equal(count(),before+1);assert.equal(JSON.parse(socket.sent.at(-2)!).type,'chat.snapshot');
+ }finally{h.shutdown();}
+});

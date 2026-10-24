@@ -134,7 +134,7 @@ export function encryptedExchangeSocket(
 					epoch: cipher.descriptor.epoch,
 					sender,
 					seq: ++sequence,
-					frame: (value as any)?.type === 'browser.frame',
+					frame: (value as any)?.type === 'browser.frame' || (value as any)?.type === 'browser.video',
 				};
 				const iv = crypto.getRandomValues(new Uint8Array(12));
 				const ciphertext = await crypto.subtle.encrypt(

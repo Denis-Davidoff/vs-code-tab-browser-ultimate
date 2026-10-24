@@ -33,9 +33,29 @@ function send(socket: WebSocket | undefined, value: unknown) {
   }
   socket.send(JSON.stringify(value));
 }
+/**
+ * The VS Code machine's public address, for display on its connection card. Behind
+ * the local proxy (Caddy, possibly behind Cloudflare) the socket peer is loopback,
+ * so the proxy's headers name the client; a direct connection uses the peer.
+ * Display only: never used to authorise anything.
+ */
+export function clientAddress(request: IncomingMessage): string | undefined {
+  const peer = request.socket.remoteAddress?.replace(/^::ffff:/, "");
+  const proxied = !peer || peer === "127.0.0.1" || peer === "::1";
+  const header = (name: string) => {
+    const value = request.headers[name];
+    return (Array.isArray(value) ? value[0] : value)?.split(",")[0]?.trim();
+  };
+  const found = proxied
+    ? header("cf-connecting-ip") ?? header("x-real-ip") ?? header("x-forwarded-for")
+    : peer;
+  const clean = found?.replace(/^::ffff:/, "");
+  return clean && /^[0-9a-fA-F.:]{2,45}$/.test(clean) ? clean : undefined;
+}
 @Injectable()
 export class Relay {
   private readonly agents = new Map<string, WebSocket>();
+  private readonly agentAddresses = new Map<string, string>();
   private readonly viewers = new Map<string, Set<WebSocket>>();
   private readonly viewerPresence = new WeakSet<WebSocket>();
   private readonly snapshots = new Map<string, unknown>();
@@ -49,6 +69,9 @@ export class Relay {
   private readonly streams: StreamRelay;
   constructor(@Inject(Services) private readonly services: Services) {
     this.streams = new StreamRelay(services);
+  }
+  address(id: string) {
+    return this.online(id) ? this.agentAddresses.get(id) : undefined;
   }
   online(id: string) {
     return this.agents.get(id)?.readyState === WebSocket.OPEN;
@@ -188,6 +211,9 @@ export class Relay {
       this.agents.get(id)?.close(AGENT_REFUSED, "Connection replaced");
       this.snapshots.delete(id);
       this.agents.set(id, ws);
+      const address = clientAddress(request);
+      if (address) this.agentAddresses.set(id, address);
+      else this.agentAddresses.delete(id);
       if (Array.isArray(hello.features) && hello.features.includes("chat-viewers")) this.viewerPresence.add(ws);
       this.broadcast(id, { type: "presence", online: true });
     } else {
@@ -326,6 +352,7 @@ export class Relay {
       this.sessions.delete(ws);
       if (this.agents.get(id) === ws) {
         this.agents.delete(id);
+        this.agentAddresses.delete(id);
         this.snapshots.delete(id);
         this.broadcast(id, { type: "presence", online: false });
       }

@@ -1,4 +1,5 @@
 import { annotationPointContext } from '../src/browser/annotationData';
+import { showSentAttachment } from '../preview-src/sentAttachment';
 import { chromeChatProtocolVersion, chromeChatProtocolHeader, chromeChatVersionHeader, chromeChatCompatibilityError, chromeChatCapabilities, chromeChatCapabilitiesHeader, negotiateChromeChatCapabilities, chromeChatFeatureError, chromeChatAttachmentFeature, chromeChatCommandFeature, chromeChatFooterCommands, chromeChatWaitHeader, chromeChatMaxWaitMs, chromeChatBaseHeader } from '../src/chat/chromeChatCompatibility';
 import { applyPatch, readPatch } from '../src/chat/core/sync';
 import { forwardedTypes } from '../src/chat/core/commands';
@@ -132,13 +133,6 @@ function render(): void {
   renderMode();
   if (resumeState && resumeState.chatId !== latest.chatId) { void saveResume({ ...resumeState, chatId: latest.chatId }); }
   const view = latest.view;
-  const light = view.themeKind === 1 || view.themeKind === 4;
-  document.documentElement.style.colorScheme = light ? 'light' : 'dark';
-  for (const name of ['vscode-light', 'vscode-dark', 'vscode-high-contrast', 'vscode-high-contrast-light']) { document.body.classList.remove(name); }
-  document.body.classList.add(view.themeKind === 4 ? 'vscode-high-contrast-light' : view.themeKind === 3 ? 'vscode-high-contrast' : light ? 'vscode-light' : 'vscode-dark');
-  for (const [key, value] of Object.entries(view.themeTokens ?? {})) {
-    if (/^--vscode-[a-zA-Z0-9-]+$/.test(key)) { document.documentElement.style.setProperty(key, value); }
-  }
   emit({ type: 'state', state: { ...view,
     browserApi: true, nativeBrowser: view.nativeBrowser === 'granted' ? 'granted' : 'unsupported', hasBrowserTab: activePage?.id !== undefined,
     attachments: (elementDrafts[latest.chatId]?.attachments ?? []).map(item => ({ id: item.id, kind: item.kind ?? 'element', label: item.label, reference: item.reference })),
@@ -507,6 +501,7 @@ window.aiBrowserChatHost = {
         .then(() => emit({ type: 'pastedFileResult', id: message.id }), error => emit({ type: 'pastedFileResult', id: message.id, error: String(error) }));
       return;
     }
+    if (message.type === 'openAttachment' && message.entry !== undefined) { showSentAttachment(latest?.view.entries, message.entry, message.id); return; }
     if (message.type === 'removeAttachment' || (message.type === 'openAttachment' && message.entry === undefined)) {
       const draft = latest && elementDrafts[latest.chatId];
       const attachment = draft?.attachments.find(item => item.id === message.id);

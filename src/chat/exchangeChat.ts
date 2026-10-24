@@ -101,11 +101,11 @@ class ExchangeSurface implements ChatStateSurface {
 			if (this.patches && view) {
 				const sent = this.sent;
 				const now = Date.now();
-				if (!this.forceFull && sent && !view.trimmed && sent.chatId === view.chatId && now - sent.at < fullEveryMs) {
+				if (!this.forceFull && sent && !view.trimmed && sent.chatId === view.chatId) {
 					const patch = diffState(sent.value, view.value, this.rev, this.rev + 1);
 					if (!patch) { return; }
 					const frame = JSON.stringify({ type: 'chat.patch', chatId: view.chatId, epoch: this.epoch, base: this.rev, rev: this.rev + 1, patch, top: { chatId: view.chatId, running: view.running, uiVersion: 1 } });
-					if (Buffer.byteLength(frame) * 2 < Buffer.byteLength(this.body)) {
+					if (now - sent.at < fullEveryMs && Buffer.byteLength(frame) * 2 < Buffer.byteLength(this.body)) {
 						this.rev++; this.sent = { value: copy(view.value), at: sent.at, chatId: view.chatId };
 						this.socket.send(frame);
 						clearTimeout(this.trailing);

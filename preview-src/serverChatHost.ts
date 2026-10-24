@@ -1,4 +1,5 @@
 import {snapshotReplay} from './snapshotEvents';
+import { showSentAttachment } from './sentAttachment';
 import {applyPatch,readPatch} from '../src/chat/core/sync';
 import { workspaceExchangeSocket } from '../src/core/exchangeCrypto';
 import type { ChatViewState, HostToView, ViewToHost } from '../src/chat/chatProtocol';
@@ -17,7 +18,8 @@ const storageKey = `ai-browser:web:${pointId}`;
 let draftState:ChatDraftState = {};
 try { draftState = JSON.parse(sessionStorage.getItem(storageKey) ?? '{}'); } catch { /* Storage can be unavailable. */ }
 let socket:WebSocket | undefined, latest:Snapshot | undefined, rendererReady = false, online = false;
-let authenticated=false, connecting=true;
+let authenticated=false, connecting=true, accessDenied=false;
+let handshake:ReturnType<typeof setTimeout>|undefined;
 let feedback = '', retry:ReturnType<typeof setTimeout> | undefined, stopped = false;
 const eventQueue:HostToView[] = [];
 const attachments = new Map<string,ChromeElementAttachment[]>();
@@ -54,12 +56,6 @@ function render():void {
   app.hidden=false;
   document.getElementById("waiting")!.hidden=true;
   const view=latest.view;
-  const light=view.themeKind===1 || view.themeKind===4;
-  document.documentElement.style.colorScheme=light?'light':'dark';
-  document.body.className=view.themeKind===4?'vscode-high-contrast-light':view.themeKind===3?'vscode-high-contrast':light?'vscode-light':'vscode-dark';
-  for(const [key,value] of Object.entries(view.themeTokens??{})) {
-    if(/^--vscode-[a-zA-Z0-9-]+$/.test(key)&&typeof value==='string'&&value.length<500&&!/[;{}]/.test(value)&&!/url\(/i.test(value))document.documentElement.style.setProperty(key,value);
-  }
   const signature=JSON.stringify([latest.chatId,view.tabs.map(tab=>[tab.chatId,tab.title,tab.busy])]);
   if(conversation.dataset.signature!==signature && document.activeElement!==conversation) {
     conversation.replaceChildren(...view.tabs.map(tab=>{const option=document.createElement('option');option.value=tab.chatId;option.textContent=`${tab.busy?'● ':''}${tab.title}`;return option;}));
@@ -67,7 +63,7 @@ function render():void {
   }
   const local=attachments.get(latest.chatId)??[];
   emit({type:'state',state:{...view,remoteWorkspace:true,suggestions:local.some(a=>a.kind==='page')?[]:view.suggestions??[],attachments:local.map(item=>({id:item.id,label:item.label,kind:item.kind??'file',reference:item.reference,...(item.file&&/^image\/(png|jpeg|webp|gif)$/.test(item.file.mime)?{thumbnail:`data:${item.file.mime};base64,${item.file.base64}`}:{})})),
-    blocked:!online?'Workspace offline. Reconnect your VS Code extension.':view.blocked,
+    blocked:connecting?'Reconnecting…':!online?'Workspace offline. Reconnect your VS Code extension.':view.blocked,
     entries:feedback?[...view.entries,{kind:'notice',text:feedback}]:view.entries,
   }});
   replaySnapshots(view.snapshotEvents);
@@ -155,6 +151,7 @@ window.aiBrowserChatHost={
     if(message.type==='pasteFile'&&latest){addAttachment({label:message.name,text:`Attached file: ${message.name}`,kind:'file',file:{name:message.name,mime:message.mime,base64:message.base64}},latest.chatId);emit({type:'pastedFileResult',id:message.id});return;}
     if(message.type==='acceptSuggestion'){if(message.id==='exchange-active-page')send({type:'attach',kind:'page'});return;}
     if(message.type==='removeAttachment'&&latest){attachments.set(latest.chatId,(attachments.get(latest.chatId)??[]).filter(a=>a.id!==message.id));send(message);render();return;}
+    if(message.type==='openAttachment'&&message.entry!==undefined){showSentAttachment(latest?.view?.entries,message.entry,message.id);return;}
     if(message.type==='openAttachment'&&message.entry===undefined&&latest){const item=(attachments.get(latest.chatId)??[]).find(a=>a.id===message.id);if(item){const dialog=document.createElement('dialog');const pre=document.createElement('pre');pre.textContent=item.text;const close=document.createElement('button');close.textContent='Close';close.onclick=()=>dialog.close();if(item.file&&/^image\/(png|jpeg|webp|gif)$/.test(item.file.mime)){const img=document.createElement('img');img.src=`data:${item.file.mime};base64,${item.file.base64}`;img.alt=item.label;img.style.maxWidth='100%';dialog.append(img);}dialog.append(pre,close);dialog.onclose=()=>dialog.remove();document.body.append(dialog);dialog.showModal();return;}}
     send(message);
   },
@@ -189,14 +186,17 @@ function renderLegacy(value:Snapshot):void {
 
 function connect():void {
   if(stopped)return;
-  connecting=true;
+  clearTimeout(retry);clearTimeout(handshake);
+  connecting=true;authenticated=false;online=false;
+  connectionState(false);render();
   const base=new URL(location.href).searchParams.get('server')??`${location.protocol==='https:'?'wss:':'ws:'}//${location.host}`;
   const ws=socket=workspaceExchangeSocket(base+'/ws/browser',pointId);status.dataset.busy='true';status.textContent='Connecting…';
-  ws.onopen=()=>ws.send(JSON.stringify({type:'auth',version:1,pointId}));
+  handshake=setTimeout(()=>{if(ws===socket)ws.close();},10000);
+  ws.onopen=()=>{if(ws===socket&&!stopped)ws.send(JSON.stringify({type:'auth',version:1,pointId}));};
   ws.onmessage=event=>{
     if(ws!==socket)return;
     try{const value=JSON.parse(event.data);
-      if(value.type==='ready'){connecting=false;authenticated=true;online=value.online;status.dataset.busy=String(!online||!latest);status.textContent=online?'Connected':'Workspace offline';connectionState(true);if(latest&&rendererReady)send({type:'ready'});}
+      if(value.type==='ready'){clearTimeout(handshake);connecting=false;authenticated=true;online=value.online;status.dataset.busy=String(!online||!latest);status.textContent=online?'Connected':'Workspace offline';connectionState(true);render();if(latest&&rendererReady)send({type:'ready'});}
       else if(value.type==='presence'){online=value.online;status.dataset.busy=String(!online||!latest);status.textContent=online?'Connected':'Workspace offline';connectionState(true);render();}
       else if(value.type==='chat.snapshot'){
         if(value.uiVersion!==1||!value.view){renderLegacy(value);return;}
@@ -220,13 +220,24 @@ function connect():void {
       }else if(value.type==='command.result')result(value.id,value.ok,value.error);
     }catch{notice('The server returned an invalid response.');}
   };
-  ws.onclose=event=>{if(ws!==socket)return;authenticated=false;online=false;connecting=event.code!==1008&&!stopped;connectionState(false);status.dataset.busy=String(connecting);status.textContent=event.code===1008?'Sign in again to reconnect.':'Disconnected. Reconnecting…';
+  ws.onclose=event=>{if(ws!==socket)return;clearTimeout(handshake);accessDenied=event.code===1008;authenticated=false;online=false;connecting=event.code!==1008&&!stopped;connectionState(false);status.dataset.busy=String(connecting);status.textContent=event.code===1008?'Sign in again to reconnect.':'Disconnected. Reconnecting…';
     for(const id of [...pending.keys()])result(id,false,'Connection lost. Check the chat before retrying.');render();
     if(!stopped&&event.code!==1008)retry=setTimeout(connect,2000);
   };
-  ws.onerror=()=>{status.dataset.busy=String(!stopped);status.textContent='Could not connect to the workspace.';};
+  ws.onerror=()=>{if(ws!==socket||stopped)return;status.dataset.busy='true';status.textContent='Reconnecting…';ws.close();};
 }
-window.addEventListener('pagehide',()=>{stopped=true;clearTimeout(retry);socket?.close();for(const item of pending.values())clearTimeout(item.timer);});
+function resumeConnection():void {
+  if(document.hidden||accessDenied||(!stopped&&connecting&&socket?.readyState===WebSocket.CONNECTING))return;
+  stopped=false;
+  // Mobile browsers can leave a dead socket marked OPEN after suspending a tab.
+  const previous=socket;socket=undefined;previous?.close();
+  for(const id of [...pending.keys()])result(id,false,'Connection interrupted. Check the chat before retrying.');
+  connect();
+}
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)resumeConnection();});
+window.addEventListener('online',resumeConnection);
+window.addEventListener('pageshow',event=>{if(event.persisted)resumeConnection();});
+window.addEventListener('pagehide',()=>{stopped=true;clearTimeout(retry);clearTimeout(handshake);socket?.close();for(const item of pending.values())clearTimeout(item.timer);});
 window.addEventListener('touchstart',event=>{if(event.target instanceof Element&&event.target.closest('input,textarea,select,[contenteditable="true"]'))return;const touch=event.touches[0];if(!touch)return;gesture={x:touch.clientX,y:touch.clientY};},{passive:true});
 let gesture:{x:number;y:number}|undefined;
 window.addEventListener('touchend',event=>{const touch=event.changedTouches[0],start=gesture;gesture=undefined;if(touch&&start&&start.x-touch.clientX>70&&Math.abs(start.y-touch.clientY)<45)window.parent.postMessage({type:'ai-browser-swipe',page:'browser'},location.origin);},{passive:true});

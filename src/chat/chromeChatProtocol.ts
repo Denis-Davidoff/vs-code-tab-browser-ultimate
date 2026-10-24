@@ -241,8 +241,10 @@ function readChromeFooterMessage(m: Record<string, unknown>): ViewToHost | undef
   const tab = () => text('tabId', 100) && !!m.tabId;
   const folder = () => text('folder') && !!m.folder;
   switch (m.type) {
-    case 'usage': case 'listWorkdir': case 'chooseWorkdir': case 'refreshWorkdirGit': case 'trustWorkdir':
+    case 'usage': case 'listWorkdir': case 'chooseWorkdir': case 'trustWorkdir':
       return { type: m.type };
+    case 'refreshWorkdirGit':
+      return m.fetch === undefined || m.fetch === 'auto' || m.fetch === 'force' ? { type: m.type, ...(m.fetch ? { fetch: m.fetch } : {}) } : undefined;
     case 'compact': return tab() ? { type: m.type, tabId: m.tabId as string } : undefined;
     case 'setWorkdir': return text('path', 4096, true) ? { type: m.type, path: m.path as string | undefined } : undefined;
     case 'attachPath': case 'removeRepoFolder': return text('path') ? { type: m.type, path: m.path as string } : undefined;

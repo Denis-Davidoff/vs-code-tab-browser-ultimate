@@ -7,11 +7,12 @@ import { transpileModule, ModuleKind, ScriptTarget } from 'typescript';
 function gestures() {
  const source=readFileSync('exchange-server/apps/web/app/workspace/[id]/remote-browser.tsx','utf8');
  const handlers=source.slice(source.indexOf('  function pointerDown('),source.indexOf('  function command('));
+ const preview=source.slice(source.indexOf('  function scrollPreview('),source.indexOf('  function input('));
  const wheel=source.slice(source.indexOf('    const wheel = (event: WheelEvent)'),source.indexOf('    let gestureZoom'));
- const node={scrollLeft:100,scrollTop:50,clientHeight:600,setPointerCapture(_id:number){}};
+ const node={scrollLeft:100,scrollTop:50,clientHeight:600,scrollHeight:650,setPointerCapture(_id:number){}};
  const zoomRef={current:1},input:any[]=[],zooms:number[]=[];
  const exported:any={};let switched=0;
- runInNewContext(transpileModule(handlers+wheel+'\nexports.down=pointerDown;exports.move=pointerMove;exports.up=pointerUp;exports.wheel=wheel;', {compilerOptions:{module:ModuleKind.CommonJS,target:ScriptTarget.ES2022}}).outputText,{
+ runInNewContext(transpileModule(handlers+preview+wheel+'\nexports.down=pointerDown;exports.move=pointerMove;exports.up=pointerUp;exports.wheel=wheel;', {compilerOptions:{module:ModuleKind.CommonJS,target:ScriptTarget.ES2022}}).outputText,{
   exports:exported,pointers:{current:new Map()},touch:{current:null},pinch:{current:null},frameRef:{current:{width:800,height:600}},image:{current:{getBoundingClientRect:()=>({width:400,height:600})}},scrollQueue:{current:{reset(){},enqueue:(x:number,y:number,deltaX:number,deltaY:number)=>input.push({action:"scroll",x,y,deltaX,deltaY})}},ignoreClickUntil:{current:0},zoomRef,node,
   point:()=>({x:.5,y:.5}),input:(value:any)=>input.push(value),onShowChat:()=>switched++,matchMedia:()=>({matches:true}),changeZoom:(value:number)=>{zoomRef.current=value;zooms.push(value);},
  });
@@ -35,4 +36,12 @@ test('desktop pinch wheel zooms while an ordinary wheel scrolls the remote page'
  const wheel={ctrlKey:true,metaKey:false,deltaX:0,deltaY:-50,deltaMode:0,clientX:150,clientY:150,preventDefault(){prevented=true;}};
  h.handlers.wheel(wheel);assert.equal(prevented,true);assert.ok(h.zoomRef.current>1);assert.equal(h.input.length,0);
  h.zoomRef.current=1;h.handlers.wheel({...wheel,ctrlKey:false,deltaY:100});assert.equal(h.input[0].action,'scroll');assert.equal(h.input[0].deltaY,100);
+});
+
+test('at full width a preview taller than its box shows the rest of itself before scrolling the page',()=>{
+ const h=gestures();h.node.scrollTop=0;h.node.scrollHeight=700;
+ h.handlers.wheel({ctrlKey:false,metaKey:false,deltaX:0,deltaY:60,deltaMode:0,clientX:1,clientY:1,preventDefault(){}});
+ assert.equal(h.node.scrollTop,60);assert.equal(h.input.length,0);
+ h.handlers.wheel({ctrlKey:false,metaKey:false,deltaX:0,deltaY:100,deltaMode:0,clientX:1,clientY:1,preventDefault(){}});
+ assert.equal(h.node.scrollTop,100);assert.equal(h.input[0].deltaY,60,'only what the box could not take reaches the page');
 });

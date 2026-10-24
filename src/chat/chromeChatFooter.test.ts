@@ -102,3 +102,13 @@ for(const surface of ['Chrome','Exchange'])test(`${surface} stages and unstages 
   assert.equal(view._active,tabB);assert.ok(editorMessages.every(m=>m.type==='state'));
  }finally{rmSync(folder,{recursive:true,force:true});}
 });
+
+test('remote fetch modes stay attached to the pinned conversation and its folder', async () => {
+ const { view, tabA, tabB } = fixture();
+ const calls: any[] = [];
+ view._readWorkdirGit = async (folder: string, fetch: string) => { calls.push({ folder, fetch, tab: view._chromeCommand.getStore().tab }); };
+ await view._receiveChromeFooter(tabA, { type: 'refreshWorkdirGit', fetch: 'force' });
+ await view._receiveChromeFooter(tabB, { type: 'refreshWorkdirGit', fetch: 'auto' });
+ assert.equal(calls[0].folder, '/A'); assert.equal(calls[0].fetch, 'force'); assert.equal(calls[0].tab, tabA);
+ assert.equal(calls[1].folder, '/B'); assert.equal(calls[1].fetch, 'auto'); assert.equal(calls[1].tab, tabB);
+});
