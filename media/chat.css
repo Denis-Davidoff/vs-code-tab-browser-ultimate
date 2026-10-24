@@ -89,6 +89,8 @@ body {
 	flex-direction: column;
 	height: 100%;
 	overflow: hidden;
+	/* Focus in an overlay must not scroll the app and leave space below its footer. */
+	overflow: clip;
 }
 
 button {
@@ -5299,32 +5301,21 @@ button {
 .working-glyph.liquid-loader { --liquid-size: 18px; transform: translateX(-2px); }
 .tab-mark.working { --liquid-size: 12px; }
 .row.tool.running::before,
-.agent-dot.running {
- background: linear-gradient(135deg, #ac9aff, #71e2e1);
- animation: ai-liquid-core 15s cubic-bezier(.45, 0, .55, 1) infinite, ai-liquid-spin 15s linear infinite;
-}
+.agent-dot.running { background: var(--liquid-core-image) center / contain no-repeat; animation: none; }
 .agents-button.live .codicon,
 .prompt.pending-send.steer .pending-note .codicon { animation: none; }
-@media (prefers-reduced-motion: reduce) {
- .row.tool.running::before, .agent-dot.running { animation: none; }
-}
 
 .agents-button.live .codicon { position: relative; width: 16px; height: 16px; }
 .agents-button.live .codicon::before {
- content: ''; position: absolute; inset: 2px;
- background: linear-gradient(135deg, #ac9aff, #71e2e1);
- animation: ai-liquid-core 15s cubic-bezier(.45, 0, .55, 1) infinite, ai-liquid-spin 15s linear infinite;
+ content: ''; position: absolute; inset: 1px;
+ background: var(--liquid-loader-image) center / contain no-repeat;
 }
 .skill-button.running { animation: none; }
 .skill-button.running::before {
  content: ''; width: 12px; height: 12px; flex: none;
- background: linear-gradient(135deg, #ac9aff, #71e2e1);
- animation: ai-liquid-core 15s cubic-bezier(.45, 0, .55, 1) infinite, ai-liquid-spin 15s linear infinite;
+ background: var(--liquid-loader-image) center / contain no-repeat;
 }
 .skill-button.running .codicon { display: none; }
-@media (prefers-reduced-motion: reduce) {
- .agents-button.live .codicon::before, .skill-button.running::before { animation: none; }
-}
 
 .usage-loading .liquid-loader { margin-right: 6px; }
 

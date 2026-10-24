@@ -10016,6 +10016,16 @@ It does not touch the user's Chrome profile or expose a network debugging port.
   unavailable there because the extension's recording destination/encoder belongs to the sidebar.
   These panels contain our chat UI, never the legacy browser iframe.
 
+- **The liquid loader is generated, and it is an SVG inside the CSS.** `media/liquid-loader.css`
+  is written by `node ./scripts/build-liquid-loader.mjs` — edit the script, never the file. The
+  shape (a 30 s loop: circle at 0 s, a fluid six-rayed form, a rounded hexagon for core and shell
+  at 12.6 s, held at neither) cannot be drawn with `border-radius`, so it is a SMIL-animated SVG
+  set as a `data:` background through `--liquid-loader-image` (core and shell) and
+  `--liquid-core-image` (core alone, for the small status dots in `chat.css`). A `data:` URL keeps
+  every surface on its plain `<span class="liquid-loader">` — the chat, the Chrome side panel and
+  the Exchange website copy only the CSS — and is allowed by each CSP (`img-src data:`). SMIL
+  rather than CSS `d:` animation because Safari, on the website, animates no CSS `d`. Reduced
+  motion swaps both variables to the first frame, a still circle.
 - **In a remote window this extension runs on the local machine, and the MCP features are
   refused there.** `extensionKind` is `["ui", "workspace"]`, inherited from upstream
   simple-browser, so a Remote-SSH, WSL or Dev Container window runs it in the local extension

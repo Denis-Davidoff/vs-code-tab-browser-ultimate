@@ -1,5 +1,5 @@
 import { initTheme, getThemePreference, setThemePreference, type ThemePreference } from './uiTheme';
-import { overlayBounds, fitOverlay } from './overlayPosition';
+import { overlayBounds, fitOverlay, anchoredOverlay } from './overlayPosition';
 import { chatTabDragType, parseChatTabTransfer } from './tabDrag';
 import { createVsCodeChatHost } from './chatHost';
 import { historyPeriodRange, type HistoryPeriod } from './historyPeriod';
@@ -4218,16 +4218,6 @@ function linkMenu(link: HTMLElement, url: string, directory?: boolean, inWorkspa
 		{ icon: 'copy', label: 'Copy Link', run: () => post({ type: 'copy', text: url }) },
 		{ icon: 'symbol-text', label: 'Copy Link Text', disabled: !text || text === url, run: () => post({ type: 'copy', text }) },
 	], url.length > 60 ? `${url.slice(0, 57)}…` : url, undefined, panel);
-	if (!menu.classList.contains('open')) {
-		return;
-	}
-	// Opened above the link like every other menu, but a link near the top of
-	// the thread has no room there, and `#app` clips what overflows it.
-	const box = app.getBoundingClientRect();
-	if (menu.getBoundingClientRect().top < box.top + 8) {
-		menu.style.bottom = '';
-		menu.style.top = `${link.getBoundingClientRect().bottom - box.top + 6}px`;
-	}
 }
 
 /* ---------------------------------------------------------------- composer */
@@ -5374,35 +5364,21 @@ function openAbove(popup: HTMLElement, anchor: HTMLElement, align: 'left' | 'rig
 		popup.classList.add(form);
 	}
 	anchor.classList.add('active');
-	// Relative to the view, not the window: the popup is positioned inside
-	// `#app`, and the two only coincide when nothing else is laid out around it.
-	const box = app.getBoundingClientRect();
-	const rect = anchor.getBoundingClientRect();
-	popup.style.maxHeight = '';
-	popup.style.maxWidth = '';
-	popup.style.minWidth = '';
-	popup.style.top = '';
-	popup.style.bottom = `${box.bottom - rect.top + 6}px`;
-	if (align === 'left') {
-		popup.style.left = `${Math.max(8, rect.left - box.left)}px`;
-		popup.style.right = '';
-	} else {
-		popup.style.right = `${Math.max(8, box.right - rect.right)}px`;
-		popup.style.left = '';
-	}
-	popup.classList.add('open');
-	// Top-of-chat anchors need the menu below them; #app clips menus above it.
-	const above = Math.max(0, rect.top - box.top - 14);
-	const below = Math.max(0, box.bottom - rect.bottom - 14);
-	const height = popup.getBoundingClientRect().height;
-	if (height > above && below > above) {
-		popup.style.bottom = '';
-		popup.style.top = `${rect.bottom - box.top + 6}px`;
-		popup.style.maxHeight = `${Math.min(height, below)}px`;
-	} else if (height > above) {
-		popup.style.maxHeight = `${above}px`;
-	}
-	constrainOverlay(popup);
+	showAnchoredOverlay(popup, anchor, align);
+}
+
+type OverlayAnchor = { anchor: HTMLElement; align: 'left' | 'right' | 'center' };
+const overlayAnchors = new WeakMap<HTMLElement, OverlayAnchor>();
+const screenOverlays = new WeakMap<HTMLElement, 'fill' | 'corner'>();
+function showScreenOverlay(node: HTMLElement, mode: 'fill' | 'corner' = 'fill'): void {
+	screenOverlays.set(node, mode);
+	node.classList.add('open');
+	constrainOverlay(node);
+}
+function showAnchoredOverlay(node: HTMLElement, anchor: HTMLElement, align: OverlayAnchor['align']): void {
+	overlayAnchors.set(node, { anchor, align });
+	node.classList.add('open');
+	constrainOverlay(node);
 }
 
 /** Covers every popup path, including context menus and inline palettes. */
@@ -5413,7 +5389,38 @@ function constrainOverlay(node: HTMLElement): void {
 		left: viewport?.offsetLeft ?? 0, top: viewport?.offsetTop ?? 0,
 		right: (viewport?.offsetLeft ?? 0) + (viewport?.width ?? window.innerWidth),
 		bottom: (viewport?.offsetTop ?? 0) + (viewport?.height ?? window.innerHeight),
-	}, node.classList.contains('hover-tip') ? 4 : 8);
+	}, screenOverlays.get(node) === 'fill' ? 0 : node.classList.contains('hover-tip') ? 4 : 8);
+	const screen = screenOverlays.get(node);
+	if (screen) {
+		node.style.boxSizing = 'border-box'; node.style.minWidth = '0';
+		node.style.right = 'auto'; node.style.bottom = 'auto';
+		node.style.maxWidth = `${bounds.width}px`; node.style.maxHeight = `${bounds.height}px`;
+		if (screen === 'fill') {
+			node.style.width = `${bounds.width}px`; node.style.height = `${bounds.height}px`;
+		}
+		node.style.left = `${screen === 'fill' ? bounds.left : Math.max(bounds.left, bounds.right - node.offsetWidth)}px`;
+		node.style.top = `${bounds.top}px`;
+		return;
+	}
+	const anchored = overlayAnchors.get(node);
+	if (anchored) {
+		if (!anchored.anchor.isConnected) { node.classList.remove('open'); return; }
+		// Re-measure natural size each time: loading content, keyboards and rotated
+		// screens must not leave a stale height limit or a stretched top/bottom pair.
+		node.style.maxHeight = ''; node.style.maxWidth = ''; node.style.minWidth = '';
+		node.style.right = 'auto'; node.style.bottom = 'auto';
+		if (node.offsetWidth > bounds.width) {
+			node.style.minWidth = '0'; node.style.maxWidth = `${bounds.width}px`;
+		}
+		const rect = anchored.anchor.getBoundingClientRect();
+		const position = anchoredOverlay(bounds, {
+			left: rect.left - appRect.left, right: rect.right - appRect.left,
+			top: rect.top - appRect.top, bottom: rect.bottom - appRect.top,
+		}, node.offsetWidth, node.offsetHeight, anchored.align);
+		node.style.maxHeight = `${position.maxHeight}px`;
+		node.style.left = `${position.left}px`; node.style.top = `${position.top}px`;
+		return;
+	}
 	if (node.offsetWidth > bounds.width) {
 		node.style.minWidth = '0'; node.style.maxWidth = `${bounds.width}px`;
 	}
@@ -5430,13 +5437,14 @@ function scheduleOverlayLayout(): void {
 	if (overlayFrame !== undefined) { return; }
 	overlayFrame = requestAnimationFrame(() => {
 		overlayFrame = undefined;
-		for (const node of app.querySelectorAll<HTMLElement>('.popup.open, .hover-tip.open')) { constrainOverlay(node); }
+		for (const node of app.querySelectorAll<HTMLElement>('.popup.open, .hover-tip.open, .history-panel.open')) { constrainOverlay(node); }
 	});
 }
 const overlayResize = new ResizeObserver(scheduleOverlayLayout);
 overlayResize.observe(app);
-for (const node of app.querySelectorAll<HTMLElement>('.popup')) { overlayResize.observe(node); }
+for (const node of app.querySelectorAll<HTMLElement>('.popup, .history-panel')) { overlayResize.observe(node); }
 new MutationObserver(scheduleOverlayLayout).observe(app, { subtree: true, childList: true, attributes: true, attributeFilter: ['class'] });
+app.addEventListener('scroll', scheduleOverlayLayout, true);
 window.addEventListener('resize', scheduleOverlayLayout);
 window.visualViewport?.addEventListener('resize', scheduleOverlayLayout);
 window.visualViewport?.addEventListener('scroll', scheduleOverlayLayout);
@@ -5677,7 +5685,7 @@ function openAgentApps(): void {
 	if (state) {
 		fillAgentApps(state);
 	}
-	agentAppsPanel.classList.add('open');
+	showScreenOverlay(agentAppsPanel);
 }
 
 /**
@@ -6244,18 +6252,7 @@ function openPalette(mode: PaletteMode): void {
 		if (paletteTarget === input) {
 			closePopups(palette);
 		}
-		const box = app.getBoundingClientRect();
-		const rect = (paletteTarget === input ? composer : paletteTarget).getBoundingClientRect();
-		palette.style.top = '';
-		palette.style.bottom = `${box.bottom - rect.top + 6}px`;
-		// The editor's prompt sits near the top of the view: under it, then.
-		if (paletteTarget !== input && rect.top - box.top < 220) {
-			palette.style.bottom = '';
-			palette.style.top = `${rect.bottom - box.top + 6}px`;
-		}
-		palette.style.left = `${Math.max(8, rect.left - box.left)}px`;
-		palette.style.right = '';
-		palette.classList.add('open');
+		showAnchoredOverlay(palette, paletteTarget === input ? composer : paletteTarget, 'left');
 	}
 	renderPalette(s);
 	if (mode === 'button') {
@@ -7113,17 +7110,7 @@ const hoverTip = (() => {
 			if (!node.isConnected) {
 				app.append(node);
 			}
-			node.style.maxHeight = ''; node.style.maxWidth = '';
-			node.classList.add('open');
-			const box = app.getBoundingClientRect();
-			const r = anchor.getBoundingClientRect();
-			const w = node.offsetWidth;
-			const h = node.offsetHeight;
-			const left = Math.min(Math.max(4, r.left - box.left + r.width / 2 - w / 2), box.width - w - 4);
-			const above = r.top - box.top - h - 6;
-			node.style.left = `${Math.max(4, left)}px`;
-			node.style.top = `${above >= 4 ? above : r.bottom - box.top + 6}px`;
-			constrainOverlay(node);
+			showAnchoredOverlay(node, anchor, 'center');
 		},
 		hide(): void {
 			clearTimeout(timer);
@@ -7798,7 +7785,7 @@ function openSkillEditor(skill?: ToolbarSkill): void {
 			error,
 			el('div', { class: 'form-actions' }, cancel, save)));
 	closePopups(skillEditor);
-	skillEditor.classList.add('open');
+	showScreenOverlay(skillEditor);
 	name.focus();
 }
 
@@ -8173,7 +8160,7 @@ function openAgentsPanel(): void {
 	agentsView = {};
 	closePopups(agentsPanel);
 	fillAgents(currentAgents(), true);
-	agentsPanel.classList.add('open');
+	showScreenOverlay(agentsPanel);
 }
 
 function statusLabel(a: ToolEntry): string {
@@ -8455,7 +8442,7 @@ function toggleHistory(chats: readonly ChatSummary[]): void {
 	}
 	fillHistory(chats);
 	closePopups(historyPanel);
-	historyPanel.classList.add('open');
+	showScreenOverlay(historyPanel);
 }
 
 /**
@@ -8643,11 +8630,7 @@ function buildSleepPopup(): void {
  */
 function openSleepPopup(): void {
 	closePopups(sleepPopup);
-	sleepPopup.style.bottom = '';
-	sleepPopup.style.left = '';
-	sleepPopup.style.top = '6px';
-	sleepPopup.style.right = '8px';
-	sleepPopup.classList.add('open');
+	showScreenOverlay(sleepPopup, 'corner');
 	sleepPopup.querySelector<HTMLButtonElement>('.sleep-option.selected, .sleep-option')?.focus();
 }
 sleepPopup.addEventListener('keydown', event => { if (event.key === 'Escape' && !event.isComposing) { closePopups(); input.focus(); } });
@@ -8955,7 +8938,7 @@ function openFeatureSettings(): void {
 		el('div', { class: 'feature-settings-layout' }, tabs,
 			el('div', { class: 'feature-settings-main' }, content, videoContent, temporaryContent, serverContent,
 				el('div', { class: 'feature-settings-actions' }, featureSettingsStatus, featureSettingsSave))));
-	featureSettingsPanel.classList.add('open');
+	showScreenOverlay(featureSettingsPanel);
 	featureSettingsPanel.focus();
 }
 featureSettingsSave.addEventListener('click', () => {
