@@ -309,6 +309,12 @@ button {
 	color: var(--bad);
 }
 
+.row.error .error-action {
+	margin-left: 6px;
+	flex: none;
+	color: var(--accent);
+}
+
 .row.notice .codicon,
 .row.error .codicon {
 	margin-top: 2px;
@@ -2973,6 +2979,21 @@ body.vscode-high-contrast-light .context-pie {
 	text-decoration: underline;
 }
 
+.agent-auth-banner {
+	flex: none;
+	padding: 8px 12px;
+	border-bottom: 1px solid var(--border);
+	color: var(--warn);
+	font-size: 12px;
+}
+.agent-auth-banner[hidden] { display: none; }
+.agent-auth-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px 16px;
+	margin-top: 5px;
+}
+
 .agent-apps-body .agents-sub {
 	padding: 0;
 }
@@ -5270,7 +5291,7 @@ body.vscode-high-contrast-light .context-pie {
 .row.tool.running::before,
 .agent-dot.running {
  background: linear-gradient(135deg, #ac9aff, #71e2e1);
- animation: ai-liquid-core 3.6s ease-in-out infinite;
+ animation: ai-liquid-core 15s cubic-bezier(.45, 0, .55, 1) infinite, ai-liquid-spin 15s linear infinite;
 }
 .agents-button.live .codicon,
 .prompt.pending-send.steer .pending-note .codicon { animation: none; }
@@ -5282,13 +5303,13 @@ body.vscode-high-contrast-light .context-pie {
 .agents-button.live .codicon::before {
  content: ''; position: absolute; inset: 2px;
  background: linear-gradient(135deg, #ac9aff, #71e2e1);
- animation: ai-liquid-core 3.6s ease-in-out infinite;
+ animation: ai-liquid-core 15s cubic-bezier(.45, 0, .55, 1) infinite, ai-liquid-spin 15s linear infinite;
 }
 .skill-button.running { animation: none; }
 .skill-button.running::before {
  content: ''; width: 12px; height: 12px; flex: none;
  background: linear-gradient(135deg, #ac9aff, #71e2e1);
- animation: ai-liquid-core 3.6s ease-in-out infinite;
+ animation: ai-liquid-core 15s cubic-bezier(.45, 0, .55, 1) infinite, ai-liquid-spin 15s linear infinite;
 }
 .skill-button.running .codicon { display: none; }
 @media (prefers-reduced-motion: reduce) {

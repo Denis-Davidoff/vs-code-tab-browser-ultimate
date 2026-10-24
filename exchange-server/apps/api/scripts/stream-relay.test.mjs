@@ -225,3 +225,25 @@ test("media relay authenticates, forwards selected-tab frames and inputs, stops 
   relay.disconnectPoint(id);
   assert.equal((await once(agent.ws, "close"))[0], 4001);
 });
+
+test("viewer counts track each active socket separately, including the same account", () => {
+  const { StreamRelay } = load();
+  const relay = new StreamRelay({});
+  const messages = [];
+  const viewer = () => ({ readyState: WebSocket.OPEN, bufferedAmount: 0, send: raw => messages.push(JSON.parse(raw)) });
+  const laptop = viewer(), phone = viewer(), background = viewer(), agent = viewer();
+  try {
+    relay.agents.set("point", agent);
+    relay.viewers.set("point", new Set([laptop, phone, background]));
+    relay.watching.add(laptop); relay.watching.add(phone);
+    relay.notify("point");
+    assert.equal(messages.length, 4);
+    assert.ok(messages.every(message => message.count === 2 && message.active));
+    messages.length = 0;
+    relay.watching.delete(phone); relay.notify("point");
+    assert.ok(messages.every(message => message.count === 1));
+    messages.length = 0;
+    laptop.readyState = WebSocket.CLOSED; relay.notify("point");
+    assert.ok(messages.every(message => message.count === 0 && !message.active));
+  } finally { relay.dispose(); }
+});

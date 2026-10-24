@@ -52,7 +52,7 @@ export function readExchangeUiCommand(value: unknown): ExchangeUiCommand | undef
 		case 'setSleep': {
 			const c = m.choice;
 			if (!c || typeof c !== 'object' || !validSleepChoice(c)) { return undefined; }
-			message = { type: 'setSleep', choice: c.mode === 'off' ? {mode:'off'} : c.mode === 'timer' ? {mode:'timer',minutes:c.minutes} : {mode:'agents',scope:c.scope,tabId:c.tabId} }; break;
+			message = { type: 'setSleep', choice: c.mode === 'off' || c.mode === 'forever' ? {mode:c.mode} : c.mode === 'timer' ? {mode:'timer',minutes:c.minutes} : {mode:'agents',scope:c.scope,tabId:c.tabId} }; break;
 		}
 		case 'temporaryStorage':
 			if (!['refresh','all','project'].includes(m.action) || (m.project !== undefined && !text('project'))) { return undefined; }

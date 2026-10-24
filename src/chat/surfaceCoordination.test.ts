@@ -48,10 +48,10 @@ test('project command refreshes keep independent lists and throttles even when r
 	assert.equal(changes, 2);
 });
 
-function catalog(storage: any): any {
+function catalog(storage: any, key?:string, legacy?:(panel:any)=>boolean): any {
 	const source = readFileSync('src/chat/chatPanelCatalog.ts', 'utf8').replace(/^import .*\n/gm, '').replaceAll('export ', '');
 	const Type = runInNewContext(transpileModule(`${source}\nChatPanelCatalog;`, { compilerOptions: { target: ScriptTarget.ES2022 } }).outputText, { readChatPanelIdentity });
-	return new Type(storage);
+	return new Type(storage,key,legacy);
 }
 
 test('hidden panel identities, drafts and allocation high-water survive cold start', () => {
@@ -129,4 +129,19 @@ test('moving an idle chat during queue debounce reschedules and sends in the alr
 	await Promise.resolve(); await Promise.resolve();
 	assert.equal(sent, 1);
 	assert.equal(tab.readyForQueued, false);
+});
+
+test('project panel catalogs restore only their own panels and eligible legacy dialogs',()=>{
+ const values=new Map<string,any>();
+ const storage={get:(key:string)=>values.get(key),update:async(key:string,value:any)=>{values.set(key,JSON.parse(JSON.stringify(value)));}};
+ const a={id:'abcdef01-1234-4567-8901-abcdef012345',number:2};
+ const b={id:'abcdef02-1234-4567-8901-abcdef012345',number:3};
+ const old=catalog(storage);old.remember(a,{a:'draft A'});old.remember(b,{b:'draft B'});
+ const projectA=catalog(storage,'project-A',panel=>panel.id===a.id);
+ assert.equal(projectA.panels.size,1);assert.equal(projectA.panels.get(a.id).drafts.a,'draft A');
+ projectA.remember(a,{a:'saved A'});
+ const projectB=catalog(storage,'project-B',panel=>panel.id===b.id);
+ assert.equal(projectB.panels.size,1);assert.equal(projectB.panels.has(a.id),false);
+ const restartedA=catalog(storage,'project-A',()=>true);
+ assert.equal(restartedA.panels.size,1);assert.equal(restartedA.panels.get(a.id).drafts.a,'saved A');
 });

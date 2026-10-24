@@ -8,7 +8,7 @@ import { remoteRefusal } from './core/commands.ts';
 import { remoteScope } from './core/remoteScope.ts';
 
 /** Use the real controller routing and annotation listener with independent local/remote tabs. */
-function harness(){
+function harness(nativeGranted=true){
  const source=readFileSync('src/chat/chatView.ts','utf8');
  const commands=source.slice(source.indexOf('\tprivate static readonly _exchangeAnnotationOwners'),source.indexOf('\n\tprivate readonly _chromeCommand'));
  const annotations=source.slice(source.indexOf('\tprivate _onAnnotations('),source.indexOf('\n\t/**\n\t * Adds an annotation'));
@@ -16,7 +16,7 @@ function harness(){
  const refusal=source.slice(source.indexOf('function exchangeRefusal('),source.indexOf('\nfunction pushKey('));
  const exports:any={};
  const code=refusal+'class ChatViewProvider {static _surfaces=new Map();'+commands+annotations+remove+'} exports.Controller=ChatViewProvider;';
- runInNewContext(transpileModule(code,{compilerOptions:{module:ModuleKind.CommonJS,target:ScriptTarget.ES2022}}).outputText,{exports,URL,path:{isAbsolute:(value:string)=>value.startsWith('/'),join:(...parts:string[])=>parts.join('/')},os:{homedir:()=>'/home/user'},isDirectory:(value:string)=>value==='/project',vscode:{commands:{executeCommand:async(name:string)=>exports.nativeCalls.push(name)}},chromeChatCommandFeature:()=> 'chat',remoteRefusal,remoteScope});
+ runInNewContext(transpileModule(code,{compilerOptions:{module:ModuleKind.CommonJS,target:ScriptTarget.ES2022}}).outputText,{exports,URL,isBrowserApiGranted:()=>nativeGranted,tabSource:{open:async(url:string,options:any)=>exports.nativeCalls.push({url,...options})},path:{isAbsolute:(value:string)=>value.startsWith('/'),join:(...parts:string[])=>parts.join('/')},os:{homedir:()=>'/home/user'},isDirectory:(value:string)=>value==='/project',vscode:{commands:{executeCommand:async(name:string)=>exports.nativeCalls.push(name)}},chromeChatCommandFeature:()=> 'chat',remoteRefusal,remoteScope});
  exports.nativeCalls=[];const Controller=exports.Controller,view:any=new Controller(),events:any[]=[],calls:any[]=exports.nativeCalls;
  const localChat={chat:{id:'local-chat'},attachments:[]},remoteChat={chat:{id:'remote-chat'},attachments:[]};
  const page={id:'remote-page',url:'https://example.com',title:'Remote'};
@@ -66,7 +66,7 @@ test('a website session cannot change approvals or reach chats, files and termin
 
 test('opening a VS Code browser tab or Chrome needs no selected remote tab',async()=>{
  const h=harness();await h.command({type:'openBrowser',where:'vscode'},null);
- assert.equal(h.calls[0],'workbench.action.browser.open');assert.equal(h.events[0].message.type,'exchangeBrowser');
+ assert.deepEqual(h.calls[0],{url:'about:blank',where:'vscode',preserveFocus:true});assert.equal(h.events[0].message.type,'exchangeBrowser');
  await h.command({type:'openBrowser',where:'chrome'},null);
  assert.equal(h.calls[1],'aiBrowser.openInChrome');assert.equal(h.events[1].message.type,'exchangeBrowser');
 });
@@ -76,4 +76,10 @@ test('remote folder paths are validated before changing the conversation',async(
  await assert.rejects(()=>h.command({type:'chooseWorkdir'}),/Enter the folder path/);
  const received:any[]=[];h.view._receive=async(message:any)=>received.push(message);h.view._receiveChromeFooter=async(_tab:any,message:any)=>received.push(message);
  await h.command({type:'setWorkdir',path:' /project '});assert.equal(received[0].path,'/project');
+});
+
+test('remote native tab opening reports missing API access without opening a local URL prompt',async()=>{
+ const h=harness(false);
+ await assert.rejects(()=>h.command({type:'openBrowser',where:'vscode'},null),/native browser API/);
+ assert.equal(h.calls.length,0);assert.equal(h.events.length,0);
 });

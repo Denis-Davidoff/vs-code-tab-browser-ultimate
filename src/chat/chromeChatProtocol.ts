@@ -168,6 +168,9 @@ export function readChromeChatCommand(value: unknown): ChromeChatCommand | undef
 	if (raw.attachments !== undefined && (!attachments || m.type !== 'send')) { return undefined; }
 	let message: ViewToHost;
 	switch (m.type) {
+		case 'openBrowser':
+			if (m.where !== 'vscode') { return undefined; }
+			message = { type: 'openBrowser', where: 'vscode' }; break;
 		case 'openAttachment':
 			if (typeof m.id !== 'string' || m.id.length > 200 || typeof m.entry !== 'number' || !Number.isSafeInteger(m.entry) || m.entry < 0) { return undefined; }
 			message = { type: 'openAttachment', id: m.id, entry: m.entry }; break;

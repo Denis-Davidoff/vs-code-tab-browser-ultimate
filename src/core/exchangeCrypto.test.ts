@@ -148,3 +148,12 @@ test('reflection and plaintext downgrade are rejected by protected endpoints', a
 		false,
 	);
 });
+
+test('encrypted Exchange connections accept relay viewer presence without exposing chat content',async()=>{
+ const h=await pair();
+ h.transports[0].deliver({type:'chat.viewers',count:2});
+ await waitFor(()=>h.received.some(value=>value.type==='chat.viewers'));
+ assert.equal(h.received.find(value=>value.type==='chat.viewers').count,2);
+ assert.equal(h.transports[0].readyState,1);
+ h.agent.close();h.viewer.close();
+});

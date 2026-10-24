@@ -2,7 +2,12 @@ export const sleepMinutes = [5, 10, 15, 20, 25, 30, 35, 40, 45, 55] as const;
 export const sleepHours = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 24, 48, 72] as const;
 /** What "until the agents finish" waits for: one tab of the chat, or every tab of this window. */
 export type SleepScope = 'tab' | 'window';
-export type SleepChoice = { mode: 'off' } | { mode: 'agents'; scope?: SleepScope; tabId?: string } | { mode: 'timer'; minutes: number };
+export type SleepChoice = { mode: 'off' } | { mode: 'forever' } | { mode: 'agents'; scope?: SleepScope; tabId?: string } | { mode: 'timer'; minutes: number };
+/** 0 disables the connection trigger; -1 holds awake until explicitly stopped. */
+export const exchangeAwakeMinutes = [0, 15, 30, 60, 120, 180, 240, 300, 360, 720, 1440, 2880, -1] as const;
+export function readExchangeAwakeMinutes(value: unknown): number {
+	return typeof value === 'number' && (exchangeAwakeMinutes as readonly number[]).includes(value) ? value : 60;
+}
 export interface SleepState {
 	automatic?: boolean;
 	automaticActive?: boolean;
@@ -22,6 +27,6 @@ export function validSleepChoice(value: SleepChoice): boolean {
 		return scope === 'window' ? value.tabId === undefined
 			: scope === 'tab' && typeof value.tabId === 'string' && value.tabId.length > 0 && value.tabId.length <= 200;
 	}
-	return value?.mode === 'off' || (value?.mode === 'timer' &&
+	return value?.mode === 'off' || value?.mode === 'forever' || (value?.mode === 'timer' &&
 		([...sleepMinutes, ...sleepHours.map(h => h * 60)] as number[]).includes(value.minutes));
 }

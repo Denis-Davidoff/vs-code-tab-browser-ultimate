@@ -72,9 +72,11 @@ export const COMMANDS = {
 	// Settings that act on the editor or its machine.
 	setApprovalMode: editor(approvals),
 	setAgentBinary: editor('Agent apps are chosen only in VS Code.'), openAgentSetting: editor('Agent apps are chosen only in VS Code.'),
+	authenticateAgent: editor('Sign in to the agent in the VS Code window.'), checkAgentAuthentication: editor('Check agent sign-in in the VS Code window.'),
 	temporaryStorage: editor('Temporary files are managed only in VS Code.'),
 	setNewsHidden: chat({ no: chromeEditor }, 'host'),
 	setAutomaticAwake: chat({ no: chromeEditor }, 'host'), setSleep: chat({ no: chromeEditor }, 'host'),
+	setExchangeKeepAwake: editor(),
 	controlRecording: chat('local', { no: 'Recording is available in VS Code and Chrome.', hide: true }),
 	recording: machine('Recording is available in VS Code and Chrome.'),
 	voiceStart: machine('Voice messages need the microphone of the computer running VS Code.'),
@@ -85,7 +87,7 @@ export const COMMANDS = {
 	openText: chat({ no: chromeEditor }, 'host'), openDiff: chat({ no: chromeEditor }, 'host'),
 	saveAttachment: editor(), openFile: editor('Local files open only in VS Code.'),
 	openLink: chat('local', 'mixed'), localLinkInfo: chat({ no: chromeEditor }, 'host'),
-	openBrowser: chat('local', 'mixed'),
+	openBrowser: chat('mixed', 'mixed'),
 
 	// Footer features, negotiated with Chrome per feature.
 	usage: both('usage'), dismissUsageAlert: both('usage'),

@@ -9,3 +9,10 @@ html,body{height:100%;margin:0;overflow:hidden}body{display:flex;flex-direction:
 #waiting { align-content: center; gap: 16px; }
 #waiting > .liquid-loader { --liquid-size: 48px; }
 body:has(#status[data-busy="false"]) #waiting > .liquid-loader { display: none; }
+
+/* Match the primary send button's horizontal offset in the mobile web chat. */
+@media (max-width: 760px) {
+  .input-actions > .send-slot:has(> .queue-button) {
+    transform: translateX(4px);
+  }
+}

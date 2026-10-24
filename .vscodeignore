@@ -31,3 +31,6 @@ native/**
 
 # Separate hosted application
 exchange-server/**
+
+# Spinner design previews are not extension runtime assets.
+work/spinner-variants/**

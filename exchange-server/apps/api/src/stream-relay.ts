@@ -240,12 +240,14 @@ export class StreamRelay {
     });
   }
   private notify(id: string): void {
-    send(this.agents.get(id)!, {
+    const count = [...(this.viewers.get(id) ?? [])].filter(ws => ws.readyState === WebSocket.OPEN && this.watching.has(ws)).length;
+    const message = {
       type: "browser.viewers",
-      active: [...(this.viewers.get(id) ?? [])].some((ws) =>
-        this.watching.has(ws),
-      ),
-    });
+      active: count > 0,
+      count,
+    };
+    send(this.agents.get(id), message);
+    for (const viewer of this.viewers.get(id) ?? []) send(viewer, message);
   }
   private async authenticate(
     ws: WebSocket,

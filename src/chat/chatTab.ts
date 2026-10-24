@@ -101,6 +101,7 @@ export interface TabHost {
 	limits(agent: AgentId, windows: readonly UsageWindow[], usingCredits: boolean | undefined): void;
 	/** A turn ended, this heavy; the view decides whether to ask for the plan's limits. */
 	turnEnded(agent: AgentId, weight: TurnWeight): void;
+	authenticationError?(agent: AgentId, text: string): void;
 	save(chat: StoredChat): Promise<void>;
 	inHistory(chatId: string): boolean;
 	/** The approval menu's mode for a category key; see `approvalKey`. */
@@ -1414,6 +1415,7 @@ export class ChatTab {
 					: (chat.agent === 'claude' || chat.agent === 'codex') && event.error && transientTurnError(event.error) ? 'continue' : undefined;
 				const retrying = !!mode && !!done && this._chat === chat && !this._closed && this._scheduleRetry(done, chat, event.error ?? '', mode);
 				if (event.error && !retrying) {
+					this._host.authenticationError?.(chat.agent, event.error);
 					chat.entries.push(event.error === 'Stopped.'
 						? { kind: 'notice', text: vscode.l10n.t("Stopped.") }
 						: { kind: 'error', text: event.error });
@@ -1514,6 +1516,7 @@ export class ChatTab {
 	}
 
 	private _push(entry: ChatEntry): void {
+		if (entry.kind === 'error') this._host.authenticationError?.(this._chat.agent, entry.text);
 		this._chat.entries.push(entry);
 		this._chat.updatedAt = Date.now();
 		this._post();

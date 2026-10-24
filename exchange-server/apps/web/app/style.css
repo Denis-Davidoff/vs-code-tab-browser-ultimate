@@ -779,6 +779,9 @@ label {
   color: var(--fg-3);
   background: transparent;
 }
+.workspace-fullscreen-toggle {
+  display: none;
+}
 .workspace-width-toggle[aria-pressed="true"] {
   color: var(--fg);
   background: var(--soft-2);
@@ -1075,6 +1078,18 @@ label {
   .workspace-width-toggle {
     display: none;
   }
+  .workspace-fullscreen-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    color: var(--fg-3);
+    background: transparent;
+    border-color: transparent;
+  }
   .workspace-width-toggle + .workspace-back {
     margin-left: auto;
   }
@@ -1276,7 +1291,7 @@ label {
   border: 0;
   background: var(--bg);
 }
-.mobile-workspace-tabs {
+.workspace-header .mobile-workspace-tabs {
   display: none;
 }
 @media (max-width: 760px) {
@@ -1291,11 +1306,11 @@ label {
   .workspace-header {
     flex-shrink: 0;
   }
-  .mobile-workspace-tabs {
+  .workspace-header .mobile-workspace-tabs {
     display: flex;
     align-items: center;
     gap: 7px;
-    padding-top: 6px;
+    margin-left: 0;
     flex-shrink: 0;
   }
   .mobile-workspace-tabs button {
@@ -1309,11 +1324,6 @@ label {
     background: var(--soft-2);
     border-color: var(--border-strong);
     color: var(--fg);
-  }
-  .mobile-workspace-tabs > span {
-    margin-left: auto;
-    font-size: 9px;
-    color: var(--fg-3);
   }
   .workspace-screens {
     display: flex;
@@ -1381,6 +1391,15 @@ label {
   font: inherit;
   font-size: 11px;
 }
+.remote-viewer-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  color: var(--fg-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
 .remote-browser-panel button {
   flex: none;
   min-width: 28px;
@@ -1442,6 +1461,9 @@ label {
 }
 
 @media (max-width: 760px) {
+  .workspace-shell {
+    padding: 0 6px;
+  }
   .workspace-header {
     min-height: 42px;
     gap: 8px;
@@ -1455,6 +1477,9 @@ label {
     height: 26px;
     border-radius: 7px;
   }
+  .workspace-header .brand > span {
+    display: none;
+  }
   .workspace-header .header-divider {
     display: none;
   }
@@ -1466,16 +1491,16 @@ label {
   .workspace-header .workspace-back {
     margin-left: 0;
   }
-  .mobile-workspace-tabs {
-    padding-top: 4px;
+  .workspace-header .mobile-workspace-tabs {
     gap: 5px;
   }
   .mobile-workspace-tabs button {
-    padding: 5px 10px;
-    font-size: 10px;
+    min-height: 32px;
+    padding: 5px 9px;
+    font-size: 11px;
   }
   .workspace-screens {
-    padding: 6px 0 8px;
+    padding: 3px 0 4px;
   }
 }
 

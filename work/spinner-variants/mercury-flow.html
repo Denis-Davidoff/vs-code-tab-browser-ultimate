@@ -1,0 +1,67 @@
+<div id="mercury-flow-variants">
+  <style>
+    #mercury-flow-variants { --lc-ink:light-dark(#25242d,#e8e6f1); --lc-muted:light-dark(#696475,#a6a0b6); --lc-bg:light-dark(#f6f5fa,#17161e); --lc-purple:#ac9aff; --lc-cyan:#71e2e1; color:var(--lc-ink); }
+    #mercury-flow-variants .lc-stage { background:var(--lc-bg); min-height:265px; padding:24px 12px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px; box-sizing:border-box; }
+    #mercury-flow-variants .lc-caption { color:var(--lc-muted); text-align:center; }
+    #mercury-flow-variants .lc-name { font-weight:500; }
+    #mercury-flow-variants .lc-sizes { display:flex; align-items:center; gap:24px; height:28px; }
+    #mercury-flow-variants .lc-spinner { position:relative; display:inline-block; flex:none; width:88px; height:88px; }
+    #mercury-flow-variants .lc-sizes .lc-spinner { width:18px; height:18px; }
+    #mercury-flow-variants .lc-spinner::before, #mercury-flow-variants .lc-spinner::after { content:''; position:absolute; box-sizing:border-box; border-radius:50%; animation:mercury-flow-core 15s cubic-bezier(.45,0,.55,1) infinite, mercury-flow-spin 15s linear infinite; }
+    #mercury-flow-variants .lc-spinner::before { inset:15%; background:linear-gradient(135deg,var(--lc-purple),var(--lc-cyan)); }
+    #mercury-flow-variants .lc-spinner::after { inset:2%; border:1px solid var(--lc-purple); opacity:.65; animation-name:mercury-flow-shell,mercury-flow-spin; }
+    #mercury-flow-variants .lc-big::after { border-width:1.5px; }
+    #mercury-flow-variants .lc-spinner { --lc-a:22% 78% 72% 28% / 28% 22% 78% 72%; --lc-b:78% 22% 24% 76% / 22% 76% 24% 78%; --lc-c:24% 76% 30% 70% / 76% 24% 70% 30%; --lc-d:76% 24% 78% 22% / 26% 78% 22% 74%; --lc-sa:.42; --lc-sb:.68; --lc-ra:80deg; --lc-rb:210deg; --lc-oa:-60deg; --lc-ob:-170deg; }
+    @keyframes mercury-flow-core { 0%,2% {border-radius:50%;transform:scale(1)} 34% {border-radius:var(--lc-a);transform:scale(var(--lc-sa))} 50% {border-radius:var(--lc-b);transform:scale(var(--lc-min,.5))} 68% {border-radius:var(--lc-b);transform:scale(var(--lc-sb))} 98%,100% {border-radius:50%;transform:scale(1)} }
+    @keyframes mercury-flow-shell { 0%,2% {border-radius:50%;transform:scale(1)} 34% {border-radius:var(--lc-c);transform:scale(.96)} 68% {border-radius:var(--lc-d);transform:scale(1.03)} 98%,100% {border-radius:50%;transform:scale(1)} }
+    #mercury-flow-variants.lc-circle .lc-spinner::before, #mercury-flow-variants.lc-circle .lc-spinner::after { animation:none; border-radius:50%; transform:none; rotate:0deg; }
+    #mercury-flow-variants.lc-paused .lc-spinner::before, #mercury-flow-variants.lc-paused .lc-spinner::after {animation-play-state:paused}
+    @media(prefers-reduced-motion:reduce){#mercury-flow-variants .lc-spinner::before,#mercury-flow-variants .lc-spinner::after{animation:none}}
+    #mercury-flow-variants .lc-grid {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;}
+    @media(max-width:620px){#mercury-flow-variants .lc-grid{grid-template-columns:repeat(2,minmax(0,1fr));}}
+    @media(max-width:380px){#mercury-flow-variants .lc-grid{grid-template-columns:1fr;}}
+    #mercury-flow-variants [data-variant="Ртуть · мягкая"] .lc-spinner { --lc-a:78% 22% 56% 44% / 80% 36% 64% 20%; --lc-b:28% 72% 22% 78% / 48% 80% 20% 52%; --lc-c:78% 22% 56% 44% / 80% 36% 64% 20%; --lc-d:28% 72% 22% 78% / 48% 80% 20% 52%; --lc-sa:0.92; --lc-sb:0.96; --lc-min:0.8; --lc-ra:-25deg; --lc-rb:45deg; --lc-oa:13.750000000000002deg; --lc-ob:-24.750000000000004deg; }
+    #mercury-flow-variants [data-variant="Ртуть · текучая"] .lc-spinner { --lc-a:88% 12% 60% 40% / 86% 28% 72% 14%; --lc-b:16% 84% 14% 86% / 40% 88% 12% 60%; --lc-c:88% 12% 60% 40% / 86% 28% 72% 14%; --lc-d:16% 84% 14% 86% / 40% 88% 12% 60%; --lc-sa:0.77; --lc-sb:0.85; --lc-min:0.65; --lc-ra:-40deg; --lc-rb:65deg; --lc-oa:22.0deg; --lc-ob:-35.75deg; }
+    #mercury-flow-variants [data-variant="Ртуть · глубокая"] .lc-spinner { --lc-a:94% 6% 58% 42% / 92% 32% 68% 8%; --lc-b:12% 88% 8% 92% / 38% 94% 6% 62%; --lc-c:94% 6% 58% 42% / 92% 32% 68% 8%; --lc-d:12% 88% 8% 92% / 38% 94% 6% 62%; --lc-sa:0.62; --lc-sb:0.70; --lc-min:0.5; --lc-ra:-55deg; --lc-rb:85deg; --lc-oa:30.250000000000004deg; --lc-ob:-46.75000000000001deg; }
+    #mercury-flow-variants [data-variant="Ртуть · пульс"] .lc-spinner { --lc-a:96% 4% 66% 34% / 94% 22% 78% 6%; --lc-b:8% 92% 6% 94% / 30% 96% 4% 70%; --lc-c:96% 4% 66% 34% / 94% 22% 78% 6%; --lc-d:8% 92% 6% 94% / 30% 96% 4% 70%; --lc-sa:0.47; --lc-sb:0.55; --lc-min:0.35; --lc-ra:-65deg; --lc-rb:100deg; --lc-oa:35.75deg; --lc-ob:-55.00000000000001deg; }
+    #mercury-flow-variants [data-variant="Ртуть · искра"] .lc-spinner { --lc-a:98% 2% 62% 38% / 96% 20% 80% 4%; --lc-b:4% 96% 3% 97% / 26% 98% 2% 74%; --lc-c:98% 2% 62% 38% / 96% 20% 80% 4%; --lc-d:4% 96% 3% 97% / 26% 98% 2% 74%; --lc-sa:0.34; --lc-sb:0.42; --lc-min:0.22; --lc-ra:-80deg; --lc-rb:120deg; --lc-oa:44.0deg; --lc-ob:-66.0deg; }
+    #mercury-flow-variants [data-variant="Ртуть · шторм"] .lc-spinner { --lc-a:98% 2% 86% 14% / 90% 10% 70% 30%; --lc-b:6% 94% 12% 88% / 16% 84% 4% 96%; --lc-c:98% 2% 86% 14% / 90% 10% 70% 30%; --lc-d:6% 94% 12% 88% / 16% 84% 4% 96%; --lc-sa:0.52; --lc-sb:0.60; --lc-min:0.4; --lc-ra:-110deg; --lc-rb:145deg; --lc-oa:60.50000000000001deg; --lc-ob:-79.75deg; }
+    @keyframes mercury-flow-spin { from { rotate:0deg; } to { rotate:var(--lc-turn,360deg); } }
+    #mercury-flow-variants [data-variant="Ртуть · мягкая"] .lc-spinner::before { --lc-turn:360deg; }
+    #mercury-flow-variants [data-variant="Ртуть · мягкая"] .lc-spinner::after { --lc-turn:-360deg; }
+    #mercury-flow-variants [data-variant="Ртуть · текучая"] .lc-spinner::before { --lc-turn:360deg; }
+    #mercury-flow-variants [data-variant="Ртуть · текучая"] .lc-spinner::after { --lc-turn:360deg; }
+    #mercury-flow-variants [data-variant="Ртуть · глубокая"] .lc-spinner::before { --lc-turn:-360deg; }
+    #mercury-flow-variants [data-variant="Ртуть · глубокая"] .lc-spinner::after { --lc-turn:360deg; }
+    #mercury-flow-variants [data-variant="Ртуть · пульс"] .lc-spinner::before { --lc-turn:-360deg; }
+    #mercury-flow-variants [data-variant="Ртуть · пульс"] .lc-spinner::after { --lc-turn:-360deg; }
+    #mercury-flow-variants [data-variant="Ртуть · искра"] .lc-spinner::before { --lc-turn:720deg; }
+    #mercury-flow-variants [data-variant="Ртуть · искра"] .lc-spinner::after { --lc-turn:-360deg; }
+    #mercury-flow-variants [data-variant="Ртуть · шторм"] .lc-spinner::before { --lc-turn:720deg; }
+    #mercury-flow-variants [data-variant="Ртуть · шторм"] .lc-spinner::after { --lc-turn:360deg; }
+  </style>
+  <div class="lc-grid" aria-label="Шесть вариантов жидкого спиннера">
+    <section data-variant="Ртуть · мягкая"><div class="lc-stage"><div class="lc-name">Ртуть · мягкая</div><span class="lc-spinner lc-big" role="img" aria-label="Каплевидные формы мягко восстанавливают круглую форму"></span><div class="lc-sizes" aria-hidden="true"><span class="lc-spinner"></span><span>В интерфейсе</span></div><div class="lc-caption">Ядро до 80%<br>Ядро ↻ · оболочка ↺</div></div></section>
+    <section data-variant="Ртуть · текучая"><div class="lc-stage"><div class="lc-name">Ртуть · текучая</div><span class="lc-spinner lc-big" role="img" aria-label="Каплевидные формы мягко восстанавливают круглую форму"></span><div class="lc-sizes" aria-hidden="true"><span class="lc-spinner"></span><span>В интерфейсе</span></div><div class="lc-caption">Ядро до 65%<br>Оба ↻</div></div></section>
+    <section data-variant="Ртуть · глубокая"><div class="lc-stage"><div class="lc-name">Ртуть · глубокая</div><span class="lc-spinner lc-big" role="img" aria-label="Каплевидные формы мягко восстанавливают круглую форму"></span><div class="lc-sizes" aria-hidden="true"><span class="lc-spinner"></span><span>В интерфейсе</span></div><div class="lc-caption">Ядро до 50%<br>Ядро ↺ · оболочка ↻</div></div></section>
+    <section data-variant="Ртуть · пульс"><div class="lc-stage"><div class="lc-name">Ртуть · пульс</div><span class="lc-spinner lc-big" role="img" aria-label="Каплевидные формы мягко восстанавливают круглую форму"></span><div class="lc-sizes" aria-hidden="true"><span class="lc-spinner"></span><span>В интерфейсе</span></div><div class="lc-caption">Ядро до 35%<br>Оба ↺</div></div></section>
+    <section data-variant="Ртуть · искра"><div class="lc-stage"><div class="lc-name">Ртуть · искра</div><span class="lc-spinner lc-big" role="img" aria-label="Каплевидные формы мягко восстанавливают круглую форму"></span><div class="lc-sizes" aria-hidden="true"><span class="lc-spinner"></span><span>В интерфейсе</span></div><div class="lc-caption">Ядро до 22%<br>Ядро ↻ быстрее · оболочка ↺</div></div></section>
+    <section data-variant="Ртуть · шторм"><div class="lc-stage"><div class="lc-name">Ртуть · шторм</div><span class="lc-spinner lc-big" role="img" aria-label="Каплевидные формы мягко восстанавливают круглую форму"></span><div class="lc-sizes" aria-hidden="true"><span class="lc-spinner"></span><span>В интерфейсе</span></div><div class="lc-caption">Ядро до 40% · максимум пластики<br>Оба ↻ · ядро быстрее</div></div></section>
+
+
+
+
+
+
+  </div>
+  <div class="viz-controls" style="margin-top:12px"><button type="button" class="btn" data-action="pause">Пауза</button><button type="button" class="btn" data-action="circle" aria-pressed="false">Идеальный круг</button></div>
+  <script>
+    (()=>{
+      const root=document.getElementById('mercury-flow-variants');
+      const pause=root.querySelector('[data-action="pause"]');
+      const circle=root.querySelector('[data-action="circle"]');
+      pause.addEventListener('click',()=>{root.classList.remove('lc-circle');circle.setAttribute('aria-pressed','false');const stopped=root.classList.toggle('lc-paused');pause.textContent=stopped?'Продолжить':'Пауза';});
+      circle.addEventListener('click',()=>{const shown=root.classList.toggle('lc-circle');root.classList.remove('lc-paused');pause.textContent='Пауза';circle.setAttribute('aria-pressed',String(shown));});
+    })();
+  </script>
+</div>

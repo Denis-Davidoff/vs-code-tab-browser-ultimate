@@ -140,7 +140,7 @@ function render(): void {
     if (/^--vscode-[a-zA-Z0-9-]+$/.test(key)) { document.documentElement.style.setProperty(key, value); }
   }
   emit({ type: 'state', state: { ...view,
-    browserApi: true, nativeBrowser: 'unsupported', hasBrowserTab: activePage?.id !== undefined,
+    browserApi: true, nativeBrowser: view.nativeBrowser === 'granted' ? 'granted' : 'unsupported', hasBrowserTab: activePage?.id !== undefined,
     attachments: (elementDrafts[latest.chatId]?.attachments ?? []).map(item => ({ id: item.id, kind: item.kind ?? 'element', label: item.label, reference: item.reference })),
     suggestions: pageSuggestion(latest.chatId),
     blocked: latest.canSend ? view.blocked : 'Update the editor extension to enable sending from Chrome.',
@@ -233,6 +233,10 @@ const annotations = new ChromeAnnotations(syncAnnotationDrafts, error => showFee
 chrome.tabs.onRemoved.addListener(tabId => annotations.closed(tabId));
 
 function restoreCommandDraft(command: ChromeChatCommand): void {
+  if(command.message.type==='gitIndexAction'&&command.chatId===latest?.chatId){
+    emit({type:'gitIndexResult',folder:command.message.folder,error:'Git action was not confirmed. Refresh Git changes before retrying.'});
+    return;
+  }
   if (command.message.type !== 'send') { return; }
   const draft = elementDrafts[command.chatId] ??= { next: 1, attachments: [] };
   const text = restorePickedElements(draft, command.attachments ?? [], command.message.text);
@@ -482,7 +486,7 @@ window.aiBrowserChatHost = {
     }
     if (message.type === 'copy') { void navigator.clipboard.writeText(message.text).catch(error => showFeedback(String(error))); return; }
     if (message.type === 'openLink' && /^https?:\/\//i.test(message.url)) { void chrome.tabs.create({ url: message.url }).catch(error => showFeedback(String(error))); return; }
-    if (message.type === 'openBrowser') { void chrome.tabs.create({ url: 'chrome://newtab/' }); return; }
+    if (message.type === 'openBrowser' && message.where !== 'vscode') { void chrome.tabs.create({ url: 'about:blank' }).catch(error => showFeedback(String(error))); return; }
     if (message.type === 'acceptSuggestion') {
       if (message.id === pageSuggestionId) { void attachFromChrome('sharedPage').catch(error => showFeedback(error instanceof Error ? error.message : String(error))); }
       return;
@@ -531,10 +535,16 @@ window.aiBrowserChatHost = {
       if (message.type === 'temporaryStorage') { emit({ type: 'temporaryStorage', error }); }
       showFeedback(error); return;
     }
-    if (!active || !latest) { return; }
+    if (!active || !latest) {
+      if(message.type==='gitIndexAction')emit({type:'gitIndexResult',folder:message.folder,error:'Reconnect to VS Code before updating Git files.'});
+      return;
+    }
     const chatId = latest.chatId, current = generation;
     const feature = chromeChatCommandFeature(message);
-    if (!supportsFeature(feature)) { showFeedback(chromeChatFeatureError(feature)); return; }
+    if (!supportsFeature(feature)) {
+      if(message.type==='gitIndexAction')emit({type:'gitIndexResult',folder:message.folder,error:chromeChatFeatureError(feature)});
+      showFeedback(chromeChatFeatureError(feature)); return;
+    }
     if (message.type === 'chooseWorkdir') { showFeedback('Choose the working folder in the VS Code window.'); }
     prepareChromeMessage(message, chatId, current);
   },

@@ -41,6 +41,7 @@ class ExchangeSurface implements ChatStateSurface {
 	private socket?: Socket;
 	private stopped = false;
 	private ready = false;
+	private viewers = 0;
 	private timer?: ReturnType<typeof setTimeout>;
 	private handshake?: ReturnType<typeof setTimeout>;
 	private publish?: ReturnType<typeof setTimeout>;
@@ -128,7 +129,7 @@ class ExchangeSurface implements ChatStateSurface {
 		this.changed('connecting');
 		const socket = this.socket = encryptedExchangeSocket(this.config.url + '/ws/agent',this.cipher,true,()=>{ this.forceFull = true; this.sendSnapshot(); },WebSocketCtor as unknown as typeof WebSocket);
 		this.handshake = setTimeout(() => socket.close(), 10000);
-		socket.addEventListener('open', () => socket.send(JSON.stringify({ type: 'auth', version: 1, pointId: this.config.pointId, key: this.key, encryption: this.cipher?.descriptor ?? null })));
+		socket.addEventListener('open', () => socket.send(JSON.stringify({ type: 'auth', version: 1, pointId: this.config.pointId, key: this.key, encryption: this.cipher?.descriptor ?? null, features:['chat-viewers'] })));
 		socket.addEventListener('message', event => {
 			if (socket !== this.socket || this.stopped) { return; }
 			void this.receive(socket, event.data).catch(() => socket.close());
@@ -136,7 +137,7 @@ class ExchangeSurface implements ChatStateSurface {
 		socket.addEventListener('error', () => socket.close());
 		socket.addEventListener('close', event => {
 			if (socket !== this.socket) { return; }
-			clearTimeout(this.handshake); this.ready = false; this.refresh?.();
+			clearTimeout(this.handshake); this.ready = false; this.viewers = 0; this.refresh?.();
 			if (this.stopped) { return; }
 			if (event.code === agentRefused) {
 				this.close();
@@ -162,6 +163,12 @@ class ExchangeSurface implements ChatStateSurface {
 			this.refresh?.(); this.sendSnapshot(); return;
 		}
 		if (!this.ready) { throw new Error('Handshake required'); }
+		if(value.type==='chat.viewers'){
+			if(!Number.isSafeInteger(value.count)||value.count<0)throw new Error('Invalid viewer count');
+			if(value.count>this.viewers)ChatViewProvider.exchangeViewerConnected(this.source);
+			this.viewers=value.count;
+			return;
+		}
 		if (value.type === 'chat.resync' && typeof value.id === 'string') {
 			this.forceFull = true; this.sendSnapshot();
 			socket.send(JSON.stringify({ type: 'command.result', id: value.id, ok: true })); return;
@@ -229,6 +236,8 @@ export function registerExchangeChat(context: vscode.ExtensionContext, browser?:
 	let restoreTimer: ReturnType<typeof setTimeout> | undefined;
 	let restoreDelay = 1000;
 	const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 40);
+	const viewersStatus = browser ? vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 39) : undefined;
+	if(viewersStatus)context.subscriptions.push(viewersStatus);
 	status.command = 'aiBrowser.chat.disconnectExchange';
 	status.tooltip = 'Disconnect this chat from AI Browser Server';
 	const initialized = (async () => {
@@ -323,7 +332,14 @@ export function registerExchangeChat(context: vscode.ExtensionContext, browser?:
 				const chat = ChatViewProvider.observeChromeSource(source, surface);
 				let media: {dispose():void} | undefined;
 				surface.onClose=()=>{media?.dispose();if(current===generation&&!disposed){connection=undefined;scheduleRestore();}};
-				if(browser){const {ExchangeBrowser}=await import('../browser/exchangeBrowser');if(!surface.closed&&current===generation){const remote=new ExchangeBrowser(url,pointId,key,browser,cipher);media=remote;surface.browserTab=()=>remote.selectedTab();surface.page=()=>remote.selectedPage();remote.onPage=()=>surface.pageChanged();}}
+				if(browser){const {ExchangeBrowser}=await import('../browser/exchangeBrowser');if(!surface.closed&&current===generation){
+					const remote=new ExchangeBrowser(url,pointId,key,browser,cipher);media=remote;surface.browserTab=()=>remote.selectedTab();surface.page=()=>remote.selectedPage();
+					const showViewers=()=>{
+						const page=remote.selectedPage();
+						if(viewersStatus&&page&&remote.viewerCount>0){viewersStatus.text=`$(eye) ${remote.viewerCount}`;viewersStatus.tooltip=`${remote.viewerCount} active viewers · ${page.title||page.url}`;viewersStatus.show();}else viewersStatus?.hide();
+					};
+					remote.onPage=()=>{surface.pageChanged();showViewers();};remote.onViewers=showViewers;
+				}}
 				if(current!==generation){media?.dispose();chat.dispose();return;}
 				connection={dispose(){media?.dispose();chat.dispose();}}; status.show();
 			}

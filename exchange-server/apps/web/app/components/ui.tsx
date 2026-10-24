@@ -5,6 +5,7 @@ export type IconName =
   | "plus"
   | "terminal"
   | "globe"
+  | "eye"
   | "link"
   | "copy"
   | "key"
@@ -15,6 +16,12 @@ export type IconName =
   | "close"
   | "google";
 const paths: Record<IconName, React.ReactNode> = {
+  eye: (
+    <>
+      <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" />
+      <circle cx="12" cy="12" r="3" />
+    </>
+  ),
   arrow: (
     <>
       <path d="M5 12h14M13 6l6 6-6 6" />

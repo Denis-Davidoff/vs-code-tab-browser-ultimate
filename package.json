@@ -982,6 +982,43 @@
 						"title": "Gemini CLI Executable",
 						"markdownDescription": "%configuration.chat.geminiPath.description%"
 					},
+					"aiBrowser.chat.exchangeKeepAwakeMinutes": {
+						"type": "number",
+						"enum": [
+							0,
+							15,
+							30,
+							60,
+							120,
+							180,
+							240,
+							300,
+							360,
+							720,
+							1440,
+							2880,
+							-1
+						],
+						"enumDescriptions": [
+							"Disabled",
+							"15 minutes",
+							"30 minutes",
+							"1 hour",
+							"2 hours",
+							"3 hours",
+							"4 hours",
+							"5 hours",
+							"6 hours",
+							"12 hours",
+							"24 hours",
+							"48 hours",
+							"Until turned off"
+						],
+						"default": 60,
+						"scope": "window",
+						"title": "Keep Awake After Exchange Connection",
+						"markdownDescription": "Prevent automatic system sleep when a website viewer connects to this chat through Exchange. Each new viewer renews the timer. 0 disables this trigger; -1 keeps the computer awake until you turn it off or close the VS Code window. The display may still sleep."
+					},
 					"aiBrowser.chat.viewMode": {
 						"type": "string",
 						"enum": [

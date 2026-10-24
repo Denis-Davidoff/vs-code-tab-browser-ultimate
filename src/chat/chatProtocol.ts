@@ -33,6 +33,8 @@ export interface ChatAgent {
 	readonly available: boolean;
 	/** Why it is not available, or why its models could not be listed. */
 	readonly problem?: string;
+	/** A failed login or live turn reported a credential problem; no credentials are exposed. */
+	readonly authentication?: { readonly required: boolean; readonly signingIn: boolean };
 	/** Which executable is in use: its version, where it came from, its path. */
 	readonly detail?: string;
 	readonly models: readonly ChatModel[];
@@ -588,6 +590,7 @@ export interface ChatSurface {
 }
 
 export interface ExchangeConnectionState {
+	readonly keepAwakeMinutes?: number;
 	readonly url: string;
 	readonly pointId: string;
 	readonly hasKey: boolean;
@@ -791,6 +794,7 @@ export type HostToView =
 export type ViewToHost =
 	| { readonly type: 'connectExchange'; readonly url: string; readonly pointId: string; readonly key?: string; readonly password?: string }
 	| { readonly type: 'disconnectExchange' }
+	| { readonly type: 'setExchangeKeepAwake'; readonly minutes: number }
 	| { readonly type: 'answerChromeConnection'; readonly id: string; readonly allow: boolean }
 	| { readonly type: 'reportTheme'; readonly tokens: Readonly<Record<string, string>> }
 	| { readonly type: 'temporaryStorage'; readonly action: 'refresh' | 'all' | 'project'; readonly project?: string }
@@ -869,6 +873,8 @@ export type ViewToHost =
 	| { readonly type: 'openDiff'; readonly name: string; readonly diff: string }
 	/** The copy of an agent's CLI this project uses; no `path` is Auto, the newest. */
 	| { readonly type: 'setAgentBinary'; readonly agent: AgentId; readonly path?: string }
+	| { readonly type: 'authenticateAgent'; readonly agent: AgentId }
+	| { readonly type: 'checkAgentAuthentication'; readonly agent: AgentId }
 	/** VS Code's own setting for an agent's executable. */
 	| { readonly type: 'openAgentSetting'; readonly agent: AgentId }
 	/** Through the host: `navigator.clipboard` in a webview depends on the host granting it. */

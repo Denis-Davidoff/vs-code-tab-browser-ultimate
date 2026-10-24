@@ -4,6 +4,14 @@ import { Brand, Icon } from "../../components/ui";
 import { WorkspaceGate } from "../../components/workspace-gate";
 import { RemoteBrowser } from "./remote-browser";
 
+type FullscreenDocument = Document & {
+  webkitFullscreenElement?: Element;
+  webkitExitFullscreen?: () => void | Promise<void>;
+};
+type FullscreenElement = HTMLElement & {
+  webkitRequestFullscreen?: () => void | Promise<void>;
+};
+
 export default function Workspace({
   params,
 }: {
@@ -19,6 +27,38 @@ export default function Workspace({
     [resizing, setResizing] = useState(false);
   const [wide, setWide] = useState(false);
   const [desktop, setDesktop] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
+  const [canFullscreen, setCanFullscreen] = useState(false);
+  const [fullscreenError, setFullscreenError] = useState("");
+  useEffect(() => {
+    const doc = document as FullscreenDocument;
+    const root = doc.documentElement as FullscreenElement;
+    setCanFullscreen(!!(root.requestFullscreen || root.webkitRequestFullscreen));
+    const changed = () => {
+      setFullscreen(!!(doc.fullscreenElement || doc.webkitFullscreenElement));
+      setFullscreenError("");
+    };
+    changed();
+    doc.addEventListener("fullscreenchange", changed);
+    doc.addEventListener("webkitfullscreenchange", changed);
+    return () => {
+      doc.removeEventListener("fullscreenchange", changed);
+      doc.removeEventListener("webkitfullscreenchange", changed);
+    };
+  }, []);
+  async function toggleFullscreen() {
+    const doc = document as FullscreenDocument;
+    const root = doc.documentElement as FullscreenElement;
+    try {
+      setFullscreenError("");
+      if (doc.fullscreenElement) await doc.exitFullscreen();
+      else if (doc.webkitFullscreenElement) await doc.webkitExitFullscreen?.();
+      else if (root.requestFullscreen) await root.requestFullscreen({ navigationUI: "hide" });
+      else await root.webkitRequestFullscreen?.();
+    } catch {
+      setFullscreenError("Full screen is unavailable. Try again.");
+    }
+  }
   useEffect(() => {
     const media = matchMedia("(min-width: 761px)");
     const update = () => setDesktop(media.matches);
@@ -105,6 +145,22 @@ export default function Workspace({
       <main className={`workspace-shell${wide ? " workspace-wide" : ""}`}>
         <header className="site-header workspace-header">
           <Brand />
+          <nav className="mobile-workspace-tabs" aria-label="Workspace screens">
+            <button
+              aria-current={page === "chat" ? "page" : undefined}
+              onClick={() => showPage("chat")}
+            >
+              <Icon name="terminal" size={15} />
+              Chat
+            </button>
+            <button
+              aria-current={page === "browser" ? "page" : undefined}
+              onClick={() => showPage("browser")}
+            >
+              <Icon name="globe" size={15} />
+              Browser
+            </button>
+          </nav>
           <span className="header-divider" aria-hidden="true" />
           <span className="header-caption">
             <span
@@ -118,6 +174,19 @@ export default function Workspace({
                 : "Workspace offline"
               : "Connecting…"}
           </span>
+          <button
+            type="button"
+            className="workspace-fullscreen-toggle"
+            onClick={toggleFullscreen}
+            disabled={!canFullscreen}
+            aria-pressed={fullscreen}
+            aria-label={fullscreen ? "Exit full screen" : "Enter full screen"}
+            title={fullscreenError || (!canFullscreen ? "Full screen is not supported in this browser" : fullscreen ? "Exit full screen" : "Enter full screen")}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d={fullscreen ? "M8 3v5H3M16 3v5h5M8 21v-5H3M16 21v-5h5" : "M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5"} />
+            </svg>
+          </button>
           <button
             type="button"
             className="workspace-width-toggle"
@@ -152,23 +221,6 @@ export default function Workspace({
             All connections
           </a>
         </header>
-        <nav className="mobile-workspace-tabs" aria-label="Workspace screens">
-          <button
-            aria-current={page === "chat" ? "page" : undefined}
-            onClick={() => showPage("chat")}
-          >
-            <Icon name="terminal" size={15} />
-            Chat
-          </button>
-          <button
-            aria-current={page === "browser" ? "page" : undefined}
-            onClick={() => showPage("browser")}
-          >
-            <Icon name="globe" size={15} />
-            Browser
-          </button>
-          <span>Swipe to switch</span>
-        </nav>
         <div
           ref={screens}
           className={`workspace workspace-screens${resizing ? " is-resizing" : ""}`}

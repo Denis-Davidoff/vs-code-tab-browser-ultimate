@@ -4,6 +4,7 @@ import { isAbsolute } from 'node:path';
 import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { transpileModule, ScriptTarget } from 'typescript';
+import { legacyProjectTabs } from './chatProject.ts';
 import { readChatPanelIdentity } from './chatPanelState.ts';
 
 const panel = { id: 'abcdef01-1234-4567-8901-abcdef012345', number: 4 };
@@ -30,12 +31,12 @@ function storage() {
 		constructor(_host: unknown, chat: any) { this.chat = chat; this.id = chat.id; this.started = !!chat.entries.length; }
 	}
 	let next = 0;
-	const context = { ChatTab: Tab, reopened: (chat: any) => ({ ...chat }), newChat: (agent: string, id?: string) => ({ id: id ?? `new-${++next}`, agent, entries: [] }),
+	const context = { legacyProjectTabs, ChatTab: Tab, reopened: (chat: any) => ({ ...chat }), newChat: (agent: string, id?: string) => ({ id: id ?? `new-${++next}`, agent, entries: [] }),
 		tabLimit: () => 20, path: { isAbsolute }, capAt: (s: string, limit: number) => s.slice(0, limit), tabTitleLimit: 80,
 		ChatViewProvider: { _surfaces: new Map<string, any>() } };
 	const restore = production('_restoreTabs', context), save = production('_saveTabs', context), find = production('_findOpenChat', context);
 	const host = (key: string) => {
-		const view: any = { _tabsStorageKey: key, _tabs: [], _remembered: { agent: 'codex' }, _tabsSaved: '', _history: () => [stored],
+		const view: any = { _tabsStorageKey: key, _legacyTabsStorageKey:key+'.legacy', _projectId:'project-1', _tabs: [], _remembered: { agent: 'codex' }, _tabsSaved: '', _history: () => [stored],
 			_context: { workspaceState: { get: (k: string) => values.get(k), update: (k: string, v: any) => { values.set(k, v); return Promise.resolve(); } } } };
 		view._findOpenChat = find;
 		return view;
@@ -69,4 +70,33 @@ test('restoration skips conversations already owned by the main chat and repeate
 	s.restore.call(restored);
 	assert.deepEqual(restored._tabs.map((tab: any) => tab.chat.id), ['fresh']);
 	assert.equal(restored._active.chat.id, 'fresh');
+});
+
+test('legacy tabs migrate whatever folder they work in; a snapshot stamped for another project stays closed',()=>{
+ const s=storage();
+ s.values.set('sidebar.legacy',{ids:['started','foreign','fresh-default'],fresh:['foreign','fresh-default'],folders:{foreign:'/elsewhere'},active:'foreign'});
+ const view=s.host('sidebar');s.restore.call(view);
+ assert.deepEqual(view._tabs.map((tab:any)=>tab.chat.id),['started','foreign','fresh-default']);
+ assert.equal(view._active.chat.id,'foreign');assert.equal(view._active.chat.folder,'/elsewhere');
+ assert.ok(s.values.has('sidebar.legacy'),'legacy storage remains intact');
+ const other=storage();
+ other.values.set('sidebar.legacy',{project:'project-2',ids:['started'],active:'started'});
+ const stranger=other.host('sidebar');other.restore.call(stranger);
+ assert.ok(!stranger._tabs.some((tab:any)=>tab.chat.id==='started'));
+});
+
+test('a saved project session keeps intentionally selected external working folders',()=>{
+ const s=storage(),view=s.host('project-A');
+ view._tabs=[new s.Tab({}, {id:'copy-chat',folder:'/separate/worktree',entries:[]})];view._active=view._tabs[0];
+ s.save.call(view);const restored=s.host('project-A');s.restore.call(restored);
+ assert.equal(restored._active.chat.id,'copy-chat');assert.equal(restored._active.chat.folder,'/separate/worktree');
+ const foreign=s.host('project-A');foreign._projectId='project-B';s.restore.call(foreign);
+ assert.notEqual(foreign._active.chat.id,'copy-chat');
+});
+
+test('an explicitly empty project session never falls back to old open dialogs',()=>{
+ const s=storage();s.values.set('sidebar',{project:'project-1',ids:[]});
+ s.values.set('sidebar.legacy',{ids:['started'],active:'started'});
+ const view=s.host('sidebar');s.restore.call(view);
+ assert.equal(view._tabs.length,1);assert.notEqual(view._active.chat.id,'started');
 });

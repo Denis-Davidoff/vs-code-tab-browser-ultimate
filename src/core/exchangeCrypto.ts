@@ -236,7 +236,7 @@ export function encryptedExchangeSocket(
 					return;
 				}
 				if (
-					['presence', 'browser.presence', 'browser.viewers'].includes(
+					['presence', 'browser.presence', 'browser.viewers', 'chat.viewers'].includes(
 						value.type,
 					)
 				) {

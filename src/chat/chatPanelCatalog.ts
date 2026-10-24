@@ -12,12 +12,14 @@ export class ChatPanelCatalog {
 	readonly panels = new Map<string, SavedChatPanel>();
 	private _highWater = 1;
 	private _saved = '';
-	constructor(private readonly _storage: Storage) {
-		const saved = _storage.get<{ highWater?: number; panels?: unknown[] }>(key);
+	constructor(private readonly _storage: Storage, private readonly _key = key, legacyPanel?: (panel: ChatPanelIdentity) => boolean) {
+		const owned = _storage.get<{ highWater?: number; panels?: unknown[] }>(this._key);
+		const saved = owned ?? (legacyPanel ? _storage.get<{ highWater?: number; panels?: unknown[] }>(key) : undefined);
 		if (Number.isSafeInteger(saved?.highWater) && saved!.highWater! > 0) { this._highWater = saved!.highWater!; }
 		for (const entry of Array.isArray(saved?.panels) ? saved.panels : []) {
 			const panel = readChatPanelIdentity(entry);
 			if (!panel || this.panels.has(panel.id)) { continue; }
+			if (!owned && legacyPanel && !legacyPanel(panel)) { continue; }
 			const raw = (entry as SavedChatPanel).drafts;
 			const drafts = Object.fromEntries(Object.entries(raw && typeof raw === 'object' ? raw : {}).filter(([, value]) => typeof value === 'string'));
 			this.panels.set(panel.id, { panel, drafts });
@@ -44,6 +46,6 @@ export class ChatPanelCatalog {
 		const json = JSON.stringify(value);
 		if (json === this._saved) { return; }
 		this._saved = json;
-		void this._storage.update(key, value).then(undefined, () => { this._saved = ''; });
+		void this._storage.update(this._key, value).then(undefined, () => { this._saved = ''; });
 	}
 }

@@ -305,6 +305,7 @@ export async function geminiTrustsFolder(binary: string, folder: string): Promis
 export type GeminiFolderState = 'trusted' | 'untrusted' | 'signedOut' | 'unknown';
 
 export class GeminiBackend implements AgentBackend {
+	public get running(): boolean { return [...this._sessions].some(session => session.running); }
 	public readonly id = 'gemini' as const;
 	private readonly _sessions = new Set<GeminiSession>();
 	private _commands: ChatCommand[] | undefined;

@@ -6,6 +6,7 @@ import { annotationPointContext } from '../browser/annotationData';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { chromeChatCommandFeature } from './chromeChatCompatibility';
 import { ChatPanelCatalog } from './chatPanelCatalog';
+import { chatProjectId, legacyProjectTabs, type SavedChatTabs } from './chatProject';
 import { ChatStateSurfaces, type ChatStateSurface } from './chatSurface';
 import type { ChromeElementAttachment } from './chromeChatProtocol';
 import { bindAttachmentReference } from './attachmentReferences';
@@ -15,7 +16,7 @@ import { featureAgent, featureAiKey, defaultFeaturePrompts, featureEffort, readF
 import { availableBranchName, titleModel } from './autoTitle';
 import { localFileLink } from './fileLinks';
 import { SleepControl } from '../power/sleepControl';
-import { sleepHours, sleepMinutes, type SleepChoice } from '../power/sleepProtocol';
+import { sleepHours, sleepMinutes, exchangeAwakeMinutes, readExchangeAwakeMinutes, type SleepChoice } from '../power/sleepProtocol';
 import { VoiceRecording, voiceHelperPath, voiceUnavailable } from './voiceRecorder';
 import { tidyTranscript, voiceChipLabel, voiceLocalePattern, voiceMaxSeconds, voicePromptText, type HelperLine } from './voiceText';
 import { privateTempDirectory, projectTempDirectory, legacyPrivateTempDirectory, writeExclusive } from '../core/safeFiles';
@@ -412,6 +413,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		if (!view || view._disposed || !view._view) { throw new Error('The source chat is no longer open'); }
 		return view._stateSurfaces.attach(surface, chatId => view._stateFor(chatId), () => view._post());
 	}
+	public static exchangeViewerConnected(id: string): void {
+		const view=this._surfaces.get(id);
+		if(!view||view._disposed)return;
+		const minutes=readExchangeAwakeMinutes(vscode.workspace.getConfiguration('aiBrowser.chat').get('exchangeKeepAwakeMinutes',60));
+		view._sleep.connected(minutes);
+	}
 
 	public static async commandChromeSource(id: string, chatId: string, message: ViewToHost, picked: readonly ChromeElementAttachment[] = [], reply?: (message: HostToView, chatId?: string) => void, canonical?: (item:ChromeElementAttachment)=>Attachment|undefined): Promise<void> {
 		// The website's `send` comes through here too, after its own check.
@@ -454,6 +461,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 					tab.push({ kind: 'notice', text: `Not sent: ${message.text}` });
 				});
 			}
+		} else if (message.type === 'openBrowser') {
+			if(message.where!=='vscode')throw new Error('Open Chrome tabs in the Chrome side panel.');
+			if(!isBrowserApiGranted())throw new Error('Enable the native browser API in VS Code and restart the editor before opening a remote browser tab.');
+			view._awaitOpenedPage(tab);
+			await tabSource.open('about:blank',{where:'vscode',preserveFocus:true});
 		} else if (message.type === 'stop') {
 			view._stopTab(tab);
 		} else if (message.type === 'select' || message.type === 'switchAgent') {
@@ -489,7 +501,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		if(message.type==='openBrowser'){
 			// Chrome on the editor's machine: its tabs then appear in the website's Browser panel.
 			if(message.where==='chrome'){const page=await vscode.commands.executeCommand<vscode.BrowserTab|undefined>('aiBrowser.openInChrome');if(!page)throw new Error('Google Chrome could not be opened on the VS Code machine.');}
-			else await vscode.commands.executeCommand('workbench.action.browser.open');
+			else {
+				if(!isBrowserApiGranted())throw new Error('Enable the native browser API in VS Code and restart the editor before opening a remote browser tab.');
+				// The no-argument workbench command opens the local address prompt.
+				// Remote control needs an actual page target before it can navigate.
+				await tabSource.open('about:blank',{where:'vscode',preserveFocus:true});
+			}
 			reply?.({type:'exchangeBrowser'},chatId);return;
 		}
 		if(message.type==='openLink'){
@@ -661,6 +678,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		changed: () => { this._post(); this._drainQueues(); },
 		limits: (agent, windows, usingCredits) => this._noteLimits(agent, windows, usingCredits, false),
 		turnEnded: (agent, weight) => this._turnEnded(agent, weight),
+		authenticationError: (agent, text) => this._registry.authenticationError(agent, text),
 		save: chat => this._save(chat),
 		inHistory: id => this._history().some(c => c.id === id),
 		approvalMode: key => this._approvalPolicy()[key] ?? 'ask',
@@ -685,6 +703,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private _postTimer: ReturnType<typeof setTimeout> | undefined;
 	private readonly _subscriptions: vscode.Disposable[] = [];
 	private _nativeBrowser: BrowserApiState | undefined;
+	private readonly _projectId: string;
 
 	/**
 	 * `browserServer`: the extension's MCP server while it runs, handed to every
@@ -699,12 +718,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		_transfer?: { tab: ChatTab; services: ChatServices },
 		private readonly _restoredPanel?: ChatPanelIdentity,
 	) {
+		// Freeze the owner for this surface: changing a working folder must not
+		// move its saved conversation set into another project's session.
+		this._projectId = chatProjectId(vscode.workspace.workspaceFile?.toString(),
+			(vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri.toString()), _context.storageUri?.toString());
 		if (_restoredPanel) { this._surfaceNumber = _restoredPanel.number; }
 		const shared = _transfer?.services ?? ChatViewProvider._sharedServices;
 		this._registry = shared?.registry ?? new AgentRegistry(() => this._cwd(), id => this._agentBinaries()[id], _browserServer, () => !this._untrusted(this._cwd()));
 		void sweepBrowserConfigs().catch(() => { /* swept with the temp directory */ });
 		if (shared) { this._runs = shared.runs; this._gitAccess = shared.git; }
-		this._services = shared ?? { registry: this._registry, git: this._gitAccess, panels: new ChatPanelCatalog(_context.workspaceState), runs: this._runs, views: new Set() };
+		this._services = shared ?? { registry: this._registry, git: this._gitAccess,
+			panels: new ChatPanelCatalog(_context.workspaceState, `aiBrowser.chat.panelCatalog.project.${this._projectId}`, panel => {
+				const old = _context.workspaceState.get<SavedChatTabs>(`${openTabsKey}.panel.${panel.id}`);
+				const tabs = legacyProjectTabs(old, this._projectId);
+				return Array.isArray(tabs?.ids) && tabs.ids.length > 0;
+			}), runs: this._runs, views: new Set() };
 		if (!_restoredPanel && _detachedChat) { this._surfaceNumber = this._freeSurfaceNumber(); }
 		this._services.views.add(this);
 		ChatViewProvider._sharedServices = this._services;
@@ -752,7 +780,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		// once enough of them are closed.
 		this._subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration('workbench.iconTheme') || e.affectsConfiguration('files.associations')) { this._gitEventRefresh(); this._postFileIcons(); }
-			if (e.affectsConfiguration(tabLimitSetting) || e.affectsConfiguration(collapseToolsSetting) || e.affectsConfiguration(viewModeSetting)) {
+			if (e.affectsConfiguration(tabLimitSetting) || e.affectsConfiguration(collapseToolsSetting) || e.affectsConfiguration(viewModeSetting) || e.affectsConfiguration('aiBrowser.chat.exchangeKeepAwakeMinutes')) {
 				this._post();
 			}
 		}));
@@ -1111,7 +1139,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				description: `${surface._active.chat.title} · ${surface._tabs.length} chats · ${surface._active.chat.folder ?? surface._windowCwd()}`,
 			})),
 			sleep: this._sleep.state,
-			exchangeConnection: exchangeConnection.state,
+			exchangeConnection: { ...exchangeConnection.state, keepAwakeMinutes: readExchangeAwakeMinutes(vscode.workspace.getConfiguration('aiBrowser.chat').get('exchangeKeepAwakeMinutes',60)) },
 			featureAi: readFeatureAiSettings(this._context.globalState.get(featureAiKey)),
 			recordingQuality: readRecordingQuality(this._context.globalState.get(recordingQualityKey)),
 			recordingSeconds: readRecordingSeconds(this._context.globalState.get(recordingSecondsKey)),
@@ -1224,6 +1252,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				return;
 			case 'disconnectExchange':
 				exchangeConnection.disconnect();
+				return;
+			case 'setExchangeKeepAwake':
+				if((exchangeAwakeMinutes as readonly number[]).includes(message.minutes)){
+					await vscode.workspace.getConfiguration('aiBrowser.chat').update('exchangeKeepAwakeMinutes',message.minutes,vscode.ConfigurationTarget.Global);
+				}
 				return;
 			case 'answerChromeConnection':
 				if (ChatViewProvider._chromeConnectionRequest?.id === message.id) {
@@ -1587,6 +1620,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				return;
 			case 'setAgentBinary':
 				await this._setAgentBinary(message.agent, message.path);
+				return;
+			case 'authenticateAgent':
+			case 'checkAgentAuthentication':
+				if (this._blocked() || !isAgentId(message.agent)) return;
+				if (message.type === 'authenticateAgent') await this._registry.authenticate(message.agent);
+				else await this._registry.checkAuthentication(message.agent);
 				return;
 			case 'openAgentSetting':
 				await vscode.commands.executeCommand('workbench.action.openSettings', `aiBrowser.chat.${message.agent}Path`);
@@ -3898,8 +3937,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			});
 		} catch (err) { error = err instanceof Error ? err.message : String(err); }
 		finally {
-			if (!this._disposed && folder === this._workdir()) { await this._refreshWorkdirGit(); }
-			this._postMessage({ type: 'gitIndexResult', folder, error });
+			try {
+				if (!this._disposed && folder === this._workdir()) {
+					// A coalesced read may belong to another remote request, whose
+					// reply callback cannot update the popup that made this mutation.
+					if (this._chromeCommand?.getStore()) { await this._readWorkdirGit(folder); }
+					else { await this._refreshWorkdirGit(); }
+				}
+			} finally { this._postMessage({ type: 'gitIndexResult', folder, error }); }
 		}
 	}
 
@@ -5007,6 +5052,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	private get _tabsStorageKey(): string {
+		return `${this._legacyTabsStorageKey}.project.${this._projectId}`;
+	}
+
+	private get _legacyTabsStorageKey(): string {
 		const panel = this._panelIdentity;
 		return panel ? `${openTabsKey}.panel.${panel.id}` : openTabsKey;
 	}
@@ -5071,7 +5120,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 	/** The open tabs as they were when the window closed; at least one, empty if nothing was open. */
 	private _restoreTabs(): void {
-		const saved = this._context.workspaceState.get<{ ids?: unknown; fresh?: unknown; active?: unknown; names?: unknown; folders?: unknown; repos?: unknown; ultracodes?: unknown }>(this._tabsStorageKey);
+		const owned = this._context.workspaceState.get<SavedChatTabs>(this._tabsStorageKey);
+		const saved = owned ? (!owned.project || owned.project === this._projectId ? owned : undefined)
+			: legacyProjectTabs(this._context.workspaceState.get<SavedChatTabs>(this._legacyTabsStorageKey), this._projectId);
 		const repos = saved?.repos && typeof saved.repos === 'object' ? saved.repos as Record<string, { copy?: unknown; references?: unknown }> : {};
 		const ultracodes = saved?.ultracodes && typeof saved.ultracodes === 'object' ? saved.ultracodes as Record<string, unknown> : {};
 		const names = saved?.names && typeof saved.names === 'object' ? saved.names as Record<string, unknown> : {};
@@ -5131,6 +5182,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		const identity = this._panelIdentity;
 		if (identity) { this._services.panels.remember(identity, Object.fromEntries(this._savedDrafts)); }
 		const value = {
+			project: this._projectId,
 			ids: this._tabs.map(t => t.chat.id),
 			ultracodes: Object.fromEntries(this._tabs.map(t => [t.chat.id, t.chat.ultracode])),
 			fresh: this._tabs.filter(t => !t.started).map(t => t.chat.id),

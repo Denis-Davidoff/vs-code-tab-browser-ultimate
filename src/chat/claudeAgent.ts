@@ -250,6 +250,7 @@ class ControlChannel implements vscode.Disposable {
 const projectSettingsOff = ['--setting-sources=user', '--strict-mcp-config'];
 
 export class ClaudeBackend implements AgentBackend {
+	public get running(): boolean { return [...this._sessions].some(session => session.running); }
 	public readonly id = 'claude' as const;
 	private readonly _sessions = new Set<ClaudeSession>();
 	/** Detection's processes kept for the usage answer; ended with the backend. */

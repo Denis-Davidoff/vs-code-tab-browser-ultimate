@@ -41,6 +41,7 @@ function harness(healthStatus = 200, memory?: {stored:Map<string,any>;secrets:Ma
 	};
 	let choices=[{id:'panel-1',panelId:'sidebar'},{id:'panel-2',panelId:'stable-panel-2'}];
 	const chatView = { ChatViewProvider: {
+        exchangeViewerConnected:(source:string)=>actions.push({viewerJoined:source}),
 		chromeSources: () => choices,
 		commandExchangeSource: async (source:string,chatId:string,message:any,_picked:any,reply:any,browserTab:any) => { actions.push({source,chatId,message,...(browserTab?{browserTab}:{})}); reply?.({type:'usage',usage:[],loading:false},chatId); },
 		observeChromeSource: (source: string, surface: any) => {
@@ -276,4 +277,16 @@ test('a relay that carries patches gets numbered snapshots and then patches; an 
    }
   }finally{h.shutdown();}
  }
+});
+
+test('each additional Exchange viewer renews awake protection, repeated presence does not',async()=>{
+ const h=harness();
+ try{
+  await h.port.connect({url:'https://exchange.test',pointId,key},'panel-2');
+  const ws=h.sockets[0];ws.emit('open');
+  assert.ok(JSON.parse(ws.sent[0]).features.includes('chat-viewers'));
+  ws.emit('message',{data:JSON.stringify({type:'ready',version:1})});await flush();
+  for(const count of [0,1,1,2,1,2,0]){ws.emit('message',{data:JSON.stringify({type:'chat.viewers',count})});await flush();}
+  assert.deepEqual(h.actions,[{viewerJoined:'panel-2'},{viewerJoined:'panel-2'},{viewerJoined:'panel-2'}]);
+ }finally{h.shutdown();}
 });

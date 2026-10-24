@@ -25,8 +25,8 @@ class Refused extends Error {}
 function refuse(ws: WebSocket, path: string, reason: string) {
   ws.close(path === "/ws/agent" ? AGENT_REFUSED : 1008, reason);
 }
-function send(socket: WebSocket, value: unknown) {
-  if (socket.readyState !== WebSocket.OPEN) return;
+function send(socket: WebSocket | undefined, value: unknown) {
+  if (socket?.readyState !== WebSocket.OPEN) return;
   if (socket.bufferedAmount > MAX_BUFFER) {
     socket.close(1013, "Client too slow");
     return;
@@ -37,6 +37,7 @@ function send(socket: WebSocket, value: unknown) {
 export class Relay {
   private readonly agents = new Map<string, WebSocket>();
   private readonly viewers = new Map<string, Set<WebSocket>>();
+  private readonly viewerPresence = new WeakSet<WebSocket>();
   private readonly snapshots = new Map<string, unknown>();
   private readonly pending = new Map<
     string,
@@ -187,6 +188,7 @@ export class Relay {
       this.agents.get(id)?.close(AGENT_REFUSED, "Connection replaced");
       this.snapshots.delete(id);
       this.agents.set(id, ws);
+      if (Array.isArray(hello.features) && hello.features.includes("chat-viewers")) this.viewerPresence.add(ws);
       this.broadcast(id, { type: "presence", online: true });
     } else {
       const viewers = this.viewers.get(id) ?? new Set<WebSocket>();
@@ -211,6 +213,7 @@ export class Relay {
     });
     if (path === "/ws/browser" && this.snapshots.has(id))
       send(ws, this.snapshots.get(id));
+    this.notifyChatViewers(id);
     let processing = Promise.resolve(),
       queued = 0;
     ws.on("message", (raw) => {
@@ -329,6 +332,8 @@ export class Relay {
       const viewers = this.viewers.get(id);
       viewers?.delete(ws);
       if (viewers?.size === 0) this.viewers.delete(id);
+      if (path === "/ws/browser")
+        this.notifyChatViewers(id);
       for (const [commandId, item] of this.pending)
         if (item.viewer === ws) {
           clearTimeout(item.timer);
@@ -338,6 +343,12 @@ export class Relay {
   }
   private broadcast(id: string, event: unknown) {
     for (const viewer of this.viewers.get(id) ?? []) send(viewer, event);
+  }
+  private notifyChatViewers(id: string) {
+    const agent = this.agents.get(id);
+    if (!agent || !this.viewerPresence.has(agent)) return;
+    const count = [...(this.viewers.get(id) ?? [])].filter(viewer => viewer.readyState === WebSocket.OPEN).length;
+    send(agent, { type: "chat.viewers", count });
   }
   disconnectPoint(id: string) {
     this.streams.disconnectPoint(id);

@@ -1,0 +1,5 @@
+{
+  "tasks": {
+    "Compile & Install": "npm run package && \"/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code\" \\   --install-extension ./tab-browser-ultimate.vsix --force"
+  }
+}

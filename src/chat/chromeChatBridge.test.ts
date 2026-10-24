@@ -748,3 +748,29 @@ test('a panel that names the revision it shows gets a patch of the view, and a s
 		assert.ok(JSON.parse((await get(config)).body).view, 'no header gets the whole snapshot');
 	} finally { bridge.close(); }
 });
+
+ test('Chrome may request a VS Code browser tab but cannot forward local Chrome opens',()=>{
+ const envelope={id:'request-browser-123',chatId:'chat'};
+ const command=readChromeChatCommand({...envelope,message:{type:'openBrowser',where:'vscode'}});
+ assert.equal(command?.message.type,'openBrowser');
+ assert.equal((command?.message as {where?:string})?.where,'vscode');
+ for(const where of [undefined,'chrome','invalid'])assert.equal(readChromeChatCommand({...envelope,message:{type:'openBrowser',where}}),undefined);
+ });
+
+test('Chrome browser requests create a native page for the displayed conversation',async()=>{
+ const source=readFileSync('src/chat/chatView.ts','utf8');
+ const method=/public static async commandChromeSource\([\s\S]*?\n\t\}/.exec(source)![0].replace('public static async ','async function ');
+ const calls:any[]=[];let granted=true;
+ const command=runInNewContext(transpileModule(`${method}\ncommandChromeSource;`,{compilerOptions:{target:ScriptTarget.ES2022}}).outputText,{
+  remoteRefusal,remoteScope,chromeChatCommandFeature:load('chromeChatCompatibility').chromeChatCommandFeature,
+  isBrowserApiGranted:()=>granted,tabSource:{async open(url:string,options:any){calls.push({url,...options});}},
+ });
+ const tab={chat:{id:'chat-1'}},view={_view:{},_tabs:[tab],_blocked:()=>undefined,_awaitOpenedPage:(target:any)=>calls.push(target),_postMessage(){},_state:()=>({})};
+ const receiver={_surfaces:new Map([['surface',view]])};
+ await command.call(receiver,'surface','chat-1',{type:'openBrowser',where:'vscode'});
+ assert.equal(calls[0],tab);assert.equal(calls[1].url,'about:blank');assert.equal(calls[1].where,'vscode');assert.equal(calls[1].preserveFocus,true);
+ granted=false;
+ await assert.rejects(()=>command.call(receiver,'surface','chat-1',{type:'openBrowser',where:'vscode'}),/native browser API/);
+ await assert.rejects(()=>command.call(receiver,'surface','chat-1',{type:'openBrowser',where:'chrome'}),/Chrome side panel/);
+ assert.equal(calls.length,2);
+});

@@ -12,6 +12,9 @@ chrome-extension/*.zip
 chrome-extension/*.zip.tmp
 node_modules/
 
+# Local deployment configuration and scripts
+/exchange-server/deploy/
+
 # Marketplace stub build artifacts
 vscode-marketplace/media/
 vscode-marketplace/*.vsix

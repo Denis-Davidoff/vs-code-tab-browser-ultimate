@@ -76,19 +76,22 @@ function result(id:string,ok:boolean,error?:string):void {
   const item=pending.get(id);if(!item)return;
   clearTimeout(item.timer);pending.delete(id);
   if(ok&&item.message?.type==='send')attachments.set(item.chatId,(attachments.get(item.chatId)??[]).filter(a=>!item.attachmentIds.includes(a.id)));
-  if(!ok){if(item.message?.type==='send')emit({type:'restoreDraft',chatId:item.chatId,text:item.message.text});notice(error??'The action could not be completed.');}
+  if(!ok){if(item.message?.type==='send')emit({type:'restoreDraft',chatId:item.chatId,text:item.message.text});
+    if(item.message?.type==='gitIndexAction'&&item.chatId===latest?.chatId)emit({type:'gitIndexResult',folder:item.message.folder,error:error??'The Git action could not be completed. Refresh before retrying.'});
+    notice(error??'The action could not be completed.');}
   conversation.disabled=false;render();
 }
 function send(message:ExchangeUiMessage):void {
   if(!latest || !online || socket?.readyState!==WebSocket.OPEN) {
+    if(message.type==='gitIndexAction')queueMicrotask(()=>emit({type:'gitIndexResult',folder:message.folder,error:'Workspace offline. Reconnect before updating Git files.'}));
     if(message.type==='send'&&latest)queueMicrotask(()=>emit({type:'restoreDraft',chatId:latest!.chatId,text:message.text}));
     notice('Workspace offline. Your message was not sent.');return;
   }
   const id=crypto.randomUUID(),chatId=latest.chatId;
   const picked=message.type==='send'?(attachments.get(chatId)??[]).slice():[];
   const command=readExchangeUiCommand({type:'chat.command',id,chatId,message,...(picked.length?{attachments:picked}:{})});
-  if(!command){if(message.type==='send')queueMicrotask(()=>emit({type:'restoreDraft',chatId,text:message.text}));notice('This action requires a local VS Code window.');return;}
-  if(pending.size>=64){notice('Wait for the pending actions to finish.');return;}
+  if(!command){if(message.type==='send')queueMicrotask(()=>emit({type:'restoreDraft',chatId,text:message.text}));if(message.type==='gitIndexAction')queueMicrotask(()=>emit({type:'gitIndexResult',folder:message.folder,error:'Git action unavailable. Update the VS Code extension.'}));notice('This action requires a local VS Code window.');return;}
+  if(pending.size>=64){if(message.type==='gitIndexAction')queueMicrotask(()=>emit({type:'gitIndexResult',folder:message.folder,error:'Wait for the pending actions to finish.'}));notice('Wait for the pending actions to finish.');return;}
   feedback='';
   const timer=setTimeout(()=>result(id,false,'No acknowledgement. Check the workspace before trying again.'),30000);
   pending.set(id,{chatId,message,attachmentIds:picked.map(a=>a.id),timer});

@@ -988,6 +988,8 @@ export class BrowserController implements vscode.Disposable {
 			const width=event.metadata?.deviceWidth,height=event.metadata?.deviceHeight;
 			if(typeof event.data==='string' && event.data.length<2_000_000 && Number.isFinite(width)&&width>0&&Number.isFinite(height)&&height>0){lastFrame=Date.now();frame(event.data,width,height);}
 		});
+		// Counted before the first await below, so an older stream disposed while this one is starting sees it.
+		this._screencasts.set(tab,(this._screencasts.get(tab)??0)+1);
 		try{await send('Page.startScreencast',{format:'jpeg',quality:60,maxWidth:1440,maxHeight:1000,everyNthFrame:1});}catch{/* Screenshot fallback also supports browsers without screencast. */}
 		const tick=async()=>{
 			if(closed||busy||Date.now()-lastFrame<1500)return;busy=true;
@@ -995,25 +997,50 @@ export class BrowserController implements vscode.Disposable {
 				await this._remoteTab(id);
 				const metrics=await send('Page.getLayoutMetrics');
 				const viewport=metrics.cssLayoutViewport ?? metrics.layoutViewport;
-				const {data}=await send('Page.captureScreenshot',{format:'jpeg',quality:60,captureBeyondViewport:false,clip:{x:viewport.pageX,y:viewport.pageY,width:viewport.clientWidth,height:viewport.clientHeight,scale:Math.min(1,1440/viewport.clientWidth,1000/viewport.clientHeight)}});
+				// Capture the view, not a scaled compositor surface. Repeated clipped
+				// surface captures can interfere with the live embedded browser's
+				// visible region while the user scrolls it. Previewing must not resize it.
+				const {data}=await send('Page.captureScreenshot',{format:'jpeg',quality:60,fromSurface:false,captureBeyondViewport:false});
 				if(!closed&&typeof data==='string'&&data.length<2_000_000){lastFrame=Date.now();frame(data,viewport.clientWidth,viewport.clientHeight);}
 			}catch{/* A closed tab is reported by the next tabs refresh. */}finally{busy=false;}
 		};
 		const timer=setInterval(()=>void tick(),500);void tick();
-		return new vscode.Disposable(()=>{closed=true;clearInterval(timer);listener.dispose();void send('Page.stopScreencast').catch(()=>{});release();});
+		return new vscode.Disposable(()=>{
+			closed=true;clearInterval(timer);listener.dispose();
+			const remaining=(this._screencasts.get(tab)??1)-1;
+			if(remaining>0)this._screencasts.set(tab,remaining);
+			else{this._screencasts.delete(tab);void send('Page.stopScreencast').catch(()=>{});}
+			release();
+		});
 	}
 	public async remoteInput(id:string,input:RemoteBrowserInput):Promise<void> {
 		const tab=await this._remoteTab(id);
 		if(input.action==='close'){await tab.close();return;}
 		const release=this._hold(tab);
 		try{
+			if(input.action==='navigate'){
+				// Navigation must not wait for screenshot setup or for all the DOM,
+				// CSS and Runtime domains of a blank page to finish enabling.
+				let client:CDPClient|undefined,finished=false;
+				let timeout:ReturnType<typeof setTimeout>|undefined;
+				try{
+					await Promise.race([(async()=>{
+						const connection=new CDPClient(await tab.startCDPSession());
+						if(finished){connection.dispose();return;}
+						client=connection;
+						const sessionId=await connection.attachToPage();
+						const result=await connection.send('Page.navigate',{url:input.url},sessionId);
+						if(result?.errorText)throw new Error(`Could not open ${input.url}: ${result.errorText}`);
+					})(),new Promise<never>((_,reject)=>{timeout=setTimeout(()=>reject(new Error('Browser navigation timed out; check the page before retrying.')),5000);})]);
+				}finally{finished=true;clearTimeout(timeout);client?.dispose();}
+				return;
+			}
 			const session=await this._sessionFor(tab);
 			const send=async(method:string,params?:object)=>{
 				let timeout:ReturnType<typeof setTimeout>|undefined;
 				try{return await Promise.race([session.client.send(method,params,session.sessionId),new Promise<never>((_,reject)=>{timeout=setTimeout(()=>reject(new Error('Browser action timed out; check the page before retrying.')),5000);})]);}
 				finally{clearTimeout(timeout);}
 			};
-			if(input.action==='navigate'){await send('Page.navigate',{url:input.url});return;}
 			if(input.action==='reload'){await send('Page.reload');return;}
 			if(input.action==='back'||input.action==='forward'){
 				const history=await send('Page.getNavigationHistory');const entry=history.entries[history.currentIndex+(input.action==='back'?-1:1)];
@@ -1023,7 +1050,12 @@ export class BrowserController implements vscode.Disposable {
 			if(input.action==='key'){
 				const codes:Record<string,number>={Backspace:8,Tab:9,Enter:13,Escape:27,Delete:46,ArrowLeft:37,ArrowUp:38,ArrowRight:39,ArrowDown:40,Home:36,End:35,PageUp:33,PageDown:34};
 				const key={key:input.key,windowsVirtualKeyCode:codes[input.key]??input.key.toUpperCase().charCodeAt(0),modifiers:input.modifiers};
-				await send('Input.dispatchKeyEvent',{type:'keyDown',...key});await send('Input.dispatchKeyEvent',{type:'keyUp',...key});return;
+				// Chromium needs the carriage return on keyDown to produce Enter's
+				// default action (submit a form or insert a newline), not just key events.
+				const text=input.key==='Enter'&&!(input.modifiers&7)?{text:'\r',unmodifiedText:'\r'}:{};
+				try{await send('Input.dispatchKeyEvent',{type:'keyDown',...key,...text});}
+				finally{await send('Input.dispatchKeyEvent',{type:'keyUp',...key});}
+				return;
 			}
 			if(input.action!=='click'&&input.action!=='scroll'&&input.action!=='move')return;
 			const metrics=await send('Page.getLayoutMetrics');const viewport=metrics.cssLayoutViewport ?? metrics.layoutViewport;
@@ -1082,6 +1114,15 @@ export class BrowserController implements vscode.Disposable {
 	 * work, so the rule cannot be re-entered by adding a call site.
 	 */
 	private readonly _inFlight = new Map<vscode.BrowserTab, number>();
+
+	/**
+	 * Remote previews running on each tab. They share the tab's one CDP session and
+	 * so one screencast: a stream that starts again (selection repeated, viewers
+	 * leaving and returning) can overlap the one it replaces, and the older one's
+	 * disposal must not stop the capture the newer one is using. The screencast
+	 * is stopped only when the last stream of the tab goes.
+	 */
+	private readonly _screencasts = new Map<vscode.BrowserTab, number>();
 
 	/**
 	 * Opens waiting for a session slot to come free.
@@ -3466,6 +3507,7 @@ export class BrowserController implements vscode.Disposable {
 		const { data } = await session.client.send('Page.captureScreenshot', {
 			format: 'png',
 			captureBeyondViewport: fullPage,
+			...(!fullPage ? { fromSurface: false } : {}),
 			...(clip ? { clip } : {}),
 		}, session.sessionId);
 

@@ -56,6 +56,7 @@ export function RemoteBrowser({
     [address, setAddress] = useState(""),
     [text, setText] = useState("");
   const [pending, setPending] = useState(false);
+  const [viewerCount, setViewerCount] = useState(0);
   const [zoom, setZoom] = useState(1);
   const zoomRef = useRef(1);
   const commands = useRef(new Map<string, ReturnType<typeof setTimeout>>());
@@ -74,6 +75,9 @@ export function RemoteBrowser({
     });
   const frameRef = useRef<Frame | null>(null),
     lastUrl = useRef("");
+  const editingAddress = useRef(false);
+  // True once the viewer has typed into the field since it last showed the page's address.
+  const addressDirty = useRef(false);
   const touch = useRef<{
       x: number;
       y: number;
@@ -399,19 +403,27 @@ export function RemoteBrowser({
               setSelected(null);
               clearCommands();
             }
+          } else if (value.type === "browser.viewers") {
+            setViewerCount(Number.isSafeInteger(value.count) && value.count >= 0 ? value.count : 0);
           } else if (value.type === "browser.state") {
             setTabs(value.tabs);
-            setError(value.error ?? "");
-            if (selectedRef.current !== value.selected) {
+            if (value.error) setError(value.error);
+            const changedTab = selectedRef.current !== value.selected;
+            if (changedTab) {
               setFrame(null);
               frameRef.current = null;
             }
             selectedRef.current = value.selected;
             setSelected(value.selected);
             const tab = value.tabs.find((t: Tab) => t.id === value.selected);
-            if (tab && tab.url !== lastUrl.current) {
+            if (tab && (changedTab || tab.url !== lastUrl.current)) {
               lastUrl.current = tab.url;
-              setAddress(tab.url);
+              // Polling must not replace a URL while the viewer is typing it;
+              // onBlur shows the latest one if it moved on meanwhile.
+              if (changedTab || !editingAddress.current) {
+                addressDirty.current = false;
+                setAddress(tab.url);
+              }
             }
           } else if (value.type === "browser.frame") {
             if (
@@ -441,6 +453,7 @@ export function RemoteBrowser({
       ws.onclose = (event) => {
         if (ws !== socket.current || stopped) return;
         ready.current = false;
+        setViewerCount(0);
         setOnline(false);
         setFrame(null);
         frameRef.current = null;
@@ -555,6 +568,9 @@ export function RemoteBrowser({
       aria-label="Browser screen"
     >
       <div className="remote-browser-controls">
+        <span className="remote-viewer-count" title="Active viewers of the selected tab" aria-label={`${selected ? viewerCount : 0} active viewers`}>
+          <Icon name="eye" size={14} /> {selected ? viewerCount : 0}
+        </span>
         <span
           className={`remote-browser-icon${online ? " online" : ""}`}
           title={online ? pending ? "Waiting for browser…" : "Browser connected" : "Waiting for browser connection…"}
@@ -602,9 +618,13 @@ export function RemoteBrowser({
         className="remote-browser-address"
         onSubmit={(event) => {
           event.preventDefault();
+          const url = address.trim();
+          if (!url) return;
+          editingAddress.current = false;
+          addressDirty.current = false;
           input({
             action: "navigate",
-            url: /^https?:\/\//i.test(address) ? address : "https://" + address,
+            url: /^https?:\/\//i.test(url) ? url : "https://" + url,
           });
         }}
       >
@@ -640,8 +660,23 @@ export function RemoteBrowser({
           placeholder="https://… or http://localhost:…"
           value={address}
           disabled={!selected}
-          onChange={(event) => setAddress(event.target.value)}
+          onFocus={() => { editingAddress.current = true; }}
+          onBlur={() => {
+            editingAddress.current = false;
+            // The page may have moved on while the field was focused; an
+            // untouched field follows it, a draft the viewer typed stays.
+            if (!addressDirty.current) setAddress(lastUrl.current);
+          }}
+          onChange={(event) => {
+            // Typing after Enter, with focus never having left the field, is editing too.
+            editingAddress.current = true;
+            addressDirty.current = true;
+            setAddress(event.target.value);
+          }}
         />
+        <button type="submit" disabled={!selected || !address.trim()} aria-label="Go to address" title="Go to address">
+          →
+        </button>
         <div
           className="remote-browser-zoom"
           role="group"

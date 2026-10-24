@@ -10,7 +10,8 @@ import { pastedFileLimit } from '../src/chat/pastedFiles';
 import { maxRecordingSeconds, minRecordingSeconds, readRecordingQuality, readRecordingSeconds, recordingProfiles, type RecordingQuality } from '../src/browser/recordingQuality';
 import { localFileLink } from '../src/chat/fileLinks';
 import { namesFile, resolveFileIcon, type FileIconTable } from '../src/chat/fileIconTable';
-import { sleepMinutes, sleepHours, type SleepChoice } from '../src/power/sleepProtocol';
+import { sleepMinutes, sleepHours, exchangeAwakeMinutes, type SleepChoice } from '../src/power/sleepProtocol';
+import { isAgentAuthenticationError } from '../src/chat/agentAuthText';
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -37,6 +38,7 @@ import { sleepMinutes, sleepHours, type SleepChoice } from '../src/power/sleepPr
  */
 
 import type {
+	ChatAgent,
 	AgentId, AgentQuestion, AgentUsage, ApprovalEntry, UsageAlert, ToolbarParam, ToolbarResult, ToolbarRun, ToolbarSkill, ApprovalKind, ApprovalMode, AttachmentChip, AttachmentKind, ChatCommand, ChatEntry, ChatStats, ChatSummary, ChatTabStatus, ChatTabSummary, ChatViewMode, ChatViewState, HostToView, RepoMode, ToolEntry, ViewToHost, VoiceEvent, WorkdirFolder, GitBranchState, GitRemoteAction, WorkdirGitStatus,
 } from '../src/chat/chatProtocol';
 import { baseName, searchPaths } from './fileRank';
@@ -964,7 +966,9 @@ const agentsPanel = el('div', { class: 'history-panel agents-panel' });
 /** Which copy of each agent's CLI this project uses: opened from the gear in the agent menu. */
 const agentAppsPanel = el('div', { class: 'history-panel agent-apps' });
 
-const chatMain = el('main', { class: 'chat-main' }, chromeConnectionBanner, chromeMirrorLine, controlRefusal, usageAlertBar, thread, blocked, footer);
+const agentAuthBanner = el('div', { class: 'agent-auth-banner' });
+agentAuthBanner.hidden = true;
+const chatMain = el('main', { class: 'chat-main' }, chromeConnectionBanner, chromeMirrorLine, controlRefusal, agentAuthBanner, usageAlertBar, thread, blocked, footer);
 /**
  * The view title's own buttons for surfaces that have no VS Code title bar —
  * the Chrome side panel and the website. One row in the renderer instead of a
@@ -1380,6 +1384,7 @@ function render(): void {
 	landFlight(state);
 	renderAttachments(state);
 	renderSelectors(state);
+	renderAgentAuthentication(state);
 	renderApproveToggle(state);
 	renderSend();
 	renderContext(state);
@@ -2345,6 +2350,7 @@ function signature(entry: ChatEntry, i: number): string {
 	// without it the rows already on screen kept the old setting until another
 	// chat was shown. A row the user opened or closed keeps that either way.
 	return entry.kind === 'user' ? `${JSON.stringify(entry)}|${commandsSignature}|${fileIconsSignature}`
+		: entry.kind === 'error' && isAgentAuthenticationError(entry.text) ? `${JSON.stringify(entry)}|${JSON.stringify(authErrorAgent() && [authErrorAgent()!.id, authErrorAgent()!.name, authErrorAgent()!.authentication?.signingIn])}`
 		: `${JSON.stringify(entry)}|${toggled.get(keyOf(entry, i)) ?? ''}|${openByDefault()}|${fileIconsSignature}`;
 }
 
@@ -2796,8 +2802,26 @@ function entryNode(entry: ChatEntry, i: number): HTMLElement {
 		case 'notice':
 			return el('div', { class: 'row notice' }, icon('info'), el('span', { text: entry.text }));
 		case 'error':
-			return el('div', { class: 'row error' }, icon('error'), el('span', { text: entry.text }));
+			return el('div', { class: 'row error' }, icon('error'), el('span', { text: entry.text }), authErrorAction(entry.text));
 	}
+}
+
+/** The agent of the tab in front, when it can be signed in from this surface. */
+function authErrorAgent(): ChatAgent | undefined {
+	return state && gate('authenticateAgent').s === 'on' ? state.agents.find(a => a.id === state!.selection.agent && !!a.binary) : undefined;
+}
+
+/**
+ * An expired or missing sign-in is fixed where it is reported (asked for): the
+ * error row itself carries the button, the same one the banner and Agent apps
+ * have, so the fix is not somewhere else to look for.
+ */
+function authErrorAction(text: string): HTMLElement | undefined {
+	const agent = isAgentAuthenticationError(text) ? authErrorAgent() : undefined;
+	if (!agent) { return undefined; }
+	const login = button([el('span', { text: agent.authentication?.signingIn ? 'Show sign-in terminal' : `Sign in to ${agent.name}` })], { class: 'agent-app-link error-action' });
+	login.addEventListener('click', event => { event.stopPropagation(); post({ type: 'authenticateAgent', agent: agent.id }); });
+	return login;
 }
 
 const approvalLabels: Record<ApprovalKind, { icon: string; ask: string }> = {
@@ -5591,6 +5615,37 @@ agentPill.addEventListener('click', () => {
  * whose element is replaced closes under the user's pointer.
  */
 let agentAppsShown = '';
+let agentAuthShown = '';
+function agentAuthenticationActions(agent: ChatAgent, detecting: boolean): HTMLElement {
+	const row = el('div', { class: 'agent-auth-actions' });
+	if (gate('authenticateAgent').s !== 'on') {
+		row.append(el('span', { text: 'Open AI Browser Chat in VS Code → Agent apps to sign in, then refresh here.' }));
+		return row;
+	}
+	const login = button([el('span', { text: agent.authentication?.signingIn ? 'Show sign-in terminal' : 'Sign in / Reauthorize' })], { class: 'agent-app-link' });
+	login.disabled = detecting || !agent.binary;
+	login.addEventListener('click', () => post({ type: 'authenticateAgent', agent: agent.id }));
+	const check = button([el('span', { text: 'Check after sign-in' })], { class: 'agent-app-link' });
+	check.title = 'Reload this agent with the new credentials. Finish or stop its replies first.';
+	check.disabled = detecting || !agent.binary;
+	check.addEventListener('click', () => post({ type: 'checkAgentAuthentication', agent: agent.id }));
+	row.append(login, check);
+	return row;
+}
+function renderAgentAuthentication(s: ChatViewState): void {
+	const agent = s.agents.find(a => a.id === s.selection.agent);
+	const show = !!agent && !!(agent.authentication?.required || agent.authentication?.signingIn);
+	agentAuthBanner.hidden = !show;
+	const shape = JSON.stringify([agent?.id, agent?.authentication, agent?.binary, s.detecting, gate('authenticateAgent')]);
+	if (shape === agentAuthShown) return;
+	agentAuthShown = shape;
+	agentAuthBanner.replaceChildren();
+	if (!agent || !show) return;
+	agentAuthBanner.append(el('span', { text: agent.authentication?.signingIn
+		? `Complete ${agent.name} sign-in in the terminal, then close it or press Check after sign-in.`
+		: `${agent.name}: sign-in is required or the session has expired. Sign in again to continue this conversation.` }),
+		agentAuthenticationActions(agent, s.detecting));
+}
 
 function openAgentApps(): void {
 	closePopups(agentAppsPanel);
@@ -5617,7 +5672,7 @@ function fillAgentApps(s: ChatViewState): void {
 			pendingPicks.delete(id);
 		}
 	}
-	const shape = JSON.stringify([s.detecting, [...pendingPicks], s.agents.map(a => [a.id, a.available, a.problem, a.copies, a.binary, a.choice, a.pinMissing, a.pinned])]);
+	const shape = JSON.stringify([s.detecting, [...pendingPicks], s.agents.map(a => [a.id, a.available, a.problem, a.copies, a.binary, a.choice, a.pinMissing, a.pinned, a.authentication])]);
 	if (shape === agentAppsShown) {
 		return;
 	}
@@ -5679,11 +5734,13 @@ function fillAgentApps(s: ChatViewState): void {
 		if (!agent.available && agent.problem && !s.detecting) {
 			notes.push(el('div', { class: 'agent-app-note warn', text: agent.problem }));
 		}
+		notes.push(el('div', { class: 'agent-app-note', text: 'Sign in in the terminal using the selected CLI. Finish or stop this agent’s replies, then Check after sign-in to reload its credentials. Saved conversations are kept. Gemini: complete /auth, then exit or press Check.' }));
 		body.append(el('div', { class: 'agent-app' },
 			el('div', { class: 'agent-app-name', text: agent.name }),
 			select,
 			agent.binary ? el('div', { class: 'agent-app-path', text: `In use: ${agent.binary}`, title: agent.binary }) : undefined,
 			...notes,
+			agentAuthenticationActions(agent, s.detecting),
 			setting));
 	}
 	agentAppsPanel.replaceChildren(panelHead('Agent apps'), body);
@@ -8481,6 +8538,7 @@ function renderSleep(): void {
 	const countdown = `${Math.floor(seconds / 3600).toString().padStart(2, '0')}:${Math.floor(seconds / 60 % 60).toString().padStart(2, '0')}:${(seconds % 60).toString().padStart(2, '0')}`;
 	const tabScoped = sleep?.mode === 'agents' && sleep.scope === 'tab';
 	const tip = sleep?.error ? `Cannot keep computer awake: ${sleep.error}`
+		: sleep?.mode === 'forever' ? 'Keep computer awake until turned off'
 		: sleep?.mode === 'timer' ? `Keep awake: ${countdown}${active ? '' : ' — starting…'}`
 		: tabScoped ? `Keep awake until the agents and subagents in ${sleepTabTitle(sleep.tabId)} finish`
 		: sleep?.mode === 'agents' ? 'Keep awake until the agents and subagents in every tab finish'
@@ -8497,7 +8555,7 @@ function renderSleep(): void {
 	const status = sleepPopup.querySelector('.sleep-status');
 	if (status) {
 		status.textContent = tip;
-		status.classList.toggle('sleep-enabled-status', !!sleep && (sleep.mode === 'timer' || sleep.mode === 'agents' || sleep.automaticActive) && !sleep.error);
+		status.classList.toggle('sleep-enabled-status', !!sleep && (sleep.mode !== 'off' || sleep.automaticActive) && !sleep.error);
 	}
 }
 function buildSleepPopup(): void {
@@ -8532,6 +8590,7 @@ function buildSleepPopup(): void {
 		el('div', { class: 'sleep-label', text: 'For a time — the whole app' }),
 		el('div', { class: 'sleep-label sleep-sublabel', text: 'Minutes' }), minutes,
 		el('div', { class: 'sleep-label sleep-sublabel', text: 'Hours' }), hours,
+		wideOption('coffee', 'Keep awake indefinitely', 'Until you turn this off or close this VS Code window', {mode:'forever'}, sleep?.mode==='forever'),
 		el('div', { class: 'sleep-label', text: 'Until the agents finish' }),
 		...(thisTab ? [thisTab] : []), allTabs);
 	// Another tab holds it: say so, so moving the hold here is a visible change.
@@ -8626,6 +8685,13 @@ function createServerSettings(): HTMLElement {
 	const settings = state?.exchangeConnection;
 	const content = el('div', { class: 'feature-settings-content server-settings' });
 	if (!settings) { return content; }
+	const awake = el('select'); awake.setAttribute('aria-label','Keep awake after an Exchange connection');
+	for(const value of exchangeAwakeMinutes){
+		const option=el('option',{text:value===0?'Disabled':value===-1?'Until turned off':value<60?`${value} minutes`:`${value/60} hour${value===60?'':'s'}`});
+		option.value=String(value);awake.append(option);
+	}
+	awake.value=String(settings.keepAwakeMinutes??60);
+	awake.addEventListener('change',()=>post({type:'setExchangeKeepAwake',minutes:Number(awake.value)}));
 	const server = el('input'); server.type = 'text'; server.placeholder = 'https://your-server.example';
 	server.value = settings.url;
 	server.spellcheck = false; server.autocomplete = 'off';
@@ -8651,6 +8717,7 @@ function createServerSettings(): HTMLElement {
 	const refresh = () => {
 		const saved = state?.exchangeConnection;
 		if (!saved) { return; }
+		awake.value=String(saved.keepAwakeMinutes??60);
 		if (!edited.has(server)) { server.value = saved.url; }
 		if (!edited.has(point)) { point.value = saved.pointId; }
 		const labels = { disconnected: 'Disconnected', connecting: 'Connecting…', connected: 'Connected', reconnecting: 'Reconnecting…', error: 'Connection failed' };
@@ -8679,6 +8746,8 @@ function createServerSettings(): HTMLElement {
 	content.append(el('h3', { text: 'AI Browser Server' }),
 		el('p', { text: 'Connect this chat to your AI Browser account to read and control it from the website.' }),
 		connectionStatus, form, error, el('div', { class: 'server-connection-actions' }, connect, disconnect),
+		el('label',{},'Keep awake after someone connects',awake),
+		el('p',{class:'feature-settings-note',text:'Applies on each new website connection. The timer starts again when another viewer joins and continues after disconnect. It prevents automatic system sleep; the display can still turn off. Saved immediately.'}),
 		el('p', { class: 'feature-settings-note', text: 'Create a connection once, then paste its server address, ID, and key here. The key is stored securely by VS Code. This workspace reconnects automatically after a reload when its chat panel opens. Disconnect pauses automatic reconnection and keeps the saved credentials.' }));
 	refresh();
 	return content;
