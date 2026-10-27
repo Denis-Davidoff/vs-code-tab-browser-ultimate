@@ -1,7 +1,10 @@
 import { initTheme, getThemePreference, setThemePreference, type ThemePreference } from './uiTheme';
+import { initChatAppearance, getChatFileIcons, setChatFileIcons } from './chatAppearance';
 import { overlayBounds, fitOverlay, anchoredOverlay } from './overlayPosition';
 import { chatTabDragType, parseChatTabTransfer } from './tabDrag';
+import { fitTabs } from './tabOverflow';
 import { createVsCodeChatHost } from './chatHost';
+import { installChatSelectionCopy } from './chatSelection';
 import { historyPeriodRange, type HistoryPeriod } from './historyPeriod';
 import type { TemporaryStorage } from '../src/core/temporaryFiles';
 import { aiFeatures, defaultFeaturePrompts, featureAgent, featurePromptLimit, readFeatureAiSettings, type AiFeature, type FeatureAiSettings, type FeatureEffort } from '../src/chat/featureAi';
@@ -13,6 +16,16 @@ import { localFileLink } from '../src/chat/fileLinks';
 import { namesFile, resolveFileIcon, type FileIconTable } from '../src/chat/fileIconTable';
 import { sleepMinutes, sleepHours, exchangeAwakeMinutes, type SleepChoice } from '../src/power/sleepProtocol';
 import { isAgentAuthenticationError } from '../src/chat/agentAuthText';
+import { frontStripId, shouldFocusComposer, stripTabs, terminalAddition, terminalCloseText, terminalTabShown, terminalTabTitle, visibleTerminalFront, withPendingTitle, type StripTab } from './terminalTabs';
+import type { TerminalView } from './terminalView';
+import { agentControlRow, askAgentRows, chipShown, composerPlaceholder, conversationBadge, conversationRows, conversationShown, isPinChip, pinChipOpenTitle, pinChipStatus, pinRows, pinSummary, terminalMarks, unpinTitle } from './chatTerminal';
+
+/**
+ * The nonce of the script that started this page, which the terminal's styles
+ * need (see `terminalCsp.ts`). The browser lets go of it once the script has run,
+ * so it is read here, in the first statements.
+ */
+const scriptNonce = (document.currentScript as HTMLScriptElement | null)?.nonce || undefined;
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -49,7 +62,11 @@ import { controlOf, type Availability } from '../src/chat/core/commands';
 import codiconCsv from '@vscode/codicons/dist/codicon.csv';
 
 initTheme(!window.aiBrowserChatHost);
+initChatAppearance();
 const vscode = createVsCodeChatHost();
+if (!window.aiBrowserChatHost) {
+  installChatSelectionCopy(document, document.body, text => vscode.postMessage({ type: 'copy', text }));
+}
 /**
  * Every message goes through the surface's control map (`state.controls`, from
  * the command table): what is unavailable here is never sent, and the reason is
@@ -223,7 +240,13 @@ videoPauseButton.addEventListener('click', () => post({ type: 'controlRecording'
 videoStopButton.addEventListener('click', () => post({ type: 'controlRecording', action: 'stop' }));
 const input = el('textarea', { class: 'input' });
 input.rows = 1;
-input.placeholder = 'Ask about this page, or anything…';
+const defaultPlaceholder = 'Ask about this page, or anything…';
+input.placeholder = defaultPlaceholder;
+/** While a terminal is pinned to the conversation in front, the box asks about it; otherwise it is the plain one. */
+function renderPlaceholder(s: ChatViewState): void {
+	const text = composerPlaceholder(defaultPlaceholder, s.tabs.find(t => t.id === s.activeTab));
+	if (input.placeholder !== text) { input.placeholder = text; }
+}
 
 // Every button of the bottom bar says what it does, and its key where it has
 // one — asked for: the icons alone did not say it.
@@ -273,8 +296,18 @@ queueButton.addEventListener('click', () => send('queue'));
 /** Ask before terminal commands and browser tools, or let them run: one switch for every tab. */
 const approveToggle = button([], { class: 'pill approve-toggle' });
 
-// Settings and tools get deliberate rows in a narrow composer.
-const toolbarSettings = el('div', { class: 'toolbar-settings' }, agentPill, modelPill, effortBox, ultracodeBox, approveToggle);
+// Narrow composers keep one row, with the same selectors behind one summary.
+const compactSelectorLabel = el('span', { class: 'compact-selector-label' });
+const compactEffortDot = el('span', { class: 'effort compact-effort-dot' });
+compactEffortDot.setAttribute('aria-hidden', 'true');
+const compactSelector = button([compactSelectorLabel, compactEffortDot, icon('chevron-down', 'pill-chevron')], { class: 'pill compact-selector', title: 'Agent, model, effort and permissions' });
+compactSelector.setAttribute('aria-haspopup', 'dialog');
+compactSelector.setAttribute('aria-expanded', 'false');
+const selectorControls = el('div', { class: 'selector-controls' }, agentPill, modelPill, effortBox, ultracodeBox, approveToggle);
+const selectorStrip = el('div', { class: 'popup selector-strip' });
+selectorStrip.setAttribute('role', 'dialog');
+selectorStrip.setAttribute('aria-label', 'Chat settings');
+const toolbarSettings = el('div', { class: 'toolbar-settings' }, selectorControls, compactSelector);
 const toolbarAttachments = el('span', { class: 'toolbar-attachments' }, plusButton, browserButton, slashButton);
 const toolbarEnd = el('span', { class: 'toolbar-end' }, agentsButton, contextButton, usageButton);
 const toolbar = el('div', { class: 'toolbar' }, toolbarAttachments, toolbarSettings, toolbarEnd);
@@ -1000,7 +1033,26 @@ const remoteAwake = remoteButton('coffee', 'Keep the computer awake');
 remoteAwake.addEventListener('click', () => { if (gate('setSleep').s !== 'on') { refuseControl(gate('setSleep')); return; } buildSleepPopup(); renderSleep(); openSleepPopup(); });
 const remoteSettings = remoteButton('settings-gear', 'Chat settings');
 remoteSettings.addEventListener('click', () => { if (gate('saveFeatureAi').s !== 'on') { refuseControl(gate('saveFeatureAi')); return; } openFeatureSettings(); });
-remoteBar.append(remoteNew, remoteHistory, remoteAwake, remoteSettings);
+/**
+ * "New terminal" for Chrome and the website: always there while the host speaks of terminals, and
+ * disabled with its reason (the setting to turn on, a declined consent, the limit) rather than
+ * hidden, which is how a website user once found no way to open one at all.
+ */
+const remoteTerminal = remoteButton('terminal', 'New terminal');
+remoteTerminal.addEventListener('click', () => {
+	const why = remoteTerminalBlock();
+	if (why) { refuseControl({ s: 'off', reason: why }); return; }
+	const items = terminalMenuItems();
+	if (items.length > 1) { openMenu(remoteTerminal, items, 'Open new terminal'); } else { post({ type: 'newTerminal' }); }
+});
+/** Why the remote "New terminal" cannot act now, or `undefined`. */
+function remoteTerminalBlock(): string | undefined {
+	const control = gate('newTerminal');
+	if (control.s === 'off') { return control.reason; }
+	const offer = state ? terminalAddition(state.terminalSupport, state.terminals?.length ?? 0) : undefined;
+	return offer?.kind === 'off' ? offer.reason : undefined;
+}
+remoteBar.append(remoteNew, remoteTerminal, remoteHistory, remoteAwake, remoteSettings);
 // A shell with a header of its own (the Chrome side panel, the Exchange website) gives the bar a
 // place in it (#remote-actions), so the chat keeps the height a row of its own would take.
 const remoteSlot = document.getElementById('remote-actions');
@@ -1015,10 +1067,16 @@ function renderRemoteBar(s: ChatViewState): void {
 		b.setAttribute('aria-disabled', String(control.s === 'off'));
 		b.title = control.s === 'off' ? control.reason : b.dataset.label ?? '';
 	}
+	// Absent only where the build or the host has no terminals at all (an older editor).
+	remoteTerminal.hidden = !__TERMINAL__ || !s.terminalSupport || gate('newTerminal').s === 'hidden';
+	const why = remoteTerminal.hidden ? undefined : remoteTerminalBlock();
+	remoteTerminal.classList.toggle('control-off', !!why);
+	remoteTerminal.setAttribute('aria-disabled', String(!!why));
+	remoteTerminal.title = why ?? 'New terminal';
 }
 
 if (!remoteSlot) { app.append(remoteBar); }
-app.append(featureSettingsPanel, sleepPopup, tabStrip, chatMain, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel);
+app.append(featureSettingsPanel, sleepPopup, tabStrip, chatMain, selectorStrip, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel);
 
 /* ---------------------------------------------------------------- state */
 
@@ -1099,11 +1157,65 @@ function followDraft(s: ChatViewState): void {
 	autosize();
 }
 
+/**
+ * Terminal tabs. xterm is large and most windows never open a terminal, so the
+ * code is loaded the first time the state names one; output that arrives before
+ * it has loaded waits in `terminalBacklog`. The Chrome side panel and the
+ * website run the same code; their shims turn the terminal messages into
+ * `terminal.*` frames (`remoteTerminal.ts`) and their states carry only the
+ * terminals the editor shares.
+ */
+let terminalView: TerminalView | undefined;
+/** A `focusInput` that found a terminal in front: see its handler. */
+let composerFocusPending = false;
+let terminalLoading = false;
+const terminalBacklog: HostToView[] = [];
+function syncTerminals(s: ChatViewState): void {
+	if (__TERMINAL__) {
+		if (!terminalView && !terminalLoading && s.terminals?.length) {
+			terminalLoading = true;
+			import('./terminalView').then(({ createTerminalView }) => {
+				terminalView = createTerminalView({
+					app, after: chatMain, post, nonce: scriptNonce, canFocus: () => !editingTab,
+					// The toolbar's "Ask agent" and a URL printed in a terminal: the menus and the link rule live here.
+					askAgent: askAgentMenu,
+					insertMenu: terminalInsertMenu,
+					openLink: (url, external) => post({ type: 'openLink', url, external }),
+					// What the surface allows (the control table), and which surface this is.
+					gate: type => gate(type).s === 'on',
+					surface: () => state?.surface,
+					canInput: () => gate('terminalInput').s === 'on',
+					// The website's Watch / Take control (its shim in serverChatHost.ts); absent in the editor.
+					lease: window.aiBrowserChatHost?.terminalLease,
+				});
+				if (state) { terminalView.sync(state.terminals, visibleTerminalFront(state)); }
+				for (const message of terminalBacklog.splice(0)) { terminalView.handle(message); }
+			}).catch(error => {
+				console.error('The terminal could not be loaded', error);
+				controlRefusal.textContent = 'The terminal could not be started.';
+				controlRefusal.hidden = false;
+			});
+		}
+		terminalView?.sync(s.terminals, visibleTerminalFront(s));
+	}
+}
+
 let recordingEncoder: { id: string; encoder: ReturnType<typeof createRecordingEncoder> } | undefined;
 window.addEventListener('unload', () => recordingEncoder?.encoder.dispose());
 window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 	const message = event.data;
 	switch (message.type) {
+		case 'terminalData':
+		case 'terminalReplay':
+		case 'terminalExit':
+		case 'terminalSettings':
+		case 'terminalPaste':
+		case 'terminalFocus':
+			// Only the editor has terminals. A message that comes before the terminal code has loaded waits for it.
+			if (__TERMINAL__) {
+				if (terminalView) { terminalView.handle(message); } else if (terminalBacklog.length < 5000) { terminalBacklog.push(message); }
+			}
+			return;
 		case 'pastedFileResult':
 			pastedFileRequests.get(message.id)?.(message.error);
 			return;
@@ -1136,6 +1248,12 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 			state = message.state;
 			renderChromeConnection(state.chromeConnectionRequest);
 			render();
+			if (composerFocusPending) {
+				// Decided once, at the first state after the request: a terminal that is still in front keeps the keyboard.
+				const wanted = shouldFocusComposer(true, state);
+				composerFocusPending = false;
+				if (wanted && !editingTab && !hasSelection()) { input.focus(); }
+			}
 			vscode.setState({ drafts, chatDrawerCollapsed, chatDrawerSide, panel: state.panel });
 			return;
 		case 'localLinkInfo': {
@@ -1316,6 +1434,7 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
             featureSettingsStatus.textContent = message.error ? `Could not save settings: ${message.error}` : 'Settings saved.';
             featureSettingsSave.disabled = false;
             for (const select of featureSettingsPanel.querySelectorAll('select')) {
+                if (select.dataset.appearance) { select.disabled = false; continue; }
                 if (select.dataset.field === 'recordingQuality') { select.value = videoQualityDraft; select.disabled = false; continue; }
                 if (select.dataset.field === 'recordingUnit') { select.value = lengthFields(videoSecondsDraft ?? 300).unit; select.disabled = false; continue; }
                 const choice = featureSettingsDraft[select.dataset.feature as AiFeature];
@@ -1364,8 +1483,11 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 			// Not while a tab is being renamed: the host asks for this on every tab
 			// selection, and a reply that arrives after the double-click closed
 			// the name field the moment it opened.
-			if (!editingTab) {
-				input.focus();
+			if (!editingTab && !hasSelection()) {
+				// A terminal in front is where the keyboard goes: the box is hidden, and focusing it would fail.
+				// The host may have sent this before the state that takes the terminal away from the front:
+				// then the composer is focused at that state (`composerFocusPending`).
+				if (!terminalView?.focusFront()) { input.focus(); } else { composerFocusPending = true; }
 			}
 			return;
 		case 'agentStopFailed':
@@ -1401,14 +1523,20 @@ function render(): void {
 		paintInput();
 	}
 	renderTabs(state);
+	syncTerminals(state);
 	renderSwitch(state);
 	renderQuestionDock(state);
-	renderThread(state);
-	landFlight(state);
+	// A conversation behind a terminal is not drawn: its column is hidden but keeps its
+	// geometry, and drawing it measures that to decide whether a reply is being followed.
+	if (!app.classList.contains('terminal-front')) {
+		renderThread(state);
+		landFlight(state);
+	}
 	renderAttachments(state);
-	renderSelectors(state);
+	renderPlaceholder(state);
 	renderAgentAuthentication(state);
 	renderApproveToggle(state);
+	renderSelectors(state);
 	renderSend();
 	renderContext(state);
 	renderSleep();
@@ -1452,8 +1580,10 @@ interface TabNode {
 	readonly root: HTMLElement;
 	readonly label: HTMLButtonElement;
 	readonly close: HTMLButtonElement;
-	tab: ChatTabSummary;
+	tab: StripTab;
 	shown: string;
+	/** Opens the tab's context menu at `anchor`; set by `tabNode`. */
+	openMenu: (anchor: HTMLElement, keep?: HTMLElement) => void;
 	/** A name just given, shown until the state carries it; see `startRename`. */
 	pendingTitle?: { readonly title: string; readonly until: number };
 }
@@ -1486,7 +1616,7 @@ function updateChatDrawer(): void {
 	// The narrow strip remains horizontal regardless of the drawer preference.
 	tabStrip.setAttribute('aria-label', wideChat.matches ? 'Chat sidebar' : 'Open chats');
 	if (wideChat.matches) {
-		requestAnimationFrame(() => tabNodes.get(state?.activeTab ?? '')?.root.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
+		requestAnimationFrame(() => tabNodes.get(state ? frontStripId(state) : '')?.root.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
 	}
 }
 drawerSideToggle.addEventListener('click', () => {
@@ -1502,18 +1632,315 @@ drawerToggle.addEventListener('click', () => {
 wideChat.addEventListener('change', () => {
 	for (const { root } of tabNodes.values()) { tabResizeEnds.get(root)?.(); }
 	updateChatDrawer();
+	layoutTabOverflow(true);
 });
 updateChatDrawer();
 const tabAdd = button([icon('add'), el('span', { class: 'tab-add-label', text: 'New chat' })], { class: 'ghost round tab-add', title: 'New chat' });
+/** "New terminal" and the agents whose own CLI can run in one: rows for a menu, disabled with the reason where it is not on offer. */
+function terminalMenuItems(): MenuItem[] {
+	if (!__TERMINAL__) { return []; }
+	const offer = state ? terminalAddition(state.terminalSupport, state.terminals?.length ?? 0, state.agents) : { kind: 'hidden' } as const;
+	if (offer.kind === 'hidden' || gate('newTerminal').s === 'hidden') { return []; }
+	if (offer.kind === 'off') {
+		return [{ icon: 'terminal', label: 'New terminal', description: offer.reason, command: 'newTerminal', disabled: true, run: () => {} }];
+	}
+	return [
+		{ icon: 'terminal', label: 'New terminal', description: 'A shell in the folder of this chat', command: 'newTerminal', run: () => post({ type: 'newTerminal' }) },
+		...offer.agents.map(agent => ({
+			icon: 'terminal', label: `${agent.name} in a terminal`, description: `${agent.name}'s own CLI, with the browser tools`, command: 'newTerminal',
+			run: () => post({ type: 'newTerminal', agent: agent.id }),
+		})),
+	];
+}
+/**
+ * "Ask agent" on a terminal: a new chat with an agent that can start (the picked one first), or a
+ * conversation already open, which takes the terminal as a pin. The terminal's selected text, taken
+ * when the button was pressed (the menu's click takes the focus off xterm), goes along as context.
+ * The host checks the limit and the ids again; what is decided here is only what is offered.
+ */
+function askAgentMenu(anchor: HTMLElement, terminalId: string, selection: string): void {
+	const s = state;
+	const terminal = s?.terminals?.find(t => t.id === terminalId);
+	if (!s || !terminal) { return; }
+	const text = selection.trim() ? selection : '';
+	const rows = askAgentRows({
+		terminal, agents: s.agents, defaultAgent: s.selection.agent, tabs: s.tabs,
+		frontTab: s.activeTab, tabLimit: s.tabLimit, hasSelection: !!text,
+	});
+	const withText = { ...(text ? { selection: text } : {}), ...(terminalWatchOnly ? { mode: 'watch' as const } : {}) };
+	openMenu(anchor, [...rows.map((row): MenuItem => {
+		if (row.kind === 'tab') {
+			return { icon: row.icon, label: row.label, description: row.description, checked: row.checked, command: 'terminalAskAgent',
+				run: () => post({ type: 'terminalAskAgent', id: terminalId, target: { kind: 'tab', tabId: row.tabId }, ...withText }) };
+		}
+		// A surface that sees one conversation only (the website) hides the new chats: the form rule `terminalAskAgent.new`.
+		return {
+			icon: row.icon, label: row.label, description: row.description, disabled: row.disabled, command: 'terminalAskAgent.new',
+			run: () => { if (row.kind === 'new') { post({ type: 'terminalAskAgent', id: terminalId, target: { kind: 'new', agent: row.agent }, ...withText }); } },
+		};
+	}), watchOnlyToggle(() => askAgentMenu(anchor, terminalId, selection))], `Ask an agent about ${terminal.name}`);
+	focusMenu();
+}
+
+/**
+ * "Watch only": the next pin from the "+" Terminal… menu or Ask agent is read-only — the agent reads the
+ * screen ("look what I am doing") and its terminal_send / terminal_key are refused. A toggle row that
+ * reopens the menu it is in; remembered for this page only.
+ */
+let terminalWatchOnly = false;
+function watchOnlyToggle(reopen: () => void): MenuItem {
+	return {
+		icon: 'eye', label: 'Watch only', checked: terminalWatchOnly, command: 'pinTerminal',
+		description: terminalWatchOnly ? 'The agent may read, not type' : 'Off: the agent may type (each input approved)',
+		run: () => { terminalWatchOnly = !terminalWatchOnly; setTimeout(reopen, 0); },
+	};
+}
+
+/**
+ * The terminal toolbar's "Insert": what the "+" menu attaches, put into the terminal's input instead (a
+ * terminal agent such as Claude Code or Codex CLI reads it there). The host materialises each: text as
+ * text, a screenshot or a file as its path. Never sent: the user presses Enter.
+ */
+function terminalInsertMenu(anchor: HTMLElement, terminalId: string): void {
+	const item = (icon: string, label: string, description: string, kind: Extract<ViewToHost, { type: 'terminalInsert' }>['kind']): MenuItem =>
+		({ icon, label, description, command: 'terminalInsert', run: () => post({ type: 'terminalInsert', id: terminalId, kind }) });
+	openMenu(anchor, [
+		item('link', 'Page address', 'The URL and title of the browser tab in front', 'page'),
+		item('inspect', 'Element…', 'Pick an element on the page; its context as text', 'element'),
+		item('device-camera', 'Screenshot', 'The visible page, saved; its path', 'screenshot'),
+		item('file', 'File…', 'One or more files; their paths', 'file'),
+		item('selection', 'Editor selection', 'The text selected in the editor', 'selection'),
+		item('device-camera-video', 'Video…', 'A recorded video; its path', 'video'),
+		item('comment', 'Annotations', 'The notes on the page in front', 'annotation'),
+	], 'Insert into the terminal (not sent)');
+	focusMenu();
+}
+
+/** The "+" menu's terminal rows: pin one to this conversation, or make one for the agent. Nothing where the state has no terminal support. */
+function terminalPinItems(): MenuItem[] {
+	const s = state;
+	if (!s?.terminalSupport || gate('pinTerminal').s === 'hidden') { return []; }
+	const count = s.terminals?.length ?? 0;
+	const offer = terminalAddition(s.terminalSupport, count, s.agents);
+	if (!count && offer.kind !== 'on') {
+		return [{ icon: 'terminal', label: 'Terminal…', description: offer.kind === 'off' ? offer.reason : undefined, command: 'pinTerminal', disabled: true, run: () => {} }];
+	}
+	const tabId = s.activeTab;
+	return [{
+		icon: 'terminal', label: 'Terminal…', description: pinSummary(s.terminals ?? [], tabId), command: 'pinTerminal',
+		// `run` comes after the menu closed itself: the next one is opened once that has finished.
+		run: () => setTimeout(() => openTerminalPinMenu(tabId), 0),
+	}];
+}
+
+function openTerminalPinMenu(tabId: string): void {
+	const s = state;
+	if (!s || s.activeTab !== tabId) { return; }
+	const offer = terminalAddition(s.terminalSupport, s.terminals?.length ?? 0, s.agents);
+	openMenu(plusButton, [
+		...pinRows(s.terminals ?? [], tabId).map((row): MenuItem => ({
+			icon: row.icon, label: row.label, description: row.description, checked: row.pinned, command: 'pinTerminal',
+			run: () => post({ type: 'pinTerminal', id: row.id, tabId, pinned: !row.pinned, ...(terminalWatchOnly ? { mode: 'watch' as const } : {}) }),
+		})),
+		watchOnlyToggle(() => openTerminalPinMenu(tabId)),
+		{
+			icon: 'add', label: 'New terminal for the agent', command: 'newTerminal', disabled: offer.kind !== 'on',
+			description: offer.kind === 'off' ? offer.reason : 'A shell in this chat\'s folder; you stay here',
+			run: () => post({ type: 'newTerminal', pinTo: tabId }),
+		},
+	], 'Let the agent use a terminal');
+	focusMenu();
+}
+
 function chooseNewChatLocation(): void {
 	openMenu(tabAdd, [
 		{ icon: 'comment-discussion', label: 'Here in chat', run: () => post({ type: 'newTab', location: 'here' }) },
 		{ icon: 'files', label: 'In a new tab', run: () => post({ type: 'newTab', location: 'tab' }) },
 		{ icon: 'link-external', label: 'In a new window', run: () => post({ type: 'newTab', location: 'window' }) },
+		...terminalMenuItems(),
 	], 'Open new chat');
 }
 tabAdd.addEventListener('click', () => post({ type: 'newTab', location: 'here' }));
+/**
+ * "Allow remote access" on a terminal tab (the editor only): Chrome's side panel and the Exchange website may then watch it,
+ * and type once it takes control. Disabled with the host's reason while it cannot be shared (the
+ * `aiBrowser.chat.remoteTerminal` setting off, no encrypted connection); absent with a host that does not say.
+ */
+function websiteAccessRow(terminal: { readonly id: string; readonly remote?: boolean }): MenuItem[] {
+	const support = state?.terminalSupport;
+	const website = support?.available ? support.website : undefined;
+	if (!website) { return []; }
+	const on = terminal.remote === true;
+	return [{
+		icon: on ? 'eye-closed' : 'globe', label: on ? 'Stop remote access' : 'Allow remote access', checked: on,
+		description: !website.allowed && !on ? website.reason : on ? 'Chrome and the website can no longer watch or type here' : 'Watch from the Chrome side panel or the Exchange website; typing needs Take control there',
+		command: 'setTerminalRemote', disabled: !website.allowed && !on,
+		run: () => post({ type: 'setTerminalRemote', id: terminal.id, remote: !on }),
+	}];
+}
+
+/** The strip's own "New terminal": the editor only, and only while one can be started. */
+const tabAddTerminal = button([icon('terminal'), el('span', { class: 'tab-add-label', text: 'New terminal' })], { class: 'ghost round tab-add tab-add-terminal', title: 'New terminal' });
+tabAddTerminal.addEventListener('click', () => {
+	const items = terminalMenuItems();
+	if (items.length > 1) { openMenu(tabAddTerminal, items, 'Open new terminal'); } else { post({ type: 'newTerminal' }); }
+});
+/*
+ * The narrow strip's overflow: the tabs that do not fit in the row are hidden (a class: the keyed
+ * nodes stay, #365/#383) and listed in a dropdown behind a "+N" button. The tab in front is always
+ * shown. Each row selects its tab; a right-click, the context-menu key or its "⋯" opens the tab's
+ * own context menu over the dropdown.
+ */
+const overflowCount = el('span', { class: 'tab-overflow-count' });
+const overflowButton = button([icon('chevron-down'), overflowCount], { class: 'ghost tab-overflow-button' });
+overflowButton.hidden = true;
+overflowButton.setAttribute('aria-haspopup', 'menu');
+const tabOverflowPanel = el('div', { class: 'popup menu tab-overflow' });
+tabOverflowPanel.setAttribute('role', 'menu');
+/** Ids in the dropdown, in strip order. */
+let overflowIds: string[] = [];
+let overflowShape = '';
+let overflowPanelShape = '';
+/** A tab renamed from the dropdown's menu: selected first, renamed once it is shown. */
+let renameWhenShown: string | undefined;
+
+function renameFromMenu(node: TabNode): void {
+	if (!node.root.classList.contains('overflowed')) { startRename(node); return; }
+	if (gate(node.tab.terminal ? 'selectTerminal' : 'selectTab').s !== 'on') { return; }
+	renameWhenShown = node.tab.id;
+	post(node.tab.terminal ? { type: 'selectTerminal', id: node.tab.id } : { type: 'selectTab', id: node.tab.id });
+}
+
+/** Decides which tabs are shown; `force` measures again even if nothing it depends on changed. */
+function layoutTabOverflow(force = false): void {
+	const s = state;
+	const strip = s ? stripOf(s) : [];
+	const nodes = strip.map(t => tabNodes.get(t.id)).filter((n): n is TabNode => !!n);
+	if (wideChat.matches || !s || !nodes.length) {
+		for (const n of nodes) { n.root.classList.remove('overflowed'); }
+		overflowButton.hidden = true;
+		overflowIds = [];
+		overflowShape = '';
+		if (tabOverflowPanel.classList.contains('open')) { closePopups(); }
+		return;
+	}
+	// A switch animation still holding inline widths would be measured mid-transition.
+	for (const n of nodes) { tabResizeEnds.get(n.root)?.(); }
+	const frontId = frontStripId(s);
+	const shape = JSON.stringify([tabRow.clientWidth, frontId, nodes.map(n => [n.tab.id, n.shown]), editingTab]);
+	if (!force && shape === overflowShape) { return; }
+	overflowShape = shape;
+	// Measured with everything shown and nothing shrinking, in one frame: nothing is painted in between.
+	for (const n of nodes) { n.root.classList.remove('overflowed'); }
+	overflowButton.hidden = false;
+	tabRow.classList.add('measuring');
+	const widths = nodes.map(n => n.root.getBoundingClientRect().width);
+	const rowStyle = getComputedStyle(tabRow);
+	const gap = parseFloat(rowStyle.columnGap) || 0;
+	const adds = [tabAdd, tabAddTerminal].filter(b => b.isConnected && !b.hidden)
+		.reduce((sum, b) => sum + b.getBoundingClientRect().width + gap + 2, 0);
+	const available = tabRow.clientWidth - parseFloat(rowStyle.paddingLeft) - parseFloat(rowStyle.paddingRight) - adds - 1;
+	const overflowWidth = overflowButton.getBoundingClientRect().width + gap;
+	tabRow.classList.remove('measuring');
+	const fit = fitTabs({ widths, front: nodes.findIndex(n => n.tab.id === frontId), available, gap, overflowWidth });
+	const hidden = new Set(fit.hidden);
+	nodes.forEach((n, i) => n.root.classList.toggle('overflowed', hidden.has(i)));
+	overflowIds = fit.hidden.map(i => nodes[i].tab.id);
+	overflowButton.hidden = !overflowIds.length;
+	overflowCount.textContent = `+${overflowIds.length}`;
+	const more = `${overflowIds.length} more tab${overflowIds.length === 1 ? '' : 's'}`;
+	overflowButton.title = more;
+	overflowButton.setAttribute('aria-label', more);
+	if (!overflowIds.length && tabOverflowPanel.classList.contains('open')) { closePopups(); }
+	if (tabOverflowPanel.classList.contains('open')) { fillOverflowPanel(); }
+	placeTabConfirm();
+}
+
+let overflowFrame: number | undefined;
+new ResizeObserver(() => {
+	if (overflowFrame !== undefined) { return; }
+	overflowFrame = requestAnimationFrame(() => { overflowFrame = undefined; layoutTabOverflow(); });
+}).observe(tabStrip);
+
+function selectStripTab(t: StripTab): void {
+	post(t.terminal ? { type: 'selectTerminal', id: t.id } : { type: 'selectTab', id: t.id });
+}
+
+/** The dropdown's rows; rebuilt only when what they show changes (#365). */
+/** The row the menu over the dropdown was opened from, for Escape to return to. */
+let overflowMenuRow: HTMLElement | undefined;
+
+/** A close started from the dropdown closes it first, or its confirmation is drawn under it. */
+function closeFromStrip(node: TabNode): void {
+	if (tabOverflowPanel.classList.contains('open')) { closePopups(); }
+	node.close.click();
+}
+
+function fillOverflowPanel(): void {
+	const rows = overflowIds.map(id => tabNodes.get(id)).filter((n): n is TabNode => !!n);
+	const shape = JSON.stringify(rows.map(n => [n.tab.id, n.shown]));
+	if (shape === overflowPanelShape && tabOverflowPanel.childElementCount) { return; }
+	const focused = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>('.tab-overflow-row')?.dataset.id;
+	overflowPanelShape = shape;
+	tabOverflowPanel.replaceChildren(el('div', { class: 'menu-heading' }, el('span', { text: 'More tabs' })), ...rows.map(node => {
+		const t = node.tab;
+		const marks: (HTMLElement | undefined)[] = t.terminal
+			? [icon('terminal', 'menu-icon'), t.terminal.status === 'exited' ? el('span', { class: 'tab-mark exited', title: 'The process ended' }) : undefined]
+			: [el('span', { class: 'menu-icon tab-overflow-mark' }, tabMark(t.status) ?? icon('comment'))];
+		const name = t.terminal ? t.terminal.name : t.title;
+		const agents = t.terminal ? 0 : agentsOf(t);
+		const row = button([
+			...marks.filter((m): m is HTMLElement => !!m),
+			el('span', { class: 'menu-text' }, el('span', { class: 'menu-label', text: name })),
+			agents ? el('span', { class: 'tab-agents', text: agents > 99 ? '99+' : String(agents) }) : '',
+		], { class: 'menu-item tab-overflow-row' });
+		row.dataset.id = t.id;
+		row.setAttribute('role', 'menuitem');
+		row.title = `${node.label.getAttribute('aria-label') ?? name}\nRight-click for tab actions.`;
+		const select = gate(t.terminal ? 'selectTerminal' : 'selectTab');
+		row.disabled = select.s !== 'on';
+		const more = button([icon('ellipsis')], { class: 'ghost round tab-overflow-more', title: 'Tab actions' });
+		more.addEventListener('click', event => { event.stopPropagation(); overflowMenuRow = row; node.openMenu(row, tabOverflowPanel); });
+		row.addEventListener('click', () => { closePopups(); selectStripTab(t); });
+		const wrap = el('div', { class: 'tab-overflow-item' }, row, more);
+		wrap.addEventListener('contextmenu', event => {
+			event.preventDefault();
+			event.stopPropagation();
+			overflowMenuRow = row;
+			node.openMenu(row, tabOverflowPanel);
+		});
+		return wrap;
+	}));
+	if (focused) { tabOverflowPanel.querySelector<HTMLElement>(`.tab-overflow-row[data-id="${CSS.escape(focused)}"]`)?.focus(); }
+}
+
+overflowButton.addEventListener('click', () => {
+	if (tabOverflowPanel.classList.contains('open')) { closePopups(); return; }
+	overflowPanelShape = '';
+	fillOverflowPanel();
+	openAbove(tabOverflowPanel, overflowButton, 'right');
+	overflowButton.setAttribute('aria-expanded', 'true');
+	tabOverflowPanel.querySelector<HTMLButtonElement>('.tab-overflow-row:not(:disabled)')?.focus();
+});
+tabOverflowPanel.addEventListener('keydown', event => {
+	if (event.isComposing || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) { return; }
+	const rows = [...tabOverflowPanel.querySelectorAll<HTMLButtonElement>('.tab-overflow-row:not(:disabled)')];
+	if (!rows.length) { return; }
+	const at = rows.indexOf(document.activeElement as HTMLButtonElement);
+	const next = event.key === 'Home' ? 0 : event.key === 'End' ? rows.length - 1
+		: at < 0 ? (event.key === 'ArrowDown' ? 0 : rows.length - 1) : (at + (event.key === 'ArrowDown' ? 1 : -1) + rows.length) % rows.length;
+	event.preventDefault();
+	rows[next].focus();
+});
+
+/** The close confirmation: a popover under the tab being closed, not a band across the strip. */
 const tabConfirm = el('div', { class: 'tab-confirm' });
+tabConfirm.setAttribute('role', 'alertdialog');
+tabConfirm.addEventListener('mousedown', event => event.stopPropagation());
+document.addEventListener('mousedown', event => {
+	if (closingTab && !tabConfirm.hidden && !tabConfirm.contains(event.target as Node)) { cancelClosing(); }
+});
+window.addEventListener('resize', () => placeTabConfirm());
 /** The first click of a possible double-click, by tab; see the label's click handler. */
 let firstClick: { readonly id: string; readonly at: number } | undefined;
 const doubleClickMs = 600;
@@ -1614,17 +2041,27 @@ app.addEventListener('drop', event => {
 
 
 
+/** Every tab of the strip: the conversations, then the terminals (which only the editor's state has). */
+function stripOf(s: ChatViewState): readonly StripTab[] {
+	if (__TERMINAL__) { return stripTabs(s); }
+	return s.tabs;
+}
+
 function renderTabs(s: ChatViewState): void {
-	if (closingTab && !s.tabs.some(t => t.id === closingTab && (t.busy || t.queued || t.skillRuns))) {
+	// The conversations, then the terminals; only the editor's state has terminals.
+	const strip = stripOf(s);
+	const frontId = frontStripId(s);
+	if (closingTab && !strip.some(t => t.id === closingTab && (t.busy || t.queued || t.skillRuns))) {
 		closingTab = undefined;
 	}
-	if (editingTab && !s.tabs.some(t => t.id === editingTab)) {
+	if (editingTab && !strip.some(t => t.id === editingTab)) {
 		editingTab = undefined;
 	}
 	if (!tabStrip.contains(tabRow)) {
-		tabStrip.replaceChildren(drawerHeader, tabRow, tabConfirm, drawerFooter);
+		tabStrip.replaceChildren(drawerHeader, tabRow, drawerFooter);
+		app.append(tabConfirm, tabOverflowPanel);
 	}
-	const open = new Set(s.tabs.map(t => t.id));
+	const open = new Set(strip.map(t => t.id));
 	for (const [id, node] of tabNodes) {
 		if (!open.has(id)) {
 			if (draggedChatTab?.id === id) { draggedChatTab = undefined; chatTabDragEnded = performance.now(); }
@@ -1632,15 +2069,15 @@ function renderTabs(s: ChatViewState): void {
 			tabNodes.delete(id);
 		}
 	}
-	const switching = frontTab !== undefined && s.activeTab !== frontTab;
+	const switching = frontTab !== undefined && frontId !== frontTab;
 	const tabsBefore = switching ? tabWidths() : undefined;
-	s.tabs.forEach((summary, i) => {
+	strip.forEach((summary, i) => {
 		const node = tabNodes.get(summary.id) ?? tabNode(summary);
 		const pending = node.pendingTitle;
 		if (pending && (summary.title === pending.title || performance.now() > pending.until)) {
 			node.pendingTitle = undefined;
 		}
-		const t = node.pendingTitle ? { ...summary, title: node.pendingTitle.title } : summary;
+		const t = node.pendingTitle ? withPendingTitle(summary, node.pendingTitle.title) : summary;
 		node.tab = t;
 		const agent = t.agent ? s.agents.find(a => a.id === t.agent)?.name ?? t.agent : undefined;
 		const shown = tabShown(t, agent);
@@ -1648,38 +2085,65 @@ function renderTabs(s: ChatViewState): void {
 			node.shown = shown;
 			fillTab(node, agent);
 		}
-		node.root.classList.toggle('active', t.id === s.activeTab);
+		node.root.classList.toggle('active', t.id === frontId);
 		node.root.classList.toggle('chrome-mirrored', t.chrome === true);
-		node.label.setAttribute('aria-current', t.id === s.activeTab ? 'page' : 'false');
+		node.label.setAttribute('aria-current', t.id === frontId ? 'page' : 'false');
 		node.root.classList.toggle('running', t.running);
 		// What this surface allows on a tab (Chrome picks the conversation it shows, nothing more).
-		node.close.hidden = gate('closeTab').s !== 'on';
-		node.root.draggable = gate('placeTab').s === 'on';
+		// A terminal is never dragged: the strip keeps conversations first.
+		node.close.hidden = gate(t.terminal ? 'closeTerminal' : 'closeTab').s !== 'on';
+		node.root.draggable = !t.terminal && gate('placeTab').s === 'on';
 		// Moved only when out of place: re-inserting an element ends its transition.
 		if (tabRow.children[i] !== node.root) {
 			tabRow.insertBefore(node.root, tabRow.children[i] ?? null);
 		}
 	});
-	if (s.tabs.length >= s.tabLimit || gate('newTab').s !== 'on') {
-		tabAdd.remove();
-	} else if (tabRow.lastElementChild !== tabAdd) {
-		tabRow.append(tabAdd);
+	// The add buttons close the row: "+" while the conversations are below their limit, and beside it
+	// "New terminal" while one can be started (gone for a surface with no terminals, and at their limit).
+	// Moved only when out of place, like the tabs.
+	const adds: HTMLElement[] = [];
+	if (s.tabs.length < s.tabLimit && gate('newTab').s === 'on') { adds.push(tabAdd); }
+	if (__TERMINAL__ && gate('newTerminal').s === 'on' && terminalAddition(s.terminalSupport, s.terminals?.length ?? 0).kind === 'on') {
+		adds.push(tabAddTerminal);
 	}
+	for (const add of [tabAdd, tabAddTerminal]) {
+		if (!adds.includes(add)) { add.remove(); }
+	}
+	// The overflow button follows the tabs, before the add buttons; shown only while tabs overflow.
+	if (tabRow.children[strip.length] !== overflowButton) {
+		tabRow.insertBefore(overflowButton, tabRow.children[strip.length] ?? null);
+	}
+	adds.forEach((add, k) => {
+		add.hidden = false;
+		if (tabRow.children[strip.length + 1 + k] !== add) {
+			tabRow.insertBefore(add, tabRow.children[strip.length + 1 + k] ?? null);
+		}
+	});
+	// Decided before the switch animation measures, so a tab coming out of the dropdown does not flash.
+	layoutTabOverflow();
 	renderTabConfirm(s);
 	if (tabsBefore && frontTab) {
-		animateTabSwitch(tabsBefore, [frontTab, s.activeTab]);
+		animateTabSwitch(tabsBefore, [frontTab, frontId]);
 	}
-	if (s.activeTab !== frontTab) {
-		frontTab = s.activeTab;
+	if (renameWhenShown) {
+		const node = tabNodes.get(renameWhenShown);
+		if (!node) { renameWhenShown = undefined; }
+		else if (frontId === renameWhenShown && !node.root.classList.contains('overflowed')) {
+			renameWhenShown = undefined;
+			startRename(node);
+		}
+	}
+	if (frontId !== frontTab) {
+		frontTab = frontId;
 		// After the width has settled, or it scrolls to where the tab was going.
-		setTimeout(() => tabNodes.get(s.activeTab)?.root.scrollIntoView({ block: 'nearest', inline: 'nearest' }), 340);
+		setTimeout(() => tabNodes.get(frontId)?.root.scrollIntoView({ block: 'nearest', inline: 'nearest' }), 340);
 	}
 }
 
 function tabWidths(): Map<string, number> {
 	const widths = new Map<string, number>();
 	for (const [id, node] of tabNodes) {
-		if (node.root.isConnected) { widths.set(id, node.root.getBoundingClientRect().width); }
+		if (node.root.isConnected && !node.root.classList.contains('overflowed')) { widths.set(id, node.root.getBoundingClientRect().width); }
 	}
 	return widths;
 }
@@ -1695,7 +2159,7 @@ const tabResizeEnds = new WeakMap<HTMLElement, () => void>();
  */
 function animateTabSwitch(before: Map<string, number>, ids: string[]): void {
 	const nodes = ids.map(id => ({ id, root: tabNodes.get(id)?.root }))
-		.filter((n): n is { id: string; root: HTMLElement } => !!n.root?.isConnected);
+		.filter((n): n is { id: string; root: HTMLElement } => !!n.root?.isConnected && !n.root.classList.contains('overflowed'));
 	// A switch still under way gives up its held widths first, so both are measured free.
 	for (const { root } of nodes) { tabResizeEnds.get(root)?.(); }
 	if (wideChat.matches || matchMedia('(prefers-reduced-motion: reduce)').matches) { return; }
@@ -1735,8 +2199,8 @@ function animateTabSwitch(before: Map<string, number>, ids: string[]): void {
 	}
 }
 
-function tabShown(t: ChatTabSummary, agent: string | undefined): string {
-	return JSON.stringify([t.title, t.status, t.agents, t.skillRuns, t.busy, agent, t.chrome]);
+function tabShown(t: StripTab, agent: string | undefined): string {
+	return t.terminal ? terminalTabShown(t.terminal) : JSON.stringify([t.title, t.status, t.agents, t.skillRuns, t.busy, agent, t.chrome, conversationShown(t)]);
 }
 
 /**
@@ -1749,23 +2213,53 @@ function stoppedParts(t: ChatTabSummary): string[] {
 	return [t.busy ? 'its reply' : '', agents ? `${agents} agent${agents === 1 ? '' : 's'}` : ''].filter(Boolean);
 }
 
-function tabNode(t: ChatTabSummary): TabNode {
+function tabNode(t: StripTab): TabNode {
 	const label = button([], { class: 'tab-label' });
 	const close = button([icon('close')], { class: 'tab-close' });
 	const root = el('div', { class: 'tab' }, label, close);
 	const compactNumber = nextCompactTabNumber++;
 	root.style.setProperty('--tab-identity', `hsl(${(compactNumber * 137.508) % 360} 55% 67%)`);
-	const node: TabNode = { root, label, close, tab: t, shown: '', compactNumber };
-	makeTabDraggable(node);
+	const node: TabNode = { root, label, close, tab: t, shown: '', compactNumber, openMenu: () => {} };
+	if (!t.terminal) { makeTabDraggable(node); }
 	root.addEventListener('contextmenu', event => {
 		event.preventDefault();
 		event.stopPropagation();
+		node.openMenu(label);
+	});
+	/** The tab's context menu, at its label or, for a tab in the overflow dropdown, at its row there (`keep`: the dropdown stays under it). */
+	node.openMenu = (anchor: HTMLElement, keep?: HTMLElement): void => {
+		const overflowed = root.classList.contains('overflowed');
+		const terminal = node.tab.terminal;
+		if (terminal) {
+			const compact = wideChat.matches && chatDrawerCollapsed;
+			const exited = terminal.status === 'exited';
+			const selected = terminalView?.hasSelection(terminal.id) ?? false;
+			const control = agentControlRow(terminal);
+			openMenu(anchor, [
+				{ icon: 'edit', label: 'Rename', command: 'renameTerminal', run: () => renameFromMenu(node) },
+				{ icon: 'comment-discussion', label: 'Ask agent…', description: 'A new chat or an open one, with this terminal pinned', command: 'terminalAskAgent',
+					run: () => setTimeout(() => askAgentMenu(overflowed ? overflowButton : label, terminal.id, ''), 0) },
+				...(control ? [{ icon: control.icon, label: control.label, description: control.description, command: 'setTerminalAgentControl',
+					run: () => post({ type: 'setTerminalAgentControl', id: terminal.id, allowed: control.allowed }) }] : []),
+				{ icon: 'debug-restart', label: 'Restart', description: 'Start the shell again in the same folder', command: 'restartTerminal', disabled: !exited, run: () => post({ type: 'restartTerminal', id: terminal.id }) },
+				{ icon: 'comment-discussion', label: selected ? 'Send selection to chat' : 'Copy last output to chat', description: 'Adds it to the chat in front as context', command: 'terminalToChat', run: () => terminalView?.sendToChat(terminal.id) },
+				...websiteAccessRow(terminal),
+				{ icon: 'close', label: 'Close', command: 'closeTerminal', run: () => closeFromStrip(node) },
+			], compact || overflowed ? node.tab.title : 'Terminal', undefined, keep);
+			return;
+		}
 		const destinations = (state?.chatSurfaces ?? []).filter(surface => surface.id !== state?.surfaceId);
 		const draft = () => {
 			saveDraft();
 			return node.tab.id === draftTab ? currentDraft() : drafts[node.tab.chatId] ?? '';
 		};
-		const items: MenuItem[] = state?.panel ? [] : [
+		// The terminals pinned to this conversation: go there, or let the agent go.
+		const pinned: MenuItem[] = conversationRows(node.tab).map(row => ({
+			icon: row.icon, label: row.label, command: row.kind === 'go' ? 'selectTerminal' : 'pinTerminal',
+			run: () => post(row.kind === 'go' ? { type: 'selectTerminal', id: row.id } : { type: 'pinTerminal', id: row.id, tabId: node.tab.id, pinned: false }),
+		}));
+		const items: MenuItem[] = state?.panel ? [...pinned] : [
+			...pinned,
 			{ icon: 'link-external', label: 'Move to a new window', command: 'moveTabToNew', run: () => post({ type: 'moveTabToNew', id: node.tab.id, location: 'window', draft: draft() }) },
 			{ icon: 'files', label: 'Move to a new tab', command: 'moveTabToNew', run: () => post({ type: 'moveTabToNew', id: node.tab.id, location: 'tab', draft: draft() }) },
 		];
@@ -1781,10 +2275,13 @@ function tabNode(t: ChatTabSummary): TabNode {
 			items.push({ icon: 'terminal', label: 'Continue in terminal', command: 'resumeInTerminal', disabled: node.tab.busy || !!node.tab.queued || !!node.tab.skillRuns, run: () => post({ type: 'resumeInTerminal', id: node.tab.chatId }) });
 		}
 		const compact = wideChat.matches && chatDrawerCollapsed;
-		if (compact) { items.push({ icon: 'close', label: 'Close chat', run: () => node.close.click() }); }
-		openMenu(label, items.length ? items : [{ label: 'No other chat is open', disabled: true, run: () => {} }],
-			compact ? node.tab.title : `Move chat to · ${(state?.chatSurfaces ?? []).length} open views`);
-	});
+		if (overflowed) {
+			items.unshift({ icon: 'edit', label: 'Rename', command: 'renameTab', run: () => renameFromMenu(node) });
+		}
+		if (compact || overflowed) { items.push({ icon: 'close', label: 'Close chat', command: 'closeTab', run: () => closeFromStrip(node) }); }
+		openMenu(anchor, items.length ? items : [{ label: 'No other chat is open', disabled: true, run: () => {} }],
+			compact || overflowed ? node.tab.title : `Move chat to · ${(state?.chatSurfaces ?? []).length} open views`, undefined, keep);
+	};
 	label.addEventListener('click', event => {
 		if (performance.now() - chatTabDragEnded < 250) { return; }
 		// The second click of a double-click can land on another tab: the
@@ -1796,10 +2293,12 @@ function tabNode(t: ChatTabSummary): TabNode {
 			return;
 		}
 		firstClick = { id: node.tab.id, at: now };
-		post({ type: 'selectTab', id: node.tab.id });
+		post(node.tab.terminal ? { type: 'selectTerminal', id: node.tab.id } : { type: 'selectTab', id: node.tab.id });
+		// A terminal already in front takes the keyboard back: nothing changes in the state to do it.
+		if (node.tab.terminal && state && frontStripId(state) === node.tab.id) { terminalView?.focusFront(); }
 	});
 	label.addEventListener('dblclick', () => {
-		if (gate('renameTab').s !== 'on') { return; }
+		if (gate(node.tab.terminal ? 'renameTerminal' : 'renameTab').s !== 'on') { return; }
 		const first = firstClick && performance.now() - firstClick.at < doubleClickMs ? tabNodes.get(firstClick.id) : undefined;
 		firstClick = undefined;
 		startRename(first ?? node);
@@ -1818,7 +2317,7 @@ function tabNode(t: ChatTabSummary): TabNode {
 			}
 			tabConfirm.querySelector<HTMLButtonElement>('.confirm-cancel')?.focus();
 		} else {
-			post({ type: 'closeTab', id: node.tab.id });
+			post({ type: node.tab.terminal ? 'closeTerminal' : 'closeTab', id: node.tab.id });
 		}
 	});
 	tabNodes.set(t.id, node);
@@ -1832,9 +2331,16 @@ function agentsOf(t: ChatTabSummary): number {
 
 function fillTab(node: TabNode, agent: string | undefined): void {
 	const t = node.tab;
+	if (t.terminal) {
+		fillTerminalTab(node, t.terminal, agent);
+		return;
+	}
 	const compactMark = t.status === 'working' || t.status === 'waiting' ? tabMark(t.status)
 		: icon(t.status === 'failed' ? 'error' : t.status === 'read' || t.status === 'unread' ? 'check' : 'comment');
 	compactMark?.removeAttribute('title');
+	// Terminals pinned to this conversation: a terminal icon and their count (editor only; the state has none elsewhere).
+	const badge = conversationBadge(t);
+	const terminalBadge = badge ? el('span', { class: 'tab-terminals', title: badge.title }, icon('terminal'), el('span', { text: String(badge.count) })) : undefined;
 	const compact = el('span', { class: `tab-compact status-${t.status ?? 'new'}` },
 		el('span', { class: 'tab-compact-number', text: String(node.compactNumber) }), compactMark);
 	compact.setAttribute('aria-hidden', 'true');
@@ -1843,12 +2349,47 @@ function fillTab(node: TabNode, agent: string | undefined): void {
 		tabMark(t.status),
 		el('span', { class: 'tab-title', text: t.title }),
 		agentsOf(t) ? el('span', { class: 'tab-agents', text: agentsOf(t) > 99 ? '99+' : String(agentsOf(t)), title: `${agentsOf(t)} agent${agentsOf(t) === 1 ? '' : 's'} working` }) : undefined,
+		terminalBadge,
 	];
 	node.label.replaceChildren(...parts.filter((p): p is HTMLElement => !!p));
-	const description = `${agent ? `${t.title} — ${agent}` : t.title}\n${t.status ? tabMarks[t.status] : 'New chat'}${agentsOf(t) ? ` · ${agentsOf(t)} agent${agentsOf(t) === 1 ? '' : 's'} running` : ''}${t.chrome ? ' · open in Google Chrome' : ''}`;
+	const description = `${agent ? `${t.title} — ${agent}` : t.title}\n${t.status ? tabMarks[t.status] : 'New chat'}${agentsOf(t) ? ` · ${agentsOf(t)} agent${agentsOf(t) === 1 ? '' : 's'} running` : ''}${t.chrome ? ' · open in Google Chrome' : ''}${badge ? ` · ${badge.title}` : ''}`;
 	node.label.setAttribute('aria-label', description);
 	node.label.title = `${description}\nDouble-click to rename. Drag to reorder. Right-click for chat actions.`;
 	node.close.title = t.busy ? 'Close (stops what it is doing)' : 'Close';
+}
+
+/** Shared with the Exchange website: a globe, accented while a website viewer holds control. */
+function remoteTerminalMark(terminal: NonNullable<StripTab['terminal']>): HTMLElement {
+	const mark = icon('globe', `tab-terminal-remote${terminal.remoteControl ? ' control' : ''}`);
+	const viewers = terminal.remoteViewers ?? 0;
+	mark.title = terminal.remoteControl ? 'The Exchange website is in control — type here to take it back'
+		: viewers ? `Watched from the Exchange website (${viewers})` : 'Shared with the Exchange website';
+	return mark;
+}
+
+/** A terminal's tab: the terminal icon, the name, and a muted dot once the shell has ended. */
+function fillTerminalTab(node: TabNode, terminal: NonNullable<StripTab['terminal']>, agent: string | undefined): void {
+	const exited = terminal.status === 'exited';
+	const ownerAgent = terminal.pinnedBy?.agent ? state?.agents.find(a => a.id === terminal.pinnedBy?.agent)?.name ?? terminal.pinnedBy.agent : undefined;
+	const marks = terminalMarks(terminal, ownerAgent);
+	const compact = el('span', { class: `tab-compact status-terminal${exited ? ' exited' : ''}${marks.some(m => m.kind === 'unread') ? ' unread' : ''}${marks.some(m => m.kind === 'typing') ? ' typing' : ''}` },
+		el('span', { class: 'tab-compact-number', text: String(node.compactNumber) }), icon('terminal'));
+	compact.setAttribute('aria-hidden', 'true');
+	node.label.replaceChildren(compact,
+		icon('terminal', 'tab-terminal-icon'),
+		exited ? el('span', { class: 'tab-mark exited', title: 'The process ended' }) : '',
+		...marks.map(mark => {
+			if (mark.kind === 'unread' || mark.kind === 'typing') { return el('span', { class: `tab-mark terminal-${mark.kind}`, title: mark.title }); }
+			const pin = icon(mark.kind === 'paused' ? 'debug-pause' : 'comment-discussion', `tab-terminal-pin${mark.kind === 'paused' ? ' paused' : ''}`);
+			pin.title = mark.title;
+			return pin;
+		}),
+		...((!state?.surface || state.surface === 'editor') && terminal.remote ? [remoteTerminalMark(terminal)] : []),
+		el('span', { class: 'tab-title', text: terminal.name }));
+	const description = terminalTabTitle(terminal, agent, ownerAgent) + (marks.some(m => m.kind === 'unread') ? '\nNew output since you last looked' : '');
+	node.label.setAttribute('aria-label', description);
+	node.label.title = `${description}\nDouble-click to rename. Right-click for terminal actions.`;
+	node.close.title = exited ? 'Close' : 'Close (ends the process)';
 }
 
 /**
@@ -1881,8 +2422,8 @@ function startRename(node: TabNode): void {
 		field.remove();
 		node.label.hidden = false;
 		if (keep && name && name !== before) {
-			post({ type: 'renameTab', id: node.tab.id, title: name });
-			node.tab = { ...node.tab, title: name };
+			post(node.tab.terminal ? { type: 'renameTerminal', id: node.tab.id, name } : { type: 'renameTab', id: node.tab.id, title: name });
+			node.tab = withPendingTitle(node.tab, name);
 			// Shown until the host's state says so: a post it built before it read
 			// the rename would otherwise show the old name for a moment.
 			node.pendingTitle = { title: name, until: performance.now() + 2000 };
@@ -1924,16 +2465,17 @@ function cancelClosing(): void {
 		renderTabs(state);
 	}
 	if (id) {
-		tabNodes.get(id)?.close.focus();
+		const node = tabNodes.get(id);
+		(node?.root.classList.contains('overflowed') ? overflowButton : node?.close)?.focus();
 	}
 }
 
 function renderTabConfirm(s: ChatViewState): void {
-	const closing = closingTab ? s.tabs.find(t => t.id === closingTab) : undefined;
+	const closing = closingTab ? stripOf(s).find(t => t.id === closingTab) : undefined;
 	if (closing && wideChat.matches && chatDrawerCollapsed) {
 		chatDrawerCollapsed = false; updateChatDrawer(); saveDraft();
 	}
-	const shown = closing ? JSON.stringify([closing.id, closing.title, closing.agents, closing.skillRuns, closing.busy, closing.queued]) : '';
+	const shown = closing ? JSON.stringify([closing.id, closing.title, closing.agents, closing.skillRuns, closing.busy, closing.queued, closing.terminal?.status]) : '';
 	if (shown === confirmShown) {
 		return;
 	}
@@ -1946,19 +2488,42 @@ function renderTabConfirm(s: ChatViewState): void {
 	const yes = button([el('span', { text: 'Stop and close' })], { class: 'confirm-danger' });
 	yes.addEventListener('click', () => {
 		closingTab = undefined;
-		post({ type: 'closeTab', id: closing.id });
+		post({ type: closing.terminal ? 'closeTerminal' : 'closeTab', id: closing.id });
 		if (state) {
 			renderTabs(state);
 		}
 	});
 	const no = button([el('span', { text: 'Cancel' })], { class: 'confirm-cancel' });
 	no.addEventListener('click', () => cancelClosing());
+	if (closing.terminal) {
+		tabConfirm.replaceChildren(el('span', { text: terminalCloseText(closing.terminal) }), yes, no);
+		placeTabConfirm();
+		return;
+	}
 	const parts = stoppedParts(closing);
 	const queued = closing.queued ? `${closing.queued} queued message${closing.queued === 1 ? '' : 's'} will not be sent.` : '';
 	const text = parts.length
 		? `"${closing.title}" is still working. Closing it stops ${parts.join(' and ')}.${queued ? ` ${queued}` : ''}`
 		: `"${closing.title}": ${queued}`;
 	tabConfirm.replaceChildren(el('span', { text }), yes, no);
+	placeTabConfirm();
+}
+
+/** Puts the confirmation under the tab being closed, kept inside the view. */
+function placeTabConfirm(): void {
+	const root = closingTab ? tabNodes.get(closingTab)?.root : undefined;
+	// A tab in the overflow dropdown is closed from there: the confirmation goes under its button.
+	const anchor = root?.classList.contains('overflowed') ? overflowButton : root;
+	if (!anchor || tabConfirm.hidden) { return; }
+	const box = app.getBoundingClientRect();
+	const at = anchor.getBoundingClientRect();
+	const width = Math.min(300, box.width - 16);
+	tabConfirm.style.width = `${width}px`;
+	const left = Math.max(8, Math.min(at.left - box.left, box.width - width - 8));
+	tabConfirm.style.left = `${left}px`;
+	const below = at.bottom - box.top + 4;
+	const height = tabConfirm.offsetHeight;
+	tabConfirm.style.top = `${below + height > box.height - 8 ? Math.max(8, at.top - box.top - height - 4) : below}px`;
 }
 
 /**
@@ -2909,7 +3474,7 @@ function approvalNode(entry: ApprovalEntry): HTMLElement {
 	}
 	const label = approvalLabels[entry.what];
 	const node = el('div', { class: `row approval ${entry.status}` },
-		el('div', { class: 'approval-head' }, icon(label.icon), el('span', { text: entry.what === 'mcp' && entry.server ? `${label.ask} (${entry.server})` : label.ask })),
+		el('div', { class: 'approval-head' }, icon(label.icon), el('span', { text: entry.ask ?? (entry.what === 'mcp' && entry.server ? `${label.ask} (${entry.server})` : label.ask) })),
 		el('div', { class: 'approval-title', text: entry.title }));
 	// Refused by the menu: one short line — what, and that it was refused.
 	const quiet = entry.status === 'denied' && entry.auto;
@@ -3360,13 +3925,13 @@ function viewModeRow(): HTMLElement {
 
 approveToggle.addEventListener('click', () => {
 	if (approvalPopup.classList.contains('open')) {
-		closePopups();
+		closePopups(undefined, selectorStrip.contains(approveToggle) ? selectorStrip : undefined);
 		return;
 	}
 	if (state) {
 		renderApprovalMenu(state, true);
 	}
-	openAbove(approvalPopup, approveToggle, 'left');
+	openAbove(approvalPopup, selectorAnchor(approveToggle), 'left');
 });
 
 /**
@@ -3388,6 +3953,7 @@ function promptNode(entry: Extract<ChatEntry, { kind: 'user' }>): HTMLElement {
 				const file = entry.attachmentFiles?.[index];
 				const kind = entry.attachmentKinds?.[index];
 				const attachmentIconNode = (file ? themeFileIcon(file) : undefined) ?? (kind ? icon(attachmentIcon(kind)) : undefined);
+				if (file) { attachmentIconNode?.classList.add('chat-file-icon'); }
 				const saved = entry.attachmentData?.[index];
 				const children = [attachmentIconNode, el('span', { class: 'chip-label', text: label })];
 				if (!saved) { return el('span', { class: 'chip small', title: label }, ...children); }
@@ -4231,7 +4797,7 @@ function renderAttachments(s: ChatViewState): void {
 	// chips each time swallowed a click on one whose press outlasted a post,
 	// and took keyboard focus off it.
 	const shown = JSON.stringify([
-		s.attachments.map(c => [c.id, c.kind, c.label, c.reference, c.thumbnail?.length]),
+		s.attachments.map(chipShown),
 		s.suggestions.map(c => [c.id, c.kind, c.label]),
 		fileIconsSignature,
 	]);
@@ -4240,6 +4806,8 @@ function renderAttachments(s: ChatViewState): void {
 	}
 	attachmentsShown = shown;
 	attachmentsRow.replaceChildren(...s.attachments.map(chip => {
+		// A terminal pinned to the conversation: not a draft attachment, so no reference and no "open in a tab".
+		if (isPinChip(chip)) { return pinChipNode(chip); }
 		const remove = button([icon('close')], { class: 'chip-remove', title: 'Remove — an open file or page goes back to being a suggestion' });
 		remove.addEventListener('click', () => post({ type: 'removeAttachment', id: chip.id }));
 		let thumb: HTMLElement = chipIcon(chip);
@@ -4282,6 +4850,41 @@ function renderAttachments(s: ChatViewState): void {
 }
 
 /**
+ * A terminal pinned to this conversation (the host derives it; it is not consumed by a
+ * send). The remove button unpins, a click on the name goes to the terminal, and the
+ * dot says whether the shell is running, ended or gone. Built only when `chipShown`
+ * changes, like every chip (#365), so what it does reads the state when it is pressed.
+ */
+function pinChipNode(chip: AttachmentChip & { readonly terminalId: string }): HTMLElement {
+	const id = chip.terminalId;
+	const status = pinChipStatus(chip);
+	const unpin = () => post({ type: 'pinTerminal', id, tabId: state?.activeTab ?? '', pinned: false });
+	const remove = button([icon('close')], { class: 'chip-remove', title: unpinTitle });
+	remove.addEventListener('click', unpin);
+	const mark = el('span', { class: `chip-pin-mark ${status}` });
+	mark.setAttribute('aria-hidden', 'true');
+	const open = button([icon(chip.terminalWatch ? 'eye' : 'terminal'), el('span', { class: 'chip-label', text: chip.label })], { class: 'chip-open', title: chip.terminalWatch ? `${pinChipOpenTitle(chip)} — shared read-only` : pinChipOpenTitle(chip) });
+	open.disabled = status === 'closed';
+	open.addEventListener('click', () => post({ type: 'selectTerminal', id }));
+	const root = el('span', { class: `chip chip-terminal ${status}` }, remove, mark, open);
+	root.addEventListener('contextmenu', event => {
+		event.preventDefault();
+		const terminal = state?.terminals?.find(t => t.id === id);
+		const control = terminal ? agentControlRow(terminal) : undefined;
+		openMenu(root, [
+			{ icon: 'terminal', label: 'Go to terminal', command: 'selectTerminal', disabled: status === 'closed', run: () => post({ type: 'selectTerminal', id }) },
+			...(control ? [{ icon: control.icon, label: control.label, description: control.description, command: 'setTerminalAgentControl',
+				run: () => post({ type: 'setTerminalAgentControl', id, allowed: control.allowed }) }] : []),
+			{ icon: 'eye', label: 'Watch only', checked: chip.terminalWatch === true, command: 'pinTerminal',
+				description: chip.terminalWatch ? 'Allow the agent to type again' : 'The agent may read, not type',
+				run: () => post({ type: 'pinTerminal', id, tabId: state?.activeTab ?? '', pinned: true, mode: chip.terminalWatch ? 'control' : 'watch' }) },
+			{ icon: 'close', label: 'Unpin', description: unpinTitle, command: 'pinTerminal', run: unpin },
+		], chip.label);
+	});
+	return root;
+}
+
+/**
  * What could be attached and is not: the file or the browser tab the user has
  * open, dashed, with a "+" where an attached chip has its remove button. The
  * "+" attaches it; removing the attached chip brings the suggestion back.
@@ -4302,7 +4905,9 @@ function suggestionChip(chip: AttachmentChip): HTMLElement {
  * the rest and wherever the theme has none.
  */
 function chipIcon(chip: AttachmentChip): HTMLElement {
-	return (chip.iconName ? themeFileIcon(chip.iconName) : undefined) ?? icon(attachmentIcon(chip.kind));
+	const node = (chip.iconName ? themeFileIcon(chip.iconName) : undefined) ?? icon(attachmentIcon(chip.kind));
+	if (chip.iconName) { node.classList.add('chat-file-icon'); }
+	return node;
 }
 
 // A selection is remembered per draft; without one, references append to the message.
@@ -4344,6 +4949,7 @@ function attachmentIcon(kind: AttachmentKind): string {
 		case 'voice': return 'mic';
 		case 'video': return 'device-camera-video';
 		case 'pointAnnotation': case 'annotation': return 'comment';
+		case 'terminal': return 'terminal';
 	}
 }
 
@@ -4387,7 +4993,13 @@ function renderSelectors(s: ChatViewState): void {
 	ultracodeInput.checked = s.selection.ultracode === true;
 	ultracodeBox.dataset.tip = `UltraCode: ${ultracodeInput.checked ? 'On' : 'Off'}\nLet Claude organize dynamic workflows and subagents at the selected effort. May use more of your plan. Requires Claude Code 2.1.284 or later. Changes apply to the next message once the current work finishes.`;
 	if (hoverTip.anchor === ultracodeBox) { hoverTip.show(ultracodeBox); }
+	const compactLabel = `${agent?.name ?? (s.detecting ? 'Looking…' : 'No agent')} › ${model?.label ?? 'Model'}`;
+	if (compactSelectorLabel.textContent !== compactLabel) { compactSelectorLabel.textContent = compactLabel; }
+	compactSelector.title = `${compactLabel}\nEffort: ${s.selection.effort ? labelOf(s.selection.effort) : 'Default'}\nPermissions: ${approveToggle.textContent || 'Configure'}\nClick to configure`;
+	compactSelector.setAttribute('aria-label', compactSelector.title);
 	const efforts = model?.efforts ?? [];
+	compactEffortDot.dataset.effort = s.selection.effort ?? efforts[0] ?? 'minimal';
+	compactEffortDot.title = efforts.length ? `Effort: ${s.selection.effort ? labelOf(s.selection.effort) : 'Default'}` : 'Effort: model default';
 	effortBox.hidden = !efforts.length;
 	if (efforts.length) {
 		effortRange.max = String(efforts.length - 1);
@@ -4401,6 +5013,7 @@ function updateEffortAppearance(effort: string): void {
 	const label = labelOf(effort);
 	effortRange.setAttribute('aria-valuetext', label);
 	effortBox.dataset.effort = effort;
+	compactEffortDot.dataset.effort = effort;
 	effortBox.dataset.tip = `Effort: ${label}\nMore effort takes longer and uses more of your plan.`;
 	if (hoverTip.anchor === effortBox) { hoverTip.show(effortBox); }
 }
@@ -4589,6 +5202,7 @@ function autosize(): void {
 // Fit the actual labels and visible indicators instead of guessing a sidebar breakpoint.
 let toolbarLayoutFrame: number | undefined;
 let toolbarLayoutShape = '';
+let toolbarLayoutWidth = 0;
 function scheduleToolbarLayout(): void {
 	if (toolbarLayoutFrame !== undefined) { return; }
 	toolbarLayoutFrame = requestAnimationFrame(() => {
@@ -4601,19 +5215,26 @@ function scheduleToolbarLayout(): void {
 			agentsButton.textContent, agentsButton.hidden, contextButton.hidden]);
 		if (shape === toolbarLayoutShape) { return; }
 		toolbarLayoutShape = shape;
-		toolbar.classList.remove('stacked', 'compact-effort');
+		if (selectorStrip.classList.contains('open') && width === toolbarLayoutWidth) { return; }
+		toolbarLayoutWidth = width;
+		if (selectorStrip.classList.contains('open')) { closePopups(); }
+		const wasCompact = toolbar.classList.contains('compact-selector-mode');
+		toolbar.classList.remove('stacked', 'compact-effort', 'compact-selector-mode');
 		// Measure unshrunk settings in both presentations; these temporary styles
 		// are removed in the same frame, without replacing or cloning controls.
 		toolbarSettings.style.width = 'max-content';
 		toolbarSettings.style.maxWidth = 'none';
 		const available = width - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
 		const sides = toolbarAttachments.getBoundingClientRect().width + toolbarEnd.getBoundingClientRect().width;
-		const gap = parseFloat(style.columnGap) * 2;
+		const gap = (parseFloat(style.columnGap) || 0) * 2;
 		const fits = () => Math.ceil(sides + toolbarSettings.getBoundingClientRect().width + gap) <= available;
 		if (!fits()) { toolbar.classList.add('compact-effort'); }
-		if (!fits()) { toolbar.classList.add('stacked'); }
+		if (!fits()) { toolbar.classList.add('compact-selector-mode'); }
 		toolbarSettings.style.removeProperty('width');
 		toolbarSettings.style.removeProperty('max-width');
+		// A resized/hidden original anchor must never leave its popup offscreen.
+		if (wasCompact !== toolbar.classList.contains('compact-selector-mode') &&
+			(menu.classList.contains('open') || approvalPopup.classList.contains('open'))) { closePopups(); }
 	});
 }
 new ResizeObserver(scheduleToolbarLayout).observe(toolbar);
@@ -5313,6 +5934,9 @@ composer.addEventListener('mousedown', event => {
  * right-click menu in an agent's report (see `linkMenu`).
  */
 function closePopups(except?: HTMLElement, keep?: HTMLElement): void {
+ if (except !== selectorStrip && keep !== selectorStrip) {
+  restoreSelectorControls();
+ }
  if (except !== branchPopup) { branchButton.setAttribute('aria-expanded', 'false'); branchNamePending = undefined; }
  if (except !== gitPopup) {
   gitPopupPinned = false;
@@ -5333,7 +5957,8 @@ function closePopups(except?: HTMLElement, keep?: HTMLElement): void {
 			paramsFormAnchor = undefined;
 		}
 	}
-	for (const popup of [featureSettingsPanel, sleepPopup, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel]) {
+	if (except !== tabOverflowPanel && keep !== tabOverflowPanel) { overflowButton.setAttribute('aria-expanded', 'false'); }
+	for (const popup of [tabOverflowPanel, selectorStrip, featureSettingsPanel, sleepPopup, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel]) {
 		if (popup !== except && popup !== keep) {
 			popup.classList.remove('open');
 			if (popup === featureSettingsPanel) {
@@ -5341,21 +5966,23 @@ function closePopups(except?: HTMLElement, keep?: HTMLElement): void {
 			}
 		}
 	}
-	for (const pill of [tabAdd, agentPill, modelPill, plusButton, usageButton, approveToggle, slashButton, workdirButton, branchButton, commitButton, contextButton]) {
+	for (const pill of [overflowButton, tabAdd, tabAddTerminal, compactSelector, agentPill, modelPill, plusButton, usageButton, approveToggle, slashButton, workdirButton, branchButton, commitButton, contextButton]) {
 		pill.classList.remove('active');
 	}
+	if (selectorStrip.classList.contains('open')) { compactSelector.classList.add('active'); }
 	// A skill button is a popup's anchor too; the mark only tells a second
 	// press of it to close what it opened, and is not drawn (see chat.css).
 	for (const { button } of skillButtons.values()) {
 		button.classList.remove('active');
 	}
-	for (const link of document.querySelectorAll('.link.active, .tab-label.active')) {
+	for (const link of document.querySelectorAll('.link.active, .tab-label.active, .tab-overflow-row.active')) {
 		link.classList.remove('active');
 	}
 }
 
 /** `form`: the GitHub form's own class on the reused parameters popover, set before it is measured; anything else opened there drops it. */
 function openAbove(popup: HTMLElement, anchor: HTMLElement, align: 'left' | 'right', keep?: HTMLElement, form?: 'repo-form'): void {
+	if (selectorStrip.contains(anchor)) { keep = selectorStrip; }
 	closePopups(popup, keep);
 	if (popup === paramsPopup) {
 		paramsFormAnchor = undefined;
@@ -5456,7 +6083,8 @@ function closeMenuOverPanel(): boolean {
 		return false;
 	}
 	menu.classList.remove('open', 'over-panel');
-	for (const link of document.querySelectorAll('.link.active, .tab-label.active')) {
+	if (selectorStrip.classList.contains('open')) { scheduleSelectorStripClose(); }
+	for (const link of document.querySelectorAll('.link.active, .tab-label.active, .tab-overflow-row.active')) {
 		link.classList.remove('active');
 	}
 	return true;
@@ -5519,7 +6147,7 @@ document.addEventListener('mousedown', event => {
 		}
 		return;
 	}
-	if (![workdirSummary, gitRefreshSlot, effortBox, ultracodeBox, featureSettingsPanel, sleepPopup, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillBar, historyPanel, agentsPanel, agentAppsPanel, plusButton, usageButton, usageAlertText, agentsButton, agentPill, modelPill, approveToggle, slashButton, workdirButton, branchButton, commitButton, contextButton].some(n => n.contains(target))) {
+	if (![tabOverflowPanel, overflowButton, workdirSummary, gitRefreshSlot, effortBox, ultracodeBox, selectorStrip, featureSettingsPanel, sleepPopup, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillBar, historyPanel, agentsPanel, agentAppsPanel, plusButton, usageButton, usageAlertText, agentsButton, compactSelector, agentPill, modelPill, approveToggle, slashButton, workdirButton, branchButton, commitButton, contextButton].some(n => n.contains(target))) {
 		closePopups();
 	}
 });
@@ -5529,6 +6157,10 @@ document.addEventListener('keydown', event => {
 	// in: without this, cancelling a conversion closed the toolbar skill editor,
 	// the GitHub form or a parameters popover, and what was typed went with it.
 	if (event.key !== 'Escape' || event.isComposing || event.keyCode === 229) {
+		return;
+	}
+	// Escape typed into a terminal is the shell's (vim, readline): xterm takes it first, and this must not act on it if it ever got here.
+	if (terminalView?.contains(event.target)) {
 		return;
 	}
 	// The innermost question first: a close being confirmed, then the switch card.
@@ -5542,6 +6174,12 @@ document.addEventListener('keydown', event => {
 	}
 	// A menu over a panel first, the panel with the next Escape.
 	if (closeMenuOverPanel()) {
+		if (tabOverflowPanel.classList.contains('open') && overflowMenuRow?.isConnected) { overflowMenuRow.focus(); }
+		return;
+	}
+	if (tabOverflowPanel.classList.contains('open')) {
+		closePopups();
+		overflowButton.focus();
 		return;
 	}
 	if (gitPopup.classList.contains('open')) {
@@ -5577,8 +6215,9 @@ interface MenuAction {
  * `note`: a warning under the heading, in the chart orange.
  */
 function openMenu(anchor: HTMLElement, items: MenuItem[], heading?: string, action?: MenuAction, keep?: HTMLElement, note?: string): void {
+	if (selectorStrip.contains(anchor)) { keep = selectorStrip; }
 	if (menu.classList.contains('open') && anchor.classList.contains('active')) {
-		closePopups();
+		closePopups(undefined, keep);
 		return;
 	}
 	let headingAction: HTMLButtonElement | undefined;
@@ -5621,13 +6260,82 @@ function openMenu(anchor: HTMLElement, items: MenuItem[], heading?: string, acti
 	openAbove(menu, anchor, 'left', keep);
 }
 
+/**
+ * Arrow keys, Home and End move between a menu's rows once focus is in it (Tab already does; Enter
+ * and Space press a row, Escape closes the menu). `focusMenu` puts the focus on the first row for
+ * a menu that was opened from the keyboard-reachable terminal controls.
+ */
+menu.addEventListener('keydown', event => {
+	if (event.isComposing || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) { return; }
+	const rows = [...menu.querySelectorAll<HTMLButtonElement>('.menu-item:not(:disabled)')];
+	if (!rows.length) { return; }
+	const at = rows.indexOf(document.activeElement as HTMLButtonElement);
+	const next = event.key === 'Home' ? 0 : event.key === 'End' ? rows.length - 1
+		: at < 0 ? (event.key === 'ArrowDown' ? 0 : rows.length - 1) : (at + (event.key === 'ArrowDown' ? 1 : -1) + rows.length) % rows.length;
+	event.preventDefault();
+	rows[next].focus();
+});
+function focusMenu(): void {
+	menu.querySelector<HTMLButtonElement>('.menu-item:not(:disabled)')?.focus();
+}
+
+
+/** The very same controls move into the strip, preserving handlers and live state. */
+let selectorStripTimer: ReturnType<typeof setTimeout> | undefined;
+function selectorAnchor(original: HTMLElement): HTMLElement {
+	if (toolbar.classList.contains('compact-selector-mode') && !selectorStrip.classList.contains('open')) { openCompactSelectors(); }
+	return original;
+}
+
+function restoreSelectorControls(): void {
+	clearTimeout(selectorStripTimer);
+	selectorStrip.classList.remove('open');
+	if (selectorControls.parentElement === selectorStrip) {
+		toolbarSettings.prepend(selectorControls);
+		toolbarLayoutShape = '';
+		scheduleToolbarLayout();
+	}
+	compactSelector.setAttribute('aria-expanded', 'false');
+	compactSelector.classList.remove('active');
+}
+
+function openCompactSelectors(): void {
+	clearTimeout(selectorStripTimer);
+	if (!state || !toolbar.classList.contains('compact-selector-mode') || selectorStrip.classList.contains('open')) { return; }
+	closePopups(selectorStrip);
+	selectorStrip.append(selectorControls);
+	compactSelector.classList.add('active');
+	compactSelector.setAttribute('aria-expanded', 'true');
+	showAnchoredOverlay(selectorStrip, compactSelector, 'center');
+}
+function scheduleSelectorStripClose(): void {
+	clearTimeout(selectorStripTimer);
+	selectorStripTimer = setTimeout(() => {
+		if (compactSelector.matches(':hover, :focus-visible') || (selectorStrip.matches(':hover') || !!selectorStrip.querySelector(':focus-visible')) ||
+			menu.classList.contains('open') || approvalPopup.classList.contains('open')) { return; }
+		if (selectorStrip.classList.contains('open')) { closePopups(); }
+	}, 250);
+}
+compactSelector.addEventListener('pointerenter', event => {
+	if (event.pointerType === 'mouse' && matchMedia('(hover: hover) and (pointer: fine)').matches) { openCompactSelectors(); }
+});
+compactSelector.addEventListener('pointerleave', event => { if (event.pointerType === 'mouse') { scheduleSelectorStripClose(); } });
+selectorStrip.addEventListener('pointerenter', () => clearTimeout(selectorStripTimer));
+selectorStrip.addEventListener('pointerleave', event => { if (event.pointerType === 'mouse') { scheduleSelectorStripClose(); } });
+compactSelector.addEventListener('focus', () => { if (compactSelector.matches(':focus-visible')) { openCompactSelectors(); } });
+compactSelector.addEventListener('blur', scheduleSelectorStripClose);
+selectorStrip.addEventListener('focusout', scheduleSelectorStripClose);
+compactSelector.addEventListener('click', event => {
+	if (event.detail !== 0 && !matchMedia('(hover: hover) and (pointer: fine)').matches && selectorStrip.classList.contains('open')) { closePopups(); }
+	else { openCompactSelectors(); }
+});
 
 agentPill.addEventListener('click', () => {
 	const s = state;
 	if (!s) {
 		return;
 	}
-	openMenu(agentPill, s.agents.map(a => ({
+	openMenu(selectorAnchor(agentPill), s.agents.map(a => ({
 		icon: a.id === 'claude' ? 'sparkle' : a.id === 'gemini' ? 'star-full' : 'hubot',
 		label: a.name,
 		description: a.available ? a.detail?.split(':')[0] : a.problem,
@@ -5785,7 +6493,7 @@ modelPill.addEventListener('click', () => {
 	if (!s || !agent) {
 		return;
 	}
-	openMenu(modelPill, agent.models.map(m => ({
+	openMenu(selectorAnchor(modelPill), agent.models.map(m => ({
 		label: m.label,
 		description: m.description,
 		checked: m.id === s.selection.model,
@@ -7844,7 +8552,7 @@ plusButton.addEventListener('click', () => {
 		description: item.needsTab ? pageProblem : undefined,
 		disabled: item.needsTab && !!pageProblem,
 		run: () => post({ type: 'attach', kind: item.kind }),
-	}))], 'Attach');
+	})), ...terminalPinItems()], 'Attach');
 });
 
 /* "U" */
@@ -8763,6 +9471,26 @@ function createServerSettings(): HTMLElement {
 	return content;
 }
 
+function createAppearanceSettings(): HTMLElement {
+ const content = el('div', { class: 'feature-settings-content' });
+ const theme = el('select');
+ theme.dataset.appearance = 'theme';
+ theme.setAttribute('aria-label', 'Color theme');
+ for (const [value, label] of [['system', window.aiBrowserChatHost ? 'Auto (device)' : 'Auto (VS Code)'], ['light', 'Light'], ['dark', 'Dark']]) {
+  const option = el('option', { text: label }); option.value = value; theme.append(option);
+ }
+ theme.value = getThemePreference();
+ theme.addEventListener('change', () => setThemePreference(theme.value as ThemePreference));
+ const icons = el('input'); icons.type = 'checkbox'; icons.checked = getChatFileIcons();
+ icons.dataset.appearance = 'fileIcons';
+ icons.addEventListener('change', () => setChatFileIcons(icons.checked));
+ content.append(el('h3', { text: 'Appearance' }),
+  el('label', { class: 'appearance-setting' }, el('span', { text: 'Color theme' }), theme),
+  el('label', { class: 'appearance-setting' }, el('span', { text: 'Show file icons in chat' }), icons),
+  el('p', { class: 'feature-settings-note', text: 'Changes apply immediately and are saved on this device.' }));
+ return content;
+}
+
 function openFeatureSettings(): void {
 	if (!state) { return; }
 	closePopups(featureSettingsPanel);
@@ -8792,6 +9520,14 @@ function openFeatureSettings(): void {
 	temporaryTab.setAttribute('role', 'tab'); temporaryTab.setAttribute('aria-selected', 'false');
 	temporaryTab.setAttribute('aria-controls', 'temporary-files-content');
 	tabs.append(temporaryTab);
+ const appearanceTab = button(['Appearance'], { class: 'feature-settings-tab' });
+ appearanceTab.id = 'appearance-tab';
+ appearanceTab.setAttribute('role', 'tab'); appearanceTab.setAttribute('aria-selected', 'false');
+ appearanceTab.setAttribute('aria-controls', 'appearance-content');
+ tabs.append(appearanceTab);
+ const appearanceContent = createAppearanceSettings();
+ appearanceContent.id = 'appearance-content'; appearanceContent.hidden = true;
+ appearanceContent.setAttribute('role', 'tabpanel'); appearanceContent.setAttribute('aria-labelledby', appearanceTab.id);
 	const serverTab = button(['Server connection'], { class: 'feature-settings-tab' });
 	serverTab.id = 'server-connection-tab'; serverTab.hidden = !state.exchangeConnection;
 	serverTab.setAttribute('role', 'tab'); serverTab.setAttribute('aria-selected', 'false');
@@ -8901,13 +9637,14 @@ function openFeatureSettings(): void {
 		content.append(row);
 	}
 	content.append(el('p', { class: 'feature-settings-note', text: "Commit messages use the selected agent's remembered chat model or its default. Branch names and chat titles use an available lightweight model. Effort is mapped to the levels supported by that model. Custom prompts apply to future requests; output format and length checks still apply. Empty prompts use the defaults. Settings are shared across projects." }));
-	const selectTab = (selected: 'ai' | 'video' | 'temporary' | 'server') => {
+	const selectTab = (selected: 'ai' | 'video' | 'temporary' | 'server' | 'appearance') => {
 		content.hidden = selected !== 'ai'; videoContent.hidden = selected !== 'video'; temporaryContent.hidden = selected !== 'temporary';
 		tab.setAttribute('aria-selected', String(selected === 'ai')); videoTab.setAttribute('aria-selected', String(selected === 'video'));
 		temporaryTab.setAttribute('aria-selected', String(selected === 'temporary'));
 		serverContent.hidden = selected !== 'server'; serverTab.setAttribute('aria-selected', String(selected === 'server'));
-		featureSettingsSave.hidden = selected === 'temporary' || selected === 'server';
-		featureSettingsStatus.hidden = selected === 'server';
+		appearanceContent.hidden = selected !== 'appearance'; appearanceTab.setAttribute('aria-selected', String(selected === 'appearance'));
+		featureSettingsSave.hidden = selected === 'temporary' || selected === 'server' || selected === 'appearance';
+		featureSettingsStatus.hidden = selected === 'server' || selected === 'appearance';
 	};
 	tab.addEventListener('click', () => selectTab('ai')); videoTab.addEventListener('click', () => selectTab('video'));
 	// Temporary files live on the editor's machine: the tab is gone where they cannot be managed.
@@ -8918,7 +9655,8 @@ function openFeatureSettings(): void {
 	});
 	serverTab.addEventListener('click', () => selectTab('server'));
 	featureSettingsSave.hidden = false; featureSettingsStatus.hidden = false;
-	const sections = [tab, videoTab, temporaryTab, ...(state.exchangeConnection ? [serverTab] : [])];
+	appearanceTab.addEventListener('click', () => selectTab('appearance'));
+	const sections = [tab, videoTab, temporaryTab, appearanceTab, ...(state.exchangeConnection ? [serverTab] : [])];
 	tabs.addEventListener('keydown', event => {
 		const index = sections.indexOf(document.activeElement as HTMLButtonElement);
 		if (index < 0 || !['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) { return; }
@@ -8927,17 +9665,9 @@ function openFeatureSettings(): void {
 			: (index + (event.key === 'ArrowDown' ? 1 : -1) + sections.length) % sections.length;
 		sections[next].click(); sections[next].focus();
 	});
-	const appearance = el('select');
- appearance.setAttribute('aria-label', 'Color theme');
- for (const [value, label] of [['system', window.aiBrowserChatHost ? 'Auto (device)' : 'Auto (VS Code)'], ['light', 'Light'], ['dark', 'Dark']]) {
-  const option = el('option', { text: label }); option.value = value; appearance.append(option);
- }
- appearance.value = getThemePreference();
- appearance.addEventListener('change', () => setThemePreference(appearance.value as ThemePreference));
 	featureSettingsPanel.replaceChildren(heading,
-  el('label', { class: 'appearance-setting' }, el('span', { text: 'Color theme' }), appearance),
 		el('div', { class: 'feature-settings-layout' }, tabs,
-			el('div', { class: 'feature-settings-main' }, content, videoContent, temporaryContent, serverContent,
+			el('div', { class: 'feature-settings-main' }, content, videoContent, temporaryContent, serverContent, appearanceContent,
 				el('div', { class: 'feature-settings-actions' }, featureSettingsStatus, featureSettingsSave))));
 	showScreenOverlay(featureSettingsPanel);
 	featureSettingsPanel.focus();
@@ -8947,7 +9677,7 @@ featureSettingsSave.addEventListener('click', () => {
 	if (videoSecondsDraft === undefined) { return; }
 	featureSettingsSaving = true;
 	featureSettingsSave.disabled = true;
-	for (const field of featureSettingsPanel.querySelectorAll<HTMLSelectElement | HTMLTextAreaElement | HTMLButtonElement | HTMLInputElement>('select, textarea, .feature-prompt-reset, input[data-field="recordingSeconds"]')) { field.disabled = true; }
+	for (const field of featureSettingsPanel.querySelectorAll<HTMLSelectElement | HTMLTextAreaElement | HTMLButtonElement | HTMLInputElement>('select, textarea, .feature-prompt-reset, input[data-field="recordingSeconds"]')) { if (!field.dataset.appearance) field.disabled = true; }
 	featureSettingsStatus.textContent = 'Saving…';
 	post({ type: 'saveFeatureAi', settings: featureSettingsDraft, recordingQuality: videoQualityDraft, recordingSeconds: videoSecondsDraft });
 });

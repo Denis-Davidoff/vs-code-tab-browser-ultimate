@@ -9,9 +9,13 @@ await mkdir(output, { recursive: true });
 await build({
   entryPoints: { background: `${source}background.ts`, sidepanel: `${source}sidepanel.ts`,
     elementPicker: `${source}elementPicker.ts`,
-    chat: `${source}../preview-src/chat.ts`, codicon: `${source}../node_modules/@vscode/codicons/dist/codicon.css` },
+    chat: `${source}../preview-src/chat.ts`, codicon: `${source}../node_modules/@vscode/codicons/dist/codicon.css`,
+    // xterm's stylesheet as an entry of its own: imported from chat.ts it would overwrite chat.css.
+    xterm: `${source}../node_modules/@xterm/xterm/css/xterm.css` },
   outdir: output, bundle: true, platform: 'browser', format: 'iife', target: 'chrome116', logLevel: 'info',
   loader: { '.ttf': 'dataurl', '.csv': 'text' },
+  // Terminal tabs reach Chrome too (the editor's shared terminals, over the bridge): xterm is bundled.
+  define: { __TERMINAL__: 'true' },
 });
 await Promise.all(['manifest.json', 'sidepanel.html', 'sidepanel.css'].map(file => copyFile(`${source}${file}`, `${output}${file}`)));
 await copyFile(`${source}../media/chat.css`, `${output}chat.css`);

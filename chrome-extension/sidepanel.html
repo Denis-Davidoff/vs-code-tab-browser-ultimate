@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AI Browser</title>
   <link rel="stylesheet" href="codicon.css">
+  <link rel="stylesheet" href="xterm.css">
   <link rel="stylesheet" href="chat.css">
   <link rel="stylesheet" href="sidepanel.css">
 </head>
@@ -16,7 +17,7 @@
     <select id="conversation" aria-label="Conversation" title="Conversation shown in Chrome. Switching editor tabs does not change it." hidden></select>
     <button id="mode" type="button" aria-expanded="false" aria-controls="mode-details" hidden></button>
     <span id="remote-actions"></span>
-    <button id="disconnect" type="button" hidden>Disconnect</button>
+    <button id="disconnect" type="button" title="Disconnect from editor" aria-label="Disconnect from editor" hidden><span class="codicon codicon-debug-disconnect" aria-hidden="true"></span></button>
   </header>
   <div id="mode-details" class="chrome-shell" role="note" hidden>
     <p id="mode-text"></p>

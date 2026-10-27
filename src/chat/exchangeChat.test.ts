@@ -1,5 +1,5 @@
 import { isIP } from 'node:net';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { dirname, relative, resolve } from 'node:path';
@@ -30,6 +30,7 @@ function harness(healthStatus = 200, memory?: {stored:Map<string,any>;secrets:Ma
 	const commands = new Map<string, (...args: any[]) => unknown>();
 	const status = { text: '', command: '', tooltip: '', show() {}, hide() {}, dispose() {} };
 	const vscode = {
+        env: { machineId: 'test-workstation' },
 		workspace: { isTrusted: true }, StatusBarAlignment: { Right: 1 },
 		window: { createStatusBarItem: () => status },
 		commands: { registerCommand: (name: string, callback: (...args: any[]) => unknown) => { commands.set(name, callback); return { dispose() {} }; } },
@@ -43,6 +44,7 @@ function harness(healthStatus = 200, memory?: {stored:Map<string,any>;secrets:Ma
 	const chatView = { ChatViewProvider: {
         exchangeViewerConnected:(source:string)=>actions.push({viewerJoined:source}),
 		chromeSources: () => choices,
+		exchangeTerminals: () => ({ blocked: () => true, find: () => undefined, shared: () => [], support: () => ({ available: false, reason: 'off' }) }),
 		commandExchangeSource: async (source:string,chatId:string,message:any,_picked:any,reply:any,browserTab:any) => { actions.push({source,chatId,message,...(browserTab?{browserTab}:{})}); reply?.({type:'usage',usage:[],loading:false},chatId); },
 		observeChromeSource: (source: string, surface: any) => {
 			sources.push(source); observed=surface;
@@ -50,7 +52,7 @@ function harness(healthStatus = 200, memory?: {stored:Map<string,any>;secrets:Ma
 			surface.bind(refresh); refresh();
 			return { dispose: () => surface.close() };
 		},
-	}, chatViewId: 'aiBrowser.chat' };
+	}, chatViewId: 'aiBrowser.chat', remoteTerminalSetting: () => false };
 	const modules = new Map<string, any>();
 	function load(name: string): any {
 		if (modules.has(name)) { return modules.get(name); }
@@ -59,7 +61,7 @@ function harness(healthStatus = 200, memory?: {stored:Map<string,any>;secrets:Ma
 		const js = transpileModule(readFileSync(filename, 'utf8'), { compilerOptions: { module: ModuleKind.CommonJS, target: ScriptTarget.ES2022 } }).outputText;
 		runInNewContext(js, { module, exports: module.exports, WebSocket: FakeSocket, Buffer, URL, Error, AbortSignal, TextEncoder, TextDecoder, crypto:globalThis.crypto, btoa, atob, EventTarget, Event, MessageEvent, setTimeout, clearTimeout,
 			fetch: async (url: URL) => { healthRequests.push(String(url)); return { ok: healthStatus === 200, status: healthStatus, json: async () => ({ status: "ok", protocolVersion: 1 }) }; },
-			require: (specifier: string) => specifier === 'node:net' ? { isIP } : specifier === 'vscode' ? vscode : specifier === './chatView' ? chatView : load(relative(resolve("src/chat"),resolve(dirname(filename),specifier))),
+			require: (specifier: string) => specifier === 'node:net' ? { isIP } : specifier === 'node:crypto' ? { createHash } : specifier === 'vscode' ? vscode : specifier === './chatView' ? chatView : load(relative(resolve("src/chat"),resolve(dirname(filename),specifier))),
 		});
 		return module.exports;
 	}
@@ -273,7 +275,8 @@ test('a relay that carries patches gets numbered snapshots and then patches; an 
     await delay(2100);
     const trailing=JSON.parse(socket.sent.at(-1)!);assert.equal(trailing.type,'chat.snapshot');assert.equal(trailing.view.entries[1].text,'one two three');
    }else{
-    assert.ok(frames.every((m:any)=>m.type==='chat.snapshot'&&m.epoch===undefined));
+    // Still numbered: terminal frames carry the snapshot's epoch.
+    assert.ok(frames.every((m:any)=>m.type==='chat.snapshot'&&typeof m.epoch==='string'&&typeof m.rev==='number'));
    }
   }finally{h.shutdown();}
  }

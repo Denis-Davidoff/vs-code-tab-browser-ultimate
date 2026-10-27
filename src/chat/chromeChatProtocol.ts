@@ -41,6 +41,8 @@ export interface ChromeChatSnapshot {
 	 * older editors.
 	 */
 	readonly agentChrome?: boolean;
+	/** The bridge's epoch for `terminal.*` frames; absent from an editor that gives Chrome no terminals. */
+	readonly terminalEpoch?: string;
 	readonly settings: {
 		readonly selection: Selection;
 		readonly viewMode: ChatViewMode;
@@ -65,7 +67,7 @@ const viewFields = {
 	sleep: 'shared', voice: 'override', blocked: 'shared', detecting: 'shared', agents: 'override', selection: 'shared',
 	chatId: 'shared', entries: 'shared', running: 'shared', attachments: 'override', suggestions: 'override',
 	hasBrowserTab: 'shared', browserApi: 'shared', nativeBrowser: 'shared', news: 'shared', newsHidden: 'shared',
-	tabs: 'shared', activeTab: 'shared', tabLimit: 'shared', pendingSends: 'shared', queuePaused: 'shared',
+	tabs: 'shared', activeTab: 'shared', tabLimit: 'shared', terminals: 'editor', terminalFront: 'editor', terminalSupport: 'editor', pendingSends: 'shared', queuePaused: 'shared',
 	approvals: 'shared', switchTo: 'shared', commands: 'shared', toolbar: 'shared', toolbarRuns: 'shared',
 	skillAgents: 'shared', viewMode: 'shared', collapseTools: 'shared', context: 'shared', workdir: 'shared',
 	usage: 'shared', usageAlert: 'shared', snapshotEvents: 'shared',
@@ -77,7 +79,14 @@ export function projectView(state: ChatViewState): ChatViewState {
 	for (const [key, kind] of Object.entries(viewFields)) {
 		if (kind === 'shared' && Object.prototype.hasOwnProperty.call(state, key)) { result[key] = (state as unknown as Record<string, unknown>)[key]; }
 	}
+	// The terminals pinned to a conversation are editor-only (`ChatTabSummary.terminals`): their names and ids stay home.
+	if (Array.isArray(result.tabs)) { result.tabs = withoutPinnedTerminals(result.tabs as ChatViewState['tabs']); }
 	return result as unknown as ChatViewState;
+}
+
+/** The tabs as a remote surface sees them: no pinned terminals. */
+export function withoutPinnedTerminals(tabs: ChatViewState['tabs']): ChatViewState['tabs'] {
+	return tabs.map(({ terminals: _terminals, ...tab }) => tab);
 }
 
 export function chromeChatSnapshot(state: ChatViewState, editorVersion?: string): ChromeChatSnapshot {
@@ -91,7 +100,7 @@ export function chromeChatSnapshot(state: ChatViewState, editorVersion?: string)
 		canSend: true,
 		canAttachElements: true,
 		view: { ...projectView(state), surface: 'chrome', controls: surfaceControls('chrome'), chatSurfaces: [],
-			tabs: state.tabs, attachments: [], suggestions: [],
+			tabs: withoutPinnedTerminals(state.tabs), attachments: [], suggestions: [],
 			voice: { ...state.voice, available: false },
 			agents: state.agents?.map(({ copies: _copies, binary: _binary, pinned: _pinned, ...agent }) => agent) ?? [],
 		},
@@ -186,6 +195,17 @@ export function readChromeChatCommand(value: unknown): ChromeChatCommand | undef
 			if (typeof m.text !== 'string' || (!m.text.trim() && !attachments?.length) || m.text.length > 100_000 || m.text.includes('\0')) { return undefined; }
 			message = { type: 'send', text: m.text, ...(m.mode === 'queue' ? { mode: 'queue' as const } : {}) }; break;
 		case 'stop': message = { type: 'stop' }; break;
+		// Terminal lifecycle: the bridge asks for consent first, the host checks the setting and the share.
+		case 'newTerminal':
+			if (Object.keys(m).some(k => !['type', 'agent'].includes(k)) || (m.agent !== undefined && m.agent !== 'claude' && m.agent !== 'codex')) { return undefined; }
+			message = { type: 'newTerminal', ...(m.agent ? { agent: m.agent } : {}) }; break;
+		case 'closeTerminal': case 'restartTerminal':
+			if (typeof m.id !== 'string' || !m.id || m.id.length > 100 || Object.keys(m).some(k => !['type', 'id'].includes(k))) { return undefined; }
+			message = { type: m.type, id: m.id }; break;
+		case 'renameTerminal':
+			if (typeof m.id !== 'string' || !m.id || m.id.length > 100 || typeof m.name !== 'string' || m.name.length > 200 || m.name.includes('\0')
+				|| Object.keys(m).some(k => !['type', 'id', 'name'].includes(k))) { return undefined; }
+			message = { type: 'renameTerminal', id: m.id, name: m.name }; break;
 		case 'switchAgent':
 			if (m.choice !== 'newTab' && m.choice !== 'replace' && m.choice !== 'continue' && m.choice !== 'cancel') { return undefined; }
 			message = { type: 'switchAgent', choice: m.choice }; break;

@@ -34,3 +34,5 @@ exchange-server/**
 
 # Spinner design previews are not extension runtime assets.
 work/spinner-variants/**
+work/**
+deploy-exchange.sh

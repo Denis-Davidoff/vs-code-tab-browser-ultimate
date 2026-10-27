@@ -774,3 +774,49 @@ test('Chrome browser requests create a native page for the displayed conversatio
  await assert.rejects(()=>command.call(receiver,'surface','chat-1',{type:'openBrowser',where:'chrome'}),/Chrome side panel/);
  assert.equal(calls.length,2);
 });
+
+test('terminals in Chrome: disabled with the setting named, consent once, frames over /terminal', async () => {
+	let setting = false, asked = 0;
+	const sinks: any[] = [];
+	const target: any = {
+		id: 'term-1', remote: true, running: true, status: 'running', exitCode: undefined, size: { cols: 80, rows: 24 },
+		addConsumer(_key: string, sink: unknown) { sinks.push(sink); return { data: 'hello', seq: 5 }; },
+		removeConsumer() {}, creditConsumer() {}, outstanding: () => 0, remoteInput() {}, remoteResize() {}, onEditorInput: () => () => {},
+	};
+	const commands: any[] = [];
+	const bridge = new ChromeChatBridge(extensionId, async (command: any) => { commands.push(command.message.type); });
+	bridge.setTerminals({
+		terminals: { find: (id: string) => id === 'term-1' ? target : undefined, shared: () => [{ id: 'term-1', name: 'zsh', cwd: '/a/b', status: 'running', remote: true }],
+			support: () => ({ available: true, limit: 8, agents: [] }), blocked: () => !setting },
+		setting: () => setting, askConsent: async () => { asked++; return true; }, audit() {},
+	});
+	const config = await bridge.start();
+	bridge.update(state());
+	let snapshot = JSON.parse((await get(config)).body);
+	assert.match(snapshot.view.terminalSupport.reason, /aiBrowser\.chat\.remoteTerminal/);
+	assert.equal(snapshot.view.controls.newTerminal.s, 'off');
+	assert.deepEqual(snapshot.view.terminals, []);
+	const json = { 'Content-Type': 'application/json' };
+	const refused = await get(config, json, 'POST', '/command', JSON.stringify({ id: 'cmd-00000001', chatId: 'chat-1', message: { type: 'newTerminal' } }));
+	assert.equal(refused.status, 409); assert.match(JSON.parse(refused.body).error, /Remote Terminal/);
+	assert.equal(asked, 0); assert.deepEqual(commands, []);
+
+	setting = true; bridge.update(state());
+	snapshot = JSON.parse((await get(config)).body);
+	assert.equal(snapshot.view.terminalSupport.available, true);
+	assert.deepEqual(snapshot.view.terminals.map((t: any) => [t.id, t.cwd]), [['term-1', 'b']]);
+	assert.equal(typeof snapshot.terminalEpoch, 'string');
+	const ok = await get(config, json, 'POST', '/command', JSON.stringify({ id: 'cmd-00000002', chatId: 'chat-1', message: { type: 'newTerminal' } }));
+	assert.equal(ok.status, 200); assert.equal(asked, 1); assert.deepEqual(commands, ['newTerminal']);
+
+	const attach = { type: 'terminal.attach', t: 'term-1', cols: 80, rows: 24, e: snapshot.terminalEpoch, v: 'viewer-123', n: 1 };
+	const posted = await get(config, json, 'POST', '/terminal', JSON.stringify({ frames: [attach] }));
+	assert.equal(posted.status, 200); assert.equal(asked, 1, 'consent is asked once per bridge');
+	const frames = JSON.parse((await get(config, {}, 'GET', '/terminal?after=0')).body);
+	assert.ok(frames.cursor > 0);
+	assert.ok(frames.frames.some((f: any) => f.type === 'terminal.replay' && f.data === 'hello' && f.v === 'viewer-123'));
+	// Nothing new: held for the wait, then an empty answer at the same cursor.
+	const held = JSON.parse((await get(config, { 'X-AI-Browser-Wait': '50' }, 'GET', `/terminal?after=${frames.cursor}`)).body);
+	assert.deepEqual(held, { cursor: frames.cursor, frames: [] });
+	bridge.close();
+});

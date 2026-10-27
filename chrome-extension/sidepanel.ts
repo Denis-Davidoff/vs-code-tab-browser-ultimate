@@ -1,5 +1,5 @@
 import { annotationPointContext } from '../src/browser/annotationData';
-import { showSentAttachment } from '../preview-src/sentAttachment';
+import { showSentAttachment, showAttachmentPreview } from '../preview-src/sentAttachment';
 import { chromeChatProtocolVersion, chromeChatProtocolHeader, chromeChatVersionHeader, chromeChatCompatibilityError, chromeChatCapabilities, chromeChatCapabilitiesHeader, negotiateChromeChatCapabilities, chromeChatFeatureError, chromeChatAttachmentFeature, chromeChatCommandFeature, chromeChatFooterCommands, chromeChatWaitHeader, chromeChatMaxWaitMs, chromeChatBaseHeader } from '../src/chat/chromeChatCompatibility';
 import { applyPatch, readPatch } from '../src/chat/core/sync';
 import { forwardedTypes } from '../src/chat/core/commands';
@@ -10,6 +10,9 @@ import { ChromeAnnotations, type AnnotationTab, type AnnotationPage, type Annota
 import { appendPickedElement, restorePickedElements, type ElementDraft } from './elementDrafts';
 import type { ElementPickerWorld, ChromeElementPick } from './elementPicker';
 import type { HostToView, ViewToHost } from '../src/chat/chatProtocol';
+import { createRemoteTerminalShim } from '../preview-src/remoteTerminal';
+import { createChromeTerminalLink, type ChromeTerminalLink } from '../preview-src/chromeTerminalLink';
+import { isTerminalReply, readAgentTerminalFrame, remoteInputFrameMax, splitTerminalData } from '../src/chat/remoteTerminalProtocol';
 import type { ChatDraftState } from '../preview-src/chatHost';
 
 function element<T extends HTMLElement>(id: string): T {
@@ -120,7 +123,8 @@ function chromePageText(href: string, title: string | undefined): string {
   return `The user is looking at this page in Google Chrome: ${href}\n${title || ''}\n`
     + 'To read or act on it use the ai-browser MCP tools (browser_tabs, browser_select_tab, browser_snapshot, browser_click, browser_navigate, …), '
     + 'whose names carry a client prefix such as mcp__ai-browser__. Call browser_tabs, pick this address among the Chrome tabs, and select it with browser_select_tab before acting; '
-    + 'open new pages with browser_navigate from that tab so they stay in Chrome.';
+    + 'open new pages with browser_navigate from that tab so they stay in Chrome.\n'
+    + 'For this page, use only the built-in ai-browser MCP as your browser; do not use other browser tools or launch a separate browser. If it is unavailable, report that instead of switching tools.';
 }
 const pageSuggestionId = 'chrome-active-page';
 function pageSuggestion(chatId: string): { id: string; kind: 'sharedPage'; label: string }[] {
@@ -128,6 +132,45 @@ function pageSuggestion(chatId: string): { id: string; kind: 'sharedPage'; label
   if (page?.id === undefined || !page.url || !/^https?:/.test(page.url)) { return []; }
   if (elementDrafts[chatId]?.attachments.some(item => item.kind === 'sharedPage' && item.tabId === page.id)) { return []; }
   return [{ id: pageSuggestionId, kind: 'sharedPage', label: (page.title || page.url).slice(0, 160) }];
+}
+/**
+ * Terminal tabs: the website's shim (`remoteTerminal.ts`) with the bridge as its
+ * transport (`chromeTerminalLink.ts`). The editor shares only terminals marked
+ * "Allow remote access" or opened from here, after the user agreed in VS Code.
+ */
+const terminalViewer = 'chrome-' + Array.from(crypto.getRandomValues(new Uint8Array(12)), b => b.toString(16).padStart(2, '0')).join('');
+let terminalLink: ChromeTerminalLink | undefined;
+let terminalEpoch: string | undefined;
+const terminals = createRemoteTerminalShim({
+  viewerId: terminalViewer, epoch: () => terminalEpoch, emit, notice: text => showFeedback(text),
+  send: frame => terminalLinkFor()?.send(frame) ?? false,
+  readClipboard: () => navigator.clipboard.readText(),
+  readAgentFrame: readAgentTerminalFrame, isTerminalReply, splitData: splitTerminalData, inputFrameMax: remoteInputFrameMax,
+});
+function terminalLinkFor(): ChromeTerminalLink | undefined {
+  const connection = active;
+  if (!connection) { return undefined; }
+  return terminalLink ??= createChromeTerminalLink({
+    post: async frames => {
+      const response = await fetch(`${connection.url}/terminal`, { method: 'POST', headers: bridgeHeaders(connection, true), body: JSON.stringify({ frames }), signal: AbortSignal.timeout(10_000) });
+      if (!response.ok) { const error = await response.json().catch(() => ({})) as { error?: string }; if (error.error) { showFeedback(error.error); } }
+      return response.ok;
+    },
+    get: async (after, signal) => {
+      const response = await fetch(`${connection.url}/terminal?after=${after}`, { headers: { ...bridgeHeaders(connection), [chromeChatWaitHeader]: String(chromeChatMaxWaitMs) },
+        cache: 'no-store', signal: AbortSignal.any([signal, AbortSignal.timeout(5_000 + chromeChatMaxWaitMs)]) });
+      if (!response.ok) { throw new Error('Terminal stream unavailable'); }
+      return await response.json() as { cursor: number; frames: unknown[] };
+    },
+    deliver: frame => { terminals.fromAgent(frame); },
+  });
+}
+function syncTerminalStream(snapshot: ChromeChatSnapshot): void {
+  const epoch = typeof snapshot.terminalEpoch === 'string' ? snapshot.terminalEpoch : undefined;
+  const ids = (snapshot.view.terminals ?? []).map(t => t.id);
+  if (epoch !== terminalEpoch) { terminalEpoch = epoch; if (epoch) { terminals.reconnected(); } }
+  if (ids.length && epoch) { terminalLinkFor()?.start(); }
+  terminals.syncTerminals(ids);
 }
 function render(): void {
   if (!latest?.view) { return; }
@@ -144,6 +187,7 @@ function render(): void {
     entries: feedback ? [...view.entries, { kind: 'notice', text: feedback }] : view.entries,
   } });
   replaySnapshots(view.snapshotEvents);
+  syncTerminalStream(latest);
 }
 /** The conversations of the editor panel; the one chosen stays put when the editor switches tabs. */
 function renderConversations(snapshot: ChromeChatSnapshot): void {
@@ -472,10 +516,14 @@ chrome.tabs.onUpdated.addListener((tabId, _change, tab) => {
 refreshActivePage();
 
 window.aiBrowserChatHost = {
+  terminalLease: terminals,
   getState: () => draftState,
   setState(state) { draftState = state; void chrome.storage.session.set({ draftState: state }); },
   postMessage(message: ViewToHost) {
     if (message.type === 'controlRecording') { controlChromeRecording(message.action); return; }
+    if (terminals.fromView(message)) { return; }
+    // The terminal in front is the panel's own choice; nothing to tell the editor.
+    if (message.type === 'selectTerminal') { return; }
     if (message.type === 'selectTab') {
       const tab = latest?.view.tabs.find(t => t.id === message.id);
       if (tab) { pinConversation(tab.chatId); }
@@ -514,18 +562,8 @@ window.aiBrowserChatHost = {
           draft!.attachments = draft!.attachments.filter(item => item.id !== message.id);
           render(); void persistOutbox().catch(() => showFeedback('Could not save the attachment draft.'));
         } else {
-          const dialog = document.createElement('dialog'); dialog.className = 'chrome-element-preview';
-          const titleId = `preview-title-${message.id}`; dialog.setAttribute('aria-labelledby', titleId);
-          const title = document.createElement('h2'); title.id = titleId; title.textContent = attachment.label;
-          const close = document.createElement('button'); close.type = 'button'; close.className = 'preview-close'; close.textContent = 'Close'; close.addEventListener('click', () => dialog.close());
-          const head = document.createElement('div'); head.className = 'preview-head'; head.append(title, close);
-          const text = document.createElement('pre'); text.textContent = attachment.text;
-          dialog.append(head, text);
-          if (attachment.file?.mime.startsWith('image/')) {
-            const image = document.createElement('img'); image.src = `data:${attachment.file.mime};base64,${attachment.file.base64}`;
-            image.alt = attachment.label; image.style.maxWidth = '100%'; dialog.append(image);
-          }
-          dialog.addEventListener('close', () => dialog.remove()); document.body.append(dialog); dialog.showModal();
+          showAttachmentPreview({ label: attachment.label, text: attachment.text,
+            image: attachment.file?.mime.startsWith('image/') ? `data:${attachment.file.mime};base64,${attachment.file.base64}` : undefined });
         }
         return;
       }
@@ -682,6 +720,7 @@ function returnOutboxToDrafts(): boolean {
 }
 
 function reset(): void {
+  terminalLink?.stop(); terminalLink = undefined; terminalEpoch = undefined;
   status.dataset.busy = 'false'; delete status.dataset.state;
   controlChromeRecording('stop');
   emit({ type: 'recordingStatus', seconds: 0 });
@@ -905,6 +944,7 @@ async function poll(connection: ChromeChatConnection, current: number): Promise<
       }
     }
     status.dataset.busy = 'false'; status.textContent = latest?.blocked ?? (latest?.running ? 'Working…' : 'Connected');
+    status.title = `${status.textContent} · Chrome ${chromeVersion} · VS Code ${latest?.editorVersion ?? 'unknown'}`;
     status.dataset.state = latest?.blocked ? 'error' : 'connected';
     await pollFooterEvents(connection, current);
     if (current !== generation) { return; }

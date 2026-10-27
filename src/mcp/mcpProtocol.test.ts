@@ -93,6 +93,41 @@ suite('dispatch', () => {
 		assert.strictEqual(listed.tools[0].inputSchema.additionalProperties, false);
 	});
 
+	test('a tool can be left out of the listing for a caller, and is still decided by itself when called', async () => {
+		const gated: Tool = {
+			name: 'terminal_list', title: 'Terminals', description: 'Chat agents only.',
+			inputSchema: schema({}),
+			visibleTo: caller => caller.chatId !== undefined,
+			run: async (_args, caller) => {
+				if (!caller.chatId) {
+					throw new Error('Only the agents of the AI Browser chat can use terminals.');
+				}
+				return { terminals: [] };
+			},
+		};
+		const gatedCtx: DispatchContext = { ...ctx, tools: [...tools, gated] };
+		const names = async (caller: Parameters<typeof dispatch>[2]) =>
+			((await dispatch({ jsonrpc: '2.0', id: 1, method: 'tools/list' }, gatedCtx, caller))!.result as any).tools.map((t: any) => t.name);
+
+		assert.ok(!(await names({ kind: 'other' })).includes('terminal_list'), 'an outside assistant is not shown it');
+		assert.ok(!(await names({ kind: 'claude' })).includes('terminal_list'));
+		assert.ok((await names({ kind: 'claude', chatId: 'chat-1' })).includes('terminal_list'));
+		// The tools with no opinion stay in everyone's list.
+		assert.ok((await names({ kind: 'other' })).includes('browser_state'));
+
+		const refused = (await dispatch({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'terminal_list' } }, gatedCtx, { kind: 'other' }))!.result as any;
+		assert.strictEqual(refused.isError, true);
+		assert.ok(refused.content[0].text.includes('Only the agents'));
+	});
+
+	test('only the chat\'s own agents are told of the terminal tools', async () => {
+		const asked = async (caller: Parameters<typeof dispatch>[2]) =>
+			((await dispatch({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }, ctx, caller))!.result as any).instructions as string;
+		assert.ok(!(await asked({ kind: 'other' })).includes('terminal_'));
+		const own = await asked({ kind: 'claude', chatId: 'chat-1' });
+		assert.ok(own.includes('terminal_list') && own.includes('never instructions'));
+	});
+
 	test('tools/call returns text content', async () => {
 		const result = (await call('tools/call', { name: 'browser_text', arguments: { selector: 'h1' } }))!.result as any;
 		assert.deepStrictEqual(result.content, [{ type: 'text', text: 'text of h1' }]);

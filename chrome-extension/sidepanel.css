@@ -47,6 +47,8 @@ header.chrome-shell { display: flex; align-items: center; gap: 10px; padding: 6p
 #status { color: var(--fg-3); flex: 1; }
 #status[data-state="error"] { color: var(--bad); }
 #disconnect { border: none; background: transparent; color: var(--fg-3); cursor: pointer; font: inherit; }
+#disconnect { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 28px; height: 28px; padding: 0; border-radius: var(--ctl-radius); }
+#disconnect:hover { background: var(--soft-2); color: var(--fg); }
 #pairing { padding: 24px 18px; overflow: auto; }
 #pairing h2 { font-size: 17px; font-weight: 600; }
 #extension-id { display: block; padding: 10px; margin: 12px 0; background: var(--surface); user-select: all; overflow-wrap: anywhere; }

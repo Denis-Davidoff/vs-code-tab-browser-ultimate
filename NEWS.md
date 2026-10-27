@@ -18,6 +18,7 @@ src/chat/news.ts — see "The AI Browser chat" in CLAUDE.md.
 
 Browse, debug and test your pages in VS Code's own browser — and let Claude Code, Codex or Gemini CLI see them, click through them and take screenshots, right inside the editor.
 
+- $(terminal) **Terminal tabs** — open a shell or Claude Code / Codex in a chat tab; pin it to a conversation and its agent reads it and, with your approval, types.
 - $(extensions) **Chrome extension** — a full 1:1 mirror of your chat, right in Chrome alongside any website. [Download ZIP](https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/raw/refs/heads/main/chrome-extension/ai-browser-chrome-0.6.0.zip) while Chrome Web Store approval is pending.
 - $(coffee) **Keep awake** — use the cup at the top to prevent sleep for a set time or until all agents and sub-agents finish.
 - $(eye) **View Mode** — choose Minimal, Compact or Standard in the approval menu to control how much work, tool use and thinking is shown.
@@ -26,6 +27,12 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 - $(device-camera-video) **Record video** — record browser tabs from their toolbar, up to 4K, into the chat or clipboard.
 - $(location) **Page markers** — pin notes to page elements and send them to the agent as one prompt.
 - $(settings-gear) **Chat Settings** — use the gear at the top to edit prompts for commit messages, branch names and chat titles, or clean up temporary files.
+
+## 0.10.0 — 2026-10-27
+- **Terminal tabs in the chat**: open a real shell, or Claude Code or Codex in their own CLI, as a tab beside your conversations — from the tab strip's **+**, **New Chat** or **AI Browser: New Terminal**. It uses your own default shell profile, copy and paste work as in a terminal, and links open in the browser. macOS and Windows; Linux is not supported yet.
+- **Agents that use your terminal**: **Ask agent** or **+ → Terminal…** pins a terminal to a conversation. Its agent can read the screen and wait for a command to finish; typing into the terminal asks you first, **Watch only** lets it read and never type, and **Pause agent input** stops it at once. Your own typing always comes first.
+- **Insert into a terminal**: the terminal toolbar's **+** puts a page address, an element, a screenshot, a file, the editor's selection or page markers into an agent CLI's prompt, without pressing Enter.
+- **Terminals on the website**: with **AI Browser › Chat: Remote Terminal** on and an encrypted connection, the Exchange website can watch terminals you mark **Allow website access** and, after **Take control**, type into them — with a key bar for phones. Off by default; your typing in VS Code takes control back.
 
 ## 0.9.0 — 2026-10-23
 - **Exchange server**: share a chat and a browser tab with a self-hosted website, and send messages, stop turns, pick elements, add markers and click through the page from any device. The connection is encrypted end to end and opened from VS Code, so nothing has to listen on your machine.

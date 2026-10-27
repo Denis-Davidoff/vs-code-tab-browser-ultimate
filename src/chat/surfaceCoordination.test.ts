@@ -5,6 +5,7 @@ import { runInNewContext } from 'node:vm';
 import { createSourceFile, isClassDeclaration, ScriptKind, ScriptTarget, transpileModule } from 'typescript';
 import { GitAccess } from './gitAccess.ts';
 import { readChatPanelIdentity } from './chatPanelState.ts';
+import { closesEmptyPanel } from './terminalLogic.ts';
 
 function method(file: string, name: string, context: Record<string, unknown> = {}): any {
 	const text = readFileSync(file, 'utf8');
@@ -109,13 +110,14 @@ test('pending panels own their conversations before any serializer is invoked', 
 test('moving an idle chat during queue debounce reschedules and sends in the already-ready destination', async () => {
 	const timers = new Map<number, () => void>();
 	let nextTimer = 0, sent = 0;
-	const context = { setTimeout: (fn: () => void) => { const id = ++nextTimer; timers.set(id, fn); return id; }, clearTimeout: (id: number) => timers.delete(id), tabLimit: () => 20 };
+	const context = { closesEmptyPanel, setTimeout: (fn: () => void) => { const id = ++nextTimer; timers.set(id, fn); return id; }, clearTimeout: (id: number) => timers.delete(id), tabLimit: () => 20 };
 	const tab = { id: 'queued', chat: { id: 'conversation' }, attachments: [], readyForQueued: true,
 		dequeue() { this.readyForQueued = false; return { text: 'queued message', attachments: [] }; }, moveTo(_host: unknown) {} };
 	const sibling = { id: 'other', chat: { id: 'other' } };
 	const services = {};
 	const surface = (tabs: any[]) => ({ _tabs: tabs, _active: tabs[0], _services: services, _view: {}, _registry: {}, _repoBusy: new Map(),
 		_gitCommits: new Map(), _draining: new Map(), _chatSkillTabs: new Map(), _annotationLinks: new Map(), _livePages: new Map(), _savedDrafts: new Map(),
+		_terminals: { clearFront() { return false; }, size: 0 }, _leaveTerminal() { return false; },
 		_post() {}, _saveTabs() {}, _state() { return {}; }, _postMessage() {}, _fail(error: Error) { throw error; },
 		_send: async (text: string) => { assert.equal(text, 'queued message'); sent++; } });
 	const from: any = surface([tab, sibling]), to: any = surface([sibling]);

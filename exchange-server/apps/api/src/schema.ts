@@ -4,6 +4,8 @@ import {
   timestamp,
   boolean,
   integer,
+  bigint,
+  index,
 } from "drizzle-orm/pg-core";
 const dates = () => ({
   createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -73,3 +75,55 @@ export const twoFactor = pgTable("two_factor", {
   failedVerificationCount: integer("failed_verification_count").default(0),
   lockedUntil: timestamp("locked_until"),
 });
+
+// Security history survives workspace/account deletion until retention expiry.
+export const auditEvent = pgTable(
+  "exchange_audit_event",
+  {
+    id: text("id").primaryKey(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    event: text("event").notNull(),
+    userId: text("user_id"),
+    authSessionId: text("auth_session_id"),
+    pointId: text("point_id"),
+    connectionId: text("connection_id"),
+    ip: text("ip"),
+    peerIp: text("peer_ip"),
+    userAgent: text("user_agent"),
+    outcome: text("outcome").notNull(),
+    reason: text("reason"),
+  },
+  (table) => [
+    index("audit_user_created_idx").on(table.userId, table.createdAt),
+    index("audit_ip_created_idx").on(table.ip, table.createdAt),
+  ],
+);
+export const securityConnection = pgTable(
+  "exchange_connection",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    authSessionId: text("auth_session_id"),
+    pointId: text("point_id").notNull(),
+    kind: text("kind").notNull(),
+    deviceId: text("device_id"),
+    viewerId: text("viewer_id"),
+    ip: text("ip"),
+    peerIp: text("peer_ip"),
+    userAgent: text("user_agent"),
+    startedAt: timestamp("started_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    endedAt: timestamp("ended_at", { withTimezone: true }),
+    durationMs: bigint("duration_ms", { mode: "number" }),
+    endReason: text("end_reason"),
+  },
+  (table) => [
+    index("connection_user_started_idx").on(table.userId, table.startedAt),
+  ],
+);

@@ -1,4 +1,5 @@
 "use client";
+import { exchangeViewerId } from '../../../../../../src/core/exchangeViewer';
 import { workspaceExchangeSocket } from "../../../../../../src/core/exchangeCrypto";
 import {
   useEffect,
@@ -437,7 +438,7 @@ export function RemoteBrowser({
       handshake = setTimeout(() => { if (ws === socket.current) ws.close(); }, 10000);
       ws.onopen = () => {
         if (ws !== socket.current || stopped) return;
-        ws.send(JSON.stringify({ type: "auth", version: 1, pointId }));
+        ws.send(JSON.stringify({ type: "auth", version: 1, pointId, viewerId: exchangeViewerId(pointId) }));
       };
       ws.onmessage = (event) => {
         if (ws !== socket.current || stopped) return;

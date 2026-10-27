@@ -1,5 +1,6 @@
+import { exchangeViewerId } from '../src/core/exchangeViewer';
 import {snapshotReplay} from './snapshotEvents';
-import { showSentAttachment } from './sentAttachment';
+import { showSentAttachment, showAttachmentPreview } from './sentAttachment';
 import {applyPatch,readPatch} from '../src/chat/core/sync';
 import { workspaceExchangeSocket } from '../src/core/exchangeCrypto';
 import type { ChatViewState, HostToView, ViewToHost } from '../src/chat/chatProtocol';
@@ -7,6 +8,8 @@ import type { ChatDraftState } from './chatHost';
 import type { ChromeElementAttachment } from '../src/chat/chromeChatProtocol';
 import { readExchangeUiCommand, type ExchangeUiMessage } from '../src/chat/exchangeUiProtocol';
 import { fileBase64 } from './clipboardFiles';
+import { createRemoteTerminalShim } from './remoteTerminal';
+import { isTerminalReply, readAgentTerminalFrame, remoteInputFrameMax, splitTerminalData } from '../src/chat/remoteTerminalProtocol';
 
 type Snapshot = {type:'chat.snapshot';uiVersion?:number;chatId:string;view?:ChatViewState;messages?:{role:string;text:string}[]};
 const app = document.getElementById('app')!;
@@ -32,6 +35,15 @@ function emit(message:HostToView):void {
   window.dispatchEvent(new MessageEvent('message',{data:message}));
 }
 function notice(text:string):void {feedback=text;render();}
+/** Terminal tabs: the renderer's terminal messages to and from `terminal.*` frames (see remoteTerminal.ts). */
+const terminals=createRemoteTerminalShim({
+  // The frame validator wants 8–64 of [A-Za-z0-9_-]; the relay's "legacy" fallback (no sessionStorage) is not one, so terminals get a page-lifetime id.
+  viewerId:/^[A-Za-z0-9_-]{8,64}$/.test(exchangeViewerId(pointId))?exchangeViewerId(pointId):'page-'+crypto.getRandomValues(new Uint32Array(2)).join('-'),epoch:()=>shownEpoch,emit,notice,
+  send:frame=>{if(!online||socket?.readyState!==WebSocket.OPEN)return false;socket.send(JSON.stringify(frame));return true;},
+  // No host clipboard on a website: the viewer's own (copy goes through `copy` below).
+  readClipboard:typeof navigator.clipboard?.readText==="function"&&window.isSecureContext?()=>navigator.clipboard.readText():undefined,
+  readAgentFrame:readAgentTerminalFrame,isTerminalReply,splitData:splitTerminalData,inputFrameMax:remoteInputFrameMax,
+});
 function connectionState(connected:boolean):void {
   window.parent.postMessage({type:'ai-browser-connection',connected,online},location.origin);
 }
@@ -67,6 +79,7 @@ function render():void {
     entries:feedback?[...view.entries,{kind:'notice',text:feedback}]:view.entries,
   }});
   replaySnapshots(view.snapshotEvents);
+  terminals.syncTerminals((view.terminals??[]).map(t=>t.id));
 }
 function result(id:string,ok:boolean,error?:string):void {
   const item=pending.get(id);if(!item)return;
@@ -133,10 +146,12 @@ function chooseFile():void {
   input.addEventListener('change',()=>{void(async()=>{for(const file of Array.from(input.files??[]))await addFile(file,chatId);})().catch(error=>notice(String(error)));});input.click();
 }
 window.aiBrowserChatHost={
+  terminalLease:terminals,
   getState:()=>draftState,
   setState(value){draftState=value;try{sessionStorage.setItem(storageKey,JSON.stringify(value));}catch{/* Keep drafts in memory if storage is full. */}},
   postMessage(message:ViewToHost){
     if(message.type==='ready'){rendererReady=true;render();for(const event of eventQueue.splice(0))emit(event);if(latest)send({type:'ready'});return;}
+    if(terminals.fromView(message))return;
     if(message.type==='saveDrafts'||message.type==='tabDraft'||message.type==='reportTheme')return;
     if(message.type==='selectTab'){const tab=latest?.view?.tabs.find(t=>t.id===message.id);if(tab)pinConversation(tab.chatId);return;}
     if(message.type==='copy'){void copy(message.text).catch(error=>notice(String(error)));return;}
@@ -152,7 +167,10 @@ window.aiBrowserChatHost={
     if(message.type==='acceptSuggestion'){if(message.id==='exchange-active-page')send({type:'attach',kind:'page'});return;}
     if(message.type==='removeAttachment'&&latest){attachments.set(latest.chatId,(attachments.get(latest.chatId)??[]).filter(a=>a.id!==message.id));send(message);render();return;}
     if(message.type==='openAttachment'&&message.entry!==undefined){showSentAttachment(latest?.view?.entries,message.entry,message.id);return;}
-    if(message.type==='openAttachment'&&message.entry===undefined&&latest){const item=(attachments.get(latest.chatId)??[]).find(a=>a.id===message.id);if(item){const dialog=document.createElement('dialog');const pre=document.createElement('pre');pre.textContent=item.text;const close=document.createElement('button');close.textContent='Close';close.onclick=()=>dialog.close();if(item.file&&/^image\/(png|jpeg|webp|gif)$/.test(item.file.mime)){const img=document.createElement('img');img.src=`data:${item.file.mime};base64,${item.file.base64}`;img.alt=item.label;img.style.maxWidth='100%';dialog.append(img);}dialog.append(pre,close);dialog.onclose=()=>dialog.remove();document.body.append(dialog);dialog.showModal();return;}}
+    if(message.type==='openAttachment'&&message.entry===undefined&&latest){
+      const item=(attachments.get(latest.chatId)??[]).find(a=>a.id===message.id);
+      if(item){showAttachmentPreview({label:item.label,text:item.text,image:item.file&&/^image\/(png|jpeg|webp|gif)$/.test(item.file.mime)?`data:${item.file.mime};base64,${item.file.base64}`:undefined});return;}
+    }
     send(message);
   },
 };
@@ -192,15 +210,16 @@ function connect():void {
   const base=new URL(location.href).searchParams.get('server')??`${location.protocol==='https:'?'wss:':'ws:'}//${location.host}`;
   const ws=socket=workspaceExchangeSocket(base+'/ws/browser',pointId);status.dataset.busy='true';status.textContent='Connecting…';
   handshake=setTimeout(()=>{if(ws===socket)ws.close();},10000);
-  ws.onopen=()=>{if(ws===socket&&!stopped)ws.send(JSON.stringify({type:'auth',version:1,pointId}));};
+  ws.onopen=()=>{if(ws===socket&&!stopped)ws.send(JSON.stringify({type:'auth',version:1,pointId,viewerId:exchangeViewerId(pointId)}));};
   ws.onmessage=event=>{
     if(ws!==socket)return;
     try{const value=JSON.parse(event.data);
+      if(terminals.fromAgent(value))return;
       if(value.type==='ready'){clearTimeout(handshake);connecting=false;authenticated=true;online=value.online;status.dataset.busy=String(!online||!latest);status.textContent=online?'Connected':'Workspace offline';connectionState(true);render();if(latest&&rendererReady)send({type:'ready'});}
       else if(value.type==='presence'){online=value.online;status.dataset.busy=String(!online||!latest);status.textContent=online?'Connected':'Workspace offline';connectionState(true);render();}
       else if(value.type==='chat.snapshot'){
         if(value.uiVersion!==1||!value.view){renderLegacy(value);return;}
-        clearTimeout(resyncTimer);resyncTimer=undefined;const first=!latest;latest=value;shownEpoch=typeof value.epoch==='string'?value.epoch:undefined;shownRev=typeof value.rev==='number'?value.rev:-1;feedback='';render();if(first&&rendererReady)send({type:'ready'});
+        clearTimeout(resyncTimer);resyncTimer=undefined;const first=!latest,epoch=shownEpoch;latest=value;shownEpoch=typeof value.epoch==='string'?value.epoch:undefined;if(shownEpoch!==epoch)terminals.reconnected();shownRev=typeof value.rev==='number'?value.rev:-1;feedback='';render();if(first&&rendererReady)send({type:'ready'});
       }else if(value.type==='chat.patch'){
         // A patch of the view on screen; one that does not fit asks for the whole snapshot.
         const patch=readPatch(value.patch);

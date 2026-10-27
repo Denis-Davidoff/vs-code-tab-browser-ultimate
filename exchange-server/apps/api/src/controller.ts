@@ -25,7 +25,11 @@ export class ApiController {
     @Inject(Relay) private readonly relay: Relay,
   ) {}
   @Get("health") health() {
-    return { status: "ok", protocolVersion: 1 };
+    return {
+      status: "ok",
+      protocolVersion: 1,
+      features: ["device-identity", "viewer-sessions"],
+    };
   }
   @Get("points") async list(@Req() req: Request) {
     const userId = await this.services.owner(req.headers);

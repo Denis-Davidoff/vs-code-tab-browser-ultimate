@@ -5,6 +5,12 @@ import type { NextConfig } from "next";
 if (existsSync("../../.env")) loadEnvFile("../../.env");
 const config: NextConfig = {
   turbopack: { root: fileURLToPath(new URL("../../../", import.meta.url)) },
+  async headers() {
+    return [{
+      source: "/remote-chat/:path*",
+      headers: [{ key: "Cache-Control", value: "no-cache, must-revalidate" }],
+    }];
+  },
   async rewrites() {
     return [
       {

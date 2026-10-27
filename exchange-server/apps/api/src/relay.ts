@@ -7,9 +7,11 @@ import { and, eq } from "drizzle-orm";
 import {
   agentMessageSchema,
   commandSchema,
-  PROTOCOL_VERSION, RELAY_FEATURES,
+  PROTOCOL_VERSION,
+  RELAY_FEATURES,
 } from "@exchange/protocol";
 import { Services } from "./services.js";
+import { requestIdentity } from "./security/audit.js";
 import { point } from "./schema.js";
 import { StreamRelay } from "./stream-relay.js";
 import { encryptionSchema, envelopeSchema } from "./encrypted-envelope.js";
@@ -47,7 +49,9 @@ export function clientAddress(request: IncomingMessage): string | undefined {
     return (Array.isArray(value) ? value[0] : value)?.split(",")[0]?.trim();
   };
   const found = proxied
-    ? header("cf-connecting-ip") ?? header("x-real-ip") ?? header("x-forwarded-for")
+    ? (header("cf-connecting-ip") ??
+      header("x-real-ip") ??
+      header("x-forwarded-for"))
     : peer;
   const clean = found?.replace(/^::ffff:/, "");
   return clean && /^[0-9a-fA-F.:]{2,45}$/.test(clean) ? clean : undefined;
@@ -135,11 +139,22 @@ export class Relay {
         ws.once("message", (raw) => {
           clearTimeout(timeout);
           void this.authenticate(ws, request, path, raw.toString()).catch(
-            (error) =>
-              // A database or session-store failure is transient: 1011 lets the client retry.
-              error instanceof Refused
-                ? refuse(ws, path, "Authentication failed")
-                : ws.close(1011, "Authentication unavailable"),
+            (error) => {
+              this.services.audit.background(
+                this.services.audit.record({
+                  ...requestIdentity(request),
+                  event: "connection.denied",
+                  outcome: error instanceof Refused ? "denied" : "error",
+                  reason: path === "/ws/agent" ? "agent_auth" : "viewer_auth",
+                }),
+              );
+              return (
+                // A database or session-store failure is transient: 1011 lets the client retry.
+                error instanceof Refused
+                  ? refuse(ws, path, "Authentication failed")
+                  : ws.close(1011, "Authentication unavailable")
+              );
+            },
           );
         });
       });
@@ -158,25 +173,53 @@ export class Relay {
       throw new Refused("Invalid handshake");
     }
     if (
+      !hello ||
+      typeof hello !== "object" ||
       hello.type !== "auth" ||
       hello.version !== PROTOCOL_VERSION ||
       typeof hello.pointId !== "string"
     )
       throw new Refused("Invalid handshake");
+    let authSessionId: string | undefined;
     let userId: string | undefined, keyHash: string | undefined;
     if (path === "/ws/agent") {
       if (typeof hello.key !== "string" || hello.key.length > 200)
         throw new Refused("Invalid key");
       keyHash = createHash("sha256").update(hello.key).digest("hex");
     } else
-      userId = await this.services.owner(request.headers).catch((error) => {
-        throw error instanceof UnauthorizedException
-          ? new Refused("Not signed in")
-          : error;
-      });
-    const permitted = () =>
-      this.services.db
-        .select({ id: point.id, encryption: point.encryption })
+      userId = await this.services
+        .identity(request.headers)
+        .then((identity) => {
+          authSessionId = identity.sessionId;
+          return identity.userId;
+        })
+        .catch((error) => {
+          throw error instanceof UnauthorizedException
+            ? new Refused("Not signed in")
+            : error;
+        });
+    const viewerId =
+      typeof hello.viewerId === "string" &&
+      /^[a-zA-Z0-9-]{1,100}$/.test(hello.viewerId)
+        ? hello.viewerId
+        : "legacy";
+    const permitted = async () => {
+      if (
+        userId &&
+        !(await this.services.plugins.viewer(
+          userId,
+          authSessionId!,
+          hello.pointId,
+          viewerId,
+        ))
+      )
+        return [];
+      return this.services.db
+        .select({
+          id: point.id,
+          userId: point.userId,
+          encryption: point.encryption,
+        })
         .from(point)
         .where(
           and(
@@ -184,8 +227,24 @@ export class Relay {
             userId ? eq(point.userId, userId) : eq(point.keyHash, keyHash!),
           ),
         );
+    };
     const [record] = await permitted();
     if (!record) throw new Refused("Unknown point");
+    const ownerId = record.userId;
+    const deviceId =
+      typeof hello.deviceId === "string" &&
+      /^[a-f0-9]{64}$/.test(hello.deviceId)
+        ? hello.deviceId
+        : `legacy:${hello.pointId}`;
+    if (path === "/ws/agent") {
+      try {
+        await this.services.plugins.agent(ownerId, deviceId, hello.pointId);
+      } catch (error) {
+        if (this.services.plugins.isDenied(error))
+          throw new Refused("Device quota or subscription unavailable");
+        throw error;
+      }
+    }
     let encryption = record.encryption ?? null;
     if (path === "/ws/agent") {
       if (hello.encryption === undefined && encryption)
@@ -207,6 +266,33 @@ export class Relay {
       throw new Refused("Unlock workspace first");
     if (ws.readyState !== WebSocket.OPEN) return;
     const id = hello.pointId as string;
+    await this.services.audit.track(ws, request, {
+      userId: ownerId,
+      pointId: id,
+      authSessionId,
+      kind: path === "/ws/agent" ? "agent" : "chat",
+      viewerId: userId ? viewerId : undefined,
+      deviceId: path === "/ws/agent" ? deviceId : undefined,
+    });
+    if (ws.readyState !== WebSocket.OPEN) return;
+    if (
+      userId &&
+      (await this.services.identity(request.headers)).sessionId !==
+        authSessionId
+    )
+      throw new Refused("Session revoked");
+    if (
+      userId &&
+      !(await this.services.plugins.viewer(
+        userId,
+        authSessionId!,
+        id,
+        viewerId,
+      ))
+    ) {
+      ws.close(1008, "Viewer disconnected");
+      return;
+    }
     if (path === "/ws/agent") {
       this.agents.get(id)?.close(AGENT_REFUSED, "Connection replaced");
       this.snapshots.delete(id);
@@ -214,7 +300,11 @@ export class Relay {
       const address = clientAddress(request);
       if (address) this.agentAddresses.set(id, address);
       else this.agentAddresses.delete(id);
-      if (Array.isArray(hello.features) && hello.features.includes("chat-viewers")) this.viewerPresence.add(ws);
+      if (
+        Array.isArray(hello.features) &&
+        hello.features.includes("chat-viewers")
+      )
+        this.viewerPresence.add(ws);
       this.broadcast(id, { type: "presence", online: true });
     } else {
       const viewers = this.viewers.get(id) ?? new Set<WebSocket>();
@@ -225,6 +315,15 @@ export class Relay {
       this.sessions.set(ws, async () => {
         try {
           await this.services.owner(request.headers);
+          if (
+            !(await this.services.plugins.viewer(
+              userId!,
+              authSessionId!,
+              id,
+              viewerId,
+            ))
+          )
+            ws.close(1008, "Viewer disconnected");
         } catch {
           ws.close(1008, "Session expired");
         }
@@ -283,7 +382,10 @@ export class Relay {
             if (event.type === "chat.snapshot") {
               this.snapshots.set(id, event);
               this.broadcast(id, event);
-            } else if (event.type === "chat.event" || event.type === "chat.patch") {
+            } else if (
+              event.type === "chat.event" ||
+              event.type === "chat.patch"
+            ) {
               // A patch applies on top of the snapshot cached above; it is never cached itself.
               this.broadcast(id, event);
             } else {
@@ -359,8 +461,7 @@ export class Relay {
       const viewers = this.viewers.get(id);
       viewers?.delete(ws);
       if (viewers?.size === 0) this.viewers.delete(id);
-      if (path === "/ws/browser")
-        this.notifyChatViewers(id);
+      if (path === "/ws/browser") this.notifyChatViewers(id);
       for (const [commandId, item] of this.pending)
         if (item.viewer === ws) {
           clearTimeout(item.timer);
@@ -374,7 +475,9 @@ export class Relay {
   private notifyChatViewers(id: string) {
     const agent = this.agents.get(id);
     if (!agent || !this.viewerPresence.has(agent)) return;
-    const count = [...(this.viewers.get(id) ?? [])].filter(viewer => viewer.readyState === WebSocket.OPEN).length;
+    const count = [...(this.viewers.get(id) ?? [])].filter(
+      (viewer) => viewer.readyState === WebSocket.OPEN,
+    ).length;
     send(agent, { type: "chat.viewers", count });
   }
   disconnectPoint(id: string) {

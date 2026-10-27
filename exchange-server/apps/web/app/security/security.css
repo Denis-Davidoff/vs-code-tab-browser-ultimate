@@ -1,0 +1,42 @@
+.security-page .card {
+  margin-block: 20px;
+  padding: 24px;
+}
+.security-page h2 {
+  margin-block: 0 12px;
+}
+.security-page p {
+  line-height: 1.6;
+}
+.security-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  align-items: center;
+}
+.security-table {
+  overflow-x: auto;
+  margin-top: 16px;
+}
+.security-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.security-table th,
+.security-table td {
+  text-align: left;
+  padding: 12px;
+  vertical-align: top;
+  border-bottom: 1px solid var(--border, #8884);
+}
+.security-table td {
+  min-width: 110px;
+  max-width: 300px;
+  overflow-wrap: anywhere;
+}
+.security-table small {
+  display: block;
+  margin-top: 5px;
+  opacity: 0.65;
+}

@@ -7,6 +7,28 @@ import type { AddressInfo } from 'node:net';
 import type { ChatStateSurface } from './chatSurface';
 import type { ChatViewState, HostToView } from './chatProtocol';
 import { chromeChatSnapshot, readChromeChatCommand, type ChromeChatCommand, type ChromeChatConnection } from './chromeChatProtocol';
+import type { TerminalSupport, TerminalTabSummary } from './chatProtocol';
+import { RemoteTerminalHub, isTerminalFrame, type AgentTerminalFrame, type RemoteTerminalTarget } from './remoteTerminalProtocol';
+import { remoteTerminalView, terminalLifecycleTypes } from './remoteTerminalView';
+
+/**
+ * The editor's terminals as the Chrome bridge reaches them: the same port the
+ * Exchange website uses, plus the setting, the consent modal and the audit log.
+ * Absent (an older wiring, a test): Chrome is offered no terminals.
+ */
+export interface ChromeTerminalPort {
+	readonly terminals: { find(id: string): RemoteTerminalTarget | undefined; shared(): readonly TerminalTabSummary[]; support(): TerminalSupport; blocked(): boolean };
+	setting(): boolean;
+	/** The modal in VS Code; asked once per bridge (connection). */
+	askConsent(): Promise<boolean>;
+	audit(line: string): void;
+}
+
+/** Agent frames kept for the panel's long-poll: the hub's flow control bounds data, this bounds everything. */
+const terminalFramesKept = 2048;
+const terminalFramesBytes = 4_000_000;
+/** Viewer frames in one POST. */
+const terminalFramesPerPost = 64;
 
 /** Delivery state belongs to an approved session, not its replaceable HTTP bridge. */
 export class ChromeChatDelivery {
@@ -48,6 +70,16 @@ export class ChromeChatBridge implements ChatStateSurface {
 	private readonly _epoch = randomBytes(8).toString('hex');
 	/** The last few published snapshots, as copies, for patches against them. */
 	private readonly _published = new Map<number, Record<string, unknown>>();
+	/** Terminal tabs in Chrome: see `ChromeTerminalPort`. */
+	private _terminalPort?: ChromeTerminalPort;
+	private _terminalConsent: 'unasked' | 'asking' | 'yes' | 'no' = 'unasked';
+	private _consentAsk?: Promise<boolean>;
+	private _hub?: RemoteTerminalHub;
+	private _terminalSequence = 0;
+	private _terminalFrames: { id: number; frame: AgentTerminalFrame; bytes: number }[] = [];
+	private _terminalBytes = 0;
+	private readonly _terminalWaiters = new Set<() => void>();
+	private _lastState?: ChatViewState;
 
 	/** Snapshot polling is the panel heartbeat, including unchanged (304) snapshots. */
 	private _touchPresence(): void {
@@ -55,6 +87,8 @@ export class ChromeChatBridge implements ChatStateSurface {
 		this._presenceTimer = setTimeout(() => {
 			this._presenceTimer = undefined;
 			this._active = false;
+			// No panel is polling: nobody is watching, and nobody may hold a lease.
+			this._hub?.dropAll();
 			this._refresh?.();
 		}, 10_000);
 		this._presenceTimer.unref?.();
@@ -97,12 +131,64 @@ export class ChromeChatBridge implements ChatStateSurface {
 		this._refresh?.();
 	}
 
+	/** Gives Chrome the editor's shared terminals (`ChromeTerminalPort`). */
+	setTerminals(port: ChromeTerminalPort): void { this._terminalPort = port; if (this._lastState) { this.update(this._lastState); } }
+
+	private _terminalsAllowed(): boolean {
+		const port = this._terminalPort;
+		return !!port && !this._closed && port.setting() && this._terminalConsent === 'yes' && !port.terminals.blocked();
+	}
+	/** Asks once per bridge; `false` with no port, the setting off, or a refusal. */
+	private async _terminalConsentFor(): Promise<boolean> {
+		const port = this._terminalPort;
+		if (!port || !port.setting() || this._closed) { return false; }
+		if (this._terminalConsent === 'yes') { return true; }
+		if (this._terminalConsent === 'no') { return false; }
+		if (!this._consentAsk) {
+			this._terminalConsent = 'asking';
+			this._consentAsk = port.askConsent().then(yes => yes && !this._closed, () => false).then(yes => {
+				this._terminalConsent = yes ? 'yes' : 'no';
+				port.audit(`consent ${this._terminalConsent} chrome=${this._extensionId}`);
+				if (this._lastState) { this.update(this._lastState); }
+				return yes;
+			});
+		}
+		return this._consentAsk;
+	}
+	private _terminalHub(): RemoteTerminalHub {
+		const port = this._terminalPort!;
+		return this._hub ??= new RemoteTerminalHub({
+			allowed: () => this._terminalsAllowed(),
+			epoch: () => this._epoch,
+			find: id => port.terminals.find(id),
+			send: frame => this._pushTerminalFrame(frame),
+			audit: event => port.audit(`chrome ${event.kind} viewer=${event.v} terminal=${event.t}${event.detail ? ' ' + event.detail : ''}`),
+		});
+	}
+	private _pushTerminalFrame(frame: AgentTerminalFrame): void {
+		if (this._closed) { return; }
+		const bytes = Buffer.byteLength(JSON.stringify(frame));
+		this._terminalFrames.push({ id: ++this._terminalSequence, frame, bytes });
+		this._terminalBytes += bytes;
+		while (this._terminalFrames.length > terminalFramesKept || this._terminalBytes > terminalFramesBytes) { this._terminalBytes -= this._terminalFrames.shift()!.bytes; }
+		for (const wake of [...this._terminalWaiters]) { wake(); }
+	}
+
 	update(state: ChatViewState): void {
 		if (this._closed) { return; }
+		this._lastState = state;
 		this._chats = new Set([state.chatId, ...state.tabs.map(tab => tab.chatId)]);
 		// A pinned conversation closed in the editor: follow what the editor shows instead.
 		this._chatId = state.chatId;
-		const body = JSON.stringify({ ...chromeChatSnapshot(state, this._editorVersion), deliverySession: this._delivery.id, canSend: !!this._command, agentChrome: this._driven });
+		const snapshot = chromeChatSnapshot(state, this._editorVersion);
+		const port = this._terminalPort;
+		if (port) {
+			const { controls, ...terminals } = remoteTerminalView({ surface: 'chrome', encrypted: true, setting: port.setting(), consent: this._terminalConsent, blocked: port.terminals.blocked() },
+				() => port.terminals.shared(), () => port.terminals.support());
+			Object.assign(snapshot.view, terminals, { controls: { ...snapshot.view.controls, ...controls } });
+			this._hub?.sync();
+		}
+		const body = JSON.stringify({ ...snapshot, deliverySession: this._delivery.id, canSend: !!this._command, agentChrome: this._driven, ...(port ? { terminalEpoch: this._epoch } : {}) });
 		if (body !== this._body) {
 			this._body = body; this._revision++;
 			// A copy, not the live state: what was published must not move under a later diff.
@@ -125,8 +211,10 @@ export class ChromeChatBridge implements ChatStateSurface {
 		}
 		const eventMatch = /^\/events\?after=([0-9]{1,15})$/.exec(request.url ?? '');
 		const annotationRoute = request.url === '/annotations';
-		const commandRoute = request.url === '/command' || annotationRoute;
-		if (!commandRoute && !eventMatch && request.url !== '/snapshot') { response.writeHead(404).end(); return; }
+		const terminalPost = request.url === '/terminal';
+		const terminalMatch = /^\/terminal\?after=([0-9]{1,15})$/.exec(request.url ?? '');
+		const commandRoute = request.url === '/command' || annotationRoute || terminalPost;
+		if (!commandRoute && !eventMatch && !terminalMatch && request.url !== '/snapshot') { response.writeHead(404).end(); return; }
 		if (request.method === 'OPTIONS') {
 			if (origin !== this._origin || request.headers['access-control-request-method'] !== (commandRoute ? 'POST' : 'GET')) {
 				response.writeHead(403).end(); return;
@@ -163,6 +251,8 @@ export class ChromeChatBridge implements ChatStateSurface {
 		}
 
 		if (annotationRoute && request.method === 'POST') { void this._syncAnnotations(request, response); return; }
+		if (terminalPost && request.method === 'POST') { void this._receiveTerminalFrames(request, response); return; }
+		if (terminalMatch && request.method === 'GET') { this._sendTerminalFrames(request, response, Number(terminalMatch[1])); return; }
 
 		if (commandRoute && request.method === 'POST') {
 			void this._receiveCommand(request, response); return;
@@ -254,6 +344,11 @@ export class ChromeChatBridge implements ChatStateSurface {
 		}
 		const command = readChromeChatCommand(raw);
 		if (!command) { reply(400, 'This action is not supported in Chrome yet.'); return; }
+		if ((terminalLifecycleTypes as readonly string[]).includes(command.message.type)) {
+			// Consent before anything reaches the terminals; the host checks the setting and the share again.
+			if (!(await this._terminalConsentFor())) { reply(409, this._terminalPort?.setting() === false ? 'Terminals are off for Chrome: in VS Code, turn on the setting “AI Browser › Chat: Remote Terminal” (aiBrowser.chat.remoteTerminal).' : 'Terminal access was not allowed in VS Code for this connection.'); return; }
+			this._terminalPort?.audit(`chrome ${command.message.type}`);
+		}
 		const features = negotiateChromeChatCapabilities(request.headers[chromeChatCapabilitiesHeader.toLowerCase()], Number(request.headers[chromeChatProtocolHeader.toLowerCase()]));
 		const feature = chromeChatCommandFeature(command.message);
 		if (!features[feature]) { reply(409, chromeChatFeatureError(feature)); return; }
@@ -290,6 +385,48 @@ export class ChromeChatBridge implements ChatStateSurface {
 		reply(result.status, result.error);
 	}
 
+	/** `POST /terminal`: `{ frames: [...] }` from the panel's shim, each checked by the hub. */
+	private async _receiveTerminalFrames(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+		response.setHeader('Content-Type', 'application/json; charset=utf-8');
+		let frames: unknown[];
+		try {
+			const chunks: Buffer[] = []; let size = 0;
+			for await (const chunk of request) {
+				size += (chunk as Buffer).length;
+				if (size > 1_000_000) { throw new Error('Too large.'); }
+				chunks.push(chunk as Buffer);
+			}
+			const value = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { frames?: unknown };
+			if (!Array.isArray(value?.frames) || value.frames.length > terminalFramesPerPost) { throw new Error('Invalid frames.'); }
+			frames = value.frames;
+		} catch { if (!response.destroyed) { response.writeHead(400).end(JSON.stringify({ error: 'Invalid terminal frames.' })); } return; }
+		if (!this._terminalPort || this._closed) { response.writeHead(409).end(JSON.stringify({ error: 'Terminals are not available in this editor.' })); return; }
+		for (const frame of frames) {
+			if (!isTerminalFrame(frame)) { continue; }
+			if ((frame as { type: string }).type === 'terminal.attach' && this._terminalConsent === 'unasked') { await this._terminalConsentFor(); }
+			if (this._terminalsAllowed()) { this._terminalHub().receive(frame); } else { this._hub?.dropAll(); }
+		}
+		if (!response.destroyed) { response.writeHead(200).end(JSON.stringify({ ok: this._terminalsAllowed() })); }
+	}
+
+	/** `GET /terminal?after=N`: agent frames after the panel's cursor, held up to the wait header while there are none. */
+	private _sendTerminalFrames(request: http.IncomingMessage, response: http.ServerResponse, after: number): void {
+		response.setHeader('Content-Type', 'application/json; charset=utf-8');
+		const wait = Math.min(chromeChatMaxWaitMs, Math.max(0, Number(request.headers[chromeChatWaitHeader.toLowerCase()]) || 0));
+		const answer = () => {
+			if (response.destroyed || response.writableEnded) { return; }
+			// A cursor ahead of this bridge (a panel from before a reconnect) starts again from what is kept.
+			const from = after > this._terminalSequence ? 0 : after;
+			response.writeHead(200).end(JSON.stringify({ cursor: this._terminalSequence, frames: this._terminalFrames.filter(f => f.id > from).map(f => f.frame) }));
+		};
+		if (!wait || this._closed || this._terminalSequence !== after) { answer(); return; }
+		const done = () => { clearTimeout(timer); this._terminalWaiters.delete(wake); response.off('close', done); };
+		const wake = () => { done(); answer(); };
+		const timer = setTimeout(wake, wait);
+		this._terminalWaiters.add(wake);
+		response.on('close', done);
+	}
+
 	private _publishEvent(event: { chatId: string; message?: HostToView; error?: string }): void {
 		this._delivery.events.push({ ...event, id: ++this._delivery.sequence });
 		this._wake();
@@ -317,6 +454,8 @@ export class ChromeChatBridge implements ChatStateSurface {
 		if (this._presenceTimer) { clearTimeout(this._presenceTimer); this._presenceTimer = undefined; }
 		this._active = false;
 		this._releaseAnnotations?.();
+		this._hub?.dispose(); this._hub = undefined;
+		for (const wake of [...this._terminalWaiters]) { wake(); }
 		this._body = undefined;
 		this._wake();
 		this._server.close();

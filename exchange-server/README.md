@@ -2,6 +2,24 @@
 
 A separate application that connects a website to the AI Browser chat in VS Code over an outgoing WebSocket. Next.js serves the dashboard and the workspace screen; NestJS handles authentication, PostgreSQL and command routing. The extension opens no inbound ports.
 
+## License
+
+[Elastic License 2.0](LICENSE) (ELv2). You may run and modify the server for
+personal use or internal company use for free. Offering its substantial
+functionality to third parties as a hosted or managed service is prohibited
+without separate permission, whether access is paid or free, including for
+modified versions. Source redistribution remains permitted under ELv2.
+See [LICENSING.md](LICENSING.md) for scope, third-party exceptions and existing
+MIT grants.
+
+## Security and modules
+
+The public base includes a persistent [security journal and connection history](PLUGINS.md),
+accessible through **Account → Access activity**. Optional local modules add viewer/session
+management and commercial quotas without payments. The public base has no tariff limits.
+See [PLUGINS.md](PLUGINS.md) for migrations, trusted proxy setup, retention, module activation
+and verification of the base and full configurations.
+
 ## What is built
 
 - Sign-up and sign-in with email and password through Better Auth; Google OAuth once credentials are configured.

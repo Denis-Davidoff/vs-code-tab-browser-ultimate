@@ -1,4 +1,5 @@
 "use client";
+import { exchangeViewerId } from "../../../../../src/core/exchangeViewer";
 import { Form, Input } from "./form";
 import { useEffect, useState, type ReactNode } from "react";
 import {
@@ -15,6 +16,7 @@ export function WorkspaceGate({
   children: ReactNode;
 }) {
   const [descriptor, setDescriptor] = useState<ExchangeEncryption | null>(null),
+    [paused, setPaused] = useState(false),
     [loaded, setLoaded] = useState(false),
     [unlocked, setUnlocked] = useState(false),
     [busy, setBusy] = useState(false),
@@ -39,7 +41,26 @@ export function WorkspaceGate({
           );
         return response.json();
       })
-      .then((data) => {
+      .then(async (data) => {
+        const capabilities = await fetch("/api/security/capabilities", {
+          cache: "no-store",
+        });
+        if (!capabilities.ok)
+          throw new Error("Could not verify workspace access.");
+        if ((await capabilities.json()).plugins.includes("sessions")) {
+          const access = await fetch(
+            `/api/plugins/viewers/access/${encodeURIComponent(pointId)}?viewerId=${encodeURIComponent(exchangeViewerId(pointId))}`,
+            { cache: "no-store" },
+          );
+          if (!access.ok) throw new Error("Could not verify viewer access.");
+          if ((await access.json()).blocked) {
+            if (!cancelled) {
+              setPaused(true);
+              setLoaded(true);
+            }
+            return;
+          }
+        }
         if (cancelled) return;
         setDescriptor(data.encryption);
         setLoaded(true);
@@ -65,13 +86,51 @@ export function WorkspaceGate({
       </header>
       <section className="card workspace-unlock">
         <Icon name="shield" size={28} />
-        <h1>{loaded ? "Unlock workspace" : "Opening workspace…"}</h1>
+        <h1>
+          {paused
+            ? "Viewer disconnected"
+            : loaded
+              ? "Unlock workspace"
+              : "Opening workspace…"}
+        </h1>
         <p>
-          {loaded
-            ? "Enter the workspace password set in VS Code. It stays in this browser tab."
-            : ""}
+          {paused
+            ? "This viewer was disconnected. Reconnect explicitly to open this workspace again."
+            : loaded
+              ? "Enter the workspace password set in VS Code. It stays in this browser tab."
+              : ""}
         </p>
-        {error && !loaded && (
+        {paused && (
+          <button
+            className="primary"
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true);
+              setError("");
+              try {
+                const response = await fetch(
+                  `/api/plugins/viewers/access/${encodeURIComponent(pointId)}/resume`,
+                  {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify({
+                      viewerId: exchangeViewerId(pointId),
+                    }),
+                  },
+                );
+                if (!response.ok)
+                  throw new Error("Could not reconnect. Please sign in again.");
+                window.location.reload();
+              } catch (e) {
+                setError((e as Error).message);
+                setBusy(false);
+              }
+            }}
+          >
+            Reconnect to workspace
+          </button>
+        )}
+        {error && (!loaded || paused) && (
           <p className="error" role="alert">
             {error}
           </p>

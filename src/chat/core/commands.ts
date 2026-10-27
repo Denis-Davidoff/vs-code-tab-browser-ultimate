@@ -44,11 +44,28 @@ const editor = (reason = editorOnly): CommandSpec => chat({ no: chromeEditor }, 
 /** Physically impossible away from the editor's machine (its microphone, its screen): hidden, not disabled. */
 const machine = (reason: string): CommandSpec => chat({ no: reason, hide: true }, { no: reason, hide: true });
 
+const terminal = machine('Terminals run only in VS Code, on the editor\u2019s own machine.');
+const terminalStream = 'Terminal output and keys use the terminal stream.';
+const terminalLifecycle: CommandSpec = chat('host', 'host');
+const terminalLocal = (reason: string): CommandSpec => chat({ local: reason }, { local: reason });
+
 export const COMMANDS = {
 	// Pairing and the window's own plumbing: never from a remote surface.
 	connectExchange: editor(internal), disconnectExchange: editor(internal), answerChromeConnection: editor(internal),
 	reportTheme: chat('local', 'local'), copy: local, saveDrafts: local, tabDraft: local,
 	ready: chat('local', 'host'),
+
+	// Terminal tabs: a shell on the editor's machine. Chrome and the website reach the ones the editor
+	// shares (`aiBrowser.chat.remoteTerminal`; the website on encrypted connections only): lifecycle as
+	// commands, gated again by the host (consent, setting); output, keys and acks as `terminal.*` frames
+	// (`remoteTerminalProtocol.ts`, Chrome's over the bridge's `/terminal` routes), never here.
+	newTerminal: terminalLifecycle, closeTerminal: terminalLifecycle, renameTerminal: terminalLifecycle, restartTerminal: terminalLifecycle,
+	selectTerminal: terminalLocal('Handled in the browser.'),
+	terminalAttach: terminalLocal(terminalStream), terminalInput: terminalLocal(terminalStream), terminalResize: terminalLocal(terminalStream), terminalAck: terminalLocal(terminalStream),
+	// The editor's clipboard and its front conversation are never the website's.
+	terminalPasteRequest: terminalLocal('Handled in the browser.'), terminalToChat: terminal,
+	pinTerminal: terminal, terminalAskAgent: terminal, setTerminalAgentControl: terminal,
+	setTerminalRemote: editor('Remote access to a terminal is granted only in VS Code.'), terminalInsert: terminal,
 
 	// The conversation.
 	send: chat('host', 'host'), stop: chat('host', 'host'), select: chat('host', 'host'), switchAgent: chat('host', 'host'),

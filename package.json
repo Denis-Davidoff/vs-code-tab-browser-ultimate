@@ -153,6 +153,7 @@
 		"onCommand:aiBrowser.copyAnnotationPrompt",
 		"onView:aiBrowser.chat",
 		"onCommand:aiBrowser.chat.newChat",
+		"onCommand:aiBrowser.chat.newTerminal",
 		"onCommand:aiBrowser.chat.connectChrome",
 		"onCommand:aiBrowser.chat.connectExchange",
 		"onCommand:aiBrowser.chat.disconnectExchange",
@@ -701,6 +702,12 @@
 				"icon": "$(add)"
 			},
 			{
+				"command": "aiBrowser.chat.newTerminal",
+				"title": "%command.chat.newTerminal.title%",
+				"category": "%displayName%",
+				"icon": "$(terminal)"
+			},
+			{
 				"command": "aiBrowser.chat.connectChrome",
 				"title": "Connect Chrome Chat (Preview)",
 				"category": "%displayName%"
@@ -960,6 +967,22 @@
 						"maximum": 30,
 						"title": "Chat Tabs",
 						"markdownDescription": "%configuration.chat.tabLimit.description%"
+					},
+					"aiBrowser.chat.terminalLimit": {
+						"type": "integer",
+						"default": 8,
+						"minimum": 1,
+						"maximum": 20,
+						"scope": "application",
+						"title": "Terminal Tabs",
+						"markdownDescription": "%configuration.chat.terminalLimit.description%"
+					},
+					"aiBrowser.chat.remoteTerminal": {
+						"type": "boolean",
+						"default": false,
+						"scope": "application",
+						"title": "Terminal Tabs on the Website",
+						"markdownDescription": "%configuration.chat.remoteTerminal.description%"
 					},
 					"aiBrowser.chat.claudePath": {
 						"type": "string",
@@ -1409,6 +1432,10 @@
 					"when": "!aiBrowser.chatUnsupported"
 				},
 				{
+					"command": "aiBrowser.chat.newTerminal",
+					"when": "!aiBrowser.chatUnsupported && !aiBrowser.chatBlocked"
+				},
+				{
 					"command": "aiBrowser.chat.history",
 					"when": "!aiBrowser.chatUnsupported"
 				},
@@ -1833,7 +1860,7 @@
 	"scripts": {
 		"compile": "npm run build-ext && npm run build-webview",
 		"watch": "run-p -l watch-ext watch-webview watch-typecheck-webview",
-		"build-ext": "npm run clean-ext && tsc --project ./tsconfig.json",
+		"build-ext": "npm run clean-ext && tsc --project ./tsconfig.json && node scripts/stage-terminal.mjs",
 		"build-webview": "node ./esbuild.webview.mts",
 		"build-chrome": "node ./scripts/build-chrome.mjs",
 		"typecheck-chrome": "tsc --project ./chrome-extension/tsconfig.json --noEmit",
@@ -1860,13 +1887,18 @@
 		"@vscode/codicons": "^0.0.36",
 		"@vscode/dts": "^0.4.1",
 		"@vscode/vsce": "^3.9.2",
+		"@xterm/addon-fit": "^0.11.0",
+		"@xterm/headless": "6.0.0",
+		"@xterm/xterm": "^6.0.0",
 		"esbuild": "^0.28.2",
+		"node-pty": "^1.1.0",
 		"npm-run-all2": "^9.0.3",
 		"ovsx": "^1.1.1",
 		"typescript": "^5.9.3",
 		"yazl": "2.5.1"
 	},
 	"allowScripts": {
-		"esbuild@0.28.2": true
+		"esbuild@0.28.2": true,
+		"node-pty@1.1.0": true
 	}
 }

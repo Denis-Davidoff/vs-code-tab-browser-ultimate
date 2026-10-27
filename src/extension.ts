@@ -722,6 +722,13 @@ export function activate(context: vscode.ExtensionContext) {
 			if (where !== 'tab' && where !== 'window') { await revealChat(); }
 			await chat.newChat(where);
 		}),
+		// A shell in a tab of the chat view, in the folder of the conversation in
+		// front. The view is revealed first, so the tab shows where the user looks.
+		// `agent` starts that agent's own CLI instead; anything else is a shell.
+		vscode.commands.registerCommand('aiBrowser.chat.newTerminal', async (agent?: unknown) => {
+			await revealChat();
+			await chat.newTerminal(agent === 'claude' || agent === 'codex' ? agent : undefined);
+		}),
 		vscode.commands.registerCommand('aiBrowser.chat.settings', async () => {
 			await revealChat();
 			chat.showSettings();

@@ -12,6 +12,9 @@ import { chatTitle, toolOutputLimit, validAnswers, type AgentEvent } from './age
 import { agentNames, type AgentBackend, type AgentSession, type TurnImage, type TurnInput } from './agents';
 import type { AgentId, RepoCopy, RepoReference, ApprovalEntry, ApprovalMode, AttachmentChip, PendingSend, ChatEntry, ChatStats, ChatTabStatus, ToolEntry, UsageWindow } from './chatProtocol';
 import { generateUuid } from '../core/uuid';
+import { plainInPrompt } from '../core/notifyText';
+import { pinAnnouncement, pinSignature, type PinInfo } from './terminalPins';
+import type { TerminalApproval } from './agentProtocol';
 import { stepGate, withNextDecision } from './toolbarText';
 import type { TurnWeight } from './usageAlert';
 
@@ -114,6 +117,19 @@ export interface TabHost {
 	 * running in the background from it stop with it, as its agents do.
 	 */
 	released(chatId: string): void;
+	/**
+	 * The terminals pinned to `tab`, live: what its agent is told about and may drive through the
+	 * `terminal_*` tools. Absent where terminals do not exist (tests, a surface with none).
+	 */
+	pinnedTerminals?(tab: ChatTab): readonly PinInfo[];
+	/** The tab let go of its pins: a chat from the history took the conversation's place. */
+	dropPins?(tab: ChatTab): void;
+	/**
+	 * Records the approval of typing into a terminal as a one-shot grant, which the
+	 * `terminal_send` / `terminal_key` tools consume (`src/mcp/terminalGrants.ts`). Absent
+	 * where there are no terminals; the tools then have nothing to consume and refuse.
+	 */
+	mintTerminalGrant?(chatId: string, approval: TerminalApproval): void;
 }
 
 /**
@@ -228,6 +244,13 @@ export class ChatTab {
 	/** Held until the message they go with is sent. */
 	public attachments: Attachment[] = [];
 	public attachmentReferences = new AttachmentReferenceScope();
+	/**
+	 * What the agent was last told about the terminals pinned to this tab (`pinSignature`), `undefined`
+	 * when nothing yet. **Pins are not attachments**: they live on the tab (`TerminalPins`), are drawn
+	 * as chips derived at state time and are never in `attachments`, so `takeDraftAttachments` cannot
+	 * consume one with a message, and they carry no `@N`. The agent hears of them in `send`.
+	 */
+	private _pinAnnounced: string | undefined;
 
 	/** Freeze this message's references before starting a fresh draft. */
 	public takeDraftAttachments(): Attachment[] {
@@ -283,6 +306,8 @@ export class ChatTab {
 	 * that follows a tool's result, or at the start of its own turn.
 	 */
 	private _waiting: { readonly id: string; readonly entry: UserEntry; readonly pending: Pending }[] = [];
+	/** Terminal inputs a card waits on, by approval id: the grant is minted when the answer is yes (`_grantTerminal`). */
+	private readonly _terminalApprovals = new Map<string, TerminalApproval>();
 	/** A tool's result came after the oldest waiting prompt was sent: the next output is its taking in. */
 	private _boundary = false;
 	private _flushTimer: ReturnType<typeof setTimeout> | undefined;
@@ -673,8 +698,12 @@ export class ChatTab {
 	 * other agent taking this one's place. The webview carries the draft across,
 	 * which it can only do while the tab is the same one.
 	 */
-	public start(chat: StoredChat): void {
+	public start(chat: StoredChat, keepPins = false): void {
 		this.close();
+		// A new conversation knows nothing of what the old one was told; and unless asked to keep them
+		// (Clear, "Close this chat, start …"), a chat opened from the history has none of the pins.
+		this._pinAnnounced = undefined;
+		if (!keepPins) { this._host.dropPins?.(this); }
 		this._closed = false;
 		this._discarded = false;
 		chat.ultracode ??= this._host.ultracodeDefault?.() ?? false;
@@ -774,10 +803,45 @@ export class ChatTab {
 			this._session?.answer(id, answered, answered ? given : undefined);
 		} else {
 			entry.status = allow ? 'allowed' : 'denied';
+			// The grant first: answering lets the tool run, and it refuses without one.
+			this._grantTerminal(id, allow);
 			this._session?.answer(id, allow);
 		}
 		this._post();
 		void this._save();
+	}
+
+	/**
+	 * A card's detail: for an input to a terminal, which terminal first — its name and folder
+	 * when it is pinned here, otherwise a warning that the input will be refused — since the
+	 * CLI's arguments carry only an id. The names are the user's own, not a model's.
+	 */
+	private _terminalCardDetail(request: { readonly detail?: string; readonly terminal?: TerminalApproval }): string | undefined {
+		const id = request.terminal && !request.terminal.read ? request.terminal.args?.terminalId : undefined;
+		if (typeof id !== 'string' || !id) {
+			return request.detail;
+		}
+		const pinned = this._host.pinnedTerminals?.(this)?.find(t => t.id === id.trim());
+		const where = pinned
+			? `Terminal “${pinned.name}” (${pinned.status === 'exited' ? 'exited' : pinned.cwd})${pinned.agentControl === 'paused' ? ' — agent control is paused, so this will be refused' : ''}`
+			: this._host.pinnedTerminals
+				? `Terminal ${plainInPrompt(id, 60)} is not attached to this conversation, so this will be refused`
+				: undefined;
+		return [where, request.detail].filter(Boolean).join('\n') || undefined;
+	}
+
+	/**
+	 * Records the approval of an input to a terminal as a one-shot grant, once it is yes — by a
+	 * click, an "Always", or the approval menu. A no, and every answer of another kind, only
+	 * forgets the question. The tool refuses without a grant, so an input that no card was shown
+	 * for cannot be typed whatever a CLI's own rules did with it.
+	 */
+	private _grantTerminal(id: string, allow: boolean): void {
+		const approval = this._terminalApprovals.get(id);
+		this._terminalApprovals.delete(id);
+		if (approval && allow) {
+			this._host.mintTerminalGrant?.(this._chat.id, approval);
+		}
 	}
 
 	/**
@@ -795,6 +859,7 @@ export class ChatTab {
 			if (mode !== 'ask') {
 				entry.status = mode === 'auto' ? 'allowed' : 'denied';
 				entry.auto = true;
+				this._grantTerminal(entry.id, mode === 'auto');
 				this._session?.answer(entry.id, mode === 'auto');
 				answered = true;
 			}
@@ -819,6 +884,7 @@ export class ChatTab {
 
 	/** Questions nobody can answer any more — the session is going — are closed in the chat. */
 	private _cancelApprovals(): void {
+		this._terminalApprovals.clear();
 		for (const entry of this._chat.entries) {
 			if (entry.kind === 'approval' && entry.status === 'pending') {
 				entry.status = 'cancelled';
@@ -895,7 +961,9 @@ export class ChatTab {
 		}
 
 		const sent = asked ? withNextDecision(said, asked) : said;
-		const prompt = [sent, attachmentContext(context)].filter(Boolean).join('\n\n');
+		const pinNote = this._takePinNote();
+		const signatureSent = this._pinAnnounced;
+		const prompt = [sent, pinNote, attachmentContext(context)].filter(Boolean).join('\n\n');
 		const images = attachments.map(a => a.image).filter((i): i is TurnImage => !!i);
 		pending.resend = { input: { text: prompt, images, ...(agent === 'claude' ? { ultracode } : {}) }, model, effort };
 
@@ -910,6 +978,8 @@ export class ChatTab {
 			delivered = await session.send(pending.resend.input, model, effort);
 		} catch (err) {
 			delivered = false;
+			// The agent never saw the note: the next message carries it again.
+			this._pinNoteUnsent(pinNote, signatureSent);
 			// Only into the chat it was sent from: by now the user may have moved
 			// to another one, which this failure is nothing to do with.
 			if (this._session === session && this._chat === chat) {
@@ -937,6 +1007,8 @@ export class ChatTab {
 				}
 			}
 		}
+		// Given up without a throw (stopped before any turn began): the note did not reach the agent either.
+		if (!delivered) { this._pinNoteUnsent(pinNote, signatureSent); }
 		this._post();
 		// Not a chat the user has deleted in the meantime: the send can take
 		// seconds on a cold app-server, and saving here wrote the deleted chat —
@@ -945,6 +1017,27 @@ export class ChatTab {
 			await this._save(chat);
 		}
 		return delivered;
+	}
+
+	/**
+	 * The text that tells the agent which terminals are pinned to this conversation, when that changed
+	 * since it was last told — the set, a name, a status, a size, the pause — and after a new session
+	 * (a model change restarts the process; it does not remember). Built here, inside `send`, so a
+	 * queued message, a skill's next prompt and a retry (`Pending.resend` keeps the prompt) all carry
+	 * it as of the moment they go. Never contains terminal output; the names are neutralised.
+	 */
+	private _pinNoteUnsent(note: string | undefined, signature: string | undefined): void {
+		// Only the record this send made: a later message may have announced a newer set meanwhile.
+		if (note !== undefined && this._pinAnnounced === signature) { this._pinAnnounced = undefined; }
+	}
+
+	private _takePinNote(): string | undefined {
+		if (!this._session) { this._pinAnnounced = undefined; }
+		const pins = this._host.pinnedTerminals?.(this) ?? [];
+		const signature = pinSignature(pins);
+		if (signature === (this._pinAnnounced ?? '')) { return undefined; }
+		this._pinAnnounced = signature;
+		return pinAnnouncement(pins, name => plainInPrompt(name, 80));
 	}
 
 	private _post(): void {
@@ -1285,8 +1378,18 @@ export class ChatTab {
 					this._host.noteServer(request.server);
 				}
 				const mode = this._host.approvalMode(approvalKey(request));
+				// A look at a pinned terminal asks nothing — the pin is the consent — but
+				// Terminal on Deny switches every terminal tool off.
+				if (request.terminal?.read && mode !== 'deny') {
+					this._session?.answer(request.id, true);
+					return;
+				}
 				// Allowed by the menu: no card, the tool's own row says what ran.
 				if (mode === 'auto') {
+					if (request.terminal) {
+						this._terminalApprovals.set(request.id, request.terminal);
+						this._grantTerminal(request.id, true);
+					}
 					this._session?.answer(request.id, true);
 					return;
 				}
@@ -1295,15 +1398,19 @@ export class ChatTab {
 				const denied = mode === 'deny';
 				if (denied) {
 					this._session?.answer(request.id, false);
+				} else if (request.terminal) {
+					this._terminalApprovals.set(request.id, request.terminal);
 				}
 				chat.entries.push({
 					kind: 'approval', id: request.id, what: request.what, server: request.server,
-					title: request.title, detail: request.detail,
+					title: request.title, detail: this._terminalCardDetail(request),
+					...(request.ask ? { ask: request.ask } : {}),
 					status: denied ? 'denied' : 'pending', auto: denied || undefined,
 				});
 				break;
 			}
 			case 'approvalDone': {
+				this._terminalApprovals.delete(event.id);
 				const entry = this._approval(event.id);
 				if (entry?.status !== 'pending') {
 					return;

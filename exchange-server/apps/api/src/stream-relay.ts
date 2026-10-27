@@ -5,6 +5,7 @@ import { WebSocket, WebSocketServer } from "ws";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import type { Services } from "./services.js";
+import { requestIdentity } from "./security/audit.js";
 import { point } from "./schema.js";
 import { UnauthorizedException } from "@nestjs/common";
 
@@ -91,7 +92,9 @@ const input = z.discriminatedUnion("action", [
       height: z.number().int().min(200).max(4096),
     })
     .strict(),
-  z.object({ action: z.enum(["reload", "back", "forward", "close", "unfit"]) }).strict(),
+  z
+    .object({ action: z.enum(["reload", "back", "forward", "close", "unfit"]) })
+    .strict(),
 ]);
 export const streamCommandSchema = z.discriminatedUnion("action", [
   z
@@ -151,13 +154,23 @@ const frameSchema = z
     height: z.number().positive().max(32000),
   })
   .strict();
-export const videoSchema = z.object({
-  type: z.literal("browser.video"), tabId,
-  codec: z.literal("avc1.420028"), streamId: z.string().min(1).max(100),
-  data: z.string().min(4).max(2_000_000).regex(/^[A-Za-z0-9+/]*={0,2}$/),
-  key: z.boolean(), timestamp: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
-  width: z.number().positive().max(32000), height: z.number().positive().max(32000),
-}).strict();
+export const videoSchema = z
+  .object({
+    type: z.literal("browser.video"),
+    tabId,
+    codec: z.literal("avc1.420028"),
+    streamId: z.string().min(1).max(100),
+    data: z
+      .string()
+      .min(4)
+      .max(2_000_000)
+      .regex(/^[A-Za-z0-9+/]*={0,2}$/),
+    key: z.boolean(),
+    timestamp: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    width: z.number().positive().max(32000),
+    height: z.number().positive().max(32000),
+  })
+  .strict();
 const resultSchema = z
   .object({
     type: z.literal("browser.result"),
@@ -169,7 +182,8 @@ const resultSchema = z
 const send = (ws: WebSocket | undefined, value: unknown) => {
   if (ws?.readyState !== WebSocket.OPEN) return;
   if (
-    ((value as { type?: string; frame?: boolean })?.type === "browser.frame" || (value as { type?: string })?.type === "browser.video" ||
+    ((value as { type?: string; frame?: boolean })?.type === "browser.frame" ||
+      (value as { type?: string })?.type === "browser.video" ||
       (value as { frame?: boolean })?.frame === true) &&
     ws.bufferedAmount > 256_000
   )
@@ -246,20 +260,42 @@ export class StreamRelay {
         clearTimeout(timer);
         this.paths.set(ws, path);
         void this.authenticate(ws, request, path, raw.toString()).catch(
-          (error) =>
+          (error) => {
+            this.services.audit.background(
+              this.services.audit.record({
+                ...requestIdentity(request),
+                event: "connection.denied",
+                outcome: error instanceof Refused ? "denied" : "error",
+                reason:
+                  path === "/ws/stream-agent"
+                    ? "media_agent_auth"
+                    : "media_viewer_auth",
+              }),
+            );
             error instanceof Refused
               ? ws.close(refusalCode(path), error.message)
-              : ws.close(1011, "Authentication unavailable"),
+              : ws.close(1011, "Authentication unavailable");
+          },
         );
       });
     });
   }
   private notify(id: string): void {
-    const count = [...(this.viewers.get(id) ?? [])].filter(ws => ws.readyState === WebSocket.OPEN && this.watching.has(ws)).length;
+    const count = [...(this.viewers.get(id) ?? [])].filter(
+      (ws) => ws.readyState === WebSocket.OPEN && this.watching.has(ws),
+    ).length;
     const message = {
       type: "browser.viewers",
       active: count > 0,
-      ...(count > 0 && [...(this.viewers.get(id) ?? [])].filter(viewer => this.watching.has(viewer) && viewer.readyState === WebSocket.OPEN).every(viewer => this.videoViewers.has(viewer)) ? { video: "h264" } : {}),
+      ...(count > 0 &&
+      [...(this.viewers.get(id) ?? [])]
+        .filter(
+          (viewer) =>
+            this.watching.has(viewer) && viewer.readyState === WebSocket.OPEN,
+        )
+        .every((viewer) => this.videoViewers.has(viewer))
+        ? { video: "h264" }
+        : {}),
       count,
     };
     send(this.agents.get(id), message);
@@ -283,6 +319,14 @@ export class StreamRelay {
         version: z.literal(1),
         pointId: z.uuid(),
         key: z.string().max(200).optional(),
+        viewerId: z
+          .string()
+          .regex(/^[a-zA-Z0-9-]{1,100}$/)
+          .optional(),
+        deviceId: z
+          .string()
+          .regex(/^[a-f0-9]{64}$/)
+          .optional(),
         encryption: encryptionSchema.nullable().optional(),
         encrypted: z.boolean().optional(),
       })
@@ -291,14 +335,26 @@ export class StreamRelay {
     if (!result.success) throw new Refused("Invalid handshake");
     const hello = result.data;
     const agent = path === "/ws/stream-agent";
-    const owner = agent
+    const identity = agent
       ? undefined
-      : await this.services.owner(request.headers).catch(unauthorized);
+      : await this.services.identity(request.headers).catch(unauthorized);
+    const owner = identity?.userId;
+    const viewerId = hello.viewerId ?? "legacy";
     if (agent && !hello.key) throw new Refused("Key required");
     const hash = agent
       ? createHash("sha256").update(hello.key!).digest("hex")
       : undefined;
     const permitted = async () => {
+      if (
+        !agent &&
+        !(await this.services.plugins.viewer(
+          owner!,
+          identity!.sessionId,
+          hello.pointId,
+          viewerId,
+        ))
+      )
+        return false;
       if (
         !agent &&
         (await this.services.owner(request.headers).catch(unauthorized)) !==
@@ -323,10 +379,20 @@ export class StreamRelay {
     if (!(await permitted())) throw new Refused("Access denied");
     const id = hello.pointId;
     const [record] = await this.services.db
-      .select({ encryption: point.encryption })
+      .select({ userId: point.userId, encryption: point.encryption })
       .from(point)
       .where(eq(point.id, id));
     const encryption = record?.encryption ?? null;
+    const deviceId = hello.deviceId ?? `legacy:${id}`;
+    if (agent && record) {
+      try {
+        await this.services.plugins.agent(record.userId, deviceId, id);
+      } catch (error) {
+        if (this.services.plugins.isDenied(error))
+          throw new Refused("Device quota or subscription unavailable");
+        throw error;
+      }
+    }
     if (
       agent
         ? JSON.stringify(hello.encryption ?? null) !==
@@ -334,6 +400,20 @@ export class StreamRelay {
         : Boolean(encryption) !== (hello.encrypted === true)
     ) {
       ws.close(agent ? 1011 : 1008, "Workspace encryption changed. Reload.");
+      return;
+    }
+    if (!record) throw new Refused("Access denied");
+    await this.services.audit.track(ws, request, {
+      userId: record.userId,
+      pointId: id,
+      authSessionId: identity?.sessionId,
+      kind: agent ? "media-agent" : "media",
+      viewerId: agent ? undefined : viewerId,
+      deviceId: agent ? deviceId : undefined,
+    });
+    if (ws.readyState !== WebSocket.OPEN) return;
+    if (!(await permitted())) {
+      ws.close(1008, "Viewer disconnected");
       return;
     }
     this.checks.set(ws, permitted);
@@ -382,8 +462,12 @@ export class StreamRelay {
                 throw new Error("Encryption changed");
               if (agent) {
                 if (this.agents.get(id) !== ws) return;
-                for (const viewer of this.viewers.get(id) ?? [])
-                  send(viewer, packet);
+                for (const viewer of this.viewers.get(id) ?? []) {
+                  if (packet.frame && this.watching.has(viewer))
+                    this.mediaSend(viewer, packet, record.userId);
+                  else if (!packet.frame)
+                    this.mediaSend(viewer, packet, record.userId);
+                }
               } else send(this.agents.get(id), packet);
             })
             .catch(() => ws.close(1008, "Invalid encrypted packet"))
@@ -396,10 +480,17 @@ export class StreamRelay {
         if (this.agents.get(id) !== ws) return;
         try {
           const message = JSON.parse(raw.toString());
-          if (message.type === "browser.frame" || message.type === "browser.video") {
-            const frame = message.type === "browser.video" ? videoSchema.parse(message) : frameSchema.parse(message);
+          if (
+            message.type === "browser.frame" ||
+            message.type === "browser.video"
+          ) {
+            const frame =
+              message.type === "browser.video"
+                ? videoSchema.parse(message)
+                : frameSchema.parse(message);
             for (const viewer of this.viewers.get(id) ?? [])
-              if (this.watching.has(viewer)) send(viewer, frame);
+              if (this.watching.has(viewer))
+                this.mediaSend(viewer, frame, record.userId);
           } else if (message.type === "browser.state") {
             const state = stateSchema.parse(message);
             this.states.set(id, state);
@@ -437,13 +528,30 @@ export class StreamRelay {
           const message = JSON.parse(raw.toString());
           if (message.type === "browser.watch") {
             const watch = z
-              .object({ type: z.literal("browser.watch"), active: z.boolean(), video: z.literal("h264").optional() })
+              .object({
+                type: z.literal("browser.watch"),
+                active: z.boolean(),
+                video: z.literal("h264").optional(),
+              })
               .strict()
               .parse(message);
             if (watch.video === "h264") this.videoViewers.add(ws);
             else this.videoViewers.delete(ws);
+            const changed = this.watching.has(ws) !== watch.active;
             if (watch.active) this.watching.add(ws);
             else this.watching.delete(ws);
+            if (changed)
+              this.services.audit.background(
+                this.services.audit.record({
+                  ...requestIdentity(request),
+                  userId: owner,
+                  authSessionId: identity?.sessionId,
+                  pointId: id,
+                  event: watch.active
+                    ? "browser.view.started"
+                    : "browser.view.stopped",
+                }),
+              );
             if (this.agents.has(id)) this.notify(id);
             return;
           }
@@ -513,6 +621,46 @@ export class StreamRelay {
             });
         }
     });
+  }
+  private readonly deliveries = new WeakMap<
+    WebSocket,
+    { chain: Promise<void>; queued: number }
+  >();
+  private mediaSend(viewer: WebSocket, value: unknown, userId: string): void {
+    if (viewer.readyState !== WebSocket.OPEN) return;
+    const serialized = JSON.stringify(value);
+    // Count serialized media-channel bytes, including base64 and encrypted envelopes.
+    // Control/state packets are free; encrypted opaque messages are charged conservatively.
+    if (!this.services.plugins.policies.length) {
+      send(viewer, value);
+      return;
+    }
+    const state = this.deliveries.get(viewer) ?? {
+      chain: Promise.resolve(),
+      queued: 0,
+    };
+    this.deliveries.set(viewer, state);
+    if (++state.queued > 16) {
+      state.queued--;
+      viewer.close(1013, "Media accounting busy");
+      return;
+    }
+    state.chain = state.chain
+      .then(async () => {
+        if (viewer.readyState !== WebSocket.OPEN) return;
+        if (
+          !(await this.services.plugins.media(
+            userId,
+            Buffer.byteLength(serialized),
+          ))
+        ) {
+          viewer.close(4001, "Media allowance exhausted");
+          return;
+        }
+        if (viewer.readyState === WebSocket.OPEN) send(viewer, value);
+      })
+      .catch(() => viewer.close(1011, "Media accounting unavailable"))
+      .finally(() => state.queued--);
   }
   disconnectPoint(id: string): void {
     this.agents.get(id)?.close(4001, "Access revoked");

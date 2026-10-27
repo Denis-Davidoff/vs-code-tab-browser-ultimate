@@ -384,6 +384,8 @@ export interface ApprovalEntry {
 	readonly server?: string;
 	readonly title: string;
 	readonly detail?: string;
+	/** A headline in place of the category's own ("Type into a terminal?"); see `ApprovalRequest.ask`. */
+	readonly ask?: string;
 	status: 'pending' | 'allowed' | 'denied' | 'cancelled';
 	/** Answered by the approval menu's choice rather than by a click. */
 	auto?: boolean;
@@ -401,7 +403,7 @@ export interface ChatSummary {
 	readonly updatedAt: number;
 }
 
-export type AttachmentKind = 'screenshot' | 'element' | 'page' | 'sharedPage' | 'selection' | 'file' | 'voice' | 'video' | 'annotation' | 'pointAnnotation';
+export type AttachmentKind = 'screenshot' | 'element' | 'page' | 'sharedPage' | 'selection' | 'file' | 'voice' | 'video' | 'annotation' | 'pointAnnotation' | 'terminal';
 
 /** What the composer shows for an attachment; the content stays in the host. */
 export interface AttachmentChip {
@@ -418,6 +420,19 @@ export interface AttachmentChip {
 	readonly iconName?: string;
 	/** A small data URI for screenshots. */
 	readonly thumbnail?: string;
+	/**
+	 * `terminal` chips only: a PIN, not a draft attachment. It belongs to the
+	 * conversation until it is removed (X) or the terminal goes, is not consumed by
+	 * a send and keeps its reference, and the agent acts on that terminal through
+	 * the `terminal_*` tools of the ai-browser server. Derived at state time from the
+	 * tab's pins, never stored in the draft.
+	 */
+	readonly pinned?: true;
+	readonly terminalId?: string;
+	/** `closed`: the terminal is gone and the pin is about to be dropped. */
+	readonly terminalStatus?: 'running' | 'exited' | 'closed';
+	/** `terminal` pins only: shared read-only (watch); the chip shows an eye. */
+	readonly terminalWatch?: true;
 }
 
 export interface Selection {
@@ -599,6 +614,66 @@ export interface ExchangeConnectionState {
 	readonly error?: string;
 }
 
+/**
+ * A terminal tab: a shell on the editor's machine, drawn with xterm.js in the
+ * chat view's own tab strip. Terminals are NOT conversations — they are never in
+ * `ChatViewState.tabs`, hold no agent and no draft, and exist only in the editor
+ * (the Chrome side panel and the Exchange website never see them: every field
+ * and message below is editor-only or refused there).
+ */
+export interface TerminalTabSummary {
+	readonly id: string;
+	/** The name in the strip; the user may rename it. */
+	readonly name: string;
+	/** The folder it started in, for the tooltip. */
+	readonly cwd: string;
+	/** `exited`: the shell ended, the screen stays readable and the tab can be restarted or closed. */
+	readonly status: 'running' | 'exited';
+	readonly exitCode?: number;
+	/** Started as an agent's own CLI rather than a shell. */
+	readonly agent?: AgentId;
+	/** Output arrived while this tab was not in front, after a quiet spell (see `TerminalTab`). */
+	readonly unread?: true;
+	/** The conversation that owns this terminal: its agent may drive it through `terminal_*`. One owner at a time. */
+	readonly pinnedBy?: { readonly tabId: string; readonly title: string; readonly agent?: AgentId };
+	/** `paused`: the user stopped the agent's input here (the emergency stop); the pin stays. */
+	readonly agentControl?: 'allowed' | 'paused';
+	/** `watch`: pinned read-only — the agent may read the screen, never type (`pinTerminal`'s `mode`). */
+	readonly pinMode?: 'watch' | 'control';
+	/** The agent typed here a moment ago (drives a "typing" mark). */
+	readonly agentActive?: true;
+	/** Shared with the Exchange website (editor decides; see remote terminals). */
+	readonly remote?: boolean;
+	/** Website viewers attached right now (remote terminals). */
+	readonly remoteViewers?: number;
+	/** A website viewer holds the control lease: it types, and its size is the PTY's. */
+	readonly remoteControl?: true;
+}
+
+export type TerminalSupport =
+	| {
+		readonly available: true; readonly limit: number; readonly agents: readonly AgentId[];
+		/**
+		 * Whether a terminal may be shared with the Exchange website ("Allow website access",
+		 * `setTerminalRemote`): `reason` says why not (the `aiBrowser.chat.remoteTerminal`
+		 * setting is off, the connection is not encrypted …). Absent: the row is not offered.
+		 */
+		readonly website?: { readonly allowed: true } | { readonly allowed: false; readonly reason: string };
+	}
+	| { readonly available: false; readonly reason: string };
+
+/** The editor's `terminal.integrated.*` settings the view needs; posted on `terminalAttach` and on every change. */
+export interface TerminalSettings {
+	readonly fontFamily?: string;
+	readonly fontSize?: number;
+	readonly lineHeight?: number;
+	readonly letterSpacing?: number;
+	readonly cursorStyle?: 'block' | 'underline' | 'line';
+	readonly cursorBlink?: boolean;
+	readonly scrollback?: number;
+	readonly macOptionIsMeta?: boolean;
+}
+
 export interface ChatViewState {
 	/** Rendered through the remote workspace website. */
 	readonly remoteWorkspace?: boolean;
@@ -658,6 +733,12 @@ export interface ChatViewState {
 	readonly activeTab: string;
 	/** `aiBrowser.chat.tabLimit`; more tabs than this can be open when it was lowered. */
 	readonly tabLimit: number;
+	/** Terminal tabs, in strip order (editor only). They come after the conversations in the strip. */
+	readonly terminals?: readonly TerminalTabSummary[];
+	/** The terminal in front; absent while a conversation is (editor only). */
+	readonly terminalFront?: string;
+	/** Whether a terminal can be started here, and why not (editor only). */
+	readonly terminalSupport?: TerminalSupport;
 	/**
 	 * The tab in front's messages not in the conversation yet, in order: sent
 	 * during a turn and not yet taken in by Claude Code (`steer`), or held to be
@@ -729,6 +810,8 @@ export interface ChatTabSummary {
 	readonly status?: ChatTabStatus;
 	/** Shown in Chrome's side panel: what is typed there appears here. */
 	readonly chrome?: boolean;
+	/** Terminals pinned to this conversation (editor only). */
+	readonly terminals?: readonly { readonly id: string; readonly name: string; readonly status: 'running' | 'exited' }[];
 }
 
 /**
@@ -755,6 +838,19 @@ export type HostToView =
 	| { readonly type: 'exchangeBrowser'; readonly message?: string }
 	| { readonly type: 'usage'; readonly usage: readonly AgentUsage[]; readonly stats?: ChatStats; readonly loading: boolean }
 	| { readonly type: 'focusInput' }
+	/**
+	 * Terminal output, posted DIRECTLY (never through `_postMessage`, which queues
+	 * and diverts): batched, ordered by `seq`, and acknowledged by `terminalAck`.
+	 */
+	| { readonly type: 'terminalData'; readonly id: string; readonly seq: number; readonly data: string }
+	/** The answer to `terminalAttach`: the screen's tail so far (`seq` of its last byte), then live `terminalData` follows. */
+	| { readonly type: 'terminalReplay'; readonly id: string; readonly seq: number; readonly data: string }
+	| { readonly type: 'terminalExit'; readonly id: string; readonly code?: number }
+	| { readonly type: 'terminalSettings'; readonly settings: TerminalSettings }
+	/** The answer to `terminalPasteRequest`: the clipboard's text, to be pasted into that terminal. */
+	| { readonly type: 'terminalPaste'; readonly id: string; readonly text: string }
+	/** Focus this terminal's keyboard input (a terminal tab was selected, or the view was revealed on it). */
+	| { readonly type: 'terminalFocus'; readonly id: string }
 	/** The view's title bar cup: open the keep-awake popup. */
 	| { readonly type: 'openSettings' }
 	| { readonly type: 'featureAiSaved'; readonly settings?: FeatureAiSettings; readonly recordingQuality?: RecordingQuality; readonly recordingSeconds?: number; readonly error?: string }
@@ -879,6 +975,39 @@ export type ViewToHost =
 	| { readonly type: 'openAgentSetting'; readonly agent: AgentId }
 	/** Through the host: `navigator.clipboard` in a webview depends on the host granting it. */
 	| { readonly type: 'copy'; readonly text: string }
+	/** A new terminal tab in the folder of the conversation in front; `agent` starts that agent's own CLI instead of a shell. */
+	/** `pinTo`: a conversation tab id — the terminal is created in the background and pinned to it, and the view stays where it is. */
+	| { readonly type: 'newTerminal'; readonly agent?: AgentId; readonly pinTo?: string }
+	/** Pin (or unpin) a terminal to a conversation: the agent of that conversation may then read and type into it. */
+	| { readonly type: 'pinTerminal'; readonly id: string; readonly tabId: string; readonly pinned: boolean; readonly mode?: 'watch' | 'control' }
+	/**
+	 * "Insert into terminal": the user (never an agent) puts a page address, an element, a screenshot, a
+	 * file, a selection, a video or an annotation into a terminal's input — as text, or as the path of a
+	 * file the host writes. Bracketed when the program asked for it; never followed by Enter. `file`: a
+	 * file dropped on or pasted into the terminal, base64.
+	 */
+	| { readonly type: 'terminalInsert'; readonly id: string; readonly kind: 'page' | 'element' | 'screenshot' | 'file' | 'selection' | 'video' | 'annotation'; readonly file?: { readonly name: string; readonly data: string } }
+	/** "Ask agent" from a terminal: a new conversation, or an open one; the terminal is pinned there and the conversation comes to the front with the composer focused. `selection` (selected text) is attached as context. */
+	| { readonly type: 'terminalAskAgent'; readonly id: string; readonly target: { readonly kind: 'new'; readonly agent?: AgentId } | { readonly kind: 'tab'; readonly tabId: string }; readonly selection?: string; readonly mode?: 'watch' | 'control' }
+	/** The emergency stop and its release: while `allowed` is false the agent's input to this terminal is refused. */
+	| { readonly type: 'setTerminalAgentControl'; readonly id: string; readonly allowed: boolean }
+	/** "Allow website access": the terminal is shared with the Exchange website (editor only; needs `aiBrowser.chat.remoteTerminal`). */
+	| { readonly type: 'setTerminalRemote'; readonly id: string; readonly remote: boolean }
+	| { readonly type: 'selectTerminal'; readonly id: string }
+	| { readonly type: 'closeTerminal'; readonly id: string }
+	| { readonly type: 'renameTerminal'; readonly id: string; readonly name: string }
+	/** A shell that exited, started again in the same folder, in the same tab. */
+	| { readonly type: 'restartTerminal'; readonly id: string }
+	/** The view's xterm for this terminal exists (or was rebuilt): send its screen and settings. Its size is `cols` x `rows`. */
+	| { readonly type: 'terminalAttach'; readonly id: string; readonly cols: number; readonly rows: number }
+	| { readonly type: 'terminalInput'; readonly id: string; readonly data: string }
+	| { readonly type: 'terminalResize'; readonly id: string; readonly cols: number; readonly rows: number }
+	/** Flow control: `bytes` of `terminalData` were written to the screen. The host stops reading the shell while too many are unacknowledged. */
+	| { readonly type: 'terminalAck'; readonly id: string; readonly bytes: number }
+	/** Paste goes through the host: the host answers with `terminalPaste`. */
+	| { readonly type: 'terminalPasteRequest'; readonly id: string }
+	/** Selected text or the last `lines` lines of the screen, attached to the conversation in front as context; the view then shows that conversation. */
+	| { readonly type: 'terminalToChat'; readonly id: string; readonly text: string }
 	/** The composer's browser button: a new browser tab, nothing else. */
 	| { readonly type: 'openBrowser'; readonly where?: 'vscode' | 'chrome' }
 	/** The approval menu's View Mode: `aiBrowser.chat.viewMode`. */

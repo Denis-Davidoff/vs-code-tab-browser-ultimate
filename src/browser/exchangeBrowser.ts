@@ -1,6 +1,7 @@
 import type { RemoteVideoEncoder } from './remoteVideo';
 import { encryptedExchangeSocket, type ExchangeCipher } from '../core/exchangeCrypto';
-import type * as vscode from 'vscode';
+import * as vscode from 'vscode';
+import { createHash } from 'node:crypto';
 import type { BrowserController } from './browserController';
 import { isExchangeControlPage, readRemoteBrowserInput } from './remoteBrowserProtocol';
 
@@ -51,7 +52,7 @@ export class ExchangeBrowser {
   if(isExchangeControlPage(tab.url,this.url,this.pointId))throw new Error('Select a website, not the remote workspace itself.');
   return tab;
  }
- constructor(private readonly url:string,private readonly pointId:string,private readonly key:string,private readonly browser:BrowserController,private readonly cipher?:ExchangeCipher){this.connect();}
+ constructor(private readonly url:string,private readonly pointId:string,private readonly key:string,private readonly browser:BrowserController,private readonly cipher?:ExchangeCipher,private readonly deviceIdentity=false){this.connect();}
  private send(value:unknown,frame=false):boolean{
   if(this.socket?.readyState!==1)return false;
   if(frame&&this.socket.bufferedAmount>256_000)return false;
@@ -139,7 +140,7 @@ export class ExchangeBrowser {
   this.publishedState=undefined;
   const socket=this.socket=encryptedExchangeSocket(this.url+'/ws/stream-agent',this.cipher,true,()=>{void this.refresh(true);});
   this.handshake=setTimeout(()=>socket.close(),10000);
-  socket.addEventListener('open',()=>socket.send(JSON.stringify({type:'auth',version:1,pointId:this.pointId,key:this.key,encryption:this.cipher?.descriptor??null})));
+  socket.addEventListener('open',()=>socket.send(JSON.stringify({type:'auth',version:1,pointId:this.pointId,key:this.key,...(this.deviceIdentity?{deviceId:createHash('sha256').update(vscode.env.machineId + new URL(this.url).origin).digest('hex')}:{}),encryption:this.cipher?.descriptor??null})));
   socket.addEventListener('message',event=>{
    if(socket!==this.socket||this.stopped)return;
    try{

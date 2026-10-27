@@ -10,6 +10,7 @@ import * as vscode from 'vscode';
 import { BrowserController } from '../browser/browserController';
 import type { BrowserRecording } from '../browser/recording';
 import { chatTools, type ChatControlPort } from './chatTools';
+import { terminalTools } from './terminalTools';
 import { modelFrameLimits } from '../browser/screenshotFrames';
 import { defaultSegmentChars, maxSegmentChars, parseReplacements, segmentBudget } from '../translate/translateText';
 import { generateUuid } from '../core/uuid';
@@ -802,6 +803,7 @@ export class McpServer implements vscode.Disposable {
 			},
 			...this._editorTools(),
 			...(this._chat ? chatTools(this._chat) : []),
+			...(this._chat ? terminalTools(this._chat) : []),
 		];
 	}
 

@@ -1,3 +1,4 @@
+import { createHash as deviceHash } from "node:crypto";
 import { surfaceControls } from './core/commands';
 import { diffState } from './core/sync';
 import { exchangeCipher, encryptedExchangeSocket, type ExchangeCipher } from '../core/exchangeCrypto';
@@ -8,6 +9,9 @@ import { exchangeConnection, type ExchangeConnectionInput } from './exchangeConn
 import type { ChatStateSurface } from './chatSurface';
 import { ChatViewProvider, chatViewId } from './chatView';
 import { readExchangeUiCommand } from './exchangeUiProtocol';
+import { RemoteTerminalHub, isTerminalFrame, type AgentTerminalFrame } from './remoteTerminalProtocol';
+import { remoteTerminalSetting } from './chatView';
+import { remoteTerminalView } from './remoteTerminalView';
 import { chromeChatSnapshot } from './chromeChatProtocol';
 import { exchangeServerUrl, exchangeWebsiteUrl, exchangeSnapshot, readExchangeCommand } from './exchangeProtocol';
 
@@ -30,8 +34,57 @@ function exchangePageSuggestion(page: { title: string; url: string } | undefined
 	return [{ id: exchangePageSuggestionId, kind: 'page', label: (page.title || page.url).slice(0, 120) }];
 }
 
+let auditChannel: vscode.OutputChannel | undefined;
+export function auditRemoteTerminal(line: string): void {
+	auditChannel ??= vscode.window.createOutputChannel('AI Browser: Remote Terminals');
+	auditChannel.appendLine(`${new Date().toISOString()} ${line}`);
+}
+const terminalLifecycle = new Set(['newTerminal', 'closeTerminal', 'renameTerminal', 'restartTerminal']);
+
+/**
+ * The consent modal's text. It names everything the answer allows: the website can also open new
+ * shells and agent CLIs here, and those are shared with it from the start, unmarked.
+ */
+export const terminalConsentDetail = 'It can watch the terminals you mark "Allow remote access", open new shells or agent CLIs on this computer (shared with it from the start), and, when it takes control, type into them. Your own typing in VS Code always takes control back. Asked once for this connection.';
+
 class ExchangeSurface implements ChatStateSurface {
 	onClose?: () => void;
+	/**
+	 * Terminal tabs on the website: only on an encrypted connection (the relay would refuse a
+	 * plaintext `terminal.*` and close the agent), only with the setting on, and only after the
+	 * user agreed for this connection. Consent is per connection, never stored.
+	 */
+	private terminalConsent: 'unasked' | 'asking' | 'yes' | 'no' = 'unasked';
+	private hub?: RemoteTerminalHub;
+	private get terminalsPossible(): boolean { return !!this.cipher && remoteTerminalSetting(); }
+	private terminalsAllowed(): boolean {
+		return this.terminalsPossible && this.terminalConsent === 'yes' && this.ready && !this.stopped
+			&& !ChatViewProvider.exchangeTerminals(this.source).blocked();
+	}
+	/** Asks once per connection; a modal, since it is a decision taken at the machine. */
+	private async askTerminalConsent(): Promise<boolean> {
+		if (!this.terminalsPossible) { return false; }
+		if (this.terminalConsent === 'yes') { return true; }
+		if (this.terminalConsent !== 'unasked') { return false; }
+		this.terminalConsent = 'asking';
+		const allow = 'Allow';
+		const answer = await vscode.window.showWarningMessage('Let the AI Browser Server website use terminal tabs on this computer?',
+			{ modal: true, detail: terminalConsentDetail }, allow);
+		this.terminalConsent = answer === allow && !this.stopped ? 'yes' : 'no';
+		auditRemoteTerminal(`consent ${this.terminalConsent} point=${this.config.pointId}`);
+		this.pageChanged();
+		return this.terminalConsent === 'yes';
+	}
+	private terminalHub(): RemoteTerminalHub {
+		const port = ChatViewProvider.exchangeTerminals(this.source);
+		return this.hub ??= new RemoteTerminalHub({
+			allowed: () => this.terminalsAllowed(),
+			epoch: () => this.epoch,
+			find: id => port.find(id),
+			send: (frame: AgentTerminalFrame) => { if (this.cipher && this.ready && !this.stopped && this.socket?.readyState === 1) { this.socket.send(JSON.stringify(frame)); } },
+			audit: event => auditRemoteTerminal(`${event.kind} viewer=${event.v} terminal=${event.t}${event.detail ? ' ' + event.detail : ''}`),
+		});
+	}
 	browserTab?: () => Promise<vscode.BrowserTab>;
 	/** The page the website's Browser panel streams, offered as a dashed suggestion. */
 	page?: () => { id: string; title: string; url: string } | undefined;
@@ -87,7 +140,12 @@ class ExchangeSurface implements ChatStateSurface {
 		this.pinned = state.chatId; this.last = state;
 		this.chats = new Set([state.chatId,...state.tabs.map(tab => tab.chatId)]);
 		const full = chromeChatSnapshot(state);
-		const view = {...full.view,surface:'exchange' as const,controls:surfaceControls('exchange'),voice:{...full.view.voice,available:false,reason:'Microphone recording is available in VS Code.'},suggestions:exchangePageSuggestion(this.page?.())};
+		const terminals = ChatViewProvider.exchangeTerminals(this.source);
+		// Shared with the Chrome side panel (`remoteTerminalView`): disabled with the reason, never hidden.
+		const { controls: terminalControls, ...terminalView } = remoteTerminalView({ surface: 'exchange', encrypted: !!this.cipher, setting: remoteTerminalSetting(),
+			consent: this.terminalConsent, blocked: terminals.blocked() }, () => terminals.shared(), () => terminals.support());
+		this.hub?.sync();
+		const view = {...full.view,...terminalView,surface:'exchange' as const,controls:{...surfaceControls('exchange'),...terminalControls},voice:{...full.view.voice,available:false,reason:'Microphone recording is available in VS Code.'},suggestions:exchangePageSuggestion(this.page?.())};
 		let body = JSON.stringify({...JSON.parse(exchangeSnapshot(state)),uiVersion:1,view});
 		while (Buffer.byteLength(body)>5_000_000 && view.entries.length>1) { view.entries = view.entries.slice(Math.max(1,Math.floor(view.entries.length/4))); body = JSON.stringify({...JSON.parse(exchangeSnapshot(state)),uiVersion:1,view}); }
 		this.body = body;
@@ -120,7 +178,10 @@ class ExchangeSurface implements ChatStateSurface {
 				this.sent = view.trimmed ? undefined : { value: copy(view.value), at: now, chatId: view.chatId };
 				return;
 			}
-			this.socket.send(this.body);
+			// Without patches the snapshot is still numbered: terminal frames carry its epoch (`e`), and
+			// the website refuses to attach to a terminal without one.
+			this.rev++;
+			this.socket.send(JSON.stringify({ ...JSON.parse(this.body), epoch: this.epoch, rev: this.rev }));
 		}
 	}
 	private connect(): void {
@@ -129,7 +190,7 @@ class ExchangeSurface implements ChatStateSurface {
 		this.changed('connecting');
 		const socket = this.socket = encryptedExchangeSocket(this.config.url + '/ws/agent',this.cipher,true,()=>{ this.forceFull = true; this.sendSnapshot(); },WebSocketCtor as unknown as typeof WebSocket);
 		this.handshake = setTimeout(() => socket.close(), 10000);
-		socket.addEventListener('open', () => socket.send(JSON.stringify({ type: 'auth', version: 1, pointId: this.config.pointId, key: this.key, encryption: this.cipher?.descriptor ?? null, features:['chat-viewers'] })));
+		socket.addEventListener('open', () => socket.send(JSON.stringify({ type: 'auth', version: 1, pointId: this.config.pointId, key: this.key, encryption: this.cipher?.descriptor ?? null, features:['chat-viewers'], deviceId: deviceHash('sha256').update(vscode.env.machineId + new URL(this.config.url).origin).digest('hex') })));
 		socket.addEventListener('message', event => {
 			if (socket !== this.socket || this.stopped) { return; }
 			void this.receive(socket, event.data).catch(() => socket.close());
@@ -137,7 +198,7 @@ class ExchangeSurface implements ChatStateSurface {
 		socket.addEventListener('error', () => socket.close());
 		socket.addEventListener('close', event => {
 			if (socket !== this.socket) { return; }
-			clearTimeout(this.handshake); this.ready = false; this.viewers = 0; this.refresh?.();
+			clearTimeout(this.handshake); this.ready = false; this.viewers = 0; this.hub?.dropAll(); this.refresh?.();
 			if (this.stopped) { return; }
 			if (event.code === agentRefused) {
 				this.close();
@@ -163,10 +224,18 @@ class ExchangeSurface implements ChatStateSurface {
 			this.refresh?.(); this.sendSnapshot(); return;
 		}
 		if (!this.ready) { throw new Error('Handshake required'); }
+		// The terminal stream: never a chat command, no `command.result`, and nothing at all unless encrypted.
+		if (isTerminalFrame(value)) {
+			if (!this.cipher) { return; }
+			if (value.type === 'terminal.attach' && this.terminalConsent === 'unasked') { await this.askTerminalConsent(); }
+			if (this.terminalsAllowed()) { this.terminalHub().receive(value); } else { this.hub?.dropAll(); }
+			return;
+		}
 		if(value.type==='chat.viewers'){
 			if(!Number.isSafeInteger(value.count)||value.count<0)throw new Error('Invalid viewer count');
 			if(value.count>this.viewers)ChatViewProvider.exchangeViewerConnected(this.source);
 			this.viewers=value.count;
+			if(this.viewers===0)this.hub?.dropAll();
 			return;
 		}
 		if (value.type === 'chat.resync' && typeof value.id === 'string') {
@@ -183,6 +252,10 @@ class ExchangeSurface implements ChatStateSurface {
 					if (!this.chats.has(command.chatId)) { throw new Error('This conversation is no longer open.'); }
 					if (command.type === 'chat.pin') { this.pinned = command.chatId; this.refresh?.(); }
 					else if (command.type === 'chat.command') {
+						if (terminalLifecycle.has(command.message.type)) {
+							if (!this.cipher || !remoteTerminalSetting() || !(await this.askTerminalConsent())) { throw new Error('Terminals are not available on this connection.'); }
+							auditRemoteTerminal(`${command.message.type} point=${this.config.pointId}`);
+						}
 						const needsBrowser=['attach','openLink'].includes(command.message.type);
 						const browserTab=needsBrowser?await this.browserTab?.():undefined;
 						if(needsBrowser&&!browserTab)throw new Error('Select a tab in the website Browser panel first.');
@@ -205,7 +278,7 @@ class ExchangeSurface implements ChatStateSurface {
 	}
 	close(): void {
 		if (this.stopped) { return; }
-		this.stopped = true; this.ready = false; clearTimeout(this.trailing);
+		this.stopped = true; this.ready = false; clearTimeout(this.trailing); this.hub?.dispose(); this.hub = undefined;
 		ChatViewProvider.releaseExchangeSource?.(this.source);
 		this.onClose?.();
 		clearTimeout(this.timer); clearTimeout(this.handshake); clearTimeout(this.publish);
@@ -213,7 +286,7 @@ class ExchangeSurface implements ChatStateSurface {
 	}
 }
 
-async function verifyExchangeServer(socketOrigin: string): Promise<void> {
+async function verifyExchangeServer(socketOrigin: string): Promise<{ deviceIdentity: boolean }> {
 	const address = new URL(socketOrigin);
 	address.protocol = address.protocol === 'wss:' ? 'https:' : 'http:';
 	const healthUrl = new URL('/api/health', address);
@@ -221,10 +294,11 @@ async function verifyExchangeServer(socketOrigin: string): Promise<void> {
 	try { response = await fetch(healthUrl, { signal: AbortSignal.timeout(5000), redirect: 'error' }); }
 	catch { throw new Error(`Cannot reach AI Browser Server at ${address.origin}. Copy the server address from your website's connection details.`); }
 	if (!response.ok) { throw new Error(`AI Browser Server returned HTTP ${response.status}. Check the server address and port.`); }
-	let health: { status?: string; protocolVersion?: number };
+	let health: { status?: string; protocolVersion?: number; features?: string[] };
 	try { health = await response.json() as typeof health; }
 	catch { throw new Error('This address does not provide the AI Browser Server API. Copy the server address from your connection details.'); }
 	if (health?.status !== 'ok' || health.protocolVersion !== 1) { throw new Error('This server does not support the AI Browser connection protocol.'); }
+    return { deviceIdentity: Array.isArray(health.features) && health.features.includes('device-identity') };
 }
 
 export function registerExchangeChat(context: vscode.ExtensionContext, browser?: BrowserController): void {
@@ -302,7 +376,7 @@ export function registerExchangeChat(context: vscode.ExtensionContext, browser?:
 			if (!key || !/^exch_[A-Za-z0-9_-]{43}$/.test(key)) { throw new Error('Paste the connection key from your AI Browser dashboard.'); }
 			if (!ChatViewProvider.chromeSources().some(item => item.id === source)) { throw new Error('Open the chat you want to share and try again.'); }
 			if (current !== generation) { return; }
-			await verifyExchangeServer(url);
+			const capabilities = await verifyExchangeServer(url);
 			if (current !== generation) { return; }
 			await context.secrets.store(secretKey + '.' + pointId, key);
 			if (input.password !== undefined && typeof input.password !== 'string') { throw new Error('Invalid workspace password.'); }
@@ -333,7 +407,7 @@ export function registerExchangeChat(context: vscode.ExtensionContext, browser?:
 				let media: {dispose():void} | undefined;
 				surface.onClose=()=>{media?.dispose();if(current===generation&&!disposed){connection=undefined;scheduleRestore();}};
 				if(browser){const {ExchangeBrowser}=await import('../browser/exchangeBrowser');if(!surface.closed&&current===generation){
-					const remote=new ExchangeBrowser(url,pointId,key,browser,cipher);media=remote;surface.browserTab=()=>remote.selectedTab();surface.page=()=>remote.selectedPage();
+					const remote=new ExchangeBrowser(url,pointId,key,browser,cipher,capabilities.deviceIdentity);media=remote;surface.browserTab=()=>remote.selectedTab();surface.page=()=>remote.selectedPage();
 					const showViewers=()=>{
 						const page=remote.selectedPage();
 						if(viewersStatus&&page&&remote.viewerCount>0){viewersStatus.text=`$(eye) ${remote.viewerCount}`;viewersStatus.tooltip=`${remote.viewerCount} active viewers · ${page.title||page.url}`;viewersStatus.show();}else viewersStatus?.hide();

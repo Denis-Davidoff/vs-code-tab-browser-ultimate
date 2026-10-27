@@ -27,6 +27,14 @@ export function readExchangeUiCommand(value: unknown): ExchangeUiCommand | undef
 		case 'newChat': case 'newTab': message = { type: m.type, location: 'here' }; break;
 		case 'removeAttachment': case 'openChat': case 'deleteChat': case 'closeTab': case 'selectTab': case 'unqueue': case 'stopAgent': case 'resumeInTerminal':
 			if (!id()) { return undefined; } message = { type: m.type, id: m.id }; break;
+		// Terminal lifecycle; the host checks again (`aiBrowser.chat.remoteTerminal`, encryption, consent, shared).
+		case 'newTerminal':
+			if (Object.keys(m).some(k => !['type','agent'].includes(k)) || (m.agent !== undefined && m.agent !== 'claude' && m.agent !== 'codex')) { return undefined; }
+			message = { type: 'newTerminal', ...(m.agent ? { agent: m.agent } : {}) }; break;
+		case 'closeTerminal': case 'restartTerminal':
+			if (!id() || Object.keys(m).some(k => !['type','id'].includes(k))) { return undefined; } message = { type: m.type, id: m.id }; break;
+		case 'renameTerminal':
+			if (!id() || !text('name',200) || Object.keys(m).some(k => !['type','id','name'].includes(k))) { return undefined; } message = { type: 'renameTerminal', id: m.id, name: m.name }; break;
 		case 'resumeQueue':
 			if (!text('tabId',100)) { return undefined; } message = { type: 'resumeQueue', tabId: m.tabId }; break;
 		case 'renameTab':

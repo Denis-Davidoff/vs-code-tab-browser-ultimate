@@ -1796,24 +1796,36 @@ button {
 }
 
 .toolbar-settings,
+.selector-controls,
 .toolbar-attachments {
 	display: flex;
 	align-items: center;
 	min-width: 0;
 }
 
+.selector-controls { display: flex; align-items: center; gap: 2px; flex-wrap: nowrap; width: max-content; }
 .toolbar-settings { gap: 2px; justify-content: center; justify-self: center; max-width: 100%; }
 .toolbar-attachments { flex: none; width: max-content; }
 
-.toolbar.compact-effort .toolbar-settings > .pill { min-width: 0; }
-.toolbar.compact-effort .toolbar-settings > .pill:nth-child(1) { flex: 0 1 auto; max-width: 90px; }
-.toolbar.compact-effort .toolbar-settings > .pill:nth-child(2) { flex: 0 1 auto; max-width: 130px; }
+.toolbar.compact-effort .selector-controls > .pill { min-width: 0; }
+.toolbar.compact-effort .selector-controls > .pill:nth-child(1) { flex: 0 1 auto; max-width: 90px; }
+.toolbar.compact-effort .selector-controls > .pill:nth-child(2) { flex: 0 1 auto; max-width: 130px; }
 .toolbar.compact-effort .approve-toggle { flex: none; }
 
-.toolbar.stacked { grid-template-columns: auto minmax(0, 1fr); gap: 4px; }
-.toolbar.stacked .toolbar-settings { grid-column: 1 / -1; grid-row: 1; width: 100%; }
-.toolbar.stacked .toolbar-attachments { grid-column: 1; grid-row: 2; }
-.toolbar.stacked .toolbar-end { grid-column: 2; grid-row: 2; }
+/* The summary takes only the space left between the existing tool buttons. */
+.toolbar .compact-selector { display: none; }
+.toolbar.compact-selector-mode { grid-template-columns: max-content minmax(22px, 1fr) max-content; }
+.toolbar.compact-selector-mode .toolbar-settings { justify-self: stretch; width: 100%; overflow: hidden; }
+.toolbar.compact-selector-mode .toolbar-settings > :not(.compact-selector) { display: none; }
+.toolbar.compact-selector-mode .compact-selector {
+ display: flex; align-items: center; gap: 3px; min-width: 0; max-width: 100%; width: 100%; padding: 0 8px 0 2px;
+}
+.compact-selector-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.compact-selector .compact-effort-dot {
+ flex: none; width: 6px; height: 6px; padding: 0; margin: 0; border: 0;
+ border-radius: 50%; background: var(--effort-colour); pointer-events: none;
+}
+.compact-selector .pill-chevron { display: none; }
 
 
 
@@ -2855,13 +2867,53 @@ button {
 	margin-left: 2px;
 }
 
+/* The narrow strip's overflow (`layoutTabOverflow`): hidden tabs are listed behind "+N". */
+.tab.overflowed { display: none; }
+.tab-row.measuring .tab { flex-shrink: 0; }
+.tab-overflow-button {
+	flex: none;
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	padding: 2px 6px;
+	border-radius: 6px;
+	color: var(--fg-3);
+	font-variant-numeric: tabular-nums;
+}
+.tab-overflow-button[hidden] { display: none; }
+.tab-overflow-button:hover,
+.tab-overflow-button.active { color: var(--fg); }
+.popup.tab-overflow { min-width: 200px; max-width: 320px; overflow-y: auto; }
+.tab-overflow-item { position: relative; display: flex; align-items: center; }
+.tab-overflow-item .tab-overflow-row { flex: 1; min-width: 0; padding-right: 30px; }
+.tab-overflow-row .menu-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tab-overflow-row .tab-agents { flex: none; margin-left: 6px; }
+.tab-overflow-mark { display: inline-flex; align-items: center; justify-content: center; }
+.tab-overflow-more {
+	position: absolute;
+	right: 4px;
+	opacity: 0;
+}
+.tab-overflow-item:hover .tab-overflow-more,
+.tab-overflow-item:focus-within .tab-overflow-more,
+.tab-overflow-more:focus-visible { opacity: 1; }
+@media (hover: none) { .tab-overflow-more { opacity: 1; } }
+
 
 .tab-confirm {
+	position: absolute;
+	z-index: var(--ds-z-popup);
 	display: flex;
 	flex-wrap: wrap;
 	align-items: center;
+	justify-content: flex-end;
 	gap: 6px;
-	padding: 6px 10px;
+	box-sizing: border-box;
+	padding: 8px 10px;
+	border-radius: var(--ds-radius-md);
+	background: var(--ds-surface-raised);
+	border: 1px solid var(--vscode-menu-border, var(--border-strong));
+	box-shadow: var(--ds-shadow-popup);
 	color: var(--fg-2);
 	font-size: 0.92em;
 }
@@ -4090,7 +4142,7 @@ button {
 	min-width: 0;
 	flex-wrap: wrap;
 	gap: 4px;
-	max-height: 26px;
+	max-height: var(--ctl-h);
 	overflow: hidden;
 }
 
@@ -4903,6 +4955,8 @@ button {
 	background: no-repeat center / 16px 16px; font-style: normal; font-weight: normal; text-decoration: none;
 }
 .theme-file-icon::before { content: attr(data-char); font-size: var(--icon-size, 100%); line-height: 1; }
+:root[data-chat-file-icons="false"] .theme-file-icon,
+:root[data-chat-file-icons="false"] .chat-file-icon { display: none; }
 /* In a chip the chip's own gap parts icon and label, so the icon has no margin;
    and a font glyph's box is its ink, not its advance — Seti's glyph at 150% is
    19.5 px wide with ~3.7 px of bearing on each side (measured), which put the
@@ -5158,7 +5212,6 @@ button {
 	.chat-drawer-footer .ghost { width: 30px; padding: 0; }
 	.chat-drawer-collapsed .chat-drawer-header { padding: 8px; }
 	.chat-drawer-collapsed .chat-drawer-title,
-	.chat-drawer-collapsed .tab-confirm { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -5439,9 +5492,35 @@ button {
 :root:not([data-theme]) body.vscode-high-contrast-light .send.queue-button {
  background: var(--vscode-button-background);
 }
-.appearance-setting { flex: none; }
+.appearance-setting { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 0; flex: none; }
+.appearance-setting input[type="checkbox"] { flex: none; width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
 
 /* ---------------------------------------------------------------- control standard */
+/* Attachment previews share the website's panel and icon-button styling. */
+body > dialog.attachment-preview {
+  width: min(900px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--ds-radius-md, 12px);
+  background: var(--bg);
+  color: var(--fg);
+  box-shadow: var(--ds-shadow-modal);
+  overflow: hidden;
+}
+body > dialog.attachment-preview[open] { display: flex; flex-direction: column; }
+.attachment-preview::backdrop { background: var(--ds-backdrop, #0009); }
+.attachment-preview-header { display: flex; align-items: center; gap: 12px; padding: 10px 12px 10px 16px; border-bottom: 1px solid var(--border); flex: none; }
+.attachment-preview-header strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.attachment-preview-close { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 32px; height: 32px; padding: 0; border: 0; border-radius: var(--ctl-radius); background: transparent; color: var(--fg-3); cursor: pointer; }
+.attachment-preview-close:hover { background: var(--soft-2); color: var(--fg); }
+.attachment-preview-content { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 16px; }
+.attachment-preview-content img { display: block; max-width: 100%; max-height: 65dvh; object-fit: contain; margin: 0 auto; }
+.attachment-preview-content pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.6 var(--mono); margin: 12px 0 0; }
+.attachment-preview-footer { display: flex; justify-content: center; padding: 10px 16px 14px; flex: none; }
+.attachment-preview-dismiss { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; padding: 6px 18px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--fg); font: inherit; cursor: pointer; }
+.attachment-preview-dismiss:hover { background: var(--soft-2); border-color: var(--border-strong); }
+.attachment-preview :is(.attachment-preview-close, .attachment-preview-dismiss):focus-visible { outline: var(--ctl-ring); outline-offset: var(--ctl-ring-offset); }
 /* One set of rules for sizes, radii, focus and disabled states, read from the
    --ctl-* tokens on :root. Kept last so it wins over the older per-control rules
    of equal specificity; class names the script uses are unchanged. */
@@ -5680,3 +5759,626 @@ textarea.form-input {
 .history-panel button.ghost:not(.round):not(.icon-only):hover:not(:disabled) { border-color: color-mix(in srgb, var(--vscode-foreground) 32%, transparent); }
 .feature-settings .feature-settings-heading button.ghost,
 .history-panel .panel-head button.ghost { border-color: transparent; }
+
+/* Desktop settings are moved here on hover; touch devices open it by tapping. */
+.selector-strip { width: max-content; min-width: 0; padding: 6px 8px; overflow-x: auto; overflow-y: hidden; }
+.selector-strip.open { display: flex; }
+.selector-strip .selector-controls { flex: none; }
+.selector-strip .pill { flex: none; }
+
+/* ---------------------------------------------------------------- terminal tabs
+ *
+ * xterm in the editor's chat view (`terminalView.ts`, built only for the editor).
+ * The terminals have their own column beside `.chat-main`, at the full width — not
+ * inside the 696px conversation column. Whichever is not in front stays laid out
+ * and measurable, hidden with `visibility` and taken out of the flow, never
+ * `display: none`: the conversation keeps its scroll position and what it follows
+ * (`renderThread` measures it), and a terminal keeps its size and its scrollback.
+ * `xterm.css` is loaded by its own `<link>`; the colours come from the editor's
+ * terminal theme (set as `--terminal-background` by the script).
+ */
+
+.terminal-main {
+	--terminal-background: var(--bg);
+	position: relative;
+	display: flex;
+	flex: 1;
+	flex-direction: column;
+	min-width: 0;
+	min-height: 0;
+	background: var(--terminal-background);
+}
+
+#app:not(.terminal-front) .terminal-main,
+#app.terminal-front .chat-main {
+	position: absolute;
+	inset: 0;
+	visibility: hidden;
+	pointer-events: none;
+}
+
+/* The one line of the hidden conversation column that is about the terminals themselves ("The terminal
+   could not be started.") stays on screen over the terminal: a child may be visible inside a hidden
+   parent. Banners that need an answer are not shown this way: the view puts the conversation in front
+   while one is pending (`conversationNeeded` in terminalTabs.ts). */
+#app.terminal-front .chat-main > .control-refusal:not([hidden]) {
+	visibility: visible;
+	pointer-events: auto;
+	position: relative;
+	z-index: 5;
+}
+
+.terminal-host {
+	position: absolute;
+	inset: 0;
+	overflow: hidden;
+	visibility: hidden;
+	background: var(--terminal-background);
+}
+
+.terminal-host.front {
+	visibility: visible;
+}
+
+/* The padding is the terminal's own, which FitAddon subtracts when it counts columns and rows. */
+.terminal-host .xterm {
+	padding: 8px 0 0 12px;
+}
+
+/* xterm.css paints the viewport black, and it lies under the padding: the theme's background, or a black band shows. */
+.terminal-host .xterm .xterm-viewport {
+	background-color: var(--terminal-background);
+}
+
+/* The shell ended: the screen stays readable, and the tab can be started again. */
+.terminal-exit {
+	position: absolute;
+	left: 50%;
+	bottom: 14px;
+	z-index: 2;
+	display: none;
+	align-items: center;
+	gap: 10px;
+	max-width: calc(100% - 24px);
+	padding: 5px 6px 5px 12px;
+	transform: translateX(-50%);
+	border: 1px solid var(--border-strong);
+	border-radius: var(--ds-radius-md);
+	background: var(--elevated);
+	color: var(--fg-2);
+	box-shadow: var(--ds-shadow-tip);
+	font-size: var(--ctl-font);
+}
+
+.terminal-exit.show {
+	display: flex;
+}
+
+.terminal-exit-restart {
+	height: var(--ctl-h-sm);
+	padding: 0 10px;
+	border-radius: var(--ctl-radius);
+	background: var(--ctl-primary-bg);
+	color: var(--ctl-primary-fg);
+	cursor: pointer;
+}
+
+.terminal-exit-restart:hover {
+	background: var(--ctl-primary-hover-bg);
+}
+
+.terminal-exit-restart:focus-visible {
+	outline: var(--ctl-ring);
+	outline-offset: var(--ctl-ring-offset);
+}
+
+/* A terminal's tab: the terminal icon in front of the name, and a muted dot once the shell ended. */
+.tab-terminal-icon {
+	flex: none;
+	color: var(--fg-3);
+}
+
+.tab-mark.exited::before {
+	content: '';
+	display: block;
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	background: var(--fg-faint);
+}
+
+.tab-compact.status-terminal.exited {
+	opacity: .6;
+}
+
+.chat-drawer-collapsed .tab-terminal-icon {
+	display: none;
+}
+
+/* ---------------------------------------------------------------- terminals pinned to a conversation
+ * (VIEW-B: chips, strip marks, menus. The terminal column itself is the block above.) */
+
+/* The pinned chip: a status dot instead of the reference button. */
+.chip-terminal .chip-pin-mark {
+	flex: none;
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	background: var(--ok);
+}
+
+.chip-terminal .chip-pin-mark.exited {
+	background: var(--fg-faint);
+}
+
+.chip-terminal .chip-pin-mark.closed {
+	background: var(--vscode-charts-orange, #d18616);
+}
+
+.chip-terminal.closed .chip-label {
+	text-decoration: line-through;
+	opacity: .7;
+}
+
+/* A conversation tab: the terminal icon and the number of terminals pinned to it. */
+.tab-terminals {
+	flex: none;
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	font-size: 0.85em;
+	color: var(--fg-3);
+}
+
+.tab-terminals .codicon {
+	font-size: 12px;
+}
+
+/* A terminal's tab: new output, the agent typing, and who uses it. */
+.tab-mark.terminal-unread::before,
+.tab-mark.terminal-typing::before {
+	content: '';
+	display: block;
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+}
+
+.tab-mark.terminal-unread::before {
+	background: var(--vscode-charts-blue, var(--accent));
+}
+
+.tab-mark.terminal-typing::before {
+	background: var(--accent);
+	animation: terminal-typing-pulse 1s ease-in-out infinite;
+}
+
+@keyframes terminal-typing-pulse {
+	50% { opacity: .35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.tab-mark.terminal-typing::before { animation: none; }
+}
+
+.tab-terminal-pin {
+	flex: none;
+	font-size: 12px;
+	color: var(--fg-3);
+}
+
+.tab-terminal-pin.paused {
+	color: var(--vscode-charts-orange, #d18616);
+}
+
+.tab-terminal-remote {
+	flex: none;
+	font-size: 12px;
+	color: var(--fg-3);
+}
+
+.tab-terminal-remote.control {
+	color: var(--vscode-charts-orange, #d18616);
+}
+
+/* The collapsed rail (wide layouts only) shows tiles: an unread terminal is tinted, and the count sits in the corner opposite the agents' one. */
+@media (min-width: 1000px) {
+	.chat-drawer-collapsed .tab-compact.status-terminal.unread { color: var(--vscode-charts-blue, var(--accent)); }
+	.chat-drawer-collapsed .tab-compact.status-terminal.typing { color: var(--accent); }
+	.chat-drawer-collapsed .tab-terminal-pin,
+	.chat-drawer-collapsed .tab-terminal-remote,
+	.chat-drawer-collapsed .tab-mark.terminal-unread,
+	.chat-drawer-collapsed .tab-mark.terminal-typing { display: none; }
+	.chat-drawer-collapsed .tab-label > .tab-terminals {
+		position: absolute;
+		left: 2px;
+		bottom: 1px;
+		z-index: 1;
+		gap: 1px;
+		padding: 0 2px;
+		border-radius: 4px;
+		background: var(--elevated, var(--bg));
+		font-size: 9px;
+		line-height: 12px;
+	}
+}
+
+/* ---------------------------------------------------------------- terminal view: toolbar, stage, key bar, touch
+ *
+ * `terminalToolbar.ts`, `terminalKeyBar.ts` and `terminalTouchUi.ts`. The column inside `.terminal-main` is the
+ * toolbar, the stage (the hosts are absolutely positioned inside it, so FitAddon fits to what the toolbar and the
+ * key bar leave) and the touch key bar. Nothing here is set through the `style` attribute (the page's CSP blocks
+ * it): only classes, `hidden` and custom properties from the script. A class's `display` beats the `hidden`
+ * attribute, so each component says `[hidden] { display: none }` for itself.
+ */
+
+.terminal-main {
+	container-type: inline-size;
+	container-name: terminal;
+}
+
+.terminal-stage {
+	position: relative;
+	flex: 1;
+	min-height: 0;
+}
+
+.terminal-host {
+	touch-action: none;
+	-webkit-touch-callout: none;
+}
+
+.terminal-toolbar {
+	flex: none;
+	display: flex;
+	align-items: center;
+	gap: var(--ctl-gap-sm);
+	min-height: var(--ctl-h-lg);
+	padding: 4px 8px;
+	border-bottom: 1px solid var(--border);
+	background: var(--terminal-background);
+	color: var(--fg-2);
+	font-size: var(--ctl-font);
+}
+
+.terminal-toolbar [hidden],
+.terminal-keybar [hidden],
+.terminal-stage [hidden] {
+	display: none !important;
+}
+
+.terminal-toolbar-name {
+	flex: 0 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	color: var(--fg);
+	font-weight: 600;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.terminal-toolbar-status {
+	flex: none;
+	color: var(--fg-3);
+	white-space: nowrap;
+}
+
+.terminal-toolbar-spacer {
+	flex: 1 1 0;
+	min-width: 0;
+}
+
+/* Who drives this terminal: the conversation that pinned it, a dot while its input arrives, and a muted look while paused. */
+.terminal-agent-mark {
+	display: inline-flex;
+	flex: 0 1 auto;
+	align-items: center;
+	gap: 5px;
+	min-width: 0;
+	max-width: 45%;
+	height: var(--ctl-h-sm);
+	padding: 0 8px;
+	border-radius: var(--ds-radius-pill);
+	background: var(--soft-2);
+	color: var(--fg-2);
+}
+
+.terminal-agent-text {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.terminal-agent-dot {
+	display: none;
+	flex: none;
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	background: var(--accent);
+}
+
+.terminal-agent-mark.typing .terminal-agent-dot {
+	display: block;
+	animation: terminal-agent-pulse 1s ease-in-out infinite;
+}
+
+.terminal-agent-mark.paused {
+	color: var(--vscode-editorWarning-foreground, var(--fg-2));
+}
+
+@keyframes terminal-agent-pulse {
+	50% { opacity: .35; }
+}
+
+.terminal-tool {
+	display: inline-flex;
+	flex: none;
+	align-items: center;
+	justify-content: center;
+	gap: 5px;
+	min-width: var(--ctl-h);
+	height: var(--ctl-h);
+	padding: 0 8px;
+	border-radius: var(--ctl-radius);
+	background: transparent;
+	color: var(--fg-2);
+	font: inherit;
+	white-space: nowrap;
+	cursor: pointer;
+}
+
+.terminal-tool:hover {
+	background: var(--ctl-hover-bg);
+	color: var(--fg);
+}
+
+.terminal-tool:focus-visible {
+	outline: var(--ctl-ring);
+	outline-offset: var(--ctl-ring-offset);
+}
+
+.terminal-tool[aria-pressed="true"] {
+	color: var(--vscode-editorWarning-foreground, var(--fg));
+}
+
+/* A narrow terminal (a phone, a thin side bar): icons only. */
+@container terminal (max-width: 520px) {
+	.terminal-tool-label,
+	.terminal-toolbar-status {
+		display: none;
+	}
+	.terminal-agent-text {
+		display: none;
+	}
+	.terminal-agent-mark {
+		padding: 0 6px;
+	}
+}
+
+@media (max-height: 460px) {
+	.terminal-toolbar-name {
+		display: none;
+	}
+}
+
+@media (pointer: coarse) {
+	.terminal-tool {
+		min-width: 40px;
+		height: 40px;
+	}
+}
+
+.terminal-sr {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip: rect(0 0 0 0);
+	white-space: nowrap;
+}
+
+/* The key bar: hidden unless the device is a touch one (or it was turned on). */
+.terminal-keybar {
+	--kb-h: 38px;
+	flex: none;
+	display: none;
+	flex-direction: column;
+	gap: 4px;
+	padding: 4px 4px calc(4px + env(safe-area-inset-bottom, 0px));
+	border-top: 1px solid var(--border);
+	background: var(--elevated);
+	touch-action: manipulation;
+	-webkit-user-select: none;
+	user-select: none;
+	-webkit-touch-callout: none;
+}
+
+.terminal-main.has-keybar .terminal-keybar {
+	display: flex;
+}
+
+@media (pointer: coarse) {
+	.terminal-keybar {
+		--kb-h: 44px;
+	}
+}
+
+.terminal-keygrid {
+	display: grid;
+	grid-template-columns: repeat(8, minmax(0, 1fr));
+	gap: 4px;
+}
+
+.terminal-key {
+	position: relative;
+	min-width: 0;
+	min-height: var(--kb-h);
+	padding: 0 2px;
+	border-radius: var(--ctl-radius);
+	background: var(--soft-2);
+	color: var(--fg);
+	font: inherit;
+	font-size: 14px;
+	cursor: pointer;
+	touch-action: manipulation;
+}
+
+.terminal-key:active,
+.terminal-key.held {
+	background: var(--ctl-active-bg);
+}
+
+.terminal-key[aria-pressed="true"] {
+	background: var(--ctl-primary-bg);
+	color: var(--ctl-primary-fg);
+}
+
+/* A locked modifier: a dot in the corner. */
+.terminal-key[data-lock]::after {
+	content: '';
+	position: absolute;
+	top: 4px;
+	right: 4px;
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: currentColor;
+}
+
+.terminal-key:focus-visible {
+	outline: var(--ctl-ring);
+	outline-offset: var(--ctl-ring-offset);
+}
+
+.terminal-key-off {
+	visibility: hidden;
+}
+
+/* The letters offered while Ctrl is armed or locked: one tap sends the control byte. */
+.terminal-ctrl-strip {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	overflow-x: auto;
+}
+
+.terminal-ctrl-label {
+	flex: none;
+	padding: 0 4px;
+	color: var(--fg-3);
+	font-size: var(--ctl-font);
+}
+
+.terminal-ctrl-letter {
+	flex: 1 0 36px;
+}
+
+/* A short viewport (landscape with the keyboard up): the two rows become one that scrolls sideways. */
+@media (max-height: 460px) {
+	.terminal-keygrid:not(.terminal-drawer) {
+		grid-template-columns: repeat(16, minmax(44px, 1fr));
+		overflow-x: auto;
+		touch-action: pan-x;
+	}
+}
+
+/* Where the bar was hidden on a touch device: a small button brings it back. */
+.terminal-keybar-chip {
+	position: absolute;
+	right: 8px;
+	bottom: 8px;
+	z-index: 3;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 36px;
+	height: 36px;
+	border: 1px solid var(--border-strong);
+	border-radius: 50%;
+	background: var(--elevated);
+	color: var(--fg-2);
+	cursor: pointer;
+}
+
+/* Scrolled back in the scrollback: a way to the newest line. */
+.terminal-bottom-chip {
+	position: absolute;
+	right: 12px;
+	bottom: 12px;
+	z-index: 3;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 44px;
+	height: 44px;
+	border: 1px solid var(--border-strong);
+	border-radius: 50%;
+	background: var(--elevated);
+	color: var(--fg);
+	box-shadow: var(--ds-shadow-tip);
+	cursor: pointer;
+}
+
+/* The bubble over a long-press selection. */
+.terminal-bubble {
+	position: absolute;
+	left: var(--bubble-x, 0);
+	top: var(--bubble-y, 0);
+	z-index: 4;
+	display: flex;
+	gap: 2px;
+	padding: 3px;
+	border: 1px solid var(--border-strong);
+	border-radius: var(--ds-radius-md);
+	background: var(--elevated);
+	box-shadow: var(--ds-shadow-popup);
+}
+
+.terminal-bubble-button {
+	min-height: 40px;
+	padding: 0 12px;
+	border-radius: var(--ctl-radius);
+	background: transparent;
+	color: var(--fg);
+	font: inherit;
+	cursor: pointer;
+}
+
+.terminal-bubble-button:active {
+	background: var(--ctl-active-bg);
+}
+
+/* The one input a soft keyboard types into: 1px and transparent, never `display: none` (which cannot be focused);
+   16px so iOS does not zoom the page on focus. */
+.terminal-kbd {
+	position: absolute;
+	left: 0;
+	bottom: 0;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	border: 0;
+	overflow: hidden;
+	opacity: 0;
+	resize: none;
+	font-size: 16px;
+	caret-color: transparent;
+	pointer-events: none;
+}
+
+/* Where the page is not the editor's and a soft keyboard may cover it (iOS does not resize the layout viewport): the
+   page lies over what is visible. `terminalKeyBar.ts` writes the four properties from `visualViewport`. */
+body.vv-locked {
+	position: fixed;
+	left: var(--vv-left, 0);
+	top: var(--vv-top, 0);
+	width: var(--vv-width, 100%);
+	height: var(--vv-height, 100%);
+	overflow: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.terminal-agent-mark.typing .terminal-agent-dot { animation: none; }
+}

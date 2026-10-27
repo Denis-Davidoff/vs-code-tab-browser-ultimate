@@ -1,10 +1,11 @@
+import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { transpileModule, ModuleKind, ScriptTarget } from 'typescript';
 
-function fixture(streamPending=false, videoMode?: 'supported'|'unsupported'|'failure') {
+function fixture(streamPending=false, videoMode?: 'supported'|'unsupported'|'failure',deviceIdentity=true) {
  const starts: string[] = [], disposed: string[] = [], finish: (() => void)[] = [];
  const encoders:any[]=[],videoAttempts:string[]=[];
  const sent:any[]=[],frames:((data:string,width:number,height:number)=>void)[]=[];
@@ -12,12 +13,14 @@ function fixture(streamPending=false, videoMode?: 'supported'|'unsupported'|'fai
  const socket = { readyState: 1, bufferedAmount: 0, send(data:string) {sent.push(JSON.parse(data));}, close() {}, addEventListener(name: string, listener: (event: any) => void) { listeners.set(name, listener); } };
  let listingError: Error | undefined;
  let tabs = [{ id: 'a', title: 'A', url: 'https://a.test', kind: 'chrome' }, { id: 'b', title: 'B', url: 'https://b.test', kind: 'vscode' }];
- const context: any = { exports: {}, Date: { now: () => Date.now() }, setTimeout() {}, clearTimeout() {}, setInterval() {}, clearInterval() {}, require(name: string) {
+ const context: any = { exports: {}, URL, Date: { now: () => Date.now() }, setTimeout() {}, clearTimeout() {}, setInterval() {}, clearInterval() {}, require(name: string) {
+  if(name==='node:crypto')return {createHash};
+  if(name==='vscode')return {env:{machineId:'test-workstation'}};
   return name.includes('exchangeCrypto') ? { encryptedExchangeSocket: () => socket } : { isExchangeControlPage: () => false, readRemoteBrowserInput: (input: unknown) => input };
  } };
  const source = readFileSync('src/browser/exchangeBrowser.ts', 'utf8');
  runInNewContext(transpileModule(source, { compilerOptions: { module: ModuleKind.CommonJS, target: ScriptTarget.ES2022 } }).outputText, context);
- const browser = new context.exports.ExchangeBrowser('https://exchange.test', 'workspace', 'key', { ...(videoMode?{async remoteVideoEncoder(_tabId:string,output:Function,failed:Function){videoAttempts.push(_tabId);if(videoMode==='unsupported')throw new Error('Unsupported');const encoder={disposed:false,keys:0,failed,async push(_data:string,width:number,height:number){if(videoMode==='failure')throw new Error('Failed');output({codec:'avc1.420028',streamId:'stream-1',timestamp:100,key:true,data:'AAAAAQ==',width,height});},requestKeyframe(){this.keys++;},dispose(){this.disposed=true;}};encoders.push(encoder);return encoder;}}:{}), async remoteTabs() { if(listingError)throw listingError; return tabs; }, async remoteTab(id:string) { const tab=tabs.find(tab=>tab.id===id); if(!tab)throw new Error('Tab closed'); return tab; }, async remoteStream(tabId:string,frame:(data:string,width:number,height:number)=>void) { starts.push(tabId); frames.push(frame); const stream={ dispose() { disposed.push(tabId); } }; if(streamPending)return new Promise(resolve=>finish.push(()=>resolve(stream)));return stream; }, async remoteInput(tabId:string,input:any) { notifications.push({tabId,input}); } });
+ const browser = new context.exports.ExchangeBrowser('https://exchange.test', 'workspace', 'key', { ...(videoMode?{async remoteVideoEncoder(_tabId:string,output:Function,failed:Function){videoAttempts.push(_tabId);if(videoMode==='unsupported')throw new Error('Unsupported');const encoder={disposed:false,keys:0,failed,async push(_data:string,width:number,height:number){if(videoMode==='failure')throw new Error('Failed');output({codec:'avc1.420028',streamId:'stream-1',timestamp:100,key:true,data:'AAAAAQ==',width,height});},requestKeyframe(){this.keys++;},dispose(){this.disposed=true;}};encoders.push(encoder);return encoder;}}:{}), async remoteTabs() { if(listingError)throw listingError; return tabs; }, async remoteTab(id:string) { const tab=tabs.find(tab=>tab.id===id); if(!tab)throw new Error('Tab closed'); return tab; }, async remoteStream(tabId:string,frame:(data:string,width:number,height:number)=>void) { starts.push(tabId); frames.push(frame); const stream={ dispose() { disposed.push(tabId); } }; if(streamPending)return new Promise(resolve=>finish.push(()=>resolve(stream)));return stream; }, async remoteInput(tabId:string,input:any) { notifications.push({tabId,input}); } },undefined,deviceIdentity);
  const notifications: unknown[] = [];
  browser.onPage = () => notifications.push(browser.selectedPage()?.id ?? null);
  function message(value: unknown) { listeners.get('message')!({ data: JSON.stringify(value) }); }
@@ -259,4 +262,17 @@ test('a tab that initially could not encode retries H.264 after navigating to a 
  await f.browser.refresh();await f.browser.chain;assert.equal(f.videoAttempts.length,2);
  f.frames[1]('new-jpeg-input',1440,900);await new Promise(resolve=>setImmediate(resolve));
  assert.equal(f.sent.at(-1).type,'browser.video');
+});
+
+
+test('media handshake uses a server-specific machine hash without exposing the raw machine ID',()=>{
+ const f=fixture();f.listeners.get('open')!({});
+ const hello=f.sent.find(value=>value.type==='auth');
+ assert.equal(hello.deviceId,createHash('sha256').update('test-workstationhttps://exchange.test').digest('hex'));
+ assert.ok(!JSON.stringify(hello).includes('test-workstation'));
+});
+
+test('older servers receive the legacy media handshake without unknown strict-schema fields',()=>{
+ const f=fixture(false,undefined,false);f.listeners.get('open')!({});
+ assert.equal(f.sent.find(value=>value.type==='auth').deviceId,undefined);
 });

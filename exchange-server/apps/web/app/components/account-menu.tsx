@@ -56,6 +56,7 @@ export function AccountMenu({
             <Icon name="shield" size={16} />
             Account settings
           </button>
+          <a href="/security">Access activity</a>
           <button onClick={() => void auth.signOut()}>
             <Icon name="logout" size={16} />
             Sign out
@@ -84,7 +85,11 @@ export function AccountMenu({
         </div>
         <p className="account-email">{user.email}</p>
 
-        {notice && <p className="notice is-info" role="status">{notice}</p>}
+        {notice && (
+          <p className="notice is-info" role="status">
+            {notice}
+          </p>
+        )}
         <Form
           error={errorField === "name" ? error : ""}
           errorField="name"

@@ -3,6 +3,8 @@ media/index.js
 media/index.js.map
 media/codicon.css
 media/codicon.css.map
+media/xterm.css
+media/xterm.css.map
 
 # Build output
 out/
@@ -34,3 +36,6 @@ media/chat.js.map
 media/recording.js
 media/recording.js.map
 /deploy-exchange.sh
+
+# Private Exchange modules: backed up separately; never publish with the base server.
+/exchange-server/private-plugins/

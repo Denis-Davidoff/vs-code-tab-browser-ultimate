@@ -19,8 +19,8 @@ test("custom schema migrations keep all foreign keys out of public and preserve 
       if (!file.endsWith(".sql")) continue;
       const original = await readFile(join(source, file), "utf8");
       const custom = await readFile(join(folder.path, file), "utf8");
-      assert.ok(original.includes('"public"."user"'));
-      assert.ok(custom.includes('"exchange"."user"'));
+      if (original.includes('"public"."user"'))
+        assert.ok(custom.includes('"exchange"."user"'));
       assert.ok(!custom.includes('"public".'));
       assert.equal(custom.replaceAll('"exchange".', '"public".'), original);
     }

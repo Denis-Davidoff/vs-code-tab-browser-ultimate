@@ -125,7 +125,10 @@ export function encryptedExchangeSocket(
 			'message',
 			new MessageEvent('message', { data: JSON.stringify(value) }),
 		);
+	let pendingBytes = 0;
 	const seal = (value: unknown) => {
+		const plain = utf8.encode(JSON.stringify(value));
+		pendingBytes += plain.byteLength;
 		sendQueue = sendQueue
 			.then(async () => {
 				const header = {
@@ -149,7 +152,7 @@ export function encryptedExchangeSocket(
 						]),
 					},
 					cipher.key,
-					utf8.encode(JSON.stringify(value)),
+					plain,
 				);
 				if (transport.readyState === 1)
 					transport.send(
@@ -160,7 +163,8 @@ export function encryptedExchangeSocket(
 						}),
 					);
 			})
-			.catch(() => transport.close(1008, 'Encryption failed'));
+			.catch(() => transport.close(1008, 'Encryption failed'))
+			.finally(() => { pendingBytes -= plain.byteLength; });
 	};
 	const hello = () => {
 		verified = false;
@@ -172,7 +176,7 @@ export function encryptedExchangeSocket(
 			return transport.readyState;
 		},
 		get bufferedAmount() {
-			return transport.bufferedAmount;
+			return transport.bufferedAmount + pendingBytes;
 		},
 		close(code?: number, reason?: string) {
 			transport.close(code, reason);
@@ -240,7 +244,7 @@ export function encryptedExchangeSocket(
 						value.type,
 					)
 				) {
-					if (!agent && value.online === true) hello();
+					if (!agent && value.online === true) { if (ready) ready = { ...ready, online: true }; hello(); }
 					dispatch(value);
 					return;
 				}

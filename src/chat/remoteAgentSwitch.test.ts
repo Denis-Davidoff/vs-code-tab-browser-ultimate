@@ -22,7 +22,7 @@ function fixture(transport:'server'|'chrome') {
  });
  const View=exports.View,view=new View(),native=makeTab('native'),remote=makeTab('remote'),events:any[]=[];
  Object.assign(view,{_frontActive:native,_tabs:[native,remote],_chromeCommand:new AsyncLocalStorage(),_view:{},_exchangeDrafts:new Map(),_remembered:{agent:'codex',models:{},efforts:{}},_context:{globalState:{get:()=>undefined,update:async()=>{}}},
-  _blocked:()=>undefined,_post(){},_postMessage(){},_giveBackQueue(){},_rememberAgent(){},_selection(this:any){return {agent:this._active.chat.agent};},
+  _blocked:()=>undefined,_post(){},_postMessage(){},_focusInput(){},_giveBackQueue(){},_rememberAgent(){},_selection(this:any){return {agent:this._active.chat.agent};},
   _state(this:any){return {chatId:this._active.chat.id,switchTo:this._switchTo};},
   async _receive(this:any,message:any){if(message.type==='select')this._select(message.selection);else await this._switchAgent(message.choice);},
   _addTab(this:any,agent:string){const tab=makeTab(`new-${++serial}`,agent,false);this._tabs.push(tab);this._active=tab;return tab;},

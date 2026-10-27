@@ -1,5 +1,6 @@
 {
   "name": "exchange-server",
+  "license": "Elastic-2.0",
   "private": true,
   "workspaces": [
     "apps/*",
@@ -23,7 +24,9 @@
     "chat:build": "node scripts/build-chat.mjs",
     "predev": "npm run chat:build",
     "prebuild": "npm run chat:build",
-    "test:security": "node --env-file=.env scripts/security-smoke.mjs"
+    "test:security": "node --env-file=.env scripts/security-smoke.mjs",
+    "test:integration": "npm run build -w @exchange/api && node scripts/security-integration.mjs",
+    "test:full": "npm test && npm run build -w @exchange/api && node scripts/security-integration.mjs --full"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

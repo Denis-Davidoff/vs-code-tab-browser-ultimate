@@ -27,6 +27,8 @@
  */
 
 import { schema, number, string, textArgument, numberArgument, type Caller, type Tool } from './mcpProtocol';
+import type { TerminalAgentApi } from './terminalTools';
+import type { TerminalGrants } from './terminalGrants';
 
 /** The four that act; `chatControlTools` in `agentProtocol.ts` is the same list, written twice. */
 export const chatToolNames = ['chat_keep_awake', 'chat_pause', 'chat_resume', 'chat_stop_agent'] as const;
@@ -48,6 +50,15 @@ export interface ChatControl {
 	pause(ownTab: string): unknown;
 	resume(ownTab: string): unknown;
 	stopAgent(ownTab: string, rowId: string): Promise<unknown>;
+	/**
+	 * The `terminal_*` tools' side (`terminalTools.ts`): the terminals pinned to a
+	 * conversation, which only the chat can resolve across every surface.
+	 */
+	readonly terminal: TerminalAgentApi;
+	/** The approvals of typing into a terminal, minted by the chat and consumed by the tools. One store for every surface. */
+	readonly grants: TerminalGrants;
+	/** Whether the approval menu's Terminal row is on Deny: every terminal tool then refuses, whatever a CLI's own rules allowed. */
+	terminalDenied(chatId: string): boolean;
 }
 
 /** Filled in by the chat once it exists. */
