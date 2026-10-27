@@ -131,11 +131,10 @@ for (const file of readdirSync(join(root, 'media', 'icons'))) {
 }
 
 /*
- * The element commands encode two things in one icon: the centre dot is *what*
- * is copied, the ring is *where it goes*. So the same kind must share a dot
- * across destinations, the same destination must share a ring across kinds, and
- * no two kinds may share a dot — which, given the file naming, reduces to the
- * stems lining up.
+ * The element commands carry one crosshair per kind, whatever the destination:
+ * the centre dot says *what* is copied (element, CSS path, CSS path + location,
+ * XPath), and Copy, Claude Code, Codex and the chat share it. So the same kind
+ * must share one icon across destinations, and no two kinds may share a dot.
  */
 const grid = {
 	element: ['aiBrowser.copyElement', 'aiBrowser.addElementToClaudeCode', 'aiBrowser.addElementToCodex', 'aiBrowser.chat.addElement'],
@@ -157,8 +156,8 @@ for (const [kind, ids] of Object.entries(grid)) {
 	if (new Set(stems.map(s => s.dot)).size !== 1) {
 		problems.push(`${kind}: the centre dot differs across destinations`);
 	}
-	if (new Set(stems.map(s => s.dest)).size !== 4) {
-		problems.push(`${kind}: destinations are not copy/claude/codex/chat`);
+	if (stems.some(s => s.dest !== 'copy')) {
+		problems.push(`${kind}: a destination has an icon of its own; every destination uses the kind's crosshair`);
 	}
 }
 
@@ -277,6 +276,7 @@ const twins = {
 	'aiBrowser.repeat.chat.cssLocation': 'aiBrowser.chat.addCssLocation',
 	'aiBrowser.repeat.chat.xpath': 'aiBrowser.chat.addXPath',
 	'aiBrowser.repeat.annotate': 'aiBrowser.annotatePage',
+	'aiBrowser.repeat.annotateAnywhere': 'aiBrowser.annotateAnywhere',
 };
 for (const [delegate, twin] of Object.entries(twins)) {
 	if (!commands.has(delegate)) {

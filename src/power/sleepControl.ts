@@ -36,6 +36,14 @@ export class SleepControl {
 		this.update();
 		this.changed();
 	}
+	/** A new remote viewer renews the timer, without shortening an existing hold. */
+	public connected(minutes: number): void {
+		if (minutes === 0 || this.state.mode === 'forever') { return; }
+		if (minutes === -1) { this.choose({ mode: 'forever' }); return; }
+		if (!validSleepChoice({ mode: 'timer', minutes })) { return; }
+		if (this.state.mode === 'timer' && this.state.until! >= Date.now() + minutes * 60000) { return; }
+		this.choose({ mode: 'timer', minutes });
+	}
 	public update(): void {
 		if (this.disposed) { return; }
 		const before = JSON.stringify(this.state);

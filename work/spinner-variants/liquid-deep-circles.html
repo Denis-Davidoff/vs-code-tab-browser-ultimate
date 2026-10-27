@@ -1,0 +1,50 @@
+<div id="liquid-deep-variants">
+  <style>
+    #liquid-deep-variants { --lc-ink:light-dark(#25242d,#e8e6f1); --lc-muted:light-dark(#696475,#a6a0b6); --lc-bg:light-dark(#f6f5fa,#17161e); --lc-purple:#ac9aff; --lc-cyan:#71e2e1; color:var(--lc-ink); }
+    #liquid-deep-variants .lc-stage { background:var(--lc-bg); min-height:265px; padding:24px 12px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px; box-sizing:border-box; }
+    #liquid-deep-variants .lc-caption { color:var(--lc-muted); text-align:center; }
+    #liquid-deep-variants .lc-name { font-weight:500; }
+    #liquid-deep-variants .lc-sizes { display:flex; align-items:center; gap:24px; height:28px; }
+    #liquid-deep-variants .lc-spinner { position:relative; display:inline-block; flex:none; width:88px; height:88px; }
+    #liquid-deep-variants .lc-sizes .lc-spinner { width:18px; height:18px; }
+    #liquid-deep-variants .lc-spinner::before, #liquid-deep-variants .lc-spinner::after { content:''; position:absolute; box-sizing:border-box; border-radius:50%; animation:lc-deep-morph var(--lc-duration,15s) cubic-bezier(.45,0,.55,1) infinite; }
+    #liquid-deep-variants .lc-spinner::before { inset:15%; background:linear-gradient(135deg,var(--lc-purple),var(--lc-cyan)); }
+    #liquid-deep-variants .lc-spinner::after { inset:2%; border:1px solid var(--lc-purple); opacity:.65; animation-name:lc-deep-shell; }
+    #liquid-deep-variants .lc-big::after { border-width:1.5px; }
+    #liquid-deep-variants .lc-spinner { --lc-a:22% 78% 72% 28% / 28% 22% 78% 72%; --lc-b:78% 22% 24% 76% / 22% 76% 24% 78%; --lc-c:24% 76% 30% 70% / 76% 24% 70% 30%; --lc-d:76% 24% 78% 22% / 26% 78% 22% 74%; --lc-sa:.42; --lc-sb:.68; --lc-ra:80deg; --lc-rb:210deg; --lc-oa:-60deg; --lc-ob:-170deg; }
+    #liquid-deep-variants [data-variant="Микровихрь"] { --lc-duration:15s; }
+    #liquid-deep-variants [data-variant="Микровихрь"] .lc-spinner { --lc-a:88% 12% 72% 28% / 18% 78% 22% 82%; --lc-b:16% 84% 22% 78% / 80% 18% 82% 20%; --lc-ra:160deg; --lc-rb:310deg; --lc-oa:-140deg; --lc-ob:-300deg; }
+    #liquid-deep-variants [data-variant="Ртуть"] .lc-spinner { --lc-a:90% 10% 55% 45% / 90% 45% 55% 10%; --lc-b:22% 78% 10% 90% / 50% 90% 10% 50%; --lc-c:82% 18% 54% 46% / 84% 28% 72% 16%; --lc-d:20% 80% 18% 82% / 46% 80% 20% 54%; --lc-ra:-30deg; --lc-rb:50deg; --lc-oa:15deg; --lc-ob:-35deg; }
+    #liquid-deep-variants [data-variant="Бутон"] .lc-spinner { --lc-a:85% 15% 50% 50% / 80% 80% 20% 20%; --lc-b:50% 50% 15% 85% / 20% 20% 80% 80%; --lc-c:80% 20% 50% 50% / 84% 76% 24% 16%; --lc-d:50% 50% 20% 80% / 16% 24% 76% 84%; --lc-ra:120deg; --lc-rb:240deg; --lc-oa:-120deg; --lc-ob:-240deg; }
+    #liquid-deep-variants [data-variant="Глубина"] { --lc-duration:15s; }
+    #liquid-deep-variants [data-variant="Глубина"] .lc-spinner { --lc-a:82% 18% 78% 22% / 18% 82% 18% 82%; --lc-b:22% 78% 18% 82% / 82% 18% 82% 18%; --lc-c:18% 82% 22% 78% / 82% 18% 82% 18%; --lc-d:78% 22% 82% 18% / 18% 82% 18% 82%; --lc-ra:30deg; --lc-rb:100deg; --lc-oa:-30deg; --lc-ob:-100deg; --lc-sa:.42; --lc-sb:.68; }
+    #liquid-deep-variants [data-variant="Плазма"] { --lc-duration:15s; }
+    #liquid-deep-variants [data-variant="Плазма"] .lc-spinner { --lc-a:15% 85% 85% 15% / 85% 15% 85% 15%; --lc-b:85% 15% 15% 85% / 15% 85% 15% 85%; --lc-c:82% 18% 18% 82% / 18% 82% 18% 82%; --lc-d:18% 82% 82% 18% / 82% 18% 82% 18%; --lc-ra:90deg; --lc-rb:270deg; --lc-oa:-90deg; --lc-ob:-270deg; --lc-sa:.42; --lc-sb:.68; }
+    @keyframes lc-deep-morph { 0%,2% {border-radius:50%;transform:rotate(0deg) scale(1)} 34% {border-radius:var(--lc-a);transform:rotate(var(--lc-ra)) scale(var(--lc-sa))} 50% {border-radius:var(--lc-b);transform:rotate(180deg) scale(.32)} 68% {border-radius:var(--lc-b);transform:rotate(var(--lc-rb)) scale(var(--lc-sb))} 98%,100% {border-radius:50%;transform:rotate(360deg) scale(1)} }
+    @keyframes lc-deep-shell { 0%,2% {border-radius:50%;transform:rotate(0deg) scale(1)} 34% {border-radius:var(--lc-c);transform:rotate(var(--lc-oa)) scale(.96)} 68% {border-radius:var(--lc-d);transform:rotate(var(--lc-ob)) scale(1.03)} 98%,100% {border-radius:50%;transform:rotate(-360deg) scale(1)} }
+    #liquid-deep-variants.lc-circle .lc-spinner::before, #liquid-deep-variants.lc-circle .lc-spinner::after { animation:none; border-radius:50%; transform:none; }
+    #liquid-deep-variants.lc-paused .lc-spinner::before, #liquid-deep-variants.lc-paused .lc-spinner::after {animation-play-state:paused}
+    @media(prefers-reduced-motion:reduce){#liquid-deep-variants .lc-spinner::before,#liquid-deep-variants .lc-spinner::after{animation:none}}
+    #liquid-deep-variants .lc-grid {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;}
+    @media(max-width:620px){#liquid-deep-variants .lc-grid{grid-template-columns:repeat(2,minmax(0,1fr));}}
+    @media(max-width:380px){#liquid-deep-variants .lc-grid{grid-template-columns:1fr;}}
+  </style>
+  <div class="lc-grid" aria-label="Шесть вариантов жидкого спиннера">
+    <section data-variant="Сжатие"><div class="lc-stage"><div class="lc-name">Сжатие</div><span class="lc-spinner lc-big" role="img" aria-label="Плавное изменение двух концентрических форм с возвратом в круг"></span><div class="lc-sizes" aria-hidden="true"><span class="lc-spinner"></span><span>В интерфейсе</span></div><div class="lc-caption">Мягкая органика · 15 с</div></div></section>
+    <section data-variant="Микровихрь"><div class="lc-stage"><div class="lc-name">Микровихрь</div><span class="lc-spinner lc-big" role="img" aria-label="Встречное вращение ядра и внешнего контура с возвратом в круг"></span><div class="lc-sizes" aria-hidden="true"><span class="lc-spinner"></span><span>В интерфейсе</span></div><div class="lc-caption">Встречное вращение · 15 с</div></div></section>
+    <section data-variant="Ртуть"><div class="lc-stage"><div class="lc-name">Ртуть</div><span class="lc-spinner lc-big" role="img" aria-label="Каплевидные формы мягко восстанавливают круглую форму"></span><div class="lc-sizes" aria-hidden="true"><span class="lc-spinner"></span><span>В интерфейсе</span></div><div class="lc-caption">Пластичность капли · 15 с</div></div></section>
+    <section data-variant="Бутон"><div class="lc-stage"><div class="lc-name">Бутон</div><span class="lc-spinner lc-big" role="img" aria-label="Округлые лепестки вращаются и собираются в круг"></span><div class="lc-sizes" aria-hidden="true"><span class="lc-spinner"></span><span>В интерфейсе</span></div><div class="lc-caption">Округлые лепестки · 15 с</div></div></section>
+    <section data-variant="Глубина"><div class="lc-stage"><div class="lc-name">Глубина</div><span class="lc-spinner lc-big" role="img" aria-label="Волны ядра и контура сходятся в два идеальных круга"></span><div class="lc-sizes" aria-hidden="true"><span class="lc-spinner"></span><span>В интерфейсе</span></div><div class="lc-caption">Медленная волна · 15 с</div></div></section>
+    <section data-variant="Плазма"><div class="lc-stage"><div class="lc-name">Плазма</div><span class="lc-spinner lc-big" role="img" aria-label="Упругая деформация с возвратом ядра и контура в круг"></span><div class="lc-sizes" aria-hidden="true"><span class="lc-spinner"></span><span>В интерфейсе</span></div><div class="lc-caption">Упругая деформация · 15 с</div></div></section>
+  </div>
+  <div class="viz-controls" style="margin-top:12px"><button type="button" class="btn" data-action="pause">Пауза</button><button type="button" class="btn" data-action="circle" aria-pressed="false">Идеальный круг</button></div>
+  <script>
+    (()=>{
+      const root=document.getElementById('liquid-deep-variants');
+      const pause=root.querySelector('[data-action="pause"]');
+      const circle=root.querySelector('[data-action="circle"]');
+      pause.addEventListener('click',()=>{root.classList.remove('lc-circle');circle.setAttribute('aria-pressed','false');const stopped=root.classList.toggle('lc-paused');pause.textContent=stopped?'Продолжить':'Пауза';});
+      circle.addEventListener('click',()=>{const shown=root.classList.toggle('lc-circle');root.classList.remove('lc-paused');pause.textContent='Пауза';circle.setAttribute('aria-pressed',String(shown));});
+    })();
+  </script>
+</div>

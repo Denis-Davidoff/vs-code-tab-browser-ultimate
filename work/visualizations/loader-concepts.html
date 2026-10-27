@@ -1,0 +1,42 @@
+<style>
+#loader-concepts{--lc-accent:light-dark(#6355dc,#a69aff);--lc-surface:light-dark(#f7f8fc,#191b25);--lc-text:light-dark(#242638,#ececf6);--lc-muted:light-dark(#727588,#999db2);color-scheme:light dark}
+#loader-concepts .stage{height:300px;display:flex;align-items:center;justify-content:center;padding:24px}
+#loader-concepts .sample{width:100%;max-width:420px;background:var(--lc-surface);color:var(--lc-text);border-radius:20px;padding:32px;box-sizing:border-box;text-align:center;font:14px/1.5 system-ui,sans-serif}
+#loader-concepts .name{font-weight:500;margin:20px 0 4px}#loader-concepts .caption{color:var(--lc-muted);margin:0}
+#loader-concepts .space{height:88px;display:grid;place-items:center;color:var(--lc-accent)}
+#loader-concepts .orbit{width:52px;height:52px;position:relative}
+#loader-concepts .orbit:before,#loader-concepts .orbit:after{content:'';position:absolute;inset:0;border:3px solid transparent;border-top-color:currentColor;border-right-color:currentColor;border-radius:50%;animation:lc-spin 1.5s linear infinite}
+#loader-concepts .orbit:after{inset:10px;opacity:.5;animation-direction:reverse;animation-duration:1s}
+#loader-concepts .dot{width:5px;height:5px;border-radius:50%;background:currentColor;position:absolute;top:24px;left:24px}
+#loader-concepts .browser{width:68px;height:50px;border:2px solid color-mix(in srgb,currentColor 45%,transparent);border-radius:7px;position:relative;overflow:hidden}
+#loader-concepts .browser:before{content:'•••';position:absolute;top:-5px;left:5px;letter-spacing:2px}
+#loader-concepts .lines{position:absolute;inset:18px 10px 7px;background:repeating-linear-gradient(to bottom,currentColor 0 2px,transparent 2px 8px);opacity:.3}
+#loader-concepts .scan{position:absolute;left:0;right:0;top:12px;height:12px;background:linear-gradient(transparent,color-mix(in srgb,currentColor 35%,transparent));border-bottom:2px solid currentColor;animation:lc-scan 1.8s ease-in-out infinite}
+#loader-concepts .tabs{display:flex;gap:5px;align-items:flex-end;height:50px;border-bottom:2px solid color-mix(in srgb,currentColor 25%,transparent);padding:0 7px}
+#loader-concepts .tabs i{display:block;width:24px;height:29px;border-radius:6px 6px 0 0;background:currentColor;opacity:.25;animation:lc-tab 1.8s ease-in-out infinite}
+#loader-concepts .tabs i:nth-child(2){animation-delay:.2s}#loader-concepts .tabs i:nth-child(3){animation-delay:.4s}
+#loader-concepts .spark{position:relative;width:64px;height:64px}
+#loader-concepts .spark i{position:absolute;width:9px;height:9px;border-radius:50%;background:currentColor;left:27px;top:27px;--dx:0px;--dy:-25px;animation:lc-gather 2.4s ease-in-out infinite}
+#loader-concepts .spark i:nth-child(2){--dx:25px;--dy:0px}#loader-concepts .spark i:nth-child(3){--dx:0px;--dy:25px}#loader-concepts .spark i:nth-child(4){--dx:-25px;--dy:0px}
+#loader-concepts .star{position:absolute;inset:12px;background:currentColor;clip-path:polygon(50% 0,62% 36%,100% 50%,62% 64%,50% 100%,38% 64%,0 50%,38% 36%);animation:lc-star 2.4s ease-in-out infinite}
+#loader-concepts .contour{width:50px;height:50px;border-radius:14px;position:relative;background:color-mix(in srgb,currentColor 12%,transparent)}
+#loader-concepts .contour:before{content:'';position:absolute;inset:0;border-radius:14px;background:conic-gradient(from var(--lc-angle),transparent 50%,currentColor);padding:3px;mask:linear-gradient(#000 0 0) content-box exclude,linear-gradient(#000 0 0);animation:lc-contour 1.6s linear infinite}
+#loader-concepts .morph{width:42px;height:42px;background:currentColor;animation:lc-morph 3s ease-in-out infinite;box-shadow:0 0 24px color-mix(in srgb,currentColor 15%,transparent)}
+@property --lc-angle{syntax:'<angle>';initial-value:0deg;inherits:false}
+@keyframes lc-spin{to{transform:rotate(360deg)}}
+@keyframes lc-scan{0%,100%{transform:translateY(0)}50%{transform:translateY(25px)}}
+@keyframes lc-tab{0%,65%,100%{transform:translateY(0);opacity:.25}25%{transform:translateY(-12px);opacity:1}}
+@keyframes lc-gather{0%,100%{transform:translate(var(--dx),var(--dy));opacity:.7}45%,65%{transform:translate(0,0) scale(.2);opacity:0}}
+@keyframes lc-star{0%,20%,100%{transform:scale(.15) rotate(-45deg);opacity:0}48%,65%{transform:scale(1) rotate(0);opacity:1}}
+@keyframes lc-contour{to{--lc-angle:360deg}}
+@keyframes lc-morph{0%,100%{border-radius:50%;transform:rotate(0) scale(.9)}33%{border-radius:10px;transform:rotate(0) scale(1)}66%{border-radius:7px;transform:rotate(135deg) scale(.85)}}
+@media(prefers-reduced-motion:reduce){#loader-concepts *:before,#loader-concepts *:after,#loader-concepts *{animation-duration:8s!important}}
+</style>
+<div id="loader-concepts" class="viz-carousel viz-dotted-background" aria-label="Варианты загрузчика" data-previous-label="Назад" data-next-label="Далее">
+<section data-variant="Орбита"><div class="stage"><div class="sample"><div class="space" role="img" aria-label="Две вращающиеся дуги вокруг точки"><div class="orbit"><span class="dot"></span></div></div><p class="name">Орбита</p><p class="caption">Плавные дуги · спокойный ритм</p></div></div></section>
+<section data-variant="Сканирующий луч" hidden><div class="stage"><div class="sample"><div class="space" role="img" aria-label="Луч сканирует страницу браузера"><div class="browser"><div class="lines"></div><div class="scan"></div></div></div><p class="name">Сканирующий луч</p><p class="caption">Браузер изучает страницу</p></div></div></section>
+<section data-variant="Живые вкладки" hidden><div class="stage"><div class="sample"><div class="space" role="img" aria-label="Три вкладки по очереди приподнимаются"><div class="tabs"><i></i><i></i><i></i></div></div><p class="name">Живые вкладки</p><p class="caption">Переключение · поиск · движение</p></div></div></section>
+<section data-variant="Искра AI" hidden><div class="stage"><div class="sample"><div class="space" role="img" aria-label="Четыре точки собираются в светящуюся звезду"><div class="spark"><i></i><i></i><i></i><i></i><div class="star"></div></div></div><p class="name">Искра AI</p><p class="caption">Мысль собирается в решение</p></div></div></section>
+<section data-variant="Бегущий контур" hidden><div class="stage"><div class="sample"><div class="space" role="img" aria-label="Световой след бежит по скруглённому контуру"><div class="contour"></div></div><p class="name">Бегущий контур</p><p class="caption">Лаконичный световой след</p></div></div></section>
+<section data-variant="Морфинг" hidden><div class="stage"><div class="sample"><div class="space" role="img" aria-label="Круг превращается в квадрат и ромб"><div class="morph"></div></div><p class="name">Морфинг</p><p class="caption">Одна форма · постоянное превращение</p></div></div></section>
+</div>

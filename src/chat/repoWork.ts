@@ -7,7 +7,7 @@ import { execFile } from 'child_process';
 import { createHash } from 'crypto';
 import { promises as fs } from 'fs';
 import * as path from 'path';
-import { cloneUrl, defaultBranchOf, repoSlug, type RepoRef } from './githubRepo';
+import { cloneUrl, defaultBranchOf, repoSlug, validBranch, type RepoRef } from './githubRepo';
 
 /**
  * The git work behind the chat's GitHub repositories — see "The working
@@ -38,7 +38,7 @@ const localTimeoutMs = 60_000;
 export class GitError extends Error { }
 
 /** Runs git; rejects with the last lines of what it said on stderr. */
-export function runGit(git: string, args: readonly string[], cwd: string | undefined, timeoutMs = localTimeoutMs): Promise<string> {
+export function runGit(git: string, args: readonly string[], cwd: string | undefined, timeoutMs = localTimeoutMs, environment: NodeJS.ProcessEnv = {}): Promise<string> {
 	return new Promise((resolve, reject) => {
 		// `core.fsmonitor` off whatever a config says: it names a program git runs
 		// when it reads the index, and a worktree's `.git` is a file the agent
@@ -48,7 +48,7 @@ export function runGit(git: string, args: readonly string[], cwd: string | undef
 			timeout: timeoutMs,
 			maxBuffer: 64 * 1024 * 1024,
 			windowsHide: true,
-			env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', LC_ALL: 'C' },
+			env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', LC_ALL: 'C', ...environment },
 		}, (error, stdout, stderr) => {
 			if (error) {
 				const said = String(stderr).trim().split('\n').slice(-4).join('\n');
@@ -265,10 +265,19 @@ export async function copyChanges(git: string, copy: string, base: string): Prom
 }
 
 /**
- * Commits whatever the copy holds uncommitted, with `message`, and pushes its
- * branch. Rejects when there is nothing ahead of the base to push.
+ * Commits whatever the copy holds uncommitted, with `message`, and pushes the
+ * branch that is checked out **now**, which it returns. Rejects when there is
+ * nothing ahead of the base to push, or when HEAD is detached.
+ *
+ * The branch is read from the copy rather than taken from the chat's record:
+ * an agent or a terminal can switch branches in the copy, and pushing the
+ * recorded one then reported success while the commit just made stayed local.
  */
-export async function pushCopy(git: string, copy: string, base: string, branch: string, message: string): Promise<void> {
+export async function pushCopy(git: string, copy: string, base: string, message: string): Promise<string> {
+	const branch = (await runGit(git, ['symbolic-ref', '--quiet', '--short', 'HEAD'], copy).catch(() => '')).trim();
+	if (!branch || !validBranch(branch)) {
+		throw new GitError('The copy is not on a branch (HEAD is detached), so there is nothing to push it to. Switch to a branch first.');
+	}
 	if ((await runGit(git, ['status', '--porcelain'], copy)).trim()) {
 		await runGit(git, ['add', '--all'], copy);
 		await runGit(git, ['commit', '--quiet', '-m', message], copy);
@@ -277,7 +286,8 @@ export async function pushCopy(git: string, copy: string, base: string, branch: 
 	if (!ahead) {
 		throw new GitError('There is nothing to push: the copy has no changes from the branch it was taken from.');
 	}
-	await runGit(git, ['push', '--set-upstream', 'origin', `${branch}:${branch}`], copy, networkTimeoutMs);
+	await runGit(git, ['push', '--set-upstream', 'origin', `refs/heads/${branch}:refs/heads/${branch}`], copy, networkTimeoutMs);
+	return branch;
 }
 
 /** Removes a separate copy and its local branch; what was pushed stays on GitHub. */

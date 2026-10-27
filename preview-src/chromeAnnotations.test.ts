@@ -6,13 +6,21 @@ import { runInNewContext, createContext } from 'node:vm';
 import { ModuleKind, ScriptTarget, transpileModule } from 'typescript';
 import { parseAnnotations, annotationClipboardText } from '../src/browser/annotationData.ts';
 
-function fixture() {
+function fixture(options: { rejectClipboard?: boolean; noClipboard?: boolean; legacyCopy?: boolean } = {}) {
   const pages = new Map<number, any>();
   const changes: any[] = [], clipboard: string[] = [], errors: unknown[] = [];
-  let saved: any, confirm = false;
+  let saved: any, confirm = false, inPage = false, selectedText = '', removedFields = 0, pageFields = 0, panelFields = 0;
   const context = createContext({ module: { exports: {} }, exports: {}, Error, Map, Set, Promise,
     require: () => ({ parseAnnotations, annotationClipboardText }),
-    navigator: { clipboard: { async writeText(value: string) { clipboard.push(value); } } },
+    navigator: { clipboard: options.noClipboard ? undefined : { async writeText(value: string) {
+      if (!inPage || options.rejectClipboard) { throw new Error('Document is not focused'); }
+      clipboard.push(value);
+    } } },
+    HTMLElement: class {},
+    document: { activeElement: null, getSelection: () => null, documentElement: { append() { pageFields++; } }, body: { append() { if (inPage) { pageFields++; } else { panelFields++; } } },
+      createElement: () => ({ value: '', style: {}, setAttribute() {}, select() { selectedText = this.value; }, remove() { removedFields++; } }),
+      execCommand: (command: string) => { assert.equal(command, 'copy'); if (options.legacyCopy === false) { return false; } clipboard.push(selectedText); return true; },
+    },
   });
   context.exports = context.module.exports;
   function addTab(id: number) { pages.set(id, { url: `https://example.test/${id}`, events: [], records: [], api: undefined }); }
@@ -24,7 +32,7 @@ function fixture() {
       if (options.files) {
         page.api ??= {
           hydrate(data: any) { page.records = JSON.parse(JSON.stringify(data.records)); page.nextNumber = data.nextNumber; },
-          start(data: any) { this.hydrate(data); page.picking = true; },
+          start(data: any) { this.hydrate(data); page.picking = true; page.mode = data.mode; },
           collect() { return { url: page.url, records: page.records.map((record: any) => ({ ...record, elementFound: true })) }; },
           remove(ids: string[], url: string) { assert.equal(page.url, url); page.records = page.records.filter((record: any) => !ids.includes(record.id)); },
           add(selector: string, text: string, color: string, id: string) {
@@ -37,7 +45,9 @@ function fixture() {
       }
       context.location = { href: page.url };
       context.window = { __aiBrowserAnnotations: page.api, __aiBrowserChromeAnnotationEvents: page.events, confirm: () => confirm };
-      return [{ result: await options.func(...(options.args ?? [])) }];
+      inPage = true;
+      try { return [{ result: await options.func(...(options.args ?? [])) }]; }
+      finally { inPage = false; }
     } },
   };
   context.chrome = chrome;
@@ -45,7 +55,7 @@ function fixture() {
     compilerOptions: { module: ModuleKind.CommonJS, target: ScriptTarget.ES2022 },
   }).outputText, context);
   const manager = new context.module.exports.ChromeAnnotations((tab: unknown, page: unknown) => changes.push(JSON.parse(JSON.stringify({ tab, page }))), (error: unknown) => errors.push(error));
-  return { manager, pages, changes, clipboard, errors, addTab, saved: () => saved, confirm: (value: boolean) => { confirm = value; } };
+  return { manager, pages, changes, clipboard, errors, addTab, removedFields: () => removedFields, pageFields: () => pageFields, panelFields: () => panelFields, saved: () => saved, confirm: (value: boolean) => { confirm = value; } };
 }
 function note(number: number, id: string = randomUUID()) {
   return { id, number, createdAt: 1, text: 'User note', color: '#2563eb', element: { selector: '#save', strong: true, tag: 'button', text: 'Save', role: '' } };
@@ -121,4 +131,40 @@ test('both conversations retain annotation grants across save, restore and MCP c
   await restored.manager.retainChats(new Set(['chat-2']));
   assert.deepEqual(Array.from(restored.manager.snapshot()[0].chatIds), ['chat-2']);
   await assert.rejects(restored.manager.execute({ id: randomUUID(), chatId: 'chat-1', tabId: 1, url: page.url, action: 'remove', ids: [] }), /available/);
+});
+
+
+test('Chrome starts both picker modes and preserves point context across storage and restore', async () => {
+  const f = fixture(); f.addTab(1);
+  await f.manager.start(1, 'chat-1', 'point');
+  const page = f.pages.get(1);
+  assert.equal(page.mode, 'point');
+  const record = { ...note(1), point: { x: 120, y: 350, viewportX: 120, viewportY: 50, elements: [note(1).element] } };
+  page.records.push(record);
+  await f.manager.poll();
+  const restored = fixture(); restored.addTab(1); restored.manager.restore(f.saved().annotationTabs);
+  await restored.manager.poll();
+  await restored.manager.start(1, 'chat-1', 'element');
+  assert.equal(restored.pages.get(1).mode, 'element');
+  assert.deepEqual(restored.pages.get(1).records[0].point, record.point);
+});
+
+
+for (const noClipboard of [false, true]) {
+  test(`Chrome annotation copy falls back in the side panel, never the page, when Clipboard API is ${noClipboard ? 'missing' : 'denied'}`, async () => {
+    const f = fixture({ rejectClipboard: true, noClipboard }); f.addTab(1); await f.manager.start(1, 'chat-1');
+    const page = f.pages.get(1), record = note(1); page.records.push(record);
+    page.events.push({ type: 'copy', id: record.id, url: page.url }); await f.manager.poll();
+    assert.equal(f.clipboard[0], annotationClipboardText(record, page.url));
+    assert.equal(f.errors.length, 0); assert.equal(f.removedFields(), 1);
+    assert.equal(f.pageFields(), 0); assert.equal(f.panelFields(), 1);
+  });
+}
+
+test('a refused fallback reports copy failure and cleans up its temporary field', async () => {
+  const f = fixture({ rejectClipboard: true, legacyCopy: false }); f.addTab(1); await f.manager.start(1, 'chat-1');
+  const page = f.pages.get(1), record = note(1); page.records.push(record);
+  page.events.push({ type: 'copy', id: record.id, url: page.url }); await f.manager.poll();
+  assert.equal(f.clipboard.length, 0); assert.equal(f.removedFields(), 1); assert.equal(f.pageFields(), 0);
+  assert.match(String(f.errors[0]), /Could not copy the annotation/);
 });

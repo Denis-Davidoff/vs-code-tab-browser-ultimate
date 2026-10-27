@@ -187,3 +187,22 @@ test('automatic awake coexists with manual timers and survives timer expiry', ()
   assert.equal(control.state.automaticActive, true);
  } finally { control.dispose(); f.close(); }
 });
+
+test('Exchange viewer joins arm, renew and disable timers without shortening existing holds', () => {
+ const f=fixture();const {SleepControl}=f.require('./sleepControl.js');
+ const control=new SleepControl(()=>false,()=>{},'Test: no OS assertion');
+ const now=Date.now;let clock=100000;Date.now=()=>clock;
+ try{
+  control.connected(60);assert.equal(control.state.mode,'timer');assert.equal(control.state.until,clock+3600000);
+  clock+=60000;control.connected(60);assert.equal(control.state.until,clock+3600000);
+  control.choose({mode:'timer',minutes:120});const longer=control.state.until;
+  control.connected(15);assert.equal(control.state.until,longer);
+  control.connected(0);assert.equal(control.state.until,longer);
+  clock=longer+1;control.update();assert.equal(control.state.mode,'off');
+  control.connected(-1);assert.equal(control.state.mode,'forever');
+  clock+=1000*60*60*72;control.update();assert.equal(control.state.mode,'forever');
+  control.connected(60);assert.equal(control.state.mode,'forever');
+  control.choose({mode:'off'});assert.equal(control.state.mode,'off');
+  control.connected(0);assert.equal(control.state.mode,'off');
+ }finally{Date.now=now;control.dispose();f.close();}
+});

@@ -3,20 +3,21 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { createContext, runInNewContext } from 'node:vm';
 import { createSourceFile, isFunctionDeclaration, ScriptTarget, transpileModule } from 'typescript';
-import { chromeChatCompatibilityError, chromeChatProtocolVersion, chromeChatProtocolHeader, chromeChatVersionHeader, chromeChatCapabilities, chromeChatCapabilitiesHeader, negotiateChromeChatCapabilities, chromeChatFeatureError, chromeChatAttachmentFeature, chromeChatCommandFeature } from '../src/chat/chromeChatCompatibility.ts';
+import { chromeChatCompatibilityError, chromeChatProtocolVersion, chromeChatProtocolHeader, chromeChatVersionHeader, chromeChatCapabilities, chromeChatCapabilitiesHeader, negotiateChromeChatCapabilities, chromeChatFeatureError, chromeChatAttachmentFeature, chromeChatCommandFeature, chromeChatWaitHeader, chromeChatMaxWaitMs } from '../src/chat/chromeChatCompatibility.ts';
+import { applyPatch, readPatch } from '../src/chat/core/sync.ts';
 
 function fixture(snapshot: Record<string, unknown>, responseStatus = 200) {
   const source = readFileSync('chrome-extension/sidepanel.ts', 'utf8');
   const ast = createSourceFile('sidepanel.ts', source, ScriptTarget.ES2022, true);
-  const names = new Set(['poll', 'flush', 'bridgeHeaders', 'editorCompatibility', 'requireUpdate', 'supportsFeature']);
+  const names = new Set(['poll', 'flush', 'bridgeHeaders', 'editorCompatibility', 'requireUpdate', 'supportsFeature', 'revisionOf', 'snapshotFrom']);
   const functions = ast.statements.filter(node => isFunctionDeclaration(node) && names.has(node.name?.text ?? '')).map(node => node.getText(ast)).join('\n');
   const connection = { url: 'http://127.0.0.1:12345', token: 'secret' };
   let sends = 0, renders = 0, retries = 0, network = 0;
   const queued = [{ id: 'pending-message' }];
   const status = { textContent: '', title: '', dataset: {} as Record<string, string> };
   const context: any = createContext({ connection, status, AbortController,
-    chromeChatCompatibilityError, chromeChatProtocolVersion, chromeChatProtocolHeader, chromeChatVersionHeader, chromeChatCapabilities, chromeChatCapabilitiesHeader, negotiateChromeChatCapabilities, chromeChatFeatureError, chromeChatAttachmentFeature, chromeChatCommandFeature,
-    chromeVersion: '0.5.0', generation: 0, compatible: false, active: connection, latest: undefined, etag: undefined,
+    chromeChatCompatibilityError, chromeChatProtocolVersion, chromeChatProtocolHeader, chromeChatVersionHeader, chromeChatCapabilities, chromeChatCapabilitiesHeader, negotiateChromeChatCapabilities, chromeChatFeatureError, chromeChatAttachmentFeature, chromeChatCommandFeature, chromeChatWaitHeader, chromeChatMaxWaitMs,
+    chromeVersion: '0.5.0', generation: 0, compatible: false, active: connection, latest: undefined, etag: undefined, shownRevision: -1, shownEpoch: undefined, chromeChatBaseHeader: 'X-AI-Browser-Base', applyPatch, readPatch,
     failures: 0, request: undefined, timer: undefined, outbox: queued, flushing: false,
     annotations: { async poll() {}, async retainChats() {} },
     async fetch() { network++; return { status: responseStatus, ok: responseStatus < 400, async json() { return snapshot; }, headers: { get() { return undefined; } } }; },
@@ -36,6 +37,7 @@ test('an old or newer incompatible editor shows which extension to update before
     assert.match(f.status.textContent, protocolVersion === undefined ? /Update the AI Browser extension for VS Code/ : /Update the AI Browser extension for Chrome/);
     assert.equal(f.context.compatible, false); assert.equal(f.counts().sends, 0); assert.equal(f.counts().renders, 0);
     assert.equal(f.queued.length, 1, 'pending messages survive an update requirement');
+    assert.equal(f.status.dataset.busy, 'false', 'an update requirement stops loading');
     assert.equal(f.context.generation, 1, 'the old polling generation is stopped');
   }
 });
@@ -45,6 +47,7 @@ test('compatible protocol versions enable chat even with different release numbe
   await f.context.poll(f.connection, 0);
   assert.equal(f.context.compatible, true); assert.equal(f.counts().renders, 1); assert.equal(f.counts().sends, 1);
   assert.match(f.status.title, /Chrome 0.5.0.*VS Code 0.8.7/);
+  assert.equal(f.status.dataset.busy, 'false', 'successful connection stops the connection loader');
 });
 
 test('pending commands cannot flush before the compatibility handshake succeeds', async () => {

@@ -1,0 +1,1 @@
+ALTER TABLE "exchange_connection" ADD COLUMN "viewer_id" text;

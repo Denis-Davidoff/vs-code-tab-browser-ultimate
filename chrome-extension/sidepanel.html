@@ -5,23 +5,26 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AI Browser</title>
   <link rel="stylesheet" href="codicon.css">
+  <link rel="stylesheet" href="xterm.css">
   <link rel="stylesheet" href="chat.css">
   <link rel="stylesheet" href="sidepanel.css">
 </head>
 <body>
   <header class="chrome-shell">
-    <span>AI Browser</span>
-    <span id="status" role="status" aria-live="polite">Connect to your editor</span>
-    <select id="conversation" title="Conversation shown in Chrome. Switching editor tabs does not change it." hidden></select>
-    <button id="mode" type="button" aria-expanded="false" hidden></button>
-    <button id="disconnect" type="button" hidden>Disconnect</button>
+    <h1 class="shell-title">AI Browser</h1>
+    <span class="liquid-loader connection-spinner" aria-hidden="true"></span>
+    <span id="status" role="status" aria-live="polite" data-busy="true">Initializing…</span>
+    <select id="conversation" aria-label="Conversation" title="Conversation shown in Chrome. Switching editor tabs does not change it." hidden></select>
+    <button id="mode" type="button" aria-expanded="false" aria-controls="mode-details" hidden></button>
+    <span id="remote-actions"></span>
+    <button id="disconnect" type="button" title="Disconnect from editor" aria-label="Disconnect from editor" hidden><span class="codicon codicon-debug-disconnect" aria-hidden="true"></span></button>
   </header>
   <div id="mode-details" class="chrome-shell" role="note" hidden>
     <p id="mode-text"></p>
-    <button id="mode-close" type="button" title="Close" aria-label="Close">✕</button>
+    <button id="mode-close" type="button" title="Close" aria-label="Close mode details"><span class="codicon codicon-close" aria-hidden="true"></span></button>
   </div>
   <div id="element-picker-controls" class="chrome-shell" hidden>
-    <span id="element-picker-status"></span>
+    <span id="element-picker-status" role="status"></span>
     <button id="cancel-element-pick" type="button">Cancel</button>
   </div>
   <form id="pairing" class="chrome-shell">
@@ -36,6 +39,7 @@
     <code id="extension-id"></code>
     <label for="connection">Paste the connection code copied by the editor</label>
     <textarea id="connection" rows="4" spellcheck="false" autocomplete="off" required></textarea>
+    <p id="connection-error" class="field-error"></p>
     <button type="submit">Connect to VS Code</button>
     </details>
   </form>

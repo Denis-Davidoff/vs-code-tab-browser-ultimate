@@ -24,6 +24,7 @@ function host(overrides: Record<string, unknown> = {}): any {
 		posted, reads: [] as string[], _disposed: false, _view: { visible: true }, _viewReady: true, _gitStale: false,
 		_gitRefreshes: new Map(), _queued: [] as any[], _workdir: () => '/repo', _blocked: () => undefined,
 		_postMessage: (m: any) => posted.push(m),
+		_stateSurfaces: { publish() {}, broadcast() {}, watching: () => false },
 		...overrides,
 	};
 	h._refreshWorkdirGit = method(view, '_refreshWorkdirGit', { Promise });
@@ -82,12 +83,22 @@ test('editor events read nothing while the view is hidden, and a visible burst i
 });
 
 test('a Git snapshot is not queued for a view that is not there', () => {
-	const h = host({ _view: undefined, _viewReady: false, _stateSurfaces: { publish() {} } });
+	const h = host({ _view: undefined, _viewReady: false, _stateSurfaces: { publish() {}, broadcast(m: any) { broadcast.push(m); }, watching: () => false } });
+	const broadcast: any[] = [];
 	const post = method(view, '_postMessage');
 	post.call(h, { type: 'workdirGit', folder: '/repo' });
 	post.call(h, { type: 'state', state: {} });
 	post.call(h, { type: 'openSleep' });
 	assert.deepEqual(h._queued, [{ type: 'openSleep' }]);
+	// A remote view (the Exchange website) still gets the Git snapshot the editor sends on its own.
+	assert.deepEqual(JSON.parse(JSON.stringify(broadcast)), [{ type: 'workdirGit', folder: '/repo' }]);
+});
+
+test('a remote view watching keeps the Git state read with no editor view open', async () => {
+	const h = host({ _view: undefined, _viewReady: false, _stateSurfaces: { publish() {}, broadcast() {}, watching: () => true } });
+	h._readWorkdirGit = (folder: string) => { h.reads.push(folder); return Promise.resolve(); };
+	await h._refreshWorkdirGit();
+	assert.deepEqual(h.reads, ['/repo']);
 });
 
 test('a tab the view lets go of is not left closed for when the view comes back', () => {
@@ -103,4 +114,24 @@ test('a tab the view lets go of is not left closed for when the view comes back'
 	const tabClosed = tab();
 	close.call(tabClosed);
 	assert.equal(tabClosed._closed, true);
+});
+
+test('failed fetch still returns local Git status and cached branch counts', async () => {
+ const status = { staged: [], unstaged: [], changed: 0, deleted: 0 };
+ const branches = { current: 'main', branches: [], upstream: { remote: 'origin', branch: 'main', ahead: 2, behind: 1, gone: false } };
+ const read = method(view, '_readWorkdirGit', {
+  gitBinary: async () => 'git', gitExtensionErrorText: (error: Error) => error.message,
+  parseGitStatus: () => status, parseGitBranches: () => branches, branchRefFormat: 'refs',
+ });
+ const posted: any[] = [];
+ await read.call({
+  _blocked: () => false, _view: undefined,
+  _fetchWorkdirGit: async () => { throw new Error('Offline'); },
+  _runWorkdirGit: async () => '', _pullRequestFor: () => ({}), _branchStashes: new Map(),
+  _postMessage: (message: any) => posted.push(message),
+ }, '/repo', 'auto');
+ assert.equal(posted.length, 1);
+ assert.equal(posted[0].fetchError, 'Offline'); assert.equal(posted[0].error, undefined);
+ assert.equal(posted[0].status, status); assert.equal(posted[0].branches.upstream.ahead, 2);
+ assert.equal(posted[0].branches.upstream.behind, 1);
 });

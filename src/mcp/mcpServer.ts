@@ -10,6 +10,7 @@ import * as vscode from 'vscode';
 import { BrowserController } from '../browser/browserController';
 import type { BrowserRecording } from '../browser/recording';
 import { chatTools, type ChatControlPort } from './chatTools';
+import { terminalTools } from './terminalTools';
 import { modelFrameLimits } from '../browser/screenshotFrames';
 import { defaultSegmentChars, maxSegmentChars, parseReplacements, segmentBudget } from '../translate/translateText';
 import { generateUuid } from '../core/uuid';
@@ -517,7 +518,7 @@ export class McpServer implements vscode.Disposable {
 				description: 'Lists the interactive elements on the page with selectors you can pass to browser_click or browser_fill. '
 					+ 'Pass frameId to list a frame\'s elements instead; the selectors then belong to that frame.',
 				inputSchema: schema({ frameId: frameIdArgument }),
-				run: (args, caller) => browser.snapshot(textArgument(args.frameId, 'frameId'), caller),
+				run: (args, caller, signal) => browser.snapshot(textArgument(args.frameId, 'frameId'), caller, signal),
 			},
 			{
 				name: 'browser_annotations_list', title: 'List page annotations',
@@ -706,9 +707,47 @@ export class McpServer implements vscode.Disposable {
 			})),
 			{
 				name: 'browser_click', title: 'Click',
-				description: 'Clicks the first element matching a CSS selector.',
-				inputSchema: schema({ selector: string('CSS selector of the element to click'), frameId: frameIdArgument }, ['selector']),
-				run: (args, caller) => browser.click(stringOrUndefined(args.selector) ?? '', textArgument(args.frameId, 'frameId'), caller),
+				description: 'Clicks one uniquely matching, visible, enabled element using native mouse input. Refuses covered or ambiguous targets. '
+					+ 'Use button for right/middle click, clickCount: 2 for double click, smooth: true for gradual pointer movement. '
+					+ 'A selector may cross open or closed author shadow roots with >>>, for example my-form >>> button. humanize adds a curved route and brief pauses. No automatic retry after input.',
+				inputSchema: schema({ selector: string('Unique CSS selector; >>> crosses an author shadow root'), frameId: frameIdArgument,
+					button: { type: 'string', enum: ['left', 'middle', 'right'] }, clickCount: { type: 'integer', enum: [1, 2] },
+					smooth: { type: 'boolean', description: 'Move the page pointer gradually before clicking; default false. Does not move the OS cursor.' },
+					humanize: { type: 'boolean', description: 'Optional curved pointer movement with varied timing and brief click pauses; default false.' },
+				}, ['selector']),
+				run: (args, caller, signal) => browser.click(textArgument(args.selector, 'selector') ?? '', textArgument(args.frameId, 'frameId'), caller,
+					{ button: args.button as 'left' | 'middle' | 'right' | undefined, clickCount: args.clickCount as number | undefined, smooth: args.smooth as boolean | undefined, humanize: args.humanize as boolean | undefined }, signal),
+			},
+			{
+				name: 'browser_hover', title: 'Hover over an element',
+				description: 'Moves the page pointer over a uniquely matching visible element using native input, opening hover menus and tooltips. '
+					+ 'Supports CSS selectors with >>> for open/closed author shadow roots and frameId. smooth adds gradual movement; humanize adds a curved route and varied timing.',
+				inputSchema: schema({ selector: string('Unique CSS selector'), frameId: frameIdArgument, smooth: { type: 'boolean' }, humanize: { type: 'boolean' } }, ['selector']),
+				run: (args, caller, signal) => browser.hover(textArgument(args.selector, 'selector') ?? '', textArgument(args.frameId, 'frameId'), caller, args.smooth as boolean | undefined, signal, args.humanize as boolean | undefined),
+			},
+			{
+				name: 'browser_press', title: 'Press a key',
+				description: 'Focuses one uniquely matching element and sends native keyboard input. Use Enter to submit, Escape to dismiss, '
+					+ 'Tab or arrows to navigate, and Control+a (Meta+a on macOS) to select text. Supports >>> and frameId. Does not read field values.',
+				inputSchema: schema({ selector: string('Unique selector of the element to focus'), key: string('Key or shortcut, for example Enter, ArrowDown, Shift+Tab, Control+a or Meta+a'), frameId: frameIdArgument }, ['selector', 'key']),
+				run: (args, caller, signal) => browser.press(textArgument(args.selector, 'selector') ?? '', textArgument(args.key, 'key') ?? '', textArgument(args.frameId, 'frameId'), caller, signal),
+			},
+			{
+				name: 'browser_type', title: 'Insert text into a field',
+				description: 'Focuses a unique editable element and inserts text at its caret/selection using native browser input. '
+					+ 'Preserves existing text outside the selection; browser_fill replaces the whole value. By default inserts one batch. '
+					+ 'humanize: true types up to 400 characters with native key events and varied pauses; longer text must be split. '
+					+ 'Supports >>> for open/closed author shadow roots and frameId. The result never echoes the field value.',
+				inputSchema: schema({ selector: string('Unique selector of a text input, textarea or contenteditable'), text: string('Text to insert, at most 20000 characters; 400 graphemes with humanize'), frameId: frameIdArgument, humanize: { type: 'boolean' } }, ['selector', 'text']),
+				run: (args, caller, signal) => browser.type(textArgument(args.selector, 'selector') ?? '', textArgument(args.text, 'text') ?? '', textArgument(args.frameId, 'frameId'), caller, signal, args.humanize as boolean | undefined),
+			},
+			{
+				name: 'browser_drag', title: 'Drag an element',
+				description: 'Drags from a unique source element to a unique target element using native left mouse input. '
+					+ 'Both must fit visibly in the same frame viewport. Supports >>> and frameId; smooth defaults to true. '
+					+ 'Useful for sliders and pointer-driven interfaces. Does not synthesize an HTML5 DataTransfer payload or auto-scroll during dragging. Check the resulting page state.',
+				inputSchema: schema({ selector: string('Unique source selector'), targetSelector: string('Unique destination selector'), frameId: frameIdArgument, smooth: { type: 'boolean' }, humanize: { type: 'boolean', description: 'Add a curved pointer route and varied pauses.' } }, ['selector', 'targetSelector']),
+				run: (args, caller, signal) => browser.drag(textArgument(args.selector, 'selector') ?? '', textArgument(args.targetSelector, 'targetSelector') ?? '', textArgument(args.frameId, 'frameId'), caller, args.smooth as boolean | undefined, signal, args.humanize as boolean | undefined),
 			},
 			{
 				name: 'browser_fill', title: 'Fill a field',
@@ -719,8 +758,8 @@ export class McpServer implements vscode.Disposable {
 					value: string('Value to set'),
 					frameId: frameIdArgument,
 				}, ['selector', 'value']),
-				run: (args, caller) => browser.fill(stringOrUndefined(args.selector) ?? '', textArgument(args.value, 'value') ?? '',
-					textArgument(args.frameId, 'frameId'), caller),
+				run: (args, caller, signal) => browser.fill(stringOrUndefined(args.selector) ?? '', textArgument(args.value, 'value') ?? '',
+					textArgument(args.frameId, 'frameId'), caller, signal),
 			},
 			{
 				name: 'browser_wait_for', title: 'Wait for',
@@ -764,6 +803,7 @@ export class McpServer implements vscode.Disposable {
 			},
 			...this._editorTools(),
 			...(this._chat ? chatTools(this._chat) : []),
+			...(this._chat ? terminalTools(this._chat) : []),
 		];
 	}
 
@@ -811,7 +851,7 @@ export class McpServer implements vscode.Disposable {
 					+ 'the one they had last), its cursor, the selected text, its errors and warnings, and the other open files. '
 					+ 'Call it when the user says "this", "here" or "the selected code", rather than guessing.',
 				inputSchema: schema({}),
-				run: () => Promise.resolve(editor.context()),
+				run: () => editor.context(),
 			},
 			{
 				name: 'editor_reveal', title: 'Show a place in the editor',

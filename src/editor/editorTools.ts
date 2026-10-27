@@ -68,9 +68,9 @@ export class EditorTools implements vscode.Disposable {
 	 * cursor, selection and problems, plus the other open files. A file
 	 * outside the workspace is named as such and nothing of it is read.
 	 */
-	public context(): unknown {
+	public async context(): Promise<unknown> {
 		const editor = vscode.window.activeTextEditor ?? this._last;
-		const active = editor && !editor.document.isClosed ? this._describe(editor, editor !== vscode.window.activeTextEditor) : undefined;
+		const active = editor && !editor.document.isClosed ? await this._describe(editor, editor !== vscode.window.activeTextEditor) : undefined;
 		const tabs: unknown[] = [];
 		for (const group of vscode.window.tabGroups.all) {
 			for (const tab of group.tabs) {
@@ -95,9 +95,12 @@ export class EditorTools implements vscode.Disposable {
 		};
 	}
 
-	private _describe(editor: vscode.TextEditor, previous: boolean): unknown {
+	private async _describe(editor: vscode.TextEditor, previous: boolean): Promise<unknown> {
 		const doc = editor.document;
-		const inside = this._insideWorkspace(doc.uri) || doc.isUntitled;
+		// The editor's own line and selection are read from memory, not through
+		// `_resolve`, so the real-path boundary is checked here as well: a file
+		// opened through a symlink inside the workspace may live outside it.
+		const inside = doc.isUntitled || await this._readableInside(doc.uri);
 		const display = this._display(doc.uri);
 		const sel = editor.selection;
 		const base = {
@@ -346,6 +349,15 @@ export class EditorTools implements vscode.Disposable {
 		} catch {
 			return false;
 		}
+	}
+
+	/** Inside a workspace folder, and for a local file, still inside once symlinks are resolved. */
+	private async _readableInside(uri: vscode.Uri): Promise<boolean> {
+		const folder = vscode.workspace.getWorkspaceFolder(uri);
+		if (!folder) {
+			return false;
+		}
+		return uri.scheme !== 'file' || await this._realInside(folder.uri.fsPath, uri.fsPath);
 	}
 
 	private _insideWorkspace(uri: vscode.Uri): boolean {

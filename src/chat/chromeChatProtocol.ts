@@ -1,3 +1,4 @@
+import { surfaceControls } from './core/commands';
 import { chromeChatProtocolVersion, chromeChatCapabilities, readChromeChatCapabilities, type ChromeChatCapabilities } from './chromeChatCompatibility';
 import type { ChatEntry, ChatViewMode, ChatViewState, Selection, ViewToHost } from './chatProtocol';
 import type { FeatureAiSettings } from './featureAi';
@@ -40,6 +41,8 @@ export interface ChromeChatSnapshot {
 	 * older editors.
 	 */
 	readonly agentChrome?: boolean;
+	/** The bridge's epoch for `terminal.*` frames; absent from an editor that gives Chrome no terminals. */
+	readonly terminalEpoch?: string;
 	readonly settings: {
 		readonly selection: Selection;
 		readonly viewMode: ChatViewMode;
@@ -47,6 +50,43 @@ export interface ChromeChatSnapshot {
 		readonly recordingQuality?: ChatViewState['recordingQuality'];
 		readonly recordingSeconds?: number;
 	};
+}
+
+/**
+ * What of the editor's state may leave it for Chrome and the website. Every
+ * field of `ChatViewState` has to be classified here — the `satisfies` makes a
+ * new field fail the typecheck until it is — so a field holding a path, a
+ * pairing request or a drag token cannot reach a remote surface by default, as
+ * it could while the snapshot was `...state` with known fields blanked.
+ * `override` fields are sent, rebuilt by `chromeChatSnapshot`.
+ */
+const viewFields = {
+	remoteWorkspace: 'shared', exchangeConnection: 'editor', chromeConnectionRequest: 'editor', chromeMirror: 'editor',
+	themeTokens: 'shared', themeKind: 'shared', panel: 'editor', surfaceId: 'shared', surface: 'override', controls: 'override',
+	dragToken: 'editor', chatSurfaces: 'override', recordingQuality: 'shared', recordingSeconds: 'shared', featureAi: 'shared',
+	sleep: 'shared', voice: 'override', blocked: 'shared', detecting: 'shared', agents: 'override', selection: 'shared',
+	chatId: 'shared', entries: 'shared', running: 'shared', attachments: 'override', suggestions: 'override',
+	hasBrowserTab: 'shared', browserApi: 'shared', nativeBrowser: 'shared', news: 'shared', newsHidden: 'shared',
+	tabs: 'shared', activeTab: 'shared', tabLimit: 'shared', terminals: 'editor', terminalFront: 'editor', terminalSupport: 'editor', pendingSends: 'shared', queuePaused: 'shared',
+	approvals: 'shared', switchTo: 'shared', commands: 'shared', toolbar: 'shared', toolbarRuns: 'shared',
+	skillAgents: 'shared', viewMode: 'shared', collapseTools: 'shared', context: 'shared', workdir: 'shared',
+	usage: 'shared', usageAlert: 'shared', snapshotEvents: 'shared',
+} as const satisfies Record<keyof ChatViewState, 'shared' | 'editor' | 'override'>;
+
+/** The shared fields of the state, by the classification above; nothing else is copied. */
+export function projectView(state: ChatViewState): ChatViewState {
+	const result: Record<string, unknown> = {};
+	for (const [key, kind] of Object.entries(viewFields)) {
+		if (kind === 'shared' && Object.prototype.hasOwnProperty.call(state, key)) { result[key] = (state as unknown as Record<string, unknown>)[key]; }
+	}
+	// The terminals pinned to a conversation are editor-only (`ChatTabSummary.terminals`): their names and ids stay home.
+	if (Array.isArray(result.tabs)) { result.tabs = withoutPinnedTerminals(result.tabs as ChatViewState['tabs']); }
+	return result as unknown as ChatViewState;
+}
+
+/** The tabs as a remote surface sees them: no pinned terminals. */
+export function withoutPinnedTerminals(tabs: ChatViewState['tabs']): ChatViewState['tabs'] {
+	return tabs.map(({ terminals: _terminals, ...tab }) => tab);
 }
 
 export function chromeChatSnapshot(state: ChatViewState, editorVersion?: string): ChromeChatSnapshot {
@@ -59,8 +99,8 @@ export function chromeChatSnapshot(state: ChatViewState, editorVersion?: string)
 		entries: state.entries,
 		canSend: true,
 		canAttachElements: true,
-		view: { ...state, dragToken: undefined, chatSurfaces: [], panel: undefined, chromeConnectionRequest: undefined, chromeMirror: undefined,
-			tabs: state.tabs, attachments: [], suggestions: [],
+		view: { ...projectView(state), surface: 'chrome', controls: surfaceControls('chrome'), chatSurfaces: [],
+			tabs: withoutPinnedTerminals(state.tabs), attachments: [], suggestions: [],
 			voice: { ...state.voice, available: false },
 			agents: state.agents?.map(({ copies: _copies, binary: _binary, pinned: _pinned, ...agent }) => agent) ?? [],
 		},
@@ -137,6 +177,12 @@ export function readChromeChatCommand(value: unknown): ChromeChatCommand | undef
 	if (raw.attachments !== undefined && (!attachments || m.type !== 'send')) { return undefined; }
 	let message: ViewToHost;
 	switch (m.type) {
+		case 'openBrowser':
+			if (m.where !== 'vscode') { return undefined; }
+			message = { type: 'openBrowser', where: 'vscode' }; break;
+		case 'openAttachment':
+			if (typeof m.id !== 'string' || m.id.length > 200 || typeof m.entry !== 'number' || !Number.isSafeInteger(m.entry) || m.entry < 0) { return undefined; }
+			message = { type: 'openAttachment', id: m.id, entry: m.entry }; break;
 		case 'setViewMode':
 			if (m.mode !== 'minimal' && m.mode !== 'compact' && m.mode !== 'standard') { return undefined; }
 			message = { type: 'setViewMode', mode: m.mode }; break;
@@ -149,6 +195,17 @@ export function readChromeChatCommand(value: unknown): ChromeChatCommand | undef
 			if (typeof m.text !== 'string' || (!m.text.trim() && !attachments?.length) || m.text.length > 100_000 || m.text.includes('\0')) { return undefined; }
 			message = { type: 'send', text: m.text, ...(m.mode === 'queue' ? { mode: 'queue' as const } : {}) }; break;
 		case 'stop': message = { type: 'stop' }; break;
+		// Terminal lifecycle: the bridge asks for consent first, the host checks the setting and the share.
+		case 'newTerminal':
+			if (Object.keys(m).some(k => !['type', 'agent'].includes(k)) || (m.agent !== undefined && m.agent !== 'claude' && m.agent !== 'codex')) { return undefined; }
+			message = { type: 'newTerminal', ...(m.agent ? { agent: m.agent } : {}) }; break;
+		case 'closeTerminal': case 'restartTerminal':
+			if (typeof m.id !== 'string' || !m.id || m.id.length > 100 || Object.keys(m).some(k => !['type', 'id'].includes(k))) { return undefined; }
+			message = { type: m.type, id: m.id }; break;
+		case 'renameTerminal':
+			if (typeof m.id !== 'string' || !m.id || m.id.length > 100 || typeof m.name !== 'string' || m.name.length > 200 || m.name.includes('\0')
+				|| Object.keys(m).some(k => !['type', 'id', 'name'].includes(k))) { return undefined; }
+			message = { type: 'renameTerminal', id: m.id, name: m.name }; break;
 		case 'switchAgent':
 			if (m.choice !== 'newTab' && m.choice !== 'replace' && m.choice !== 'continue' && m.choice !== 'cancel') { return undefined; }
 			message = { type: 'switchAgent', choice: m.choice }; break;
@@ -204,8 +261,10 @@ function readChromeFooterMessage(m: Record<string, unknown>): ViewToHost | undef
   const tab = () => text('tabId', 100) && !!m.tabId;
   const folder = () => text('folder') && !!m.folder;
   switch (m.type) {
-    case 'usage': case 'listWorkdir': case 'chooseWorkdir': case 'refreshWorkdirGit': case 'trustWorkdir':
+    case 'usage': case 'listWorkdir': case 'chooseWorkdir': case 'trustWorkdir':
       return { type: m.type };
+    case 'refreshWorkdirGit':
+      return m.fetch === undefined || m.fetch === 'auto' || m.fetch === 'force' ? { type: m.type, ...(m.fetch ? { fetch: m.fetch } : {}) } : undefined;
     case 'compact': return tab() ? { type: m.type, tabId: m.tabId as string } : undefined;
     case 'setWorkdir': return text('path', 4096, true) ? { type: m.type, path: m.path as string | undefined } : undefined;
     case 'attachPath': case 'removeRepoFolder': return text('path') ? { type: m.type, path: m.path as string } : undefined;

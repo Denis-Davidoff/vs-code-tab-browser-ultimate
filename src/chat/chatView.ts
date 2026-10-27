@@ -1,6 +1,13 @@
+import { GitFetchScheduler } from './gitFetch';
+import type { ExchangeUiMessage } from './exchangeUiProtocol';
+import { remoteRefusal } from './core/commands';
+import { remoteScope } from './core/remoteScope';
+import { exchangeConnection } from './exchangeConnection';
+import { annotationPointContext } from '../browser/annotationData';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { chromeChatCommandFeature } from './chromeChatCompatibility';
 import { ChatPanelCatalog } from './chatPanelCatalog';
+import { chatProjectId, legacyProjectTabs, type SavedChatTabs } from './chatProject';
 import { ChatStateSurfaces, type ChatStateSurface } from './chatSurface';
 import type { ChromeElementAttachment } from './chromeChatProtocol';
 import { bindAttachmentReference } from './attachmentReferences';
@@ -10,11 +17,12 @@ import { featureAgent, featureAiKey, defaultFeaturePrompts, featureEffort, readF
 import { availableBranchName, titleModel } from './autoTitle';
 import { localFileLink } from './fileLinks';
 import { SleepControl } from '../power/sleepControl';
-import { sleepHours, sleepMinutes, type SleepChoice } from '../power/sleepProtocol';
+import { sleepHours, sleepMinutes, exchangeAwakeMinutes, readExchangeAwakeMinutes, type SleepChoice } from '../power/sleepProtocol';
 import { VoiceRecording, voiceHelperPath, voiceUnavailable } from './voiceRecorder';
 import { tidyTranscript, voiceChipLabel, voiceLocalePattern, voiceMaxSeconds, voicePromptText, type HelperLine } from './voiceText';
 import { privateTempDirectory, projectTempDirectory, legacyPrivateTempDirectory, writeExclusive } from '../core/safeFiles';
 import { pastedFileLimit, pastedFileName, pastedImageType } from './pastedFiles';
+import { annotationClipboardText } from '../browser/annotationData';
 import type { BrowserRecording, RecordingDestination, RecordingEncoder } from '../browser/recording';
 import { readRecordingQuality, readRecordingSeconds, recordingQualityKey, recordingSecondsKey } from '../browser/recordingQuality';
 /*---------------------------------------------------------------------------------------------
@@ -35,6 +43,15 @@ const terminalAuthEnv = 'AI_BROWSER_MCP_AUTH';
 const terminalTabEnv = 'AI_BROWSER_MCP_TAB';
 import { geminiPath } from './geminiAgent';
 import { bundledPin } from './agentBinary';
+import { TerminalSet, type TerminalStarter, type TerminalTab } from './terminalTab';
+import { AgentTypingGate, UnreadTracker } from './terminalControl';
+import { TerminalPins, isPinMode, pinChipId, terminalOfPinChip, watchRefusal, type PinInfo, type PinMode } from './terminalPins';
+import { isTerminalInsertKind, terminalInsertPayload, type TerminalInsertItem, type TerminalInsertKind } from './terminalInsert';
+import { TerminalRefusal, type TerminalAgentApi } from '../mcp/terminalTools';
+import { mintTerminalGrant, planKeys, typedTextProblem } from '../mcp/terminalInput';
+import { TerminalGrants } from '../mcp/terminalGrants';
+import { chooseTerminalCwd, clampTerminalLimit, nextTerminalName, profilePlatform, readTerminalSettings, terminalChatText, closesEmptyPanel, terminalName, terminalPasteLimit, sanitizePaste, terminalSettingKeys, userScopedSetting } from './terminalLogic';
+import { plainText, resolveShell, scrubEnv, terminalAvailability, TerminalHost, type ShellProfileSettings } from '../terminal/terminalHost';
 import { JsonLineProcess } from './agentProcess';
 import { ChatTab, isHome, newChat, reopened, started, storedEntries, storedTextLimit, type Attachment, type SkillStep, type StoredChat, type TabHost } from './chatTab';
 import { chatTranscript, secondOpinionText, transcriptFileName, type OpinionContext } from './transcript';
@@ -64,7 +81,7 @@ import type { PageAnnotation } from '../browser/annotationData';
 import type {
 	AgentId, AgentUsage, ApprovalMode, AttachmentChip, AttachmentKind, ChatSummary, GitCommitState,
 	ChatNews, ChatTabSummary, ChatViewState, HostToView, RepoMode, Selection, ToolbarRun, ToolbarSkill, UsageAlert, UsageWindow, ViewToHost, VoiceEvent, WorkdirFolder, WorkdirState,
-	ChatViewMode, ToolEntry,
+	ChatViewMode, ToolEntry, TerminalSupport, TerminalTabSummary,
 } from './chatProtocol';
 import { pickElementContext, pickForChat } from '../elements/elementPicker';
 import { parseNews } from './news';
@@ -221,6 +238,9 @@ const openTabsKey = 'aiBrowser.chat.openTabs';
 export const defaultTabLimit = 10;
 export const maxTabLimit = 30;
 const tabLimitSetting = 'aiBrowser.chat.tabLimit';
+const terminalLimitSetting = 'aiBrowser.chat.terminalLimit';
+/** The most of a terminal's screen attached to a conversation (a paste into one is `terminalPasteLimit`, `terminalLogic.ts`). */
+const terminalSelectionLimit = 4_000_000;
 const collapseToolsSetting = 'aiBrowser.chat.collapseToolCalls';
 const viewModeSetting = 'aiBrowser.chat.viewMode';
 const chatViewModes: readonly ChatViewMode[] = ['minimal', 'compact', 'standard'];
@@ -252,6 +272,11 @@ export function tabLimit(): number {
 	return typeof value === 'number' && Number.isInteger(value) && value >= 1
 		? Math.min(value, maxTabLimit)
 		: defaultTabLimit;
+}
+
+/** Terminal tabs are counted apart from conversations: a shell spends no plan, a Claude tab does. */
+export function terminalLimit(): number {
+	return clampTerminalLimit(vscode.workspace.getConfiguration().get<unknown>(terminalLimitSetting));
 }
 const historyLimit = 50;
 /** The folders picked with the folder button lately, newest first; for every window. */
@@ -344,6 +369,28 @@ interface ChatServices {
 }
 
 /** What a push question is about: a yes counts only for the same push and the same question. */
+/**
+ * What a website session may not do through `chat.command` is the website's
+ * column of `COMMANDS` (src/chat/core/commands.ts), checked in `remoteScope`
+ * with the other refusals both entry points share; this adds the checks that
+ * an inner id names the shared conversation. Approvals stay in the
+ * editor (a remote Auto would run commands with no card), and nothing may
+ * reach chats that were not shared, local files, terminals or the agent
+ * binaries. A type with no row is refused. An inner id has to name the shared
+ * conversation itself.
+ */
+/** `aiBrowser.chat.remoteTerminal`, read at every decision (application scope: a workspace cannot switch it on). */
+export function remoteTerminalSetting(): boolean {
+	return vscode.workspace.getConfiguration('aiBrowser.chat').inspect<boolean>('remoteTerminal')?.globalValue === true;
+}
+
+function exchangeRefusal(message: ExchangeUiMessage, tab: ChatTab, chatId: string): void {
+	const m = message as { type: string; id?: unknown; tabId?: unknown; chatId?: unknown };
+	if ((m.type === 'closeTab' || m.type === 'selectTab' || m.type === 'renameTab') && m.id !== tab.id) { throw new Error('This conversation is not shared.'); }
+	if (m.type === 'resumeQueue' && m.tabId !== tab.id) { throw new Error('This conversation is not shared.'); }
+	if (m.type === 'secondOpinion' && m.chatId !== chatId) { throw new Error('This conversation is not shared.'); }
+}
+
 function pushKey(action: string, branch: string, remote: string, target: string, question: string): string {
 	return JSON.stringify([action, branch, remote, target, question]);
 }
@@ -370,9 +417,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private readonly _stateSurfaces = new ChatStateSurfaces();
 	private _themeTokens?: Record<string, string>;
 
-	public static chromeSources(): { id: string; label: string; description: string }[] {
+	public static chromeSources(): { id: string; label: string; description: string; panelId: string }[] {
 		return [...this._surfaces.values()].filter(view => !view._disposed && !!view._view).map(view => ({
-			id: view._surfaceId, label: view._surfaceLabel(), description: view._active.chat.title,
+			id: view._surfaceId, label: view._surfaceLabel(), description: view._active.chat.title, panelId: view._panelIdentity?.id ?? 'sidebar',
 		}));
 	}
 
@@ -390,22 +437,44 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		if (!view || view._disposed || !view._view) { throw new Error('The source chat is no longer open'); }
 		return view._stateSurfaces.attach(surface, chatId => view._stateFor(chatId), () => view._post());
 	}
+	/**
+	 * The terminals of a surface as the Exchange hub sees them: only those shared with the website,
+	 * and none while the window is blocked or the setting is off (re-asked on every call).
+	 */
+	public static exchangeTerminals(id: string): { find(terminalId: string): TerminalTab | undefined; shared(): TerminalTabSummary[]; support(): TerminalSupport; blocked(): boolean } {
+		const live = () => { const view = this._surfaces.get(id); return view && !view._disposed ? view : undefined; };
+		const blocked = () => { const view = live(); return !view || !!view._blocked() || !remoteTerminalSetting(); };
+		return {
+			blocked,
+			find: terminalId => { const view = live(); const terminal = blocked() ? undefined : view?._terminals.find(terminalId); return terminal?.remote ? terminal : undefined; },
+			shared: () => { const view = live(); return !view || blocked() ? [] : view._terminals.tabs.filter(t => t.remote).map(t => t.summary()); },
+			support: () => { const view = live(); return view ? view._terminalSupport() : { available: false, reason: 'The chat is closed.' }; },
+		};
+	}
 
-	public static async commandChromeSource(id: string, chatId: string, message: ViewToHost, picked: readonly ChromeElementAttachment[] = [], reply?: (message: HostToView, chatId?: string) => void): Promise<void> {
-		const view = this._surfaces.get(id);
-		// Chrome addresses the conversation it shows, which need not be the tab in front.
-		const tab = view && !view._disposed && view._view ? view._tabs.find(t => t.chat.id === chatId) : undefined;
-		if (!view || !tab) {
-			throw new Error('This conversation was closed in the editor. Pick another one.');
-		}
-		const blocked = view._blocked();
-		if (blocked) { throw new Error(blocked); }
+	public static exchangeViewerConnected(id: string): void {
+		const view=this._surfaces.get(id);
+		if(!view||view._disposed)return;
+		const minutes=readExchangeAwakeMinutes(vscode.workspace.getConfiguration('aiBrowser.chat').get('exchangeKeepAwakeMinutes',60));
+		view._sleep.connected(minutes);
+	}
+
+	public static async commandChromeSource(id: string, chatId: string, message: ViewToHost, picked: readonly ChromeElementAttachment[] = [], reply?: (message: HostToView, chatId?: string) => void, canonical?: (item:ChromeElementAttachment)=>Attachment|undefined): Promise<void> {
+		// The website's `send` comes through here too, after its own check.
+		const { view, tab } = remoteScope('chrome', this._surfaces.get(id), v => !v._disposed && v._view ? v._tabs.find(t => t.chat.id === chatId) : undefined, v => v._blocked(), remoteRefusal('chrome', message.type));
 		if (chromeChatCommandFeature(message) !== 'chat') {
 			await view._receiveChromeFooter(tab, message, reply); return;
+		}
+		if (message.type === 'newTerminal' || message.type === 'closeTerminal' || message.type === 'renameTerminal' || message.type === 'restartTerminal') {
+			// The bridge asked for consent before this (`ChromeChatBridge._terminalConsentFor`).
+			if (message.type === 'newTerminal' && message.pinTo !== undefined) { throw new Error('Pinning a terminal is done in VS Code.'); }
+			await view._remoteTerminalCommand(tab, message); return;
 		}
 		if (message.type === 'send') {
 			const stopGeneration = tab.stopGeneration;
 			const attachments: Attachment[] = await Promise.all(picked.map(async element => {
+				const canonicalItem=canonical?.(element);
+				if(canonicalItem){const chip={...canonicalItem.chip};bindAttachmentReference(chip,element.reference);return {...canonicalItem,chip};}
 				const chip = { id: element.id, kind: element.kind ?? 'element' as const, label: element.label };
 				bindAttachmentReference(chip, element.reference);
 				if (!element.file) { return { chip, text: element.text, ...(element.annotation ? { chromeAnnotation: { ...element.annotation, chatId } } : {}) }; }
@@ -436,15 +505,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 					tab.push({ kind: 'notice', text: `Not sent: ${message.text}` });
 				});
 			}
+		} else if (message.type === 'openBrowser') {
+			if(message.where!=='vscode')throw new Error('Open Chrome tabs in the Chrome side panel.');
+			if(!isBrowserApiGranted())throw new Error('Enable the native browser API in VS Code and restart the editor before opening a remote browser tab.');
+			view._awaitOpenedPage(tab);
+			await tabSource.open('about:blank',{where:'vscode',preserveFocus:true});
 		} else if (message.type === 'stop') {
 			view._stopTab(tab);
-		} else if (message.type === 'select' && tab !== view._active) {
-			if (message.selection.agent && message.selection.agent !== view._selection(tab).agent && tab.started) {
-				throw new Error('Switch this conversation to another agent in the editor.');
-			}
-			view._asActive(tab, () => view._select(message.selection));
-		} else if (message.type === 'switchAgent' && tab !== view._active) {
-			throw new Error('Answer this in the editor.');
+		} else if (message.type === 'select' || message.type === 'switchAgent') {
+			const scope = {tab, chatId, reply, remote: true};
+			await view._chromeCommand.run(scope, () => view._receive(message));
+			scope.chatId = scope.tab.chat.id;
+			view._postMessage({type:'state', state:view._state()});
+			if(scope.chatId!==chatId)reply?.({type:'focusInput'},scope.chatId);
+			return;
 		} else {
 			await view._receive(message);
 		}
@@ -452,17 +526,98 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 
-	private readonly _chromeCommand = new AsyncLocalStorage<{ tab: ChatTab; chatId: string; reply?: (message: HostToView, chatId?: string) => void }>();
+	/** The web client uses the same controller with its conversation in async request scope. */
+	private static readonly _exchangeAnnotationOwners=new Map<vscode.BrowserTab,{view:ChatViewProvider;chatId:string;reply:(message:HostToView,chatId?:string)=>void;ignored:Set<string>}>();
+	private readonly _exchangeDrafts=new Map<string,Map<string,Attachment>>();
+	public static releaseExchangeSource(id:string):void {
+		const view=this._surfaces.get(id);view?._exchangeDrafts.clear();
+		for(const [page,owner] of this._exchangeAnnotationOwners)if(owner.view._surfaceId===id)this._exchangeAnnotationOwners.delete(page);
+	}
+	public static async commandExchangeSource(id: string, chatId: string, message: ExchangeUiMessage, picked: readonly ChromeElementAttachment[] = [], reply?: (message: HostToView, chatId?: string) => void, browserTab?:vscode.BrowserTab): Promise<void> {
+		const { view, tab } = remoteScope('exchange', this._surfaces.get(id), v => !v._disposed && v._view ? v._tabs.find(t => t.chat.id === chatId) : undefined, v => v._blocked(), message.type === 'history' ? undefined : remoteRefusal('exchange', message.type));
+		exchangeRefusal(message, tab, chatId);
+		if (message.type === 'newTerminal' || message.type === 'closeTerminal' || message.type === 'renameTerminal' || message.type === 'restartTerminal') {
+			await view._remoteTerminalCommand(tab, message); return;
+		}
+		if (message.type === 'send') { await this.commandChromeSource(id, chatId, message, picked, reply,item=>view._exchangeDrafts.get(chatId)?.get(item.id)); return; }
+		if(message.type==='removeAttachment'){
+			view._exchangeDrafts.get(chatId)?.delete(message.id);
+			for(const owner of this._exchangeAnnotationOwners.values())if(owner.view===view&&owner.chatId===chatId)owner.ignored.add(message.id);
+			return;
+		}
+		if(message.type==='openBrowser'){
+			// Chrome on the editor's machine: its tabs then appear in the website's Browser panel.
+			if(message.where==='chrome'){const page=await vscode.commands.executeCommand<vscode.BrowserTab|undefined>('aiBrowser.openInChrome');if(!page)throw new Error('Google Chrome could not be opened on the VS Code machine.');}
+			else {
+				if(!isBrowserApiGranted())throw new Error('Enable the native browser API in VS Code and restart the editor before opening a remote browser tab.');
+				// The no-argument workbench command opens the local address prompt.
+				// Remote control needs an actual page target before it can navigate.
+				await tabSource.open('about:blank',{where:'vscode',preserveFocus:true});
+			}
+			reply?.({type:'exchangeBrowser'},chatId);return;
+		}
+		if(message.type==='openLink'){
+			if(!browserTab)throw new Error('Select a tab in the website Browser panel first.');
+			const url=new URL(message.url);if(!['http:','https:'].includes(url.protocol))throw new Error('Only HTTP and HTTPS links can open in the remote browser.');
+			await view._browser.remoteInput(view._browser.tabIdOf(browserTab),{action:'navigate',url:url.href});
+			reply?.({type:'exchangeBrowser'},chatId);return;
+		}
+				if(message.type==='setWorkdir'&&message.path!==undefined){
+			if(/[\0\r\n]/.test(message.path))throw new Error('Enter an absolute folder path on the computer running VS Code.');
+			let folder=message.path.trim();
+			if(folder==='~'||folder.startsWith('~/'))folder=path.join(os.homedir(),folder.slice(1));
+			if(!folder||/[\0\r\n]/.test(folder)||!path.isAbsolute(folder))throw new Error('Enter an absolute folder path on the computer running VS Code.');
+			if(!isDirectory(folder))throw new Error('The folder does not exist on the computer running VS Code.');
+			message={type:'setWorkdir',path:folder};
+		}
+		if (message.type === 'closeTab') {
+			await view._receive(message); reply?.({type:'focusInput'}, view._active.chat.id); return;
+		}
+		const scope = {tab,chatId,reply,remote:true};
+		await view._chromeCommand.run(scope, async () => {
+			if (message.type === 'ready') {
+				reply?.({type:'inputHistory',items:view._inputHistory()},scope.chatId);
+				for(const item of view._exchangeDrafts.get(chatId)?.values()??[])reply?.({type:'exchangeAttachment',id:item.chip.id,label:item.chip.label,text:item.text,kind:'annotation'},chatId);
+			} else if (message.type === 'attach') {
+				if(!browserTab)throw new Error('Select a tab in the website Browser panel first.');
+				if(!['annotation','pointAnnotation','page','screenshot','element'].includes(message.kind))throw new Error('This attachment is available only in the local VS Code chat.');
+				if(message.kind==='annotation'||message.kind==='pointAnnotation'){
+					if(!reply)throw new Error('Remote annotation receiver is unavailable.');
+					const owner={view,chatId,reply,ignored:new Set<string>()};this._exchangeAnnotationOwners.set(browserTab,owner);
+					const existing=view._browser.annotationsOf(browserTab);
+					if(existing)view._syncExchangeAnnotations({tab:browserTab,url:existing.url,records:existing.records,created:[],removed:[]},owner);
+					try{await view._browser.annotateTab(browserTab,message.kind==='pointAnnotation'?'point':'element');}
+					catch(error){if(this._exchangeAnnotationOwners.get(browserTab)===owner)this._exchangeAnnotationOwners.delete(browserTab);throw error;}
+					reply({type:'exchangeBrowser',message:'Click the remote page to add an annotation.'},chatId);
+				}else{
+					if(message.kind==='element')reply?.({type:'exchangeBrowser',message:'Click an element in the remote page to attach it.'},chatId);
+					const item=await view._makeAttachment(message.kind,browserTab,true);
+					if(item){
+						const file=item.image?{name:'screenshot.png',mime:item.image.mediaType,base64:item.image.base64}:undefined;
+						if(file&&file.base64.length>5_333_336)throw new Error('Screenshot exceeds the 4 MB attachment limit.');
+						reply?.({type:'exchangeAttachment',id:item.chip.id,label:item.chip.label,text:item.text??item.chip.label,kind:message.kind==='screenshot'?'screenshot':message.kind==='page'?'page':'element',file},chatId);
+					}
+				}
+			} else if (message.type === 'history') { view.showHistory(); }
+			else if (chromeChatCommandFeature(message) !== 'chat') { await view._receiveChromeFooter(scope.tab,message,reply); }
+			else { await view._receive(message); }
+		});
+		if (scope.tab.chat.id !== scope.chatId) { scope.chatId = scope.tab.chat.id; }
+		if (scope.chatId !== chatId) { reply?.({type:'focusInput'},scope.chatId); }
+		view._post();
+	}
+
+	private readonly _chromeCommand = new AsyncLocalStorage<{ tab: ChatTab; chatId: string; remote?: boolean; reply?: (message: HostToView, chatId?: string) => void }>();
 
 	/** Async request scope keeps folder/skill/Git actions bound to Chrome's conversation. */
 	private async _receiveChromeFooter(tab: ChatTab, message: ViewToHost, reply?: (message: HostToView, chatId?: string) => void): Promise<void> {
 		if ('tabId' in message && message.tabId !== undefined && message.tabId !== tab.id) { throw new Error('The destination conversation changed. Try again.'); }
-		const scope = { tab, chatId: tab.chat.id, reply };
+		const scope = { tab, chatId: tab.chat.id, reply, remote: this._chromeCommand.getStore()?.remote };
 		await this._chromeCommand.run(scope, async () => {
 			const target = message.type === 'runToolbarSkill' ? { ...message, tabId: tab.id } : message;
 			if (target.type === 'refreshWorkdirGit') {
 				const folder = this._workdir(tab);
-				if (folder) { await this._readWorkdirGit(folder); }
+				if (folder) { await this._readWorkdirGit(folder, target.fetch); }
 			} else if (target.type === 'attachPath') {
 				const folder = this._workdir(tab);
 				if (!folder || !target.path || /[\0\r\n]/.test(target.path)) { throw new Error('Invalid project path.'); }
@@ -483,6 +638,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 * does not mark the tab read, since nobody in the editor is looking at it.
 	 */
 	private _stateFor(chatId?: string): ChatViewState {
+		if (this._chromeCommand?.getStore()) { return this._chromeCommand.exit(() => this._stateFor(chatId)); }
 		const tab = chatId ? this._tabs.find(t => t.chat.id === chatId) : undefined;
 		if (!tab || tab === this._active) { return this._state(); }
 		return this._asActive(tab, () => this._state());
@@ -508,12 +664,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private _peeking = false;
 	/** Runs a synchronous step with `tab` in front, then puts the real one back. */
 	private _asActive<T>(tab: ChatTab, run: () => T): T {
-		const active = this._active, peeking = this._peeking, switchTo = this._switchTo;
-		this._active = tab; this._peeking = true; this._switchTo = undefined;
+		const active = this._active, peeking = this._peeking;
+		this._active = tab; this._peeking = true;
 		try { return run(); }
-		finally { this._active = active; this._peeking = peeking; this._switchTo = this._switchTo ?? switchTo; }
+		finally { this._active = active; this._peeking = peeking; }
 	}
 	private static readonly _terminalSessions = new Map<string, vscode.Terminal>();
+	/**
+	 * Which conversation tab each terminal is pinned to, for every surface of this extension host: a
+	 * tab moved to another surface keeps its pins, and a terminal is resolved across all of them.
+	 * Memory only — terminal ids die with the host. See `terminalPins.ts`.
+	 */
+	private static readonly _pins = new TerminalPins();
+	/**
+	 * The approvals of typing into a terminal: minted when the user (or the approval menu) answers the
+	 * card of a `terminal_send` / `terminal_key`, consumed by the tool (`src/mcp/terminalGrants.ts`).
+	 * One store for every surface.
+	 */
+	public static readonly terminalGrants = new TerminalGrants();
 	private static readonly _surfaces = new Map<string, ChatViewProvider>();
 	private static _sharedServices?: ChatServices;
 	private readonly _surfaceId = generateUuid();
@@ -539,9 +707,32 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private readonly _registry: AgentRegistry;
 	/** The open conversations, in the order of their tabs; `_active` is the one shown. */
 	private _tabs: ChatTab[] = [];
-	private _active!: ChatTab;
+	private _frontActive!: ChatTab;
+	private get _active(): ChatTab { const scope = this._chromeCommand?.getStore(); return scope?.remote ? scope.tab : this._frontActive; }
+	private set _active(tab: ChatTab) { const scope = this._chromeCommand?.getStore(); if (scope?.remote) { scope.tab = tab; scope.chatId = tab.chat.id; } else { this._frontActive = tab; } }
+	/**
+	 * The terminal tabs and the one in front. Never in `_tabs`: they are not
+	 * conversations, and `_active` stays the last conversation while one shows.
+	 * A conversation is selected → `clearFront`, never through the `_active`
+	 * setter, which `_asActive` swaps for a moment.
+	 */
+	private readonly _terminals = new TerminalSet(
+		() => terminalLimit(),
+		message => this._postTerminal(message),
+		() => this._post(),
+		() => ({ gate: new AgentTypingGate(), unread: new UnreadTracker() }),
+	);
+	private _terminalHostInstance: TerminalHost | undefined;
+	/** A terminal was left (`_leaveTerminal`) and the state that says so has not been posted yet. */
+	private _terminalLeftPending = false;
+	/** A `focusInput` was asked for meanwhile: posted right after that state, as `terminalFocus` is. */
+	private _focusAfterState = false;
+	/** Terminals being started: counted against the limit before they are tabs. */
+	private _terminalsStarting = 0;
 	/** The agent picked for a conversation that has started with another: asked about in the view. */
-	private _switchTo: AgentId | undefined;
+	private readonly _agentSwitches = new WeakMap<ChatTab, AgentId>();
+	private get _switchTo(): AgentId | undefined { return this._agentSwitches.get(this._active); }
+	private set _switchTo(agent: AgentId | undefined) { const tab = this._active; if (agent) { this._agentSwitches.set(tab, agent); } else { this._agentSwitches.delete(tab); } }
 	private _tabsSaved = '';
 	/** NEWS.md from the installed extension, read once; see `news.ts`. */
 	private _news: ChatNews | undefined;
@@ -565,11 +756,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		changed: () => { this._post(); this._drainQueues(); },
 		limits: (agent, windows, usingCredits) => this._noteLimits(agent, windows, usingCredits, false),
 		turnEnded: (agent, weight) => this._turnEnded(agent, weight),
+		authenticationError: (agent, text) => this._registry.authenticationError(agent, text),
 		save: chat => this._save(chat),
 		inHistory: id => this._history().some(c => c.id === id),
 		approvalMode: key => this._approvalPolicy()[key] ?? 'ask',
 		noteServer: server => this._noteServer(server),
 		released: chatId => this._runs.stopChat(chatId),
+		pinnedTerminals: tab => ChatViewProvider._pinnedInfos(tab),
+		dropPins: tab => { if (ChatViewProvider._pins.dropTab(tab.id).length) { ChatViewProvider._postAll(); } },
+		mintTerminalGrant: (chatId, approval) => { mintTerminalGrant(ChatViewProvider.terminalGrants, chatId, approval); },
 	};
 	private _remembered: RememberedSelection;
 	private readonly _runs = new ToolbarRuns({
@@ -589,6 +784,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private _postTimer: ReturnType<typeof setTimeout> | undefined;
 	private readonly _subscriptions: vscode.Disposable[] = [];
 	private _nativeBrowser: BrowserApiState | undefined;
+	private readonly _projectId: string;
 
 	/**
 	 * `browserServer`: the extension's MCP server while it runs, handed to every
@@ -603,18 +799,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		_transfer?: { tab: ChatTab; services: ChatServices },
 		private readonly _restoredPanel?: ChatPanelIdentity,
 	) {
+		// Freeze the owner for this surface: changing a working folder must not
+		// move its saved conversation set into another project's session.
+		this._projectId = chatProjectId(vscode.workspace.workspaceFile?.toString(),
+			(vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri.toString()), _context.storageUri?.toString());
 		if (_restoredPanel) { this._surfaceNumber = _restoredPanel.number; }
 		const shared = _transfer?.services ?? ChatViewProvider._sharedServices;
 		this._registry = shared?.registry ?? new AgentRegistry(() => this._cwd(), id => this._agentBinaries()[id], _browserServer, () => !this._untrusted(this._cwd()));
 		void sweepBrowserConfigs().catch(() => { /* swept with the temp directory */ });
 		if (shared) { this._runs = shared.runs; this._gitAccess = shared.git; }
-		this._services = shared ?? { registry: this._registry, git: this._gitAccess, panels: new ChatPanelCatalog(_context.workspaceState), runs: this._runs, views: new Set() };
+		this._services = shared ?? { registry: this._registry, git: this._gitAccess,
+			panels: new ChatPanelCatalog(_context.workspaceState, `aiBrowser.chat.panelCatalog.project.${this._projectId}`, panel => {
+				const old = _context.workspaceState.get<SavedChatTabs>(`${openTabsKey}.panel.${panel.id}`);
+				const tabs = legacyProjectTabs(old, this._projectId);
+				return Array.isArray(tabs?.ids) && tabs.ids.length > 0;
+			}), runs: this._runs, views: new Set() };
 		if (!_restoredPanel && _detachedChat) { this._surfaceNumber = this._freeSurfaceNumber(); }
 		this._services.views.add(this);
 		ChatViewProvider._sharedServices = this._services;
 		if (_restoredPanel) {
 			for (const [id, draft] of Object.entries(this._services.panels.panels.get(_restoredPanel.id)?.drafts ?? {})) { this._savedDrafts.set(id, draft); }
 		}
+		this._subscriptions.push(exchangeConnection.onDidChange(() => this._post()));
 		this._subscriptions.push(this._registry.onDidChange(() => this._post()));
 		if (_recording) { this._subscriptions.push(_recording.onDidChange(() => this._postRecording())); }
 		this._remembered = _context.globalState.get<RememberedSelection>(selectionKey) ?? { models: {}, efforts: {} };
@@ -655,7 +861,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		// once enough of them are closed.
 		this._subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration('workbench.iconTheme') || e.affectsConfiguration('files.associations')) { this._gitEventRefresh(); this._postFileIcons(); }
-			if (e.affectsConfiguration(tabLimitSetting) || e.affectsConfiguration(collapseToolsSetting) || e.affectsConfiguration(viewModeSetting)) {
+			if (terminalSettingKeys.some(key => e.affectsConfiguration(key))) { this._postTerminalSettings(); }
+			if (e.affectsConfiguration(terminalLimitSetting) || e.affectsConfiguration(tabLimitSetting) || e.affectsConfiguration(collapseToolsSetting) || e.affectsConfiguration(viewModeSetting) || e.affectsConfiguration('aiBrowser.chat.exchangeKeepAwakeMinutes') || e.affectsConfiguration('aiBrowser.chat.remoteTerminal')) {
 				this._post();
 			}
 		}));
@@ -848,6 +1055,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				this._view = undefined;
 				for (const surface of ChatViewProvider._surfaces.values()) { surface._post(); }
 				this._viewReady = false;
+				// The terminals' shells go on, as they do for a hidden view; what was
+				// in flight to the page that is gone is given back.
+				this._terminals.detachAll();
 				this._videoEncoder?.host.dispose();
 				// Nothing can show what a conversation does once its view is gone,
 				// so its CLI is not left working unseen on the user's quota. The
@@ -881,11 +1091,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 					font-src data: ${webview.cspSource};
 					img-src data: ${webview.cspSource};
 					media-src blob:;
-					style-src ${webview.cspSource};
+					style-src ${webview.cspSource} 'nonce-${nonce}';
 					script-src 'nonce-${nonce}';
 					">
 				<meta name="viewport" content="width=device-width, initial-scale=1">
 				<link rel="stylesheet" href="${uri('codicon.css')}">
+				<link rel="stylesheet" href="${uri('xterm.css')}">
 				<link rel="stylesheet" href="${uri('chat.css')}">
 			</head>
 			<body>
@@ -929,6 +1140,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			if (this._tabs.includes(command.tab) && command.tab.chat.id === command.chatId) { command.reply?.(message, command.chatId); }
 			return;
 		}
+		if (message.type === 'workdirGit') { this._stateSurfaces.broadcast(message); }
 		if (message.type === 'state') {
 			const shown = message.state.chatId;
 			this._stateSurfaces.publish(chatId => !chatId || chatId === shown ? message.state : this._stateFor(chatId));
@@ -979,6 +1191,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				for (const surface of ChatViewProvider._surfaces.values()) { if (surface !== this) { surface._post(); } }
 			}
 			this._postMessage({ type: 'state', state: this._state() });
+			// The view now shows the conversation the terminal gave way to: its box can take the focus.
+			this._terminalLeftPending = false;
+			if (this._focusAfterState) {
+				this._focusAfterState = false;
+				this._postMessage({ type: 'focusInput' });
+			}
+			// Said after the state that shows the tab, or the view has nothing to focus yet.
+			const focus = this._terminals.takeFocus();
+			if (focus) { this._postTerminal({ type: 'terminalFocus', id: focus }); }
 			this._saveTabs();
 		}, postDelayMs);
 	}
@@ -991,10 +1212,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		if (this._chromeCommand?.getStore()) { return this._chromeCommand.exit(() => this._state()); }
 		// Whatever the tab in front finished is read once the view shows it. A
 		// view in another side bar container, or collapsed, is not looked at.
-		if (this._view?.visible && !this._peeking) {
+		// Not while a terminal shows: the conversation behind it is not looked at.
+		if (this._view?.visible && !this._peeking && !this._terminals.front) {
 			this._active.seen();
 		}
-		const mirrored = this._stateSurfaces.chatIds(this._active.chat.id);
+		const mirrored = this._stateSurfaces.chatIds(this._active.chat.id, 'chrome');
 		const limit = tabLimit();
 		const selection = this._selection();
 		const viewMode = readViewMode();
@@ -1013,6 +1235,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				description: `${surface._active.chat.title} · ${surface._tabs.length} chats · ${surface._active.chat.folder ?? surface._windowCwd()}`,
 			})),
 			sleep: this._sleep.state,
+			exchangeConnection: { ...exchangeConnection.state, keepAwakeMinutes: readExchangeAwakeMinutes(vscode.workspace.getConfiguration('aiBrowser.chat').get('exchangeKeepAwakeMinutes',60)) },
 			featureAi: readFeatureAiSettings(this._context.globalState.get(featureAiKey)),
 			recordingQuality: readRecordingQuality(this._context.globalState.get(recordingQualityKey)),
 			recordingSeconds: readRecordingSeconds(this._context.globalState.get(recordingSecondsKey)),
@@ -1025,7 +1248,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			chatId: this._active.chat.id,
 			entries: this._active.chat.entries,
 			running: this._active.running,
-			attachments: this._active.attachments.map(a => ({ ...a.chip, reference: attachmentReference(a.chip) })),
+			// The pins first: they are the conversation's, not a draft's, and carry no `@N`.
+			attachments: [...this._pinChips(this._active), ...this._active.attachments.map(a => ({ ...a.chip, reference: attachmentReference(a.chip) }))],
 			suggestions: this._suggestions().map(s => s.chip),
 			pendingSends: this._active.pendingSends,
 			...(this._active.paused ? { queuePaused: { by: this._active.paused.by } } : {}),
@@ -1042,10 +1266,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				queued: tab.queuedCount,
 				status: tab.status,
 				...(mirrored.has(tab.chat.id) ? { chrome: true } : {}),
+				...this._pinnedSummary(tab),
 			})),
 			...(mirrored.has(this._active.chat.id) && !this._peeking ? { chromeMirror: true } : {}),
 			activeTab: this._active.id,
 			tabLimit: limit,
+			terminals: this._terminals.tabs.map(t => this._terminalSummary(t)),
+			...(this._terminals.front ? { terminalFront: this._terminals.front } : {}),
+			terminalSupport: this._terminalSupport(),
 			approvals: { policy: this._approvalPolicy(), servers: this._approvalServers() },
 			switchTo: this._switchTo,
 			commands: this._registry.commandsFor(this._cwd()),
@@ -1120,6 +1348,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 	private async _receive(message: ViewToHost): Promise<void> {
 		switch (message.type) {
+			case 'connectExchange':
+				await exchangeConnection.connect({ url: message.url, pointId: message.pointId, key: message.key, password: message.password }, this._surfaceId);
+				return;
+			case 'disconnectExchange':
+				exchangeConnection.disconnect();
+				return;
+			case 'setExchangeKeepAwake':
+				if((exchangeAwakeMinutes as readonly number[]).includes(message.minutes)){
+					await vscode.workspace.getConfiguration('aiBrowser.chat').update('exchangeKeepAwakeMinutes',message.minutes,vscode.ConfigurationTarget.Global);
+				}
+				return;
 			case 'answerChromeConnection':
 				if (ChatViewProvider._chromeConnectionRequest?.id === message.id) {
 					ChatViewProvider._chromeConnectionRequest.finish(message.allow === true ? this._surfaceId : undefined);
@@ -1187,6 +1426,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				return;
 			case 'ready': {
 				this._viewReady = true;
+				// A page that (re)loads has no screens: each terminal is given its own
+				// when the view's xterm for it says `terminalAttach`.
+				this._terminals.detachAll();
 				this._postRecording();
 				// A queue held while there was no view goes out now that there is one.
 				this._drainQueues();
@@ -1306,7 +1548,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				await this._restoreBranchStash(message.folder);
 				return;
 			case 'refreshWorkdirGit':
-				await this._refreshWorkdirGit();
+				await this._refreshWorkdirGit(message.fetch);
 				return;
 			case 'listWorkdir':
 				await this._listWorkdir();
@@ -1374,7 +1616,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				await this._openText(message.name, message.text);
 				return;
 			case 'openAttachment':
-				await this._openAttachment(message.id);
+				await this._openAttachment(message.id, message.entry);
 				return;
 			case 'saveAttachment': {
 				const attachment = this._active.attachments.find(a => a.chip.id === message.id);
@@ -1409,11 +1651,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 					policy[key] = message.mode;
 				}
 				await this._context.workspaceState.update(approvalPolicyKey, policy).then(undefined, () => { /* a convenience */ });
-				for (const tab of this._tabs) {
-					tab.approvalModesChanged();
+				// The policy is the workspace's, so every chat surface of the window
+				// answers its waiting cards and redraws its menu — not only this one.
+				for (const view of ChatViewProvider._surfaces.values()) {
+					for (const tab of view._tabs) {
+						tab.approvalModesChanged();
+					}
+					view._post();
 				}
 				this._runs.approvalModesChanged();
-				this._post();
 				return;
 			}
 			case 'stopAgent':
@@ -1479,6 +1725,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			case 'setAgentBinary':
 				await this._setAgentBinary(message.agent, message.path);
 				return;
+			case 'authenticateAgent':
+			case 'checkAgentAuthentication':
+				if (this._blocked() || !isAgentId(message.agent)) return;
+				if (message.type === 'authenticateAgent') await this._registry.authenticate(message.agent);
+				else await this._registry.checkAuthentication(message.agent);
+				return;
 			case 'openAgentSetting':
 				await vscode.commands.executeCommand('workbench.action.openSettings', `aiBrowser.chat.${message.agent}Path`);
 				return;
@@ -1488,11 +1740,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			case 'pasteFile':
 				await this._pasteFile(message);
 				return;
-			case 'removeAttachment':
+			case 'removeAttachment': {
+				// A pin's chip is a binding, not a draft attachment: its X unpins.
+				const pinned = terminalOfPinChip(message.id);
+				if (pinned !== undefined) {
+					if (ChatViewProvider._pins.unpin(this._active.id, pinned)) { ChatViewProvider._postAll(); }
+					return;
+				}
 				this._active.attachments = this._active.attachments.filter(a => a.chip.id !== message.id);
 				this._livePages.delete(message.id);
 				this._post();
 				return;
+			}
 			case 'acceptSuggestion': {
 				// Taken from what is open now, not from what the chip showed: the
 				// suggestion is the editor or tab in front, and only that is accepted.
@@ -1548,6 +1807,62 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			case 'copy':
 				await vscode.env.clipboard.writeText(message.text);
 				return;
+			case 'newTerminal':
+				await this.newTerminal(message.agent, message.pinTo);
+				return;
+			case 'pinTerminal':
+				this._pinTerminalMessage(message.id, message.tabId, message.pinned, message.mode);
+				return;
+			case 'terminalAskAgent':
+				await this._terminalAskAgent(message.id, message.target, message.selection, message.mode);
+				return;
+			case 'setTerminalAgentControl':
+				this._terminals.find(message.id)?.setAgentControl(message.allowed === true);
+				return;
+			case 'setTerminalRemote':
+				// Only the editor grants it, and only while the window allows terminals on the website at all.
+				if (message.remote === true && !remoteTerminalSetting()) { refuse(vscode.l10n.t("Turn on the setting AI Browser › Chat: Remote Terminal first.")); return; }
+				this._terminals.find(message.id)?.setRemote(message.remote === true);
+				return;
+			case 'selectTerminal':
+				this._terminals.select(message.id);
+				return;
+			case 'closeTerminal':
+				this._closeTerminal(message.id);
+				return;
+			case 'renameTerminal':
+				// One line, and short, as a conversation's name is.
+				if (this._terminals.find(message.id)?.rename(terminalName(message.name))) { this._post(); }
+				return;
+			case 'restartTerminal':
+				await this._restartTerminal(message.id);
+				return;
+			case 'terminalAttach': {
+				const tab = this._terminals.find(message.id);
+				if (!tab) { return; }
+				// The settings first: the font decides the cells the screen is drawn in.
+				this._postTerminalSettings();
+				tab.attach(message.cols, message.rows);
+				return;
+			}
+			case 'terminalInput':
+				this._terminals.find(message.id)?.input(message.data);
+				return;
+			case 'terminalResize':
+				this._terminals.find(message.id)?.resize(message.cols, message.rows);
+				return;
+			case 'terminalAck':
+				this._terminals.find(message.id)?.ack(message.bytes);
+				return;
+			case 'terminalPasteRequest':
+				await this._pasteIntoTerminal(message.id);
+				return;
+			case 'terminalInsert':
+				await this._insertIntoTerminal(message.id, message.kind, message.file);
+				return;
+			case 'terminalToChat':
+				await this._terminalToChat(message.id, message.text);
+				return;
 			case 'setNewsHidden':
 				// Remembered as the newest entry at the moment of hiding, in
 				// `globalState`: hidden in every window, and shown again by itself
@@ -1558,7 +1873,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				} catch {
 					// Best effort: the choice is a convenience.
 				}
-				this._post();
+				// Kept in globalState: every chat surface shows it at once.
+				for (const view of ChatViewProvider._surfaces.values()) { view._post(); }
 				return;
 			case 'openBrowser':
 				if (message.where === 'vscode' && !isBrowserApiGranted()) {
@@ -2327,10 +2643,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			next.title = tab.chat.title;
 			next.named = true;
 		}
-		tab.start(next);
+		// The terminals pinned to the tab stay: Clear changes the chat under it, not the work beside it.
+		tab.start(next, true);
 		this._switchTo = undefined;
 		this._post();
-		this._postMessage({ type: 'focusInput' });
+		this._focusInput();
 	}
 
 	/**
@@ -2662,11 +2979,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 */
 	private _tabNote(tab: vscode.BrowserTab): string {
 		if (!this._browserServer()) {
-			return 'Browser tools: the ai-browser MCP server is off (aiBrowser.mcp.enabled), so the page cannot be read or driven from here.';
+			return 'Browser tools: the ai-browser MCP server is off (aiBrowser.mcp.enabled), so the page cannot be read or driven from here.\nFor this page, use only the built-in ai-browser MCP as your browser; do not use other browser tools or launch a separate browser. If it is unavailable, report that instead of switching tools.';
 		}
 		const id = this._browser.tabIdOf(tab);
 		const active = this._browser.focusedTab === tab ? 'active' : 'not active';
-		return `Browser tab ${id} (${active}). ai-browser MCP tools: names end in browser_state, browser_snapshot, browser_click… Check browser_state before acting; pins or sharing may target another tab. If needed, use browser_select_tab with "${id}"; if sharing prevents selection, ask the user to assign this tab.`;
+		return `Browser tab ${id} (${active}). ai-browser MCP tools: names end in browser_state, browser_snapshot, browser_click… Check browser_state before acting; pins or sharing may target another tab. If needed, use browser_select_tab with "${id}"; if sharing prevents selection, ask the user to assign this tab.\nFor this page, use only the built-in ai-browser MCP as your browser; do not use other browser tools or launch a separate browser. If it is unavailable, report that instead of switching tools.`;
 	}
 
 	/** A page-address attachment for `tab`, under the chip id given. */
@@ -2803,6 +3120,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			`Page annotation #${record.number} on ${url}`,
 			`Note: ${note ? JSON.stringify(record.text) : '(empty)'}`,
 			`Element (untrusted page data): <${record.element.tag}> ${JSON.stringify(record.element.selector)}${record.element.text ? ` text ${JSON.stringify(record.element.text)}` : ''}${record.element.role ? ` role ${JSON.stringify(record.element.role)}` : ''}`,
+      ...annotationPointContext(record),
 			`Annotation ID ${record.id}, browser tab ${tabId}. The marker is removed from the page once this message is sent, so this text is the annotation.`,
 		].join('\n');
 		return { chip: { id, kind: 'annotation', label: capAt(plainInLabel(label, 120), 120) }, text };
@@ -2815,6 +3133,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 * attaches the page's existing ones too), but only the first binds it.
 	 */
 	private _onAnnotations(change: AnnotationChange): void {
+		const remote=ChatViewProvider._exchangeAnnotationOwners.get(change.tab);
+		if(remote?.view===this)this._syncExchangeAnnotations(change,remote);
 		let changed = false;
 		for (const id of change.removed) {
 			const link = this._annotationLinks.get(id);
@@ -2829,6 +3149,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		for (const record of change.records) {
 			const link = this._annotationLinks.get(record.id);
 			if (!link) {
+				if(remote)continue;
 				if (blocked || !change.created.includes(record.id) || !this._active) { continue; }
 				this._attachAnnotation(this._active, record, change.url, change.tab);
 				changed = true;
@@ -2848,6 +3169,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			}
 		}
 		if (changed) { this._post(); }
+	}
+	private _syncExchangeAnnotations(change:AnnotationChange,owner:{chatId:string;reply:(message:HostToView,chatId?:string)=>void;ignored:Set<string>}):void {
+		if(this._disposed||!this._tabs.some(tab=>tab.chat.id===owner.chatId))return;
+		const drafts=this._exchangeDrafts.get(owner.chatId)??new Map<string,Attachment>();this._exchangeDrafts.set(owner.chatId,drafts);
+		for(const id of change.removed){if(drafts.delete(id))owner.reply({type:'exchangeAttachment',id,removed:true},owner.chatId);owner.ignored.delete(id);}
+		const assistant=this._browser.annotationsOf(change.tab)?.agentMade;
+		for(const record of change.records){
+			if(assistant?.has(record.id)||owner.ignored.has(record.id)||(!drafts.has(record.id)&&drafts.size>=8))continue;
+			const item={...this._annotationAttachment(record,change.url,change.tab,record.id),exchangeAnnotation:{tabId:this._browser.tabIdOf(change.tab),id:record.id}};
+			const previous=drafts.get(record.id);drafts.set(record.id,item);
+			if(previous?.text!==item.text||previous?.chip.label!==item.chip.label)owner.reply({type:'exchangeAttachment',id:record.id,label:item.chip.label,text:item.text,kind:'annotation'},owner.chatId);
+		}
 	}
 
 	/**
@@ -2878,6 +3211,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 */
 	private _removeSentAnnotations(attachments: readonly Attachment[]): void {
 		for (const item of attachments) {
+			if(item.exchangeAnnotation){
+				const annotation=item.exchangeAnnotation;
+				for(const [chatId,drafts] of this._exchangeDrafts)if(drafts.delete(item.chip.id)){
+					for(const owner of ChatViewProvider._exchangeAnnotationOwners.values())if(owner.view===this&&owner.chatId===chatId){owner.ignored.add(annotation.id);owner.reply({type:'exchangeAttachment',id:item.chip.id,removed:true},chatId);}
+				}
+				void this._browser.remoteTab(annotation.tabId).then(page=>this._browser.removeAnnotations(page,[annotation.id])).catch(()=>{});
+			}
 			if (item.chromeAnnotation) {
 				try { void chromeAnnotationSessions.removeSent(item.chromeAnnotation).catch(error => refuse(`Could not remove the sent Chrome annotation: ${String(error)}`)); }
 				catch (error) { refuse(`Could not remove the sent Chrome annotation: ${String(error)}`); }
@@ -2898,6 +3238,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 	/** Closing a chat tab deletes the annotations bound to it. */
 	private _dropAnnotationsOf(chat: ChatTab): void {
+		for(const item of this._exchangeDrafts.get(chat.chat.id)?.values()??[]){const note=item.exchangeAnnotation;if(note)void this._browser.remoteTab(note.tabId).then(page=>this._browser.removeAnnotations(page,[note.id])).catch(()=>{});}
+		this._exchangeDrafts.delete(chat.chat.id);
+		for(const [page,owner] of ChatViewProvider._exchangeAnnotationOwners)if(owner.view===this&&owner.chatId===chat.chat.id)ChatViewProvider._exchangeAnnotationOwners.delete(page);
 		const byPage = new Map<vscode.BrowserTab, string[]>();
 		let changed = false;
 		for (const [id, link] of this._annotationLinks) {
@@ -2923,7 +3266,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		if (attachment) {
 			tab.attachments.push(attachment);
 			this._post();
-			this._postMessage({ type: 'focusInput' });
+			this._focusInput();
 		}
 	}
 
@@ -2957,9 +3300,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}
 		// The chat tab it was asked from, or the one in front if that one closed meanwhile.
 		(this._tabs.includes(tab) ? tab : this._active).attachments.push(attachment);
+		// A chip added to a conversation is for looking at it: a terminal in front gives way.
+		this._leaveTerminal();
 		this._post();
 		await this._focusView();
-		this._postMessage({ type: 'focusInput' });
+		this._focusInput();
 	}
 
 	/** What `addFromBrowser` attaches; may throw — a capture can fail — which the caller reports. */
@@ -2984,15 +3329,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	/** `page`: the browser tab to attach from; the one the user last had in front when absent. */
-	private async _makeAttachment(kind: AttachmentKind, page?: vscode.BrowserTab): Promise<Attachment | undefined> {
+	private async _makeAttachment(kind: AttachmentKind, page?: vscode.BrowserTab, remote=false): Promise<Attachment | undefined> {
 		const id = generateUuid();
 		if (kind === 'video') {
 			if (!this._recording) { throw new Error('Video recording is unavailable.'); }
 			await this._recording.start(undefined, 'chat');
 			return undefined;
 		}
-		if (kind === 'voice' || kind === 'selection') {
-			// Created by their dedicated controls, never asked for through "+".
+		if (kind === 'voice' || kind === 'selection' || kind === 'terminal') {
+			// Created by their dedicated controls, never asked for through "+" (a terminal is a pin, `pinTerminal`).
 			return undefined;
 		}
 		if (kind === 'file') {
@@ -3034,7 +3379,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				return attachment;
 			}
 			case 'screenshot': {
-				if (!this._browser.onScreen(tab)) {
+				if (!remote && !this._browser.onScreen(tab)) {
 					refuse(vscode.l10n.t("\"{0}\" is not on screen — bring its tab to the front, then attach.", plainInLabel(pageTitle(tab.title, tab.url), 60)));
 					return undefined;
 				}
@@ -3050,7 +3395,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			case 'element': {
 				// A pick waits for a click on the page; on a page the user cannot
 				// see, that is a wait for something they cannot do.
-				if (!this._browser.onScreen(tab)) {
+				if (!remote && !this._browser.onScreen(tab)) {
 					refuse(vscode.l10n.t("\"{0}\" is not on screen — bring its tab to the front, then attach.", plainInLabel(pageTitle(tab.title, tab.url), 60)));
 					return undefined;
 				}
@@ -3061,7 +3406,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				const heading = /^Element:\s*(.+)$/m.exec(markdown)?.[1]?.trim();
 				return { chip: { id, kind, label: heading ? plainInPrompt(heading, 40) : vscode.l10n.t("Element") }, text: markdown };
 			}
+			case 'pointAnnotation':
 			case 'annotation': {
+				if(!remote)ChatViewProvider._exchangeAnnotationOwners.delete(tab);
 				// Starts the page's annotation picker; the chip arrives when the note is
 				// made, through `_onAnnotations`, in the chat tab in front.
 				if (!this._browser.onScreen(tab)) {
@@ -3080,8 +3427,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 					}
 					if (added) { this._post(); }
 				}
-				await this._browser.annotateTab(tab);
-				confirm(vscode.l10n.t("Click a page element to add an annotation (Esc to cancel)."));
+				await this._browser.annotateTab(tab, kind === 'pointAnnotation' ? 'point' : 'element');
+				confirm(kind === 'pointAnnotation' ? "Click anywhere on the page to add an annotation (Esc to cancel)." : "Click a page element to add an annotation (Esc to cancel).");
 				return undefined;
 			}
 		}
@@ -3095,8 +3442,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 * next chip reuses it. `Beside` was the first version and split the editor
 	 * area into a new group on every first click, which read as a separate window.
 	 */
-	private async _openAttachment(id: string): Promise<void> {
-		const attachment = this._active.attachments.find(a => a.chip.id === id);
+	private async _openAttachment(id: string, entryIndex?: number): Promise<void> {
+		const entry = Number.isInteger(entryIndex) ? this._active.chat.entries[entryIndex!] : undefined;
+		const saved = entry?.kind === 'user' ? entry.attachmentData?.find(a => a.chip.id === id) : undefined;
+		const attachment = entryIndex === undefined ? this._active.attachments.find(a => a.chip.id === id)
+			: saved ? { ...saved, file: saved.file ? vscode.Uri.parse(saved.file) : undefined } : undefined;
 		if (!attachment) {
 			return;
 		}
@@ -3177,7 +3527,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		const left = side('before', before);
 		const right = side('after', after);
 		try {
-			await vscode.commands.executeCommand('vscode.diff', left, right, vscode.l10n.t("{0} (changes)", plainInLabel(name)), { preview: true, viewColumn: vscode.ViewColumn.Active });
+			await vscode.commands.executeCommand('vscode.diff', left, right, vscode.l10n.t("{0} (changes)", plainInPrompt(name, 80)), { preview: true, viewColumn: vscode.ViewColumn.Active });
 		} catch (err) {
 			refuse(vscode.l10n.t("Could not open the changes: {0}", err instanceof Error ? err.message : String(err)));
 		}
@@ -3362,26 +3712,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}
 		const args = chat.agent === 'codex' ? ['resume', chat.ref] : ['--resume', chat.ref];
 		// Preserve the chat's restriction on project hooks in untrusted managed copies.
-		if (chat.agent === 'claude' && this._untrusted(cwd)) { args.push('--setting-sources', 'user'); }
+		if (chat.agent === 'claude' && this._untrusted(cwd)) { args.push('--setting-sources=user', '--strict-mcp-config'); }
 		// The terminal CLI is not ours, so it gets the browser server the chat's
 		// own processes get at start; without it the conversation lost the browser
-		// tools on the move. Codex takes the token from the environment, never argv.
-		const server = this._browserServer?.();
-		const env: Record<string, string | null> = {};
-		// The tab the conversation was working on (a Chrome one included) goes
-		// along as X-AI-Browser-Tab, which seeds the terminal session's selection.
-		const tabId = this._browser?.tabIdForChat?.(chat.id);
-		let config: string | undefined;
-		if (server && chat.agent === 'claude') {
-			config = await writeTerminalBrowserConfig(server, tabId);
-			if (config) { args.push('--mcp-config', config); }
-		} else if (server && chat.agent === 'codex') {
-			args.push('-c', `mcp_servers.ai-browser.url=${JSON.stringify(server.url)}`,
-				'-c', 'mcp_servers.ai-browser.http_headers={}',
-				'-c', `mcp_servers.ai-browser.env_http_headers={Authorization="${terminalAuthEnv}"${tabId ? `, "X-AI-Browser-Tab"="${terminalTabEnv}"` : ''}}`);
-			env[terminalAuthEnv] = `Bearer ${server.token}`;
-			if (tabId) { env[terminalTabEnv] = tabId; }
-		}
+		// tools on the move. The tab the conversation was working on (a Chrome one
+		// included) goes along, which seeds the terminal session's selection.
+		const launch = await this._browserCliLaunch(chat.agent, chat.id);
+		args.push(...launch.args);
+		const env = launch.env, config = launch.config;
 		// Closing releases the live backend, keeping the conversation in history.
 		if (open) { open.surface._closeTab(open.tab.id); }
 		// Claude Code and Gemini run a process per conversation: let it exit first.
@@ -3407,6 +3745,569 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			if (config) { fs.rm(config, { force: true }, () => undefined); }
 		});
 		terminal.show();
+	}
+
+	/**
+	 * What an agent's CLI is given to reach this window's browser server when it
+	 * runs outside the chat's own processes — in an editor terminal or in a
+	 * terminal tab. Claude Code reads a `0600` `--mcp-config` file (the token is
+	 * never in argv, where every local user could read it); Codex takes the
+	 * server through `-c` overrides and the token from the environment.
+	 * `config`, when there is one, is the file to remove when the CLI is done.
+	 * Gemini reads servers from settings files only and is not covered.
+	 */
+	private async _browserCliLaunch(agent: AgentId, chatId: string | undefined): Promise<{ args: string[]; env: Record<string, string>; config?: string }> {
+		const args: string[] = [];
+		const env: Record<string, string> = {};
+		const server = this._browserServer?.();
+		const tabId = chatId ? this._browser?.tabIdForChat?.(chatId) : undefined;
+		let config: string | undefined;
+		if (server && agent === 'claude') {
+			config = await writeTerminalBrowserConfig(server, tabId);
+			if (config) { args.push('--mcp-config', config); }
+		} else if (server && agent === 'codex') {
+			args.push('-c', `mcp_servers.ai-browser.url=${JSON.stringify(server.url)}`,
+				'-c', 'mcp_servers.ai-browser.http_headers={}',
+				'-c', `mcp_servers.ai-browser.env_http_headers={Authorization="${terminalAuthEnv}"${tabId ? `, "X-AI-Browser-Tab"="${terminalTabEnv}"` : ''}}`);
+			env[terminalAuthEnv] = `Bearer ${server.token}`;
+			if (tabId) { env[terminalTabEnv] = tabId; }
+		}
+		return { args, env, ...(config ? { config } : {}) };
+	}
+
+	/* ------------------------------------------------------------ terminal tabs */
+
+	/**
+	 * A conversation takes the front back from a terminal (a state post will say so). Returns whether a terminal was in front.
+	 * Until that state has been posted the view still shows the terminal, so a `focusInput` sent now would focus the xterm that
+	 * is about to be hidden and leave the focus on the page's body: `_focusInput` waits for the state instead.
+	 */
+	private _leaveTerminal(): boolean {
+		const changed = this._terminals.clearFront();
+		if (changed) { this._terminalLeftPending = true; }
+		return changed;
+	}
+
+	/** Asks the view to focus its message box (or the terminal in front) — after the state, when a terminal was just left. */
+	private _focusInput(): void {
+		if (this._terminalLeftPending) { this._focusAfterState = true; return; }
+		this._postMessage({ type: 'focusInput' });
+	}
+
+	private _terminalHost(): TerminalHost {
+		return this._terminalHostInstance ??= new TerminalHost();
+	}
+
+	/**
+	 * Direct to the view, never through `_postMessage`: that queues everything
+	 * until the view is ready (a hidden view would pile output up, #488) and
+	 * diverts messages while a remote command runs. Nothing is kept for a view
+	 * that is not there — the session's tail is what a view is given when its
+	 * xterm says `terminalAttach`.
+	 */
+	private _postTerminal(message: HostToView): void {
+		if (this._view && this._viewReady) { void this._view.webview.postMessage(message); }
+	}
+
+	/** The agents whose own CLI can start in a terminal tab: found, with the browser server injected as in "Continue in terminal". */
+	private _terminalAgents(): AgentId[] {
+		return this._registry.agents.filter(a => (a.id === 'claude' || a.id === 'codex') && a.available && !!a.binary).map(a => a.id);
+	}
+
+	/** Whether a terminal can start here, and why not. */
+	private _terminalSupport(): TerminalSupport {
+		const blocked = this._blocked();
+		if (blocked) { return { available: false, reason: blocked }; }
+		const availability = terminalAvailability();
+		if (!availability.ok) { return { available: false, reason: availability.reason ?? vscode.l10n.t("The terminal is not available.") }; }
+		const website = remoteTerminalSetting() ? { allowed: true as const }
+			: { allowed: false as const, reason: vscode.l10n.t("Turn on the setting AI Browser › Chat: Remote Terminal first.") };
+		return { available: true, limit: terminalLimit(), agents: this._terminalAgents(), website };
+	}
+
+	private _postTerminalSettings(): void {
+		const config = vscode.workspace.getConfiguration();
+		this._postTerminal({ type: 'terminalSettings', settings: readTerminalSettings(key => config.get<unknown>(key)) });
+	}
+
+	private _shellProfileSettings(): ShellProfileSettings {
+		// The user's settings and the defaults only: a workspace's `.vscode/settings.json` must not choose the program a
+		// terminal runs (`userScopedSetting`).
+		const config = vscode.workspace.getConfiguration('terminal.integrated');
+		const platform = profilePlatform(process.platform);
+		const defaultProfile = userScopedSetting(config.inspect<unknown>(`defaultProfile.${platform}`));
+		const profiles = userScopedSetting(config.inspect<unknown>(`profiles.${platform}`));
+		return {
+			...(typeof defaultProfile === 'string' && defaultProfile ? { defaultProfile } : {}),
+			...(profiles && typeof profiles === 'object' && !Array.isArray(profiles) ? { profiles: profiles as ShellProfileSettings['profiles'] } : {}),
+		};
+	}
+
+	/**
+	 * How one terminal's process is started — and started again by Restart: the
+	 * shell VS Code's own terminal would use, or an agent's CLI. The environment is
+	 * the host's without what only the editor and the chat should hold
+	 * (`scrubEnv`); the agent's gets the browser server's token on purpose.
+	 */
+	private _terminalStarter(cwd: string, agent: AgentId | undefined): TerminalStarter {
+		return async (handlers, size) => {
+			let file: string;
+			let args: string[];
+			let extra: Record<string, string> = {};
+			let cleanup: (() => void) | undefined;
+			if (agent) {
+				const binary = this._registry.agents.find(a => a.id === agent)?.binary;
+				if (!binary) { throw new Error(vscode.l10n.t("The agent's CLI was not found. Refresh Agents and try again.")); }
+				file = binary;
+				args = [];
+				// Like the chat's own process in a folder fetched from GitHub: its settings are held back.
+				if (agent === 'claude' && this._untrusted(cwd)) { args.push('--setting-sources=user', '--strict-mcp-config'); }
+				const launch = await this._browserCliLaunch(agent, undefined);
+				args.push(...launch.args);
+				extra = { ...launch.env, PATH: geminiPath(binary) };
+				const config = launch.config;
+				if (config) { cleanup = () => fs.rm(config, { force: true }, () => undefined); }
+			} else {
+				({ file, args } = resolveShell(process.platform, process.env, this._shellProfileSettings()));
+			}
+			// `claude` refuses to start inside what it takes for another Claude Code session.
+			const { CLAUDE_CODE_ENTRYPOINT: _entrypoint, ...base } = process.env;
+			try {
+				const session = this._terminalHost().create({
+					file, args, cwd, env: scrubEnv(base, extra), cols: size.cols, rows: size.rows,
+					onData: handlers.onData, onExit: handlers.onExit,
+				});
+				return { session, cleanup };
+			} catch (error) {
+				cleanup?.();
+				throw error;
+			}
+		};
+	}
+
+	/**
+	 * A new terminal tab in the folder of the conversation in front, in front itself; `agent` starts that agent's own CLI.
+	 * `pinTo` (a conversation tab id): made for that conversation's agent — in its folder, in the background (the view
+	 * stays where it is) and pinned to it.
+	 */
+	public async newTerminal(agent?: AgentId, pinTo?: string): Promise<void> {
+		const support = this._terminalSupport();
+		if (!support.available) { refuse(support.reason); return; }
+		let owner: ChatTab | undefined;
+		if (pinTo !== undefined) {
+			owner = typeof pinTo === 'string' ? this._tabs.find(t => t.id === pinTo) : undefined;
+			if (!owner) { refuse(vscode.l10n.t("That conversation is no longer open.")); return; }
+			// An agent's own CLI is a conversation of its own: nothing for another agent to drive.
+			if (agent !== undefined) { refuse(vscode.l10n.t("A terminal for an agent to use is a shell; an agent's own CLI cannot be pinned.")); return; }
+		}
+		if (agent !== undefined && !support.agents.includes(agent)) {
+			refuse(vscode.l10n.t("{0} is not available as a terminal. Refresh Agents and try again.", agent in agentNames ? agentNames[agent] : String(agent)));
+			return;
+		}
+		if (this._terminals.size + this._terminalsStarting >= support.limit) {
+			refuse(vscode.l10n.t("{0} terminals are open — close one to open another.", this._terminals.size));
+			return;
+		}
+		// The folder of the conversation in front (a terminal showing does not change which); the window's, then home, if that is gone.
+		const cwd = chooseTerminalCwd([(owner ?? this._active).cwd, this._windowCwd(), os.homedir()], isDirectory);
+		if (!cwd) { refuse(vscode.l10n.t("The terminal's folder no longer exists.")); return; }
+		const name = agent ? nextTerminalName(this._terminals.names(), agentNames[agent], true) : nextTerminalName(this._terminals.names(), vscode.l10n.t("Terminal"));
+		this._terminalsStarting++;
+		try {
+			const terminal = await this._terminals.create(generateUuid(), name, cwd, agent, this._terminalStarter(cwd, agent), { background: !!owner });
+			if (owner) {
+				if (this._tabs.includes(owner)) { this._pinTerminalTo(terminal.id, owner); }
+				// The conversation was closed while the shell started: nobody asked for it any more.
+				else { this._closeTerminal(terminal.id); }
+			}
+		} catch (error) {
+			if (!this._disposed) { void vscode.window.showWarningMessage(vscode.l10n.t("Could not start the terminal: {0}", plainInNotification(error instanceof Error ? error.message : String(error), 300))); }
+		} finally {
+			this._terminalsStarting--;
+		}
+	}
+
+	/**
+	 * Terminal lifecycle from the Exchange website (the surface has already checked encryption and
+	 * consent): the setting and the window are checked again here, a new terminal is made shared, in
+	 * the background and in the folder of the shared conversation, and only shared terminals may be
+	 * closed, renamed or restarted. Failures are thrown, so the website's command result says why.
+	 */
+	private async _remoteTerminalCommand(tab: ChatTab, message: Extract<ViewToHost, { type: 'newTerminal' | 'closeTerminal' | 'renameTerminal' | 'restartTerminal' }>): Promise<void> {
+		if (!remoteTerminalSetting()) { throw new Error('Terminals are off for Chrome and the website: in VS Code, turn on the setting “AI Browser › Chat: Remote Terminal” (aiBrowser.chat.remoteTerminal).'); }
+		if (this._blocked()) { throw new Error(this._blocked()!); }
+		if (message.type !== 'newTerminal') {
+			const terminal = this._terminals.find(message.id);
+			if (!terminal?.remote) { throw new Error('This terminal is not shared for remote access.'); }
+			if (message.type === 'closeTerminal') { this._closeTerminal(message.id); }
+			else if (message.type === 'restartTerminal') { await this._restartTerminal(message.id); }
+			else if (terminal.rename(terminalName(message.name))) { this._post(); }
+			return;
+		}
+		const support = this._terminalSupport();
+		if (!support.available) { throw new Error(support.reason); }
+		const agent = message.agent;
+		if (agent !== undefined && !support.agents.includes(agent)) { throw new Error('That agent is not available as a terminal.'); }
+		if (this._terminals.size + this._terminalsStarting >= support.limit) { throw new Error(`${this._terminals.size} terminals are open — close one to open another.`); }
+		const cwd = chooseTerminalCwd([tab.cwd, this._windowCwd(), os.homedir()], isDirectory);
+		if (!cwd) { throw new Error("The terminal's folder no longer exists."); }
+		const name = agent ? nextTerminalName(this._terminals.names(), agentNames[agent], true) : nextTerminalName(this._terminals.names(), vscode.l10n.t("Terminal"));
+		this._terminalsStarting++;
+		try {
+			await this._terminals.create(generateUuid(), name, cwd, agent, this._terminalStarter(cwd, agent), { background: true, remote: true });
+		} finally {
+			this._terminalsStarting--;
+		}
+	}
+
+	/* ------------------------------------------------------------ pinned terminals */
+
+	/** Every provider that is alive: a terminal belongs to one, a conversation tab can be on any. */
+	private static _liveSurfaces(): ChatViewProvider[] {
+		return [...ChatViewProvider._surfaces.values()].filter(s => !s._disposed);
+	}
+
+	/** The surfaces redraw: a pin changed what a terminal's strip and a conversation's chips show, possibly on two of them. */
+	private static _postAll(): void {
+		for (const surface of ChatViewProvider._liveSurfaces()) { surface._post(); }
+	}
+
+	/** A terminal by id, wherever it lives. */
+	private static _terminalAcross(id: string): { surface: ChatViewProvider; terminal: TerminalTab } | undefined {
+		for (const surface of ChatViewProvider._liveSurfaces()) {
+			const terminal = surface._terminals.find(id);
+			if (terminal) { return { surface, terminal }; }
+		}
+		return undefined;
+	}
+
+	/** A conversation tab by its id, wherever it is open. */
+	private static _tabAcross(tabId: string): { surface: ChatViewProvider; tab: ChatTab } | undefined {
+		for (const surface of ChatViewProvider._liveSurfaces()) {
+			const tab = surface._tabs.find(t => t.id === tabId);
+			if (tab) { return { surface, tab }; }
+		}
+		return undefined;
+	}
+
+	/** The conversation tab that holds the chat `chatId` — what an agent's capability header names. */
+	private static _tabOfChat(chatId: string): { surface: ChatViewProvider; tab: ChatTab } | undefined {
+		for (const surface of ChatViewProvider._liveSurfaces()) {
+			const tab = surface._tabs.find(t => t.chat.id === chatId);
+			if (tab) { return { surface, tab }; }
+		}
+		return undefined;
+	}
+
+	private static _pinInfo(terminal: TerminalTab): PinInfo {
+		const size = terminal.size;
+		return {
+			id: terminal.id, name: terminal.name, status: terminal.status, ...(terminal.exitCode !== undefined ? { exitCode: terminal.exitCode } : {}),
+			cwd: terminal.cwd, cols: size.cols, rows: size.rows, agentControl: terminal.agentControlAllowed ? 'allowed' : 'paused',
+			...(ChatViewProvider._pins.mode(terminal.id) === 'watch' ? { mode: 'watch' as const } : {}),
+		};
+	}
+
+	/** The live terminals pinned to a conversation tab, in pin order. */
+	private static _pinnedInfos(tab: ChatTab): PinInfo[] {
+		return ChatViewProvider._pins.pinsOf(tab.id)
+			.map(id => ChatViewProvider._terminalAcross(id)?.terminal)
+			.filter((t): t is TerminalTab => !!t)
+			.map(t => ChatViewProvider._pinInfo(t));
+	}
+
+	/** The composer's chips for the terminals pinned to `tab`: derived each time, never stored, no `@N`. */
+	private _pinChips(tab: ChatTab): AttachmentChip[] {
+		return ChatViewProvider._pinnedInfos(tab).map(pin => ({
+			id: pinChipId(pin.id), kind: 'terminal' as const, pinned: true as const, terminalId: pin.id,
+			label: pin.status === 'exited' ? vscode.l10n.t("{0} (exited)", pin.name) : pin.mode === 'watch' ? vscode.l10n.t("{0} (watch only)", pin.name) : pin.name,
+			terminalStatus: pin.status,
+			...(pin.mode === 'watch' ? { terminalWatch: true as const } : {}),
+		}));
+	}
+
+	/** What a conversation's tab says of its pins (`ChatTabSummary.terminals`). */
+	private _pinnedSummary(tab: ChatTab): { terminals?: { id: string; name: string; status: 'running' | 'exited' }[] } {
+		const pins = ChatViewProvider._pinnedInfos(tab);
+		return pins.length ? { terminals: pins.map(p => ({ id: p.id, name: p.name, status: p.status })) } : {};
+	}
+
+	/** A terminal's strip entry with its owner: who may drive it, and whether the user stopped that. */
+	private _terminalSummary(terminal: TerminalTab): TerminalTabSummary {
+		const summary = terminal.summary();
+		const owner = ChatViewProvider._pins.owner(terminal.id);
+		const held = owner !== undefined ? ChatViewProvider._tabAcross(owner)?.tab : undefined;
+		if (!held) { return summary; }
+		return {
+			...summary,
+			pinnedBy: { tabId: held.id, title: held.title ?? vscode.l10n.t("New chat"), ...(held.started ? { agent: held.chat.agent } : {}) },
+			agentControl: terminal.agentControlAllowed ? 'allowed' : 'paused',
+			pinMode: ChatViewProvider._pins.mode(terminal.id) ?? 'control',
+		};
+	}
+
+	/** A line in a conversation, where it has begun: a fresh tab shows its welcome and gets no notice. */
+	private static _noticeIn(tab: ChatTab, text: string): void {
+		if (tab.started) { tab.push({ kind: 'notice', text }); }
+	}
+
+	/**
+	 * Pins `terminalId` (one of this surface's terminals) to a conversation tab. The agent of that conversation may then read
+	 * it and, with the user's approval of each input, type into it. One owner at a time: another conversation's pin moves,
+	 * and both conversations say so. Refused in the status bar for an agent's own CLI (self-control makes no sense).
+	 */
+	private _pinTerminalTo(terminalId: string, tab: ChatTab, mode: PinMode = 'control'): boolean {
+		const terminal = this._terminals.find(terminalId);
+		if (!terminal) { return false; }
+		const support = this._terminalSupport();
+		if (!support.available) { refuse(support.reason); return false; }
+		if (terminal.agent) {
+			refuse(vscode.l10n.t("{0} is an agent's own CLI: it cannot be given to a conversation to drive.", terminal.name));
+			return false;
+		}
+		const result = ChatViewProvider._pins.pin(tab.id, terminal.id, mode);
+		if (result.already) { return true; }
+		if (result.movedFrom !== undefined) {
+			const previous = ChatViewProvider._tabAcross(result.movedFrom)?.tab;
+			if (previous) { ChatViewProvider._noticeIn(previous, vscode.l10n.t("Terminal \"{0}\" was moved to another conversation.", plainInPrompt(terminal.name, 80))); }
+			ChatViewProvider._noticeIn(tab, vscode.l10n.t("Terminal \"{0}\" was moved here from another conversation.", plainInPrompt(terminal.name, 80)));
+		}
+		ChatViewProvider._postAll();
+		return true;
+	}
+
+	/** `pinTerminal`: from the composer's chip menu, the "+" menu and the terminal's own menu. */
+	private _pinTerminalMessage(id: unknown, tabId: unknown, pinned: unknown, mode?: unknown): void {
+		if (typeof id !== 'string' || typeof tabId !== 'string') { return; }
+		const tab = this._tabs.find(t => t.id === tabId);
+		if (!tab) { return; }
+		if (pinned === true) {
+			this._pinTerminalTo(id, tab, isPinMode(mode) ? mode : 'control');
+		} else if (ChatViewProvider._pins.unpin(tab.id, id)) {
+			ChatViewProvider._postAll();
+		}
+	}
+
+	/** A terminal was closed (or its surface is going): its pin is dropped and the conversation told. `quiet`: this surface's own tabs are going too. */
+	private _terminalGone(id: string, name: string, quiet = false): void {
+		const owner = ChatViewProvider._pins.dropTerminal(id);
+		if (owner === undefined) { return; }
+		const held = ChatViewProvider._tabAcross(owner);
+		if (held && !(quiet && held.surface === this)) {
+			ChatViewProvider._noticeIn(held.tab, vscode.l10n.t("Terminal \"{0}\" was closed; its pin was removed.", plainInPrompt(name, 80)));
+		}
+	}
+
+	private _closeTerminal(id: unknown): void {
+		const terminal = this._terminals.find(id);
+		if (!terminal) { return; }
+		const name = terminal.name;
+		this._terminals.close(id);
+		this._terminalGone(terminal.id, name);
+		ChatViewProvider._postAll();
+	}
+
+	/**
+	 * "Ask agent" from a terminal: a new conversation (in the terminal's folder) or an open one gets the terminal pinned,
+	 * the terminal's selected text as context, and comes to the front with the composer focused. Nothing is prefilled and
+	 * nothing is sent: the user asks. The tab limit is checked before anything changes, so a refusal leaves the terminal in front.
+	 */
+	private async _terminalAskAgent(id: string, target: { kind: 'new'; agent?: AgentId } | { kind: 'tab'; tabId: string }, selection: unknown, mode?: unknown): Promise<void> {
+		const terminal = this._terminals.find(id);
+		if (!terminal || !target || typeof target !== 'object') { return; }
+		const support = this._terminalSupport();
+		if (!support.available) { refuse(support.reason); return; }
+		if (terminal.agent) {
+			refuse(vscode.l10n.t("{0} is an agent's own CLI: ask in that CLI, or in a shell terminal.", terminal.name));
+			return;
+		}
+		let tab: ChatTab | undefined;
+		if (target.kind === 'new') {
+			const agent = target.agent !== undefined ? target.agent : this._remembered.agent ?? this._registry.agents.find(a => a.available)?.id;
+			if (agent === undefined || !isAgentId(agent) || !this._registry.agents.some(a => a.id === agent && a.available)) {
+				refuse(vscode.l10n.t("No agent is available. Refresh Agents and try again."));
+				return;
+			}
+			if (this._tabs.length >= tabLimit()) {
+				refuse(vscode.l10n.t("{0} chats are open — close one to open another.", this._tabs.length));
+				return;
+			}
+			tab = this._addTab(agent);
+			if (!tab) { return; }
+			// A fresh tab sends with the remembered agent.
+			this._select({ agent });
+			// The conversation works where the terminal is; with the window's own folder it simply follows the window.
+			tab.setFolder(terminal.cwd === this._windowCwd() ? undefined : terminal.cwd);
+			tab.chat.references = undefined;
+		} else if (target.kind === 'tab' && typeof target.tabId === 'string') {
+			tab = this._tabs.find(t => t.id === target.tabId);
+			if (!tab) { refuse(vscode.l10n.t("That conversation is no longer open.")); return; }
+		} else { return; }
+		if (!this._pinTerminalTo(id, tab, isPinMode(mode) ? mode : 'control')) { return; }
+		if (typeof selection === 'string' && selection.trim()) {
+			const shaped = terminalChatText(plainText(selection.length > terminalSelectionLimit ? selection.slice(-terminalSelectionLimit) : selection), terminal.name, terminal.cwd);
+			if (shaped) { tab.attachments.push({ chip: { id: generateUuid(), kind: 'selection', label: shaped.label }, text: shaped.text }); }
+		}
+		if (target.kind === 'tab') {
+			// `_addTab` has done this for a new one.
+			this._selectTab(tab.id);
+		}
+		this._leaveTerminal();
+		this._post();
+		this._focusInput();
+	}
+
+	private async _restartTerminal(id: string): Promise<void> {
+		const tab = this._terminals.find(id);
+		if (!tab || tab.status !== 'exited' || this._blocked()) { return; }
+		try {
+			await tab.restart();
+		} catch (error) {
+			if (!this._disposed) { void vscode.window.showWarningMessage(vscode.l10n.t("Could not start the terminal: {0}", plainInNotification(error instanceof Error ? error.message : String(error), 300))); }
+			this._post();
+		}
+	}
+
+	/** Paste goes through the host: `navigator.clipboard` in a webview depends on the host granting it. */
+	private async _pasteIntoTerminal(id: string): Promise<void> {
+		const tab = this._terminals.find(id);
+		if (!tab?.running) { return; }
+		const raw = await vscode.env.clipboard.readText();
+		if (!raw) { return; }
+		// Refused loudly, never accepted and then dropped on the way to the shell: anything under the limit is fully writable.
+		if (raw.length > terminalPasteLimit) {
+			refuse(vscode.l10n.t("The clipboard is too large to paste into a terminal."));
+			return;
+		}
+		// No escape sequence may travel with a paste: one that ends the shell's bracketed paste early runs the rest as typed input.
+		const text = sanitizePaste(raw);
+		if (!text) { return; }
+		this._postTerminal({ type: 'terminalPaste', id, text });
+	}
+
+	/**
+	 * "Insert into terminal" (`terminalInsert.ts`): the user — never an agent, so no approval card — puts a page address,
+	 * an element, a screenshot, a file, a selection, a video or the page's annotations into a terminal's input, mostly for a
+	 * terminal agent (Claude Code, Codex CLI) running there. Text goes in as text; a binary item is written to the private
+	 * temp directory (0600) and its path goes in. Bracketed when the program asked for it (DECSET 2004), sanitised, and
+	 * never followed by Enter: the user sends it.
+	 */
+	private async _insertIntoTerminal(id: unknown, kind: unknown, file: unknown): Promise<void> {
+		const terminal = this._terminals.find(id);
+		if (!terminal?.running || !isTerminalInsertKind(kind) || this._blocked()) { return; }
+		let item: TerminalInsertItem | undefined;
+		try {
+			item = await this._terminalInsertItem(terminal, kind, file);
+		} catch (error) {
+			refuse(vscode.l10n.t("Could not insert into the terminal: {0}", plainInLabel(error instanceof Error ? error.message : String(error), 200)));
+			return;
+		}
+		// A pick or a dialog can take a while: the terminal may be gone by then.
+		if (!item || this._disposed || this._terminals.find(terminal.id) !== terminal || !terminal.running) { return; }
+		let bracketed = false;
+		try { bracketed = (await terminal.readScreen({ maxChars: 1 })).state.bracketedPaste === true; } catch { /* no model: plain */ }
+		const bytes = terminalInsertPayload(item, bracketed, sanitizePaste);
+		if (!bytes) { refuse(vscode.l10n.t("Nothing to insert, or it is too long for a terminal.")); return; }
+		terminal.input(bytes);
+		this._terminals.select(terminal.id);
+		this._post();
+		this._postTerminal({ type: 'terminalFocus', id: terminal.id });
+	}
+
+	/** What `_insertIntoTerminal` writes, materialised; `undefined` when the user cancelled or nothing was there. */
+	private async _terminalInsertItem(terminal: TerminalTab, kind: TerminalInsertKind, file: unknown): Promise<TerminalInsertItem | undefined> {
+		const saveBinary = async (folder: 'captures' | 'files', name: string, data: Uint8Array): Promise<string> => {
+			const saved = await writeExclusive(await projectTempDirectory(terminal.cwd, folder), name, data);
+			await trackTemporaryFile(saved, terminal.cwd);
+			return saved;
+		};
+		switch (kind) {
+			case 'file': {
+				if (file !== undefined) {
+					// Dropped on, or pasted into, the terminal: checked like the composer's pasted files.
+					const f = file as { name?: unknown; data?: unknown };
+					if (typeof f.name !== 'string' || typeof f.data !== 'string' || f.data.length > Math.ceil(pastedFileLimit / 3) * 4
+						|| f.data.length % 4 !== 0 || /[^A-Za-z0-9+/=]/.test(f.data)) {
+						throw new Error('Invalid file, or it is over 64 MB.');
+					}
+					const data = Buffer.from(f.data, 'base64');
+					if (data.toString('base64') !== f.data || data.length > pastedFileLimit) { throw new Error('Invalid file, or it is over 64 MB.'); }
+					return { paths: [await saveBinary('files', `${generateUuid()}-${pastedFileName(f.name)}`, data)] };
+				}
+				const picked = await vscode.window.showOpenDialog({ canSelectMany: true, defaultUri: vscode.Uri.file(terminal.cwd), openLabel: vscode.l10n.t("Insert") });
+				return picked?.length ? { paths: picked.filter(u => u.scheme === 'file').map(u => u.fsPath) } : undefined;
+			}
+			case 'video': {
+				// The recordings this project made, or any video: their path, as the CLIs read files themselves.
+				const picked = await vscode.window.showOpenDialog({
+					canSelectMany: false, defaultUri: vscode.Uri.file(await projectTempDirectory(terminal.cwd, 'captures')),
+					filters: { [vscode.l10n.t("Videos")]: ['mp4', 'webm', 'mov', 'm4v'] }, openLabel: vscode.l10n.t("Insert"),
+				});
+				return picked?.[0]?.scheme === 'file' ? { paths: [picked[0].fsPath] } : undefined;
+			}
+			case 'selection': {
+				const editor = vscode.window.activeTextEditor ?? this._lastTextEditorForInsert();
+				const text = editor ? editor.selections.filter(sel => !sel.isEmpty).map(sel => editor.document.getText(sel)).join('\n') : '';
+				if (!text) { refuse(vscode.l10n.t("Select some text in an editor first.")); return undefined; }
+				return { text };
+			}
+			default:
+				break;
+		}
+		if (!tabSource.available()) { refuse(vscode.l10n.t("Open Google Chrome or enable native browser tabs to insert a page.")); return undefined; }
+		const tab = this._browser.userTab;
+		if (!tab) {
+			refuse(this._browser.hasOpenTabs
+				? vscode.l10n.t("Several browser tabs are open — click into the one to insert from, then try again.")
+				: vscode.l10n.t("No browser tab is open to insert from."));
+			return undefined;
+		}
+		switch (kind) {
+			case 'page': {
+				const title = plainInPrompt(pageTitle(tab.title, tab.url), 200);
+				return { text: title ? `${tab.url} (${title})` : tab.url };
+			}
+			case 'element':
+				return { text: (await this._fromBrowser('element', tab))?.text ?? '' };
+			case 'screenshot': {
+				if (!this._browser.onScreen(tab)) {
+					refuse(vscode.l10n.t("\"{0}\" is not on screen — bring its tab to the front, then insert.", plainInLabel(pageTitle(tab.title, tab.url), 60)));
+					return undefined;
+				}
+				const shot = await this._browser.capture(false, tab);
+				return { paths: [await saveBinary('captures', `screenshot-${generateUuid()}.png`, shot.png)] };
+			}
+			case 'annotation': {
+				const notes = this._browser.annotationsOf(tab);
+				const records = notes?.records.filter(r => !notes.agentMade.has(r.id)) ?? [];
+				if (!notes || !records.length) { refuse(vscode.l10n.t("This page has no annotations — add one with Add Annotation Marker.")); return undefined; }
+				return { text: records.map(r => annotationClipboardText(r, notes.url)).join('\n\n') };
+			}
+		}
+	}
+
+	/** The last text editor that is visible, for a selection while focus is in the chat view. */
+	private _lastTextEditorForInsert(): vscode.TextEditor | undefined {
+		return vscode.window.visibleTextEditors.find(e => e.selections.some(sel => !sel.isEmpty));
+	}
+
+	/**
+	 * Selected text, or the last lines of a screen, as context for the conversation
+	 * in front: a chip like an editor selection's, and that conversation shown.
+	 * The text is a shell's output — data, as every attachment is.
+	 */
+	private async _terminalToChat(id: string, text: unknown): Promise<void> {
+		const tab = this._terminals.find(id);
+		if (!tab || typeof text !== 'string' || this._blocked()) { return; }
+		const shaped = terminalChatText(plainText(text.length > terminalSelectionLimit ? text.slice(-terminalSelectionLimit) : text), tab.name, tab.cwd);
+		if (!shaped) {
+			refuse(vscode.l10n.t("There is no text in the terminal to attach."));
+			return;
+		}
+		this._active.attachments.push({ chip: { id: generateUuid(), kind: 'selection', label: shaped.label }, text: shaped.text });
+		this._leaveTerminal();
+		this._post();
+		this._focusInput();
 	}
 
 	private _history(): StoredChat[] {
@@ -3495,6 +4396,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}
 		tab.open(stored);
 		this._switchTo = undefined;
+		this._leaveTerminal();
 		this._post();
 	}
 
@@ -3579,9 +4481,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}
 	}
 
-	private async _runWorkdirGit(git: string, args: readonly string[], folder: string, timeoutMs?: number): Promise<string> {
+	private async _runWorkdirGit(git: string, args: readonly string[], folder: string, timeoutMs?: number, environment?: NodeJS.ProcessEnv): Promise<string> {
 		await this._assertGitFolder(folder);
-		return runGit(git, args, folder, timeoutMs);
+		return runGit(git, args, folder, timeoutMs, environment);
 	}
 
 	private async _gitWorktreeIdentity(folder: string): Promise<string> {
@@ -3610,7 +4512,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private _gitStale = false;
 	private _gitEventTimer: ReturnType<typeof setTimeout> | undefined;
 	/** The read under way for a folder, and whether another was asked for meanwhile. */
-	private readonly _gitRefreshes = new Map<string, { again: boolean; done: Promise<void> }>();
+	private readonly _gitRefreshes = new Map<string, { again: boolean; fetch?: 'auto' | 'force'; done: Promise<void> }>();
+	private static readonly _gitFetches = new GitFetchScheduler();
 
 	/**
 	 * An editor event that may change how the footer's files are drawn: every
@@ -3622,7 +4525,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 */
 	private _gitEventRefresh(): void {
 		if (this._disposed) { return; }
-		if (!this._view?.visible || !this._viewReady) {
+		if ((!this._view?.visible || !this._viewReady) && !this._stateSurfaces.watching()) {
 			this._gitStale = true;
 			return;
 		}
@@ -3639,10 +4542,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 * it — which is what a caller that has just changed the index needs — and
 	 * is answered when that rerun is done.
 	 */
-	private _refreshWorkdirGit(): Promise<void> {
+	private _refreshWorkdirGit(fetch?: 'auto' | 'force'): Promise<void> {
 		// Only for a view that can show it: the answer is not queued (see
 		// `_postMessage`), and `ready` asks for a fresh one.
-		if (this._disposed || !this._view || !this._viewReady) {
+		if (this._disposed || ((!this._view || !this._viewReady) && !this._stateSurfaces.watching())) {
 			this._gitStale = true;
 			return Promise.resolve();
 		}
@@ -3651,19 +4554,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		const running = this._gitRefreshes.get(folder);
 		if (running) {
 			running.again = true;
+			running.fetch = fetch === 'force' || running.fetch === 'force' ? 'force' : fetch ?? running.fetch;
 			return running.done;
 		}
 		this._gitStale = false;
-		const entry = { again: false, done: Promise.resolve() };
+		const entry: { again: boolean; fetch?: 'auto' | 'force'; done: Promise<void> } = { again: false, fetch, done: Promise.resolve() };
 		this._gitRefreshes.set(folder, entry);
 		entry.done = (async () => {
 			try {
 				do {
 					entry.again = false;
-					await this._readWorkdirGit(folder);
+					const requestedFetch = entry.fetch;
+					entry.fetch = undefined;
+					await this._readWorkdirGit(folder, requestedFetch);
 					// A rerun for a folder no longer in front, or for a view that has
 					// gone, would only spend processes.
-				} while (entry.again && !this._disposed && this._viewReady && folder === this._workdir());
+				} while (entry.again && !this._disposed && (this._viewReady || this._stateSurfaces.watching()) && folder === this._workdir());
 			} finally {
 				this._gitRefreshes.delete(folder);
 			}
@@ -3671,7 +4577,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		return entry.done;
 	}
 
-	private async _readWorkdirGit(folder: string): Promise<void> {
+	private async _readWorkdirGit(folder: string, fetch?: 'auto' | 'force'): Promise<void> {
 		// Restricted Mode, or a remote window: `git status` runs the repository's
 		// own `filter.<driver>.clean` commands from `.git/config`, which
 		// `core.fsmonitor=false` does not stop — code from a folder the user has
@@ -3684,6 +4590,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		try {
 			const git = await gitBinary();
 			if (!git) { throw new Error('Git is unavailable'); }
+			let fetchError: string | undefined;
+			if (fetch) {
+				try { await this._fetchWorkdirGit(git, folder, fetch === 'force'); }
+				catch (error) { fetchError = gitExtensionErrorText(error); }
+			}
 			const [output, current, refs, urls] = await Promise.all([
 				this._runWorkdirGit(git, ['--no-optional-locks', 'status', '--porcelain=v1', '-z', '--untracked-files=all'], folder, 15_000),
 				this._runWorkdirGit(git, ['symbolic-ref', '--quiet', 'HEAD'], folder, 15_000).catch(() => ''),
@@ -3694,10 +4605,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			const status = parseGitStatus(output);
 			const decorated = this._view && !this._chromeCommand?.getStore() ? await themedGitFiles(status, this._view.webview, vscode.Uri.joinPath(this._context.extensionUri, 'media'), vscode.Uri.file(folder)) : status;
 			const branches = parseGitBranches(current, refs, urls);
-			this._postMessage({ type: 'workdirGit', folder, status: decorated, branches: { ...branches, ...this._pullRequestFor(branches), savedStash: this._branchStashes.get(folder)?.at(-1) } });
+			this._postMessage({ type: 'workdirGit', folder, status: decorated, branches: { ...branches, ...this._pullRequestFor(branches), savedStash: this._branchStashes.get(folder)?.at(-1) }, ...(fetchError ? { fetchError } : {}) });
 		} catch (error) {
 			this._postMessage({ type: 'workdirGit', folder, error: error instanceof Error ? error.message : String(error) });
 		}
+	}
+
+	private async _fetchWorkdirGit(git: string, folder: string, force: boolean): Promise<void> {
+		if (this._disposed || this._blocked()) { return; }
+		if (this._untrusted(folder)) { throw new Error('Trust this repository before fetching remote changes.'); }
+		const root = (await this._runWorkdirGit(git, ['rev-parse', '--show-toplevel'], folder, 15_000)).trim();
+		const key = await fs.promises.realpath(root);
+		await ChatViewProvider._gitFetches.run(key, force, async () => {
+			if (this._disposed || this._blocked() || this._untrusted(folder)) { return; }
+			const remotes = await this._runWorkdirGit(git, ['remote'], folder, 15_000);
+			if (!remotes.trim()) { return; }
+			if (force) {
+				// An explicit click may ask VS Code to authenticate using its Git integration.
+				const repository = await gitRepositoryFor(root, folder);
+				for (const remote of remotes.trim().split('\n')) { await repository.fetch({ remote: remote.trim() }); }
+			} else {
+				// Periodic reads must not open sign-in dialogs. Existing helpers/SSH keys may authenticate.
+				await this._runWorkdirGit(git, ['-c', `core.hooksPath=${os.devNull}`, '-c', 'credential.interactive=false', 'fetch', '--all', '--prune', '--no-recurse-submodules', '--quiet'], folder, 20_000, { GIT_ASKPASS: '', SSH_ASKPASS: '', SSH_ASKPASS_REQUIRE: 'never' });
+			}
+		});
 	}
 
 	private async _openGitDiff(message: Extract<ViewToHost, { type: 'openGitDiff' }>): Promise<void> {
@@ -3757,8 +4688,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			});
 		} catch (err) { error = err instanceof Error ? err.message : String(err); }
 		finally {
-			if (!this._disposed && folder === this._workdir()) { await this._refreshWorkdirGit(); }
-			this._postMessage({ type: 'gitIndexResult', folder, error });
+			try {
+				if (!this._disposed && folder === this._workdir()) {
+					// A coalesced read may belong to another remote request, whose
+					// reply callback cannot update the popup that made this mutation.
+					if (this._chromeCommand?.getStore()) { await this._readWorkdirGit(folder); }
+					else { await this._refreshWorkdirGit(); }
+				}
+			} finally { this._postMessage({ type: 'gitIndexResult', folder, error }); }
 		}
 	}
 
@@ -4251,7 +5188,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			await this._rememberFolder(folder);
 		}
 		this._post();
-		this._postMessage({ type: 'focusInput' });
+		this._focusInput();
 		// The "/" palette lists the skills of the project in front.
 		const agent = tab.started ? tab.chat.agent : this._selection(tab).agent;
 		if (agent && !this._registry.detecting) {
@@ -4342,7 +5279,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			? { chip: { id: generateUuid(), kind: 'file', label: `${path.basename(target)}/`, iconName: `${path.basename(target)}/` }, text: `Attached folder: ${target} (${shown}/ in the project)` }
 			: { chip: { id: generateUuid(), kind: 'file', label: path.basename(target), iconName: path.basename(target) }, file: vscode.Uri.file(target), text: `Attached file: ${target} (${shown} in the project)` });
 		this._post();
-		this._postMessage({ type: 'focusInput' });
+		this._focusInput();
 	}
 
 	/** Files or folders selected through VS Code Explorer's context menu. */
@@ -4369,9 +5306,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			attached++;
 		}
 		if (!attached) { return; }
+		this._leaveTerminal();
 		this._post();
 		await this._focusView();
-		this._postMessage({ type: 'focusInput' });
+		this._focusInput();
 	}
 
 	/**
@@ -4447,9 +5385,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			return;
 		}
 		this._active.attachments.push(attachment);
+		this._leaveTerminal();
 		this._post();
 		await this._focusView();
-		this._postMessage({ type: 'focusInput' });
+		this._focusInput();
 	}
 
 	/* ------------------------------------------------------------ GitHub repositories */
@@ -4834,9 +5773,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				}
 				await this._withGitMutation(folder, () => this._repoWork(tab, vscode.l10n.t("pushing {0}", copy.branch), async () => {
 					const message = capAt(tab.chat.title.replace(/\s+/g, ' ').trim() || 'Changes from the AI Browser chat', 72);
-					await pushCopy(git, folder, copy.base, copy.branch, message);
-					const url = compareUrl(repo, copy.base, copy.branch);
-					tab.push({ kind: 'notice', text: vscode.l10n.t("Pushed {0} to {1}. A pull request into {2}: {3}", copy.branch, copy.repo, copy.base, url) });
+					const pushed = await pushCopy(git, folder, copy.base, message);
+					const url = compareUrl(repo, copy.base, pushed);
+					tab.push({ kind: 'notice', text: vscode.l10n.t("Pushed {0} to {1}. A pull request into {2}: {3}", pushed, copy.repo, copy.base, url) });
 					await vscode.env.openExternal(vscode.Uri.parse(url));
 				}));
 				return;
@@ -4866,6 +5805,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	private get _tabsStorageKey(): string {
+		return `${this._legacyTabsStorageKey}.project.${this._projectId}`;
+	}
+
+	private get _legacyTabsStorageKey(): string {
 		const panel = this._panelIdentity;
 		return panel ? `${openTabsKey}.panel.${panel.id}` : openTabsKey;
 	}
@@ -4930,7 +5873,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 	/** The open tabs as they were when the window closed; at least one, empty if nothing was open. */
 	private _restoreTabs(): void {
-		const saved = this._context.workspaceState.get<{ ids?: unknown; fresh?: unknown; active?: unknown; names?: unknown; folders?: unknown; repos?: unknown; ultracodes?: unknown }>(this._tabsStorageKey);
+		const owned = this._context.workspaceState.get<SavedChatTabs>(this._tabsStorageKey);
+		const saved = owned ? (!owned.project || owned.project === this._projectId ? owned : undefined)
+			: legacyProjectTabs(this._context.workspaceState.get<SavedChatTabs>(this._legacyTabsStorageKey), this._projectId);
 		const repos = saved?.repos && typeof saved.repos === 'object' ? saved.repos as Record<string, { copy?: unknown; references?: unknown }> : {};
 		const ultracodes = saved?.ultracodes && typeof saved.ultracodes === 'object' ? saved.ultracodes as Record<string, unknown> : {};
 		const names = saved?.names && typeof saved.names === 'object' ? saved.names as Record<string, unknown> : {};
@@ -4990,6 +5935,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		const identity = this._panelIdentity;
 		if (identity) { this._services.panels.remember(identity, Object.fromEntries(this._savedDrafts)); }
 		const value = {
+			project: this._projectId,
 			ids: this._tabs.map(t => t.chat.id),
 			ultracodes: Object.fromEntries(this._tabs.map(t => [t.chat.id, t.chat.ultracode])),
 			fresh: this._tabs.filter(t => !t.started).map(t => t.chat.id),
@@ -5028,9 +5974,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		const at = this._tabs.indexOf(beside);
 		this._tabs.splice((at >= 0 ? at : this._tabs.indexOf(this._active)) + 1, 0, tab);
 		const command = this._chromeCommand?.getStore();
-		if (command) { command.tab = tab; command.chatId = tab.chat.id; } else { this._active = tab; this._switchTo = undefined; }
+		if (command) { command.tab = tab; command.chatId = tab.chat.id; } else { this._active = tab; this._switchTo = undefined; this._leaveTerminal(); }
 		this._post();
-		this._postMessage({ type: 'focusInput' });
+		this._focusInput();
 		return tab;
 	}
 
@@ -5143,13 +6089,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		if (destination._livePages.size) { destination._watchLivePages(); }
 		const at = this._tabs.indexOf(tab);
 		this._tabs.splice(at, 1);
-		const closeSource = !this._tabs.length && !!this._panelIdentity;
+		// A panel that still owns terminals is not empty: closing it would end their shells, which nobody asked for.
+		const closeSource = closesEmptyPanel(this._tabs.length, this._terminals.size, !!this._panelIdentity);
 		if (!this._tabs.length && !closeSource) { this._tabs.push(new ChatTab(this._tabHost, newChat(this._remembered.agent ?? 'claude'))); }
 		if (!closeSource && this._active === tab) { this._active = this._tabs[Math.min(at, this._tabs.length - 1)]; this._switchTo = undefined; }
 		this._savedDrafts.delete(tab.chat.id);
 		destination._savedDrafts.set(tab.chat.id, draft);
 		destination._active = tab;
 		destination._switchTo = undefined;
+		destination._leaveTerminal();
 		// Send the selected chat before its draft, including to an already-ready view.
 		destination._postMessage({ type: 'state', state: destination._state() });
 		destination._postMessage({ type: 'setTabDraft', chatId: tab.chat.id, text: draft });
@@ -5165,13 +6113,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 	private _selectTab(id: string): void {
 		const tab = this._tabs.find(t => t.id === id);
-		if (!tab || tab === this._active) {
+		if (!tab) { return; }
+		// A conversation selected while a terminal shows takes the front back, even
+		// the one that was `_active` all along. A remote surface's pin is not the editor's view.
+		const fromTerminal = !this._chromeCommand?.getStore() && this._leaveTerminal();
+		if (tab === this._active && !fromTerminal) {
 			return;
 		}
 		this._active = tab;
 		this._switchTo = undefined;
 		this._post();
-		this._postMessage({ type: 'focusInput' });
+		this._focusInput();
 	}
 
 	/** Closing a tab stops what it runs — its turn and its agents — and keeps the chat in the history. */
@@ -5186,6 +6138,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 	private _removeTab(tab: ChatTab): void {
 		this._dropAnnotationsOf(tab);
+		// A closed conversation's terminals are not its any more; they stay open, unowned.
+		if (ChatViewProvider._pins.dropTab(tab.id).length) { ChatViewProvider._postAll(); }
 		for (const [folder, job] of this._gitCommits) {
 			if (job.tab === tab) { job.controller.abort(); this._gitCommits.delete(folder); }
 		}
@@ -5251,8 +6205,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 					next.title = from.chat.title;
 					next.named = true;
 				}
-				from.start(next);
-				this._postMessage({ type: 'focusInput' });
+				from.start(next, true);
+				this._focusInput();
 				return;
 			}
 			case 'continue': {
@@ -5487,6 +6441,62 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		return folder !== undefined && isDirectory(folder) ? folder : this._windowCwd();
 	}
 
+	/* ------------------------------------------------------------ terminal_* MCP tools */
+
+	/**
+	 * The `terminal_*` tools' side of the chat (`terminalTools.ts`).
+	 */
+	private static _terminalApi(): TerminalAgentApi {
+		// The terminals pinned to a conversation, as its agent drives them (`terminalTools.ts`). Every call
+		// names the caller's chat, resolves it to its tab and only ever touches a terminal pinned to that tab:
+		// a terminal that does not exist and one pinned elsewhere are answered alike, so the tools are no way
+		// to learn which exist. Grants are not looked at here: the tool consumed one before it called.
+		const notPinned = 'That terminal is not attached to this conversation. Call terminal_list for the ones that are.';
+		const pinnedTo = (chatId: string, terminalId: string): TerminalTab => {
+			const own = ChatViewProvider._tabOfChat(chatId);
+			if (!own) { throw new TerminalRefusal('The conversation this call came from is no longer open in a tab.'); }
+			const terminal = ChatViewProvider._pins.has(own.tab.id, terminalId) ? ChatViewProvider._terminalAcross(terminalId)?.terminal : undefined;
+			if (!terminal) { throw new TerminalRefusal(notPinned); }
+			return terminal;
+		};
+		// A watch-only pin: reads are allowed, input never — refused before anything reaches the shell.
+		const writable = (chatId: string, terminalId: string): TerminalTab => {
+			const terminal = pinnedTo(chatId, terminalId);
+			if (ChatViewProvider._pins.mode(terminalId) === 'watch') { throw new TerminalRefusal(watchRefusal); }
+			return terminal;
+		};
+		return {
+			list: chatId => {
+				const own = ChatViewProvider._tabOfChat(chatId);
+				return own ? ChatViewProvider._pinnedInfos(own.tab) : [];
+			},
+			read: async (chatId, terminalId, o) => {
+				const t = pinnedTo(chatId, terminalId);
+				const read = await t.readScreen(o);
+				const ago = t.userTypedMsAgo();
+				return ago !== undefined ? { ...read, userTypedMsAgo: ago } : read;
+			},
+			wait: async (chatId, terminalId, o, signal) => pinnedTo(chatId, terminalId).waitFor({ ...o, signal }),
+			send: async (chatId, terminalId, o) => {
+				const t = writable(chatId, terminalId);
+				// The tool validated it already; what is typed is what the card showed, so it is checked where it takes effect too.
+				const problem = typedTextProblem(o.text);
+				if (problem) { throw new TerminalRefusal(problem); }
+				const result = t.agentInput(o.enter ? `${o.text}\r` : o.text);
+				if (!result.ok) { throw new TerminalRefusal(result.message, result.reason === 'user-typing'); }
+				return { sent: true, ...(result.userTypedMsAgo !== undefined ? { userTypedMsAgo: result.userTypedMsAgo } : {}) };
+			},
+			key: async (chatId, terminalId, o) => {
+				const t = writable(chatId, terminalId);
+				const plan = planKeys(o.keys);
+				if (!plan.ok) { throw new TerminalRefusal(plan.error); }
+				const result = t.agentInput(plan.bytes);
+				if (!result.ok) { throw new TerminalRefusal(result.message, result.reason === 'user-typing'); }
+				return { sent: true };
+			},
+		};
+	}
+
 	/* ------------------------------------------------------------ chat_* MCP tools */
 
 	/**
@@ -5574,7 +6584,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			queued: tab.queuedCount,
 			...(tab.paused ? { paused: { by: tab.paused.by, since: iso(tab.paused.at) } } : {}),
 		});
+		const terminal = ChatViewProvider._terminalApi();
 		return {
+			terminal,
+			grants: ChatViewProvider.terminalGrants,
+			// The Terminal row of the approval menu on Deny switches every terminal tool off, whatever a CLI's own rules allowed.
+			terminalDenied: chatId => (ChatViewProvider._tabOfChat(chatId)?.surface ?? surfaces()[0])?._approvalPolicy().command === 'deny',
 			tabOf: chatId => {
 				for (const surface of surfaces()) {
 					const tab = surface._tabs.find(t => t.chat.id === chatId);
@@ -5744,7 +6759,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		this._gitEventTimer = undefined;
 		for (const tab of this._tabs) {
 			tab.close();
+			ChatViewProvider._pins.dropTab(tab.id);
 		}
+		// The pins on this surface's terminals go with them; a conversation on another surface hears of it.
+		for (const terminal of this._terminals.tabs) { this._terminalGone(terminal.id, terminal.name, true); }
+		// A shell does not outlive the window or panel it was opened in.
+		this._terminals.dispose();
+		this._terminalHostInstance?.dispose();
+		this._terminalHostInstance = undefined;
 		// After the tabs: closing one posts, and a timer set then would fire on a
 		// view that is gone.
 		clearTimeout(this._postTimer);

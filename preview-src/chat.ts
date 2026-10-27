@@ -1,6 +1,10 @@
-import { overlayBounds, fitOverlay } from './overlayPosition';
+import { initTheme, getThemePreference, setThemePreference, type ThemePreference } from './uiTheme';
+import { initChatAppearance, getChatFileIcons, setChatFileIcons } from './chatAppearance';
+import { overlayBounds, fitOverlay, anchoredOverlay } from './overlayPosition';
 import { chatTabDragType, parseChatTabTransfer } from './tabDrag';
+import { fitTabs } from './tabOverflow';
 import { createVsCodeChatHost } from './chatHost';
+import { installChatSelectionCopy } from './chatSelection';
 import { historyPeriodRange, type HistoryPeriod } from './historyPeriod';
 import type { TemporaryStorage } from '../src/core/temporaryFiles';
 import { aiFeatures, defaultFeaturePrompts, featureAgent, featurePromptLimit, readFeatureAiSettings, type AiFeature, type FeatureAiSettings, type FeatureEffort } from '../src/chat/featureAi';
@@ -10,7 +14,18 @@ import { pastedFileLimit } from '../src/chat/pastedFiles';
 import { maxRecordingSeconds, minRecordingSeconds, readRecordingQuality, readRecordingSeconds, recordingProfiles, type RecordingQuality } from '../src/browser/recordingQuality';
 import { localFileLink } from '../src/chat/fileLinks';
 import { namesFile, resolveFileIcon, type FileIconTable } from '../src/chat/fileIconTable';
-import { sleepMinutes, sleepHours, type SleepChoice } from '../src/power/sleepProtocol';
+import { sleepMinutes, sleepHours, exchangeAwakeMinutes, type SleepChoice } from '../src/power/sleepProtocol';
+import { isAgentAuthenticationError } from '../src/chat/agentAuthText';
+import { frontStripId, shouldFocusComposer, stripTabs, terminalAddition, terminalCloseText, terminalTabShown, terminalTabTitle, visibleTerminalFront, withPendingTitle, type StripTab } from './terminalTabs';
+import type { TerminalView } from './terminalView';
+import { agentControlRow, askAgentRows, chipShown, composerPlaceholder, conversationBadge, conversationRows, conversationShown, isPinChip, pinChipOpenTitle, pinChipStatus, pinRows, pinSummary, terminalMarks, unpinTitle } from './chatTerminal';
+
+/**
+ * The nonce of the script that started this page, which the terminal's styles
+ * need (see `terminalCsp.ts`). The browser lets go of it once the script has run,
+ * so it is read here, in the first statements.
+ */
+const scriptNonce = (document.currentScript as HTMLScriptElement | null)?.nonce || undefined;
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -37,15 +52,60 @@ import { sleepMinutes, sleepHours, type SleepChoice } from '../src/power/sleepPr
  */
 
 import type {
+	ChatAgent,
 	AgentId, AgentQuestion, AgentUsage, ApprovalEntry, UsageAlert, ToolbarParam, ToolbarResult, ToolbarRun, ToolbarSkill, ApprovalKind, ApprovalMode, AttachmentChip, AttachmentKind, ChatCommand, ChatEntry, ChatStats, ChatSummary, ChatTabStatus, ChatTabSummary, ChatViewMode, ChatViewState, HostToView, RepoMode, ToolEntry, ViewToHost, VoiceEvent, WorkdirFolder, GitBranchState, GitRemoteAction, WorkdirGitStatus,
 } from '../src/chat/chatProtocol';
 import { baseName, searchPaths } from './fileRank';
+import { controlOf, type Availability } from '../src/chat/core/commands';
 // Every codicon the bundled font has, one per line (`name,char,code`); bundled
 // as text by esbuild, so the icon picker lists exactly what can be drawn.
 import codiconCsv from '@vscode/codicons/dist/codicon.csv';
 
+initTheme(!window.aiBrowserChatHost);
+initChatAppearance();
 const vscode = createVsCodeChatHost();
-const post = (message: ViewToHost) => vscode.postMessage(message);
+if (!window.aiBrowserChatHost) {
+  installChatSelectionCopy(document, document.body, text => vscode.postMessage({ type: 'copy', text }));
+}
+/**
+ * Every message goes through the surface's control map (`state.controls`, from
+ * the command table): what is unavailable here is never sent, and the reason is
+ * said instead. In the editor the map is empty and everything goes.
+ */
+const post = (message: ViewToHost) => {
+	const control = gate(message.type);
+	if (control.s !== 'on') {
+		refuseControl(control);
+		return;
+	}
+	vscode.postMessage(message);
+};
+
+/** What the surface rendering this view allows for a control id (a message type, or `<type>.<form>`). */
+function gate(id: string): Availability {
+	return controlOf(state?.controls, id);
+}
+
+/** Applies a control to a button: hidden, or marked unavailable with the reason as its tooltip. */
+function gateButton(b: HTMLElement, id: string): Availability {
+	const control = gate(id);
+	b.hidden = control.s === 'hidden' || b.hidden;
+	b.classList.toggle('control-off', control.s === 'off');
+	if (control.s === 'off') {
+		b.setAttribute('aria-disabled', 'true');
+		b.title = control.reason;
+	}
+	return control;
+}
+
+let refusalTimer: ReturnType<typeof setTimeout> | undefined;
+function refuseControl(control: Availability): void {
+	if (control.s !== 'off') { return; }
+	controlRefusal.textContent = control.reason;
+	controlRefusal.hidden = false;
+	clearTimeout(refusalTimer);
+	refusalTimer = setTimeout(() => { controlRefusal.hidden = true; }, 6000);
+}
 
 // Reuse the editor's actual theme tokens in the Chrome surface, including custom themes.
 if (!window.aiBrowserChatHost) {
@@ -85,7 +145,14 @@ function el<K extends keyof HTMLElementTagNameMap>(
 	return node;
 }
 
+function liquidLoader(extra = ''): HTMLElement {
+	const node = el('span', { class: `liquid-loader ${extra}`.trim() });
+	node.setAttribute('aria-hidden', 'true');
+	return node;
+}
+
 function icon(name: string, extra = ''): HTMLElement {
+	if (name === 'loading') { return liquidLoader(extra); }
 	return el('i', { class: `codicon codicon-${name} ${extra}`.trim() });
 }
 
@@ -132,7 +199,7 @@ thread.append(threadInner);
 const blocked = el('div', { class: 'blocked' });
 const chromeConnectionBanner = el('div', { class: 'chrome-connection-banner' });
 chromeConnectionBanner.hidden = true;
-chromeConnectionBanner.setAttribute('role', 'alert');
+chromeConnectionBanner.setAttribute('role', 'status');
 let chromeConnectionShown: string | undefined;
 function renderChromeConnection(request: ChatViewState['chromeConnectionRequest']): void {
 	chromeConnectionBanner.hidden = !request;
@@ -173,7 +240,13 @@ videoPauseButton.addEventListener('click', () => post({ type: 'controlRecording'
 videoStopButton.addEventListener('click', () => post({ type: 'controlRecording', action: 'stop' }));
 const input = el('textarea', { class: 'input' });
 input.rows = 1;
-input.placeholder = 'Ask about this page, or anything…';
+const defaultPlaceholder = 'Ask about this page, or anything…';
+input.placeholder = defaultPlaceholder;
+/** While a terminal is pinned to the conversation in front, the box asks about it; otherwise it is the plain one. */
+function renderPlaceholder(s: ChatViewState): void {
+	const text = composerPlaceholder(defaultPlaceholder, s.tabs.find(t => t.id === s.activeTab));
+	if (input.placeholder !== text) { input.placeholder = text; }
+}
 
 // Every button of the bottom bar says what it does, and its key where it has
 // one — asked for: the icons alone did not say it.
@@ -223,8 +296,18 @@ queueButton.addEventListener('click', () => send('queue'));
 /** Ask before terminal commands and browser tools, or let them run: one switch for every tab. */
 const approveToggle = button([], { class: 'pill approve-toggle' });
 
-// Settings and tools get deliberate rows in a narrow composer.
-const toolbarSettings = el('div', { class: 'toolbar-settings' }, agentPill, modelPill, effortBox, ultracodeBox, approveToggle);
+// Narrow composers keep one row, with the same selectors behind one summary.
+const compactSelectorLabel = el('span', { class: 'compact-selector-label' });
+const compactEffortDot = el('span', { class: 'effort compact-effort-dot' });
+compactEffortDot.setAttribute('aria-hidden', 'true');
+const compactSelector = button([compactSelectorLabel, compactEffortDot, icon('chevron-down', 'pill-chevron')], { class: 'pill compact-selector', title: 'Agent, model, effort and permissions' });
+compactSelector.setAttribute('aria-haspopup', 'dialog');
+compactSelector.setAttribute('aria-expanded', 'false');
+const selectorControls = el('div', { class: 'selector-controls' }, agentPill, modelPill, effortBox, ultracodeBox, approveToggle);
+const selectorStrip = el('div', { class: 'popup selector-strip' });
+selectorStrip.setAttribute('role', 'dialog');
+selectorStrip.setAttribute('aria-label', 'Chat settings');
+const toolbarSettings = el('div', { class: 'toolbar-settings' }, selectorControls, compactSelector);
 const toolbarAttachments = el('span', { class: 'toolbar-attachments' }, plusButton, browserButton, slashButton);
 const toolbarEnd = el('span', { class: 'toolbar-end' }, agentsButton, contextButton, usageButton);
 const toolbar = el('div', { class: 'toolbar' }, toolbarAttachments, toolbarSettings, toolbarEnd);
@@ -292,12 +375,15 @@ const workdirLocation = el('span', { class: 'workdir-location' }, workdirLocatio
 const workdirSummary = button([workdirMode, workdirLocation], { class: 'workdir-summary', title: 'Working folder' });
 const gitChanged = el('span', { class: 'git-changed' }, '+0');
 const gitDeleted = el('span', { class: 'git-deleted' }, '−0');
-const gitRefresh = button([icon('refresh')], { class: 'ghost round', title: 'Refresh Git status' });
-gitRefresh.setAttribute('aria-label', 'Refresh Git status');
+const gitRefresh = button([icon('refresh')], { class: 'ghost round', title: 'Fetch remote changes and refresh Git status' });
+gitRefresh.setAttribute('aria-label', 'Fetch remote changes and refresh Git status');
 const gitRefreshSlot = el('span', { class: 'git-refresh-slot' }, gitRefresh);
-gitRefreshSlot.dataset.tip = 'Refresh Git status';
+gitRefreshSlot.dataset.tip = 'Fetch remote changes and refresh Git status';
 const branchName = el('span', { class: 'git-branch-name' }, '…');
-const branchButton = button([icon('git-branch'), branchName, icon('chevron-down')], { class: 'ghost git-branch-button', title: 'Switch or manage Git branches' });
+const branchAhead = el('span', { class: 'git-branch-ahead' });
+const branchBehind = el('span', { class: 'git-branch-behind' });
+branchAhead.hidden = branchBehind.hidden = true;
+const branchButton = button([icon('git-branch'), branchName, branchAhead, branchBehind, icon('chevron-down')], { class: 'ghost git-branch-button', title: 'Switch or manage Git branches' });
 branchButton.setAttribute('aria-haspopup', 'dialog');
 branchButton.setAttribute('aria-expanded', 'false');
 const commitIcon = icon('git-commit');
@@ -310,18 +396,19 @@ const gitStatus = el('div', { class: 'git-status' }, branchButton, commitButton,
 gitStatus.hidden = true;
 let gitFolder: string | undefined;
 let gitPending = false;
-function refreshGitStatus(): void {
+function refreshGitStatus(fetch: 'auto' | 'force' = 'auto'): void {
  if (!gitFolder || gitPending) { return; }
  gitPending = true;
  gitRefresh.disabled = true;
  gitPopupRefresh.disabled = true;
  branchRefresh.disabled = true;
- post({ type: 'refreshWorkdirGit' });
+ post({ type: 'refreshWorkdirGit', fetch });
 }
-gitRefresh.addEventListener('click', refreshGitStatus);
-gitStatus.addEventListener('mouseenter', refreshGitStatus);
-commitButton.addEventListener('focus', refreshGitStatus);
+gitRefresh.addEventListener('click', () => refreshGitStatus('force'));
+gitStatus.addEventListener('mouseenter', () => refreshGitStatus());
+commitButton.addEventListener('focus', () => refreshGitStatus());
 setInterval(() => { if (!document.hidden) { refreshGitStatus(); } }, 15_000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { refreshGitStatus(); } });
 const workdirFooter = el('div', { class: 'workdir-status' }, workdirButton, workdirSummary, gitStatus);
 const commitNoticeText = el('span', { class: 'git-commit-notice-text' });
 const commitFix = button(['Fix with current model'], { class: 'git-commit-fix' });
@@ -349,6 +436,7 @@ const tabStrip = el('nav', { class: 'tab-strip' });
  */
 const usageAlertText = el('span', { class: 'usage-alert-text' });
 const usageAlertClose = button([icon('close')], { class: 'usage-alert-close' });
+usageAlertClose.setAttribute('aria-label', 'Close plan-limit notice');
 const usageAlertBar = el('div', { class: 'usage-alert' },
 	el('span', { class: 'u-mark', text: 'U' }), usageAlertText, usageAlertClose);
 usageAlertBar.hidden = true;
@@ -356,6 +444,11 @@ usageAlertBar.hidden = true;
 const chromeMirrorLine = el('div', { class: 'chrome-mirror' }, icon('broadcast'),
 	el('span', { text: 'Connected from Google Chrome — messages sent there appear here. Closing the Chrome panel does not stop the agent.' }));
 chromeMirrorLine.hidden = true;
+/** Says why a control is unavailable on this surface (Chrome, the website), for a few seconds. */
+const controlRefusal = el('div', { class: 'control-refusal' });
+controlRefusal.hidden = true;
+controlRefusal.setAttribute('role', 'status');
+controlRefusal.addEventListener('click', () => { controlRefusal.hidden = true; });
 chromeMirrorLine.setAttribute('role', 'status');
 usageAlertBar.setAttribute('role', 'status');
 
@@ -374,7 +467,7 @@ commitButton.setAttribute('aria-controls', gitPopup.id);
 const gitPopupRefresh = button([icon('refresh')], { class: 'ghost round', title: 'Refresh Git changes' });
 gitPopupRefresh.setAttribute('aria-label', 'Refresh Git changes');
 gitPopupRefresh.disabled = gitPending;
-gitPopupRefresh.addEventListener('click', () => { gitPopupPinned = true; refreshGitStatus(); });
+gitPopupRefresh.addEventListener('click', () => { gitPopupPinned = true; refreshGitStatus('force'); });
 const gitPopupHeader = el('div', { class: 'git-changes-heading' }, el('strong', {}, 'Git changes'),
  el('div', { class: 'git-changes-heading-tools' }, el('span', { class: 'git-change-totals' }, gitChanged, gitDeleted), gitPopupRefresh));
 const gitPopupError = el('div', { class: 'git-branch-error' });
@@ -384,6 +477,7 @@ const gitPopupActions = el('div', { class: 'git-changes-actions' });
 gitPopup.append(gitPopupHeader, gitPopupError, gitPopupList, gitPopupActions);
 let gitFiles: WorkdirGitStatus | undefined;
 let gitError = '';
+let gitFetchError = '';
 let gitIndexPending = false;
 let gitPopupPinned = false;
 let gitPopupPressed = false;
@@ -649,7 +743,7 @@ branchMagic.setAttribute('aria-label', branchMagic.dataset.tip);
 const branchRefresh = button([icon('refresh')], { class: 'ghost round', title: 'Refresh Git branches' });
 branchRefresh.setAttribute('aria-label', 'Refresh Git branches');
 branchRefresh.disabled = gitPending;
-branchRefresh.addEventListener('click', refreshGitStatus);
+branchRefresh.addEventListener('click', () => refreshGitStatus('force'));
 branchSearchRow.append(clearableSearch(branchSearch), branchMagic, branchRefresh);
 /** The current branch against its remote: Publish, Push, Pull, and the pull request page. */
 const branchSync = el('div', { class: 'git-branch-sync' });
@@ -766,6 +860,7 @@ function renderBranches(): void {
 	branchRestoreStash.textContent = branchState?.savedStash ? `Return to ${branchState.savedStash.branch} & Apply Stash` : 'Return & Apply Stash';
  branchMagic.disabled = branchBusy || !branchState || !!branchNamePending;
  branchMagic.classList.toggle('loading', !!branchNamePending);
+ setIcon(branchMagic, branchNamePending ? 'loading' : 'sparkle');
  branchError.classList.toggle('generating', !!branchNamePending);
 	branchCreate.textContent = query ? `+ Create “${query}” from ${branchState?.current || 'HEAD'}` : '+ Create a new branch (enter name above)';
 	branchCreate.disabled = branchBusy || !branchState || !query || !!branchState?.branches.some(b => !b.remote && b.name === query);
@@ -912,8 +1007,76 @@ const agentsPanel = el('div', { class: 'history-panel agents-panel' });
 /** Which copy of each agent's CLI this project uses: opened from the gear in the agent menu. */
 const agentAppsPanel = el('div', { class: 'history-panel agent-apps' });
 
-const chatMain = el('main', { class: 'chat-main' }, chromeConnectionBanner, chromeMirrorLine, usageAlertBar, thread, blocked, footer);
-app.append(featureSettingsPanel, sleepPopup, tabStrip, chatMain, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel);
+const agentAuthBanner = el('div', { class: 'agent-auth-banner' });
+agentAuthBanner.hidden = true;
+const chatMain = el('main', { class: 'chat-main' }, chromeConnectionBanner, chromeMirrorLine, controlRefusal, agentAuthBanner, usageAlertBar, thread, blocked, footer);
+/**
+ * The view title's own buttons for surfaces that have no VS Code title bar —
+ * the Chrome side panel and the website. One row in the renderer instead of a
+ * header written again by each shell, each button gated by the surface's
+ * control map. Absent in the editor, whose title bar carries the same commands.
+ */
+const remoteBar = el('div', { class: 'remote-bar' });
+function remoteButton(name: string, label: string): HTMLButtonElement {
+	const b = button([icon(name)], { class: 'ghost round', title: label });
+	b.setAttribute('aria-label', label);
+	b.dataset.label = label;
+	return b;
+}
+remoteBar.hidden = true;
+const remoteNew = remoteButton('add', 'New chat');
+remoteNew.addEventListener('click', () => post({ type: 'newTab', location: 'here' }));
+const remoteHistory = remoteButton('history', 'Chat history');
+// The website asks its host for the list; it is not one of the editor's messages.
+remoteHistory.addEventListener('click', () => { if (gate('history').s === 'on') { vscode.postMessage({ type: 'history' } as unknown as ViewToHost); } else { refuseControl(gate('history')); } });
+const remoteAwake = remoteButton('coffee', 'Keep the computer awake');
+remoteAwake.addEventListener('click', () => { if (gate('setSleep').s !== 'on') { refuseControl(gate('setSleep')); return; } buildSleepPopup(); renderSleep(); openSleepPopup(); });
+const remoteSettings = remoteButton('settings-gear', 'Chat settings');
+remoteSettings.addEventListener('click', () => { if (gate('saveFeatureAi').s !== 'on') { refuseControl(gate('saveFeatureAi')); return; } openFeatureSettings(); });
+/**
+ * "New terminal" for Chrome and the website: always there while the host speaks of terminals, and
+ * disabled with its reason (the setting to turn on, a declined consent, the limit) rather than
+ * hidden, which is how a website user once found no way to open one at all.
+ */
+const remoteTerminal = remoteButton('terminal', 'New terminal');
+remoteTerminal.addEventListener('click', () => {
+	const why = remoteTerminalBlock();
+	if (why) { refuseControl({ s: 'off', reason: why }); return; }
+	const items = terminalMenuItems();
+	if (items.length > 1) { openMenu(remoteTerminal, items, 'Open new terminal'); } else { post({ type: 'newTerminal' }); }
+});
+/** Why the remote "New terminal" cannot act now, or `undefined`. */
+function remoteTerminalBlock(): string | undefined {
+	const control = gate('newTerminal');
+	if (control.s === 'off') { return control.reason; }
+	const offer = state ? terminalAddition(state.terminalSupport, state.terminals?.length ?? 0) : undefined;
+	return offer?.kind === 'off' ? offer.reason : undefined;
+}
+remoteBar.append(remoteNew, remoteTerminal, remoteHistory, remoteAwake, remoteSettings);
+// A shell with a header of its own (the Chrome side panel, the Exchange website) gives the bar a
+// place in it (#remote-actions), so the chat keeps the height a row of its own would take.
+const remoteSlot = document.getElementById('remote-actions');
+if (remoteSlot) { remoteBar.classList.add('in-shell'); remoteSlot.append(remoteBar); }
+function renderRemoteBar(s: ChatViewState): void {
+	remoteBar.hidden = !s.surface || s.surface === 'editor';
+	if (remoteBar.hidden) { return; }
+	for (const [b, id] of [[remoteNew, 'newTab'], [remoteHistory, 'history'], [remoteAwake, 'setSleep'], [remoteSettings, 'saveFeatureAi']] as const) {
+		const control = gate(id);
+		b.hidden = control.s === 'hidden';
+		b.classList.toggle('control-off', control.s === 'off');
+		b.setAttribute('aria-disabled', String(control.s === 'off'));
+		b.title = control.s === 'off' ? control.reason : b.dataset.label ?? '';
+	}
+	// Absent only where the build or the host has no terminals at all (an older editor).
+	remoteTerminal.hidden = !__TERMINAL__ || !s.terminalSupport || gate('newTerminal').s === 'hidden';
+	const why = remoteTerminal.hidden ? undefined : remoteTerminalBlock();
+	remoteTerminal.classList.toggle('control-off', !!why);
+	remoteTerminal.setAttribute('aria-disabled', String(!!why));
+	remoteTerminal.title = why ?? 'New terminal';
+}
+
+if (!remoteSlot) { app.append(remoteBar); }
+app.append(featureSettingsPanel, sleepPopup, tabStrip, chatMain, selectorStrip, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel);
 
 /* ---------------------------------------------------------------- state */
 
@@ -994,11 +1157,65 @@ function followDraft(s: ChatViewState): void {
 	autosize();
 }
 
+/**
+ * Terminal tabs. xterm is large and most windows never open a terminal, so the
+ * code is loaded the first time the state names one; output that arrives before
+ * it has loaded waits in `terminalBacklog`. The Chrome side panel and the
+ * website run the same code; their shims turn the terminal messages into
+ * `terminal.*` frames (`remoteTerminal.ts`) and their states carry only the
+ * terminals the editor shares.
+ */
+let terminalView: TerminalView | undefined;
+/** A `focusInput` that found a terminal in front: see its handler. */
+let composerFocusPending = false;
+let terminalLoading = false;
+const terminalBacklog: HostToView[] = [];
+function syncTerminals(s: ChatViewState): void {
+	if (__TERMINAL__) {
+		if (!terminalView && !terminalLoading && s.terminals?.length) {
+			terminalLoading = true;
+			import('./terminalView').then(({ createTerminalView }) => {
+				terminalView = createTerminalView({
+					app, after: chatMain, post, nonce: scriptNonce, canFocus: () => !editingTab,
+					// The toolbar's "Ask agent" and a URL printed in a terminal: the menus and the link rule live here.
+					askAgent: askAgentMenu,
+					insertMenu: terminalInsertMenu,
+					openLink: (url, external) => post({ type: 'openLink', url, external }),
+					// What the surface allows (the control table), and which surface this is.
+					gate: type => gate(type).s === 'on',
+					surface: () => state?.surface,
+					canInput: () => gate('terminalInput').s === 'on',
+					// The website's Watch / Take control (its shim in serverChatHost.ts); absent in the editor.
+					lease: window.aiBrowserChatHost?.terminalLease,
+				});
+				if (state) { terminalView.sync(state.terminals, visibleTerminalFront(state)); }
+				for (const message of terminalBacklog.splice(0)) { terminalView.handle(message); }
+			}).catch(error => {
+				console.error('The terminal could not be loaded', error);
+				controlRefusal.textContent = 'The terminal could not be started.';
+				controlRefusal.hidden = false;
+			});
+		}
+		terminalView?.sync(s.terminals, visibleTerminalFront(s));
+	}
+}
+
 let recordingEncoder: { id: string; encoder: ReturnType<typeof createRecordingEncoder> } | undefined;
 window.addEventListener('unload', () => recordingEncoder?.encoder.dispose());
 window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 	const message = event.data;
 	switch (message.type) {
+		case 'terminalData':
+		case 'terminalReplay':
+		case 'terminalExit':
+		case 'terminalSettings':
+		case 'terminalPaste':
+		case 'terminalFocus':
+			// Only the editor has terminals. A message that comes before the terminal code has loaded waits for it.
+			if (__TERMINAL__) {
+				if (terminalView) { terminalView.handle(message); } else if (terminalBacklog.length < 5000) { terminalBacklog.push(message); }
+			}
+			return;
 		case 'pastedFileResult':
 			pastedFileRequests.get(message.id)?.(message.error);
 			return;
@@ -1031,6 +1248,12 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 			state = message.state;
 			renderChromeConnection(state.chromeConnectionRequest);
 			render();
+			if (composerFocusPending) {
+				// Decided once, at the first state after the request: a terminal that is still in front keeps the keyboard.
+				const wanted = shouldFocusComposer(true, state);
+				composerFocusPending = false;
+				if (wanted && !editingTab && !hasSelection()) { input.focus(); }
+			}
 			vscode.setState({ drafts, chatDrawerCollapsed, chatDrawerSide, panel: state.panel });
 			return;
 		case 'localLinkInfo': {
@@ -1127,11 +1350,26 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
    gitPopupRefresh.disabled = false;
    branchRefresh.disabled = false;
    gitFiles = message.status;
-   if (message.error) { gitError = message.error; }
+   if (message.error || message.fetchError) { gitError = message.error ?? message.fetchError ?? ''; }
    else if (!gitIndexPending) { gitError = ''; }
+   gitRefresh.title = message.fetchError ? `Fetch failed: ${message.fetchError}` : 'Fetch remote changes and refresh Git status';
+   gitRefreshSlot.dataset.tip = gitRefresh.title;
+   if (gitFetchError && branchError.textContent === `Remote data may be outdated: ${gitFetchError}`) { branchError.textContent = ''; }
+   gitFetchError = message.fetchError ?? '';
+   if (gitFetchError) { branchError.textContent = `Remote data may be outdated: ${gitFetchError}`; }
    branchState = message.branches;
    branchName.textContent = branchState ? branchState.current || 'Detached HEAD' : 'Git';
+   const upstream = branchState?.current && !branchState.upstream?.gone ? branchState.upstream : undefined;
+   const ahead = upstream?.ahead ?? 0, behind = upstream?.behind ?? 0;
+   branchAhead.textContent = ahead ? `+${ahead}` : '';
+   branchBehind.textContent = behind ? `−${behind}` : '';
+   branchAhead.hidden = !ahead;
+   branchBehind.hidden = !behind;
+   const remoteBranch = upstream ? `${upstream.remote}/${upstream.branch}` : '';
+   branchAhead.title = `${ahead} local commit${ahead === 1 ? '' : 's'} to push to ${remoteBranch}`;
+   branchBehind.title = `${behind} remote commit${behind === 1 ? '' : 's'} to pull from ${remoteBranch}`;
    branchButton.title = branchState ? `Current branch: ${branchState.current || 'Detached HEAD'} — switch or manage branches` : message.error ?? 'Git branches unavailable';
+   if (ahead || behind) { branchButton.title += ` — ${ahead} to push, ${behind} to pull (${remoteBranch}; last fetched state)`; }
    if (branchPopup.classList.contains('open')) { renderBranches(); }
    renderGitChanges();
    return;
@@ -1196,6 +1434,7 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
             featureSettingsStatus.textContent = message.error ? `Could not save settings: ${message.error}` : 'Settings saved.';
             featureSettingsSave.disabled = false;
             for (const select of featureSettingsPanel.querySelectorAll('select')) {
+                if (select.dataset.appearance) { select.disabled = false; continue; }
                 if (select.dataset.field === 'recordingQuality') { select.value = videoQualityDraft; select.disabled = false; continue; }
                 if (select.dataset.field === 'recordingUnit') { select.value = lengthFields(videoSecondsDraft ?? 300).unit; select.disabled = false; continue; }
                 const choice = featureSettingsDraft[select.dataset.feature as AiFeature];
@@ -1244,8 +1483,11 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 			// Not while a tab is being renamed: the host asks for this on every tab
 			// selection, and a reply that arrives after the double-click closed
 			// the name field the moment it opened.
-			if (!editingTab) {
-				input.focus();
+			if (!editingTab && !hasSelection()) {
+				// A terminal in front is where the keyboard goes: the box is hidden, and focusing it would fail.
+				// The host may have sent this before the state that takes the terminal away from the front:
+				// then the composer is focused at that state (`composerFocusPending`).
+				if (!terminalView?.focusFront()) { input.focus(); } else { composerFocusPending = true; }
 			}
 			return;
 		case 'agentStopFailed':
@@ -1266,9 +1508,11 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 });
 
 function render(): void {
+	if (state) { renderRemoteBar(state); }
 	if (!state) {
 		return;
 	}
+	serverSettingsRefresh?.();
 	renderVoice();
 	app.classList.toggle('is-blocked', !!state.blocked);
 	blocked.textContent = state.blocked ?? '';
@@ -1279,13 +1523,20 @@ function render(): void {
 		paintInput();
 	}
 	renderTabs(state);
+	syncTerminals(state);
 	renderSwitch(state);
 	renderQuestionDock(state);
-	renderThread(state);
-	landFlight(state);
+	// A conversation behind a terminal is not drawn: its column is hidden but keeps its
+	// geometry, and drawing it measures that to decide whether a reply is being followed.
+	if (!app.classList.contains('terminal-front')) {
+		renderThread(state);
+		landFlight(state);
+	}
 	renderAttachments(state);
-	renderSelectors(state);
+	renderPlaceholder(state);
+	renderAgentAuthentication(state);
 	renderApproveToggle(state);
+	renderSelectors(state);
 	renderSend();
 	renderContext(state);
 	renderSleep();
@@ -1329,8 +1580,10 @@ interface TabNode {
 	readonly root: HTMLElement;
 	readonly label: HTMLButtonElement;
 	readonly close: HTMLButtonElement;
-	tab: ChatTabSummary;
+	tab: StripTab;
 	shown: string;
+	/** Opens the tab's context menu at `anchor`; set by `tabNode`. */
+	openMenu: (anchor: HTMLElement, keep?: HTMLElement) => void;
 	/** A name just given, shown until the state carries it; see `startRename`. */
 	pendingTitle?: { readonly title: string; readonly until: number };
 }
@@ -1363,7 +1616,7 @@ function updateChatDrawer(): void {
 	// The narrow strip remains horizontal regardless of the drawer preference.
 	tabStrip.setAttribute('aria-label', wideChat.matches ? 'Chat sidebar' : 'Open chats');
 	if (wideChat.matches) {
-		requestAnimationFrame(() => tabNodes.get(state?.activeTab ?? '')?.root.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
+		requestAnimationFrame(() => tabNodes.get(state ? frontStripId(state) : '')?.root.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
 	}
 }
 drawerSideToggle.addEventListener('click', () => {
@@ -1379,18 +1632,315 @@ drawerToggle.addEventListener('click', () => {
 wideChat.addEventListener('change', () => {
 	for (const { root } of tabNodes.values()) { tabResizeEnds.get(root)?.(); }
 	updateChatDrawer();
+	layoutTabOverflow(true);
 });
 updateChatDrawer();
 const tabAdd = button([icon('add'), el('span', { class: 'tab-add-label', text: 'New chat' })], { class: 'ghost round tab-add', title: 'New chat' });
+/** "New terminal" and the agents whose own CLI can run in one: rows for a menu, disabled with the reason where it is not on offer. */
+function terminalMenuItems(): MenuItem[] {
+	if (!__TERMINAL__) { return []; }
+	const offer = state ? terminalAddition(state.terminalSupport, state.terminals?.length ?? 0, state.agents) : { kind: 'hidden' } as const;
+	if (offer.kind === 'hidden' || gate('newTerminal').s === 'hidden') { return []; }
+	if (offer.kind === 'off') {
+		return [{ icon: 'terminal', label: 'New terminal', description: offer.reason, command: 'newTerminal', disabled: true, run: () => {} }];
+	}
+	return [
+		{ icon: 'terminal', label: 'New terminal', description: 'A shell in the folder of this chat', command: 'newTerminal', run: () => post({ type: 'newTerminal' }) },
+		...offer.agents.map(agent => ({
+			icon: 'terminal', label: `${agent.name} in a terminal`, description: `${agent.name}'s own CLI, with the browser tools`, command: 'newTerminal',
+			run: () => post({ type: 'newTerminal', agent: agent.id }),
+		})),
+	];
+}
+/**
+ * "Ask agent" on a terminal: a new chat with an agent that can start (the picked one first), or a
+ * conversation already open, which takes the terminal as a pin. The terminal's selected text, taken
+ * when the button was pressed (the menu's click takes the focus off xterm), goes along as context.
+ * The host checks the limit and the ids again; what is decided here is only what is offered.
+ */
+function askAgentMenu(anchor: HTMLElement, terminalId: string, selection: string): void {
+	const s = state;
+	const terminal = s?.terminals?.find(t => t.id === terminalId);
+	if (!s || !terminal) { return; }
+	const text = selection.trim() ? selection : '';
+	const rows = askAgentRows({
+		terminal, agents: s.agents, defaultAgent: s.selection.agent, tabs: s.tabs,
+		frontTab: s.activeTab, tabLimit: s.tabLimit, hasSelection: !!text,
+	});
+	const withText = { ...(text ? { selection: text } : {}), ...(terminalWatchOnly ? { mode: 'watch' as const } : {}) };
+	openMenu(anchor, [...rows.map((row): MenuItem => {
+		if (row.kind === 'tab') {
+			return { icon: row.icon, label: row.label, description: row.description, checked: row.checked, command: 'terminalAskAgent',
+				run: () => post({ type: 'terminalAskAgent', id: terminalId, target: { kind: 'tab', tabId: row.tabId }, ...withText }) };
+		}
+		// A surface that sees one conversation only (the website) hides the new chats: the form rule `terminalAskAgent.new`.
+		return {
+			icon: row.icon, label: row.label, description: row.description, disabled: row.disabled, command: 'terminalAskAgent.new',
+			run: () => { if (row.kind === 'new') { post({ type: 'terminalAskAgent', id: terminalId, target: { kind: 'new', agent: row.agent }, ...withText }); } },
+		};
+	}), watchOnlyToggle(() => askAgentMenu(anchor, terminalId, selection))], `Ask an agent about ${terminal.name}`);
+	focusMenu();
+}
+
+/**
+ * "Watch only": the next pin from the "+" Terminal… menu or Ask agent is read-only — the agent reads the
+ * screen ("look what I am doing") and its terminal_send / terminal_key are refused. A toggle row that
+ * reopens the menu it is in; remembered for this page only.
+ */
+let terminalWatchOnly = false;
+function watchOnlyToggle(reopen: () => void): MenuItem {
+	return {
+		icon: 'eye', label: 'Watch only', checked: terminalWatchOnly, command: 'pinTerminal',
+		description: terminalWatchOnly ? 'The agent may read, not type' : 'Off: the agent may type (each input approved)',
+		run: () => { terminalWatchOnly = !terminalWatchOnly; setTimeout(reopen, 0); },
+	};
+}
+
+/**
+ * The terminal toolbar's "Insert": what the "+" menu attaches, put into the terminal's input instead (a
+ * terminal agent such as Claude Code or Codex CLI reads it there). The host materialises each: text as
+ * text, a screenshot or a file as its path. Never sent: the user presses Enter.
+ */
+function terminalInsertMenu(anchor: HTMLElement, terminalId: string): void {
+	const item = (icon: string, label: string, description: string, kind: Extract<ViewToHost, { type: 'terminalInsert' }>['kind']): MenuItem =>
+		({ icon, label, description, command: 'terminalInsert', run: () => post({ type: 'terminalInsert', id: terminalId, kind }) });
+	openMenu(anchor, [
+		item('link', 'Page address', 'The URL and title of the browser tab in front', 'page'),
+		item('inspect', 'Element…', 'Pick an element on the page; its context as text', 'element'),
+		item('device-camera', 'Screenshot', 'The visible page, saved; its path', 'screenshot'),
+		item('file', 'File…', 'One or more files; their paths', 'file'),
+		item('selection', 'Editor selection', 'The text selected in the editor', 'selection'),
+		item('device-camera-video', 'Video…', 'A recorded video; its path', 'video'),
+		item('comment', 'Annotations', 'The notes on the page in front', 'annotation'),
+	], 'Insert into the terminal (not sent)');
+	focusMenu();
+}
+
+/** The "+" menu's terminal rows: pin one to this conversation, or make one for the agent. Nothing where the state has no terminal support. */
+function terminalPinItems(): MenuItem[] {
+	const s = state;
+	if (!s?.terminalSupport || gate('pinTerminal').s === 'hidden') { return []; }
+	const count = s.terminals?.length ?? 0;
+	const offer = terminalAddition(s.terminalSupport, count, s.agents);
+	if (!count && offer.kind !== 'on') {
+		return [{ icon: 'terminal', label: 'Terminal…', description: offer.kind === 'off' ? offer.reason : undefined, command: 'pinTerminal', disabled: true, run: () => {} }];
+	}
+	const tabId = s.activeTab;
+	return [{
+		icon: 'terminal', label: 'Terminal…', description: pinSummary(s.terminals ?? [], tabId), command: 'pinTerminal',
+		// `run` comes after the menu closed itself: the next one is opened once that has finished.
+		run: () => setTimeout(() => openTerminalPinMenu(tabId), 0),
+	}];
+}
+
+function openTerminalPinMenu(tabId: string): void {
+	const s = state;
+	if (!s || s.activeTab !== tabId) { return; }
+	const offer = terminalAddition(s.terminalSupport, s.terminals?.length ?? 0, s.agents);
+	openMenu(plusButton, [
+		...pinRows(s.terminals ?? [], tabId).map((row): MenuItem => ({
+			icon: row.icon, label: row.label, description: row.description, checked: row.pinned, command: 'pinTerminal',
+			run: () => post({ type: 'pinTerminal', id: row.id, tabId, pinned: !row.pinned, ...(terminalWatchOnly ? { mode: 'watch' as const } : {}) }),
+		})),
+		watchOnlyToggle(() => openTerminalPinMenu(tabId)),
+		{
+			icon: 'add', label: 'New terminal for the agent', command: 'newTerminal', disabled: offer.kind !== 'on',
+			description: offer.kind === 'off' ? offer.reason : 'A shell in this chat\'s folder; you stay here',
+			run: () => post({ type: 'newTerminal', pinTo: tabId }),
+		},
+	], 'Let the agent use a terminal');
+	focusMenu();
+}
+
 function chooseNewChatLocation(): void {
 	openMenu(tabAdd, [
 		{ icon: 'comment-discussion', label: 'Here in chat', run: () => post({ type: 'newTab', location: 'here' }) },
 		{ icon: 'files', label: 'In a new tab', run: () => post({ type: 'newTab', location: 'tab' }) },
 		{ icon: 'link-external', label: 'In a new window', run: () => post({ type: 'newTab', location: 'window' }) },
+		...terminalMenuItems(),
 	], 'Open new chat');
 }
 tabAdd.addEventListener('click', () => post({ type: 'newTab', location: 'here' }));
+/**
+ * "Allow remote access" on a terminal tab (the editor only): Chrome's side panel and the Exchange website may then watch it,
+ * and type once it takes control. Disabled with the host's reason while it cannot be shared (the
+ * `aiBrowser.chat.remoteTerminal` setting off, no encrypted connection); absent with a host that does not say.
+ */
+function websiteAccessRow(terminal: { readonly id: string; readonly remote?: boolean }): MenuItem[] {
+	const support = state?.terminalSupport;
+	const website = support?.available ? support.website : undefined;
+	if (!website) { return []; }
+	const on = terminal.remote === true;
+	return [{
+		icon: on ? 'eye-closed' : 'globe', label: on ? 'Stop remote access' : 'Allow remote access', checked: on,
+		description: !website.allowed && !on ? website.reason : on ? 'Chrome and the website can no longer watch or type here' : 'Watch from the Chrome side panel or the Exchange website; typing needs Take control there',
+		command: 'setTerminalRemote', disabled: !website.allowed && !on,
+		run: () => post({ type: 'setTerminalRemote', id: terminal.id, remote: !on }),
+	}];
+}
+
+/** The strip's own "New terminal": the editor only, and only while one can be started. */
+const tabAddTerminal = button([icon('terminal'), el('span', { class: 'tab-add-label', text: 'New terminal' })], { class: 'ghost round tab-add tab-add-terminal', title: 'New terminal' });
+tabAddTerminal.addEventListener('click', () => {
+	const items = terminalMenuItems();
+	if (items.length > 1) { openMenu(tabAddTerminal, items, 'Open new terminal'); } else { post({ type: 'newTerminal' }); }
+});
+/*
+ * The narrow strip's overflow: the tabs that do not fit in the row are hidden (a class: the keyed
+ * nodes stay, #365/#383) and listed in a dropdown behind a "+N" button. The tab in front is always
+ * shown. Each row selects its tab; a right-click, the context-menu key or its "⋯" opens the tab's
+ * own context menu over the dropdown.
+ */
+const overflowCount = el('span', { class: 'tab-overflow-count' });
+const overflowButton = button([icon('chevron-down'), overflowCount], { class: 'ghost tab-overflow-button' });
+overflowButton.hidden = true;
+overflowButton.setAttribute('aria-haspopup', 'menu');
+const tabOverflowPanel = el('div', { class: 'popup menu tab-overflow' });
+tabOverflowPanel.setAttribute('role', 'menu');
+/** Ids in the dropdown, in strip order. */
+let overflowIds: string[] = [];
+let overflowShape = '';
+let overflowPanelShape = '';
+/** A tab renamed from the dropdown's menu: selected first, renamed once it is shown. */
+let renameWhenShown: string | undefined;
+
+function renameFromMenu(node: TabNode): void {
+	if (!node.root.classList.contains('overflowed')) { startRename(node); return; }
+	if (gate(node.tab.terminal ? 'selectTerminal' : 'selectTab').s !== 'on') { return; }
+	renameWhenShown = node.tab.id;
+	post(node.tab.terminal ? { type: 'selectTerminal', id: node.tab.id } : { type: 'selectTab', id: node.tab.id });
+}
+
+/** Decides which tabs are shown; `force` measures again even if nothing it depends on changed. */
+function layoutTabOverflow(force = false): void {
+	const s = state;
+	const strip = s ? stripOf(s) : [];
+	const nodes = strip.map(t => tabNodes.get(t.id)).filter((n): n is TabNode => !!n);
+	if (wideChat.matches || !s || !nodes.length) {
+		for (const n of nodes) { n.root.classList.remove('overflowed'); }
+		overflowButton.hidden = true;
+		overflowIds = [];
+		overflowShape = '';
+		if (tabOverflowPanel.classList.contains('open')) { closePopups(); }
+		return;
+	}
+	// A switch animation still holding inline widths would be measured mid-transition.
+	for (const n of nodes) { tabResizeEnds.get(n.root)?.(); }
+	const frontId = frontStripId(s);
+	const shape = JSON.stringify([tabRow.clientWidth, frontId, nodes.map(n => [n.tab.id, n.shown]), editingTab]);
+	if (!force && shape === overflowShape) { return; }
+	overflowShape = shape;
+	// Measured with everything shown and nothing shrinking, in one frame: nothing is painted in between.
+	for (const n of nodes) { n.root.classList.remove('overflowed'); }
+	overflowButton.hidden = false;
+	tabRow.classList.add('measuring');
+	const widths = nodes.map(n => n.root.getBoundingClientRect().width);
+	const rowStyle = getComputedStyle(tabRow);
+	const gap = parseFloat(rowStyle.columnGap) || 0;
+	const adds = [tabAdd, tabAddTerminal].filter(b => b.isConnected && !b.hidden)
+		.reduce((sum, b) => sum + b.getBoundingClientRect().width + gap + 2, 0);
+	const available = tabRow.clientWidth - parseFloat(rowStyle.paddingLeft) - parseFloat(rowStyle.paddingRight) - adds - 1;
+	const overflowWidth = overflowButton.getBoundingClientRect().width + gap;
+	tabRow.classList.remove('measuring');
+	const fit = fitTabs({ widths, front: nodes.findIndex(n => n.tab.id === frontId), available, gap, overflowWidth });
+	const hidden = new Set(fit.hidden);
+	nodes.forEach((n, i) => n.root.classList.toggle('overflowed', hidden.has(i)));
+	overflowIds = fit.hidden.map(i => nodes[i].tab.id);
+	overflowButton.hidden = !overflowIds.length;
+	overflowCount.textContent = `+${overflowIds.length}`;
+	const more = `${overflowIds.length} more tab${overflowIds.length === 1 ? '' : 's'}`;
+	overflowButton.title = more;
+	overflowButton.setAttribute('aria-label', more);
+	if (!overflowIds.length && tabOverflowPanel.classList.contains('open')) { closePopups(); }
+	if (tabOverflowPanel.classList.contains('open')) { fillOverflowPanel(); }
+	placeTabConfirm();
+}
+
+let overflowFrame: number | undefined;
+new ResizeObserver(() => {
+	if (overflowFrame !== undefined) { return; }
+	overflowFrame = requestAnimationFrame(() => { overflowFrame = undefined; layoutTabOverflow(); });
+}).observe(tabStrip);
+
+function selectStripTab(t: StripTab): void {
+	post(t.terminal ? { type: 'selectTerminal', id: t.id } : { type: 'selectTab', id: t.id });
+}
+
+/** The dropdown's rows; rebuilt only when what they show changes (#365). */
+/** The row the menu over the dropdown was opened from, for Escape to return to. */
+let overflowMenuRow: HTMLElement | undefined;
+
+/** A close started from the dropdown closes it first, or its confirmation is drawn under it. */
+function closeFromStrip(node: TabNode): void {
+	if (tabOverflowPanel.classList.contains('open')) { closePopups(); }
+	node.close.click();
+}
+
+function fillOverflowPanel(): void {
+	const rows = overflowIds.map(id => tabNodes.get(id)).filter((n): n is TabNode => !!n);
+	const shape = JSON.stringify(rows.map(n => [n.tab.id, n.shown]));
+	if (shape === overflowPanelShape && tabOverflowPanel.childElementCount) { return; }
+	const focused = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>('.tab-overflow-row')?.dataset.id;
+	overflowPanelShape = shape;
+	tabOverflowPanel.replaceChildren(el('div', { class: 'menu-heading' }, el('span', { text: 'More tabs' })), ...rows.map(node => {
+		const t = node.tab;
+		const marks: (HTMLElement | undefined)[] = t.terminal
+			? [icon('terminal', 'menu-icon'), t.terminal.status === 'exited' ? el('span', { class: 'tab-mark exited', title: 'The process ended' }) : undefined]
+			: [el('span', { class: 'menu-icon tab-overflow-mark' }, tabMark(t.status) ?? icon('comment'))];
+		const name = t.terminal ? t.terminal.name : t.title;
+		const agents = t.terminal ? 0 : agentsOf(t);
+		const row = button([
+			...marks.filter((m): m is HTMLElement => !!m),
+			el('span', { class: 'menu-text' }, el('span', { class: 'menu-label', text: name })),
+			agents ? el('span', { class: 'tab-agents', text: agents > 99 ? '99+' : String(agents) }) : '',
+		], { class: 'menu-item tab-overflow-row' });
+		row.dataset.id = t.id;
+		row.setAttribute('role', 'menuitem');
+		row.title = `${node.label.getAttribute('aria-label') ?? name}\nRight-click for tab actions.`;
+		const select = gate(t.terminal ? 'selectTerminal' : 'selectTab');
+		row.disabled = select.s !== 'on';
+		const more = button([icon('ellipsis')], { class: 'ghost round tab-overflow-more', title: 'Tab actions' });
+		more.addEventListener('click', event => { event.stopPropagation(); overflowMenuRow = row; node.openMenu(row, tabOverflowPanel); });
+		row.addEventListener('click', () => { closePopups(); selectStripTab(t); });
+		const wrap = el('div', { class: 'tab-overflow-item' }, row, more);
+		wrap.addEventListener('contextmenu', event => {
+			event.preventDefault();
+			event.stopPropagation();
+			overflowMenuRow = row;
+			node.openMenu(row, tabOverflowPanel);
+		});
+		return wrap;
+	}));
+	if (focused) { tabOverflowPanel.querySelector<HTMLElement>(`.tab-overflow-row[data-id="${CSS.escape(focused)}"]`)?.focus(); }
+}
+
+overflowButton.addEventListener('click', () => {
+	if (tabOverflowPanel.classList.contains('open')) { closePopups(); return; }
+	overflowPanelShape = '';
+	fillOverflowPanel();
+	openAbove(tabOverflowPanel, overflowButton, 'right');
+	overflowButton.setAttribute('aria-expanded', 'true');
+	tabOverflowPanel.querySelector<HTMLButtonElement>('.tab-overflow-row:not(:disabled)')?.focus();
+});
+tabOverflowPanel.addEventListener('keydown', event => {
+	if (event.isComposing || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) { return; }
+	const rows = [...tabOverflowPanel.querySelectorAll<HTMLButtonElement>('.tab-overflow-row:not(:disabled)')];
+	if (!rows.length) { return; }
+	const at = rows.indexOf(document.activeElement as HTMLButtonElement);
+	const next = event.key === 'Home' ? 0 : event.key === 'End' ? rows.length - 1
+		: at < 0 ? (event.key === 'ArrowDown' ? 0 : rows.length - 1) : (at + (event.key === 'ArrowDown' ? 1 : -1) + rows.length) % rows.length;
+	event.preventDefault();
+	rows[next].focus();
+});
+
+/** The close confirmation: a popover under the tab being closed, not a band across the strip. */
 const tabConfirm = el('div', { class: 'tab-confirm' });
+tabConfirm.setAttribute('role', 'alertdialog');
+tabConfirm.addEventListener('mousedown', event => event.stopPropagation());
+document.addEventListener('mousedown', event => {
+	if (closingTab && !tabConfirm.hidden && !tabConfirm.contains(event.target as Node)) { cancelClosing(); }
+});
+window.addEventListener('resize', () => placeTabConfirm());
 /** The first click of a possible double-click, by tab; see the label's click handler. */
 let firstClick: { readonly id: string; readonly at: number } | undefined;
 const doubleClickMs = 600;
@@ -1491,17 +2041,27 @@ app.addEventListener('drop', event => {
 
 
 
+/** Every tab of the strip: the conversations, then the terminals (which only the editor's state has). */
+function stripOf(s: ChatViewState): readonly StripTab[] {
+	if (__TERMINAL__) { return stripTabs(s); }
+	return s.tabs;
+}
+
 function renderTabs(s: ChatViewState): void {
-	if (closingTab && !s.tabs.some(t => t.id === closingTab && (t.busy || t.queued || t.skillRuns))) {
+	// The conversations, then the terminals; only the editor's state has terminals.
+	const strip = stripOf(s);
+	const frontId = frontStripId(s);
+	if (closingTab && !strip.some(t => t.id === closingTab && (t.busy || t.queued || t.skillRuns))) {
 		closingTab = undefined;
 	}
-	if (editingTab && !s.tabs.some(t => t.id === editingTab)) {
+	if (editingTab && !strip.some(t => t.id === editingTab)) {
 		editingTab = undefined;
 	}
 	if (!tabStrip.contains(tabRow)) {
-		tabStrip.replaceChildren(drawerHeader, tabRow, tabConfirm, drawerFooter);
+		tabStrip.replaceChildren(drawerHeader, tabRow, drawerFooter);
+		app.append(tabConfirm, tabOverflowPanel);
 	}
-	const open = new Set(s.tabs.map(t => t.id));
+	const open = new Set(strip.map(t => t.id));
 	for (const [id, node] of tabNodes) {
 		if (!open.has(id)) {
 			if (draggedChatTab?.id === id) { draggedChatTab = undefined; chatTabDragEnded = performance.now(); }
@@ -1509,15 +2069,15 @@ function renderTabs(s: ChatViewState): void {
 			tabNodes.delete(id);
 		}
 	}
-	const switching = frontTab !== undefined && s.activeTab !== frontTab;
+	const switching = frontTab !== undefined && frontId !== frontTab;
 	const tabsBefore = switching ? tabWidths() : undefined;
-	s.tabs.forEach((summary, i) => {
+	strip.forEach((summary, i) => {
 		const node = tabNodes.get(summary.id) ?? tabNode(summary);
 		const pending = node.pendingTitle;
 		if (pending && (summary.title === pending.title || performance.now() > pending.until)) {
 			node.pendingTitle = undefined;
 		}
-		const t = node.pendingTitle ? { ...summary, title: node.pendingTitle.title } : summary;
+		const t = node.pendingTitle ? withPendingTitle(summary, node.pendingTitle.title) : summary;
 		node.tab = t;
 		const agent = t.agent ? s.agents.find(a => a.id === t.agent)?.name ?? t.agent : undefined;
 		const shown = tabShown(t, agent);
@@ -1525,35 +2085,65 @@ function renderTabs(s: ChatViewState): void {
 			node.shown = shown;
 			fillTab(node, agent);
 		}
-		node.root.classList.toggle('active', t.id === s.activeTab);
+		node.root.classList.toggle('active', t.id === frontId);
 		node.root.classList.toggle('chrome-mirrored', t.chrome === true);
-		node.label.setAttribute('aria-current', t.id === s.activeTab ? 'page' : 'false');
+		node.label.setAttribute('aria-current', t.id === frontId ? 'page' : 'false');
 		node.root.classList.toggle('running', t.running);
+		// What this surface allows on a tab (Chrome picks the conversation it shows, nothing more).
+		// A terminal is never dragged: the strip keeps conversations first.
+		node.close.hidden = gate(t.terminal ? 'closeTerminal' : 'closeTab').s !== 'on';
+		node.root.draggable = !t.terminal && gate('placeTab').s === 'on';
 		// Moved only when out of place: re-inserting an element ends its transition.
 		if (tabRow.children[i] !== node.root) {
 			tabRow.insertBefore(node.root, tabRow.children[i] ?? null);
 		}
 	});
-	if (s.tabs.length >= s.tabLimit) {
-		tabAdd.remove();
-	} else if (tabRow.lastElementChild !== tabAdd) {
-		tabRow.append(tabAdd);
+	// The add buttons close the row: "+" while the conversations are below their limit, and beside it
+	// "New terminal" while one can be started (gone for a surface with no terminals, and at their limit).
+	// Moved only when out of place, like the tabs.
+	const adds: HTMLElement[] = [];
+	if (s.tabs.length < s.tabLimit && gate('newTab').s === 'on') { adds.push(tabAdd); }
+	if (__TERMINAL__ && gate('newTerminal').s === 'on' && terminalAddition(s.terminalSupport, s.terminals?.length ?? 0).kind === 'on') {
+		adds.push(tabAddTerminal);
 	}
+	for (const add of [tabAdd, tabAddTerminal]) {
+		if (!adds.includes(add)) { add.remove(); }
+	}
+	// The overflow button follows the tabs, before the add buttons; shown only while tabs overflow.
+	if (tabRow.children[strip.length] !== overflowButton) {
+		tabRow.insertBefore(overflowButton, tabRow.children[strip.length] ?? null);
+	}
+	adds.forEach((add, k) => {
+		add.hidden = false;
+		if (tabRow.children[strip.length + 1 + k] !== add) {
+			tabRow.insertBefore(add, tabRow.children[strip.length + 1 + k] ?? null);
+		}
+	});
+	// Decided before the switch animation measures, so a tab coming out of the dropdown does not flash.
+	layoutTabOverflow();
 	renderTabConfirm(s);
 	if (tabsBefore && frontTab) {
-		animateTabSwitch(tabsBefore, [frontTab, s.activeTab]);
+		animateTabSwitch(tabsBefore, [frontTab, frontId]);
 	}
-	if (s.activeTab !== frontTab) {
-		frontTab = s.activeTab;
+	if (renameWhenShown) {
+		const node = tabNodes.get(renameWhenShown);
+		if (!node) { renameWhenShown = undefined; }
+		else if (frontId === renameWhenShown && !node.root.classList.contains('overflowed')) {
+			renameWhenShown = undefined;
+			startRename(node);
+		}
+	}
+	if (frontId !== frontTab) {
+		frontTab = frontId;
 		// After the width has settled, or it scrolls to where the tab was going.
-		setTimeout(() => tabNodes.get(s.activeTab)?.root.scrollIntoView({ block: 'nearest', inline: 'nearest' }), 340);
+		setTimeout(() => tabNodes.get(frontId)?.root.scrollIntoView({ block: 'nearest', inline: 'nearest' }), 340);
 	}
 }
 
 function tabWidths(): Map<string, number> {
 	const widths = new Map<string, number>();
 	for (const [id, node] of tabNodes) {
-		if (node.root.isConnected) { widths.set(id, node.root.getBoundingClientRect().width); }
+		if (node.root.isConnected && !node.root.classList.contains('overflowed')) { widths.set(id, node.root.getBoundingClientRect().width); }
 	}
 	return widths;
 }
@@ -1569,7 +2159,7 @@ const tabResizeEnds = new WeakMap<HTMLElement, () => void>();
  */
 function animateTabSwitch(before: Map<string, number>, ids: string[]): void {
 	const nodes = ids.map(id => ({ id, root: tabNodes.get(id)?.root }))
-		.filter((n): n is { id: string; root: HTMLElement } => !!n.root?.isConnected);
+		.filter((n): n is { id: string; root: HTMLElement } => !!n.root?.isConnected && !n.root.classList.contains('overflowed'));
 	// A switch still under way gives up its held widths first, so both are measured free.
 	for (const { root } of nodes) { tabResizeEnds.get(root)?.(); }
 	if (wideChat.matches || matchMedia('(prefers-reduced-motion: reduce)').matches) { return; }
@@ -1609,8 +2199,8 @@ function animateTabSwitch(before: Map<string, number>, ids: string[]): void {
 	}
 }
 
-function tabShown(t: ChatTabSummary, agent: string | undefined): string {
-	return JSON.stringify([t.title, t.status, t.agents, t.skillRuns, t.busy, agent, t.chrome]);
+function tabShown(t: StripTab, agent: string | undefined): string {
+	return t.terminal ? terminalTabShown(t.terminal) : JSON.stringify([t.title, t.status, t.agents, t.skillRuns, t.busy, agent, t.chrome, conversationShown(t)]);
 }
 
 /**
@@ -1623,28 +2213,58 @@ function stoppedParts(t: ChatTabSummary): string[] {
 	return [t.busy ? 'its reply' : '', agents ? `${agents} agent${agents === 1 ? '' : 's'}` : ''].filter(Boolean);
 }
 
-function tabNode(t: ChatTabSummary): TabNode {
+function tabNode(t: StripTab): TabNode {
 	const label = button([], { class: 'tab-label' });
 	const close = button([icon('close')], { class: 'tab-close' });
 	const root = el('div', { class: 'tab' }, label, close);
 	const compactNumber = nextCompactTabNumber++;
 	root.style.setProperty('--tab-identity', `hsl(${(compactNumber * 137.508) % 360} 55% 67%)`);
-	const node: TabNode = { root, label, close, tab: t, shown: '', compactNumber };
-	makeTabDraggable(node);
+	const node: TabNode = { root, label, close, tab: t, shown: '', compactNumber, openMenu: () => {} };
+	if (!t.terminal) { makeTabDraggable(node); }
 	root.addEventListener('contextmenu', event => {
 		event.preventDefault();
 		event.stopPropagation();
+		node.openMenu(label);
+	});
+	/** The tab's context menu, at its label or, for a tab in the overflow dropdown, at its row there (`keep`: the dropdown stays under it). */
+	node.openMenu = (anchor: HTMLElement, keep?: HTMLElement): void => {
+		const overflowed = root.classList.contains('overflowed');
+		const terminal = node.tab.terminal;
+		if (terminal) {
+			const compact = wideChat.matches && chatDrawerCollapsed;
+			const exited = terminal.status === 'exited';
+			const selected = terminalView?.hasSelection(terminal.id) ?? false;
+			const control = agentControlRow(terminal);
+			openMenu(anchor, [
+				{ icon: 'edit', label: 'Rename', command: 'renameTerminal', run: () => renameFromMenu(node) },
+				{ icon: 'comment-discussion', label: 'Ask agent…', description: 'A new chat or an open one, with this terminal pinned', command: 'terminalAskAgent',
+					run: () => setTimeout(() => askAgentMenu(overflowed ? overflowButton : label, terminal.id, ''), 0) },
+				...(control ? [{ icon: control.icon, label: control.label, description: control.description, command: 'setTerminalAgentControl',
+					run: () => post({ type: 'setTerminalAgentControl', id: terminal.id, allowed: control.allowed }) }] : []),
+				{ icon: 'debug-restart', label: 'Restart', description: 'Start the shell again in the same folder', command: 'restartTerminal', disabled: !exited, run: () => post({ type: 'restartTerminal', id: terminal.id }) },
+				{ icon: 'comment-discussion', label: selected ? 'Send selection to chat' : 'Copy last output to chat', description: 'Adds it to the chat in front as context', command: 'terminalToChat', run: () => terminalView?.sendToChat(terminal.id) },
+				...websiteAccessRow(terminal),
+				{ icon: 'close', label: 'Close', command: 'closeTerminal', run: () => closeFromStrip(node) },
+			], compact || overflowed ? node.tab.title : 'Terminal', undefined, keep);
+			return;
+		}
 		const destinations = (state?.chatSurfaces ?? []).filter(surface => surface.id !== state?.surfaceId);
 		const draft = () => {
 			saveDraft();
 			return node.tab.id === draftTab ? currentDraft() : drafts[node.tab.chatId] ?? '';
 		};
-		const items: MenuItem[] = state?.panel ? [] : [
-			{ icon: 'link-external', label: 'Move to a new window', run: () => post({ type: 'moveTabToNew', id: node.tab.id, location: 'window', draft: draft() }) },
-			{ icon: 'files', label: 'Move to a new tab', run: () => post({ type: 'moveTabToNew', id: node.tab.id, location: 'tab', draft: draft() }) },
+		// The terminals pinned to this conversation: go there, or let the agent go.
+		const pinned: MenuItem[] = conversationRows(node.tab).map(row => ({
+			icon: row.icon, label: row.label, command: row.kind === 'go' ? 'selectTerminal' : 'pinTerminal',
+			run: () => post(row.kind === 'go' ? { type: 'selectTerminal', id: row.id } : { type: 'pinTerminal', id: row.id, tabId: node.tab.id, pinned: false }),
+		}));
+		const items: MenuItem[] = state?.panel ? [...pinned] : [
+			...pinned,
+			{ icon: 'link-external', label: 'Move to a new window', command: 'moveTabToNew', run: () => post({ type: 'moveTabToNew', id: node.tab.id, location: 'window', draft: draft() }) },
+			{ icon: 'files', label: 'Move to a new tab', command: 'moveTabToNew', run: () => post({ type: 'moveTabToNew', id: node.tab.id, location: 'tab', draft: draft() }) },
 		];
 		items.push(...destinations.map(surface => ({
-			icon: 'arrow-right', label: surface.label, description: surface.description,
+			icon: 'arrow-right', label: surface.label, description: surface.description, command: 'moveTabTo',
 			run: () => {
 				saveDraft();
 				post({ type: 'moveTabTo', id: node.tab.id, target: surface.id,
@@ -1652,13 +2272,16 @@ function tabNode(t: ChatTabSummary): TabNode {
 			},
 		})));
 		if (node.tab.canResumeInTerminal) {
-			items.push({ icon: 'terminal', label: 'Continue in terminal', disabled: node.tab.busy || !!node.tab.queued || !!node.tab.skillRuns, run: () => post({ type: 'resumeInTerminal', id: node.tab.chatId }) });
+			items.push({ icon: 'terminal', label: 'Continue in terminal', command: 'resumeInTerminal', disabled: node.tab.busy || !!node.tab.queued || !!node.tab.skillRuns, run: () => post({ type: 'resumeInTerminal', id: node.tab.chatId }) });
 		}
 		const compact = wideChat.matches && chatDrawerCollapsed;
-		if (compact) { items.push({ icon: 'close', label: 'Close chat', run: () => node.close.click() }); }
-		openMenu(label, items.length ? items : [{ label: 'No other chat is open', disabled: true, run: () => {} }],
-			compact ? node.tab.title : `Move chat to · ${(state?.chatSurfaces ?? []).length} open views`);
-	});
+		if (overflowed) {
+			items.unshift({ icon: 'edit', label: 'Rename', command: 'renameTab', run: () => renameFromMenu(node) });
+		}
+		if (compact || overflowed) { items.push({ icon: 'close', label: 'Close chat', command: 'closeTab', run: () => closeFromStrip(node) }); }
+		openMenu(anchor, items.length ? items : [{ label: 'No other chat is open', disabled: true, run: () => {} }],
+			compact || overflowed ? node.tab.title : `Move chat to · ${(state?.chatSurfaces ?? []).length} open views`, undefined, keep);
+	};
 	label.addEventListener('click', event => {
 		if (performance.now() - chatTabDragEnded < 250) { return; }
 		// The second click of a double-click can land on another tab: the
@@ -1670,9 +2293,12 @@ function tabNode(t: ChatTabSummary): TabNode {
 			return;
 		}
 		firstClick = { id: node.tab.id, at: now };
-		post({ type: 'selectTab', id: node.tab.id });
+		post(node.tab.terminal ? { type: 'selectTerminal', id: node.tab.id } : { type: 'selectTab', id: node.tab.id });
+		// A terminal already in front takes the keyboard back: nothing changes in the state to do it.
+		if (node.tab.terminal && state && frontStripId(state) === node.tab.id) { terminalView?.focusFront(); }
 	});
 	label.addEventListener('dblclick', () => {
+		if (gate(node.tab.terminal ? 'renameTerminal' : 'renameTab').s !== 'on') { return; }
 		const first = firstClick && performance.now() - firstClick.at < doubleClickMs ? tabNodes.get(firstClick.id) : undefined;
 		firstClick = undefined;
 		startRename(first ?? node);
@@ -1691,7 +2317,7 @@ function tabNode(t: ChatTabSummary): TabNode {
 			}
 			tabConfirm.querySelector<HTMLButtonElement>('.confirm-cancel')?.focus();
 		} else {
-			post({ type: 'closeTab', id: node.tab.id });
+			post({ type: node.tab.terminal ? 'closeTerminal' : 'closeTab', id: node.tab.id });
 		}
 	});
 	tabNodes.set(t.id, node);
@@ -1705,9 +2331,16 @@ function agentsOf(t: ChatTabSummary): number {
 
 function fillTab(node: TabNode, agent: string | undefined): void {
 	const t = node.tab;
+	if (t.terminal) {
+		fillTerminalTab(node, t.terminal, agent);
+		return;
+	}
 	const compactMark = t.status === 'working' || t.status === 'waiting' ? tabMark(t.status)
 		: icon(t.status === 'failed' ? 'error' : t.status === 'read' || t.status === 'unread' ? 'check' : 'comment');
 	compactMark?.removeAttribute('title');
+	// Terminals pinned to this conversation: a terminal icon and their count (editor only; the state has none elsewhere).
+	const badge = conversationBadge(t);
+	const terminalBadge = badge ? el('span', { class: 'tab-terminals', title: badge.title }, icon('terminal'), el('span', { text: String(badge.count) })) : undefined;
 	const compact = el('span', { class: `tab-compact status-${t.status ?? 'new'}` },
 		el('span', { class: 'tab-compact-number', text: String(node.compactNumber) }), compactMark);
 	compact.setAttribute('aria-hidden', 'true');
@@ -1716,12 +2349,47 @@ function fillTab(node: TabNode, agent: string | undefined): void {
 		tabMark(t.status),
 		el('span', { class: 'tab-title', text: t.title }),
 		agentsOf(t) ? el('span', { class: 'tab-agents', text: agentsOf(t) > 99 ? '99+' : String(agentsOf(t)), title: `${agentsOf(t)} agent${agentsOf(t) === 1 ? '' : 's'} working` }) : undefined,
+		terminalBadge,
 	];
 	node.label.replaceChildren(...parts.filter((p): p is HTMLElement => !!p));
-	const description = `${agent ? `${t.title} — ${agent}` : t.title}\n${t.status ? tabMarks[t.status] : 'New chat'}${agentsOf(t) ? ` · ${agentsOf(t)} agent${agentsOf(t) === 1 ? '' : 's'} running` : ''}${t.chrome ? ' · open in Google Chrome' : ''}`;
+	const description = `${agent ? `${t.title} — ${agent}` : t.title}\n${t.status ? tabMarks[t.status] : 'New chat'}${agentsOf(t) ? ` · ${agentsOf(t)} agent${agentsOf(t) === 1 ? '' : 's'} running` : ''}${t.chrome ? ' · open in Google Chrome' : ''}${badge ? ` · ${badge.title}` : ''}`;
 	node.label.setAttribute('aria-label', description);
 	node.label.title = `${description}\nDouble-click to rename. Drag to reorder. Right-click for chat actions.`;
 	node.close.title = t.busy ? 'Close (stops what it is doing)' : 'Close';
+}
+
+/** Shared with the Exchange website: a globe, accented while a website viewer holds control. */
+function remoteTerminalMark(terminal: NonNullable<StripTab['terminal']>): HTMLElement {
+	const mark = icon('globe', `tab-terminal-remote${terminal.remoteControl ? ' control' : ''}`);
+	const viewers = terminal.remoteViewers ?? 0;
+	mark.title = terminal.remoteControl ? 'The Exchange website is in control — type here to take it back'
+		: viewers ? `Watched from the Exchange website (${viewers})` : 'Shared with the Exchange website';
+	return mark;
+}
+
+/** A terminal's tab: the terminal icon, the name, and a muted dot once the shell has ended. */
+function fillTerminalTab(node: TabNode, terminal: NonNullable<StripTab['terminal']>, agent: string | undefined): void {
+	const exited = terminal.status === 'exited';
+	const ownerAgent = terminal.pinnedBy?.agent ? state?.agents.find(a => a.id === terminal.pinnedBy?.agent)?.name ?? terminal.pinnedBy.agent : undefined;
+	const marks = terminalMarks(terminal, ownerAgent);
+	const compact = el('span', { class: `tab-compact status-terminal${exited ? ' exited' : ''}${marks.some(m => m.kind === 'unread') ? ' unread' : ''}${marks.some(m => m.kind === 'typing') ? ' typing' : ''}` },
+		el('span', { class: 'tab-compact-number', text: String(node.compactNumber) }), icon('terminal'));
+	compact.setAttribute('aria-hidden', 'true');
+	node.label.replaceChildren(compact,
+		icon('terminal', 'tab-terminal-icon'),
+		exited ? el('span', { class: 'tab-mark exited', title: 'The process ended' }) : '',
+		...marks.map(mark => {
+			if (mark.kind === 'unread' || mark.kind === 'typing') { return el('span', { class: `tab-mark terminal-${mark.kind}`, title: mark.title }); }
+			const pin = icon(mark.kind === 'paused' ? 'debug-pause' : 'comment-discussion', `tab-terminal-pin${mark.kind === 'paused' ? ' paused' : ''}`);
+			pin.title = mark.title;
+			return pin;
+		}),
+		...((!state?.surface || state.surface === 'editor') && terminal.remote ? [remoteTerminalMark(terminal)] : []),
+		el('span', { class: 'tab-title', text: terminal.name }));
+	const description = terminalTabTitle(terminal, agent, ownerAgent) + (marks.some(m => m.kind === 'unread') ? '\nNew output since you last looked' : '');
+	node.label.setAttribute('aria-label', description);
+	node.label.title = `${description}\nDouble-click to rename. Right-click for terminal actions.`;
+	node.close.title = exited ? 'Close' : 'Close (ends the process)';
 }
 
 /**
@@ -1754,8 +2422,8 @@ function startRename(node: TabNode): void {
 		field.remove();
 		node.label.hidden = false;
 		if (keep && name && name !== before) {
-			post({ type: 'renameTab', id: node.tab.id, title: name });
-			node.tab = { ...node.tab, title: name };
+			post(node.tab.terminal ? { type: 'renameTerminal', id: node.tab.id, name } : { type: 'renameTab', id: node.tab.id, title: name });
+			node.tab = withPendingTitle(node.tab, name);
 			// Shown until the host's state says so: a post it built before it read
 			// the rename would otherwise show the old name for a moment.
 			node.pendingTitle = { title: name, until: performance.now() + 2000 };
@@ -1797,16 +2465,17 @@ function cancelClosing(): void {
 		renderTabs(state);
 	}
 	if (id) {
-		tabNodes.get(id)?.close.focus();
+		const node = tabNodes.get(id);
+		(node?.root.classList.contains('overflowed') ? overflowButton : node?.close)?.focus();
 	}
 }
 
 function renderTabConfirm(s: ChatViewState): void {
-	const closing = closingTab ? s.tabs.find(t => t.id === closingTab) : undefined;
+	const closing = closingTab ? stripOf(s).find(t => t.id === closingTab) : undefined;
 	if (closing && wideChat.matches && chatDrawerCollapsed) {
 		chatDrawerCollapsed = false; updateChatDrawer(); saveDraft();
 	}
-	const shown = closing ? JSON.stringify([closing.id, closing.title, closing.agents, closing.skillRuns, closing.busy, closing.queued]) : '';
+	const shown = closing ? JSON.stringify([closing.id, closing.title, closing.agents, closing.skillRuns, closing.busy, closing.queued, closing.terminal?.status]) : '';
 	if (shown === confirmShown) {
 		return;
 	}
@@ -1819,23 +2488,46 @@ function renderTabConfirm(s: ChatViewState): void {
 	const yes = button([el('span', { text: 'Stop and close' })], { class: 'confirm-danger' });
 	yes.addEventListener('click', () => {
 		closingTab = undefined;
-		post({ type: 'closeTab', id: closing.id });
+		post({ type: closing.terminal ? 'closeTerminal' : 'closeTab', id: closing.id });
 		if (state) {
 			renderTabs(state);
 		}
 	});
 	const no = button([el('span', { text: 'Cancel' })], { class: 'confirm-cancel' });
 	no.addEventListener('click', () => cancelClosing());
+	if (closing.terminal) {
+		tabConfirm.replaceChildren(el('span', { text: terminalCloseText(closing.terminal) }), yes, no);
+		placeTabConfirm();
+		return;
+	}
 	const parts = stoppedParts(closing);
 	const queued = closing.queued ? `${closing.queued} queued message${closing.queued === 1 ? '' : 's'} will not be sent.` : '';
 	const text = parts.length
 		? `"${closing.title}" is still working. Closing it stops ${parts.join(' and ')}.${queued ? ` ${queued}` : ''}`
 		: `"${closing.title}": ${queued}`;
 	tabConfirm.replaceChildren(el('span', { text }), yes, no);
+	placeTabConfirm();
+}
+
+/** Puts the confirmation under the tab being closed, kept inside the view. */
+function placeTabConfirm(): void {
+	const root = closingTab ? tabNodes.get(closingTab)?.root : undefined;
+	// A tab in the overflow dropdown is closed from there: the confirmation goes under its button.
+	const anchor = root?.classList.contains('overflowed') ? overflowButton : root;
+	if (!anchor || tabConfirm.hidden) { return; }
+	const box = app.getBoundingClientRect();
+	const at = anchor.getBoundingClientRect();
+	const width = Math.min(300, box.width - 16);
+	tabConfirm.style.width = `${width}px`;
+	const left = Math.max(8, Math.min(at.left - box.left, box.width - width - 8));
+	tabConfirm.style.left = `${left}px`;
+	const below = at.bottom - box.top + 4;
+	const height = tabConfirm.offsetHeight;
+	tabConfirm.style.top = `${below + height > box.height - 8 ? Math.max(8, at.top - box.top - height - 4) : below}px`;
 }
 
 /**
- * The mark in front of a tab's title: a CSS orbit spinner while it works,
+ * The mark in front of a tab's title: a liquid-core loader while it works,
  * a green dot for work
  * finished out of sight, an orange one for work that ended in an error, and
  * nothing once it is finished and read — nor before the first message. A tab whose
@@ -1857,7 +2549,7 @@ function tabMark(status: ChatTabStatus | undefined): HTMLElement | undefined {
 		return undefined;
 	}
 	return el('span', {
-		class: `tab-mark ${status}`,
+		class: `tab-mark ${status}${status === 'working' ? ' liquid-loader' : ''}`,
 		title: tabMarks[status],
 	});
 }
@@ -1973,7 +2665,103 @@ window.addEventListener('blur', pressEnded);
 /** What the welcome was built from; see the empty-chat branch of `renderThread`. */
 let welcomeShown = '';
 
+let stickyFrame = 0;
+/** Shrinks each prompt stuck over its reply in step with the scroll, from its
+ *  whole height down to four lines; the room it lost is given to what follows it in the turn so the rows
+ *  below stay put (chat.css, `.prompt.shrunk`). */
+function fitStickyPrompts(): void {
+	stickyFrame = 0;
+	const top = thread.getBoundingClientRect().top;
+	for (const prompt of thread.querySelectorAll<HTMLElement>('.prompt')) {
+		if (prompt === openedPrompt) {
+			continue;
+		}
+		const content = prompt.querySelector<HTMLElement>('.prompt-content');
+		const turn = prompt.parentElement;
+		if (!content || !turn) {
+			continue;
+		}
+		const full = content.scrollHeight;
+		// Four whole lines of the text, whatever sits above it (attachments),
+		// so the last of them is never cut.
+		const text = content.querySelector<HTMLElement>('.bubble-text');
+		const lineOf = (node: HTMLElement) => parseFloat(getComputedStyle(node).lineHeight) || 18;
+		const min = Math.min(full, text
+			? text.offsetTop - content.offsetTop + lineOf(text) * 4
+			: lineOf(content) * 4);
+		const scrolled = Math.max(0, top - turn.getBoundingClientRect().top);
+		const height = Math.max(min, full - scrolled);
+		prompt.classList.toggle('compact', height < full && height <= min + 0.5);
+		if (height >= full) {
+			prompt.classList.remove('shrunk');
+			content.style.maxHeight = '';
+			turn.style.removeProperty('--prompt-room');
+		} else {
+			prompt.classList.add('shrunk');
+			content.style.maxHeight = `${height}px`;
+			turn.style.setProperty('--prompt-room', `${full - height}px`);
+		}
+	}
+}
+function scheduleStickyPrompts(): void {
+	if (!stickyFrame) {
+		stickyFrame = requestAnimationFrame(fitStickyPrompts);
+	}
+}
+// Fitted in the scroll event itself, not a frame later: a frame behind, the
+// prompt and the rows under it were out of step while the scroll was fast.
+thread.addEventListener('scroll', fitStickyPrompts, { passive: true });
+
+/** A prompt down to its four lines, opened by a click to at most half the
+ *  thread's height over the rows under it; the margin keeps the rows where they
+ *  were. It closes on a click elsewhere, or 3 s after the pointer leaves it; the wheel scrolls it alone, never the chat
+ *  behind it. */
+let openedPrompt: HTMLElement | undefined;
+/** The open message closes by itself 3 s after the pointer leaves it. */
+let promptLeaveTimer: ReturnType<typeof setTimeout> | undefined;
+function cancelPromptLeave(): void {
+	if (promptLeaveTimer !== undefined) {
+		clearTimeout(promptLeaveTimer);
+		promptLeaveTimer = undefined;
+	}
+}
+function openPrompt(prompt: HTMLElement): void {
+	const content = prompt.querySelector<HTMLElement>('.prompt-content');
+	if (!content) {
+		return;
+	}
+	collapsePrompt();
+	const full = content.scrollHeight;
+	const height = Math.min(full, thread.clientHeight / 2);
+	openedPrompt = prompt;
+	prompt.classList.add('open');
+	content.style.maxHeight = `${height}px`;
+	prompt.parentElement?.style.setProperty('--prompt-room', `${full - height}px`);
+	content.scrollTop = 0;
+}
+function collapsePrompt(): void {
+	cancelPromptLeave();
+	const prompt = openedPrompt;
+	if (!prompt) {
+		return;
+	}
+	openedPrompt = undefined;
+	prompt.classList.remove('open');
+	const content = prompt.querySelector<HTMLElement>('.prompt-content');
+	if (content) {
+		content.scrollTop = 0;
+	}
+	fitStickyPrompts();
+}
+document.addEventListener('mousedown', event => {
+	if (openedPrompt && !openedPrompt.contains(event.target as Node)) {
+		collapsePrompt();
+	}
+}, true);
+window.addEventListener('resize', scheduleStickyPrompts);
+
 function renderThread(s: ChatViewState): void {
+	scheduleStickyPrompts();
 	const atBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 60;
 	let stick = atBottom;
 	let restore: number | undefined;
@@ -2150,6 +2938,7 @@ function signature(entry: ChatEntry, i: number): string {
 	// without it the rows already on screen kept the old setting until another
 	// chat was shown. A row the user opened or closed keeps that either way.
 	return entry.kind === 'user' ? `${JSON.stringify(entry)}|${commandsSignature}|${fileIconsSignature}`
+		: entry.kind === 'error' && isAgentAuthenticationError(entry.text) ? `${JSON.stringify(entry)}|${JSON.stringify(authErrorAgent() && [authErrorAgent()!.id, authErrorAgent()!.name, authErrorAgent()!.authentication?.signingIn])}`
 		: `${JSON.stringify(entry)}|${toggled.get(keyOf(entry, i)) ?? ''}|${openByDefault()}|${fileIconsSignature}`;
 }
 
@@ -2314,7 +3103,7 @@ function renderTail(tail: HTMLElement, s: ChatViewState, turn: Turn, last: boole
 
 /**
  * "2 agents running · 3m 12s", under a finished turn while agents the chat
- * started are still at work: the working star in front, so it reads as alive,
+ * started are still at work: the liquid core in front, so it reads as alive,
  * and a click opens the agents list. The time is since the first of them
  * started — how long the background work has gone on; a sum of their times
  * would run ahead of the clock. Built only when the count or that start
@@ -2323,7 +3112,7 @@ function renderTail(tail: HTMLElement, s: ChatViewState, turn: Turn, last: boole
 function agentsRunningLine(count: number, since: number): HTMLElement {
 	const label = `${count} agent${count === 1 ? '' : 's'} running`;
 	const line = button([
-		el('span', { class: 'working-glyph', text: glyphs[glyphAt] }),
+		liquidLoader('working-glyph'),
 		el('span', { class: 'shimmer agents-running-text', text: agentsRunningText(label, since) }),
 	], { class: 'agents-running', title: `${label} — show them` });
 	line.dataset.label = label;
@@ -2386,8 +3175,10 @@ function tickWorking(): void {
 	const phrase = workingNode.dataset.waiting ? 'Waiting for your answer' : workingPhrase();
 	const label = since ? `${phrase}… ${duration(Date.now() - since)}` : `${phrase}…`;
 	const text = workingNode.querySelector('.working-text');
-	if (text?.textContent !== label) {
-		workingNode.replaceChildren(el('span', { class: 'working-glyph', text: glyphs[glyphAt] }), el('span', { class: 'shimmer working-text', text: label }));
+	if (text) {
+		if (text.textContent !== label) { text.textContent = label; }
+	} else {
+		workingNode.replaceChildren(liquidLoader('working-glyph'), el('span', { class: 'shimmer working-text', text: label }));
 	}
 }
 setInterval(tickWorking, 1000);
@@ -2404,27 +3195,8 @@ setInterval(() => {
 	}
 }, 1000);
 
-/**
- * The mark in front of "Working…": a star that changes shape, there and back,
- * every 120 ms. A glyph rather than a spinner icon, because a turning circle
- * reads as "loading" and this is the agent working, which can take minutes.
- * Under reduced motion it stays on one shape.
- */
-const glyphs = ['·', '✢', '✳', '✶', '✻', '✽', '✻', '✶', '✳', '✢'];
-let glyphAt = 0;
+// CSS animates the shared liquid core without a JavaScript animation timer.
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
-setInterval(() => {
-	const agentsLine = threadInner.querySelector('.agents-running .working-glyph');
-	if (reducedMotion.matches || (!workingNode && !agentsLine)) {
-		return;
-	}
-	glyphAt = (glyphAt + 1) % glyphs.length;
-	for (const glyph of [workingNode?.querySelector('.working-glyph'), agentsLine]) {
-		if (glyph) {
-			glyph.textContent = glyphs[glyphAt];
-		}
-	}
-}, 120);
 
 /**
  * The empty chat: what AI Browser is, and what is new. Both come from NEWS.md
@@ -2618,8 +3390,26 @@ function entryNode(entry: ChatEntry, i: number): HTMLElement {
 		case 'notice':
 			return el('div', { class: 'row notice' }, icon('info'), el('span', { text: entry.text }));
 		case 'error':
-			return el('div', { class: 'row error' }, icon('error'), el('span', { text: entry.text }));
+			return el('div', { class: 'row error' }, icon('error'), el('span', { text: entry.text }), authErrorAction(entry.text));
 	}
+}
+
+/** The agent of the tab in front, when it can be signed in from this surface. */
+function authErrorAgent(): ChatAgent | undefined {
+	return state && gate('authenticateAgent').s === 'on' ? state.agents.find(a => a.id === state!.selection.agent && !!a.binary) : undefined;
+}
+
+/**
+ * An expired or missing sign-in is fixed where it is reported (asked for): the
+ * error row itself carries the button, the same one the banner and Agent apps
+ * have, so the fix is not somewhere else to look for.
+ */
+function authErrorAction(text: string): HTMLElement | undefined {
+	const agent = isAgentAuthenticationError(text) ? authErrorAgent() : undefined;
+	if (!agent) { return undefined; }
+	const login = button([el('span', { text: agent.authentication?.signingIn ? 'Show sign-in terminal' : `Sign in to ${agent.name}` })], { class: 'agent-app-link error-action' });
+	login.addEventListener('click', event => { event.stopPropagation(); post({ type: 'authenticateAgent', agent: agent.id }); });
+	return login;
 }
 
 const approvalLabels: Record<ApprovalKind, { icon: string; ask: string }> = {
@@ -2684,7 +3474,7 @@ function approvalNode(entry: ApprovalEntry): HTMLElement {
 	}
 	const label = approvalLabels[entry.what];
 	const node = el('div', { class: `row approval ${entry.status}` },
-		el('div', { class: 'approval-head' }, icon(label.icon), el('span', { text: entry.what === 'mcp' && entry.server ? `${label.ask} (${entry.server})` : label.ask })),
+		el('div', { class: 'approval-head' }, icon(label.icon), el('span', { text: entry.ask ?? (entry.what === 'mcp' && entry.server ? `${label.ask} (${entry.server})` : label.ask) })),
 		el('div', { class: 'approval-title', text: entry.title }));
 	// Refused by the menu: one short line — what, and that it was refused.
 	const quiet = entry.status === 'denied' && entry.auto;
@@ -3069,6 +3859,7 @@ function renderApprovalMenu(s: ChatViewState, force = false): void {
 				const b = button([el('span', { text: modeLabels[mode] })], { class: `mode-seg ${mode}` });
 				b.dataset.key = key;
 				b.dataset.mode = mode;
+				gateButton(b, 'setApprovalMode');
 				b.addEventListener('click', () => post({ type: 'setApprovalMode', key, mode }));
 				return b;
 			});
@@ -3134,20 +3925,21 @@ function viewModeRow(): HTMLElement {
 
 approveToggle.addEventListener('click', () => {
 	if (approvalPopup.classList.contains('open')) {
-		closePopups();
+		closePopups(undefined, selectorStrip.contains(approveToggle) ? selectorStrip : undefined);
 		return;
 	}
 	if (state) {
 		renderApprovalMenu(state, true);
 	}
-	openAbove(approvalPopup, approveToggle, 'left');
+	openAbove(approvalPopup, selectorAnchor(approveToggle), 'left');
 });
 
 /**
  * A turn's prompt. Sticky inside its turn: while its reply scrolls, it stays at
  * the top, and the next turn's prompt pushes it away — the Claude Code panel's
- * `.message.stickyHeader`. Text and attachments share a four-line preview;
- * hovering reveals the content in a bounded scroll area.
+ * `.message.stickyHeader`. Shown whole in place; once stuck to the top it
+ * shrinks with the scroll down to a four-line preview (`fitStickyPrompts`),
+ * and hovering reveals the content in a bounded scroll area.
  */
 function promptNode(entry: Extract<ChatEntry, { kind: 'user' }>): HTMLElement {
 	const bubble = el('div', { class: 'bubble' });
@@ -3161,7 +3953,18 @@ function promptNode(entry: Extract<ChatEntry, { kind: 'user' }>): HTMLElement {
 				const file = entry.attachmentFiles?.[index];
 				const kind = entry.attachmentKinds?.[index];
 				const attachmentIconNode = (file ? themeFileIcon(file) : undefined) ?? (kind ? icon(attachmentIcon(kind)) : undefined);
-				return el('span', { class: 'chip small', title: label }, attachmentIconNode, el('span', { class: 'chip-label', text: label }));
+				if (file) { attachmentIconNode?.classList.add('chat-file-icon'); }
+				const saved = entry.attachmentData?.[index];
+				const children = [attachmentIconNode, el('span', { class: 'chip-label', text: label })];
+				if (!saved) { return el('span', { class: 'chip small', title: label }, ...children); }
+				const open = button(children, { class: 'chip small', title: `Open ${label}` });
+				open.addEventListener('click', () => {
+					// By the chip's id, not by object identity: a row is kept while it is unchanged,
+					// and each state post brings new entry objects, so `indexOf(entry)` found nothing.
+					const entryIndex = state?.entries.findIndex(e => e.kind === 'user' && !!e.attachmentData?.some(d => d.chip.id === saved.chip.id)) ?? -1;
+					if (entryIndex >= 0) { post({ type: 'openAttachment', id: saved.chip.id, entry: entryIndex }); }
+				});
+				return open;
 			})));
 	}
 	if (entry.text) {
@@ -3170,10 +3973,41 @@ function promptNode(entry: Extract<ChatEntry, { kind: 'user' }>): HTMLElement {
 		copy.classList.add('message-copy');
 		bubble.append(copy);
 	}
-	// Every collapsed preview starts at the beginning, even after scrolling.
-	bubble.addEventListener('mouseleave', () => { content.scrollTop = 0; });
-	content.addEventListener('blur', () => { content.scrollTop = 0; });
-	return el('div', { class: 'prompt' }, bubble);
+	const prompt = el('div', { class: 'prompt' }, bubble);
+	bubble.addEventListener('click', event => {
+		if ((event.target as HTMLElement).closest('button') || !window.getSelection()?.isCollapsed) {
+			return;
+		}
+		if (prompt === openedPrompt) {
+			return;
+		}
+		if (prompt.classList.contains('compact')) {
+			openPrompt(prompt);
+		}
+	});
+	prompt.addEventListener('mouseenter', () => {
+		if (prompt === openedPrompt) {
+			cancelPromptLeave();
+		}
+	});
+	prompt.addEventListener('mouseleave', () => {
+		if (prompt === openedPrompt) {
+			cancelPromptLeave();
+			promptLeaveTimer = setTimeout(() => {
+				if (prompt === openedPrompt) {
+					collapsePrompt();
+				}
+			}, 3000);
+		}
+	});
+	// overscroll-behavior holds the chat only while the text itself scrolls; an
+	// open message that fits needs the wheel stopped here.
+	content.addEventListener('wheel', event => {
+		if (prompt === openedPrompt && content.scrollHeight <= content.clientHeight) {
+			event.preventDefault();
+		}
+	}, { passive: false });
+	return prompt;
 }
 
 function thinkingNode(entry: Extract<ChatEntry, { kind: 'thinking' }>, i: number): HTMLElement {
@@ -3951,16 +4785,6 @@ function linkMenu(link: HTMLElement, url: string, directory?: boolean, inWorkspa
 		{ icon: 'copy', label: 'Copy Link', run: () => post({ type: 'copy', text: url }) },
 		{ icon: 'symbol-text', label: 'Copy Link Text', disabled: !text || text === url, run: () => post({ type: 'copy', text }) },
 	], url.length > 60 ? `${url.slice(0, 57)}…` : url, undefined, panel);
-	if (!menu.classList.contains('open')) {
-		return;
-	}
-	// Opened above the link like every other menu, but a link near the top of
-	// the thread has no room there, and `#app` clips what overflows it.
-	const box = app.getBoundingClientRect();
-	if (menu.getBoundingClientRect().top < box.top + 8) {
-		menu.style.bottom = '';
-		menu.style.top = `${link.getBoundingClientRect().bottom - box.top + 6}px`;
-	}
 }
 
 /* ---------------------------------------------------------------- composer */
@@ -3973,7 +4797,7 @@ function renderAttachments(s: ChatViewState): void {
 	// chips each time swallowed a click on one whose press outlasted a post,
 	// and took keyboard focus off it.
 	const shown = JSON.stringify([
-		s.attachments.map(c => [c.id, c.kind, c.label, c.reference, c.thumbnail?.length]),
+		s.attachments.map(chipShown),
 		s.suggestions.map(c => [c.id, c.kind, c.label]),
 		fileIconsSignature,
 	]);
@@ -3982,6 +4806,8 @@ function renderAttachments(s: ChatViewState): void {
 	}
 	attachmentsShown = shown;
 	attachmentsRow.replaceChildren(...s.attachments.map(chip => {
+		// A terminal pinned to the conversation: not a draft attachment, so no reference and no "open in a tab".
+		if (isPinChip(chip)) { return pinChipNode(chip); }
 		const remove = button([icon('close')], { class: 'chip-remove', title: 'Remove — an open file or page goes back to being a suggestion' });
 		remove.addEventListener('click', () => post({ type: 'removeAttachment', id: chip.id }));
 		let thumb: HTMLElement = chipIcon(chip);
@@ -4024,6 +4850,41 @@ function renderAttachments(s: ChatViewState): void {
 }
 
 /**
+ * A terminal pinned to this conversation (the host derives it; it is not consumed by a
+ * send). The remove button unpins, a click on the name goes to the terminal, and the
+ * dot says whether the shell is running, ended or gone. Built only when `chipShown`
+ * changes, like every chip (#365), so what it does reads the state when it is pressed.
+ */
+function pinChipNode(chip: AttachmentChip & { readonly terminalId: string }): HTMLElement {
+	const id = chip.terminalId;
+	const status = pinChipStatus(chip);
+	const unpin = () => post({ type: 'pinTerminal', id, tabId: state?.activeTab ?? '', pinned: false });
+	const remove = button([icon('close')], { class: 'chip-remove', title: unpinTitle });
+	remove.addEventListener('click', unpin);
+	const mark = el('span', { class: `chip-pin-mark ${status}` });
+	mark.setAttribute('aria-hidden', 'true');
+	const open = button([icon(chip.terminalWatch ? 'eye' : 'terminal'), el('span', { class: 'chip-label', text: chip.label })], { class: 'chip-open', title: chip.terminalWatch ? `${pinChipOpenTitle(chip)} — shared read-only` : pinChipOpenTitle(chip) });
+	open.disabled = status === 'closed';
+	open.addEventListener('click', () => post({ type: 'selectTerminal', id }));
+	const root = el('span', { class: `chip chip-terminal ${status}` }, remove, mark, open);
+	root.addEventListener('contextmenu', event => {
+		event.preventDefault();
+		const terminal = state?.terminals?.find(t => t.id === id);
+		const control = terminal ? agentControlRow(terminal) : undefined;
+		openMenu(root, [
+			{ icon: 'terminal', label: 'Go to terminal', command: 'selectTerminal', disabled: status === 'closed', run: () => post({ type: 'selectTerminal', id }) },
+			...(control ? [{ icon: control.icon, label: control.label, description: control.description, command: 'setTerminalAgentControl',
+				run: () => post({ type: 'setTerminalAgentControl', id, allowed: control.allowed }) }] : []),
+			{ icon: 'eye', label: 'Watch only', checked: chip.terminalWatch === true, command: 'pinTerminal',
+				description: chip.terminalWatch ? 'Allow the agent to type again' : 'The agent may read, not type',
+				run: () => post({ type: 'pinTerminal', id, tabId: state?.activeTab ?? '', pinned: true, mode: chip.terminalWatch ? 'control' : 'watch' }) },
+			{ icon: 'close', label: 'Unpin', description: unpinTitle, command: 'pinTerminal', run: unpin },
+		], chip.label);
+	});
+	return root;
+}
+
+/**
  * What could be attached and is not: the file or the browser tab the user has
  * open, dashed, with a "+" where an attached chip has its remove button. The
  * "+" attaches it; removing the attached chip brings the suggestion back.
@@ -4044,7 +4905,9 @@ function suggestionChip(chip: AttachmentChip): HTMLElement {
  * the rest and wherever the theme has none.
  */
 function chipIcon(chip: AttachmentChip): HTMLElement {
-	return (chip.iconName ? themeFileIcon(chip.iconName) : undefined) ?? icon(attachmentIcon(chip.kind));
+	const node = (chip.iconName ? themeFileIcon(chip.iconName) : undefined) ?? icon(attachmentIcon(chip.kind));
+	if (chip.iconName) { node.classList.add('chat-file-icon'); }
+	return node;
 }
 
 // A selection is remembered per draft; without one, references append to the message.
@@ -4085,7 +4948,8 @@ function attachmentIcon(kind: AttachmentKind): string {
 		case 'file': return 'file';
 		case 'voice': return 'mic';
 		case 'video': return 'device-camera-video';
-		case 'annotation': return 'comment';
+		case 'pointAnnotation': case 'annotation': return 'comment';
+		case 'terminal': return 'terminal';
 	}
 }
 
@@ -4129,7 +4993,13 @@ function renderSelectors(s: ChatViewState): void {
 	ultracodeInput.checked = s.selection.ultracode === true;
 	ultracodeBox.dataset.tip = `UltraCode: ${ultracodeInput.checked ? 'On' : 'Off'}\nLet Claude organize dynamic workflows and subagents at the selected effort. May use more of your plan. Requires Claude Code 2.1.284 or later. Changes apply to the next message once the current work finishes.`;
 	if (hoverTip.anchor === ultracodeBox) { hoverTip.show(ultracodeBox); }
+	const compactLabel = `${agent?.name ?? (s.detecting ? 'Looking…' : 'No agent')} › ${model?.label ?? 'Model'}`;
+	if (compactSelectorLabel.textContent !== compactLabel) { compactSelectorLabel.textContent = compactLabel; }
+	compactSelector.title = `${compactLabel}\nEffort: ${s.selection.effort ? labelOf(s.selection.effort) : 'Default'}\nPermissions: ${approveToggle.textContent || 'Configure'}\nClick to configure`;
+	compactSelector.setAttribute('aria-label', compactSelector.title);
 	const efforts = model?.efforts ?? [];
+	compactEffortDot.dataset.effort = s.selection.effort ?? efforts[0] ?? 'minimal';
+	compactEffortDot.title = efforts.length ? `Effort: ${s.selection.effort ? labelOf(s.selection.effort) : 'Default'}` : 'Effort: model default';
 	effortBox.hidden = !efforts.length;
 	if (efforts.length) {
 		effortRange.max = String(efforts.length - 1);
@@ -4143,6 +5013,7 @@ function updateEffortAppearance(effort: string): void {
 	const label = labelOf(effort);
 	effortRange.setAttribute('aria-valuetext', label);
 	effortBox.dataset.effort = effort;
+	compactEffortDot.dataset.effort = effort;
 	effortBox.dataset.tip = `Effort: ${label}\nMore effort takes longer and uses more of your plan.`;
 	if (hoverTip.anchor === effortBox) { hoverTip.show(effortBox); }
 }
@@ -4331,6 +5202,7 @@ function autosize(): void {
 // Fit the actual labels and visible indicators instead of guessing a sidebar breakpoint.
 let toolbarLayoutFrame: number | undefined;
 let toolbarLayoutShape = '';
+let toolbarLayoutWidth = 0;
 function scheduleToolbarLayout(): void {
 	if (toolbarLayoutFrame !== undefined) { return; }
 	toolbarLayoutFrame = requestAnimationFrame(() => {
@@ -4343,19 +5215,26 @@ function scheduleToolbarLayout(): void {
 			agentsButton.textContent, agentsButton.hidden, contextButton.hidden]);
 		if (shape === toolbarLayoutShape) { return; }
 		toolbarLayoutShape = shape;
-		toolbar.classList.remove('stacked', 'compact-effort');
+		if (selectorStrip.classList.contains('open') && width === toolbarLayoutWidth) { return; }
+		toolbarLayoutWidth = width;
+		if (selectorStrip.classList.contains('open')) { closePopups(); }
+		const wasCompact = toolbar.classList.contains('compact-selector-mode');
+		toolbar.classList.remove('stacked', 'compact-effort', 'compact-selector-mode');
 		// Measure unshrunk settings in both presentations; these temporary styles
 		// are removed in the same frame, without replacing or cloning controls.
 		toolbarSettings.style.width = 'max-content';
 		toolbarSettings.style.maxWidth = 'none';
 		const available = width - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
 		const sides = toolbarAttachments.getBoundingClientRect().width + toolbarEnd.getBoundingClientRect().width;
-		const gap = parseFloat(style.columnGap) * 2;
+		const gap = (parseFloat(style.columnGap) || 0) * 2;
 		const fits = () => Math.ceil(sides + toolbarSettings.getBoundingClientRect().width + gap) <= available;
 		if (!fits()) { toolbar.classList.add('compact-effort'); }
-		if (!fits()) { toolbar.classList.add('stacked'); }
+		if (!fits()) { toolbar.classList.add('compact-selector-mode'); }
 		toolbarSettings.style.removeProperty('width');
 		toolbarSettings.style.removeProperty('max-width');
+		// A resized/hidden original anchor must never leave its popup offscreen.
+		if (wasCompact !== toolbar.classList.contains('compact-selector-mode') &&
+			(menu.classList.contains('open') || approvalPopup.classList.contains('open'))) { closePopups(); }
 	});
 }
 new ResizeObserver(scheduleToolbarLayout).observe(toolbar);
@@ -4771,6 +5650,7 @@ function renderVoice(): void {
 	setIcon(micButton, voicePhase === 'finishing' ? 'loading' : 'mic');
 	micButton.querySelector('.codicon')?.classList.toggle('codicon-modifier-spin', voicePhase === 'finishing');
 	const available = state?.voice.available ?? false;
+	micButton.hidden = gate('voiceStart').s === 'hidden';
 	micButton.setAttribute('aria-disabled', String(!available && voicePhase === 'idle'));
 	const max = state?.voice.maxSeconds ?? 300;
 	const finishing = voiceDownloading
@@ -5054,6 +5934,9 @@ composer.addEventListener('mousedown', event => {
  * right-click menu in an agent's report (see `linkMenu`).
  */
 function closePopups(except?: HTMLElement, keep?: HTMLElement): void {
+ if (except !== selectorStrip && keep !== selectorStrip) {
+  restoreSelectorControls();
+ }
  if (except !== branchPopup) { branchButton.setAttribute('aria-expanded', 'false'); branchNamePending = undefined; }
  if (except !== gitPopup) {
   gitPopupPinned = false;
@@ -5074,26 +5957,32 @@ function closePopups(except?: HTMLElement, keep?: HTMLElement): void {
 			paramsFormAnchor = undefined;
 		}
 	}
-	for (const popup of [featureSettingsPanel, sleepPopup, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel]) {
+	if (except !== tabOverflowPanel && keep !== tabOverflowPanel) { overflowButton.setAttribute('aria-expanded', 'false'); }
+	for (const popup of [tabOverflowPanel, selectorStrip, featureSettingsPanel, sleepPopup, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel]) {
 		if (popup !== except && popup !== keep) {
 			popup.classList.remove('open');
+			if (popup === featureSettingsPanel) {
+				for (const secret of popup.querySelectorAll<HTMLInputElement>('.server-settings input[type="password"]')) { secret.value = ''; }
+			}
 		}
 	}
-	for (const pill of [tabAdd, agentPill, modelPill, plusButton, usageButton, approveToggle, slashButton, workdirButton, branchButton, commitButton, contextButton]) {
+	for (const pill of [overflowButton, tabAdd, tabAddTerminal, compactSelector, agentPill, modelPill, plusButton, usageButton, approveToggle, slashButton, workdirButton, branchButton, commitButton, contextButton]) {
 		pill.classList.remove('active');
 	}
+	if (selectorStrip.classList.contains('open')) { compactSelector.classList.add('active'); }
 	// A skill button is a popup's anchor too; the mark only tells a second
 	// press of it to close what it opened, and is not drawn (see chat.css).
 	for (const { button } of skillButtons.values()) {
 		button.classList.remove('active');
 	}
-	for (const link of document.querySelectorAll('.link.active, .tab-label.active')) {
+	for (const link of document.querySelectorAll('.link.active, .tab-label.active, .tab-overflow-row.active')) {
 		link.classList.remove('active');
 	}
 }
 
 /** `form`: the GitHub form's own class on the reused parameters popover, set before it is measured; anything else opened there drops it. */
 function openAbove(popup: HTMLElement, anchor: HTMLElement, align: 'left' | 'right', keep?: HTMLElement, form?: 'repo-form'): void {
+	if (selectorStrip.contains(anchor)) { keep = selectorStrip; }
 	closePopups(popup, keep);
 	if (popup === paramsPopup) {
 		paramsFormAnchor = undefined;
@@ -5103,35 +5992,21 @@ function openAbove(popup: HTMLElement, anchor: HTMLElement, align: 'left' | 'rig
 		popup.classList.add(form);
 	}
 	anchor.classList.add('active');
-	// Relative to the view, not the window: the popup is positioned inside
-	// `#app`, and the two only coincide when nothing else is laid out around it.
-	const box = app.getBoundingClientRect();
-	const rect = anchor.getBoundingClientRect();
-	popup.style.maxHeight = '';
-	popup.style.maxWidth = '';
-	popup.style.minWidth = '';
-	popup.style.top = '';
-	popup.style.bottom = `${box.bottom - rect.top + 6}px`;
-	if (align === 'left') {
-		popup.style.left = `${Math.max(8, rect.left - box.left)}px`;
-		popup.style.right = '';
-	} else {
-		popup.style.right = `${Math.max(8, box.right - rect.right)}px`;
-		popup.style.left = '';
-	}
-	popup.classList.add('open');
-	// Top-of-chat anchors need the menu below them; #app clips menus above it.
-	const above = Math.max(0, rect.top - box.top - 14);
-	const below = Math.max(0, box.bottom - rect.bottom - 14);
-	const height = popup.getBoundingClientRect().height;
-	if (height > above && below > above) {
-		popup.style.bottom = '';
-		popup.style.top = `${rect.bottom - box.top + 6}px`;
-		popup.style.maxHeight = `${Math.min(height, below)}px`;
-	} else if (height > above) {
-		popup.style.maxHeight = `${above}px`;
-	}
-	constrainOverlay(popup);
+	showAnchoredOverlay(popup, anchor, align);
+}
+
+type OverlayAnchor = { anchor: HTMLElement; align: 'left' | 'right' | 'center' };
+const overlayAnchors = new WeakMap<HTMLElement, OverlayAnchor>();
+const screenOverlays = new WeakMap<HTMLElement, 'fill' | 'corner'>();
+function showScreenOverlay(node: HTMLElement, mode: 'fill' | 'corner' = 'fill'): void {
+	screenOverlays.set(node, mode);
+	node.classList.add('open');
+	constrainOverlay(node);
+}
+function showAnchoredOverlay(node: HTMLElement, anchor: HTMLElement, align: OverlayAnchor['align']): void {
+	overlayAnchors.set(node, { anchor, align });
+	node.classList.add('open');
+	constrainOverlay(node);
 }
 
 /** Covers every popup path, including context menus and inline palettes. */
@@ -5142,7 +6017,38 @@ function constrainOverlay(node: HTMLElement): void {
 		left: viewport?.offsetLeft ?? 0, top: viewport?.offsetTop ?? 0,
 		right: (viewport?.offsetLeft ?? 0) + (viewport?.width ?? window.innerWidth),
 		bottom: (viewport?.offsetTop ?? 0) + (viewport?.height ?? window.innerHeight),
-	}, node.classList.contains('hover-tip') ? 4 : 8);
+	}, screenOverlays.get(node) === 'fill' ? 0 : node.classList.contains('hover-tip') ? 4 : 8);
+	const screen = screenOverlays.get(node);
+	if (screen) {
+		node.style.boxSizing = 'border-box'; node.style.minWidth = '0';
+		node.style.right = 'auto'; node.style.bottom = 'auto';
+		node.style.maxWidth = `${bounds.width}px`; node.style.maxHeight = `${bounds.height}px`;
+		if (screen === 'fill') {
+			node.style.width = `${bounds.width}px`; node.style.height = `${bounds.height}px`;
+		}
+		node.style.left = `${screen === 'fill' ? bounds.left : Math.max(bounds.left, bounds.right - node.offsetWidth)}px`;
+		node.style.top = `${bounds.top}px`;
+		return;
+	}
+	const anchored = overlayAnchors.get(node);
+	if (anchored) {
+		if (!anchored.anchor.isConnected) { node.classList.remove('open'); return; }
+		// Re-measure natural size each time: loading content, keyboards and rotated
+		// screens must not leave a stale height limit or a stretched top/bottom pair.
+		node.style.maxHeight = ''; node.style.maxWidth = ''; node.style.minWidth = '';
+		node.style.right = 'auto'; node.style.bottom = 'auto';
+		if (node.offsetWidth > bounds.width) {
+			node.style.minWidth = '0'; node.style.maxWidth = `${bounds.width}px`;
+		}
+		const rect = anchored.anchor.getBoundingClientRect();
+		const position = anchoredOverlay(bounds, {
+			left: rect.left - appRect.left, right: rect.right - appRect.left,
+			top: rect.top - appRect.top, bottom: rect.bottom - appRect.top,
+		}, node.offsetWidth, node.offsetHeight, anchored.align);
+		node.style.maxHeight = `${position.maxHeight}px`;
+		node.style.left = `${position.left}px`; node.style.top = `${position.top}px`;
+		return;
+	}
 	if (node.offsetWidth > bounds.width) {
 		node.style.minWidth = '0'; node.style.maxWidth = `${bounds.width}px`;
 	}
@@ -5159,13 +6065,14 @@ function scheduleOverlayLayout(): void {
 	if (overlayFrame !== undefined) { return; }
 	overlayFrame = requestAnimationFrame(() => {
 		overlayFrame = undefined;
-		for (const node of app.querySelectorAll<HTMLElement>('.popup.open, .hover-tip.open')) { constrainOverlay(node); }
+		for (const node of app.querySelectorAll<HTMLElement>('.popup.open, .hover-tip.open, .history-panel.open')) { constrainOverlay(node); }
 	});
 }
 const overlayResize = new ResizeObserver(scheduleOverlayLayout);
 overlayResize.observe(app);
-for (const node of app.querySelectorAll<HTMLElement>('.popup')) { overlayResize.observe(node); }
+for (const node of app.querySelectorAll<HTMLElement>('.popup, .history-panel')) { overlayResize.observe(node); }
 new MutationObserver(scheduleOverlayLayout).observe(app, { subtree: true, childList: true, attributes: true, attributeFilter: ['class'] });
+app.addEventListener('scroll', scheduleOverlayLayout, true);
 window.addEventListener('resize', scheduleOverlayLayout);
 window.visualViewport?.addEventListener('resize', scheduleOverlayLayout);
 window.visualViewport?.addEventListener('scroll', scheduleOverlayLayout);
@@ -5176,7 +6083,8 @@ function closeMenuOverPanel(): boolean {
 		return false;
 	}
 	menu.classList.remove('open', 'over-panel');
-	for (const link of document.querySelectorAll('.link.active, .tab-label.active')) {
+	if (selectorStrip.classList.contains('open')) { scheduleSelectorStripClose(); }
+	for (const link of document.querySelectorAll('.link.active, .tab-label.active, .tab-overflow-row.active')) {
 		link.classList.remove('active');
 	}
 	return true;
@@ -5239,7 +6147,7 @@ document.addEventListener('mousedown', event => {
 		}
 		return;
 	}
-	if (![workdirSummary, gitRefreshSlot, effortBox, ultracodeBox, featureSettingsPanel, sleepPopup, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillBar, historyPanel, agentsPanel, agentAppsPanel, plusButton, usageButton, usageAlertText, agentsButton, agentPill, modelPill, approveToggle, slashButton, workdirButton, branchButton, commitButton, contextButton].some(n => n.contains(target))) {
+	if (![tabOverflowPanel, overflowButton, workdirSummary, gitRefreshSlot, effortBox, ultracodeBox, selectorStrip, featureSettingsPanel, sleepPopup, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillBar, historyPanel, agentsPanel, agentAppsPanel, plusButton, usageButton, usageAlertText, agentsButton, compactSelector, agentPill, modelPill, approveToggle, slashButton, workdirButton, branchButton, commitButton, contextButton].some(n => n.contains(target))) {
 		closePopups();
 	}
 });
@@ -5249,6 +6157,10 @@ document.addEventListener('keydown', event => {
 	// in: without this, cancelling a conversion closed the toolbar skill editor,
 	// the GitHub form or a parameters popover, and what was typed went with it.
 	if (event.key !== 'Escape' || event.isComposing || event.keyCode === 229) {
+		return;
+	}
+	// Escape typed into a terminal is the shell's (vim, readline): xterm takes it first, and this must not act on it if it ever got here.
+	if (terminalView?.contains(event.target)) {
 		return;
 	}
 	// The innermost question first: a close being confirmed, then the switch card.
@@ -5262,6 +6174,12 @@ document.addEventListener('keydown', event => {
 	}
 	// A menu over a panel first, the panel with the next Escape.
 	if (closeMenuOverPanel()) {
+		if (tabOverflowPanel.classList.contains('open') && overflowMenuRow?.isConnected) { overflowMenuRow.focus(); }
+		return;
+	}
+	if (tabOverflowPanel.classList.contains('open')) {
+		closePopups();
+		overflowButton.focus();
 		return;
 	}
 	if (gitPopup.classList.contains('open')) {
@@ -5280,6 +6198,8 @@ interface MenuItem {
 	readonly disabled?: boolean;
 	/** A key or gesture that does the same, shown at the right of the row. */
 	readonly shortcut?: string;
+	/** The control it stands for: hidden, or disabled with the reason, where the surface does not allow it. */
+	readonly command?: string;
 	readonly run: () => void;
 }
 
@@ -5295,8 +6215,9 @@ interface MenuAction {
  * `note`: a warning under the heading, in the chart orange.
  */
 function openMenu(anchor: HTMLElement, items: MenuItem[], heading?: string, action?: MenuAction, keep?: HTMLElement, note?: string): void {
+	if (selectorStrip.contains(anchor)) { keep = selectorStrip; }
 	if (menu.classList.contains('open') && anchor.classList.contains('active')) {
-		closePopups();
+		closePopups(undefined, keep);
 		return;
 	}
 	let headingAction: HTMLButtonElement | undefined;
@@ -5312,7 +6233,10 @@ function openMenu(anchor: HTMLElement, items: MenuItem[], heading?: string, acti
 	menu.replaceChildren(
 		heading ? el('div', { class: 'menu-heading' }, el('span', { text: heading }), headingAction) : '',
 		note ? el('div', { class: 'menu-note', text: note }) : '',
-		...items.map(item => {
+		...items.flatMap(item => {
+			const control = item.command ? gate(item.command) : { s: 'on' } as const;
+			if (control.s === 'hidden') { return []; }
+			if (control.s === 'off') { item = { ...item, disabled: true, description: control.reason }; }
 			const b = button([
 				item.icon ? icon(item.icon, 'menu-icon') : el('span', { class: 'menu-icon' }),
 				el('span', { class: 'menu-text' },
@@ -5329,27 +6253,96 @@ function openMenu(anchor: HTMLElement, items: MenuItem[], heading?: string, acti
 				}
 				item.run();
 			});
-			return b;
+			return [b];
 		}));
 	// Over a panel the menu is drawn above it: a panel sits over the popups.
 	menu.classList.toggle('over-panel', !!keep);
 	openAbove(menu, anchor, 'left', keep);
 }
 
+/**
+ * Arrow keys, Home and End move between a menu's rows once focus is in it (Tab already does; Enter
+ * and Space press a row, Escape closes the menu). `focusMenu` puts the focus on the first row for
+ * a menu that was opened from the keyboard-reachable terminal controls.
+ */
+menu.addEventListener('keydown', event => {
+	if (event.isComposing || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) { return; }
+	const rows = [...menu.querySelectorAll<HTMLButtonElement>('.menu-item:not(:disabled)')];
+	if (!rows.length) { return; }
+	const at = rows.indexOf(document.activeElement as HTMLButtonElement);
+	const next = event.key === 'Home' ? 0 : event.key === 'End' ? rows.length - 1
+		: at < 0 ? (event.key === 'ArrowDown' ? 0 : rows.length - 1) : (at + (event.key === 'ArrowDown' ? 1 : -1) + rows.length) % rows.length;
+	event.preventDefault();
+	rows[next].focus();
+});
+function focusMenu(): void {
+	menu.querySelector<HTMLButtonElement>('.menu-item:not(:disabled)')?.focus();
+}
+
+
+/** The very same controls move into the strip, preserving handlers and live state. */
+let selectorStripTimer: ReturnType<typeof setTimeout> | undefined;
+function selectorAnchor(original: HTMLElement): HTMLElement {
+	if (toolbar.classList.contains('compact-selector-mode') && !selectorStrip.classList.contains('open')) { openCompactSelectors(); }
+	return original;
+}
+
+function restoreSelectorControls(): void {
+	clearTimeout(selectorStripTimer);
+	selectorStrip.classList.remove('open');
+	if (selectorControls.parentElement === selectorStrip) {
+		toolbarSettings.prepend(selectorControls);
+		toolbarLayoutShape = '';
+		scheduleToolbarLayout();
+	}
+	compactSelector.setAttribute('aria-expanded', 'false');
+	compactSelector.classList.remove('active');
+}
+
+function openCompactSelectors(): void {
+	clearTimeout(selectorStripTimer);
+	if (!state || !toolbar.classList.contains('compact-selector-mode') || selectorStrip.classList.contains('open')) { return; }
+	closePopups(selectorStrip);
+	selectorStrip.append(selectorControls);
+	compactSelector.classList.add('active');
+	compactSelector.setAttribute('aria-expanded', 'true');
+	showAnchoredOverlay(selectorStrip, compactSelector, 'center');
+}
+function scheduleSelectorStripClose(): void {
+	clearTimeout(selectorStripTimer);
+	selectorStripTimer = setTimeout(() => {
+		if (compactSelector.matches(':hover, :focus-visible') || (selectorStrip.matches(':hover') || !!selectorStrip.querySelector(':focus-visible')) ||
+			menu.classList.contains('open') || approvalPopup.classList.contains('open')) { return; }
+		if (selectorStrip.classList.contains('open')) { closePopups(); }
+	}, 250);
+}
+compactSelector.addEventListener('pointerenter', event => {
+	if (event.pointerType === 'mouse' && matchMedia('(hover: hover) and (pointer: fine)').matches) { openCompactSelectors(); }
+});
+compactSelector.addEventListener('pointerleave', event => { if (event.pointerType === 'mouse') { scheduleSelectorStripClose(); } });
+selectorStrip.addEventListener('pointerenter', () => clearTimeout(selectorStripTimer));
+selectorStrip.addEventListener('pointerleave', event => { if (event.pointerType === 'mouse') { scheduleSelectorStripClose(); } });
+compactSelector.addEventListener('focus', () => { if (compactSelector.matches(':focus-visible')) { openCompactSelectors(); } });
+compactSelector.addEventListener('blur', scheduleSelectorStripClose);
+selectorStrip.addEventListener('focusout', scheduleSelectorStripClose);
+compactSelector.addEventListener('click', event => {
+	if (event.detail !== 0 && !matchMedia('(hover: hover) and (pointer: fine)').matches && selectorStrip.classList.contains('open')) { closePopups(); }
+	else { openCompactSelectors(); }
+});
 
 agentPill.addEventListener('click', () => {
 	const s = state;
 	if (!s) {
 		return;
 	}
-	openMenu(agentPill, s.agents.map(a => ({
+	openMenu(selectorAnchor(agentPill), s.agents.map(a => ({
 		icon: a.id === 'claude' ? 'sparkle' : a.id === 'gemini' ? 'star-full' : 'hubot',
 		label: a.name,
 		description: a.available ? a.detail?.split(':')[0] : a.problem,
 		checked: a.id === s.selection.agent,
 		disabled: !a.available,
 		run: () => post({ type: 'select', selection: { agent: a.id } }),
-	})), 'Agent', { icon: 'gear', title: 'Which Claude Code, Codex and Gemini CLI apps to use', run: openAgentApps });
+	})), 'Agent', gate('setAgentBinary').s === 'on' ? { icon: 'gear', title: 'Which Claude Code, Codex and Gemini CLI apps to use', run: openAgentApps } : undefined);
 });
 
 /* agent apps */
@@ -5363,6 +6356,37 @@ agentPill.addEventListener('click', () => {
  * whose element is replaced closes under the user's pointer.
  */
 let agentAppsShown = '';
+let agentAuthShown = '';
+function agentAuthenticationActions(agent: ChatAgent, detecting: boolean): HTMLElement {
+	const row = el('div', { class: 'agent-auth-actions' });
+	if (gate('authenticateAgent').s !== 'on') {
+		row.append(el('span', { text: 'Open AI Browser Chat in VS Code → Agent apps to sign in, then refresh here.' }));
+		return row;
+	}
+	const login = button([el('span', { text: agent.authentication?.signingIn ? 'Show sign-in terminal' : 'Sign in / Reauthorize' })], { class: 'agent-app-link' });
+	login.disabled = detecting || !agent.binary;
+	login.addEventListener('click', () => post({ type: 'authenticateAgent', agent: agent.id }));
+	const check = button([el('span', { text: 'Check after sign-in' })], { class: 'agent-app-link' });
+	check.title = 'Reload this agent with the new credentials. Finish or stop its replies first.';
+	check.disabled = detecting || !agent.binary;
+	check.addEventListener('click', () => post({ type: 'checkAgentAuthentication', agent: agent.id }));
+	row.append(login, check);
+	return row;
+}
+function renderAgentAuthentication(s: ChatViewState): void {
+	const agent = s.agents.find(a => a.id === s.selection.agent);
+	const show = !!agent && !!(agent.authentication?.required || agent.authentication?.signingIn);
+	agentAuthBanner.hidden = !show;
+	const shape = JSON.stringify([agent?.id, agent?.authentication, agent?.binary, s.detecting, gate('authenticateAgent')]);
+	if (shape === agentAuthShown) return;
+	agentAuthShown = shape;
+	agentAuthBanner.replaceChildren();
+	if (!agent || !show) return;
+	agentAuthBanner.append(el('span', { text: agent.authentication?.signingIn
+		? `Complete ${agent.name} sign-in in the terminal, then close it or press Check after sign-in.`
+		: `${agent.name}: sign-in is required or the session has expired. Sign in again to continue this conversation.` }),
+		agentAuthenticationActions(agent, s.detecting));
+}
 
 function openAgentApps(): void {
 	closePopups(agentAppsPanel);
@@ -5370,7 +6394,7 @@ function openAgentApps(): void {
 	if (state) {
 		fillAgentApps(state);
 	}
-	agentAppsPanel.classList.add('open');
+	showScreenOverlay(agentAppsPanel);
 }
 
 /**
@@ -5389,7 +6413,7 @@ function fillAgentApps(s: ChatViewState): void {
 			pendingPicks.delete(id);
 		}
 	}
-	const shape = JSON.stringify([s.detecting, [...pendingPicks], s.agents.map(a => [a.id, a.available, a.problem, a.copies, a.binary, a.choice, a.pinMissing, a.pinned])]);
+	const shape = JSON.stringify([s.detecting, [...pendingPicks], s.agents.map(a => [a.id, a.available, a.problem, a.copies, a.binary, a.choice, a.pinMissing, a.pinned, a.authentication])]);
 	if (shape === agentAppsShown) {
 		return;
 	}
@@ -5451,11 +6475,13 @@ function fillAgentApps(s: ChatViewState): void {
 		if (!agent.available && agent.problem && !s.detecting) {
 			notes.push(el('div', { class: 'agent-app-note warn', text: agent.problem }));
 		}
+		notes.push(el('div', { class: 'agent-app-note', text: 'Sign in in the terminal using the selected CLI. Finish or stop this agent’s replies, then Check after sign-in to reload its credentials. Saved conversations are kept. Gemini: complete /auth, then exit or press Check.' }));
 		body.append(el('div', { class: 'agent-app' },
 			el('div', { class: 'agent-app-name', text: agent.name }),
 			select,
 			agent.binary ? el('div', { class: 'agent-app-path', text: `In use: ${agent.binary}`, title: agent.binary }) : undefined,
 			...notes,
+			agentAuthenticationActions(agent, s.detecting),
 			setting));
 	}
 	agentAppsPanel.replaceChildren(panelHead('Agent apps'), body);
@@ -5467,7 +6493,7 @@ modelPill.addEventListener('click', () => {
 	if (!s || !agent) {
 		return;
 	}
-	openMenu(modelPill, agent.models.map(m => ({
+	openMenu(selectorAnchor(modelPill), agent.models.map(m => ({
 		label: m.label,
 		description: m.description,
 		checked: m.id === s.selection.model,
@@ -5486,7 +6512,7 @@ modelPill.addEventListener('click', () => {
 // tabs the browser tools then drive the same way.
 function browserMenuItems(): MenuItem[] {
 	const items: MenuItem[] = [
-		{ icon: 'globe', label: 'Google Chrome', run: () => post({ type: 'openBrowser', where: 'chrome' }) },
+		{ icon: 'globe', label: 'Google Chrome', command: 'openBrowser.chrome', run: () => post({ type: 'openBrowser', where: 'chrome' }) },
 	];
 	if (state?.nativeBrowser && state.nativeBrowser !== 'unsupported') {
 		items.push({ icon: 'window', label: 'VS Code Browser',
@@ -5587,7 +6613,7 @@ function commandGroup(c: ChatCommand): string {
 function chatActions(s: ChatViewState): PaletteItem[] {
 	const tab = s.tabs.find(t => t.id === s.activeTab);
 	const items: PaletteItem[] = [];
-	if (tab?.canResumeInTerminal) {
+	if (tab?.canResumeInTerminal && gate('resumeInTerminal').s === 'on') {
 		items.push({ key: 'chat:terminal', group: 'Chat', name: 'terminal', label: 'Continue in terminal', icon: 'terminal',
 			detail: 'Continue this session in a terminal tab; this chat tab closes',
 			disabled: tab.busy || !!tab.queued || !!tab.skillRuns, haystack: 'terminal resume continue cli',
@@ -5935,18 +6961,7 @@ function openPalette(mode: PaletteMode): void {
 		if (paletteTarget === input) {
 			closePopups(palette);
 		}
-		const box = app.getBoundingClientRect();
-		const rect = (paletteTarget === input ? composer : paletteTarget).getBoundingClientRect();
-		palette.style.top = '';
-		palette.style.bottom = `${box.bottom - rect.top + 6}px`;
-		// The editor's prompt sits near the top of the view: under it, then.
-		if (paletteTarget !== input && rect.top - box.top < 220) {
-			palette.style.bottom = '';
-			palette.style.top = `${rect.bottom - box.top + 6}px`;
-		}
-		palette.style.left = `${Math.max(8, rect.left - box.left)}px`;
-		palette.style.right = '';
-		palette.classList.add('open');
+		showAnchoredOverlay(palette, paletteTarget === input ? composer : paletteTarget, 'left');
 	}
 	renderPalette(s);
 	if (mode === 'button') {
@@ -6463,6 +7478,8 @@ function renderWorkdir(s: ChatViewState): void {
 		branchBusy = false;
 		branchDeleting = undefined;
 		branchName.textContent = '…';
+		branchAhead.textContent = branchBehind.textContent = '';
+		branchAhead.hidden = branchBehind.hidden = true;
 		gitPending = false;
 		gitChanged.textContent = '…';
 		gitDeleted.textContent = '';
@@ -6802,17 +7819,7 @@ const hoverTip = (() => {
 			if (!node.isConnected) {
 				app.append(node);
 			}
-			node.style.maxHeight = ''; node.style.maxWidth = '';
-			node.classList.add('open');
-			const box = app.getBoundingClientRect();
-			const r = anchor.getBoundingClientRect();
-			const w = node.offsetWidth;
-			const h = node.offsetHeight;
-			const left = Math.min(Math.max(4, r.left - box.left + r.width / 2 - w / 2), box.width - w - 4);
-			const above = r.top - box.top - h - 6;
-			node.style.left = `${Math.max(4, left)}px`;
-			node.style.top = `${above >= 4 ? above : r.bottom - box.top + 6}px`;
-			constrainOverlay(node);
+			showAnchoredOverlay(node, anchor, 'center');
 		},
 		hide(): void {
 			clearTimeout(timer);
@@ -7487,7 +8494,7 @@ function openSkillEditor(skill?: ToolbarSkill): void {
 			error,
 			el('div', { class: 'form-actions' }, cancel, save)));
 	closePopups(skillEditor);
-	skillEditor.classList.add('open');
+	showScreenOverlay(skillEditor);
 	name.focus();
 }
 
@@ -7528,7 +8535,8 @@ const attachItems: { kind: AttachmentKind; icon: string; label: string; needsTab
 	{ kind: 'element', icon: 'inspect', label: 'Element from the page…', needsTab: true },
 	{ kind: 'page', icon: 'link', label: 'Page address', needsTab: true },
 	{ kind: 'sharedPage', icon: 'link-external', label: 'Share page', needsTab: true },
-	{ kind: 'annotation', icon: 'comment-add', label: 'Add annotation…', needsTab: true },
+	{ kind: 'annotation', icon: 'comment-add', label: 'Add annotation to element…', needsTab: true },
+	{ kind: 'pointAnnotation', icon: 'comment-add', label: 'Add annotation anywhere…', needsTab: true },
 	{ kind: 'file', icon: 'file', label: 'File…', needsTab: false },
 ];
 
@@ -7544,7 +8552,7 @@ plusButton.addEventListener('click', () => {
 		description: item.needsTab ? pageProblem : undefined,
 		disabled: item.needsTab && !!pageProblem,
 		run: () => post({ type: 'attach', kind: item.kind }),
-	}))], 'Attach');
+	})), ...terminalPinItems()], 'Attach');
 });
 
 /* "U" */
@@ -7562,7 +8570,7 @@ usageButton.addEventListener('click', () => {
 function renderUsage(usage: readonly AgentUsage[], stats: ChatStats | undefined, loading: boolean): void {
 	const sections: HTMLElement[] = [];
 	if (loading) {
-		sections.push(el('div', { class: 'usage-loading' }, el('span', { class: 'shimmer', text: 'Asking the agents…' })));
+		sections.push(el('div', { class: 'usage-loading' }, liquidLoader(), el('span', { class: 'shimmer', text: 'Asking the agents…' })));
 	}
 	for (const u of usage) {
 		const name = state?.agents.find(a => a.id === u.agent)?.name ?? u.agent;
@@ -7861,7 +8869,7 @@ function openAgentsPanel(): void {
 	agentsView = {};
 	closePopups(agentsPanel);
 	fillAgents(currentAgents(), true);
-	agentsPanel.classList.add('open');
+	showScreenOverlay(agentsPanel);
 }
 
 function statusLabel(a: ToolEntry): string {
@@ -8033,6 +9041,7 @@ function fillAgents(agents: ToolEntry[], force = false): void {
 		for (const a of [...agents].reverse()) {
 			const row = button([
 				el('span', { class: `agent-dot ${a.status}` }),
+				...(a.agent?.type === 'workflow' ? [icon('type-hierarchy-sub', 'agent-kind')] : []),
 				el('span', { class: 'agent-text' },
 					el('span', { class: 'agent-title', text: agentTitle(a) }),
 					el('span', { class: 'agent-meta' },
@@ -8102,6 +9111,7 @@ function panelFooter(): HTMLElement {
 
 /** Codex names an agent by its path, `/root/<parent>/<agent>`; the one before it started it. */
 function spawnedBy(type: string | undefined): string {
+	if (type === 'workflow') { return 'Workflow started by the main agent — it runs its own agents in the background'; }
 	const path = type?.startsWith('/') ? type.split('/').filter(Boolean) : [];
 	return path.length > 2 ? `Spawned by ${path[path.length - 2].replace(/[_-]+/g, ' ')}` : 'Spawned by the main agent';
 }
@@ -8141,7 +9151,7 @@ function toggleHistory(chats: readonly ChatSummary[]): void {
 	}
 	fillHistory(chats);
 	closePopups(historyPanel);
-	historyPanel.classList.add('open');
+	showScreenOverlay(historyPanel);
 }
 
 /**
@@ -8199,7 +9209,9 @@ function fillHistory(chats: readonly ChatSummary[]): void {
 			el('span', { class: 'history-meta', text: `${state?.agents.find(a => a.id === chat.agent)?.name ?? chat.agent} · ${ago(chat.updatedAt)}` }),
 		], { class: 'history-item', title: chat.title });
 		open.classList.toggle('current', chat.id === state?.chatId);
+		gateButton(open, 'openChat');
 		open.addEventListener('click', () => {
+			if (gate('openChat').s !== 'on') { refuseControl(gate('openChat')); return; }
 			closePopups();
 			post({ type: 'openChat', id: chat.id });
 		});
@@ -8207,6 +9219,8 @@ function fillHistory(chats: readonly ChatSummary[]): void {
 		remove.addEventListener('click', () => post({ type: 'deleteChat', id: chat.id }));
 		const terminal = button([icon('terminal')], { class: 'ghost round history-delete', title: 'Continue in terminal' });
 		terminal.hidden = !chat.canResumeInTerminal;
+		gateButton(remove, 'deleteChat');
+		gateButton(terminal, 'resumeInTerminal');
 		terminal.addEventListener('click', () => { closePopups(); post({ type: 'resumeInTerminal', id: chat.id }); });
 		list.append(el('div', { class: 'history-row' }, open, terminal, remove));
 	}
@@ -8246,6 +9260,7 @@ function renderSleep(): void {
 	const countdown = `${Math.floor(seconds / 3600).toString().padStart(2, '0')}:${Math.floor(seconds / 60 % 60).toString().padStart(2, '0')}:${(seconds % 60).toString().padStart(2, '0')}`;
 	const tabScoped = sleep?.mode === 'agents' && sleep.scope === 'tab';
 	const tip = sleep?.error ? `Cannot keep computer awake: ${sleep.error}`
+		: sleep?.mode === 'forever' ? 'Keep computer awake until turned off'
 		: sleep?.mode === 'timer' ? `Keep awake: ${countdown}${active ? '' : ' — starting…'}`
 		: tabScoped ? `Keep awake until the agents and subagents in ${sleepTabTitle(sleep.tabId)} finish`
 		: sleep?.mode === 'agents' ? 'Keep awake until the agents and subagents in every tab finish'
@@ -8262,7 +9277,7 @@ function renderSleep(): void {
 	const status = sleepPopup.querySelector('.sleep-status');
 	if (status) {
 		status.textContent = tip;
-		status.classList.toggle('sleep-enabled-status', !!sleep && (sleep.mode === 'timer' || sleep.mode === 'agents' || sleep.automaticActive) && !sleep.error);
+		status.classList.toggle('sleep-enabled-status', !!sleep && (sleep.mode !== 'off' || sleep.automaticActive) && !sleep.error);
 	}
 }
 function buildSleepPopup(): void {
@@ -8297,6 +9312,7 @@ function buildSleepPopup(): void {
 		el('div', { class: 'sleep-label', text: 'For a time — the whole app' }),
 		el('div', { class: 'sleep-label sleep-sublabel', text: 'Minutes' }), minutes,
 		el('div', { class: 'sleep-label sleep-sublabel', text: 'Hours' }), hours,
+		wideOption('coffee', 'Keep awake indefinitely', 'Until you turn this off or close this VS Code window', {mode:'forever'}, sleep?.mode==='forever'),
 		el('div', { class: 'sleep-label', text: 'Until the agents finish' }),
 		...(thisTab ? [thisTab] : []), allTabs);
 	// Another tab holds it: say so, so moving the hold here is a visible change.
@@ -8323,11 +9339,7 @@ function buildSleepPopup(): void {
  */
 function openSleepPopup(): void {
 	closePopups(sleepPopup);
-	sleepPopup.style.bottom = '';
-	sleepPopup.style.left = '';
-	sleepPopup.style.top = '6px';
-	sleepPopup.style.right = '8px';
-	sleepPopup.classList.add('open');
+	showScreenOverlay(sleepPopup, 'corner');
 	sleepPopup.querySelector<HTMLButtonElement>('.sleep-option.selected, .sleep-option')?.focus();
 }
 sleepPopup.addEventListener('keydown', event => { if (event.key === 'Escape' && !event.isComposing) { closePopups(); input.focus(); } });
@@ -8386,6 +9398,99 @@ function createTemporarySettings(): HTMLElement {
  return temporaryStorageContent;
 }
 
+let serverSettingsRefresh: (() => void) | undefined;
+function createServerSettings(): HTMLElement {
+	const settings = state?.exchangeConnection;
+	const content = el('div', { class: 'feature-settings-content server-settings' });
+	if (!settings) { return content; }
+	const awake = el('select'); awake.setAttribute('aria-label','Keep awake after an Exchange connection');
+	for(const value of exchangeAwakeMinutes){
+		const option=el('option',{text:value===0?'Disabled':value===-1?'Until turned off':value<60?`${value} minutes`:`${value/60} hour${value===60?'':'s'}`});
+		option.value=String(value);awake.append(option);
+	}
+	awake.value=String(settings.keepAwakeMinutes??60);
+	awake.addEventListener('change',()=>post({type:'setExchangeKeepAwake',minutes:Number(awake.value)}));
+	const server = el('input'); server.type = 'text'; server.placeholder = 'https://your-server.example';
+	server.value = settings.url;
+	server.spellcheck = false; server.autocomplete = 'off';
+	server.setAttribute('aria-label', 'Server address');
+	const point = el('input'); point.type = 'text'; point.placeholder = 'Paste the connection ID';
+	point.value = settings.pointId; point.spellcheck = false; point.autocomplete = 'off';
+	point.setAttribute('aria-label', 'Connection ID');
+	const key = el('input'); key.type = 'password'; key.placeholder = 'Paste the connection key';
+	key.autocomplete = 'off'; key.spellcheck = false;
+	key.setAttribute('aria-label', 'Connection key');
+	const connectionStatus = el('div', { class: 'server-connection-status' });
+	connectionStatus.setAttribute('role', 'status');
+	const keyStatus = el('span', { class: 'server-key-status' });
+    const password = el('input'); password.type='password'; password.autocomplete='new-password'; password.placeholder='Optional · at least 12 characters';
+    const passwordStatus = el('span', { class: 'server-key-status' });
+    const clearPassword = button(['Remove workspace password'], {class:'ghost'}); let removePassword=false;
+    clearPassword.addEventListener('click',()=>{removePassword=true;password.value='';passwordStatus.textContent='Password will be removed when you save.';});
+	const error = el('p', { class: 'server-connection-error' }); error.setAttribute('role', 'alert');
+	const connect = button([icon('plug'), 'Save & connect'], { class: 'feature-settings-save' });
+	const disconnect = button(['Disconnect'], { class: 'ghost' });
+	let pending = false;
+	const edited = new Set<HTMLInputElement>();
+	const refresh = () => {
+		const saved = state?.exchangeConnection;
+		if (!saved) { return; }
+		awake.value=String(saved.keepAwakeMinutes??60);
+		if (!edited.has(server)) { server.value = saved.url; }
+		if (!edited.has(point)) { point.value = saved.pointId; }
+		const labels = { disconnected: 'Disconnected', connecting: 'Connecting…', connected: 'Connected', reconnecting: 'Reconnecting…', error: 'Connection failed' };
+		connectionStatus.textContent = labels[saved.status];
+		connectionStatus.dataset.status = saved.status;
+		keyStatus.textContent = saved.hasKey ? 'Key saved in VS Code SecretStorage.' : 'No key saved.';
+		passwordStatus.textContent = removePassword ? 'Password will be removed when you save.' : saved.hasPassword ? 'Encryption enabled. Leave blank to keep the saved password.' : 'Adds end-to-end encryption for chat, commands, and browser frames.';
+        clearPassword.hidden = !saved.hasPassword;
+		key.placeholder = saved.hasKey ? 'Leave blank to use the saved key' : 'Paste the connection key';
+		error.textContent = saved.error ?? ''; error.hidden = !saved.error;
+		connect.disabled = pending || saved.status === 'connecting' || !server.value.trim() || !point.value.trim() || (!key.value.trim() && !saved.hasKey);
+		disconnect.disabled = !pending && !['connecting', 'connected', 'reconnecting'].includes(saved.status);
+	};
+	serverSettingsRefresh = () => { pending = false; refresh(); };
+	for (const field of [server, point, key]) { field.addEventListener('input', () => { edited.add(field); refresh(); }); }
+	connect.addEventListener('click', () => {
+		if (connect.disabled) { return; }
+		pending = true;
+		post({ type: 'connectExchange', url: server.value, pointId: point.value, ...(key.value.trim() ? { key: key.value.trim() } : {}), ...(password.value ? {password:password.value} : removePassword ? {password:''} : {}) });
+		key.value = ''; password.value='';removePassword=false; refresh();
+	});
+	disconnect.addEventListener('click', () => { pending = false; post({ type: 'disconnectExchange' }); });
+	const form = el('div', { class: 'server-connection-form' },
+		el('label', {}, 'Server address', server), el('label', {}, 'Connection ID', point),
+		el('label', {}, 'Connection key', key, keyStatus), el('label', {}, 'Workspace password', password, passwordStatus), clearPassword);
+	content.append(el('h3', { text: 'AI Browser Server' }),
+		el('p', { text: 'Connect this chat to your AI Browser account to read and control it from the website.' }),
+		connectionStatus, form, error, el('div', { class: 'server-connection-actions' }, connect, disconnect),
+		el('label',{class:'server-keep-awake'},'Keep awake after someone connects',awake),
+		el('p',{class:'feature-settings-note',text:'Applies on each new website connection. The timer starts again when another viewer joins and continues after disconnect. It prevents automatic system sleep; the display can still turn off. Saved immediately.'}),
+		el('p', { class: 'feature-settings-note', text: 'Create a connection once, then paste its server address, ID, and key here. The key is stored securely by VS Code. This workspace reconnects automatically after a reload when its chat panel opens. Disconnect pauses automatic reconnection and keeps the saved credentials.' }));
+	refresh();
+	return content;
+}
+
+function createAppearanceSettings(): HTMLElement {
+ const content = el('div', { class: 'feature-settings-content' });
+ const theme = el('select');
+ theme.dataset.appearance = 'theme';
+ theme.setAttribute('aria-label', 'Color theme');
+ for (const [value, label] of [['system', window.aiBrowserChatHost ? 'Auto (device)' : 'Auto (VS Code)'], ['light', 'Light'], ['dark', 'Dark']]) {
+  const option = el('option', { text: label }); option.value = value; theme.append(option);
+ }
+ theme.value = getThemePreference();
+ theme.addEventListener('change', () => setThemePreference(theme.value as ThemePreference));
+ const icons = el('input'); icons.type = 'checkbox'; icons.checked = getChatFileIcons();
+ icons.dataset.appearance = 'fileIcons';
+ icons.addEventListener('change', () => setChatFileIcons(icons.checked));
+ content.append(el('h3', { text: 'Appearance' }),
+  el('label', { class: 'appearance-setting' }, el('span', { text: 'Color theme' }), theme),
+  el('label', { class: 'appearance-setting' }, el('span', { text: 'Show file icons in chat' }), icons),
+  el('p', { class: 'feature-settings-note', text: 'Changes apply immediately and are saved on this device.' }));
+ return content;
+}
+
 function openFeatureSettings(): void {
 	if (!state) { return; }
 	closePopups(featureSettingsPanel);
@@ -8415,6 +9520,22 @@ function openFeatureSettings(): void {
 	temporaryTab.setAttribute('role', 'tab'); temporaryTab.setAttribute('aria-selected', 'false');
 	temporaryTab.setAttribute('aria-controls', 'temporary-files-content');
 	tabs.append(temporaryTab);
+ const appearanceTab = button(['Appearance'], { class: 'feature-settings-tab' });
+ appearanceTab.id = 'appearance-tab';
+ appearanceTab.setAttribute('role', 'tab'); appearanceTab.setAttribute('aria-selected', 'false');
+ appearanceTab.setAttribute('aria-controls', 'appearance-content');
+ tabs.append(appearanceTab);
+ const appearanceContent = createAppearanceSettings();
+ appearanceContent.id = 'appearance-content'; appearanceContent.hidden = true;
+ appearanceContent.setAttribute('role', 'tabpanel'); appearanceContent.setAttribute('aria-labelledby', appearanceTab.id);
+	const serverTab = button(['Server connection'], { class: 'feature-settings-tab' });
+	serverTab.id = 'server-connection-tab'; serverTab.hidden = !state.exchangeConnection;
+	serverTab.setAttribute('role', 'tab'); serverTab.setAttribute('aria-selected', 'false');
+	serverTab.setAttribute('aria-controls', 'server-connection-content');
+	if (state.exchangeConnection) { tabs.append(serverTab); }
+	const serverContent = createServerSettings();
+	serverContent.id = 'server-connection-content'; serverContent.hidden = true;
+	serverContent.setAttribute('role', 'tabpanel'); serverContent.setAttribute('aria-labelledby', serverTab.id);
 	const temporaryContent = createTemporarySettings();
 	temporaryContent.id = 'temporary-files-content'; temporaryContent.hidden = true;
 	temporaryContent.setAttribute('role', 'tabpanel'); temporaryContent.setAttribute('aria-labelledby', temporaryTab.id);
@@ -8516,19 +9637,26 @@ function openFeatureSettings(): void {
 		content.append(row);
 	}
 	content.append(el('p', { class: 'feature-settings-note', text: "Commit messages use the selected agent's remembered chat model or its default. Branch names and chat titles use an available lightweight model. Effort is mapped to the levels supported by that model. Custom prompts apply to future requests; output format and length checks still apply. Empty prompts use the defaults. Settings are shared across projects." }));
-	const selectTab = (selected: 'ai' | 'video' | 'temporary') => {
+	const selectTab = (selected: 'ai' | 'video' | 'temporary' | 'server' | 'appearance') => {
 		content.hidden = selected !== 'ai'; videoContent.hidden = selected !== 'video'; temporaryContent.hidden = selected !== 'temporary';
 		tab.setAttribute('aria-selected', String(selected === 'ai')); videoTab.setAttribute('aria-selected', String(selected === 'video'));
 		temporaryTab.setAttribute('aria-selected', String(selected === 'temporary'));
-		featureSettingsSave.hidden = selected === 'temporary';
+		serverContent.hidden = selected !== 'server'; serverTab.setAttribute('aria-selected', String(selected === 'server'));
+		appearanceContent.hidden = selected !== 'appearance'; appearanceTab.setAttribute('aria-selected', String(selected === 'appearance'));
+		featureSettingsSave.hidden = selected === 'temporary' || selected === 'server' || selected === 'appearance';
+		featureSettingsStatus.hidden = selected === 'server' || selected === 'appearance';
 	};
 	tab.addEventListener('click', () => selectTab('ai')); videoTab.addEventListener('click', () => selectTab('video'));
+	// Temporary files live on the editor's machine: the tab is gone where they cannot be managed.
+	temporaryTab.hidden = gate('temporaryStorage').s !== 'on';
 	temporaryTab.addEventListener('click', () => {
 		selectTab('temporary');
 		if (!temporaryStorageBusy) { temporaryStorageBusy = true; renderTemporaryStorage(); post({ type: 'temporaryStorage', action: 'refresh' }); }
 	});
-	featureSettingsSave.hidden = false;
-	const sections = [tab, videoTab, temporaryTab];
+	serverTab.addEventListener('click', () => selectTab('server'));
+	featureSettingsSave.hidden = false; featureSettingsStatus.hidden = false;
+	appearanceTab.addEventListener('click', () => selectTab('appearance'));
+	const sections = [tab, videoTab, temporaryTab, appearanceTab, ...(state.exchangeConnection ? [serverTab] : [])];
 	tabs.addEventListener('keydown', event => {
 		const index = sections.indexOf(document.activeElement as HTMLButtonElement);
 		if (index < 0 || !['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) { return; }
@@ -8539,9 +9667,9 @@ function openFeatureSettings(): void {
 	});
 	featureSettingsPanel.replaceChildren(heading,
 		el('div', { class: 'feature-settings-layout' }, tabs,
-			el('div', { class: 'feature-settings-main' }, content, videoContent, temporaryContent,
+			el('div', { class: 'feature-settings-main' }, content, videoContent, temporaryContent, serverContent, appearanceContent,
 				el('div', { class: 'feature-settings-actions' }, featureSettingsStatus, featureSettingsSave))));
-	featureSettingsPanel.classList.add('open');
+	showScreenOverlay(featureSettingsPanel);
 	featureSettingsPanel.focus();
 }
 featureSettingsSave.addEventListener('click', () => {
@@ -8549,7 +9677,7 @@ featureSettingsSave.addEventListener('click', () => {
 	if (videoSecondsDraft === undefined) { return; }
 	featureSettingsSaving = true;
 	featureSettingsSave.disabled = true;
-	for (const field of featureSettingsPanel.querySelectorAll<HTMLSelectElement | HTMLTextAreaElement | HTMLButtonElement | HTMLInputElement>('select, textarea, .feature-prompt-reset, input[data-field="recordingSeconds"]')) { field.disabled = true; }
+	for (const field of featureSettingsPanel.querySelectorAll<HTMLSelectElement | HTMLTextAreaElement | HTMLButtonElement | HTMLInputElement>('select, textarea, .feature-prompt-reset, input[data-field="recordingSeconds"]')) { if (!field.dataset.appearance) field.disabled = true; }
 	featureSettingsStatus.textContent = 'Saving…';
 	post({ type: 'saveFeatureAi', settings: featureSettingsDraft, recordingQuality: videoQualityDraft, recordingSeconds: videoSecondsDraft });
 });

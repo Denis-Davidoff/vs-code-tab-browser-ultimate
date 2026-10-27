@@ -79,6 +79,7 @@ interface Asked {
 }
 
 export class CodexBackend implements AgentBackend {
+	public get running(): boolean { return [...this._all].some(session => session.running); }
 	public readonly id = 'codex' as const;
 
 	private _process: JsonLineProcess | undefined;

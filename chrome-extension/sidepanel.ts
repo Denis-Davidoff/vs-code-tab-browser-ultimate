@@ -1,10 +1,18 @@
-import { chromeChatProtocolVersion, chromeChatProtocolHeader, chromeChatVersionHeader, chromeChatCompatibilityError, chromeChatCapabilities, chromeChatCapabilitiesHeader, negotiateChromeChatCapabilities, chromeChatFeatureError, chromeChatAttachmentFeature, chromeChatCommandFeature, chromeChatFooterCommands } from '../src/chat/chromeChatCompatibility';
+import { annotationPointContext } from '../src/browser/annotationData';
+import { showSentAttachment, showAttachmentPreview } from '../preview-src/sentAttachment';
+import { chromeChatProtocolVersion, chromeChatProtocolHeader, chromeChatVersionHeader, chromeChatCompatibilityError, chromeChatCapabilities, chromeChatCapabilitiesHeader, negotiateChromeChatCapabilities, chromeChatFeatureError, chromeChatAttachmentFeature, chromeChatCommandFeature, chromeChatFooterCommands, chromeChatWaitHeader, chromeChatMaxWaitMs, chromeChatBaseHeader } from '../src/chat/chromeChatCompatibility';
+import { applyPatch, readPatch } from '../src/chat/core/sync';
+import { forwardedTypes } from '../src/chat/core/commands';
+import { snapshotReplay } from '../preview-src/snapshotEvents';
 import { chromePairingKind, chromePairingPorts, readChromeChatConnection, readChromeChatCommand, readChromeElementAttachments, type ChromeChatCommand, type ChromeChatConnection, type ChromeChatSnapshot, type ChromeElementAttachment } from '../src/chat/chromeChatProtocol';
 import { formatAncestor, inertProse, oneLine, renderElementMarkdown } from '../src/elements/elementMarkdown';
 import { ChromeAnnotations, type AnnotationTab, type AnnotationPage, type AnnotationRequest } from './annotations';
 import { appendPickedElement, restorePickedElements, type ElementDraft } from './elementDrafts';
 import type { ElementPickerWorld, ChromeElementPick } from './elementPicker';
 import type { HostToView, ViewToHost } from '../src/chat/chatProtocol';
+import { createRemoteTerminalShim } from '../preview-src/remoteTerminal';
+import { createChromeTerminalLink, type ChromeTerminalLink } from '../preview-src/chromeTerminalLink';
+import { isTerminalReply, readAgentTerminalFrame, remoteInputFrameMax, splitTerminalData } from '../src/chat/remoteTerminalProtocol';
 import type { ChatDraftState } from '../preview-src/chatHost';
 
 function element<T extends HTMLElement>(id: string): T {
@@ -15,6 +23,9 @@ function element<T extends HTMLElement>(id: string): T {
 const pairing = element<HTMLFormElement>('pairing');
 const code = element<HTMLTextAreaElement>('connection');
 const status = element('status');
+const connectionError = element('connection-error');
+function clearConnectionError(): void { connectionError.textContent = ''; code.removeAttribute('aria-invalid'); code.removeAttribute('aria-describedby'); }
+code.addEventListener('input', () => { if (code.hasAttribute('aria-invalid')) { clearConnectionError(); } });
 const app = element('app');
 const disconnect = element<HTMLButtonElement>('disconnect');
 const conversation = element<HTMLSelectElement>('conversation');
@@ -56,6 +67,31 @@ element('extension-id').textContent = chrome.runtime.id;
 let active: ChromeChatConnection | undefined;
 let latest: ChromeChatSnapshot | undefined;
 let etag: string | undefined;
+/**
+ * The editor's revision of the snapshot on screen. A command's reply and a held
+ * poll can arrive in either order, and the older of the two must not replace
+ * the newer; a revision only grows within one connection.
+ */
+let shownRevision = -1;
+/** The bridge's epoch for `shownRevision`; patches are asked for only against a snapshot from this bridge. */
+let shownEpoch: string | undefined;
+/**
+ * The body of a snapshot answer: a whole snapshot, or a patch of the view on
+ * screen (`core/sync.ts`). `undefined` when a patch does not apply — the next
+ * poll then asks for the whole snapshot.
+ */
+function snapshotFrom(body: unknown): ChromeChatSnapshot | undefined {
+  const value = body as { patch?: unknown; top?: Record<string, unknown> };
+  if (!value || typeof value !== 'object' || value.patch === undefined) { return body as ChromeChatSnapshot; }
+  const patch = readPatch(value.patch);
+  const view = patch && latest?.view ? applyPatch(latest.view as unknown as Record<string, unknown>, shownRevision, patch) : undefined;
+  if (!view || !value.top) { return undefined; }
+  return { ...value.top, view, entries: (view as { entries?: unknown }).entries } as unknown as ChromeChatSnapshot;
+}
+function revisionOf(tag: string | null | undefined): number {
+  const match = /^"(\d{1,15})"$/.exec(tag ?? '');
+  return match ? Number(match[1]) : -1;
+}
 let timer: ReturnType<typeof setTimeout> | undefined;
 let request: AbortController | undefined;
 let generation = 0;
@@ -70,10 +106,72 @@ let outboxWrite: Promise<void> = Promise.resolve();
 let flushing = false;
 let feedback: string | undefined;
 let pairingPending = false;
-const supported = new Set<string>([...Object.values(chromeChatFooterCommands).flat(), 'send', 'stop', 'select', 'switchAgent', 'approve', 'setViewMode', 'saveFeatureAi']);
+// What Chrome forwards is Chrome's column of the command table, kept with the host's checks.
+const supported = new Set<string>(forwardedTypes('chrome'));
 const passive = new Set(['ready', 'saveDrafts', 'tabDraft']);
 
 function emit(message: HostToView): void { window.dispatchEvent(new MessageEvent('message', { data: message })); }
+// Git state and the like, carried in each snapshot: Chrome gets no pushed events.
+const replaySnapshots = snapshotReplay(emit);
+/**
+ * The Chrome tab in front, offered as a dashed chip the way the editor offers
+ * its own browser tab: one click attaches it as a page that follows the tab.
+ * Without it the agent has no hint that the page the user means is in Chrome.
+ */
+/** What a page chip tells the agent: the page is in Google Chrome and the ai-browser tools reach it. */
+function chromePageText(href: string, title: string | undefined): string {
+  return `The user is looking at this page in Google Chrome: ${href}\n${title || ''}\n`
+    + 'To read or act on it use the ai-browser MCP tools (browser_tabs, browser_select_tab, browser_snapshot, browser_click, browser_navigate, …), '
+    + 'whose names carry a client prefix such as mcp__ai-browser__. Call browser_tabs, pick this address among the Chrome tabs, and select it with browser_select_tab before acting; '
+    + 'open new pages with browser_navigate from that tab so they stay in Chrome.\n'
+    + 'For this page, use only the built-in ai-browser MCP as your browser; do not use other browser tools or launch a separate browser. If it is unavailable, report that instead of switching tools.';
+}
+const pageSuggestionId = 'chrome-active-page';
+function pageSuggestion(chatId: string): { id: string; kind: 'sharedPage'; label: string }[] {
+  const page = activePage;
+  if (page?.id === undefined || !page.url || !/^https?:/.test(page.url)) { return []; }
+  if (elementDrafts[chatId]?.attachments.some(item => item.kind === 'sharedPage' && item.tabId === page.id)) { return []; }
+  return [{ id: pageSuggestionId, kind: 'sharedPage', label: (page.title || page.url).slice(0, 160) }];
+}
+/**
+ * Terminal tabs: the website's shim (`remoteTerminal.ts`) with the bridge as its
+ * transport (`chromeTerminalLink.ts`). The editor shares only terminals marked
+ * "Allow remote access" or opened from here, after the user agreed in VS Code.
+ */
+const terminalViewer = 'chrome-' + Array.from(crypto.getRandomValues(new Uint8Array(12)), b => b.toString(16).padStart(2, '0')).join('');
+let terminalLink: ChromeTerminalLink | undefined;
+let terminalEpoch: string | undefined;
+const terminals = createRemoteTerminalShim({
+  viewerId: terminalViewer, epoch: () => terminalEpoch, emit, notice: text => showFeedback(text),
+  send: frame => terminalLinkFor()?.send(frame) ?? false,
+  readClipboard: () => navigator.clipboard.readText(),
+  readAgentFrame: readAgentTerminalFrame, isTerminalReply, splitData: splitTerminalData, inputFrameMax: remoteInputFrameMax,
+});
+function terminalLinkFor(): ChromeTerminalLink | undefined {
+  const connection = active;
+  if (!connection) { return undefined; }
+  return terminalLink ??= createChromeTerminalLink({
+    post: async frames => {
+      const response = await fetch(`${connection.url}/terminal`, { method: 'POST', headers: bridgeHeaders(connection, true), body: JSON.stringify({ frames }), signal: AbortSignal.timeout(10_000) });
+      if (!response.ok) { const error = await response.json().catch(() => ({})) as { error?: string }; if (error.error) { showFeedback(error.error); } }
+      return response.ok;
+    },
+    get: async (after, signal) => {
+      const response = await fetch(`${connection.url}/terminal?after=${after}`, { headers: { ...bridgeHeaders(connection), [chromeChatWaitHeader]: String(chromeChatMaxWaitMs) },
+        cache: 'no-store', signal: AbortSignal.any([signal, AbortSignal.timeout(5_000 + chromeChatMaxWaitMs)]) });
+      if (!response.ok) { throw new Error('Terminal stream unavailable'); }
+      return await response.json() as { cursor: number; frames: unknown[] };
+    },
+    deliver: frame => { terminals.fromAgent(frame); },
+  });
+}
+function syncTerminalStream(snapshot: ChromeChatSnapshot): void {
+  const epoch = typeof snapshot.terminalEpoch === 'string' ? snapshot.terminalEpoch : undefined;
+  const ids = (snapshot.view.terminals ?? []).map(t => t.id);
+  if (epoch !== terminalEpoch) { terminalEpoch = epoch; if (epoch) { terminals.reconnected(); } }
+  if (ids.length && epoch) { terminalLinkFor()?.start(); }
+  terminals.syncTerminals(ids);
+}
 function render(): void {
   if (!latest?.view) { return; }
   app.hidden = false;
@@ -81,25 +179,22 @@ function render(): void {
   renderMode();
   if (resumeState && resumeState.chatId !== latest.chatId) { void saveResume({ ...resumeState, chatId: latest.chatId }); }
   const view = latest.view;
-  const light = view.themeKind === 1 || view.themeKind === 4;
-  document.documentElement.style.colorScheme = light ? 'light' : 'dark';
-  for (const name of ['vscode-light', 'vscode-dark', 'vscode-high-contrast', 'vscode-high-contrast-light']) { document.body.classList.remove(name); }
-  document.body.classList.add(view.themeKind === 4 ? 'vscode-high-contrast-light' : view.themeKind === 3 ? 'vscode-high-contrast' : light ? 'vscode-light' : 'vscode-dark');
-  for (const [key, value] of Object.entries(view.themeTokens ?? {})) {
-    if (/^--vscode-[a-zA-Z0-9-]+$/.test(key)) { document.documentElement.style.setProperty(key, value); }
-  }
   emit({ type: 'state', state: { ...view,
-    browserApi: true, nativeBrowser: 'unsupported', hasBrowserTab: activePage?.id !== undefined,
+    browserApi: true, nativeBrowser: view.nativeBrowser === 'granted' ? 'granted' : 'unsupported', hasBrowserTab: activePage?.id !== undefined,
     attachments: (elementDrafts[latest.chatId]?.attachments ?? []).map(item => ({ id: item.id, kind: item.kind ?? 'element', label: item.label, reference: item.reference })),
+    suggestions: pageSuggestion(latest.chatId),
     blocked: latest.canSend ? view.blocked : 'Update the editor extension to enable sending from Chrome.',
     entries: feedback ? [...view.entries, { kind: 'notice', text: feedback }] : view.entries,
   } });
+  replaySnapshots(view.snapshotEvents);
+  syncTerminalStream(latest);
 }
 /** The conversations of the editor panel; the one chosen stays put when the editor switches tabs. */
 function renderConversations(snapshot: ChromeChatSnapshot): void {
   const tabs = snapshot.view.tabs;
   const signature = JSON.stringify([snapshot.chatId, tabs.map(tab => [tab.chatId, tab.title, tab.busy])]);
-  conversation.hidden = tabs.length < 2;
+  // The renderer's own tab strip picks the conversation now (`selectTab` → pin); the select stays for keyboard users of old builds only.
+  conversation.hidden = true;
   if (conversation.dataset.signature === signature || document.activeElement === conversation) { return; }
   conversation.dataset.signature = signature;
   conversation.replaceChildren(...tabs.map(tab => {
@@ -110,8 +205,10 @@ function renderConversations(snapshot: ChromeChatSnapshot): void {
   conversation.value = snapshot.chatId;
 }
 let pinning = 0;
-conversation.addEventListener('change', () => {
-  const connection = active, chatId = conversation.value, current = generation, request = ++pinning;
+conversation.addEventListener('change', () => pinConversation(conversation.value));
+/** Shows another of the editor's conversations in Chrome; the editor's own tab in front is left alone. */
+function pinConversation(chatId: string): void {
+  const connection = active, current = generation, request = ++pinning;
   if (!connection || !latest || chatId === latest.chatId) { return; }
   conversation.disabled = true;
   void fetch(`${connection.url}/command`, { method: 'POST',
@@ -122,15 +219,15 @@ conversation.addEventListener('change', () => {
     if (current !== generation || request !== pinning) { return; }
     if (response.status === 426) { requireUpdate(result.error ?? 'Update both AI Browser extensions.'); return; }
     if (!response.ok) { throw new Error(result.error ?? 'Could not switch conversations.'); }
-    cancelPick(); feedback = undefined; etag = undefined;
-    if (result.snapshot?.view) { latest = result.snapshot; }
+    cancelPick(); feedback = undefined; etag = undefined; shownEpoch = undefined;
+    if (result.snapshot?.view) { latest = result.snapshot; shownRevision = Math.max(shownRevision, (result as { revision?: number }).revision ?? -1); }
   }).catch(error => {
     if (current === generation && request === pinning) { feedback = error instanceof Error ? error.message : 'Could not switch conversations.'; }
   }).finally(() => {
     if (current !== generation || request !== pinning) { return; }
     conversation.disabled = false; delete conversation.dataset.signature; render();
   });
-});
+}
 function showFeedback(text: string): void { feedback = text; render(); }
 function persistOutbox(): Promise<void> {
   const saved = outbox.slice();
@@ -156,6 +253,7 @@ function syncAnnotationDrafts(tab: AnnotationTab, page: AnnotationPage, attachAl
       `Page annotation #${record.number} on ${page.url}`,
       `Note: ${record.text.trim() ? JSON.stringify(record.text) : '(empty)'}`,
       `Element (untrusted page data): <${record.element.tag}> ${JSON.stringify(record.element.selector)}${record.element.text ? ` text ${JSON.stringify(record.element.text)}` : ''}${record.element.role ? ` role ${JSON.stringify(record.element.role)}` : ''}`,
+      ...annotationPointContext(record),
       `Annotation ID ${record.id}, browser tab chrome-annotations:${tab.tabId}. Use browser_annotations_get/list/add/remove with this tabId.`,
     ].join('\n');
     let found = false;
@@ -176,6 +274,10 @@ const annotations = new ChromeAnnotations(syncAnnotationDrafts, error => showFee
 chrome.tabs.onRemoved.addListener(tabId => annotations.closed(tabId));
 
 function restoreCommandDraft(command: ChromeChatCommand): void {
+  if(command.message.type==='gitIndexAction'&&command.chatId===latest?.chatId){
+    emit({type:'gitIndexResult',folder:command.message.folder,error:'Git action was not confirmed. Refresh Git changes before retrying.'});
+    return;
+  }
   if (command.message.type !== 'send') { return; }
   const draft = elementDrafts[command.chatId] ??= { next: 1, attachments: [] };
   const text = restorePickedElements(draft, command.attachments ?? [], command.message.text);
@@ -300,11 +402,11 @@ async function attachFromChrome(kind: string): Promise<void> {
   const chatId = latest.chatId, current = generation;
   const feature = chromeChatAttachmentFeature(kind);
   if (feature && !supportsFeature(feature)) { showFeedback(chromeChatFeatureError(feature)); return; }
-  if (kind === 'annotation') {
+  if (kind === 'annotation' || kind === 'pointAnnotation') {
     cancelPick();
     const tab = (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
     if (current !== generation || tab?.id === undefined) { return; }
-    await annotations.start(tab.id, chatId); return;
+    await annotations.start(tab.id, chatId, kind === 'pointAnnotation' ? 'point' : 'element'); return;
   }
   if (kind === 'file') {
     const input = document.createElement('input'); input.type = 'file';
@@ -366,7 +468,7 @@ async function attachFromChrome(kind: string): Promise<void> {
   }
   if (kind === 'page' || kind === 'sharedPage') {
     await addChromeAttachment(chatId, current, { kind, label: (tab.title || url.href).slice(0, 160),
-      text: `The page the user is looking at: ${url.href}\n${tab.title || ''}\nThis address alone does not grant browser tool access. Check browser_tabs before interacting.`,
+      text: chromePageText(url.href, tab.title),
       ...(kind === 'sharedPage' ? { tabId: tab.id } : {}) }); return;
   }
   throw new Error('This attachment is unavailable in Chrome.');
@@ -386,7 +488,7 @@ function refreshActivePage(): void {
         if (item.kind === 'sharedPage' && item.tabId === activePage?.id && activePage?.url && /^https?:/.test(activePage.url)) {
           const url = new URL(activePage.url); url.username = ''; url.password = '';
           draft.attachments[index] = { ...item, label: (activePage.title || url.href).slice(0, 160),
-            text: `Shared page: ${url.href}\n${activePage.title || ''}\nCheck browser_tabs before interacting; Chrome sharing does not grant tool access.` };
+            text: chromePageText(url.href, activePage.title) };
         }
       }
     }
@@ -404,7 +506,7 @@ chrome.tabs.onUpdated.addListener((tabId, _change, tab) => {
         if (item.kind !== 'sharedPage' || item.tabId !== tabId) { return item; }
         changed = true;
         return { ...item, label: (tab.title || url.href).slice(0, 160),
-          text: `Shared page: ${url.href}\n${tab.title || ''}\nCheck browser_tabs before interacting; Chrome sharing does not grant tool access.` };
+          text: chromePageText(url.href, tab.title) };
       });
     }
   }
@@ -414,13 +516,26 @@ chrome.tabs.onUpdated.addListener((tabId, _change, tab) => {
 refreshActivePage();
 
 window.aiBrowserChatHost = {
+  terminalLease: terminals,
   getState: () => draftState,
   setState(state) { draftState = state; void chrome.storage.session.set({ draftState: state }); },
   postMessage(message: ViewToHost) {
     if (message.type === 'controlRecording') { controlChromeRecording(message.action); return; }
+    if (terminals.fromView(message)) { return; }
+    // The terminal in front is the panel's own choice; nothing to tell the editor.
+    if (message.type === 'selectTerminal') { return; }
+    if (message.type === 'selectTab') {
+      const tab = latest?.view.tabs.find(t => t.id === message.id);
+      if (tab) { pinConversation(tab.chatId); }
+      return;
+    }
     if (message.type === 'copy') { void navigator.clipboard.writeText(message.text).catch(error => showFeedback(String(error))); return; }
     if (message.type === 'openLink' && /^https?:\/\//i.test(message.url)) { void chrome.tabs.create({ url: message.url }).catch(error => showFeedback(String(error))); return; }
-    if (message.type === 'openBrowser') { void chrome.tabs.create({ url: 'chrome://newtab/' }); return; }
+    if (message.type === 'openBrowser' && message.where !== 'vscode') { void chrome.tabs.create({ url: 'about:blank' }).catch(error => showFeedback(String(error))); return; }
+    if (message.type === 'acceptSuggestion') {
+      if (message.id === pageSuggestionId) { void attachFromChrome('sharedPage').catch(error => showFeedback(error instanceof Error ? error.message : String(error))); }
+      return;
+    }
     if (message.type === 'attach') {
       if (message.kind === 'element') { startPick(); }
       else { void attachFromChrome(message.kind).catch(error => showFeedback(error instanceof Error ? error.message : String(error))); }
@@ -437,7 +552,8 @@ window.aiBrowserChatHost = {
         .then(() => emit({ type: 'pastedFileResult', id: message.id }), error => emit({ type: 'pastedFileResult', id: message.id, error: String(error) }));
       return;
     }
-    if (message.type === 'removeAttachment' || message.type === 'openAttachment') {
+    if (message.type === 'openAttachment' && message.entry !== undefined) { showSentAttachment(latest?.view.entries, message.entry, message.id); return; }
+    if (message.type === 'removeAttachment' || (message.type === 'openAttachment' && message.entry === undefined)) {
       const draft = latest && elementDrafts[latest.chatId];
       const attachment = draft?.attachments.find(item => item.id === message.id);
       if (attachment) {
@@ -446,15 +562,8 @@ window.aiBrowserChatHost = {
           draft!.attachments = draft!.attachments.filter(item => item.id !== message.id);
           render(); void persistOutbox().catch(() => showFeedback('Could not save the attachment draft.'));
         } else {
-          const dialog = document.createElement('dialog'); dialog.className = 'chrome-element-preview';
-          const close = document.createElement('button'); close.textContent = 'Close'; close.addEventListener('click', () => dialog.close());
-          const text = document.createElement('pre'); text.textContent = attachment.text;
-          dialog.append(close, text);
-          if (attachment.file?.mime.startsWith('image/')) {
-            const image = document.createElement('img'); image.src = `data:${attachment.file.mime};base64,${attachment.file.base64}`;
-            image.alt = attachment.label; image.style.maxWidth = '100%'; dialog.append(image);
-          }
-          dialog.addEventListener('close', () => dialog.remove()); document.body.append(dialog); dialog.showModal();
+          showAttachmentPreview({ label: attachment.label, text: attachment.text,
+            image: attachment.file?.mime.startsWith('image/') ? `data:${attachment.file.mime};base64,${attachment.file.base64}` : undefined });
         }
         return;
       }
@@ -465,10 +574,16 @@ window.aiBrowserChatHost = {
       if (message.type === 'temporaryStorage') { emit({ type: 'temporaryStorage', error }); }
       showFeedback(error); return;
     }
-    if (!active || !latest) { return; }
+    if (!active || !latest) {
+      if(message.type==='gitIndexAction')emit({type:'gitIndexResult',folder:message.folder,error:'Reconnect to VS Code before updating Git files.'});
+      return;
+    }
     const chatId = latest.chatId, current = generation;
     const feature = chromeChatCommandFeature(message);
-    if (!supportsFeature(feature)) { showFeedback(chromeChatFeatureError(feature)); return; }
+    if (!supportsFeature(feature)) {
+      if(message.type==='gitIndexAction')emit({type:'gitIndexResult',folder:message.folder,error:chromeChatFeatureError(feature)});
+      showFeedback(chromeChatFeatureError(feature)); return;
+    }
     if (message.type === 'chooseWorkdir') { showFeedback('Choose the working folder in the VS Code window.'); }
     prepareChromeMessage(message, chatId, current);
   },
@@ -567,7 +682,10 @@ async function flush(): Promise<void> {
         showFeedback(result.error ?? 'Action refused. Review the conversation in the editor.');
       } else {
         feedback = undefined;
-        if (result.snapshot?.view) { latest = result.snapshot; render(); }
+        const revision = (result as { revision?: number }).revision;
+        if (result.snapshot?.view && (revision === undefined || revision >= shownRevision)) {
+          latest = result.snapshot; shownRevision = Math.max(shownRevision, revision ?? -1); render();
+        }
       }
       if (command.message.type === 'saveFeatureAi') {
         emit(response.ok ? { type: 'featureAiSaved', settings: latest?.settings.featureAi,
@@ -589,10 +707,24 @@ async function reconcileDelivery(session: string | undefined): Promise<void> {
   if (outboxSession !== session) { outboxSession = session; await persistOutbox(); }
 }
 
+/**
+ * Gives every queued outgoing message back to its draft. The composer cleared
+ * the text and chips at send, so dropping the queue — a Disconnect, a new
+ * connection code — would otherwise lose them for good.
+ */
+function returnOutboxToDrafts(): boolean {
+  const pending = outbox.splice(0);
+  for (const command of pending) { persisted.delete(command.id); restoreCommandDraft(command); }
+  persisted.clear();
+  return pending.length > 0;
+}
+
 function reset(): void {
+  terminalLink?.stop(); terminalLink = undefined; terminalEpoch = undefined;
+  status.dataset.busy = 'false'; delete status.dataset.state;
   controlChromeRecording('stop');
   emit({ type: 'recordingStatus', seconds: 0 });
-  cancelPick();
+  cancelPick(); shownRevision = -1; shownEpoch = undefined;
   cancelQuickAttempt();
   generation++; compatible = false; annotationResults.clear(); active = undefined; latest = undefined;
   request?.abort(); clearTimeout(timer); etag = undefined; failures = 0; feedback = undefined;
@@ -605,7 +737,7 @@ function bridgeHeaders(connection: ChromeChatConnection, json = false): Record<s
 }
 function requireUpdate(message: string): void {
   // Keep outgoing commands and drafts intact. Nothing retries until a fresh connection is compatible.
-  reset(); status.textContent = message; status.dataset.state = 'error';
+  reset(); status.dataset.busy = 'false'; status.textContent = message; status.dataset.state = 'error';
 }
 function editorCompatibility(peer: { protocolVersion?: unknown; editorVersion?: unknown; capabilities?: unknown }): string | undefined {
   return chromeChatCompatibilityError(peer.protocolVersion, chromeChatProtocolVersion, peer.editorVersion, chromeVersion)
@@ -630,7 +762,7 @@ async function requestQuickConnection(url: string, current: number): Promise<voi
     secret: Array.from(crypto.getRandomValues(new Uint8Array(32)), value => value.toString(16).padStart(2, '0')).join(''),
     controller: new AbortController() };
   quickAttempt = attempt; quickConnect.disabled = true; cancelConnect.hidden = false; editorSources.replaceChildren();
-  status.textContent = 'Click Allow in the editor chat.';
+  status.dataset.busy = 'true'; delete status.dataset.state; status.textContent = 'Click Allow in the editor chat.';
   const deadline = Date.now() + 90_000;
   const expired = setTimeout(() => attempt.controller.abort(), 90_000);
   try {
@@ -651,7 +783,7 @@ async function requestQuickConnection(url: string, current: number): Promise<voi
         await saveResume(typeof key === 'string' && /^[a-f0-9]{64}$/.test(key) ? { key } : undefined);
         await outboxWrite.catch(() => {});
         if (current !== generation || attempt.controller.signal.aborted) { return; }
-        outbox = []; persisted.clear();
+        returnOutboxToDrafts(); await persistOutbox().catch(() => {});
         await chrome.storage.session.set({ connection, outbox });
         if (current !== generation || attempt.controller.signal.aborted) { return; }
         quickAttempt = undefined;
@@ -663,7 +795,7 @@ async function requestQuickConnection(url: string, current: number): Promise<voi
       await new Promise<void>(resolve => setTimeout(resolve, 500));
     }
   } catch (error) {
-    if (current === generation) { status.textContent = attempt.controller.signal.aborted ? 'The request timed out. Try again.' : error instanceof Error ? error.message : 'Could not connect.'; }
+    if (current === generation) { status.dataset.busy = 'false'; status.textContent = attempt.controller.signal.aborted ? 'The request timed out. Try again.' : error instanceof Error ? error.message : 'Could not connect.'; status.dataset.state = 'error'; }
   } finally {
     clearTimeout(expired);
     if (quickAttempt === attempt) { cancelQuickAttempt(); }
@@ -674,7 +806,7 @@ quickConnect.addEventListener('click', () => {
   cancelQuickAttempt();
   const current = ++generation;
   quickConnect.disabled = true; cancelConnect.hidden = false; editorSources.replaceChildren();
-  status.textContent = 'Looking for an open editor…';
+  status.dataset.busy = 'true'; delete status.dataset.state; status.textContent = 'Looking for an open editor…';
   void Promise.all(chromePairingPorts.map(async port => {
     const url = `http://127.0.0.1:${port}`;
     try {
@@ -687,13 +819,13 @@ quickConnect.addEventListener('click', () => {
     if (current !== generation) { return; }
     const hosts = found.filter((host): host is { url: string; label: string; problem: string | undefined } => !!host);
     quickConnect.disabled = false; cancelConnect.hidden = true;
-    if (!hosts.length) { status.textContent = 'No editor found. Open a local window with an updated AI Browser extension and try again.'; return; }
+    if (!hosts.length) { status.dataset.busy = 'false'; status.textContent = 'No editor found. Open a local window with an updated AI Browser extension and try again.'; return; }
     if (hosts.length === 1) {
-      if (hosts[0].problem) { status.textContent = hosts[0].problem; status.dataset.state = 'error'; }
+      if (hosts[0].problem) { status.dataset.busy = 'false'; status.textContent = hosts[0].problem; status.dataset.state = 'error'; }
       else { void requestQuickConnection(hosts[0].url, current); }
       return;
     }
-    status.textContent = 'Choose an editor window:';
+    status.dataset.busy = 'false'; delete status.dataset.state; status.textContent = 'Choose an editor window:';
     for (const host of hosts) {
       const button = document.createElement('button'); button.type = 'button'; button.textContent = host.problem ? `${host.label} — ${host.problem}` : host.label; button.disabled = !!host.problem;
       button.addEventListener('click', () => void requestQuickConnection(host.url, current)); editorSources.append(button);
@@ -701,7 +833,7 @@ quickConnect.addEventListener('click', () => {
   });
 });
 cancelConnect.addEventListener('click', () => {
-  generation++; cancelQuickAttempt(); editorSources.replaceChildren(); status.textContent = 'Connection cancelled.';
+  generation++; cancelQuickAttempt(); editorSources.replaceChildren(); status.dataset.busy = 'false'; delete status.dataset.state; status.textContent = 'Connection cancelled.';
 });
 
 window.addEventListener('pagehide', cancelQuickAttempt);
@@ -775,12 +907,17 @@ async function poll(connection: ChromeChatConnection, current: number): Promise<
   }
   if (current !== generation || active !== connection) { return; }
   const controller = new AbortController(); request = controller;
-  const timeout = setTimeout(() => controller.abort(), 5_000);
+  const timeout = setTimeout(() => controller.abort(), 5_000 + chromeChatMaxWaitMs);
+  let held = false;
   try {
     const headers = bridgeHeaders(connection);
     if (etag) { headers['If-None-Match'] = etag; }
+    // Long-poll: an editor that knows the header holds an unchanged snapshot until something changes.
+    headers[chromeChatWaitHeader] = '1000';
+    if (shownEpoch && shownRevision >= 0 && latest?.view) { headers[chromeChatBaseHeader] = `${shownEpoch}:${shownRevision}`; }
     const response = await fetch(`${connection.url}/snapshot`, { headers, cache: 'no-store', signal: controller.signal });
     if (current !== generation) { return; }
+    held = !!response.headers.get(chromeChatWaitHeader);
     if (response.status === 401 || response.status === 403) {
       await chrome.storage.session.remove('connection');
       if (current === generation) { void editorGone('The editor ended this connection.'); }
@@ -789,7 +926,9 @@ async function poll(connection: ChromeChatConnection, current: number): Promise<
     if (response.status === 426) { const error = await response.json() as { error?: string }; requireUpdate(error.error ?? 'Update both AI Browser extensions.'); return; }
     if (response.status !== 304) {
       if (!response.ok) { throw new Error('Editor unavailable'); }
-      const snapshot = await response.json() as ChromeChatSnapshot;
+      const snapshot = snapshotFrom(await response.json());
+      if (!snapshot) { etag = undefined; shownEpoch = undefined; if (current === generation) { timer = setTimeout(() => void poll(connection, current), 0); } return; }
+      const epoch = response.headers.get(chromeChatBaseHeader);
       if (current !== generation) { return; }
       const problem = editorCompatibility(snapshot);
       if (problem || snapshot.version !== 1 || !snapshot.view) {
@@ -799,50 +938,62 @@ async function poll(connection: ChromeChatConnection, current: number): Promise<
       if (current !== generation) { return; }
       compatible = true;
       status.title = `Chrome ${chromeVersion} · VS Code ${snapshot.editorVersion ?? 'unknown'}`;
-      latest = snapshot; render(); etag = response.headers.get('ETag') ?? undefined;
+      const revision = revisionOf(response.headers.get('ETag'));
+      if (revision === -1 || revision >= shownRevision) {
+        latest = snapshot; shownRevision = Math.max(shownRevision, revision); shownEpoch = epoch && revision >= 0 ? epoch : undefined; render(); etag = response.headers.get('ETag') ?? undefined;
+      }
     }
-    status.textContent = latest?.blocked ?? (latest?.running ? 'Working…' : 'Connected');
+    status.dataset.busy = 'false'; status.textContent = latest?.blocked ?? (latest?.running ? 'Working…' : 'Connected');
+    status.title = `${status.textContent} · Chrome ${chromeVersion} · VS Code ${latest?.editorVersion ?? 'unknown'}`;
     status.dataset.state = latest?.blocked ? 'error' : 'connected';
     await pollFooterEvents(connection, current);
     if (current !== generation) { return; }
     failures = 0; void flush();
   } catch {
     if (current !== generation) { return; }
-    failures++; status.textContent = 'Editor unavailable · Reconnecting…'; status.dataset.state = 'error';
+    failures++; status.dataset.busy = 'true'; status.textContent = 'Editor unavailable · Reconnecting…'; status.dataset.state = 'error';
     // A restarted editor listens on a new port with a new key: the old address never comes back.
     if (failures >= 2) { void editorGone('The editor was closed or reloaded.'); return; }
   } finally { clearTimeout(timeout); }
-  if (current === generation) { timer = setTimeout(() => void poll(connection, current), failures ? Math.min(10_000, 1000 * 2 ** Math.min(failures, 4)) : 750); }
+  if (current === generation) { timer = setTimeout(() => void poll(connection, current), failures ? Math.min(10_000, 1000 * 2 ** Math.min(failures, 4)) : held ? 0 : 250); }
 }
 function connect(connection: ChromeChatConnection, restoredCursor?: number): void {
   const cursor = restoredCursor ?? (footerSession && footerSession === connection.deliverySession ? footerCursor : 0);
   reset(); active = connection; footerSession = connection.deliverySession; footerCursor = cursor;
   pairing.hidden = true; app.hidden = true; disconnect.hidden = false;
-  status.textContent = 'Connecting…'; delete status.dataset.state;
+  status.dataset.busy = 'true'; status.textContent = 'Connecting…'; delete status.dataset.state;
   void poll(connection, generation);
 }
 pairing.addEventListener('submit', event => {
   event.preventDefault(); if (pairingPending) { return; } pairingPending = true;
+  clearConnectionError();
+  status.dataset.busy = 'true'; delete status.dataset.state; status.textContent = 'Connecting…';
   void (async () => {
     try {
       const connection = readChromeChatConnection(JSON.parse(code.value.trim()));
       if (!connection || connection.extensionId !== chrome.runtime.id) { throw new Error('Paste a valid connection code for this Chrome extension.'); }
       const problem = editorCompatibility(connection); if (problem) { throw new Error(problem); }
       const current = ++generation;
-      outbox = []; persisted.clear();
-      await outboxWrite.catch(() => {});
+      returnOutboxToDrafts(); await persistOutbox().catch(() => {});
       await chrome.storage.session.set({ connection, outbox });
       if (current !== generation) { return; }
       code.value = ''; connect(connection);
-    } catch (error) { status.textContent = error instanceof Error ? error.message : 'Paste a valid connection code.'; status.dataset.state = 'error'; }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Paste a valid connection code.';
+      status.dataset.busy = 'false'; status.textContent = message; status.dataset.state = 'error';
+      // The same message beside the field, wired for assistive technology, and focus on the field.
+      connectionError.textContent = message; code.setAttribute('aria-invalid', 'true'); code.setAttribute('aria-describedby', 'connection-error'); code.focus();
+    }
     finally { pairingPending = false; }
   })();
 });
 disconnect.addEventListener('click', () => {
-  reset(); outbox = []; persisted.clear(); status.textContent = 'Disconnected from editor';
+  reset();
+  const returned = returnOutboxToDrafts();
+  status.dataset.busy = 'false'; status.textContent = returned ? 'Disconnected from editor. Messages not yet delivered were returned to their drafts.' : 'Disconnected from editor';
   // A deliberate disconnect forgets the grant: the next connection asks in the editor again.
   void saveResume(undefined);
-  void outboxWrite.catch(() => {}).then(() => chrome.storage.session.remove(['connection', 'outbox']));
+  void persistOutbox().catch(() => {}).then(() => chrome.storage.session.remove(['connection']));
 });
 const initialGeneration = generation;
 void chrome.storage.session.get(['connection', 'draftState', 'outbox', 'elementDrafts', 'annotationTabs', 'footerPosition', 'outboxSession']).then(saved => {
@@ -867,9 +1018,9 @@ void chrome.storage.session.get(['connection', 'draftState', 'outbox', 'elementD
   const position = saved.footerPosition as { token?: string; deliverySession?: string; cursor?: number } | undefined;
   const cursor = (position?.deliverySession ? position.deliverySession === connection?.deliverySession : position?.token === connection?.token) && Number.isSafeInteger(position?.cursor) && position!.cursor! >= 0 ? position!.cursor! : 0;
   if (connection?.extensionId === chrome.runtime.id) { connect(connection, cursor); }
-  else { void resumeOnce(); }
+  else { status.textContent = 'Connect to your editor'; status.dataset.busy = 'false'; void resumeOnce(); }
   watchForEditor();
-}).catch(() => { status.textContent = 'Session storage unavailable. Reload the extension.'; });
+}).catch(() => { status.dataset.busy = 'false'; status.textContent = 'Session storage unavailable. Reload the extension.'; });
 
 /* ------------------------------------------------------------ resume after the editor restarts */
 
@@ -890,7 +1041,7 @@ async function saveResume(grant: ResumeGrant | undefined): Promise<void> {
 /** The editor went away: back to the Connect screen, and keep looking for it while a grant is remembered. */
 async function editorGone(reason: string): Promise<void> {
   reset();
-  status.textContent = resumeState ? `${reason} Reconnecting automatically when it is back…` : `${reason} Click Connect.`;
+  status.dataset.busy = String(!!resumeState); status.textContent = resumeState ? `${reason} Reconnecting automatically when it is back…` : `${reason} Click Connect.`;
   status.dataset.state = 'error';
   void resumeOnce();
 }
@@ -904,6 +1055,7 @@ async function resumeOnce(): Promise<boolean> {
   await resumeLoaded;
   if (resuming || active || quickAttempt || !resumeState) { return false; }
   resuming = true;
+  status.dataset.busy = 'true'; status.textContent = 'Looking for your editor · Reconnecting…';
   const current = generation;
   try {
     const hosts = (await Promise.all(chromePairingPorts.map(async port => {

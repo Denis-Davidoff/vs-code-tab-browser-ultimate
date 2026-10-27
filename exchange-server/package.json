@@ -1,0 +1,37 @@
+{
+  "name": "exchange-server",
+  "license": "Elastic-2.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "npm run build -w @exchange/protocol && concurrently -k \"npm run dev -w @exchange/api\" \"npm run dev -w @exchange/web\"",
+    "build": "npm run build -w @exchange/protocol && npm run build -w @exchange/api && npm run build -w @exchange/web",
+    "typecheck": "npm run build -w @exchange/protocol && npm run typecheck --workspaces --if-present",
+    "db:push": "npm run db:push -w @exchange/api",
+    "test": "npm run test -w @exchange/protocol && npm run test -w @exchange/api",
+    "setup": "node scripts/init-env.mjs",
+    "test:smoke": "node --env-file=.env scripts/smoke.mjs",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "db:migrate": "npm run db:migrate -w @exchange/api",
+    "start": "concurrently -k \"npm run start -w @exchange/api\" \"npm run start -w @exchange/web\"",
+    "chat:build": "node scripts/build-chat.mjs",
+    "predev": "npm run chat:build",
+    "prebuild": "npm run chat:build",
+    "test:security": "node --env-file=.env scripts/security-smoke.mjs",
+    "test:integration": "npm run build -w @exchange/api && node scripts/security-integration.mjs",
+    "test:full": "npm test && npm run build -w @exchange/api && node scripts/security-integration.mjs --full"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "concurrently": "^9.2.1",
+    "prettier": "^3.9.10",
+    "typescript": "^5.9.3"
+  }
+}

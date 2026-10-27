@@ -1,10 +1,14 @@
+import { createRemoteVideoEncoder, type RemoteVideoEncoder, type RemoteVideoChunk } from './remoteVideo';
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { takeRemotePick } from './remotePick';
 import * as vscode from 'vscode';
 import { CDPClient } from '../core/cdp';
+import { NativeActions, type ActionScope, type FrameOwner, type PointerOptions } from './nativeActions';
+import type { RemoteBrowserInput } from './remoteBrowserProtocol';
 import { extractElementData, renderElementMarkdown } from '../elements/elementContext';
 import { tabs as tabSource } from './tabSource';
 import { legacyMarkerRemoval, stripMarker, stripMarkerFromHtml } from './shareIndicator';
@@ -150,6 +154,7 @@ function shareLostMessage(target: ShareTarget): string {
  * demand would report an empty log for everything that happened before.
  */
 class TabSession {
+	public readonly actions: NativeActions;
 
 	private readonly _console: ConsoleLine[] = [];
 	private readonly _subscriptions: vscode.Disposable[] = [];
@@ -168,7 +173,34 @@ class TabSession {
 	private constructor(
 		public readonly client: CDPClient,
 		public readonly sessionId: string,
-	) { }
+	) {
+		this.actions = new NativeActions({
+			send: (method, params, id) => client.send(method, params, id),
+			mainSessionId: sessionId,
+			scope: async frameId => frameId === undefined ? { sessionId } : this.frameScope(frameId),
+			owners: frameId => this._actionOwners(frameId),
+		});
+	}
+
+	/** Frame owners in parent document coordinates, including out-of-process frames. */
+	private async _actionOwners(frameId: string): Promise<FrameOwner[]> {
+		const frames = await this.frames(frameId);
+		const { frameTree } = await this.client.send('Page.getFrameTree', {}, this.sessionId);
+		const rootId = frameTree?.frame?.id;
+		const path: FrameOwner[] = [], seen = new Set<string>();
+		let id = frameId;
+		while (id !== rootId) {
+			if (seen.has(id) || seen.size >= 32) { throw new Error('The frame ancestry is invalid or too deep.'); }
+			seen.add(id);
+			const frame = frames.find(frame => frame.id === id);
+			if (!frame?.parentId) { throw new Error('The frame ancestry changed. Refresh browser_frames before acting.'); }
+			const parent: ActionScope = frame.parentId === rootId
+				? { sessionId: this.sessionId } : await this.frameScope(frame.parentId);
+			path.unshift({ frameId: id, parent });
+			id = frame.parentId;
+		}
+		return path;
+	}
 
 	/**
 	 * `signal` ends an open that is still in flight: the controller fires it when
@@ -704,7 +736,7 @@ function withFrameHint(value: object, frames: readonly { id: string; url: string
 		...value,
 		frames,
 		framesNote: 'This page embeds frames, and their content is not included above. Pass a frame id as frameId to '
-			+ 'browser_text, browser_snapshot, browser_html, browser_click, browser_fill, browser_scroll or browser_wait_for '
+			+ 'browser_text, browser_snapshot, browser_html, browser_click, browser_hover, browser_drag, browser_press, browser_type, browser_fill, browser_scroll or browser_wait_for '
 			+ 'to work inside one; browser_frames lists every frame, nested ones included.',
 	};
 }
@@ -925,6 +957,129 @@ function literal(value: unknown): string {
 
 export class BrowserController implements vscode.Disposable {
 
+	/** Explicit human remote control, independent of assistants' tab assignments. */
+	public async remoteTabs(): Promise<{id:string;title:string;url:string;kind:'chrome'|'vscode'}[]> {
+		await this._settle(); requireGrant();
+		const tabs=tabSource.all ?? []; this._identify(tabs);
+		return tabs.slice(0,100).map(tab=>({id:this._idOf(tab),title:(stripMarker(tab.title)??'').slice(0,2000),url:tab.url.slice(0,16000),kind:tabSource.isChrome(tab)?'chrome' as const:'vscode' as const}));
+	}
+	private async _remoteTab(id:string): Promise<vscode.BrowserTab> {
+		await this._settle(); requireGrant();
+		if(!vscode.workspace.isTrusted)throw new Error('Trust this workspace before remote browser control.');
+		const tabs=tabSource.all ?? [];this._identify(tabs);
+		const tab=tabs.find(t=>this._idOf(t)===id);
+		if(!tab)throw new Error('The selected browser tab was closed. Select another tab.');
+		return tab;
+	}
+	public remoteTab(id:string):Promise<vscode.BrowserTab> { return this._remoteTab(id); }
+	public async remoteVideoEncoder(id: string, output: (chunk: RemoteVideoChunk) => void, failed: (error: Error) => void): Promise<RemoteVideoEncoder> {
+  const tab = await this._remoteTab(id);
+  return createRemoteVideoEncoder(await this._sessionFor(tab), output, failed);
+ }
+	public async remoteStream(id:string,frame:(data:string,width:number,height:number)=>void):Promise<vscode.Disposable> {
+		const tab=await this._remoteTab(id),release=this._hold(tab);
+		let session:TabSession;
+		try{session=await this._sessionFor(tab);}catch(error){release();throw error;}
+		let closed=false,busy=false,lastFrame=0;
+		const send=async(method:string,params?:object)=>{
+			let timeout:ReturnType<typeof setTimeout>|undefined;
+			try{return await Promise.race([session.client.send(method,params,session.sessionId),new Promise<never>((_,reject)=>{timeout=setTimeout(()=>reject(new Error('Browser did not respond')),5000);})]);}
+			finally{clearTimeout(timeout);}
+		};
+		const listener=session.client.on('Page.screencastFrame',(event,sessionId)=>{
+			if(sessionId!==session.sessionId)return;
+			void send('Page.screencastFrameAck',{sessionId:event.sessionId}).catch(()=>{});
+			if(closed || Date.now()-lastFrame<100)return;
+			const width=event.metadata?.deviceWidth,height=event.metadata?.deviceHeight;
+			if(typeof event.data==='string' && event.data.length<2_000_000 && Number.isFinite(width)&&width>0&&Number.isFinite(height)&&height>0){lastFrame=Date.now();frame(event.data,width,height);}
+		});
+		// Counted before the first await below, so an older stream disposed while this one is starting sees it.
+		this._screencasts.set(tab,(this._screencasts.get(tab)??0)+1);
+		try{await send('Page.startScreencast',{format:'jpeg',quality:60,maxWidth:1440,maxHeight:1000,everyNthFrame:1});}catch{/* Screenshot fallback also supports browsers without screencast. */}
+		const tick=async()=>{
+			if(closed||busy||Date.now()-lastFrame<1500)return;busy=true;
+			try{
+				await this._remoteTab(id);
+				const metrics=await send('Page.getLayoutMetrics');
+				const viewport=metrics.cssLayoutViewport ?? metrics.layoutViewport;
+				// Capture the view, not a scaled compositor surface. Repeated clipped
+				// surface captures can interfere with the live embedded browser's
+				// visible region while the user scrolls it. Previewing must not resize it.
+				const {data}=await send('Page.captureScreenshot',{format:'jpeg',quality:60,fromSurface:false,captureBeyondViewport:false});
+				if(!closed&&typeof data==='string'&&data.length<2_000_000){lastFrame=Date.now();frame(data,viewport.clientWidth,viewport.clientHeight);}
+			}catch{/* A closed tab is reported by the next tabs refresh. */}finally{busy=false;}
+		};
+		const timer=setInterval(()=>void tick(),500);void tick();
+		return new vscode.Disposable(()=>{
+			closed=true;clearInterval(timer);listener.dispose();
+			const remaining=(this._screencasts.get(tab)??1)-1;
+			if(remaining>0)this._screencasts.set(tab,remaining);
+			else{this._screencasts.delete(tab);void send('Page.stopScreencast').catch(()=>{});}
+			release();
+		});
+	}
+	public async remoteInput(id:string,input:RemoteBrowserInput):Promise<void> {
+		const tab=await this._remoteTab(id);
+		if(input.action==='close'){await tab.close();return;}
+		const release=this._hold(tab);
+		try{
+			if(input.action==='navigate'){
+				// Navigation must not wait for screenshot setup or for all the DOM,
+				// CSS and Runtime domains of a blank page to finish enabling.
+				let client:CDPClient|undefined,finished=false;
+				let timeout:ReturnType<typeof setTimeout>|undefined;
+				try{
+					await Promise.race([(async()=>{
+						const connection=new CDPClient(await tab.startCDPSession());
+						if(finished){connection.dispose();return;}
+						client=connection;
+						const sessionId=await connection.attachToPage();
+						const result=await connection.send('Page.navigate',{url:input.url},sessionId);
+						if(result?.errorText)throw new Error(`Could not open ${input.url}: ${result.errorText}`);
+					})(),new Promise<never>((_,reject)=>{timeout=setTimeout(()=>reject(new Error('Browser navigation timed out; check the page before retrying.')),5000);})]);
+				}finally{finished=true;clearTimeout(timeout);client?.dispose();}
+				return;
+			}
+			const session=await this._sessionFor(tab);
+			const send=async(method:string,params?:object)=>{
+				let timeout:ReturnType<typeof setTimeout>|undefined;
+				try{return await Promise.race([session.client.send(method,params,session.sessionId),new Promise<never>((_,reject)=>{timeout=setTimeout(()=>reject(new Error('Browser action timed out; check the page before retrying.')),5000);})]);}
+				finally{clearTimeout(timeout);}
+			};
+			// "Fit to my view": the remote viewer asked for the page to be laid out at its own size.
+			// Explicit and undone on 'unfit' or when the viewer stops watching this tab.
+			if(input.action==='fit'){await send('Emulation.setDeviceMetricsOverride',{width:input.width,height:input.height,deviceScaleFactor:0,mobile:false});return;}
+			if(input.action==='unfit'){await send('Emulation.clearDeviceMetricsOverride');return;}
+			if(input.action==='reload'){await send('Page.reload');return;}
+			if(input.action==='back'||input.action==='forward'){
+				const history=await send('Page.getNavigationHistory');const entry=history.entries[history.currentIndex+(input.action==='back'?-1:1)];
+				if(entry)await send('Page.navigateToHistoryEntry',{entryId:entry.id});return;
+			}
+			if(input.action==='text'){await send('Input.insertText',{text:input.text});return;}
+			if(input.action==='key'){
+				const codes:Record<string,number>={Backspace:8,Tab:9,Enter:13,Escape:27,Delete:46,ArrowLeft:37,ArrowUp:38,ArrowRight:39,ArrowDown:40,Home:36,End:35,PageUp:33,PageDown:34};
+				const key={key:input.key,windowsVirtualKeyCode:codes[input.key]??input.key.toUpperCase().charCodeAt(0),modifiers:input.modifiers};
+				// Chromium needs the carriage return on keyDown to produce Enter's
+				// default action (submit a form or insert a newline), not just key events.
+				const text=input.key==='Enter'&&!(input.modifiers&7)?{text:'\r',unmodifiedText:'\r'}:{};
+				try{await send('Input.dispatchKeyEvent',{type:'keyDown',...key,...text});}
+				finally{await send('Input.dispatchKeyEvent',{type:'keyUp',...key});}
+				return;
+			}
+			if(input.action!=='click'&&input.action!=='scroll'&&input.action!=='move')return;
+			const metrics=await send('Page.getLayoutMetrics');const viewport=metrics.cssLayoutViewport ?? metrics.layoutViewport;
+			const x=Math.min(viewport.clientWidth-1,input.x*viewport.clientWidth),y=Math.min(viewport.clientHeight-1,input.y*viewport.clientHeight);
+			// A pointer move from the viewer: the inspect overlay and the annotation picker highlight from it.
+			if(input.action==='move'){await send('Input.dispatchMouseEvent',{type:'mouseMoved',x,y,button:'none'});return;}
+			if(input.action==='scroll'){await send('Input.dispatchMouseEvent',{type:'mouseWheel',x,y,deltaX:input.deltaX,deltaY:input.deltaY});return;}
+			// A pick waiting on this tab takes the click by its coordinates (remotePick.ts).
+			if(input.button==='left'&&await takeRemotePick(tab,x,y))return;
+			await send('Input.dispatchMouseEvent',{type:'mouseMoved',x,y,button:'none'});
+			await send('Input.dispatchMouseEvent',{type:'mousePressed',x,y,button:input.button,clickCount:input.count});
+			await send('Input.dispatchMouseEvent',{type:'mouseReleased',x,y,button:input.button,clickCount:input.count});
+		}finally{release();}
+	}
+
 	/**
 	 * One CDP session per tab, not one for the window.
 	 *
@@ -968,6 +1123,15 @@ export class BrowserController implements vscode.Disposable {
 	 * work, so the rule cannot be re-entered by adding a call site.
 	 */
 	private readonly _inFlight = new Map<vscode.BrowserTab, number>();
+
+	/**
+	 * Remote previews running on each tab. They share the tab's one CDP session and
+	 * so one screencast: a stream that starts again (selection repeated, viewers
+	 * leaving and returning) can overlap the one it replaces, and the older one's
+	 * disposal must not stop the capture the newer one is using. The screencast
+	 * is stopped only when the last stream of the tab goes.
+	 */
+	private readonly _screencasts = new Map<vscode.BrowserTab, number>();
 
 	/**
 	 * Opens waiting for a session slot to come free.
@@ -2459,86 +2623,24 @@ export class BrowserController implements vscode.Disposable {
 	 * A compact list of things worth interacting with, for orientation.
 	 *
 	 * **Every selector it hands out is verified to resolve back to the element
-	 * it describes**, and that is not a refinement — it is the difference
-	 * between this tool being safe and being dangerous. `click` and `fill`
-	 * resolve a selector with `document.querySelector`, which returns the
-	 * *first* match. The old builder fell back to the bare tag name, so two
+	 * it describes**. The original click used the first document.querySelector
+	 * match; native actions now require uniqueness. The old builder fell back
+	 * to the bare tag name, so two
 	 * buttons with no `id` and no `name` were both reported as `button`, and an
 	 * agent told to press the second one pressed the first: asked for Delete,
 	 * it clicked Save. Nothing anywhere reported a problem — the click
 	 * succeeded, on the wrong element.
 	 *
-	 * So the builder tries a unique `id`, then `tag[name=…]`, then a positional
-	 * `:nth-of-type` path, and **checks each candidate with the same call
-	 * `click` will make** before accepting it. An element that cannot be
-	 * addressed — inside a shadow root, say — is listed with no `selector` at
-	 * all rather than with one that would act on something else.
+	 * The shared snapshot builder verifies uniqueness within each shadow root;
+	 * actions resolve every segment again through CDP, including closed roots.
 	 *
 	 * Classes are deliberately not used, for the reason given under the element
 	 * commands: utility-class frameworks make them long and unstable.
 	 */
-	public async snapshot(frameId: string | undefined, caller: CallerIdentity): Promise<unknown> {
+	public async snapshot(frameId: string | undefined, caller: CallerIdentity, signal?: AbortSignal): Promise<unknown> {
 		requireFrameId(frameId);
 		return this._withSession(caller, async session => {
-			const value = await evaluate(session, `(() => {
-				// The exact test the consumer performs, so a selector cannot pass
-				// here and pick a different element there.
-				const resolves = (sel, el) => {
-					try { return !!sel && document.querySelector(sel) === el; } catch (e) { return false; }
-				};
-				const idFor = (el) => el.id ? '#' + CSS.escape(el.id) : undefined;
-				const pathFor = (el) => {
-					const parts = [];
-					let node = el;
-					while (node && node.nodeType === 1) {
-						const byId = idFor(node);
-						// A duplicate id resolves to somebody else, so it is only an
-						// anchor when it actually points back at this node.
-						if (byId && document.querySelector(byId) === node) { parts.unshift(byId); break; }
-						const parent = node.parentElement;
-						let part = node.tagName.toLowerCase();
-						if (parent) {
-							const twins = Array.prototype.filter.call(parent.children, (c) => c.tagName === node.tagName);
-							if (twins.length > 1) { part += ':nth-of-type(' + (twins.indexOf(node) + 1) + ')'; }
-						}
-						parts.unshift(part);
-						if (!parent) { break; }
-						node = parent;
-					}
-					return parts.join(' > ');
-				};
-				const selectorFor = (el) => {
-					const byId = idFor(el);
-					if (resolves(byId, el)) { return byId; }
-					const name = el.getAttribute('name');
-					const byName = name ? el.tagName.toLowerCase() + '[name=' + JSON.stringify(name) + ']' : undefined;
-					if (resolves(byName, el)) { return byName; }
-					const path = pathFor(el);
-					return resolves(path, el) ? path : undefined;
-				};
-
-				const out = [];
-				const nodes = document.querySelectorAll('a[href], button, input, select, textarea, [role="button"], [role="link"], [contenteditable="true"]');
-				for (const el of nodes) {
-					const rect = el.getBoundingClientRect();
-					if (rect.width === 0 || rect.height === 0) { continue; }
-					// **A field's value is never its label.** An input has no
-					// innerText, so the chain used to fall through to value and
-					// hand the model whatever the user had typed — a password
-					// included, next to type "password". Only a button-like
-					// input shows its value as its caption; any other field says
-					// only that it holds something. Breaks-silently #211.
-					const buttonLike = el.tagName === 'INPUT' && /^(submit|button|reset)$/i.test(el.type);
-					const label = (el.getAttribute('aria-label') || el.innerText || (buttonLike ? el.value : '') || el.getAttribute('placeholder') || el.getAttribute('title') || '').trim().slice(0, 80);
-					const entry = { tag: el.tagName.toLowerCase(), type: el.getAttribute('type') || undefined, label };
-					if (!buttonLike && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && el.value) { entry.filled = true; }
-					const selector = selectorFor(el);
-					if (selector) { entry.selector = selector; }
-					out.push(entry);
-					if (out.length >= 150) { break; }
-				}
-				return { url: location.href, title: document.title, elements: out };
-			})()`, frameId);
+			const value = await session.actions.snapshot(frameId, signal);
 			// Nothing writes a marker into a page any more, but a page an older
 			// build reached can still be open with its observer re-applying one.
 			// This title is read from the page, so it is one of the two sites
@@ -2841,14 +2943,14 @@ export class BrowserController implements vscode.Disposable {
 	 * The picker waits for a click, so the page must be on screen (#355); the
 	 * tab is returned so the confirmation can name it.
 	 */
-	public async annotatePage(): Promise<vscode.BrowserTab> {
+	public async annotatePage(mode: 'element' | 'point' = 'element'): Promise<vscode.BrowserTab> {
 		requireGrant();
 		const tab = this.focusedTab ?? this.userTab;
 		if (!tab) { throw new Error('Open a page in the integrated browser first.'); }
 		if (!this.onScreen(tab)) {
 			throw new Error(`"${plainInLabel(pageTitle(tab.title, tab.url), 60)}" is not on screen — bring its tab to the front, then add a marker.`);
 		}
-		await this._annotations.start(tab);
+		await this._annotations.start(tab, mode);
 		return tab;
 	}
 
@@ -2878,9 +2980,9 @@ export class BrowserController implements vscode.Disposable {
 	}
 
 	/** User action from the chat's "+": the tab the chat resolved, on screen. */
-	public async annotateTab(tab: vscode.BrowserTab): Promise<void> {
+	public async annotateTab(tab: vscode.BrowserTab, mode: 'element' | 'point' = 'element'): Promise<void> {
 		requireGrant();
-		await this._annotations.start(tab);
+		await this._annotations.start(tab, mode);
 	}
 
 	public onDidChangeAnnotations(listener: (change: AnnotationChange) => void): vscode.Disposable {
@@ -3414,6 +3516,7 @@ export class BrowserController implements vscode.Disposable {
 		const { data } = await session.client.send('Page.captureScreenshot', {
 			format: 'png',
 			captureBeyondViewport: fullPage,
+			...(!fullPage ? { fromSurface: false } : {}),
 			...(clip ? { clip } : {}),
 		}, session.sessionId);
 
@@ -3425,18 +3528,40 @@ export class BrowserController implements vscode.Disposable {
 		return { png: Buffer.from(data, 'base64'), clipped, url: tab.url };
 	}
 
-	public async click(selector: string, frameId: string | undefined, caller: CallerIdentity): Promise<unknown> {
+	public async click(selector: string, frameId: string | undefined, caller: CallerIdentity, options?: PointerOptions, signal?: AbortSignal): Promise<unknown> {
 		refuseValueProbe(selector);
 		requireFrameId(frameId);
-		return this._withSession(caller, async session => {
-			return evaluate(session, `(() => {
-				const el = document.querySelector(${literal(selector)});
-				if (!el) { throw new Error('No element matches ' + ${literal(selector)}); }
-				el.scrollIntoView({ block: 'center' });
-				el.click();
-				return 'clicked ' + (el.tagName.toLowerCase());
-			})()`, frameId);
-		});
+		return this._withSession(caller, (session, tab) => this._onScrollGate(tab,
+			() => session.actions.pointerAction('click', selector, frameId, options, signal)));
+	}
+
+	public async hover(selector: string, frameId: string | undefined, caller: CallerIdentity, smooth?: boolean, signal?: AbortSignal, humanize?: boolean): Promise<unknown> {
+		refuseValueProbe(selector);
+		requireFrameId(frameId);
+		return this._withSession(caller, (session, tab) => this._onScrollGate(tab,
+			() => session.actions.pointerAction('hover', selector, frameId, { smooth, humanize }, signal)));
+	}
+
+	public async press(selector: string, key: string, frameId: string | undefined, caller: CallerIdentity, signal?: AbortSignal): Promise<unknown> {
+		refuseValueProbe(selector);
+		requireFrameId(frameId);
+		return this._withSession(caller, (session, tab) => this._onScrollGate(tab,
+			() => session.actions.keyboardAction(selector, frameId, { key }, signal)));
+	}
+
+	public async type(selector: string, text: string, frameId: string | undefined, caller: CallerIdentity, signal?: AbortSignal, humanize?: boolean): Promise<unknown> {
+		refuseValueProbe(selector);
+		requireFrameId(frameId);
+		return this._withSession(caller, (session, tab) => this._onScrollGate(tab,
+			() => session.actions.keyboardAction(selector, frameId, { text }, signal, humanize)));
+	}
+
+	public async drag(selector: string, targetSelector: string, frameId: string | undefined, caller: CallerIdentity, smooth?: boolean, signal?: AbortSignal, humanize?: boolean): Promise<unknown> {
+		refuseValueProbe(selector);
+		refuseValueProbe(targetSelector);
+		requireFrameId(frameId);
+		return this._withSession(caller, (session, tab) => this._onScrollGate(tab,
+			() => session.actions.drag(selector, targetSelector, frameId, smooth, signal, humanize)));
 	}
 
 	/**
@@ -3468,14 +3593,12 @@ export class BrowserController implements vscode.Disposable {
 	 *   value (a mask, a trimmed email, a lowercased colour) took it, and says
 	 *   what it now reads rather than being reported as a failure.
 	 */
-	public async fill(selector: string, value: string, frameId: string | undefined, caller: CallerIdentity): Promise<unknown> {
+	public async fill(selector: string, value: string, frameId: string | undefined, caller: CallerIdentity, signal?: AbortSignal): Promise<unknown> {
 		refuseValueProbe(selector);
 		requireFrameId(frameId);
 		return this._withSession(caller, async session => {
-			const result = await evaluate(session, `(() => {
-				const el = document.querySelector(${literal(selector)});
-				if (!el) { throw new Error('No element matches ' + ${literal(selector)}); }
-				const value = ${literal(value)};
+			const result = await session.actions.onElement(selector, frameId, `function(value) {
+				const el = this;
 				const tag = el.tagName.toLowerCase();
 				el.focus();
 				if (el.isContentEditable) {
@@ -3553,7 +3676,7 @@ export class BrowserController implements vscode.Disposable {
 					attributes: { type: el.getAttribute('type') ?? '', name: el.getAttribute('name') ?? '',
 						id: el.getAttribute('id') ?? '', autocomplete: el.getAttribute('autocomplete') ?? '' },
 				};
-			})()`, frameId);
+			}`, [value], signal);
 			if (typeof result === 'string') {
 				return result;
 			}

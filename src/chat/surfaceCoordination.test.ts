@@ -5,6 +5,7 @@ import { runInNewContext } from 'node:vm';
 import { createSourceFile, isClassDeclaration, ScriptKind, ScriptTarget, transpileModule } from 'typescript';
 import { GitAccess } from './gitAccess.ts';
 import { readChatPanelIdentity } from './chatPanelState.ts';
+import { closesEmptyPanel } from './terminalLogic.ts';
 
 function method(file: string, name: string, context: Record<string, unknown> = {}): any {
 	const text = readFileSync(file, 'utf8');
@@ -48,10 +49,10 @@ test('project command refreshes keep independent lists and throttles even when r
 	assert.equal(changes, 2);
 });
 
-function catalog(storage: any): any {
+function catalog(storage: any, key?:string, legacy?:(panel:any)=>boolean): any {
 	const source = readFileSync('src/chat/chatPanelCatalog.ts', 'utf8').replace(/^import .*\n/gm, '').replaceAll('export ', '');
 	const Type = runInNewContext(transpileModule(`${source}\nChatPanelCatalog;`, { compilerOptions: { target: ScriptTarget.ES2022 } }).outputText, { readChatPanelIdentity });
-	return new Type(storage);
+	return new Type(storage,key,legacy);
 }
 
 test('hidden panel identities, drafts and allocation high-water survive cold start', () => {
@@ -109,13 +110,14 @@ test('pending panels own their conversations before any serializer is invoked', 
 test('moving an idle chat during queue debounce reschedules and sends in the already-ready destination', async () => {
 	const timers = new Map<number, () => void>();
 	let nextTimer = 0, sent = 0;
-	const context = { setTimeout: (fn: () => void) => { const id = ++nextTimer; timers.set(id, fn); return id; }, clearTimeout: (id: number) => timers.delete(id), tabLimit: () => 20 };
+	const context = { closesEmptyPanel, setTimeout: (fn: () => void) => { const id = ++nextTimer; timers.set(id, fn); return id; }, clearTimeout: (id: number) => timers.delete(id), tabLimit: () => 20 };
 	const tab = { id: 'queued', chat: { id: 'conversation' }, attachments: [], readyForQueued: true,
 		dequeue() { this.readyForQueued = false; return { text: 'queued message', attachments: [] }; }, moveTo(_host: unknown) {} };
 	const sibling = { id: 'other', chat: { id: 'other' } };
 	const services = {};
 	const surface = (tabs: any[]) => ({ _tabs: tabs, _active: tabs[0], _services: services, _view: {}, _registry: {}, _repoBusy: new Map(),
 		_gitCommits: new Map(), _draining: new Map(), _chatSkillTabs: new Map(), _annotationLinks: new Map(), _livePages: new Map(), _savedDrafts: new Map(),
+		_terminals: { clearFront() { return false; }, size: 0 }, _leaveTerminal() { return false; },
 		_post() {}, _saveTabs() {}, _state() { return {}; }, _postMessage() {}, _fail(error: Error) { throw error; },
 		_send: async (text: string) => { assert.equal(text, 'queued message'); sent++; } });
 	const from: any = surface([tab, sibling]), to: any = surface([sibling]);
@@ -129,4 +131,19 @@ test('moving an idle chat during queue debounce reschedules and sends in the alr
 	await Promise.resolve(); await Promise.resolve();
 	assert.equal(sent, 1);
 	assert.equal(tab.readyForQueued, false);
+});
+
+test('project panel catalogs restore only their own panels and eligible legacy dialogs',()=>{
+ const values=new Map<string,any>();
+ const storage={get:(key:string)=>values.get(key),update:async(key:string,value:any)=>{values.set(key,JSON.parse(JSON.stringify(value)));}};
+ const a={id:'abcdef01-1234-4567-8901-abcdef012345',number:2};
+ const b={id:'abcdef02-1234-4567-8901-abcdef012345',number:3};
+ const old=catalog(storage);old.remember(a,{a:'draft A'});old.remember(b,{b:'draft B'});
+ const projectA=catalog(storage,'project-A',panel=>panel.id===a.id);
+ assert.equal(projectA.panels.size,1);assert.equal(projectA.panels.get(a.id).drafts.a,'draft A');
+ projectA.remember(a,{a:'saved A'});
+ const projectB=catalog(storage,'project-B',panel=>panel.id===b.id);
+ assert.equal(projectB.panels.size,1);assert.equal(projectB.panels.has(a.id),false);
+ const restartedA=catalog(storage,'project-A',()=>true);
+ assert.equal(restartedA.panels.size,1);assert.equal(restartedA.panels.get(a.id).drafts.a,'saved A');
 });

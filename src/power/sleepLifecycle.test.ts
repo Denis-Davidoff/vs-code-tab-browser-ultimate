@@ -43,6 +43,7 @@ const { ChatTab, newChat } = load<typeof import('../chat/chatTab.ts')>('src/chat
 	vscode, './agentProtocol': protocol, './agents': { agentNames: { codex: 'Codex' } },
 	'../core/uuid': { generateUuid: () => 'test-chat' }, './toolbarText': {},
 	'./attachmentReferences': load('src/chat/attachmentReferences.ts'),
+	'../core/notifyText': load('src/core/notifyText.ts'), './terminalPins': load('src/chat/terminalPins.ts'),
 });
 const { SleepControl } = load<typeof import('./sleepControl.ts')>('src/power/sleepControl.ts', {
 	'./sleepProtocol': load('src/power/sleepProtocol.ts'),
@@ -207,6 +208,7 @@ test('a prompt Claude Code refuses as too long goes again after 5, 15 and 30 s, 
 		'./agentProtocol': protocol, './agents': { agentNames: { claude: 'Claude Code' } },
 		'../core/uuid': { generateUuid: () => 'test-chat' }, './toolbarText': {},
 		'./attachmentReferences': load('src/chat/attachmentReferences.ts'),
+		'../core/notifyText': load('src/core/notifyText.ts'), './terminalPins': load('src/chat/terminalPins.ts'),
 	}, fake);
 	const sent: string[] = [];
 	let fire: (event: AgentEvent) => void = () => {};
@@ -256,6 +258,7 @@ function retryHarness() {
 		'./agentProtocol': protocol, './agents': { agentNames: { claude: 'Claude Code' } },
 		'../core/uuid': { generateUuid: () => 'test-chat' }, './toolbarText': {},
 		'./attachmentReferences': load('src/chat/attachmentReferences.ts'),
+		'../core/notifyText': load('src/core/notifyText.ts'), './terminalPins': load('src/chat/terminalPins.ts'),
 	}, fake);
 	const sent: string[] = [];
 	let fire: (event: AgentEvent) => void = () => {};

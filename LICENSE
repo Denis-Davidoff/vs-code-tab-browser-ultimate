@@ -1,3 +1,11 @@
+Licensing scope
+
+Except for separately licensed material, the MIT license below applies to this
+repository outside exchange-server/. Exchange Server is licensed separately
+under Elastic License 2.0; see exchange-server/LICENSE and
+exchange-server/LICENSING.md. Third-party and shared material retains its
+existing licenses. This notice does not revoke previously granted licenses.
+
 MIT License
 
 Copyright (c) 2015 - present Microsoft Corporation

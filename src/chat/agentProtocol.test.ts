@@ -9,8 +9,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { suite, test } from 'node:test';
 import {
-	LineSplitter, chatControlTools, chatTitle, claudeApproval, claudeApprovalAnswer, claudeContextWindow, claudeEvents, claudeModels, claudeRateLimit, claudeRateLimitWindows, claudeUsage,
-	claudeCommands, claudeTool, codexAgentThreadEvents, codexSkillItems, codexSkills, codexApproval, codexApprovalAnswer, codexEvents, codexPatchPaths, codexQuestions, outsideProject, questionSkipped, validAnswers, codexModels, codexUsage, compareCliVersions, geminiApproval, geminiApprovalAnswer, geminiCommands, geminiErrorText, geminiEvents, geminiExitText, geminiModels, geminiTurnEnd, parseCliVersion, parseLine, toolDetail, unwrapShell, windowLabel,
+	LineSplitter, chatControlTools, terminalInputTools, terminalReadTools, chatTitle, claudeApproval, claudeApprovalAnswer, claudeContextWindow, claudeEvents, claudeModels, claudeRateLimit, claudeRateLimitWindows, claudeUsage,
+	claudeCommands, claudeTool, codexAgentThreadEvents, codexSkillItems, codexSkills, codexApproval, codexApprovalAnswer, codexEvents, codexPatchPaths, codexQuestions, outsideProject, questionSkipped, validAnswers, codexModels, codexUsage, compareCliVersions, geminiApproval, geminiApprovalAnswer, geminiCommands, geminiErrorText, geminiEvents, geminiExitText, geminiModels, geminiTurnEnd, ourToolClass, parseCliVersion, parseLine, toolDetail, unwrapShell, windowLabel,
 } from './agentProtocol.ts';
 
 // The samples below are trimmed copies of what Claude Code 2.1.301 and
@@ -320,6 +320,22 @@ suite('claudeEvents', () => {
 		const failed = claudeEvents({ type: 'system', subtype: 'task_notification', tool_use_id: 'a3', status: 'failed' });
 		assert.ok(failed[0].type === 'toolUpdate' && failed[0].update.status === 'failed');
 		assert.deepStrictEqual(claudeEvents({ type: 'system', subtype: 'task_progress' }), []);
+	});
+
+	test('a workflow is listed with the agents: its tool call names it, its task is a workflow', () => {
+		const call = claudeEvents({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'w1', name: 'Workflow',
+			input: { script: "export const meta = {\n  name: 'review-changes',\n  description: 'Review the diff',\n}\nphase('x')" } }] } });
+		const tool = call.find(e => e.type === 'tool');
+		assert.ok(tool && tool.type === 'tool');
+		assert.strictEqual(tool.tool.kind, 'agent');
+		assert.strictEqual(tool.tool.detail, 'review-changes');
+		assert.strictEqual(tool.tool.input, 'Review the diff');
+		assert.deepStrictEqual(tool.tool.agent, { type: 'workflow', background: true });
+		assert.deepStrictEqual(
+			claudeEvents({ type: 'system', subtype: 'task_started', task_id: 't1', tool_use_id: 'w1', task_type: 'local_workflow', is_backgrounded: true }),
+			[{ type: 'toolUpdate', id: 'w1', update: { agent: { type: 'workflow', background: true } } }]);
+		const named = claudeEvents({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'w2', name: 'Workflow', input: { name: 'find-flaky-tests' } }] } });
+		assert.ok(named.some(e => e.type === 'tool' && e.tool.detail === 'find-flaky-tests'));
 	});
 
 	test('a task that is not an agent is not read, and task_updated finds its row through the task map', () => {
@@ -1201,6 +1217,152 @@ suite('Gemini CLI', () => {
 		const source = fs.readFileSync('src/mcp/chatTools.ts', 'utf8');
 		const listed = /chatToolNames = \[([^\]]*)\]/.exec(source)?.[1].match(/'[^']+'/g)?.map(s => s.slice(1, -1)) ?? [];
 		assert.deepStrictEqual([...listed].sort(), [...chatControlTools].sort());
+	});
+
+	/*
+	 * The terminal tools. An input to a terminal is command execution: it is filed under
+	 * Terminal with a card showing exactly what is typed, and no tool of our server is
+	 * filed under AI Browser (which can be on Auto) unless it is named there.
+	 */
+	const terminalClaude = (tool: string, input: Record<string, unknown> = {}) => claudeApproval('r', { tool_name: `mcp__ai-browser__${tool}`, input }, '/w');
+	const terminalGemini = (tool: string, title: string) => geminiApproval('1:0', { toolCall: { toolCallId: `mcp_ai-browser_${tool}__call_7`, title, kind: 'other', content: [], locations: [] }, options: [] }, '/w');
+	const terminalCodex = (tool: string, params?: Record<string, unknown>) => codexApproval('1', 'mcpServer/elicitation/request', {
+		threadId: 't', turnId: 'u', serverName: 'ai-browser', mode: 'form', message: `Allow the ai-browser MCP server to run tool "${tool}"?`,
+		_meta: { codex_approval_kind: 'mcp_tool_call', tool_title: tool, ...(params ? { tool_params: params } : {}) }, requestedSchema: {},
+	})!;
+
+	test('terminal_send is command execution with the exact text on the card, on all three CLIs', () => {
+		const args = { terminalId: 't1', text: 'git status --short' };
+		const claude = terminalClaude('terminal_send', args);
+		assert.strictEqual(claude.what, 'command');
+		assert.strictEqual(claude.ask, 'Type into a terminal?');
+		assert.strictEqual(claude.title, 'git status --short  ⏎');
+		assert.deepStrictEqual(claude.terminal, { tool: 'terminal_send', args });
+		assert.ok(claude.detail?.includes('presses Enter'));
+
+		const codex = terminalCodex('terminal_send', args);
+		assert.strictEqual(codex.what, 'command');
+		assert.strictEqual(codex.title, 'git status --short  ⏎');
+		assert.deepStrictEqual(codex.terminal, { tool: 'terminal_send', args });
+
+		const gemini = terminalGemini('terminal_send', JSON.stringify(args));
+		assert.strictEqual(gemini.what, 'command');
+		assert.strictEqual(gemini.title, 'git status --short  ⏎');
+		assert.deepStrictEqual(gemini.terminal, { tool: 'terminal_send', args });
+		// Gemini may spell a call with arguments as `<tool>(<json>)`.
+		const called = terminalGemini('terminal_send', `terminal_send(${JSON.stringify(args)})`);
+		assert.deepStrictEqual(called.terminal, { tool: 'terminal_send', args });
+		assert.strictEqual(called.what, 'command');
+	});
+
+	test('what is typed is shown as it is: no Enter, trailing blanks and control characters', () => {
+		const noEnter = terminalClaude('terminal_send', { terminalId: 't1', text: 'rm -rf ', enter: false });
+		assert.strictEqual(noEnter.title, 'rm -rf');
+		assert.ok(noEnter.detail?.includes('without pressing Enter'));
+		assert.ok(noEnter.detail?.includes('ends with 1 space'), noEnter.detail);
+
+		const hidden = terminalClaude('terminal_send', { terminalId: 't1', text: 'echo hi\nrm -rf ~\x1b[201~' });
+		assert.ok(!/[\x00-\x08\x0b-\x1f]|\n/.test(hidden.title), JSON.stringify(hidden.title));
+		assert.ok(hidden.title.includes('\\u{A}') && hidden.title.includes('\\u{1B}'), hidden.title);
+
+		const empty = terminalClaude('terminal_send', { terminalId: 't1', text: '' });
+		assert.ok(empty.title.startsWith('(empty)'));
+	});
+
+	test('a number the model meant as text is shown as text', () => {
+		assert.strictEqual(terminalClaude('terminal_send', { terminalId: 't1', text: 42 }).title, '42  ⏎');
+	});
+
+	test('terminal_key shows the keys in order and warns about Enter', () => {
+		const args = { terminalId: 't1', keys: ['up', 'Enter'] };
+		const claude = terminalClaude('terminal_key', args);
+		assert.strictEqual(claude.what, 'command');
+		assert.strictEqual(claude.ask, 'Press keys in a terminal?');
+		assert.strictEqual(claude.title, 'up → Enter');
+		assert.ok(claude.detail?.includes('Enter runs whatever is on the command line'));
+		assert.deepStrictEqual(claude.terminal, { tool: 'terminal_key', args });
+		assert.ok(!terminalClaude('terminal_key', { terminalId: 't1', keys: ['up', 'down'] }).detail?.includes('Enter runs'));
+		assert.strictEqual(terminalGemini('terminal_key', JSON.stringify(args)).title, 'up → Enter');
+		assert.strictEqual(terminalCodex('terminal_key', args).title, 'up → Enter');
+	});
+
+	test('arguments that cannot be read leave a card that says so, and no arguments to match', () => {
+		// Gemini's title that is not JSON (cut, or another shape): shown as it came.
+		const cut = terminalGemini('terminal_send', '{"terminalId":"t1","text":"ls -la /very/lo');
+		assert.strictEqual(cut.what, 'command');
+		assert.strictEqual(cut.ask, 'Type into a terminal?');
+		assert.strictEqual(cut.terminal?.args, undefined);
+		assert.ok(cut.detail?.includes('"text":"ls -la'));
+		// Codex naming the tool and giving no parameters.
+		const codex = terminalCodex('terminal_key');
+		assert.strictEqual(codex.what, 'command');
+		assert.strictEqual(codex.terminal?.args, undefined);
+		// Not an array of strings: nothing to show as keys.
+		assert.strictEqual(terminalClaude('terminal_key', { terminalId: 't1', keys: [1] }).title, 'Press keys');
+	});
+
+	test('terminal_list, _read and _wait are looks: marked read, still under Terminal', () => {
+		for (const tool of ['terminal_list', 'terminal_read', 'terminal_wait']) {
+			const claude = terminalClaude(tool, { terminalId: 't1' });
+			assert.strictEqual(claude.what, 'command', tool);
+			assert.strictEqual(claude.terminal?.read, true, tool);
+			assert.strictEqual(claude.ask, undefined);
+			assert.strictEqual(terminalGemini(tool, `${tool} (ai-browser MCP Server)`).terminal?.read, true, tool);
+			assert.strictEqual(terminalCodex(tool).terminal?.read, true, tool);
+		}
+	});
+
+	test('an unknown tool of our server is not AI Browser: it is asked under Other tools', () => {
+		assert.strictEqual(terminalClaude('browser_new_thing').what, 'other');
+		assert.strictEqual(terminalGemini('browser_new_thing', 'browser_new_thing (ai-browser MCP Server)').what, 'other');
+		assert.strictEqual(terminalCodex('browser_new_thing').what, 'other');
+		assert.strictEqual(terminalClaude('terminal_create').what, 'other', 'there is no such tool, so it is no category of its own');
+		assert.strictEqual(terminalClaude('terminal_new_thing').what, 'other');
+		// And an unreadable Codex tool keeps the stricter category it always had.
+		assert.strictEqual(codexApproval('1', 'mcpServer/elicitation/request', { serverName: 'ai-browser', message: 'Allow this tool?', _meta: { codex_approval_kind: 'mcp_tool_call' } })?.what, 'chat');
+	});
+
+	test('every tool our server registers has a place, and none changed category', () => {
+		const names = new Set<string>();
+		for (const file of ['src/mcp/mcpServer.ts', 'src/editor/editorTools.ts', 'src/mcp/chatTools.ts', 'src/mcp/terminalTools.ts']) {
+			for (const match of fs.readFileSync(file, 'utf8').matchAll(/\bname: '((?:browser|editor|chat|terminal)_[a-z_]+)'/g)) {
+				names.add(match[1]);
+			}
+		}
+		for (const action of ['pause', 'resume', 'status', 'stop']) {
+			names.add(`browser_recording_${action}`);
+		}
+		assert.ok(names.size >= 45, `found ${names.size} tools`);
+		for (const name of names) {
+			const cls = ourToolClass(name);
+			assert.notStrictEqual(cls.what, 'other', `${name} is not classified: add it to browserServerTools, chatControlTools or the terminal sets`);
+			const expected = name.startsWith('terminal_') ? 'command' : chatControlTools.has(name) ? 'chat' : 'browser';
+			assert.strictEqual(cls.what, expected, name);
+			assert.strictEqual(terminalClaude(name).what, expected, name);
+		}
+	});
+
+	test('the terminal tool sets are the same lists in terminalTools.ts', () => {
+		// Written twice: a leaf may not import terminalTools.ts, which imports mcpProtocol.
+		const source = fs.readFileSync('src/mcp/terminalTools.ts', 'utf8');
+		const list = (name: string) => (new RegExp(`${name} = \\[([^\\]]*)\\]`).exec(source)?.[1].match(/'[^']+'/g) ?? []).map(t => t.slice(1, -1)).sort();
+		assert.deepStrictEqual(list('terminalInputToolNames'), [...terminalInputTools].sort());
+		assert.deepStrictEqual(list('terminalReadToolNames'), [...terminalReadTools].sort());
+		assert.deepStrictEqual(list('terminalToolNames'), [...terminalInputTools, ...terminalReadTools].sort());
+	});
+
+	test('Claude is launched with ask rules for the tools that type, and not for the ones that look', () => {
+		const source = fs.readFileSync('src/chat/claudeAgent.ts', 'utf8');
+		assert.ok(/ask: \[\.\.\.chatControlTools, \.\.\.terminalInputTools\]/.test(source));
+		assert.ok(!/terminalReadTools/.test(source));
+	});
+
+	test("another server's terminal_send is that server's, and a user allow-list name cannot widen ours", () => {
+		assert.strictEqual(claudeApproval('r', { tool_name: 'mcp__team__terminal_send', input: {} }, '/w').what, 'mcp');
+		assert.strictEqual(claudeApproval('r', { tool_name: 'mcp__ai-browser__fs__terminal_send', input: {} }, '/w').what, 'other');
+		const spoof = geminiApproval('1:0', { toolCall: { toolCallId: 'mcp_fs_exec__call_5', title: 'terminal_send (ai-browser MCP Server)', kind: 'other', content: [], locations: [] }, options: [] }, '/w');
+		assert.strictEqual(spoof.what, 'other');
+		assert.strictEqual(spoof.terminal, undefined);
 	});
 
 	test('a title the model wrote never makes a command an MCP tool', () => {

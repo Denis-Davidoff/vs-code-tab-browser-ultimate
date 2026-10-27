@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { transpileModule, ScriptTarget } from 'typescript';
+import { closesEmptyPanel } from './terminalLogic.ts';
 
 function method(name: string, context: Record<string, unknown> = {}) {
 	const source = readFileSync('src/chat/chatView.ts', 'utf8');
@@ -29,7 +30,7 @@ async function transfer(fail = false, location: 'tab' | 'window' = 'tab', comman
 	const session = { running: true };
 	const tab = { id: 'moving', chat: { id: 'conversation', title: 'My chat' }, session, attachments: [{ chip: { id: 'attached' } }],
 		moveTo(host: unknown) { calls.push('move'); Object.assign(this, { host }); }, close() { assert.fail('moving must not close the session'); } };
-	const source: any = { _tabs: [tab], _active: tab, _remembered: { agent: 'codex' },
+	const source: any = { _tabs: [tab], _active: tab, _remembered: { agent: 'codex' }, _terminals: { size: 0 },
 		_registry: {}, _runs: {}, _services: {}, _savedDrafts: new Map(), _livePages: new Map(), _repoBusy: new Map(), _gitCommits: new Map(), _windows: new Set(), _childChats: new Set(),
 		_draining: new Map(), _chatSkillTabs: new Map([['skill', [{ tab }]]]), _annotationLinks: new Map(),
 		_post() { calls.push('post'); }, _saveTabs() { calls.push('save'); }, _fail() { calls.push('error'); } };
@@ -38,6 +39,8 @@ async function transfer(fail = false, location: 'tab' | 'window' = 'tab', comman
 	class Destination {
 		_tabs: unknown[];
 		_tabHost = {};
+		_terminals = { clearFront() { return false; }, dispose() {} };
+		_leaveTerminal() { return false; }
 		_view = {};
 		_services: unknown;
 		_chatSkillTabs = new Map();
@@ -55,7 +58,7 @@ async function transfer(fail = false, location: 'tab' | 'window' = 'tab', comman
 		dispose() { for (const t of this._tabs as any[]) { t.close(); } }
 	}
 	class Empty { id = 'empty'; constructor(..._args: unknown[]) {} }
-	const context = { ChatViewProvider: Destination, ChatTab: Empty, newChat: () => ({}), clearTimeout,
+	const context = { closesEmptyPanel, ChatViewProvider: Destination, ChatTab: Empty, newChat: () => ({}), clearTimeout,
 		vscode: { commands: { async getCommands() { return ['workbench.action.moveEditorToNewWindow']; }, async executeCommand() { calls.push('window'); if (commandFails) { throw new Error('window failed'); } } }, ViewColumn: { Active: -1 }, window: { createWebviewPanel: () => ({ webview: {}, visible: true, reveal() {},
 			onDidDispose(listener: () => void) { closed = listener; }, onDidChangeViewState() {}, dispose() { closed?.(); } }) } }, tabLimit: () => 10 };
 	source._canMoveTab = method('_canMoveTab', context);
@@ -91,11 +94,11 @@ test('failed setup leaves the source tab and live session intact', async () => {
 test('closing a previous surface keeps shared backends until the last moved chat closes', () => {
 	const source = readFileSync('src/chat/chatView.ts', 'utf8');
 	const body = /\tpublic dispose\(\): void \{[\s\S]*?\n\t\}/.exec(source)![0].replace('public dispose', 'function dispose');
-	const dispose = runInNewContext(transpileModule(`${body}\ndispose;`, { compilerOptions: { target: ScriptTarget.ES2022 } }).outputText, { clearTimeout, ChatViewProvider: { _surfaces: new Map() } });
+	const dispose = runInNewContext(transpileModule(`${body}\ndispose;`, { compilerOptions: { target: ScriptTarget.ES2022 } }).outputText, { clearTimeout, ChatViewProvider: { _surfaces: new Map(), _pins: { dropTab() { return []; } } } });
 	let backendDisposals = 0, runDisposals = 0, tabCloses = 0;
 	const services = { views: new Set<unknown>(), panels: { forget() {} } };
 	const surface = () => ({ _windows: new Set(), _pendingPanels: new Map(), _titleRequests: new Map(), _branchNameRequests: new Map(), _gitCommits: new Map(),
-		_stateSurfaces: { dispose() {} },
+		_stateSurfaces: { dispose() {} }, _terminals: { dispose() {}, tabs: [] }, _terminalGone() {},
 		_sleep: { dispose() {} }, _draftRequests: new Map(), _livePages: new Map(), _voiceCancel() {}, _detachedChat: {}, _panelIdentity: {}, _saveTabs() {}, _services: services,
 		_runs: { dispose() { runDisposals++; } }, _registry: { dispose() { backendDisposals++; } },
 		_usageChecks: new Map(), _draining: new Map(), _tabs: [{ close() { tabCloses++; } }], _subscriptions: [],
@@ -121,12 +124,12 @@ function existingViews(limit = 10) {
 	const old = { id: 'old', chat: { id: 'chat-old' } };
 	const sibling = { id: 'sibling', chat: { id: 'chat-sibling' } };
 	const source: any = { _tabs: [live, sibling], _active: live, _services: services, _savedDrafts: new Map(), _registry: {}, _repoBusy: new Map(), _gitCommits: new Map(),
-		_draining: new Map(), _chatSkillTabs: new Map(), _annotationLinks: new Map(), _livePages: new Map(), _post() {}, _saveTabs() {}, _dragToken: 'secret' };
+		_draining: new Map(), _chatSkillTabs: new Map(), _annotationLinks: new Map(), _livePages: new Map(), _post() {}, _saveTabs() {}, _dragToken: 'secret', _terminals: { size: 0 } };
 	const target: any = { _tabs: [old], _active: old, _services: services, _savedDrafts: new Map(), _drainQueues() {}, _view: {}, _tabHost: {}, _chatSkillTabs: new Map(),
-		_annotationLinks: new Map(), _livePages: new Map(), _post() {}, _saveTabs() {},
+		_annotationLinks: new Map(), _livePages: new Map(), _post() {}, _saveTabs() {}, _terminals: { clearFront() { return false; } }, _leaveTerminal() { return false; },
 		_state() { return { chatId: this._active.chat.id }; }, _postMessage(message: any) { messages.push(message); } };
 	const surfaces = new Map([['source', source], ['target', target]]);
-	const context = { clearTimeout, tabLimit: () => limit, ChatViewProvider: { _surfaces: surfaces },
+	const context = { closesEmptyPanel, clearTimeout, tabLimit: () => limit, ChatViewProvider: { _surfaces: surfaces },
 		refuse: (message: string) => errors.push(message), vscode: { l10n: { t: (text: string) => text } } };
 	source._canMoveTab = method('_canMoveTab', context);
 	source._moveTabInto = method('_moveTabInto', context);
@@ -197,6 +200,23 @@ test('moving the last chat closes its source panel only after destination has th
 	assert.equal(s.source._moveTabInto(s.live, s.target, 'keep this'), true);
 	assert.equal(closed, true);
 	assert.equal(s.live.session.running, true);
+});
+
+test('moving the last chat out of a panel that owns a terminal keeps the panel and its shells, with a fresh conversation', () => {
+	const s = existingViews();
+	s.source._tabs = [s.live];
+	s.source._panelIdentity = {};
+	s.source._terminals = { size: 1 };
+	s.source._remembered = { agent: 'claude' };
+	s.source._tabHost = {};
+	s.source._closeEmptyPanel = () => assert.fail('a panel that still owns a terminal must not be closed');
+	s.source._panel = { dispose() { assert.fail('closing the panel would end its terminals'); } };
+	const context = { closesEmptyPanel, clearTimeout, tabLimit: () => 10, ChatViewProvider: { _surfaces: new Map() }, refuse: () => undefined, vscode: { l10n: { t: (text: string) => text } }, newChat: () => ({ id: 'fresh' }), ChatTab: class { chat: unknown; constructor(_host: unknown, chat: unknown) { this.chat = chat; } } };
+	s.source._moveTabInto = method('_moveTabInto', context);
+	assert.equal(s.source._moveTabInto(s.live, s.target, ''), true);
+	assert.equal(s.source._tabs.length, 1, 'a fresh conversation takes the place');
+	assert.deepEqual((s.source._tabs[0] as any).chat, { id: 'fresh' });
+	assert.equal(s.target._active, s.live);
 });
 
 test('a failed transfer never closes the source panel', () => {
@@ -274,6 +294,7 @@ for (const agent of ['claude', 'codex', 'gemini']) {
 			_runs: { runningIn: () => 0 },
 			_closeTab() { closes++; },
 		};
+		host._browserCliLaunch = method('_browserCliLaunch', { writeTerminalBrowserConfig: async () => undefined, terminalAuthEnv: 'AUTH', terminalTabEnv: 'TAB' });
 		const tab = { id: 'tab', chat, cwd: '/task folder', busy: false, queuedCount: 0 };
 		host._findOpenChat = () => ({ tab, surface: host });
 		const resume = method('_resumeInTerminal', {
@@ -343,7 +364,7 @@ test('Chrome open attaches the returned new tab instead of pages discovered whil
 test('Chrome attachments use the browser visibility check with a text editor active', async () => {
 	const page = { title: 'Chrome', url: 'https://example.test' };
 	const attach = method('_makeAttachment', {
-		tabSource: { available: () => true }, generateUuid: () => 'attachment',
+		tabSource: { available: () => true }, generateUuid: () => 'attachment', ChatViewProvider: { _exchangeAnnotationOwners: new Map() },
 		refuse() { assert.fail('visible Chrome must not be refused'); }, confirm() {},
 		pageTitle: (title: string) => title, plainInPrompt: (text: string) => text,
 		pickElementContext: async (tab: unknown) => { assert.equal(tab, page); return 'Element: Button'; },
@@ -368,6 +389,7 @@ test('a blocked Codex terminal handoff leaves the chat open and can be retried a
 		_registry: { agents: [{ id: 'codex', binary: '/codex' }], backend: () => ({ release: async () => released }) },
 		_runs: { runningIn: () => 0 }, _closeTab() { closes++; },
 	};
+	host._browserCliLaunch = method('_browserCliLaunch', { writeTerminalBrowserConfig: async () => undefined, terminalAuthEnv: 'AUTH', terminalTabEnv: 'TAB' });
 	host._findOpenChat = () => ({ tab: { id: 'tab', chat, cwd: '/task', busy: false, queuedCount: 0 }, surface: host });
 	const resume = method('_resumeInTerminal', {
 		ChatViewProvider: { _terminalSessions: new Map() }, isAgentId: () => true,

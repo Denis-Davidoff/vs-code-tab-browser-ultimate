@@ -1,0 +1,92 @@
+/* Shared AI Browser chat design tokens.
+ * Dark defaults: chrome-extension/sidepanel.css
+ * Semantic colors, radii and easing: media/chat.css
+ */
+:root {
+  color-scheme: dark;
+  --vscode-font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --vscode-font-size: 13px;
+  --vscode-editor-font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --vscode-editor-font-size: 12px;
+  --vscode-sideBar-background: #181818;
+  --vscode-editor-background: #1f1f1f;
+  --vscode-foreground: #cccccc;
+  --vscode-descriptionForeground: #9d9d9d;
+  --vscode-input-background: #313131;
+  --vscode-input-foreground: #cccccc;
+  --vscode-input-border: #3c3c3c;
+  --vscode-input-placeholderForeground: #989898;
+  --vscode-focusBorder: #0078d4;
+  --vscode-button-background: #0078d4;
+  --vscode-button-foreground: #ffffff;
+  --vscode-button-hoverBackground: #026ec1;
+  --vscode-button-secondaryBackground: #313131;
+  --vscode-button-secondaryHoverBackground: #3c3c3c;
+  --vscode-menu-background: #1f1f1f;
+  --vscode-editorWidget-background: #202020;
+  --vscode-dropdown-background: #313131;
+  --vscode-dropdown-foreground: #cccccc;
+  --vscode-dropdown-border: #3c3c3c;
+  --vscode-textLink-foreground: #4daafc;
+  --vscode-textLink-activeForeground: #4daafc;
+  --vscode-list-hoverBackground: #2a2d2e;
+  --vscode-list-activeSelectionBackground: #04395e;
+  --vscode-list-activeSelectionForeground: #ffffff;
+  --vscode-list-inactiveSelectionBackground: #37373d;
+  --vscode-textCodeBlock-background: #242424;
+  --vscode-errorForeground: #f48771;
+  --vscode-widget-shadow: #00000066;
+}
+
+:root {
+  --bg: var(--vscode-sideBar-background, var(--vscode-editor-background));
+  --fg: var(--vscode-foreground);
+  --fg-2: color-mix(in srgb, var(--vscode-foreground) 65%, transparent);
+  --fg-3: var(--vscode-descriptionForeground);
+  --fg-faint: color-mix(in srgb, var(--vscode-foreground) 40%, transparent);
+  --border: color-mix(in srgb, var(--vscode-foreground) 9%, transparent);
+  --border-strong: color-mix(
+    in srgb,
+    var(--vscode-foreground) 14%,
+    transparent
+  );
+  --soft: color-mix(in srgb, var(--vscode-foreground) 5%, transparent);
+  --soft-2: color-mix(in srgb, var(--vscode-foreground) 9%, transparent);
+  --code-bg: var(
+    --vscode-textCodeBlock-background,
+    color-mix(in srgb, var(--vscode-foreground) 6%, transparent)
+  );
+  --surface: var(--vscode-input-background);
+  --elevated: var(
+    --vscode-menu-background,
+    var(--vscode-editorWidget-background)
+  );
+  --accent: var(--vscode-focusBorder);
+  --added: var(--vscode-gitDecoration-addedResourceForeground, #81b88b);
+  --removed: var(--vscode-gitDecoration-deletedResourceForeground, #c74e39);
+  --added-bg: var(
+    --vscode-diffEditor-insertedLineBackground,
+    color-mix(in srgb, #81b88b 15%, transparent)
+  );
+  --removed-bg: var(
+    --vscode-diffEditor-removedLineBackground,
+    color-mix(in srgb, #c74e39 15%, transparent)
+  );
+  --ok: var(--vscode-charts-green, #74c991);
+  --bad: var(--vscode-errorForeground, #f85149);
+  --warn: var(--vscode-editorWarning-foreground, #cca700);
+  --info: var(--vscode-editorInfo-foreground, #3794ff);
+  --mono: var(--vscode-editor-font-family, monospace);
+  --mono-size: calc(var(--vscode-editor-font-size, 12px) - 0.5px);
+  --radius: 8px;
+  --radius-lg: 12px;
+  --line: 1.55;
+  /* Above and below each row of a turn's timeline; its dot and line are placed from it. */
+  --row-pad: 10px;
+  /* The lines a command, its output, an IN or an OUT block shows (the
+	   script's ioLines says the same); the rest is not shown at all, and a
+	   click opens the whole text. */
+  --io-lines: 3;
+  --ease: cubic-bezier(0.23, 1, 0.32, 1);
+}

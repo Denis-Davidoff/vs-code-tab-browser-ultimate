@@ -29,10 +29,13 @@ and nothing else here states the delta as a whole:
 - **Removed:** `aiKey`, `@vscode/extension-telemetry`, the web-worker entry point and the
   `isWeb`-only palette gate — see
   [Removed on purpose](#removed-on-purpose--do-not-reintroduce). There are no runtime
-  dependencies at all.
+  dependencies at all: `node-pty` and xterm are build-time inputs, bundled or staged into the
+  package — see [Build](#build).
 - **Added on top:** the element picker and its reports, the screenshots, the hand-over to Claude
   Code and Codex, the MCP server, saved logins and passkeys, and the toolbar menu they live in —
-  and, from 0.7, [a chat of our own](#the-ai-browser-chat) driving the Claude Code and Codex CLIs.
+  and, from 0.7, [a chat of our own](#the-ai-browser-chat) driving the Claude Code and Codex CLIs
+  — which also holds [terminal tabs](#terminal-tabs-a-real-shell-in-the-chat) (a real shell, or an
+  agent's own CLI, drawn with xterm.js).
 
 **The README is deliberately short and this file is the reference.** It was cut back to the
 pitch, the editor-support table and the toolbar, plus `api.open`, installing and the licence;
@@ -124,6 +127,8 @@ cloned repository could switch autofill on for its own dev server (breaks-silent
 | Chat setting | Default | |
 |---|---|---|
 | `aiBrowser.chat.tabLimit` | `10` | how many conversations stay open as tabs, 1 to 30 — see [Tabs](#tabs-several-conversations-at-once) |
+| `aiBrowser.chat.terminalLimit` | `8` | how many terminal tabs stay open, 1 to 20, `application`-scoped; counted apart from the conversations — see [Terminal tabs](#terminal-tabs-a-real-shell-in-the-chat) |
+| `aiBrowser.chat.remoteTerminal` | `false` | let the Chrome side panel and the Exchange website open, watch, and with a lease type into, terminal tabs marked "Allow remote access"; `application`-scoped, the website on encrypted connections only — see [Remote terminals](#remote-terminals-on-the-exchange-website-and-in-chrome) |
 | `aiBrowser.chat.claudePath` | `""` | the `claude` executable; empty searches — see [Finding the CLIs](#finding-the-clis) |
 | `aiBrowser.chat.codexPath` | `""` | the `codex` executable, the same way |
 | `aiBrowser.chat.geminiPath` | `""` | the `gemini` executable, the same way — see [Gemini CLI over ACP](#gemini-cli-over-acp) |
@@ -159,6 +164,7 @@ not kinds of code:
 | `translate/` | Translate Page |
 | `chat/` | the AI Browser chat and the agents behind it |
 | `power/` | keeping the computer awake from the chat: the window's vote, the shared daemon, the OS lock |
+| `terminal/` | the PTY half of the chat's terminal tabs: `terminalHost` (node-pty, flow control, shell and environment). Its chat-side modules, `terminalTab` and `terminalLogic`, live in `chat/` |
 | `editor/` | the code editor for the MCP tools: `editorTools` (`editor_context`, `editor_reveal`, the language features), `editorText` |
 
 Rules that come with it:
@@ -257,6 +263,8 @@ difference, in `browserController.js`, was a doc comment whose link had been upd
 - [src/chat/gitExtension.ts](src/chat/gitExtension.ts) — VS Code's Git extension for publish, push and fetch: its askpass signs in to a remote
 - [src/chat/repoWork.ts](src/chat/repoWork.ts) — the git work behind it: the clone in storage, separate copies, read-only checkouts, push
 - [src/core/gitBinary.ts](src/core/gitBinary.ts) — a `git` that can be run without the macOS install dialog, for Connect Codex and the chat
+- [src/chat/exchangeChat.ts](src/chat/exchangeChat.ts) — one chat shared with a hosted Exchange server over an outgoing WebSocket
+- [src/chat/exchangeProtocol.ts](src/chat/exchangeProtocol.ts) — the two remote commands, the server address rule, the text-only snapshot (leaf, under test)
 - [src/chat/chatProtocol.ts](src/chat/chatProtocol.ts) — the messages between the chat's webview and the host (types only, read by both builds)
 - [src/chat/agents.ts](src/chat/agents.ts) — the agent interface, and detecting which agents are installed
 - [src/chat/agentBinary.ts](src/chat/agentBinary.ts) — where `claude` and `codex` are, and which copy to use
@@ -269,6 +277,11 @@ difference, in `browserController.js`, was a doc comment whose link had been upd
 - [src/chat/voiceText.ts](src/chat/voiceText.ts) — voice messages as text: the helper's stdout read, the chip and the prompt line a transcript becomes (leaf, under test)
 - [src/chat/voiceRecorder.ts](src/chat/voiceRecorder.ts) — one voice message: the helper process, its events, its file removed
 - [native/voice/voice.swift](native/voice/voice.swift) — the voice helper: records from the microphone, transcribes on the device (macOS 26+); built into `bin/ai-browser-voice`
+- [src/terminal/terminalHost.ts](src/terminal/terminalHost.ts) — the PTY layer of the terminal tabs: loading the staged node-pty, shell and environment, batched and flow-controlled output, the tail for a reloaded view (leaf, no `vscode`, under test)
+- [src/chat/terminalTab.ts](src/chat/terminalTab.ts) — one terminal tab and the set of them: the process's lifetime, what was posted and not yet acknowledged, which one is in front (leaf, under test)
+- [src/chat/terminalLogic.ts](src/chat/terminalLogic.ts) — limit, names, start folder, the editor's `terminal.integrated.*` settings, the safe font rule, paste sanitising, the terminal's text as chat context (leaf, under test)
+- [scripts/stage-terminal.mjs](scripts/stage-terminal.mjs) — copies the part of node-pty that runs into `out/terminal/vendor/node-pty` (the last step of `build-ext`)
+- [scripts/test-terminal.mjs](scripts/test-terminal.mjs) — a manual smoke test of the compiled host against the real staged node-pty
 - [src/power/sleepProtocol.ts](src/power/sleepProtocol.ts) — the keep-awake choices and state (types and lists, read by both builds)
 - [src/power/sleepControl.ts](src/power/sleepControl.ts) — one window's keep-awake choice (a timer, or until one tab's or every tab's agents finish), and its vote to the daemon
 - [src/power/sleepDaemon.ts](src/power/sleepDaemon.ts) — the shared daemon holding the OS lock while any window votes for it
@@ -289,11 +302,13 @@ back/forward/reload, "open externally" button, focus lock indicator.
 - [preview-src/index.ts](preview-src/index.ts) → `media/index.js`
 - [preview-src/events.ts](preview-src/events.ts) — `onceDocumentLoaded`
 - [preview-src/chat.ts](preview-src/chat.ts) → `media/chat.js` — the chat view's script, a second webview with its own CSP (see [The AI Browser chat](#the-ai-browser-chat))
+- [preview-src/terminalView.ts](preview-src/terminalView.ts) — the terminal tabs' xterm views, loaded by `chat.ts` with a dynamic `import()` behind `__TERMINAL__` (every build: editor, Chrome side panel, website); its pure parts are leaves under test: [terminalKeys.ts](preview-src/terminalKeys.ts) (which keys are the shell's), [terminalTheme.ts](preview-src/terminalTheme.ts) (colours, options, the safe font rule), [terminalFlow.ts](preview-src/terminalFlow.ts) (acknowledgements, replay ordering, early output), [terminalTabs.ts](preview-src/terminalTabs.ts) (the strip's terminal tabs and menu rules), [terminalPaste.ts](preview-src/terminalPaste.ts) (paste sanitising, input slices), [terminalCsp.ts](preview-src/terminalCsp.ts) (what xterm needs from the CSP)
 - `@vscode/codicons/dist/codicon.css` → `media/codicon.css`
+- `@xterm/xterm/css/xterm.css` → `media/xterm.css`, an entry of its own (see [esbuild](#esbuild))
 
 `media/main.css`, `media/chat.css`, `media/chat-activity.svg` and `media/icon.png` are
 checked-in static assets and are not built.
-`media/index.js`, `media/chat.js`, `media/codicon.css` and their `.map` files are **build
+`media/index.js`, `media/chat.js`, `media/codicon.css`, `media/xterm.css` and their `.map` files are **build
 artifacts and are gitignored**. After a fresh clone the panel stays blank until `npm run compile` has run.
 
 CSS classes the webview script depends on: `.header`, `.controls`, `.url-input`,
@@ -353,15 +368,28 @@ the page's parameter of the same name, so `/product?id=42` reached a last-value-
 
 ## Build
 
-There are **no production dependencies at all**, only devDependencies. All seven are in use —
-verified by removing each one from `node_modules` and watching what broke.
+There are **no production dependencies at all**, only devDependencies, and every one of them is a
+build-time input. That includes the two things the terminal tabs run on, which is why they are
+devDependencies and not `dependencies`:
+
+- **`@xterm/xterm` and `@xterm/addon-fit`** are bundled into `media/chat.js` by esbuild (the editor
+  build only — see [esbuild](#esbuild)).
+- **`node-pty`** is native code and cannot be bundled. `scripts/stage-terminal.mjs`, the last step of
+  `build-ext`, copies the part of it that runs (`lib/` and the four darwin and win32 prebuilds, 5.1 MB
+  of the 62 MB it installs as) into `out/terminal/vendor/node-pty`, which is what ships, and
+  `terminalHost` loads it from there. The VSIX has no `node_modules`: `vsce package
+  --no-dependencies`. Under `dependencies` a bare `vsce ls` or `vsce package` would pack 305 raw
+  `node_modules/node-pty` files — tests, sources, debug symbols, `spawn-helper` without its execute
+  bit — beside the staged copy. `allowScripts` keeps the entry for `node-pty@1.1.0`, so `npm install`
+  still builds it where there is no prebuild.
 
 ```
 compile                  build-ext && build-webview            ← full build
 watch                    run-p -l watch-ext watch-webview watch-typecheck-webview
-build-ext                clean-ext && tsc --project ./tsconfig.json  ← src/ → out/
-clean-ext                removes out/: tsc never deletes stale outputs
-build-webview            node ./esbuild.webview.mts            ← preview-src/ → media/
+build-ext                clean-ext && tsc --project ./tsconfig.json && node scripts/stage-terminal.mjs  ← src/ → out/, node-pty staged
+clean-ext                removes out/: tsc never deletes stale outputs — which is why the stage step comes last
+build-webview            node ./esbuild.webview.mts            ← preview-src/ → media/ (chat.js carries xterm, xterm.css beside it)
+build-chrome             node ./scripts/build-chrome.mjs       ← the Chrome side panel; defines __TERMINAL__ true, ships xterm.css
 watch-ext                tsc ... --watch
 watch-webview            node ./esbuild.webview.mts --watch
 watch-typecheck-webview  tsc --project ./preview-src/tsconfig.json --noEmit --watch
@@ -403,7 +431,7 @@ npm run compile && npm run typecheck
 ### esbuild
 
 [esbuild.webview.mts](esbuild.webview.mts) is self-contained and runs directly (Node executes
-`.mts` natively, no transpile step). Two of its options are mandatory and both are
+`.mts` natively, no transpile step). Its options are mostly mandatory and each is
 non-obvious:
 
 - `loader: { '.csv': 'text' }` — the chat imports `@vscode/codicons/dist/codicon.csv` as a string
@@ -414,6 +442,25 @@ non-obvious:
   `type="module"`. An ESM bundle simply will not execute in the panel.
 - `loader: { '.ttf': 'dataurl' }` — otherwise the icons do not render, because the CSP only
   allows `font-src data:`.
+- `define: { __TERMINAL__: 'true' }` — mandatory in every builder of `chat.ts`:
+  all three builders define it `'true'` today — `scripts/build-chrome.mjs` (changed from `'false'`
+  on 2026-10-27 at the user's request, so the side panel shows the editor's shared terminals) and
+  `exchange-server/scripts/build-chat.mjs` each also ship `xterm.css` as an entry of its own, for the
+  [remote terminals](#remote-terminals-on-the-exchange-website-and-in-chrome). The define is kept so
+  a build can still leave terminals out: `chat.ts` uses it in one shape only, a bare positive
+  `if (__TERMINAL__) { … }`, and that shape is the point: esbuild drops the branch when the constant
+  is `false`, which keeps xterm (about 345 KB) out of such a bundle, but it does **not** fold a
+  `typeof __TERMINAL__ !== 'undefined' &&` guard or an early return when not minifying — measured,
+  xterm stayed in the unminified Chrome bundle back when it was `false`. A build with no define at all throws a `ReferenceError` as the script
+  starts, and the chat is blank. `preview-src/terminalBuild.test.ts` checks that all three builders
+  define it, that the terminal code is reached only through the guarded dynamic `import()` (no
+  static value import), that `chat.ts` imports no CSS, and that Chrome's build and
+  `sidepanel.html` carry `xterm.css` before `chat.css`. The side panel's CSP already allows
+  `style-src 'unsafe-inline'`, so `terminalCsp.ts` runs there with no nonce and nothing else changes.
+- **An entry of its own for xterm's stylesheet** (`xterm` → `media/xterm.css`, loaded by the
+  view's `<link>` before `chat.css`). **Never `import '…/xterm.css'` from `chat.ts`:** esbuild then
+  writes a `media/chat.css` for the `chat` entry, over the checked-in stylesheet that is not a build
+  artifact. The two `.css` files are gitignored like `codicon.css`.
 
 `minify` is on for production builds and off in watch mode; sourcemaps are always emitted.
 
@@ -1244,7 +1291,7 @@ falls back to its Copy twin there: a remembered chat action otherwise refused on
 (#372, #223's shape). A path pick from the palette refuses a page that is not on screen, as the
 element and screenshot entries do. **Its four
 element entries are repeat-button actions like the assistants' Add entries**, a fourth
-destination with a pink ring (asked for, after they first shipped without): each records itself,
+destination (asked for, after they first shipped without), drawn with the kind's crosshair: each records itself,
 and `aiBrowser.repeat.chat.*` twins carry the primary button and the chord. Wherever the chat
 cannot run the context key falls back to the Copy twin, as it does for an assistant that is not
 installed. Screenshot and page address are not
@@ -1315,27 +1362,26 @@ glyph that VS Code recolours, so any colour baked into one is lost. A custom SVG
 `background-image` and keeps its own fills — but by the same token it cannot inherit
 `currentColor`, which is why everything here ships as a light/dark pair.
 
-**Each element icon encodes two things at once**, so the grid is 4 × 4 —
-`media/icons/crosshair-<dot>[-<destination>]-<theme>.svg`, thirty-two files:
+**One crosshair per element kind, whatever the destination** —
+`media/icons/crosshair-<dot>-<theme>.svg`, eight files:
 
-| kind → dot | destination → ring |
-|---|---|
-| element: red `#E03131` | Copy: theme grey |
-| CSS path: blue `#1971C2` | Claude Code: yellow — `#FFD43B` dark, `#A16207` light |
-| CSS path + location: grape `#AE3EC9` | Codex: blue-white — `#C5F6FA` dark, `#0E7490` light |
-| XPath: green `#2F9E44` | AI Browser Chat: pink — `#F783AC` dark, `#BE185D` light |
+| kind → dot |
+|---|
+| element: red `#E03131` |
+| CSS path: blue `#1971C2` |
+| CSS path + location: grape `#AE3EC9` |
+| XPath: green `#2F9E44` |
 
-The same kind keeps its dot across destinations; the same destination keeps its ring across
-kinds; and **no two kinds share a dot**, which `check-manifest` now asserts separately. The
-within-a-kind rule was there from the start and the across-kinds one was not, so a fourth kind
-could have been given blue and produced two toolbar buttons that say the same thing — the icon
-is the only label a primary button has. As with the globe, the light variant of each ring is that hue taken down to something
-readable — a pale yellow or a blue-white is invisible on a white background.
+Copy, Claude Code, Codex and the AI Browser chat share the kind's icon (asked for: the grid of
+sixteen, with a ring colour per destination, was more variety than it was worth). The dot is
+what tells the four kinds apart, so **no two kinds share a dot**, which `check-manifest`
+asserts, together with every destination using its kind's icon. The trade-off, accepted: the
+repeat button no longer shows *where* it sends — its tooltip, the command's title, does.
 
 **`npm run check-manifest` guards all of this**, because none of it produces a compile error:
 a menu item pointing at a missing command, a command with no activation event, an icon path
 with a typo, an icon file nobody references, two primary buttons sharing a `lastElementAction`,
-two kinds sharing a centre dot, this grid losing its shape, and a command with no `category` — a
+two kinds sharing a centre dot, a destination with an icon of its own, and a command with no `category` — a
 command that only makes sense in a menu is hidden with `commandPalette` / `when: false` instead,
 or the palette lists bare rows such as "Balanced · 1080p *". Run it after touching `package.json`
 or `media/icons`.
@@ -1363,8 +1409,8 @@ Add button back; `LastElementAction.refresh` runs on `extensions.onDidChange` (b
 The seventeen action ids (`element`, `cssPath`, `cssLocation`, `xpath`, `<destination>:<kind>` with the destination `claude`, `codex` or `chat`, and `annotate`)
 are compared
 verbatim in `when` clauses, which makes them **part of the manifest's contract** — renaming one
-in `lastAction.ts` alone silently removes a button. Add commands reuse the crosshair colour of
-the matching Copy command, so the button looks the same whichever destination it repeats. [src/elements/lastAction.ts](src/elements/lastAction.ts)
+in `lastAction.ts` alone silently removes a button. Add commands use the crosshair of the
+matching Copy command, so the button looks the same whichever destination it repeats. [src/elements/lastAction.ts](src/elements/lastAction.ts)
 keeps the context key and a memento in step — the memento because a context key does not
 survive a restart. Each command records itself before running, in `extension.ts`.
 
@@ -4998,7 +5044,8 @@ Markdown reader (fences, headings, lists, quotes, tables, rules, paragraphs, inl
 italics, links) that builds nodes and sets `textContent`. Links are spans the host is asked to
 open, never `<a href>` — a click in a webview would navigate the view itself; see the Markdown
 reader above. The CSP is the panel's
-minus `frame-src`, plus `img-src data:` for screenshot thumbnails.
+minus `frame-src`, plus `img-src data:` for screenshot thumbnails, and `'nonce-…'` in `style-src`
+for xterm's own `<style>` elements (see [Terminal tabs](#the-webview-xterm-under-the-chats-csp)).
 
 **The host owns the state; the webview renders it.** Every change posts a whole
 `ChatViewState`, coalesced to one post per 40 ms while text streams. **A post sent before the
@@ -6484,7 +6531,9 @@ process that is still there — a CLI busy in a tool call, or one that traps the
 **With the chat open, the extension does start processes** — the user's own CLIs, and
 only while a conversation needs them — and, once keep-awake is switched on in some window, one
 detached daemon and the OS's own lock under it; see
-[Keeping the computer awake](#keeping-the-computer-awake). Nothing else in the extension does.
+[Keeping the computer awake](#keeping-the-computer-awake) — and a shell (or an agent's CLI) for each
+[terminal tab](#terminal-tabs-a-real-shell-in-the-chat) the user opens, killed with its tab. Nothing
+else in the extension does.
 
 **Every path that lets go of a session mid-turn ends the turn in the chat first** (`_endTurnHere`,
 in `ChatTab`): closing a tab, the other agent taking a tab's place ("Close this chat, start …"), a
@@ -6885,6 +6934,19 @@ a whole number from 1 up as the default, and 30 for anything above it (#184's ru
 must not take the view down). **Lowering it closes nothing**: the open tabs stay, "+" comes back
 once enough are closed, and only a window restore is cut to the new limit.
 
+**In the narrow strip, tabs that do not fit go into a dropdown** (asked for): `layoutTabOverflow` in
+`chat.ts`, the fitting rule in [preview-src/tabOverflow.ts](preview-src/tabOverflow.ts) (leaf, under test).
+The tab in front is always shown, then the others in strip order while they fit at their own width;
+the rest get the class `overflowed` (hidden, never removed — the nodes stay keyed, #365/#383) and a
+`chevron-down +N` button after the last visible tab opens a list of them, each with its mark, agent
+count or terminal icon. A row selects its tab; a right-click, the context-menu key or its `⋯` opens the
+tab's own context menu (`TabNode.openMenu`) over the list, which stays open under it (`keep`), with
+Rename and Close added for a hidden tab. Rename selects the tab first and starts once it is shown
+(`renameWhenShown`); a busy tab's close confirmation is placed under the `+N` button. The layout is
+measured synchronously in `renderTabs`, before the switch animation measures, with every tab shown and
+`flex-shrink: 0` (`.tab-row.measuring`) in one frame, so nothing flashes; a `ResizeObserver` on the strip
+re-runs it. The wide drawer is untouched: there everything is shown and the button hidden.
+
 **The mark on each tab** (`ChatTab.status`, `ChatTabStatus` in the protocol), all asked for:
 
 | Mark | When |
@@ -6944,8 +7006,10 @@ once enough are closed, and only a window restore is cut to the new limit.
   - **A named tab is not "empty"**: a chat from the history opens in a new tab instead of over it,
     and "Close this chat, start …" keeps the name on the tab it reuses.
 - **Closing a tab stops what it runs** — its turn and its agents — and keeps the chat in the
-  history. A tab that is working asks first, inside the strip ("… is still working. Closing it
-  stops its reply and 1 agent."), never in a modal.
+  history. A tab that is working asks first, in a popover under the tab (`placeTabConfirm`,
+  flipped above when there is no room; a press outside or Escape cancels) — "… is still working.
+  Closing it stops its reply and 1 agent." — never in a modal. It was a band across the strip,
+  which took a row for as long as the question stood (asked for: a tooltip with buttons).
 - **The view closing ends each tab's work with `close('view')`, which does not mark the tab
   closed.** The same `ChatTab` objects are shown again when the view is resolved again, and
   `_closed` is reset only by `start()`, so a tab the view let go of came back closed for good: a
@@ -7367,6 +7431,14 @@ show or stop them. An agent's `turn/started` that arrives before the parent's `s
 binds its thread is kept (`_unclaimedTurns`, bounded) and handed over at the binding, or that
 agent could not be stopped.
 
+**A Claude Code workflow is listed with the agents.** The `Workflow` tool's call is an agent
+row (`agent.type: 'workflow'`, background), named by its `name` or the script's `meta.name`, its
+description as the prompt; its task arrives as `task_type: 'local_workflow'` (read in the 2.1.309
+binary beside `local_agent`) with the same `task_started` / `task_progress` / `task_notification`,
+so it counts, shows time and tokens, and stops like an agent. The row carries a
+`type-hierarchy-sub` icon. **Not measured yet:** whether the workflow's own agents and phases
+reach stream-json; until then the card shows the workflow alone.
+
 **`stopped` is a fourth tool status**, drawn in the warning colour. The turn-end sweep uses it for
 a turn that ended with `Stopped.` too, where it used to say `failed`.
 
@@ -7377,6 +7449,194 @@ agent still running; after the review, a message sent during the automatic turn 
 and tokens. The panel was checked in headless Chrome: hidden with no agents, a click and a fold
 landing with a state post between press and release, a 3 006-character selection and the scroll
 surviving posts, ↑ in a wrapped draft moving the caret.
+
+### One command table for the three surfaces
+
+[src/chat/core/commands.ts](src/chat/core/commands.ts) (leaf, under test) has a row for every
+`ViewToHost` type saying what the Chrome side panel and the Exchange website do with it: `host`
+(forwarded and carried out), `local` (answered by the surface's own shim), `mixed` (some forms
+local or refused by the host), or `{ no }` with the reason. `satisfies Record<ViewToHost['type'], …>`
+fails the typecheck until a new type has its row, and a type with no row is refused remotely.
+
+- **The Chrome side panel forwards `forwardedTypes('chrome')`**, and `commandChromeSource` now
+  checks the same column on the host — before, the host had no allowlist for Chrome's `chat`
+  feature, and only the panel's own list stood between a crafted command and `_receive`.
+- **`exchangeRefusal` reads the website's column** (it replaced the `exchangeForbidden` denylist,
+  under which a new type was allowed by default). The website's own `history` request is not a
+  `ViewToHost` and passes.
+- **`commands.test.ts` freezes both forwarded sets** as reviewed literals: changing a row that
+  widens or narrows what a remote surface may do changes that diff, on purpose. It also checks
+  that the website reader can still produce every forwarded type and that each row's feature is
+  the one Chrome negotiates (`chromeChatCommandFeature`).
+- **The renderer shows the same table before anything is clicked.** Chrome's and the website's
+  states carry `surface` and `controls` (`surfaceControls`, only what is not on): a `{ no }` row is
+  a disabled control with the reason as its title, a `{ no, hide }` row (the microphone, recording)
+  is hidden — policy and destructive actions are disabled, what cannot work away from the
+  editor's machine is hidden. `post()` in `chat.ts` refuses a message whose control is not on and
+  shows the reason in a line above the thread (`controlRefusal`), so a refused action never reaches
+  a shim or the host. Menu rows take `command` (gated in `openMenu`), buttons `gateButton`. A form
+  of a `mixed` command is a control id of its own (`openBrowser.chrome`); this replaced the
+  renderer's reading of `remoteWorkspace`. The editor's own state has no map: everything is on.
+- **What leaves the editor is a classified list** (`viewFields` / `projectView` in
+  `chromeChatProtocol.ts`): every `ChatViewState` field is `shared`, `editor` or `override`, the
+  `satisfies` fails on a new field until it is classified, and an unclassified field is not
+  copied. The snapshot used to be `...state` with known fields blanked, so a new field holding a
+  path went to Chrome and the website by default.
+- **The last `workdirGit` per folder rides in every remote state** (`snapshotEvents`, kept by
+  `ChatStateSurfaces.broadcast`) and both shims hand it to the renderer once per change
+  (`preview-src/snapshotEvents.ts`, shared). Before, Chrome — which takes no pushed events —
+  never saw a Git change made in the editor, and a website viewer that connected after one saw
+  none until the next. The relay cannot cache events itself (encrypted envelopes are opaque).
+- **Settings kept for the whole window reach every chat surface at once**: approval modes answer
+  the waiting cards of every surface's tabs and redraw every menu, `newsHidden` redraws every
+  surface; each used to redraw only the surface it was changed in.
+- **Delays**: the website's extra coalescing is 16 ms (was 150 on top of the host's 40).
+- **Chrome long-polls the snapshot.** The panel sends `X-AI-Browser-Wait: 1000` with its ETag; the
+  bridge holds an unchanged request until a new revision, a delivered event or the bridge closing
+  (`_waiters` / `_wake`), at most `chromeChatMaxWaitMs`, and answers the header back. A panel that
+  sees it polls again at once; against an editor without it, every 250 ms (was 750). The loop also
+  carries the annotation sync and the footer events, which is why the hold is about a second and
+  not the 25 s a pure long-poll would use. **Listen for `close` on the response, not the
+  request**: a GET request emits `close` as soon as its body is read, which took every held
+  request off the wait list unanswered.
+- **A snapshot older than the one on screen is dropped in Chrome** (`shownRevision`): a command's
+  reply now carries the bridge's `revision`, a poll its ETag, and the two can land in either order
+  once a poll is held. The pin of another conversation and a new connection reset it.
+- **Chrome picks its conversation in the renderer's own tab strip**, not in a `<select>` of the
+  shell: `selectTab` is `local` for Chrome, and the side panel answers it with the pin
+  (`pinConversation`), so clicking a tab in Chrome changes what Chrome shows and leaves the editor's
+  tab in front alone. The strip reads the control map: the close button (`closeTab`), dragging
+  (`placeTab`), renaming (`renameTab`), "+" (`newTab`) and the move rows (`moveTabTo` /
+  `moveTabToNew`) disappear where they are not on. The old `<select>` is kept in the markup and
+  hidden. **The website does the same** (`pinConversation` in `serverChatHost.ts`, `chat.pin`):
+  its `selectTab` is `mixed` — the shim pins, and the host still accepts one naming the shared tab.
+- **"Open in Google Chrome" on a tab counts Chrome's bridges only** (`ChatStateSurface.kind`,
+  `chatIds(front, 'chrome')`). The Exchange website's surface is `active` while its relay socket is up,
+  viewers or not, so with it counted a tab stayed marked as shared in Chrome after Chrome was closed.
+- **The Chrome side panel offers the Chrome tab in front as a dashed suggestion**, as the editor offers
+  its browser tab (`pageSuggestion` in `sidepanel.ts`; `acceptSuggestion` is `local` for Chrome). The +
+  attaches it as a `sharedPage` that follows the tab; it is not offered while the draft holds that tab.
+  The page chip's text (`chromePageText`) says the page is in Google Chrome and names the `browser_*`
+  tools: told only "check browser_tabs", the agent did not see that "open the page" meant those tools.
+- **The website can open Google Chrome** (`openBrowser` with `where: 'chrome'` runs `aiBrowser.openInChrome`
+  on the editor's machine), and the Browser panel's tab list names each tab's browser: `remoteTabs` carries
+  `kind: 'chrome' | 'vscode'` (`tabSource.isChrome`), the relay's `browser.state` schema accepts it as optional,
+  and the select reads "Chrome · …" / "VS Code · …".
+- **The website offers the page its Browser panel streams as a dashed suggestion too**, built by the
+  host (`exchangePageSuggestion` in `exchangeChat.ts`): the shim cannot see which tab is selected, the
+  stream socket can (`ExchangeBrowser.selectedPage`, from its last listing, only while a viewer watches;
+  `onPage` republishes the snapshot when it changes). The shim answers `acceptSuggestion` itself with the
+  existing `attach` of kind `page`, which the host builds from that same tab, MCP note included; it is not
+  offered while the draft already holds a page.
+- **The view title's buttons are the renderer's on Chrome and the website** (`remoteBar` in
+  `chat.ts`, shown whenever `state.surface` names a remote surface): New chat (`newTab`), History
+  (`history`, the website's own request, hidden for Chrome by a form rule), Keep awake (`setSleep`)
+  and Chat settings (`saveFeatureAi`), each gated by the control map. The website's header kept
+  only its connection status; its four buttons and their wiring in `serverChatHost.ts` are gone.
+  **The bar sits in the shell's own header** when the page has a `#remote-actions` slot (both shells do), so it takes no row of its own, beside the connection status. The served copy is `apps/web/public/remote-chat/`, written by `exchange-server/scripts/build-chat.mjs` — edit `chat-assets/` and rebuild, or the page keeps the old header.
+  **Both shells used to hide the renderer's tab strip** (`#app .tab-strip { display: none }` in
+  `sidepanel.css` and `web-chat.css`) in favour of their `<select>`; those rules are removed, or
+  hiding the select would have left no way to switch conversations.
+- **Patches instead of whole states** ([src/chat/core/sync.ts](src/chat/core/sync.ts), leaf, under
+  test): `diffState` names the top-level fields that changed or went and the entries as a tail
+  from the first that differs; `applyPatch(prev, diffState(prev, next))` is `next`, checked on
+  3 000 random pairs. Computed **per surface, after projection** — `_state` and its side effects
+  (`seen()`, the `@N` references) are untouched, and no `editor` field can leave through a patch.
+  - **Chrome**: the panel names what it shows in `X-AI-Browser-Base: <epoch>:<rev>`; the bridge
+    keeps copies of its last four snapshots (`_published`) and answers `{ patch, top }` — the view
+    diffed, the snapshot's other fields whole, `entries` not twice — when that is under half the
+    snapshot, else the whole snapshot. A patch that does not apply empties the panel's base and it
+    polls again at once for the whole one. The epoch is per bridge, sent in the same header.
+  - **Exchange**: the relay announces `features: ['patch']` in its `ready`
+    (`RELAY_FEATURES` in `packages/protocol`); only then does the agent number its snapshots
+    (`epoch`, `rev`) and send `chat.patch` between them. A whole snapshot still goes at least every
+    2 s (`fullEveryMs`), **2 s after the last patch** (`trailing` — the relay caches whole snapshots only, so a burst ending in a patch left a viewer joining later, or a page from before the relay's upgrade that drops patches, on half a reply still "Working"), on `ready`, on the encrypted socket's sync and on `chat.resync` — what the
+    website sends when a patch does not fit (at most once a second; a request inside that second is deferred to its end, never dropped). The relay broadcasts patches
+    and never caches them, so a late viewer starts from the cached snapshot and converges at the
+    next whole one. A snapshot cut to fit 5 MB is never a base. An older relay announces nothing
+    and gets whole snapshots, as before; relay and web assets ship together, so an old website
+    never meets a patch. **`chat.resync` is answered by the agent itself** with `command.result`,
+    before the conversation checks.
+- **Both remote entry points start at one door**, `remoteScope` in
+  [src/chat/core/remoteScope.ts](src/chat/core/remoteScope.ts) (leaf, under test): the surface's
+  conversation (or `remoteGone`, worded per surface), then the chat's own `_blocked()`, then the
+  table's refusal — one order for `commandChromeSource` and `commandExchangeSource`, which keep
+  only what differs (Chrome's send and attachments; the website's browser, folder and annotation
+  forms, and `exchangeRefusal`'s check that an inner id names the shared conversation). The
+  surface's members are private, so the scope takes callbacks rather than a shape. Tests that lift
+  those methods out of `chatView.ts` are given `remoteScope` beside `remoteRefusal`.
+
+### Sharing a chat with Exchange
+
+`exchange-server/` is a separate hosted application (Next.js, NestJS, PostgreSQL; its own
+[README](exchange-server/README.md) is the reference for running it and for protocol v1). The
+extension's half is **AI Browser: Connect Chat to Exchange**: one chat of one surface, observed
+as a `ChatStateSurface` like Chrome's, published as a text-only snapshot over a WebSocket the
+extension opens, and driven back by exactly two commands, `chat.send` and `chat.stop`, through
+`ChatViewProvider.commandChromeSource`. `exchange-server/**` is in `.vscodeignore`.
+
+- **A website message is an editor message.** It goes through `_send`, so every approval
+  category on Auto answers yes without a card: a website session can run commands in the
+  workspace. Approvals themselves are never answered remotely; the snapshot says one waits.
+- **The website's `chat.command` is the chat's own UI, narrowed by `exchangeRefusal`** in
+  `chatView.ts`. It refuses `setApprovalMode` (a remote Auto for every category would run
+  commands with no card, and the choice is stored per workspace), `deleteChat`, `openChat`,
+  `temporaryStorage`, `resumeInTerminal`, `setAgentBinary`, `openAgentSetting` and `openFile`,
+  and an inner tab or chat id that is not the shared conversation's. `ExchangeSurface` checks
+  only the outer `chatId`, so a new message type with an `id` must be added there too.
+- **The Chrome extension never copies through the page's DOM.** Its annotation Copy tries
+  `navigator.clipboard` in the page and otherwise a field in the side panel's own document
+  (`copyInPanel`, which `clipboardWrite` lets copy without focus): a `<textarea>` appended to
+  the page let its `MutationObserver` read the note and its `copy` listener rewrite it.
+- **A pick started from the website is answered by the website's click, by coordinates**
+  (`src/browser/remotePick.ts`, a leaf registry). Element and annotation picks register for
+  their tab; `remoteInput` hands a left click on that tab to them instead of dispatching it:
+  `DOM.getNodeForLocation` on the picker's own session for an element, the page script's
+  `pickAt(x, y)` (`elementsFromPoint`, our overlay skipped) for an annotation. Waiting for input
+  on the page left the pick to be finished in the local VS Code browser, where the shared tab is
+  usually a hidden tab behind the website itself. In headless Chrome a CDP click does finish an
+  inspect pick, so the cause in the editor is not pinned down; the coordinate path does not depend
+  on it. A handler that declines (no annotation pick under way) lets the click reach the page.
+  **The website sends pointer moves** (`action: 'move'`, a mouse only, at most every 120 ms and
+  never with more than two commands in flight), dispatched as `mouseMoved`: the inspect overlay
+  and the annotation picker highlight from it, and the page gets its own hover.
+- **Git state reaches the website on its own** (`ChatStateSurface.event`, `broadcast` in
+  `chatSurface.ts`): every `workdirGit` the editor posts — after a commit, a branch switch, an
+  editor event — is also sent as a `chat.event` for the pinned chat. It used to go only to the
+  editor's view, so the website saw Git only as the reply to its own refresh. An active remote
+  surface also counts as a viewer for `_gitEventRefresh` / `_refreshWorkdirGit`, so the read runs
+  with the editor's chat view hidden; Restricted Mode still refuses it (#208).
+- **Close from the website** (`action: 'close'`, the × button) closes the shared tab: the
+  built-in browser's with `tab.close()` (`remoteInput`), and for a Chrome source the stream is
+  stopped and the selection cleared (`exchangeBrowser.ts`). There is no DevTools action: one was
+  built and removed, and the protocol refuses `devtools` (`remoteBrowserProtocol.test.ts`).
+- **The stream relay refuses the way the chat relay does** (`Refused` in `stream-relay.ts`):
+  4001 on `/ws/stream-agent` and 1008 on `/ws/stream-browser` for evidence, 1011 for a check
+  that failed. It closed 4001 on any error, so one database hiccup stopped streaming for good.
+- **Remote terminals need the snapshot's epoch**, so the agent numbers every snapshot (`epoch`,
+  `rev`) whether or not the relay carries patches; the website refuses to attach without one. The
+  viewer id must match `viewerPattern` (8–64 of `[A-Za-z0-9_-]`): `exchangeViewerId`'s `legacy`
+  fallback does not, so the website then uses a page-lifetime id for terminals. While a viewer holds
+  the control lease (`TerminalTab.setRemoteControl`) the editor view's resizes are kept aside and
+  applied when it ends; the strip shows a globe on a shared terminal, orange while the website is
+  in control. `src/chat/exchangeTerminal.test.ts` drives it end to end over an encrypted fake relay;
+  `preview-src/remoteTerminalEnds.test.ts` joins the website shim to the hub.
+- **Refused in an untrusted workspace**; plaintext only to loopback (`exchangeServerUrl`); the
+  key in SecretStorage, the address and point ID in workspaceState; nothing reconnects after a
+  window reload.
+- **Only close code 4001 stops the client for good** (refused key, revoked or deleted point,
+  connection replaced). Every other close reconnects with backoff. It was 1008 for all of them,
+  and the relay also sent 1008 for a snapshot it could not parse and for a queue overflow, so a
+  slow database read as "your key was revoked" and disconnected for good. A failure *while*
+  checking the key (the database, the session store) is 1011, not 4001: only evidence refuses
+  (`Refused` in `relay.ts`). The relay keeps 1008 for a refused `/ws/browser`.
+- **The client's frame limit is the relay's `maxPayload` (8 MB for chat, 2.1 MB for the stream relay), in bytes.** The protocol limits
+  `text` in UTF-16 units (64 000), and 64 000 Cyrillic characters are 128 000+ UTF-8 bytes: a
+  128 000-byte limit closed the socket on a valid command, the relay timed out after 30 s, and a
+  retry did the same. Compare frames in bytes against the relay's own limit.
+
+Not run inside VS Code against a live server yet beyond the README's manual steps; the smoke test
+(`npm run test:smoke` in `exchange-server/`) covers the relay with a fake agent.
 
 ### Keeping the computer awake
 
@@ -7622,6 +7882,316 @@ Chrome the bar's states and keys — Escape crossing `done`, the download hint, 
 back, a space in another field left alone, the refusal above a usable box, ⌘Enter queueing, the
 box back to 68 px. **Not run inside VS Code yet**,
 where the TCC prompt names VS Code.
+
+### Terminal tabs: a real shell in the chat
+
+Asked for: a terminal inside the chat, beside the conversations, that the chat's own agents can
+read and — with the user's approval — type into. A terminal tab runs a real shell (or the Claude
+Code / Codex CLI itself) in a pseudo-terminal on this machine, drawn with xterm.js. It is **not**
+VS Code's integrated terminal: no `createTerminal`, no proposed terminal API, nothing the editor's
+terminal panel knows about. It is built in four layers, each with its own leaf modules under test:
+the PTY in the extension host (`src/terminal/terminalHost.ts`), a headless screen model beside it
+(`src/terminal/screenModel.ts`), the tab and its set (`src/chat/terminalTab.ts`), and the xterm
+view (`preview-src/terminalView.ts`). Everything below was built in this order and reviewed twice;
+the review's confirmed findings are breaks-silently #526 onwards.
+
+#### The data model and the strip
+
+- **Terminal tabs are not conversations.** `ChatViewProvider._terminals` (a `TerminalSet`) holds
+  them and the front terminal id; `_tabs`, `_active`, `state.tabs` and `state.activeTab` stay
+  conversations only. `aiBrowser.chat.tabLimit` never counts terminals; `aiBrowser.chat.terminalLimit`
+  (8, 1–20, `application`) does, and starts still in flight are counted (`_terminalsStarting`), so
+  two quick presses cannot pass it.
+- **In the strip they come after the conversations** (`StripTab` in `preview-src/terminalTabs.ts`),
+  with a mark for running, exited (muted), unread output (`unreadQuietMs`, 2 s of quiet while not in
+  front), pinned, and the agent typing. `frontStripId(state)` replaces `activeTab` for the active
+  mark, the drawer and the tab-switch animation. Not draggable, no Move rows; double-click or F2
+  renames; the context menu has Rename, Restart, Ask agent, Send to chat, Allow remote access and
+  Close. Closing a running terminal asks inline ("Stop and close").
+- **Leaving a terminal for a conversation goes through `_leaveTerminal`, and the composer's focus
+  through `_focusInput`**, which posts `focusInput` only after the state that removes the terminal
+  from the front (`terminalFocus.test.ts` guards both). `terminalFront` is cleared explicitly by the
+  paths that bring a conversation forward and never through the `_active` setter; closing a
+  background conversation does not take the front.
+- **Each surface owns its terminals** — the side bar and every chat panel — and kills them in its
+  own `dispose()`. A panel that still has terminals is not closed by moving its last conversation
+  away (`closesEmptyPanel`), since disposing it kills their shells (#533). **Terminals do not
+  survive a window reload** and are not in `openTabs`: a PTY dies with its extension host.
+- **Where to start**: the first existing folder of the front conversation's `cwd`, the window's
+  folder, home (`chooseTerminalCwd`). The palette has **AI Browser: New Terminal**
+  (`aiBrowser.chat.newTerminal`, optional `'claude'` / `'codex'`), and the strip's "+" and New Chat
+  menus offer a shell and each agent found.
+- **An agent terminal** (Claude Code or Codex, never Gemini — it reads MCP servers only from settings
+  files) starts the agent's own CLI with the browser MCP server injected by `_browserCliLaunch`, the
+  code the terminal hand-over uses (#517): Claude a `0600` `--mcp-config` file removed when the tab
+  exits, closes or restarts; Codex `-c` overrides with the token in `AI_BROWSER_MCP_AUTH`, never
+  argv. A folder held back gets `--setting-sources=user --strict-mcp-config` (#443).
+
+#### The host: node-pty, the shell, flow control
+
+- **node-pty is staged, not installed**: `scripts/stage-terminal.mjs` copies `lib/` and the four
+  darwin/win32 prebuilds (no `.pdb`, tests, maps or `.d.ts`; 5.1 MB of 62) into
+  `out/terminal/vendor/node-pty`, `chmod`s each `spawn-helper` to `0755` (a zip does not promise the
+  bit, and without it every macOS spawn fails with `posix_spawnp failed`), and exits 1 if the package
+  is missing — see [Build](#build). `terminalHost` loads it from there, relative to `__dirname`.
+- **Availability is decided without a spawn** (`terminalAvailability`, cached): darwin and win32 on
+  arm64/x64 need their prebuild files by name, then one load. **Linux has no terminal**: node-pty
+  1.1.0 ships no Linux prebuild, so it is reported unavailable with that reason, unless a local
+  node-gyp `build/Release` was staged. `state.terminalSupport` carries the answer, after
+  `_blocked()` — below 1.106, Restricted Mode and a remote window refuse first, since a shell in an
+  untrusted folder or on the wrong machine is the hazard #208 and #225 describe.
+- **The shell comes from the user's own profile only.** `terminal.integrated.defaultProfile.<os>`
+  and `profiles.<os>` are read with `inspect()`, and only the user's values and the defaults count
+  — a workspace's never, unlike VS Code, which ignores them only in an untrusted workspace (#528).
+  `resolveShell` takes `path` as a string or a list, `${env:…}`, bare names on `PATH`; fallback is
+  macOS `$SHELL -l` → `/bin/zsh` → `/bin/sh`, Linux `$SHELL` → `/bin/sh`, Windows `%COMSPEC%` →
+  `powershell.exe`.
+- **The environment is scrubbed** (`scrubEnv`): `VSCODE_*`, `ELECTRON_*` (`ELECTRON_RUN_AS_NODE`
+  above all), `NODE_OPTIONS`, `AI_BROWSER_MCP_*`, `CLAUDECODE` (#333) and `TERM_PROGRAM*` go;
+  `TERM=xterm-256color`, `COLORTERM=truecolor`, `TERM_PROGRAM=ai-browser` and, with no locale set
+  (an editor started from the Dock), `LANG=en_US.UTF-8` come; an agent terminal's own variables go
+  back on last, on purpose.
+- **Flow control in UTF-16 units**, the only unit the view can count: `seq` is the cumulative end
+  offset of what was delivered, the view acknowledges `data.length` after xterm has parsed it. The
+  PTY pauses above 1 MB un-acknowledged and resumes at 256 KB. `TerminalTab` drops (and acknowledges
+  at once) output while no view is attached, counts what it posted (`_inflight`) and gives it back on
+  attach, detach, restart and exit, so a reloaded view can never leave the shell paused (#529).
+  The emulator's backlog is part of the same rule (below).
+- **Replay**: on every `terminalAttach` the host posts `terminalSettings` then a `terminalReplay` —
+  the delivered tail, at most ~256K units, cut by `safeTailStart` outside surrogate pairs and
+  CSI/OSC/DCS sequences — and the view drops `terminalData` with `seq <=` the replay's. Restart
+  replays `\x1bc`. Colours and alternate-screen state are not reconstructed, so vim or htop after a
+  reload draws a best-effort screen. **Replay is never acknowledged** (#530).
+- **Output goes through `_postTerminal`**, straight to a ready view, never `_postMessage`, which
+  queues for a view that has not said `ready` and is diverted during a remote command (#531).
+- **Kill**: SIGHUP to the shell's process group (node-pty makes it a session leader), SIGKILL after
+  3 s; Windows `pty.kill()`. A write over 1 MiB is dropped by the session, which is why every path
+  in front of it is capped below (#532).
+
+#### The screen model: what an agent reads
+
+An agent reads a terminal as a **screen**, not as bytes. Every PTY batch is also fed into a
+headless xterm.js (`@xterm/headless` 6.0.0, pinned **exactly** to `@xterm/xterm`'s version so
+host and view parse alike; the stage script refuses to run when they differ). Measured: the raw tail
+stacks every repaint of an Ink UI (Claude Code, Codex), glues positioned rows and mixes the
+alternate screen in; the emulator gives the last frame. The stage step copies the one minified
+`lib-headless/xterm-headless.js` (183 KB, no map) to `out/terminal/vendor/xterm-headless` with
+`@xterm/xterm`'s `LICENSE` (the headless package ships none). `terminalHost.ts` takes the model
+through an injected factory, since a module `npm test` loads may not import it as a value.
+
+- **Read**: the viewport by default; `scrollback: true` the retained buffer (newest 500 lines);
+  `since: <cursor>` the lines from that checkpoint's row on, so a progress bar is re-sent whole and
+  never duplicated. A cursor is `<generation>.<seq>` with a random generation per model, so one from
+  another terminal or a restarted shell is refused, not misread. Caps: 12 000 characters by default,
+  40 000 hard, 2 000 per line. In the alternate screen the viewport is always the answer.
+- **Wait**: `idle` (the screen's signature unchanged for `quietMs`, 800 by default — a spinner never
+  goes idle, a silent compile does), `text` (a literal match, which the typed command's own echo
+  also satisfies — the tool's description says so), `command` (an OSC 133/633 `D` mark after a `C`
+  or an Enter, then 60 ms of quiet; without shell integration it falls back to idle). Exit ends every
+  wait; 120 s at most. A read settles the emulator first (bounded 250 ms), or it would see nothing
+  just written.
+- **OSC 133/633 and OSC 7 are parsed when a shell emits them; none is injected** — no shell
+  integration scripts are installed.
+- **Degraded mode**: no emulator (a load failure, a backlog that overflowed) reads the raw tail
+  through `plainText` and says `degraded: true`.
+- **Never subscribe to the headless terminal's `onData`** (#534), and **its write queue is flow
+  control** (#535).
+- About 7 MB per terminal at the 3 000-line scrollback; 20 terminals is ~140 MB.
+
+#### The webview: xterm under the chat's CSP
+
+- **Loaded lazily** (`import('./terminalView')`) the first time a state names a terminal, behind
+  `__TERMINAL__` — see [esbuild](#esbuild); xterm's stylesheet is `media/xterm.css`, linked before
+  `chat.css`.
+- **xterm 6 writes inline `<style>` elements and `style` attributes**, both refused by a `style-src`
+  without `unsafe-inline`. `terminalCsp.ts` installs, before the first terminal, a `createElement`
+  wrapper giving every `<style>` the script's nonce (read from `document.currentScript.nonce` in
+  `chat.ts`'s first statements — it is `null` later) and a `setAttribute('style', …)` shim writing
+  `style.cssText`; the host adds `'nonce-…'` to `style-src`. Measured under the exact policy: three
+  sheets applied, truecolor right, no violations. **Re-measure on every xterm upgrade.**
+- **The nonce makes any string xterm puts in a `<style>` CSS on the chat page**, so the font family
+  (`terminal.integrated.fontFamily`, `editor.fontFamily`, `--vscode-editor-font-family`) must pass
+  `safeFontFamily` — bare or quoted names, none of `; { } < > \ ( ) / : @ !` — or becomes
+  `monospace`. Written twice, `terminalLogic.ts` and `terminalTheme.ts` (#526).
+- **Layout**: `.terminal-main` beside `.chat-main`, the one not in front `visibility: hidden` and
+  absolutely placed — **never `display: none`**, which resets the thread's scroll and zeroes the
+  size `FitAddon` measures (#474's class). `open()` waits for a non-zero size; one rAF-debounced
+  `ResizeObserver` per terminal; attach after the first fit, resize only when cols or rows change.
+  Banners that live in `.chat-main` (the Chrome pairing Allow/Deny, refusal lines) are kept visible
+  over a terminal (#538).
+- **Keys** (`terminalKeys.ts`): mac Cmd+C/V/A copy, paste and select all, Cmd+←/→/Backspace send
+  line-start/end/kill, other Cmd chords go to the workbench; elsewhere Ctrl+Shift+letter goes to the
+  workbench except C/V, Ctrl+C copies only with a selection (else it is SIGINT), Ctrl+V and
+  Shift+Insert paste; F1, Ctrl+Tab, Ctrl+PageUp/Down pass everywhere. Escape inside a terminal is the
+  terminal's. **OSC 52 is swallowed**: a program cannot write the clipboard.
+- **Clipboard is host-mediated**: copy through the host, paste by `terminalPasteRequest` →
+  `env.clipboard` → `terminalPaste`. **Every paste is sanitised** (`sanitizePaste`: no ESC, C0 but
+  tab/CR/LF, DEL, C1) — xterm's own paste event included — because an `ESC[201~` inside the text ends
+  a shell's bracketed paste early and the rest runs as typed (#527). Paste over 990 000 characters is
+  refused aloud; input goes out in 64 KiB slices (`splitInput`, never halving a pair) (#532).
+- **Theme**: the editor's `terminal.*` colours, `--terminal-background` over xterm.css's black
+  `.xterm-viewport`. Settings arrive as `terminalSettings` (range-checked; out of range left out).
+- **Links**: http/https only, by a link provider of our own (`terminalLinks.ts`, double-width aware);
+  Cmd/Ctrl-click opens externally, a click opens in the built-in browser.
+
+#### The toolbar, and the key bar for phones
+
+One toolbar above the terminal in front, built once and changed in place (#365): name and state,
+**Ask agent**, **Send to chat** (the selection, or the last lines, as a `selection` chip — fenced,
+control characters out, at most 200 000 characters), **Insert** (+), Clear, Scroll to bottom, and
+the agent mark with **Pause agent input / Resume agent input**. Its buttons prevent default on
+pointer and mouse down, so the terminal keeps the keyboard. Below the terminal, on a coarse
+pointer (or forced per device), the **key bar**: Esc, Tab, sticky Ctrl/Alt, arrows honouring DECCKM
+(`ESC O A` in application mode — vim, less, tmux), Home/End, a Ctrl+letter strip and a drawer.
+Every byte from xterm, the key bar, the touch proxy textarea and paste goes through one funnel
+(`sendInput` → `splitInput` → `terminalInput`). On touch, resizes are debounced 150 ms while the
+soft keyboard animates, and only an explicit focus opens the keyboard. Per-device preferences (key
+bar, keyboard type, pinch font size) live in `localStorage`, since on the website the phone is not
+the editor's machine.
+
+#### Pins, Ask agent, watch-only, the typing gate
+
+- **A pin gives one conversation's agent a terminal** (`src/chat/terminalPins.ts`): one owner per
+  terminal, several terminals per conversation, held by the conversation **tab** — Clear and "Close
+  this chat, start …" keep it, a chat from the history drops it, a move between surfaces keeps it.
+  In memory only. Pinning to another tab moves it, with a notice in both conversations.
+- **The agent is told by its next message** (`pinAnnouncement`, re-sent when `pinSignature`
+  changes): tool names by suffix (#144), the name through `plainInPrompt`, terminal output declared
+  data, never any output itself. A send that did not reach the agent clears the "told" mark, so it is
+  told again (#540).
+- **Ask agent** (toolbar or tab menu) pins the terminal to a new conversation or an open one, with
+  the selection as the question; **"+" → Terminal…** in the composer pins an existing terminal, or a
+  new one, to this conversation (opened on `setTimeout(0)`, or the same click closes it). A row past
+  the tab limit is disabled with its reason.
+- **Watch only** (`mode: 'watch'`): the agent may read, never type (`watchRefusal`). The refusal
+  comes after the CLI's approval card, so an approved card can still end refused.
+- **The typing gate** (`AgentTypingGate`, `terminalControl.ts`): agent input is refused for
+  1.5 s after the user typed in that terminal, with `retryAfterMs`; **Pause agent input** is the
+  emergency stop — every agent input refused until resumed, reading still allowed. Only the user's
+  input feeds the gate. The agent's own input draws the "typing" mark for 3 s.
+
+#### The `terminal_*` MCP tools
+
+`src/mcp/terminalTools.ts`: `terminal_list`, `terminal_read`, `terminal_wait`, `terminal_send`
+(a line, optional Enter), `terminal_key` (named keys and chords); the two that type wait up to
+`waitMs` (default 1 500) and answer the screen.
+
+- **Capability-only**: they require `X-AI-Browser-Chat` (`chatCapability.ts`), `terminal_list`
+  included; `tools/list` hides them from any other caller (`Tool.visibleTo`) and a hidden tool
+  called anyway still refuses. A toolbar skill's background run has no chat id and is refused.
+- **Pinned-only**: a conversation reaches only the terminals pinned to its tab.
+- **Classification fails closed** (`ourToolClass` in `agentProtocol.ts`): every `browser_*`,
+  `editor_*` and chat-read tool is listed by name, anything else of ours is Other tools; a test reads
+  the four tool files and fails on an unclassified tool (#536). `terminal_send` / `terminal_key` are
+  **Terminal** ("Type into a terminal?" / "Press keys in a terminal?"), the exact text shown with
+  control characters made visible and Enter as ⏎; the three reads need no card (the pin is the
+  consent), but Terminal on Deny refuses all five.
+- **Claude Code is started with `ask` rules for `terminal_send` and `terminal_key`** beside the
+  chat-control ones, since an `ask` outranks a user's `allow` for `mcp__ai-browser`.
+- **Approval is enforced server-side by a one-shot grant** (`src/mcp/terminalGrants.ts`): minted by
+  the click, Always or Auto before the CLI is told yes, keyed by `[terminal, text, enter]` or
+  `[terminal, keys]`, 120 s, used once; an unreadable argument (a Gemini title that is not JSON)
+  mints a 60 s wildcard used only when nothing exact matches. Without a grant the tool refuses, so a
+  user allow rule, a hook or a CLI's config cannot skip the card (#537). A refusal raised before
+  anything was typed (the user typing, paused, exited) refunds the grant.
+- Arrow keys from `terminal_key` are always CSI, DECCKM not consulted host-side.
+
+#### Insert into terminal
+
+For a terminal running an AI agent's CLI: the toolbar's **Insert** menu puts a page address, an
+element, a screenshot, a file, the editor's selection, a video file or the page's annotations into
+the terminal's **input** (`terminalInsert.ts`, `_insertIntoTerminal`). Text goes as text; images and
+files are written exclusively, `0600`, into `projectTempDirectory(cwd, 'captures' | 'files')`,
+tracked for the cleanup panel, and their quoted path is inserted with a trailing space — both CLIs
+take a path in their prompt. It is sanitised and wrapped in `ESC[200~ … ESC[201~` only while the
+program has bracketed paste on (DECSET 2004, read from the screen model); otherwise line breaks fold
+to spaces, since each would be an Enter. **Never followed by Enter**, and no card: it is the user's
+input, and it feeds the typing gate. Files dropped on or pasted into the terminal go the same way.
+
+#### Remote terminals on the Exchange website and in Chrome
+
+Off by default: `aiBrowser.chat.remoteTerminal` (`application`, read with `inspect().globalValue`
+at every decision). The Chrome side panel has the same terminals since 2026-10-27 (asked for),
+with the same gates except encryption — its bridge is loopback, authenticated by the pairing token.
+What a remote surface is told is one leaf for both, [src/chat/remoteTerminalView.ts](src/chat/remoteTerminalView.ts)
+(`remoteTerminalView` / `remoteTerminalReason`, under test). Every gate, all of which must hold:
+
+- the setting on, `_blocked()` false — both checked again on every hot frame
+  (`ChatViewProvider.exchangeTerminals`);
+- **an encrypted connection only, for the website** (a plaintext `terminal.*` frame would make the
+  relay close the agent with 4400, so nothing is sent or routed without a cipher);
+- **consent once per connection** (per Chrome bridge), a modal on the first attach or lifecycle
+  command, kept in memory (`terminalConsentDetail`, and its Chrome twin in `chromeChatSetup.ts`: it
+  can watch terminals marked "Allow remote access", **open new
+  shells or agent CLIs, shared from the start**, and type once it takes control — the first wording
+  left the second part out, #539);
+- **only terminals marked shared** (`setTerminalRemote`, editor-only; editor terminals start
+  unshared, ones opened from Chrome or the website shared). The projection carries shared terminals
+  only, `cwd` cut to its last folder; the sharing row (`TerminalSupport.website`) never leaves.
+
+**Where a gate is closed, "New terminal" is disabled with the reason, never hidden.** This was the
+website bug: its only entry was the strip's "New terminal" button, shown only while a terminal could
+be started, and the New Chat menu that carries the disabled row is reached from the editor's title
+bar alone — so with the setting off (the default) the website had no entry at all and nothing said
+why. Now `remoteBar` (the shell header's buttons in `chat.ts`) has a **New terminal** button on both
+remote surfaces whenever the state carries `terminalSupport`: enabled, it opens the shell/agent menu;
+disabled, its tooltip and a click say exactly what to do — the setting by its title and its id
+(`remoteTerminalSettingHint`), a declined consent, the encryption, the limit. The lifecycle controls
+are `off` with that reason in the surface's control map.
+
+**Chrome's transport** reuses the website's frames and shim (`preview-src/remoteTerminal.ts`) over
+the bridge rather than a socket: `POST /terminal` carries `{ frames }` (at most 64, each checked by
+`RemoteTerminalHub.receive`; the first `terminal.attach` asks for consent), and `GET
+/terminal?after=<cursor>` long-polls agent frames (held up to `X-AI-Browser-Wait`, at most
+`chromeChatMaxWaitMs`; the bridge keeps the last 2048 frames / 4 MB). The hub's epoch is the
+bridge's own `_epoch`, sent as `terminalEpoch` in the snapshot. The panel's side is
+[preview-src/chromeTerminalLink.ts](preview-src/chromeTerminalLink.ts) (leaf, under test): one POST
+in flight so `n` stays ordered, a refused batch drops the queue, the poll loop follows the cursor.
+Lifecycle commands go through `/command` (`readChromeChatCommand` accepts the four;
+`commandChromeSource` routes them to `_remoteTerminalCommand`), and the bridge asks for consent before
+forwarding. The panel stopping its snapshot polls (presence) drops every consumer and lease. No new
+capability is negotiated: an older editor's snapshot carries no `terminalSupport`, so the entry is
+simply absent there.
+
+The wire (`src/chat/remoteTerminalProtocol.ts`, leaf, with the hub `RemoteTerminalHub`): viewer →
+agent `terminal.attach | detach | input | resize | ack | lease{claim|renew|release}`, each with the
+snapshot's epoch `e`, a viewer id `v` (8–64 of `[A-Za-z0-9_-]`) and a strictly increasing `n`;
+agent → viewer `terminal.replay | data | exit | lease | error`, addressed to `v` because agent →
+viewers is a broadcast. They bypass `chat.command`. Caps: input frames 4 096 units at 64 KB/s
+(128 KB burst), data frames 32 KB, a 512 KB window, at most 8 consumers (4 per terminal, 2 per
+viewer).
+
+- **A viewer watches by default**; input needs the **lease** (Take control), idle after 30 s; the
+  editor's own typing takes it back. A watcher's keys are refused with one notice, xterm's automatic
+  query replies dropped silently. Only the holder's size reaches the PTY; while a lease is held the
+  editor's resizes are kept aside and applied when it ends (`setRemoteControl`).
+- **Fan-out with the slowest consumer holding the PTY** (`_owed` minus the largest outstanding of the
+  editor view and every remote consumer), and **a consumer at its window for 5 s is dropped**, giving
+  its debt back — one stalled phone must not pause the shell for everyone.
+- **The epoch**: the agent numbers every snapshot (`epoch`, `rev`) whether or not the relay carries
+  patches; an epoch change re-attaches everything.
+- **Audit**: consent, attach/detach, lease claim/release/expiry, slow drops, refusals and lifecycle
+  commands go to the output channel **AI Browser: Remote Terminals**.
+- The website and Chrome side is `preview-src/remoteTerminal.ts` (a shim turning renderer messages into frames
+  and back; paste from `navigator.clipboard`); `web-chat.css` carries VS Code's default ANSI palettes,
+  `100dvh` and `interactive-widget=resizes-content`. The strip in the editor shows a globe on a shared
+  terminal, orange while the website is in control. Encryption does not protect against an operator
+  who changes the website itself; the setting's description says so.
+
+#### Verified, and not
+
+Verified: `npm test` over every leaf named above; `scripts/test-terminal.mjs`, the compiled host
+against the real staged node-pty (zsh `-f` and bash `--norc`, a command, its screen, exit code 3
+still readable after exit, a 6 MB flood to a non-acknowledging view stopping under 2 MB and
+finishing with nothing lost, 100 MB through the emulator with the shell paused around the cap) on
+macOS arm64; the view in headless Chrome against a fake host (CSP, keys, DECCKM, links, layout,
+the key bar at a 500 px "keyboard"); the remote path end to end over an encrypted fake relay
+(`exchangeTerminal.test.ts`) and the website shim joined to the hub (`remoteTerminalEnds.test.ts`).
+**Not verified**: inside a real VS Code window (workbench key forwarding, the real clipboard, the
+element pick and image paste of Insert, detached panels, forks); on a real phone (iOS Safari,
+Android with Gboard, an iPad keyboard, VoiceOver/TalkBack); Windows (conpty and the Windows branches
+of the smoke test have never run); fish/pwsh native OSC 133; Codex's and Gemini's live argument
+shapes for the new tools.
 
 ### Verified how
 
@@ -9640,8 +10210,204 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
      once (`_seeded`), so a later `browser_select_tab` still moves it and a share still wins.
      Without it the terminal followed the VS Code tab in front, never the Chrome tab the chat had
      been working on (the last-resort fallback is built-in only).
+518. **A real-path boundary checked on the tool path and not on the editor's own buffer** →
+     `editor_reveal` and the language tools resolve symlinks (`_realInside`), while
+     `editor_context` asked only `getWorkspaceFolder`, so a file opened through a workspace
+     symlink to `~/.ssh/config` handed its current line and selection to the model.
+     `_readableInside` applies the real-path test there too; an outside file gets metadata only.
+519. **Pushing the branch a record names instead of the one checked out** → `pushCopy` committed on
+     the current `HEAD` and pushed `copy.branch`, so after an agent or a terminal switched branches
+     in the copy, Push reported success and opened a compare page while the new commit stayed
+     local. It reads `symbolic-ref HEAD`, refuses a detached one, and returns what it pushed.
+520. **Emptying a send queue whose composer has already let go of the text** → the Chrome side
+     panel cleared its outbox on Disconnect and on every new connection, and the composer had
+     cleared the text and chips at send, so undelivered messages were gone.
+     `returnOutboxToDrafts` gives them back first.
+521. **A test that lifts functions out of a file and runs them in a sandbox** → when the lifted
+     function starts calling a new helper, the test fails with `ReferenceError` while the product
+     works (`prepareChromeMessage`, `chromeFooter.test.ts`). Lift the helper too, not a stub,
+     so the test still exercises the real path.
+522. **One close code for "revoked" and "transient"** → the Exchange relay closed an agent with
+     1008 for a revoked key and for a bad message or a full queue alike, and the client stopped
+     for good on any 1008. Give a permanent refusal its own code (4001).
+523. **A size limit in one unit on the server and another on the client** → 64 000 UTF-16 units
+     pass the relay and exceed 128 000 UTF-8 bytes; the client dropped the connection on a valid
+     command. Bound frames in bytes, by the receiver's real limit.
+524. **A pick that waits for input on a page the viewer is not looking at** → Element and
+     Annotation pressed on the Exchange website armed the picker on the shared tab, and the
+     website's click never finished it, so the pick was done in the local VS Code browser
+     instead. Resolve a remote pick from the click's coordinates (`remotePick.ts`).
+525. **An agent's key press that reaches the user's clipboard** → `browser_press` sent Cmd/Ctrl+V
+     as CDP's `paste` command, so a prompt-injected agent could paste what the user had copied (a
+     password, a token) into a page and read it back. `keyDescription` refuses copy, cut and paste
+     shortcuts outright — without the command Chromium still pastes on Control+V natively on
+     Windows and Linux. Text goes in with `browser_type`.
+526. **A setting written into a nonce-allowed `<style>`** → xterm puts the font family unescaped into
+     a `<style>` element, and `terminalCsp.ts` gives every `<style>` the page's nonce, so a
+     workspace's `terminal.integrated.fontFamily` could restyle the whole chat — the approval cards
+     included. Once a nonce covers generated styles, every string reaching them is CSS on the page:
+     validate it (`safeFontFamily`, written twice) or fall back.
+527. **Pasting through a bracketed paste without sanitising** → `ESC[201~` inside the clipboard
+     closes the shell's paste early, and the rest runs as typed commands. xterm's `paste()` only
+     rewrites newlines and adds the markers. Strip ESC, C0 but tab/CR/LF, DEL and C1 from every
+     paste path, the view's own paste event included.
+528. **A program to run, taken from a workspace setting** → the shell and its arguments came from
+     `terminal.integrated.profiles.*`, so a cloned repository's `.vscode/settings.json` ran code on
+     New Terminal. Read them with `inspect()` and keep the user's values and the defaults only — the
+     rule `claudePath` and `codexPath` follow by being `application`-scoped.
+529. **Flow control whose credit lives in a view that can go away** → a reloaded view never
+     acknowledges what its predecessor was sent, and the PTY stayed paused for good, the shell
+     blocked on its own output with no error. Whoever counts in-flight output gives it back on
+     attach, detach, restart and exit.
+530. **Acknowledging what the other side never counted** → the view acknowledged the replay and
+     dropped duplicates, which the host had not counted as in flight, so the credit came off live
+     output and the shell ran ahead of xterm by a replay's worth per attach. Both ends must agree,
+     in one written-down contract, on exactly which bytes are owed.
+531. **A stream through a queue built for messages** → `_postMessage` holds everything for a view
+     that has not said `ready` and diverts it during a remote command, so terminal output would pile
+     up without bound for a hidden view. A stream has its own path that drops when nobody listens,
+     with a replay to catch up.
+532. **Limits in a chain that do not nest** → the host accepted a paste of up to 4 000 000
+     characters and the session dropped any write over 1 MiB in silence, so a large paste vanished.
+     Each layer's limit must sit below the next one's, and the outermost refuse aloud: paste
+     990 000, input 1 000 000, slices of 64 KiB.
+533. **Closing a container because its last item of one kind left** → moving the last conversation
+     out of a panel closed it, and its running terminals with it. Ask whether the container holds
+     anything else that goes with it (`closesEmptyPanel`).
+534. **Two emulators answering one shell** → the headless model's `onData` answers cursor and
+     device queries, as the view's xterm already does, and a second answer reaches the shell as
+     typed input. A shadow emulator only reads; never subscribe to its replies.
+535. **An asynchronous consumer outside flow control** → with no view attached the tab acknowledged
+     output at once, so only the headless emulator's queue stood between a flood and memory, and at
+     50 MB it throws "write data discarded". Its backlog is part of the pause rule (4 MB high, 1 MB
+     low), and a throw from it degrades reads instead of reaching the shell's reader.
+536. **A new tool filed under an Auto-able category by default** → every `ai-browser` tool used to be
+     "AI Browser", so `terminal_send` would have run unasked under that Auto. Classify by an explicit
+     list and file the rest under Other tools; a test fails on a registered tool nobody classified.
+537. **An approval that only the client enforces** → a user `allow` rule, a hook or a CLI config can
+     answer for the card, and the input goes through. The server mints a one-shot grant when the
+     chat says yes and the tool refuses without one; a refusal before anything was typed refunds it.
+538. **A banner inside a column that another view hides** → the Chrome pairing Allow/Deny lives in
+     `.chat-main`, which a terminal in front hides, so the question could not be answered. Anything
+     that waits on the user stays visible whatever is in front.
+539. **Consent text narrower than the power it grants** → the website-terminal modal spoke of
+     watching and typing into shared terminals and not of opening new shells on this computer, which
+     the same consent allowed. The dialog names every capability it unlocks.
+540. **Marking a message as told when it was not delivered** → the pin announcement was recorded as
+     sent when `send` resolved `false`, so the agent never learned of its terminals. Undo the mark on
+     every path where delivery did not happen, and only if no newer mark replaced it.
+541. **A size set before the process exists** → a restart whose view attach landed while the new PTY
+     was still spawning kept 80×24. Remember the last size the view reported and apply it to every
+     process started afterwards.
+542. **Focus requested before the state that makes it possible** → `focusInput` reached the view
+     before the state that took the terminal out of the front, so the hidden xterm took the focus
+     and the composer never got it. Post focus requests after the state they depend on.
+543. **A rename that waits for the host's echo** → the tab showed the old name until the next state.
+     Show the user's change at once and hold it until the state carries it.
+544. **An assertion that cannot fail** → `assert.ok(x || true)` and a check on a value the test set
+     itself passed whatever the code did, in two terminal tests. Read a new test's assertions for one
+     that can actually fail.
+545. **A build-time input under `dependencies`** → node-pty there made a bare `vsce package` pack 305
+     raw `node_modules` files beside the staged copy, `spawn-helper` without its execute bit. Native
+     code that is staged is a devDependency like everything bundled.
+546. **A guard on a build constant that the bundler does not fold** → `typeof __TERMINAL__ !==
+     'undefined' &&` and an early return left xterm in the unminified Chrome bundle; only a bare
+     positive `if (__TERMINAL__)` is dropped, and a build without the define throws at startup.
+547. **Importing a stylesheet from a script entry** → esbuild writes `<entry>.css`, so
+     `import 'xterm.css'` in `chat.ts` would overwrite the checked-in `media/chat.css`. Give the
+     stylesheet an entry of its own.
+548. **A keyed label whose key misses a field** → the strip refills a terminal tab only when
+     `terminalTabShown` changes, so a summary field left out of it never shows. Add every field a
+     label draws to the string that decides when it is redrawn.
+549. **Hand-made module maps in tests** → tests that load `chatTab.ts` through their own `require`
+     map, or lift `chatView.ts` methods into a sandbox, failed on each new relative import
+     (`./terminalPins`) or member (`_terminals`, `_focusInput`). #521 again: extend the map with the
+     real module.
+550. **Measuring a hidden tab for an animation** → a tab in the overflow dropdown measures 0 px, so a
+     switch to it animated its width from nothing. `tabWidths` and `animateTabSwitch` skip `overflowed`
+     tabs, and the overflow layout runs before the animation measures.
+551. **An entry shown only while it works** → the website's "New terminal" existed only while a terminal
+     could be started, and the default (setting off) left no entry and no reason, read as "the website
+     cannot open terminals". A remote entry is disabled with the exact thing to enable, never hidden.
+552. **A lifted method meeting a new module-level name** → the Chrome footer and clipboard tests lift
+     `sidepanel.ts`'s `postMessage` into a sandbox, and its new `terminals.fromView` call threw
+     `ReferenceError`. #521 again: give the sandbox the real `createRemoteTerminalShim`.
 
 ## Special cases and non-obvious decisions
+
+### Native page actions inspired by Stagehand
+
+`src/browser/nativeActions.ts` independently implements the useful deterministic parts of
+Stagehand's locator/input approach, without adding a production dependency, Chrome extension,
+LLM client, or second agent. `TabSession` owns one `NativeActions`; `BrowserController` still
+resolves the caller's allowed tab through `_withSession`. MCP exposes:
+
+- `browser_click`: unique selector, native mouse events, optional `button`, `clickCount: 2`,
+  `smooth` and `humanize`. Unlike the previous `el.click()`, covered/disabled/ambiguous targets fail.
+- `browser_hover`: native pointer movement for hover menus; optional `smooth` and `humanize`.
+- `browser_press`: focus a unique selector and send a key or shortcut (`Enter`, `Shift+Tab`,
+  `Control+a`, `Meta+a`). Platform editing shortcuts include explicit CDP editing commands:
+  on macOS, sending the modifier and key alone did not perform Select All in headless Chrome.
+- `browser_type`: insert text at the caret/selection using `Input.insertText`; does not replace
+  the whole value. Optional `humanize` sends native per-grapheme key events with varied pauses
+  (up to 400 graphemes per call). Results never echo editable values. Chromium accepts at most
+  four UTF-16 units in a keyboard event's text buffer, so longer graphemes such as joined emoji
+  are inserted atomically with `Input.insertText` between their key-down/up events. No character
+  is split into surrogate halves. Before each character, verify the same element still has focus;
+  never refocus automatically after a page handler moved it somewhere else.
+- `browser_drag`: native left-button drag between two selectors in the same frame, with smooth
+  movement by default. Both endpoints must fit in its viewport. It does not synthesize HTML5
+  DataTransfer payloads or auto-scroll while dragging; callers must check the resulting state.
+
+The snapshot and action resolver support explicit `host >>> inner-selector` chains through
+open and closed author shadow roots. `browser_fill` uses the same pinned-element resolver.
+For each shadow boundary, `DOM.describeNode` supplies its backend root id and `DOM.resolveNode`
+exposes that root in the selected frame's execution context; no attachShadow monkey-patch or
+persistent page registry is needed. Browser-owned user-agent shadow roots are excluded.
+Snapshot discovery describes only the selected document and does not recurse into iframe
+documents; its internal DOM data is never returned directly. Resolved root objects are released
+after metadata extraction. Ordinary CSS remains ordinary CSS;
+`>>>` inside a quoted attribute or CSS function is not a shadow boundary. Snapshot traversal
+is bounded at 150 entries, 200 roots and 20000 visited elements, with a `truncated` flag.
+Editable content and field values are never used as snapshot labels, except button captions.
+
+Pointer coordinates are computed in each frame's viewport and projected through the content
+quad from `DOM.getBoxModel`, using an invertible projective transform. This handles scale,
+rotation, skew, CSS zoom and perspective in nested and site-isolated frames. CDP quads already
+include same-renderer ancestors, so apply a session's transform only when crossing into another
+renderer; adding every frame offset again is wrong. Map back into each parent's local viewport
+for hit-testing. Singular/edge-on transforms fail before mouse input.
+
+An OOPIF's DOM geometry can update before the compositor routes input using its new transform.
+Before pressing, verify a trusted native pointer move actually reached the pinned target with
+a transient pointermove probe, retrying only movement (up to five attempts). Remove the probe
+and release its object on every exit; never replay a press. An explicit sandbox without
+allow-scripts cannot run that callback, so sample stable geometry from the host after a short
+settling interval instead. This keeps native links usable in script-disabled frames without
+waiting on sandboxed page timers. Same-renderer actions need no compositor probe.
+
+Native actions serialize per tab session and use the existing scroll/screenshot gate. Each
+operation has a 15-second budget (humanized typing scales up to 55 seconds), and each
+CDP/readiness wait a 2.5-second bound. Remote element
+objects are pinned for an action and released afterwards, so a rerender cannot silently
+redirect input to a replacement node. Cancellation/errors release held keys or mouse buttons.
+An issued mutation is never retried automatically; inspect the page before retrying after a
+timeout. `smooth` interpolates pointer events over a bounded route; `humanize` uses a curved
+route, varied movement timing and brief click/drag pauses. Humanized typing pauses longer at
+word/punctuation boundaries. Both are optional, and neither adds deliberate typing mistakes,
+moves the OS cursor, installs a visible cursor overlay, or guarantees human indistinguishability.
+
+`nativeActions.test.ts` checks protocol sequences, cancellation, selector parsing and queueing.
+The opt-in `nativeActions.browser.test.ts` launches a disposable headless Chrome with CDP pipes
+and tests trusted events, transformed nested/site-isolated frames, open/closed shadow DOM,
+Unicode editing, script-disabled frames and dragging:
+
+```sh
+AI_BROWSER_TEST_CHROME='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' node --test src/browser/nativeActions.browser.test.ts
+```
+
+The browser test uses a temporary profile; its cross-origin fixture listens only on loopback.
+It does not touch the user's Chrome profile or expose a network debugging port.
 
 - **Surface coordination after review:** all providers share one `GitAccess`; busy-folder
   checks enumerate every provider, so moving a running agent cannot bypass worktree locks.
@@ -9720,6 +10486,17 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
   unavailable there because the extension's recording destination/encoder belongs to the sidebar.
   These panels contain our chat UI, never the legacy browser iframe.
 
+- **The liquid loader is generated, and it is an SVG inside the CSS.** `media/liquid-loader.css`
+  is written by `node ./scripts/build-liquid-loader.mjs` — edit the script, never the file. The
+  shape (a 40 s loop: circle at 0 s, a fluid six-rayed form, a rounded hexagon for core and shell
+  at 16.8 s, held at neither, then the core shrinking into a 2 px dot — a non-scaling round-capped
+  stroke, so twice the shell's line at every size — held 4 s, and growing back into the circle) cannot be drawn with `border-radius`, so it is a SMIL-animated SVG
+  set as a `data:` background through `--liquid-loader-image` (core and shell) and
+  `--liquid-core-image` (core alone, for the small status dots in `chat.css`). A `data:` URL keeps
+  every surface on its plain `<span class="liquid-loader">` — the chat, the Chrome side panel and
+  the Exchange website copy only the CSS — and is allowed by each CSP (`img-src data:`). SMIL
+  rather than CSS `d:` animation because Safari, on the website, animates no CSS `d`. Reduced
+  motion swaps both variables to the first frame, a still circle.
 - **In a remote window this extension runs on the local machine, and the MCP features are
   refused there.** `extensionKind` is `["ui", "workspace"]`, inherited from upstream
   simple-browser, so a Remote-SSH, WSL or Dev Container window runs it in the local extension
@@ -9820,6 +10597,19 @@ interaction under [TypeScript configuration](#typescript-configuration).
   which checks the prefix against the schemes the parser actually recognizes.
 
 ## Removed on purpose — do not reintroduce
+
+- **The first remote terminal: a terminal manager behind the Chrome side panel and the Exchange
+  relay.** Before the in-chat terminal tabs, a separate terminal was reachable from the Chrome side
+  panel and from the website through relay endpoints of its own (`/ws/terminal-*`), with a manager
+  in the extension handing out leases. It was never released, and it was removed in favour of the
+  [terminal tabs](#terminal-tabs-a-real-shell-in-the-chat): one terminal in the chat, the same tab
+  in the editor and — opted in, over the chat's own encrypted connection — on the website. A second
+  transport meant a second set of gates, a second flow-control scheme and a second place for the
+  consent to drift. Do not bring back a terminal channel beside the chat's. (The Chrome side panel
+  built with `__TERMINAL__` false on purpose until 2026-10-27, when the user asked for terminals
+  there; they now reach it through the chat's own bridge with the website's frames and gates — see
+  [Remote terminals](#remote-terminals-on-the-exchange-website-and-in-chrome) — which is not this
+  second channel.)
 
 - **A left-hand (activity bar) copy of the chat for VS Code before 1.106.** Built, as Claude Code
   and Codex do, and removed on request: the chat lives in the secondary side bar only, and below

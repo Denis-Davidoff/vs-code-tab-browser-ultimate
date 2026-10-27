@@ -1,3 +1,6 @@
+@import url("./liquid-loader.css");
+@import url("./appearance.css");
+
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -46,26 +49,116 @@
 	   click opens the whole text. */
 	--io-lines: 3;
 	--ease: cubic-bezier(.23, 1, .32, 1);
+	/* Control standard: sizes shared by every AI Browser surface, colours
+	   mapped onto the VS Code theme so light, dark and high contrast hold. */
+	--ctl-h-sm: 24px;
+	--ctl-h: 28px;
+	--ctl-h-lg: 36px;
+	--ctl-h-xl: 44px;
+	--ctl-pad-x: 8px;
+	--ctl-radius: 6px;
+	--ctl-radius-sm: 4px;
+	--ctl-gap: 6px;
+	--ctl-gap-sm: 4px;
+	--ctl-font: 12px;
+	--ctl-icon: 16px;
+	--ctl-chevron: 10px;
+	--ctl-check: 14px;
+	--ctl-ring: 1px solid var(--ctl-focus);
+	--ctl-ring-offset: 1px;
+	--ctl-disabled-opacity: .5;
+	--ctl-fg: var(--vscode-foreground);
+	--ctl-fg-muted: var(--fg-3);
+	--ctl-bg: var(--vscode-input-background);
+	--ctl-border: var(--vscode-input-border, var(--border-strong));
+	--ctl-border-hover: color-mix(in srgb, var(--vscode-foreground) 25%, transparent);
+	--ctl-hover-bg: var(--vscode-toolbar-hoverBackground, var(--soft-2));
+	--ctl-active-bg: var(--vscode-toolbar-activeBackground, var(--soft-2));
+	--ctl-focus: var(--vscode-focusBorder);
+	--ctl-primary-bg: var(--vscode-button-background);
+	--ctl-primary-fg: var(--vscode-button-foreground);
+	--ctl-primary-hover-bg: var(--vscode-button-hoverBackground, var(--vscode-button-background));
+	--ctl-accent: var(--vscode-checkbox-selectBackground, var(--vscode-button-background));
+	--ctl-chevron-img: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M2 3.5l3 3 3-3' fill='none' stroke='%23CCCCCC' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
+
+body.vscode-light {
+	--ctl-chevron-img: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M2 3.5l3 3 3-3' fill='none' stroke='%23616161' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+
+body.vscode-high-contrast {
+	--ctl-border: var(--vscode-contrastBorder);
+	--ctl-border-hover: var(--vscode-contrastActiveBorder);
+	--ctl-chevron-img: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M2 3.5l3 3 3-3' fill='none' stroke='%23FFFFFF' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+
+body.vscode-high-contrast-light {
+	--ctl-chevron-img: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M2 3.5l3 3 3-3' fill='none' stroke='%23000000' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+
+/* Design system tokens (docs/design-system.md, section 2). Shared rules read --ds-* and --ctl-*. */
+:root {
+	--ds-space-1: 4px; --ds-space-2: 6px; --ds-space-3: 8px;
+	--ds-space-4: 12px; --ds-space-5: 16px; --ds-space-6: 24px;
+	--ds-radius-sm: 4px; --ds-radius: 6px; --ds-radius-md: 8px;
+	--ds-radius-lg: 12px; --ds-radius-pill: 999px;
+	--ds-text-xs: .85em; --ds-text-sm: .92em; --ds-text-body: 1em;
+	--ds-text-h4: 1.05em; --ds-text-h3: 1.12em; --ds-text-h2: 1.2em; --ds-text-h1: 1.3em;
+	--ds-weight-regular: 400; --ds-weight-medium: 500; --ds-weight-strong: 600;
+	--ds-leading-tight: 1.25; --ds-leading: 1.45; --ds-leading-prose: var(--line);
+	--ds-tracking-label: .06em;
+	--ds-shadow-color: var(--vscode-widget-shadow, rgba(0, 0, 0, .36));
+	--ds-shadow-tip: 0 2px 8px var(--ds-shadow-color);
+	--ds-shadow-popup: 0 8px 24px var(--ds-shadow-color);
+	--ds-shadow-modal: 0 16px 48px var(--ds-shadow-color);
+	--ds-backdrop: color-mix(in srgb, var(--ds-shadow-color) 60%, transparent);
+	--ds-z-sticky: 10; --ds-z-popup: 30; --ds-z-panel: 40; --ds-z-popup-over-panel: 45;
+	--ds-z-palette: 50; --ds-z-toast: 55; --ds-z-tooltip: 60;
+	--ds-accent: var(--accent); --ds-danger: var(--bad); --ds-warning: var(--warn);
+	--ds-success: var(--ok); --ds-info: var(--vscode-editorInfo-foreground, #3794ff);
+	--ds-muted: var(--fg-3);
+	--ds-accent-soft: color-mix(in srgb, var(--ds-accent) 10%, transparent);
+	--ds-danger-soft: color-mix(in srgb, var(--ds-danger) 10%, transparent);
+	--ds-warning-soft: color-mix(in srgb, var(--ds-warning) 10%, transparent);
+	--ds-success-soft: color-mix(in srgb, var(--ds-success) 10%, transparent);
+	--ds-info-soft: color-mix(in srgb, var(--ds-info) 10%, transparent);
+	--ds-danger-line: color-mix(in srgb, var(--ds-danger) 35%, transparent);
+	--ds-warning-line: color-mix(in srgb, var(--ds-warning) 35%, transparent);
+	--ds-success-line: color-mix(in srgb, var(--ds-success) 35%, transparent);
+	--ds-info-line: color-mix(in srgb, var(--ds-info) 35%, transparent);
+	--ds-surface-raised: var(--elevated); --ds-divider: var(--border);
+	--ds-duration-fast: .12s; --ds-duration: .18s; --ds-duration-slow: .3s;
+	--radius: var(--ds-radius-md); --radius-lg: var(--ds-radius-lg);
+}
+@media (prefers-reduced-motion: reduce) {
+	:root { --ds-duration-fast: 0s; --ds-duration: 0s; --ds-duration-slow: 0s; }
+}
+body.vscode-high-contrast, body.vscode-high-contrast-light {
+	--ds-shadow-tip: none; --ds-shadow-popup: none; --ds-shadow-modal: none;
+}
+:is(input, select, textarea)[aria-invalid="true"] { border-color: var(--ds-danger); }
+:is(input, select, textarea)[aria-invalid="true"]:focus-visible { outline: 1px solid var(--ds-danger); outline-offset: var(--ctl-ring-offset); }
 
 .chrome-connection-banner {
 	flex: none;
 	display: flex;
 	flex-direction: column;
-	gap: 8px;
-	margin: 10px 12px;
-	padding: 14px;
-	border: 1px solid var(--accent);
-	border-radius: var(--radius-lg);
-	background: var(--soft);
-	font-size: 12px;
+	gap: var(--ds-space-3);
+	margin: var(--ds-space-3) var(--ds-space-4);
+	padding: var(--ds-space-2) var(--ds-space-4);
+	border: 1px solid var(--ds-info-line);
+	border-radius: var(--ds-radius);
+	background: var(--ds-info-soft);
+	font-size: var(--ds-text-sm);
+	line-height: var(--ds-leading);
 }
 .chrome-connection-banner[hidden] { display: none; }
 .chrome-connection-banner > span { color: var(--fg-2); }
 .chrome-connection-banner > code { color: var(--fg-3); overflow-wrap: anywhere; }
 .chrome-connection-actions { display: flex; gap: 8px; }
 .chrome-connection-actions button { padding: 6px 12px; border-radius: 6px; cursor: pointer; }
-.chrome-connection-actions .primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: 0; }
+.chrome-connection-actions .primary { box-sizing: border-box; height: var(--ctl-h); padding: 0 12px; border-radius: var(--ctl-radius); background: var(--ctl-primary-bg); color: var(--ctl-primary-fg); border: 0; }
+.chrome-connection-actions .primary:hover:not(:disabled) { background: var(--ctl-primary-hover-bg); }
 
 html, body {
 	height: 100%;
@@ -86,11 +179,16 @@ body {
 	flex-direction: column;
 	height: 100%;
 	overflow: hidden;
+	/* Focus in an overlay must not scroll the app and leave space below its footer. */
+	overflow: clip;
 }
 
 button {
 	font: inherit;
 	color: inherit;
+	border: 0;
+	background: none;
+	padding: 0;
 }
 
 .codicon {
@@ -123,6 +221,8 @@ button {
 .thread {
 	flex: 1;
 	overflow-y: auto;
+	/* The stuck prompt changes size under the scroll; anchoring would fight it. */
+	overflow-anchor: none;
 	overscroll-behavior: contain;
 }
 
@@ -184,22 +284,31 @@ button {
 	overflow: hidden;
 }
 
-.prompt-content {
-	max-height: 4lh;
-	overflow: hidden;
-}
-
 .prompt-content .bubble-text {
 	display: block;
 	-webkit-line-clamp: unset;
 }
 
-.bubble:hover > .prompt-content,
-.prompt-content:focus-visible {
-	max-height: max(4lh, 50vh);
+/* In its place the prompt is shown whole. Once it is stuck to the top over its
+   reply, chat.ts (fitStickyPrompts) shrinks it with the scroll, to four lines
+   at most; the room it lost, added above what follows it, keeps the rows below where they were, so they do
+   not jump while it shrinks. It is not opened on hover: a scroll area there
+   took the wheel from the chat. */
+.prompt.shrunk .prompt-content { overflow: hidden; }
+/* The room a shrunk prompt lost, given to the rows below it rather than to its own
+   margin: a sticky box's margin counts against its turn, so a margin made the
+   prompt leave the top while the turn's last rows were still on screen. */
+/* On .rows by name: the turn's summary line sits between the prompt and the
+   rows and is usually hidden, and a margin on a hidden box gives nothing. */
+.turn > .rows { margin-top: var(--prompt-room, 0px); }
+.prompt.compact .bubble { cursor: pointer; }
+.prompt.open .bubble { cursor: auto; }
+.prompt.open .prompt-content {
 	overflow-y: auto;
+	/* The wheel scrolls the open message only, never the chat behind it. */
 	overscroll-behavior-y: contain;
 }
+
 
 .bubble-attachments .chip-label { max-width: none; min-width: 0; }
 
@@ -289,11 +398,17 @@ button {
 	align-items: flex-start;
 	gap: 6px;
 	color: var(--fg-3);
-	font-size: 0.95em;
+	font-size: var(--ds-text-sm);
 }
 
 .row.error {
 	color: var(--bad);
+}
+
+.row.error .error-action {
+	margin-left: 6px;
+	flex: none;
+	color: var(--accent);
 }
 
 .row.notice .codicon,
@@ -412,7 +527,7 @@ button {
 	font-size: var(--vscode-chat-font-size, var(--vscode-font-size));
 }
 
-/* the changing star before "Working…" — fixed width, so the text does not move as it changes */
+/* Fixed space for the working indicator, so the label never shifts. */
 .working-glyph {
 	transform: translateX(-2px);
 	display: inline-block;
@@ -779,14 +894,16 @@ button {
    label in a column of its own (asked for, after Claude Code's panel). */
 .io,
 .exec {
-	--io-bg: color-mix(in srgb, var(--code-bg), #000 22%);
+	--io-bg: color-mix(in srgb, var(--code-bg) 78%, var(--vscode-editor-background));
 	background: var(--io-bg);
 }
 
-body.vscode-light .io,
-body.vscode-light .exec,
-body.vscode-high-contrast-light .io,
-body.vscode-high-contrast-light .exec {
+:root[data-theme="light"] .io,
+:root[data-theme="light"] .exec,
+:root:not([data-theme]) body.vscode-light .io,
+:root:not([data-theme]) body.vscode-light .exec,
+:root:not([data-theme]) body.vscode-high-contrast-light .io,
+:root:not([data-theme]) body.vscode-high-contrast-light .exec {
 	--io-bg: color-mix(in srgb, var(--code-bg), #000 5%);
 }
 
@@ -998,9 +1115,13 @@ body.vscode-high-contrast-light .exec {
 
 .paste-status {
 	padding: 4px 0;
-	font-size: 0.9em;
-	color: var(--fg-3);
+	font-size: var(--ds-text-sm);
+	color: var(--ds-muted);
 }
+.status-line { font-size: var(--ds-text-sm); line-height: var(--ds-leading); color: var(--ds-muted); }
+:is(.paste-status, .status-line).is-success { color: var(--ds-success); }
+:is(.paste-status, .status-line).is-warning { color: var(--ds-warning); }
+:is(.paste-status, .status-line).is-danger { color: var(--ds-danger); }
 
 /* ---------------------------------------------------------------- markdown */
 
@@ -1027,7 +1148,8 @@ body.vscode-high-contrast-light .exec {
 	color: color-mix(in srgb, var(--vscode-charts-yellow, #cca700) var(--heading-yellow, 100%), var(--heading-top));
 }
 
-body.vscode-dark .markdown .heading {
+:root[data-theme="dark"] .markdown .heading,
+:root:not([data-theme]) body.vscode-dark .markdown .heading {
 	--heading-top: #fff;
 }
 
@@ -1207,11 +1329,13 @@ body.vscode-dark .markdown .heading {
 
 /* code a little brighter than the prose round it: towards white on a dark theme, towards black
    on a light one; a high-contrast theme keeps its own foreground */
-body.vscode-dark .code-block pre {
+:root[data-theme="dark"] .code-block pre,
+:root:not([data-theme]) body.vscode-dark .code-block pre {
 	color: color-mix(in srgb, var(--vscode-foreground) 70%, #fff);
 }
 
-body.vscode-light .code-block pre {
+:root[data-theme="light"] .code-block pre,
+:root:not([data-theme]) body.vscode-light .code-block pre {
 	color: color-mix(in srgb, var(--vscode-foreground) 75%, #000);
 }
 
@@ -1412,7 +1536,7 @@ body.vscode-light .code-block pre {
 }
 
 .news-toggle:focus-visible {
-	outline: none;
+	outline-offset: 2px;
 }
 
 .welcome-problem {
@@ -1672,24 +1796,36 @@ body.vscode-light .code-block pre {
 }
 
 .toolbar-settings,
+.selector-controls,
 .toolbar-attachments {
 	display: flex;
 	align-items: center;
 	min-width: 0;
 }
 
+.selector-controls { display: flex; align-items: center; gap: 2px; flex-wrap: nowrap; width: max-content; }
 .toolbar-settings { gap: 2px; justify-content: center; justify-self: center; max-width: 100%; }
 .toolbar-attachments { flex: none; width: max-content; }
 
-.toolbar.compact-effort .toolbar-settings > .pill { min-width: 0; }
-.toolbar.compact-effort .toolbar-settings > .pill:nth-child(1) { flex: 0 1 auto; max-width: 90px; }
-.toolbar.compact-effort .toolbar-settings > .pill:nth-child(2) { flex: 0 1 auto; max-width: 130px; }
+.toolbar.compact-effort .selector-controls > .pill { min-width: 0; }
+.toolbar.compact-effort .selector-controls > .pill:nth-child(1) { flex: 0 1 auto; max-width: 90px; }
+.toolbar.compact-effort .selector-controls > .pill:nth-child(2) { flex: 0 1 auto; max-width: 130px; }
 .toolbar.compact-effort .approve-toggle { flex: none; }
 
-.toolbar.stacked { grid-template-columns: auto minmax(0, 1fr); gap: 4px; }
-.toolbar.stacked .toolbar-settings { grid-column: 1 / -1; grid-row: 1; width: 100%; }
-.toolbar.stacked .toolbar-attachments { grid-column: 1; grid-row: 2; }
-.toolbar.stacked .toolbar-end { grid-column: 2; grid-row: 2; }
+/* The summary takes only the space left between the existing tool buttons. */
+.toolbar .compact-selector { display: none; }
+.toolbar.compact-selector-mode { grid-template-columns: max-content minmax(22px, 1fr) max-content; }
+.toolbar.compact-selector-mode .toolbar-settings { justify-self: stretch; width: 100%; overflow: hidden; }
+.toolbar.compact-selector-mode .toolbar-settings > :not(.compact-selector) { display: none; }
+.toolbar.compact-selector-mode .compact-selector {
+ display: flex; align-items: center; gap: 3px; min-width: 0; max-width: 100%; width: 100%; padding: 0 8px 0 2px;
+}
+.compact-selector-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.compact-selector .compact-effort-dot {
+ flex: none; width: 6px; height: 6px; padding: 0; margin: 0; border: 0;
+ border-radius: 50%; background: var(--effort-colour); pointer-events: none;
+}
+.compact-selector .pill-chevron { display: none; }
 
 
 
@@ -1818,7 +1954,9 @@ body.vscode-light .code-block pre {
 }
 
 .usage-alert-close:focus-visible {
-	outline: none;
+	/* Exception (design system section 4): black reads on the fixed yellow. */
+	outline: 1px solid #000;
+	outline-offset: -2px;
 }
 
 /* The hubot about the size of the round marks beside it (the pie, the U). */
@@ -1887,8 +2025,9 @@ body.vscode-light .code-block pre {
 
 
 /* A dark neutral keeps the 25% landmark visible on a light background. */
-body.vscode-light .context-pie,
-body.vscode-high-contrast-light .context-pie {
+:root[data-theme="light"] .context-pie,
+:root:not([data-theme]) body.vscode-light .context-pie,
+:root:not([data-theme]) body.vscode-high-contrast-light .context-pie {
 	--context-neutral: var(--fg);
 }
 
@@ -2054,16 +2193,16 @@ body.vscode-high-contrast-light .context-pie {
 	overflow-y: auto;
 	display: none;
 	position: absolute;
-	z-index: 30;
+	z-index: var(--ds-z-popup);
 	min-width: 200px;
 	max-width: calc(100% - 16px);
 	box-sizing: border-box;
-	padding: 4px;
-	border-radius: 10px;
-	background: var(--elevated);
+	padding: var(--ds-space-1);
+	border-radius: var(--ds-radius-md);
+	background: var(--ds-surface-raised);
 	color: var(--vscode-menu-foreground, var(--fg));
 	border: 1px solid var(--vscode-menu-border, var(--border-strong));
-	box-shadow: 0 8px 24px var(--vscode-widget-shadow, #00000040);
+	box-shadow: var(--ds-shadow-popup);
 }
 
 .popup.open {
@@ -2147,7 +2286,7 @@ body.vscode-high-contrast-light .context-pie {
 
 /* a link's menu opened from inside a panel (an agent's report): above the panel's 40 */
 .popup.menu.over-panel {
-	z-index: 45;
+	z-index: var(--ds-z-popup-over-panel);
 }
 
 .menu-shortcut {
@@ -2253,7 +2392,7 @@ body.vscode-high-contrast-light .context-pie {
 	display: none;
 	position: absolute;
 	inset: 0;
-	z-index: 40;
+	z-index: var(--ds-z-panel);
 	flex-direction: column;
 	background: var(--bg);
 }
@@ -2588,6 +2727,8 @@ body.vscode-high-contrast-light .context-pie {
 	min-width: 130px;
 	max-width: 260px;
 	color: var(--fg);
+	/* A dark grey fill besides the underline; a mix of the text colour, so every theme gets one. */
+	background: color-mix(in srgb, var(--vscode-foreground) 13%, transparent);
 	border-bottom-color: var(--accent);
 }
 
@@ -2666,36 +2807,6 @@ body.vscode-high-contrast-light .context-pie {
 }
 
 
-.tab-mark.working::before {
-	content: '';
-	position: absolute;
-	inset: 0;
-	box-sizing: border-box;
-	border: 2px solid color-mix(in srgb, currentColor 20%, transparent);
-	border-top-color: currentColor;
-	border-right-color: currentColor;
-	border-radius: 50%;
-	animation: tab-orbit .85s linear infinite;
-}
-
-.tab-mark.working::after {
-	content: '';
-	width: 3px;
-	height: 3px;
-	border-radius: 50%;
-	background: currentColor;
-	animation: tab-spark .85s ease-in-out infinite alternate;
-}
-
-@keyframes tab-orbit {
-	to { transform: rotate(360deg); }
-}
-
-@keyframes tab-spark {
-	from { opacity: .35; transform: scale(.65); }
-	to { opacity: 1; transform: scale(1); }
-}
-
 .tab-mark.unread::before,
 .tab-mark.failed::before {
 	content: '';
@@ -2756,13 +2867,53 @@ body.vscode-high-contrast-light .context-pie {
 	margin-left: 2px;
 }
 
+/* The narrow strip's overflow (`layoutTabOverflow`): hidden tabs are listed behind "+N". */
+.tab.overflowed { display: none; }
+.tab-row.measuring .tab { flex-shrink: 0; }
+.tab-overflow-button {
+	flex: none;
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	padding: 2px 6px;
+	border-radius: 6px;
+	color: var(--fg-3);
+	font-variant-numeric: tabular-nums;
+}
+.tab-overflow-button[hidden] { display: none; }
+.tab-overflow-button:hover,
+.tab-overflow-button.active { color: var(--fg); }
+.popup.tab-overflow { min-width: 200px; max-width: 320px; overflow-y: auto; }
+.tab-overflow-item { position: relative; display: flex; align-items: center; }
+.tab-overflow-item .tab-overflow-row { flex: 1; min-width: 0; padding-right: 30px; }
+.tab-overflow-row .menu-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tab-overflow-row .tab-agents { flex: none; margin-left: 6px; }
+.tab-overflow-mark { display: inline-flex; align-items: center; justify-content: center; }
+.tab-overflow-more {
+	position: absolute;
+	right: 4px;
+	opacity: 0;
+}
+.tab-overflow-item:hover .tab-overflow-more,
+.tab-overflow-item:focus-within .tab-overflow-more,
+.tab-overflow-more:focus-visible { opacity: 1; }
+@media (hover: none) { .tab-overflow-more { opacity: 1; } }
+
 
 .tab-confirm {
+	position: absolute;
+	z-index: var(--ds-z-popup);
 	display: flex;
 	flex-wrap: wrap;
 	align-items: center;
+	justify-content: flex-end;
 	gap: 6px;
-	padding: 6px 10px;
+	box-sizing: border-box;
+	padding: 8px 10px;
+	border-radius: var(--ds-radius-md);
+	background: var(--ds-surface-raised);
+	border: 1px solid var(--vscode-menu-border, var(--border-strong));
+	box-shadow: var(--ds-shadow-popup);
 	color: var(--fg-2);
 	font-size: 0.92em;
 }
@@ -2950,10 +3101,6 @@ body.vscode-high-contrast-light .context-pie {
 	font: inherit;
 }
 
-.agent-app-select:focus {
-	outline: none;
-}
-
 .agent-app-select:disabled {
 	opacity: 0.6;
 }
@@ -2988,6 +3135,21 @@ body.vscode-high-contrast-light .context-pie {
 
 .agent-app-link:hover {
 	text-decoration: underline;
+}
+
+.agent-auth-banner {
+	flex: none;
+	padding: 8px 12px;
+	border-bottom: 1px solid var(--border);
+	color: var(--warn);
+	font-size: 12px;
+}
+.agent-auth-banner[hidden] { display: none; }
+.agent-auth-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px 16px;
+	margin-top: 5px;
 }
 
 .agent-apps-body .agents-sub {
@@ -3600,14 +3762,6 @@ body.vscode-high-contrast-light .context-pie {
 	font-size: 12px;
 }
 
-.prompt.pending-send.steer .pending-note .codicon {
-	animation: spin 1.2s linear infinite;
-}
-
-@keyframes spin {
-	to { transform: rotate(360deg); }
-}
-
 .pending-remove {
 	margin-left: auto;
 	padding: 1px;
@@ -3988,7 +4142,7 @@ body.vscode-high-contrast-light .context-pie {
 	min-width: 0;
 	flex-wrap: wrap;
 	gap: 4px;
-	max-height: 26px;
+	max-height: var(--ctl-h);
 	overflow: hidden;
 }
 
@@ -4055,11 +4209,7 @@ body.vscode-high-contrast-light .context-pie {
 	background: var(--vscode-toolbar-activeBackground, color-mix(in srgb, var(--fg) 16%, transparent));
 }
 
-.skill-button:focus {
-	outline: none;
-}
-
-.skill-button:focus-visible {
+.skill-button:focus:not(:focus-visible) {
 	outline: none;
 }
 
@@ -4252,9 +4402,9 @@ body.vscode-high-contrast-light .context-pie {
 
 .form-error {
 	min-height: 1em;
-	padding: 2px 0;
-	color: var(--bad);
-	font-size: 0.9em;
+	padding: var(--ds-space-1) 0 0;
+	color: var(--ds-danger);
+	font-size: var(--ds-text-sm);
 }
 
 .form-error:empty {
@@ -4433,7 +4583,7 @@ body.vscode-high-contrast-light .context-pie {
 
 /* The palette over the editor panel. */
 .palette {
-	z-index: 50;
+	z-index: var(--ds-z-palette);
 }
 
 /* The view's own tooltip (`hoverTip`), for buttons whose native one did not show. */
@@ -4442,19 +4592,19 @@ body.vscode-high-contrast-light .context-pie {
 	max-height: calc(100% - 8px);
 	overflow-y: auto;
 	position: absolute;
-	z-index: 60;
+	z-index: var(--ds-z-tooltip);
 	max-width: min(320px, calc(100% - 8px));
 	padding: 4px 8px;
 	border: 1px solid var(--vscode-editorHoverWidget-border, var(--border-strong));
-	border-radius: 4px;
+	border-radius: var(--ds-radius-sm);
 	background: var(--vscode-editorHoverWidget-background, var(--elevated));
 	color: var(--vscode-editorHoverWidget-foreground, var(--fg));
-	font-size: 0.92em;
-	line-height: 1.4;
+	font-size: var(--ds-text-sm);
+	line-height: var(--ds-leading);
 	white-space: pre-line;
 	overflow-wrap: anywhere;
 	pointer-events: none;
-	box-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, .3));
+	box-shadow: var(--ds-shadow-tip);
 	opacity: 0;
 	visibility: hidden;
 }
@@ -4486,7 +4636,6 @@ body.vscode-high-contrast-light .context-pie {
 .sleep-option:hover { background: var(--vscode-list-hoverBackground); }
 .sleep-option.selected { border-color: currentColor; background: var(--vscode-list-hoverBackground); }
 .sleep-popup > .sleep-option { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; margin-top: 8px; padding: 10px; }
-.sleep-option:focus-visible { outline: none; }
 
 .sleep-popup > .sleep-agents-option {
 	display: flex;
@@ -4541,7 +4690,7 @@ body.vscode-high-contrast-light .context-pie {
 	cursor: pointer;
 }
 .workdir-summary:hover { color: var(--fg); }
-.workdir-summary:focus-visible { outline: none; border-radius: 4px; }
+.workdir-summary:focus-visible { border-radius: 4px; }
 .workdir-mode { flex: none; font-weight: 600; }
 .workdir-location { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workdir-location.path-tail { direction: rtl; text-align: left; }
@@ -4655,13 +4804,14 @@ body.vscode-high-contrast-light .context-pie {
 
 /* A refusal, above the box rather than over it: the box stays usable. */
 .voice-error {
-	margin: 8px 8px 0;
-	padding: 6px 10px;
-	border-radius: 6px;
-	background: color-mix(in srgb, var(--vscode-errorForeground, #f14c4c) 12%, transparent);
-	color: var(--vscode-errorForeground, var(--fg));
-	font-size: 0.88em;
-	line-height: 1.4;
+	margin: var(--ds-space-2) var(--ds-space-4) 0;
+	padding: var(--ds-space-2) var(--ds-space-4);
+	border: 1px solid var(--ds-danger-line);
+	border-radius: var(--ds-radius);
+	background: var(--ds-danger-soft);
+	color: var(--ctl-fg);
+	font-size: var(--ds-text-sm);
+	line-height: var(--ds-leading);
 	cursor: pointer;
 }
 
@@ -4687,7 +4837,10 @@ body.vscode-high-contrast-light .context-pie {
 .git-file { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; line-height: 1.6; }
 
 .git-branch-button { display: flex; align-items: center; gap: 4px; min-width: 0; max-width: 150px; font-size: 11px; padding: 4px; }
-.git-branch-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-branch-ahead, .git-branch-behind { flex: none; font-variant-numeric: tabular-nums; }
+.git-branch-ahead { color: var(--ok); }
+.git-branch-behind { color: var(--bad); }
+.git-branch-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .git-branch-popup { width: min(380px, calc(100% - 16px)); max-height: min(480px, 65vh); font-size: 12px; }
 .git-branch-popup .palette-search { font-size: 12px; }
 .git-branch-list { min-height: 0; overflow: auto; padding: 0 8px 8px; }
@@ -4718,7 +4871,7 @@ body.vscode-high-contrast-light .context-pie {
 .git-status > .round { flex: none; }
 
 .git-commit-button { display: flex; align-items: center; gap: 4px; flex: none; padding: 4px; font-size: 11px; }
-.git-commit-button:disabled { opacity: .55; cursor: default; }
+.git-commit-button:disabled { opacity: var(--ctl-disabled-opacity); cursor: default; }
 .git-commit-notice { display: flex; align-items: flex-start; gap: 6px; margin: 4px 3px 0; padding: 7px 8px; border: 1px solid var(--border-strong); border-radius: 6px; font-size: 11px; }
 .git-commit-notice[hidden], .git-commit-fix[hidden] { display: none; }
 .git-commit-notice[data-phase="error"] { color: var(--vscode-errorForeground, #f14c4c); }
@@ -4802,6 +4955,8 @@ body.vscode-high-contrast-light .context-pie {
 	background: no-repeat center / 16px 16px; font-style: normal; font-weight: normal; text-decoration: none;
 }
 .theme-file-icon::before { content: attr(data-char); font-size: var(--icon-size, 100%); line-height: 1; }
+:root[data-chat-file-icons="false"] .theme-file-icon,
+:root[data-chat-file-icons="false"] .chat-file-icon { display: none; }
 /* In a chip the chip's own gap parts icon and label, so the icon has no margin;
    and a font glyph's box is its ink, not its advance — Seti's glyph at 150% is
    19.5 px wide with ~3.7 px of bearing on each side (measured), which put the
@@ -4830,8 +4985,7 @@ body.vscode-high-contrast-light .context-pie {
 .temporary-delete-all { padding: 5px 10px; border: 1px solid var(--vscode-button-border, transparent); border-radius: 3px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); cursor: pointer; }
 .temporary-delete-all:hover { background: var(--vscode-button-hoverBackground); }
 .temporary-delete-all:disabled { opacity: .5; cursor: default; }
-.feature-settings:focus, .feature-settings-tab:focus { outline: none; }
-.feature-settings-tab:focus-visible { outline: none; }
+.feature-settings:focus:not(:focus-visible), .feature-settings-tab:focus:not(:focus-visible) { outline: none; }
 
 .sleep-automatic { display: flex; align-items: flex-start; gap: 8px; padding: 10px 6px 4px; margin-top: 8px; border-top: 1px solid var(--vscode-panel-border); cursor: pointer; }
 .sleep-automatic > span { display: flex; flex-direction: column; gap: 3px; }
@@ -4839,9 +4993,9 @@ body.vscode-high-contrast-light .context-pie {
 
 .git-changes-heading-tools { display: flex; align-items: center; gap: 8px; }
 
-/* Keep focus behavior without a visual outline on webview controls. */
-:focus,
-:focus-visible {
+/* A pointer focus draws nothing; keyboard focus gets the one shared ring
+   (see the control standard at the end of this file). */
+:focus:not(:focus-visible) {
 	outline: none;
 }
 
@@ -4854,8 +5008,22 @@ body.vscode-high-contrast-light .context-pie {
 
 /* Dragging chat tabs: leave the source readable and mark the insertion edge. */
 .tab.dragging { opacity: .5; }
-.tab.drop-before { box-shadow: inset 2px 0 var(--accent); }
-.tab.drop-after { box-shadow: inset -2px 0 var(--accent); }
+.tab.drop-before,
+.tab.drop-after { position: relative; }
+.tab.drop-before::before,
+.tab.drop-after::before {
+	content: '';
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	width: 2px;
+	border-radius: 0;
+	background: var(--accent);
+	pointer-events: none;
+	z-index: 1;
+}
+.tab.drop-before::before { left: 0; }
+.tab.drop-after::before { right: 0; }
 
 .receiving-chat-tab .tab-strip { box-shadow: inset 0 -2px var(--accent); }
 
@@ -5016,8 +5184,16 @@ body.vscode-high-contrast-light .context-pie {
 
 	.tab-add-label { display: inline; }
 
-	.tab.drop-before { box-shadow: inset 0 2px var(--accent); }
-	.tab.drop-after { box-shadow: inset 0 -2px var(--accent); }
+	.tab.drop-before::before,
+	.tab.drop-after::before {
+		left: 0;
+		right: 0;
+		bottom: auto;
+		width: auto;
+		height: 2px;
+	}
+	.tab.drop-before::before { top: 0; }
+	.tab.drop-after::before { top: auto; bottom: 0; }
 	.receiving-chat-tab .tab-strip { box-shadow: inset -2px 0 var(--accent); }
 
 	.chat-drawer-right .tab-strip {
@@ -5036,7 +5212,6 @@ body.vscode-high-contrast-light .context-pie {
 	.chat-drawer-footer .ghost { width: 30px; padding: 0; }
 	.chat-drawer-collapsed .chat-drawer-header { padding: 8px; }
 	.chat-drawer-collapsed .chat-drawer-title,
-	.chat-drawer-collapsed .tab-confirm { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -5082,12 +5257,12 @@ body.vscode-high-contrast-light .context-pie {
 	opacity: .45;
 }
 .ultracode-input:checked + .ultracode-indicator .ultracode-symbol {
-	color: #efd28e;
+	color: var(--premium-ink, #efd28e);
 	opacity: 1;
 }
-.ultracode-tip-name { color: #efd28e; font-weight: 700; }
+.ultracode-tip-name { color: var(--premium-ink, #efd28e); font-weight: 700; }
 .ultracode-input:focus-visible + .ultracode-indicator {
-	outline: 2px solid var(--accent);
+	outline: var(--ctl-ring);
 	outline-offset: 3px;
 }
 
@@ -5194,9 +5369,27 @@ body.vscode-high-contrast-light .context-pie {
 	background-size: 200% 100%;
 	animation: chrome-mirror-flow 4s linear infinite;
 }
-/* Drawer tabs use a 1px border instead of the horizontal strip's 2px border. */
+/* In the drawer, mark the edge facing the conversation. */
 @media (min-width: 1000px) {
-	.tab.chrome-mirrored::after { bottom: -1px; }
+	.tab.chrome-mirrored::after {
+		top: 6px;
+		bottom: 6px;
+		left: auto;
+		right: -1px;
+		width: 2px;
+		height: auto;
+		background-image: linear-gradient(180deg, #34d399, #22d3ee, #818cf8, #e879f9, #34d399);
+		background-size: 100% 200%;
+		animation-name: chrome-mirror-flow-vertical;
+	}
+	.chat-drawer-right .tab.chrome-mirrored::after {
+		left: -1px;
+		right: auto;
+	}
+}
+@keyframes chrome-mirror-flow-vertical {
+	from { background-position: 50% 0%; }
+	to { background-position: 50% 200%; }
 }
 @keyframes chrome-mirror-flow {
 	from { background-position: 0% 50%; }
@@ -5207,4 +5400,985 @@ body.vscode-high-contrast-light .context-pie {
 		animation: none;
 		background-position: 50% 50%;
 	}
+}
+
+/* Remote workspace settings use the chat's existing theme tokens. */
+.server-settings h3 { margin: 0 0 8px; font-size: 14px; font-weight: 600; }
+.server-connection-form { display: flex; flex-direction: column; gap: 14px; margin: 18px 0; }
+.server-connection-form label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--fg-2); }
+.server-connection-form input { box-sizing: border-box; width: 100%; min-width: 0; padding: 8px 10px; font: inherit; color: var(--fg); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius); outline: none; }
+.server-connection-form input:focus { border-color: var(--accent); }
+.server-connection-form input::placeholder { color: var(--fg-faint); }
+.server-key-status { font-size: 10px; color: var(--fg-3); }
+.server-connection-status { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; padding: 5px 9px; border: 1px solid var(--border); border-radius: 5px; color: var(--fg-3); background: var(--soft); }
+.server-connection-status::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.server-connection-status[data-status="connected"] { color: var(--ok); }
+.server-connection-status[data-status="connecting"], .server-connection-status[data-status="reconnecting"] { color: var(--vscode-textLink-foreground, var(--accent)); }
+.server-connection-status[data-status="error"], .server-settings .server-connection-error { color: var(--bad); }
+.server-connection-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+.server-connection-actions button { min-height: 30px; padding: 6px 12px; border-radius: 6px; cursor: pointer; }
+.server-connection-actions button:disabled { opacity: .5; cursor: default; }
+
+.remote-folder-dialog { width: min(480px, calc(100% - 32px)); }
+.remote-folder-dialog form, .remote-folder-dialog label { display: flex; flex-direction: column; gap: 12px; }
+.remote-folder-dialog h2 { margin: 0; font-size: 16px; }
+.remote-folder-dialog input { width: 100%; box-sizing: border-box; padding: 8px; color: var(--fg); background: var(--bg); border: 1px solid var(--border-strong); border-radius: 4px; }
+.remote-folder-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.remote-folder-actions button { padding: 6px 12px; cursor: pointer; color: var(--fg); background: var(--soft); border: 1px solid var(--border-strong); border-radius: 4px; }
+
+/* A workflow in the agents list: it runs agents of its own. */
+.agent-row .agent-kind { flex: none; opacity: .75; margin-right: 2px; }
+
+/* A control this surface does not allow (state.controls): visible, not usable, its title says why. */
+.control-off { opacity: .45; cursor: default; }
+.control-refusal {
+	margin: var(--ds-space-2) var(--ds-space-4) 0;
+	padding: var(--ds-space-2) var(--ds-space-4);
+	border: 1px solid var(--ds-divider);
+	border-radius: var(--ds-radius);
+	cursor: pointer;
+	background: var(--soft-2);
+	color: var(--ds-muted);
+	font-size: var(--ds-text-sm);
+	line-height: var(--ds-leading);
+}
+
+/* The view title's buttons on surfaces with no VS Code title bar (Chrome, the website). */
+.remote-bar { display: flex; justify-content: flex-end; gap: 2px; padding: 4px 8px 0; flex: none; }
+.remote-bar[hidden] { display: none; }
+.remote-bar.in-shell { padding: 0; margin-left: auto; }
+
+/* Loading indicators keep their existing layout and status semantics. */
+.working-glyph.liquid-loader { --liquid-size: 18px; transform: translateX(-2px); }
+.tab-mark.working { --liquid-size: 12px; }
+.row.tool.running::before,
+.agent-dot.running { background: var(--liquid-core-image) center / contain no-repeat; animation: none; }
+.agents-button.live .codicon,
+.prompt.pending-send.steer .pending-note .codicon { animation: none; }
+
+.agents-button.live .codicon { position: relative; width: 16px; height: 16px; }
+.agents-button.live .codicon::before {
+ content: ''; position: absolute; inset: 1px;
+ background: var(--liquid-loader-image) center / contain no-repeat;
+}
+.skill-button.running { animation: none; }
+.skill-button.running::before {
+ content: ''; width: 12px; height: 12px; flex: none;
+ background: var(--liquid-loader-image) center / contain no-repeat;
+}
+.skill-button.running .codicon { display: none; }
+
+.usage-loading .liquid-loader { margin-right: 6px; }
+
+/* Soft status colors need stronger ink on a light canvas. */
+:root[data-theme="light"], :root[data-theme="light"] body, :root:not([data-theme]) body.vscode-light, :root:not([data-theme]) body.vscode-high-contrast-light {
+ --effort-minimal: #57606a; --effort-low: #386a94; --effort-medium: #245b91;
+ --effort-high: #4a559b; --effort-xhigh: #75469b; --effort-maximum: #806000; --effort-extreme: #995000;
+ --premium-ink: #806000;
+}
+.effort[data-effort="minimal"] { --effort-colour: var(--effort-minimal, #bfc5ce); }
+.effort[data-effort="low"] { --effort-colour: var(--effort-low, #d8e9fb); }
+.effort[data-effort="medium"] { --effort-colour: var(--effort-medium, #acd1f5); }
+.effort[data-effort="high"] { --effort-colour: var(--effort-high, #b8c5ef); }
+.effort[data-effort="xhigh"] { --effort-colour: var(--effort-xhigh, #c9b7e8); }
+.effort[data-effort="maximum"] { --effort-colour: var(--effort-maximum, #efd28e); }
+.effort[data-effort="extreme"] { --effort-colour: var(--effort-extreme, #edbc90); }
+.appearance-setting { display: flex; align-items: center; gap: 12px; padding: 12px 18px; border-bottom: 1px solid var(--border); color: var(--fg-2); }
+.appearance-setting select { margin-left: auto; padding: 6px 10px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface); color: var(--fg); font: inherit; }
+
+.effort { --effort-colour: var(--effort-minimal, #bfc5ce); }
+:root[data-theme="light"] .send.queue-button,
+:root:not([data-theme]) body.vscode-light .send.queue-button,
+:root:not([data-theme]) body.vscode-high-contrast-light .send.queue-button {
+ background: var(--vscode-button-background);
+}
+.appearance-setting { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 0; flex: none; }
+.appearance-setting input[type="checkbox"] { flex: none; width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+
+/* ---------------------------------------------------------------- control standard */
+/* Attachment previews share the website's panel and icon-button styling. */
+body > dialog.attachment-preview {
+  width: min(900px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--ds-radius-md, 12px);
+  background: var(--bg);
+  color: var(--fg);
+  box-shadow: var(--ds-shadow-modal);
+  overflow: hidden;
+}
+body > dialog.attachment-preview[open] { display: flex; flex-direction: column; }
+.attachment-preview::backdrop { background: var(--ds-backdrop, #0009); }
+.attachment-preview-header { display: flex; align-items: center; gap: 12px; padding: 10px 12px 10px 16px; border-bottom: 1px solid var(--border); flex: none; }
+.attachment-preview-header strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.attachment-preview-close { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 32px; height: 32px; padding: 0; border: 0; border-radius: var(--ctl-radius); background: transparent; color: var(--fg-3); cursor: pointer; }
+.attachment-preview-close:hover { background: var(--soft-2); color: var(--fg); }
+.attachment-preview-content { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 16px; }
+.attachment-preview-content img { display: block; max-width: 100%; max-height: 65dvh; object-fit: contain; margin: 0 auto; }
+.attachment-preview-content pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.6 var(--mono); margin: 12px 0 0; }
+.attachment-preview-footer { display: flex; justify-content: center; padding: 10px 16px 14px; flex: none; }
+.attachment-preview-dismiss { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; padding: 6px 18px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--fg); font: inherit; cursor: pointer; }
+.attachment-preview-dismiss:hover { background: var(--soft-2); border-color: var(--border-strong); }
+.attachment-preview :is(.attachment-preview-close, .attachment-preview-dismiss):focus-visible { outline: var(--ctl-ring); outline-offset: var(--ctl-ring-offset); }
+/* One set of rules for sizes, radii, focus and disabled states, read from the
+   --ctl-* tokens on :root. Kept last so it wins over the older per-control rules
+   of equal specificity; class names the script uses are unchanged. */
+
+/* The web and Chrome surfaces choose the theme with data-theme rather than body classes. */
+:root[data-theme="light"] body {
+	--ctl-chevron-img: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M2 3.5l3 3 3-3' fill='none' stroke='%23616161' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+:root[data-theme="dark"] body {
+	--ctl-chevron-img: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M2 3.5l3 3 3-3' fill='none' stroke='%23CCCCCC' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+
+/* Focus: the one ring, for keyboard focus only. */
+:where(button, select, input, textarea, summary, [role=button], [tabindex]:not([tabindex="-1"])):focus-visible {
+	outline: var(--ctl-ring);
+	outline-offset: var(--ctl-ring-offset);
+}
+:where(input, textarea, select):focus-visible {
+	outline-offset: -1px;
+}
+/* Text fields are always :focus-visible, and most sit borderless inside a box that
+   draws its own focus (the composer, the palette and branch searches, a tab being
+   renamed); a ring there would be a second one. Bordered form fields keep it. */
+:where(input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"]), textarea):focus-visible {
+	outline: none;
+}
+.form-input:focus-visible {
+	outline: var(--ctl-ring);
+	outline-offset: -1px;
+}
+
+/* Disabled: one opacity; aria-disabled keeps pointer events, so its tooltip still shows. */
+:where(button, select, input, textarea):disabled,
+:where([aria-disabled="true"]) {
+	opacity: var(--ctl-disabled-opacity);
+	cursor: default;
+}
+
+/* Native checkboxes and radios, coloured by the theme. The ultracode input is an
+   invisible overlay over its indicator and keeps its own size. */
+input[type="checkbox"]:not(.ultracode-input),
+input[type="radio"] {
+	width: var(--ctl-check);
+	height: var(--ctl-check);
+	margin: 0;
+	accent-color: var(--ctl-accent);
+	vertical-align: -2px;
+	flex: none;
+}
+.form-choice input[type="radio"] {
+	margin-top: 2px;
+}
+.sleep-automatic input[type="checkbox"] {
+	margin-top: 1px;
+}
+
+/* Selects: a custom chevron as a theme-coloured background image. */
+.agent-app-select,
+.feature-settings-row select,
+.appearance-setting select,
+.history-filter select {
+	--ctl-bg: var(--vscode-dropdown-background, var(--surface));
+	--ctl-border: var(--vscode-dropdown-border, var(--vscode-input-border, var(--border-strong)));
+	box-sizing: border-box;
+	height: var(--ctl-h);
+	min-height: var(--ctl-h);
+	padding: 0 calc(var(--ctl-pad-x) + var(--ctl-chevron) + 6px) 0 var(--ctl-pad-x);
+	appearance: none;
+	-webkit-appearance: none;
+	border: 1px solid var(--ctl-border);
+	border-radius: var(--ctl-radius);
+	background-color: var(--ctl-bg);
+	background-image: var(--ctl-chevron-img);
+	background-repeat: no-repeat;
+	background-position: right var(--ctl-pad-x) center;
+	background-size: var(--ctl-chevron) var(--ctl-chevron);
+	color: var(--vscode-dropdown-foreground, var(--ctl-fg));
+	font: inherit;
+	font-size: var(--ctl-font);
+	line-height: 1;
+	text-overflow: ellipsis;
+	cursor: pointer;
+	vertical-align: middle;
+}
+body.vscode-high-contrast :is(.agent-app-select, .feature-settings-row select, .appearance-setting select, .history-filter select) {
+	--ctl-border: var(--vscode-contrastBorder);
+}
+.history-filter select {
+	--ctl-h: var(--ctl-h-sm);
+	--ctl-pad-x: 6px;
+	--ctl-font: 11px;
+	flex: 1;
+	min-width: 0;
+}
+.agent-app-select:hover:not(:disabled),
+.feature-settings-row select:hover:not(:disabled),
+.appearance-setting select:hover:not(:disabled),
+.history-filter select:hover:not(:disabled) {
+	border-color: var(--ctl-border-hover);
+}
+.agent-app-select option,
+.feature-settings-row select option,
+.appearance-setting select option,
+.history-filter select option {
+	background: var(--ctl-bg);
+	color: var(--ctl-fg);
+}
+
+/* Text inputs. */
+.form-input {
+	min-height: var(--ctl-h);
+	padding: 0 var(--ctl-pad-x);
+	border-radius: var(--ctl-radius);
+	font-size: inherit;
+}
+input.form-input {
+	height: var(--ctl-h);
+}
+textarea.form-input {
+	height: auto;
+	padding: 6px var(--ctl-pad-x);
+}
+.form-input::placeholder {
+	color: var(--ctl-fg-muted);
+}
+.form-input:focus {
+	border-color: var(--ctl-focus);
+}
+
+/* Ghost buttons, pills and toolbar skills. */
+.ghost {
+	border-radius: var(--ctl-radius);
+}
+.ghost.round {
+	border-radius: 999px;
+}
+.pill {
+	height: var(--ctl-h);
+	padding: 0 6px 0 8px;
+}
+.skill-button {
+	height: var(--ctl-h);
+	min-width: var(--ctl-h);
+	border-radius: var(--ctl-radius);
+}
+.skill-add {
+	width: var(--ctl-h);
+}
+
+/* The mic stays at the small size; its disabled look is the shared one. */
+.mic-button[aria-disabled="true"] {
+	opacity: var(--ctl-disabled-opacity);
+}
+
+/* Copy buttons on code and messages. */
+.copy-button {
+	width: var(--ctl-h-sm);
+	height: var(--ctl-h-sm);
+	border-radius: var(--ctl-radius);
+}
+.copy-button .codicon {
+	font-size: 14px;
+}
+
+/* Form buttons: secondary by default, primary where marked. */
+.form-actions button,
+.param-list + button,
+.step-list + button {
+	box-sizing: border-box;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 6px;
+	height: var(--ctl-h);
+	padding: 0 12px;
+	border-radius: var(--ctl-radius);
+}
+.form-actions button:not(.primary):hover:not(:disabled, [aria-disabled="true"]),
+.param-list + button:hover:not(:disabled, [aria-disabled="true"]),
+.step-list + button:hover:not(:disabled, [aria-disabled="true"]) {
+	background: var(--ctl-hover-bg);
+	border-color: var(--ctl-border-hover);
+}
+.form-actions button.primary {
+	background: var(--ctl-primary-bg);
+	color: var(--ctl-primary-fg);
+}
+.form-actions button.primary:hover:not(:disabled, [aria-disabled="true"]) {
+	background: var(--ctl-primary-hover-bg);
+}
+
+/* Git footer buttons. */
+.git-branch-button,
+.git-commit-button {
+	box-sizing: border-box;
+	height: var(--ctl-h-sm);
+	padding: 0 6px;
+	border-radius: var(--ctl-radius);
+}
+
+/* Segmented controls: an inset ring, since the container clips. */
+.mode-segs {
+	height: var(--ctl-h-sm);
+	border-radius: var(--ctl-radius);
+}
+.mode-seg {
+	height: 100%;
+	padding: 0 8px;
+}
+.mode-seg[aria-pressed="true"] {
+	color: var(--fg);
+	background: var(--ctl-active-bg);
+	font-weight: 600;
+}
+.mode-seg.on {
+	background: var(--ctl-active-bg);
+}
+.mode-seg:focus-visible {
+	outline-offset: -2px;
+}
+
+/* Settings controls: one height, centred contents, a styled select. */
+.feature-settings-save, .server-connection-actions button { display: inline-flex; align-items: center; justify-content: center; gap: var(--ctl-gap); box-sizing: border-box; height: var(--ctl-h); padding: 0 12px; line-height: 1; border-radius: var(--ctl-radius); font-size: var(--ctl-font); }
+.feature-settings-save .codicon, .server-connection-actions button .codicon { font-size: var(--ctl-icon); line-height: 1; display: inline-flex; align-items: center; }
+.server-connection-actions { display: flex; align-items: center; gap: 8px; }
+.server-keep-awake { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; font-size: 12px; color: var(--fg-2); }
+.feature-settings-content select, .server-keep-awake select { appearance: none; -webkit-appearance: none; box-sizing: border-box; width: 100%; max-width: 280px; min-width: 0; height: var(--ctl-h); padding: 0 calc(var(--ctl-pad-x) * 2 + var(--ctl-chevron)) 0 var(--ctl-pad-x); font: inherit; font-size: var(--ctl-font); color: var(--vscode-dropdown-foreground, var(--ctl-fg)); background: var(--vscode-dropdown-background, var(--ctl-bg)) var(--ctl-chevron-img) no-repeat right var(--ctl-pad-x) center / var(--ctl-chevron) var(--ctl-chevron); border: 1px solid var(--vscode-dropdown-border, var(--ctl-border)); border-radius: var(--ctl-radius); cursor: pointer; outline: none; }
+.feature-settings-content select:hover, .server-keep-awake select:hover { border-color: var(--ctl-border-hover); }
+.feature-settings-content select:focus-visible, .server-keep-awake select:focus-visible { border-color: var(--ctl-focus); }
+.feature-settings-row select { max-width: none; }
+
+/* Text buttons with no fill in settings and panels get a faint border, so they read as buttons. */
+.feature-settings button.ghost:not(.round),
+.history-panel button.ghost:not(.round):not(.icon-only) { border: 1px solid color-mix(in srgb, var(--vscode-foreground) 18%, transparent); }
+.feature-settings button.ghost:not(.round):hover:not(:disabled),
+.history-panel button.ghost:not(.round):not(.icon-only):hover:not(:disabled) { border-color: color-mix(in srgb, var(--vscode-foreground) 32%, transparent); }
+.feature-settings .feature-settings-heading button.ghost,
+.history-panel .panel-head button.ghost { border-color: transparent; }
+
+/* Desktop settings are moved here on hover; touch devices open it by tapping. */
+.selector-strip { width: max-content; min-width: 0; padding: 6px 8px; overflow-x: auto; overflow-y: hidden; }
+.selector-strip.open { display: flex; }
+.selector-strip .selector-controls { flex: none; }
+.selector-strip .pill { flex: none; }
+
+/* ---------------------------------------------------------------- terminal tabs
+ *
+ * xterm in the editor's chat view (`terminalView.ts`, built only for the editor).
+ * The terminals have their own column beside `.chat-main`, at the full width — not
+ * inside the 696px conversation column. Whichever is not in front stays laid out
+ * and measurable, hidden with `visibility` and taken out of the flow, never
+ * `display: none`: the conversation keeps its scroll position and what it follows
+ * (`renderThread` measures it), and a terminal keeps its size and its scrollback.
+ * `xterm.css` is loaded by its own `<link>`; the colours come from the editor's
+ * terminal theme (set as `--terminal-background` by the script).
+ */
+
+.terminal-main {
+	--terminal-background: var(--bg);
+	position: relative;
+	display: flex;
+	flex: 1;
+	flex-direction: column;
+	min-width: 0;
+	min-height: 0;
+	background: var(--terminal-background);
+}
+
+#app:not(.terminal-front) .terminal-main,
+#app.terminal-front .chat-main {
+	position: absolute;
+	inset: 0;
+	visibility: hidden;
+	pointer-events: none;
+}
+
+/* The one line of the hidden conversation column that is about the terminals themselves ("The terminal
+   could not be started.") stays on screen over the terminal: a child may be visible inside a hidden
+   parent. Banners that need an answer are not shown this way: the view puts the conversation in front
+   while one is pending (`conversationNeeded` in terminalTabs.ts). */
+#app.terminal-front .chat-main > .control-refusal:not([hidden]) {
+	visibility: visible;
+	pointer-events: auto;
+	position: relative;
+	z-index: 5;
+}
+
+.terminal-host {
+	position: absolute;
+	inset: 0;
+	overflow: hidden;
+	visibility: hidden;
+	background: var(--terminal-background);
+}
+
+.terminal-host.front {
+	visibility: visible;
+}
+
+/* The padding is the terminal's own, which FitAddon subtracts when it counts columns and rows. */
+.terminal-host .xterm {
+	padding: 8px 0 0 12px;
+}
+
+/* xterm.css paints the viewport black, and it lies under the padding: the theme's background, or a black band shows. */
+.terminal-host .xterm .xterm-viewport {
+	background-color: var(--terminal-background);
+}
+
+/* The shell ended: the screen stays readable, and the tab can be started again. */
+.terminal-exit {
+	position: absolute;
+	left: 50%;
+	bottom: 14px;
+	z-index: 2;
+	display: none;
+	align-items: center;
+	gap: 10px;
+	max-width: calc(100% - 24px);
+	padding: 5px 6px 5px 12px;
+	transform: translateX(-50%);
+	border: 1px solid var(--border-strong);
+	border-radius: var(--ds-radius-md);
+	background: var(--elevated);
+	color: var(--fg-2);
+	box-shadow: var(--ds-shadow-tip);
+	font-size: var(--ctl-font);
+}
+
+.terminal-exit.show {
+	display: flex;
+}
+
+.terminal-exit-restart {
+	height: var(--ctl-h-sm);
+	padding: 0 10px;
+	border-radius: var(--ctl-radius);
+	background: var(--ctl-primary-bg);
+	color: var(--ctl-primary-fg);
+	cursor: pointer;
+}
+
+.terminal-exit-restart:hover {
+	background: var(--ctl-primary-hover-bg);
+}
+
+.terminal-exit-restart:focus-visible {
+	outline: var(--ctl-ring);
+	outline-offset: var(--ctl-ring-offset);
+}
+
+/* A terminal's tab: the terminal icon in front of the name, and a muted dot once the shell ended. */
+.tab-terminal-icon {
+	flex: none;
+	color: var(--fg-3);
+}
+
+.tab-mark.exited::before {
+	content: '';
+	display: block;
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	background: var(--fg-faint);
+}
+
+.tab-compact.status-terminal.exited {
+	opacity: .6;
+}
+
+.chat-drawer-collapsed .tab-terminal-icon {
+	display: none;
+}
+
+/* ---------------------------------------------------------------- terminals pinned to a conversation
+ * (VIEW-B: chips, strip marks, menus. The terminal column itself is the block above.) */
+
+/* The pinned chip: a status dot instead of the reference button. */
+.chip-terminal .chip-pin-mark {
+	flex: none;
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	background: var(--ok);
+}
+
+.chip-terminal .chip-pin-mark.exited {
+	background: var(--fg-faint);
+}
+
+.chip-terminal .chip-pin-mark.closed {
+	background: var(--vscode-charts-orange, #d18616);
+}
+
+.chip-terminal.closed .chip-label {
+	text-decoration: line-through;
+	opacity: .7;
+}
+
+/* A conversation tab: the terminal icon and the number of terminals pinned to it. */
+.tab-terminals {
+	flex: none;
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	font-size: 0.85em;
+	color: var(--fg-3);
+}
+
+.tab-terminals .codicon {
+	font-size: 12px;
+}
+
+/* A terminal's tab: new output, the agent typing, and who uses it. */
+.tab-mark.terminal-unread::before,
+.tab-mark.terminal-typing::before {
+	content: '';
+	display: block;
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+}
+
+.tab-mark.terminal-unread::before {
+	background: var(--vscode-charts-blue, var(--accent));
+}
+
+.tab-mark.terminal-typing::before {
+	background: var(--accent);
+	animation: terminal-typing-pulse 1s ease-in-out infinite;
+}
+
+@keyframes terminal-typing-pulse {
+	50% { opacity: .35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.tab-mark.terminal-typing::before { animation: none; }
+}
+
+.tab-terminal-pin {
+	flex: none;
+	font-size: 12px;
+	color: var(--fg-3);
+}
+
+.tab-terminal-pin.paused {
+	color: var(--vscode-charts-orange, #d18616);
+}
+
+.tab-terminal-remote {
+	flex: none;
+	font-size: 12px;
+	color: var(--fg-3);
+}
+
+.tab-terminal-remote.control {
+	color: var(--vscode-charts-orange, #d18616);
+}
+
+/* The collapsed rail (wide layouts only) shows tiles: an unread terminal is tinted, and the count sits in the corner opposite the agents' one. */
+@media (min-width: 1000px) {
+	.chat-drawer-collapsed .tab-compact.status-terminal.unread { color: var(--vscode-charts-blue, var(--accent)); }
+	.chat-drawer-collapsed .tab-compact.status-terminal.typing { color: var(--accent); }
+	.chat-drawer-collapsed .tab-terminal-pin,
+	.chat-drawer-collapsed .tab-terminal-remote,
+	.chat-drawer-collapsed .tab-mark.terminal-unread,
+	.chat-drawer-collapsed .tab-mark.terminal-typing { display: none; }
+	.chat-drawer-collapsed .tab-label > .tab-terminals {
+		position: absolute;
+		left: 2px;
+		bottom: 1px;
+		z-index: 1;
+		gap: 1px;
+		padding: 0 2px;
+		border-radius: 4px;
+		background: var(--elevated, var(--bg));
+		font-size: 9px;
+		line-height: 12px;
+	}
+}
+
+/* ---------------------------------------------------------------- terminal view: toolbar, stage, key bar, touch
+ *
+ * `terminalToolbar.ts`, `terminalKeyBar.ts` and `terminalTouchUi.ts`. The column inside `.terminal-main` is the
+ * toolbar, the stage (the hosts are absolutely positioned inside it, so FitAddon fits to what the toolbar and the
+ * key bar leave) and the touch key bar. Nothing here is set through the `style` attribute (the page's CSP blocks
+ * it): only classes, `hidden` and custom properties from the script. A class's `display` beats the `hidden`
+ * attribute, so each component says `[hidden] { display: none }` for itself.
+ */
+
+.terminal-main {
+	container-type: inline-size;
+	container-name: terminal;
+}
+
+.terminal-stage {
+	position: relative;
+	flex: 1;
+	min-height: 0;
+}
+
+.terminal-host {
+	touch-action: none;
+	-webkit-touch-callout: none;
+}
+
+.terminal-toolbar {
+	flex: none;
+	display: flex;
+	align-items: center;
+	gap: var(--ctl-gap-sm);
+	min-height: var(--ctl-h-lg);
+	padding: 4px 8px;
+	border-bottom: 1px solid var(--border);
+	background: var(--terminal-background);
+	color: var(--fg-2);
+	font-size: var(--ctl-font);
+}
+
+.terminal-toolbar [hidden],
+.terminal-keybar [hidden],
+.terminal-stage [hidden] {
+	display: none !important;
+}
+
+.terminal-toolbar-name {
+	flex: 0 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	color: var(--fg);
+	font-weight: 600;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.terminal-toolbar-status {
+	flex: none;
+	color: var(--fg-3);
+	white-space: nowrap;
+}
+
+.terminal-toolbar-spacer {
+	flex: 1 1 0;
+	min-width: 0;
+}
+
+/* Who drives this terminal: the conversation that pinned it, a dot while its input arrives, and a muted look while paused. */
+.terminal-agent-mark {
+	display: inline-flex;
+	flex: 0 1 auto;
+	align-items: center;
+	gap: 5px;
+	min-width: 0;
+	max-width: 45%;
+	height: var(--ctl-h-sm);
+	padding: 0 8px;
+	border-radius: var(--ds-radius-pill);
+	background: var(--soft-2);
+	color: var(--fg-2);
+}
+
+.terminal-agent-text {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.terminal-agent-dot {
+	display: none;
+	flex: none;
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	background: var(--accent);
+}
+
+.terminal-agent-mark.typing .terminal-agent-dot {
+	display: block;
+	animation: terminal-agent-pulse 1s ease-in-out infinite;
+}
+
+.terminal-agent-mark.paused {
+	color: var(--vscode-editorWarning-foreground, var(--fg-2));
+}
+
+@keyframes terminal-agent-pulse {
+	50% { opacity: .35; }
+}
+
+.terminal-tool {
+	display: inline-flex;
+	flex: none;
+	align-items: center;
+	justify-content: center;
+	gap: 5px;
+	min-width: var(--ctl-h);
+	height: var(--ctl-h);
+	padding: 0 8px;
+	border-radius: var(--ctl-radius);
+	background: transparent;
+	color: var(--fg-2);
+	font: inherit;
+	white-space: nowrap;
+	cursor: pointer;
+}
+
+.terminal-tool:hover {
+	background: var(--ctl-hover-bg);
+	color: var(--fg);
+}
+
+.terminal-tool:focus-visible {
+	outline: var(--ctl-ring);
+	outline-offset: var(--ctl-ring-offset);
+}
+
+.terminal-tool[aria-pressed="true"] {
+	color: var(--vscode-editorWarning-foreground, var(--fg));
+}
+
+/* A narrow terminal (a phone, a thin side bar): icons only. */
+@container terminal (max-width: 520px) {
+	.terminal-tool-label,
+	.terminal-toolbar-status {
+		display: none;
+	}
+	.terminal-agent-text {
+		display: none;
+	}
+	.terminal-agent-mark {
+		padding: 0 6px;
+	}
+}
+
+@media (max-height: 460px) {
+	.terminal-toolbar-name {
+		display: none;
+	}
+}
+
+@media (pointer: coarse) {
+	.terminal-tool {
+		min-width: 40px;
+		height: 40px;
+	}
+}
+
+.terminal-sr {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip: rect(0 0 0 0);
+	white-space: nowrap;
+}
+
+/* The key bar: hidden unless the device is a touch one (or it was turned on). */
+.terminal-keybar {
+	--kb-h: 38px;
+	flex: none;
+	display: none;
+	flex-direction: column;
+	gap: 4px;
+	padding: 4px 4px calc(4px + env(safe-area-inset-bottom, 0px));
+	border-top: 1px solid var(--border);
+	background: var(--elevated);
+	touch-action: manipulation;
+	-webkit-user-select: none;
+	user-select: none;
+	-webkit-touch-callout: none;
+}
+
+.terminal-main.has-keybar .terminal-keybar {
+	display: flex;
+}
+
+@media (pointer: coarse) {
+	.terminal-keybar {
+		--kb-h: 44px;
+	}
+}
+
+.terminal-keygrid {
+	display: grid;
+	grid-template-columns: repeat(8, minmax(0, 1fr));
+	gap: 4px;
+}
+
+.terminal-key {
+	position: relative;
+	min-width: 0;
+	min-height: var(--kb-h);
+	padding: 0 2px;
+	border-radius: var(--ctl-radius);
+	background: var(--soft-2);
+	color: var(--fg);
+	font: inherit;
+	font-size: 14px;
+	cursor: pointer;
+	touch-action: manipulation;
+}
+
+.terminal-key:active,
+.terminal-key.held {
+	background: var(--ctl-active-bg);
+}
+
+.terminal-key[aria-pressed="true"] {
+	background: var(--ctl-primary-bg);
+	color: var(--ctl-primary-fg);
+}
+
+/* A locked modifier: a dot in the corner. */
+.terminal-key[data-lock]::after {
+	content: '';
+	position: absolute;
+	top: 4px;
+	right: 4px;
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: currentColor;
+}
+
+.terminal-key:focus-visible {
+	outline: var(--ctl-ring);
+	outline-offset: var(--ctl-ring-offset);
+}
+
+.terminal-key-off {
+	visibility: hidden;
+}
+
+/* The letters offered while Ctrl is armed or locked: one tap sends the control byte. */
+.terminal-ctrl-strip {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	overflow-x: auto;
+}
+
+.terminal-ctrl-label {
+	flex: none;
+	padding: 0 4px;
+	color: var(--fg-3);
+	font-size: var(--ctl-font);
+}
+
+.terminal-ctrl-letter {
+	flex: 1 0 36px;
+}
+
+/* A short viewport (landscape with the keyboard up): the two rows become one that scrolls sideways. */
+@media (max-height: 460px) {
+	.terminal-keygrid:not(.terminal-drawer) {
+		grid-template-columns: repeat(16, minmax(44px, 1fr));
+		overflow-x: auto;
+		touch-action: pan-x;
+	}
+}
+
+/* Where the bar was hidden on a touch device: a small button brings it back. */
+.terminal-keybar-chip {
+	position: absolute;
+	right: 8px;
+	bottom: 8px;
+	z-index: 3;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 36px;
+	height: 36px;
+	border: 1px solid var(--border-strong);
+	border-radius: 50%;
+	background: var(--elevated);
+	color: var(--fg-2);
+	cursor: pointer;
+}
+
+/* Scrolled back in the scrollback: a way to the newest line. */
+.terminal-bottom-chip {
+	position: absolute;
+	right: 12px;
+	bottom: 12px;
+	z-index: 3;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 44px;
+	height: 44px;
+	border: 1px solid var(--border-strong);
+	border-radius: 50%;
+	background: var(--elevated);
+	color: var(--fg);
+	box-shadow: var(--ds-shadow-tip);
+	cursor: pointer;
+}
+
+/* The bubble over a long-press selection. */
+.terminal-bubble {
+	position: absolute;
+	left: var(--bubble-x, 0);
+	top: var(--bubble-y, 0);
+	z-index: 4;
+	display: flex;
+	gap: 2px;
+	padding: 3px;
+	border: 1px solid var(--border-strong);
+	border-radius: var(--ds-radius-md);
+	background: var(--elevated);
+	box-shadow: var(--ds-shadow-popup);
+}
+
+.terminal-bubble-button {
+	min-height: 40px;
+	padding: 0 12px;
+	border-radius: var(--ctl-radius);
+	background: transparent;
+	color: var(--fg);
+	font: inherit;
+	cursor: pointer;
+}
+
+.terminal-bubble-button:active {
+	background: var(--ctl-active-bg);
+}
+
+/* The one input a soft keyboard types into: 1px and transparent, never `display: none` (which cannot be focused);
+   16px so iOS does not zoom the page on focus. */
+.terminal-kbd {
+	position: absolute;
+	left: 0;
+	bottom: 0;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	border: 0;
+	overflow: hidden;
+	opacity: 0;
+	resize: none;
+	font-size: 16px;
+	caret-color: transparent;
+	pointer-events: none;
+}
+
+/* Where the page is not the editor's and a soft keyboard may cover it (iOS does not resize the layout viewport): the
+   page lies over what is visible. `terminalKeyBar.ts` writes the four properties from `visualViewport`. */
+body.vv-locked {
+	position: fixed;
+	left: var(--vv-left, 0);
+	top: var(--vv-top, 0);
+	width: var(--vv-width, 100%);
+	height: var(--vv-height, 100%);
+	overflow: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.terminal-agent-mark.typing .terminal-agent-dot { animation: none; }
 }

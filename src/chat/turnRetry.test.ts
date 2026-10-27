@@ -27,6 +27,7 @@ function fixture(agent: 'codex' | 'claude' = 'codex') {
 		'./agentProtocol': protocol, './agents': { agentNames: { codex: 'Codex', claude: 'Claude Code' } },
 		'../core/uuid': { generateUuid: () => 'test-chat' }, './toolbarText': {},
 		'./attachmentReferences': load('src/chat/attachmentReferences.ts'),
+		'../core/notifyText': load('src/core/notifyText.ts'), './terminalPins': load('src/chat/terminalPins.ts'),
 	}, {
 		setTimeout: (callback: () => void, delay: number) => { timers.set(++timerId, { delay, callback }); return timerId; },
 		clearTimeout: (id: number) => timers.delete(id),
@@ -275,4 +276,17 @@ test('toggling UltraCode updates only the active chat and the default for future
 	assert.equal(first.chat.ultracode, true);
 	assert.equal(second.chat.ultracode, false);
 	assert.equal(saved.ultracode, false);
+});
+
+ test('sent attachments retain serializable opening data after the composer is cleared', async () => {
+	const f = fixture();
+	const chip = { id: 'note', kind: 'annotation' as const, label: 'Note' };
+	await f.tab.send('Read it', [{ chip, text: 'Original note', file: { toString: () => 'file:///tmp/note.txt' } as any }], 'codex', 'chosen-model', undefined, {} as AgentBackend);
+	f.tab.attachments = [];
+	const entry = JSON.parse(JSON.stringify(f.tab.chat.entries.find(e => e.kind === 'user')));
+	assert.equal(entry.attachmentData[0].text, 'Original note');
+	assert.equal(entry.attachmentData[0].file, 'file:///tmp/note.txt');
+	assert.equal(entry.attachmentData[0].chip.id, 'note');
+	chip.label = 'Changed';
+	assert.equal(entry.attachmentData[0].chip.label, 'Note');
 });

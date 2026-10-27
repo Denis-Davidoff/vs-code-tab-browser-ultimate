@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate",
 	"displayName": "AI Browser🏆 Claude + Codex + Gemini",
 	"description": "Embedded browser tab with AI capabilities, Claude, Codex and Gemini integration",
-	"version": "0.8.9",
+	"version": "0.9.0",
 	"enabledApiProposals": [
 		"externalUriOpener",
 		"browser"
@@ -147,11 +147,16 @@
 		"onCommand:aiBrowser.logins.export",
 		"onCommand:aiBrowser.translatePage",
 		"onCommand:aiBrowser.annotatePage",
+		"onCommand:aiBrowser.annotateAnywhere",
+		"onCommand:aiBrowser.repeat.annotateAnywhere",
 		"onCommand:aiBrowser.clearAnnotations",
 		"onCommand:aiBrowser.copyAnnotationPrompt",
 		"onView:aiBrowser.chat",
 		"onCommand:aiBrowser.chat.newChat",
+		"onCommand:aiBrowser.chat.newTerminal",
 		"onCommand:aiBrowser.chat.connectChrome",
+		"onCommand:aiBrowser.chat.connectExchange",
+		"onCommand:aiBrowser.chat.disconnectExchange",
 		"onCommand:aiBrowser.chat.disconnectChrome",
 		"onCommand:aiBrowser.chat.history",
 		"onCommand:aiBrowser.chat.refreshAgents",
@@ -190,6 +195,16 @@
 	},
 	"contributes": {
 		"commands": [
+			{
+				"command": "aiBrowser.chat.connectExchange",
+				"title": "Connect Chat to Exchange",
+				"category": "AI Browser"
+			},
+			{
+				"command": "aiBrowser.chat.disconnectExchange",
+				"title": "Disconnect Chat from Exchange",
+				"category": "AI Browser"
+			},
 			{
 				"command": "aiBrowser.show",
 				"title": "Show",
@@ -290,8 +305,8 @@
 				"title": "%command.addElementToClaudeCode.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-red-claude-light.svg",
-					"dark": "media/icons/crosshair-red-claude-dark.svg"
+					"light": "media/icons/crosshair-red-light.svg",
+					"dark": "media/icons/crosshair-red-dark.svg"
 				}
 			},
 			{
@@ -299,8 +314,8 @@
 				"title": "%command.addCssPathToClaudeCode.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-blue-claude-light.svg",
-					"dark": "media/icons/crosshair-blue-claude-dark.svg"
+					"light": "media/icons/crosshair-blue-light.svg",
+					"dark": "media/icons/crosshair-blue-dark.svg"
 				}
 			},
 			{
@@ -308,8 +323,8 @@
 				"title": "%command.addCssLocationToClaudeCode.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-grape-claude-light.svg",
-					"dark": "media/icons/crosshair-grape-claude-dark.svg"
+					"light": "media/icons/crosshair-grape-light.svg",
+					"dark": "media/icons/crosshair-grape-dark.svg"
 				}
 			},
 			{
@@ -317,8 +332,8 @@
 				"title": "%command.addXPathToClaudeCode.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-green-claude-light.svg",
-					"dark": "media/icons/crosshair-green-claude-dark.svg"
+					"light": "media/icons/crosshair-green-light.svg",
+					"dark": "media/icons/crosshair-green-dark.svg"
 				}
 			},
 			{
@@ -326,8 +341,8 @@
 				"title": "%command.addElementToCodex.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-red-codex-light.svg",
-					"dark": "media/icons/crosshair-red-codex-dark.svg"
+					"light": "media/icons/crosshair-red-light.svg",
+					"dark": "media/icons/crosshair-red-dark.svg"
 				}
 			},
 			{
@@ -335,8 +350,8 @@
 				"title": "%command.addCssPathToCodex.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-blue-codex-light.svg",
-					"dark": "media/icons/crosshair-blue-codex-dark.svg"
+					"light": "media/icons/crosshair-blue-light.svg",
+					"dark": "media/icons/crosshair-blue-dark.svg"
 				}
 			},
 			{
@@ -344,8 +359,8 @@
 				"title": "%command.addCssLocationToCodex.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-grape-codex-light.svg",
-					"dark": "media/icons/crosshair-grape-codex-dark.svg"
+					"light": "media/icons/crosshair-grape-light.svg",
+					"dark": "media/icons/crosshair-grape-dark.svg"
 				}
 			},
 			{
@@ -353,8 +368,8 @@
 				"title": "%command.addXPathToCodex.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-green-codex-light.svg",
-					"dark": "media/icons/crosshair-green-codex-dark.svg"
+					"light": "media/icons/crosshair-green-light.svg",
+					"dark": "media/icons/crosshair-green-dark.svg"
 				}
 			},
 			{
@@ -378,6 +393,15 @@
 			{
 				"command": "aiBrowser.annotatePage",
 				"title": "%command.annotatePage.title%",
+				"category": "%displayName%",
+				"icon": {
+					"light": "media/icons/marker-light.svg",
+					"dark": "media/icons/marker-dark.svg"
+				}
+			},
+			{
+				"command": "aiBrowser.annotateAnywhere",
+				"title": "%command.annotateAnywhere.title%",
 				"category": "%displayName%",
 				"icon": {
 					"light": "media/icons/marker-light.svg",
@@ -433,6 +457,15 @@
 				}
 			},
 			{
+				"command": "aiBrowser.repeat.annotateAnywhere",
+				"title": "%command.annotateAnywhere.title%",
+				"category": "%displayName%",
+				"icon": {
+					"light": "media/icons/marker-light.svg",
+					"dark": "media/icons/marker-dark.svg"
+				}
+			},
+			{
 				"command": "aiBrowser.repeat.xpath",
 				"title": "%command.copyElementXPath.title%",
 				"category": "%displayName%",
@@ -446,8 +479,8 @@
 				"title": "%command.addElementToClaudeCode.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-red-claude-light.svg",
-					"dark": "media/icons/crosshair-red-claude-dark.svg"
+					"light": "media/icons/crosshair-red-light.svg",
+					"dark": "media/icons/crosshair-red-dark.svg"
 				}
 			},
 			{
@@ -455,8 +488,8 @@
 				"title": "%command.addCssPathToClaudeCode.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-blue-claude-light.svg",
-					"dark": "media/icons/crosshair-blue-claude-dark.svg"
+					"light": "media/icons/crosshair-blue-light.svg",
+					"dark": "media/icons/crosshair-blue-dark.svg"
 				}
 			},
 			{
@@ -464,8 +497,8 @@
 				"title": "%command.addCssLocationToClaudeCode.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-grape-claude-light.svg",
-					"dark": "media/icons/crosshair-grape-claude-dark.svg"
+					"light": "media/icons/crosshair-grape-light.svg",
+					"dark": "media/icons/crosshair-grape-dark.svg"
 				}
 			},
 			{
@@ -473,8 +506,8 @@
 				"title": "%command.addXPathToClaudeCode.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-green-claude-light.svg",
-					"dark": "media/icons/crosshair-green-claude-dark.svg"
+					"light": "media/icons/crosshair-green-light.svg",
+					"dark": "media/icons/crosshair-green-dark.svg"
 				}
 			},
 			{
@@ -482,8 +515,8 @@
 				"title": "%command.addElementToCodex.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-red-codex-light.svg",
-					"dark": "media/icons/crosshair-red-codex-dark.svg"
+					"light": "media/icons/crosshair-red-light.svg",
+					"dark": "media/icons/crosshair-red-dark.svg"
 				}
 			},
 			{
@@ -491,8 +524,8 @@
 				"title": "%command.addCssPathToCodex.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-blue-codex-light.svg",
-					"dark": "media/icons/crosshair-blue-codex-dark.svg"
+					"light": "media/icons/crosshair-blue-light.svg",
+					"dark": "media/icons/crosshair-blue-dark.svg"
 				}
 			},
 			{
@@ -500,8 +533,8 @@
 				"title": "%command.addCssLocationToCodex.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-grape-codex-light.svg",
-					"dark": "media/icons/crosshair-grape-codex-dark.svg"
+					"light": "media/icons/crosshair-grape-light.svg",
+					"dark": "media/icons/crosshair-grape-dark.svg"
 				}
 			},
 			{
@@ -509,8 +542,8 @@
 				"title": "%command.addXPathToCodex.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-green-codex-light.svg",
-					"dark": "media/icons/crosshair-green-codex-dark.svg"
+					"light": "media/icons/crosshair-green-light.svg",
+					"dark": "media/icons/crosshair-green-dark.svg"
 				}
 			},
 			{
@@ -518,8 +551,8 @@
 				"title": "%command.chat.addElement.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-red-chat-light.svg",
-					"dark": "media/icons/crosshair-red-chat-dark.svg"
+					"light": "media/icons/crosshair-red-light.svg",
+					"dark": "media/icons/crosshair-red-dark.svg"
 				}
 			},
 			{
@@ -527,8 +560,8 @@
 				"title": "%command.chat.addCssPath.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-blue-chat-light.svg",
-					"dark": "media/icons/crosshair-blue-chat-dark.svg"
+					"light": "media/icons/crosshair-blue-light.svg",
+					"dark": "media/icons/crosshair-blue-dark.svg"
 				}
 			},
 			{
@@ -536,8 +569,8 @@
 				"title": "%command.chat.addCssLocation.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-grape-chat-light.svg",
-					"dark": "media/icons/crosshair-grape-chat-dark.svg"
+					"light": "media/icons/crosshair-grape-light.svg",
+					"dark": "media/icons/crosshair-grape-dark.svg"
 				}
 			},
 			{
@@ -545,8 +578,8 @@
 				"title": "%command.chat.addXPath.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-green-chat-light.svg",
-					"dark": "media/icons/crosshair-green-chat-dark.svg"
+					"light": "media/icons/crosshair-green-light.svg",
+					"dark": "media/icons/crosshair-green-dark.svg"
 				}
 			},
 			{
@@ -609,8 +642,8 @@
 				"title": "%command.chat.addElement.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-red-chat-light.svg",
-					"dark": "media/icons/crosshair-red-chat-dark.svg"
+					"light": "media/icons/crosshair-red-light.svg",
+					"dark": "media/icons/crosshair-red-dark.svg"
 				}
 			},
 			{
@@ -618,8 +651,8 @@
 				"title": "%command.chat.addCssPath.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-blue-chat-light.svg",
-					"dark": "media/icons/crosshair-blue-chat-dark.svg"
+					"light": "media/icons/crosshair-blue-light.svg",
+					"dark": "media/icons/crosshair-blue-dark.svg"
 				}
 			},
 			{
@@ -627,8 +660,8 @@
 				"title": "%command.chat.addCssLocation.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-grape-chat-light.svg",
-					"dark": "media/icons/crosshair-grape-chat-dark.svg"
+					"light": "media/icons/crosshair-grape-light.svg",
+					"dark": "media/icons/crosshair-grape-dark.svg"
 				}
 			},
 			{
@@ -636,8 +669,8 @@
 				"title": "%command.chat.addXPath.title%",
 				"category": "%displayName%",
 				"icon": {
-					"light": "media/icons/crosshair-green-chat-light.svg",
-					"dark": "media/icons/crosshair-green-chat-dark.svg"
+					"light": "media/icons/crosshair-green-light.svg",
+					"dark": "media/icons/crosshair-green-dark.svg"
 				}
 			},
 			{
@@ -667,6 +700,12 @@
 				"title": "%command.chat.newChat.title%",
 				"category": "%displayName%",
 				"icon": "$(add)"
+			},
+			{
+				"command": "aiBrowser.chat.newTerminal",
+				"title": "%command.chat.newTerminal.title%",
+				"category": "%displayName%",
+				"icon": "$(terminal)"
 			},
 			{
 				"command": "aiBrowser.chat.connectChrome",
@@ -929,6 +968,22 @@
 						"title": "Chat Tabs",
 						"markdownDescription": "%configuration.chat.tabLimit.description%"
 					},
+					"aiBrowser.chat.terminalLimit": {
+						"type": "integer",
+						"default": 8,
+						"minimum": 1,
+						"maximum": 20,
+						"scope": "application",
+						"title": "Terminal Tabs",
+						"markdownDescription": "%configuration.chat.terminalLimit.description%"
+					},
+					"aiBrowser.chat.remoteTerminal": {
+						"type": "boolean",
+						"default": false,
+						"scope": "application",
+						"title": "Terminal Tabs on the Website",
+						"markdownDescription": "%configuration.chat.remoteTerminal.description%"
+					},
 					"aiBrowser.chat.claudePath": {
 						"type": "string",
 						"default": "",
@@ -949,6 +1004,43 @@
 						"scope": "application",
 						"title": "Gemini CLI Executable",
 						"markdownDescription": "%configuration.chat.geminiPath.description%"
+					},
+					"aiBrowser.chat.exchangeKeepAwakeMinutes": {
+						"type": "number",
+						"enum": [
+							0,
+							15,
+							30,
+							60,
+							120,
+							180,
+							240,
+							300,
+							360,
+							720,
+							1440,
+							2880,
+							-1
+						],
+						"enumDescriptions": [
+							"Disabled",
+							"15 minutes",
+							"30 minutes",
+							"1 hour",
+							"2 hours",
+							"3 hours",
+							"4 hours",
+							"5 hours",
+							"6 hours",
+							"12 hours",
+							"24 hours",
+							"48 hours",
+							"Until turned off"
+						],
+						"default": 60,
+						"scope": "window",
+						"title": "Keep Awake After Exchange Connection",
+						"markdownDescription": "Prevent automatic system sleep when a website viewer connects to this chat through Exchange. Each new viewer renews the timer. 0 disables this trigger; -1 keeps the computer awake until you turn it off or close the VS Code window. The display may still sleep."
 					},
 					"aiBrowser.chat.viewMode": {
 						"type": "string",
@@ -1036,6 +1128,11 @@
 					"command": "aiBrowser.repeat.annotate",
 					"group": "navigation@2",
 					"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'annotate'"
+				},
+				{
+					"command": "aiBrowser.repeat.annotateAnywhere",
+					"group": "navigation@2",
+					"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'annotateAnywhere'"
 				},
 				{
 					"command": "aiBrowser.repeat.claude.element",
@@ -1164,6 +1261,10 @@
 					"group": "2_annotations@1"
 				},
 				{
+					"command": "aiBrowser.annotateAnywhere",
+					"group": "2_annotations@1.5"
+				},
+				{
 					"command": "aiBrowser.clearAnnotations",
 					"group": "2_annotations@2",
 					"when": "aiBrowser.pageHasAnnotations"
@@ -1240,6 +1341,10 @@
 				},
 				{
 					"command": "aiBrowser.repeat.annotate",
+					"when": "false"
+				},
+				{
+					"command": "aiBrowser.repeat.annotateAnywhere",
 					"when": "false"
 				},
 				{
@@ -1325,6 +1430,10 @@
 				{
 					"command": "aiBrowser.chat.newChat",
 					"when": "!aiBrowser.chatUnsupported"
+				},
+				{
+					"command": "aiBrowser.chat.newTerminal",
+					"when": "!aiBrowser.chatUnsupported && !aiBrowser.chatBlocked"
 				},
 				{
 					"command": "aiBrowser.chat.history",
@@ -1663,6 +1772,12 @@
 				"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'annotate'"
 			},
 			{
+				"command": "aiBrowser.repeat.annotateAnywhere",
+				"key": "ctrl+alt+c",
+				"mac": "cmd+alt+c",
+				"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'annotateAnywhere'"
+			},
+			{
 				"command": "aiBrowser.repeat.claude.element",
 				"key": "ctrl+alt+c",
 				"mac": "cmd+alt+c",
@@ -1745,7 +1860,7 @@
 	"scripts": {
 		"compile": "npm run build-ext && npm run build-webview",
 		"watch": "run-p -l watch-ext watch-webview watch-typecheck-webview",
-		"build-ext": "npm run clean-ext && tsc --project ./tsconfig.json",
+		"build-ext": "npm run clean-ext && tsc --project ./tsconfig.json && node scripts/stage-terminal.mjs",
 		"build-webview": "node ./esbuild.webview.mts",
 		"build-chrome": "node ./scripts/build-chrome.mjs",
 		"typecheck-chrome": "tsc --project ./chrome-extension/tsconfig.json --noEmit",
@@ -1772,13 +1887,18 @@
 		"@vscode/codicons": "^0.0.36",
 		"@vscode/dts": "^0.4.1",
 		"@vscode/vsce": "^3.9.2",
+		"@xterm/addon-fit": "^0.11.0",
+		"@xterm/headless": "6.0.0",
+		"@xterm/xterm": "^6.0.0",
 		"esbuild": "^0.28.2",
+		"node-pty": "^1.1.0",
 		"npm-run-all2": "^9.0.3",
 		"ovsx": "^1.1.1",
 		"typescript": "^5.9.3",
 		"yazl": "2.5.1"
 	},
 	"allowScripts": {
-		"esbuild@0.28.2": true
+		"esbuild@0.28.2": true,
+		"node-pty@1.1.0": true
 	}
 }

@@ -10,6 +10,7 @@ import type { AgentId, AgentUsage, ChatAgent, ChatCommand, ChatModel, QuestionAn
 import { ClaudeBackend } from './claudeAgent';
 import { CodexBackend } from './codexAgent';
 import { GeminiBackend } from './geminiAgent';
+import { AgentAuthentication, checkAgentLogin, isAgentAuthenticationError } from './agentAuthentication';
 
 /**
  * The agents the chat view can talk to, behind one interface.
@@ -73,6 +74,8 @@ export interface BrowserServer {
 
 export interface AgentBackend extends vscode.Disposable {
 	readonly id: AgentId;
+	/** Used to avoid interrupting other conversations while credentials are refreshed. */
+	readonly running?: boolean;
 	/** A text-only commit message on the model and effort chosen for this feature. */
 	generateCommitMessage?(model: string, effort: string | undefined, context: string, signal: AbortSignal, systemPrompt?: string): Promise<string>;
 	/** Optional one-shot title on a small model; never uses a conversation session. */
@@ -134,6 +137,8 @@ export class AgentRegistry implements vscode.Disposable {
 	/** What is running is a full detection, not one agent's `redetect`. */
 	private _detectingAll = false;
 	private _disposed = false;
+	private readonly _authenticationErrors = new Set<AgentId>();
+	private _authentication?: AgentAuthentication;
 
 	private readonly _onDidChange = new vscode.EventEmitter<void>();
 	public readonly onDidChange = this._onDidChange.event;
@@ -167,7 +172,32 @@ export class AgentRegistry implements vscode.Disposable {
 	) { }
 
 	public get agents(): readonly ChatAgent[] {
-		return this._agents;
+		return this._agents.map(agent => ({ ...agent, authentication: {
+			required: this._authenticationErrors.has(agent.id), signingIn: this._authentication?.active(agent.id) ?? false,
+		} }));
+	}
+
+	public authenticationError(id: AgentId, text: string): void {
+		if (!this._disposed && isAgentAuthenticationError(text) && !this._authenticationErrors.has(id)) {
+			this._authenticationErrors.add(id); this._onDidChange.fire();
+		}
+	}
+
+	public async authenticate(id: AgentId): Promise<void> {
+		if (this._disposed || !isAgentId(id)) return;
+		const binary = this._agents.find(agent => agent.id === id)?.binary;
+		if (!binary) throw new Error(`Install ${agentNames[id]} and refresh the agent list before signing in.`);
+		this._authentication ??= new AgentAuthentication(() => this._onDidChange.fire(), agent => this.checkAuthentication(agent));
+		await this._authentication.start(id, binary);
+	}
+
+	/** Restart this agent after login so live processes cannot retain expired credentials. */
+	public async checkAuthentication(id: AgentId): Promise<void> {
+		if (!isAgentId(id)) return;
+		const binary = this._agents.find(agent => agent.id === id)?.binary;
+		if (!binary) return;
+		await checkAgentLogin(id, binary);
+		await this.redetect(id, true);
 	}
 
 	/** Each available agent's skills and commands, for the "/" palette. */
@@ -238,7 +268,7 @@ export class AgentRegistry implements vscode.Disposable {
 	 * reply nobody touched — and the copy in use is not held on to, since the
 	 * pick asked for a change.
 	 */
-	public async redetect(id: AgentId): Promise<void> {
+	public async redetect(id: AgentId, restart = false): Promise<void> {
 		while (this._detecting) {
 			await this._detecting;
 		}
@@ -246,6 +276,10 @@ export class AgentRegistry implements vscode.Disposable {
 			return;
 		}
 		this._detectingAll = false;
+		if (restart) {
+			if (this._backends.get(id)?.backend.running) throw new Error(`Wait for ${agentNames[id]} to finish its replies, or stop them, then check sign-in again.`);
+			this._drop(id, false);
+		}
 		this._detecting = (async () => {
 			const agent = await this._detectOne(id, false);
 			this._agents = this._agents.map(a => a.id === id ? agent : a);
@@ -318,6 +352,7 @@ export class AgentRegistry implements vscode.Disposable {
 			if (!models.length) {
 				return { id, name, available: false, models, detail, ...about, problem: vscode.l10n.t("{0} listed no models.", name) };
 			}
+			this._authenticationErrors.delete(id);
 			// Claude Code's come with the models (models() just replaced the list);
 			// Codex's are one more call, made on every detection so a Refresh
 			// finds a skill added since. The throttle starts from a real listing.
@@ -330,6 +365,7 @@ export class AgentRegistry implements vscode.Disposable {
 			}
 			return { id, name, available: true, models, detail, ...about };
 		} catch (err) {
+			this.authenticationError(id, err instanceof Error ? err.message : String(err));
 			return { id, name, available: false, models: [], detail, ...about, problem: err instanceof Error ? err.message : String(err) };
 		}
 	}
@@ -347,6 +383,7 @@ export class AgentRegistry implements vscode.Disposable {
 
 	public dispose(): void {
 		this._disposed = true;
+		this._authentication?.dispose();
 		for (const { backend } of this._backends.values()) {
 			backend.dispose();
 		}

@@ -10,7 +10,7 @@ import { promises as fs, writeFileSync } from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { JsonLineProcess, withTimeout } from './agentProcess';
-import { chatControlTools, claudeApproval, claudeApprovalAnswer, claudeCommands, claudeEvents, claudeModels, claudeUsage, type AgentEvent } from './agentProtocol';
+import { chatControlTools, terminalInputTools, claudeApproval, claudeApprovalAnswer, claudeCommands, claudeEvents, claudeModels, claudeUsage, type AgentEvent } from './agentProtocol';
 import type { AgentBackend, AgentSession, BrowserServer, TurnInput } from './agents';
 import type { AgentUsage, ChatCommand, ChatModel, QuestionAnswers } from './chatProtocol';
 import { existingPrivateTempDirectory, privateTempDirectory } from '../core/safeFiles';
@@ -46,9 +46,11 @@ import { generateUuid } from '../core/uuid';
 // its own rules before asking us, and a user's `allow` for `mcp__ai-browser`
 // (the whole server) would run them with no card, past the approval menu's
 // category. An `ask` rule outranks an `allow` — measured on 2.1.301, with
-// `--allowedTools` and with `--setting-sources=user` alike.
+// `--allowedTools` and with `--setting-sources=user` alike. The two terminal
+// tools that type (`terminalInputTools`) are in the list for the same reason;
+// the three that only look are not, since the chat answers those without a card.
 const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--thinking-display', 'summarized', '--permission-mode', 'default', '--permission-prompt-tool', 'stdio',
-	'--settings', JSON.stringify({ permissions: { ask: [...chatControlTools].map(tool => `mcp__ai-browser__${tool}`) } })];
+	'--settings', JSON.stringify({ permissions: { ask: [...chatControlTools, ...terminalInputTools].map(tool => `mcp__ai-browser__${tool}`) } })];
 
 const controlTimeoutMs = 20_000;
 /** How long detection's process is kept for the plan's usage after the models are in. */
@@ -250,6 +252,7 @@ class ControlChannel implements vscode.Disposable {
 const projectSettingsOff = ['--setting-sources=user', '--strict-mcp-config'];
 
 export class ClaudeBackend implements AgentBackend {
+	public get running(): boolean { return [...this._sessions].some(session => session.running); }
 	public readonly id = 'claude' as const;
 	private readonly _sessions = new Set<ClaudeSession>();
 	/** Detection's processes kept for the usage answer; ended with the backend. */

@@ -1,0 +1,50 @@
+:root{--ctl-h-sm:24px;--ctl-h:28px;--ctl-radius:6px;--ctl-chevron:10px;--ctl-focus:var(--accent);--ctl-ring:1px solid var(--ctl-focus);--ctl-ring-offset:1px;--ctl-border-hover:color-mix(in srgb,var(--fg) 25%,transparent);--ctl-chevron-img:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M2 3.5l3 3 3-3' fill='none' stroke='%23CCCCCC' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")}
+/* Control standard tokens above; light theme gets its own chevron. */
+:root[data-theme=light]{--ctl-chevron-img:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M2 3.5l3 3 3-3' fill='none' stroke='%23616161' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")}
+html,body{height:100%;margin:0;overflow:hidden}body{display:flex;flex-direction:column}#app{flex:1;min-height:0;height:auto}.remote-shell{display:flex;align-items:center;gap:5px;padding:3px 8px;min-height:30px;border-bottom:1px solid var(--border);font:11px var(--vscode-font-family);flex:none}.remote-shell #status{font-size:10px;max-width:95px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg-3);flex:0 1 auto}.remote-shell #conversation{flex:1;max-width:none;min-width:60px;box-sizing:border-box;height:var(--ctl-h-sm);margin:0 3px;padding:0 22px 0 6px;color:var(--fg);border:1px solid var(--border);border-radius:var(--ctl-radius);font:11px var(--vscode-font-family);line-height:1;appearance:none;-webkit-appearance:none;text-overflow:ellipsis;cursor:pointer;background:var(--surface) var(--ctl-chevron-img) no-repeat right 6px center/var(--ctl-chevron) var(--ctl-chevron)}.remote-shell #conversation:hover:not(:disabled){border-color:var(--ctl-border-hover)}.remote-shell #conversation:focus-visible{outline:var(--ctl-ring);outline-offset:-1px}.remote-shell button{display:inline-flex;align-items:center;justify-content:center;width:var(--ctl-h-sm);height:var(--ctl-h-sm);padding:0;flex:none;background:transparent;border:0;border-radius:var(--ctl-radius);color:var(--fg-3);cursor:pointer}.remote-shell button:hover{background:var(--soft-2);color:var(--fg)}.remote-shell button:focus-visible{outline:var(--ctl-ring);outline-offset:var(--ctl-ring-offset)}body>dialog{width:min(720px,85vw);max-height:80vh;overflow:auto;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:var(--ds-radius-md);padding:var(--ds-space-5);box-shadow:var(--ds-shadow-modal)}body>dialog::backdrop{background:var(--ds-backdrop)}body>dialog pre{white-space:pre-wrap;overflow-wrap:anywhere}#remote-actions{margin-left:auto;display:flex}
+
+#waiting{flex:1;display:grid;place-items:center;text-align:center;padding:var(--ds-space-6);font:var(--ds-text-sm)/var(--ds-leading-prose) var(--vscode-font-family);color:var(--ds-muted)}#waiting[hidden]{display:none}
+
+#legacy{flex:1;min-height:0;display:flex;flex-direction:column;padding:var(--ds-space-4);gap:var(--ds-space-4);font:var(--ds-text-sm)/var(--ds-leading) var(--vscode-font-family)}#legacy>p{color:var(--ds-muted);font-size:var(--ds-text-xs)}#legacy-messages{flex:1;overflow:auto}#legacy-messages p{white-space:pre-wrap;overflow-wrap:anywhere}#legacy form{display:flex;gap:8px}#legacy textarea{flex:1;min-width:0;font:inherit;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:var(--ctl-radius);padding:6px 8px}#legacy textarea:focus-visible{border-color:var(--ctl-focus);outline:var(--ctl-ring);outline-offset:-1px}#legacy button{box-sizing:border-box;height:var(--ctl-h);padding:0 12px;background:var(--vscode-button-background);color:var(--vscode-button-foreground);border:0;border-radius:var(--ctl-radius);font:inherit;cursor:pointer}#legacy button:hover{background:var(--vscode-button-hoverBackground)}#legacy button:focus-visible{outline:var(--ctl-ring);outline-offset:var(--ctl-ring-offset)}
+
+.remote-shell > .connection-spinner { display: none; }
+.remote-shell:has(#status[data-busy="true"]) > .connection-spinner { display: inline-block; }
+#waiting { align-content: center; gap: var(--ds-space-5); }
+#waiting > .liquid-loader { --liquid-size: 48px; }
+body:has(#status[data-busy="false"]) #waiting > .liquid-loader { display: none; }
+
+/* Match the primary send button's horizontal offset in the mobile web chat. */
+@media (max-width: 760px) {
+  .input-actions > .send-slot:has(> .queue-button) {
+    transform: translateX(4px);
+  }
+}
+
+/* Design system: the shell header matches the Chrome side panel's; tokens come from sidepanel.css. */
+.remote-shell { gap: var(--ds-space-3); padding: var(--ds-space-2) var(--ds-space-4); min-height: 36px; box-sizing: border-box; }
+.remote-shell #status { font-size: var(--ds-text-xs); color: var(--ds-muted); }
+.remote-shell #status[data-state="error"] { color: var(--ds-danger); }
+.remote-shell > .connection-spinner { --liquid-size: 16px; }
+/* Narrow: the status text is hidden visually but stays in the live region (and in its title). */
+@media (max-width: 420px) {
+  .remote-shell #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+}
+
+/* Terminal tabs on the website (preview-src/remoteTerminal.ts). There is no editor theme here, so
+   xterm's colours fall back to VS Code's own terminal palette (Dark Modern / Light Modern); the
+   background and foreground come from the page's editor colours in terminalTheme.ts. */
+:root{
+  --vscode-terminal-ansiBlack:#000000;--vscode-terminal-ansiRed:#cd3131;--vscode-terminal-ansiGreen:#0dbc79;--vscode-terminal-ansiYellow:#e5e510;--vscode-terminal-ansiBlue:#2472c8;--vscode-terminal-ansiMagenta:#bc3fbc;--vscode-terminal-ansiCyan:#11a8cd;--vscode-terminal-ansiWhite:#e5e5e5;
+  --vscode-terminal-ansiBrightBlack:#666666;--vscode-terminal-ansiBrightRed:#f14c4c;--vscode-terminal-ansiBrightGreen:#23d18b;--vscode-terminal-ansiBrightYellow:#f5f543;--vscode-terminal-ansiBrightBlue:#3b8eea;--vscode-terminal-ansiBrightMagenta:#d670d6;--vscode-terminal-ansiBrightCyan:#29b8db;--vscode-terminal-ansiBrightWhite:#e5e5e5;
+  --vscode-terminal-selectionBackground:#264f78}
+:root[data-theme=light]{--vscode-terminal-ansiBlack:#000000;--vscode-terminal-ansiRed:#cd3131;--vscode-terminal-ansiGreen:#107c10;--vscode-terminal-ansiYellow:#949800;--vscode-terminal-ansiBlue:#0451a5;--vscode-terminal-ansiMagenta:#bc05bc;--vscode-terminal-ansiCyan:#0598bc;--vscode-terminal-ansiWhite:#555555;
+  --vscode-terminal-ansiBrightBlack:#666666;--vscode-terminal-ansiBrightRed:#cd3131;--vscode-terminal-ansiBrightGreen:#14ce14;--vscode-terminal-ansiBrightYellow:#b5ba00;--vscode-terminal-ansiBrightBlue:#0451a5;--vscode-terminal-ansiBrightMagenta:#bc05bc;--vscode-terminal-ansiBrightCyan:#0598bc;--vscode-terminal-ansiBrightWhite:#a5a5a5;
+  --vscode-terminal-selectionBackground:#add6ff}
+/* The phone: the page is the dynamic viewport, so the soft keyboard does not push the key bar off
+   screen (the key bar tracks visualViewport itself, terminalKeyBar.ts). */
+html,body{height:100dvh}
+@supports not (height:100dvh){html,body{height:100%}}
+body{padding-bottom:env(safe-area-inset-bottom)}
+.terminal-main{overscroll-behavior:contain}
+.terminal-stage{touch-action:pan-y}
+.terminal-tool-lease[aria-pressed="true"]{color:var(--vscode-button-foreground,#fff);background:var(--vscode-button-background,#0078d4)}

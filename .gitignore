@@ -3,14 +3,19 @@ media/index.js
 media/index.js.map
 media/codicon.css
 media/codicon.css.map
+media/xterm.css
+media/xterm.css.map
 
 # Build output
 out/
 chrome-extension/dist/
 chrome-extension/*.zip
-!chrome-extension/ai-browser-chrome-0.5.0.zip
+!chrome-extension/ai-browser-chrome-0.6.0.zip
 chrome-extension/*.zip.tmp
 node_modules/
+
+# Local deployment configuration and scripts
+/exchange-server/deploy/
 
 # Marketplace stub build artifacts
 vscode-marketplace/media/
@@ -30,3 +35,7 @@ media/chat.js
 media/chat.js.map
 media/recording.js
 media/recording.js.map
+/deploy-exchange.sh
+
+# Private Exchange modules: backed up separately; never publish with the base server.
+/exchange-server/private-plugins/

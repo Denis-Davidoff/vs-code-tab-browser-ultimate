@@ -65,7 +65,13 @@ in its original folder. Finish the running turn and any queued messages first.
 The chat tab closes and remains in history. Repeating the action focuses its existing
 terminal; close that terminal before reopening the conversation in chat.
 The chat transcript does not import messages subsequently written in the terminal.
-Browser access in the CLI uses its own MCP configuration.
+The CLI keeps the browser tools and the tab the chat was working on.
+
+## ⌨️ Terminal tabs
+
+Open a shell, or Claude Code or Codex in their own CLI, as a tab in the chat (the strip's **+**,
+**New Chat**, or **AI Browser: New Terminal**; macOS and Windows). Pin it to a conversation with
+**Ask agent** and that agent can read the screen and, after you approve each input, type into it.
 
 ## 📍 Page annotations
 
@@ -92,6 +98,27 @@ visible while recording. Files are temporary until saved; agents receive a file 
 For limits, settings and technical details, see [CLAUDE.md](CLAUDE.md#browser-video-recording).
 
 ## 📝 Changelog
+
+**0.10.0** — Terminal tabs in the chat: a real shell, or Claude Code or Codex in their own CLI,
+beside your conversations. Pin one to a conversation and its agent reads the screen and, with your
+approval, types; **Watch only** and **Pause agent input** keep it in check. The terminal toolbar
+inserts pages, elements, screenshots and files into an agent CLI's prompt. Opted in, the Exchange
+website can watch shared terminals and take control, with a key bar for phones.
+
+**0.9.0** — The Exchange server shares a chat and a browser tab with a self-hosted website,
+end-to-end encrypted. From any device you can send messages, stop turns, pick elements and
+click through the page. The VS Code chat, the Chrome side panel and the website share one set
+of controls and receive updates as patches. Git state made in VS Code reaches the website
+straight away. Chrome and the website offer the current page as a one-click attachment. The
+website can open Google Chrome on the VS Code machine and labels each tab by browser. Agents
+can no longer send clipboard shortcuts. The Chrome extension is now 0.6.0.
+
+**0.8.10** — Agents gain native hover, drag, keyboard shortcuts and text insertion,
+plus double and right clicks. Browser snapshots and actions reach open and closed
+Shadow DOM; pointer actions handle scaled, rotated and perspective-transformed iframes,
+including nested frames from other sites. Optional humanized input adds curved pointer
+movement, varied pauses and character-by-character Unicode typing. Clicks refuse covered,
+disabled or ambiguous targets, and cancelled actions release held keys and mouse buttons.
 
 **0.8.9** — Popups and tooltips stay within the visible chat area, including narrow
 Chrome side panels, and adjust when the panel or content changes size. Chrome video
@@ -495,7 +522,13 @@ Integrated Browser API** and quit and reopen the editor. To use Google Chrome, c
 
 ## License
 
-MIT, with both copyright lines — Microsoft's, for the forked and copied code, and this
+Outside `exchange-server/`, MIT, with both copyright lines — Microsoft's, for the forked and copied code, and this
 project's. The per-file MIT headers on everything copied from vscode stay where they are.
 One file, `src/logins/loginFormScript.ts`, is ported from Firefox's password manager and stays under
 the Mozilla Public License 2.0 — see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
+Exchange Server is licensed separately under [Elastic License 2.0](exchange-server/LICENSE).
+Personal and internal company use are free. Providing its substantial functionality
+to third parties as a hosted or managed service, whether paid or free, requires
+separate permission. See [licensing scope and exceptions](exchange-server/LICENSING.md).
+Previously granted MIT rights and third-party licenses remain in effect.

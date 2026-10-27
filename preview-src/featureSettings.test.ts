@@ -46,9 +46,11 @@ function harness() {
 		featureSettingsSaving: false, featureSettingsDraft: readFeatureAiSettings(undefined),
 		videoQualityDraft: 'high' as RecordingQuality, videoSecondsDraft: 300 as number | undefined, recordingProfiles, readRecordingQuality,
 		readRecordingSeconds, minRecordingSeconds, maxRecordingSeconds,
-		readFeatureAiSettings, aiFeatures, defaultFeaturePrompts, featurePromptLimit, createTemporarySettings: () => new Element('div'), input: { focus() {} }, closePopups() {},
+		readFeatureAiSettings, aiFeatures, defaultFeaturePrompts, featurePromptLimit, createAppearanceSettings: () => new Element('div'), createTemporarySettings: () => new Element('div'), createServerSettings: () => new Element('div'), input: { focus() {} }, closePopups() {},
 		el(tag: string, props: { class?: string } = {}, ...children: (Element | string)[]) { const node = new Element(tag); node.className = props.class ?? ''; node.append(...children); return node; },
 		button: (children: (Element | string)[], props: { class?: string } = {}) => { const node = new Element('button'); node.className = props.class ?? ''; node.append(...children); return node; }, icon: () => new Element('i'),
+		gate: () => ({ s: 'on' }),
+		showScreenOverlay() {},
 		post(message: { settings: FeatureAiSettings; recordingQuality?: RecordingQuality }) { posts.push(message); }, message: {} as { settings?: FeatureAiSettings; recordingQuality?: RecordingQuality; error?: string },
 	};
 	const context = createContext(scope);
@@ -90,6 +92,19 @@ for (const failed of [false, true]) {
 		assert.equal(ui.posts[1].settings.branchName.agent, 'codex');
 	});
 }
+
+test('Appearance has its own settings section and does not show the AI Save action', () => {
+ const ui = harness(); ui.open();
+ const appearance = ui.panel.querySelectorAll('button').find(button => button.id === 'appearance-tab')!;
+ appearance.events.click();
+ assert.equal(ui.save.hidden, true);
+ assert.equal(ui.status.hidden, true);
+ const content = ui.panel.querySelectorAll('div').find(node => node.id === 'appearance-content')!;
+ assert.equal(content.hidden, false);
+ ui.panel.querySelectorAll('button').find(button => button.id === 'feature-ai-tab')!.events.click();
+ assert.equal(content.hidden, true);
+ assert.equal(ui.save.hidden, false);
+});
 
 test('save confirmation supplies authoritative choices without waiting for a state update', () => {
 	const ui = harness();

@@ -1,6 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { parseChatTabTransfer } from './tabDrag.ts';
+import { conversationBadge } from './chatTerminal.ts';
 
 test('cross-view drags contain identities only and reject malformed payloads', () => {
 	assert.deepEqual(parseChatTabTransfer(JSON.stringify({ source: 'view-1', id: 'tab-1', token: 'opaque', draft: 'must not be imported' })),
@@ -63,6 +64,7 @@ test('compact tab metadata retains identity and reports status and capped agent 
 		tabMark: (status: string) => element('span', { status }),
 		tabMarks: { working: 'Working', waiting: 'Waiting', read: 'Finished', unread: 'Unread', failed: 'Failed' },
 		agentsOf: (t: { agents: number; skillRuns: number }) => t.agents + t.skillRuns,
+		conversationBadge,
 	});
 	for (const status of ['working', 'waiting', 'read', 'unread', 'failed']) {
 		const children: ReturnType<typeof element>[] = [];
@@ -75,4 +77,36 @@ test('compact tab metadata retains identity and reports status and capped agent 
 		assert.match(label.title, /A named task — Claude/);
 		assert.match(label.title, /104 agents running/);
 	}
+});
+
+test('a conversation tab with pinned terminals shows their count and says which in its tooltip; one without shows nothing', async () => {
+	const { readFileSync } = await import('node:fs');
+	const { runInNewContext } = await import('node:vm');
+	const { transpileModule } = await import('typescript');
+	const source = readFileSync('preview-src/chat.ts', 'utf8');
+	const body = /function fillTab\([\s\S]*?\n\}/.exec(source)![0];
+	const element = (_tag: string, props: { class?: string; text?: string; title?: string } = {}, ...children: unknown[]) => ({
+		...props, children, attributes: {} as Record<string, string>,
+		setAttribute(name: string, value: string) { this.attributes[name] = value; },
+		removeAttribute(name: string) { delete this.attributes[name]; },
+	});
+	const fill = runInNewContext(transpileModule(body + '\nfillTab;', {}).outputText, {
+		el: element, icon: (name: string) => element('i', { class: name }),
+		tabMark: () => undefined, tabMarks: {}, conversationBadge,
+		agentsOf: (t: { agents: number; skillRuns: number }) => t.agents + t.skillRuns,
+	});
+	const run = (terminals?: { id: string; name: string; status: string }[]) => {
+		const children: ReturnType<typeof element>[] = [];
+		const label = { title: '', setAttribute() {}, replaceChildren(...nodes: typeof children) { children.push(...nodes); } };
+		fill({ tab: { title: 'Fix tests', agents: 0, skillRuns: 0, terminals }, label, close: {}, compactNumber: 1 }, undefined);
+		return { children, label };
+	};
+	const withPins = run([{ id: 't1', name: 'Terminal 2', status: 'running' }, { id: 't2', name: 'build', status: 'exited' }]);
+	const badge = withPins.children.find(c => c.class === 'tab-terminals');
+	assert.ok(badge, 'the badge is in the label');
+	assert.equal(badge.title, '2 terminals pinned: Terminal 2, build');
+	assert.equal((badge.children[1] as { text: string }).text, '2');
+	assert.match(withPins.label.title, /2 terminals pinned: Terminal 2, build/);
+	assert.equal(run().children.some(c => c.class === 'tab-terminals'), false);
+	assert.equal(run([]).children.some(c => c.class === 'tab-terminals'), false);
 });

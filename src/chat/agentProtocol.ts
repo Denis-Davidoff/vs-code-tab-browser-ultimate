@@ -876,6 +876,19 @@ export function claudeTool(name: string, input: unknown): ToolStart {
 				kind: 'agent', name, detail: str('description'), input: str('prompt'),
 				agent: { type: str('subagent_type'), background: i.run_in_background === true ? true : undefined },
 			};
+		case 'Workflow': {
+			// A workflow orchestrates agents in the background and is a task of its own
+			// (`task_type: local_workflow`), so it is listed with the agents. The script
+			// is not shown: its `meta.name` / `description` are what names it.
+			const script = str('script') ?? '';
+			const meta = (key: string) => new RegExp(`\\b${key}\\s*:\\s*(['"])([^'"\\n]{1,200})\\1`).exec(script.slice(0, 4000))?.[2];
+			const title = str('name') ?? meta('name') ?? (str('scriptPath')?.split('/').pop());
+			const description = str('description') ?? meta('description');
+			return {
+				kind: 'agent', name, detail: title ? oneLine(title) : 'Workflow', input: description,
+				agent: { type: 'workflow', background: true },
+			};
+		}
 		default:
 			return { kind: 'other', name, detail: toolDetail(input), input: jsonBody(input) };
 	}
@@ -899,7 +912,7 @@ export function claudeTool(name: string, input: unknown): ToolStart {
  * answer it.
  */
 /** The task types that are agents; anything else (`local_bash`, …) is not shown as one. */
-const agentTaskTypes = new Set(['local_agent', 'remote_agent']);
+const agentTaskTypes = new Set(['local_agent', 'remote_agent', 'local_workflow']);
 
 function claudeTaskEvents(message: Record<string, unknown>, tasks?: Map<string, string>): AgentEvent[] {
 	const id = typeof message.tool_use_id === 'string' ? message.tool_use_id : undefined;
@@ -921,7 +934,7 @@ function claudeTaskEvents(message: Record<string, unknown>, tasks?: Map<string, 
 				tasks?.set(taskId, id);
 			}
 			return id ? [{ type: 'toolUpdate', id, update: { agent: {
-				type: typeof message.subagent_type === 'string' ? message.subagent_type : undefined,
+				type: message.task_type === 'local_workflow' ? 'workflow' : typeof message.subagent_type === 'string' ? message.subagent_type : undefined,
 				background: message.is_backgrounded === true ? true : undefined,
 			} } }] : [];
 		case 'task_updated': {
@@ -1439,6 +1452,24 @@ export interface ApprovalRequest {
 	readonly detail?: string;
 	/** `what: 'question'`: the questions the agent asks, answered with `AgentSession.answer`'s `answers`. */
 	readonly questions?: readonly AgentQuestion[];
+	/** A headline for the card in place of the category's own ("Run this command?" would misdescribe typing into a terminal). */
+	readonly ask?: string;
+	/**
+	 * Set for one of our `terminal_*` tools (`ourToolClass`): which tool, its
+	 * arguments as the CLI gave them when they could be read, and whether it
+	 * only looks. The chat answers a read without a card (the pin is the
+	 * consent) and mints the one-shot grant (`terminalGrants.ts`) that lets an
+	 * input run once it is approved.
+	 */
+	readonly terminal?: TerminalApproval;
+}
+
+export interface TerminalApproval {
+	readonly tool: string;
+	/** The arguments the CLI showed; `undefined` when it gave none that could be read (Gemini's title that is not JSON). */
+	readonly args?: Readonly<Record<string, unknown>>;
+	/** `terminal_list` / `_read` / `_wait`: nothing is typed. */
+	readonly read?: true;
 }
 
 /** Bounds on what an agent's question brings in: it is the model's text, shown whole otherwise. */
@@ -1720,9 +1751,108 @@ function isBrowserServer(name: string): boolean {
  */
 export const chatControlTools: ReadonlySet<string> = new Set(['chat_keep_awake', 'chat_pause', 'chat_resume', 'chat_stop_agent']);
 
-/** The category of one of our own server's tools. */
-function ourServerWhat(tool: string): 'chat' | 'browser' {
-	return chatControlTools.has(tool) ? 'chat' : 'browser';
+/**
+ * Our `terminal_*` tools, `terminalInputToolNames` / `terminalReadToolNames` in
+ * `src/mcp/terminalTools.ts`, written twice since a leaf may not import it (a
+ * test reads that file). The two that type are command execution: the Terminal
+ * category, a card with the exact text, and a one-shot grant. The three that
+ * look are answered without a card, as the pin is the consent, and still follow
+ * Terminal's Deny.
+ */
+export const terminalInputTools: ReadonlySet<string> = new Set(['terminal_send', 'terminal_key']);
+export const terminalReadTools: ReadonlySet<string> = new Set(['terminal_list', 'terminal_read', 'terminal_wait']);
+
+/**
+ * Every tool of our server that is not chat control or a terminal tool, each
+ * named: the category AI Browser means a page, the code editor, or a read of
+ * the chat. **Fail closed**: a name that is in none of the lists is `other`,
+ * never AI Browser. The category used to be the default for any new tool, so
+ * the next one added — a terminal that types, say — would have run on AI
+ * Browser's Auto with no card on all three CLIs. A test reads the tool files and
+ * fails when a tool they register is missing here, which is the moment to
+ * decide what it is.
+ */
+const browserServerTools: ReadonlySet<string> = new Set([
+	'browser_annotations_add', 'browser_annotations_clear', 'browser_annotations_get', 'browser_annotations_list', 'browser_annotations_remove',
+	'browser_click', 'browser_console', 'browser_drag', 'browser_fill', 'browser_frames', 'browser_hover', 'browser_html',
+	'browser_inspect_element', 'browser_navigate', 'browser_press',
+	'browser_recording_pause', 'browser_recording_resume', 'browser_recording_start', 'browser_recording_status', 'browser_recording_stop',
+	'browser_replace_text', 'browser_restore_text', 'browser_screenshot', 'browser_scroll', 'browser_select_tab', 'browser_selected_element',
+	'browser_snapshot', 'browser_state', 'browser_tabs', 'browser_text', 'browser_text_segments', 'browser_type', 'browser_wait_for',
+	'editor_context', 'editor_definition', 'editor_references', 'editor_reveal', 'editor_symbols',
+	// The chat's reads, which any token holder may make.
+	'chat_state', 'chat_agents', 'chat_usage',
+]);
+
+/** The category of one of our own server's tools, and for a terminal tool which kind. */
+export function ourToolClass(tool: string): { readonly what: ApprovalKind; readonly terminal?: 'input' | 'read' } {
+	if (terminalInputTools.has(tool)) {
+		return { what: 'command', terminal: 'input' };
+	}
+	if (terminalReadTools.has(tool)) {
+		return { what: 'command', terminal: 'read' };
+	}
+	if (chatControlTools.has(tool)) {
+		return { what: 'chat' };
+	}
+	return { what: browserServerTools.has(tool) ? 'browser' : 'other' };
+}
+
+/** A string for a card with every character that is not plain shown as its code, so what is read is what is typed. */
+function visibleLine(text: string): string {
+	return text.replace(new RegExp('[\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029\\u200e\\u200f\\u202a-\\u202e\\u2066-\\u2069]', 'g'),
+		c => `\\u{${c.charCodeAt(0).toString(16).toUpperCase()}}`);
+}
+
+/**
+ * The card for `terminal_send` / `terminal_key`: the exact text or keys, under
+ * a headline that says what they do. Which terminal is not known here, only its
+ * id; the chat adds the name and folder. `args` undefined — the CLI showed none
+ * that could be read — falls back to what it did show.
+ */
+function terminalInputCard(id: string, tool: string, args: Readonly<Record<string, unknown>> | undefined, shown: string | undefined): ApprovalRequest {
+	const terminal: TerminalApproval = { tool, ...(args ? { args } : {}) };
+	if (tool === 'terminal_key') {
+		const keys = args && Array.isArray(args.keys) && args.keys.every(k => typeof k === 'string') ? args.keys as string[] : undefined;
+		const risky = keys?.some(k => /enter|return|ctrl|\^/i.test(k));
+		return {
+			id, what: 'command', ask: 'Press keys in a terminal?', terminal,
+			title: keys ? keys.map(k => oneLine(k, 40)).join(' → ') : 'Press keys',
+			detail: keys
+				? 'Presses these keys in order.' + (risky ? ' Enter runs whatever is on the command line, a command recalled with Up included; Ctrl-C and Ctrl-D end what is running.' : '')
+				: shown,
+		};
+	}
+	const text = args && (typeof args.text === 'string' || (typeof args.text === 'number' && Number.isFinite(args.text))) ? String(args.text) : args && args.text === undefined && args.terminalId !== undefined ? '' : undefined;
+	if (text === undefined) {
+		return { id, what: 'command', ask: 'Type into a terminal?', title: 'Type into a terminal', detail: shown, terminal };
+	}
+	const enter = args?.enter !== false;
+	const trailing = /\s+$/.exec(text)?.[0].length ?? 0;
+	return {
+		id, what: 'command', ask: 'Type into a terminal?', terminal,
+		title: (visibleLine(whole(text)) || '(empty)') + (enter ? '  ⏎' : ''),
+		detail: [
+			enter ? 'Types the line and presses Enter: the shell runs it as you.' : 'Types the text without pressing Enter.',
+			trailing ? `The text ends with ${trailing} space or line-break character${trailing === 1 ? '' : 's'}.` : undefined,
+		].filter(Boolean).join(' '),
+	};
+}
+
+/**
+ * An approval of one of our own server's tools, from what each CLI gave:
+ * `args` are the arguments when they could be read, `shown` the text it showed
+ * for them when not.
+ */
+function ourToolApproval(id: string, tool: string, args: Readonly<Record<string, unknown>> | undefined, shown: string | undefined): ApprovalRequest {
+	const cls = ourToolClass(tool);
+	if (cls.terminal === 'input') {
+		return terminalInputCard(id, tool, args, shown);
+	}
+	if (cls.terminal === 'read') {
+		return { id, what: 'command', title: tool, ...(shown !== undefined ? { detail: shown } : {}), terminal: { tool, ...(args ? { args } : {}), read: true } };
+	}
+	return { id, what: cls.what, title: tool, ...(shown !== undefined ? { detail: shown } : {}) };
 }
 
 /**
@@ -1801,7 +1931,7 @@ export function claudeApproval(id: string, request: Record<string, unknown>, roo
 			return { id, what: 'other', title: tool, detail: args };
 		}
 		return isBrowserServer(server)
-			? { id, what: ourServerWhat(name), title: name, detail: args }
+			? ourToolApproval(id, name, input, args)
 			: { id, what: 'mcp', server, title: name, detail: args };
 	}
 	if (claudeWebTools.has(tool)) {
@@ -1923,7 +2053,9 @@ export function codexApproval(id: string, method: string, params: Record<string,
 			// Our tool with no name to read is filed under Chat control: a title
 			// says nothing for sure, and the stricter category costs a card.
 			return isBrowserServer(server)
-				? { id, what: named ? ourServerWhat(named) : 'chat', title: name, detail: args }
+				? named
+					? ourToolApproval(id, named, isRecord(meta.tool_params) ? meta.tool_params : undefined, args)
+					: { id, what: 'chat', title: name, detail: args }
 				: { id, what: 'mcp', server, title: name, detail: args };
 		}
 		case 'item/tool/requestUserInput': {
@@ -2102,7 +2234,7 @@ function geminiMcpCall(call: Record<string, unknown>): { server?: string; tool: 
 	if (titled && name === `mcp_${geminiToolName(titled.server)}_${geminiToolName(titled.tool)}`) {
 		return titled;
 	}
-	const ours = /^mcp_(ai-browser(?:-.+-[0-9a-f]{6})?)_((?:browser|editor|chat)_[a-z_]+)$/.exec(name);
+	const ours = /^mcp_(ai-browser(?:-.+-[0-9a-f]{6})?)_((?:browser|editor|chat|terminal)_[a-z_]+)$/.exec(name);
 	if (ours) {
 		return { server: ours[1], tool: ours[2] };
 	}
@@ -2112,6 +2244,24 @@ function geminiMcpCall(call: Record<string, unknown>): { server?: string; tool: 
 		return { server: name.slice('mcp_'.length, -suffix.length), tool };
 	}
 	return { tool: name };
+}
+
+/**
+ * The arguments of a Gemini MCP call from its title, which is all it says of
+ * them: the JSON itself, or `<tool>(<JSON>)`. `undefined` when the title is
+ * neither — then nothing but the title can be shown, and an approval is matched
+ * by what was typed next rather than by what was shown (`terminalGrants.ts`).
+ * Not measured on a call with long arguments: whether Gemini cuts the title is
+ * unknown, so a cut one simply does not parse.
+ */
+function geminiToolArguments(title: string, tool: string): Record<string, unknown> | undefined {
+	const inner = title.startsWith(`${tool}(`) && title.endsWith(')') ? title.slice(tool.length + 1, -1) : title;
+	try {
+		const parsed: unknown = JSON.parse(inner);
+		return isRecord(parsed) ? parsed : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 /** The paths a Gemini tool call names: its `locations`, and the file of each diff. */
@@ -2393,7 +2543,7 @@ export function geminiApproval(id: string, params: Record<string, unknown>, root
 		return !mcp.server
 			? { id, what: 'other', title: oneLine(mcp.tool, 200), ...args }
 			: isBrowserServer(mcp.server)
-				? { id, what: ourServerWhat(mcp.tool), title: mcp.tool, ...args }
+				? ourToolApproval(id, mcp.tool, geminiToolArguments(title, mcp.tool), args.detail)
 				: { id, what: 'mcp', server: mcp.server, title: mcp.tool, ...args };
 	}
 	const paths = geminiPaths(call);

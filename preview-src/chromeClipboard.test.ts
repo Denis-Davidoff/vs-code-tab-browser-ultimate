@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { createSourceFile, forEachChild, isBinaryExpression, ScriptTarget, transpileModule } from 'typescript';
+import { createRemoteTerminalShim } from './remoteTerminal.ts';
 
 function fixture() {
   const source = readFileSync('chrome-extension/sidepanel.ts', 'utf8');
@@ -21,6 +22,8 @@ function fixture() {
   const post = runInNewContext(transpileModule(`const host = { ${method} }; host.postMessage;`, {
     compilerOptions: { target: ScriptTarget.ES2022 },
   }).outputText, { supportsFeature: () => true, latest, active: {}, generation: 1,
+    // The real terminal shim (#521): the lifted postMessage hands terminal messages to it first.
+    terminals: createRemoteTerminalShim({ viewerId: 'viewer-test', epoch: () => undefined, send: () => false, emit() {}, notice() {}, readAgentFrame: () => undefined, isTerminalReply: () => false, splitData: (d: string) => [d], inputFrameMax: 4096 }),
     addChromeAttachment: async (...args: any[]) => { attached.push(args); },
     emit: (message: any) => emitted.push(message),
   });

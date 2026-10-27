@@ -11,9 +11,10 @@ export const annotationSource = String.raw`(() => {
   +'.palette{position:absolute;left:3px;right:3px;top:30px;display:grid;grid-template-columns:repeat(5,1fr);gap:6px;padding:8px;background:white;border:1px solid #ccd5e3;border-radius:6px;box-shadow:0 3px 12px #0003;z-index:1}.palette button{width:25px;height:25px;justify-self:center;border:2px solid transparent;border-radius:50%;padding:0}.palette button[aria-pressed=true]{outline:2px solid #172033;outline-offset:2px}'
   +'.card textarea{display:block;width:100%;height:124px;min-height:60px;max-height:calc(100vh - 60px);resize:vertical;color:#172033;background:#fff;border:0;border-radius:4px;padding:4px;margin:0;line-height:1.4}.highlight{position:fixed;border:2px solid #2563eb;background:#2563eb18;pointer-events:none;border-radius:3px}[hidden]{display:none!important}';
  if(typeof CSSStyleSheet==='function'){const sheet=new CSSStyleSheet();sheet.replaceSync(style.textContent);shadow.adoptedStyleSheets=[sheet];}else{shadow.append(style);}
- function button(text, action) { const b=document.createElement('button');b.type='button';b.textContent=text;b.addEventListener('click',e=>{e.stopPropagation();if(e.isTrusted)action();});return b; }
+ function button(text, action) { const b=document.createElement('button');b.type='button';b.textContent=text;b.addEventListener('click',e=>{e.stopPropagation();if(e.isTrusted){if(suppressedClick?.handle===b&&Date.now()<suppressedClick.until){suppressedClick=undefined;return;}action();}});return b; }
  function iconButton(label,d,action){const b=button('',action);b.title=label;b.setAttribute('aria-label',label);const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('width','15');svg.setAttribute('height','15');svg.setAttribute('fill','none');svg.setAttribute('stroke','currentColor');svg.setAttribute('stroke-width','1.7');svg.setAttribute('aria-hidden','true');const p=document.createElementNS('http://www.w3.org/2000/svg','path');p.setAttribute('d',d);svg.append(p);b.append(svg);return b;}
- let mode=false, url=location.href, records=[], targets=new Map(), nodes=new Map(), nextNumber=1;
+ let drag, suppressedClick;
+ let mode=false, pickMode='element', url=location.href, records=[], targets=new Map(), nodes=new Map(), nextNumber=1;
  const colors=[['#2563eb','Blue'],['#7c3aed','Purple'],['#be185d','Pink'],['#b91c1c','Red'],['#c2410c','Orange'],['#a16207','Amber'],['#15803d','Green'],['#0f766e','Teal'],['#0369a1','Cyan'],['#475569','Gray']];
  const highlight=document.createElement('div');highlight.className='highlight';highlight.hidden=true;shadow.append(highlight);
  function mount(){if(!host.isConnected && document.documentElement)document.documentElement.append(host);}
@@ -31,6 +32,45 @@ export const annotationSource = String.raw`(() => {
   const parts=[];for(let node=el;node&&node.nodeType===1;node=node.parentElement){let index=1;for(let sib=node.previousElementSibling;sib;sib=sib.previousElementSibling)if(sib.localName===node.localName)index++;parts.unshift(CSS.escape(node.localName)+':nth-of-type('+index+')');if(parts.length>=20)break;}
   const s=parts.join(' > ');return {selector:s.length<=4000?s:'',strong:false};
  }
+ function pointAt(x,y){
+  const display=host.style.display;host.style.display='none';
+  let elements;
+  try{elements=document.elementsFromPoint(x,y).filter(e=>e!==host).slice(0,12).map(e=>({...selector(e),tag:e.localName.slice(0,100),text:snippet(e),role:(e.getAttribute('role')||'').slice(0,80)}));}
+  finally{host.style.display=display;}
+  return {x:x+window.scrollX,y:y+window.scrollY,viewportX:x,viewportY:y,elements};
+ }
+ function draggable(handle,record){
+  handle.style.cursor='grab';handle.style.touchAction='none';handle.title='Drag to move annotation';
+  handle.addEventListener('pointerdown',event=>{
+   if(!event.isTrusted||event.button!==0||drag)return;
+   event.preventDefault();event.stopPropagation();
+   const node=nodes.get(record.id);
+   drag={record,handle,pointerId:event.pointerId,startX:event.clientX,startY:event.clientY,left:parseFloat(node.root.style.left),top:parseFloat(node.root.style.top),original:record.point,moved:false};
+   handle.setPointerCapture(event.pointerId);
+  });
+  handle.addEventListener('lostpointercapture',event=>{if(event.isTrusted&&drag?.handle===handle)endDrag(true);});
+ }
+ function dragMove(event){
+  if(!drag||!event.isTrusted||event.pointerId!==drag.pointerId)return;
+  if(location.href!==url){navigate();return;}
+  const dx=event.clientX-drag.startX,dy=event.clientY-drag.startY;
+  if(!drag.moved&&Math.hypot(dx,dy)<4)return;
+  event.preventDefault();event.stopImmediatePropagation();drag.moved=true;drag.handle.style.cursor='grabbing';
+  const x=Math.max(8,Math.min(drag.left+dx,innerWidth-37)),y=Math.max(8,Math.min(drag.top+dy,innerHeight-37));
+  drag.record.point={...drag.original,x:x+window.scrollX,y:y+window.scrollY,viewportX:x,viewportY:y};layout();
+ }
+ function endDrag(cancel=false){
+  if(!drag)return;
+  const current=drag;drag=undefined;current.handle.style.cursor='grab';
+  if(current.handle.hasPointerCapture(current.pointerId))current.handle.releasePointerCapture(current.pointerId);
+  if(current.moved){
+   suppressedClick={handle:current.handle,until:Date.now()+500};
+   if(cancel){current.record.point=current.original;}
+   else{const p=current.record.point;current.record.point=pointAt(p.viewportX,p.viewportY);current.record.element=current.record.point.elements[0]||{selector:'',strong:false,tag:'page',text:'',role:''};targets.delete(current.record.id);send('change');}
+   layout();
+  }
+ }
+ function dragEnd(event){if(drag&&event.isTrusted&&event.pointerId===drag.pointerId){event.preventDefault();endDrag(event.type==='pointercancel');}}
  function resolve(record){
   const known=targets.get(record.id);if(known&&known.isConnected)return known;
   if(!record.element.selector)return undefined;
@@ -41,6 +81,7 @@ export const annotationSource = String.raw`(() => {
  function setMode(value){mode=value;highlight.hidden=true;}
  function collapse(record){const node=nodes.get(record.id);if(node){node.open=false;node.card.hidden=true;node.badge.hidden=false;node.palette.hidden=true;}layout();}
  function render(){
+  endDrag(true);
   for(const node of nodes.values())node.root.remove();nodes.clear();
   for(const record of records){
    const root=document.createElement('div');root.className='note';root.style.setProperty('--annotation-color',record.color||colors[0][0]);
@@ -50,11 +91,12 @@ export const annotationSource = String.raw`(() => {
    const label=button(String(record.number),()=>{palette.hidden=!palette.hidden;});label.className='number';label.title='Choose annotation color';label.setAttribute('aria-label','Choose color for annotation '+record.number);
    for(const [color,name] of colors){const swatch=button('',()=>{record.color=color;root.style.setProperty('--annotation-color',color);for(const b of palette.children)b.setAttribute('aria-pressed',b.title===name?'true':'false');palette.hidden=true;send('change');label.focus();});swatch.title=name;swatch.style.background=color;swatch.setAttribute('aria-label',name);swatch.setAttribute('aria-pressed',(record.color||colors[0][0])===color?'true':'false');palette.append(swatch);}
    const head=document.createElement('div');head.className='head';
-   const tag=document.createElement('span');tag.className='tag';tag.textContent=record.element.tag;
+   const tag=document.createElement('span');tag.className='tag';tag.textContent=record.point?'Page point':record.element.tag;
    const copy=iconButton('Copy annotation (note, element and page)','M9 9h11v12H9z M5 16H3V3h12v2',()=>send('copy',record.id));
    const remove=iconButton('Delete annotation','M3 6h18 M9 6V3h6v3 M6 6l1 15h10l1-15 M10 10v7 M14 10v7',()=>send('requestDelete',record.id));
-   const addMore=iconButton('Add annotation marker','M12 5v14 M5 12h14',()=>{collapse(record);if(records.length<50){setMode(true);mount();}});
+   const addMore=iconButton('Add annotation marker','M12 5v14 M5 12h14',()=>{collapse(record);if(records.length<50){pickMode=record.point?'point':'element';setMode(true);mount();}});
    head.append(label,tag,copy,remove,addMore);
+   if(record.point){draggable(badge,record);draggable(tag,record);}
    const textarea=document.createElement('textarea');textarea.maxLength=2000;textarea.placeholder='Describe the change or leave a comment…';textarea.value=record.text;textarea.setAttribute('aria-label','Annotation '+record.number+' text');
    textarea.addEventListener('focus',()=>{palette.hidden=true;});
    textarea.addEventListener('input',e=>{e.stopPropagation();if(!e.isTrusted)return;record.text=textarea.value.slice(0,2000);badge.title='Annotation '+record.number+': '+record.text;send('change');});
@@ -69,10 +111,10 @@ export const annotationSource = String.raw`(() => {
   highlight.hidden=highlight.hidden||!mode;
   const occupied=[];let lost=0;
   for(const record of records){const node=nodes.get(record.id);if(!node)continue;
-   const el=resolve(record);const rect=el?.getBoundingClientRect();const visible=!!rect&&rect.width>0&&rect.height>0;
-   node.tag.title=(!el?'Element not found — ':'')+record.element.selector;
-   node.badge.title=(!el?'Element not found — ':'')+'Annotation '+record.number+': '+record.text;
-   node.root.classList.toggle('missing',!el);
+   const el=record.point?undefined:resolve(record);const rect=record.point?{right:record.point.x-window.scrollX+15,top:record.point.y-window.scrollY+12,width:1,height:1}:el?.getBoundingClientRect();const visible=!!rect&&rect.width>0&&rect.height>0;
+   node.tag.title=(!el&&!record.point?'Element not found — ':'')+record.element.selector;
+   node.badge.title=(!el&&!record.point?'Element not found — ':'')+'Annotation '+record.number+': '+record.text;
+   node.root.classList.toggle('missing',!el&&!record.point);
    const width=node.open?Math.min(260,innerWidth-16):29,height=node.open?node.card.offsetHeight||160:29;
    let left=visible?rect.right-15:innerWidth-width-12;let top=visible?rect.top-12:60+(lost++)*34;
    left=Math.max(8,Math.min(left,innerWidth-width-8));top=Math.max(8,Math.min(top,innerHeight-height-8));
@@ -80,29 +122,39 @@ export const annotationSource = String.raw`(() => {
    node.root.style.left=left+'px';node.root.style.top=top+'px';
   }
  }
- function move(event){if(!mode||inside(event)||!event.isTrusted)return;const el=event.target;if(!(el instanceof Element))return;const r=el.getBoundingClientRect();highlight.hidden=false;highlight.style.cssText='left:'+r.left+'px;top:'+r.top+'px;width:'+r.width+'px;height:'+r.height+'px';}
+ function move(event){if(!mode||inside(event)||!event.isTrusted)return;const el=event.target;if(!(el instanceof Element))return;const r=pickMode==='point'?{left:event.clientX-6,top:event.clientY-6,width:12,height:12}:el.getBoundingClientRect();highlight.hidden=false;highlight.style.cssText='left:'+r.left+'px;top:'+r.top+'px;width:'+r.width+'px;height:'+r.height+'px';}
  function pick(event){
   if(!mode||inside(event)||!event.isTrusted)return;
   if(location.href!==url){navigate();return;}
   event.preventDefault();event.stopImmediatePropagation();
+  place(event.target,event.clientX,event.clientY);
+ }
+ function place(el,x,y){
   if(records.length>=50){setMode(false);return;}
-  const el=event.target;if(!(el instanceof Element)||el.getRootNode()!==document)return;
+  if(!(el instanceof Element)||el.getRootNode()!==document)return;
   const locator=selector(el);const record={id:uuid(),number:nextNumber++,createdAt:Date.now(),text:'',color:colors[0][0],element:{...locator,tag:el.localName.slice(0,100),text:snippet(el),role:(el.getAttribute('role')||'').slice(0,80)}};
+  if(pickMode==='point'){record.point=pointAt(x,y);}
   records.push(record);targets.set(record.id,el);setMode(false);render();send('change');
   const node=nodes.get(record.id);node.open=true;node.badge.hidden=true;node.card.hidden=false;layout();node.textarea.focus();
  }
  function down(event){if(mode&&!inside(event)&&event.isTrusted){event.preventDefault();event.stopImmediatePropagation();}}
- function key(event){if(event.key==='Escape'&&!event.isComposing&&mode){event.preventDefault();event.stopPropagation();setMode(false);}}
- window.addEventListener('pointermove',move,true);window.addEventListener('pointerdown',down,true);window.addEventListener('click',pick,true);window.addEventListener('keydown',key,true);
- function navigate(){url=location.href;setMode(false);records=[];targets.clear();render();send('navigate');}
+ function key(event){if(event.key==='Escape'&&!event.isComposing&&drag){event.preventDefault();event.stopImmediatePropagation();endDrag(true);return;}if(event.key==='Escape'&&!event.isComposing&&mode){event.preventDefault();event.stopPropagation();setMode(false);}}
+ window.addEventListener('pointermove',dragMove,true);window.addEventListener('pointerup',dragEnd,true);window.addEventListener('pointercancel',dragEnd,true);window.addEventListener('pointermove',move,true);window.addEventListener('pointerdown',down,true);window.addEventListener('click',pick,true);window.addEventListener('keydown',key,true);
+ function navigate(){endDrag(true);url=location.href;setMode(false);records=[];targets.clear();render();send('navigate');}
  const timer=setInterval(()=>{
   if(location.href!==url){navigate();}
   mount();layout();
  },150);
  const api={
   hydrate(data){url=location.href;records=data.records;nextNumber=data.nextNumber;const ids=new Set(records.map(r=>r.id));for(const id of targets.keys())if(!ids.has(id))targets.delete(id);render();},
-  start(data){api.hydrate(data);setMode(true);mount();layout();},
-  collect(){return {url:location.href,records:records.map(r=>({...r,elementFound:!!resolve(r)}))};},
+  start(data){api.hydrate(data);pickMode=data.mode==='point'?'point':'element';setMode(true);mount();layout();},
+  pickAt(x,y){
+   if(!mode)return false;
+   if(location.href!==url){navigate();return true;}
+   const el=document.elementsFromPoint(x,y).find(e=>e!==host&&!host.contains(e));
+   place(el,x,y);return true;
+  },
+  collect(){return {url:location.href,records:records.map(r=>({...r,elementFound:!!r.point||!!resolve(r)}))};},
   add(sel,text,color,id){
    if(location.href!==url)navigate();
    if(records.length>=50)return {error:'This page already has 50 annotations. Remove a note before adding another.'};
@@ -113,7 +165,7 @@ export const annotationSource = String.raw`(() => {
    return {id:record.id,number:record.number,url};
   },
   remove(ids,expectedUrl){if(expectedUrl!==undefined&&location.href!==expectedUrl)throw new Error('Page changed before annotation removal.');records=records.filter(r=>!ids.includes(r.id));for(const id of ids)targets.delete(id);render();},
-  dispose(){clearInterval(timer);window.removeEventListener('pointermove',move,true);window.removeEventListener('pointerdown',down,true);window.removeEventListener('click',pick,true);window.removeEventListener('keydown',key,true);host.remove();delete globalThis.__aiBrowserAnnotations;}
+  dispose(){endDrag(true);clearInterval(timer);window.removeEventListener('pointermove',dragMove,true);window.removeEventListener('pointerup',dragEnd,true);window.removeEventListener('pointercancel',dragEnd,true);window.removeEventListener('pointermove',move,true);window.removeEventListener('pointerdown',down,true);window.removeEventListener('click',pick,true);window.removeEventListener('keydown',key,true);host.remove();delete globalThis.__aiBrowserAnnotations;}
  };
  globalThis.__aiBrowserAnnotations=api;mount();return api;
 })()`;

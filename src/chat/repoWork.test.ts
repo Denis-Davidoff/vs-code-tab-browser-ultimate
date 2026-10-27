@@ -44,3 +44,39 @@ for (const detached of [false, true]) {
 		}
 	});
 }
+
+test('push sends the branch checked out now, not the one the chat recorded', async () => {
+	const scratch = mkdtempSync(join(tmpdir(), 'repo-push-test-'));
+	const saved = { ...process.env };
+	try {
+		for (const name of ['repoWork', 'githubRepo']) {
+			const source = readFileSync(resolve('src/chat', `${name}.ts`), 'utf8');
+			writeFileSync(join(scratch, `${name}.js`), transpileModule(source, {
+				compilerOptions: { module: ModuleKind.CommonJS, target: ScriptTarget.ES2022 },
+			}).outputText);
+		}
+		const require = createRequire(join(scratch, 'fixture.cjs'));
+		const { pushCopy } = require('./repoWork.js') as typeof RepoWork;
+		Object.assign(process.env, { GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@example.invalid', GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@example.invalid' });
+		const remote = join(scratch, 'remote.git');
+		const copy = join(scratch, 'copy');
+		const git = (args: string[], cwd = copy) => execFileSync('git', args, { cwd, stdio: 'pipe' }).toString();
+		execFileSync('git', ['init', '--bare', '--initial-branch=main', remote]);
+		execFileSync('git', ['clone', remote, copy], { stdio: 'pipe' });
+		git(['checkout', '-b', 'main']);
+		git(['commit', '--allow-empty', '-m', 'Initial']);
+		git(['push', 'origin', 'main']);
+		git(['checkout', '-b', 'ai-browser/recorded']);
+		// An agent moves the copy to another branch, then changes a file.
+		git(['checkout', '-b', 'feature']);
+		writeFileSync(join(copy, 'work.txt'), 'new work\n');
+		assert.equal(await pushCopy('git', copy, 'main', 'Work'), 'feature');
+		assert.match(git(['log', '--format=%s', 'refs/heads/feature'], remote), /^Work$/m);
+		assert.equal(git(['branch', '--list', 'ai-browser/recorded'], remote).trim(), '');
+		git(['checkout', '--detach']);
+		await assert.rejects(pushCopy('git', copy, 'main', 'Work'), /detached/);
+	} finally {
+		process.env = saved;
+		rmSync(scratch, { recursive: true, force: true });
+	}
+});

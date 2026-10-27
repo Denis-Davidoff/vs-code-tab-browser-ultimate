@@ -2,10 +2,13 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import * as vscode from 'vscode';
 import { hostIsRemote } from '../setup/proposedApi';
 import { chrome } from '../browser/chromeBrowser';
-import { ChromeChatBridge, ChromeChatDelivery } from './chromeChatBridge';
+import { ChromeChatBridge, ChromeChatDelivery, type ChromeTerminalPort } from './chromeChatBridge';
+import { auditRemoteTerminal } from './exchangeChat';
 import { ChromeChatPairing } from './chromeChatPairing';
 import type { ChromeChatConnection } from './chromeChatProtocol';
-import { ChatViewProvider, chatViewId } from './chatView';
+import { ChatViewProvider, chatViewId, remoteTerminalSetting } from './chatView';
+
+const chromeTerminalConsentDetail = 'It can watch the terminals you mark "Allow remote access", open new shells or agent CLIs on this computer (shared with it from the start), and, when it takes control, type into them. Your own typing in VS Code always takes control back. Asked once for this connection.';
 
 /**
  * Resume grants: one per Chrome extension ID, kept as a hash in SecretStorage
@@ -57,6 +60,24 @@ function watchDriven(bridge: ChromeChatBridge): vscode.Disposable {
 	return new vscode.Disposable(() => clearInterval(timer));
 }
 
+/**
+ * Terminal tabs in Chrome: the website's port and gates (`aiBrowser.chat.remoteTerminal`, the shared
+ * flag), plus a consent modal asked once per bridge. Loopback only, so no encryption gate.
+ */
+function chromeTerminalPort(sourceId: string): ChromeTerminalPort {
+	return {
+		terminals: ChatViewProvider.exchangeTerminals(sourceId),
+		setting: remoteTerminalSetting,
+		async askConsent() {
+			const allow = 'Allow';
+			const answer = await vscode.window.showWarningMessage('Let the AI Browser Chrome side panel use terminal tabs on this computer?',
+				{ modal: true, detail: chromeTerminalConsentDetail }, allow);
+			return answer === allow;
+		},
+		audit: auditRemoteTerminal,
+	};
+}
+
 /** Pairing is explicit, local to one IDE window, and revoked by re-pairing or shutdown. */
 export function registerChromeChat(context: vscode.ExtensionContext): void {
 	const editorVersion = String(context.extension.packageJSON.version);
@@ -74,6 +95,7 @@ export function registerChromeChat(context: vscode.ExtensionContext): void {
 		const delivery = new ChromeChatDelivery();
 		deliveries.set(extensionId, delivery);
 		const bridge = new ChromeChatBridge(extensionId, (command, reply) => ChatViewProvider.commandChromeSource(sourceId, command.chatId, command.message, command.attachments, reply), editorVersion, delivery);
+		bridge.setTerminals(chromeTerminalPort(sourceId));
 		let attached: vscode.Disposable | undefined;
 		try {
 			const config = await bridge.start();
@@ -106,6 +128,7 @@ export function registerChromeChat(context: vscode.ExtensionContext): void {
 		const delivery = deliveries.get(extensionId) ?? new ChromeChatDelivery();
 		deliveries.set(extensionId, delivery);
 		const bridge = new ChromeChatBridge(extensionId, (command, reply) => ChatViewProvider.commandChromeSource(source, command.chatId, command.message, command.attachments, reply), editorVersion, delivery);
+		bridge.setTerminals(chromeTerminalPort(source));
 		bridge.pin(chatId);
 		let attached: vscode.Disposable | undefined;
 		try {
@@ -153,6 +176,7 @@ export function registerChromeChat(context: vscode.ExtensionContext): void {
 			const delivery = new ChromeChatDelivery();
 			deliveries.set(extensionId.trim(), delivery);
 			bridge = new ChromeChatBridge(extensionId.trim(), (command, reply) => ChatViewProvider.commandChromeSource(source.id, command.chatId, command.message, command.attachments, reply), editorVersion, delivery);
+			bridge.setTerminals(chromeTerminalPort(source.id));
 			const config = await bridge.start();
 			attached = ChatViewProvider.observeChromeSource(source.id, bridge);
 			await vscode.env.clipboard.writeText(JSON.stringify(config));

@@ -8,6 +8,8 @@ import { runInNewContext } from 'node:vm';
 import { ModuleKind, ScriptTarget, transpileModule } from 'typescript';
 import type { ChromeChatConnection } from './chromeChatProtocol';
 import type { ChatViewState } from './chatProtocol';
+import { remoteRefusal } from './core/commands.ts';
+import { remoteScope } from './core/remoteScope.ts';
 
 // Load the same CommonJS modules VS Code runs, without importing the VS Code API.
 const nodeRequire = createRequire(`${process.cwd()}/package.json`);
@@ -39,7 +41,7 @@ test('Chrome sends stay bound to the displayed chat, preserve editor attachments
 	const method = /public static async commandChromeSource\([\s\S]*?\n\t\}/.exec(source)![0].replace('public static async ', 'async function ');
 	const command = runInNewContext(transpileModule(`${method}\ncommandChromeSource;`, {
 		compilerOptions: { target: ScriptTarget.ES2022 },
-	}).outputText, { Error, chromeChatCommandFeature: load('chromeChatCompatibility').chromeChatCommandFeature, bindAttachmentReference: attachmentReferences.bindAttachmentReference });
+	}).outputText, { Error, remoteRefusal, remoteScope, chromeChatCommandFeature: load('chromeChatCompatibility').chromeChatCommandFeature, bindAttachmentReference: attachmentReferences.bindAttachmentReference });
 	const attachments = [{ label: 'unsent editor attachment' }];
 	const calls: any[] = [];
 	const tab: any = { id: 'tab-1', chat: { id: 'chat-1' }, pendingSends: [], attachments,
@@ -352,7 +354,7 @@ test('an external view failure cannot interrupt editor updates or other observer
 	surfaces.dispose();
 });
 
-test('a pinned surface keeps its conversation while the editor switches tabs, and follows it once it closes', () => {
+test('a pinned surface keeps its conversation while the editor switches tabs, and follows it once it closes', async () => {
 	const surfaces = new ChatStateSurfaces();
 	const tabs = [{ id: 'tab-1', chatId: 'chat-1', title: 'One' }, { id: 'tab-2', chatId: 'chat-2', title: 'Two' }];
 	let open = tabs, front = 'chat-1';
@@ -362,7 +364,9 @@ test('a pinned surface keeps its conversation while the editor switches tabs, an
 	};
 	const bridge = new ChromeChatBridge(extensionId, async () => {});
 	let changed = 0;
+	const config = await bridge.start();
 	surfaces.attach(bridge, stateFor, () => { changed++; });
+	await get(config);
 	assert.equal(bridge.chatId, 'chat-1');
 	assert.deepEqual([...surfaces.chatIds(front)], ['chat-1']);
 	(bridge as any)._chatId = 'chat-2'; (bridge as any)._refresh();
@@ -641,4 +645,178 @@ test('an authenticated but unavailable resume target returns 503 instead of revo
     }, 'POST', '/resume');
     assert.equal(response.status, 503);
   } finally { pairing.dispose(); }
+});
+
+
+test('Chrome presence expires after polling stops and returns on an unchanged snapshot', async () => {
+	const bridge = new ChromeChatBridge(extensionId);
+	const config = await bridge.start();
+	const surfaces = new ChatStateSurfaces();
+	let changes = 0;
+	const attachment = surfaces.attach(bridge, () => state(), () => { changes++; });
+	try {
+		assert.equal(surfaces.chatIds(state().chatId).size, 0);
+		assert.equal((await get(config, { Authorization: '' })).status, 401);
+		assert.equal(bridge.active, false);
+		const first = await get(config);
+		assert.equal(surfaces.chatIds(state().chatId).has(state().chatId), true);
+		await new Promise(resolve => setTimeout(resolve, 10_100));
+		assert.equal(bridge.active, false);
+		assert.equal(surfaces.chatIds(state().chatId).size, 0);
+		assert.equal((await get(config, { 'If-None-Match': first.headers.etag })).status, 304);
+		assert.equal(surfaces.chatIds(state().chatId).has(state().chatId), true);
+		assert.equal(changes, 4);
+	} finally { attachment.dispose(); bridge.close(); }
+});
+
+test('only Chrome bridges mark a conversation as open in Chrome', () => {
+	const surfaces = new ChatStateSurfaces();
+	const website = { kind: 'exchange' as const, active: true, chatId: 'chat-1', update() {}, close() {} };
+	const attachment = surfaces.attach(website, () => state());
+	try {
+		assert.equal(surfaces.chatIds('chat-1').has('chat-1'), true);
+		assert.equal(surfaces.chatIds('chat-1', 'chrome').size, 0);
+	} finally { attachment.dispose(); }
+});
+
+test('Chrome cannot configure server credentials or receive local server settings', () => {
+	const envelope = { id: 'request-1234', chatId: 'chat-1' };
+	assert.equal(readChromeChatCommand({ ...envelope, message: { type: 'connectExchange', url: 'https://server.example', pointId: 'point', key: 'secret' } }), undefined);
+	assert.equal(readChromeChatCommand({ ...envelope, message: { type: 'disconnectExchange' } }), undefined);
+	const snapshot = chromeChatSnapshot({ chatId: 'chat-1', entries: [], tabs: [], voice: {}, agents: [],
+		exchangeConnection: { url: 'https://private-server.example', pointId: 'private-point', hasKey: true, status: 'connected' },
+	});
+	assert.equal(snapshot.view.exchangeConnection, undefined);
+	assert.equal(JSON.stringify(snapshot).includes('private-server'), false);
+});
+
+test('a remote snapshot carries only classified fields, with the surface and its control map', () => {
+	const snapshot = chromeChatSnapshot({ chatId: 'chat-1', entries: [], tabs: [], voice: {}, agents: [],
+		dragToken: 'secret-drag', panel: { id: 'p' }, exchangeConnection: { status: 'connected' }, somethingNew: '/Users/me/secret' } as never);
+	assert.equal(snapshot.view.dragToken, undefined);
+	assert.equal(snapshot.view.panel, undefined);
+	assert.equal(snapshot.view.exchangeConnection, undefined);
+	assert.equal((snapshot.view as any).somethingNew, undefined, 'an unclassified field must not leave the editor');
+	assert.equal(snapshot.view.surface, 'chrome');
+	assert.deepEqual(snapshot.view.controls?.setApprovalMode?.s, 'off');
+	assert.equal(snapshot.view.controls?.voiceStart?.s, 'hidden');
+	assert.equal(snapshot.view.controls?.send, undefined);
+});
+
+test('an unchanged snapshot request is held until the state changes, then answered at once', async () => {
+	const bridge = new ChromeChatBridge(extensionId);
+	const config = await bridge.start();
+	try {
+		const view = state(); bridge.update(view);
+		const etag = (await get(config)).headers.etag!;
+		const started = Date.now();
+		const held = get(config, { 'If-None-Match': etag, 'X-AI-Browser-Wait': '1000' });
+		setTimeout(() => { (view.entries[0] as { text: string }).text = 'Changed'; bridge.update(view); }, 150);
+		const answer = await held;
+		assert.equal(answer.status, 200);
+		assert.equal(answer.headers['x-ai-browser-wait'], '1000');
+		assert.ok(Date.now() - started < 900, 'answered when the state changed, not at the timeout');
+		const idle = Date.now();
+		const timedOut = await get(config, { 'If-None-Match': answer.headers.etag, 'X-AI-Browser-Wait': '300' });
+		assert.equal(timedOut.status, 304);
+		assert.ok(Date.now() - idle >= 250);
+		assert.equal((await get(config, { 'If-None-Match': answer.headers.etag })).status, 304, 'without the header nothing is held');
+	} finally { bridge.close(); }
+});
+
+test('a panel that names the revision it shows gets a patch of the view, and a stranger the whole snapshot', async () => {
+	const { applyPatch } = load('core/sync');
+	const bridge = new ChromeChatBridge(extensionId);
+	const config = await bridge.start();
+	try {
+		const view = state();
+		(view as any).entries = Array.from({ length: 40 }, (_, i) => ({ kind: 'assistant', text: `answer ${i} `.repeat(20) }));
+		bridge.update(view);
+		const first = await get(config);
+		const epoch = first.headers['x-ai-browser-base'] as string;
+		assert.match(epoch, /^[0-9a-f]{16}$/);
+		const rev = Number(String(first.headers.etag).replace(/"/g, ''));
+		(view as any).entries[39] = { kind: 'assistant', text: 'streaming on' };
+		bridge.update(view);
+		const patched = JSON.parse((await get(config, { 'X-AI-Browser-Base': `${epoch}:${rev}` })).body);
+		assert.ok(patched.patch, 'a patch, not the whole snapshot');
+		assert.equal(patched.patch.entries.from, 39);
+		const result = applyPatch(JSON.parse(first.body).view, rev, patched.patch);
+		assert.equal(result.entries[39].text, 'streaming on');
+		assert.equal(patched.top.chatId, 'chat-1');
+		assert.ok(JSON.parse((await get(config, { 'X-AI-Browser-Base': `0000000000000000:${rev}` })).body).view, 'another epoch gets the whole snapshot');
+		assert.ok(JSON.parse((await get(config)).body).view, 'no header gets the whole snapshot');
+	} finally { bridge.close(); }
+});
+
+ test('Chrome may request a VS Code browser tab but cannot forward local Chrome opens',()=>{
+ const envelope={id:'request-browser-123',chatId:'chat'};
+ const command=readChromeChatCommand({...envelope,message:{type:'openBrowser',where:'vscode'}});
+ assert.equal(command?.message.type,'openBrowser');
+ assert.equal((command?.message as {where?:string})?.where,'vscode');
+ for(const where of [undefined,'chrome','invalid'])assert.equal(readChromeChatCommand({...envelope,message:{type:'openBrowser',where}}),undefined);
+ });
+
+test('Chrome browser requests create a native page for the displayed conversation',async()=>{
+ const source=readFileSync('src/chat/chatView.ts','utf8');
+ const method=/public static async commandChromeSource\([\s\S]*?\n\t\}/.exec(source)![0].replace('public static async ','async function ');
+ const calls:any[]=[];let granted=true;
+ const command=runInNewContext(transpileModule(`${method}\ncommandChromeSource;`,{compilerOptions:{target:ScriptTarget.ES2022}}).outputText,{
+  remoteRefusal,remoteScope,chromeChatCommandFeature:load('chromeChatCompatibility').chromeChatCommandFeature,
+  isBrowserApiGranted:()=>granted,tabSource:{async open(url:string,options:any){calls.push({url,...options});}},
+ });
+ const tab={chat:{id:'chat-1'}},view={_view:{},_tabs:[tab],_blocked:()=>undefined,_awaitOpenedPage:(target:any)=>calls.push(target),_postMessage(){},_state:()=>({})};
+ const receiver={_surfaces:new Map([['surface',view]])};
+ await command.call(receiver,'surface','chat-1',{type:'openBrowser',where:'vscode'});
+ assert.equal(calls[0],tab);assert.equal(calls[1].url,'about:blank');assert.equal(calls[1].where,'vscode');assert.equal(calls[1].preserveFocus,true);
+ granted=false;
+ await assert.rejects(()=>command.call(receiver,'surface','chat-1',{type:'openBrowser',where:'vscode'}),/native browser API/);
+ await assert.rejects(()=>command.call(receiver,'surface','chat-1',{type:'openBrowser',where:'chrome'}),/Chrome side panel/);
+ assert.equal(calls.length,2);
+});
+
+test('terminals in Chrome: disabled with the setting named, consent once, frames over /terminal', async () => {
+	let setting = false, asked = 0;
+	const sinks: any[] = [];
+	const target: any = {
+		id: 'term-1', remote: true, running: true, status: 'running', exitCode: undefined, size: { cols: 80, rows: 24 },
+		addConsumer(_key: string, sink: unknown) { sinks.push(sink); return { data: 'hello', seq: 5 }; },
+		removeConsumer() {}, creditConsumer() {}, outstanding: () => 0, remoteInput() {}, remoteResize() {}, onEditorInput: () => () => {},
+	};
+	const commands: any[] = [];
+	const bridge = new ChromeChatBridge(extensionId, async (command: any) => { commands.push(command.message.type); });
+	bridge.setTerminals({
+		terminals: { find: (id: string) => id === 'term-1' ? target : undefined, shared: () => [{ id: 'term-1', name: 'zsh', cwd: '/a/b', status: 'running', remote: true }],
+			support: () => ({ available: true, limit: 8, agents: [] }), blocked: () => !setting },
+		setting: () => setting, askConsent: async () => { asked++; return true; }, audit() {},
+	});
+	const config = await bridge.start();
+	bridge.update(state());
+	let snapshot = JSON.parse((await get(config)).body);
+	assert.match(snapshot.view.terminalSupport.reason, /aiBrowser\.chat\.remoteTerminal/);
+	assert.equal(snapshot.view.controls.newTerminal.s, 'off');
+	assert.deepEqual(snapshot.view.terminals, []);
+	const json = { 'Content-Type': 'application/json' };
+	const refused = await get(config, json, 'POST', '/command', JSON.stringify({ id: 'cmd-00000001', chatId: 'chat-1', message: { type: 'newTerminal' } }));
+	assert.equal(refused.status, 409); assert.match(JSON.parse(refused.body).error, /Remote Terminal/);
+	assert.equal(asked, 0); assert.deepEqual(commands, []);
+
+	setting = true; bridge.update(state());
+	snapshot = JSON.parse((await get(config)).body);
+	assert.equal(snapshot.view.terminalSupport.available, true);
+	assert.deepEqual(snapshot.view.terminals.map((t: any) => [t.id, t.cwd]), [['term-1', 'b']]);
+	assert.equal(typeof snapshot.terminalEpoch, 'string');
+	const ok = await get(config, json, 'POST', '/command', JSON.stringify({ id: 'cmd-00000002', chatId: 'chat-1', message: { type: 'newTerminal' } }));
+	assert.equal(ok.status, 200); assert.equal(asked, 1); assert.deepEqual(commands, ['newTerminal']);
+
+	const attach = { type: 'terminal.attach', t: 'term-1', cols: 80, rows: 24, e: snapshot.terminalEpoch, v: 'viewer-123', n: 1 };
+	const posted = await get(config, json, 'POST', '/terminal', JSON.stringify({ frames: [attach] }));
+	assert.equal(posted.status, 200); assert.equal(asked, 1, 'consent is asked once per bridge');
+	const frames = JSON.parse((await get(config, {}, 'GET', '/terminal?after=0')).body);
+	assert.ok(frames.cursor > 0);
+	assert.ok(frames.frames.some((f: any) => f.type === 'terminal.replay' && f.data === 'hello' && f.v === 'viewer-123'));
+	// Nothing new: held for the wait, then an empty answer at the same cursor.
+	const held = JSON.parse((await get(config, { 'X-AI-Browser-Wait': '50' }, 'GET', `/terminal?after=${frames.cursor}`)).body);
+	assert.deepEqual(held, { cursor: frames.cursor, frames: [] });
+	bridge.close();
 });
