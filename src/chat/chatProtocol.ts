@@ -602,6 +602,8 @@ export interface ChatSurface {
 	readonly id: string;
 	readonly label: string;
 	readonly description: string;
+	/** The side bar chat: where "Return to the main window" goes. */
+	readonly main?: true;
 }
 
 export interface ExchangeConnectionState {
@@ -938,6 +940,7 @@ export type ViewToHost =
 	| { readonly type: 'newChat'; readonly location?: 'here' | 'tab' | 'window' }
 	| { readonly type: 'newTab'; readonly location?: 'here' | 'tab' | 'window' }
 	| { readonly type: 'placeTab'; readonly id: string; readonly target: string; readonly after: boolean }
+	| { readonly type: 'placeTerminal'; readonly id: string; readonly target: string; readonly after: boolean }
 	| { readonly type: 'beginTabDrag'; readonly id: string; readonly draft: string }
 	| { readonly type: 'acceptTabDrop'; readonly source: string; readonly id: string; readonly token: string }
 	| { readonly type: 'moveTabTo'; readonly id: string; readonly target: string; readonly draft: string }
@@ -995,6 +998,8 @@ export type ViewToHost =
 	| { readonly type: 'setTerminalRemote'; readonly id: string; readonly remote: boolean }
 	| { readonly type: 'selectTerminal'; readonly id: string }
 	| { readonly type: 'closeTerminal'; readonly id: string }
+	| { readonly type: 'moveTerminalTo'; readonly id: string; readonly target: string }
+	| { readonly type: 'moveTerminalToNew'; readonly id: string; readonly location: 'tab' | 'window' }
 	| { readonly type: 'renameTerminal'; readonly id: string; readonly name: string }
 	/** A shell that exited, started again in the same folder, in the same tab. */
 	| { readonly type: 'restartTerminal'; readonly id: string }

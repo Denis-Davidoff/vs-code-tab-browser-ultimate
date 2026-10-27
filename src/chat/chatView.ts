@@ -51,7 +51,7 @@ import { TerminalRefusal, type TerminalAgentApi } from '../mcp/terminalTools';
 import { mintTerminalGrant, planKeys, typedTextProblem } from '../mcp/terminalInput';
 import { TerminalGrants } from '../mcp/terminalGrants';
 import { chooseTerminalCwd, clampTerminalLimit, nextTerminalName, profilePlatform, readTerminalSettings, terminalChatText, closesEmptyPanel, terminalName, terminalPasteLimit, sanitizePaste, terminalSettingKeys, userScopedSetting } from './terminalLogic';
-import { plainText, resolveShell, scrubEnv, terminalAvailability, TerminalHost, type ShellProfileSettings } from '../terminal/terminalHost';
+import { plainText, resolveShell, safeTailStart, scrubEnv, terminalAvailability, TerminalHost, type ShellProfileSettings } from '../terminal/terminalHost';
 import { JsonLineProcess } from './agentProcess';
 import { ChatTab, isHome, newChat, reopened, started, storedEntries, storedTextLimit, type Attachment, type SkillStep, type StoredChat, type TabHost } from './chatTab';
 import { chatTranscript, secondOpinionText, transcriptFileName, type OpinionContext } from './transcript';
@@ -229,6 +229,8 @@ const approvalModes: readonly ApprovalMode[] = ['auto', 'ask', 'deny'];
 const approvalServerLimit = 30;
 /** The chats open as tabs, by chat id, and the one in front; restored with the window. */
 const openTabsKey = 'aiBrowser.chat.openTabs';
+/** The most of a terminal's screen that is kept across a restart of the editor, in UTF-16 units. */
+const terminalHistoryUnits = 150_000;
 /**
  * At most this many tabs, `aiBrowser.chat.tabLimit`: 10 unless set, 30 at most.
  * Each Claude Code tab is a `claude` process of its own (a Codex tab is only a
@@ -719,7 +721,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private readonly _terminals = new TerminalSet(
 		() => terminalLimit(),
 		message => this._postTerminal(message),
-		() => this._post(),
+		() => { this._post(); this._scheduleTerminalSave(); },
 		() => ({ gate: new AgentTypingGate(), unread: new UnreadTracker() }),
 	);
 	private _terminalHostInstance: TerminalHost | undefined;
@@ -796,7 +798,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		private readonly _browserServer: () => BrowserServer | undefined = () => undefined,
 		private readonly _recording?: BrowserRecording,
 		private readonly _detachedChat?: StoredChat,
-		_transfer?: { tab: ChatTab; services: ChatServices },
+		_transfer?: { tab?: ChatTab; services: ChatServices },
 		private readonly _restoredPanel?: ChatPanelIdentity,
 	) {
 		// Freeze the owner for this surface: changing a working folder must not
@@ -1231,7 +1233,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			surfaceId: this._surfaceId,
 			dragToken: this._dragToken,
 			chatSurfaces: [...ChatViewProvider._surfaces.values()].filter(surface => (!!surface._view || !!surface._panelIdentity) && !surface._disposed).map(surface => ({
-				id: surface._surfaceId, label: surface._surfaceLabel(),
+				id: surface._surfaceId, label: surface._surfaceLabel(), ...(surface._panel || surface._panelIdentity ? {} : { main: true as const }),
 				description: `${surface._active.chat.title} · ${surface._tabs.length} chats · ${surface._active.chat.folder ?? surface._windowCwd()}`,
 			})),
 			sleep: this._sleep.state,
@@ -1449,6 +1451,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				if (!this._blocked() && !this._registry.detecting && !this._registry.agents.some(a => a.available || a.problem)) {
 					await this._registry.detect();
 				}
+				void this._restoreTerminals().catch(() => undefined);
 				return;
 			}
 			case 'refreshAgents':
@@ -1676,6 +1679,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			case 'newTab':
 				await this.newChat(message.location);
 				return;
+			case 'placeTerminal':
+				if (this._terminals.place(message.id, message.target, message.after)) { this._scheduleTerminalSave(); }
+				break;
 			case 'placeTab':
 				this._placeTab(message.id, message.target, message.after);
 				return;
@@ -1696,6 +1702,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				}
 				return;
 			}
+			case 'moveTerminalTo': {
+				const destination = ChatViewProvider._surfaces.get(message.target);
+				if (destination && !destination._view) { await destination._focusView(); }
+				if (destination && this._moveTerminalInto(message.id, destination)) { await destination._focusView(); }
+				return;
+			}
+			case 'moveTerminalToNew':
+				if (message.location === 'tab' || message.location === 'window') { await this._detachTerminal(message.id, message.location); }
+				return;
 			case 'moveTabToNew':
 				if (!this._panelIdentity && (message.location === 'tab' || message.location === 'window')) {
 					await this._detachTab(message.id, typeof message.draft === 'string' ? message.draft : '', message.location);
@@ -3705,7 +3720,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		if (chat.agent === 'codex') {
 			const codex = registry.backend?.('codex') as { release?(threadId: string): Promise<boolean> } | undefined;
 			if (codex?.release && !await codex.release(chat.ref)) {
-				void vscode.window.showInformationMessage(vscode.l10n.t('Another Codex conversation is still working. Wait for it to finish, then choose Continue in terminal again. This chat remains open.'));
+				void vscode.window.showInformationMessage(vscode.l10n.t('Another Codex conversation is still working. Wait for it to finish, then choose Continue in VS Code terminal again. This chat remains open.'));
 				return;
 			}
 			if (open && (open.tab.busy || open.tab.queuedCount || open.surface._runs.runningIn(id))) { return; }
@@ -3809,9 +3824,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		if (this._view && this._viewReady) { void this._view.webview.postMessage(message); }
 	}
 
-	/** The agents whose own CLI can start in a terminal tab: found, with the browser server injected as in "Continue in terminal". */
+	/**
+	 * The agents whose own CLI can start in a terminal tab: every agent the registry found with a binary, so a new
+	 * agent is offered with no change here. Claude Code and Codex get the browser server injected as in "Continue in
+	 * VS Code terminal"; Gemini reads servers from its settings files only (Connect Gemini CLI).
+	 */
 	private _terminalAgents(): AgentId[] {
-		return this._registry.agents.filter(a => (a.id === 'claude' || a.id === 'codex') && a.available && !!a.binary).map(a => a.id);
+		return this._registry.agents.filter(a => a.available && !!a.binary).map(a => a.id);
 	}
 
 	/** Whether a terminal can start here, and why not. */
@@ -3843,6 +3862,71 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		};
 	}
 
+	private get _terminalsStorageKey(): string { return `${this._tabsStorageKey}.terminals`; }
+	private _terminalsSaved: string | undefined;
+	private _terminalSaveTimer: ReturnType<typeof setTimeout> | undefined;
+	private _terminalsRestored = false;
+
+	/** Terminals survive a restart of the editor: their folder, name and screen are kept, the shell starts again there. */
+	private _saveTerminals(): void {
+		clearTimeout(this._terminalSaveTimer);
+		this._terminalSaveTimer = undefined;
+		if (this._terminalsRestoring || (!this._terminalsRestored && !this._terminals.size)) { return; }
+		const items = this._terminals.tabs.map(t => {
+			let screen = t.screenSnapshot();
+			if (screen.length > terminalHistoryUnits) { screen = screen.slice(safeTailStart(screen, screen.length - terminalHistoryUnits)); }
+			return { id: t.id, name: t.name, cwd: t.cwd, ...(t.agent ? { agent: t.agent } : {}), ...(t.remote ? { remote: true } : {}), screen };
+		});
+		const value = { items, front: this._terminals.front };
+		const json = JSON.stringify(value);
+		// While terminals live their screens keep changing: look again in a while.
+		if (items.length && !this._disposed) { this._scheduleTerminalSave(15_000); }
+		if (json === this._terminalsSaved) { return; }
+		this._terminalsSaved = json;
+		this._context.workspaceState.update(this._terminalsStorageKey, value).then(undefined, () => { /* a convenience */ });
+	}
+
+	private _scheduleTerminalSave(delay = 4000): void {
+		if (this._terminalSaveTimer || this._disposed) { return; }
+		this._terminalSaveTimer = setTimeout(() => { this._terminalSaveTimer = undefined; this._saveTerminals(); }, delay);
+		this._terminalSaveTimer.unref?.();
+	}
+	private _terminalsRestoring = false;
+
+	private async _restoreTerminals(): Promise<void> {
+		if (this._terminalsRestored || this._disposed) { return; }
+		const saved = this._context.workspaceState.get<{ items?: unknown; front?: unknown }>(this._terminalsStorageKey);
+		const items = Array.isArray(saved?.items) ? saved.items as Array<Record<string, unknown>> : [];
+		if (!items.length || this._terminals.size) { this._terminalsRestored = true; return; }
+		const support = this._terminalSupport();
+		if (!support.available) { return; }
+		this._terminalsRestored = true;
+		this._terminalsRestoring = true;
+		try {
+			for (const item of items.slice(0, support.limit)) {
+				if (this._disposed) { return; }
+				const id = typeof item.id === 'string' && item.id ? item.id : generateUuid();
+				const agent = typeof item.agent === 'string' && support.agents.includes(item.agent as AgentId) ? item.agent as AgentId : undefined;
+				const cwd = chooseTerminalCwd([typeof item.cwd === 'string' ? item.cwd : undefined, this._windowCwd(), os.homedir()], isDirectory);
+				if (!cwd) { continue; }
+				const name = terminalName(typeof item.name === 'string' ? item.name : '') || vscode.l10n.t("Terminal");
+				let history = typeof item.screen === 'string' ? item.screen : '';
+				if (history) {
+					// A full-screen program that was open is not: leave its screen, reset colours, then say what happened.
+					history += `\x1b[?1049l\x1b[?25h\x1b[0m\r\n\x1b[2m── restored after restart · new session in ${cwd} ──\x1b[0m\r\n`;
+				}
+				try {
+					await this._terminals.create(id, name, cwd, agent, this._terminalStarter(cwd, agent), { background: true, ...(item.remote === true && remoteTerminalSetting() ? { remote: true } : {}), ...(history ? { history } : {}) });
+				} catch { /* that terminal is skipped; the others still come back */ }
+			}
+			if (typeof saved?.front === 'string') { this._terminals.setFront(saved.front); }
+		} finally {
+			this._terminalsRestoring = false;
+		}
+		this._post();
+		this._saveTerminals();
+	}
+
 	/**
 	 * How one terminal's process is started — and started again by Restart: the
 	 * shell VS Code's own terminal would use, or an agent's CLI. The environment is
@@ -3865,6 +3949,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				const launch = await this._browserCliLaunch(agent, undefined);
 				args.push(...launch.args);
 				extra = { ...launch.env, PATH: geminiPath(binary) };
+				// A folder fetched from GitHub: Gemini must not load its settings, hooks or servers.
+				if (agent === 'gemini' && this._untrusted(cwd)) { extra.GEMINI_CLI_TRUST_WORKSPACE = 'false'; }
 				const config = launch.config;
 				if (config) { cleanup = () => fs.rm(config, { force: true }, () => undefined); }
 			} else {
@@ -6034,6 +6120,70 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}
 	}
 
+	/** A live terminal (process, screen, pins and website sharing kept) into another surface of this window. */
+	private _moveTerminalInto(id: string, destination: ChatViewProvider): boolean {
+		if (destination === this || destination._disposed || !destination._view || !this._terminals.find(id)) { return false; }
+		if (destination._terminals.atLimit) {
+			refuse(vscode.l10n.t("{0} terminals are open — close one to open another.", destination._terminals.size)); return false;
+		}
+		const terminal = this._terminals.release(id);
+		if (!terminal) { return false; }
+		destination._terminals.adopt(terminal);
+		const closeSource = closesEmptyPanel(this._tabs.length, this._terminals.size, !!this._panelIdentity);
+		destination._post();
+		destination._scheduleTerminalSave();
+		if (closeSource) { this._closeEmptyPanel(); } else { this._post(); this._scheduleTerminalSave(); }
+		ChatViewProvider._postAll();
+		return true;
+	}
+
+	/** A new chat tab or window that holds this terminal (and a fresh conversation beside it). */
+	private async _detachTerminal(id: string, location: 'tab' | 'window'): Promise<void> {
+		const terminal = this._terminals.find(id);
+		if (!terminal) { return; }
+		let panel: vscode.WebviewPanel | undefined;
+		let detached: ChatViewProvider | undefined;
+		try {
+			const command = 'workbench.action.moveEditorToNewWindow';
+			if (location === 'window' && !(await vscode.commands.getCommands(true)).includes(command)) {
+				refuse(vscode.l10n.t("This version of VS Code does not support separate chat windows."));
+				return;
+			}
+			if (this._disposed || !this._terminals.find(id)) { return; }
+			panel = vscode.window.createWebviewPanel('aiBrowser.chat.window', terminal.name, vscode.ViewColumn.Active, { retainContextWhenHidden: true });
+			if (location === 'window') {
+				panel.reveal();
+				await vscode.commands.executeCommand(command);
+				if (this._disposed || !this._terminals.find(id)) { panel.dispose(); return; }
+			}
+			const chat = newChat(this._remembered.agent ?? 'claude');
+			const folder = this._active.chat.folder;
+			if (folder) { chat.folder = folder; }
+			detached = new ChatViewProvider(this._context, this._browser, this._browserServer, undefined, chat, { services: this._services });
+			const opened = panel;
+			const destination = detached;
+			destination._panel = opened;
+			const owner = this._lifetimeOwner ?? this;
+			destination._lifetimeOwner = owner;
+			owner._windows.add(opened);
+			opened.onDidDispose(() => { owner._windows.delete(opened); destination.dispose(); });
+			destination._bindView({ webview: opened.webview, get visible() { return opened.visible; },
+				onDidDispose: opened.onDidDispose, onDidChangeVisibility: listener => opened.onDidChangeViewState(() => listener()) });
+			const taken = this._terminals.release(id);
+			if (!taken) { opened.dispose(); return; }
+			destination._terminals.adopt(taken);
+			destination._post();
+			destination._scheduleTerminalSave();
+			if (closesEmptyPanel(this._tabs.length, this._terminals.size, !!this._panelIdentity)) { this._closeEmptyPanel(); }
+			else { this._post(); this._scheduleTerminalSave(); }
+			ChatViewProvider._postAll();
+		} catch (error) {
+			panel?.dispose();
+			detached?.dispose();
+			this._fail(error);
+		}
+	}
+
 	private _canMoveTab(tab: ChatTab): boolean {
 		// A launch still awaiting detection or a queue drain must settle in its source.
 		if (this._registry.detecting || (this._draining.has(tab) && this._draining.get(tab) === undefined)
@@ -6763,7 +6913,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}
 		// The pins on this surface's terminals go with them; a conversation on another surface hears of it.
 		for (const terminal of this._terminals.tabs) { this._terminalGone(terminal.id, terminal.name, true); }
-		// A shell does not outlive the window or panel it was opened in.
+		// A shell does not outlive the window or panel it was opened in; its screen is kept, so the next start brings it back.
+		this._saveTerminals();
+		clearTimeout(this._terminalSaveTimer);
+		this._terminalSaveTimer = undefined;
 		this._terminals.dispose();
 		this._terminalHostInstance?.dispose();
 		this._terminalHostInstance = undefined;

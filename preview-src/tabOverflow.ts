@@ -9,6 +9,11 @@ export interface TabFitInput {
 	readonly widths: readonly number[];
 	/** Index of the tab in front, or -1. */
 	readonly front: number;
+	/**
+	 * Index of a tab kept shown beside the front one (the one last chosen from the dropdown), or -1 / absent.
+	 * It is dropped when there is no room for it next to the front tab, never at the front tab's expense.
+	 */
+	readonly pinned?: number;
 	/** Room in the row for tabs, the overflow button and the gaps (add buttons already taken off). */
 	readonly available: number;
 	/** Space between two items of the row. */
@@ -36,6 +41,11 @@ export function fitTabs(input: TabFitInput): TabFit {
 	if (front >= 0 && front < widths.length) {
 		shown.add(front);
 		budget -= widths[front];
+	}
+	const pinned = input.pinned ?? -1;
+	if (pinned >= 0 && pinned < widths.length && !shown.has(pinned) && widths[pinned] + gap <= budget + 0.5) {
+		shown.add(pinned);
+		budget -= widths[pinned] + gap;
 	}
 	for (const i of all) {
 		if (shown.has(i)) { continue; }

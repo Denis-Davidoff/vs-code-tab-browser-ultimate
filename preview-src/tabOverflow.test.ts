@@ -25,3 +25,12 @@ test('no front tab', () => {
 	assert.deepEqual(fitTabs({ widths: [60, 60, 60], front: -1, available: 150, gap: 0, overflowWidth: 30 }), { visible: [0, 1], hidden: [2] });
 	assert.deepEqual(fitTabs({ widths: [], front: -1, available: 10, gap: 0, overflowWidth: 30 }), { visible: [], hidden: [] });
 });
+
+test('a pinned tab stays shown beside the front one', () => {
+	const fit = fitTabs({ widths: [60, 60, 60, 60, 60, 130], front: 0, pinned: 4, available: 300, gap: 2, overflowWidth: 40 });
+	assert.ok(fit.visible.includes(0) && fit.visible.includes(4));
+});
+test('a pinned tab without room is dropped, never the front one', () => {
+	const fit = fitTabs({ widths: [200, 60], front: 0, pinned: 1, available: 260, gap: 2, overflowWidth: 40 });
+	assert.deepEqual(fit, { visible: [0], hidden: [1] });
+});

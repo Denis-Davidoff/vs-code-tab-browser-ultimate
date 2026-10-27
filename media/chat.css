@@ -2704,7 +2704,8 @@ button {
  * the tab chosen move together.
  */
 .tab {
-	flex: 0 1 auto;
+	/* Width never follows the content: every tab is the same, the one in front 35% wider (--tab-ratio). */
+	flex: 1 1 0;
 	min-width: 56px;
 	max-width: 140px;
 	display: flex;
@@ -2716,7 +2717,7 @@ button {
 }
 
 .tab.resizing {
-	transition: width .25s linear, color .15s ease;
+	transition: width .14s linear, color .15s ease;
 }
 
 .tab:hover {
@@ -2724,8 +2725,9 @@ button {
 }
 
 .tab.active {
-	min-width: 130px;
-	max-width: 260px;
+	flex-grow: 1.35;
+	min-width: 76px;
+	max-width: 189px;
 	color: var(--fg);
 	/* A dark grey fill besides the underline; a mix of the text colour, so every theme gets one. */
 	background: color-mix(in srgb, var(--vscode-foreground) 13%, transparent);
@@ -2869,7 +2871,10 @@ button {
 
 /* The narrow strip's overflow (`layoutTabOverflow`): hidden tabs are listed behind "+N". */
 .tab.overflowed { display: none; }
-.tab-row.measuring .tab { flex-shrink: 0; }
+.tab-row.measuring .tab { flex: 0 0 140px; }
+.tab-row.measuring .tab.active { flex-basis: 189px; }
+/* Tabs overflow: the ones shown share the width left of "+", the terminal button and the dropdown. */
+.tab-row.stretched .tab:not(.overflowed) { max-width: none; }
 .tab-overflow-button {
 	flex: none;
 	display: inline-flex;
@@ -2885,19 +2890,24 @@ button {
 .tab-overflow-button.active { color: var(--fg); }
 .popup.tab-overflow { min-width: 200px; max-width: 320px; overflow-y: auto; }
 .tab-overflow-item { position: relative; display: flex; align-items: center; }
-.tab-overflow-item .tab-overflow-row { flex: 1; min-width: 0; padding-right: 30px; }
+.tab-overflow-item .tab-overflow-row { flex: 1; min-width: 0; padding-right: 56px; }
 .tab-overflow-row .menu-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tab-overflow-row .tab-agents { flex: none; margin-left: 6px; }
 .tab-overflow-mark { display: inline-flex; align-items: center; justify-content: center; }
-.tab-overflow-more {
+.tab-overflow-more,
+.tab-overflow-close {
 	position: absolute;
 	right: 4px;
 	opacity: 0;
 }
+.tab-overflow-close { right: 30px; }
+.tab-overflow-item:hover .tab-overflow-close,
+.tab-overflow-item:focus-within .tab-overflow-close { opacity: 1; }
+.tab-overflow-close:disabled { display: none; }
 .tab-overflow-item:hover .tab-overflow-more,
 .tab-overflow-item:focus-within .tab-overflow-more,
 .tab-overflow-more:focus-visible { opacity: 1; }
-@media (hover: none) { .tab-overflow-more { opacity: 1; } }
+@media (hover: none) { .tab-overflow-more, .tab-overflow-close { opacity: 1; } }
 
 
 .tab-confirm {
@@ -6030,12 +6040,13 @@ textarea.form-input {
 
 .terminal-toolbar {
 	flex: none;
-	display: flex;
+	display: grid;
+	grid-template-columns: 1fr auto 1fr;
 	align-items: center;
 	gap: var(--ctl-gap-sm);
 	min-height: var(--ctl-h-lg);
 	padding: 4px 8px;
-	border-bottom: 1px solid var(--border);
+	border-top: 1px solid var(--border);
 	background: var(--terminal-background);
 	color: var(--fg-2);
 	font-size: var(--ctl-font);
@@ -6047,21 +6058,22 @@ textarea.form-input {
 	display: none !important;
 }
 
-.terminal-toolbar-name {
-	flex: 0 1 auto;
-	min-width: 0;
-	overflow: hidden;
-	color: var(--fg);
-	font-weight: 600;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
 .terminal-toolbar-status {
 	flex: none;
 	color: var(--fg-3);
 	white-space: nowrap;
 }
+
+.terminal-toolbar-group {
+	display: flex;
+	align-items: center;
+	gap: var(--ctl-gap-sm);
+	min-width: 0;
+}
+
+.terminal-toolbar-group.middle { justify-content: center; }
+.terminal-toolbar-group.end { justify-content: flex-end; }
+.terminal-tool.icon-only .terminal-tool-label { display: none; }
 
 .terminal-toolbar-spacer {
 	flex: 1 1 0;
@@ -6154,12 +6166,6 @@ textarea.form-input {
 	}
 	.terminal-agent-mark {
 		padding: 0 6px;
-	}
-}
-
-@media (max-height: 460px) {
-	.terminal-toolbar-name {
-		display: none;
 	}
 }
 
@@ -6382,3 +6388,11 @@ body.vv-locked {
 @media (prefers-reduced-motion: reduce) {
 	.terminal-agent-mark.typing .terminal-agent-dot { animation: none; }
 }
+
+.menu-separator {
+	height: 1px;
+	margin: 4px 6px;
+	background: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+}
+
+.tab-overflow-count { color: var(--vscode-charts-yellow, #cca700); font-weight: 600; }

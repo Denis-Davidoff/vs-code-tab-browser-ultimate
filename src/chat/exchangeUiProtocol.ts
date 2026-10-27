@@ -29,7 +29,7 @@ export function readExchangeUiCommand(value: unknown): ExchangeUiCommand | undef
 			if (!id()) { return undefined; } message = { type: m.type, id: m.id }; break;
 		// Terminal lifecycle; the host checks again (`aiBrowser.chat.remoteTerminal`, encryption, consent, shared).
 		case 'newTerminal':
-			if (Object.keys(m).some(k => !['type','agent'].includes(k)) || (m.agent !== undefined && m.agent !== 'claude' && m.agent !== 'codex')) { return undefined; }
+			if (Object.keys(m).some(k => !['type','agent'].includes(k)) || (m.agent !== undefined && m.agent !== 'claude' && m.agent !== 'codex' && m.agent !== 'gemini')) { return undefined; }
 			message = { type: 'newTerminal', ...(m.agent ? { agent: m.agent } : {}) }; break;
 		case 'closeTerminal': case 'restartTerminal':
 			if (!id() || Object.keys(m).some(k => !['type','id'].includes(k))) { return undefined; } message = { type: m.type, id: m.id }; break;

@@ -28,7 +28,7 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 - $(location) **Page markers** — pin notes to page elements and send them to the agent as one prompt.
 - $(settings-gear) **Chat Settings** — use the gear at the top to edit prompts for commit messages, branch names and chat titles, or clean up temporary files.
 
-## 0.10.0 — 2026-10-27
+## 0.9.1 — 2026-10-27
 - **Terminal tabs in the chat**: open a real shell, or Claude Code or Codex in their own CLI, as a tab beside your conversations — from the tab strip's **+**, **New Chat** or **AI Browser: New Terminal**. It uses your own default shell profile, copy and paste work as in a terminal, and links open in the browser. macOS and Windows; Linux is not supported yet.
 - **Agents that use your terminal**: **Ask agent** or **+ → Terminal…** pins a terminal to a conversation. Its agent can read the screen and wait for a command to finish; typing into the terminal asks you first, **Watch only** lets it read and never type, and **Pause agent input** stops it at once. Your own typing always comes first.
 - **Insert into a terminal**: the terminal toolbar's **+** puts a page address, an element, a screenshot, a file, the editor's selection or page markers into an agent CLI's prompt, without pressing Enter.
@@ -69,7 +69,7 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 ## 0.8.7 — 2026-10-21
 - **Chrome without native Browser API setup**: use Google Chrome and agents immediately. The chat’s **+** and browser menus also offer native tabs where available, with an action to enable the API and instructions to quit and reopen the editor.
 - **Chrome tab fixes**: opening Chrome attaches the requested new tab instead of an existing page. Sharing, screenshots, element picks, annotations and video recording now handle Chrome tabs without relying on native browser events.
-- **Codex terminal handover waits for release**: if another Codex conversation is still working, the chat stays open. Retry **Continue in terminal** after that work finishes.
+- **Codex terminal handover waits for release**: if another Codex conversation is still working, the chat stays open. Retry **Continue in VS Code terminal** after that work finishes.
 - **Clearer README**: separate native browser and Chrome columns, updated installation options, and a shorter video recording guide.
 
 ## 0.8.6 — 2026-10-21

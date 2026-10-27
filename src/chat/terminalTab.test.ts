@@ -341,4 +341,57 @@ suite('TerminalSet', () => {
 		r.tab.input(big + 'x');
 		assert.deepStrictEqual(r.sessions[0].written.map(w => w.length), [terminalInputLimit]);
 	});
+	test('a restored history is shown above the new process\'s screen, and is part of what is saved', async () => {
+		const posts: HostToView[] = [];
+		const starter: TerminalStarter = async () => ({ session: new FakeSession() });
+		const tab = new TerminalTab('t', 'T', '/w', undefined, starter, m => posts.push(m), () => undefined, { history: 'old\r\n' });
+		await tab.start();
+		tab.attach(80, 24);
+		const replay = posts.find(m => m.type === 'terminalReplay') as Extract<HostToView, { type: 'terminalReplay' }>;
+		assert.ok(replay.data.startsWith('old\r\n'));
+		assert.ok(tab.screenSnapshot().startsWith('old\r\n'));
+	});
+});
+
+suite('TerminalSet moves', () => {
+	test('place reorders terminals next to a target and ignores unknown ids', async () => {
+		let changes = 0;
+		const set = new TerminalSet(() => 8, () => undefined, () => { changes++; });
+		const starter: TerminalStarter = async () => ({ session: new FakeSession(), cleanup: () => undefined } satisfies StartedTerminal);
+		for (const id of ['a', 'b', 'c']) { await set.create(id, id, '/tmp', undefined, starter); }
+		assert.strictEqual(set.place('c', 'a', false), true);
+		assert.deepStrictEqual(set.tabs.map(t => t.id), ['c', 'a', 'b']);
+		assert.strictEqual(set.place('c', 'b', true), true);
+		assert.deepStrictEqual(set.tabs.map(t => t.id), ['a', 'b', 'c']);
+		const before = changes;
+		assert.strictEqual(set.place('a', 'a', true), false);
+		assert.strictEqual(set.place('x', 'a', true), false);
+		assert.strictEqual(changes, before);
+	});
+
+	test('a terminal released from one set and adopted by another keeps its process and posts to the new owner', async () => {
+		const first: HostToView[] = [];
+		const second: HostToView[] = [];
+		const a = new TerminalSet(() => 8, m => first.push(m), () => undefined);
+		const b = new TerminalSet(() => 8, m => second.push(m), () => undefined);
+		const sessions: FakeSession[] = [];
+		const handlers: TerminalHandlers[] = [];
+		const starter: TerminalStarter = async h => {
+			const session = new FakeSession(); sessions.push(session); handlers.push(h);
+			return { session, cleanup: () => undefined } satisfies StartedTerminal;
+		};
+		const tab = await a.create('t1', 'Terminal', '/tmp', undefined, starter);
+		tab.attach(80, 24);
+		assert.strictEqual(a.release('t1'), tab);
+		assert.strictEqual(a.size, 0);
+		assert.strictEqual(a.front, undefined);
+		b.adopt(tab);
+		assert.strictEqual(b.front, 't1');
+		assert.ok(!sessions[0].disposed);
+		first.length = 0;
+		tab.attach(80, 24);
+		handlers[0].onData('x', 1);
+		assert.deepStrictEqual(first, []);
+		assert.strictEqual(second.at(-1)?.type, 'terminalData');
+	});
 });

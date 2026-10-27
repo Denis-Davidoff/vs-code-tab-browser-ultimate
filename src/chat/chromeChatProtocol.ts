@@ -197,7 +197,7 @@ export function readChromeChatCommand(value: unknown): ChromeChatCommand | undef
 		case 'stop': message = { type: 'stop' }; break;
 		// Terminal lifecycle: the bridge asks for consent first, the host checks the setting and the share.
 		case 'newTerminal':
-			if (Object.keys(m).some(k => !['type', 'agent'].includes(k)) || (m.agent !== undefined && m.agent !== 'claude' && m.agent !== 'codex')) { return undefined; }
+			if (Object.keys(m).some(k => !['type', 'agent'].includes(k)) || (m.agent !== undefined && m.agent !== 'claude' && m.agent !== 'codex' && m.agent !== 'gemini')) { return undefined; }
 			message = { type: 'newTerminal', ...(m.agent ? { agent: m.agent } : {}) }; break;
 		case 'closeTerminal': case 'restartTerminal':
 			if (typeof m.id !== 'string' || !m.id || m.id.length > 100 || Object.keys(m).some(k => !['type', 'id'].includes(k))) { return undefined; }

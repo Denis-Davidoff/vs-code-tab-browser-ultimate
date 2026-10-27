@@ -1180,6 +1180,7 @@ function syncTerminals(s: ChatViewState): void {
 					// The toolbar's "Ask agent" and a URL printed in a terminal: the menus and the link rule live here.
 					askAgent: askAgentMenu,
 					insertMenu: terminalInsertMenu,
+					openBrowser: anchor => openMenu(anchor, browserMenuItems(), 'Open a new tab in'),
 					openLink: (url, external) => post({ type: 'openLink', url, external }),
 					// What the surface allows (the control table), and which surface this is.
 					gate: type => gate(type).s === 'on',
@@ -1637,6 +1638,25 @@ wideChat.addEventListener('change', () => {
 updateChatDrawer();
 const tabAdd = button([icon('add'), el('span', { class: 'tab-add-label', text: 'New chat' })], { class: 'ghost round tab-add', title: 'New chat' });
 /** "New terminal" and the agents whose own CLI can run in one: rows for a menu, disabled with the reason where it is not on offer. */
+/** Where a terminal can go: a new editor tab or window, the main (side bar) chat when it is elsewhere, another open panel. */
+function terminalMoveRows(id: string): MenuItem[] {
+	const others = (state?.chatSurfaces ?? []).filter(surface => surface.id !== state?.surfaceId);
+	const main = others.find(surface => surface.main);
+	const rows: MenuItem[] = [];
+	if (state?.panel && main) {
+		rows.push({ icon: 'arrow-left', label: 'Return to main window', description: 'Back to the chat in the side bar', command: 'moveTerminalTo', run: () => post({ type: 'moveTerminalTo', id, target: main.id }) });
+	}
+	rows.push(
+		{ icon: 'link-external', label: 'Move to a new window', command: 'moveTerminalToNew', run: () => post({ type: 'moveTerminalToNew', id, location: 'window' }) },
+		{ icon: 'files', label: 'Move to a new tab', command: 'moveTerminalToNew', run: () => post({ type: 'moveTerminalToNew', id, location: 'tab' }) },
+	);
+	for (const surface of others) {
+		if (surface.main && state?.panel) { continue; }
+		rows.push({ icon: 'arrow-right', label: surface.label, description: surface.description, command: 'moveTerminalTo', run: () => post({ type: 'moveTerminalTo', id, target: surface.id }) });
+	}
+	return rows;
+}
+
 function terminalMenuItems(): MenuItem[] {
 	if (!__TERMINAL__) { return []; }
 	const offer = state ? terminalAddition(state.terminalSupport, state.terminals?.length ?? 0, state.agents) : { kind: 'hidden' } as const;
@@ -1647,7 +1667,7 @@ function terminalMenuItems(): MenuItem[] {
 	return [
 		{ icon: 'terminal', label: 'New terminal', description: 'A shell in the folder of this chat', command: 'newTerminal', run: () => post({ type: 'newTerminal' }) },
 		...offer.agents.map(agent => ({
-			icon: 'terminal', label: `${agent.name} in a terminal`, description: `${agent.name}'s own CLI, with the browser tools`, command: 'newTerminal',
+			icon: 'terminal', label: `${agent.name} in a terminal`, description: agent.id === 'gemini' ? `${agent.name}'s own CLI (browser tools: Connect Gemini CLI)` : `${agent.name}'s own CLI, with the browser tools`, command: 'newTerminal',
 			run: () => post({ type: 'newTerminal', agent: agent.id }),
 		})),
 	];
@@ -1819,6 +1839,7 @@ function layoutTabOverflow(force = false): void {
 	if (wideChat.matches || !s || !nodes.length) {
 		for (const n of nodes) { n.root.classList.remove('overflowed'); }
 		overflowButton.hidden = true;
+		tabRow.classList.remove('stretched');
 		overflowIds = [];
 		overflowShape = '';
 		if (tabOverflowPanel.classList.contains('open')) { closePopups(); }
@@ -1827,12 +1848,14 @@ function layoutTabOverflow(force = false): void {
 	// A switch animation still holding inline widths would be measured mid-transition.
 	for (const n of nodes) { tabResizeEnds.get(n.root)?.(); }
 	const frontId = frontStripId(s);
-	const shape = JSON.stringify([tabRow.clientWidth, frontId, nodes.map(n => [n.tab.id, n.shown]), editingTab]);
+	if (stickyTabId && !nodes.some(n => n.tab.id === stickyTabId)) { stickyTabId = undefined; }
+	const shape = JSON.stringify([tabRow.clientWidth, frontId, stickyTabId, nodes.map(n => [n.tab.id, n.shown]), editingTab]);
 	if (!force && shape === overflowShape) { return; }
 	overflowShape = shape;
 	// Measured with everything shown and nothing shrinking, in one frame: nothing is painted in between.
 	for (const n of nodes) { n.root.classList.remove('overflowed'); }
 	overflowButton.hidden = false;
+	tabRow.classList.remove('stretched');
 	tabRow.classList.add('measuring');
 	const widths = nodes.map(n => n.root.getBoundingClientRect().width);
 	const rowStyle = getComputedStyle(tabRow);
@@ -1842,12 +1865,14 @@ function layoutTabOverflow(force = false): void {
 	const available = tabRow.clientWidth - parseFloat(rowStyle.paddingLeft) - parseFloat(rowStyle.paddingRight) - adds - 1;
 	const overflowWidth = overflowButton.getBoundingClientRect().width + gap;
 	tabRow.classList.remove('measuring');
-	const fit = fitTabs({ widths, front: nodes.findIndex(n => n.tab.id === frontId), available, gap, overflowWidth });
+	const fit = fitTabs({ widths, front: nodes.findIndex(n => n.tab.id === frontId), pinned: nodes.findIndex(n => n.tab.id === stickyTabId), available, gap, overflowWidth });
 	const hidden = new Set(fit.hidden);
 	nodes.forEach((n, i) => n.root.classList.toggle('overflowed', hidden.has(i)));
 	overflowIds = fit.hidden.map(i => nodes[i].tab.id);
 	overflowButton.hidden = !overflowIds.length;
-	overflowCount.textContent = `+${overflowIds.length}`;
+	// Tabs that no longer fit: the ones still shown share the whole width left of the buttons.
+	tabRow.classList.toggle('stretched', overflowIds.length > 0);
+	overflowCount.textContent = String(overflowIds.length);
 	const more = `${overflowIds.length} more tab${overflowIds.length === 1 ? '' : 's'}`;
 	overflowButton.title = more;
 	overflowButton.setAttribute('aria-label', more);
@@ -1868,6 +1893,8 @@ function selectStripTab(t: StripTab): void {
 
 /** The dropdown's rows; rebuilt only when what they show changes (#365). */
 /** The row the menu over the dropdown was opened from, for Escape to return to. */
+/** The tab last chosen from the dropdown: it keeps its place in the strip while other shown tabs are selected. */
+let stickyTabId: string | undefined;
 let overflowMenuRow: HTMLElement | undefined;
 
 /** A close started from the dropdown closes it first, or its confirmation is drawn under it. */
@@ -1886,7 +1913,7 @@ function fillOverflowPanel(): void {
 		const t = node.tab;
 		const marks: (HTMLElement | undefined)[] = t.terminal
 			? [icon('terminal', 'menu-icon'), t.terminal.status === 'exited' ? el('span', { class: 'tab-mark exited', title: 'The process ended' }) : undefined]
-			: [el('span', { class: 'menu-icon tab-overflow-mark' }, tabMark(t.status) ?? icon('comment'))];
+			: [icon('comment', 'menu-icon'), tabMark(t.status)];
 		const name = t.terminal ? t.terminal.name : t.title;
 		const agents = t.terminal ? 0 : agentsOf(t);
 		const row = button([
@@ -1901,8 +1928,42 @@ function fillOverflowPanel(): void {
 		row.disabled = select.s !== 'on';
 		const more = button([icon('ellipsis')], { class: 'ghost round tab-overflow-more', title: 'Tab actions' });
 		more.addEventListener('click', event => { event.stopPropagation(); overflowMenuRow = row; node.openMenu(row, tabOverflowPanel); });
-		row.addEventListener('click', () => { closePopups(); selectStripTab(t); });
-		const wrap = el('div', { class: 'tab-overflow-item' }, row, more);
+		row.addEventListener('click', () => { stickyTabId = t.id; overflowShape = ''; closePopups(); selectStripTab(t); });
+		const closeLabel = t.terminal ? 'Close terminal' : 'Close tab';
+		const closer = button([icon('close')], { class: 'ghost round tab-overflow-close', title: closeLabel });
+		closer.setAttribute('aria-label', closeLabel);
+		closer.disabled = gate(t.terminal ? 'closeTerminal' : 'closeTab').s !== 'on';
+		closer.addEventListener('click', event => { event.stopPropagation(); closeFromStrip(node); });
+		const wrap = el('div', { class: 'tab-overflow-item' }, row, closer, more);
+		{
+			// Drag a hidden tab out of the list onto the strip. The panel is only hidden (its nodes stay), after the
+			// drag has started, so the source survives and dragend fires; the strip's own drop handlers do the rest.
+			wrap.draggable = true;
+			wrap.addEventListener('dragstart', event => {
+				if (!event.dataTransfer || gate(t.terminal ? 'placeTerminal' : 'placeTab').s !== 'on') { event.preventDefault(); return; }
+				if (t.terminal) {
+					event.dataTransfer.effectAllowed = 'move';
+					event.dataTransfer.setData('text/plain', t.title);
+					draggedTerminal = t.id;
+					wrap.classList.add('dragging');
+					setTimeout(() => closePopups(), 0);
+					return;
+				}
+				saveDraft();
+				draggedChatTab = { id: t.id, draft: t.id === draftTab ? currentDraft() : drafts[t.chatId] ?? '' };
+				event.dataTransfer.effectAllowed = 'move';
+				event.dataTransfer.setData(chatTabDragType, JSON.stringify({ source: state?.surfaceId, id: t.id, token: state?.dragToken }));
+				post({ type: 'beginTabDrag', id: t.id, draft: draggedChatTab.draft });
+				wrap.classList.add('dragging');
+				setTimeout(() => closePopups(), 0);
+			});
+			wrap.addEventListener('dragend', () => {
+				draggedChatTab = undefined;
+				chatTabDragEnded = performance.now();
+				wrap.classList.remove('dragging');
+				clearTabDropMarks();
+			});
+		}
 		wrap.addEventListener('contextmenu', event => {
 			event.preventDefault();
 			event.stopPropagation();
@@ -1914,14 +1975,36 @@ function fillOverflowPanel(): void {
 	if (focused) { tabOverflowPanel.querySelector<HTMLElement>(`.tab-overflow-row[data-id="${CSS.escape(focused)}"]`)?.focus(); }
 }
 
-overflowButton.addEventListener('click', () => {
-	if (tabOverflowPanel.classList.contains('open')) { closePopups(); return; }
+function openOverflow(focusFirst: boolean): void {
 	overflowPanelShape = '';
 	fillOverflowPanel();
 	openAbove(tabOverflowPanel, overflowButton, 'right');
 	overflowButton.setAttribute('aria-expanded', 'true');
-	tabOverflowPanel.querySelector<HTMLButtonElement>('.tab-overflow-row:not(:disabled)')?.focus();
+	if (focusFirst) { tabOverflowPanel.querySelector<HTMLButtonElement>('.tab-overflow-row:not(:disabled)')?.focus(); }
+}
+overflowButton.addEventListener('click', () => {
+	if (tabOverflowPanel.classList.contains('open')) { closePopups(); return; }
+	openOverflow(true);
 });
+// Hovering the button lists the tabs at once; the list goes when the pointer has left both it and the button.
+let overflowLeaveTimer: ReturnType<typeof setTimeout> | undefined;
+const canHover = window.matchMedia('(hover: hover)');
+function overflowHoverLeft(): void {
+	clearTimeout(overflowLeaveTimer);
+	overflowLeaveTimer = setTimeout(() => {
+		if (!tabOverflowPanel.classList.contains('open') || overflowButton.matches(':hover') || tabOverflowPanel.matches(':hover')) { return; }
+		// A menu over the list (a tab's own) or a focused row means it is being used.
+		if (menu.classList.contains('open') || tabOverflowPanel.contains(document.activeElement) && document.activeElement !== document.body && (document.activeElement as HTMLElement).matches?.(':focus-visible')) { return; }
+		closePopups();
+	}, 250);
+}
+overflowButton.addEventListener('mouseenter', () => {
+	clearTimeout(overflowLeaveTimer);
+	if (canHover.matches && !tabOverflowPanel.classList.contains('open') && !overflowButton.hidden) { openOverflow(false); }
+});
+overflowButton.addEventListener('mouseleave', overflowHoverLeft);
+tabOverflowPanel.addEventListener('mouseenter', () => clearTimeout(overflowLeaveTimer));
+tabOverflowPanel.addEventListener('mouseleave', overflowHoverLeft);
 tabOverflowPanel.addEventListener('keydown', event => {
 	if (event.isComposing || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) { return; }
 	const rows = [...tabOverflowPanel.querySelectorAll<HTMLButtonElement>('.tab-overflow-row:not(:disabled)')];
@@ -1949,6 +2032,24 @@ let confirmShown = '';
 let frontTab: string | undefined;
 let draggedChatTab: { id: string; draft: string } | undefined;
 let chatTabDragEnded = -Infinity;
+/** A terminal being dragged within this surface (it has no draft and never leaves). */
+let draggedTerminal: string | undefined;
+
+/** Dropped on a tab: next to a terminal, or (the strip lists conversations first) before the first terminal. */
+function dropTerminal(onto: TabNode | undefined, event: DragEvent | undefined): void {
+	const id = draggedTerminal;
+	const terminals = state?.terminals ?? [];
+	if (!id) { return; }
+	if (onto?.tab.terminal && onto.tab.id !== id) {
+		post({ type: 'placeTerminal', id, target: onto.tab.id, after: tabDropAfter(event!, onto.root.getBoundingClientRect()) });
+	} else if (!onto) {
+		const last = terminals.at(-1);
+		if (last && last.id !== id) { post({ type: 'placeTerminal', id, target: last.id, after: true }); }
+	} else if (!onto.tab.terminal) {
+		const first = terminals[0];
+		if (first && first.id !== id) { post({ type: 'placeTerminal', id, target: first.id, after: false }); }
+	}
+}
 
 function clearTabDropMarks(): void {
 	for (const { root } of tabNodes.values()) { root.classList.remove('drop-before', 'drop-after'); }
@@ -1964,15 +2065,32 @@ function makeTabDraggable(node: TabNode): void {
 	root.draggable = true;
 	root.addEventListener('dragstart', event => {
 		if (!event.dataTransfer || editingTab || node.close.contains(event.target as Node)) { event.preventDefault(); return; }
+		event.dataTransfer.effectAllowed = 'move';
+		if (node.tab.terminal) {
+			// A terminal moves within this surface only: no token, no draft.
+			draggedTerminal = node.tab.id;
+			event.dataTransfer.setData('text/plain', node.tab.title);
+			root.classList.add('dragging');
+			// Closing synchronously rebuilds the strip under the drag, which cancels the drop.
+			setTimeout(() => closePopups(), 0);
+			return;
+		}
 		saveDraft();
 		draggedChatTab = { id: node.tab.id, draft: node.tab.id === draftTab ? currentDraft() : drafts[node.tab.chatId] ?? '' };
-		event.dataTransfer.effectAllowed = 'move';
 		event.dataTransfer.setData(chatTabDragType, JSON.stringify({ source: state?.surfaceId, id: node.tab.id, token: state?.dragToken }));
 		post({ type: 'beginTabDrag', id: node.tab.id, draft: draggedChatTab.draft });
 		root.classList.add('dragging');
 		closePopups();
 	});
 	root.addEventListener('dragover', event => {
+		if (draggedTerminal) {
+			event.preventDefault();
+			event.stopPropagation();
+			if (event.dataTransfer) { event.dataTransfer.dropEffect = 'move'; }
+			clearTabDropMarks();
+			if (node.tab.terminal && draggedTerminal !== node.tab.id) { root.classList.add(tabDropAfter(event, root.getBoundingClientRect()) ? 'drop-after' : 'drop-before'); }
+			return;
+		}
 		if (!draggedChatTab) { return; }
 		event.preventDefault();
 		event.stopPropagation();
@@ -1991,6 +2109,13 @@ function makeTabDraggable(node: TabNode): void {
 	});
 	root.addEventListener('dragleave', () => root.classList.remove('drop-before', 'drop-after'));
 	root.addEventListener('drop', event => {
+		if (draggedTerminal) {
+			event.preventDefault();
+			event.stopPropagation();
+			dropTerminal(node, event);
+			clearTabDropMarks();
+			return;
+		}
 		if (!draggedChatTab) { return; }
 		event.preventDefault();
 		event.stopPropagation();
@@ -2009,17 +2134,36 @@ function makeTabDraggable(node: TabNode): void {
 }
 
 tabRow.addEventListener('dragover', event => {
+	if (draggedTerminal) { event.preventDefault(); return; }
 	if (!draggedChatTab) { return; }
 	event.preventDefault();
 	if (event.dataTransfer) { event.dataTransfer.dropEffect = 'move'; }
 });
 tabRow.addEventListener('drop', event => {
+	if (draggedTerminal) {
+		event.preventDefault();
+		const last = state?.terminals?.at(-1);
+		if (last && last.id !== draggedTerminal) { post({ type: 'placeTerminal', id: draggedTerminal, target: last.id, after: true }); }
+		clearTabDropMarks();
+		return;
+	}
 	if (!draggedChatTab) { return; }
 	event.preventDefault();
 	const last = state?.tabs.at(-1);
 	if (last && last.id !== draggedChatTab.id) { post({ type: 'placeTab', id: draggedChatTab.id, target: last.id, after: true }); }
 	clearTabDropMarks();
 });
+// A terminal drag is local: accept it anywhere in the view (the drop lands after the last terminal),
+// and clear it from the document, since the source node may have been rebuilt before dragend.
+app.addEventListener('dragover', event => { if (draggedTerminal) { event.preventDefault(); if (event.dataTransfer) { event.dataTransfer.dropEffect = 'move'; } } });
+app.addEventListener('dragenter', event => { if (draggedTerminal) { event.preventDefault(); } });
+app.addEventListener('drop', event => {
+	if (!draggedTerminal) { return; }
+	event.preventDefault();
+	dropTerminal(undefined, event);
+	clearTabDropMarks();
+});
+document.addEventListener('dragend', () => { setTimeout(() => { draggedTerminal = undefined; clearTabDropMarks(); }, 0); }, true);
 // Cross-webview drags carry an opaque token; the source host retains the draft.
 app.addEventListener('dragover', event => {
 	if (draggedChatTab || !event.dataTransfer?.types.includes(chatTabDragType)) { return; }
@@ -2092,7 +2236,7 @@ function renderTabs(s: ChatViewState): void {
 		// What this surface allows on a tab (Chrome picks the conversation it shows, nothing more).
 		// A terminal is never dragged: the strip keeps conversations first.
 		node.close.hidden = gate(t.terminal ? 'closeTerminal' : 'closeTab').s !== 'on';
-		node.root.draggable = !t.terminal && gate('placeTab').s === 'on';
+		node.root.draggable = gate(t.terminal ? 'placeTerminal' : 'placeTab').s === 'on';
 		// Moved only when out of place: re-inserting an element ends its transition.
 		if (tabRow.children[i] !== node.root) {
 			tabRow.insertBefore(node.root, tabRow.children[i] ?? null);
@@ -2109,16 +2253,17 @@ function renderTabs(s: ChatViewState): void {
 	for (const add of [tabAdd, tabAddTerminal]) {
 		if (!adds.includes(add)) { add.remove(); }
 	}
-	// The overflow button follows the tabs, before the add buttons; shown only while tabs overflow.
-	if (tabRow.children[strip.length] !== overflowButton) {
-		tabRow.insertBefore(overflowButton, tabRow.children[strip.length] ?? null);
-	}
+	// The add buttons follow the tabs and the overflow button comes last, so with overflowing tabs the row reads
+	// stretched tabs, "+" and terminal, then the dropdown; the button is shown only while tabs overflow.
 	adds.forEach((add, k) => {
 		add.hidden = false;
-		if (tabRow.children[strip.length + 1 + k] !== add) {
-			tabRow.insertBefore(add, tabRow.children[strip.length + 1 + k] ?? null);
+		if (tabRow.children[strip.length + k] !== add) {
+			tabRow.insertBefore(add, tabRow.children[strip.length + k] ?? null);
 		}
 	});
+	if (tabRow.children[strip.length + adds.length] !== overflowButton) {
+		tabRow.insertBefore(overflowButton, tabRow.children[strip.length + adds.length] ?? null);
+	}
 	// Decided before the switch animation measures, so a tab coming out of the dropdown does not flash.
 	layoutTabOverflow();
 	renderTabConfirm(s);
@@ -2171,7 +2316,8 @@ function animateTabSwitch(before: Map<string, number>, ids: string[]): void {
 	for (const { root, from } of moving) {
 		const style = root.style;
 		style.transition = 'none';
-		style.flexShrink = '0';
+		// Tabs size by flex-basis 0 and grow, so a width means nothing until flex is switched off.
+		style.flex = 'none';
 		// The limits do not transition, so they are lifted while the width moves.
 		style.minWidth = '0';
 		style.maxWidth = 'none';
@@ -2188,12 +2334,12 @@ function animateTabSwitch(before: Map<string, number>, ids: string[]): void {
 			clearTimeout(timer);
 			tabResizeEnds.delete(root);
 			root.classList.remove('resizing');
-			style.transition = style.width = style.minWidth = style.maxWidth = style.flexShrink = '';
+			style.transition = style.width = style.minWidth = style.maxWidth = style.flex = '';
 		};
 		const onEnd = (event: TransitionEvent): void => {
 			if (event.target === root && event.propertyName === 'width') { end(); }
 		};
-		const timer = setTimeout(end, 400);
+		const timer = setTimeout(end, 260);
 		root.addEventListener('transitionend', onEnd);
 		tabResizeEnds.set(root, end);
 	}
@@ -2220,7 +2366,7 @@ function tabNode(t: StripTab): TabNode {
 	const compactNumber = nextCompactTabNumber++;
 	root.style.setProperty('--tab-identity', `hsl(${(compactNumber * 137.508) % 360} 55% 67%)`);
 	const node: TabNode = { root, label, close, tab: t, shown: '', compactNumber, openMenu: () => {} };
-	if (!t.terminal) { makeTabDraggable(node); }
+	makeTabDraggable(node);
 	root.addEventListener('contextmenu', event => {
 		event.preventDefault();
 		event.stopPropagation();
@@ -2237,14 +2383,15 @@ function tabNode(t: StripTab): TabNode {
 			const control = agentControlRow(terminal);
 			openMenu(anchor, [
 				{ icon: 'edit', label: 'Rename', command: 'renameTerminal', run: () => renameFromMenu(node) },
-				{ icon: 'comment-discussion', label: 'Ask agent…', description: 'A new chat or an open one, with this terminal pinned', command: 'terminalAskAgent',
+				{ icon: 'debug-restart', label: 'Restart', description: 'Start the shell again in the same folder', command: 'restartTerminal', disabled: !exited, run: () => post({ type: 'restartTerminal', id: terminal.id }) },
+				...terminalMoveRows(terminal.id).map((row, at) => at === 0 ? { ...row, separator: true } : row),
+				{ separator: true, icon: 'comment-discussion', label: 'Ask agent…', description: 'A new chat or an open one, with this terminal pinned', command: 'terminalAskAgent',
 					run: () => setTimeout(() => askAgentMenu(overflowed ? overflowButton : label, terminal.id, ''), 0) },
 				...(control ? [{ icon: control.icon, label: control.label, description: control.description, command: 'setTerminalAgentControl',
 					run: () => post({ type: 'setTerminalAgentControl', id: terminal.id, allowed: control.allowed }) }] : []),
-				{ icon: 'debug-restart', label: 'Restart', description: 'Start the shell again in the same folder', command: 'restartTerminal', disabled: !exited, run: () => post({ type: 'restartTerminal', id: terminal.id }) },
-				{ icon: 'comment-discussion', label: selected ? 'Send selection to chat' : 'Copy last output to chat', description: 'Adds it to the chat in front as context', command: 'terminalToChat', run: () => terminalView?.sendToChat(terminal.id) },
-				...websiteAccessRow(terminal),
-				{ icon: 'close', label: 'Close', command: 'closeTerminal', run: () => closeFromStrip(node) },
+				{ icon: 'comment', label: selected ? 'Send selection to chat' : 'Copy last output to chat', description: 'Adds it to the chat in front as context', command: 'terminalToChat', run: () => terminalView?.sendToChat(terminal.id) },
+				...websiteAccessRow(terminal).map((row, at) => at === 0 ? { ...row, separator: true } : row),
+				{ separator: true, icon: 'close', label: 'Close terminal', command: 'closeTerminal', run: () => closeFromStrip(node) },
 			], compact || overflowed ? node.tab.title : 'Terminal', undefined, keep);
 			return;
 		}
@@ -2272,13 +2419,13 @@ function tabNode(t: StripTab): TabNode {
 			},
 		})));
 		if (node.tab.canResumeInTerminal) {
-			items.push({ icon: 'terminal', label: 'Continue in terminal', command: 'resumeInTerminal', disabled: node.tab.busy || !!node.tab.queued || !!node.tab.skillRuns, run: () => post({ type: 'resumeInTerminal', id: node.tab.chatId }) });
+			items.push({ separator: true, icon: 'terminal', label: 'Continue in VS Code terminal', command: 'resumeInTerminal', disabled: node.tab.busy || !!node.tab.queued || !!node.tab.skillRuns, run: () => post({ type: 'resumeInTerminal', id: node.tab.chatId }) });
 		}
 		const compact = wideChat.matches && chatDrawerCollapsed;
 		if (overflowed) {
 			items.unshift({ icon: 'edit', label: 'Rename', command: 'renameTab', run: () => renameFromMenu(node) });
 		}
-		if (compact || overflowed) { items.push({ icon: 'close', label: 'Close chat', command: 'closeTab', run: () => closeFromStrip(node) }); }
+		if (compact || overflowed) { items.push({ separator: items.length > 0, icon: 'close', label: 'Close chat', command: 'closeTab', run: () => closeFromStrip(node) }); }
 		openMenu(anchor, items.length ? items : [{ label: 'No other chat is open', disabled: true, run: () => {} }],
 			compact || overflowed ? node.tab.title : `Move chat to · ${(state?.chatSurfaces ?? []).length} open views`, undefined, keep);
 	};
@@ -6200,6 +6347,8 @@ interface MenuItem {
 	readonly shortcut?: string;
 	/** The control it stands for: hidden, or disabled with the reason, where the surface does not allow it. */
 	readonly command?: string;
+	/** A divider above the row: where one group of a menu ends and the next begins. */
+	readonly separator?: boolean;
 	readonly run: () => void;
 }
 
@@ -6253,7 +6402,10 @@ function openMenu(anchor: HTMLElement, items: MenuItem[], heading?: string, acti
 				}
 				item.run();
 			});
-			return [b];
+			if (!item.separator) { return [b]; }
+			const line = el('div', { class: 'menu-separator' });
+			line.setAttribute('role', 'separator');
+			return [line, b];
 		}));
 	// Over a panel the menu is drawn above it: a panel sits over the popups.
 	menu.classList.toggle('over-panel', !!keep);
@@ -6614,7 +6766,7 @@ function chatActions(s: ChatViewState): PaletteItem[] {
 	const tab = s.tabs.find(t => t.id === s.activeTab);
 	const items: PaletteItem[] = [];
 	if (tab?.canResumeInTerminal && gate('resumeInTerminal').s === 'on') {
-		items.push({ key: 'chat:terminal', group: 'Chat', name: 'terminal', label: 'Continue in terminal', icon: 'terminal',
+		items.push({ key: 'chat:terminal', group: 'Chat', name: 'terminal', label: 'Continue in VS Code terminal', icon: 'terminal',
 			detail: 'Continue this session in a terminal tab; this chat tab closes',
 			disabled: tab.busy || !!tab.queued || !!tab.skillRuns, haystack: 'terminal resume continue cli',
 			run: () => post({ type: 'resumeInTerminal', id: tab.chatId }),
@@ -9217,7 +9369,7 @@ function fillHistory(chats: readonly ChatSummary[]): void {
 		});
 		const remove = button([icon('trash')], { class: 'ghost round history-delete', title: 'Delete' });
 		remove.addEventListener('click', () => post({ type: 'deleteChat', id: chat.id }));
-		const terminal = button([icon('terminal')], { class: 'ghost round history-delete', title: 'Continue in terminal' });
+		const terminal = button([icon('terminal')], { class: 'ghost round history-delete', title: 'Continue in VS Code terminal' });
 		terminal.hidden = !chat.canResumeInTerminal;
 		gateButton(remove, 'deleteChat');
 		gateButton(terminal, 'resumeInTerminal');

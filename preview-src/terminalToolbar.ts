@@ -1,5 +1,5 @@
 /*
- * The row above a terminal: its name and state, what the agent is doing in it,
+ * The row above a terminal: its state (the name is the tab's), what the agent is doing in it,
  * and the few things done to the terminal as a whole.
  *
  * One toolbar for all terminals, acting on the one in front (`update`). It is
@@ -27,6 +27,7 @@ export interface ToolbarOptions {
 	readonly askAgent?: (anchor: HTMLElement, id: string, selection: string) => void;
 	/** "Insert": the chat's menu of things to put into this terminal's input (page, element, screenshot, file …). Absent: no button. */
 	readonly insertMenu?: (anchor: HTMLElement, id: string) => void;
+	readonly openBrowser?: (anchor: HTMLElement) => void;
 	readonly sendToChat: (id: string) => void;
 	readonly selection: (id: string) => string;
 	readonly clear: (id: string) => void;
@@ -79,8 +80,6 @@ export function createToolbar(options: ToolbarOptions): Toolbar {
 	el.setAttribute('role', 'toolbar');
 	el.setAttribute('aria-label', 'Terminal');
 
-	const name = document.createElement('span');
-	name.className = 'terminal-toolbar-name';
 	const status = document.createElement('span');
 	status.className = 'terminal-toolbar-status';
 	status.hidden = true;
@@ -124,6 +123,7 @@ export function createToolbar(options: ToolbarOptions): Toolbar {
 		if (current && options.askAgent) { options.askAgent(anchor, current.id, options.selection(current.id)); }
 	});
 	ask.classList.add('terminal-tool-ask');
+	const browser = button('globe', 'Browser', anchor => { options.openBrowser?.(anchor); });
 	const insert = button('add', 'Insert', anchor => { if (current && options.insertMenu) { options.insertMenu(anchor, current.id); } });
 	insert.classList.add('terminal-tool-insert');
 	insert.title = 'Insert a page, element, screenshot, file or selection into the input (not sent)';
@@ -133,7 +133,16 @@ export function createToolbar(options: ToolbarOptions): Toolbar {
 	const lease = button('eye', 'Take control', () => { if (current && options.lease) { options.lease.toggle(current.id); } });
 	lease.classList.add('terminal-tool-lease');
 	lease.hidden = true;
-	el.append(name, status, mark, spacer, lease, insert, pause, ask, toChat, clear, bottom);
+	for (const b of [insert, browser, clear, bottom]) { b.classList.add('icon-only'); }
+	// Three zones: state and input on the left, the agent actions in the middle, the screen actions at the right edge.
+	const group = (name: string, ...children: HTMLElement[]) => {
+		const g = document.createElement('span');
+		g.className = `terminal-toolbar-group ${name}`;
+		g.append(...children);
+		return g;
+	};
+	void spacer;
+	el.append(group('start', status, mark, lease, insert, browser, pause), group('middle', ask, toChat), group('end', clear, bottom));
 
 	function set(node: HTMLElement, key: 'textContent' | 'title', value: string): void {
 		if (node[key] !== value) { node[key] = value; }
@@ -148,8 +157,8 @@ export function createToolbar(options: ToolbarOptions): Toolbar {
 		update(summary) {
 			current = summary;
 			if (!summary) { return; }
-			set(name, 'textContent', summary.name);
-			set(name, 'title', summary.cwd ? `${summary.name} — ${summary.cwd}` : summary.name);
+			// The name is the tab's own: it is not repeated here. The folder stays a tooltip of the row.
+			set(el, 'title', summary.cwd ?? '');
 			const exited = summary.status === 'exited';
 			setHidden(status, !exited);
 			set(status, 'textContent', exited ? (summary.exitCode === undefined ? 'Ended' : `Ended (${summary.exitCode})`) : '');
@@ -174,6 +183,7 @@ export function createToolbar(options: ToolbarOptions): Toolbar {
 			}
 			pause.setAttribute('aria-pressed', String(paused));
 			setHidden(ask, !options.askAgent || !allowed('terminalAskAgent'));
+			setHidden(browser, !options.openBrowser || exited);
 			setHidden(insert, !options.insertMenu || exited || !allowed('terminalInsert'));
 			setHidden(toChat, !allowed('terminalToChat'));
 			setHidden(lease, !options.lease || !allowed('terminalInput') || exited);

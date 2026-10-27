@@ -84,7 +84,7 @@ export const COMMANDS = {
 	openChat: editor('Opening another saved conversation is available only in VS Code.'),
 	deleteChat: editor('Deleting saved conversations is available only in VS Code.'),
 	resolveHistoryChat: editor(), resumeInTerminal: editor('Terminals are available only in VS Code.'),
-	placeTab: editor(), beginTabDrag: editor(), acceptTabDrop: editor(), moveTabTo: editor(), moveTabToNew: editor(),
+	placeTab: editor(), placeTerminal: editor(), beginTabDrag: editor(), acceptTabDrop: editor(), moveTabTo: editor(), moveTabToNew: editor(), moveTerminalTo: editor(), moveTerminalToNew: editor(),
 
 	// Settings that act on the editor or its machine.
 	setApprovalMode: editor(approvals),

@@ -58,7 +58,7 @@ See the [Privacy Policy](PRIVACY.md) for data handling, storage and provider sha
 
 ## 💻 Continue a chat in a terminal
 
-Choose **Continue in terminal** from a chat tab's right-click menu or the chat command
+Choose **Continue in VS Code terminal** from a chat tab's right-click menu or the chat command
 picker, or use the terminal button beside a conversation in **History**. Claude Code,
 Codex and Gemini CLI open in a VS Code editor terminal tab, resuming the saved session
 in its original folder. Finish the running turn and any queued messages first.
@@ -99,7 +99,7 @@ For limits, settings and technical details, see [CLAUDE.md](CLAUDE.md#browser-vi
 
 ## 📝 Changelog
 
-**0.10.0** — Terminal tabs in the chat: a real shell, or Claude Code or Codex in their own CLI,
+**0.9.1** — Terminal tabs in the chat: a real shell, or Claude Code or Codex in their own CLI,
 beside your conversations. Pin one to a conversation and its agent reads the screen and, with your
 approval, types; **Watch only** and **Pause agent input** keep it in check. The terminal toolbar
 inserts pages, elements, screenshots and files into an agent CLI's prompt. Opted in, the Exchange

@@ -93,6 +93,9 @@ export interface TerminalTabOptions {
 	readonly now?: () => number;
 	readonly isFront?: () => boolean;
 	readonly controls?: TerminalControls;
+	/** The screen a previous run of this terminal left (restored after a restart of the editor), shown above the new process's output. */
+	readonly history?: string;
+	readonly remote?: boolean;
 }
 
 export interface TerminalHandlers {
@@ -158,6 +161,8 @@ export class TerminalTab {
 	/** Units the session counts as sent and not yet acknowledged to it. */
 	private _owed = 0;
 	private _remote = false;
+	/** What a previous run left on screen; the new process's own tail comes after it. */
+	private _history = '';
 	/** A website viewer holds the control lease: the editor view's size is kept aside until it ends. */
 	private _remoteControl = false;
 	private _viewSize: { cols: number; rows: number } | undefined;
@@ -171,13 +176,13 @@ export class TerminalTab {
 	public readonly agent: AgentId | undefined;
 	private readonly _starter: TerminalStarter;
 	/** Posts to the view directly; does nothing while there is none. */
-	private readonly _post: (message: HostToView) => void;
+	private _post: (message: HostToView) => void;
 	/** The tab's own state changed (it exited, it restarted): the strip is redrawn. */
-	private readonly _changed: () => void;
+	private _changed: () => void;
 	/** Who may type here: the user's typing keeps the agent out for a moment, and the user can pause the agent altogether. */
 	private readonly _gate: TerminalGate;
 	private readonly _unread: TerminalUnread;
-	private readonly _isFront: () => boolean;
+	private _isFront: () => boolean;
 	private readonly _now: () => number;
 	private _activeTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -188,6 +193,8 @@ export class TerminalTab {
 		this._gate = controls.gate;
 		this._unread = controls.unread;
 		this._isFront = options.isFront ?? (() => false);
+		this._history = options.history ?? '';
+		this._remote = options.remote === true;
 		this.id = id;
 		this._name = name;
 		this.cwd = cwd;
@@ -295,7 +302,7 @@ export class TerminalTab {
 	/** A remote consumer: given the screen so far, then live output. Replaces one of the same key. */
 	public addConsumer(key: string, sink: TerminalConsumerSink): { data: string; seq: number } {
 		this.removeConsumer(key);
-		const replay = this._session?.replay() ?? { data: '', seq: 0 };
+		const replay = this._replayWithHistory();
 		const added = !this._consumers.has(key);
 		this._consumers.set(key, { outstanding: 0, sink });
 		if (added && !this._disposed) { this._changed(); }
@@ -367,12 +374,28 @@ export class TerminalTab {
 			this._size = { cols, rows };
 			if (session && this._status === 'running') { session.resize(cols, rows); }
 		}
-		const replay = session?.replay() ?? { data: '', seq: 0 };
+		const replay = this._replayWithHistory();
 		this._attached = true;
 		this._post({ type: 'terminalReplay', id: this.id, seq: replay.seq, data: replay.data });
 		if (this._status === 'exited') {
 			this._post({ type: 'terminalExit', id: this.id, ...(this._exitCode !== undefined ? { code: this._exitCode } : {}) });
 		}
+	}
+
+	private _replayWithHistory(): { data: string; seq: number } {
+		const live = this._session?.replay() ?? { data: '', seq: 0 };
+		return this._history ? { data: this._history + live.data, seq: live.seq } : live;
+	}
+
+	/** Everything on screen so far, restored history included: what is saved so the terminal survives a restart of the editor. */
+	public screenSnapshot(): string { return this._replayWithHistory().data; }
+
+	/** The tab moves to another chat surface: its output, strip changes and front mark now belong there. The process is untouched. */
+	public rehome(post: (message: HostToView) => void, changed: () => void, isFront: () => boolean): void {
+		this.detach();
+		this._post = post;
+		this._changed = changed;
+		this._isFront = isFront;
 	}
 
 	/** The view's page went away (reloaded, closed): output stops being posted, and what was owed is given back. */
@@ -577,11 +600,12 @@ export class TerminalSet {
 	 * A new terminal at the end of the strip, in front. The process is started
 	 * first: a failure is thrown and leaves no tab behind.
 	 */
-	public async create(id: string, name: string, cwd: string, agent: AgentId | undefined, starter: TerminalStarter, options: { background?: boolean; now?: () => number; remote?: boolean } = {}): Promise<TerminalTab> {
+	public async create(id: string, name: string, cwd: string, agent: AgentId | undefined, starter: TerminalStarter, options: { background?: boolean; now?: () => number; remote?: boolean; history?: string } = {}): Promise<TerminalTab> {
 		if (this._disposed) { throw new Error('The chat view was closed.'); }
 		const tab = new TerminalTab(id, name, cwd, agent, starter, this._post, this._changed, {
 			isFront: () => this._front === id,
 			...(options.now ? { now: options.now } : {}),
+			...(options.history ? { history: options.history } : {}),
 			...(this._controls ? { controls: this._controls() } : {}),
 		});
 		await tab.start();
@@ -602,6 +626,9 @@ export class TerminalSet {
 		return tab;
 	}
 
+	/** Puts a restored terminal in front without focusing it. */
+	public setFront(id: string): void { if (this.find(id)) { this._front = id; } }
+
 	/** In front, if there is such a terminal (and read: its unread mark goes). Returns whether the front changed. */
 	public select(id: unknown): boolean {
 		const tab = this.find(id);
@@ -611,6 +638,40 @@ export class TerminalSet {
 		tab.markRead();
 		this._changed();
 		return true;
+	}
+
+	/** Moves a terminal next to another; the strip shows the set's order. Returns whether anything moved. */
+	public place(id: unknown, target: unknown, after: boolean): boolean {
+		const from = this.find(id);
+		const to = this.find(target);
+		if (!from || !to || from === to) { return false; }
+		this._tabs.splice(this._tabs.indexOf(from), 1);
+		this._tabs.splice(this._tabs.indexOf(to) + (after ? 1 : 0), 0, from);
+		this._changed();
+		return true;
+	}
+
+	/** Takes the tab out without ending it, for another surface (`adopt`). */
+	public release(id: unknown): TerminalTab | undefined {
+		const tab = this.find(id);
+		if (!tab) { return undefined; }
+		const at = this._tabs.indexOf(tab);
+		this._tabs.splice(at, 1);
+		tab.detach();
+		if (this._front === tab.id) { this._front = this._tabs[Math.min(at, this._tabs.length - 1)]?.id; this._focus = this._front; }
+		this._changed();
+		return tab;
+	}
+
+	/** A live terminal from another surface, in front here; its process and screen carry on. */
+	public adopt(tab: TerminalTab): void {
+		if (this._disposed || this._tabs.includes(tab)) { return; }
+		tab.rehome(this._post, this._changed, () => this._front === tab.id);
+		this._tabs.push(tab);
+		this._front = tab.id;
+		this._focus = tab.id;
+		tab.markRead();
+		this._changed();
 	}
 
 	/** A conversation is in front now. Returns whether a terminal was. */

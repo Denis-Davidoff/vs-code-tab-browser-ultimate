@@ -6945,7 +6945,7 @@ Rename and Close added for a hidden tab. Rename selects the tab first and starts
 (`renameWhenShown`); a busy tab's close confirmation is placed under the `+N` button. The layout is
 measured synchronously in `renderTabs`, before the switch animation measures, with every tab shown and
 `flex-shrink: 0` (`.tab-row.measuring`) in one frame, so nothing flashes; a `ResizeObserver` on the strip
-re-runs it. The wide drawer is untouched: there everything is shown and the button hidden.
+re-runs it. **While tabs overflow, the row reads: the tabs still shown, stretched to the full width left of the buttons (`.tab-row.stretched`, removed while `layoutTabOverflow` measures natural widths), then "+" and New terminal, then the `+N` dropdown last — the DOM order is tabs, adds, overflow button. Hovering the `+N` button opens the list at once (hover-capable pointers only, focus stays where it was); it closes 250 ms after the pointer has left both the button and the list, unless a tab's own menu is open over it.** The wide drawer is untouched: there everything is shown and the button hidden. **A conversation row in the dropdown can be dragged onto the strip** (terminals too, with their own local `draggedTerminal` path): it sets the same `draggedChatTab` and `beginTabDrag` a strip tab does, and the visible tabs' own `dragover`/`drop` post `placeTab`, so dropping on the left half of the first tab puts it at the very start and `fitTabs` then shows it and pushes another into the list. The panel is hidden from a `setTimeout(0)` after `dragstart`, never during it, and only hidden (its nodes stay), or the source node goes and `dragend` never fires.
 
 **The mark on each tab** (`ChatTab.status`, `ChatTabStatus` in the protocol), all asked for:
 
@@ -7905,7 +7905,7 @@ the review's confirmed findings are breaks-silently #526 onwards.
 - **In the strip they come after the conversations** (`StripTab` in `preview-src/terminalTabs.ts`),
   with a mark for running, exited (muted), unread output (`unreadQuietMs`, 2 s of quiet while not in
   front), pinned, and the agent typing. `frontStripId(state)` replaces `activeTab` for the active
-  mark, the drawer and the tab-switch animation. Not draggable, no Move rows; double-click or F2
+  mark, the drawer and the tab-switch animation. Draggable like a conversation tab, within the terminals only (`placeTerminal`, `TerminalSet.place`; dropped on a conversation it goes before the first terminal, since the strip lists conversations first), in the strip and from the overflow dropdown, never across surfaces (no token, no draft); no Move rows; double-click or F2
   renames; the context menu has Rename, Restart, Ask agent, Send to chat, Allow remote access and
   Close. Closing a running terminal asks inline ("Stop and close").
 - **Leaving a terminal for a conversation goes through `_leaveTerminal`, and the composer's focus
@@ -7913,19 +7913,32 @@ the review's confirmed findings are breaks-silently #526 onwards.
   from the front (`terminalFocus.test.ts` guards both). `terminalFront` is cleared explicitly by the
   paths that bring a conversation forward and never through the `_active` setter; closing a
   background conversation does not take the front.
+- **Tab context menus are grouped with dividers** (`MenuItem.separator`, `.menu-separator`): a terminal's is Rename / Restart, then the agent rows (Ask agent, pause, send to chat, website access), then Close terminal; a chat's is the pinned terminals, the Move rows, then **Continue in VS Code terminal** (named so it is not read as the strip's own terminal tabs) and Close. The terminal toolbar no longer repeats the tab's name; the folder is its tooltip.
+- **A terminal can move between surfaces** (asked for): its tab menu has *Move to a new window*, *Move to a new tab*, *Return to main window* (only in a panel; the side bar surface is flagged `ChatSurface.main`) and a row per other open surface. `TerminalSet.release` takes the tab out without ending it and `adopt` puts it in another set (`TerminalTab.rehome` re-points its post, change and front callbacks); the PTY, the screen model, pins (held by conversation tabs, found across surfaces) and the website-sharing mark all stay. The moved tab's view is detached first, so what was in flight is given back and the new view's `terminalAttach` gets a replay. A new tab or window is a panel with a fresh conversation (`_detachTerminal`); a panel left with no conversation and no terminals closes (`closesEmptyPanel`). Chrome and the website do not get these (`moveTerminalTo`/`moveTerminalToNew` are `editor()` in `commands.ts`).
 - **Each surface owns its terminals** — the side bar and every chat panel — and kills them in its
   own `dispose()`. A panel that still has terminals is not closed by moving its last conversation
-  away (`closesEmptyPanel`), since disposing it kills their shells (#533). **Terminals do not
-  survive a window reload** and are not in `openTabs`: a PTY dies with its extension host.
+  away (`closesEmptyPanel`), since disposing it kills their shells (#533). **Terminals survive a restart of the editor** (asked for), not as processes — a PTY dies with its
+  extension host — but as tabs: `_saveTerminals` keeps each one's name, folder, agent, shared mark and the last
+  150 000 units of its screen in `workspaceState` (`<tabs key>.terminals`, its own key, not `openTabs`), every
+  15 s while any exists, 4 s after a change and at dispose. `_restoreTerminals`, on the view's first `ready`
+  (after detection, so agents are known), starts a fresh shell or agent CLI in the saved folder (the window's, then
+  home, when it is gone) with the saved screen as `history`: `TerminalTab` shows it above the new process's
+  output on every attach and remote replay, followed by a dim "restored after restart" line, and a leading
+  `ESC[?1049l` so a full-screen program that was open does not strand the screen. The shell's own history
+  (zsh/bash `HISTFILE`) is what an up-arrow brings back; an agent CLI starts a new conversation. **A save never
+  runs before the restore finished** (`_terminalsRestored`), or a window that never opened the chat would write an
+  empty list over the saved one.
 - **Where to start**: the first existing folder of the front conversation's `cwd`, the window's
   folder, home (`chooseTerminalCwd`). The palette has **AI Browser: New Terminal**
   (`aiBrowser.chat.newTerminal`, optional `'claude'` / `'codex'`), and the strip's "+" and New Chat
   menus offer a shell and each agent found.
-- **An agent terminal** (Claude Code or Codex, never Gemini — it reads MCP servers only from settings
-  files) starts the agent's own CLI with the browser MCP server injected by `_browserCliLaunch`, the
+- **An agent terminal** is offered for every agent the registry found with a binary (`_terminalAgents`, so a
+  future agent appears with no change there); Gemini was added on request. It starts the agent's own CLI. Claude Code and Codex get the browser MCP server injected by `_browserCliLaunch`, the
   code the terminal hand-over uses (#517): Claude a `0600` `--mcp-config` file removed when the tab
   exits, closes or restarts; Codex `-c` overrides with the token in `AI_BROWSER_MCP_AUTH`, never
-  argv. A folder held back gets `--setting-sources=user --strict-mcp-config` (#443).
+  argv. A folder held back gets `--setting-sources=user --strict-mcp-config` (#443). **Gemini gets no injection** — it reads
+  MCP servers from settings files only, so its terminal has the browser tools only after Connect Gemini CLI (the menu row says so); a held-back folder
+  gets `GEMINI_CLI_TRUST_WORKSPACE=false`, as the chat's own Gemini does. The three remote command readers accept `gemini` too.
 
 #### The host: node-pty, the shell, flow control
 
@@ -8036,9 +8049,9 @@ through an injected factory, since a module `npm test` loads may not import it a
 
 #### The toolbar, and the key bar for phones
 
-One toolbar above the terminal in front, built once and changed in place (#365): name and state,
+One toolbar at the very bottom of the terminal in front (below the stage and the key bar), in three zones — state, agent mark, lease, Insert and Pause at the left; Ask agent and Send to chat in the centre; Clear and Scroll to bottom at the right edge, with Insert, Clear and Scroll to bottom icon-only — built once and changed in place (#365): name and state,
 **Ask agent**, **Send to chat** (the selection, or the last lines, as a `selection` chip — fenced,
-control characters out, at most 200 000 characters), **Insert** (+), Clear, Scroll to bottom, and
+control characters out, at most 200 000 characters), **Insert** (+) and **Browser** (a globe beside it: the chat's own globe menu, VS Code browser or Chrome), Clear, Scroll to bottom, and
 the agent mark with **Pause agent input / Resume agent input**. Its buttons prevent default on
 pointer and mouse down, so the terminal keeps the keyboard. Below the terminal, on a coarse
 pointer (or forced per device), the **key bar**: Esc, Tab, sticky Ctrl/Alt, arrows honouring DECCKM

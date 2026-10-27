@@ -23,10 +23,10 @@
  *    acknowledged as xterm parses it (`terminalFlow.ts`); a replay on attach
  *    restores a screen the page lost.
  *
- * The layout is a column: the toolbar (`terminalToolbar.ts`), the stage the hosts
+ * The layout is a column: the stage the hosts
  * lie in (`.terminal-host` is absolutely positioned inside it, so FitAddon fits to
  * what the toolbar and the key bar leave), and the touch key bar
- * (`terminalKeyBar.ts`, only on a touch device or when forced). Every byte that
+ * (`terminalKeyBar.ts`, only on a touch device or when forced), then the toolbar (`terminalToolbar.ts`) at the very bottom. Every byte that
  * leaves goes through `sendInput`, however it was typed.
  */
 
@@ -58,6 +58,7 @@ export interface TerminalViewOptions {
 	readonly askAgent?: (anchor: HTMLElement, id: string, selection: string) => void;
 	/** "Insert": the chat's attachment menu, each choice inserted into this terminal (`terminalInsert`). Absent: no button. */
 	readonly insertMenu?: (anchor: HTMLElement, id: string) => void;
+	readonly openBrowser?: (anchor: HTMLElement) => void;
 	/** A link printed in the terminal was clicked: the built-in browser, or the system's with `external` (⌘ / Ctrl-click). Absent: no links. */
 	readonly openLink?: (url: string, external: boolean) => void;
 	/** Whether a message may be sent from this surface (the control table). Absent: all. */
@@ -423,6 +424,7 @@ export function createTerminalView(options: TerminalViewOptions): TerminalView {
 		post,
 		askAgent: options.askAgent,
 		insertMenu: options.insertMenu,
+		openBrowser: options.openBrowser,
 		sendToChat,
 		selection: id => entries.get(id)?.term.getSelection() ?? '',
 		clear: id => { entries.get(id)?.term.clear(); },
@@ -462,7 +464,7 @@ export function createTerminalView(options: TerminalViewOptions): TerminalView {
 		onTap: id => { const entry = entries.get(id); if (entry) { focusTerminal(entry, true); } },
 	});
 
-	main.append(toolbar.el, stage, bar.el);
+	main.append(stage, bar.el, toolbar.el);
 
 	function create(summary: TerminalTabSummary): Entry {
 		// Before the first xterm exists: its styles are made when it is opened.
