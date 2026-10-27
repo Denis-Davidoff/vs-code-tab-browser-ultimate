@@ -99,6 +99,12 @@ For limits, settings and technical details, see [CLAUDE.md](CLAUDE.md#browser-vi
 
 ## 📝 Changelog
 
+**0.9.2** — A tidier tab strip: the tab in front is always 35% wider than the rest and switches
+with a quick linear animation. When tabs overflow, the remaining ones share the full width and
+hovering the dropdown opens the list, where a hovered row has a close button and a tab picked
+from it stays in the strip. Gemini CLI can be opened in a terminal tab, and dragging terminals
+to reorder them works again. The Chrome side panel and the website share all of it.
+
 **0.9.1** — Terminal tabs in the chat: a real shell, or Claude Code or Codex in their own CLI,
 beside your conversations. Pin one to a conversation and its agent reads the screen and, with your
 approval, types; **Watch only** and **Pause agent input** keep it in check. The terminal toolbar

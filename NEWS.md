@@ -28,6 +28,12 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 - $(location) **Page markers** — pin notes to page elements and send them to the agent as one prompt.
 - $(settings-gear) **Chat Settings** — use the gear at the top to edit prompts for commit messages, branch names and chat titles, or clean up temporary files.
 
+## 0.9.2 — 2026-10-27
+- **Tidier tab strip**: the tab in front is always 35% wider than the others, whatever it holds, and the width change is a quick linear animation. When tabs overflow, the rest share the full width, the **+ chat** and **+ terminal** buttons sit before the dropdown, and hovering it opens the list at once.
+- **Tab dropdown**: hover a row for a close button; a tab you pick from the list stays in the strip when you switch to another visible tab; chats show a chat icon, and the hidden-tab count is yellow.
+- **Gemini terminals**: **New terminal** offers Gemini CLI beside Claude Code and Codex, and any agent added later.
+- **Dragging terminals** to reorder them works again. The Chrome side panel and the Exchange website get all of this too.
+
 ## 0.9.1 — 2026-10-27
 - **Terminal tabs in the chat**: open a real shell, or Claude Code or Codex in their own CLI, as a tab beside your conversations — from the tab strip's **+**, **New Chat** or **AI Browser: New Terminal**. It uses your own default shell profile, copy and paste work as in a terminal, and links open in the browser. macOS and Windows; Linux is not supported yet.
 - **Agents that use your terminal**: **Ask agent** or **+ → Terminal…** pins a terminal to a conversation. Its agent can read the screen and wait for a command to finish; typing into the terminal asks you first, **Watch only** lets it read and never type, and **Pause agent input** stops it at once. Your own typing always comes first.
