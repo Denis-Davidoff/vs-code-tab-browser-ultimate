@@ -57,6 +57,7 @@ import type {
 } from '../src/chat/chatProtocol';
 import { baseName, searchPaths } from './fileRank';
 import { controlOf, type Availability } from '../src/chat/core/commands';
+import { describePrice, formatContext, modelFromCatalogItem, modelSummary, parseOptionalNumber } from '../src/chat/openrouterView';
 // Every codicon the bundled font has, one per line (`name,char,code`); bundled
 // as text by esbuild, so the icon picker lists exactly what can be drawn.
 import codiconCsv from '@vscode/codicons/dist/codicon.csv';
@@ -1425,6 +1426,10 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 			temporaryStorageState = message.storage;
 			renderTemporaryStorage(message.error);
 			return;
+		case 'openrouter':
+			openrouterData = message;
+			openrouterRender?.();
+			return;
 		case 'openSettings':
             openFeatureSettings();
             return;
@@ -1480,6 +1485,17 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 		case 'chooseNewChatLocation':
 			chooseNewChatLocation();
 			return;
+		case 'flashTab': {
+			const tab = tabNodes.get(message.id)?.root;
+			if (tab) {
+				tab.animate([
+					{ boxShadow: 'inset 0 0 0 2px transparent' },
+					{ boxShadow: 'inset 0 0 0 2px var(--accent)', offset: 0.35 },
+					{ boxShadow: 'inset 0 0 0 2px transparent' },
+				], { duration: 450, easing: 'ease-out' });
+			}
+			return;
+		}
 		case 'focusInput':
 			// Not while a tab is being renamed: the host asks for this on every tab
 			// selection, and a reply that arrives after the double-click closed
@@ -1667,7 +1683,7 @@ function terminalMenuItems(): MenuItem[] {
 	return [
 		{ icon: 'terminal', label: 'New terminal', description: 'A shell in the folder of this chat', command: 'newTerminal', run: () => post({ type: 'newTerminal' }) },
 		...offer.agents.map(agent => ({
-			icon: 'terminal', label: `${agent.name} in a terminal`, description: agent.id === 'gemini' ? `${agent.name}'s own CLI (browser tools: Connect Gemini CLI)` : `${agent.name}'s own CLI, with the browser tools`, command: 'newTerminal',
+			icon: 'terminal', label: `${agent.name} in a terminal`, description: agent.id === 'gemini' ? `${agent.name}'s own CLI (browser tools: Connect Gemini CLI)` : agent.id === 'opencode' || agent.id === 'pi' ? `${agent.name}'s own CLI (no browser tools in a terminal)` : `${agent.name}'s own CLI, with the browser tools`, command: 'newTerminal',
 			run: () => post({ type: 'newTerminal', agent: agent.id }),
 		})),
 	];
@@ -2346,7 +2362,7 @@ function animateTabSwitch(before: Map<string, number>, ids: string[]): void {
 }
 
 function tabShown(t: StripTab, agent: string | undefined): string {
-	return t.terminal ? terminalTabShown(t.terminal) : JSON.stringify([t.title, t.status, t.agents, t.skillRuns, t.busy, agent, t.chrome, conversationShown(t)]);
+	return t.terminal ? terminalTabShown(t.terminal) : JSON.stringify([t.title, t.status, t.agents, t.skillRuns, t.busy, agent, t.model, t.chrome, conversationShown(t)]);
 }
 
 /**
@@ -2494,12 +2510,14 @@ function fillTab(node: TabNode, agent: string | undefined): void {
 	const parts: (HTMLElement | undefined)[] = [
 		compact,
 		tabMark(t.status),
-		el('span', { class: 'tab-title', text: t.title }),
+		el('span', { class: 'tab-text' },
+			el('span', { class: 'tab-title', text: t.title }),
+			t.model ? el('span', { class: 'tab-model', text: t.model }) : undefined),
 		agentsOf(t) ? el('span', { class: 'tab-agents', text: agentsOf(t) > 99 ? '99+' : String(agentsOf(t)), title: `${agentsOf(t)} agent${agentsOf(t) === 1 ? '' : 's'} working` }) : undefined,
 		terminalBadge,
 	];
 	node.label.replaceChildren(...parts.filter((p): p is HTMLElement => !!p));
-	const description = `${agent ? `${t.title} — ${agent}` : t.title}\n${t.status ? tabMarks[t.status] : 'New chat'}${agentsOf(t) ? ` · ${agentsOf(t)} agent${agentsOf(t) === 1 ? '' : 's'} running` : ''}${t.chrome ? ' · open in Google Chrome' : ''}${badge ? ` · ${badge.title}` : ''}`;
+	const description = `${agent ? `${t.title} — ${agent}${t.model ? ` · ${t.model}` : ''}` : t.title}\n${t.status ? tabMarks[t.status] : 'New chat'}${agentsOf(t) ? ` · ${agentsOf(t)} agent${agentsOf(t) === 1 ? '' : 's'} running` : ''}${t.chrome ? ' · open in Google Chrome' : ''}${badge ? ` · ${badge.title}` : ''}`;
 	node.label.setAttribute('aria-label', description);
 	node.label.title = `${description}\nDouble-click to rename. Drag to reorder. Right-click for chat actions.`;
 	node.close.title = t.busy ? 'Close (stops what it is doing)' : 'Close';
@@ -2532,7 +2550,8 @@ function fillTerminalTab(node: TabNode, terminal: NonNullable<StripTab['terminal
 			return pin;
 		}),
 		...((!state?.surface || state.surface === 'editor') && terminal.remote ? [remoteTerminalMark(terminal)] : []),
-		el('span', { class: 'tab-title', text: terminal.name }));
+		el('span', { class: 'tab-text' },
+			el('span', { class: 'tab-title', text: terminal.name })));
 	const description = terminalTabTitle(terminal, agent, ownerAgent) + (marks.some(m => m.kind === 'unread') ? '\nNew output since you last looked' : '');
 	node.label.setAttribute('aria-label', description);
 	node.label.title = `${description}\nDouble-click to rename. Right-click for terminal actions.`;
@@ -3394,7 +3413,7 @@ function welcome(s: ChatViewState): HTMLElement {
 	box.append(el('div', { class: 'welcome-hint', text: available.length
 		? `Ask ${available.map(a => a.name).join(' or ')} below. Use + to attach a screenshot, an element or the page address.`
 		: s.detecting ? 'Looking for Claude Code, Codex and Gemini CLI…' : 'No agent is available yet.' }));
-	for (const agent of s.agents.filter(a => !a.available && a.problem)) {
+	for (const agent of s.agents.filter(a => a.id !== 'openrouter' && !a.available && a.problem)) {
 		box.append(el('div', { class: 'welcome-problem', text: `${agent.name}: ${agent.problem}` }));
 	}
 	if (s.news?.features?.length) {
@@ -3404,11 +3423,13 @@ function welcome(s: ChatViewState): HTMLElement {
 			const text = el('span', { class: 'welcome-feature-text' });
 			inline(text, feature.text);
 			if (feature.title === 'Chrome extension') {
-				// ZIP downloads belong in the system browser.
+				// Installation links belong in the system browser.
 				for (const link of text.querySelectorAll<HTMLElement>('[role="link"]')) {
 					const url = link.title.split('\n')[0];
-					if (!/^https:\/\/github\.com\/Denis-Davidoff\/vs-code-tab-browser-ultimate\/raw\/.+\.zip$/.test(url)) { continue; }
-					link.title = 'Download Chrome extension ZIP';
+					const isZip = /^https:\/\/github\.com\/Denis-Davidoff\/vs-code-tab-browser-ultimate\/raw\/.+\.zip$/.test(url);
+					const isStore = url === 'https://chromewebstore.google.com/detail/ai-browser/jhdffimahnoijnnfnjadghjhkacheogn';
+					if (!isZip && !isStore) { continue; }
+					link.title = isZip ? 'Download Chrome extension ZIP' : 'Open Chrome Web Store';
 					link.classList.add('welcome-feature-link');
 					const download = (event: Event) => {
 						event.preventDefault();
@@ -3498,7 +3519,7 @@ function opinionButton(index: number): HTMLButtonElement {
 			for (const model of agent.models) {
 				const own = agent.id === s.selection.agent && model.id === s.selection.model;
 				items.push({
-					icon: agent.id === 'claude' ? 'sparkle' : agent.id === 'gemini' ? 'star-full' : 'hubot',
+					icon: agent.id === 'claude' ? 'sparkle' : agent.id === 'gemini' ? 'star-full' : agent.id === 'openrouter' ? 'cloud' : agent.id === 'opencode' ? 'code' : agent.id === 'pi' ? 'circuit-board' : 'hubot',
 					label: `${agent.name} · ${model.label}`,
 					description: own ? 'This conversation' : undefined,
 					disabled: own,
@@ -6488,12 +6509,15 @@ agentPill.addEventListener('click', () => {
 		return;
 	}
 	openMenu(selectorAnchor(agentPill), s.agents.map(a => ({
-		icon: a.id === 'claude' ? 'sparkle' : a.id === 'gemini' ? 'star-full' : 'hubot',
+		icon: a.id === 'claude' ? 'sparkle' : a.id === 'gemini' ? 'star-full' : a.id === 'openrouter' ? 'cloud' : a.id === 'opencode' ? 'code' : a.id === 'pi' ? 'circuit-board' : 'hubot',
 		label: a.name,
 		description: a.available ? a.detail?.split(':')[0] : a.problem,
 		checked: a.id === s.selection.agent,
-		disabled: !a.available,
-		run: () => post({ type: 'select', selection: { agent: a.id } }),
+		disabled: !a.available && a.id !== 'openrouter',
+		run: () => {
+			if (a.id === 'openrouter' && !a.available) { openFeatureSettings('openrouter'); }
+			else { post({ type: 'select', selection: { agent: a.id } }); }
+		},
 	})), 'Agent', gate('setAgentBinary').s === 'on' ? { icon: 'gear', title: 'Which Claude Code, Codex and Gemini CLI apps to use', run: openAgentApps } : undefined);
 });
 
@@ -6527,13 +6551,22 @@ function agentAuthenticationActions(agent: ChatAgent, detecting: boolean): HTMLE
 }
 function renderAgentAuthentication(s: ChatViewState): void {
 	const agent = s.agents.find(a => a.id === s.selection.agent);
-	const show = !!agent && !!(agent.authentication?.required || agent.authentication?.signingIn);
+	// OpenRouter has no CLI to sign in to: its key is stored in Chat Settings.
+	const keyless = agent?.id === 'openrouter' && !agent.available && !s.detecting && /api key|signed in/i.test(agent.problem ?? '');
+	const show = keyless || (!!agent && agent.id !== 'openrouter' && !!(agent.authentication?.required || agent.authentication?.signingIn));
 	agentAuthBanner.hidden = !show;
-	const shape = JSON.stringify([agent?.id, agent?.authentication, agent?.binary, s.detecting, gate('authenticateAgent')]);
+	const shape = JSON.stringify([agent?.id, agent?.authentication, agent?.binary, s.detecting, gate('authenticateAgent'), keyless, gate('openrouter')]);
 	if (shape === agentAuthShown) return;
 	agentAuthShown = shape;
 	agentAuthBanner.replaceChildren();
 	if (!agent || !show) return;
+	if (keyless) {
+		const open = button([el('span', { text: 'Open Chat Settings → OpenRouter' })], { class: 'agent-app-link' });
+		open.disabled = gate('openrouter').s !== 'on';
+		open.addEventListener('click', () => openFeatureSettings('openrouter'));
+		agentAuthBanner.append(el('span', { text: 'Store your API key in Chat Settings → OpenRouter.' }), el('div', { class: 'agent-auth-actions' }, open));
+		return;
+	}
 	agentAuthBanner.append(el('span', { text: agent.authentication?.signingIn
 		? `Complete ${agent.name} sign-in in the terminal, then close it or press Check after sign-in.`
 		: `${agent.name}: sign-in is required or the session has expired. Sign in again to continue this conversation.` }),
@@ -6575,6 +6608,8 @@ function fillAgentApps(s: ChatViewState): void {
 			? 'Looking for the installed copies…'
 			: 'Which copy of each agent this project uses. Auto picks the newest one found. Changing it ends a reply in progress with that agent; the conversation carries on with the new copy.' }));
 	for (const agent of s.agents) {
+		// No binary to choose (OpenRouter is an HTTP API): nothing to show here.
+		if (agent.id === 'openrouter') { continue; }
 		const copies = agent.copies ?? [];
 		const label = (copy: { version?: string; source: string; path: string }) => {
 			const text = `${copy.version ?? 'unknown version'} — ${copy.source}`;
@@ -8464,7 +8499,7 @@ function openSkillEditor(skill?: ToolbarSkill): void {
 		(stepList.lastElementChild?.querySelector('.form-prompt') as HTMLTextAreaElement | null)?.focus();
 	});
 
-	const agents = selectField<ToolbarSkill['agents']>([['all', 'All agents'], ['claude', 'Claude Code only'], ['codex', 'Codex only'], ['gemini', 'Gemini CLI only']], editorAgents);
+	const agents = selectField<ToolbarSkill['agents']>([['all', 'All agents'], ['claude', 'Claude Code only'], ['codex', 'Codex only'], ['gemini', 'Gemini CLI only'], ['openrouter', 'OpenRouter only'], ['opencode', 'OpenCode only'], ['pi', 'Pi only']], editorAgents);
 	agents.addEventListener('change', () => { editorAgents = agents.value as ToolbarSkill['agents']; });
 
 	const results: readonly (readonly [ToolbarResult, string, string])[] = [
@@ -9643,7 +9678,208 @@ function createAppearanceSettings(): HTMLElement {
  return content;
 }
 
-function openFeatureSettings(): void {
+
+/* ---------------------------------------------------------------- OpenRouter settings */
+
+type OpenRouterMessage = Extract<HostToView, { type: 'openrouter' }>;
+type OpenRouterModelEdit = NonNullable<OpenRouterMessage['models']>[number];
+/** The host's last answer: whether a key is stored (never the key), the models, a catalogue page. Kept across openings of the panel. */
+let openrouterData: OpenRouterMessage | undefined;
+/** Draws `openrouterData` into the section that is on screen, in place; unset while the panel is closed. */
+let openrouterRender: (() => void) | undefined;
+
+/**
+ * The OpenRouter section of Chat Settings. Every action is its own message and
+ * applies at once (no Save button): the host answers with what is stored, and
+ * the section draws that. The key field is write-only: it is emptied the moment
+ * it is sent, and nothing the host posts contains it. The form for one model
+ * lives apart from the lists, so a rebuild of a list never takes typed text
+ * away (#365), and the section survives the view losing focus like the rest
+ * of the panel (#491). Everything from the host is drawn with textContent.
+ */
+function createOpenRouterSettings(): HTMLElement {
+	const content = el('div', { class: 'feature-settings-content openrouter-settings' });
+	const post_ = (message: Extract<ViewToHost, { type: 'openrouter' }>) => post(message);
+	const status = el('p', { class: 'openrouter-status' }); status.setAttribute('role', 'status');
+	const note = (text: string, error = false) => { status.textContent = text; status.classList.toggle('error', error); };
+
+	// --- the key
+	const keyState = el('span', { class: 'openrouter-key-state' });
+	const keyField = el('input'); keyField.type = 'password'; keyField.autocomplete = 'off'; keyField.spellcheck = false;
+	keyField.placeholder = 'sk-or-…'; keyField.setAttribute('aria-label', 'OpenRouter API key');
+	const keySave = button(['Store key'], { class: 'feature-settings-save' });
+	const keyRemove = button(['Remove'], { class: 'ghost' });
+	const sendKey = () => {
+		if (!keyField.value.trim()) { note('Type or paste an API key.', true); return; }
+		note('Storing…');
+		const key = keyField.value;
+		keyField.value = '';
+		post_({ type: 'openrouter', action: 'setKey', key });
+	};
+	keySave.addEventListener('click', sendKey);
+	keyField.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); sendKey(); } });
+	keyRemove.addEventListener('click', () => { note('Removing…'); post_({ type: 'openrouter', action: 'removeKey' }); });
+	const keyRow = el('div', { class: 'feature-settings-row openrouter-key' }, el('strong', { text: 'API key' }),
+		el('div', { class: 'openrouter-key-line' }, keyState),
+		el('div', { class: 'openrouter-key-line' }, keyField, keySave, keyRemove),
+		el('p', { class: 'feature-settings-note', text: 'The key is kept in VS Code’s secret storage and is never shown again. Storing a new one replaces the old. It is sent only to OpenRouter.' }));
+
+	// --- the models
+	const modelList = el('div', { class: 'openrouter-list' });
+	const form = el('div', { class: 'openrouter-form' }); form.hidden = true;
+	const addButton = button([icon('add'), 'Add a model by id'], { class: 'ghost' });
+	let listSignature = '';
+	let editing: { original?: string } | undefined;
+	let formSaving = false;
+	// The list a change is based on is the newest one asked for, not the last acknowledged: two quick Adds both survive.
+	let pendingModels: OpenRouterModelEdit[] | undefined;
+	const models = (): OpenRouterModelEdit[] => [...(pendingModels ?? openrouterData?.models ?? [])];
+	const saveModels = (list: readonly OpenRouterModelEdit[]) => { pendingModels = [...list]; note('Saving…'); post_({ type: 'openrouter', action: 'saveModels', models: list }); };
+
+	const closeForm = () => { editing = undefined; formSaving = false; form.hidden = true; form.replaceChildren(); };
+	const openForm = (original?: OpenRouterModelEdit) => {
+		editing = { original: original?.id }; formSaving = false; form.hidden = false;
+		const text = (label: string, value: string, attrs: { type?: string; placeholder?: string; hint?: string } = {}) => {
+			const field = el('input'); field.type = attrs.type ?? 'text'; field.value = value; field.spellcheck = false; field.autocomplete = 'off';
+			if (attrs.placeholder) { field.placeholder = attrs.placeholder; }
+			field.setAttribute('aria-label', label);
+			return { field, label: el('label', {}, el('span', { text: label }), field) };
+		};
+		const id = text('Model id', original?.id ?? '', { placeholder: 'vendor/model-name' });
+		const name = text('Display name (optional)', original?.name ?? '');
+		const maxTokens = text('Max tokens (optional)', original?.maxTokens === undefined ? '' : String(original.maxTokens), { placeholder: 'service default' });
+		const temperature = text('Temperature 0–2 (optional)', original?.temperature === undefined ? '' : String(original.temperature), { placeholder: 'service default' });
+		const reasoning = el('select');
+		reasoning.setAttribute('aria-label', 'Reasoning level');
+		// `data-appearance`: the Save button's disable/enable sweeps skip it (it is not one of the AI-feature selects).
+		reasoning.dataset.appearance = 'openrouter';
+		for (const [value, label] of [['', 'Off / model default'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High']]) {
+			const option = el('option', { text: label }); option.value = value; reasoning.append(option);
+		}
+		reasoning.value = original?.reasoning ?? '';
+		const check = (label: string, on: boolean) => {
+			const box = el('input'); box.type = 'checkbox'; box.checked = on; box.setAttribute('aria-label', label);
+			return { box, label: el('label', { class: 'openrouter-check' }, box, el('span', { text: label })) };
+		};
+		const tools = check('Supports tools', original?.tools !== false);
+		const images = check('Supports images', original?.images === true);
+		const error = el('p', { class: 'openrouter-form-error' }); error.setAttribute('role', 'alert');
+		const done = button([original ? 'Save changes' : 'Add model'], { class: 'feature-settings-save' });
+		const cancel = button(['Cancel'], { class: 'ghost' });
+		const submit = () => {
+			if (formSaving) { return; }
+			const max = parseOptionalNumber(maxTokens.field.value); const temp = parseOptionalNumber(temperature.field.value);
+			const problem = !id.field.value.trim() ? 'A model needs an id.' : 'error' in max ? `Max tokens ${max.error}.` : 'error' in temp ? `Temperature ${temp.error}.` : '';
+			if (problem) { error.textContent = problem; return; }
+			error.textContent = '';
+			const edited: OpenRouterModelEdit = {
+				id: id.field.value.trim(),
+				...(name.field.value.trim() ? { name: name.field.value.trim() } : {}),
+				...('value' in max && max.value !== undefined ? { maxTokens: max.value } : {}),
+				...('value' in temp && temp.value !== undefined ? { temperature: temp.value } : {}),
+				...(reasoning.value ? { reasoning: reasoning.value as 'low' | 'medium' | 'high' } : {}),
+				tools: tools.box.checked, images: images.box.checked,
+			};
+			const list = models();
+			const at = editing?.original === undefined ? -1 : list.findIndex(m => m.id === editing?.original);
+			if (at >= 0) { list[at] = edited; } else { list.push(edited); }
+			formSaving = true; done.disabled = true;
+			saveModels(list);
+		};
+		done.addEventListener('click', submit);
+		cancel.addEventListener('click', closeForm);
+		// Assigned, not added: a reopened form must not keep the previous form's handler alive.
+		form.onkeydown = event => {
+			if (event.key === 'Enter' && !event.isComposing && event.target instanceof HTMLInputElement && event.target.type !== 'checkbox') { event.preventDefault(); submit(); }
+			else if (event.key === 'Escape' && !event.isComposing) { event.stopPropagation(); closeForm(); }
+		};
+		form.replaceChildren(el('strong', { text: original ? `Edit ${original.id}` : 'Add a model' }),
+			el('div', { class: 'openrouter-form-grid' }, id.label, name.label, maxTokens.label, temperature.label, el('label', {}, el('span', { text: 'Reasoning' }), reasoning),
+				el('div', { class: 'openrouter-checks' }, tools.label, images.label)),
+			error, el('div', { class: 'openrouter-form-actions' }, done, cancel));
+		id.field.focus();
+	};
+	addButton.addEventListener('click', () => openForm());
+
+	// --- the catalogue
+	const search = el('input'); search.type = 'search'; search.placeholder = 'Search OpenRouter models, e.g. claude sonnet'; search.spellcheck = false; search.autocomplete = 'off';
+	search.setAttribute('aria-label', 'Search the OpenRouter model catalogue');
+	const refresh = button([icon('refresh')], { class: 'ghost', title: 'Fetch the catalogue again' });
+	const catalogInfo = el('p', { class: 'feature-settings-note openrouter-catalog-info' }); catalogInfo.setAttribute('role', 'status');
+	const catalogList = el('div', { class: 'openrouter-list' });
+	let catalogSignature = '';
+	let lastCatalog: OpenRouterMessage['catalog'];
+	let searchTimer: ReturnType<typeof setTimeout> | undefined;
+	const ask = (fresh = false) => { catalogInfo.textContent = 'Searching…'; post_({ type: 'openrouter', action: 'catalog', query: search.value, ...(fresh ? { refresh: true } : {}) }); };
+	search.addEventListener('input', () => { if (searchTimer) { clearTimeout(searchTimer); } searchTimer = setTimeout(() => ask(), 300); });
+	search.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); if (searchTimer) { clearTimeout(searchTimer); } ask(); } });
+	refresh.addEventListener('click', () => ask(true));
+
+	const render = () => {
+		const data = openrouterData;
+		if (!data) { keyState.textContent = 'Loading…'; return; }
+		// An answer that matches what was last asked for, or an error, ends the wait; an older answer leaves it.
+		if (pendingModels && (data.error || JSON.stringify(data.models) === JSON.stringify(pendingModels))) { pendingModels = undefined; }
+		keyState.textContent = data.keySet ? 'A key is stored.' : 'No key is stored. Optional for compatible servers such as Ollama; required by OpenRouter.';
+		keySave.textContent = data.keySet ? 'Replace key' : 'Store key';
+		keyRemove.hidden = !data.keySet;
+		if (data.error) { note(data.error, true); formSaving = false; for (const b of form.querySelectorAll<HTMLButtonElement>('button')) { b.disabled = false; } const e = form.querySelector('.openrouter-form-error'); if (e) { e.textContent = data.error; } }
+		else if (data.notice) { note(data.notice); if (editing && formSaving) { closeForm(); } }
+		else if (!data.catalog) { note(''); }
+
+		// The configured models: rebuilt only when they change.
+		const signature = JSON.stringify(data.models);
+		if (signature !== listSignature) {
+			listSignature = signature;
+			modelList.replaceChildren(...(data.models.length ? data.models.map(model => {
+				const edit = button(['Edit'], { class: 'ghost', title: `Edit ${model.id}` });
+				const remove = button([icon('trash')], { class: 'ghost', title: `Remove ${model.id}` });
+				edit.addEventListener('click', () => openForm(model));
+				remove.addEventListener('click', () => { if (editing?.original === model.id) { closeForm(); } saveModels(models().filter(m => m.id !== model.id)); });
+				const summary = modelSummary(model);
+				return el('div', { class: 'openrouter-item' },
+					el('div', { class: 'openrouter-item-text' }, el('strong', { text: model.name ?? model.id }), el('span', { text: [model.name ? model.id : '', summary].filter(Boolean).join(' · ') })),
+					edit, remove);
+			}) : [el('p', { class: 'feature-settings-note', text: 'No models yet. Search the catalogue below, or add one by its id.' })]));
+		}
+
+		// The catalogue page: rebuilt only when it, or which of its models are added, changes.
+		const have = new Set(data.models.map(m => m.id.toLowerCase()));
+		// A model added or removed answers with no catalogue page: the last one is drawn again, for its Added marks.
+		if (data.catalog) { lastCatalog = data.catalog; }
+		if (lastCatalog && lastCatalog.query.trim() === search.value.trim()) {
+			const c = lastCatalog;
+			const sig = JSON.stringify([c.items.map(i => [i.id, have.has(i.id.toLowerCase())]), c.total, c.error]);
+			catalogInfo.textContent = c.error ? `Could not load the catalogue: ${c.error}` : c.total > c.items.length ? `Showing ${c.items.length} of ${c.total} models. Type to narrow the search.` : `${c.total} model${c.total === 1 ? '' : 's'}.`;
+			if (sig !== catalogSignature) {
+				catalogSignature = sig;
+				catalogList.replaceChildren(...c.items.map(item => {
+					const added = have.has(item.id.toLowerCase());
+					const add = button([added ? 'Added' : 'Add'], { class: added ? 'ghost' : 'feature-settings-save', title: added ? `${item.id} is already added` : `Add ${item.id}` });
+					add.disabled = added;
+					add.addEventListener('click', () => { add.disabled = true; saveModels([...models(), modelFromCatalogItem(item)]); });
+					const facts = [formatContext(item.contextLength) && `${formatContext(item.contextLength)} context`, describePrice(item), item.tools ? 'tools' : 'no tools', item.images ? 'images' : '', item.reasoning ? 'reasoning' : ''].filter(Boolean).join(' · ');
+					return el('div', { class: 'openrouter-item' },
+						el('div', { class: 'openrouter-item-text' }, el('strong', { text: item.name }), el('span', { text: item.id }), el('span', { class: 'openrouter-facts', text: facts })), add);
+				}));
+			}
+		}
+	};
+	openrouterRender = render;
+	render();
+	post_({ type: 'openrouter', action: 'load' });
+	ask();
+
+	content.append(
+		el('p', { text: 'OpenRouter reaches many providers’ models with one API key. It runs inside the chat, with the browser, editor and chat tools; it has no shell and no file edits of its own. Changes apply at once; the model menu of the OpenRouter agent lists the models below.' }),
+		keyRow, status,
+		el('div', { class: 'feature-settings-row openrouter-models' }, el('strong', { text: 'Models' }), modelList, form, addButton),
+		el('div', { class: 'feature-settings-row openrouter-catalog' }, el('strong', { text: 'Catalogue' }),
+			el('div', { class: 'openrouter-search' }, search, refresh), catalogInfo, catalogList));
+	return content;
+}
+
+function openFeatureSettings(initial?: 'openrouter'): void {
 	if (!state) { return; }
 	closePopups(featureSettingsPanel);
 	if (!featureSettingsSaving) { featureSettingsDraft = readFeatureAiSettings(state.featureAi); videoQualityDraft = readRecordingQuality(state.recordingQuality); videoSecondsDraft = readRecordingSeconds(state.recordingSeconds); }
@@ -9680,6 +9916,14 @@ function openFeatureSettings(): void {
  const appearanceContent = createAppearanceSettings();
  appearanceContent.id = 'appearance-content'; appearanceContent.hidden = true;
  appearanceContent.setAttribute('role', 'tabpanel'); appearanceContent.setAttribute('aria-labelledby', appearanceTab.id);
+	const openrouterTab = button(['OpenRouter'], { class: 'feature-settings-tab' });
+	openrouterTab.id = 'openrouter-tab'; openrouterTab.hidden = gate('openrouter').s !== 'on';
+	openrouterTab.setAttribute('role', 'tab'); openrouterTab.setAttribute('aria-selected', 'false');
+	openrouterTab.setAttribute('aria-controls', 'openrouter-content');
+	if (!openrouterTab.hidden) { tabs.append(openrouterTab); }
+	const openrouterContent = openrouterTab.hidden ? el('div') : createOpenRouterSettings();
+	openrouterContent.id = 'openrouter-content'; openrouterContent.hidden = true;
+	openrouterContent.setAttribute('role', 'tabpanel'); openrouterContent.setAttribute('aria-labelledby', openrouterTab.id);
 	const serverTab = button(['Server connection'], { class: 'feature-settings-tab' });
 	serverTab.id = 'server-connection-tab'; serverTab.hidden = !state.exchangeConnection;
 	serverTab.setAttribute('role', 'tab'); serverTab.setAttribute('aria-selected', 'false');
@@ -9789,14 +10033,15 @@ function openFeatureSettings(): void {
 		content.append(row);
 	}
 	content.append(el('p', { class: 'feature-settings-note', text: "Commit messages use the selected agent's remembered chat model or its default. Branch names and chat titles use an available lightweight model. Effort is mapped to the levels supported by that model. Custom prompts apply to future requests; output format and length checks still apply. Empty prompts use the defaults. Settings are shared across projects." }));
-	const selectTab = (selected: 'ai' | 'video' | 'temporary' | 'server' | 'appearance') => {
+	const selectTab = (selected: 'ai' | 'video' | 'temporary' | 'server' | 'appearance' | 'openrouter') => {
+		openrouterContent.hidden = selected !== 'openrouter'; openrouterTab.setAttribute('aria-selected', String(selected === 'openrouter'));
 		content.hidden = selected !== 'ai'; videoContent.hidden = selected !== 'video'; temporaryContent.hidden = selected !== 'temporary';
 		tab.setAttribute('aria-selected', String(selected === 'ai')); videoTab.setAttribute('aria-selected', String(selected === 'video'));
 		temporaryTab.setAttribute('aria-selected', String(selected === 'temporary'));
 		serverContent.hidden = selected !== 'server'; serverTab.setAttribute('aria-selected', String(selected === 'server'));
 		appearanceContent.hidden = selected !== 'appearance'; appearanceTab.setAttribute('aria-selected', String(selected === 'appearance'));
-		featureSettingsSave.hidden = selected === 'temporary' || selected === 'server' || selected === 'appearance';
-		featureSettingsStatus.hidden = selected === 'server' || selected === 'appearance';
+		featureSettingsSave.hidden = selected === 'temporary' || selected === 'server' || selected === 'appearance' || selected === 'openrouter';
+		featureSettingsStatus.hidden = selected === 'server' || selected === 'appearance' || selected === 'openrouter';
 	};
 	tab.addEventListener('click', () => selectTab('ai')); videoTab.addEventListener('click', () => selectTab('video'));
 	// Temporary files live on the editor's machine: the tab is gone where they cannot be managed.
@@ -9808,7 +10053,8 @@ function openFeatureSettings(): void {
 	serverTab.addEventListener('click', () => selectTab('server'));
 	featureSettingsSave.hidden = false; featureSettingsStatus.hidden = false;
 	appearanceTab.addEventListener('click', () => selectTab('appearance'));
-	const sections = [tab, videoTab, temporaryTab, appearanceTab, ...(state.exchangeConnection ? [serverTab] : [])];
+	openrouterTab.addEventListener('click', () => selectTab('openrouter'));
+	const sections = [tab, videoTab, temporaryTab, appearanceTab, ...(openrouterTab.hidden ? [] : [openrouterTab]), ...(state.exchangeConnection ? [serverTab] : [])];
 	tabs.addEventListener('keydown', event => {
 		const index = sections.indexOf(document.activeElement as HTMLButtonElement);
 		if (index < 0 || !['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) { return; }
@@ -9819,10 +10065,11 @@ function openFeatureSettings(): void {
 	});
 	featureSettingsPanel.replaceChildren(heading,
 		el('div', { class: 'feature-settings-layout' }, tabs,
-			el('div', { class: 'feature-settings-main' }, content, videoContent, temporaryContent, serverContent, appearanceContent,
+			el('div', { class: 'feature-settings-main' }, content, videoContent, temporaryContent, openrouterContent, serverContent, appearanceContent,
 				el('div', { class: 'feature-settings-actions' }, featureSettingsStatus, featureSettingsSave))));
 	showScreenOverlay(featureSettingsPanel);
 	featureSettingsPanel.focus();
+	if (initial === 'openrouter' && !openrouterTab.hidden) { selectTab('openrouter'); }
 }
 featureSettingsSave.addEventListener('click', () => {
 	if (featureSettingsSaving) { return; }

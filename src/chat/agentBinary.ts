@@ -65,6 +65,12 @@ const extensionIds: Record<AgentId, string | undefined> = {
 	claude: 'anthropic.claude-code',
 	codex: 'openai.chatgpt',
 	gemini: undefined,
+	// OpenRouter is an HTTP API: there is no program to find.
+	openrouter: undefined,
+	// OpenCode's installer writes a native executable under `~/.opencode/bin`;
+	// Pi is an npm package. Neither has a VS Code extension that carries a copy.
+	opencode: undefined,
+	pi: undefined,
 };
 
 /** What detection found for one agent, and which copy it uses. */
@@ -125,10 +131,13 @@ async function listAgentBinaries(agent: AgentId): Promise<AgentBinary[]> {
 	const home = os.homedir();
 	const common = agent === 'claude'
 		? [path.join(home, '.local', 'bin'), path.join(home, '.claude', 'local'), '/opt/homebrew/bin', '/usr/local/bin']
-		: agent === 'gemini'
+		: agent === 'opencode'
+			// The installer's own folder first: a native Mach-O, no Node needed.
+			? [path.join(home, '.opencode', 'bin'), path.join(home, '.local', 'bin'), path.join(home, '.npm-global', 'bin'), ...await nvmBins(home), '/opt/homebrew/bin', '/usr/local/bin']
+		: agent === 'gemini' || agent === 'pi'
 			// An npm install: a global prefix of the user's own, or one of nvm's
 			// Node versions, which a VS Code started from the Dock has no `PATH` to.
-			? [path.join(home, '.local', 'bin'), path.join(home, '.npm-global', 'bin'), ...await nvmBins(home), '/opt/homebrew/bin', '/usr/local/bin']
+			? [path.join(home, '.local', 'bin'), ...(agent === 'pi' ? [path.join(home, '.pi', 'agent', 'bin')] : []), path.join(home, '.npm-global', 'bin'), ...await nvmBins(home), '/opt/homebrew/bin', '/usr/local/bin']
 			: [path.join(home, '.local', 'bin'), '/opt/homebrew/bin', '/usr/local/bin'];
 
 	const found: { path: string; source: AgentBinary['source'] }[] = [];

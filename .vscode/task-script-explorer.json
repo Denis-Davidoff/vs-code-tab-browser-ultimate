@@ -1,3 +1,12 @@
 {
-  "tasks": {}
+  "tasks": {
+    "commit": {
+      "agent": "codex",
+      "model": "astra6.1",
+      "access": "read",
+      "result": "report",
+      "notify": "done",
+      "prompt": "commit efsdfsdf"
+    }
+  }
 }

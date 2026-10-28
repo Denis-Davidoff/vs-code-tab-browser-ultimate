@@ -329,7 +329,7 @@ export function readClosedAlerts(stored: unknown): ClosedAlerts {
 	if (!stored || typeof stored !== 'object' || Array.isArray(stored)) {
 		return out;
 	}
-	for (const agent of ['claude', 'codex', 'gemini'] as const) {
+	for (const agent of ['claude', 'codex', 'gemini', 'openrouter', 'opencode', 'pi'] as const) {
 		const entry = (stored as Record<string, unknown>)[agent];
 		if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
 			continue;

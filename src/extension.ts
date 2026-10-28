@@ -727,7 +727,7 @@ export function activate(context: vscode.ExtensionContext) {
 		// `agent` starts that agent's own CLI instead; anything else is a shell.
 		vscode.commands.registerCommand('aiBrowser.chat.newTerminal', async (agent?: unknown) => {
 			await revealChat();
-			await chat.newTerminal(agent === 'claude' || agent === 'codex' || agent === 'gemini' ? agent : undefined);
+			await chat.newTerminal(agent === 'claude' || agent === 'codex' || agent === 'gemini' || agent === 'opencode' || agent === 'pi' ? agent : undefined);
 		}),
 		vscode.commands.registerCommand('aiBrowser.chat.settings', async () => {
 			await revealChat();

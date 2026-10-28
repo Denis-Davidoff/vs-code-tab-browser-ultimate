@@ -90,6 +90,10 @@ const assistantGlyphs: Record<ClientKind, string> = {
 	codex: '🟦',
 	// No build ever wrote this one into a title; it is here because the map is per kind.
 	gemini: '🔷',
+	openrouter: '🟢',
+	// Like Gemini's, never written into a title.
+	opencode: '🟡',
+	pi: '🟤',
 	other: '🟣',
 };
 

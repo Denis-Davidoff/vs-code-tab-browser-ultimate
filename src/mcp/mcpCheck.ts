@@ -133,6 +133,9 @@ export async function checkConnection(server: McpServer, browser: BrowserControl
 		server.clients.claude ? 'Claude Code' : undefined,
 		server.clients.codex ? 'Codex' : undefined,
 		server.clients.gemini ? 'Gemini CLI' : undefined,
+		server.clients.openrouter ? 'OpenRouter' : undefined,
+		server.clients.opencode ? 'OpenCode' : undefined,
+		server.clients.pi ? 'Pi' : undefined,
 	].filter(Boolean) as string[];
 
 	const lines = [

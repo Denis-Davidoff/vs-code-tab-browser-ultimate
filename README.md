@@ -99,6 +99,8 @@ For limits, settings and technical details, see [CLAUDE.md](CLAUDE.md#browser-vi
 
 ## 📝 Changelog
 
+**0.9.3** — Adding a chat reuses an existing empty tab and briefly highlights it instead of creating a duplicate.
+
 **0.9.2** — A tidier tab strip: the tab in front is always 35% wider than the rest and switches
 with a quick linear animation. When tabs overflow, the remaining ones share the full width and
 hovering the dropdown opens the list, where a hovered row has a close button and a tab picked

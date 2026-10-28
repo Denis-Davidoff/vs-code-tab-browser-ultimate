@@ -2584,6 +2584,19 @@ export function geminiApprovalAnswer(params: Record<string, unknown>, allow: boo
 		: { outcome: { outcome: 'cancelled' } };
 }
 
+/* ------------------------------------------------------------- OpenRouter */
+
+/**
+ * The card for a tool call the OpenRouter agent is about to make. Every tool
+ * it has comes from this window's own MCP server (it has no shell and no file
+ * tools of its own), so the call is classified by `ourToolClass`, which fails
+ * closed: a name nobody listed is Other tools, never AI Browser. `args` are the
+ * arguments as the model wrote them, shown whole — what Allow runs.
+ */
+export function openrouterApproval(id: string, tool: string, args: Readonly<Record<string, unknown>> | undefined, raw: string): ApprovalRequest {
+	return ourToolApproval(id, tool, args, args ? argumentLines(args) : whole(raw) || undefined);
+}
+
 /* --------------------------------------------------------------- helpers */
 
 function isRecord(value: unknown): value is Record<string, unknown> {

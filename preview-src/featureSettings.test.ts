@@ -46,7 +46,7 @@ function harness() {
 		featureSettingsSaving: false, featureSettingsDraft: readFeatureAiSettings(undefined),
 		videoQualityDraft: 'high' as RecordingQuality, videoSecondsDraft: 300 as number | undefined, recordingProfiles, readRecordingQuality,
 		readRecordingSeconds, minRecordingSeconds, maxRecordingSeconds,
-		readFeatureAiSettings, aiFeatures, defaultFeaturePrompts, featurePromptLimit, createAppearanceSettings: () => new Element('div'), createTemporarySettings: () => new Element('div'), createServerSettings: () => new Element('div'), input: { focus() {} }, closePopups() {},
+		readFeatureAiSettings, aiFeatures, defaultFeaturePrompts, featurePromptLimit, createAppearanceSettings: () => new Element('div'), createTemporarySettings: () => new Element('div'), createServerSettings: () => new Element('div'), createOpenRouterSettings: () => new Element('div'), input: { focus() {} }, closePopups() {},
 		el(tag: string, props: { class?: string } = {}, ...children: (Element | string)[]) { const node = new Element(tag); node.className = props.class ?? ''; node.append(...children); return node; },
 		button: (children: (Element | string)[], props: { class?: string } = {}) => { const node = new Element('button'); node.className = props.class ?? ''; node.append(...children); return node; }, icon: () => new Element('i'),
 		gate: () => ({ s: 'on' }),
@@ -55,7 +55,7 @@ function harness() {
 	};
 	const context = createContext(scope);
 	const execute = (code: string) => runInContext(transpileModule(code, { compilerOptions: { target: ScriptTarget.ES2022 } }).outputText, context);
-	const open = source.match(/function openFeatureSettings\(\): void \{[\s\S]*?\n\}/)?.[0];
+	const open = source.match(/function openFeatureSettings\([^)]*\): void \{[\s\S]*?\n\}/)?.[0];
 	const listener = source.match(/featureSettingsSave.addEventListener\('click', \(\) => \{[\s\S]*?\n\}\);/)?.[0];
 	const acknowledgement = source.split("case 'featureAiSaved':")[1]?.split('return;')[0];
 	assert.ok(open && listener && acknowledgement);

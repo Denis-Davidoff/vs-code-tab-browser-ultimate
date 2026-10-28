@@ -391,7 +391,7 @@ export function authorizeRequest(facts: RequestFacts, token: string): Decision {
 /* -------------------------------------------------------------- client kinds */
 
 /** Which assistant is on the other end, as far as we can tell. */
-export type ClientKind = 'claude' | 'codex' | 'gemini' | 'other';
+export type ClientKind = 'claude' | 'codex' | 'gemini' | 'openrouter' | 'opencode' | 'pi' | 'other';
 
 /**
  * Classifies a client from the `clientInfo.name` it sends with `initialize`.
@@ -411,6 +411,18 @@ export function classifyClient(clientName: string | undefined): ClientKind {
 	// `gemini-cli-mcp-client` (gemini-cli 0.64, measured), in a terminal and in the chat alike.
 	if (name.includes('gemini')) {
 		return 'gemini';
+	}
+	// The chat's own OpenRouter agent introduces itself as `ai-browser-openrouter`.
+	if (name.includes('openrouter')) {
+		return 'openrouter';
+	}
+	// OpenCode sends `opencode` (2.1.1) and Pi `pi` (1.4.0), both measured. Pi's
+	// is matched whole: a two-letter substring would claim half the clients there are.
+	if (name.includes('opencode')) {
+		return 'opencode';
+	}
+	if (name === 'pi') {
+		return 'pi';
 	}
 	return 'other';
 }

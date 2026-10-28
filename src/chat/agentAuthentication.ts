@@ -8,12 +8,13 @@ import { isAgentAuthenticationError } from './agentAuthText';
 export { isAgentAuthenticationError };
 
 export function agentLoginArgs(agent: AgentId): string[] {
-	return agent === 'claude' ? ['auth', 'login'] : agent === 'codex' ? ['login'] : ['--prompt-interactive', '/auth'];
+	return agent === 'claude' ? ['auth', 'login'] : agent === 'codex' ? ['login'] : agent === 'opencode' ? ['auth', 'login'] : agent === 'pi' ? [] : ['--prompt-interactive', '/auth'];
 }
 
 /** Status commands are local checks; their output may contain account details and stays private. */
 export async function checkAgentLogin(agent: AgentId, binary: string): Promise<void> {
-	if (agent === 'gemini') return; // Gemini's ACP session/new checks its credentials during detection.
+	// Gemini and OpenCode (ACP session/new) and Pi (get_state) are checked by detection itself.
+	if (agent === 'gemini' || agent === 'opencode' || agent === 'pi') return;
 	const cwd = await privateTempDirectory('agent-sign-in');
 	const env: NodeJS.ProcessEnv = { ...process.env, PATH: [path.dirname(binary), process.env.PATH].filter(Boolean).join(path.delimiter) };
 	delete env.CLAUDECODE; delete env.CLAUDE_CODE_ENTRYPOINT;
@@ -42,7 +43,8 @@ export class AgentAuthentication implements vscode.Disposable {
 		});
 	}
 	public active(id: AgentId): boolean { return this.starting.has(id) || this.terminals.has(id); }
-	public async start(id: AgentId, binary: string): Promise<void> {
+	/** `pathEnv`: a PATH to use instead of the binary's folder (Pi's launcher needs a `node` on it; see `piPath`). */
+	public async start(id: AgentId, binary: string, pathEnv?: string): Promise<void> {
 		if (this.disposed) return;
 		const existing = this.terminals.get(id);
 		if (existing) { existing.show(); return; }
@@ -54,7 +56,7 @@ export class AgentAuthentication implements vscode.Disposable {
 			if (this.disposed) return;
 			const terminal = vscode.window.createTerminal({
 				name: `Sign in · ${id}`, cwd, shellPath: binary, shellArgs: agentLoginArgs(id),
-				env: { PATH: [path.dirname(binary), process.env.PATH].filter(Boolean).join(path.delimiter),
+				env: { PATH: pathEnv ?? [path.dirname(binary), process.env.PATH].filter(Boolean).join(path.delimiter),
 					CLAUDECODE: null, CLAUDE_CODE_ENTRYPOINT: null, GEMINI_CLI_NO_RELAUNCH: 'true',
 					GEMINI_CLI_TRUST_WORKSPACE: 'false' },
 				iconPath: new vscode.ThemeIcon('account'),

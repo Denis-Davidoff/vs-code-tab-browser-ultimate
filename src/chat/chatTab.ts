@@ -937,14 +937,16 @@ export class ChatTab {
 			this._pending = [pending];
 			this._flushWaiting();
 		}
-		if (running && (agent === 'claude' || agent === 'gemini')) {
+		if (running && (agent === 'claude' || agent === 'gemini' || agent === 'openrouter' || agent === 'opencode')) {
 			// Taken into the running turn, or answered by a turn of its own right
 			// after it — Claude Code decides, and says which only by doing it (see
 			// `ClaudeSession.send`). Shown as waiting until then, and put into the
 			// conversation where it was taken in; pushed now, it sat in the middle
 			// of the reply still streaming, which went on below it. Gemini CLI
 			// cannot take a message into a running turn at all: `GeminiSession`
-			// holds it and sends it as a turn of its own (`autoTurn`) right after.
+			// holds it and sends it as a turn of its own (`autoTurn`) right after;
+			// OpenCode refuses a second prompt during a turn (-32603), so its session
+			// queues the same way. Pi steers like Codex and takes the `else` below.
 			if (!this._waiting.length) {
 				this._boundary = false;
 			}

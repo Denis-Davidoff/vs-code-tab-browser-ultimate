@@ -63,6 +63,9 @@ export interface ClientSet {
 	readonly claude: boolean;
 	readonly codex: boolean;
 	readonly gemini: boolean;
+	readonly openrouter: boolean;
+	readonly opencode: boolean;
+	readonly pi: boolean;
 }
 
 export class McpServer implements vscode.Disposable {
@@ -171,7 +174,7 @@ export class McpServer implements vscode.Disposable {
 	/** Which assistants have called recently. */
 	public get clients(): ClientSet {
 		const fresh = (kind: ClientKind) => Date.now() - (this._lastByKind.get(kind) ?? 0) < clientIdleMs;
-		return { claude: fresh('claude'), codex: fresh('codex'), gemini: fresh('gemini') };
+		return { claude: fresh('claude'), codex: fresh('codex'), gemini: fresh('gemini'), openrouter: fresh('openrouter'), opencode: fresh('opencode'), pi: fresh('pi') };
 	}
 
 	private _noteActivity(kind: ClientKind | undefined): void {

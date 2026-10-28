@@ -19,7 +19,7 @@ src/chat/news.ts — see "The AI Browser chat" in CLAUDE.md.
 Browse, debug and test your pages in VS Code's own browser — and let Claude Code, Codex or Gemini CLI see them, click through them and take screenshots, right inside the editor.
 
 - $(terminal) **Terminal tabs** — open a shell or Claude Code / Codex in a chat tab; pin it to a conversation and its agent reads it and, with your approval, types.
-- $(extensions) **Chrome extension** — a full 1:1 mirror of your chat, right in Chrome alongside any website. [Download ZIP](https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/raw/refs/heads/main/chrome-extension/ai-browser-chrome-0.6.0.zip) while Chrome Web Store approval is pending.
+- $(extensions) **Chrome extension** — a full 1:1 mirror of your chat, right in Chrome alongside any website. Available on the [Chrome Web Store](https://chromewebstore.google.com/detail/ai-browser/jhdffimahnoijnnfnjadghjhkacheogn). All the latest changes are available only in DEV mode: [Download ZIP](https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/raw/refs/heads/main/chrome-extension/ai-browser-chrome-0.6.0.zip) and follow “How to install” to load it with Developer mode enabled.
 - $(coffee) **Keep awake** — use the cup at the top to prevent sleep for a set time or until all agents and sub-agents finish.
 - $(eye) **View Mode** — choose Minimal, Compact or Standard in the approval menu to control how much work, tool use and thinking is shown.
 - $(files) **Chats across tabs and windows** — open chats with the top +; right-click tabs to move them between the sidebar, tabs and windows with drafts and attachments intact. View chats side by side across screens.
@@ -27,6 +27,11 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 - $(device-camera-video) **Record video** — record browser tabs from their toolbar, up to 4K, into the chat or clipboard.
 - $(location) **Page markers** — pin notes to page elements and send them to the agent as one prompt.
 - $(settings-gear) **Chat Settings** — use the gear at the top to edit prompts for commit messages, branch names and chat titles, or clean up temporary files.
+
+## 0.9.3 — 2026-10-28
+- **Reuse empty chat tabs** — pressing **+** selects and briefly highlights an existing empty chat instead of creating another.
+- **OpenCode and Pi in the chat** — two more agents beside Claude Code, Codex and Gemini CLI: pick them in the agent menu when their CLIs are installed. Tool calls ask in the chat like the others do; neither reports plan limits, and neither gets the browser tools inside a terminal tab. Known gap: OpenCode's code-mode scripts can make web requests without asking, so the Internet setting does not hold for it yet.
+- **OpenRouter settings** — Chat Settings has an OpenRouter section: store your API key (write-only), add models from the OpenRouter catalogue in one click with their context length and price, or by id, and set max tokens, temperature, reasoning and tool/image support for each. Editor only.
 
 ## 0.9.2 — 2026-10-27
 - **Tidier tab strip**: the tab in front is always 35% wider than the others, whatever it holds, and the width change is a quick linear animation. When tabs overflow, the rest share the full width, the **+ chat** and **+ terminal** buttons sit before the dropdown, and hovering it opens the list at once.

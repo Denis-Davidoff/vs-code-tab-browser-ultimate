@@ -10,6 +10,9 @@ import type { AgentId, AgentUsage, ChatAgent, ChatCommand, ChatModel, QuestionAn
 import { ClaudeBackend } from './claudeAgent';
 import { CodexBackend } from './codexAgent';
 import { GeminiBackend } from './geminiAgent';
+import { OpencodeBackend } from './opencodeAgent';
+import { PiBackend, piPath } from './piAgent';
+import { OpenRouterBackend, type OpenRouterConfig } from './openrouterAgent';
 import { AgentAuthentication, checkAgentLogin, isAgentAuthenticationError } from './agentAuthentication';
 
 /**
@@ -113,9 +116,12 @@ export const agentNames: Record<AgentId, string> = {
 	claude: 'Claude Code',
 	codex: 'Codex',
 	gemini: 'Gemini CLI',
+	openrouter: 'OpenRouter',
+	opencode: 'OpenCode',
+	pi: 'Pi',
 };
 
-const agentIds: readonly AgentId[] = ['claude', 'codex', 'gemini'];
+const agentIds: readonly AgentId[] = ['claude', 'codex', 'gemini', 'openrouter', 'opencode', 'pi'];
 
 /** A value the view sent, checked to name one of the agents. */
 export function isAgentId(value: unknown): value is AgentId {
@@ -169,6 +175,8 @@ export class AgentRegistry implements vscode.Disposable {
 		private readonly _browserServer: () => BrowserServer | undefined = () => undefined,
 		/** Whether the folder `cwd` names may load its own settings; see `openSession`. */
 		private readonly _ownSettings: () => boolean = () => true,
+		/** OpenRouter has no binary: its key, models, endpoint and saved chats come from here. Absent, it is not offered. */
+		private readonly _openrouter?: OpenRouterConfig,
 	) { }
 
 	public get agents(): readonly ChatAgent[] {
@@ -178,17 +186,18 @@ export class AgentRegistry implements vscode.Disposable {
 	}
 
 	public authenticationError(id: AgentId, text: string): void {
-		if (!this._disposed && isAgentAuthenticationError(text) && !this._authenticationErrors.has(id)) {
+		if (!this._disposed && id !== 'openrouter' && isAgentAuthenticationError(text) && !this._authenticationErrors.has(id)) {
 			this._authenticationErrors.add(id); this._onDidChange.fire();
 		}
 	}
 
 	public async authenticate(id: AgentId): Promise<void> {
 		if (this._disposed || !isAgentId(id)) return;
+		if (id === 'openrouter') throw new Error(vscode.l10n.t("OpenRouter signs in with an API key, not with a sign-in command. Store the key in Chat Settings, OpenRouter, then press Refresh Agents."));
 		const binary = this._agents.find(agent => agent.id === id)?.binary;
 		if (!binary) throw new Error(`Install ${agentNames[id]} and refresh the agent list before signing in.`);
 		this._authentication ??= new AgentAuthentication(() => this._onDidChange.fire(), agent => this.checkAuthentication(agent));
-		await this._authentication.start(id, binary);
+		await this._authentication.start(id, binary, id === 'pi' ? piPath(binary) : undefined);
 	}
 
 	/** Restart this agent after login so live processes cannot retain expired credentials. */
@@ -298,6 +307,7 @@ export class AgentRegistry implements vscode.Disposable {
 	/** `keepCurrent`: a Refresh keeps the copy in use unless another is proven newer; a pick does not. */
 	private async _detectOne(id: AgentId, keepCurrent: boolean): Promise<ChatAgent> {
 		const name = agentNames[id];
+		if (id === 'openrouter') { return this._detectOpenRouter(name); }
 		// Read once: a pick landing while this runs must not label the copy chosen
 		// under the old one.
 		const pinned = this._pinned(id);
@@ -320,7 +330,11 @@ export class AgentRegistry implements vscode.Disposable {
 					: id === 'gemini'
 						// Its companion extension carries no CLI, so it is no way to install one.
 						? vscode.l10n.t("Gemini CLI was not found. Install it (`npm install -g @google/gemini-cli` or `brew install gemini-cli`), or set aiBrowser.chat.geminiPath.")
-						: vscode.l10n.t("{0} was not found. Install its CLI or its VS Code extension, or set aiBrowser.chat.{1}Path.", name, id),
+						: id === 'opencode'
+							? vscode.l10n.t("OpenCode was not found. Install it (`curl -fsSL https://opencode.ai/install | bash`, or `npm install -g opencode-ai`), or set aiBrowser.chat.opencodePath.")
+							: id === 'pi'
+								? vscode.l10n.t("Pi was not found. Install it (`npm install -g @earendil-works/pi-coding-agent`), or set aiBrowser.chat.piPath.")
+								: vscode.l10n.t("{0} was not found. Install its CLI or its VS Code extension, or set aiBrowser.chat.{1}Path.", name, id),
 			};
 		}
 
@@ -335,7 +349,11 @@ export class AgentRegistry implements vscode.Disposable {
 				? new ClaudeBackend(binary.path, this._cwd, this._browserServer, this._ownSettings, seen)
 				: id === 'codex'
 					? new CodexBackend(binary.path, this._cwd, this._browserServer, seen)
-					: new GeminiBackend(binary.path, this._cwd, this._browserServer);
+					: id === 'opencode'
+						? new OpencodeBackend(binary.path, this._cwd, this._browserServer)
+						: id === 'pi'
+							? new PiBackend(binary.path, this._cwd, this._browserServer)
+							: new GeminiBackend(binary.path, this._cwd, this._browserServer);
 			entry = { binary: binary.path, backend };
 			this._backends.set(id, entry);
 		}
@@ -367,6 +385,29 @@ export class AgentRegistry implements vscode.Disposable {
 		} catch (err) {
 			this.authenticationError(id, err instanceof Error ? err.message : String(err));
 			return { id, name, available: false, models: [], detail, ...about, problem: err instanceof Error ? err.message : String(err) };
+		}
+	}
+
+	/** OpenRouter: no binary to find. The backend is kept across detections so its sessions survive a Refresh; its models are re-read each time. */
+	private async _detectOpenRouter(name: string): Promise<ChatAgent> {
+		const id = 'openrouter' as const;
+		if (!this._openrouter) {
+			return { id, name, available: false, models: [], problem: vscode.l10n.t("OpenRouter is not set up in this build.") };
+		}
+		let entry = this._backends.get(id);
+		if (!entry && !this._disposed) {
+			entry = { binary: '', backend: new OpenRouterBackend(this._openrouter, this._browserServer) };
+			this._backends.set(id, entry);
+		}
+		if (!entry || this._disposed) { return { id, name, available: false, models: [] }; }
+		try {
+			const models = await entry.backend.models();
+			this._authenticationErrors.delete(id);
+			return { id, name, available: true, models, detail: vscode.l10n.t("HTTP API — browser, editor and chat tools only") };
+		} catch (err) {
+			const text = err instanceof Error ? err.message : String(err);
+			this.authenticationError(id, text);
+			return { id, name, available: false, models: [], problem: text };
 		}
 	}
 

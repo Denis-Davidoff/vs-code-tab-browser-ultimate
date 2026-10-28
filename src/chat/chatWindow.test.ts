@@ -32,6 +32,7 @@ function setup(supported = true, failMove = false) {
 			} },
 	});
 	const host = { _remembered: { agent: 'codex' }, _selection: () => ({}), _active: { chat: { folder: '/project', copy: { repo: 'a/b' }, references: [] } },
+		_tabs: [] as any[], _selectTab: (_id: string) => {}, _focusInput: () => {},
 		_windows: new Set(), _postMessage: (message: any) => messages.push(message), _addTab: (agent: string) => added.push(agent), _fail: (error: unknown) => errors.push(error) };
 	return { create: (location?: string) => create.call(host, location), messages, added, children, commands, errors, panel, host, closed: () => closed };
 }
@@ -81,4 +82,15 @@ test('editor tab creates an independent chat without moving it to a window', asy
 	assert.equal(s.errors.length, 0);
 	s.panel.dispose();
 	assert.equal(s.children[0].disposed, true);
+});
+
+ test('adding a chat reuses and highlights an existing empty tab', async () => {
+	const s = setup();
+	s.host._tabs.push({ id: 'empty', started: false });
+	let selected = '';
+	s.host._selectTab = id => { selected = id; };
+	await s.create('here');
+	assert.equal(selected, 'empty');
+	assert.equal(s.added.length, 0);
+	assert.deepEqual(s.messages.map(m => ({ ...m })), [{ type: 'flashTab', id: 'empty' }]);
 });

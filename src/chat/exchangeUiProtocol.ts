@@ -29,7 +29,7 @@ export function readExchangeUiCommand(value: unknown): ExchangeUiCommand | undef
 			if (!id()) { return undefined; } message = { type: m.type, id: m.id }; break;
 		// Terminal lifecycle; the host checks again (`aiBrowser.chat.remoteTerminal`, encryption, consent, shared).
 		case 'newTerminal':
-			if (Object.keys(m).some(k => !['type','agent'].includes(k)) || (m.agent !== undefined && m.agent !== 'claude' && m.agent !== 'codex' && m.agent !== 'gemini')) { return undefined; }
+			if (Object.keys(m).some(k => !['type','agent'].includes(k)) || (m.agent !== undefined && m.agent !== 'claude' && m.agent !== 'codex' && m.agent !== 'gemini' && m.agent !== 'openrouter' && m.agent !== 'opencode' && m.agent !== 'pi')) { return undefined; }
 			message = { type: 'newTerminal', ...(m.agent ? { agent: m.agent } : {}) }; break;
 		case 'closeTerminal': case 'restartTerminal':
 			if (!id() || Object.keys(m).some(k => !['type','id'].includes(k))) { return undefined; } message = { type: m.type, id: m.id }; break;
@@ -66,12 +66,12 @@ export function readExchangeUiCommand(value: unknown): ExchangeUiCommand | undef
 			if (!['refresh','all','project'].includes(m.action) || (m.project !== undefined && !text('project'))) { return undefined; }
 			message = { type: 'temporaryStorage', action: m.action, project: m.project }; break;
 		case 'secondOpinion':
-			if (!text('chatId',100) || !Number.isSafeInteger(m.index) || m.index < 0 || !['claude','codex','gemini'].includes(m.agent) || !text('model',200)) { return undefined; }
+			if (!text('chatId',100) || !Number.isSafeInteger(m.index) || m.index < 0 || !['claude','codex','gemini','openrouter','opencode','pi'].includes(m.agent) || !text('model',200)) { return undefined; }
 			message = { type: 'secondOpinion', chatId:m.chatId,index:m.index,agent:m.agent,model:m.model }; break;
 		case 'exportChat':
 			if (!['clipboard','file'].includes(m.to)) { return undefined; } message = {type:'exportChat',to:m.to}; break;
 		case 'openAgentSetting': case 'setAgentBinary':
-			if (!['claude','codex','gemini'].includes(m.agent) || (m.path !== undefined && !text('path'))) { return undefined; }
+			if (!['claude','codex','gemini','openrouter','opencode','pi'].includes(m.agent) || (m.path !== undefined && !text('path'))) { return undefined; }
 			message = m.type === 'setAgentBinary' ? {type:'setAgentBinary',agent:m.agent,path:m.path} : {type:'openAgentSetting',agent:m.agent}; break;
 		case 'openBrowser':
 			if (m.where !== undefined && !['vscode','chrome'].includes(m.where)) { return undefined; } message = { type:'openBrowser',where:m.where }; break;

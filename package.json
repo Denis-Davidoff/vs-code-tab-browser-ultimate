@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate",
 	"displayName": "AI Browser🏆 Claude + Codex + Gemini",
 	"description": "Embedded browser tab with AI capabilities, Claude, Codex and Gemini integration",
-	"version": "0.9.2",
+	"version": "0.9.3",
 	"enabledApiProposals": [
 		"externalUriOpener",
 		"browser"
@@ -1004,6 +1004,27 @@
 						"scope": "application",
 						"title": "Gemini CLI Executable",
 						"markdownDescription": "%configuration.chat.geminiPath.description%"
+					},
+					"aiBrowser.chat.opencodePath": {
+						"type": "string",
+						"default": "",
+						"scope": "application",
+						"title": "OpenCode Executable",
+						"markdownDescription": "%configuration.chat.opencodePath.description%"
+					},
+					"aiBrowser.chat.piPath": {
+						"type": "string",
+						"default": "",
+						"scope": "application",
+						"title": "Pi Executable",
+						"markdownDescription": "%configuration.chat.piPath.description%"
+					},
+					"aiBrowser.chat.openrouterEndpoint": {
+						"type": "string",
+						"default": "",
+						"scope": "application",
+						"title": "OpenRouter Endpoint",
+						"markdownDescription": "%configuration.chat.openrouterEndpoint.description%"
 					},
 					"aiBrowser.chat.exchangeKeepAwakeMinutes": {
 						"type": "number",

@@ -42,6 +42,13 @@ import { sweepBrowserConfigs, writeTerminalBrowserConfig } from './claudeAgent';
 const terminalAuthEnv = 'AI_BROWSER_MCP_AUTH';
 const terminalTabEnv = 'AI_BROWSER_MCP_TAB';
 import { geminiPath } from './geminiAgent';
+import { piPath } from './piAgent';
+import { piResumeArgs } from './piProtocol';
+import type { OpenRouterConfig } from './openrouterAgent';
+import {
+	fetchOpenRouterCatalog, openrouterEndpoint, openrouterKeySecret, openrouterModelsKey, readOpenRouterModels, searchOpenRouterCatalog, validateOpenRouterKey, validateOpenRouterModels,
+	openrouterCatalogTtlMs, type OpenRouterCatalogEntry,
+} from './openrouterProtocol';
 import { bundledPin } from './agentBinary';
 import { TerminalSet, type TerminalStarter, type TerminalTab } from './terminalTab';
 import { AgentTypingGate, UnreadTracker } from './terminalControl';
@@ -807,7 +814,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			(vscode.workspace.workspaceFolders ?? []).map(folder => folder.uri.toString()), _context.storageUri?.toString());
 		if (_restoredPanel) { this._surfaceNumber = _restoredPanel.number; }
 		const shared = _transfer?.services ?? ChatViewProvider._sharedServices;
-		this._registry = shared?.registry ?? new AgentRegistry(() => this._cwd(), id => this._agentBinaries()[id], _browserServer, () => !this._untrusted(this._cwd()));
+		this._registry = shared?.registry ?? new AgentRegistry(() => this._cwd(), id => this._agentBinaries()[id], _browserServer, () => !this._untrusted(this._cwd()), this._openrouterConfig());
 		void sweepBrowserConfigs().catch(() => { /* swept with the temp directory */ });
 		if (shared) { this._runs = shared.runs; this._gitAccess = shared.git; }
 		this._services = shared ?? { registry: this._registry, git: this._gitAccess,
@@ -1261,6 +1268,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				canResumeInTerminal: !!tab.chat.ref,
 				title: tab.title ?? vscode.l10n.t("New chat"),
 				agent: tab.started ? tab.chat.agent : undefined,
+				...this._tabModel(tab),
 				running: tab.running,
 				agents: tab.agentsRunning,
 				skillRuns: this._runs.runningIn(tab.chat.id),
@@ -1392,6 +1400,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				return;
 			case 'temporaryStorage':
 				if (message.action === 'refresh' || message.action === 'all' || message.action === 'project') { await this._temporaryFiles(message.action, message.project); }
+				return;
+			case 'openrouter':
+				await this._openrouterAction(message);
 				return;
 			case 'saveFeatureAi':
 				try {
@@ -2378,6 +2389,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		const effort = model.efforts.includes(remembered) ? remembered : model.defaultEffort ?? model.efforts[0];
 		return { agent: agent.id, model: model.id, effort,
 			ultracode: agent.id === 'claude' && model.efforts.includes('xhigh') ? tab.chat.ultracode ?? false : undefined };
+	}
+
+	/** The label of the model a tab's agent uses, when the detected agent lists it (`ChatTabSummary.model`). */
+	private _tabModel(tab: ChatTab): { model?: string } {
+		const { agent, model } = this._selection(tab);
+		const label = this._registry.agents.find(a => a.id === agent)?.models.find(m => m.id === model)?.label;
+		return label ? { model: `${agent} → ${shortModelName(label)}` } : {};
 	}
 
 	private _select(selection: Selection): void {
@@ -3700,6 +3718,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		const open = this._findOpenChat(id);
 		const chat = open?.tab.chat ?? this._history().find(c => c.id === id);
 		if (!chat?.ref || !isAgentId(chat.agent)) { return; }
+		if (chat.agent === 'openrouter') {
+			// OpenRouter is an HTTP API with no CLI behind it: there is nothing to resume in a terminal.
+			void vscode.window.showInformationMessage(vscode.l10n.t("OpenRouter conversations have no CLI, so they cannot be continued in a terminal."));
+			return;
+		}
 		if (open && (open.tab.busy || open.tab.queuedCount || open.surface._runs.runningIn(id))) {
 			void vscode.window.showInformationMessage(vscode.l10n.t("Wait for this conversation and its agents to finish, and send or remove queued messages before opening it in a terminal."));
 			return;
@@ -3725,7 +3748,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			}
 			if (open && (open.tab.busy || open.tab.queuedCount || open.surface._runs.runningIn(id))) { return; }
 		}
-		const args = chat.agent === 'codex' ? ['resume', chat.ref] : ['--resume', chat.ref];
+		// What resumes a conversation: Codex `resume <id>`, OpenCode `-s <id>` (the session ref is OpenCode's own
+		// session id — measured), Pi `--session <id>` (from the same folder, or Pi asks to fork it), the rest `--resume <id>`.
+		const args = chat.agent === 'codex' ? ['resume', chat.ref]
+			: chat.agent === 'opencode' ? ['-s', chat.ref]
+			: chat.agent === 'pi' ? piResumeArgs(chat.ref)
+			: ['--resume', chat.ref];
+		// Not measured for either: browser tools in their TUI. OpenCode and Pi are started plainly, with the user's own
+		// configuration; a folder held back stays held back (OpenCode's project config, Pi's project trust).
+		if (chat.agent === 'pi' && this._untrusted(cwd)) { args.push('--no-approve'); }
 		// Preserve the chat's restriction on project hooks in untrusted managed copies.
 		if (chat.agent === 'claude' && this._untrusted(cwd)) { args.push('--setting-sources=user', '--strict-mcp-config'); }
 		// The terminal CLI is not ours, so it gets the browser server the chat's
@@ -3747,8 +3778,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		const terminal = vscode.window.createTerminal({
 			name: `${agentNames[chat.agent]} · ${chat.title}`,
 			cwd, shellPath: binary, shellArgs: args,
-			env: { ...env, PATH: geminiPath(binary), CLAUDECODE: null, CLAUDE_CODE_ENTRYPOINT: null,
-				...(chat.agent === 'gemini' && this._untrusted(cwd) ? { GEMINI_CLI_TRUST_WORKSPACE: 'false' } : {}) },
+			env: { ...env, PATH: chat.agent === 'pi' ? piPath(binary) : geminiPath(binary), CLAUDECODE: null, CLAUDE_CODE_ENTRYPOINT: null,
+				...(chat.agent === 'gemini' && this._untrusted(cwd) ? { GEMINI_CLI_TRUST_WORKSPACE: 'false' } : {}),
+				...(chat.agent === 'opencode' && this._untrusted(cwd) ? { OPENCODE_DISABLE_PROJECT_CONFIG: 'true' } : {}) },
 			location: vscode.TerminalLocation.Editor,
 			iconPath: new vscode.ThemeIcon('terminal'),
 		});
@@ -3769,7 +3801,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 * never in argv, where every local user could read it); Codex takes the
 	 * server through `-c` overrides and the token from the environment.
 	 * `config`, when there is one, is the file to remove when the CLI is done.
-	 * Gemini reads servers from settings files only and is not covered.
+	 * Gemini reads servers from settings files only and is not covered; OpenCode and Pi are started plainly.
 	 */
 	private async _browserCliLaunch(agent: AgentId, chatId: string | undefined): Promise<{ args: string[]; env: Record<string, string>; config?: string }> {
 		const args: string[] = [];
@@ -3948,7 +3980,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				if (agent === 'claude' && this._untrusted(cwd)) { args.push('--setting-sources=user', '--strict-mcp-config'); }
 				const launch = await this._browserCliLaunch(agent, undefined);
 				args.push(...launch.args);
-				extra = { ...launch.env, PATH: geminiPath(binary) };
+				extra = { ...launch.env, PATH: agent === 'pi' ? piPath(binary) : geminiPath(binary) };
+				// OpenCode and Pi: their own TUI, started plainly (no browser tools — not measured for a terminal).
+				// A folder fetched from GitHub keeps its project configuration and trust held back.
+				if (agent === 'opencode' && this._untrusted(cwd)) { extra.OPENCODE_DISABLE_PROJECT_CONFIG = 'true'; }
+				if (agent === 'pi' && this._untrusted(cwd)) { args.push('--no-approve'); }
 				// A folder fetched from GitHub: Gemini must not load its settings, hooks or servers.
 				if (agent === 'gemini' && this._untrusted(cwd)) { extra.GEMINI_CLI_TRUST_WORKSPACE = 'false'; }
 				const config = launch.config;
@@ -4394,6 +4430,104 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		this._leaveTerminal();
 		this._post();
 		this._focusInput();
+	}
+
+	/**
+	 * What the OpenRouter agent reads from the editor: the key from SecretStorage
+	 * (per request, never cached), the models and the endpoint, and the saved
+	 * entries of a conversation to rebuild it from — an open tab's first, since
+	 * it may not have been saved yet.
+	 */
+	private _openrouterConfig(): OpenRouterConfig {
+		return {
+			apiKey: async () => { const key = (await this._context.secrets.get(openrouterKeySecret))?.trim(); return key || undefined; },
+			models: () => this._context.globalState.get<unknown>(openrouterModelsKey),
+			endpoint: () => vscode.workspace.getConfiguration('aiBrowser.chat').inspect<string>('openrouterEndpoint')?.globalValue,
+			entries: ref => {
+				for (const surface of ChatViewProvider._surfaces.values()) {
+					const tab = surface._disposed ? undefined : surface._tabs.find(t => t.chat.ref === ref);
+					if (tab) { return tab.chat.entries; }
+				}
+				return this._history().find(c => c.ref === ref)?.entries;
+			},
+		};
+	}
+
+	/** OpenRouter's catalogue, kept for ten minutes and shared by every chat surface; one request at a time. */
+	private static _openrouterCatalog: { at: number; endpoint: string; entries: OpenRouterCatalogEntry[] } | undefined;
+	private static _openrouterCatalogRequest: { endpoint: string; promise: Promise<OpenRouterCatalogEntry[]> } | undefined;
+
+	/**
+	 * The OpenRouter section of Chat Settings. The key goes in through `setKey` and
+	 * is never posted back: the view learns only whether one is stored. Every
+	 * answer carries the canonical key state and model list, so the view shows
+	 * what is saved rather than what it sent. A change re-reads the agent's models
+	 * (`redetect` keeps its backend and its sessions).
+	 */
+	private async _openrouterAction(message: Extract<ViewToHost, { type: 'openrouter' }>): Promise<void> {
+		const state = async (extra: { error?: string; notice?: string; catalog?: Extract<HostToView, { type: 'openrouter' }>['catalog'] } = {}): Promise<void> => {
+			const keySet = !!(await this._context.secrets.get(openrouterKeySecret))?.trim();
+			this._postMessage({ type: 'openrouter', keySet, models: readOpenRouterModels(this._context.globalState.get<unknown>(openrouterModelsKey)), ...extra });
+		};
+		const changed = () => { void this._registry.redetect('openrouter').catch(() => undefined); };
+		try {
+			switch (message.action) {
+				case 'load':
+					await state();
+					return;
+				case 'setKey': {
+					const checked = validateOpenRouterKey(message.key);
+					if ('error' in checked) { await state({ error: checked.error }); return; }
+					await this._context.secrets.store(openrouterKeySecret, checked.key);
+					changed();
+					await state({ notice: vscode.l10n.t('API key stored.') });
+					return;
+				}
+				case 'removeKey':
+					await this._context.secrets.delete(openrouterKeySecret);
+					changed();
+					await state({ notice: vscode.l10n.t('API key removed.') });
+					return;
+				case 'saveModels': {
+					const checked = validateOpenRouterModels(message.models);
+					if ('error' in checked) { await state({ error: checked.error }); return; }
+					await this._context.globalState.update(openrouterModelsKey, checked.models);
+					changed();
+					await state({ notice: vscode.l10n.t('Models saved.') });
+					return;
+				}
+				case 'catalog': {
+					const query = typeof message.query === 'string' ? message.query.slice(0, 100) : '';
+					const endpoint = openrouterEndpoint(vscode.workspace.getConfiguration('aiBrowser.chat').inspect<string>('openrouterEndpoint')?.globalValue);
+					if ('error' in endpoint) { await state({ catalog: { query, items: [], total: 0, error: endpoint.error } }); return; }
+					try {
+						const entries = await this._openrouterEntries(endpoint.url, message.refresh === true);
+						const found = searchOpenRouterCatalog(entries, query);
+						await state({ catalog: { query, items: found.entries, total: found.total } });
+					} catch (error) {
+						await state({ catalog: { query, items: [], total: 0, error: error instanceof Error ? error.message : String(error) } });
+					}
+					return;
+				}
+			}
+		} catch (error) {
+			await state({ error: error instanceof Error ? error.message : String(error) });
+		}
+	}
+
+	private async _openrouterEntries(endpoint: string, refresh: boolean): Promise<OpenRouterCatalogEntry[]> {
+		const cached = ChatViewProvider._openrouterCatalog;
+		if (cached && !refresh && cached.endpoint === endpoint && Date.now() - cached.at < openrouterCatalogTtlMs) { return cached.entries; }
+		let request = ChatViewProvider._openrouterCatalogRequest;
+		if (!request || request.endpoint !== endpoint) {
+			const promise = fetchOpenRouterCatalog((url, init) => fetch(url, init), endpoint).then(entries => {
+				ChatViewProvider._openrouterCatalog = { at: Date.now(), endpoint, entries };
+				return entries;
+			}).finally(() => { if (ChatViewProvider._openrouterCatalogRequest?.promise === promise) { ChatViewProvider._openrouterCatalogRequest = undefined; } });
+			request = { endpoint, promise };
+			ChatViewProvider._openrouterCatalogRequest = request;
+		}
+		return request.promise;
 	}
 
 	private _history(): StoredChat[] {
@@ -6472,7 +6606,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			return;
 		}
 		const agent = this._remembered.agent ?? this._selection().agent ?? 'claude';
-		if (location === 'here') { this._addTab(agent); return; }
+		if (location === 'here') {
+			// Reuse a conversation with no sent messages instead of accumulating empty tabs.
+			const empty = this._tabs.find(tab => !tab.started);
+			if (empty) {
+				this._selectTab(empty.id);
+				this._postMessage({ type: 'flashTab', id: empty.id });
+				this._focusInput();
+			} else {
+				this._addTab(agent);
+			}
+			return;
+		}
 		if ((location !== 'window' && location !== 'tab') || ChatViewProvider._openingWindow) { return; }
 		ChatViewProvider._openingWindow = true;
 		let panel: vscode.WebviewPanel | undefined;
@@ -6513,7 +6658,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private _agentBinaries(): Partial<Record<AgentId, string>> {
 		const stored = this._context.workspaceState.get<Record<string, unknown>>(agentBinariesKey) ?? {};
 		const pick = (id: AgentId) => typeof stored[id] === 'string' ? stored[id] as string : undefined;
-		return { claude: pick('claude'), codex: pick('codex'), gemini: pick('gemini') };
+		return { claude: pick('claude'), codex: pick('codex'), gemini: pick('gemini'), openrouter: pick('openrouter'), opencode: pick('opencode'), pi: pick('pi') };
 	}
 
 	/**
@@ -7017,4 +7162,14 @@ function fileAttachment(uri: vscode.Uri, folder: string | undefined, directory: 
 	return directory
 		? { chip: { id: generateUuid(), kind: 'file', label: `${path.basename(uri.fsPath)}/`, iconName: `${path.basename(uri.fsPath)}/` }, text: `Attached folder: ${uri.fsPath}${shown ? ` (${shown}/ in the project)` : ''}` }
 		: { chip: { id: generateUuid(), kind: 'file', label: path.basename(uri.fsPath), iconName: path.basename(uri.fsPath) }, file: uri, text: `Attached file: ${uri.fsPath}${shown ? ` (${shown} in the project)` : ''}` };
+}
+
+/** A model label squeezed for a tab caption: `Sonnet 5.5` → `sonnet5.5`, `GPT-6.1-Sol` → `sol6.1`, `anthropic/claude-sonnet-5.5` → `claude-sonnet-5.5` (OpenRouter and OpenCode ids carry a vendor). */
+function shortModelName(label: string): string {
+	let text = label.trim().toLowerCase().replace(/^.*\//, '').replace(/^gpt-/, '');
+	const versionFirst = /^(\d[\d.]*)-(.+)$/.exec(text);
+	if (versionFirst) {
+		text = versionFirst[2] + versionFirst[1];
+	}
+	return text.replace(/\s+/g, '');
 }

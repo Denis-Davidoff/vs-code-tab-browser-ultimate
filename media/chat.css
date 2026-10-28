@@ -1473,7 +1473,7 @@ button {
 
 /* The features worth trying, listed above the changelog link. */
 .welcome-features {
-	max-width: 320px;
+	max-width: 640px;
 	margin: 14px auto 0;
 	padding: 0;
 	list-style: none;
@@ -2775,6 +2775,31 @@ button {
 	color: inherit;
 	cursor: pointer;
 	text-align: left;
+}
+
+.tab-label {
+	/* Reserve both lines even without a model, and center a lone title. */
+	min-height: calc(1lh + .96em + 12px);
+	box-sizing: border-box;
+}
+
+.tab-text {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+}
+
+/* The model, one small line under the title, beside the tab's icon. */
+.tab-model {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 0.8em;
+	line-height: 1.2;
+	opacity: .65;
 }
 
 .tab-title {
@@ -5178,7 +5203,7 @@ button {
 	}
 
 	.tab-label {
-		min-height: 34px;
+		min-height: calc(1lh + .96em + 12px);
 		padding: 6px 4px 6px 8px;
 		box-sizing: border-box;
 	}
@@ -5308,7 +5333,9 @@ button {
 		padding: 0;
 	}
 	.chat-drawer-collapsed .tab-label > .tab-mark,
+	.chat-drawer-collapsed .tab-text,
 	.chat-drawer-collapsed .tab-title,
+	.chat-drawer-collapsed .tab-model,
 	.chat-drawer-collapsed .tab-close,
 	.chat-drawer-collapsed .tab-add-label { display: none; }
 	.chat-drawer-collapsed .tab-compact {
@@ -6396,3 +6423,25 @@ body.vv-locked {
 }
 
 .tab-overflow-count { color: var(--vscode-charts-yellow, #cca700); font-weight: 600; }
+
+/* OpenRouter section of Chat Settings */
+.openrouter-settings .feature-settings-row { grid-template-columns: minmax(0, 1fr); }
+.openrouter-key-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.openrouter-key-line input, .openrouter-search input, .openrouter-form-grid input:not([type="checkbox"]), .openrouter-form-grid select { flex: 1 1 12em; min-width: 0; padding: 5px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); border-radius: 3px; font: inherit; }
+.openrouter-form-grid select { color: var(--vscode-dropdown-foreground); background: var(--vscode-dropdown-background); }
+.openrouter-status { min-height: 1.4em; margin: 0; font-size: 11px; color: var(--vscode-descriptionForeground); }
+.openrouter-settings .openrouter-status.error, .openrouter-form-error { color: var(--vscode-errorForeground); }
+.openrouter-form-error { margin: 0; min-height: 1em; font-size: 11px; }
+.openrouter-list { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.openrouter-item { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid var(--vscode-panel-border); border-radius: 4px; min-width: 0; }
+.openrouter-item-text { flex: 1 1 auto; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.openrouter-item-text > * { overflow-wrap: anywhere; }
+.openrouter-item-text span { font-size: 11px; color: var(--vscode-descriptionForeground); }
+.openrouter-form { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid var(--vscode-focusBorder); border-radius: 4px; }
+.openrouter-form[hidden] { display: none; }
+.openrouter-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(11em, 1fr)); gap: 8px; }
+.openrouter-form-grid label { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.openrouter-checks { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.openrouter-form-grid .openrouter-check { flex-direction: row; align-items: center; gap: 6px; }
+.openrouter-form-actions, .openrouter-search { display: flex; gap: 6px; align-items: center; }
+.openrouter-search input { flex: 1 1 auto; }

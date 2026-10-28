@@ -132,6 +132,9 @@ cloned repository could switch autofill on for its own dev server (breaks-silent
 | `aiBrowser.chat.claudePath` | `""` | the `claude` executable; empty searches — see [Finding the CLIs](#finding-the-clis) |
 | `aiBrowser.chat.codexPath` | `""` | the `codex` executable, the same way |
 | `aiBrowser.chat.geminiPath` | `""` | the `gemini` executable, the same way — see [Gemini CLI over ACP](#gemini-cli-over-acp) |
+| `aiBrowser.chat.opencodePath` | `""` | the `opencode` executable, the same way; `application`-scoped — see [OpenCode over ACP](#opencode-over-acp) |
+| `aiBrowser.chat.piPath` | `""` | the `pi` executable, the same way; `application`-scoped — see [Pi over its RPC mode](#pi-over-its-rpc-mode) |
+| `aiBrowser.chat.openrouterEndpoint` | `""` | the OpenRouter API address (empty: `https://openrouter.ai/api/v1`); `application`-scoped, https or loopback http only, since the API key is sent to it — see [OpenRouter](#openrouter-an-http-api-and-our-own-agent-loop) |
 | `aiBrowser.chat.viewMode` | `compact` | how much of the agents' work the chat shows: `minimal`, `compact` (tool calls folded) or `standard` (unfolded) — see [View modes](#view-modes-minimal-compact-standard); also the View Mode row of the chat's approval menu |
 | `aiBrowser.chat.collapseToolCalls` | `true` | deprecated by `viewMode`, and read only while that is unset: `false` is Standard, anything else Compact |
 
@@ -274,6 +277,8 @@ difference, in `browserController.js`, was a doc comment whose link had been upd
 - [src/chat/claudeAgent.ts](src/chat/claudeAgent.ts) — Claude Code over `stream-json` and its control channel
 - [src/chat/codexAgent.ts](src/chat/codexAgent.ts) — Codex over `codex app-server` JSON-RPC
 - [src/chat/geminiAgent.ts](src/chat/geminiAgent.ts) — Gemini CLI over ACP (`gemini --acp`), one process per conversation
+- [src/chat/opencodeAgent.ts](src/chat/opencodeAgent.ts) — OpenCode over ACP (`opencode acp`), one process per conversation; its leaf [opencodeProtocol.ts](src/chat/opencodeProtocol.ts) (readers, permission config; under test)
+- [src/chat/piAgent.ts](src/chat/piAgent.ts) — Pi over its RPC mode, one process per conversation, with a gate extension for approvals; its leaf [piProtocol.ts](src/chat/piProtocol.ts) (events, gate rules, path normalisation; under test)
 - [src/chat/voiceText.ts](src/chat/voiceText.ts) — voice messages as text: the helper's stdout read, the chip and the prompt line a transcript becomes (leaf, under test)
 - [src/chat/voiceRecorder.ts](src/chat/voiceRecorder.ts) — one voice message: the helper process, its events, its file removed
 - [native/voice/voice.swift](native/voice/voice.swift) — the voice helper: records from the microphone, transcribes on the device (macOS 26+); built into `bin/ai-browser-voice`
@@ -5436,6 +5441,258 @@ Share Tab); not in `0_start`, which stays the two assistants most people have.
   Terminal** (`aiBrowser.openGeminiCli`, palette and the Gemini submenu) does the same on its
   own, in the window's folder; refused in a remote window, where the binary is on this machine.
 
+### OpenRouter: an HTTP API and our own agent loop
+
+The fifth agent (`openrouter`) is **not a CLI**: OpenRouter is an OpenAI-compatible HTTP API (`/chat/completions`
+with SSE and tool calling), so the conversation loop is ours, in-process:
+[src/chat/openrouterAgent.ts](src/chat/openrouterAgent.ts) (the backend and session, `vscode` allowed) and the leaf
+[src/chat/openrouterProtocol.ts](src/chat/openrouterProtocol.ts) (SSE parser, chunk assembly, errors, retries, tool
+mapping, message building, the model and endpoint rules; under test), with `openrouterApproval` in `agentProtocol.ts`.
+The key and the models are set in **Chat Settings → OpenRouter** ([below](#openrouter-settings-the-key-the-models-the-catalogue)).
+**Nothing was measured against the live service** (no key was available): the shapes follow OpenAI's format and
+OpenRouter's documented differences, and the agent was run against a fake OpenAI-compatible server and a fake MCP
+server on loopback — `node scripts/test-openrouter.mjs` after `npm run build-ext` (12 scenarios; it stubs `vscode`).
+
+**What it is not: it has no shell, no file reading and no file editing.** Its tools are this window's own MCP server's —
+browser, editor, chat (and terminals pinned to its conversation) — and nothing else. A task that needs the files or a
+command belongs to Claude Code, Codex or Gemini. Do not add built-in shell or file tools here without a decision
+about their approvals.
+
+- **Where things live.** The key: SecretStorage `aiBrowser.openrouter.apiKey`, read through an injected accessor for each
+  request and kept in no field — never in a setting, an argument, a log line, an event, a state post or the webview; the
+  only place it goes is the `Authorization` header to the endpoint. The models: `globalState` `aiBrowser.openrouter.models`,
+  an array of `{ id, name?, maxTokens?, temperature?, reasoning?: 'low'|'medium'|'high', tools?, images? }`, **validated on
+  every read** (`readOpenRouterModels`: at most 100, a bad or repeated entry dropped, never repaired). A model with
+  `reasoning` offers low/medium/high in the effort slider and sends `reasoning: { effort }`. `tools: false` sends no tools
+  for that model; `images: true` is required before an image goes out as an `image_url` data URL (otherwise the text says
+  an image was attached and not shown).
+- **Detection** (`AgentRegistry._detectOpenRouter`) has no binary: no key is "not signed in" (the sentence the chat's
+  credential-error rule recognises, with the next step), no models and a refused endpoint each say so. The backend is kept
+  across detections so a Refresh does not end running conversations. The agent's pill says so; "Sign in" cannot run a CLI
+  and says to store the key.
+- **The endpoint** `aiBrowser.chat.openrouterEndpoint` is `application`-scoped and accepted only as https, or http on
+  `localhost` / `127.x` / `::1`, with no credentials, query or fragment (`openrouterEndpoint`): the key is sent there.
+- **The turn** (`OpenRouterSession._turn`): stream one completion (text and `reasoning` deltas as events, tool-call
+  fragments assembled by `index`), and when the model calls tools run them and call again, **at most 25 model calls**,
+  then a notice. Usage is summed over the turn into one `tokens` event (OpenRouter's `usage.cost` as `costUsd`, cached
+  tokens from `prompt_tokens_details`); no context window is reported (the config does not carry one).
+- **Retries are for 429 and 5xx only**, three times with 1, 2, 4 s (`Retry-After` honoured up to 30 s), and only before
+  any of the stream was read. A 401 (bad key), 402 (credits), 404 (model), 403 and 400 each say what happened and the next
+  step; a mid-stream `error` object is read the same way. No bytes for 90 s ends the request.
+- **Stop** aborts the HTTP request (and a running tool call) through an `AbortController`. **A stop never leaves a
+  `tool_call` without its answer**: the unanswered calls of that assistant message get a "Stopped by the user." result, or
+  the API refuses the next request of the conversation. Messages sent mid-turn wait and go as a turn of their own,
+  announced with `autoTurn`, as Gemini's do.
+- **History is in memory** (`_messages`). A resumed conversation has no server session: the first send rebuilds it from the
+  saved chat's prompts and replies (`entriesToMessages`, newest 400 000 characters, from a prompt on), through the injected
+  `entries(ref)` — an open tab's chat first, then the history. **Tool calls are not replayed** (stored rows hold a cut copy
+  of the output and a call without its result is refused by the API), so a resumed chat remembers what was said, not what
+  the tools returned. The prompt being sent is already the saved chat's last entry; the unanswered trailing prompt is dropped
+  from the rebuild so it is not sent twice. The `ref` is `or-<uuid>`.
+- **The MCP client.** The session POSTs JSON-RPC to the window's own server (`BrowserServer` url, `Authorization: Bearer`,
+  `X-AI-Browser-Chat: chatCapability(chatId)`, `Mcp-Session-Id` once issued — no `Origin`, which the server refuses):
+  `initialize` (client name `ai-browser-openrouter`, classified `openrouter` by `classifyClient`, so a share to the
+  OpenRouter assistant binds it), `notifications/initialized`, `tools/list`, then `tools/call`. A 404 on a known session
+  starts the handshake once more (#178). With the server off the turn goes on without tools and says so.
+- **Tool names are mapped, never trusted** (`mcpToolsToOpenAi`): the model gets sanitised, unique names (`[A-Za-z0-9_-]`,
+  56 characters) and only those map back to the server's; a name the model invents is answered "Unknown tool" with no card
+  and no server call. At most 128 tools, descriptions cut at 1 500.
+- **Every tool call goes through the approval pipeline.** The session emits the same `approval` event the CLIs' requests
+  become — classified by `ourToolClass`, which fails closed (`browser_*` / `editor_*` and the chat reads by name,
+  `chat_*` actions as Chat control, `terminal_send` / `terminal_key` as Terminal with their one-shot grant, anything
+  unlisted as Other tools) — and waits for `answer()`. Auto, Ask, Deny, the terminal grants and Always are the chat's,
+  unchanged; a stop or a dispose withdraws a waiting card (`approvalDone`), a user's no is left as the chat recorded it.
+- **Tool results are capped** at 20 000 code points (never inside a surrogate pair — a strict JSON reader refuses a lone
+  half), with the cut said. Images in a result are not put in the tool message (text only); for a model with
+  `images: true` the first four go in a user message after the results.
+- **Not built:** a context window for the pie (the catalogue states `context_length`, but a configured model does not store
+  it yet — the pie stays empty); titles, commit messages and compacting; the Chrome / Exchange surfaces' forms for it beyond
+  the widened agent lists (the settings section is editor-only, below); a terminal tab or "continue in terminal" (no CLI).
+
+#### OpenRouter settings: the key, the models, the catalogue
+
+A section of the chat's Chat Settings panel (tab **OpenRouter**, after Appearance), the way the user stores the key and
+chooses the models. Files: the view in `preview-src/chat.ts` (`createOpenRouterSettings`, styles `.openrouter-*` in
+`media/chat.css`), the host in `chatView.ts` (`_openrouterAction`, `_openrouterEntries`), the leaf
+[src/chat/openrouterView.ts](src/chat/openrouterView.ts) (formatting and parsing for the view, read by the webview build
+and `npm test`), the checks and the catalogue request in `openrouterProtocol.ts` (`validateOpenRouterKey`,
+`validateOpenRouterModel(s)`, `readOpenRouterCatalog`, `searchOpenRouterCatalog`, `fetchOpenRouterCatalog`), tests in
+`openrouterSettings.test.ts`.
+
+- **Every action is its own message and applies at once; there is no Save button** (the panel's own Save and status are
+  hidden on this tab). One `ViewToHost` type, `openrouter`, with an `action` — `load`, `setKey`, `removeKey`,
+  `saveModels` (the whole list), `catalog` — and one `HostToView` type, `openrouter`, that is always the *canonical*
+  state: whether a key is stored, the models as saved, a `notice` or an `error`, and for a search the page of results.
+  The view draws what is stored, never what it sent.
+- **Editor-only.** `openrouter: editor(…)` in `commands.ts`: the key and the model list decide where prompts and the key
+  go, so neither the Chrome side panel nor the Exchange website can send them (the readers do not produce the type, the
+  table refuses it, and the view's `post` gate hides the tab where the control is not `on`). `commands.test.ts`'s golden
+  forwarded lists are unchanged.
+- **The key is write-only.** `setKey` carries it once, from a password field that is emptied before the message is posted;
+  the host checks it (`validateOpenRouterKey`: one token of printable ASCII, 10–512 characters — **a refusal never contains
+  the key**, a test asserts it), stores it in SecretStorage and posts only `keySet: boolean`. Replace stores over it, Remove
+  deletes it. No state field, no log line and no error text carries it. **Unmeasured:** the real key format is only assumed
+  to be ASCII without spaces (OpenRouter's are `sk-or-v1-…`).
+- **The model list is replaced whole and validated in the host.** `validateOpenRouterModel`: an id of letters, digits and
+  `. _ : / ~ + @ -`, up to 200 characters, starting with a letter, digit or `~` (so `vendor/model:free`, `~vendor/latest`);
+  `maxTokens` a whole number 1–2 000 000; `temperature` 0–2; `reasoning` low/medium/high; `tools` / `images` booleans;
+  absent or null means "not set". **A bad value is refused with a reason naming the model and the field, never clamped or
+  trimmed away**, and a duplicate id (any case) or more than 100 models refuses the whole list. The view parses its number
+  fields too (`parseOptionalNumber`: plain decimal, no hex or exponent) only to say what is wrong before sending.
+- **Rename is the Display name field** of the edit form; the id is editable there as well (the edit replaces the row it
+  was opened from). The form lives in its own container apart from the lists, so a rebuild of a list never takes typed text
+  away (#365), and the panel is a form holding input, so a blur does not close it (#491; verified in headless Chrome). The
+  lists are rebuilt only when their JSON signature changes.
+- **A model change re-reads the agent** (`registry.redetect('openrouter')`, which keeps the backend and its running
+  sessions), so the OpenRouter model pill lists the configured models without a Refresh Agents; the agent's "no key" /
+  "no models" problems now point at this page instead of at `globalState`.
+- **The catalogue** (`GET <endpoint>/models`) goes through the host: `fetchOpenRouterCatalog` with a 15 s total timeout, the
+  body read as a stream and refused past 12 MB, at most 2 000 entries kept, **no `Authorization` header** (the catalogue is
+  public; a key sent where it is not needed is one a mistyped endpoint receives for nothing — a test asserts it). The
+  endpoint is the same `aiBrowser.chat.openrouterEndpoint` rule as the agent's. Results are cached 10 minutes in memory,
+  shared by every chat surface, and one request is in flight at a time (a second search while it runs waits for it); the
+  refresh button forces a new fetch. Search is the host's (every word in the id or name, an id prefix first) and the view
+  gets at most 30 entries plus the total, with a 300 ms debounce; a reply for an older query than the box holds is not drawn.
+- **A catalogue entry shows** name, id, context length (`200K`), price in dollars per million tokens (`$3 in · $15 out`, or
+  `free`; the API's `"-1"` variable price and junk are "no price"), tools, images and reasoning. **One click on Add** saves
+  `modelFromCatalogItem`: the id, the name when it differs, `tools` and `images` as the catalogue declares them, and
+  `reasoning: 'medium'` only when it lists the `reasoning` parameter — nothing guessed, no max tokens or temperature. Added
+  entries show "Added" and are disabled; they are redrawn from the last page after a save, which carries no catalogue.
+- **Nothing from the API is parsed as HTML**: names and ids go through `textContent`, and names are cut to 100 code points
+  with control characters removed (`readOpenRouterCatalog`); a test holds an `<b>` in a name as plain text.
+- **The selects of this section carry `data-appearance`**, which the panel's Save sweeps (`featureSettingsSave`'s disable and
+  `featureAiSaved`'s re-enable) skip: without it `featureAiSaved` read the select as an AI-feature one and threw on
+  `featureSettingsDraft[undefined]` (breaks-silently #556). `featureSettings.test.ts` stubs `createOpenRouterSettings`
+  like the other sections.
+- **Verified:** the leaves and the request (a fake `fetch`) under `npm test`; the whole section in headless Chrome 153
+  against the built `media/chat.js` with a stub host — key stored and replaced and removed with the field emptied and no
+  later post carrying it, a catalogue page, Add, the "Added" mark, search, edit with a client-side and a host-side error
+  with the typed value kept, a blur leaving the panel open, rename, remove. **Not measured:** the live `GET /models` (the
+  response shape is from OpenRouter's documentation: `data[].id / name / context_length / pricing.prompt|completion` as
+  strings of dollars per token, `architecture.input_modalities`, `supported_parameters`, `top_provider.max_completion_tokens`),
+  the section inside a real VS Code window and theme (the harness has no theme variables), and a real key.
+
+### OpenCode over ACP
+
+`opencode acp`, JSON-RPC one object per line, one process per conversation (`opencodeAgent.ts`; readers in
+`opencodeProtocol.ts`, tested on samples recorded from OpenCode 2.1.1). Measured through the compiled backend against the
+real CLI with `node scripts/test-opencode.mjs` (after `npm run build-ext`; it stubs `vscode`).
+
+| Fact | Measured value, and why it matters |
+|---|---|
+| version / binary | `opencode --version` prints `v2.1.1`; a native executable in `~/.opencode/bin`, so it needs no Node on `PATH` |
+| models | `session/new` lists them with effort variants (`beam-free[low..max]`); detection costs no prompt and leaves no process |
+| commands | `available_commands_update`: `init`, `review` — the palette lists these |
+| second prompt in a turn | refused with -32603, so the session queues it and announces `autoTurn` (Gemini's branch of `ChatTab.send`) |
+| permissions | `OPENCODE_CONFIG_CONTENT` replaces OpenCode's rules with ours: ask for everything, reads inside the project allowed — `read` as an **object** (`*.env` asked), never a bare `allow` (a bare allow read `.env` with no question) |
+| held-back folder | `OPENCODE_DISABLE_PROJECT_CONFIG=true` hides a project's `opencode.json` (verified with a project command) |
+| client name | `clientInfo.name` is `opencode`; the share glyph is never written into a page |
+| plan limits | none over ACP; the usage popup says so |
+
+**OPEN: code-mode `execute` runs with no approval when its script calls no tool.** Its runtime documents `fetch`;
+`return (await fetch("http://127.0.0.1:<port>/x")).status` ran with every question answered No and the request arrived.
+`'*': 'ask'`, `permission.execute`, `webfetch` and `code_mode` as `ask` did not gate it. The Internet category's Ask/Deny
+therefore does not hold for OpenCode. Candidates to measure: `codemode: false` on the MCP server (does not remove `fetch`
+from `execute`), or disabling `execute`.
+
+**Not measured:** a live paid-model turn after the permission fix (the free models ran out of quota on 2026-10-27 — the
+turn scenarios of `test-opencode.mjs` then fail at "shell asked as Terminal" with `Free usage limit reached`, which is the
+quota and not a defect; `opencode run -m opencode/big-pickle "hi"` shows it); browser tools inside an OpenCode terminal tab
+(no MCP config is injected); the Chrome and Exchange surfaces. **To re-measure** after an update: run
+`scripts/test-opencode.mjs` with `OC_MODEL=<a model with quota>`, then repeat the `.env` and `fetch` probes above.
+
+### Pi over its RPC mode
+
+`pi --mode rpc`, one process per conversation (`piAgent.ts`, `piProtocol.ts`; samples from Pi 1.4.0, package
+`@earendil-works/pi-coding-agent`). Pi has **no permission system**, so a small extension of ours (the gate, written to a
+`0600` file and loaded with `-e`) asks the host before each tool runs. `node scripts/test-pi.mjs` exercises it against
+the real CLI (15 scenarios, all passed on 2026-10-27).
+
+| Fact | Measured value, and why it matters |
+|---|---|
+| launcher | a `#!/bin/sh` script needing `node` on `PATH`; `piPath` puts the binary's folder and a found `node` first, for the chat, terminals and the sign-in terminal alike |
+| steering | a message sent mid-turn is steered into the running turn (like Codex); the prompt enters the conversation at once |
+| model / thinking change | applied on the live process with `set_model` / thinking level, no restart; the next message after a Stop works on the same process |
+| held-back folder | `--no-approve` (Pi's own project trust); the gate still loads with `-na` |
+| paths | Pi strips one leading `@` and normalises Unicode spaces before resolving (`dist/utils/paths.js`): `piGateTool` does the same before the card and the inside-the-project test |
+| MCP | the gate registers our server; a browser tool call is the AI Browser category (the real server's GET/DELETE `/mcp` 405 is tolerated by Pi, not run against it) |
+| stop | `abort` ends a running command fast; the turn ends "Stopped."; dispose and `backend.dispose` leave no `pi` process |
+| session | resume by `ref` in a new process remembers the conversation; sign-in is `/login` inside plain `pi` |
+| plan limits | none |
+
+**Lifecycle rules found by review:** a Stop landing while the process starts must end the turn (`turnEnd` "Stopped.",
+as Codex does), or the tab reads as working for good; an exit during startup is reported by the `send()` rejection only —
+`_processEnded` ends a turn only for an established process, or the failure shows twice (#514); `dispose()` also ends the
+process still in its handshake.
+
+**Not measured:** a Stop pressed after the process is ready and before the prompt is sent (the abort is a no-op; only the
+5 s kill timer ends it, as "Stopped."); steering while the final answer streams; browser tools inside a Pi terminal tab;
+Pi receives `AIB_MCP_TOKEN` in its environment, which an approved `bash env` would show to the model (the Codex terminal
+hand-over has the same exposure). **To re-measure** after an update: `scripts/test-pi.mjs`, and re-read `dist/utils/paths.js`.
+
+### Wiring of OpenCode and Pi
+
+Two more agents (`'opencode'`, `'pi'`), wired in beside Gemini. Their backends are
+[src/chat/opencodeAgent.ts](src/chat/opencodeAgent.ts) / `opencodeProtocol.ts` and
+[src/chat/piAgent.ts](src/chat/piAgent.ts) / `piProtocol.ts` (the protocol files are leaves under test, on samples
+recorded from OpenCode 2.1.1 and Pi 1.4.0). **Where they are wired**, so the next agent can follow the list: `AgentId`
+and `agentIds`/`agentNames` (`agents.ts`, with the detection branch and the install advice), `agentBinary.ts` (search
+folders, `extensionIds`), `agentAuthentication.ts` (sign-in command, no status probe), `chatView.ts`
+(`_agentBinaries`, "Continue in terminal", terminal tab start), `chatTab.ts` (the mid-turn send branch),
+`extension.ts` (`aiBrowser.chat.newTerminal`), `mcpProtocol.ts`/`mcpServer.ts`/`mcpCheck.ts`/`shareRegistry.ts`/
+`shareIndicator.ts` (`ClientKind`), `toolbarText.ts`, `usageAlert.ts`, the Chrome and Exchange readers, the webview
+icons and the toolbar editor's agent filter, and the two `application`-scoped settings `aiBrowser.chat.opencodePath`
+and `aiBrowser.chat.piPath`. `featureAgent` needed nothing: it already lists only Claude Code and Codex, so a title or
+commit message on either of these runs on one of those instead.
+
+**Facts that decide the wiring** (measured where the authors say so; the rest is marked):
+
+- **Client names**: OpenCode sends `clientInfo.name` `opencode` (2.1.1), Pi `pi` (1.4.0). `classifyClient` matches
+  Pi **whole** — a substring of two letters would claim other clients. Their share glyphs (🟡, 🟤) are never written into
+  a page, so `stripMarker` does not know them (the marker was removed anyway).
+- **Binaries**: `opencode` installs a native executable under `~/.opencode/bin` (needs no Node); `opencode --version`
+  prints `v2.1.1`, which `parseCliVersion` reads. `pi` is an npm package (`@earendil-works/pi-coding-agent`) whose launcher
+  (`~/.pi/agent/bin/pi`, linked from `~/.local/bin`) is a sh script needing `node` on `PATH`: the chat and the terminal
+  put the binary's folder and a found `node` in front (`piPath`), the same trick as `geminiPath`.
+- **Mid-turn messages**: OpenCode refuses a second prompt during a turn (-32603), so its session queues and announces
+  `autoTurn` — the Gemini branch of `ChatTab.send` (`_waiting`). Pi steers like Codex: the message goes into the running
+  turn and its prompt enters the conversation at once; `autoTurn` only appears when Pi re-sends a steered message that
+  missed its turn (not measured).
+- **Sign-in**: no status command is run for either — detection itself (`session/new`, `get_state`) says signed out.
+  The sign-in terminal runs `opencode auth login`, and plain `pi` (the user types `/login`).
+- **Folders held back** (a repository fetched from GitHub, not trusted): OpenCode gets `OPENCODE_DISABLE_PROJECT_CONFIG=true`
+  (verified with a project model override), Pi `--no-approve` (its own project trust). Both in the chat's process and in
+  terminals.
+- **No plan limits**: both say so in the usage popup. OpenCode's permission model is replaced by our own
+  (`OPENCODE_CONFIG_CONTENT` asks for everything but reads), and Pi has no permission system, so Pi's gate extension is its
+  only approval — see the two backends' own headers for the details.
+- **OpenCode's `read` rule is an object, never a bare `allow`.** OpenCode's own defaults ask before reading a `.env`
+  file (`*.env`, `*.env.*`; `*.env.example` allowed). Measured on 2.1.1 with a fake OpenAI-compatible provider calling
+  `read` on `.env`: `permission.read: "allow"` read it with no question, the object form
+  `{ "*": "allow", "*.env": "ask", "*.env.*": "ask", "*.env.example": "allow" }` asked. Pi's sign-in terminal gets
+  `piPath` (a `node` on `PATH`) like its chat process.
+- **Terminal tabs and "Continue in VS Code terminal"**: both agents' own TUI starts in the folder (`opencode`, `pi`);
+  resume is `opencode -s <id>` (the session ref is OpenCode's own id) and `pi --session <id>` (from the same folder, or Pi
+  asks to fork). **Browser tools are not injected into either terminal** — Pi's would need the gate loaded in the TUI and
+  OpenCode's an MCP config, neither measured; the terminal-tab menu row says "no browser tools in a terminal".
+- **Pi's path normalisation is part of the approval** (review, measured on Pi 1.4.0): Pi strips one leading `@` and turns
+  Unicode spaces into spaces before it resolves a path, so `read` of `@/etc/hosts` reads `/etc/hosts`. `outsideProject` took
+  `@/etc/hosts` for a project-relative name and the gate auto-allowed the read with no card (and an `edit` of
+  `@~/.ssh/x` was filed as inside the project). `piGateTool` now normalises the path the way Pi does before the card and
+  the inside-the-project test. Re-check `dist/utils/paths.js` of Pi when it is updated.
+- **OPEN, measured on OpenCode 2.1.1: its code-mode `execute` runs with no approval when the script calls no tool.** The
+  runtime documents `fetch` as available ("script tool calls and HTTP requests"), and a script
+  `return (await fetch("http://127.0.0.1:<port>/x")).status` ran with every question answered No, no card, and the
+  request arrived. `OPENCODE_CONFIG_CONTENT`'s `'*': 'ask'` does not cover it, and `permission.execute`, `webfetch` and
+  `code_mode` set to `ask` did not either (one request each). So the Internet category's Deny/Ask does not hold for
+  OpenCode scripts: a prompt-injected model can send what it read (reads inside the project are not asked) to any host.
+  Not fixed: no free model quota was left to measure a candidate (an MCP server's `codemode: false` in the config, which
+  makes its tools ordinary asked tools, would not remove `fetch` from `execute` itself). `tools.opencode.worktree_remove`
+  etc. are asked as `edit` by OpenCode and reach us as "Other tools".
+- **Not measured end to end inside VS Code**: the wiring above was checked by typecheck, the build and `npm test`
+  only; `scripts/test-opencode.mjs`, `test-pi.mjs` exercise the backends against the real CLIs. The server answers GET
+  and DELETE on `/mcp` with 405, which Pi tolerates (the real server was not run against Pi).
+
 ### The context pie and compacting
 
 Asked for: a small pie beside `U` that fills as the conversation's context window does, and a
@@ -10345,6 +10602,31 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
 552. **A lifted method meeting a new module-level name** → the Chrome footer and clipboard tests lift
      `sidepanel.ts`'s `postMessage` into a sandbox, and its new `terminals.fromView` call threw
      `ReferenceError`. #521 again: give the sandbox the real `createRemoteTerminalShim`.
+553. **A tool call in an assistant message with no matching tool result** → the OpenAI-format API refuses the whole next
+     request, so a Stop pressed between a model's tool calls and their results broke the conversation for good. The
+     OpenRouter session answers every call of the message, the unrun ones with "Stopped by the user." (#476's shape: a
+     path that ends something must end what it left half done).
+554. **An API key reachable from anything but the request** → the OpenRouter key is read from SecretStorage for each request
+     and goes only into the `Authorization` header to a validated endpoint (https, or loopback http). A setting for the
+     endpoint that a workspace could set, or one that accepted any http address, would send the key where a repository
+     chose; it is `application`-scoped and `openrouterEndpoint` refuses the rest.
+555. **A secret sent to a request that does not need it** → the model catalogue is public, so sending the API key with it
+     would hand the key to whatever address `aiBrowser.chat.openrouterEndpoint` names for a request that answers without it. A request carries a credential only when the endpoint it goes to cannot answer without one.
+556. **A section's select inside a panel whose Save sweeps every select** → `featureAiSaved` re-reads each `<select>` as an
+     AI-feature choice and the section's reasoning select made it throw, leaving the panel in its saving state. A control
+     that is not one of the panel's AI features marks itself (`data-appearance`) or lives outside the swept selectors.
+557. **A bare `allow` replacing a CLI's own narrower rule** → OpenCode asks before reading `.env` files by default; our
+     config set `read: 'allow'` and read them with no question (measured). Replace a rule with the same shape plus the
+     exceptions, never with a wider one.
+558. **A tool-path argument judged before the tool's own normalisation** → Pi strips a leading `@` and turns Unicode spaces
+     into spaces before resolving, so `@/etc/hosts` read `/etc/hosts` while our inside-the-project test saw a relative name.
+     Normalise the way the tool does before deciding (`piGateTool`); re-check the tool's path code on every update.
+559. **A script runtime that is also a network client, outside the permission rules** → OpenCode's code-mode `execute`
+     has `fetch`, and none of the permission keys tried gated it: the Internet category's Deny does not hold there (OPEN).
+     Before trusting an approval menu for a new agent, probe each way it can reach the network, not only its named tools.
+560. **A starting process that a Stop or an exit meets** → Pi's Stop during startup left the prompt pending (no `turnEnd`),
+     its exit during startup reported twice, and `dispose` left the starting process running. A session's start is a state
+     of its own: Stop ends the turn, an exit is reported once, dispose ends the process in its handshake.
 
 ## Special cases and non-obvious decisions
 
@@ -10610,6 +10892,8 @@ interaction under [TypeScript configuration](#typescript-configuration).
   which checks the prefix against the schemes the parser actually recognizes.
 
 ## Removed on purpose — do not reintroduce
+
+- **GitHub Copilot CLI as a chat agent** (`copilot --acp`, modelled on `geminiAgent.ts`). Built from the ACP specification and never measured: on the author's account an organisation policy disabled third-party MCP servers, so the browser tools could not reach it and no live run was possible. Removed rather than shipped unmeasured; the shape to redo it from is Gemini's ACP section, re-measured against a real install first.
 
 - **The first remote terminal: a terminal manager behind the Chrome side panel and the Exchange
   relay.** Before the in-chat terminal tabs, a separate terminal was reachable from the Chrome side

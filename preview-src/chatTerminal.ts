@@ -79,7 +79,7 @@ export interface AskInput {
 }
 
 export function agentIcon(agent: AgentId): string {
-	return agent === 'claude' ? 'sparkle' : agent === 'gemini' ? 'star-full' : 'hubot';
+	return agent === 'claude' ? 'sparkle' : agent === 'gemini' ? 'star-full' : agent === 'openrouter' ? 'cloud' : agent === 'opencode' ? 'code' : agent === 'pi' ? 'circuit-board' : 'hubot';
 }
 
 function tabStatusText(tab: Pick<ChatTabSummary, 'status' | 'busy'>): string {

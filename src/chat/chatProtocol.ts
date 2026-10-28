@@ -15,7 +15,7 @@ import type { SleepChoice, SleepState } from '../power/sleepProtocol';
  * it from the bundle. Anything with a value here would end up in both runtimes.
  */
 
-export type AgentId = 'claude' | 'codex' | 'gemini';
+export type AgentId = 'claude' | 'codex' | 'gemini' | 'openrouter' | 'opencode' | 'pi';
 
 export interface ChatModel {
 	readonly id: string;
@@ -799,6 +799,8 @@ export interface ChatTabSummary {
 	readonly title: string;
 	/** Absent while the conversation has not started, and so belongs to no agent yet. */
 	readonly agent?: AgentId;
+	/** One short line for under the title: the agent id and the model as its agent labels it (`codex → astra6`), when it can be told. */
+	readonly model?: string;
 	readonly running: boolean;
 	/** Agents of this conversation still working. */
 	readonly agents: number;
@@ -826,6 +828,29 @@ export interface ChatTabSummary {
  */
 export type ChatTabStatus = 'waiting' | 'working' | 'unread' | 'failed' | 'read';
 
+/** A configured OpenRouter model as the settings page edits it. Written in the view and checked in the host (`validateOpenRouterModel`). */
+export interface OpenRouterModelConfig {
+	readonly id: string;
+	readonly name?: string;
+	readonly maxTokens?: number;
+	readonly temperature?: number;
+	readonly reasoning?: 'low' | 'medium' | 'high';
+	readonly tools?: boolean;
+	readonly images?: boolean;
+}
+
+/** One model of OpenRouter's catalogue; prices in US dollars per million tokens. */
+export interface OpenRouterCatalogItem {
+	readonly id: string;
+	readonly name: string;
+	readonly contextLength?: number;
+	readonly promptPrice?: number;
+	readonly completionPrice?: number;
+	readonly tools: boolean;
+	readonly images: boolean;
+	readonly reasoning: boolean;
+}
+
 export type HostToView =
 	| { readonly type: 'pastedFileResult'; readonly id: string; readonly error?: string }
 	| { readonly type: 'temporaryStorage'; readonly storage?: TemporaryStorage; readonly error?: string }
@@ -839,6 +864,7 @@ export type HostToView =
 	| { readonly type: 'exchangeAttachment'; readonly id: string; readonly label?: string; readonly text?: string; readonly kind?: 'annotation'|'page'|'element'|'screenshot'; readonly file?: {readonly name:string;readonly mime:string;readonly base64:string}; readonly removed?: boolean }
 	| { readonly type: 'exchangeBrowser'; readonly message?: string }
 	| { readonly type: 'usage'; readonly usage: readonly AgentUsage[]; readonly stats?: ChatStats; readonly loading: boolean }
+	| { readonly type: 'flashTab'; readonly id: string }
 	| { readonly type: 'focusInput' }
 	/**
 	 * Terminal output, posted DIRECTLY (never through `_postMessage`, which queues
@@ -856,6 +882,12 @@ export type HostToView =
 	/** The view's title bar cup: open the keep-awake popup. */
 	| { readonly type: 'openSettings' }
 	| { readonly type: 'featureAiSaved'; readonly settings?: FeatureAiSettings; readonly recordingQuality?: RecordingQuality; readonly recordingSeconds?: number; readonly error?: string }
+	/**
+	 * The OpenRouter section of Chat Settings: whether a key is stored (never the key), the configured models, and the
+	 * answer to a catalogue search. `error` is the reason an action was refused; `catalog` is present only for a search.
+	 */
+	| { readonly type: 'openrouter'; readonly keySet: boolean; readonly models: readonly OpenRouterModelConfig[]; readonly error?: string; readonly notice?: string;
+		readonly catalog?: { readonly query: string; readonly items: readonly OpenRouterCatalogItem[]; readonly total: number; readonly error?: string } }
 	| { readonly type: 'openSleep' }
 	/** Queued messages given back by Stop: added to what is in the message box, not sent. */
 	| { readonly type: 'restoreDraft'; readonly chatId: string; readonly text: string }
@@ -896,6 +928,12 @@ export type ViewToHost =
 	| { readonly type: 'answerChromeConnection'; readonly id: string; readonly allow: boolean }
 	| { readonly type: 'reportTheme'; readonly tokens: Readonly<Record<string, string>> }
 	| { readonly type: 'temporaryStorage'; readonly action: 'refresh' | 'all' | 'project'; readonly project?: string }
+	/** The OpenRouter section: the key is write-only (`setKey` carries it once, nothing returns it), the models are replaced whole. */
+	| { readonly type: 'openrouter'; readonly action: 'load' }
+	| { readonly type: 'openrouter'; readonly action: 'setKey'; readonly key: string }
+	| { readonly type: 'openrouter'; readonly action: 'removeKey' }
+	| { readonly type: 'openrouter'; readonly action: 'saveModels'; readonly models: readonly OpenRouterModelConfig[] }
+	| { readonly type: 'openrouter'; readonly action: 'catalog'; readonly query: string; readonly refresh?: boolean }
 	| { readonly type: 'controlRecording'; readonly action: 'pause' | 'resume' | 'stop' }
 	| { readonly type: 'recording'; readonly id: string; readonly message: any }
 	| { readonly type: 'setAutomaticAwake'; readonly enabled: boolean }

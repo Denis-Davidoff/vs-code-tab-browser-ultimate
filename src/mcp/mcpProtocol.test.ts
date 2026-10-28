@@ -256,6 +256,13 @@ suite('classifyClient', () => {
 		assert.strictEqual(classifyClient('gemini-cli-mcp-client'), 'gemini');
 	});
 
+	test('recognises OpenCode (2.1.1) and Pi (1.4.0) by the names they send, Pi only whole', () => {
+		assert.strictEqual(classifyClient('opencode'), 'opencode');
+		assert.strictEqual(classifyClient('pi'), 'pi');
+		assert.strictEqual(classifyClient('pip-client'), 'other');
+		assert.strictEqual(classifyClient('pi-something'), 'other');
+	});
+
 	test('recognises Codex under each of its names', () => {
 		assert.strictEqual(classifyClient('codex'), 'codex');
 		assert.strictEqual(classifyClient('Codex CLI'), 'codex');
