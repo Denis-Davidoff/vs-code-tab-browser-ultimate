@@ -74,7 +74,7 @@ export type Resolution<T> =
 	/** Nothing was given to this caller; the caller follows the user. */
 	| { readonly kind: 'unassigned' };
 
-const kindOrder: readonly ClientKind[] = ['claude', 'codex', 'gemini', 'openrouter', 'opencode', 'pi', 'other'];
+const kindOrder: readonly ClientKind[] = ['claude', 'codex', 'gemini', 'opencode', 'pi', 'openrouter', 'other'];
 
 function keyOf(target: ShareTarget): string {
 	switch (target.scope) {

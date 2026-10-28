@@ -52,7 +52,7 @@ function harness(healthStatus = 200, memory?: {stored:Map<string,any>;secrets:Ma
 			surface.bind(refresh); refresh();
 			return { dispose: () => surface.close() };
 		},
-	}, chatViewId: 'aiBrowser.chat', remoteTerminalSetting: () => false };
+	}, chatViewId: 'aiBrowser.chat', remoteTerminalSetting: () => false, remoteTerminalOpenSetting: () => true };
 	const modules = new Map<string, any>();
 	function load(name: string): any {
 		if (modules.has(name)) { return modules.get(name); }

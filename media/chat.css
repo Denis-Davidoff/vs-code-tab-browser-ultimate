@@ -6439,9 +6439,13 @@ body.vv-locked {
 .openrouter-item-text span { font-size: 11px; color: var(--vscode-descriptionForeground); }
 .openrouter-form { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid var(--vscode-focusBorder); border-radius: 4px; }
 .openrouter-form[hidden] { display: none; }
-.openrouter-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(11em, 1fr)); gap: 8px; }
-.openrouter-form-grid label { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.openrouter-form-grid { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 12px; align-items: center; }
+.openrouter-form-grid > label { display: contents; }
+.openrouter-form-grid > label > span { font-size: 12px; color: var(--vscode-descriptionForeground); white-space: nowrap; }
+.openrouter-form-grid input:not([type="checkbox"]), .openrouter-form-grid select { width: 100%; box-sizing: border-box; }
+.openrouter-form-grid input:not([type="checkbox"]):focus, .openrouter-form-grid select:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+.openrouter-form-grid .openrouter-checks { grid-column: 2; }
 .openrouter-checks { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
-.openrouter-form-grid .openrouter-check { flex-direction: row; align-items: center; gap: 6px; }
+.openrouter-form-grid .openrouter-check { display: flex; flex-direction: row; align-items: center; gap: 6px; font-size: 12px; }
 .openrouter-form-actions, .openrouter-search { display: flex; gap: 6px; align-items: center; }
 .openrouter-search input { flex: 1 1 auto; }

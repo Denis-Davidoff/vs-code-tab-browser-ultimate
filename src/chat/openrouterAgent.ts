@@ -57,6 +57,8 @@ type FetchLike = (input: string, init: { method: string; headers: Record<string,
 const noModelsText = vscode.l10n.t("No OpenRouter models are configured. Add models in Chat Settings, OpenRouter, then press Refresh Agents.");
 /** No bytes from the service for this long ends the request. */
 const idleMs = 90_000;
+/** A model on this computer may spend minutes loading before its first byte. */
+const localIdleMs = 600_000;
 const mcpTimeoutMs = 30_000;
 /** One reply is read up to this many bytes; a runaway stream cannot fill the host's memory. */
 const maxStreamBytes = 16 * 1024 * 1024;
@@ -80,11 +82,13 @@ export class OpenRouterBackend implements AgentBackend {
 		if (this._disposed) {
 			throw new Error('Closed.');
 		}
+		const configured = readOpenRouterModels(this._config.models());
+		// The endpoint setting matters only to models that use it: a misspelt one must not hide models on this computer.
 		const endpoint = openrouterEndpoint(this._config.endpoint());
-		if ('error' in endpoint) {
+		if ('error' in endpoint && configured.every(model => !model.endpoint)) {
 			throw new Error(endpoint.error);
 		}
-		const models = openrouterChatModels(readOpenRouterModels(this._config.models()));
+		const models = openrouterChatModels(configured);
 		if (!models.length) {
 			throw new Error(noModelsText);
 		}
@@ -179,13 +183,15 @@ class OpenRouterSession implements AgentSession {
 		this._stopRequested = false;
 		let config: OpenRouterModel | undefined;
 		try {
-			const endpoint = openrouterEndpoint(this._config.endpoint());
-			if ('error' in endpoint) {
-				throw new Error(endpoint.error);
-			}
 			config = readOpenRouterModels(this._config.models()).find(m => m.id === model);
 			if (!config) {
 				throw new Error(vscode.l10n.t("The model {0} is not among the configured OpenRouter models. Pick another, or add it and press Refresh Agents.", model));
+			}
+			if (!config.endpoint) {
+				const endpoint = openrouterEndpoint(this._config.endpoint());
+				if ('error' in endpoint) {
+					throw new Error(endpoint.error);
+				}
 			}
 		} catch (err) {
 			this._running = false;
@@ -294,13 +300,15 @@ class OpenRouterSession implements AgentSession {
 
 	/** One `/chat/completions` request, streamed. Retries only a 429 or 5xx answered before any of the stream was read. */
 	private async _complete(model: OpenRouterModel, effort: string | undefined, tools: readonly OpenAiTool[], signal: AbortSignal, usage: (u: OpenRouterUsage | undefined) => void): Promise<CompletionReader> {
-		const endpoint = openrouterEndpoint(this._config.endpoint());
+		// A model on this computer goes to its own server and never carries the OpenRouter key.
+		const local = model.endpoint !== undefined;
+		const endpoint = local ? { url: model.endpoint as string } : openrouterEndpoint(this._config.endpoint());
 		if ('error' in endpoint) {
 			throw new Error(endpoint.error);
 		}
 		const body = JSON.stringify(completionBody({ model, messages: messagesForModel(this._messages, model.images === true), tools, effort }));
 		for (let attempt = 0; ; attempt++) {
-			const key = await this._config.apiKey();
+			const key = local ? undefined : await this._config.apiKey();
 			if (signal.aborted) {
 				throw new StoppedError();
 			}
@@ -308,7 +316,7 @@ class OpenRouterSession implements AgentSession {
 			const link = () => idle.abort();
 			signal.addEventListener('abort', link, { once: true });
 			let timer: NodeJS.Timeout | undefined;
-			const touch = () => { clearTimeout(timer); timer = setTimeout(() => idle.abort(new Error('idle')), idleMs); };
+			const touch = () => { clearTimeout(timer); timer = setTimeout(() => idle.abort(new Error('idle')), local ? localIdleMs : idleMs); };
 			try {
 				touch();
 				let response: Response;
@@ -319,11 +327,15 @@ class OpenRouterSession implements AgentSession {
 					});
 				} catch (err) {
 					if (signal.aborted) { throw new StoppedError(); }
-					throw new Error(vscode.l10n.t("OpenRouter could not be reached ({0}). Check the connection, or the endpoint setting.", idle.signal.aborted ? 'no answer' : networkReason(err)));
+					throw new Error(local
+						? vscode.l10n.t("The local server at {0} could not be reached ({1}). Is Ollama or LM Studio running, with its server started?", endpoint.url, idle.signal.aborted ? 'no answer' : networkReason(err))
+						: vscode.l10n.t("OpenRouter could not be reached ({0}). Check the connection, or the endpoint setting.", idle.signal.aborted ? 'no answer' : networkReason(err)));
 				}
 				if (response.status >= 300 && response.status < 400) {
 					// A redirect is never followed: the key must reach only the configured address.
-					throw new Error(vscode.l10n.t("OpenRouter answered with a redirect, which is not followed. Check aiBrowser.chat.openrouterEndpoint."));
+					throw new Error(local
+						? vscode.l10n.t("The local server answered with a redirect, which is not followed. Check the model's Local server address.")
+						: vscode.l10n.t("OpenRouter answered with a redirect, which is not followed. Check aiBrowser.chat.openrouterEndpoint."));
 				}
 				if (!response.ok) {
 					const text = await response.text().then(t => t.slice(0, 4000)).catch(() => '');

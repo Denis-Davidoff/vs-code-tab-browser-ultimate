@@ -9,7 +9,7 @@ import { openrouterApproval, ourToolClass } from './agentProtocol.ts';
 import { isAgentAuthenticationError } from './agentAuthText.ts';
 import { classifyClient } from '../mcp/mcpProtocol.ts';
 import {
-	messagesForModel,
+	messagesForModel, localEndpoint, validateOpenRouterModel,
 	CompletionReader, OpenRouterApiError, SseParser, completionBody, entriesToMessages, isRetryableStatus, mcpResultToText, mcpToolsToOpenAi,
 	openrouterChatModels, openrouterEndpoint, openrouterErrorText, parseToolArguments, readOpenRouterModels, readUsage, retryDelayMs, sanitiseToolName, userContent,
 } from './openrouterProtocol.ts';
@@ -239,4 +239,25 @@ test('messagesForModel turns historical images into a note for a text-only model
 	assert.match(text.content, /^look/);
 	assert.doesNotMatch(JSON.stringify(text), /image_url/);
 	assert.equal(messagesForModel(history, true)[0], (history as unknown as unknown[])[0]);
+});
+
+test('a local server must be on this computer, with no credentials, query or fragment', () => {
+	assert.deepStrictEqual(localEndpoint('http://localhost:11434/v1/'), { url: 'http://localhost:11434/v1' });
+	assert.deepStrictEqual(localEndpoint(' http://127.0.0.1:1234/v1 '), { url: 'http://127.0.0.1:1234/v1' });
+	assert.deepStrictEqual(localEndpoint('http://[::1]:8080'), { url: 'http://[::1]:8080' });
+	for (const bad of ['', undefined, 'ftp://localhost/v1', 'http://192.168.1.5:11434/v1', 'http://example.com/v1', 'http://localhost.evil.com/v1', 'http://user:pw@localhost/v1', 'http://localhost/v1?x=1', 'http://localhost/v1#a', 'not a url']) {
+		assert.ok('error' in localEndpoint(bad), String(bad));
+	}
+});
+
+test('a model keeps a valid local server address, canonical, and refuses a bad one with the model named', () => {
+	const ok = validateOpenRouterModel({ id: 'llama3.1:8b', endpoint: 'http://localhost:11434/v1/' });
+	assert.deepStrictEqual(ok, { model: { id: 'llama3.1:8b', endpoint: 'http://localhost:11434/v1' } });
+	const bad = validateOpenRouterModel({ id: 'llama3.1:8b', endpoint: 'http://10.0.0.2:11434/v1' });
+	assert.ok('error' in bad && bad.error.startsWith('llama3.1:8b:'));
+	assert.ok(!('endpoint' in (validateOpenRouterModel({ id: 'a/b', endpoint: '' }) as { model: object }).model));
+	// Read back from storage: a model whose stored address is no longer acceptable is dropped, never sent to OpenRouter.
+	assert.deepStrictEqual(readOpenRouterModels([{ id: 'x', endpoint: 'http://evil.example/v1' }, { id: 'y', endpoint: 'http://localhost:1234/v1' }]),
+		[{ id: 'y', endpoint: 'http://localhost:1234/v1' }]);
+	assert.match(openrouterChatModels([{ id: 'y', endpoint: 'http://localhost:1234/v1' }])[0].description ?? '', /local/);
 });

@@ -1,10 +1,10 @@
-# 🚀 First integrated browser for VS Code editor with Claude Code, Codex and Gemini CLI support 🎆
+# 🚀 First integrated browser for VS Code editor with Claude Code, Codex, Gemini CLI, OpenCode, Pi and OpenRouter support 🎆
 
 - 🌐 **VS Code’s built-in browser or Google Chrome:** work in a native browser tab inside the
   editor where available, or let your assistant drive Google Chrome without a Chrome extension.
 - 🤖 **Your assistants, your way:** keep the Claude Code and Codex extensions or the Gemini CLI you
-  already use, or switch to the **AI Browser chat** — all three agents in one panel, up to 10 chats at once, more
-  deeply wired into the browser.
+  already use, or switch to the **AI Browser chat** — Claude Code, Codex, Gemini CLI, OpenCode, Pi and
+  OpenRouter models in one panel, up to 10 chats at once, more deeply wired into the browser.
 - 🔌 **A built-in MCP server** that connects the browser to Claude Code, Codex, Gemini CLI or any
   other assistant that speaks MCP.
 - 🎯 **Pick an element on the page** and send its address or metadata straight to Claude Code or
@@ -67,11 +67,17 @@ terminal; close that terminal before reopening the conversation in chat.
 The chat transcript does not import messages subsequently written in the terminal.
 The CLI keeps the browser tools and the tab the chat was working on.
 
+## 🧠 Agents in the chat
+
+Claude Code, Codex, Gemini CLI, OpenCode, Pi and OpenRouter (including local Ollama or LM Studio
+models) — set up in **Chat Settings**; details in [CLAUDE.md](CLAUDE.md#the-ai-browser-chat).
+
 ## ⌨️ Terminal tabs
 
-Open a shell, or Claude Code or Codex in their own CLI, as a tab in the chat (the strip's **+**,
-**New Chat**, or **AI Browser: New Terminal**; macOS and Windows). Pin it to a conversation with
-**Ask agent** and that agent can read the screen and, after you approve each input, type into it.
+Open a shell, or an agent's own CLI, as a tab in the chat (the strip's **+**, or **AI Browser: New
+Terminal**; macOS and Windows). Pin it to a conversation with **Ask agent** and that agent can read the
+screen and, after you approve each input, type into it. Remote access is opt-in, see
+[CLAUDE.md](CLAUDE.md#terminal-tabs-a-real-shell-in-the-chat).
 
 ## 📍 Page annotations
 
@@ -98,6 +104,10 @@ visible while recording. Files are temporary until saved; agents receive a file 
 For limits, settings and technical details, see [CLAUDE.md](CLAUDE.md#browser-video-recording).
 
 ## 📝 Changelog
+
+**0.9.4** — The OpenRouter agent also runs models from Ollama or LM Studio on your computer (no key needed or sent). Chat Settings has a **Remote terminals** tab with checkboxes for what Chrome and the website
+may do with terminal tabs: use them at all, open a plain terminal, open an agent in a terminal. Each
+applies at once, and they can be changed only in VS Code.
 
 **0.9.3** — Adding a chat reuses an existing empty tab and briefly highlights it instead of creating a duplicate.
 

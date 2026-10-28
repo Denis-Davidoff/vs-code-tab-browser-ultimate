@@ -1,11 +1,45 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
+import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
+import { ScriptTarget, transpileModule } from 'typescript';
 import type { ChatAgent, ChatTabSummary, TerminalTabSummary } from '../src/chat/chatProtocol';
 import { conversationNeeded, frontStripId, lastOutput, shouldFocusComposer, stripTabs, terminalAddition, terminalCloseText, terminalStripTab, terminalTabShown, terminalTabTitle, visibleTerminalFront, withPendingTitle } from './terminalTabs.ts';
 
 const terminal = (over: Partial<TerminalTabSummary> = {}): TerminalTabSummary => ({ id: 't1', name: 'zsh', cwd: '/work', status: 'running', ...over });
 const chat = (id: string): ChatTabSummary => ({ id, chatId: `c-${id}`, title: id, running: false, agents: 0, skillRuns: 0, busy: false, queued: 0 });
 const agent = (id: string): ChatAgent => ({ id, name: id === 'claude' ? 'Claude Code' : 'Codex' }) as unknown as ChatAgent;
+
+// Drive the actual buttons and menu together: a one-item menu may contain an agent rather than a shell.
+for (const buttonName of ['tabAddTerminal', 'remoteTerminal']) {
+	for (const scenario of ['agent only', 'shell only', 'shell and agent'] as const) {
+		test(`${buttonName} opens the permitted terminal in ${scenario} mode`, () => {
+			const source = readFileSync('preview-src/chat.ts', 'utf8');
+			const menu = source.match(/function terminalMenuItems\(\): MenuItem\[\] \{[\s\S]*?\n\}/)?.[0];
+			const click = source.match(new RegExp(`${buttonName}\\.addEventListener\\('click', \\(\\) => \\{([\\s\\S]*?)\\n\\}\\);`))?.[1];
+			assert.ok(menu && click);
+			const posts: unknown[] = [];
+			let shown: { run(): void }[] | undefined;
+			runInNewContext(transpileModule(`${menu}\n(() => { ${click} })();`, { compilerOptions: { target: ScriptTarget.ES2022 } }).outputText, {
+				__TERMINAL__: true, terminalAddition,
+				state: { terminalSupport: { available: true, limit: 8, agents: scenario === 'shell only' ? [] : ['claude'], ...(scenario === 'agent only' ? { shell: false } : {}) }, terminals: [], agents: [agent('claude')] },
+				gate: () => ({ s: 'on' }), remoteTerminalBlock: () => undefined,
+				post: (message: unknown) => posts.push(JSON.parse(JSON.stringify(message))),
+				openMenu: (_anchor: unknown, items: { run(): void }[]) => { shown = items; },
+				[buttonName]: {},
+			});
+			if (scenario === 'shell only') {
+				assert.equal(shown, undefined);
+				assert.deepEqual(posts, [{ type: 'newTerminal' }]);
+			} else {
+				assert.ok(shown, 'keep the agent choice rather than posting a plain shell request');
+				assert.equal(posts.length, 0);
+				shown.at(-1)!.run();
+				assert.deepEqual(posts, [{ type: 'newTerminal', agent: 'claude' }]);
+			}
+		});
+	}
+}
 
 test('a terminal is given to the strip as a tab, carrying itself', () => {
 	const tab = terminalStripTab(terminal());
@@ -49,7 +83,7 @@ test('the tooltip names the state and the folder', () => {
 test('"New terminal" is not offered where there is no terminal support, and says why where it cannot work', () => {
 	assert.deepEqual(terminalAddition(undefined, 0), { kind: 'hidden' });
 	assert.deepEqual(terminalAddition({ available: false, reason: 'Not in a remote window.' }, 0), { kind: 'off', reason: 'Not in a remote window.' });
-	assert.deepEqual(terminalAddition({ available: true, limit: 2, agents: [] }, 1), { kind: 'on', agents: [] });
+	assert.deepEqual(terminalAddition({ available: true, limit: 2, agents: [] }, 1), { kind: 'on', shell: true, agents: [] });
 	const full = terminalAddition({ available: true, limit: 2, agents: [] }, 2);
 	assert.equal(full.kind, 'off');
 	assert.match(full.kind === 'off' ? full.reason : '', /2 terminals are open/);

@@ -391,7 +391,7 @@ export function authorizeRequest(facts: RequestFacts, token: string): Decision {
 /* -------------------------------------------------------------- client kinds */
 
 /** Which assistant is on the other end, as far as we can tell. */
-export type ClientKind = 'claude' | 'codex' | 'gemini' | 'openrouter' | 'opencode' | 'pi' | 'other';
+export type ClientKind = 'claude' | 'codex' | 'gemini' | 'opencode' | 'pi' | 'openrouter' | 'other';
 
 /**
  * Classifies a client from the `clientInfo.name` it sends with `initialize`.

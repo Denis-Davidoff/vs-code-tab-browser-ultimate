@@ -212,7 +212,7 @@ export function readChromeChatCommand(value: unknown): ChromeChatCommand | undef
 		case 'select': {
 			if (!m.selection || typeof m.selection !== 'object') { return undefined; }
 			const s = m.selection as Record<string, unknown>;
-			if (s.agent !== undefined && !['claude', 'codex', 'gemini', 'openrouter', 'opencode', 'pi'].includes(String(s.agent))) { return undefined; }
+			if (s.agent !== undefined && !['claude', 'codex', 'gemini', 'opencode', 'pi', 'openrouter'].includes(String(s.agent))) { return undefined; }
 			if ([s.model, s.effort].some(v => v !== undefined && (typeof v !== 'string' || v.length > 200))) { return undefined; }
 			message = { type: 'select', selection: { agent: s.agent as Selection['agent'], model: s.model as string | undefined,
 				effort: s.effort as string | undefined, ...(typeof s.ultracode === 'boolean' ? { ultracode: s.ultracode } : {}) } }; break;
@@ -268,7 +268,7 @@ function readChromeFooterMessage(m: Record<string, unknown>): ViewToHost | undef
     case 'compact': return tab() ? { type: m.type, tabId: m.tabId as string } : undefined;
     case 'setWorkdir': return text('path', 4096, true) ? { type: m.type, path: m.path as string | undefined } : undefined;
     case 'attachPath': case 'removeRepoFolder': return text('path') ? { type: m.type, path: m.path as string } : undefined;
-    case 'listCommands': return ['claude', 'codex', 'gemini', 'openrouter', 'opencode', 'pi'].includes(String(m.agent)) ? { type: m.type, agent: m.agent as Selection['agent'] & string } : undefined;
+    case 'listCommands': return ['claude', 'codex', 'gemini', 'opencode', 'pi', 'openrouter'].includes(String(m.agent)) ? { type: m.type, agent: m.agent as Selection['agent'] & string } : undefined;
     case 'runToolbarSkill': {
       if (!text('id', 200) || !text('tabId', 100, true) || !m.values || typeof m.values !== 'object' || Array.isArray(m.values)) { return undefined; }
       const values = Object.entries(m.values);
@@ -295,7 +295,7 @@ function readChromeFooterMessage(m: Record<string, unknown>): ViewToHost | undef
     case 'repoAction': return ['changes', 'push', 'window', 'remove'].includes(String(m.action)) ? { type: m.type, action: m.action as 'changes' | 'push' | 'window' | 'remove' } : undefined;
     case 'dismissUsageAlert': {
       const a = m.alert as Record<string, unknown> | undefined;
-      return a && ['claude', 'codex', 'gemini', 'openrouter', 'opencode', 'pi'].includes(String(a.agent)) && typeof a.label === 'string' && a.label.length <= 200 && typeof a.percent === 'number' && Number.isFinite(a.percent) && ['high', 'reached', 'credits'].includes(String(a.kind))
+      return a && ['claude', 'codex', 'gemini', 'opencode', 'pi', 'openrouter'].includes(String(a.agent)) && typeof a.label === 'string' && a.label.length <= 200 && typeof a.percent === 'number' && Number.isFinite(a.percent) && ['high', 'reached', 'credits'].includes(String(a.kind))
         ? { type: m.type, alert: { agent: a.agent, label: a.label, percent: a.percent, kind: a.kind } as import('./chatProtocol').UsageAlert } : undefined;
     }
     default: return undefined;

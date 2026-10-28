@@ -110,7 +110,7 @@ export function terminalCloseText(t: TerminalTabSummary): string {
 export type TerminalAddition =
 	| { readonly kind: 'hidden' }
 	| { readonly kind: 'off'; readonly reason: string }
-	| { readonly kind: 'on'; readonly agents: readonly ChatAgent[] };
+	| { readonly kind: 'on'; readonly shell: boolean; readonly agents: readonly ChatAgent[] };
 
 /**
  * Whether "New terminal" is offered. No support at all (a remote surface, or an
@@ -128,7 +128,7 @@ export function terminalAddition(
 	if (count >= support.limit) {
 		return { kind: 'off', reason: `${count} terminal${count === 1 ? ' is' : 's are'} open — close one first.` };
 	}
-	return { kind: 'on', agents: support.agents.flatMap(id => agents.filter(a => a.id === id)) };
+	return { kind: 'on', shell: support.shell !== false, agents: support.agents.flatMap(id => agents.filter(a => a.id === id)) };
 }
 
 export interface ScreenRow {

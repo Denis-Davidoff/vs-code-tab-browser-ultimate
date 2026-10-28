@@ -121,7 +121,7 @@ export const agentNames: Record<AgentId, string> = {
 	pi: 'Pi',
 };
 
-const agentIds: readonly AgentId[] = ['claude', 'codex', 'gemini', 'openrouter', 'opencode', 'pi'];
+const agentIds: readonly AgentId[] = ['claude', 'codex', 'gemini', 'opencode', 'pi', 'openrouter'];
 
 /** A value the view sent, checked to name one of the agents. */
 export function isAgentId(value: unknown): value is AgentId {

@@ -15,7 +15,7 @@ import type { SleepChoice, SleepState } from '../power/sleepProtocol';
  * it from the bundle. Anything with a value here would end up in both runtimes.
  */
 
-export type AgentId = 'claude' | 'codex' | 'gemini' | 'openrouter' | 'opencode' | 'pi';
+export type AgentId = 'claude' | 'codex' | 'gemini' | 'opencode' | 'pi' | 'openrouter';
 
 export interface ChatModel {
 	readonly id: string;
@@ -655,6 +655,8 @@ export interface TerminalTabSummary {
 export type TerminalSupport =
 	| {
 		readonly available: true; readonly limit: number; readonly agents: readonly AgentId[];
+		/** `false`: a plain shell may not be opened here (a remote surface with `aiBrowser.chat.remoteTerminalShell` off). Absent: it may. */
+		readonly shell?: false;
 		/**
 		 * Whether a terminal may be shared with the Exchange website ("Allow website access",
 		 * `setTerminalRemote`): `reason` says why not (the `aiBrowser.chat.remoteTerminal`
@@ -837,6 +839,8 @@ export interface OpenRouterModelConfig {
 	readonly reasoning?: 'low' | 'medium' | 'high';
 	readonly tools?: boolean;
 	readonly images?: boolean;
+	/** A server on this computer (Ollama, LM Studio) that runs the model; absent means OpenRouter. */
+	readonly endpoint?: string;
 }
 
 /** One model of OpenRouter's catalogue; prices in US dollars per million tokens. */
@@ -887,7 +891,10 @@ export type HostToView =
 	 * answer to a catalogue search. `error` is the reason an action was refused; `catalog` is present only for a search.
 	 */
 	| { readonly type: 'openrouter'; readonly keySet: boolean; readonly models: readonly OpenRouterModelConfig[]; readonly error?: string; readonly notice?: string;
-		readonly catalog?: { readonly query: string; readonly items: readonly OpenRouterCatalogItem[]; readonly total: number; readonly error?: string } }
+		readonly catalog?: { readonly query: string; /** Original local address, echoed even on validation errors to match the request. */ readonly requestedEndpoint?: string;
+			/** Canonical local address for adding a model; present only after validation. */ readonly endpoint?: string; readonly items: readonly OpenRouterCatalogItem[]; readonly total: number; readonly error?: string } }
+	/** The Remote terminals section of Chat Settings: the three `aiBrowser.chat.remoteTerminal*` switches as stored, or the reason a change was refused. */
+	| { readonly type: 'remoteTerminalSettings'; readonly remoteTerminal: boolean; readonly shell: boolean; readonly agent: boolean; readonly error?: string }
 	| { readonly type: 'openSleep' }
 	/** Queued messages given back by Stop: added to what is in the message box, not sent. */
 	| { readonly type: 'restoreDraft'; readonly chatId: string; readonly text: string }
@@ -928,12 +935,15 @@ export type ViewToHost =
 	| { readonly type: 'answerChromeConnection'; readonly id: string; readonly allow: boolean }
 	| { readonly type: 'reportTheme'; readonly tokens: Readonly<Record<string, string>> }
 	| { readonly type: 'temporaryStorage'; readonly action: 'refresh' | 'all' | 'project'; readonly project?: string }
+	/** The Remote terminals section: `load`, or `set` one of the three user settings (applies at once). */
+	| { readonly type: 'remoteTerminalSettings'; readonly action: 'load' }
+	| { readonly type: 'remoteTerminalSettings'; readonly action: 'set'; readonly key: 'remoteTerminal' | 'remoteTerminalShell' | 'remoteTerminalAgent'; readonly value: boolean }
 	/** The OpenRouter section: the key is write-only (`setKey` carries it once, nothing returns it), the models are replaced whole. */
 	| { readonly type: 'openrouter'; readonly action: 'load' }
 	| { readonly type: 'openrouter'; readonly action: 'setKey'; readonly key: string }
 	| { readonly type: 'openrouter'; readonly action: 'removeKey' }
 	| { readonly type: 'openrouter'; readonly action: 'saveModels'; readonly models: readonly OpenRouterModelConfig[] }
-	| { readonly type: 'openrouter'; readonly action: 'catalog'; readonly query: string; readonly refresh?: boolean }
+	| { readonly type: 'openrouter'; readonly action: 'catalog'; readonly query: string; readonly refresh?: boolean; readonly endpoint?: string }
 	| { readonly type: 'controlRecording'; readonly action: 'pause' | 'resume' | 'stop' }
 	| { readonly type: 'recording'; readonly id: string; readonly message: any }
 	| { readonly type: 'setAutomaticAwake'; readonly enabled: boolean }

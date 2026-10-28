@@ -16,8 +16,9 @@ the VSIX, so an edit reaches users with the next release. The format is read by
 src/chat/news.ts — see "The AI Browser chat" in CLAUDE.md.
 -->
 
-Browse, debug and test your pages in VS Code's own browser — and let Claude Code, Codex or Gemini CLI see them, click through them and take screenshots, right inside the editor.
+Browse, debug and test your pages in VS Code's own browser — and let Claude Code, Codex, Gemini CLI, OpenCode, Pi or OpenRouter models see them, click through them and take screenshots, right inside the editor.
 
+- $(hubot) **Six agents** — Claude Code, Codex, Gemini CLI, OpenCode, Pi and OpenRouter in one chat; add OpenRouter models in Chat Settings.
 - $(terminal) **Terminal tabs** — open a shell or Claude Code / Codex in a chat tab; pin it to a conversation and its agent reads it and, with your approval, types.
 - $(extensions) **Chrome extension** — a full 1:1 mirror of your chat, right in Chrome alongside any website. Available on the [Chrome Web Store](https://chromewebstore.google.com/detail/ai-browser/jhdffimahnoijnnfnjadghjhkacheogn). All the latest changes are available only in DEV mode: [Download ZIP](https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/raw/refs/heads/main/chrome-extension/ai-browser-chrome-0.6.0.zip) and follow “How to install” to load it with Developer mode enabled.
 - $(coffee) **Keep awake** — use the cup at the top to prevent sleep for a set time or until all agents and sub-agents finish.
@@ -27,6 +28,10 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 - $(device-camera-video) **Record video** — record browser tabs from their toolbar, up to 4K, into the chat or clipboard.
 - $(location) **Page markers** — pin notes to page elements and send them to the agent as one prompt.
 - $(settings-gear) **Chat Settings** — use the gear at the top to edit prompts for commit messages, branch names and chat titles, or clean up temporary files.
+
+## 0.9.4 — 2026-10-28
+- **Local models** — the OpenRouter agent also runs models from Ollama or LM Studio on your computer: pick the server beside the search box in Chat Settings → OpenRouter, or set a model's *Local server*. No key is needed or sent.
+- **Choose what Chrome and the website may open** — new settings *Remote Terminal Shell* and *Remote Terminal Agent* (both off by default) decide separately whether they can open a plain terminal or an agent's own CLI; each needs *Remote Terminal* on. All three are checkboxes in the new **Remote terminals** tab of Chat Settings, apply at once, and can be changed only in VS Code.
 
 ## 0.9.3 — 2026-10-28
 - **Reuse empty chat tabs** — pressing **+** selects and briefly highlights an existing empty chat instead of creating another.

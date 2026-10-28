@@ -35,3 +35,17 @@ test('on: only shared summaries, the folder by its last segment, no pin and no s
 	assert.deepEqual(view.terminalSupport, { available: true, limit: 8, agents: ['claude'] });
 	assert.deepEqual(view.controls, {});
 });
+
+test('the two open settings: shell only, agent only, neither', () => {
+	const shellOnly = remoteTerminalView({ ...open, openShell: true, openAgent: false }, () => shared, support);
+	assert.deepEqual(shellOnly.terminalSupport, { available: true, limit: 8, agents: [] });
+	const agentOnly = remoteTerminalView({ ...open, openShell: false, openAgent: true }, () => shared, support);
+	assert.deepEqual(agentOnly.terminalSupport, { available: true, limit: 8, agents: ['claude'], shell: false });
+	const neither = remoteTerminalView({ ...open, openShell: false, openAgent: false }, () => shared, support);
+	assert.equal(neither.terminalSupport.available, false);
+	assert.match((neither.terminalSupport as { reason: string }).reason, /remoteTerminalShell.*remoteTerminalAgent/);
+	assert.equal(neither.controls.newTerminal?.s, 'off');
+	// Already shared terminals stay watchable and manageable.
+	assert.equal(neither.terminals.length, 1);
+	assert.equal(neither.controls.closeTerminal, undefined);
+});

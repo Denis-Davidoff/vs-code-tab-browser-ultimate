@@ -17,6 +17,10 @@ export interface RemoteTerminalGates {
 	readonly encrypted: boolean;
 	/** `aiBrowser.chat.remoteTerminal`, read at the user level. */
 	readonly setting: boolean;
+	/** `aiBrowser.chat.remoteTerminalShell`: may this surface open a plain shell? Absent: yes. */
+	readonly openShell?: boolean;
+	/** `aiBrowser.chat.remoteTerminalAgent`: may this surface open an agent's CLI? Absent: yes. */
+	readonly openAgent?: boolean;
 	/** The per-connection consent asked in VS Code. */
 	readonly consent: 'unasked' | 'asking' | 'yes' | 'no';
 	/** The chat is blocked in that window (Restricted Mode, a remote window …). */
@@ -25,6 +29,13 @@ export interface RemoteTerminalGates {
 
 /** The exact words for the setting, so a user can find it in Settings by either spelling. */
 export const remoteTerminalSettingHint = 'In VS Code, turn on the setting “AI Browser › Chat: Remote Terminal” (aiBrowser.chat.remoteTerminal) on the computer running VS Code.';
+
+/** The words for one of the two "open" settings. */
+export function remoteOpenHint(kind: 'shell' | 'agent'): string {
+	return kind === 'shell'
+		? 'Opening a plain terminal from Chrome and the website is off: in VS Code, turn on “AI Browser › Chat: Remote Terminal Shell” (aiBrowser.chat.remoteTerminalShell).'
+		: 'Opening an agent in a terminal from Chrome and the website is off: in VS Code, turn on “AI Browser › Chat: Remote Terminal Agent” (aiBrowser.chat.remoteTerminalAgent).';
+}
 
 /** Why terminals are not on offer there, or `undefined` when they are. */
 export function remoteTerminalReason(g: RemoteTerminalGates): string | undefined {
@@ -54,13 +65,17 @@ export function remoteTerminalView(g: RemoteTerminalGates, shared: () => readonl
 		};
 	}
 	const supported = support();
+	const shell = g.openShell !== false, agent = g.openAgent !== false;
+	// Neither kind may be opened: existing shared terminals stay watchable, "New terminal" says why not.
+	const noOpen = supported.available && !shell && (!agent || supported.agents.length === 0) ? (agent ? remoteOpenHint('shell') : `${remoteOpenHint('shell')} ${remoteOpenHint('agent')}`) : undefined;
 	return {
 		terminals: shared().map(t => ({
 			id: t.id, name: t.name, status: t.status, cwd: t.cwd.split(/[\\/]/).filter(Boolean).pop() ?? '',
 			...(t.exitCode !== undefined ? { exitCode: t.exitCode } : {}), ...(t.agent ? { agent: t.agent } : {}), remote: true as const,
 		})),
 		// Sharing is decided in VS Code only; a remote surface never sees the row.
-		terminalSupport: supported.available ? { available: true, limit: supported.limit, agents: supported.agents } : supported,
-		controls: {},
+		terminalSupport: noOpen ? { available: false, reason: noOpen }
+			: supported.available ? { available: true, limit: supported.limit, agents: agent ? supported.agents : [], ...(shell ? {} : { shell: false as const }) } : supported,
+		controls: noOpen ? { newTerminal: { s: 'off' as const, reason: noOpen } } : {},
 	};
 }

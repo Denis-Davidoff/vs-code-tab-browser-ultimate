@@ -6,7 +6,7 @@ import { ChromeChatBridge, ChromeChatDelivery, type ChromeTerminalPort } from '.
 import { auditRemoteTerminal } from './exchangeChat';
 import { ChromeChatPairing } from './chromeChatPairing';
 import type { ChromeChatConnection } from './chromeChatProtocol';
-import { ChatViewProvider, chatViewId, remoteTerminalSetting } from './chatView';
+import { ChatViewProvider, chatViewId, remoteTerminalSetting, remoteTerminalOpenSetting } from './chatView';
 
 const chromeTerminalConsentDetail = 'It can watch the terminals you mark "Allow remote access", open new shells or agent CLIs on this computer (shared with it from the start), and, when it takes control, type into them. Your own typing in VS Code always takes control back. Asked once for this connection.';
 
@@ -68,6 +68,8 @@ function chromeTerminalPort(sourceId: string): ChromeTerminalPort {
 	return {
 		terminals: ChatViewProvider.exchangeTerminals(sourceId),
 		setting: remoteTerminalSetting,
+		openShell: () => remoteTerminalOpenSetting('shell'),
+		openAgent: () => remoteTerminalOpenSetting('agent'),
 		async askConsent() {
 			const allow = 'Allow';
 			const answer = await vscode.window.showWarningMessage('Let the AI Browser Chrome side panel use terminal tabs on this computer?',

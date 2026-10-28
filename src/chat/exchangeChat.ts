@@ -10,7 +10,7 @@ import type { ChatStateSurface } from './chatSurface';
 import { ChatViewProvider, chatViewId } from './chatView';
 import { readExchangeUiCommand } from './exchangeUiProtocol';
 import { RemoteTerminalHub, isTerminalFrame, type AgentTerminalFrame } from './remoteTerminalProtocol';
-import { remoteTerminalSetting } from './chatView';
+import { remoteTerminalSetting, remoteTerminalOpenSetting } from './chatView';
 import { remoteTerminalView } from './remoteTerminalView';
 import { chromeChatSnapshot } from './chromeChatProtocol';
 import { exchangeServerUrl, exchangeWebsiteUrl, exchangeSnapshot, readExchangeCommand } from './exchangeProtocol';
@@ -142,7 +142,7 @@ class ExchangeSurface implements ChatStateSurface {
 		const full = chromeChatSnapshot(state);
 		const terminals = ChatViewProvider.exchangeTerminals(this.source);
 		// Shared with the Chrome side panel (`remoteTerminalView`): disabled with the reason, never hidden.
-		const { controls: terminalControls, ...terminalView } = remoteTerminalView({ surface: 'exchange', encrypted: !!this.cipher, setting: remoteTerminalSetting(),
+		const { controls: terminalControls, ...terminalView } = remoteTerminalView({ surface: 'exchange', encrypted: !!this.cipher, setting: remoteTerminalSetting(), openShell: remoteTerminalOpenSetting('shell'), openAgent: remoteTerminalOpenSetting('agent'),
 			consent: this.terminalConsent, blocked: terminals.blocked() }, () => terminals.shared(), () => terminals.support());
 		this.hub?.sync();
 		const view = {...full.view,...terminalView,surface:'exchange' as const,controls:{...surfaceControls('exchange'),...terminalControls},voice:{...full.view.voice,available:false,reason:'Microphone recording is available in VS Code.'},suggestions:exchangePageSuggestion(this.page?.())};

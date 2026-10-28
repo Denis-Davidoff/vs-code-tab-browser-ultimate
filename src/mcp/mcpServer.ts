@@ -174,7 +174,7 @@ export class McpServer implements vscode.Disposable {
 	/** Which assistants have called recently. */
 	public get clients(): ClientSet {
 		const fresh = (kind: ClientKind) => Date.now() - (this._lastByKind.get(kind) ?? 0) < clientIdleMs;
-		return { claude: fresh('claude'), codex: fresh('codex'), gemini: fresh('gemini'), openrouter: fresh('openrouter'), opencode: fresh('opencode'), pi: fresh('pi') };
+		return { claude: fresh('claude'), codex: fresh('codex'), gemini: fresh('gemini'), opencode: fresh('opencode'), pi: fresh('pi'), openrouter: fresh('openrouter') };
 	}
 
 	private _noteActivity(kind: ClientKind | undefined): void {

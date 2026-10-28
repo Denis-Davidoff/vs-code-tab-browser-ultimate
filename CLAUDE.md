@@ -129,6 +129,8 @@ cloned repository could switch autofill on for its own dev server (breaks-silent
 | `aiBrowser.chat.tabLimit` | `10` | how many conversations stay open as tabs, 1 to 30 — see [Tabs](#tabs-several-conversations-at-once) |
 | `aiBrowser.chat.terminalLimit` | `8` | how many terminal tabs stay open, 1 to 20, `application`-scoped; counted apart from the conversations — see [Terminal tabs](#terminal-tabs-a-real-shell-in-the-chat) |
 | `aiBrowser.chat.remoteTerminal` | `false` | let the Chrome side panel and the Exchange website open, watch, and with a lease type into, terminal tabs marked "Allow remote access"; `application`-scoped, the website on encrypted connections only — see [Remote terminals](#remote-terminals-on-the-exchange-website-and-in-chrome) |
+| `aiBrowser.chat.remoteTerminalShell` | `false` | with `remoteTerminal` on, let Chrome and the website open a plain shell terminal; `application`-scoped — see [Remote terminals](#remote-terminals-on-the-exchange-website-and-in-chrome) |
+| `aiBrowser.chat.remoteTerminalAgent` | `false` | the same for an agent's own CLI in a terminal; `application`-scoped |
 | `aiBrowser.chat.claudePath` | `""` | the `claude` executable; empty searches — see [Finding the CLIs](#finding-the-clis) |
 | `aiBrowser.chat.codexPath` | `""` | the `codex` executable, the same way |
 | `aiBrowser.chat.geminiPath` | `""` | the `gemini` executable, the same way — see [Gemini CLI over ACP](#gemini-cli-over-acp) |
@@ -5509,6 +5511,30 @@ about their approvals.
   it yet — the pie stays empty); titles, commit messages and compacting; the Chrome / Exchange surfaces' forms for it beyond
   the widened agent lists (the settings section is editor-only, below); a terminal tab or "continue in terminal" (no CLI).
 
+#### Local models: Ollama, LM Studio, llama.cpp
+
+The same agent and loop serve a server on this computer, because all three speak the OpenAI chat-completions format
+(Ollama `http://localhost:11434/v1`, LM Studio `http://localhost:1234/v1`). **It is one more field on a model, not an
+agent of its own**: `OpenRouterModel.endpoint` (`localEndpoint` in `openrouterProtocol.ts`, under test). Decisions:
+
+- **Loopback only**, over http or https, no credentials, query or fragment — `localhost`, `127.x`, `::1`. A server on another
+  machine is refused: the conversation would leave this computer for an address a stored model chose, and the rule that the
+  key goes only to a checked endpoint is simplest to keep by never sending it to these at all.
+- **The OpenRouter key is never sent to a model's own server** (`_complete`: `local ? undefined : apiKey()`). A model with no
+  `endpoint` uses the `aiBrowser.chat.openrouterEndpoint` setting and the key as before.
+- **A bad endpoint *setting* does not hide local models** (`models()` throws only when no model is local; `_start` checks the
+  setting only for a model that uses it).
+- **Chat Settings → OpenRouter**: the catalogue has a source select beside the search box — OpenRouter, Ollama, LM Studio, or
+  another local address — and a model's form has a *Local server* field. The host's `catalog` action takes an optional
+  `endpoint`, validated by `localEndpoint`. The reply echoes the typed `requestedEndpoint` even on validation errors, so the
+  view matches it against the input without losing errors or results for a URL that normalizes (such as uppercase `LOCALHOST`).
+  The separate `endpoint` is canonical and used when adding a model; it is also part of the catalogue render signature so Add
+  buttons keep the correct server when two servers list the same ids. A local server's
+  `/models` lists ids and nothing else, so adding from it (`modelFromCatalogItem(item, endpoint)`) assumes tools **on** and images
+  **off**; the form's *Supports tools* switches it off for a model that calls tools badly. Small local models often do.
+- **Unmeasured against a live Ollama or LM Studio**: `node scripts/test-openrouter.mjs` (scenario 13) uses a fake server. Check
+  tool calling, `/models`' shape and the reasoning field on a real install before relying on it.
+
 #### OpenRouter settings: the key, the models, the catalogue
 
 A section of the chat's Chat Settings panel (tab **OpenRouter**, after Appearance), the way the user stores the key and
@@ -8398,6 +8424,12 @@ What a remote surface is told is one leaf for both, [src/chat/remoteTerminalView
 - **only terminals marked shared** (`setTerminalRemote`, editor-only; editor terminals start
   unshared, ones opened from Chrome or the website shared). The projection carries shared terminals
   only, `cwd` cut to its last folder; the sharing row (`TerminalSupport.website`) never leaves.
+
+**Opening is two more settings, one per kind** (`aiBrowser.chat.remoteTerminalShell`, `remoteTerminalAgent`, both `application`, default off, read with `inspect().globalValue` by `remoteTerminalOpenSetting`): a plain shell and an agent's CLI are different powers, so each has its own box. They narrow `remoteTerminal`, never widen it. `remoteTerminalView` passes `openShell` / `openAgent`: agent off empties `terminalSupport.agents`, shell off sets `shell: false` (the menu drops its "New terminal" row), neither turns the entry off with both hints (`remoteOpenHint`) while the already shared terminals stay watchable and closable. `_remoteTerminalCommand` checks them again on every `newTerminal`, so a crafted command cannot skip the menu. Both builds read them on every snapshot and on every configuration change.
+
+Both New terminal buttons (the remote header and the tab strip) keep the menu when only one agent is offered with shells off. A one-item menu is not necessarily a shell: bypassing it with a plain `newTerminal` request loses the agent and the host correctly refuses it.
+
+**The three switches are checkboxes in Chat Settings → Remote terminals** (editor only: `remoteTerminalSettings: editor(…)` in `commands.ts`, so no remote surface can widen its own access). One `ViewToHost` message with `action` `load` or `set` (key `remoteTerminal`, `remoteTerminalShell` or `remoteTerminalAgent`), answered by a `HostToView` `remoteTerminalSettings` carrying the stored values; each box applies at once, there is no Save, and the shell and agent boxes are disabled while the master is off. The host writes at `ConfigurationTarget.Global` (`_remoteTerminalSettings`). The same three stay in VS Code's Settings. `featureSettings.test.ts` stubs `createRemoteTerminalSettings` like the other sections.
 
 **Where a gate is closed, "New terminal" is disabled with the reason, never hidden.** This was the
 website bug: its only entry was the strip's "New terminal" button, shown only while a terminal could

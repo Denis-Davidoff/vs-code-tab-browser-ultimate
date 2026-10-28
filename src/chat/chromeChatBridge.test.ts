@@ -788,7 +788,7 @@ test('terminals in Chrome: disabled with the setting named, consent once, frames
 	bridge.setTerminals({
 		terminals: { find: (id: string) => id === 'term-1' ? target : undefined, shared: () => [{ id: 'term-1', name: 'zsh', cwd: '/a/b', status: 'running', remote: true }],
 			support: () => ({ available: true, limit: 8, agents: [] }), blocked: () => !setting },
-		setting: () => setting, askConsent: async () => { asked++; return true; }, audit() {},
+		setting: () => setting, openShell: () => true, openAgent: () => true, askConsent: async () => { asked++; return true; }, audit() {},
 	});
 	const config = await bridge.start();
 	bridge.update(state());

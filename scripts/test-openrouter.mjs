@@ -235,6 +235,21 @@ let n = 0; const ok = name => console.log(`ok ${++n} ${name}`);
 	s.dispose(); be.dispose(); ok('send without a key omits Authorization');
 }
 
+// 13 a model on this computer: its own server, never the OpenRouter key, and a bad endpoint setting does not hide it
+{
+	const local = [{ id: 'llama3.1:8b', endpoint: `http://127.0.0.1:${port}/v1` }];
+	const over = { models: () => local, endpoint: () => 'http://evil.example/v1' };
+	const be = new OpenRouterBackend(config(over), bs);
+	assert.equal((await be.models()).length, 1);
+	const s = be.openSession('/', undefined, undefined, '/', [], true, 'c13'); const ev = collect(s);
+	script.push(res => sse(res, [delta({ content: 'from here' }, 'stop'), '[DONE]']));
+	await s.send(input('x'), 'llama3.1:8b', undefined); await until(() => ended(ev));
+	assert.equal(modelRequests.at(-1).auth, undefined, 'the OpenRouter key must not reach a local server');
+	assert.equal(modelRequests.at(-1).body.model, 'llama3.1:8b');
+	assert.ok(ev.some(e => e.type === 'text' && e.text === 'from here'));
+	noKey(ev); s.dispose(); be.dispose(); ok('local model: own server, no key, bad global endpoint ignored');
+}
+
 server.close(); server.closeAllConnections?.();
 console.log('all ok');
 process.exit(0);

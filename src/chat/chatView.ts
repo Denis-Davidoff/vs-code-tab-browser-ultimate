@@ -1,3 +1,4 @@
+import { remoteOpenHint } from './remoteTerminalView';
 import { GitFetchScheduler } from './gitFetch';
 import type { ExchangeUiMessage } from './exchangeUiProtocol';
 import { remoteRefusal } from './core/commands';
@@ -46,7 +47,7 @@ import { piPath } from './piAgent';
 import { piResumeArgs } from './piProtocol';
 import type { OpenRouterConfig } from './openrouterAgent';
 import {
-	fetchOpenRouterCatalog, openrouterEndpoint, openrouterKeySecret, openrouterModelsKey, readOpenRouterModels, searchOpenRouterCatalog, validateOpenRouterKey, validateOpenRouterModels,
+	fetchOpenRouterCatalog, localEndpoint, openrouterEndpoint, openrouterKeySecret, openrouterModelsKey, readOpenRouterModels, searchOpenRouterCatalog, validateOpenRouterKey, validateOpenRouterModels,
 	openrouterCatalogTtlMs, type OpenRouterCatalogEntry,
 } from './openrouterProtocol';
 import { bundledPin } from './agentBinary';
@@ -388,6 +389,11 @@ interface ChatServices {
  * binaries. A type with no row is refused. An inner id has to name the shared
  * conversation itself.
  */
+/** `aiBrowser.chat.remoteTerminalShell` / `remoteTerminalAgent`: whether Chrome and the website may open a plain shell / an agent's CLI (application scope, read at every decision). */
+export function remoteTerminalOpenSetting(kind: 'shell' | 'agent'): boolean {
+	return vscode.workspace.getConfiguration('aiBrowser.chat').inspect<boolean>(kind === 'shell' ? 'remoteTerminalShell' : 'remoteTerminalAgent')?.globalValue === true;
+}
+
 /** `aiBrowser.chat.remoteTerminal`, read at every decision (application scope: a workspace cannot switch it on). */
 export function remoteTerminalSetting(): boolean {
 	return vscode.workspace.getConfiguration('aiBrowser.chat').inspect<boolean>('remoteTerminal')?.globalValue === true;
@@ -871,7 +877,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		this._subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration('workbench.iconTheme') || e.affectsConfiguration('files.associations')) { this._gitEventRefresh(); this._postFileIcons(); }
 			if (terminalSettingKeys.some(key => e.affectsConfiguration(key))) { this._postTerminalSettings(); }
-			if (e.affectsConfiguration(terminalLimitSetting) || e.affectsConfiguration(tabLimitSetting) || e.affectsConfiguration(collapseToolsSetting) || e.affectsConfiguration(viewModeSetting) || e.affectsConfiguration('aiBrowser.chat.exchangeKeepAwakeMinutes') || e.affectsConfiguration('aiBrowser.chat.remoteTerminal')) {
+			if (e.affectsConfiguration('aiBrowser.chat.remoteTerminal')) { this._postMessage({ type: 'remoteTerminalSettings', remoteTerminal: remoteTerminalSetting(), shell: remoteTerminalOpenSetting('shell'), agent: remoteTerminalOpenSetting('agent') }); }
+			if (e.affectsConfiguration(terminalLimitSetting) || e.affectsConfiguration(tabLimitSetting) || e.affectsConfiguration(collapseToolsSetting) || e.affectsConfiguration(viewModeSetting) || e.affectsConfiguration('aiBrowser.chat.exchangeKeepAwakeMinutes') || e.affectsConfiguration('aiBrowser.chat.remoteTerminal') || e.affectsConfiguration('aiBrowser.chat.remoteTerminalShell') || e.affectsConfiguration('aiBrowser.chat.remoteTerminalAgent')) {
 				this._post();
 			}
 		}));
@@ -1403,6 +1410,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				return;
 			case 'openrouter':
 				await this._openrouterAction(message);
+				return;
+			case 'remoteTerminalSettings':
+				await this._remoteTerminalSettings(message);
 				return;
 			case 'saveFeatureAi':
 				try {
@@ -4069,6 +4079,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		const support = this._terminalSupport();
 		if (!support.available) { throw new Error(support.reason); }
 		const agent = message.agent;
+		if (agent === undefined && !remoteTerminalOpenSetting('shell')) { throw new Error(remoteOpenHint('shell')); }
+		if (agent !== undefined && !remoteTerminalOpenSetting('agent')) { throw new Error(remoteOpenHint('agent')); }
 		if (agent !== undefined && !support.agents.includes(agent)) { throw new Error('That agent is not available as a terminal.'); }
 		if (this._terminals.size + this._terminalsStarting >= support.limit) { throw new Error(`${this._terminals.size} terminals are open — close one to open another.`); }
 		const cwd = chooseTerminalCwd([tab.cwd, this._windowCwd(), os.homedir()], isDirectory);
@@ -4454,8 +4466,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	/** OpenRouter's catalogue, kept for ten minutes and shared by every chat surface; one request at a time. */
-	private static _openrouterCatalog: { at: number; endpoint: string; entries: OpenRouterCatalogEntry[] } | undefined;
-	private static _openrouterCatalogRequest: { endpoint: string; promise: Promise<OpenRouterCatalogEntry[]> } | undefined;
+	private static readonly _openrouterCatalogs = new Map<string, { at: number; entries: OpenRouterCatalogEntry[] }>();
+	private static readonly _openrouterCatalogRequests = new Map<string, Promise<OpenRouterCatalogEntry[]>>();
+
+	/** The Remote terminals section of Chat Settings: reads and writes the three user settings. */
+	private async _remoteTerminalSettings(message: Extract<ViewToHost, { type: 'remoteTerminalSettings' }>): Promise<void> {
+		const read = (error?: string): void => {
+			this._postMessage({ type: 'remoteTerminalSettings', remoteTerminal: remoteTerminalSetting(), shell: remoteTerminalOpenSetting('shell'), agent: remoteTerminalOpenSetting('agent'), ...(error ? { error } : {}) });
+		};
+		if (message.action === 'set') {
+			const keys = ['remoteTerminal', 'remoteTerminalShell', 'remoteTerminalAgent'];
+			if (!keys.includes(message.key) || typeof message.value !== 'boolean') { read(vscode.l10n.t('Unknown setting.')); return; }
+			try {
+				// Global only: these are application-scoped, so a workspace value would be ignored anyway.
+				await vscode.workspace.getConfiguration('aiBrowser.chat').update(message.key, message.value, vscode.ConfigurationTarget.Global);
+			} catch (error) {
+				read(vscode.l10n.t('The setting was not changed: {0}', error instanceof Error ? error.message : String(error)));
+				return;
+			}
+		}
+		read();
+	}
 
 	/**
 	 * The OpenRouter section of Chat Settings. The key goes in through `setKey` and
@@ -4467,7 +4498,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private async _openrouterAction(message: Extract<ViewToHost, { type: 'openrouter' }>): Promise<void> {
 		const state = async (extra: { error?: string; notice?: string; catalog?: Extract<HostToView, { type: 'openrouter' }>['catalog'] } = {}): Promise<void> => {
 			const keySet = !!(await this._context.secrets.get(openrouterKeySecret))?.trim();
-			this._postMessage({ type: 'openrouter', keySet, models: readOpenRouterModels(this._context.globalState.get<unknown>(openrouterModelsKey)), ...extra });
+			this._postMessage({ type: 'openrouter', keySet, models: readOpenRouterModels(this._context.globalState.get<unknown>(openrouterModelsKey), true), ...extra });
 		};
 		const changed = () => { void this._registry.redetect('openrouter').catch(() => undefined); };
 		try {
@@ -4498,14 +4529,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				}
 				case 'catalog': {
 					const query = typeof message.query === 'string' ? message.query.slice(0, 100) : '';
-					const endpoint = openrouterEndpoint(vscode.workspace.getConfiguration('aiBrowser.chat').inspect<string>('openrouterEndpoint')?.globalValue);
-					if ('error' in endpoint) { await state({ catalog: { query, items: [], total: 0, error: endpoint.error } }); return; }
+					// A server on this computer is asked in place of OpenRouter when the view names one; only loopback is accepted.
+					const asked = message.endpoint !== undefined && message.endpoint !== '' ? localEndpoint(message.endpoint) : undefined;
+					const endpoint = asked ?? openrouterEndpoint(vscode.workspace.getConfiguration('aiBrowser.chat').inspect<string>('openrouterEndpoint')?.globalValue);
+					// Correlate with the typed address even when invalid; the canonical URL is only for adding a model.
+					const echo = { ...(typeof message.endpoint === 'string' ? { requestedEndpoint: message.endpoint } : {}), ...(asked && 'url' in asked ? { endpoint: asked.url } : {}) };
+					if ('error' in endpoint) { await state({ catalog: { query, ...echo, items: [], total: 0, error: endpoint.error } }); return; }
 					try {
-						const entries = await this._openrouterEntries(endpoint.url, message.refresh === true);
+						const entries = await this._openrouterEntries(endpoint.url, message.refresh === true, asked !== undefined);
 						const found = searchOpenRouterCatalog(entries, query);
-						await state({ catalog: { query, items: found.entries, total: found.total } });
+						// A local server's list carries no capabilities; Add assumes tools, so the rows say the same.
+						const items = asked !== undefined ? found.entries.map(e => ({ ...e, tools: true })) : found.entries;
+						await state({ catalog: { query, ...echo, items, total: found.total } });
 					} catch (error) {
-						await state({ catalog: { query, items: [], total: 0, error: error instanceof Error ? error.message : String(error) } });
+						await state({ catalog: { query, ...echo, items: [], total: 0, error: error instanceof Error ? error.message : String(error) } });
 					}
 					return;
 				}
@@ -4515,19 +4552,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}
 	}
 
-	private async _openrouterEntries(endpoint: string, refresh: boolean): Promise<OpenRouterCatalogEntry[]> {
-		const cached = ChatViewProvider._openrouterCatalog;
-		if (cached && !refresh && cached.endpoint === endpoint && Date.now() - cached.at < openrouterCatalogTtlMs) { return cached.entries; }
-		let request = ChatViewProvider._openrouterCatalogRequest;
-		if (!request || request.endpoint !== endpoint) {
-			const promise = fetchOpenRouterCatalog((url, init) => fetch(url, init), endpoint).then(entries => {
-				ChatViewProvider._openrouterCatalog = { at: Date.now(), endpoint, entries };
+	private async _openrouterEntries(endpoint: string, refresh: boolean, local: boolean): Promise<OpenRouterCatalogEntry[]> {
+		const cached = ChatViewProvider._openrouterCatalogs.get(endpoint);
+		if (cached && !refresh && Date.now() - cached.at < openrouterCatalogTtlMs) { return cached.entries; }
+		let request = ChatViewProvider._openrouterCatalogRequests.get(endpoint);
+		if (!request) {
+			const promise = fetchOpenRouterCatalog((url, init) => fetch(url, init), endpoint, undefined, local).then(entries => {
+				ChatViewProvider._openrouterCatalogs.set(endpoint, { at: Date.now(), entries });
 				return entries;
-			}).finally(() => { if (ChatViewProvider._openrouterCatalogRequest?.promise === promise) { ChatViewProvider._openrouterCatalogRequest = undefined; } });
-			request = { endpoint, promise };
-			ChatViewProvider._openrouterCatalogRequest = request;
+			}).finally(() => { if (ChatViewProvider._openrouterCatalogRequests.get(endpoint) === promise) { ChatViewProvider._openrouterCatalogRequests.delete(endpoint); } });
+			request = promise;
+			ChatViewProvider._openrouterCatalogRequests.set(endpoint, request);
 		}
-		return request.promise;
+		return request;
 	}
 
 	private _history(): StoredChat[] {
@@ -6658,7 +6695,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private _agentBinaries(): Partial<Record<AgentId, string>> {
 		const stored = this._context.workspaceState.get<Record<string, unknown>>(agentBinariesKey) ?? {};
 		const pick = (id: AgentId) => typeof stored[id] === 'string' ? stored[id] as string : undefined;
-		return { claude: pick('claude'), codex: pick('codex'), gemini: pick('gemini'), openrouter: pick('openrouter'), opencode: pick('opencode'), pi: pick('pi') };
+		return { claude: pick('claude'), codex: pick('codex'), gemini: pick('gemini'), opencode: pick('opencode'), pi: pick('pi'), openrouter: pick('openrouter') };
 	}
 
 	/**

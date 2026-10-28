@@ -92,6 +92,8 @@ export const COMMANDS = {
 	authenticateAgent: editor('Sign in to the agent in the VS Code window.'), checkAgentAuthentication: editor('Check agent sign-in in the VS Code window.'),
 	temporaryStorage: editor('Temporary files are managed only in VS Code.'),
 	// The key and the model list decide where prompts and the key are sent: edited only in the editor, never from a remote surface.
+	// These switches decide what a remote surface may open on this machine: changed only in the editor, never from the surface they limit.
+	remoteTerminalSettings: editor('Remote terminal access is changed only in VS Code.'),
 	openrouter: editor('The OpenRouter key and models are edited only in VS Code.'),
 	setNewsHidden: chat({ no: chromeEditor }, 'host'),
 	setAutomaticAwake: chat({ no: chromeEditor }, 'host'), setSleep: chat({ no: chromeEditor }, 'host'),

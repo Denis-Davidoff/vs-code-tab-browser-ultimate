@@ -88,7 +88,7 @@ test('a website viewer attaches, watches, takes control and types through an enc
 				return { dispose: () => s.close() };
 			},
 		},
-		chatViewId: 'aiBrowser.chat', remoteTerminalSetting: () => setting,
+		chatViewId: 'aiBrowser.chat', remoteTerminalSetting: () => setting, remoteTerminalOpenSetting: () => true,
 	};
 	const modules = new Map<string, any>();
 	const sandbox = { WebSocket: FakeSocket, Buffer, URL, Error, AbortSignal, TextEncoder, TextDecoder, crypto: globalThis.crypto, btoa, atob, EventTarget, Event, MessageEvent, setTimeout, clearTimeout };

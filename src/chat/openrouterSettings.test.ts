@@ -91,6 +91,7 @@ suite('OpenRouter settings: the catalogue', () => {
 		const [a, b] = readOpenRouterCatalog(sample);
 		assert.deepStrictEqual(modelFromCatalogItem(a), { id: a.id, name: a.name, tools: true, images: true, reasoning: 'medium' });
 		assert.deepStrictEqual(modelFromCatalogItem(b), { id: b.id, name: b.name, tools: false, images: false });
+		assert.deepStrictEqual(modelFromCatalogItem(b, 'http://localhost:11434/v1'), { id: b.id, tools: true, images: false, endpoint: 'http://localhost:11434/v1' });
 		assert.ok('model' in validateOpenRouterModel(modelFromCatalogItem(a)));
 	});
 	test('context and summaries read as short text', () => {

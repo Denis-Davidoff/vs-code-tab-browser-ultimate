@@ -33,6 +33,7 @@ export function describePrice(entry: Pick<OpenRouterCatalogItem, 'promptPrice' |
 /** The options a configured model sets, in one line; empty when it sets none. */
 export function modelSummary(model: OpenRouterModelConfig): string {
 	return [
+		model.endpoint ? `local ${model.endpoint.replace(/^https?:\/\//, '')}` : undefined,
 		model.maxTokens !== undefined ? `max ${model.maxTokens} tokens` : undefined,
 		model.temperature !== undefined ? `temperature ${model.temperature}` : undefined,
 		model.reasoning ? `reasoning ${model.reasoning}` : undefined,
@@ -42,7 +43,11 @@ export function modelSummary(model: OpenRouterModelConfig): string {
 }
 
 /** A catalogue entry as a configured model: what the service declares, nothing guessed. */
-export function modelFromCatalogItem(item: OpenRouterCatalogItem): OpenRouterModelConfig {
+export function modelFromCatalogItem(item: OpenRouterCatalogItem, endpoint?: string): OpenRouterModelConfig {
+	if (endpoint) {
+		// A local server's list names models and nothing else: tools are assumed (the user can switch them off), images are not.
+		return { id: item.id, tools: true, images: false, endpoint };
+	}
 	return {
 		id: item.id,
 		...(item.name && item.name !== item.id ? { name: item.name } : {}),

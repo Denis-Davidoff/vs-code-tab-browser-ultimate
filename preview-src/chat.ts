@@ -1044,7 +1044,7 @@ remoteTerminal.addEventListener('click', () => {
 	const why = remoteTerminalBlock();
 	if (why) { refuseControl({ s: 'off', reason: why }); return; }
 	const items = terminalMenuItems();
-	if (items.length > 1) { openMenu(remoteTerminal, items, 'Open new terminal'); } else { post({ type: 'newTerminal' }); }
+	if (items.length > 1 || (items.length === 1 && state?.terminalSupport?.available && state.terminalSupport.shell === false)) { openMenu(remoteTerminal, items, 'Open new terminal'); } else { post({ type: 'newTerminal' }); }
 });
 /** Why the remote "New terminal" cannot act now, or `undefined`. */
 function remoteTerminalBlock(): string | undefined {
@@ -1430,6 +1430,10 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 			openrouterData = message;
 			openrouterRender?.();
 			return;
+		case 'remoteTerminalSettings':
+			remoteTerminalData = message;
+			remoteTerminalRender?.();
+			return;
 		case 'openSettings':
             openFeatureSettings();
             return;
@@ -1681,7 +1685,7 @@ function terminalMenuItems(): MenuItem[] {
 		return [{ icon: 'terminal', label: 'New terminal', description: offer.reason, command: 'newTerminal', disabled: true, run: () => {} }];
 	}
 	return [
-		{ icon: 'terminal', label: 'New terminal', description: 'A shell in the folder of this chat', command: 'newTerminal', run: () => post({ type: 'newTerminal' }) },
+		...(offer.shell ? [{ icon: 'terminal', label: 'New terminal', description: 'A shell in the folder of this chat', command: 'newTerminal' as const, run: () => post({ type: 'newTerminal' }) }] : []),
 		...offer.agents.map(agent => ({
 			icon: 'terminal', label: `${agent.name} in a terminal`, description: agent.id === 'gemini' ? `${agent.name}'s own CLI (browser tools: Connect Gemini CLI)` : agent.id === 'opencode' || agent.id === 'pi' ? `${agent.name}'s own CLI (no browser tools in a terminal)` : `${agent.name}'s own CLI, with the browser tools`, command: 'newTerminal',
 			run: () => post({ type: 'newTerminal', agent: agent.id }),
@@ -1815,11 +1819,11 @@ function websiteAccessRow(terminal: { readonly id: string; readonly remote?: boo
 	}];
 }
 
-/** The strip's own "New terminal": the editor only, and only while one can be started. */
+/** The strip's own "New terminal", only while one can be started on this surface. */
 const tabAddTerminal = button([icon('terminal'), el('span', { class: 'tab-add-label', text: 'New terminal' })], { class: 'ghost round tab-add tab-add-terminal', title: 'New terminal' });
 tabAddTerminal.addEventListener('click', () => {
 	const items = terminalMenuItems();
-	if (items.length > 1) { openMenu(tabAddTerminal, items, 'Open new terminal'); } else { post({ type: 'newTerminal' }); }
+	if (items.length > 1 || (items.length === 1 && state?.terminalSupport?.available && state.terminalSupport.shell === false)) { openMenu(tabAddTerminal, items, 'Open new terminal'); } else { post({ type: 'newTerminal' }); }
 });
 /*
  * The narrow strip's overflow: the tabs that do not fit in the row are hidden (a class: the keyed
@@ -8499,7 +8503,7 @@ function openSkillEditor(skill?: ToolbarSkill): void {
 		(stepList.lastElementChild?.querySelector('.form-prompt') as HTMLTextAreaElement | null)?.focus();
 	});
 
-	const agents = selectField<ToolbarSkill['agents']>([['all', 'All agents'], ['claude', 'Claude Code only'], ['codex', 'Codex only'], ['gemini', 'Gemini CLI only'], ['openrouter', 'OpenRouter only'], ['opencode', 'OpenCode only'], ['pi', 'Pi only']], editorAgents);
+	const agents = selectField<ToolbarSkill['agents']>([['all', 'All agents'], ['claude', 'Claude Code only'], ['codex', 'Codex only'], ['gemini', 'Gemini CLI only'], ['opencode', 'OpenCode only'], ['pi', 'Pi only'], ['openrouter', 'OpenRouter only']], editorAgents);
 	agents.addEventListener('change', () => { editorAgents = agents.value as ToolbarSkill['agents']; });
 
 	const results: readonly (readonly [ToolbarResult, string, string])[] = [
@@ -9722,12 +9726,13 @@ function createOpenRouterSettings(): HTMLElement {
 	const keyRow = el('div', { class: 'feature-settings-row openrouter-key' }, el('strong', { text: 'API key' }),
 		el('div', { class: 'openrouter-key-line' }, keyState),
 		el('div', { class: 'openrouter-key-line' }, keyField, keySave, keyRemove),
-		el('p', { class: 'feature-settings-note', text: 'The key is kept in VS Code’s secret storage and is never shown again. Storing a new one replaces the old. It is sent only to OpenRouter.' }));
+		el('p', { class: 'feature-settings-note', text: 'The key is kept in VS Code’s secret storage and is never shown again. Storing a new one replaces the old. It is sent only to OpenRouter, never to a local server.' }));
 
 	// --- the models
 	const modelList = el('div', { class: 'openrouter-list' });
 	const form = el('div', { class: 'openrouter-form' }); form.hidden = true;
 	const addButton = button([icon('add'), 'Add a model by id'], { class: 'ghost' });
+	const localPresets = [['Ollama', 'http://localhost:11434/v1'], ['LM Studio', 'http://localhost:1234/v1']] as const;
 	let listSignature = '';
 	let editing: { original?: string } | undefined;
 	let formSaving = false;
@@ -9749,6 +9754,8 @@ function createOpenRouterSettings(): HTMLElement {
 		const name = text('Display name (optional)', original?.name ?? '');
 		const maxTokens = text('Max tokens (optional)', original?.maxTokens === undefined ? '' : String(original.maxTokens), { placeholder: 'service default' });
 		const temperature = text('Temperature 0–2 (optional)', original?.temperature === undefined ? '' : String(original.temperature), { placeholder: 'service default' });
+		const endpoint = text('Local server (optional)', original?.endpoint ?? '', { placeholder: 'http://localhost:11434/v1' });
+		endpoint.field.setAttribute('list', 'openrouter-local-servers');
 		const reasoning = el('select');
 		reasoning.setAttribute('aria-label', 'Reasoning level');
 		// `data-appearance`: the Save button's disable/enable sweeps skip it (it is not one of the AI-feature selects).
@@ -9775,6 +9782,7 @@ function createOpenRouterSettings(): HTMLElement {
 			const edited: OpenRouterModelEdit = {
 				id: id.field.value.trim(),
 				...(name.field.value.trim() ? { name: name.field.value.trim() } : {}),
+				...(endpoint.field.value.trim() ? { endpoint: endpoint.field.value.trim() } : {}),
 				...('value' in max && max.value !== undefined ? { maxTokens: max.value } : {}),
 				...('value' in temp && temp.value !== undefined ? { temperature: temp.value } : {}),
 				...(reasoning.value ? { reasoning: reasoning.value as 'low' | 'medium' | 'high' } : {}),
@@ -9794,7 +9802,7 @@ function createOpenRouterSettings(): HTMLElement {
 			else if (event.key === 'Escape' && !event.isComposing) { event.stopPropagation(); closeForm(); }
 		};
 		form.replaceChildren(el('strong', { text: original ? `Edit ${original.id}` : 'Add a model' }),
-			el('div', { class: 'openrouter-form-grid' }, id.label, name.label, maxTokens.label, temperature.label, el('label', {}, el('span', { text: 'Reasoning' }), reasoning),
+			el('div', { class: 'openrouter-form-grid' }, id.label, name.label, endpoint.label, maxTokens.label, temperature.label, el('label', {}, el('span', { text: 'Reasoning' }), reasoning),
 				el('div', { class: 'openrouter-checks' }, tools.label, images.label)),
 			error, el('div', { class: 'openrouter-form-actions' }, done, cancel));
 		id.field.focus();
@@ -9802,7 +9810,14 @@ function createOpenRouterSettings(): HTMLElement {
 	addButton.addEventListener('click', () => openForm());
 
 	// --- the catalogue
-	const search = el('input'); search.type = 'search'; search.placeholder = 'Search OpenRouter models, e.g. claude sonnet'; search.spellcheck = false; search.autocomplete = 'off';
+	const source = el('select'); source.dataset.appearance = 'openrouter'; source.setAttribute('aria-label', 'Where to list models from');
+	for (const [value, label] of [['', 'OpenRouter'], ...localPresets.map(([name, url]) => [url, `${name} on this computer`]), ['custom', 'Another local server…']]) {
+		const option = el('option', { text: label }); option.value = value; source.append(option);
+	}
+	const custom = el('input'); custom.type = 'text'; custom.hidden = true; custom.placeholder = 'http://localhost:8080/v1'; custom.spellcheck = false; custom.autocomplete = 'off';
+	custom.setAttribute('aria-label', 'Local server address');
+	const sourceUrl = () => source.value === 'custom' ? custom.value.trim() : source.value;
+	const search = el('input'); search.type = 'search'; search.placeholder = 'Search models, e.g. claude sonnet'; search.spellcheck = false; search.autocomplete = 'off';
 	search.setAttribute('aria-label', 'Search the OpenRouter model catalogue');
 	const refresh = button([icon('refresh')], { class: 'ghost', title: 'Fetch the catalogue again' });
 	const catalogInfo = el('p', { class: 'feature-settings-note openrouter-catalog-info' }); catalogInfo.setAttribute('role', 'status');
@@ -9810,7 +9825,9 @@ function createOpenRouterSettings(): HTMLElement {
 	let catalogSignature = '';
 	let lastCatalog: OpenRouterMessage['catalog'];
 	let searchTimer: ReturnType<typeof setTimeout> | undefined;
-	const ask = (fresh = false) => { catalogInfo.textContent = 'Searching…'; post_({ type: 'openrouter', action: 'catalog', query: search.value, ...(fresh ? { refresh: true } : {}) }); };
+	const ask = (fresh = false) => { if (source.value === 'custom' && !custom.value.trim()) { catalogInfo.textContent = 'Type the address of the server, for example http://localhost:8080/v1.'; return; } catalogInfo.textContent = 'Searching…'; post_({ type: 'openrouter', action: 'catalog', query: search.value, ...(sourceUrl() ? { endpoint: sourceUrl() } : {}), ...(fresh ? { refresh: true } : {}) }); };
+	source.addEventListener('change', () => { custom.hidden = source.value !== 'custom'; lastCatalog = undefined; catalogSignature = ''; catalogList.replaceChildren(); if (source.value !== 'custom' || custom.value.trim()) { ask(); } else { catalogInfo.textContent = 'Type the address of the server, for example http://localhost:8080/v1.'; } });
+	custom.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); lastCatalog = undefined; catalogSignature = ''; ask(true); } });
 	search.addEventListener('input', () => { if (searchTimer) { clearTimeout(searchTimer); } searchTimer = setTimeout(() => ask(), 300); });
 	search.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); if (searchTimer) { clearTimeout(searchTimer); } ask(); } });
 	refresh.addEventListener('click', () => ask(true));
@@ -9846,10 +9863,10 @@ function createOpenRouterSettings(): HTMLElement {
 		// The catalogue page: rebuilt only when it, or which of its models are added, changes.
 		const have = new Set(data.models.map(m => m.id.toLowerCase()));
 		// A model added or removed answers with no catalogue page: the last one is drawn again, for its Added marks.
-		if (data.catalog) { lastCatalog = data.catalog; }
-		if (lastCatalog && lastCatalog.query.trim() === search.value.trim()) {
+		if (data.catalog && (data.catalog.requestedEndpoint ?? '') === sourceUrl()) { lastCatalog = data.catalog; }
+		if (lastCatalog && lastCatalog.query.trim() === search.value.trim() && (lastCatalog.requestedEndpoint ?? '') === sourceUrl()) {
 			const c = lastCatalog;
-			const sig = JSON.stringify([c.items.map(i => [i.id, have.has(i.id.toLowerCase())]), c.total, c.error]);
+			const sig = JSON.stringify([c.endpoint, c.items.map(i => [i.id, have.has(i.id.toLowerCase())]), c.total, c.error]);
 			catalogInfo.textContent = c.error ? `Could not load the catalogue: ${c.error}` : c.total > c.items.length ? `Showing ${c.items.length} of ${c.total} models. Type to narrow the search.` : `${c.total} model${c.total === 1 ? '' : 's'}.`;
 			if (sig !== catalogSignature) {
 				catalogSignature = sig;
@@ -9857,7 +9874,7 @@ function createOpenRouterSettings(): HTMLElement {
 					const added = have.has(item.id.toLowerCase());
 					const add = button([added ? 'Added' : 'Add'], { class: added ? 'ghost' : 'feature-settings-save', title: added ? `${item.id} is already added` : `Add ${item.id}` });
 					add.disabled = added;
-					add.addEventListener('click', () => { add.disabled = true; saveModels([...models(), modelFromCatalogItem(item)]); });
+					add.addEventListener('click', () => { add.disabled = true; saveModels([...models(), modelFromCatalogItem(item, c.endpoint)]); });
 					const facts = [formatContext(item.contextLength) && `${formatContext(item.contextLength)} context`, describePrice(item), item.tools ? 'tools' : 'no tools', item.images ? 'images' : '', item.reasoning ? 'reasoning' : ''].filter(Boolean).join(' · ');
 					return el('div', { class: 'openrouter-item' },
 						el('div', { class: 'openrouter-item-text' }, el('strong', { text: item.name }), el('span', { text: item.id }), el('span', { class: 'openrouter-facts', text: facts })), add);
@@ -9870,12 +9887,55 @@ function createOpenRouterSettings(): HTMLElement {
 	post_({ type: 'openrouter', action: 'load' });
 	ask();
 
-	content.append(
-		el('p', { text: 'OpenRouter reaches many providers’ models with one API key. It runs inside the chat, with the browser, editor and chat tools; it has no shell and no file edits of its own. Changes apply at once; the model menu of the OpenRouter agent lists the models below.' }),
+	const localList = el('datalist'); localList.id = 'openrouter-local-servers';
+	for (const [name, url] of localPresets) { const option = el('option', { text: name }); option.value = url; localList.append(option); }
+	content.append(localList,
+		el('p', { text: 'Models from OpenRouter, or from a server on this computer such as Ollama or LM Studio (pick it beside the search box, or set a model’s Local server; no key is needed or sent). Local models vary in how well they call tools: turn Supports tools off for one that struggles. OpenRouter reaches many providers’ models with one API key. It runs inside the chat, with the browser, editor and chat tools; it has no shell and no file edits of its own. Changes apply at once; the model menu of the OpenRouter agent lists the models below.' }),
 		keyRow, status,
 		el('div', { class: 'feature-settings-row openrouter-models' }, el('strong', { text: 'Models' }), modelList, form, addButton),
 		el('div', { class: 'feature-settings-row openrouter-catalog' }, el('strong', { text: 'Catalogue' }),
-			el('div', { class: 'openrouter-search' }, search, refresh), catalogInfo, catalogList));
+			el('div', { class: 'openrouter-search' }, source, search, refresh), custom, catalogInfo, catalogList));
+	return content;
+}
+
+type RemoteTerminalSettingsMessage = Extract<HostToView, { type: 'remoteTerminalSettings' }>;
+let remoteTerminalData: RemoteTerminalSettingsMessage | undefined;
+/** Draws `remoteTerminalData` into the section that is on screen, in place; unset while the panel is closed. */
+let remoteTerminalRender: (() => void) | undefined;
+
+/** The Remote terminals section: what Chrome and the website may open. Each box applies at once; there is no Save. */
+function createRemoteTerminalSettings(): HTMLElement {
+	const content = el('div', { class: 'feature-settings-content remote-terminal-settings' });
+	const status = el('p', { class: 'feature-settings-note' }); status.setAttribute('role', 'status');
+	const boxes = {
+		remoteTerminal: el('input'), remoteTerminalShell: el('input'), remoteTerminalAgent: el('input'),
+	} as const;
+	const rows: Array<[keyof typeof boxes, string, string]> = [
+		['remoteTerminal', 'Allow Chrome and the website to use terminal tabs', 'They can watch terminals marked "Allow remote access" and, once they take control, type into them. Needs an encrypted connection on the website. Everything below only narrows this.'],
+		['remoteTerminalShell', 'Allow them to open a plain terminal', 'A shell on this computer, in your working folder.'],
+		['remoteTerminalAgent', 'Allow them to open an agent in a terminal', "An agent's own CLI (Claude Code, Codex, …) on this computer."],
+	];
+	for (const [key] of rows) { boxes[key].type = 'checkbox'; }
+	const render = () => {
+		if (!content.isConnected && remoteTerminalRender === render) { remoteTerminalRender = undefined; return; }
+		const data = remoteTerminalData;
+		if (!data) { return; }
+		boxes.remoteTerminal.checked = data.remoteTerminal;
+		boxes.remoteTerminalShell.checked = data.shell;
+		boxes.remoteTerminalAgent.checked = data.agent;
+		boxes.remoteTerminalShell.disabled = !data.remoteTerminal;
+		boxes.remoteTerminalAgent.disabled = !data.remoteTerminal;
+		status.textContent = data.error ?? '';
+	};
+	remoteTerminalRender = render;
+	for (const [key, label, note] of rows) {
+		const box = boxes[key];
+		box.addEventListener('change', () => post({ type: 'remoteTerminalSettings', action: 'set', key, value: box.checked }));
+		content.append(el('div', { class: 'feature-settings-row' }, el('label', { class: 'openrouter-check' }, box, el('span', { text: label })), el('p', { class: 'feature-settings-note', text: note })));
+	}
+	content.append(status, el('p', { class: 'feature-settings-note', text: 'These are stored in VS Code settings for your user and are shared across projects. They cannot be changed from Chrome or the website.' }));
+	render();
+	post({ type: 'remoteTerminalSettings', action: 'load' });
 	return content;
 }
 
@@ -9924,6 +9984,14 @@ function openFeatureSettings(initial?: 'openrouter'): void {
 	const openrouterContent = openrouterTab.hidden ? el('div') : createOpenRouterSettings();
 	openrouterContent.id = 'openrouter-content'; openrouterContent.hidden = true;
 	openrouterContent.setAttribute('role', 'tabpanel'); openrouterContent.setAttribute('aria-labelledby', openrouterTab.id);
+	const remoteTab = button(['Remote terminals'], { class: 'feature-settings-tab' });
+	remoteTab.id = 'remote-terminal-tab'; remoteTab.hidden = gate('remoteTerminalSettings').s !== 'on';
+	remoteTab.setAttribute('role', 'tab'); remoteTab.setAttribute('aria-selected', 'false');
+	remoteTab.setAttribute('aria-controls', 'remote-terminal-content');
+	if (!remoteTab.hidden) { tabs.append(remoteTab); }
+	const remoteContent = remoteTab.hidden ? el('div') : createRemoteTerminalSettings();
+	remoteContent.id = 'remote-terminal-content'; remoteContent.hidden = true;
+	remoteContent.setAttribute('role', 'tabpanel'); remoteContent.setAttribute('aria-labelledby', remoteTab.id);
 	const serverTab = button(['Server connection'], { class: 'feature-settings-tab' });
 	serverTab.id = 'server-connection-tab'; serverTab.hidden = !state.exchangeConnection;
 	serverTab.setAttribute('role', 'tab'); serverTab.setAttribute('aria-selected', 'false');
@@ -10033,15 +10101,16 @@ function openFeatureSettings(initial?: 'openrouter'): void {
 		content.append(row);
 	}
 	content.append(el('p', { class: 'feature-settings-note', text: "Commit messages use the selected agent's remembered chat model or its default. Branch names and chat titles use an available lightweight model. Effort is mapped to the levels supported by that model. Custom prompts apply to future requests; output format and length checks still apply. Empty prompts use the defaults. Settings are shared across projects." }));
-	const selectTab = (selected: 'ai' | 'video' | 'temporary' | 'server' | 'appearance' | 'openrouter') => {
+	const selectTab = (selected: 'ai' | 'video' | 'temporary' | 'server' | 'appearance' | 'openrouter' | 'remote') => {
+		remoteContent.hidden = selected !== 'remote'; remoteTab.setAttribute('aria-selected', String(selected === 'remote'));
 		openrouterContent.hidden = selected !== 'openrouter'; openrouterTab.setAttribute('aria-selected', String(selected === 'openrouter'));
 		content.hidden = selected !== 'ai'; videoContent.hidden = selected !== 'video'; temporaryContent.hidden = selected !== 'temporary';
 		tab.setAttribute('aria-selected', String(selected === 'ai')); videoTab.setAttribute('aria-selected', String(selected === 'video'));
 		temporaryTab.setAttribute('aria-selected', String(selected === 'temporary'));
 		serverContent.hidden = selected !== 'server'; serverTab.setAttribute('aria-selected', String(selected === 'server'));
 		appearanceContent.hidden = selected !== 'appearance'; appearanceTab.setAttribute('aria-selected', String(selected === 'appearance'));
-		featureSettingsSave.hidden = selected === 'temporary' || selected === 'server' || selected === 'appearance' || selected === 'openrouter';
-		featureSettingsStatus.hidden = selected === 'server' || selected === 'appearance' || selected === 'openrouter';
+		featureSettingsSave.hidden = selected === 'temporary' || selected === 'server' || selected === 'appearance' || selected === 'openrouter' || selected === 'remote';
+		featureSettingsStatus.hidden = selected === 'server' || selected === 'appearance' || selected === 'openrouter' || selected === 'remote';
 	};
 	tab.addEventListener('click', () => selectTab('ai')); videoTab.addEventListener('click', () => selectTab('video'));
 	// Temporary files live on the editor's machine: the tab is gone where they cannot be managed.
@@ -10054,7 +10123,8 @@ function openFeatureSettings(initial?: 'openrouter'): void {
 	featureSettingsSave.hidden = false; featureSettingsStatus.hidden = false;
 	appearanceTab.addEventListener('click', () => selectTab('appearance'));
 	openrouterTab.addEventListener('click', () => selectTab('openrouter'));
-	const sections = [tab, videoTab, temporaryTab, appearanceTab, ...(openrouterTab.hidden ? [] : [openrouterTab]), ...(state.exchangeConnection ? [serverTab] : [])];
+	remoteTab.addEventListener('click', () => selectTab('remote'));
+	const sections = [tab, videoTab, temporaryTab, appearanceTab, ...(openrouterTab.hidden ? [] : [openrouterTab]), ...(remoteTab.hidden ? [] : [remoteTab]), ...(state.exchangeConnection ? [serverTab] : [])];
 	tabs.addEventListener('keydown', event => {
 		const index = sections.indexOf(document.activeElement as HTMLButtonElement);
 		if (index < 0 || !['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) { return; }
@@ -10065,7 +10135,7 @@ function openFeatureSettings(initial?: 'openrouter'): void {
 	});
 	featureSettingsPanel.replaceChildren(heading,
 		el('div', { class: 'feature-settings-layout' }, tabs,
-			el('div', { class: 'feature-settings-main' }, content, videoContent, temporaryContent, openrouterContent, serverContent, appearanceContent,
+			el('div', { class: 'feature-settings-main' }, content, videoContent, temporaryContent, openrouterContent, remoteContent, serverContent, appearanceContent,
 				el('div', { class: 'feature-settings-actions' }, featureSettingsStatus, featureSettingsSave))));
 	showScreenOverlay(featureSettingsPanel);
 	featureSettingsPanel.focus();

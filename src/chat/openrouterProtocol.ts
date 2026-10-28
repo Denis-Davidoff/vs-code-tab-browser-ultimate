@@ -49,6 +49,8 @@ export interface OpenRouterModel {
 	readonly tools?: boolean;
 	/** Whether the model takes images. Absent means no: an `image_url` is sent only when declared. */
 	readonly images?: boolean;
+	/** A server on this computer that runs the model (Ollama, LM Studio, llama.cpp), as its canonical `/v1` address. Absent means the endpoint setting. The key is never sent there. */
+	readonly endpoint?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -80,7 +82,7 @@ function plain(text: string, limit: number): string {
  * `globalState` and may have been written by hand. At most 100, the first of a
  * repeated id kept.
  */
-export function readOpenRouterModels(raw: unknown): OpenRouterModel[] {
+export function readOpenRouterModels(raw: unknown, keepUnusable = false): OpenRouterModel[] {
 	if (!Array.isArray(raw)) {
 		return [];
 	}
@@ -101,12 +103,27 @@ export function readOpenRouterModels(raw: unknown): OpenRouterModel[] {
 		const name = typeof item.name === 'string' && plain(item.name, 100) ? plain(item.name, 100) : undefined;
 		const maxTokens = typeof item.maxTokens === 'number' && Number.isInteger(item.maxTokens) && item.maxTokens >= 1 && item.maxTokens <= 2_000_000 ? item.maxTokens : undefined;
 		const temperature = typeof item.temperature === 'number' && Number.isFinite(item.temperature) && item.temperature >= 0 && item.temperature <= 2 ? item.temperature : undefined;
+		let endpoint: string | undefined;
+		if (item.endpoint !== undefined && item.endpoint !== null && item.endpoint !== '') {
+			// A model bound to a local server is dropped, never turned into an OpenRouter one that would receive the key.
+			const checked = typeof item.endpoint === 'string' ? localEndpoint(item.endpoint) : { error: 'bad' };
+			if ('error' in checked) {
+				// The settings view keeps it (shown, refused on save) so a save never erases it; sessions never see it.
+				if (!keepUnusable || typeof item.endpoint !== 'string') {
+					continue;
+				}
+				endpoint = item.endpoint;
+			} else {
+				endpoint = checked.url;
+			}
+		}
 		const reasoning = (openrouterEfforts as readonly unknown[]).includes(item.reasoning) ? item.reasoning as OpenRouterReasoning : undefined;
 		out.push({
 			id,
 			...(name ? { name } : {}), ...(maxTokens !== undefined ? { maxTokens } : {}), ...(temperature !== undefined ? { temperature } : {}),
 			...(reasoning ? { reasoning } : {}),
 			...(typeof item.tools === 'boolean' ? { tools: item.tools } : {}), ...(typeof item.images === 'boolean' ? { images: item.images } : {}),
+			...(endpoint ? { endpoint } : {}),
 		});
 	}
 	return out;
@@ -115,7 +132,7 @@ export function readOpenRouterModels(raw: unknown): OpenRouterModel[] {
 /** The model picker's entries. A model that declares `reasoning` offers low, medium and high, defaulting to what it declared. */
 export function openrouterChatModels(models: readonly OpenRouterModel[]): ChatModel[] {
 	return models.map((model, index) => {
-		const notes = [model.tools === false ? 'no tools' : undefined, model.images ? 'images' : undefined].filter(Boolean);
+		const notes = [model.endpoint ? 'local' : undefined, model.tools === false ? 'no tools' : undefined, model.images ? 'images' : undefined].filter(Boolean);
 		return {
 			id: model.id,
 			label: model.name ?? model.id,
@@ -150,6 +167,34 @@ export function openrouterEndpoint(value: string | undefined): { readonly url: s
 	}
 	if (parsed.username || parsed.password || parsed.search || parsed.hash) {
 		return { error: 'aiBrowser.chat.openrouterEndpoint must not carry credentials, a query or a fragment.' };
+	}
+	return { url: `${parsed.origin}${parsed.pathname.replace(/\/+$/, '')}` };
+}
+
+/**
+ * A server on this computer — Ollama (`http://localhost:11434/v1`), LM Studio
+ * (`http://localhost:1234/v1`), llama.cpp — named by a model. Only loopback
+ * is accepted, over http or https, with no credentials, query or fragment:
+ * nothing is sent to it but the conversation, and never the API key.
+ */
+export function localEndpoint(value: unknown): { readonly url: string } | { readonly error: string } {
+	const text = typeof value === 'string' ? value.trim() : '';
+	if (!text) {
+		return { error: 'A local server needs an address, such as http://localhost:11434/v1.' };
+	}
+	let parsed: URL;
+	try {
+		parsed = new URL(text);
+	} catch {
+		return { error: 'The local server address is not a web address.' };
+	}
+	const host = parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+	const loopback = host === 'localhost' || host === '::1' || /^127(?:\.\d{1,3}){3}$/.test(host);
+	if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:') || !loopback) {
+		return { error: 'A local server must be on this computer: use localhost or 127.0.0.1.' };
+	}
+	if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+		return { error: 'The local server address must not carry credentials, a query or a fragment.' };
 	}
 	return { url: `${parsed.origin}${parsed.pathname.replace(/\/+$/, '')}` };
 }
@@ -681,10 +726,19 @@ export function validateOpenRouterModel(input: unknown): OpenRouterModelResult {
 			return { error: `${flag === 'tools' ? 'Supports tools' : 'Supports images'} of ${id} must be on or off.` };
 		}
 	}
+	let endpoint: string | undefined;
+	if (input.endpoint !== undefined && input.endpoint !== null && input.endpoint !== '') {
+		const checked = localEndpoint(input.endpoint);
+		if ('error' in checked) {
+			return { error: `${id}: ${checked.error}` };
+		}
+		endpoint = checked.url;
+	}
 	return {
 		model: {
 			id,
 			...(name ? { name } : {}),
+			...(endpoint ? { endpoint } : {}),
 			...(maxTokens.value !== undefined ? { maxTokens: maxTokens.value } : {}),
 			...(temperature.value !== undefined ? { temperature: temperature.value } : {}),
 			...(reasoning ? { reasoning } : {}),
@@ -825,7 +879,7 @@ export function searchOpenRouterCatalog(entries: readonly OpenRouterCatalogEntry
 	return { entries: scored.slice(0, Math.max(0, limit)).map(s => s.entry), total: scored.length };
 }
 
-export type CatalogFetch = (url: string, init: { readonly signal: AbortSignal; readonly headers: Record<string, string> }) => Promise<Response>;
+export type CatalogFetch = (url: string, init: { readonly signal: AbortSignal; readonly headers: Record<string, string>; readonly redirect?: 'manual' }) => Promise<Response>;
 
 /**
  * `GET <endpoint>/models`, bounded: 15 s for the whole request, the body read
@@ -833,19 +887,24 @@ export type CatalogFetch = (url: string, init: { readonly signal: AbortSignal; r
  * not sent — the catalogue is public, and a key sent where it is not needed
  * is a key a mistyped endpoint receives for nothing. `outer` ends it early.
  */
-export async function fetchOpenRouterCatalog(fetchLike: CatalogFetch, endpoint: string, outer?: AbortSignal): Promise<OpenRouterCatalogEntry[]> {
+export async function fetchOpenRouterCatalog(fetchLike: CatalogFetch, endpoint: string, outer?: AbortSignal, local = false): Promise<OpenRouterCatalogEntry[]> {
+	const who = local ? 'The local server' : 'OpenRouter';
 	const timeout = new AbortController();
 	const timer = setTimeout(() => timeout.abort(new Error('timeout')), openrouterCatalogTimeoutMs);
 	const onOuter = () => timeout.abort(outer?.reason);
 	outer?.addEventListener('abort', onOuter, { once: true });
 	try {
-		const response = await fetchLike(`${endpoint}/models`, { signal: timeout.signal, headers: { Accept: 'application/json' } });
+		const response = await fetchLike(`${endpoint}/models`, { signal: timeout.signal, headers: { Accept: 'application/json' }, redirect: 'manual' });
+		if (response.status >= 300 && response.status < 400) {
+			// Never followed: a redirect could lead off this computer, or to somewhere the key's endpoint rule did not allow.
+			throw new Error(`${who} answered with a redirect to the model list request, which is not followed.`);
+		}
 		if (!response.ok) {
-			throw new Error(`OpenRouter answered ${response.status} to the model list request.`);
+			throw new Error(`${who} answered ${response.status} to the model list request.`);
 		}
 		const reader = response.body?.getReader();
 		if (!reader) {
-			throw new Error('OpenRouter sent no model list.');
+			throw new Error(`${who} sent no model list.`);
 		}
 		const chunks: Uint8Array[] = [];
 		let size = 0;
@@ -857,7 +916,7 @@ export async function fetchOpenRouterCatalog(fetchLike: CatalogFetch, endpoint: 
 			size += value.byteLength;
 			if (size > openrouterCatalogMaxBytes) {
 				await reader.cancel().catch(() => undefined);
-				throw new Error('The model list from OpenRouter is larger than expected and was refused.');
+				throw new Error(`The model list from ${who} is larger than expected and was refused.`);
 			}
 			chunks.push(value);
 		}
@@ -865,16 +924,16 @@ export async function fetchOpenRouterCatalog(fetchLike: CatalogFetch, endpoint: 
 		try {
 			parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'));
 		} catch {
-			throw new Error('OpenRouter sent a model list that is not JSON.');
+			throw new Error(`${who} sent a model list that is not JSON.`);
 		}
 		const entries = readOpenRouterCatalog(parsed);
 		if (!entries.length) {
-			throw new Error('OpenRouter sent a model list with no models in it.');
+			throw new Error(`${who} sent a model list with no models in it.`);
 		}
 		return entries;
 	} catch (error) {
 		if (timeout.signal.aborted && !outer?.aborted) {
-			throw new Error('OpenRouter did not answer the model list request within 15 seconds.');
+			throw new Error(`${who} did not answer the model list request within 15 seconds.`);
 		}
 		throw error instanceof Error ? error : new Error(String(error));
 	} finally {

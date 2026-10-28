@@ -19,6 +19,9 @@ import { remoteTerminalView, terminalLifecycleTypes } from './remoteTerminalView
 export interface ChromeTerminalPort {
 	readonly terminals: { find(id: string): RemoteTerminalTarget | undefined; shared(): readonly TerminalTabSummary[]; support(): TerminalSupport; blocked(): boolean };
 	setting(): boolean;
+	/** `aiBrowser.chat.remoteTerminalShell` / `remoteTerminalAgent`. */
+	openShell(): boolean;
+	openAgent(): boolean;
 	/** The modal in VS Code; asked once per bridge (connection). */
 	askConsent(): Promise<boolean>;
 	audit(line: string): void;
@@ -183,7 +186,7 @@ export class ChromeChatBridge implements ChatStateSurface {
 		const snapshot = chromeChatSnapshot(state, this._editorVersion);
 		const port = this._terminalPort;
 		if (port) {
-			const { controls, ...terminals } = remoteTerminalView({ surface: 'chrome', encrypted: true, setting: port.setting(), consent: this._terminalConsent, blocked: port.terminals.blocked() },
+			const { controls, ...terminals } = remoteTerminalView({ surface: 'chrome', encrypted: true, setting: port.setting(), openShell: port.openShell(), openAgent: port.openAgent(), consent: this._terminalConsent, blocked: port.terminals.blocked() },
 				() => port.terminals.shared(), () => port.terminals.support());
 			Object.assign(snapshot.view, terminals, { controls: { ...snapshot.view.controls, ...controls } });
 			this._hub?.sync();
