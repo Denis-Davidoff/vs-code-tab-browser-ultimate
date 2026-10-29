@@ -110,6 +110,7 @@
 	"command.recording.maximum.title": "Maximum · 4K",
 	"command.recording.maximumDefault.title": "Maximum · 4K *",
 	"configuration.chat.sound.enabled.description": "Play a sound in the AI Browser chat when an agent finishes its work. This is the default; the speaker button beside the usage meter switches it for the chat view.",
+	"configuration.chat.sound.activeChat.description": "Play the finish sound even when the conversation is selected and visible in the active window. Off by default; background chats and inactive windows still play a sound when sound is enabled.",
 	"configuration.chat.sound.name.description": "Which sound plays when an agent finishes.",
 	"configuration.chat.sound.repeat.description": "How many times the finish sound plays in a row, 1 to 5.",
 	"configuration.chat.sound.volume.description": "Volume of that sound, 0 to 200; above 100 is louder than full volume used to be.",

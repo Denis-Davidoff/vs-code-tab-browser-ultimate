@@ -713,6 +713,8 @@ export interface ChatViewState {
 	 * (`surfaceControls` in core/commands.ts). Absent: the editor, everything on.
 	 */
 	readonly surface?: import('./core/commands').SurfaceKind;
+	/** The VS Code window's focus, independent of which workbench control has keyboard focus. Editor only. */
+	readonly windowFocused?: boolean;
 	readonly controls?: import('./core/commands').ControlMap;
 	/**
 	 * The last snapshot message of each kind the editor broadcast (`workdirGit` per
@@ -855,6 +857,8 @@ export const chatSounds = ['chime', 'bell', 'pop', 'dingdong', 'marimba', 'harp'
 export type ChatSound = typeof chatSounds[number];
 export interface ChatSoundSettings {
 	readonly enabled: boolean; readonly sound: ChatSound; readonly volume: number;
+	/** Play even when the finished conversation is selected and visible. Absent: false (older hosts). */
+	readonly activeChat?: boolean;
 	/** `aiBrowser.chat.sound.repeat`: how many times in a row, 1 to 5. */
 	readonly repeat: number;
 	/** `aiBrowser.chat.notifications.enabled`: a system notification when an agent finishes. */
@@ -974,7 +978,7 @@ export type ViewToHost =
 	| { readonly type: 'temporaryStorage'; readonly action: 'refresh' | 'all' | 'project'; readonly project?: string }
 	/** The Remote terminals section: `load`, or `set` one of the three user settings (applies at once). */
 	| { readonly type: 'soundSettings'; readonly action: 'load' }
-	| { readonly type: 'soundSettings'; readonly action: 'set'; readonly enabled?: boolean; readonly sound?: ChatSound; readonly volume?: number; readonly repeat?: number; readonly notify?: boolean; readonly notifyAway?: boolean }
+	| { readonly type: 'soundSettings'; readonly action: 'set'; readonly enabled?: boolean; readonly activeChat?: boolean; readonly sound?: ChatSound; readonly volume?: number; readonly repeat?: number; readonly notify?: boolean; readonly notifyAway?: boolean }
 	/** An agent finished: the host shows it as a system notification (editor only; Chrome and the website use the page's own). */
 	| { readonly type: 'osNotify'; readonly title: string; readonly text: string }
 	/** Chrome and the website: send more of the conversation's earlier turns. Answered by the surface's bridge. */

@@ -29,6 +29,10 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 - $(location) **Page markers** — pin notes to page elements and send them to the agent as one prompt.
 - $(settings-gear) **Chat Settings** — use the gear at the top to edit prompts for commit messages, branch names and chat titles, or clean up temporary files.
 
+## 0.9.6 — 2026-10-29
+- **Quiet active chat** — the selected, visible conversation finishes silently by default while its VS Code or browser window is active. Background chats, inactive windows and conversations behind a terminal still play finish sounds when sound is enabled.
+- **Optional sound for the active chat** — enable **Play a sound for the active chat** in Chat Settings → Sound & notifications. Chrome and the website can override this setting per device.
+
 ## 0.9.5 — 2026-10-29
 - **Finish sounds** — a sound when agents finish: fifty to choose from in Chat Settings → Sound, volume up to 200%, played up to five times in a row. The speaker button beside the usage meter switches it on or off.
 - **System notifications** — when agents finish, optionally only while the window is not focused.

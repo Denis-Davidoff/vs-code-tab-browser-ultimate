@@ -105,6 +105,8 @@ For limits, settings and technical details, see [CLAUDE.md](CLAUDE.md#browser-vi
 
 ## 📝 Changelog
 
+**0.9.6** — The selected, visible chat finishes silently by default while its VS Code or browser window is active. Enable **Play a sound for the active chat** in Chat Settings → Sound & notifications to hear it too. Background chats and inactive windows still play finish sounds when sound is enabled; Chrome and the website can keep their own setting per device.
+
 **0.9.5** — Finish sounds (fifty, volume up to 200%, repeated up to five times) and system notifications when agents finish, also in Chrome and on the website. Chats load only their last turns, with earlier ones on scroll, so remote connections open faster. The website's message box stays visible above a phone keyboard.
 
 **0.9.4** — The OpenRouter agent also runs models from Ollama or LM Studio on your computer (no key needed or sent). Chat Settings has a **Remote terminals** tab with checkboxes for what Chrome and the website

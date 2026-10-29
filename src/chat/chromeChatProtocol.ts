@@ -72,7 +72,7 @@ const viewFields = {
 	approvals: 'shared', switchTo: 'shared', commands: 'shared', toolbar: 'shared', toolbarRuns: 'shared',
 	skillAgents: 'shared', viewMode: 'shared', collapseTools: 'shared', context: 'shared', workdir: 'shared',
 	usage: 'shared', usageAlert: 'shared', snapshotEvents: 'shared',
-	access: 'editor', sound: 'shared', entriesOffset: 'override',
+	access: 'editor', windowFocused: 'editor', sound: 'shared', entriesOffset: 'override',
 } as const satisfies Record<keyof ChatViewState, 'shared' | 'editor' | 'override'>;
 
 /** The shared fields of the state, by the classification above; nothing else is copied. */

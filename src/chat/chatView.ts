@@ -892,6 +892,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		this._subscriptions.push(vscode.window.onDidChangeActiveColorTheme(() => { this._gitEventRefresh(); this._postFileIcons(); }));
 		// The suggested file follows the text editor in front.
 		this._subscriptions.push(vscode.window.onDidChangeActiveTextEditor(() => this._post()));
+		this._subscriptions.push(vscode.window.onDidChangeWindowState(() => this._post()));
 		// A selection there is suggested in its place. Every cursor move fires
 		// this, so the state is posted only when the selection itself changes.
 		let lastSelection: string | undefined;
@@ -1262,6 +1263,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			} : undefined,
 			themeTokens: this._themeTokens,
 			sound: soundSettings(),
+			windowFocused: vscode.window.state.focused,
 			themeKind: vscode.window.activeColorTheme.kind,
 			panel: this._panelIdentity,
 			surfaceId: this._surfaceId,
@@ -4534,6 +4536,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			const config = vscode.workspace.getConfiguration('aiBrowser.chat.sound');
 			try {
 				if (typeof message.enabled === 'boolean') { await config.update('enabled', message.enabled, vscode.ConfigurationTarget.Global); }
+				if (typeof message.activeChat === 'boolean') { await config.update('activeChat', message.activeChat, vscode.ConfigurationTarget.Global); }
 				if (typeof message.sound === 'string' && (chatSounds as readonly string[]).includes(message.sound)) { await config.update('name', message.sound, vscode.ConfigurationTarget.Global); }
 				const notify = vscode.workspace.getConfiguration('aiBrowser.chat.notifications');
 				if (typeof message.notify === 'boolean') { await notify.update('enabled', message.notify, vscode.ConfigurationTarget.Global); }
@@ -7315,6 +7318,7 @@ function soundSettings(): ChatSoundSettings {
 	const repeat = config.get<unknown>('repeat');
 	return {
 		enabled: typeof enabled === 'boolean' ? enabled : true,
+		activeChat: config.get<unknown>('activeChat') === true,
 		sound: typeof name === 'string' && (chatSounds as readonly string[]).includes(name) ? name as ChatSound : 'chime',
 		volume: typeof volume === 'number' && Number.isFinite(volume) ? Math.min(200, Math.max(0, volume)) : 60,
 		repeat: typeof repeat === 'number' && Number.isFinite(repeat) ? Math.round(Math.min(5, Math.max(1, repeat))) : 1,

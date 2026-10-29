@@ -8029,6 +8029,7 @@ speaker button left of the C and U meters that switches between sound and silenc
   per-device override. The tab's `hidden` test is inlined in `openFeatureSettings`, which tests lift
   into a sandbox.
 - **Repeat** (`aiBrowser.chat.sound.repeat`, 1–5): the sound is scheduled that many times back to back, each copy after the previous one's last note plus 0.15 s. Per device on Chrome and the website like the rest.
+- **Active chat** (`aiBrowser.chat.sound.activeChat`, default off): a selected, visible conversation in the active window finishes silently unless "Play a sound for the active chat" is checked. VS Code uses `window.state.focused`, published as editor-only `windowFocused` and refreshed on window-state changes, so focusing another workbench control does not make a visible chat sound. Chrome and the website use their own `document.hasFocus()`. Background conversations, inactive windows, hidden pages and conversations behind a terminal still sound. Applies to finish sounds only: previews and system notifications keep their own controls. Chrome and the website can override this per device in `aiBrowser.chat.deviceSound`.
 - Volume goes to 200: the old 100 is kept as is, above it is louder; a `DynamicsCompressor` limits the sum so
   loud chords do not clip. Fifty sounds (`chatSounds`, the manifest's `enum` and `chatSoundLabels` list them
   alike); a note may glide (`to`).

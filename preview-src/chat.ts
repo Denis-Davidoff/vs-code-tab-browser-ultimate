@@ -331,7 +331,7 @@ let soundOverride = readSoundOverride();
  * `localStorage`: the editor's are VS Code user settings, which a remote surface may not write
  * (`soundSettings` is editor-only). A key not set here follows the editor.
  */
-type DeviceSound = Partial<Pick<ChatSoundSettings, 'sound' | 'volume' | 'repeat' | 'notify' | 'notifyAway'>>;
+type DeviceSound = Partial<Pick<ChatSoundSettings, 'sound' | 'volume' | 'repeat' | 'notify' | 'notifyAway' | 'activeChat'>>;
 const deviceSoundKey = 'aiBrowser.chat.deviceSound';
 function readDeviceSound(): DeviceSound {
 	try {
@@ -343,6 +343,7 @@ function readDeviceSound(): DeviceSound {
 		if (typeof v.repeat === 'number' && Number.isInteger(v.repeat) && v.repeat >= 1 && v.repeat <= 5) { out.repeat = v.repeat; }
 		if (typeof v.notify === 'boolean') { out.notify = v.notify; }
 		if (typeof v.notifyAway === 'boolean') { out.notifyAway = v.notifyAway; }
+		if (typeof v.activeChat === 'boolean') { out.activeChat = v.activeChat; }
 		return out;
 	} catch { return {}; }
 }
@@ -393,7 +394,13 @@ function soundOnFinish(s: ChatViewState): void {
 	const finished = s.tabs.filter(t => before.get(t.id) === true && !t.busy && t.status !== 'waiting');
 	if (!finished.length) { return; }
 	const snd = effectiveSound(s)!;
-	if (soundOn()) { playChatSound(snd.sound, snd.volume, snd.repeat); }
+	// Use workbench focus in VS Code: a webview can lose keyboard focus to another editor control.
+	// Remote surfaces use their own browser window's focus, independently of the host editor.
+	const windowFocused = remoteSurface(s) ? document.hasFocus() : (s.windowFocused ?? document.hasFocus());
+	const visibleChat = windowFocused && !document.hidden && !visibleTerminalFront(s);
+	if (soundOn() && (snd.activeChat === true || finished.some(t => t.id !== s.activeTab || !visibleChat))) {
+		playChatSound(snd.sound, snd.volume, snd.repeat);
+	}
 	if (snd.notify) { notifyFinished(s, finished); }
 }
 /**
@@ -10527,10 +10534,12 @@ function createSoundSettings(): HTMLElement {
 		if (!remote) { post({ type: 'soundSettings', action: 'set', ...change }); return; }
 		const { enabled: _e, ...rest } = change; setDeviceSound(rest);
 	};
-	const current = effectiveSound() ?? { enabled: true, sound: 'chime' as ChatSound, volume: 60, repeat: 1, notify: true, notifyAway: true };
+	const current = effectiveSound() ?? { enabled: true, activeChat: false, sound: 'chime' as ChatSound, volume: 60, repeat: 1, notify: true, notifyAway: true };
 	const enabled = el('input'); enabled.type = 'checkbox'; enabled.checked = current.enabled;
 	enabled.checked = remote ? soundOn() : current.enabled;
 	enabled.addEventListener('change', () => { if (remote) { if (enabled.checked !== soundOn()) { soundButton.click(); } return; } save({ enabled: enabled.checked }); });
+	const activeChat = el('input'); activeChat.type = 'checkbox'; activeChat.checked = current.activeChat === true;
+	activeChat.addEventListener('change', () => save({ activeChat: activeChat.checked }));
 	const choice = el('select'); choice.dataset.appearance = 'sound'; choice.setAttribute('aria-label', 'Sound');
 	for (const [key, label] of Object.entries(chatSoundLabels)) { const o = el('option', { text: label }); o.value = key; choice.append(o); }
 	choice.value = current.sound;
@@ -10554,6 +10563,8 @@ function createSoundSettings(): HTMLElement {
 	content.append(
 		el('div', { class: 'feature-settings-row' }, el('label', { class: 'openrouter-check' }, enabled, el('span', { text: 'Play a sound when agents finish' })),
 			el('p', { class: 'feature-settings-note', text: 'The default for the speaker button beside the usage meter. A press there switches it on this device until you change this.' })),
+		el('div', { class: 'feature-settings-row' }, el('label', { class: 'openrouter-check' }, activeChat, el('span', { text: 'Play a sound for the active chat' })),
+			el('p', { class: 'feature-settings-note', text: 'Off by default. A conversation that is selected and visible in the active window finishes silently; background chats and inactive windows still play a sound.' })),
 		el('div', { class: 'feature-settings-row' }, el('strong', { text: 'Sound' }), el('div', { class: 'sound-row' }, choice, test)),
 		el('div', { class: 'feature-settings-row' }, el('strong', { text: 'Volume' }), el('div', { class: 'sound-row' }, volume, volumeText)),
 		el('div', { class: 'feature-settings-row' }, el('strong', { text: 'Repeat' }), el('div', { class: 'sound-row' }, repeat)),

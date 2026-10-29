@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate",
 	"displayName": "AI Browser🏆 Claude + Codex + Gemini + OpenCode + Pi + OpenRouter",
 	"description": "Chat with browser, MCP for chrome and embedded browser tab with AI capabilities, Claude, Codex, Gemini, OpenCode, Pi and OpenRouter integration (Qwen, LM Studio, Ollama, etc.)",
-	"version": "0.9.5",
+	"version": "0.9.6",
 	"enabledApiProposals": [
 		"externalUriOpener",
 		"browser"
@@ -1052,6 +1052,12 @@
 						"default": true,
 						"title": "Sound When Agents Finish",
 						"markdownDescription": "%configuration.chat.sound.enabled.description%"
+					},
+					"aiBrowser.chat.sound.activeChat": {
+						"type": "boolean",
+						"default": false,
+						"title": "Sound for the Active Chat",
+						"markdownDescription": "%configuration.chat.sound.activeChat.description%"
 					},
 					"aiBrowser.chat.sound.name": {
 						"type": "string",
