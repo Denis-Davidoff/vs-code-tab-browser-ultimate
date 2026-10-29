@@ -1,3 +1,4 @@
+import { currentVisibleTurns } from './core/entryWindow';
 import { chromeChatProtocolVersion, chromeChatProtocolHeader, chromeChatVersionHeader, chromeChatCompatibilityError, chromeChatCapabilities, chromeChatCapabilitiesHeader, negotiateChromeChatCapabilities, chromeChatFeatureError, chromeChatAttachmentFeature, chromeChatCommandFeature, chromeChatWaitHeader, chromeChatMaxWaitMs, chromeChatBaseHeader } from './chromeChatCompatibility';
 import { diffState } from './core/sync';
 import { ChromeAnnotationSession, chromeAnnotationSessions } from '../browser/chromeAnnotationSessions';
@@ -83,6 +84,9 @@ export class ChromeChatBridge implements ChatStateSurface {
 	private _terminalBytes = 0;
 	private readonly _terminalWaiters = new Set<() => void>();
 	private _lastState?: ChatViewState;
+	/** How many of the user's turns Chrome is sent (`windowEntries`); grows with `loadEarlier`, reset per conversation. */
+	private _prompts = 0;
+	private _windowChat?: string;
 
 	/** Snapshot polling is the panel heartbeat, including unchanged (304) snapshots. */
 	private _touchPresence(): void {
@@ -183,7 +187,8 @@ export class ChromeChatBridge implements ChatStateSurface {
 		this._chats = new Set([state.chatId, ...state.tabs.map(tab => tab.chatId)]);
 		// A pinned conversation closed in the editor: follow what the editor shows instead.
 		this._chatId = state.chatId;
-		const snapshot = chromeChatSnapshot(state, this._editorVersion);
+		if (this._windowChat !== state.chatId) { this._windowChat = state.chatId; this._prompts = currentVisibleTurns(); }
+		const snapshot = chromeChatSnapshot(state, this._editorVersion, this._prompts);
 		const port = this._terminalPort;
 		if (port) {
 			const { controls, ...terminals } = remoteTerminalView({ surface: 'chrome', encrypted: true, setting: port.setting(), openShell: port.openShell(), openAgent: port.openAgent(), consent: this._terminalConsent, blocked: port.terminals.blocked() },
@@ -345,6 +350,14 @@ export class ChromeChatBridge implements ChatStateSurface {
 			this._chatId = pin; this._refresh?.();
 			reply(200); return;
 		}
+		const earlier = readLoadEarlier(raw);
+		if (earlier) {
+			if (earlier.chatId === this._windowChat) {
+				this._prompts = earlier.reset ? currentVisibleTurns() : this._prompts + currentVisibleTurns();
+				if (this._lastState) { this.update(this._lastState); }
+			}
+			reply(200); return;
+		}
 		const command = readChromeChatCommand(raw);
 		if (!command) { reply(400, 'This action is not supported in Chrome yet.'); return; }
 		if ((terminalLifecycleTypes as readonly string[]).includes(command.message.type)) {
@@ -467,6 +480,15 @@ export class ChromeChatBridge implements ChatStateSurface {
 }
 
 /** `{ message: { type: 'pin' }, chatId }`: which conversation Chrome shows. Handled by the bridge alone. */
+/** Chrome asks for more of the conversation's earlier turns (`windowEntries`), or for the default window back. */
+function readLoadEarlier(raw: unknown): { chatId: string; reset: boolean } | undefined {
+	if (!raw || typeof raw !== 'object') { return undefined; }
+	const value = raw as Record<string, unknown>;
+	const message = value.message as Record<string, unknown> | undefined;
+	if (!message || typeof message !== 'object' || message.type !== 'loadEarlier' || typeof value.chatId !== 'string') { return undefined; }
+	return { chatId: value.chatId, reset: message.reset === true };
+}
+
 function readPin(raw: unknown): string | undefined {
 	if (!raw || typeof raw !== 'object') { return undefined; }
 	const value = raw as Record<string, unknown>;

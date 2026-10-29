@@ -1,7 +1,7 @@
-// Builds media/liquid-loader.css: the "soft nut" spinner shared by the extension's chat, the
+// Builds media/liquid-loader.css: the "Whirlpool" liquid spinner shared by the extension's chat, the
 // Chrome side panel and the Exchange website. A 40 s loop: a circle at 0 s, a rounded hexagon
 // (core and shell alike) at 16.8 s, a fluid six-rayed shape in between, held at neither; then the
-// core shrinks into a rounded droplet and immediately grows back into the circle.
+// core shrinks into a 4 px dot and immediately grows back into the circle.
 //
 // A star or a hexagon cannot be drawn with border-radius, so the shapes are an SVG animated with
 // SMIL and set as a data: background. Every surface keeps its plain <span class="liquid-loader">
@@ -11,8 +11,8 @@
 import { writeFileSync } from 'node:fs';
 
 const DUR = 40; // seconds per loop
-const FRAMES = 160, POINTS = 64, SCALE = 10; // viewBox -500..500, integer coordinates
-const v = { k: 6, A: .16, p: .6, w: .08, ck: 6, ca: .07, TH: .42, HW: .34, rot: 30, round: .25, core: 720, shell: -720 };
+const FRAMES = 320, POINTS = 64, SCALE = 10; // viewBox -500..500, integer coordinates
+const v = { k: 6, A: .16, p: .6, w: .08, ck: 6, ca: .07, TH: .42, HW: .10, rot: 30, round: .25, core: 720, shell: -720 };
 const SHELL_A = v.A * .45;
 // The loop is DUR s with one circle and one hexagon; the motion between them (deformation,
 // breathing, rotation) runs twice as fast. SPEED must be a whole number to keep the loop seamless.
@@ -44,32 +44,49 @@ function shell(cycle, R) {
 	});
 }
 
-// After the hexagon the core shrinks to a round droplet at 35% of its initial radius.
-// The envelope touches 0 at the minimum droplet and immediately rises again.
-const MIN_CORE = .35;
+// After the hexagon the liquid collapses to the fixed-size dot and grows back immediately.
 const COLLAPSE = { from: .6, gone: .7, back: .7, to: .96 };
 const ease = x => (1 - Math.cos(Math.PI * Math.min(1, Math.max(0, x)))) / 2;
 const collapse = t => t < COLLAPSE.gone ? 1 - ease((t - COLLAPSE.from) / (COLLAPSE.gone - COLLAPSE.from))
 	: t < COLLAPSE.back ? 0 : ease((t - COLLAPSE.back) / (COLLAPSE.to - COLLAPSE.back));
-// The dot the core shrinks to: a zero-length stroke with round caps, non-scaling, so it is 2 px
-// across (twice the shell's 1 px line) at every loader size. Solid, as a gradient needs a box.
-const DOT = '<path d="M0 0L0 0" stroke="#8fbef0" stroke-width="2" stroke-linecap="round" vector-effect="non-scaling-stroke"/>';
+// The dot the core shrinks to: a zero-length stroke with round caps, non-scaling, so it is 4 px
+// across at every loader size. Solid, as a gradient needs a box.
+const DOT = '<path d="M0 0L0 0" stroke="#8fbef0" stroke-width="4" stroke-linecap="round" vector-effect="non-scaling-stroke"/>';
 
+// The liquid is drawn in vessel coordinates, without a separate core rotation:
+// its six travelling tilts must stay aligned with the rotating wall it wets.
 function core(cycle, R) {
-	const t = cycle / (2 * Math.PI), m = fluid(t), h = hexW(t);
-	const th = SPEED * cycle; // the flow between the two shapes runs SPEED times per loop
-	// the core breathes larger and smaller on top of its deformation; 1 at the circle
-	const size = 1 - .14 * (1 - Math.cos(th)) / 2 + .1 * Math.sin(2 * th) + .08 * Math.sin(3 * th);
-	const z = collapse(t);
-	return ring(phi => {
-		// Broad travelling waves form rounded lobes; their different speeds keep the
-		// liquid flowing instead of repeatedly opening into a six-pointed star.
-		const flow = .22 * Math.sin(2 * phi + 3 * th + .5 * Math.sin(th))
-			+ .13 * Math.sin(3 * phi - 4 * th)
-			+ .04 * Math.cos(4 * phi + 5 * th);
-		const r = R * size * (1 + m * flow);
-		return (1 - z) * R * MIN_CORE + z * ((1 - h) * r + h * R * .9 * hexR(phi, v.core, v.rot));
-	}, true);
+	const TAU = 2 * Math.PI, t = cycle / TAU, spin = v.shell * Math.PI / 180 * t;
+	const raw = shell(cycle, SHELL_R).match(/-?\d+(?:\.\d+)?/g).map(Number);
+	const radii = Array.from({ length: POINTS }, (_, i) => Math.hypot(raw[2*i], raw[2*i+1]) / SCALE);
+	const boundary = phi => {
+		const f = ((phi - spin) / TAU % 1 + 1) % 1 * POINTS, i = Math.floor(f);
+		return radii[i] + (radii[(i + 1) % POINTS] - radii[i]) * (f - i);
+	};
+	const q = cycle * 6, angle = q + .38 * Math.sin(q);
+	const h = hexW(t), grow = collapse(t);
+	const moving = (1 - Math.exp(-((Math.sin(Math.PI * t) / .1) ** 2))) * (1 - h);
+	const limits = [], desired = [];
+	for (let i = 0; i < POINTS; i++) {
+		const phi = i * TAU / POINTS, a = phi - angle;
+		limits.push(boundary(phi) - 1.1);
+		desired.push(R * (1 + moving * (.82 * Math.cos(a)
+			+ .10 * Math.sin(2*a - q) + .055 * Math.sin(3*a + 2*q))));
+	}
+	// A rounded meniscus spreads around the wall. Redistribute displaced liquid
+	// to conserve its area during the tilt, rather than trimming it at the edge.
+	const cap = (r, wall) => -Math.log(Math.exp(-r / 1.1) + Math.exp(-wall / 1.1)) * 1.1;
+	let lo = .4, hi = 2.2;
+	for (let step = 0; step < 18; step++) {
+		const scale = (lo + hi) / 2;
+		const area = desired.reduce((sum, r, i) => sum + cap(r * scale, limits[i]) ** 2, 0) / POINTS;
+		if (area > R * R) hi = scale; else lo = scale;
+	}
+	const rr = desired.map((r, i) => {
+		const liquid = cap(r * (lo + hi) / 2, limits[i]);
+		return (liquid + (boundary(i * TAU / POINTS) * .74 - liquid) * h) * grow;
+	});
+	return ring(phi => rr[Math.round(phi / TAU * POINTS) % POINTS], true);
 }
 
 function ring(radius, smooth = false) {
@@ -103,7 +120,7 @@ const grad = '<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop off
 
 function svg({ withShell, animated }) {
 	const shape = (d, draw) => animated ? `<path d="${d}"><animate attributeName="d" dur="${DUR}s" repeatCount="indefinite" values="${frames(draw)}"/></path>` : `<path d="${d}"/>`;
-	const coreG = `<g fill="url(#g)">${animated ? spin(v.core) : ''}${shape(core(0, CORE_R), th => core(th, CORE_R))}</g>`;
+	const coreG = `<g fill="url(#g)">${shape(core(0, CORE_R), th => core(th, CORE_R))}</g>`;
 	// 1 px of a 16 px loader, as the border it replaces; non-scaling keeps it 1 px at 48 px too
 	const shellG = withShell ? `<g fill="none" stroke="#ac9aff" stroke-opacity=".65" stroke-width="1" vector-effect="non-scaling-stroke">${animated ? spin(v.shell) : ''}${shape(shell(0, SHELL_R), th => shell(th, SHELL_R))}</g>`.replace('<path', '<path vector-effect="non-scaling-stroke"') : '';
 	return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="-500 -500 1000 1000">${grad}${DOT}${coreG}${shellG}</svg>`;
@@ -112,8 +129,8 @@ const url = s => `url("data:image/svg+xml,${s.replace(/%/g, '%25').replace(/#/g,
 
 const css = `/* AI Browser liquid loader, shared by the extension, Chrome and the Exchange website.
  * Generated by scripts/build-liquid-loader.mjs — edit that, not this file.
- * A 40 s loop: circle, then a fluid six-rayed shape, a rounded hexagon at 16.8 s, then the core
- * shrinks to a rounded droplet and grows back into the circle. The SVG is a data: URL, so no surface has an extra file to copy. */
+ * Whirlpool: six circular tilts over 40 s, a brief rounded hexagon at 16.8 s, then the liquid
+ * shrinks to a 4 px dot at 28 s and grows back into the circle. The SVG is a data: URL, so no surface has an extra file to copy. */
 :root {
 	--liquid-loader-image: ${url(svg({ withShell: true, animated: true }))};
 	/* The small status dots draw the core alone. */

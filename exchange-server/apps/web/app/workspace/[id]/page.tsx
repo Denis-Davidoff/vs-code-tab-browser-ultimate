@@ -30,6 +30,27 @@ export default function Workspace({
   const [fullscreen, setFullscreen] = useState(false);
   const [canFullscreen, setCanFullscreen] = useState(false);
   const [fullscreenError, setFullscreenError] = useState("");
+  // The page follows the visible part of the screen, not the layout viewport: in full screen
+  // (and in some mobile browsers) the on-screen keyboard covers the page instead of resizing it,
+  // so the chat iframe's message box sat under the keyboard. `--vv-height` is what is visible.
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const root = document.documentElement;
+    const fit = () => {
+      root.style.setProperty("--vv-height", `${Math.round(vv.height)}px`);
+      // A browser that scrolls the page to show the focused field leaves the header off screen.
+      if (window.scrollY || vv.offsetTop) window.scrollTo(0, 0);
+    };
+    fit();
+    vv.addEventListener("resize", fit);
+    vv.addEventListener("scroll", fit);
+    return () => {
+      vv.removeEventListener("resize", fit);
+      vv.removeEventListener("scroll", fit);
+      root.style.removeProperty("--vv-height");
+    };
+  }, []);
   useEffect(() => {
     const doc = document as FullscreenDocument;
     const root = doc.documentElement as FullscreenElement;

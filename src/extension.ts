@@ -1,3 +1,5 @@
+import { setVisibleTurns } from './chat/core/entryWindow';
+import { visibleTurns } from './chat/visibleTurns';
 import { configureTemporaryFiles } from './core/temporaryFiles';
 import { registerChromeChat } from './chat/chromeChatSetup';
 import { registerExchangeChat } from './chat/exchangeChat';
@@ -97,6 +99,11 @@ export function activate(context: vscode.ExtensionContext) {
 
 	const manager = new AIBrowserManager(context.extensionUri);
 	context.subscriptions.push(manager);
+	// How many turns each chat view is sent at first (`aiBrowser.chat.visibleTurns`), for the bridges that cannot read settings.
+	setVisibleTurns(visibleTurns());
+	context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
+		if (e.affectsConfiguration('aiBrowser.chat.visibleTurns')) { setVisibleTurns(visibleTurns()); }
+	}));
 
 	context.subscriptions.push(vscode.window.registerWebviewPanelSerializer(AIBrowserView.viewType, {
 		deserializeWebviewPanel: async (panel, state) => {
@@ -732,6 +739,10 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.commands.registerCommand('aiBrowser.chat.settings', async () => {
 			await revealChat();
 			chat.showSettings();
+		}),
+		vscode.commands.registerCommand('aiBrowser.chat.allAgents', async () => {
+			await revealChat();
+			chat.showAllAgents();
 		}),
 		vscode.commands.registerCommand('aiBrowser.chat.history', async () => {
 			await revealChat();

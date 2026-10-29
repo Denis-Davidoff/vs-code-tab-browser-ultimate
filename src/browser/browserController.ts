@@ -1368,6 +1368,15 @@ export class BrowserController implements vscode.Disposable {
 	private readonly _chatTabs = new Map<string, vscode.BrowserTab>();
 	private _nextTabId = 1;
 	/**
+	 * Tabs an AI Browser chat owns, by chat id: one its agent opened, or one the
+	 * user took for it from the chat's Access tab. Another caller — another chat,
+	 * an assistant in a terminal — neither sees nor reaches such a tab unless the
+	 * user shares it (a share outranks ownership). A tab the user opened has no
+	 * owner and is free for everyone. The user's own commands carry no caller and
+	 * are never refused.
+	 */
+	private readonly _chatOwners = new Map<vscode.BrowserTab, string>();
+	/**
 	 * A few random characters in every id this window hands out (`tab-k3f-2`).
 	 * Counting from 1 alone made `tab-1` mean a different page after a window
 	 * reload, and in every other window — so an id written into a prompt and
@@ -1400,7 +1409,17 @@ export class BrowserController implements vscode.Disposable {
 	 * open, which is the usual case, it is the only answer that can be right.
 	 */
 	private _resolveTab(caller?: CallerIdentity): vscode.BrowserTab | undefined {
-		const open = tabSource.all ?? [];
+		const open = (tabSource.all ?? []).filter(tab => this._usableBy(tab, caller));
+		// A chat that owns a tab works on it, not on whatever the user has in front.
+		const chatId = caller?.chatId;
+		const pinnedFirst = caller ? this._pins.get(callerKey(caller))?.tab : undefined;
+		if (chatId && !(pinnedFirst && open.includes(pinnedFirst))) {
+			const owned = open.filter(tab => this._chatOwners.get(tab) === chatId);
+			if (owned.length) {
+				const last = this._chatTabs.get(chatId);
+				return last && owned.includes(last) ? last : owned[owned.length - 1];
+			}
+		}
 
 		const key = caller ? callerKey(caller) : undefined;
 		// A preferred tab seeds the caller's selection once, so a later
@@ -1424,7 +1443,7 @@ export class BrowserController implements vscode.Disposable {
 		}
 
 		const active = tabSource.active;
-		if (active) {
+		if (active && open.includes(active)) {
 			this._lastTab = active;
 			return active;
 		}
@@ -1487,6 +1506,63 @@ export class BrowserController implements vscode.Disposable {
 		const tab = this._resolveTab(caller);
 		if (tab && caller.chatId) { this._chatTabs.set(caller.chatId, tab); }
 		return { tab };
+	}
+
+	/** Whether a caller may act on a tab: free, its own chat's, or a user's command. */
+	private _usableBy(tab: vscode.BrowserTab, caller?: CallerIdentity): boolean {
+		const owner = this._chatOwners.get(tab);
+		return !owner || !caller || owner === caller.chatId;
+	}
+
+	private _ownedRefusal(id: string): Error {
+		return new Error(`Browser tab ${id} belongs to another AI Browser chat, and only that chat's agent may use it. `
+			+ 'Do not act on it. Ask the user to share it with this chat from the chat\'s Access tab, or open a page of your own '
+			+ 'with `browser_navigate` and `newTab: true`.');
+	}
+
+	/** Every open tab and who may use it, for a chat's Access tab. */
+	public accessTabs(chatId: string): { id: string; title: string; url: string; owner: 'this' | 'other' | 'free'; ownerChat?: string; focused: boolean; chrome: boolean }[] {
+		if (!tabSource.available()) { return []; }
+		const open = tabSource.all ?? [];
+		this._identify(open);
+		const focused = tabSource.active;
+		return open.map(tab => {
+			const owner = this._chatOwners.get(tab);
+			return {
+				id: this._idOf(tab), title: stripMarker(tab.title) || tab.url || '', url: tab.url ?? '',
+				owner: !owner ? 'free' as const : owner === chatId ? 'this' as const : 'other' as const,
+				...(owner && owner !== chatId ? { ownerChat: owner } : {}),
+				focused: tab === focused, chrome: tabSource.isChrome(tab),
+			};
+		});
+	}
+
+	/** Gives a tab to one chat, taking it from any other; `undefined` makes it free for everyone. */
+	public setTabOwner(id: string, chatId: string | undefined): boolean {
+		const open = tabSource.all ?? [];
+		this._identify(open);
+		const tab = open.find(candidate => this._tabIds.get(candidate) === id);
+		if (!tab) { return false; }
+		if (chatId) {
+			this._chatOwners.set(tab, chatId);
+			// Another caller's selection of this tab would only be refused from now on.
+			for (const [key, pin] of [...this._pins]) {
+				if (pin.tab === tab && pin.caller.chatId !== chatId) { this._pins.delete(key); }
+			}
+		} else {
+			this._chatOwners.delete(tab);
+		}
+		this._onDidChangeShare.fire();
+		return true;
+	}
+
+	/** A closed chat's tabs become free for everyone. */
+	public releaseChatTabs(chatId: string): void {
+		let changed = false;
+		for (const [tab, owner] of [...this._chatOwners]) {
+			if (owner === chatId) { this._chatOwners.delete(tab); changed = true; }
+		}
+		if (changed) { this._onDidChangeShare.fire(); }
 	}
 
 	/** Our id of the tab a chat conversation last worked on, while it is open. */
@@ -2255,6 +2331,7 @@ export class BrowserController implements vscode.Disposable {
 		// and kept the element markdown picked on it for the life of the
 		// window, keyed by a tab that no longer exists.
 		this._selectedElements.delete(tab);
+		if (this._chatOwners.delete(tab)) { this._onDidChangeShare.fire(); }
 		// An open still in flight for this tab is ended, not abandoned: if the
 		// page had stopped answering, nothing else would ever settle it.
 		for (const abort of this._openAborts.get(tab) ?? []) {
@@ -2363,7 +2440,7 @@ export class BrowserController implements vscode.Disposable {
 		// their addresses, one-time links and query-string tokens included — is
 		// the opposite of what the assignment was for. The note says what
 		// happened; the count of others is withheld for the same reason.
-		const visible = paused ? [] : (assignment && target ? [target] : open);
+		const visible = paused ? [] : (assignment && target ? [target] : open.filter(tab => this._usableBy(tab, caller)));
 
 		return {
 			selection: this._selectionKind(caller),
@@ -2377,6 +2454,7 @@ export class BrowserController implements vscode.Disposable {
 				url: tab.url,
 				title: stripMarker(tab.title),
 				inUse: tab === target,
+				...(caller.chatId && this._chatOwners.get(tab) === caller.chatId ? { ownedByThisChat: true } : {}),
 				sharedByUser: this._shares.isShared(tab),
 				focusedInEditor: tab === focused,
 			})),
@@ -2431,6 +2509,9 @@ export class BrowserController implements vscode.Disposable {
 				+ 'Call `browser_tabs` for the current list — ids change as tabs open and close.');
 		}
 
+		if (!this._usableBy(match, caller)) {
+			throw this._ownedRefusal(id);
+		}
 		// The pin above is this caller's; `_lastTab` is the user's, and a
 		// selection is not a user action.
 		this._pins.set(callerKey(caller), { tab: match, caller });
@@ -2547,6 +2628,10 @@ export class BrowserController implements vscode.Disposable {
 			// the shadowed pin the share rules forbid — it comes back the moment
 			// the share is stopped, and the assistant returns to a tab it chose
 			// before the user overruled it.
+			if (caller.chatId) {
+				this._chatOwners.set(tab, caller.chatId);
+				this._onDidChangeShare.fire();
+			}
 			const stillUnassigned = this._shares.resolve(caller).kind === 'unassigned';
 			if (stillUnassigned && (newTab || this._pins.has(callerKey(caller)))) {
 				this._pins.set(callerKey(caller), { tab, caller });
@@ -3111,6 +3196,9 @@ export class BrowserController implements vscode.Disposable {
 		if (!tab) {
 			throw new Error(`No open browser tab has the id ${tabId} — it has been closed, or the window was reloaded. `
 				+ 'Tell the user, and do not act on another tab instead.');
+		}
+		if (!target && !this._usableBy(tab, caller)) {
+			throw this._ownedRefusal(tabId);
 		}
 		if (target && own && own !== tab) {
 			throw new Error(`The user has given you browser tab ${this._idOf(own)}, and your tools act on that tab only, `

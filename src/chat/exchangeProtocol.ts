@@ -52,13 +52,13 @@ export function exchangeWebsiteUrl(value: string): string {
 }
 
 /** Text-only projection: no tool arguments, credentials, drafts, files or local resource URLs. */
-export function exchangeSnapshot(state: ChatViewState): string {
+export function exchangeSnapshot(state: ChatViewState, offset = 0): string {
 	const messages: { id: string; role: 'user' | 'assistant' | 'system'; text: string }[] = [];
 	for (const [index, entry] of state.entries.entries()) {
 		if (entry.kind === 'user' || entry.kind === 'assistant' || entry.kind === 'notice' || entry.kind === 'error') {
-			messages.push({ id: `${state.chatId}:${index}`, role: entry.kind === 'user' ? 'user' : entry.kind === 'assistant' ? 'assistant' : 'system', text: entry.text.slice(0, 64000) });
+			messages.push({ id: `${state.chatId}:${index + offset}`, role: entry.kind === 'user' ? 'user' : entry.kind === 'assistant' ? 'assistant' : 'system', text: entry.text.slice(0, 64000) });
 		} else if (entry.kind === 'approval' && entry.status === 'pending') {
-			messages.push({ id: `${state.chatId}:${index}`, role: 'system', text: `Approval required in VS Code: ${entry.title}`.slice(0, 64000) });
+			messages.push({ id: `${state.chatId}:${index + offset}`, role: 'system', text: `Approval required in VS Code: ${entry.title}`.slice(0, 64000) });
 		}
 	}
 	const bounded: typeof messages = [];

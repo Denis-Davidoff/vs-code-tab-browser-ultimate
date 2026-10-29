@@ -147,7 +147,7 @@ test('the tab label is refilled when its terminals change, not otherwise', () =>
 });
 
 test('the composer asks about the pinned terminal, and keeps its own text without one', () => {
-	const base = 'Ask about this page, or anything…';
+	const base = 'Start typing here…';
 	assert.equal(composerPlaceholder(base, undefined), base);
 	assert.equal(composerPlaceholder(base, tab('a')), base);
 	assert.equal(composerPlaceholder(base, tab('a', { terminals: [] })), base);

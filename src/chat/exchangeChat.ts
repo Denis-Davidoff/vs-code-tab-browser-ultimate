@@ -1,3 +1,4 @@
+import { currentVisibleTurns } from './core/entryWindow';
 import { createHash as deviceHash } from "node:crypto";
 import { surfaceControls } from './core/commands';
 import { diffState } from './core/sync';
@@ -108,6 +109,7 @@ class ExchangeSurface implements ChatStateSurface {
 	get chatId(): string | undefined { return this.pinned; }
 	get active(): boolean { return this.ready; }
 	readonly kind = 'exchange' as const;
+	get viewerCount(): number { return this.viewers; }
 	get closed(): boolean { return this.stopped; }
 	constructor(private readonly config: Config, private readonly key: string, private readonly source: string, private readonly status: vscode.StatusBarItem, private readonly changed: (phase: ExchangeConnectionState['status'], error?: string) => void, private readonly cipher?: ExchangeCipher) { this.connect(); }
 	bind(refresh: () => void): void { this.refresh = refresh; }
@@ -129,6 +131,9 @@ class ExchangeSurface implements ChatStateSurface {
 	private sent?: { value: Record<string, unknown>; at: number; chatId: string };
 	private view?: { value: Record<string, unknown>; trimmed: boolean; chatId: string; running: boolean };
 	private forceFull = false;
+	/** How many of the user's turns the website is sent (`windowEntries`); grows with `loadEarlier`, reset per conversation. */
+	private prompts = 0;
+	private windowChat?: string;
 	/**
 	 * A whole snapshot once patches stop: the relay caches whole snapshots only,
 	 * so a burst that ended in a patch left a viewer joining later (or a page
@@ -139,15 +144,18 @@ class ExchangeSurface implements ChatStateSurface {
 	update(state: ChatViewState): void {
 		this.pinned = state.chatId; this.last = state;
 		this.chats = new Set([state.chatId,...state.tabs.map(tab => tab.chatId)]);
-		const full = chromeChatSnapshot(state);
+		if (this.windowChat !== state.chatId) { this.windowChat = state.chatId; this.prompts = currentVisibleTurns(); }
+		const full = chromeChatSnapshot(state, undefined, this.prompts);
+		const windowed = { ...state, entries: full.entries };
+		const offset = full.view.entriesOffset ?? 0;
 		const terminals = ChatViewProvider.exchangeTerminals(this.source);
 		// Shared with the Chrome side panel (`remoteTerminalView`): disabled with the reason, never hidden.
 		const { controls: terminalControls, ...terminalView } = remoteTerminalView({ surface: 'exchange', encrypted: !!this.cipher, setting: remoteTerminalSetting(), openShell: remoteTerminalOpenSetting('shell'), openAgent: remoteTerminalOpenSetting('agent'),
 			consent: this.terminalConsent, blocked: terminals.blocked() }, () => terminals.shared(), () => terminals.support());
 		this.hub?.sync();
 		const view = {...full.view,...terminalView,surface:'exchange' as const,controls:{...surfaceControls('exchange'),...terminalControls},voice:{...full.view.voice,available:false,reason:'Microphone recording is available in VS Code.'},suggestions:exchangePageSuggestion(this.page?.())};
-		let body = JSON.stringify({...JSON.parse(exchangeSnapshot(state)),uiVersion:1,view});
-		while (Buffer.byteLength(body)>5_000_000 && view.entries.length>1) { view.entries = view.entries.slice(Math.max(1,Math.floor(view.entries.length/4))); body = JSON.stringify({...JSON.parse(exchangeSnapshot(state)),uiVersion:1,view}); }
+		let body = JSON.stringify({...JSON.parse(exchangeSnapshot(windowed, offset)),uiVersion:1,view});
+		while (Buffer.byteLength(body)>5_000_000 && view.entries.length>1) { { const cut = Math.max(1,Math.floor(view.entries.length/4)); view.entries = view.entries.slice(cut); view.entriesOffset = (view.entriesOffset ?? 0) + cut; } body = JSON.stringify({...JSON.parse(exchangeSnapshot(windowed, offset)),uiVersion:1,view}); }
 		this.body = body;
 		this.view = { value: view as unknown as Record<string, unknown>, trimmed: view.entries.length !== full.view.entries.length, chatId: state.chatId, running: state.running };
 		if (!this.publish) { this.publish = setTimeout(() => { this.publish = undefined; this.sendSnapshot(); }, 16); }
@@ -237,6 +245,10 @@ class ExchangeSurface implements ChatStateSurface {
 			this.viewers=value.count;
 			if(this.viewers===0)this.hub?.dropAll();
 			return;
+		}
+		if (value.type === 'chat.command' && typeof value.id === 'string' && value.message?.type === 'loadEarlier') {
+			if (value.chatId === this.windowChat) { this.prompts = value.message.reset === true ? currentVisibleTurns() : this.prompts + currentVisibleTurns(); if (this.last) { this.forceFull = true; this.update(this.last); } }
+			socket.send(JSON.stringify({ type: 'command.result', id: value.id, ok: true })); return;
 		}
 		if (value.type === 'chat.resync' && typeof value.id === 'string') {
 			this.forceFull = true; this.sendSnapshot();

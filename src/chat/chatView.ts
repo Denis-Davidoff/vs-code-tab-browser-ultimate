@@ -1,3 +1,4 @@
+import { currentVisibleTurns, windowEntries } from './core/entryWindow';
 import { remoteOpenHint } from './remoteTerminalView';
 import { GitFetchScheduler } from './gitFetch';
 import type { ExchangeUiMessage } from './exchangeUiProtocol';
@@ -35,6 +36,7 @@ import { attachmentReference, preserveAttachmentReference } from './attachmentRe
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import * as cp from 'child_process';
 import * as vscode from 'vscode';
 import { AgentRegistry, agentNames, isAgentId, type BrowserServer } from './agents';
 import { sweepBrowserConfigs, writeTerminalBrowserConfig } from './claudeAgent';
@@ -87,10 +89,11 @@ import type { AnnotationChange } from '../browser/pageAnnotations';
 import { chromeAnnotationSessions } from '../browser/chromeAnnotationSessions';
 import type { PageAnnotation } from '../browser/annotationData';
 import type {
-	AgentId, AgentUsage, ApprovalMode, AttachmentChip, AttachmentKind, ChatSummary, GitCommitState,
-	ChatNews, ChatTabSummary, ChatViewState, HostToView, RepoMode, Selection, ToolbarRun, ToolbarSkill, UsageAlert, UsageWindow, ViewToHost, VoiceEvent, WorkdirFolder, WorkdirState,
-	ChatViewMode, ToolEntry, TerminalSupport, TerminalTabSummary,
+	AgentId, AllAgentsChat, AgentUsage, ApprovalMode, AttachmentChip, AttachmentKind, ChatSummary, GitCommitState,
+	ChatAccess, ChatNews, ChatTabSummary, ChatViewState, HostToView, RepoMode, Selection, ToolbarRun, ToolbarSkill, UsageAlert, UsageWindow, ViewToHost, VoiceEvent, WorkdirFolder, WorkdirState,
+	ChatViewMode, ToolEntry, TerminalSupport, TerminalTabSummary, ChatSound, ChatSoundSettings,
 } from './chatProtocol';
+import { chatSounds } from './chatProtocol';
 import { pickElementContext, pickForChat } from '../elements/elementPicker';
 import { parseNews } from './news';
 import { confirm, refuse } from '../core/notify';
@@ -877,6 +880,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		this._subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration('workbench.iconTheme') || e.affectsConfiguration('files.associations')) { this._gitEventRefresh(); this._postFileIcons(); }
 			if (terminalSettingKeys.some(key => e.affectsConfiguration(key))) { this._postTerminalSettings(); }
+			if (e.affectsConfiguration('aiBrowser.chat.sound') || e.affectsConfiguration('aiBrowser.chat.notifications')) { this._post(); }
 			if (e.affectsConfiguration('aiBrowser.chat.remoteTerminal')) { this._postMessage({ type: 'remoteTerminalSettings', remoteTerminal: remoteTerminalSetting(), shell: remoteTerminalOpenSetting('shell'), agent: remoteTerminalOpenSetting('agent') }); }
 			if (e.affectsConfiguration(terminalLimitSetting) || e.affectsConfiguration(tabLimitSetting) || e.affectsConfiguration(collapseToolsSetting) || e.affectsConfiguration(viewModeSetting) || e.affectsConfiguration('aiBrowser.chat.exchangeKeepAwakeMinutes') || e.affectsConfiguration('aiBrowser.chat.remoteTerminal') || e.affectsConfiguration('aiBrowser.chat.remoteTerminalShell') || e.affectsConfiguration('aiBrowser.chat.remoteTerminalAgent')) {
 				this._post();
@@ -1171,7 +1175,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			}
 			return;
 		}
-		void this._view.webview.postMessage(message);
+		// `typeof`: tests lift `_postMessage` into a sandbox without the rest of the class.
+		void this._view.webview.postMessage(message.type === 'state' && typeof this._windowed === 'function' ? { type: 'state', state: this._windowed(message.state) } : message);
+	}
+
+	/**
+	 * The editor's view is sent the last turns of the conversation too, not all of it: a long chat
+	 * kept every entry in the webview's DOM and memory. Earlier turns come with `loadEarlier`; a
+	 * `reset` from a view back at the end drops them again. Per conversation, back to the default
+	 * when another one is shown.
+	 */
+	private _editorPrompts = 0;
+	private _editorWindowChat?: string;
+	private _windowed(state: ChatViewState): ChatViewState {
+		if (this._editorWindowChat !== state.chatId) { this._editorWindowChat = state.chatId; this._editorPrompts = currentVisibleTurns(); }
+		const window = windowEntries(state.entries, this._editorPrompts);
+		return window.offset ? { ...state, entries: window.entries, entriesOffset: window.offset } : state;
 	}
 
 	/** Coalesces state posts: a streaming reply changes the state many times a frame. */
@@ -1242,6 +1261,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				id: ChatViewProvider._chromeConnectionRequest.id, extensionId: ChatViewProvider._chromeConnectionRequest.extensionId,
 			} : undefined,
 			themeTokens: this._themeTokens,
+			sound: soundSettings(),
 			themeKind: vscode.window.activeColorTheme.kind,
 			panel: this._panelIdentity,
 			surfaceId: this._surfaceId,
@@ -1287,6 +1307,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			})),
 			...(mirrored.has(this._active.chat.id) && !this._peeking ? { chromeMirror: true } : {}),
 			activeTab: this._active.id,
+			access: this._access(),
 			tabLimit: limit,
 			terminals: this._terminals.tabs.map(t => this._terminalSummary(t)),
 			...(this._terminals.front ? { terminalFront: this._terminals.front } : {}),
@@ -1410,6 +1431,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				return;
 			case 'openrouter':
 				await this._openrouterAction(message);
+				return;
+			case 'soundSettings':
+				await this._soundSettings(message);
+				return;
+			case 'loadEarlier':
+				// Chrome and the website answer it in their own bridge; one reaching here is the editor's view.
+				if (this._chromeCommand?.getStore() || message.chatId !== this._editorWindowChat) { break; }
+				this._editorPrompts = message.reset ? currentVisibleTurns() : this._editorPrompts + currentVisibleTurns();
+				this._postMessage({ type: 'state', state: this._state() });
+				break;
+			case 'osNotify':
+				osNotify(message.title, message.text);
 				return;
 			case 'remoteTerminalSettings':
 				await this._remoteTerminalSettings(message);
@@ -1833,6 +1866,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				return;
 			case 'resumeInTerminal':
 				await this._resumeInTerminal(message.id);
+				return;
+			case 'tabAccess':
+				if (typeof message.tabId === 'string') {
+					this._browser.setTabOwner(message.tabId, message.take ? this._active.chat.id : undefined);
+					this._post();
+				}
+				return;
+			case 'listAllAgents':
+				this.showAllAgents(true);
+				return;
+			case 'listHistory':
+				this.showHistory(true);
 				return;
 			case 'deleteChat':
 				await this._deleteChat(message.id);
@@ -4142,6 +4187,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		};
 	}
 
+	/** The Access tab of the conversation in front. */
+	private _access(): ChatAccess {
+		const chatId = this._active.chat.id;
+		const names = new Map<string, string>();
+		for (const surface of ChatViewProvider._surfaces.values()) { for (const t of surface._tabs) { names.set(t.chat.id, t.chat.title); } }
+		const watchers = this._stateSurfaces.watchers(chatId, chatId);
+		return {
+			tabs: this._browser.accessTabs(chatId).map(t => ({ ...t, ...(t.ownerChat ? { ownerName: names.get(t.ownerChat) ?? 'a closed chat' } : {}), ownerChat: undefined })),
+			chrome: watchers.chrome,
+			...(watchers.website !== undefined ? { website: watchers.website } : {}),
+			terminals: ChatViewProvider._pinnedInfos(this._active).map(p => ({ id: p.id, name: p.name, watch: p.mode === 'watch' })),
+		};
+	}
+
 	/** The live terminals pinned to a conversation tab, in pin order. */
 	private static _pinnedInfos(tab: ChatTab): PinInfo[] {
 		return ChatViewProvider._pins.pinsOf(tab.id)
@@ -4469,6 +4528,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private static readonly _openrouterCatalogs = new Map<string, { at: number; entries: OpenRouterCatalogEntry[] }>();
 	private static readonly _openrouterCatalogRequests = new Map<string, Promise<OpenRouterCatalogEntry[]>>();
 
+	/** The Sound section of Chat Settings: `aiBrowser.chat.sound.*`, written for the user. */
+	private async _soundSettings(message: Extract<ViewToHost, { type: 'soundSettings' }>): Promise<void> {
+		if (message.action === 'set') {
+			const config = vscode.workspace.getConfiguration('aiBrowser.chat.sound');
+			try {
+				if (typeof message.enabled === 'boolean') { await config.update('enabled', message.enabled, vscode.ConfigurationTarget.Global); }
+				if (typeof message.sound === 'string' && (chatSounds as readonly string[]).includes(message.sound)) { await config.update('name', message.sound, vscode.ConfigurationTarget.Global); }
+				const notify = vscode.workspace.getConfiguration('aiBrowser.chat.notifications');
+				if (typeof message.notify === 'boolean') { await notify.update('enabled', message.notify, vscode.ConfigurationTarget.Global); }
+				if (typeof message.notifyAway === 'boolean') { await notify.update('onlyWhenAway', message.notifyAway, vscode.ConfigurationTarget.Global); }
+				if (typeof message.repeat === 'number' && Number.isFinite(message.repeat)) { await config.update('repeat', Math.round(Math.min(5, Math.max(1, message.repeat))), vscode.ConfigurationTarget.Global); }
+				if (typeof message.volume === 'number' && Number.isFinite(message.volume)) { await config.update('volume', Math.round(Math.min(200, Math.max(0, message.volume))), vscode.ConfigurationTarget.Global); }
+			} catch (error) {
+				void vscode.window.showErrorMessage(vscode.l10n.t('The setting was not changed: {0}', error instanceof Error ? error.message : String(error)));
+			}
+		}
+		this._post();
+	}
+
 	/** The Remote terminals section of Chat Settings: reads and writes the three user settings. */
 	private async _remoteTerminalSettings(message: Extract<ViewToHost, { type: 'remoteTerminalSettings' }>): Promise<void> {
 		const read = (error?: string): void => {
@@ -4588,6 +4666,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	/** The title bar's gear opens settings inside the chat view. */
 	public showSettings(): void {
 		this._postMessage({ type: 'openSettings' });
+	}
+
+	/** The title bar's Agents: every agent and workflow of every chat open in this extension host. */
+	public showAllAgents(refresh = false): void {
+		const chats: AllAgentsChat[] = [];
+		for (const view of ChatViewProvider._surfaces.values()) {
+			if (view._disposed) { continue; }
+			for (const tab of view._tabs) {
+				const own = tab.chat.entries.filter((e): e is ToolEntry => e.kind === 'tool' && e.tool === 'agent');
+				const agents = [...own, ...view._runs.rows(tab.chat.id)].sort((a, b) => a.startedAt - b.startedAt);
+				if (agents.length) {
+					chats.push({ tabId: tab.id, chatId: tab.chat.id, title: tab.title ?? vscode.l10n.t("New chat"), surface: view._surfaceLabel(), here: view === this, agents });
+				}
+			}
+		}
+		this._postMessage({ type: 'allAgents', chats, refresh });
 	}
 
 	/** The title bar's cup; the popup is the view's own, so it pauses no browser tab. */
@@ -6458,6 +6552,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	private _removeTab(tab: ChatTab): void {
+		this._browser.releaseChatTabs(tab.chat.id);
 		this._dropAnnotationsOf(tab);
 		// A closed conversation's terminals are not its any more; they stay open, unowned.
 		if (ChatViewProvider._pins.dropTab(tab.id).length) { ChatViewProvider._postAll(); }
@@ -7209,4 +7304,46 @@ function shortModelName(label: string): string {
 		text = versionFirst[2] + versionFirst[1];
 	}
 	return text.replace(/\s+/g, '');
+}
+
+/** The finish sound settings as the view takes them, anything out of range read as its default. */
+function soundSettings(): ChatSoundSettings {
+	const config = vscode.workspace.getConfiguration('aiBrowser.chat.sound');
+	const enabled = config.get<unknown>('enabled');
+	const name = config.get<unknown>('name');
+	const volume = config.get<unknown>('volume');
+	const repeat = config.get<unknown>('repeat');
+	return {
+		enabled: typeof enabled === 'boolean' ? enabled : true,
+		sound: typeof name === 'string' && (chatSounds as readonly string[]).includes(name) ? name as ChatSound : 'chime',
+		volume: typeof volume === 'number' && Number.isFinite(volume) ? Math.min(200, Math.max(0, volume)) : 60,
+		repeat: typeof repeat === 'number' && Number.isFinite(repeat) ? Math.round(Math.min(5, Math.max(1, repeat))) : 1,
+		notify: vscode.workspace.getConfiguration('aiBrowser.chat.notifications').get<unknown>('enabled') !== false,
+		notifyAway: vscode.workspace.getConfiguration('aiBrowser.chat.notifications').get<unknown>('onlyWhenAway') !== false,
+	};
+}
+
+/**
+ * A system notification that an agent finished, from the extension host: the
+ * workbench has no API for one, so each platform's own tool, with the text
+ * passed as data (argv, environment), never spliced into a script (#158).
+ * Not a VS Code toast: that would pause a browser tab (#10).
+ */
+function osNotify(title: string, text: string): void {
+	const settings = soundSettings();
+	if (!settings.notify || (settings.notifyAway && vscode.window.state.focused)) { return; }
+	const clean = (value: unknown, max: number) => String(value ?? '').replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, max);
+	const t = clean(title, 120) || 'AI Browser';
+	const body = clean(text, 300);
+	const done = () => { /* a notification is never worth an error */ };
+	try {
+		if (process.platform === 'darwin') {
+			cp.execFile('osascript', ['-e', 'on run argv', '-e', 'display notification (item 2 of argv) with title (item 1 of argv)', '-e', 'end run', t, body], { timeout: 10_000 }, done);
+		} else if (process.platform === 'win32') {
+			const script = "Add-Type -AssemblyName System.Windows.Forms; $n = New-Object System.Windows.Forms.NotifyIcon; $n.Icon = [System.Drawing.SystemIcons]::Information; $n.Visible = $true; $n.ShowBalloonTip(6000, $env:AIB_NOTIFY_TITLE, $env:AIB_NOTIFY_TEXT, 'Info'); Start-Sleep -Seconds 7; $n.Dispose()";
+			cp.execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { timeout: 15_000, windowsHide: true, env: { ...process.env, AIB_NOTIFY_TITLE: t, AIB_NOTIFY_TEXT: body || ' ' } }, done);
+		} else {
+			cp.execFile('notify-send', ['--app-name=AI Browser', '--', t, body], { timeout: 10_000 }, done);
+		}
+	} catch { done(); }
 }

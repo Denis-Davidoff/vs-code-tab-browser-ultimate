@@ -10,7 +10,8 @@
     "activeTab",
     "scripting",
     "tabs",
-    "clipboardWrite"
+    "clipboardWrite",
+    "notifications"
   ],
   "host_permissions": [
     "<all_urls>"

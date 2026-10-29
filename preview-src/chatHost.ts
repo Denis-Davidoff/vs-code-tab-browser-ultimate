@@ -7,6 +7,8 @@ export interface ChatDraftState {
 	drafts?: Record<string, string>;
 	chatDrawerCollapsed?: boolean;
 	chatDrawerSide?: 'left' | 'right';
+	composerTab?: 'chat' | 'skills' | 'activity' | 'history' | 'agents' | 'access';
+	overviewHeight?: number;
 }
 
 /** Host transport and draft persistence kept outside the chat renderer. */

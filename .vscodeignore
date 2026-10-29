@@ -36,3 +36,6 @@ exchange-server/**
 work/spinner-variants/**
 work/**
 deploy-exchange.sh
+
+# Sourcemaps: about 5 MB of the package, of use only for debugging a local build.
+**/*.map

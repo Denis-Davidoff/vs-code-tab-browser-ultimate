@@ -920,7 +920,7 @@ label {
 }
 .workspace-shell {
   max-width: 1500px;
-  height: 100dvh;
+  height: var(--vv-height, 100dvh);
   min-height: 0;
   overflow: hidden;
 }
@@ -1469,7 +1469,7 @@ label {
     display: none;
   }
   .workspace-shell {
-    height: 100dvh;
+    height: var(--vv-height, 100dvh);
     min-height: 0;
     overflow: hidden;
   }

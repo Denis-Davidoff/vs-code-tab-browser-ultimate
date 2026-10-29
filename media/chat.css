@@ -1174,12 +1174,12 @@ button {
 }
 
 .markdown .heading.h4 {
-	font-size: 1.05em;
+	font-size: calc(1.05em - 1px);
 }
 
 .markdown .h1 { font-size: 1.3em; }
 .markdown .h2 { font-size: 1.15em; }
-.markdown .h3 { font-size: 1.05em; }
+.markdown .h3 { font-size: calc(1.05em - 1px); }
 
 .markdown ul,
 .markdown ol {
@@ -4185,6 +4185,13 @@ button {
 .skill-bar.expanded .skill-list { max-height: none; overflow: visible; }
 .skill-expand[hidden] { display: none; }
 
+/* On a phone the lists in the composer's place (Skills, Activity, History) never reach past the top of the screen:
+   capped at a share of the visible height, which shrinks while the keyboard is open (--chat-vh, from visualViewport). */
+@media (pointer: coarse) {
+	.composer-list, .composer.skills-mode > .skill-bar { max-height: calc(var(--chat-vh, 100dvh) * .4) !important; overflow-y: auto; }
+	.composer.skills-mode > .skill-bar .skill-list { max-height: none; overflow: visible; }
+}
+
 .skill-bar[hidden] {
 	display: none;
 }
@@ -6449,3 +6456,205 @@ body.vv-locked {
 .openrouter-form-grid .openrouter-check { display: flex; flex-direction: row; align-items: center; gap: 6px; font-size: 12px; }
 .openrouter-form-actions, .openrouter-search { display: flex; gap: 6px; align-items: center; }
 .openrouter-search input { flex: 1 1 auto; }
+
+/* ---------------------------------------------------------------- Chat / Skills tabs above the composer */
+
+.composer-tabs {
+	display: flex;
+	gap: 14px;
+	padding: 0 6px;
+	margin-bottom: 6px;
+	border-bottom: 1px solid color-mix(in srgb, var(--vscode-foreground) 9%, transparent);
+	overflow-x: auto;
+	scrollbar-width: none;
+}
+
+.composer-tab {
+	position: relative;
+	flex: none;
+	height: 28px;
+	padding: 0 1px;
+	border: none;
+	background: transparent;
+	color: var(--fg-3);
+	font: inherit;
+	font-size: calc(1.05em - 1px);
+	cursor: pointer;
+	transition: color .12s;
+}
+
+.composer-tab::after {
+	content: '';
+	position: absolute;
+	left: 0; right: 0; bottom: -1px;
+	height: 2px;
+	border-radius: 2px 2px 0 0;
+	background: transparent;
+	transition: background .12s;
+}
+
+.composer-tab:hover { color: var(--vscode-foreground); }
+/* The first letter is the Alt shortcut's hint. */
+.composer-tab-key { color: color-mix(in srgb, var(--vscode-foreground) 45%, var(--fg-3)); }
+.composer-tab:hover .composer-tab-key, .composer-tab.active .composer-tab-key { color: inherit; }
+.composer-tab-count { display: inline-block; min-width: 14px; height: 14px; margin-left: 4px; padding: 0 4px; box-sizing: border-box; border-radius: 7px; font-size: 9px; line-height: 14px; font-weight: 600; text-align: center; vertical-align: 1px; }
+.composer-tab-count[hidden] { display: none; }
+.composer-tab-count.agents { background: var(--vscode-focusBorder); color: var(--vscode-button-foreground, #fff); }
+.composer-tab-count.access { background: color-mix(in srgb, var(--vscode-foreground) 14%, transparent); color: var(--vscode-foreground); }
+.composer-tab.active { color: var(--vscode-foreground); font-weight: 600; }
+.composer-tab.active::after { background: var(--vscode-focusBorder); }
+.composer-tab:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; border-radius: 4px; }
+
+/* Chat: the message box, no skills. Skills: every skill, wrapped, in the box's place. */
+.composer:not(.skills-mode) > .skill-bar { display: none; }
+.composer.skills-mode > .skill-bar { padding: 8px 6px; min-height: 68px; max-height: 33vh; overflow-y: auto; box-sizing: border-box; scrollbar-gutter: stable; }
+.composer.skills-mode .skill-list { max-height: none; overflow: visible; }
+.composer.skills-mode .skill-expand { display: none; }
+
+/* Agents and History tabs: a list in the message box's place, at most a third of the view. */
+.composer:not(.list-mode) > .composer-list, .composer:not(.list-mode):not(.skills-mode) > .cl-resize { display: none; }
+.cl-resize { height: 7px; margin: -2px 0 -3px; cursor: ns-resize; position: relative; z-index: 2; touch-action: none; }
+.cl-resize::after { content: ''; position: absolute; left: calc(50% - 18px); right: calc(50% - 18px); top: 3px; height: 2px; border-radius: 2px; background: color-mix(in srgb, var(--vscode-foreground) 18%, transparent); transition: background .15s, left .15s, right .15s; }
+/* On hover and while dragging the bar spans the whole width, so the edge being moved reads as one line. */
+.cl-resize:hover::after, .cl-resize.dragging::after { background: var(--vscode-focusBorder); left: 10px; right: 10px; }
+.composer-list .cl-section { display: flex; flex-direction: column; gap: 1px; }
+.composer-list { max-height: 33vh; overflow-y: auto; padding: 6px 6px 8px; display: flex; flex-direction: column; gap: 1px; min-height: 68px; box-sizing: border-box; scrollbar-gutter: stable; }
+.composer-list .cl-head { position: sticky; top: -6px; z-index: 1; display: flex; align-items: center; gap: 6px; padding: 6px 6px 4px; margin-top: 2px; background: color-mix(in srgb, var(--surface) 92%, #000); font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--fg-3); }
+.composer-list .cl-head:not(:first-child), .composer-list .cl-section + .cl-section > .cl-head:first-child { margin-top: 8px; border-top: 1px solid color-mix(in srgb, var(--vscode-foreground) 8%, transparent); padding-top: 10px; }
+.composer-list .cl-count { min-width: 16px; height: 16px; padding: 0 5px; box-sizing: border-box; border-radius: 8px; background: color-mix(in srgb, var(--vscode-foreground) 10%, transparent); color: var(--vscode-foreground); font-size: 10px; line-height: 16px; text-align: center; letter-spacing: 0; }
+.composer-list .cl-spacer { flex: 1; }
+.composer-list .cl-link { border: none; background: none; padding: 0 2px; color: var(--vscode-textLink-foreground); font: inherit; font-size: 11px; text-transform: none; letter-spacing: 0; font-weight: 500; cursor: pointer; }
+.composer-list .cl-link:hover { text-decoration: underline; }
+.composer-list .cl-row { display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; padding: 6px 8px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--vscode-foreground); font: inherit; text-align: left; box-sizing: border-box; transition: background .12s, border-color .12s; }
+.composer-list button.cl-row { cursor: pointer; }
+.composer-list .cl-row:hover { background: color-mix(in srgb, var(--vscode-foreground) 6%, transparent); }
+.composer-list button.cl-row:focus-visible { outline: none; border-color: var(--vscode-focusBorder); }
+.composer-list .cl-row.current { background: color-mix(in srgb, var(--vscode-focusBorder) 12%, transparent); border-color: color-mix(in srgb, var(--vscode-focusBorder) 35%, transparent); }
+.composer-list .cl-lead { flex: none; }
+.composer-list .cl-lead.agent-dot { width: 8px; height: 8px; margin: 0 7px; }
+.composer-list .cl-icon { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 6px; background: color-mix(in srgb, var(--vscode-foreground) 7%, transparent); color: var(--fg-3); }
+.composer-list .cl-icon .codicon { font-size: 14px; }
+.composer-list .cl-icon.owner-this { color: var(--vscode-charts-green); background: color-mix(in srgb, var(--vscode-charts-green) 14%, transparent); }
+.composer-list .cl-icon.owner-other { color: var(--vscode-charts-orange); background: color-mix(in srgb, var(--vscode-charts-orange) 14%, transparent); }
+.composer-list .cl-icon.live { color: var(--vscode-charts-blue); background: color-mix(in srgb, var(--vscode-charts-blue) 14%, transparent); }
+.composer-list .cl-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.composer-list .cl-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.composer-list .cl-meta { display: flex; align-items: center; gap: 5px; min-width: 0; overflow: hidden; white-space: nowrap; font-size: .88em; color: var(--fg-3); }
+.composer-list .cl-meta > * { flex: none; }
+.composer-list .cl-meta .cl-host { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; }
+.composer-list .cl-sep { opacity: .6; }
+.composer-list .cl-chevron { flex: none; opacity: 0; color: var(--fg-3); transition: opacity .12s; }
+.composer-list .cl-row:hover .cl-chevron, .composer-list .cl-row:focus-visible .cl-chevron { opacity: 1; }
+.composer-list .cl-row.waiting .cl-title::after { content: ' · waiting for you'; color: var(--vscode-charts-yellow); font-weight: 400; }
+.composer-list .cl-chip { display: inline-flex; align-items: center; height: 16px; padding: 0 6px; border-radius: 8px; font-size: 10.5px; font-weight: 500; line-height: 16px; background: color-mix(in srgb, var(--vscode-foreground) 9%, transparent); color: var(--vscode-foreground); }
+.composer-list .cl-chip.mine { background: color-mix(in srgb, var(--vscode-charts-green) 18%, transparent); color: var(--vscode-charts-green); }
+.composer-list .cl-chip.other { background: color-mix(in srgb, var(--vscode-charts-orange) 18%, transparent); color: var(--vscode-charts-orange); max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
+.composer-list .cl-chip.free { background: color-mix(in srgb, var(--vscode-charts-blue) 16%, transparent); color: var(--vscode-charts-blue); }
+.composer-list .cl-chip.live { background: color-mix(in srgb, var(--vscode-charts-blue) 16%, transparent); color: var(--vscode-charts-blue); }
+.composer-list .cl-chip.plain { color: var(--fg-3); }
+.composer-list .cl-action { flex: none; height: 22px; padding: 0 10px; border-radius: 6px; border: 1px solid var(--vscode-button-secondaryBackground, var(--border-strong)); background: var(--vscode-button-secondaryBackground, transparent); color: var(--vscode-button-secondaryForeground, var(--vscode-foreground)); font: inherit; font-size: 11.5px; cursor: pointer; opacity: .85; }
+.composer-list .cl-action.primary { background: var(--vscode-button-background); border-color: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+.composer-list .cl-row:hover .cl-action, .composer-list .cl-action:focus-visible { opacity: 1; }
+.composer-list .cl-action:hover { filter: brightness(1.1); }
+.composer-list .cl-action:disabled { opacity: .4; cursor: default; }
+.composer-list .cl-empty { display: flex; align-items: center; gap: 8px; padding: 8px 10px; color: var(--fg-3); font-size: .92em; }
+.composer-list .cl-empty-icon { opacity: .7; }
+
+/* Skills, Activity and History keep the message box under them, cut to one line (asked for):
+   the textarea and the mirror behind it take the same padding, or the caret leaves the text. */
+.composer:is(.skills-mode, .list-mode) > .input-area { min-height: 0; border-top: 1px solid color-mix(in srgb, var(--vscode-foreground) 8%, transparent); }
+.composer:is(.skills-mode, .list-mode) .input { min-height: 0; height: calc(var(--line) + 12px) !important; max-height: none; padding: 6px 12px; overflow-y: hidden; }
+.composer:is(.skills-mode, .list-mode) .input-mirror { padding: 6px 12px; }
+.composer:is(.skills-mode, .list-mode) .input-actions { padding: 0 8px 0 0; justify-content: center; }
+.composer:is(.skills-mode, .list-mode) .input-actions > .send-slot:first-child { transform: translateX(4px); }
+.composer:is(.skills-mode, .list-mode) .input-actions > .send-slot:nth-child(n + 2) { display: none; }
+
+/* .composer-list sets display: flex, which beats [hidden]; Activity and History share the class. */
+.composer > .composer-list[hidden] { display: none; }
+/* The title bar's All agents: a chat's name above its agents. */
+.all-agents-panel .all-agents-chat { margin: 10px 0 2px; padding: 0 4px; font-size: 11px; font-weight: 600; color: var(--vscode-descriptionForeground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.all-agents-panel .agent-row:disabled { cursor: default; opacity: .85; }
+
+.turn.turn-flash .prompt .bubble { animation: turn-flash 1.2s ease-out; }
+@keyframes turn-flash { 0%, 30% { box-shadow: 0 0 0 2px var(--vscode-focusBorder); } 100% { box-shadow: 0 0 0 2px transparent; } }
+
+/* The speaker toggle beside C and U: dimmed while silent. */
+.sound-button.muted { opacity: 0.55; }
+.sound-settings .sound-row { display: flex; align-items: center; gap: 8px; }
+.sound-settings input[type=range] { flex: 1; max-width: 220px; }
+
+/*
+ * Chat Settings — one design layer over the rules above (asked for: a calm,
+ * consistent panel). Later in the file on purpose, so it wins without !important.
+ */
+.feature-settings { --set-gap: 14px; --set-radius: 8px; --set-line: color-mix(in srgb, var(--vscode-foreground) 10%, transparent); --set-surface: color-mix(in srgb, var(--vscode-foreground) 3.5%, transparent); padding: 14px 16px; }
+.feature-settings.open { gap: var(--set-gap); }
+.feature-settings-heading { padding-bottom: 12px; border-bottom: 1px solid var(--set-line); }
+.feature-settings-heading :is(h2, h3, strong) { font-size: 14px; font-weight: 600; letter-spacing: .01em; margin: 0; }
+.feature-settings-layout { grid-template-columns: clamp(110px, 26%, 172px) minmax(0, 1fr); gap: 18px; }
+
+/* The section rail: quiet rows, an accent bar on the one shown. */
+.feature-settings-tabs { gap: 2px; padding: 2px 12px 2px 0; border-right: 1px solid var(--set-line); }
+.feature-settings-tab { position: relative; padding: 7px 10px; border: 0; border-radius: 6px; font-size: 12.5px; line-height: 1.3; color: var(--vscode-descriptionForeground); transition: background-color .12s, color .12s; }
+.feature-settings-tab:hover { background: color-mix(in srgb, var(--vscode-foreground) 6%, transparent); color: var(--vscode-foreground); }
+.feature-settings-tab[aria-selected="true"] { background: color-mix(in srgb, var(--vscode-focusBorder) 14%, transparent); color: var(--vscode-foreground); font-weight: 600; border-left: 0; }
+.feature-settings-tab[aria-selected="true"]::before { content: ''; position: absolute; left: 0; top: 7px; bottom: 7px; width: 3px; border-radius: 2px; background: var(--vscode-focusBorder); }
+.feature-settings-tab:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+
+/* A section: intro text, then rows grouped in one card. */
+.feature-settings-main { gap: var(--set-gap); padding-right: 6px; }
+.feature-settings-content { display: flex; flex-direction: column; gap: 10px; }
+.feature-settings-content > p { margin: 0 0 2px; font-size: 12px; line-height: 1.55; }
+.feature-settings-content .feature-settings-row { gap: 8px 14px; padding: 12px 14px; border: 1px solid var(--set-line); border-radius: var(--set-radius); background: var(--set-surface); }
+.feature-settings-row > strong { font-size: 12.5px; font-weight: 600; }
+.feature-settings-row label { gap: 6px; font-size: 12px; color: var(--vscode-foreground); }
+.feature-settings-content .feature-settings-note { font-size: 11.5px; line-height: 1.5; margin: 0; }
+.feature-settings-content code { font-size: 11px; padding: 1px 4px; border-radius: 3px; background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent); }
+
+/* Fields: the shared control height and a clear focus. */
+.feature-settings-content :is(input[type=text], input[type=number], input[type=password], input[type=url], textarea),
+.video-length-fields input { box-sizing: border-box; min-height: var(--ctl-h); padding: 4px 8px; border-radius: var(--ctl-radius); font: inherit; font-size: var(--ctl-font); }
+.feature-settings-content :is(input, textarea, select):focus-visible { outline: none; border-color: var(--vscode-focusBorder); box-shadow: 0 0 0 1px var(--vscode-focusBorder); }
+.feature-settings-content input[type=checkbox] { width: 15px; height: 15px; margin: 0; accent-color: var(--vscode-focusBorder); cursor: pointer; flex: none; }
+.feature-settings-content input[type=range] { accent-color: var(--vscode-focusBorder); cursor: pointer; }
+.feature-settings-content .openrouter-check { flex-direction: row; align-items: center; gap: 8px; cursor: pointer; }
+
+/* Every text button in the panel: one height, real padding on both sides. */
+.feature-settings-content button:not(.round):not(.icon-only),
+.temporary-delete-all { display: inline-flex; align-items: center; justify-content: center; gap: 6px; box-sizing: border-box; height: var(--ctl-h); padding: 0 12px; border-radius: var(--ctl-radius); font-size: var(--ctl-font); line-height: 1; white-space: nowrap; flex: none; }
+.feature-settings-content button:not(.round):not(.icon-only) .codicon { font-size: 14px; }
+.feature-settings-save { padding: 0 16px; font-weight: 500; }
+.feature-settings-main > .feature-settings-actions { padding: 12px 0 2px; border-top: 1px solid var(--set-line); }
+
+/* Sound. */
+.sound-settings .sound-row { gap: 10px; flex-wrap: wrap; }
+.sound-settings .sound-row select { flex: 1 1 160px; max-width: 260px; }
+.sound-settings input[type=range] { flex: 1 1 140px; max-width: 260px; }
+.sound-settings .sound-volume { min-width: 3.5em; text-align: right; font-variant-numeric: tabular-nums; color: var(--vscode-descriptionForeground); }
+
+@media (max-width: 420px) {
+ .feature-settings { padding: 10px; }
+ .feature-settings-layout { gap: 10px; }
+ .feature-settings-content .feature-settings-row { padding: 10px; }
+}
+/* The actions bar takes the panel's own background: --bg drew a darker band under Save. */
+/* No band of its own, but the settings scrolling under it are blurred, so Save stays readable. */
+.feature-settings-main > .feature-settings-actions {
+	background: color-mix(in srgb, var(--vscode-editorWidget-background, var(--bg)) 35%, transparent);
+	-webkit-backdrop-filter: blur(10px) saturate(1.2);
+	backdrop-filter: blur(10px) saturate(1.2);
+	z-index: 1;
+}
+/* Earlier turns load on request: a quiet row at the top of the thread. */
+.earlier-bar { display: flex; justify-content: center; padding: 6px 0 10px; }
+.earlier-bar[hidden] { display: none; }
+.earlier-button { font-size: 12px; padding: 4px 12px; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--vscode-foreground) 14%, transparent); }
+/* Centred under Send: the slot below it sat 3px to the left. */
+.send.queue-button { position: relative; left: 3px; }
+
+/* A clicked conversation tab while its chat loads: a spinner replaces its mark. */
+.tab .tab-loading { display: none; }
+.tab.loading .tab-loading { display: inline-block; font-size: 12px; flex: none; }
+.tab.loading .tab-mark,
+.tab.loading .tab-compact .codicon:not(.tab-loading),
+.tab.loading .tab-compact .tab-mark { display: none; }

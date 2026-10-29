@@ -54,6 +54,7 @@ export const COMMANDS = {
 	connectExchange: editor(internal), disconnectExchange: editor(internal), answerChromeConnection: editor(internal),
 	reportTheme: chat('local', 'local'), copy: local, saveDrafts: local, tabDraft: local,
 	ready: chat('local', 'host'),
+	loadEarlier: chat('host', 'host'),
 
 	// Terminal tabs: a shell on the editor's machine. Chrome and the website reach the ones the editor
 	// shares (`aiBrowser.chat.remoteTerminal`; the website on encrypted connections only): lifecycle as
@@ -82,6 +83,9 @@ export const COMMANDS = {
 	// Chrome's tab strip picks which editor conversation the side panel shows (a pin).
 	selectTab: chat('local', 'mixed'), closeTab: chat({ no: chromeEditor }, 'host'), renameTab: chat({ no: chromeEditor }, 'host'),
 	openChat: editor('Opening another saved conversation is available only in VS Code.'),
+	tabAccess: editor('Who may use a browser tab is decided only in VS Code.'),
+	listAllAgents: editor('Every chat\'s agents are listed only in VS Code.'),
+	listHistory: editor('The saved conversations are listed only in VS Code.'),
 	deleteChat: editor('Deleting saved conversations is available only in VS Code.'),
 	resolveHistoryChat: editor(), resumeInTerminal: editor('Terminals are available only in VS Code.'),
 	placeTab: editor(), placeTerminal: editor(), beginTabDrag: editor(), acceptTabDrop: editor(), moveTabTo: editor(), moveTabToNew: editor(), moveTerminalTo: editor(), moveTerminalToNew: editor(),
@@ -93,6 +97,8 @@ export const COMMANDS = {
 	temporaryStorage: editor('Temporary files are managed only in VS Code.'),
 	// The key and the model list decide where prompts and the key are sent: edited only in the editor, never from a remote surface.
 	// These switches decide what a remote surface may open on this machine: changed only in the editor, never from the surface they limit.
+	soundSettings: editor('The finish sound is changed only in VS Code.'),
+	osNotify: editor('Chrome and the website show their own notification.'),
 	remoteTerminalSettings: editor('Remote terminal access is changed only in VS Code.'),
 	openrouter: editor('The OpenRouter key and models are edited only in VS Code.'),
 	setNewsHidden: chat({ no: chromeEditor }, 'host'),

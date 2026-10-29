@@ -1,8 +1,8 @@
 {
 	"name": "tab-browser-ultimate",
 	"displayName": "AI Browser🏆 Claude + Codex + Gemini + OpenCode + Pi + OpenRouter",
-	"description": "Embedded browser tab with AI capabilities, Claude, Codex, Gemini, OpenCode, Pi and OpenRouter integration",
-	"version": "0.9.4",
+	"description": "Chat with browser, MCP for chrome and embedded browser tab with AI capabilities, Claude, Codex, Gemini, OpenCode, Pi and OpenRouter integration (Qwen, LM Studio, Ollama, etc.)",
+	"version": "0.9.5",
 	"enabledApiProposals": [
 		"externalUriOpener",
 		"browser"
@@ -223,6 +223,7 @@
 		"onCommand:aiBrowser.chat.disconnectChrome",
 		"onCommand:aiBrowser.chat.history",
 		"onCommand:aiBrowser.chat.refreshAgents",
+		"onCommand:aiBrowser.chat.allAgents",
 		"onCommand:aiBrowser.chat.keepAwake",
 		"onCommand:aiBrowser.chat.keepAwakeActive",
 		"onCommand:aiBrowser.chat.addElement",
@@ -799,6 +800,12 @@
 				"icon": "$(gear)"
 			},
 			{
+				"command": "aiBrowser.chat.allAgents",
+				"title": "%command.chat.allAgents.title%",
+				"category": "%displayName%",
+				"icon": "$(hubot)"
+			},
+			{
 				"command": "aiBrowser.chat.keepAwake",
 				"title": "%command.chat.keepAwake.title%",
 				"category": "%displayName%",
@@ -1039,6 +1046,50 @@
 						"scope": "application",
 						"title": "Terminal Tabs",
 						"markdownDescription": "%configuration.chat.terminalLimit.description%"
+					},
+					"aiBrowser.chat.sound.enabled": {
+						"type": "boolean",
+						"default": true,
+						"title": "Sound When Agents Finish",
+						"markdownDescription": "%configuration.chat.sound.enabled.description%"
+					},
+					"aiBrowser.chat.sound.name": {
+						"type": "string",
+						"enum": ["chime", "bell", "pop", "dingdong", "marimba", "harp", "kalimba", "glass", "bubble", "coin", "levelup", "sparkle", "sonar", "arcade", "droplet", "woodblock", "fanfare", "zen", "whistle", "synth", "lullaby", "triad", "ascend", "descend", "doorbell", "tick", "blip", "laser", "ufo", "boing", "piano", "celesta", "organ", "flute", "pluck", "gong", "twinkle", "heartbeat", "success", "notice", "trill", "jingle", "swoosh", "robot", "chirp", "harmony", "steel", "cosmic", "ping", "victory"],
+						"default": "chime",
+						"markdownDescription": "%configuration.chat.sound.name.description%"
+					},
+					"aiBrowser.chat.sound.volume": {
+						"type": "integer",
+						"minimum": 0,
+						"maximum": 200,
+						"default": 60,
+						"markdownDescription": "%configuration.chat.sound.volume.description%"
+					},
+					"aiBrowser.chat.sound.repeat": {
+						"type": "integer",
+						"minimum": 1,
+						"maximum": 5,
+						"default": 1,
+						"markdownDescription": "%configuration.chat.sound.repeat.description%"
+					},
+					"aiBrowser.chat.visibleTurns": {
+          "type": "integer",
+          "default": 20,
+          "minimum": 5,
+          "maximum": 200,
+          "markdownDescription": "%config.chat.visibleTurns.description%"
+        },
+        "aiBrowser.chat.notifications.enabled": {
+						"type": "boolean",
+						"default": true,
+						"title": "Notify When Agents Finish",
+						"markdownDescription": "%configuration.chat.notifications.enabled.description%"
+					},
+					"aiBrowser.chat.notifications.onlyWhenAway": {
+						"type": "boolean",
+						"default": true,
+						"markdownDescription": "%configuration.chat.notifications.onlyWhenAway.description%"
 					},
 					"aiBrowser.chat.remoteTerminal": {
 						"type": "boolean",
@@ -1542,6 +1593,10 @@
 					"when": "!aiBrowser.chatUnsupported"
 				},
 				{
+					"command": "aiBrowser.chat.allAgents",
+					"when": "!aiBrowser.chatUnsupported"
+				},
+				{
 					"command": "aiBrowser.chat.keepAwake",
 					"when": "!aiBrowser.chatUnsupported && !aiBrowser.keepAwakeActive"
 				},
@@ -1750,9 +1805,9 @@
 					"group": "navigation@2"
 				},
 				{
-					"command": "aiBrowser.chat.refreshAgents",
+					"command": "aiBrowser.chat.allAgents",
 					"when": "view == aiBrowser.chat",
-					"group": "navigation@3"
+					"group": "navigation@3.5"
 				},
 				{
 					"command": "aiBrowser.chat.keepAwake",

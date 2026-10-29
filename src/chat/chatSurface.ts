@@ -19,6 +19,8 @@ export interface ChatStateSurface {
 	 * shared in Chrome after Chrome had been closed.
 	 */
 	readonly kind?: 'chrome' | 'exchange';
+	/** How many people watch it, where the surface knows (the website). */
+	readonly viewerCount?: number;
 	/** Given a way to ask for a fresh state, e.g. after the surface changed its pin. */
 	bind?(refresh: () => void): void;
 	/**
@@ -83,6 +85,17 @@ export class ChatStateSurfaces {
 	/** Conversations some surface is showing — what the editor marks as mirrored. */
 	chatIds(fallback: string, kind?: 'chrome' | 'exchange'): Set<string> {
 		return new Set([...this._surfaces].filter(surface => surface.active !== false && (!kind || surface.kind === kind)).map(surface => surface.chatId ?? fallback));
+	}
+	/** Who watches one conversation from outside the editor, for its Access tab. */
+	watchers(chatId: string, fallback: string): { chrome: boolean; website?: number } {
+		let chrome = false;
+		let website: number | undefined;
+		for (const surface of this._surfaces) {
+			if (surface.active === false || (surface.chatId ?? fallback) !== chatId) { continue; }
+			if (surface.kind === 'chrome') { chrome = true; }
+			if (surface.kind === 'exchange') { website = (website ?? 0) + (surface.viewerCount ?? 0); }
+		}
+		return { chrome, ...(website !== undefined ? { website } : {}) };
 	}
 	dispose(): void {
 		const surfaces = [...this._surfaces];

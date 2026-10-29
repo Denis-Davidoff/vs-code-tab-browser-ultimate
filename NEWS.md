@@ -29,6 +29,13 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 - $(location) **Page markers** — pin notes to page elements and send them to the agent as one prompt.
 - $(settings-gear) **Chat Settings** — use the gear at the top to edit prompts for commit messages, branch names and chat titles, or clean up temporary files.
 
+## 0.9.5 — 2026-10-29
+- **Finish sounds** — a sound when agents finish: fifty to choose from in Chat Settings → Sound, volume up to 200%, played up to five times in a row. The speaker button beside the usage meter switches it on or off.
+- **System notifications** — when agents finish, optionally only while the window is not focused.
+- **Sound in Chrome and on the website** — they play the same sounds and notifications, with their own settings kept on that device.
+- **Faster remote chats** — every view, VS Code included, loads only the last turns (`aiBrowser.chat.visibleTurns`, 20 by default); earlier ones load when you scroll up or press *Show earlier messages*.
+- **Mobile keyboard** — on the website, the message box stays in view when the phone's keyboard opens.
+
 ## 0.9.4 — 2026-10-28
 - **Local models** — the OpenRouter agent also runs models from Ollama or LM Studio on your computer: pick the server beside the search box in Chat Settings → OpenRouter, or set a model's *Local server*. No key is needed or sent.
 - **Choose what Chrome and the website may open** — new settings *Remote Terminal Shell* and *Remote Terminal Agent* (both off by default) decide separately whether they can open a plain terminal or an agent's own CLI; each needs *Remote Terminal* on. All three are checkboxes in the new **Remote terminals** tab of Chat Settings, apply at once, and can be changed only in VS Code.

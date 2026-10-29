@@ -137,6 +137,7 @@ cloned repository could switch autofill on for its own dev server (breaks-silent
 | `aiBrowser.chat.opencodePath` | `""` | the `opencode` executable, the same way; `application`-scoped — see [OpenCode over ACP](#opencode-over-acp) |
 | `aiBrowser.chat.piPath` | `""` | the `pi` executable, the same way; `application`-scoped — see [Pi over its RPC mode](#pi-over-its-rpc-mode) |
 | `aiBrowser.chat.openrouterEndpoint` | `""` | the OpenRouter API address (empty: `https://openrouter.ai/api/v1`); `application`-scoped, https or loopback http only, since the API key is sent to it — see [OpenRouter](#openrouter-an-http-api-and-our-own-agent-loop) |
+| `aiBrowser.chat.sound.enabled` / `.name` / `.volume` / `.repeat` | `true` / `chime` / `60` / `1` | the sound when an agent finishes — see [Finish sounds](#finish-sounds) |
 | `aiBrowser.chat.viewMode` | `compact` | how much of the agents' work the chat shows: `minimal`, `compact` (tool calls folded) or `standard` (unfolded) — see [View modes](#view-modes-minimal-compact-standard); also the View Mode row of the chat's approval menu |
 | `aiBrowser.chat.collapseToolCalls` | `true` | deprecated by `viewMode`, and read only while that is unset: `false` is Standard, anything else Compact |
 
@@ -2594,6 +2595,22 @@ built-in extension uses it. And a page's own `window.open` / `target="_blank"` b
 editor tab in the main process (`setWindowOpenHandler` → child view with `pinned: true`), which
 `browser_click` reaches through `el.click()` like any other click.
 
+### A chat owns the tabs its agent opens
+
+Asked for: a tab an AI Browser chat's agent opens (`browser_navigate` with a new tab, or the
+first page when none was open, from a caller with `chatId`) belongs to that chat
+(`BrowserController._chatOwners`). Every other caller — another chat, Claude Code or Codex in a
+terminal — does not see it in `browser_tabs`, is never resolved onto it (focused, last-used and
+last-resort branches skip it), and is refused by `browser_select_tab` and by a `tabId` naming it
+(`_ownedRefusal`). A tab the user opened has no owner and is free for everyone. The owning chat
+works on its own tab before the one in front (`_resolveTab`), unless it pinned another. A user's
+share outranks ownership, and the user's own commands carry no caller and are never refused.
+The chat's **Access** composer tab lists every tab with Take / Make free (`tabAccess`, editor
+only), who watches the conversation from Chrome or the website (`ChatStateSurfaces.watchers`,
+the website's `viewerCount`), and its pinned terminals. Closing a chat tab frees its tabs
+(`releaseChatTabs`); ownership is in memory and does not survive a reload. Not run inside VS Code
+yet. The website's viewer count reaches the editor's Access tab only with the next state post.
+
 ### Giving a tab to an assistant
 
 The user hands **one tab to one assistant**, and several assistants can be on the same tab.
@@ -4795,7 +4812,7 @@ small print, asked for. The choice is kept in `globalState` (`aiBrowser.chat.new
 holds in every window, and it is stored as **the newest entry's title at the moment of hiding**:
 when a release adds an entry, the list shows itself again. Hiding the changelog once must not mean
 never hearing of a new feature, which a plain boolean would have made permanent. The title bar carries
-icon buttons: New Chat, Chat History, Refresh Agents (`view/title`, `navigation@1..3`). The agents
+icon buttons: New Chat, Chat History (`view/title`, `navigation@1..2`); Refresh Agents was removed from it on request and stays in the palette. The agents
 button, `U` and Send are one group with `margin-left: auto`, so a narrow side bar wraps them
 *together* onto the next line at the right. Where it wraps depends on the font: measured at
 420 px / 380 px in VS Code before the agents button existed, and at 440 px in headless Chrome
@@ -6441,6 +6458,25 @@ and **parameters** — name, type (text, number or a choice of values), maximum 
 each is required. Kept in `globalState` (`aiBrowser.chat.toolbar`), so every project has the same
 toolbar; at most 30, prompts up to 20 000 characters.
 
+- **The bar lives in the Skills tab above the composer** (asked for): `composerTabs` — **Chat**
+  (the message box, no skills) and **Skills** (every skill, wrapped, in the box's place; the
+  composer's agent/model toolbar stays under both, since a skill runs on them). The skill bar is
+  a child of `.composer`, shown by `.skills-mode`; the choice is `composerTab` in the webview's
+  `setState`, so every `vscode.setState` call must carry it (a test sandbox defines it too).
+- **The message box stays under every composer tab** (asked for): on Skills, Activity and History it
+  is cut to one line (`.composer:is(.skills-mode, .list-mode)`, the mirror's padding matched), Send
+  alone in its column; the chips stay visible, since they go with the next message.
+- **Activity and History are composer tabs too** (asked for): Activity is one scrolling list in the
+  box's place (`.composer-list`) with two sections, Agents then Access (`.cl-section`); History lists
+  this chat's own messages, newest first (`renderComposerHistory`, from `state.entries`); a click
+  scrolls the thread to that turn and flashes its prompt (`scrollToPrompt`). An agent row opens the Agents panel on that agent's card; Access lists every tab with Take / Make free. History asks the host with
+  `listHistory` (editor-only in `commands.ts`) each time its tab opens. One resize handle serves
+  both lists. **Its height is the user's**:
+  a handle above it (`.cl-resize`, pointer drag, double-click resets to the 33vh default) sets
+  `overviewHeight` in the webview state, clamped to 80 px–80 % of the view, so every
+  `vscode.setState` carries it beside `composerTab`. A saved `agents` / `access` tab from before
+  the merge opens as Activity. Lists are rebuilt only when their rows change (#365); the
+  look is the `cl-*` set in `chat.css`.
 - **Made in an editor drawn over the chat** (`openSkillEditor`, a `history-panel`), opened from
   the "/" palette's *Toolbar* group — Add skill to toolbar…, Edit toolbar skill…, Delete toolbar
   skill… — or from a button's right-click menu, which also moves it left or right. The editor is
@@ -7271,6 +7307,10 @@ re-runs it. **While tabs overflow, the row reads: the tabs still shown, stretche
   what it shows changes, and moved only when out of order (re-inserting ends a transition). It
   used to be rebuilt whenever anything in it changed, which also lost clicks (#365) and keyboard
   focus on a tab.
+- **A clicked conversation tab spins until its chat is drawn** (asked for): `markTabLoading` adds
+  `loading` to the tab's root, which hides its mark and shows a `codicon-loading` spinner
+  (`.tab-loading`, present in every label, hidden otherwise); the first state naming it as
+  `activeTab` (or without it) clears it, and 10 s at most. A class, not a rebuild (#365).
 - **Double-click a tab (or F2) to rename it** — asked for: Enter or a click elsewhere keeps the
   name, Escape keeps the old one (and goes no further, so it does not also close a popup), an
   empty name changes nothing. The name is one line, 80 characters at most, and sets
@@ -7558,6 +7598,8 @@ tool uses, the agent's report as Markdown, then its prompt and its tool calls fo
 follows the Claude Code panel's own agent map, as asked for; it is **in the chat, not a file**,
 which was the first idea and was changed on request. Everything is read from the chat's own
 rows: nothing is asked of the CLI, and a chat reopened from the history shows its agents too.
+
+**The composer's agents button is gone; agents live in two places** (asked for): the Activity composer tab lists this chat's agents at work now (with "View all agents (N)" opening this chat's Agents panel), and the title bar's **All Agents** (`aiBrowser.chat.allAgents`, `$(hubot)` beside the cup) lists every agent and workflow of every chat open in the extension host, grouped by chat (`showAllAgents` → `allAgents`, refreshed every second by `listAllAgents` while open, editor-only). A row of this surface selects its chat and opens the agent's card (`pendingAgentCard`); a row of another surface is shown, not clickable. The Activity tab carries two counters: agents running in this chat, and this chat's access (own browser tabs, remote viewers, pinned terminals).
 
 **Once the turn has ended and agents are still running, the foot of the chat says so** — asked
 for: "✱ 2 agents running · 3m 12s" under the last turn's "Worked for …" (`agentsRunningLine`, in that
@@ -7920,6 +7962,78 @@ extension opens, and driven back by exactly two commands, `chat.send` and `chat.
 
 Not run inside VS Code against a live server yet beyond the README's manual steps; the smoke test
 (`npm run test:smoke` in `exchange-server/`) covers the relay with a fake agent.
+
+### Only the last turns are loaded
+
+Asked for: a remote connection was slow because every message of a chat was sent, and the editor's
+view kept every message in its DOM. Now every view — VS Code, the Chrome side panel, the website — is
+sent the last **turns** of the conversation: a turn is the user's message with everything after it
+(replies, tool calls, thinking), so a window never starts in the middle of an answer. Counting only
+the user's messages would let one turn with hundreds of tool calls fill the view, so the window is
+also capped at 20 entries per turn on average (`windowEntries` in
+[src/chat/core/entryWindow.ts](src/chat/core/entryWindow.ts), leaf, under test), moved back to start at a prompt.
+
+- **How many**: `aiBrowser.chat.visibleTurns`, 20 by default (5–200), read in `extension.ts` into
+  `setVisibleTurns` so the Chrome bridge and the website's connection — which load no `vscode` — read
+  the same value. Each "Show earlier messages" adds that many again.
+- **Where the cut is made**: per surface, after `_state()` — `_postMessage` for the editor's view
+  (`_windowed`; `typeof` because tests lift `_postMessage` alone), `chromeChatSnapshot`'s `prompts`
+  for Chrome and the website. `_state()` itself stays whole, since the other surfaces cut their own.
+  The view is told `entriesOffset` (an `override` field), the index of the first entry sent.
+- **Loading more**: `{ type: 'loadEarlier', chatId, reset? }` — the button at the top of the thread,
+  scrolling to the top, or the composer's History tab. The editor answers it in `_receive`; Chrome's
+  bridge (`readLoadEarlier`) and the website's connection answer it before their command readers, with a
+  whole snapshot. A window belongs to one conversation and goes back to the default on another.
+- **Dropping again**: once more was loaded and the view has sat at the end of the thread for a minute
+  (`earlierIdleMs`), it sends `reset`, and the earlier turns leave the DOM and the state.
+- **Indices**: the view's entry indices are local to the window; the two messages that carry one to the
+  host (`secondOpinion`, `openAttachment`'s `entry`) add `entriesOffset`, and the opened/closed rows are
+  keyed by the place in the whole chat (`keyOf`, `turnKey` add `renderedOffset`).
+- **A window that moves forward is not a rebuild.** Each new message in a chat longer than the window
+  pushes the oldest turn out; the view drops the leading turns' nodes (`turnFirst`) and keeps the rest.
+  Rebuilding there redrew the thread and lost clicks on every send (#365). Only a backward move (earlier
+  turns loaded) rebuilds, keeping the distance from the bottom.
+- **The window always starts at a prompt**, the current turn's own when that turn alone is over the
+  entry cap. Starting at "total minus the cap" put the start mid-turn and moved it with every new entry,
+  which rebuilt the thread on every post of a long agent turn.
+- **The website's 5 MB trim adds what it cut to `entriesOffset`**, or the indices above point at other messages.
+- The host keeps the whole conversation in memory; only what the views hold is cut.
+
+### Finish sounds
+
+Asked for: a sound when an agent finishes, chosen in settings from five, with a volume, and a
+speaker button left of the C and U meters that switches between sound and silence.
+
+- **Synthesised, not files** ([preview-src/chatSound.ts](preview-src/chatSound.ts)): Web Audio
+  oscillators, so the CSP needs nothing and Chrome and the website play the same sounds.
+- **The settings travel in the state** (`ChatViewState.sound`, `shared` in `viewFields`), so the
+  Chrome side panel and the Exchange website play them too; they are changed only in VS Code
+  (`soundSettings` is `editor()` in `commands.ts`; Chat Settings → Sound, written at
+  `ConfigurationTarget.Global`).
+- **"Finished" is a tab's `busy` going from true to false** between two states, not ending on
+  `waiting` (an approval). The first state after a load plays nothing.
+- **The speaker button overrides the default per device** (`localStorage`
+  `aiBrowser.chat.soundOverride`), and the override records which default it overrode: changing
+  `aiBrowser.chat.sound.enabled` makes the setting win again.
+- **System notifications** (`aiBrowser.chat.notifications.enabled` / `.onlyWhenAway`, both default on, in the
+  same settings section and the same `soundSettings` message): the editor's view posts `osNotify` and the host shows
+  it with `osascript` (`display notification`, title and text as `argv`), PowerShell's `NotifyIcon` balloon (text in
+  the environment) or `notify-send` — never a VS Code toast, which pauses a browser tab (#10). "Away" is
+  `window.state.focused`. On macOS the sender shown is Script Editor; no prompt is needed. Chrome and the website use
+  the page's `Notification` (permission asked on the first click; the Chrome manifest declares `notifications`),
+  "away" there being `!document.hasFocus() || document.hidden`. `osNotify` is `editor()` in `commands.ts`.
+- **Chrome and the website have their own Sound & notifications tab**, stored per device in
+  `localStorage` (`aiBrowser.chat.deviceSound`: sound, volume, notify, notify only when away), since
+  `soundSettings` stays editor-only — a remote surface may not write VS Code user settings. A key not
+  set there follows the editor (`effectiveSound`). "Play a sound" there drives the speaker button's
+  per-device override. The tab's `hidden` test is inlined in `openFeatureSettings`, which tests lift
+  into a sandbox.
+- **Repeat** (`aiBrowser.chat.sound.repeat`, 1–5): the sound is scheduled that many times back to back, each copy after the previous one's last note plus 0.15 s. Per device on Chrome and the website like the rest.
+- Volume goes to 200: the old 100 is kept as is, above it is louder; a `DynamicsCompressor` limits the sum so
+  loud chords do not clip. Fifty sounds (`chatSounds`, the manifest's `enum` and `chatSoundLabels` list them
+  alike); a note may glide (`to`).
+- Queued and waiting messages show a static hourglass (`watch`), not the spinning `loading` icon
+  (asked for).
 
 ### Keeping the computer awake
 
@@ -11031,7 +11145,8 @@ which otherwise drops `src/**`), which is what MPL §3.2(a) asks for, and
 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) ships too. `package.json` declares
 `MIT AND MPL-2.0`. Do not add `removeComments` to the tsconfig, and do not drop either file from
 the package — `unzip -l tab-browser-ultimate.vsix | grep -E 'loginFormScript|THIRD'` should list
-four entries (the source, the compiled file and its map, and the notices).
+three entries (the source, the compiled file and the notices). Sourcemaps are not packaged
+(`**/*.map` in `.vscodeignore`): about 5 MB, of use only for debugging a local build.
 
 **Verify the package by extracting it, never by trusting that the build ran.** The committed
 `.vsix` went out of date once in this repository's history and nothing caught it: a commit

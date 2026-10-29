@@ -53,8 +53,10 @@ const scriptNonce = (document.currentScript as HTMLScriptElement | null)?.nonce 
 
 import type {
 	ChatAgent,
-	AgentId, AgentQuestion, AgentUsage, ApprovalEntry, UsageAlert, ToolbarParam, ToolbarResult, ToolbarRun, ToolbarSkill, ApprovalKind, ApprovalMode, AttachmentChip, AttachmentKind, ChatCommand, ChatEntry, ChatStats, ChatSummary, ChatTabStatus, ChatTabSummary, ChatViewMode, ChatViewState, HostToView, RepoMode, ToolEntry, ViewToHost, VoiceEvent, WorkdirFolder, GitBranchState, GitRemoteAction, WorkdirGitStatus,
+	AgentId, AllAgentsChat, AgentQuestion, AgentUsage, ApprovalEntry, UsageAlert, ToolbarParam, ToolbarResult, ToolbarRun, ToolbarSkill, ApprovalKind, ApprovalMode, AttachmentChip, AttachmentKind, ChatCommand, ChatEntry, ChatStats, ChatSummary, ChatTabStatus, ChatTabSummary, ChatViewMode, ChatViewState, HostToView, RepoMode, ToolEntry, ViewToHost, VoiceEvent, WorkdirFolder, GitBranchState, GitRemoteAction, WorkdirGitStatus,
 } from '../src/chat/chatProtocol';
+import type { ChatSound, ChatSoundSettings } from '../src/chat/chatProtocol';
+import { chatSoundLabels, playChatSound } from './chatSound';
 import { baseName, searchPaths } from './fileRank';
 import { controlOf, type Availability } from '../src/chat/core/commands';
 import { describePrice, formatContext, modelFromCatalogItem, modelSummary, parseOptionalNumber } from '../src/chat/openrouterView';
@@ -241,7 +243,7 @@ videoPauseButton.addEventListener('click', () => post({ type: 'controlRecording'
 videoStopButton.addEventListener('click', () => post({ type: 'controlRecording', action: 'stop' }));
 const input = el('textarea', { class: 'input' });
 input.rows = 1;
-const defaultPlaceholder = 'Ask about this page, or anything…';
+const defaultPlaceholder = 'Start typing here…';
 input.placeholder = defaultPlaceholder;
 /** While a terminal is pinned to the conversation in front, the box asks about it; otherwise it is the plain one. */
 function renderPlaceholder(s: ChatViewState): void {
@@ -310,7 +312,110 @@ selectorStrip.setAttribute('role', 'dialog');
 selectorStrip.setAttribute('aria-label', 'Chat settings');
 const toolbarSettings = el('div', { class: 'toolbar-settings' }, selectorControls, compactSelector);
 const toolbarAttachments = el('span', { class: 'toolbar-attachments' }, plusButton, browserButton, slashButton);
-const toolbarEnd = el('span', { class: 'toolbar-end' }, agentsButton, contextButton, usageButton);
+/**
+ * Sound when an agent finishes, or silence. The default is the user setting
+ * `aiBrowser.chat.sound.enabled`; a press here overrides it on this device
+ * until that setting itself changes (the override remembers which default it overrode).
+ */
+const soundButton = button([], { class: 'ghost round sound-button' });
+const soundOverrideKey = 'aiBrowser.chat.soundOverride';
+function readSoundOverride(): { on: boolean; base: boolean } | undefined {
+	try {
+		const v = JSON.parse(localStorage.getItem(soundOverrideKey) ?? 'null') as unknown;
+		return v && typeof v === 'object' && typeof (v as { on?: unknown }).on === 'boolean' && typeof (v as { base?: unknown }).base === 'boolean' ? v as { on: boolean; base: boolean } : undefined;
+	} catch { return undefined; }
+}
+let soundOverride = readSoundOverride();
+/**
+ * Chrome and the website keep their own sound and notification settings, per device, in
+ * `localStorage`: the editor's are VS Code user settings, which a remote surface may not write
+ * (`soundSettings` is editor-only). A key not set here follows the editor.
+ */
+type DeviceSound = Partial<Pick<ChatSoundSettings, 'sound' | 'volume' | 'repeat' | 'notify' | 'notifyAway'>>;
+const deviceSoundKey = 'aiBrowser.chat.deviceSound';
+function readDeviceSound(): DeviceSound {
+	try {
+		const v = JSON.parse(localStorage.getItem(deviceSoundKey) ?? 'null') as Record<string, unknown> | null;
+		if (!v || typeof v !== 'object') { return {}; }
+		const out: { -readonly [K in keyof DeviceSound]: DeviceSound[K] } = {};
+		if (typeof v.sound === 'string' && v.sound in chatSoundLabels) { out.sound = v.sound as ChatSound; }
+		if (typeof v.volume === 'number' && v.volume >= 0 && v.volume <= 200) { out.volume = v.volume; }
+		if (typeof v.repeat === 'number' && Number.isInteger(v.repeat) && v.repeat >= 1 && v.repeat <= 5) { out.repeat = v.repeat; }
+		if (typeof v.notify === 'boolean') { out.notify = v.notify; }
+		if (typeof v.notifyAway === 'boolean') { out.notifyAway = v.notifyAway; }
+		return out;
+	} catch { return {}; }
+}
+let deviceSound = readDeviceSound();
+function remoteSurface(s: ChatViewState | undefined = state): boolean { return !!s?.surface && s.surface !== 'editor'; }
+/** The sound settings in force on this surface: the editor's, with this device's choices on top away from it. */
+function effectiveSound(s: ChatViewState | undefined = state): ChatSoundSettings | undefined {
+	if (!s?.sound) { return undefined; }
+	return remoteSurface(s) ? { ...s.sound, ...deviceSound } : s.sound;
+}
+function setDeviceSound(change: DeviceSound): void {
+	deviceSound = { ...deviceSound, ...change };
+	try { localStorage.setItem(deviceSoundKey, JSON.stringify(deviceSound)); } catch { /* lasts for this page */ }
+}
+function soundOn(): boolean {
+	const base = state?.sound?.enabled ?? false;
+	return soundOverride && soundOverride.base === base ? soundOverride.on : base;
+}
+function renderSoundButton(): void {
+	const on = soundOn();
+	const tip = on ? 'Sound when agents finish: on — click for silence' : 'Sound when agents finish: off — click to turn on';
+	if (soundButton.dataset.on !== String(on)) {
+		soundButton.dataset.on = String(on);
+		soundButton.replaceChildren(icon(on ? 'unmute' : 'mute'));
+	}
+	soundButton.classList.toggle('muted', !on);
+	if (soundButton.title !== tip) { soundButton.title = tip; soundButton.setAttribute('aria-label', tip); }
+	soundButton.setAttribute('aria-pressed', String(on));
+	soundButton.hidden = !state?.sound;
+}
+soundButton.addEventListener('click', () => {
+	const base = state?.sound?.enabled ?? false;
+	const on = !soundOn();
+	soundOverride = on === base ? undefined : { on, base };
+	try {
+		if (soundOverride) { localStorage.setItem(soundOverrideKey, JSON.stringify(soundOverride)); } else { localStorage.removeItem(soundOverrideKey); }
+	} catch { /* storage unavailable: the choice lasts for this page */ }
+	renderSoundButton();
+	const snd = effectiveSound(); if (on && snd) { playChatSound(snd.sound, snd.volume, snd.repeat); }
+});
+/** Which tabs were working at the last state, to hear the moment one finishes. */
+let soundBusy: Map<string, boolean> | undefined;
+function soundOnFinish(s: ChatViewState): void {
+	const now = new Map(s.tabs.map(t => [t.id, t.busy] as const));
+	const before = soundBusy;
+	soundBusy = now;
+	if (!before || !s.sound) { return; }
+	const finished = s.tabs.filter(t => before.get(t.id) === true && !t.busy && t.status !== 'waiting');
+	if (!finished.length) { return; }
+	const snd = effectiveSound(s)!;
+	if (soundOn()) { playChatSound(snd.sound, snd.volume, snd.repeat); }
+	if (snd.notify) { notifyFinished(s, finished); }
+}
+/**
+ * A system notification for the tabs that just finished. The editor asks the
+ * host, which knows whether the VS Code window is focused; Chrome and the
+ * website use the page's own `Notification`, while the page is not focused.
+ */
+function notifyFinished(s: ChatViewState, tabs: readonly ChatTabSummary[]): void {
+	const failed = tabs.some(t => t.status === 'failed');
+	const title = tabs.length === 1 ? tabs[0].title || 'AI Browser chat' : `${tabs.length} chats finished`;
+	const text = failed ? 'An agent finished with an error.' : tabs.length === 1 ? 'The agent finished its work.' : tabs.map(t => t.title).join(', ');
+	if (!s.surface || s.surface === 'editor') { post({ type: 'osNotify', title, text }); return; }
+	if (typeof Notification === 'undefined' || Notification.permission !== 'granted') { return; }
+	if (effectiveSound(s)?.notifyAway && document.hasFocus() && !document.hidden) { return; }
+	try { new Notification(title, { body: text, tag: 'ai-browser-chat-finished' }); } catch { /* not allowed here */ }
+}
+/** Chrome and the website may show a notification only once the user allowed it, asked on their first click. */
+document.addEventListener('pointerdown', () => {
+	if (!effectiveSound()?.notify || !remoteSurface()) { return; }
+	if (typeof Notification !== 'undefined' && Notification.permission === 'default') { void Notification.requestPermission().catch(() => undefined); }
+}, { capture: true });
+const toolbarEnd = el('span', { class: 'toolbar-end' }, soundButton, contextButton, usageButton);
 const toolbar = el('div', { class: 'toolbar' }, toolbarAttachments, toolbarSettings, toolbarEnd);
 /**
  * The box's text drawn again behind it, with the agent's commands in colour:
@@ -426,7 +531,288 @@ function answerCommit(type: 'fixGitCommit' | 'dismissGitCommit'): void {
 }
 commitFix.addEventListener('click', () => { commitFix.disabled = true; answerCommit('fixGitCommit'); });
 commitDismiss.addEventListener('click', () => answerCommit('dismissGitCommit'));
-const footer = el('div', { class: 'footer' }, questionDock, switchCard, skillBar, composer, workdirFooter, commitNotice);
+/**
+ * Tabs above the message area: Chat is the message box, Skills shows every toolbar skill in
+ * its place. The composer's own toolbar (agent, model, effort) stays under both, since a skill
+ * runs on the tab's agent and model.
+ */
+/** Alt (Option) plus the label's first letter, which is drawn white as the hint. */
+const composerTabKeyMod = /Mac/.test(navigator.platform) ? '⌥' : 'Alt+';
+function composerTabLabel(text: string): Child[] {
+	return [el('span', { class: 'composer-tab-key' }, text[0]), text.slice(1)];
+}
+const composerTabChat = button(composerTabLabel('Chat'), { class: 'composer-tab' });
+const composerTabSkills = button(composerTabLabel('Skills'), { class: 'composer-tab' });
+const composerTabActivity = button(composerTabLabel('Activity'), { class: 'composer-tab' });
+const composerTabHistory = button(composerTabLabel('History'), { class: 'composer-tab' });
+type ComposerTab = 'chat' | 'skills' | 'activity' | 'history';
+const composerTabButtons: Record<ComposerTab, HTMLButtonElement> = { chat: composerTabChat, skills: composerTabSkills, activity: composerTabActivity, history: composerTabHistory };
+const composerTabs = el('div', { class: 'composer-tabs' }, composerTabChat, composerTabSkills, composerTabActivity, composerTabHistory);
+composerTabs.setAttribute('role', 'tablist');
+for (const tab of Object.values(composerTabButtons)) { tab.setAttribute('role', 'tab'); }
+composer.insertBefore(skillBar, inputArea);
+/**
+ * The Activity tab: one scrolling list in the message box's place, in three
+ * sections — Agents, Access, History. Its height is the user's, set by dragging
+ * the handle above it (`overviewHeight` in the webview state), clamped to the view.
+ * An agent row opens the Agents panel on that agent's card; a chat row opens the chat.
+ */
+const composerAgentList = el('div', { class: 'cl-section' });
+const composerAccessList = el('div', { class: 'cl-section composer-access' });
+const composerHistoryList = el('div', { class: 'cl-section' });
+const composerOverview = el('div', { class: 'composer-list' }, composerAgentList, composerAccessList);
+const composerHistoryPanel = el('div', { class: 'composer-list' }, composerHistoryList);
+const composerResize = el('div', { class: 'cl-resize', title: 'Drag to resize · double-click to reset' });
+composerResize.setAttribute('role', 'separator');
+composerResize.setAttribute('aria-orientation', 'horizontal');
+composer.insertBefore(composerResize, skillBar);
+composer.insertBefore(composerOverview, inputArea);
+composer.insertBefore(composerHistoryPanel, inputArea);
+const overviewMin = 80;
+/** The visible height (shrinks under a phone keyboard), for the CSS caps on the composer's lists. */
+function trackVisibleHeight(): void {
+	const vv = window.visualViewport;
+	const update = () => document.documentElement.style.setProperty('--chat-vh', `${Math.round(vv?.height ?? window.innerHeight)}px`);
+	update();
+	vv?.addEventListener('resize', update);
+	window.addEventListener('resize', update);
+}
+trackVisibleHeight();
+const overviewMax = () => Math.max(overviewMin, Math.round(window.innerHeight * 0.8));
+let overviewHeight: number | undefined;
+function applyOverviewHeight(): void {
+	for (const list of [composerOverview, composerHistoryPanel, skillBar]) {
+		if (overviewHeight === undefined) { list.style.removeProperty('height'); list.style.removeProperty('max-height'); continue; }
+		list.style.height = `${Math.min(overviewMax(), Math.max(overviewMin, overviewHeight))}px`;
+		list.style.maxHeight = 'none';
+	}
+}
+composerResize.addEventListener('pointerdown', e => {
+	if (e.button !== 0) { return; }
+	e.preventDefault();
+	const startY = e.clientY;
+	const startH = (composerTab === 'history' ? composerHistoryPanel : composerTab === 'skills' ? skillBar : composerOverview).getBoundingClientRect().height;
+	composerResize.setPointerCapture(e.pointerId);
+	composerResize.classList.add('dragging');
+	const move = (m: PointerEvent) => {
+		overviewHeight = Math.round(Math.min(overviewMax(), Math.max(overviewMin, startH + startY - m.clientY)));
+		applyOverviewHeight();
+	};
+	const end = () => {
+		composerResize.removeEventListener('pointermove', move);
+		composerResize.removeEventListener('pointerup', end);
+		composerResize.removeEventListener('pointercancel', end);
+		composerResize.classList.remove('dragging');
+		vscode.setState({ ...(vscode.getState() ?? {}), overviewHeight });
+	};
+	composerResize.addEventListener('pointermove', move);
+	composerResize.addEventListener('pointerup', end);
+	composerResize.addEventListener('pointercancel', end);
+});
+composerResize.addEventListener('dblclick', () => {
+	overviewHeight = undefined;
+	applyOverviewHeight();
+	vscode.setState({ ...(vscode.getState() ?? {}), overviewHeight });
+});
+window.addEventListener('resize', () => { if (overviewHeight !== undefined) { applyOverviewHeight(); } });
+let composerAccessShape = '';
+let composerAgentsShape = '';
+let composerHistoryShape = '';
+function setComposerTab(tab: ComposerTab, save = true): void {
+	composerTab = tab;
+	for (const [name, b] of Object.entries(composerTabButtons) as [ComposerTab, HTMLButtonElement][]) {
+		b.classList.toggle('active', name === tab);
+		b.setAttribute('aria-selected', String(name === tab));
+	}
+	composer.classList.toggle('skills-mode', tab === 'skills');
+	composer.classList.toggle('list-mode', tab === 'activity' || tab === 'history');
+	composerOverview.hidden = tab !== 'activity';
+	composerHistoryPanel.hidden = tab !== 'history';
+	if (tab === 'activity' && state) { renderComposerAgents(state); renderComposerAccess(state); }
+	if (tab === 'history') {
+		renderComposerHistory();
+	}
+	if (save) { vscode.setState({ ...(vscode.getState() ?? {}), composerTab }); }
+	if (save && tab === 'chat') { input.focus(); }
+}
+for (const [name, b] of Object.entries(composerTabButtons) as [ComposerTab, HTMLButtonElement][]) {
+	b.addEventListener('click', () => setComposerTab(name));
+}
+/** Alt+C / S / A / H switch the composer tabs; `code`, since Option+letter types a symbol on a Mac. */
+const composerTabKeys: Record<string, ComposerTab> = { KeyC: 'chat', KeyS: 'skills', KeyA: 'activity', KeyH: 'history' };
+document.addEventListener('keydown', e => {
+	if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.isComposing) { return; }
+	const tab = composerTabKeys[e.code];
+	if (!tab || composerTabs.hidden || (e.target as Element | null)?.closest?.('.terminal-main')) { return; }
+	e.preventDefault();
+	e.stopPropagation();
+	setComposerTab(tab);
+	if (tab !== 'chat' && !input.hidden) { input.focus(); }
+}, true);
+/** The composer lists' shared pieces: a section head with a count, a row, an empty state. */
+function clHead(title: string, count?: number, hint?: string, action?: HTMLElement): HTMLElement {
+	return el('div', { class: 'cl-head', title: hint ?? '' },
+		el('span', { class: 'cl-head-title', text: title }),
+		count === undefined ? el('span') : el('span', { class: 'cl-count', text: String(count) }),
+		el('span', { class: 'cl-spacer' }),
+		action ?? el('span'));
+}
+function clEmpty(iconName: string, text: string): HTMLElement {
+	return el('div', { class: 'cl-empty' }, icon(iconName, 'cl-empty-icon'), el('span', { text }));
+}
+function clRow(lead: HTMLElement, title: string, meta: Child[], trail?: HTMLElement): HTMLElement[] {
+	return [lead, el('span', { class: 'cl-text' }, el('span', { class: 'cl-title', text: title }), el('span', { class: 'cl-meta' }, ...meta)), trail ?? el('span')];
+}
+function clLink(text: string, onClick: () => void): HTMLButtonElement {
+	const b = button([text], { class: 'cl-link' });
+	b.addEventListener('click', onClick);
+	return b;
+}
+/** Rebuilt only when the rows change (#365); time and tokens are refreshed in place. */
+/** What the Access section counts: browser tabs, remote watchers and pinned terminals. */
+function accessCount(s: ChatViewState): number {
+	const a = s.access;
+	return a ? a.tabs.filter(t => t.owner === 'this').length + (a.chrome ? 1 : 0) + (a.website !== undefined ? 1 : 0) + a.terminals.length : 0;
+}
+const activityAgentsBadge = el('span', { class: 'composer-tab-count agents' });
+const activityAccessBadge = el('span', { class: 'composer-tab-count access' });
+composerTabActivity.append(activityAgentsBadge, activityAccessBadge);
+/** The Activity tab's two counters: agents at work in this chat, and everything with access. */
+function renderActivityBadges(s: ChatViewState): void {
+	const running = agentRows(s).filter(a => a.status === 'running').length;
+	const access = accessCount(s);
+	activityAgentsBadge.textContent = running ? String(running) : '';
+	activityAgentsBadge.hidden = !running;
+	activityAgentsBadge.title = `${running} agent${running === 1 ? '' : 's'} running`;
+	activityAccessBadge.textContent = access ? String(access) : '';
+	activityAccessBadge.hidden = !access;
+	activityAccessBadge.title = `${access} with access: browser tabs, remote viewers, terminals`;
+}
+function renderComposerAgents(s: ChatViewState): void {
+	renderActivityBadges(s);
+	if (composerTab !== 'activity') { return; }
+	const all = [...agentRows(s)].reverse();
+	/** Only the agents at work now (running or waiting on the user); the rest are one click away. */
+	const agents = all.filter(a => a.status === 'running' || a.agent?.waiting);
+	const shape = JSON.stringify([all.length, agents.map(a => [a.id, a.status, agentTitle(a), a.agent?.waiting ?? false])]);
+	if (shape !== composerAgentsShape) {
+		composerAgentsShape = shape;
+		composerAgentList.replaceChildren();
+		composerAgentList.append(clHead('Agents', agents.length, 'Agents of this chat at work now',
+			all.length ? clLink(`View all agents (${all.length})`, () => openAgentsPanel()) : undefined));
+		if (!agents.length) { composerAgentList.append(clEmpty('hubot', all.length ? 'No agent is working right now.' : 'No agents in this chat yet. Agents the assistant starts appear here.')); }
+		for (const a of agents) {
+			const row = button(clRow(
+				el('span', { class: `cl-lead agent-dot ${a.status}` }),
+				agentTitle(a),
+				[liveSpan('span', a, 'status', a.status === 'running' ? 'agent-live' : ''), el('span', { class: 'cl-sep', text: '·' }), liveSpan('span', a, 'numbers', '')],
+				icon('chevron-right', 'cl-chevron')), { class: `cl-row status-${a.status}`, title: agentTitle(a) });
+			if (a.agent?.waiting) { row.classList.add('waiting'); }
+			row.addEventListener('click', () => {
+				openAgentsPanel();
+				agentsView = { selected: a.id };
+				fillAgents(currentAgents(), true);
+			});
+			composerAgentList.append(row);
+		}
+	}
+	for (const node of composerAgentList.querySelectorAll<HTMLElement>('[data-live]')) {
+		const [id, part] = (node.dataset.live ?? '').split('\n');
+		const a = agents.find(x => x.id === id);
+		if (a) { const text = agentLive(a, part); if (node.textContent !== text) { node.textContent = text; } }
+	}
+}
+/**
+ * Who can reach this conversation and what it may use: the browser tabs (its own,
+ * another chat's, free for everyone) with Take / Make free, who watches it from
+ * Chrome or the website, and the terminals pinned to it. Rebuilt on change only.
+ */
+function renderComposerAccess(s: ChatViewState): void {
+	if (composerTab !== 'activity') { return; }
+	const access = s.access;
+	const shape = JSON.stringify(access ?? null);
+	if (shape === composerAccessShape) { return; }
+	composerAccessShape = shape;
+	composerAccessList.replaceChildren();
+	if (!access) { composerAccessList.append(clEmpty('lock', 'Access is managed in VS Code.')); return; }
+	const lead = (name: string, cls = '') => el('span', { class: `cl-lead cl-icon ${cls}` }, icon(name));
+	const chip = (text: string, cls: string) => el('span', { class: `cl-chip ${cls}`, text });
+	/** Only this chat's own tabs: Activity describes the chat tab in front and nothing else. */
+	const ownTabs = access.tabs.filter(t => t.owner === 'this');
+	composerAccessList.append(clHead('Browser tabs', ownTabs.length, 'Tabs this chat\'s agent opened are its own; other chats and assistants cannot use them until you share them.'));
+	if (!ownTabs.length) { composerAccessList.append(clEmpty('browser', 'This chat has no browser tab of its own.')); }
+	for (const t of ownTabs) {
+		const owner = t.owner === 'this' ? chip('This chat', 'mine') : t.owner === 'other' ? chip(t.ownerName ?? 'Another chat', 'other') : chip('Shared', 'free');
+		const action = t.owner === 'this'
+			? button(['Share'], { class: 'cl-action', title: 'Make free: let every chat and assistant use this tab' })
+			: button(['Take'], { class: 'cl-action primary', title: t.owner === 'other' ? 'Take this tab from the other chat for this one' : 'Only this chat\'s agent will be able to use this tab' });
+		action.addEventListener('click', () => post({ type: 'tabAccess', tabId: t.id, take: t.owner !== 'this' }));
+		gateButton(action, 'tabAccess');
+		let host = t.url;
+		try { host = new URL(t.url).host || t.url; } catch { /* keep the address */ }
+		composerAccessList.append(el('div', { class: `cl-row static owner-${t.owner}` }, ...clRow(
+			lead(t.chrome ? 'globe' : 'browser', `owner-${t.owner}`),
+			t.title || t.url,
+			[owner, el('span', { class: 'cl-host', text: host, title: t.url }), ...(t.focused ? [chip('in front', 'plain')] : []), ...(t.chrome ? [chip('Chrome', 'plain')] : [])],
+			action)));
+	}
+	const remote: [string, string][] = [];
+	if (access.chrome) { remote.push(['window', 'Google Chrome side panel']); }
+	if (access.website !== undefined) { remote.push(['globe', `Exchange website · ${access.website} viewer${access.website === 1 ? '' : 's'}`]); }
+	composerAccessList.append(clHead('Watching remotely', remote.length, 'Surfaces outside this editor that show this conversation'));
+	if (!remote.length) { composerAccessList.append(clEmpty('eye-closed', 'Only you, in this editor.')); }
+	for (const [ic, text] of remote) { composerAccessList.append(el('div', { class: 'cl-row static' }, ...clRow(lead(ic, 'live'), text, [chip('live', 'live')]))); }
+	composerAccessList.append(clHead('Terminals', access.terminals.length, 'Terminals pinned to this conversation; its agent can read them'));
+	if (!access.terminals.length) { composerAccessList.append(clEmpty('terminal', 'No terminal is pinned to this chat.')); }
+	for (const t of access.terminals) {
+		composerAccessList.append(el('div', { class: 'cl-row static' }, ...clRow(lead('terminal'), t.name, [chip(t.watch ? 'Watch only' : 'Read · type with approval', t.watch ? 'plain' : 'mine')])));
+	}
+}
+/** The user's own messages in this chat, newest first; a click scrolls the thread to one. */
+function renderComposerHistory(): void {
+	if (composerTab !== 'history') { return; }
+	const prompts: { index: number; text: string; at?: number }[] = [];
+	(state?.entries ?? []).forEach((e, index) => {
+		if (e.kind === 'user') { prompts.push({ index, text: e.text.trim() || e.attachments.join(', ') || '(empty message)', at: e.at }); }
+	});
+	prompts.reverse();
+	const earlier = state?.entriesOffset ?? 0;
+	const shape = JSON.stringify([state?.chatId ?? '', earlier, prompts.map(p => [p.index, p.text, p.at])]);
+	if (shape === composerHistoryShape) { return; }
+	composerHistoryShape = shape;
+	composerHistoryList.replaceChildren();
+	composerHistoryList.append(clHead('Your messages', prompts.length, 'Messages you sent in this chat; click one to scroll to it'));
+	if (!prompts.length) { composerHistoryList.append(clEmpty('history', 'No messages in this chat yet.')); return; }
+	for (const p of prompts) {
+		const line = p.text.replace(/\s+/g, ' ');
+		const row = button(clRow(
+			el('span', { class: 'cl-lead cl-icon' }, icon('comment')),
+			line.length > 200 ? `${line.slice(0, 200)}…` : line,
+			p.at ? [el('span', { text: ago(p.at) })] : [],
+			icon('arrow-up', 'cl-chevron')), { class: 'cl-row', title: p.text.slice(0, 1000) });
+		row.addEventListener('click', () => scrollToPrompt(p.index));
+		composerHistoryList.append(row);
+	}
+	if (earlier) {
+		// Only the last turns are loaded (`windowEntries`); the rest come on request, as from the top of the thread.
+		const more = button(clRow(el('span', { class: 'cl-lead cl-icon' }, icon('history')), 'Show earlier messages', [], icon('chevron-down', 'cl-chevron')), { class: 'cl-row', title: 'Load earlier messages of this chat' });
+		more.addEventListener('click', () => { composerHistoryShape = ''; loadEarlier(); });
+		composerHistoryList.append(more);
+	}
+}
+/** Scrolls the thread to the turn whose prompt is entry `index`, and flashes it. */
+function scrollToPrompt(index: number): void {
+	if (!state) { return; }
+	const t = turnsOf(state.entries).findIndex(turn => turn.prompt === index);
+	const root = turnNodes[t]?.root;
+	if (!root) { return; }
+	root.scrollIntoView({ block: 'start', behavior: reducedMotion.matches ? 'auto' : 'smooth' });
+	root.classList.remove('turn-flash');
+	void root.offsetWidth;
+	root.classList.add('turn-flash');
+	setTimeout(() => root.classList.remove('turn-flash'), 1200);
+}
+const footer = el('div', { class: 'footer' }, questionDock, switchCard, composerTabs, composer, workdirFooter, commitNotice);
 workdirSummary.addEventListener('click', () => workdirButton.click());
 /** One tab per open conversation, above the thread. */
 const tabStrip = el('nav', { class: 'tab-strip' });
@@ -1005,6 +1391,8 @@ const paramsPopup = el('div', { class: 'popup params-popup' });
 let paramsFormAnchor: HTMLElement | undefined;
 const historyPanel = el('div', { class: 'history-panel' });
 const agentsPanel = el('div', { class: 'history-panel agents-panel' });
+/** The title bar's Agents: every agent and workflow of every open chat, grouped by chat. */
+const allAgentsPanel = el('div', { class: 'history-panel agents-panel all-agents-panel' });
 /** Which copy of each agent's CLI this project uses: opened from the gear in the agent menu. */
 const agentAppsPanel = el('div', { class: 'history-panel agent-apps' });
 
@@ -1077,7 +1465,7 @@ function renderRemoteBar(s: ChatViewState): void {
 }
 
 if (!remoteSlot) { app.append(remoteBar); }
-app.append(featureSettingsPanel, sleepPopup, tabStrip, chatMain, selectorStrip, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel);
+app.append(featureSettingsPanel, sleepPopup, tabStrip, chatMain, selectorStrip, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, allAgentsPanel, agentAppsPanel);
 
 /* ---------------------------------------------------------------- state */
 
@@ -1098,6 +1486,12 @@ const scrollByChat = new Map<string, number | 'bottom'>();
 const savedView = vscode.getState();
 let chatDrawerCollapsed = savedView?.chatDrawerCollapsed ?? false;
 let chatDrawerSide: 'left' | 'right' = savedView?.chatDrawerSide === 'right' ? 'right' : 'left';
+const savedTab: string | undefined = savedView?.composerTab;
+let composerTab: ComposerTab = savedTab === 'agents' || savedTab === 'access' ? 'activity'
+	: savedTab && Object.hasOwn(composerTabButtons, savedTab) ? savedTab as ComposerTab : 'chat';
+overviewHeight = typeof savedView?.overviewHeight === 'number' ? savedView.overviewHeight : undefined;
+applyOverviewHeight();
+setTimeout(() => setComposerTab(composerTab, false), 0);
 const drafts: Record<string, string> = { ...(savedView?.drafts ?? {}) };
 /** The conversation whose draft the box holds, and the tab it is in. */
 let draftChat: string | undefined;
@@ -1112,7 +1506,7 @@ function saveDraft(): void {
 	if (draftChat) {
 		drafts[draftChat] = currentDraft();
 	}
-	vscode.setState({ drafts, chatDrawerCollapsed, chatDrawerSide, panel: state?.panel ?? savedView?.panel });
+	vscode.setState({ drafts, chatDrawerCollapsed, chatDrawerSide, composerTab, overviewHeight, panel: state?.panel ?? savedView?.panel });
 	post({ type: 'saveDrafts', drafts });
 }
 
@@ -1153,7 +1547,7 @@ function followDraft(s: ChatViewState): void {
 			delete drafts[id];
 		}
 	}
-	vscode.setState({ drafts, chatDrawerCollapsed, chatDrawerSide, panel: state?.panel ?? savedView?.panel });
+	vscode.setState({ drafts, chatDrawerCollapsed, chatDrawerSide, composerTab, overviewHeight, panel: state?.panel ?? savedView?.panel });
 	post({ type: 'saveDrafts', drafts });
 	autosize();
 }
@@ -1248,6 +1642,8 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 		}
 		case 'state':
 			state = message.state;
+			soundOnFinish(state);
+			renderSoundButton();
 			renderChromeConnection(state.chromeConnectionRequest);
 			render();
 			if (composerFocusPending) {
@@ -1256,7 +1652,7 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 				composerFocusPending = false;
 				if (wanted && !editingTab && !hasSelection()) { input.focus(); }
 			}
-			vscode.setState({ drafts, chatDrawerCollapsed, chatDrawerSide, panel: state.panel });
+			vscode.setState({ drafts, chatDrawerCollapsed, chatDrawerSide, composerTab, overviewHeight, panel: state.panel });
 			return;
 		case 'localLinkInfo': {
 			const pending = pendingLocalLinkMenu;
@@ -1266,6 +1662,23 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 			}
 			return;
 		}
+		case 'allAgents':
+			if (message.refresh) {
+				if (allAgentsPanel.classList.contains('open')) { fillAllAgents(message.chats); }
+			} else if (allAgentsPanel.classList.contains('open')) {
+				closePopups();
+			} else {
+				allAgentsShape = '';
+				fillAllAgents(message.chats);
+				closePopups(allAgentsPanel);
+				showScreenOverlay(allAgentsPanel);
+				clearInterval(allAgentsTimer);
+				allAgentsTimer = setInterval(() => {
+					if (!allAgentsPanel.classList.contains('open')) { clearInterval(allAgentsTimer); return; }
+					post({ type: 'listAllAgents' });
+				}, 1000);
+			}
+			return;
 		case 'history':
 			if (message.refresh) {
 				// A delete changed the list: update a panel that is open, and leave
@@ -1553,6 +1966,7 @@ function render(): void {
 		renderThread(state);
 		landFlight(state);
 	}
+	if (loadingTab && (state.activeTab === loadingTab.id || !state.tabs.some(t => t.id === loadingTab!.id))) { clearTabLoading(); }
 	renderAttachments(state);
 	renderPlaceholder(state);
 	renderAgentAuthentication(state);
@@ -2460,6 +2874,7 @@ function tabNode(t: StripTab): TabNode {
 			return;
 		}
 		firstClick = { id: node.tab.id, at: now };
+		if (!node.tab.terminal && state && state.activeTab !== node.tab.id) { markTabLoading(node.tab.id); }
 		post(node.tab.terminal ? { type: 'selectTerminal', id: node.tab.id } : { type: 'selectTab', id: node.tab.id });
 		// A terminal already in front takes the keyboard back: nothing changes in the state to do it.
 		if (node.tab.terminal && state && frontStripId(state) === node.tab.id) { terminalView?.focusFront(); }
@@ -2491,6 +2906,26 @@ function tabNode(t: StripTab): TabNode {
 	return node;
 }
 
+/**
+ * A conversation tab clicked and not yet in front: its icon spins until a state
+ * names it as the active tab (the thread is drawn from that state), or 10 s pass.
+ * Only a class on the tab, so nothing is rebuilt (#365).
+ */
+let loadingTab: { id: string; timer: ReturnType<typeof setTimeout> } | undefined;
+
+function markTabLoading(id: string): void {
+	clearTabLoading();
+	tabNodes.get(id)?.root.classList.add('loading');
+	loadingTab = { id, timer: setTimeout(clearTabLoading, 10_000) };
+}
+
+function clearTabLoading(): void {
+	if (!loadingTab) { return; }
+	clearTimeout(loadingTab.timer);
+	tabNodes.get(loadingTab.id)?.root.classList.remove('loading');
+	loadingTab = undefined;
+}
+
 /** A tab's agents still working, its background toolbar runs included. */
 function agentsOf(t: ChatTabSummary): number {
 	return t.agents + (t.skillRuns ?? 0);
@@ -2513,6 +2948,7 @@ function fillTab(node: TabNode, agent: string | undefined): void {
 	compact.setAttribute('aria-hidden', 'true');
 	const parts: (HTMLElement | undefined)[] = [
 		compact,
+		el('span', { class: 'tab-loading codicon codicon-loading codicon-modifier-spin', title: 'Loading the conversation' }),
 		tabMark(t.status),
 		el('span', { class: 'tab-text' },
 			el('span', { class: 'tab-title', text: t.title }),
@@ -2806,6 +3242,8 @@ function turnsOf(entries: readonly ChatEntry[]): Turn[] {
 let renderedChat = '';
 let rendered: { sig: string; node: HTMLElement }[] = [];
 let turnNodes: { root: HTMLElement; summary: HTMLElement; rows: HTMLElement; tail: HTMLElement }[] = [];
+/** The first entry index of each drawn turn, beside `turnNodes`: which turns go when the window moves forward. */
+let turnFirst: number[] = [];
 const spacer = el('div', { class: 'spacer' });
 let workingNode: HTMLElement | undefined;
 
@@ -2935,8 +3373,33 @@ function renderThread(s: ChatViewState): void {
 	const atBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 60;
 	let stick = atBottom;
 	let restore: number | undefined;
+	const offset = s.entriesOffset ?? 0;
+	// The window moved. Forward (a new turn pushed the oldest out): the rows already drawn stay,
+	// and the leading ones go with their turns — a rebuild here, on every message of a long chat,
+	// lost clicks and selections (#365). Backward (earlier turns loaded, or a reset that is not a
+	// plain forward drop): rebuilt, keeping what is on screen in place, measured from the bottom.
+	// Open/closed choices are keyed by the entry's place in the whole chat (`keyOf`), so they survive both.
+	let fromBottom: number | undefined;
+	let rebuild = false;
+	if (s.chatId === renderedChat && offset !== renderedOffset) {
+		const delta = offset - renderedOffset;
+		if (delta > 0 && delta <= rendered.length) {
+			const dropped = turnFirst.filter(first => first < delta).length;
+			for (const nodes of turnNodes.slice(0, dropped)) { nodes.root.remove(); }
+			turnNodes = turnNodes.slice(dropped);
+			turnFirst = turnFirst.slice(dropped).map(first => first - delta);
+			rendered = rendered.slice(delta);
+			workingNode = undefined;
+		} else {
+			rebuild = true;
+			fromBottom = atBottom ? undefined : thread.scrollHeight - thread.scrollTop;
+		}
+		earlierAsked = false;
+	}
+	if (s.chatId !== renderedChat) { earlierAsked = false; }
+	renderedOffset = offset;
 
-	if (s.chatId !== renderedChat || s.entries.length < rendered.length) {
+	if (rebuild || s.chatId !== renderedChat || s.entries.length < rendered.length) {
 		// Open/closed choices are keyed by position, so they belong to one chat:
 		// carried over, the next chat opened its own rows at the same indices.
 		if (s.chatId !== renderedChat) {
@@ -2959,6 +3422,7 @@ function renderThread(s: ChatViewState): void {
 		renderedChat = s.chatId;
 		rendered = [];
 		turnNodes = [];
+		turnFirst = [];
 		workingNode = undefined;
 		threadInner.replaceChildren(spacer);
 	}
@@ -2976,6 +3440,7 @@ function renderThread(s: ChatViewState): void {
 		}
 		rendered = [];
 		turnNodes = [];
+		turnFirst = [];
 		return;
 	}
 	welcomeShown = '';
@@ -2987,6 +3452,10 @@ function renderThread(s: ChatViewState): void {
 	if (spacer.parentElement !== threadInner) {
 		threadInner.prepend(spacer);
 	}
+	earlierBar.hidden = !offset;
+	earlierButton.disabled = earlierAsked;
+	earlierButton.textContent = earlierAsked ? 'Loading earlier messages…' : 'Show earlier messages';
+	if (spacer.nextSibling !== earlierBar) { spacer.after(earlierBar); }
 
 	const turns = turnsOf(s.entries);
 	const lastTurn = turns.length - 1;
@@ -3001,6 +3470,7 @@ function renderThread(s: ChatViewState): void {
 			threadInner.append(root);
 			nodes = turnNodes[t] = { root, summary, rows, tail };
 		}
+		turnFirst[t] = turn.prompt >= 0 ? turn.prompt : turn.rows[0] ?? 0;
 		// Minimal: the turn's work folds under its summary line unless opened.
 		const folded = s.viewMode === 'minimal' && turn.prompt >= 0
 			&& turn.rows.some(i => isBackground(s.entries[i])) && !toggled.get(turnKey(turn));
@@ -3038,12 +3508,52 @@ function renderThread(s: ChatViewState): void {
 	});
 	renderPendingSends(s);
 
-	if (stick) {
+	if (fromBottom !== undefined) {
+		thread.scrollTop = thread.scrollHeight - fromBottom;
+	} else if (stick) {
 		thread.scrollTop = thread.scrollHeight;
 	} else if (restore !== undefined) {
 		thread.scrollTop = restore;
 	}
 }
+
+/**
+ * Only the last turns of a conversation are sent to the view (`windowEntries` on the host);
+ * earlier ones come on request — the button at the top, or scrolling to the top — and go away
+ * again once the view has sat at the end for a while (`earlierIdleMs`), so a long chat does
+ * not keep every message in memory. `renderedOffset` is the index of the first entry shown.
+ */
+let renderedOffset = 0;
+let earlierAsked = false;
+let earlierExtra = false;
+let earlierIdle: ReturnType<typeof setTimeout> | undefined;
+const earlierIdleMs = 60_000;
+const earlierButton = button(['Show earlier messages'], { class: 'ghost earlier-button' });
+const earlierBar = el('div', { class: 'earlier-bar' }, earlierButton);
+earlierBar.hidden = true;
+function loadEarlier(): void {
+	if (!state || earlierAsked || !(state.entriesOffset ?? 0)) { return; }
+	earlierAsked = true; earlierExtra = true;
+	earlierButton.disabled = true; earlierButton.textContent = 'Loading earlier messages…';
+	post({ type: 'loadEarlier', chatId: state.chatId });
+	// A host that does not answer (an older editor) must not leave the button stuck.
+	setTimeout(() => { earlierAsked = false; if (state) { earlierButton.disabled = false; earlierButton.textContent = 'Show earlier messages'; } }, 5000);
+}
+earlierButton.addEventListener('click', loadEarlier);
+thread.addEventListener('scroll', () => {
+	if (thread.scrollTop < 80 && !earlierBar.hidden) { loadEarlier(); }
+	const atEnd = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 60;
+	clearTimeout(earlierIdle); earlierIdle = undefined;
+	if (atEnd && earlierExtra && state) {
+		const chatId = state.chatId;
+		earlierIdle = setTimeout(() => {
+			if (!state || state.chatId !== chatId) { return; }
+			if (thread.scrollHeight - thread.scrollTop - thread.clientHeight >= 60) { return; }
+			earlierExtra = false;
+			post({ type: 'loadEarlier', chatId, reset: true });
+		}, earlierIdleMs);
+	}
+}, { passive: true });
 
 /**
  * Messages not in the conversation yet, below it: one sent during a turn that
@@ -3082,7 +3592,7 @@ function renderPendingSends(s: ChatViewState): void {
 			bubble.append(el('div', { class: 'bubble-text', text: p.text }));
 		}
 		const note = el('div', { class: 'pending-note' },
-			icon(p.kind === 'queue' ? 'list-ordered' : 'loading'),
+			icon(p.kind === 'queue' ? 'list-ordered' : 'watch'),
 			el('span', { text: p.kind !== 'queue' ? 'Waiting for the agent to take it in'
 				: p.skill?.background ? `/${p.skill.name} — runs in the background when this turn ends`
 				: p.skill && p.skill.steps === 1 ? `/${p.skill.name} — sent when this turn ends`
@@ -3116,7 +3626,8 @@ function signature(entry: ChatEntry, i: number): string {
 let commandsSignature = '';
 
 function keyOf(entry: ChatEntry, i: number): string {
-	return entry.kind === 'tool' ? `tool:${entry.id}` : entry.kind === 'approval' ? `approval:${entry.id}` : `${entry.kind}:${i}`;
+	// By the entry's place in the whole chat: only a window of it is shown (`entriesOffset`).
+	return entry.kind === 'tool' ? `tool:${entry.id}` : entry.kind === 'approval' ? `approval:${entry.id}` : `${entry.kind}:${i + renderedOffset}`;
 }
 
 /**
@@ -3129,7 +3640,7 @@ function isBackground(entry: ChatEntry | undefined): boolean {
 }
 
 function turnKey(turn: Turn): string {
-	return `turn:${turn.prompt}`;
+	return `turn:${turn.prompt + renderedOffset}`;
 }
 
 function plural(count: number, one: string, many = `${one}s`): string {
@@ -3527,7 +4038,7 @@ function opinionButton(index: number): HTMLButtonElement {
 					label: `${agent.name} · ${model.label}`,
 					description: own ? 'This conversation' : undefined,
 					disabled: own,
-					run: () => post({ type: 'secondOpinion', chatId: s.chatId, index, agent: agent.id, model: model.id }),
+					run: () => post({ type: 'secondOpinion', chatId: s.chatId, index: index + (s.entriesOffset ?? 0), agent: agent.id, model: model.id }),
 				});
 			}
 		}
@@ -4134,7 +4645,7 @@ function promptNode(entry: Extract<ChatEntry, { kind: 'user' }>): HTMLElement {
 					// By the chip's id, not by object identity: a row is kept while it is unchanged,
 					// and each state post brings new entry objects, so `indexOf(entry)` found nothing.
 					const entryIndex = state?.entries.findIndex(e => e.kind === 'user' && !!e.attachmentData?.some(d => d.chip.id === saved.chip.id)) ?? -1;
-					if (entryIndex >= 0) { post({ type: 'openAttachment', id: saved.chip.id, entry: entryIndex }); }
+					if (entryIndex >= 0) { post({ type: 'openAttachment', id: saved.chip.id, entry: entryIndex + (state?.entriesOffset ?? 0) }); }
 				});
 				return open;
 			})));
@@ -4943,7 +5454,7 @@ function linkMenu(link: HTMLElement, url: string, directory?: boolean, inWorkspa
 	// A link in an agent's report sits inside a panel. Closing the panel the
 	// menu was opened from hid the link under it and put the menu in the
 	// corner, so the panel stays open beneath the menu.
-	const panel = [agentsPanel, historyPanel, agentAppsPanel, skillEditor].find(p => p.classList.contains('open') && p.contains(link));
+	const panel = [agentsPanel, allAgentsPanel, historyPanel, agentAppsPanel, skillEditor].find(p => p.classList.contains('open') && p.contains(link));
 	openMenu(link, [
 		...(localFileLink(url) ? [
 			...(directory && inWorkspace ? [{ icon: 'files', label: 'Show in VS Code Explorer', shortcut: 'Click', run: () => post({ type: 'openLink', url, external: false }) }] : []),
@@ -6130,7 +6641,7 @@ function closePopups(except?: HTMLElement, keep?: HTMLElement): void {
 		}
 	}
 	if (except !== tabOverflowPanel && keep !== tabOverflowPanel) { overflowButton.setAttribute('aria-expanded', 'false'); }
-	for (const popup of [tabOverflowPanel, selectorStrip, featureSettingsPanel, sleepPopup, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, agentAppsPanel]) {
+	for (const popup of [tabOverflowPanel, selectorStrip, featureSettingsPanel, sleepPopup, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, allAgentsPanel, agentAppsPanel]) {
 		if (popup !== except && popup !== keep) {
 			popup.classList.remove('open');
 			if (popup === featureSettingsPanel) {
@@ -6319,7 +6830,7 @@ document.addEventListener('mousedown', event => {
 		}
 		return;
 	}
-	if (![tabOverflowPanel, overflowButton, workdirSummary, gitRefreshSlot, effortBox, ultracodeBox, selectorStrip, featureSettingsPanel, sleepPopup, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillBar, historyPanel, agentsPanel, agentAppsPanel, plusButton, usageButton, usageAlertText, agentsButton, compactSelector, agentPill, modelPill, approveToggle, slashButton, workdirButton, branchButton, commitButton, contextButton].some(n => n.contains(target))) {
+	if (![tabOverflowPanel, overflowButton, workdirSummary, gitRefreshSlot, effortBox, ultracodeBox, selectorStrip, featureSettingsPanel, sleepPopup, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillBar, historyPanel, agentsPanel, allAgentsPanel, agentAppsPanel, plusButton, usageButton, usageAlertText, agentsButton, compactSelector, agentPill, modelPill, approveToggle, slashButton, workdirButton, branchButton, commitButton, contextButton].some(n => n.contains(target))) {
 		closePopups();
 	}
 });
@@ -8047,6 +8558,15 @@ effortRange.addEventListener('focus', () => hoverTip.show(effortBox));
 effortRange.addEventListener('blur', () => hoverTip.hide());
 hoverTip.attach(skillAddButton);
 hoverTip.attach(skillExpandButton);
+for (const [tab, tip] of [
+	[composerTabChat, 'Message box'],
+	[composerTabSkills, 'Toolbar skills'],
+	[composerTabActivity, 'Agents and access of this chat'],
+	[composerTabHistory, 'Messages of this chat'],
+] as const) {
+	tab.dataset.tip = `${tip} (${composerTabKeyMod}${tab.textContent?.[0] ?? ''})`;
+	hoverTip.attach(tab);
+}
 
 function toolbarSkill(id: string): ToolbarSkill | undefined {
 	return state?.toolbar.find(s => s.id === id);
@@ -9045,6 +9565,14 @@ function renderAgents(s: ChatViewState): void {
 	} else if (agentsView) {
 		fillAgents(agents);
 	}
+	renderComposerAgents(s);
+	renderComposerAccess(s);
+	renderComposerHistory();
+	if (pendingAgentCard && s.chatId === pendingAgentCard.chatId) {
+		const id = pendingAgentCard.id;
+		pendingAgentCard = undefined;
+		if (agents.some(a => a.id === id)) { openAgentCard(id); }
+	}
 }
 
 agentsButton.addEventListener('click', () => {
@@ -9331,6 +9859,58 @@ function fullRowTip(row: HTMLElement, item: { label: string; hint?: string; deta
 			row.removeAttribute('title');
 		}
 	});
+}
+
+/* all agents */
+
+let allAgentsShape = '';
+let allAgentsTimer: ReturnType<typeof setInterval> | undefined;
+/** An agent picked in All Agents: its chat is selected first, then its card opens once that chat's state arrives. */
+let pendingAgentCard: { chatId: string; id: string } | undefined;
+function fillAllAgents(chats: readonly AllAgentsChat[]): void {
+	const all = chats.flatMap(c => c.agents);
+	const shape = JSON.stringify(chats.map(c => [c.tabId, c.title, c.surface, c.agents.map(a => [a.id, a.status, agentTitle(a), a.agent?.type])]));
+	if (shape !== allAgentsShape) {
+		allAgentsShape = shape;
+		const running = all.filter(a => a.status === 'running').length;
+		const list = el('div', { class: 'history-list' },
+			el('div', { class: 'agents-sub', text: all.length ? `${all.length} agent${all.length === 1 ? '' : 's'} and workflows in ${chats.length} chat${chats.length === 1 ? '' : 's'}${running ? ` · ${running} running` : ''}` : 'No chat has started an agent yet.' }));
+		const multi = new Set(chats.map(c => c.surface)).size > 1;
+		for (const chat of chats) {
+			list.append(el('div', { class: 'all-agents-chat', text: multi ? `${chat.title} · ${chat.surface}` : chat.title, title: chat.title }));
+			for (const a of [...chat.agents].reverse()) {
+				const row = button([
+					el('span', { class: `agent-dot ${a.status}` }),
+					...(a.agent?.type === 'workflow' ? [icon('type-hierarchy-sub', 'agent-kind')] : []),
+					el('span', { class: 'agent-text' },
+						el('span', { class: 'agent-title', text: agentTitle(a) }),
+						el('span', { class: 'agent-meta' },
+							liveSpan('span', a, 'status', a.status === 'running' ? 'agent-live' : ''),
+							liveSpan('span', a, 'numbers', ''))),
+					...(chat.here ? [icon('chevron-right', 'agent-chevron')] : []),
+				], { class: 'agent-row', title: chat.here ? agentTitle(a) : `${agentTitle(a)} — open in ${chat.surface}` });
+				row.disabled = !chat.here;
+				row.addEventListener('click', () => {
+					closePopups();
+					if (state?.chatId === chat.chatId) { openAgentCard(a.id); return; }
+					pendingAgentCard = { chatId: chat.chatId, id: a.id };
+					post({ type: 'selectTab', id: chat.tabId });
+				});
+				list.append(row);
+			}
+		}
+		allAgentsPanel.replaceChildren(panelHead('All agents'), list, panelFooter());
+	}
+	for (const node of allAgentsPanel.querySelectorAll<HTMLElement>('[data-live]')) {
+		const [id, part] = (node.dataset.live ?? '').split('\n');
+		const a = all.find(x => x.id === id);
+		if (a) { const text = agentLive(a, part); if (node.textContent !== text) { node.textContent = text; } }
+	}
+}
+function openAgentCard(id: string): void {
+	openAgentsPanel();
+	agentsView = { selected: id };
+	fillAgents(currentAgents(), true);
 }
 
 /* history */
@@ -9939,6 +10519,52 @@ function createRemoteTerminalSettings(): HTMLElement {
 	return content;
 }
 
+/** The Sound section: the default for the speaker button, which sound, how loud. Each control applies at once. */
+function createSoundSettings(): HTMLElement {
+	const content = el('div', { class: 'feature-settings-content sound-settings' });
+	const remote = remoteSurface();
+	const save = (change: DeviceSound & { enabled?: boolean }): void => {
+		if (!remote) { post({ type: 'soundSettings', action: 'set', ...change }); return; }
+		const { enabled: _e, ...rest } = change; setDeviceSound(rest);
+	};
+	const current = effectiveSound() ?? { enabled: true, sound: 'chime' as ChatSound, volume: 60, repeat: 1, notify: true, notifyAway: true };
+	const enabled = el('input'); enabled.type = 'checkbox'; enabled.checked = current.enabled;
+	enabled.checked = remote ? soundOn() : current.enabled;
+	enabled.addEventListener('change', () => { if (remote) { if (enabled.checked !== soundOn()) { soundButton.click(); } return; } save({ enabled: enabled.checked }); });
+	const choice = el('select'); choice.dataset.appearance = 'sound'; choice.setAttribute('aria-label', 'Sound');
+	for (const [key, label] of Object.entries(chatSoundLabels)) { const o = el('option', { text: label }); o.value = key; choice.append(o); }
+	choice.value = current.sound;
+	const volume = el('input'); volume.type = 'range'; volume.min = '0'; volume.max = '200'; volume.step = '5';
+	volume.value = String(current.volume); volume.setAttribute('aria-label', 'Volume');
+	const volumeText = el('span', { class: 'sound-volume', text: `${current.volume}%` });
+	const repeat = el('select'); repeat.dataset.appearance = 'sound'; repeat.setAttribute('aria-label', 'Repeat');
+	for (let n = 1; n <= 5; n++) { const o = el('option', { text: n === 1 ? 'Once' : `${n} times` }); o.value = String(n); repeat.append(o); }
+	repeat.value = String(current.repeat ?? 1);
+	const test = button([icon('play'), 'Test'], { class: 'ghost' });
+	const play = () => playChatSound(choice.value as ChatSound, Number(volume.value), Number(repeat.value));
+	repeat.addEventListener('change', () => { save({ repeat: Number(repeat.value) }); play(); });
+	choice.addEventListener('change', () => { save({ sound: choice.value as ChatSound }); play(); });
+	volume.addEventListener('input', () => { volumeText.textContent = `${volume.value}%`; });
+	volume.addEventListener('change', () => { save({ volume: Number(volume.value) }); play(); });
+	test.addEventListener('click', play);
+	const notify = el('input'); notify.type = 'checkbox'; notify.checked = current.notify;
+	const away = el('input'); away.type = 'checkbox'; away.checked = current.notifyAway; away.disabled = !current.notify;
+	notify.addEventListener('change', () => { away.disabled = !notify.checked; save({ notify: notify.checked }); if (remote && notify.checked && typeof Notification !== 'undefined' && Notification.permission === 'default') { void Notification.requestPermission().catch(() => undefined); }; });
+	away.addEventListener('change', () => save({ notifyAway: away.checked }));
+	content.append(
+		el('div', { class: 'feature-settings-row' }, el('label', { class: 'openrouter-check' }, enabled, el('span', { text: 'Play a sound when agents finish' })),
+			el('p', { class: 'feature-settings-note', text: 'The default for the speaker button beside the usage meter. A press there switches it on this device until you change this.' })),
+		el('div', { class: 'feature-settings-row' }, el('strong', { text: 'Sound' }), el('div', { class: 'sound-row' }, choice, test)),
+		el('div', { class: 'feature-settings-row' }, el('strong', { text: 'Volume' }), el('div', { class: 'sound-row' }, volume, volumeText)),
+		el('div', { class: 'feature-settings-row' }, el('strong', { text: 'Repeat' }), el('div', { class: 'sound-row' }, repeat)),
+		el('div', { class: 'feature-settings-row' }, el('strong', { text: 'Notifications' }),
+			el('label', { class: 'openrouter-check' }, notify, el('span', { text: 'Show a system notification when agents finish' })),
+			el('label', { class: 'openrouter-check' }, away, el('span', { text: 'Only when the window is not focused' })),
+			el('p', { class: 'feature-settings-note', text: 'VS Code shows it through the system (macOS Notification Center, Windows, notify-send on Linux). Chrome and the website show the browser\'s own, once you allow it.' })),
+		el('p', { class: 'feature-settings-note', text: remote ? 'Stored on this device for this browser only. What is not changed here follows the settings in VS Code.' : 'Stored in VS Code settings (aiBrowser.chat.sound.*, aiBrowser.chat.notifications.*) for your user. Chrome and the website follow them unless changed there.' }));
+	return content;
+}
+
 function openFeatureSettings(initial?: 'openrouter'): void {
 	if (!state) { return; }
 	closePopups(featureSettingsPanel);
@@ -9992,6 +10618,14 @@ function openFeatureSettings(initial?: 'openrouter'): void {
 	const remoteContent = remoteTab.hidden ? el('div') : createRemoteTerminalSettings();
 	remoteContent.id = 'remote-terminal-content'; remoteContent.hidden = true;
 	remoteContent.setAttribute('role', 'tabpanel'); remoteContent.setAttribute('aria-labelledby', remoteTab.id);
+	const soundTab = button(['Sound & notifications'], { class: 'feature-settings-tab' });
+	soundTab.id = 'sound-tab'; soundTab.hidden = ((!state.surface || state.surface === 'editor') && gate('soundSettings').s !== 'on') || !state.sound;
+	soundTab.setAttribute('role', 'tab'); soundTab.setAttribute('aria-selected', 'false');
+	soundTab.setAttribute('aria-controls', 'sound-content');
+	if (!soundTab.hidden) { tabs.append(soundTab); }
+	const soundContent = soundTab.hidden ? el('div') : createSoundSettings();
+	soundContent.id = 'sound-content'; soundContent.hidden = true;
+	soundContent.setAttribute('role', 'tabpanel'); soundContent.setAttribute('aria-labelledby', soundTab.id);
 	const serverTab = button(['Server connection'], { class: 'feature-settings-tab' });
 	serverTab.id = 'server-connection-tab'; serverTab.hidden = !state.exchangeConnection;
 	serverTab.setAttribute('role', 'tab'); serverTab.setAttribute('aria-selected', 'false');
@@ -10101,7 +10735,8 @@ function openFeatureSettings(initial?: 'openrouter'): void {
 		content.append(row);
 	}
 	content.append(el('p', { class: 'feature-settings-note', text: "Commit messages use the selected agent's remembered chat model or its default. Branch names and chat titles use an available lightweight model. Effort is mapped to the levels supported by that model. Custom prompts apply to future requests; output format and length checks still apply. Empty prompts use the defaults. Settings are shared across projects." }));
-	const selectTab = (selected: 'ai' | 'video' | 'temporary' | 'server' | 'appearance' | 'openrouter' | 'remote') => {
+	const selectTab = (selected: 'ai' | 'video' | 'temporary' | 'server' | 'appearance' | 'openrouter' | 'remote' | 'sound') => {
+		soundContent.hidden = selected !== 'sound'; soundTab.setAttribute('aria-selected', String(selected === 'sound'));
 		remoteContent.hidden = selected !== 'remote'; remoteTab.setAttribute('aria-selected', String(selected === 'remote'));
 		openrouterContent.hidden = selected !== 'openrouter'; openrouterTab.setAttribute('aria-selected', String(selected === 'openrouter'));
 		content.hidden = selected !== 'ai'; videoContent.hidden = selected !== 'video'; temporaryContent.hidden = selected !== 'temporary';
@@ -10109,8 +10744,8 @@ function openFeatureSettings(initial?: 'openrouter'): void {
 		temporaryTab.setAttribute('aria-selected', String(selected === 'temporary'));
 		serverContent.hidden = selected !== 'server'; serverTab.setAttribute('aria-selected', String(selected === 'server'));
 		appearanceContent.hidden = selected !== 'appearance'; appearanceTab.setAttribute('aria-selected', String(selected === 'appearance'));
-		featureSettingsSave.hidden = selected === 'temporary' || selected === 'server' || selected === 'appearance' || selected === 'openrouter' || selected === 'remote';
-		featureSettingsStatus.hidden = selected === 'server' || selected === 'appearance' || selected === 'openrouter' || selected === 'remote';
+		featureSettingsSave.hidden = selected === 'temporary' || selected === 'server' || selected === 'appearance' || selected === 'openrouter' || selected === 'remote' || selected === 'sound';
+		featureSettingsStatus.hidden = selected === 'server' || selected === 'appearance' || selected === 'openrouter' || selected === 'remote' || selected === 'sound';
 	};
 	tab.addEventListener('click', () => selectTab('ai')); videoTab.addEventListener('click', () => selectTab('video'));
 	// Temporary files live on the editor's machine: the tab is gone where they cannot be managed.
@@ -10124,7 +10759,8 @@ function openFeatureSettings(initial?: 'openrouter'): void {
 	appearanceTab.addEventListener('click', () => selectTab('appearance'));
 	openrouterTab.addEventListener('click', () => selectTab('openrouter'));
 	remoteTab.addEventListener('click', () => selectTab('remote'));
-	const sections = [tab, videoTab, temporaryTab, appearanceTab, ...(openrouterTab.hidden ? [] : [openrouterTab]), ...(remoteTab.hidden ? [] : [remoteTab]), ...(state.exchangeConnection ? [serverTab] : [])];
+	soundTab.addEventListener('click', () => selectTab('sound'));
+	const sections = [tab, videoTab, temporaryTab, appearanceTab, ...(openrouterTab.hidden ? [] : [openrouterTab]), ...(remoteTab.hidden ? [] : [remoteTab]), ...(soundTab.hidden ? [] : [soundTab]), ...(state.exchangeConnection ? [serverTab] : [])];
 	tabs.addEventListener('keydown', event => {
 		const index = sections.indexOf(document.activeElement as HTMLButtonElement);
 		if (index < 0 || !['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) { return; }
@@ -10135,7 +10771,7 @@ function openFeatureSettings(initial?: 'openrouter'): void {
 	});
 	featureSettingsPanel.replaceChildren(heading,
 		el('div', { class: 'feature-settings-layout' }, tabs,
-			el('div', { class: 'feature-settings-main' }, content, videoContent, temporaryContent, openrouterContent, remoteContent, serverContent, appearanceContent,
+			el('div', { class: 'feature-settings-main' }, content, videoContent, temporaryContent, openrouterContent, remoteContent, soundContent, serverContent, appearanceContent,
 				el('div', { class: 'feature-settings-actions' }, featureSettingsStatus, featureSettingsSave))));
 	showScreenOverlay(featureSettingsPanel);
 	featureSettingsPanel.focus();
@@ -10153,3 +10789,24 @@ featureSettingsSave.addEventListener('click', () => {
 featureSettingsPanel.addEventListener('keydown', event => {
 	if (event.key === 'Escape' && !event.isComposing) { event.stopPropagation(); closePopups(); input.focus(); }
 });
+
+/**
+ * A click on a chat tab or a composer tab keeps the message box focused when
+ * it had the focus before the press — asked for, so switching does not cost a
+ * click back into the box. The press is not prevented (that would stop a tab
+ * being dragged); the focus is given back once the click has been handled,
+ * and only while the box is still on screen (a terminal tab hides it).
+ */
+let keepInputFocus = false;
+for (const area of [tabStrip, composerTabs]) {
+	area.addEventListener('pointerdown', () => { keepInputFocus = document.activeElement === input; }, true);
+	area.addEventListener('click', () => {
+		if (!keepInputFocus) { return; }
+		keepInputFocus = false;
+		requestAnimationFrame(() => {
+			if (input.offsetParent !== null && !document.activeElement?.closest('.tab-rename, input:not(.input), [contenteditable]')) {
+				input.focus({ preventScroll: true });
+			}
+		});
+	});
+}

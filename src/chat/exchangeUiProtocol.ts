@@ -22,6 +22,8 @@ export function readExchangeUiCommand(value: unknown): ExchangeUiCommand | undef
 	switch (m.type) {
 		case 'attach':
 			if (!['screenshot','page','element','selection','annotation','pointAnnotation'].includes(m.kind)) { return undefined; } message = {type:'attach',kind:m.kind}; break;
+		case 'loadEarlier':
+			message = { type: 'loadEarlier', chatId: raw.chatId, ...(m.reset === true ? { reset: true } : {}) }; break;
 		case 'ready': case 'history': case 'refreshAgents': case 'clearChat':
 			message = { type: m.type }; break;
 		case 'newChat': case 'newTab': message = { type: m.type, location: 'here' }; break;

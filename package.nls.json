@@ -72,6 +72,7 @@
 	"command.chat.history.title": "Chat History",
 	"command.chat.refreshAgents.title": "Refresh Agents",
 	"command.chat.settings.title": "Chat Settings",
+	"command.chat.allAgents.title": "All Agents",
 	"command.chat.keepAwake.title": "Keep Computer Awake",
 	"command.chat.keepAwakeActive.title": "Keep Computer Awake (On)",
 	"icon.cup.description": "Keep the computer awake — off",
@@ -107,5 +108,12 @@
 	"command.recording.high.title": "High · 1440p",
 	"command.recording.highDefault.title": "High · 1440p *",
 	"command.recording.maximum.title": "Maximum · 4K",
-	"command.recording.maximumDefault.title": "Maximum · 4K *"
+	"command.recording.maximumDefault.title": "Maximum · 4K *",
+	"configuration.chat.sound.enabled.description": "Play a sound in the AI Browser chat when an agent finishes its work. This is the default; the speaker button beside the usage meter switches it for the chat view.",
+	"configuration.chat.sound.name.description": "Which sound plays when an agent finishes.",
+	"configuration.chat.sound.repeat.description": "How many times the finish sound plays in a row, 1 to 5.",
+	"configuration.chat.sound.volume.description": "Volume of that sound, 0 to 200; above 100 is louder than full volume used to be.",
+	"configuration.chat.notifications.enabled.description": "Show a system notification (macOS Notification Center, Windows, Linux `notify-send`) when an agent in the AI Browser chat finishes. Chrome and the website show the browser's own.",
+	"configuration.chat.notifications.onlyWhenAway.description": "Only notify while the VS Code window (or the Chrome or website page) is not focused.",
+	"config.chat.visibleTurns.description": "How many of your messages, with the agents' replies to them, a chat shows at first in VS Code, the Chrome side panel and on the website. Earlier ones load when you scroll to the top or press \"Show earlier messages\" (this many more each time), and are dropped again after a minute at the end of the chat. Fewer means less memory and a faster remote connection."
 }

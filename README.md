@@ -105,6 +105,8 @@ For limits, settings and technical details, see [CLAUDE.md](CLAUDE.md#browser-vi
 
 ## 📝 Changelog
 
+**0.9.5** — Finish sounds (fifty, volume up to 200%, repeated up to five times) and system notifications when agents finish, also in Chrome and on the website. Chats load only their last turns, with earlier ones on scroll, so remote connections open faster. The website's message box stays visible above a phone keyboard.
+
 **0.9.4** — The OpenRouter agent also runs models from Ollama or LM Studio on your computer (no key needed or sent). Chat Settings has a **Remote terminals** tab with checkboxes for what Chrome and the website
 may do with terminal tabs: use them at all, open a plain terminal, open an agent in a terminal. Each
 applies at once, and they can be changed only in VS Code.

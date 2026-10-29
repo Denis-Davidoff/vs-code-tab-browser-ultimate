@@ -1,3 +1,4 @@
+import { remotePromptsStep, windowEntries } from './core/entryWindow';
 import { surfaceControls } from './core/commands';
 import { chromeChatProtocolVersion, chromeChatCapabilities, readChromeChatCapabilities, type ChromeChatCapabilities } from './chromeChatCompatibility';
 import type { ChatEntry, ChatViewMode, ChatViewState, Selection, ViewToHost } from './chatProtocol';
@@ -71,6 +72,7 @@ const viewFields = {
 	approvals: 'shared', switchTo: 'shared', commands: 'shared', toolbar: 'shared', toolbarRuns: 'shared',
 	skillAgents: 'shared', viewMode: 'shared', collapseTools: 'shared', context: 'shared', workdir: 'shared',
 	usage: 'shared', usageAlert: 'shared', snapshotEvents: 'shared',
+	access: 'editor', sound: 'shared', entriesOffset: 'override',
 } as const satisfies Record<keyof ChatViewState, 'shared' | 'editor' | 'override'>;
 
 /** The shared fields of the state, by the classification above; nothing else is copied. */
@@ -89,7 +91,9 @@ export function withoutPinnedTerminals(tabs: ChatViewState['tabs']): ChatViewSta
 	return tabs.map(({ terminals: _terminals, ...tab }) => tab);
 }
 
-export function chromeChatSnapshot(state: ChatViewState, editorVersion?: string): ChromeChatSnapshot {
+export function chromeChatSnapshot(full: ChatViewState, editorVersion?: string, prompts = remotePromptsStep): ChromeChatSnapshot {
+	const window = windowEntries(full.entries, prompts);
+	const state: ChatViewState = window.offset ? { ...full, entries: window.entries } : full;
 	return {
 		version: 1, protocolVersion: chromeChatProtocolVersion, capabilities: chromeChatCapabilities, editorVersion,
 		title: state.tabs.find(tab => tab.id === state.activeTab)?.title ?? 'AI Browser',
@@ -102,6 +106,7 @@ export function chromeChatSnapshot(state: ChatViewState, editorVersion?: string)
 		view: { ...projectView(state), surface: 'chrome', controls: surfaceControls('chrome'), chatSurfaces: [],
 			tabs: withoutPinnedTerminals(state.tabs), attachments: [], suggestions: [],
 			voice: { ...state.voice, available: false },
+			entriesOffset: window.offset,
 			agents: state.agents?.map(({ copies: _copies, binary: _binary, pinned: _pinned, ...agent }) => agent) ?? [],
 		},
 		settings: { selection: state.selection, viewMode: state.viewMode, featureAi: state.featureAi,

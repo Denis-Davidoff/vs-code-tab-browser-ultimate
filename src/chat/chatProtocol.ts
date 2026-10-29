@@ -678,7 +678,25 @@ export interface TerminalSettings {
 	readonly macOptionIsMeta?: boolean;
 }
 
+/** Who can reach one conversation, and what it may use: its Access tab. */
+export interface ChatAccess {
+	/** Every open browser tab: this chat's own, another chat's, or free for everyone. */
+	readonly tabs: readonly {
+		readonly id: string; readonly title: string; readonly url: string;
+		readonly owner: 'this' | 'other' | 'free'; readonly ownerName?: string;
+		readonly focused: boolean; readonly chrome: boolean;
+	}[];
+	/** The Chrome side panel is showing this conversation. */
+	readonly chrome: boolean;
+	/** The Exchange website is connected to it, with this many viewers. */
+	readonly website?: number;
+	/** Terminals pinned to this conversation. */
+	readonly terminals: readonly { readonly id: string; readonly name: string; readonly watch: boolean }[];
+}
+
 export interface ChatViewState {
+	/** The tab in front's Access tab: editor only. */
+	readonly access?: ChatAccess;
 	/** Rendered through the remote workspace website. */
 	readonly remoteWorkspace?: boolean;
 	/** Local server settings; the connection key is never included. */
@@ -743,6 +761,10 @@ export interface ChatViewState {
 	readonly terminalFront?: string;
 	/** Whether a terminal can be started here, and why not (editor only). */
 	readonly terminalSupport?: TerminalSupport;
+	/** The finish sound from the user settings `aiBrowser.chat.sound.*`; every surface plays it. */
+	readonly sound?: ChatSoundSettings;
+	/** On Chrome and the website: how many earlier entries were not sent (`windowEntries`); `loadEarlier` asks for more. */
+	readonly entriesOffset?: number;
 	/**
 	 * The tab in front's messages not in the conversation yet, in order: sent
 	 * during a turn and not yet taken in by Claude Code (`steer`), or held to be
@@ -828,6 +850,19 @@ export interface ChatTabSummary {
  * message, since an error does not stop being one by being looked at; `read`
  * otherwise.
  */
+/** The five finish sounds, synthesised in the view. */
+export const chatSounds = ['chime', 'bell', 'pop', 'dingdong', 'marimba', 'harp', 'kalimba', 'glass', 'bubble', 'coin', 'levelup', 'sparkle', 'sonar', 'arcade', 'droplet', 'woodblock', 'fanfare', 'zen', 'whistle', 'synth', 'lullaby', 'triad', 'ascend', 'descend', 'doorbell', 'tick', 'blip', 'laser', 'ufo', 'boing', 'piano', 'celesta', 'organ', 'flute', 'pluck', 'gong', 'twinkle', 'heartbeat', 'success', 'notice', 'trill', 'jingle', 'swoosh', 'robot', 'chirp', 'harmony', 'steel', 'cosmic', 'ping', 'victory'] as const;
+export type ChatSound = typeof chatSounds[number];
+export interface ChatSoundSettings {
+	readonly enabled: boolean; readonly sound: ChatSound; readonly volume: number;
+	/** `aiBrowser.chat.sound.repeat`: how many times in a row, 1 to 5. */
+	readonly repeat: number;
+	/** `aiBrowser.chat.notifications.enabled`: a system notification when an agent finishes. */
+	readonly notify: boolean;
+	/** `aiBrowser.chat.notifications.onlyWhenAway`: only while the window is not focused. */
+	readonly notifyAway: boolean;
+}
+
 export type ChatTabStatus = 'waiting' | 'working' | 'unread' | 'failed' | 'read';
 
 /** A configured OpenRouter model as the settings page edits it. Written in the view and checked in the host (`validateOpenRouterModel`). */
@@ -896,6 +931,8 @@ export type HostToView =
 	/** The Remote terminals section of Chat Settings: the three `aiBrowser.chat.remoteTerminal*` switches as stored, or the reason a change was refused. */
 	| { readonly type: 'remoteTerminalSettings'; readonly remoteTerminal: boolean; readonly shell: boolean; readonly agent: boolean; readonly error?: string }
 	| { readonly type: 'openSleep' }
+	/** The title bar's Agents: every agent and workflow of every open chat, grouped by chat. `refresh` updates an open panel only. */
+	| { readonly type: 'allAgents'; readonly chats: readonly AllAgentsChat[]; readonly refresh: boolean }
 	/** Queued messages given back by Stop: added to what is in the message box, not sent. */
 	| { readonly type: 'restoreDraft'; readonly chatId: string; readonly text: string }
 	/** Messages sent from this workspace, oldest first, for the composer's ↑ / ↓. */
@@ -936,6 +973,12 @@ export type ViewToHost =
 	| { readonly type: 'reportTheme'; readonly tokens: Readonly<Record<string, string>> }
 	| { readonly type: 'temporaryStorage'; readonly action: 'refresh' | 'all' | 'project'; readonly project?: string }
 	/** The Remote terminals section: `load`, or `set` one of the three user settings (applies at once). */
+	| { readonly type: 'soundSettings'; readonly action: 'load' }
+	| { readonly type: 'soundSettings'; readonly action: 'set'; readonly enabled?: boolean; readonly sound?: ChatSound; readonly volume?: number; readonly repeat?: number; readonly notify?: boolean; readonly notifyAway?: boolean }
+	/** An agent finished: the host shows it as a system notification (editor only; Chrome and the website use the page's own). */
+	| { readonly type: 'osNotify'; readonly title: string; readonly text: string }
+	/** Chrome and the website: send more of the conversation's earlier turns. Answered by the surface's bridge. */
+	| { readonly type: 'loadEarlier'; readonly chatId: string; readonly reset?: boolean }
 	| { readonly type: 'remoteTerminalSettings'; readonly action: 'load' }
 	| { readonly type: 'remoteTerminalSettings'; readonly action: 'set'; readonly key: 'remoteTerminal' | 'remoteTerminalShell' | 'remoteTerminalAgent'; readonly value: boolean }
 	/** The OpenRouter section: the key is write-only (`setKey` carries it once, nothing returns it), the models are replaced whole. */
@@ -985,6 +1028,11 @@ export type ViewToHost =
 	| { readonly type: 'tabDraft'; readonly request: string; readonly draft?: string }
 	| { readonly type: 'resumeInTerminal'; readonly id: string }
 	| { readonly type: 'deleteChat'; readonly id: string }
+	/** The composer's History tab asks for the saved chats; answered as a `history` refresh. */
+	| { readonly type: 'listHistory' }
+	| { readonly type: 'listAllAgents' }
+	/** The Access tab: take a browser tab for this chat, or make it free for everyone. */
+	| { readonly type: 'tabAccess'; readonly tabId: string; readonly take: boolean }
 	| { readonly type: 'newChat'; readonly location?: 'here' | 'tab' | 'window' }
 	| { readonly type: 'newTab'; readonly location?: 'here' | 'tab' | 'window' }
 	| { readonly type: 'placeTab'; readonly id: string; readonly target: string; readonly after: boolean }
@@ -1118,3 +1166,13 @@ export type ViewToHost =
 	| { readonly type: 'repoAction'; readonly action: 'changes' | 'push' | 'window' | 'remove' }
 	/** The tab in front's folder, fetched from GitHub, may load its own Claude Code settings from now on. */
 	| { readonly type: 'trustWorkdir' };
+
+/** One open chat's agents for the title bar's Agents panel. `here` is the surface that asked, where the chat can be selected. */
+export interface AllAgentsChat {
+	readonly tabId: string;
+	readonly chatId: string;
+	readonly title: string;
+	readonly surface: string;
+	readonly here: boolean;
+	readonly agents: readonly ToolEntry[];
+}
