@@ -24,6 +24,8 @@ export interface GithubPullRequest {
 	readonly url: string;
 	readonly author: string;
 	readonly branch: string;
+	/** Repository containing the head branch (forks may reuse branch names). */
+	readonly headRepo?: string;
 	readonly draft: boolean;
 	/** ISO time of the last update. */
 	readonly updatedAt: string;
@@ -53,14 +55,78 @@ export interface GithubStatus {
 	readonly repo: string;
 	readonly source: GithubSource;
 	readonly branch?: string;
+	/** The name `branch` is pushed under, when it tracks another one (`local-work` → `origin/remote-work`). */
+	readonly headBranch?: string;
+	readonly pushRepo?: string;
 	readonly prs: readonly GithubPullRequest[];
 	readonly runs: readonly GithubRun[];
 	/** Runs could not be read (Actions off, no access) while the pull requests could. */
 	readonly runsError?: string;
+	/** The repository's default branch, the base a new pull request is opened against. */
+	readonly defaultBranch?: string;
+	/** The working folder's branch has an upstream on the remote (a pull request needs it pushed). */
+	readonly published?: boolean;
+	/** The branch's last commit subject: the title a new pull request starts with. */
+	readonly suggestedTitle?: string;
+}
+
+/** A pull request just opened from the GitHub tab. */
+export interface GithubCreatedPr {
+	readonly number: number;
+	readonly url: string;
+}
+
+/**
+ * Whether the tab offers to open a pull request for the working folder's
+ * branch: one is checked out, it is not the default branch, and no open pull
+ * request has it as its head.
+ */
+export function canOfferPullRequest(status: GithubStatus): boolean {
+	const branch = status.headBranch ?? status.branch;
+	if (!branch || !status.defaultBranch || branch === status.defaultBranch) { return false; }
+	const repo = (status.pushRepo ?? status.repo).toLowerCase();
+	return !status.prs.some(pr => pr.branch === branch && (pr.headRepo ?? status.repo).toLowerCase() === repo);
+}
+
+/**
+ * The `head` of a new pull request: the bare branch when it lives in the
+ * repository the tab shows, `owner:branch` when it was pushed to a fork.
+ */
+export function pullRequestHead(repo: string, pushRepo: string | undefined, branch: string): string {
+	if (!pushRepo || pushRepo.toLowerCase() === repo.toLowerCase()) { return branch; }
+	return `${pushRepo.split('/')[0]}:${branch}`;
+}
+
+/** A pull request's body from the branch's commit subjects, newest last. */
+export function pullRequestBody(subjects: readonly string[]): string {
+	const lines = subjects.map(s => s.replace(/[\u0000-\u001f\u007f]/g, ' ').trim()).filter(Boolean).slice(-50);
+	return lines.length > 1 ? lines.map(l => `- ${l}`).join('\n') : '';
+}
+
+/** A title the user typed: one line, not empty, at most 256 characters as GitHub allows. */
+export function pullRequestTitle(typed: unknown): string | undefined {
+	if (typeof typed !== 'string') { return undefined; }
+	const title = typed.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
+	return title && [...title].length <= 256 ? title : undefined;
+}
+
+/** `POST /repos/{o}/{n}/pulls`'s answer, or the URL `gh pr create` prints. */
+export function parseCreatedPr(output: string): GithubCreatedPr | undefined {
+	const trimmed = output.trim();
+	if (trimmed.startsWith('{')) {
+		try {
+			const raw = JSON.parse(trimmed) as Record<string, unknown>;
+			const number = num(raw.number);
+			const url = httpsUrl(raw.html_url);
+			return number && url ? { number, url } : undefined;
+		} catch { return undefined; }
+	}
+	const m = /https:\/\/github\.com\/[^\s]+\/pull\/(\d+)/.exec(trimmed);
+	return m ? { number: Number(m[1]), url: m[0] } : undefined;
 }
 
 /** What `gh pr list --json` is asked for. */
-export const ghPrFields = 'number,title,url,author,headRefName,isDraft,updatedAt,reviewDecision,statusCheckRollup';
+export const ghPrFields = 'number,title,url,author,headRefName,headRepository,headRepositoryOwner,isDraft,updatedAt,reviewDecision,statusCheckRollup';
 /** What `gh run list --json` is asked for. */
 export const ghRunFields = 'databaseId,name,displayTitle,url,headBranch,event,status,conclusion,updatedAt';
 
@@ -112,10 +178,15 @@ export function parseGhPullRequests(json: string, branch?: string): GithubPullRe
 		const url = httpsUrl(raw?.url);
 		if (!number || !url) { continue; }
 		const head = text(raw.headRefName, 250);
+		const repository = raw.headRepository as Record<string, unknown> | undefined;
+		const owner = text((raw.headRepositoryOwner as Record<string, unknown> | undefined)?.login, 100);
+		const name = text(repository?.name, 100);
+		const headRepo = text(repository?.nameWithOwner, 250) || (owner && name ? `${owner}/${name}` : '');
 		const checks = summarizeChecks(raw.statusCheckRollup);
 		out.push({
 			number, url, title: text(raw.title), author: text((raw.author as Record<string, unknown> | undefined)?.login, 100),
 			branch: head, draft: raw.isDraft === true, updatedAt: text(raw.updatedAt, 40), review: text(raw.reviewDecision, 40),
+			...(headRepo ? { headRepo } : {}),
 			...(checks ? { checks } : {}), ...(branch && head === branch ? { current: true } : {}),
 		});
 	}
@@ -145,9 +216,11 @@ export function parseApiPullRequests(json: string, branch?: string): GithubPullR
 		const url = httpsUrl(raw?.html_url);
 		if (!number || !url) { continue; }
 		const head = text((raw.head as Record<string, unknown> | undefined)?.ref, 250);
+		const headRepo = text(((raw.head as Record<string, unknown> | undefined)?.repo as Record<string, unknown> | undefined)?.full_name, 250);
 		out.push({
 			number, url, title: text(raw.title), author: text((raw.user as Record<string, unknown> | undefined)?.login, 100),
 			branch: head, draft: raw.draft === true, updatedAt: text(raw.updated_at, 40), review: '',
+			...(headRepo ? { headRepo } : {}),
 			...(branch && head === branch ? { current: true } : {}),
 		});
 	}

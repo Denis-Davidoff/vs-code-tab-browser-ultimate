@@ -29,6 +29,15 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 - $(location) **Page markers** — pin notes to page elements and send them to the agent as one prompt.
 - $(settings-gear) **Chat Settings** — use the gear at the top to edit prompts for commit messages, branch names and chat titles, or clean up temporary files.
 
+## 0.9.9 — 2026-10-30
+
+- **Inline attachment badges** — files, folders and other attachments share compact badges in drafts and sent messages, with icons for their type. Open them with a click or use their context menus; drag badges into the composer or move them within a draft.
+- **Copy and paste attachments** — copying selected badges or a whole message preserves attachment references when pasted back into chat. Sent badges also have an **Attach to chat** action.
+- **Attach the current browser** — use the first item in the globe menu. A soft green highlight marks an available page and clears after attaching it; the attachment goes directly into your text.
+- **Lists and links while typing** — continue bulleted, numbered and nested lists with Enter, indent with Tab, and follow highlighted links. Link menus offer the internal browser, the external browser or copying the address.
+- **Files navigation and sorting** — sticky Name, Size and Modified headers sort in either direction; tile arrow keys follow the visible layout, and right-click selects a file and opens its menu immediately.
+- **Pull request suggestions** — branches with the same name in different forks are checked against their source repository.
+
 ## 0.9.8 — 2026-10-30
 
 - Attached files, tabs and suggestions show only on the Chat tab of the composer; Skills, Activity, History and GitHub hide them, and they still go with the next message.

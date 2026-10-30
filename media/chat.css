@@ -1625,11 +1625,10 @@ button {
 	display: flex;
 	flex-wrap: wrap;
 	gap: 4px;
-	padding: 8px 8px 0;
+	padding: 0 8px 8px;
 }
 
-.attachments[hidden],
-.composer:is(.skills-mode, .list-mode) .attachments {
+.attachments[hidden] {
 	display: none;
 }
 
@@ -1719,6 +1718,10 @@ button {
 .input::placeholder {
 	color: var(--vscode-input-placeholderForeground, var(--fg-faint));
 }
+.composer-link { color: var(--vscode-textLink-foreground, var(--accent)); text-decoration: underline; text-underline-offset: 2px; }
+.prompt-formatted ul, .prompt-formatted ol { margin: 3px 0; padding-left: 24px; white-space: normal; }
+.prompt-formatted li { white-space: pre-wrap; }
+.prompt-formatted li > ul, .prompt-formatted li > ol { margin: 2px 0; }
 
 .chip {
 	position: relative;
@@ -1826,6 +1829,9 @@ button {
 .selector-controls { display: flex; align-items: center; gap: 2px; flex-wrap: nowrap; width: max-content; }
 .toolbar-settings { gap: 2px; justify-content: center; justify-self: center; max-width: 100%; }
 .toolbar-attachments { flex: none; width: max-content; }
+.toolbar-attachments .has-suggestion > .codicon-globe,
+.menu-item.suggested .menu-label,
+.menu-item.suggested .menu-icon { color: color-mix(in srgb, var(--vscode-charts-green, #74c991) 65%, var(--fg-2)); }
 
 .toolbar.compact-effort .selector-controls > .pill { min-width: 0; }
 .toolbar.compact-effort .selector-controls > .pill:nth-child(1) { flex: 0 1 auto; max-width: 90px; }
@@ -6533,8 +6539,8 @@ body.vv-locked {
 
 /* Agents and History tabs: a list in the message box's place, at most a third of the view. */
 .composer:not(.list-mode) > .composer-list, .composer:not(.list-mode):not(.skills-mode) > .cl-resize { display: none; }
-.cl-resize { height: 7px; margin: -2px 0 -3px; cursor: ns-resize; position: relative; z-index: 2; touch-action: none; }
-.cl-resize::after { content: ''; position: absolute; left: calc(50% - 18px); right: calc(50% - 18px); top: 3px; height: 2px; border-radius: 2px; background: color-mix(in srgb, var(--vscode-foreground) 18%, transparent); transition: background .15s, left .15s, right .15s; }
+.cl-resize { height: 7px; margin: -2px 20% -3px; cursor: ns-resize; position: relative; z-index: 2; touch-action: none; }
+.cl-resize::after { content: ''; position: absolute; left: calc(50% - 32px); right: calc(50% - 32px); top: 2px; height: 3px; border-radius: 3px; background: color-mix(in srgb, var(--vscode-foreground) 18%, transparent); transition: background .15s, left .15s, right .15s; }
 /* On hover and while dragging the bar spans the whole width, so the edge being moved reads as one line. */
 .cl-resize:hover::after, .cl-resize.dragging::after { background: var(--vscode-focusBorder); left: 10px; right: 10px; }
 .composer-list .cl-section { display: flex; flex-direction: column; gap: 1px; }
@@ -6547,6 +6553,11 @@ body.vv-locked {
 .composer-list .cl-link:hover { text-decoration: underline; }
 .composer-list .cl-row { display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; padding: 6px 8px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--vscode-foreground); font: inherit; text-align: left; box-sizing: border-box; transition: background .12s, border-color .12s; }
 .composer-list button.cl-row { cursor: pointer; }
+.composer-list .cl-row-pair { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.composer-list .cl-row-pair > .cl-row { flex: 1 1 auto; }
+.composer-list .cl-answer { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 8px; border: 1px solid var(--border); border-radius: 6px; background: none; color: var(--fg-2); font: inherit; font-size: 11px; cursor: pointer; }
+.composer-list .cl-answer:hover { color: var(--fg); background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent); }
+.composer-list .cl-answer:focus-visible { outline: none; border-color: var(--vscode-focusBorder); }
 .composer-list .cl-row:hover { background: color-mix(in srgb, var(--vscode-foreground) 6%, transparent); }
 .composer-list button.cl-row:focus-visible { outline: none; border-color: var(--vscode-focusBorder); }
 .composer-list .cl-row.current { background: color-mix(in srgb, var(--vscode-focusBorder) 12%, transparent); border-color: color-mix(in srgb, var(--vscode-focusBorder) 35%, transparent); }
@@ -6580,14 +6591,9 @@ body.vv-locked {
 .composer-list .cl-empty { display: flex; align-items: center; gap: 8px; padding: 8px 10px; color: var(--fg-3); font-size: .92em; }
 .composer-list .cl-empty-icon { opacity: .7; }
 
-/* Skills, Activity and History keep the message box under them, cut to one line (asked for):
-   the textarea and the mirror behind it take the same padding, or the caret leaves the text. */
-.composer:is(.skills-mode, .list-mode) > .input-area { min-height: 0; border-top: 1px solid color-mix(in srgb, var(--vscode-foreground) 8%, transparent); }
-.composer:is(.skills-mode, .list-mode) .input { min-height: 0; height: calc(var(--line) + 12px) !important; max-height: none; padding: 6px 12px; overflow-y: hidden; }
-.composer:is(.skills-mode, .list-mode) .input-mirror { padding: 6px 12px; }
-.composer:is(.skills-mode, .list-mode) .input-actions { padding: 0 8px 0 0; justify-content: center; }
-.composer:is(.skills-mode, .list-mode) .input-actions > .send-slot:first-child { transform: translateX(4px); }
-.composer:is(.skills-mode, .list-mode) .input-actions > .send-slot:nth-child(n + 2) { display: none; }
+/* Every composer tab keeps the full message box under it — chips, suggestions and every button (asked for);
+   the tab's own panel sits above it like a settings pane. */
+.composer:is(.skills-mode, .list-mode) > .input-area { border-top: 1px solid color-mix(in srgb, var(--vscode-foreground) 8%, transparent); }
 
 /* .composer-list sets display: flex, which beats [hidden]; Activity and History share the class. */
 .composer > .composer-list[hidden] { display: none; }
@@ -6685,3 +6691,199 @@ body.vv-locked {
 .composer-github .gh-run.failure { color: var(--vscode-charts-red); }
 .composer-github .gh-run.running, .composer-github .gh-run.queued { color: var(--vscode-charts-yellow); }
 .composer-github .cl-row.current .cl-title { font-weight: 600; }
+
+/* The GitHub tab's "Create pull request" form: a title, Draft, Create. */
+.gh-pr-form { display: flex; flex-direction: column; gap: 6px; padding: 6px 8px 8px; margin: 2px 0 4px; border: 1px solid color-mix(in srgb, var(--vscode-foreground) 12%, transparent); border-radius: 6px; }
+.gh-pr-title { box-sizing: border-box; width: 100%; padding: 4px 6px; font: inherit; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, transparent); border-radius: 4px; }
+.gh-pr-title:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+.gh-pr-actions { display: flex; align-items: center; gap: 8px; }
+.gh-pr-actions .cl-spacer { flex: 1; }
+.gh-pr-draft { display: inline-flex; align-items: center; gap: 4px; opacity: .85; }
+.gh-pr-submit { font-weight: 600; }
+.gh-pr-note { font-size: .92em; opacity: .7; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gh-pr-note.error { opacity: 1; color: var(--vscode-errorForeground); white-space: normal; }
+.gh-pr-offer:disabled { opacity: .6; cursor: default; }
+
+/* "Add skill": an accent button with its label, so it reads apart from the skills themselves. */
+.skill-button.skill-new {
+	width: auto;
+	padding: 0 10px 0 7px;
+	gap: 4px;
+	border: 1px dashed var(--vscode-focusBorder, var(--vscode-button-background));
+	background: color-mix(in srgb, var(--vscode-button-background) 14%, transparent);
+	color: var(--vscode-textLink-foreground, var(--fg));
+	font-weight: 600;
+}
+.skill-button.skill-new:hover {
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	border-style: solid;
+}
+.skill-add-label { white-space: nowrap; }
+/* On the Skills tab it closes the list, after the last skill. */
+.composer.skills-mode > .skill-bar > .skill-new { order: 2; }
+.composer.skills-mode > .skill-bar > .skill-expand { order: 3; }
+
+/* ---------------------------------------------------------------- the Files tab */
+.composer-files { display: flex; flex-direction: column; gap: 0; padding: 0 !important; min-height: 220px; }
+.composer-files[hidden] { display: none; }
+.fx-bar { display: flex; align-items: center; gap: 2px; padding: 6px 6px 6px 4px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: inherit; z-index: 1; }
+.fx-tool { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border: 0; border-radius: 5px; background: none; color: var(--fg-2); cursor: pointer; flex: none; }
+.fx-tool:hover:not(:disabled), .fx-tool.active { background: color-mix(in srgb, var(--vscode-foreground) 10%, transparent); color: var(--fg); }
+.fx-tool:disabled { opacity: .4; cursor: default; }
+.fx-seg { display: inline-flex; padding: 1px; border-radius: 6px; background: color-mix(in srgb, var(--vscode-foreground) 6%, transparent); margin-left: 2px; }
+.fx-bar.editing-path .fx-crumbs { flex: 1; overflow: visible; }
+.fx-bar.editing-path > .cl-spacer { display: none; }
+.fx-path-edit { position: relative; flex: 1; min-width: 0; }
+.fx-path-input { width: 100%; box-sizing: border-box; height: 22px; padding: 0 24px 0 6px; font: inherit; font-size: 12px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-focusBorder); border-radius: 4px; outline: none; }
+.fx-path-list { position: absolute; left: 0; right: 0; top: calc(100% + 2px); z-index: 30; max-height: 220px; overflow-y: auto; background: var(--vscode-editorWidget-background, var(--surface)); border: 1px solid var(--border); border-radius: 5px; box-shadow: 0 4px 14px rgba(0,0,0,.25); padding: 3px; }
+.fx-path-list[hidden] { display: none; }
+.fx-path-option { display: flex; align-items: center; gap: 6px; padding: 3px 6px; border-radius: 4px; cursor: pointer; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fx-path-option:hover, .fx-path-option.active { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+.fx-crumbs { display: flex; align-items: center; flex: 1 1 auto; min-width: 0; align-self: stretch; cursor: text; overflow: hidden; gap: 1px; font-size: 12px; }
+.fx-crumb-icon { color: var(--fg-2); display: inline-flex; margin: 0 2px; }
+.fx-crumb { border: 0; background: none; color: var(--fg-2); padding: 2px 5px; border-radius: 4px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 140px; font: inherit; }
+.fx-crumb:hover:not(.current) { background: color-mix(in srgb, var(--vscode-foreground) 10%, transparent); color: var(--fg); }
+.fx-crumb.current { color: var(--fg); font-weight: 600; cursor: default; }
+.fx-crumb-sep { font-size: 11px !important; opacity: .5; flex: none; }
+.fx-search { width: 110px; min-width: 60px; height: 22px; box-sizing: border-box; padding: 0 6px; border-radius: 5px; border: 1px solid var(--vscode-input-border, var(--border)); background: var(--vscode-input-background); color: var(--vscode-input-foreground); font: inherit; font-size: 12px; margin-right: 2px; }
+.fx-search:not(.open) { display: none; }
+.fx-tool.active { color: var(--vscode-focusBorder); }
+.fx-status .fx-act .codicon { flex: 0 0 auto; }
+.fx-search:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+.fx-body { flex: 1; overflow-y: auto; padding: 4px; outline: none; display: flex; flex-direction: column; gap: 1px; transition: opacity .15s; }
+.fx-body:not(.grid) { padding-top: 0; }
+.fx-body.loading { opacity: .7; }
+.fx-body:focus-visible { box-shadow: inset 0 0 0 1px var(--vscode-focusBorder); }
+.fx-body.fx-drop { box-shadow: inset 0 0 0 2px var(--vscode-focusBorder); background: color-mix(in srgb, var(--vscode-focusBorder) 8%, transparent); }
+.fx-head, .fx-item { display: grid; grid-template-columns: 20px minmax(0, 1fr) 64px 72px 12px; align-items: center; gap: 8px; padding: 0 8px; }
+.fx-head { height: 20px; flex-shrink: 0; position: sticky; top: 0; z-index: 1; background: var(--surface); border: 1px solid transparent; font-size: 11px; color: var(--fg-2); text-transform: uppercase; letter-spacing: .04em; }
+.fx-sort { display: block; position: relative; width: 100%; border: 0; padding: 0; background: none; color: inherit; font: inherit; text-transform: inherit; letter-spacing: inherit; text-align: left; cursor: pointer; }
+.fx-sort.right { text-align: right; }
+.fx-sort:hover { color: var(--fg); }
+.fx-sort:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
+.fx-sort[data-direction]::after { content: '↑'; display: inline-block; margin-left: 3px; letter-spacing: 0; }
+.fx-sort[data-direction="desc"]::after { content: '↓'; }
+.fx-item { height: 26px; border-radius: 5px; cursor: default; user-select: none; font-size: 12.5px; border: 1px solid transparent; }
+.fx-item:hover { background: var(--vscode-list-hoverBackground, color-mix(in srgb, var(--vscode-foreground) 7%, transparent)); }
+.fx-item.selected { background: var(--vscode-list-inactiveSelectionBackground, color-mix(in srgb, var(--vscode-focusBorder) 20%, transparent)); color: var(--vscode-list-inactiveSelectionForeground, inherit); }
+.fx-body:focus .fx-item.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+.fx-item.fx-drop { border-color: var(--vscode-focusBorder); background: color-mix(in srgb, var(--vscode-focusBorder) 15%, transparent); }
+.fx-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fx-item.dir .fx-name { font-weight: 500; }
+.fx-meta { color: var(--fg-2); font-size: 11.5px; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fx-icon { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; }
+.fx-icon.dir .fx-codicon { color: var(--vscode-charts-yellow, #d7ba7d); }
+.fx-link { position: absolute; right: -3px; bottom: -2px; font-size: 9px !important; opacity: .8; }
+.fx-new { grid-template-columns: 20px 1fr; }
+.fx-rename { height: 20px; font: inherit; padding: 0 4px; border: 1px solid var(--vscode-focusBorder); background: var(--vscode-input-background); color: var(--vscode-input-foreground); border-radius: 3px; }
+/* Tiles */
+.fx-body.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(88px, 1fr)); gap: 4px; align-content: start; }
+.fx-body.grid .fx-item { grid-template-columns: 1fr; grid-template-rows: 48px auto; justify-items: center; height: auto; padding: 8px 4px 6px; gap: 4px; text-align: center; border-radius: 8px; }
+.fx-body.grid .fx-name { white-space: normal; word-break: break-word; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.25; font-size: 12px; }
+.fx-body.grid .fx-icon.big { width: 44px; height: 44px; }
+.fx-body.grid .fx-icon.big .fx-codicon { font-size: 36px !important; }
+.fx-body.grid .fx-icon.big .theme-file-icon { --icon-size: 34px; transform: scale(1.9); }
+.fx-body.grid .cl-empty { grid-column: 1 / -1; }
+/* Selection actions */
+.fx-count { font-size: 12px; font-weight: 600; margin: 0 6px 0 2px; }
+.fx-act { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px; border-radius: 5px; border: 1px solid var(--border); background: var(--surface); color: var(--fg); font: inherit; font-size: 12px; cursor: pointer; }
+.fx-act:hover { background: color-mix(in srgb, var(--vscode-foreground) 10%, var(--surface)); }
+.fx-act.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border-color: transparent; }
+.fx-act.primary:hover { background: var(--vscode-button-hoverBackground); }
+.fx-act.danger:hover { color: var(--vscode-errorForeground); border-color: var(--vscode-errorForeground); }
+.fx-act.clear { margin-left: auto; border: 0; background: none; padding: 0 4px; }
+.fx-status { display: flex; gap: 2px; padding: 0 6px 0 10px; font-size: 11px; color: var(--fg-2); border-top: 1px solid var(--border); height: 26px; align-items: center; overflow: hidden; white-space: nowrap; }
+.fx-status.selecting { background: color-mix(in srgb, var(--vscode-focusBorder) 8%, transparent); }
+.fx-status .fx-act { flex: 1 1 0; min-width: 0; height: 20px; padding: 0 4px; justify-content: center; gap: 4px; border: 0; background: none; color: var(--fg-2); font-size: 11px; overflow: hidden; }
+.fx-status .fx-act .fx-act-label { overflow: hidden; text-overflow: ellipsis; }
+.fx-status .fx-act.clear { flex: 0 0 22px; margin-left: 0; }
+.fx-status .fx-act.clear .fx-act-label { display: none; }
+.fx-status .fx-error, .fx-status .fx-notice { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.fx-status .fx-act:hover { background: color-mix(in srgb, var(--vscode-foreground) 12%, transparent); color: var(--fg); }
+.fx-status .fx-act.primary { color: var(--vscode-textLink-foreground, var(--fg)); }
+.fx-status .fx-count { color: var(--fg); margin: 0 6px 0 0; font-size: 11px; }
+.fx-summary { overflow: hidden; text-overflow: ellipsis; }
+.fx-error { color: var(--vscode-errorForeground); margin-left: auto; }
+.fx-notice { color: var(--vscode-charts-green, var(--fg)); margin-left: auto; }
+
+/* Files: uncommitted changes, coloured as VS Code's Explorer colours them. */
+.fx-item.git-changed .fx-name, .fx-item.git-changed .fx-git { color: var(--vscode-gitDecoration-modifiedResourceForeground, #e2c08d); }
+.fx-item.git-new .fx-name, .fx-item.git-new .fx-git { color: var(--vscode-gitDecoration-untrackedResourceForeground, #73c991); }
+.fx-git { font-size: 11px; font-weight: 600; text-align: center; }
+
+/* Composer tabs being reordered by drag. */
+.composer-tabs > .dragging { opacity: .45; }
+.composer-tabs > .drop-before { box-shadow: inset 2px 0 0 var(--vscode-focusBorder); }
+.composer-tabs > .drop-after { box-shadow: inset -2px 0 0 var(--vscode-focusBorder); }
+/* A file or folder attached to the draft: its icon sits on a soft accent chip and its name gets a dotted
+   accent underline — quiet enough beside selection and the Git colours, which keep their own meaning. */
+.fx-item.attached .fx-name { width: fit-content; max-width: 100%; box-sizing: border-box; padding: 0 3px; border-radius: 3px; background: color-mix(in srgb, #75bfff 14%, transparent); }
+.fx-path-cancel { position: absolute; right: 2px; top: 2px; width: 18px; height: 18px; padding: 0; display: flex; align-items: center; justify-content: center; border: 0; border-radius: 3px; background: transparent; color: var(--vscode-icon-foreground); cursor: pointer; }
+.fx-path-cancel:hover { background: var(--vscode-toolbar-hoverBackground); }
+.fx-path-cancel .codicon { font-size: 12px; }
+
+/* Reserve horizontal space with the token's own invisible characters: the textarea and mirror
+   must keep identical wrapping. Vertical padding and static shadows do not change that layout. */
+.att-token-wrap { color: var(--fg); }
+.attachment-drag-preview { position: fixed !important; left: 0; top: 0; z-index: 1000; pointer-events: none; white-space: pre; opacity: .9; }
+.sent-attachment { cursor: pointer; user-select: all; }
+.sent-attachment:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; border-radius: 999px; }
+.att-token {
+	position: relative;
+	border-radius: 999px;
+	padding: 2px 0;
+	background: linear-gradient(180deg, color-mix(in srgb, var(--vscode-focusBorder) 19%, var(--surface)), color-mix(in srgb, var(--vscode-focusBorder) 10%, var(--surface)));
+	box-shadow: inset 0 1px 0 color-mix(in srgb, white 12%, transparent), 0 0 0 1px color-mix(in srgb, var(--vscode-focusBorder) 24%, transparent), 0 1px 1px rgb(0 0 0 / 8%);
+	-webkit-box-decoration-break: clone;
+	box-decoration-break: clone;
+	color: var(--fg);
+}
+.att-token.unbound { background: color-mix(in srgb, var(--fg) 10%, transparent); box-shadow: none; }
+.att-token-hide { color: transparent; }
+.att-token-prefix { position: relative; }
+.att-token .att-token-icon {
+	position: absolute;
+	right: 3px;
+	top: 50%;
+	transform: translateY(-50%);
+	width: 1.05em;
+	font-size: 12px;
+	line-height: 1;
+	text-align: center;
+	pointer-events: none;
+	color: var(--fg);
+}
+.att-token .att-token-close { position: relative; }
+.sent-attachment .att-token-close { display: none; }
+.sent-attachment .att-token { padding-right: 6px; }
+.input-mirror .att-token .att-token-close::after {
+	content: '×';
+	position: absolute;
+	right: 3px;
+	top: 50%;
+	transform: translateY(-50%);
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 14px;
+	height: 14px;
+	border-radius: 50%;
+	background: color-mix(in srgb, var(--fg) 7%, transparent);
+	color: var(--fg-2);
+	font-size: 12px;
+	line-height: 1;
+}
+.input-mirror .att-token-close.hovered::after {
+	background: color-mix(in srgb, var(--vscode-errorForeground, #f48771) 20%, transparent);
+	color: var(--vscode-errorForeground, #f48771);
+}
+.composer-tabs > .composer-maximize {
+	margin-left: auto;
+	align-self: center;
+	flex: none;
+	padding: 2px 4px;
+	opacity: .7;
+}
+.composer-tabs > .composer-maximize:hover { opacity: 1; }
+.composer-tabs > .composer-maximize[hidden] { display: none; }

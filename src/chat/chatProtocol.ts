@@ -418,6 +418,8 @@ export interface AttachmentChip {
 	 * chip that is not one file, such as a conversation handed over.
 	 */
 	readonly iconName?: string;
+	/** File and folder chips of the draft: the absolute path, so the Files tab can mark what is attached. */
+	readonly filePath?: string;
 	/** A small data URI for screenshots. */
 	readonly thumbnail?: string;
 	/**
@@ -741,7 +743,7 @@ export interface ChatViewState {
 	readonly attachments: readonly AttachmentChip[];
 	/**
 	 * What could be attached and is not yet: the text editor and the browser tab
-	 * the user has open, drawn dashed with a "+" — see `acceptSuggestion`.
+	 * the user has open, offered in the toolbar menus — see `acceptSuggestion`.
 	 */
 	readonly suggestions: readonly AttachmentChip[];
 	readonly hasBrowserTab: boolean;
@@ -894,7 +896,17 @@ export interface OpenRouterCatalogItem {
 	readonly reasoning: boolean;
 }
 
+/** One attachment token copied out of a message box (`[@N label]`), as the clipboard carries it. */
+export interface PastedAttachment {
+	readonly token: string;
+	readonly id: string;
+	readonly kind: AttachmentKind;
+	readonly label: string;
+	readonly filePath?: string;
+}
+
 export type HostToView =
+	| { readonly type: 'pastedAttachments'; readonly request: string; readonly chatId: string; readonly results: readonly { readonly token: string; readonly id?: string }[] }
 	| { readonly type: 'pastedFileResult'; readonly id: string; readonly error?: string }
 	| { readonly type: 'temporaryStorage'; readonly storage?: TemporaryStorage; readonly error?: string }
 	| { readonly type: 'recordingStatus'; readonly state?: 'starting' | 'recording' | 'paused' | 'stopping'; readonly seconds: number }
@@ -960,7 +972,9 @@ export type HostToView =
 	/** `confirm`: nothing was done; ask the user this, and send the action again with `confirmed`. */
 	| { readonly type: 'gitRemoteResult'; readonly folder: string; readonly action: GitRemoteAction; readonly error?: string; readonly confirm?: string; /** What the question was about; sent back as `confirmed`. */ readonly confirmKey?: string }
 	/** The composer's GitHub tab: pull requests and Actions runs of `folder`'s repository, or why there are none. */
-	| { readonly type: 'githubStatus'; readonly folder: string; readonly status?: import('./githubStatus').GithubStatus; readonly error?: string; /** Signing in to GitHub would show more (a private repository, no `gh`). */ readonly signIn?: boolean }
+	/** A Files tab listing of `dir` in `folder`, or the outcome of an action on it. */
+	| { readonly type: 'files'; readonly request: number; readonly folder: string; readonly dir: string; readonly entries?: readonly import('./fileExplorer').FileEntry[]; readonly truncated?: boolean; readonly clipboard?: { readonly count: number; readonly cut: boolean }; readonly error?: string; readonly notice?: string; /** For `complete`: the folders directly inside `dir`. */ readonly completions?: readonly string[] }
+	| { readonly type: 'githubStatus'; readonly folder: string; readonly status?: import('./githubStatus').GithubStatus; readonly error?: string; /** Signing in to GitHub would show more (a private repository, no `gh`). */ readonly signIn?: boolean; /** A pull request was just opened from the tab. */ readonly created?: import('./githubStatus').GithubCreatedPr; /** Opening one failed; the list is unchanged. */ readonly createError?: string }
 	| { readonly type: 'workdirGit'; readonly folder: string; readonly status?: WorkdirGitStatus; readonly branches?: GitBranchState; readonly error?: string; readonly fetchError?: string }
 	/**
 	 * The files and folders of `folder`, relative and `/`-separated, a folder
@@ -1024,6 +1038,13 @@ export type ViewToHost =
 	| { readonly type: 'attach'; readonly kind: AttachmentKind }
 	| { readonly type: 'pasteFile'; readonly id: string; readonly tabId: string; readonly chatId: string; readonly name: string; readonly mime: string; readonly base64: string }
 	| { readonly type: 'removeAttachment'; readonly id: string }
+	/**
+	 * Attachment tokens pasted into the message box: each names the chip it was copied from. The host
+	 * clones a draft attachment that still exists in this extension host, rebuilds a file or folder
+	 * from its path, and answers `pastedAttachments`; anything else stays plain text.
+	 */
+	| { readonly type: 'rememberAttachments'; readonly ids: readonly string[] }
+	| { readonly type: 'pasteAttachments'; readonly request: string; readonly chatId: string; readonly items: readonly PastedAttachment[] }
 	| { readonly type: 'acceptSuggestion'; readonly id: string }
 	| { readonly type: 'usage' }
 	/** The usage line closed: not shown again until its percentage grows. */
@@ -1039,6 +1060,10 @@ export type ViewToHost =
 	| { readonly type: 'listAllAgents' }
 	/** The GitHub tab asks for `folder`'s pull requests and runs; `signIn` may ask VS Code's GitHub sign-in. */
 	| { readonly type: 'githubStatus'; readonly folder: string; readonly signIn?: boolean }
+	/** The Files tab: list a folder of the working folder, or act on entries (paths relative to it, '/'-separated). */
+	| { readonly type: 'files'; readonly request: number; readonly folder: string; readonly action: 'list' | 'open' | 'reveal' | 'revealOs' | 'delete' | 'copy' | 'cut' | 'paste' | 'copyPath' | 'copyRelativePath' | 'attach' | 'newFolder' | 'drop' | 'complete' | 'upload'; readonly dir: string; readonly paths?: readonly string[]; readonly name?: string; /** For `drop`: `file:` URIs dragged in from VS Code or the system, copied (or moved, when inside the folder and `move`). */ readonly uris?: readonly string[]; readonly move?: boolean; /** For `upload`: a file dropped from the system, which a webview sees without its path. */ readonly data?: string }
+	/** The GitHub tab opens a pull request for `folder`'s current branch against the default branch. */
+	| { readonly type: 'githubCreatePr'; readonly folder: string; readonly title: string; readonly draft?: boolean }
 	/** The Access tab: take a browser tab for this chat, or make it free for everyone. */
 	| { readonly type: 'tabAccess'; readonly tabId: string; readonly take: boolean }
 	| { readonly type: 'newChat'; readonly location?: 'here' | 'tab' | 'window' }
@@ -1069,6 +1094,7 @@ export type ViewToHost =
 	| { readonly type: 'setApprovalMode'; readonly key: string; readonly mode: ApprovalMode }
 	/** A chip in the composer clicked: its file, its image or its text, in an editor tab. */
 	| { readonly type: 'openAttachment'; readonly id: string; readonly entry?: number }
+	| { readonly type: 'reattachAttachment'; readonly id: string; readonly entry: number }
 	| { readonly type: 'saveAttachment'; readonly id: string }
 	/** A tool call's input or output, opened as a read-only text in an editor tab. */
 	| { readonly type: 'openText'; readonly name: string; readonly text: string }

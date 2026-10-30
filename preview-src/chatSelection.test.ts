@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { installChatSelectionCopy } from './chatSelection.ts';
 
-function fixture() {
+function fixture(serialize?: (selection: Selection) => string | undefined) {
   const handlers = new Map<string, (event: any) => void>();
   const copied: string[] = [];
   const anchor = {}, focus = {};
@@ -13,7 +13,7 @@ function fixture() {
     addEventListener: (name: string, handler: (event: any) => void) => handlers.set(name, handler),
   };
   let inside = true;
-  installChatSelectionCopy(document as unknown as Document, { contains: () => inside } as unknown as HTMLElement, text => copied.push(text));
+  installChatSelectionCopy(document as unknown as Document, { contains: () => inside } as unknown as HTMLElement, text => copied.push(text), serialize);
   const dispatch = (type: string, extra: Record<string, unknown> = {}) => {
     let prevented = false;
     const data: string[] = [];
@@ -57,4 +57,12 @@ test('editing fields, empty selections, selections outside the chat and unrelate
   f.outside();
   assert.equal(f.dispatch('copy').prevented, false);
   assert.deepEqual(f.copied, []);
+});
+
+test('selected sent badges use their portable serialization for keyboard and menu copy', () => {
+  const f = fixture(() => 'Text [att:id|file.ts]');
+  f.dispatch('keydown');
+  const copied = f.dispatch('copy');
+  assert.deepEqual(f.copied, ['Text [att:id|file.ts]', 'Text [att:id|file.ts]']);
+  assert.deepEqual(copied.data, ['text/plain', 'Text [att:id|file.ts]']);
 });

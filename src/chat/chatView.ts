@@ -77,7 +77,11 @@ import { gitExtensionErrorText, gitRepositoryFor } from './gitExtension';
 import { gitDiffSides } from './gitDiff';
 import { assertSwitchReady, switchAndUpdate, type SwitchResult } from './gitBranchSwitch';
 import { parseGitStatus } from './gitStatus';
-import { ghPrFields, ghRunFields, githubListLimit, parseApiPullRequests, parseApiRuns, parseGhPullRequests, parseGhRuns, pickGithubRemote, type GithubSource, type GithubStatus } from './githubStatus';
+import { copyName, gitMarks, hiddenNames, isInside, maxListed, resolveInside, sortEntries, type FileEntry } from './fileExplorer';
+import { ghPrFields, ghRunFields, githubListLimit, parseApiPullRequests, parseApiRuns, parseCreatedPr, parseGhPullRequests, parseGhRuns, pickGithubRemote, pullRequestBody, pullRequestHead, pullRequestTitle, type GithubCreatedPr, type GithubSource, type GithubStatus } from './githubStatus';
+
+/** What the GitHub tab reads from the working folder itself. */
+interface GithubLocal { readonly slug?: string; readonly branch?: string; readonly headBranch?: string; readonly published?: boolean; readonly remote?: string; readonly pushRepo?: string; readonly suggestedTitle?: string }
 import { parseRemoteUrls } from './gitBranchState';
 import { chatResourceRoots, loadFileIconTable, themedGitFiles } from './fileIconTheme';
 import type { FileIconTable } from './fileIconTable';
@@ -94,6 +98,7 @@ import type {
 	AgentId, AllAgentsChat, AgentUsage, ApprovalMode, AttachmentChip, AttachmentKind, ChatSummary, GitCommitState,
 	ChatAccess, ChatNews, ChatTabSummary, ChatViewState, HostToView, RepoMode, Selection, ToolbarRun, ToolbarSkill, UsageAlert, UsageWindow, ViewToHost, VoiceEvent, WorkdirFolder, WorkdirState,
 	ChatViewMode, ToolEntry, TerminalSupport, TerminalTabSummary, ChatSound, ChatSoundSettings,
+	PastedAttachment,
 } from './chatProtocol';
 import { chatSounds } from './chatProtocol';
 import { pickElementContext, pickForChat } from '../elements/elementPicker';
@@ -703,6 +708,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 */
 	public static readonly terminalGrants = new TerminalGrants();
 	private static readonly _surfaces = new Map<string, ChatViewProvider>();
+	/** Copied snapshots survive removal from their draft (Cut), sending, and switching surfaces. */
+	private static readonly _attachmentClipboard = new Map<string, Attachment>();
 	private static _sharedServices?: ChatServices;
 	private readonly _surfaceId = generateUuid();
 	private readonly _surfaceNumber: number = 1;
@@ -1679,6 +1686,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			case 'openAttachment':
 				await this._openAttachment(message.id, message.entry);
 				return;
+			case 'reattachAttachment':
+				this._reattachAttachment(message.id, message.entry);
+				return;
 			case 'saveAttachment': {
 				const attachment = this._active.attachments.find(a => a.chip.id === message.id);
 				if (!attachment?.file || attachment.chip.kind !== 'video') { return; }
@@ -1825,6 +1835,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				this._post();
 				return;
 			}
+			case 'rememberAttachments':
+				this._rememberAttachments(message.ids);
+				return;
+			case 'pasteAttachments': {
+				void this._pasteAttachments(message.items, message.request, message.chatId);
+				return;
+			}
 			case 'acceptSuggestion': {
 				// Taken from what is open now, not from what the chip showed: the
 				// suggestion is the editor or tab in front, and only that is accepted.
@@ -1882,6 +1899,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				return;
 			case 'githubStatus':
 				if (typeof message.folder === 'string') { await this._githubStatus(message.folder, message.signIn === true); }
+				return;
+			case 'files':
+				if (typeof message.folder === 'string' && typeof message.dir === 'string') { await this._files(message); }
+				return;
+			case 'githubCreatePr':
+				if (typeof message.folder === 'string') { await this._githubCreatePr(message.folder, message.title, message.draft === true); }
 				return;
 			case 'listHistory':
 				this.showHistory(true);
@@ -3451,7 +3474,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			const shown = vscode.workspace.asRelativePath(file, false);
 			// The path, not the contents: both agents read files themselves, and
 			// a large file pasted into the prompt would cost the whole context.
-			return { chip: { id, kind, label: path.basename(file.fsPath), iconName: path.basename(file.fsPath) }, file, text: `Attached file: ${file.fsPath}${shown !== file.fsPath ? ` (${shown} in the workspace)` : ''}` };
+			return { chip: { id, kind, label: path.basename(file.fsPath), iconName: path.basename(file.fsPath), filePath: file.fsPath }, file, text: `Attached file: ${file.fsPath}${shown !== file.fsPath ? ` (${shown} in the workspace)` : ''}` };
 		}
 
 		// Two refusals, because the fixes are unrelated (Recipe, step 3): without
@@ -3540,6 +3563,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 * next chip reuses it. `Beside` was the first version and split the editor
 	 * area into a new group on every first click, which read as a separate window.
 	 */
+	private _reattachAttachment(id: string, entryIndex: number): void {
+		if (this._blocked() || !Number.isInteger(entryIndex)) { return; }
+		const entry = this._active.chat.entries[entryIndex];
+		const saved = entry?.kind === 'user' ? entry.attachmentData?.find(data => data.chip.id === id) : undefined;
+		if (!saved) { return; }
+		const { reference: _reference, ...chip } = saved.chip;
+		this._active.attachments.push({ ...saved, chip: { ...chip, id: generateUuid() }, file: saved.file ? vscode.Uri.parse(saved.file) : undefined });
+		this._post();
+		this._focusInput();
+	}
+
 	private async _openAttachment(id: string, entryIndex?: number): Promise<void> {
 		const entry = Number.isInteger(entryIndex) ? this._active.chat.entries[entryIndex!] : undefined;
 		const saved = entry?.kind === 'user' ? entry.attachmentData?.find(a => a.chip.id === id) : undefined;
@@ -4978,30 +5012,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 * public repository. `gh` is run outside the folder with `--repo`, so it
 	 * reads none of the repository's own Git configuration (#208).
 	 */
-	private async _githubStatus(folder: string, signIn: boolean): Promise<void> {
-		const answer = (rest: Omit<Extract<HostToView, { type: 'githubStatus' }>, 'type' | 'folder'>) => this._postMessage({ type: 'githubStatus', folder, ...rest });
+	private async _githubStatus(folder: string, signIn: boolean, extra?: { created?: GithubCreatedPr; createError?: string }): Promise<void> {
+		const answer = (rest: Omit<Extract<HostToView, { type: 'githubStatus' }>, 'type' | 'folder'>) => this._postMessage({ type: 'githubStatus', folder, ...rest, ...extra });
 		if (this._blocked()) { answer({ error: 'GitHub is unavailable in this window.' }); return; }
-		let repo: RepoRef | undefined;
-		let branch: string | undefined;
-		try {
-			const git = await gitBinary();
-			if (!git) { throw new Error('Git is unavailable.'); }
-			const [urls, head] = await Promise.all([
-				this._runWorkdirGit(git, ['config', '--get-regexp', '^remote\\..*\\.url$'], folder, 15_000).catch(() => ''),
-				this._runWorkdirGit(git, ['symbolic-ref', '--quiet', '--short', 'HEAD'], folder, 15_000).catch(() => ''),
-			]);
-			branch = head.trim() || undefined;
-			const upstreamRemote = branch ? (await this._runWorkdirGit(git, ['config', '--get', `branch.${branch}.remote`], folder, 15_000).catch(() => '')).trim() : '';
-			repo = pickGithubRemote(parseRemoteUrls(urls), parseRepo, upstreamRemote || undefined);
-		} catch (error) {
-			answer({ error: error instanceof Error ? error.message : String(error) });
-			return;
-		}
-		if (!repo) { answer({ error: 'This folder has no GitHub remote.' }); return; }
-		const slug = repoSlug(repo);
+		let local: GithubLocal;
+		try { local = await this._githubLocal(folder); }
+		catch (error) { answer({ error: error instanceof Error ? error.message : String(error) }); return; }
+		const { slug, branch } = local;
+		const pushed = local.headBranch ?? branch;
+		if (!slug) { answer({ error: 'This folder has no GitHub remote.' }); return; }
+		const withLocal = (status: GithubStatus): GithubStatus => ({
+			...status, branch, headBranch: local.headBranch, pushRepo: local.pushRepo,
+			prs: status.prs.map(pr => ({ ...pr, current: !!pushed && pr.branch === pushed && (pr.headRepo ?? slug).toLowerCase() === (local.pushRepo ?? slug).toLowerCase() })), runs: mark(status.runs),
+			...(local.published !== undefined ? { published: local.published } : {}),
+			...(local.suggestedTitle ? { suggestedTitle: local.suggestedTitle } : {}),
+		});
 		const cached = this._githubCache.get(slug);
-		if (cached && !signIn && Date.now() - cached.at < 30_000) { answer({ status: { ...cached.status, branch, prs: mark(cached.status.prs), runs: mark(cached.status.runs) }, ...(cached.signIn ? { signIn: true } : {}) }); return; }
-		function mark<T extends { branch: string; current?: boolean }>(items: readonly T[]): T[] { return items.map(i => ({ ...i, current: !!branch && i.branch === branch })); }
+		if (cached && !signIn && !extra && Date.now() - cached.at < 30_000) { answer({ status: withLocal(cached.status), ...(cached.signIn ? { signIn: true } : {}) }); return; }
+		function mark<T extends { branch: string; current?: boolean }>(items: readonly T[]): T[] { return items.map(i => ({ ...i, current: !!pushed && i.branch === pushed })); }
+		const done = (status: GithubStatus, signInMore?: boolean) => {
+			this._githubCache.set(slug, { at: Date.now(), status, ...(signInMore ? { signIn: signInMore } : {}) });
+			answer({ status: withLocal(status), ...(signInMore ? { signIn: signInMore } : {}) });
+		};
 		const failures: string[] = [];
 		const gh = await this._ghBinary();
 		if (gh) {
@@ -5012,45 +5044,142 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				let runsError: string | undefined;
 				try { runs = parseGhRuns(await run(['run', 'list', '--repo', slug, '--limit', String(githubListLimit), '--json', ghRunFields]), branch); }
 				catch (error) { runsError = error instanceof Error ? error.message : String(error); }
-				return this._githubAnswer(slug, { repo: slug, source: 'gh', branch, prs, runs, ...(runsError ? { runsError } : {}) }, answer);
+				const defaultBranch = (await run(['repo', 'view', slug, '--json', 'defaultBranchRef', '--jq', '.defaultBranchRef.name']).catch(() => '')).trim();
+				return done({ repo: slug, source: 'gh', prs, runs, ...(runsError ? { runsError } : {}), ...(validBranch(defaultBranch) ? { defaultBranch } : {}) });
 			} catch (error) {
 				failures.push(`gh: ${error instanceof Error ? error.message : String(error)}`);
 			}
 		}
-		let token: string | undefined;
-		try {
-			const session = await vscode.authentication.getSession('github', ['repo'], signIn ? { createIfNone: true } : { silent: true });
-			token = session?.accessToken;
-		} catch (error) {
-			if (signIn) { failures.push(error instanceof Error ? error.message : String(error)); }
-		}
+		const token = await this._githubToken(signIn, failures);
 		const source: GithubSource = token ? 'vscode' : 'public';
 		try {
-			const api = async (route: string) => {
-				const response = await fetch(`https://api.github.com/repos/${slug}/${route}`, {
-					headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'ai-browser', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-					signal: AbortSignal.timeout(15_000),
-				});
-				if (!response.ok) { throw new Error(response.status === 404 ? 'Repository not found, or private.' : response.status === 403 || response.status === 429 ? 'GitHub refused: rate limit or no access.' : `GitHub answered ${response.status}.`); }
-				const body = await response.text();
-				if (body.length > 8_000_000) { throw new Error('GitHub answered too much.'); }
-				return body;
-			};
+			const api = (route: string) => this._githubApi(slug, route, token);
 			const prs = parseApiPullRequests(await api(`pulls?state=open&per_page=${githubListLimit}`), branch);
 			let runs: GithubStatus['runs'] = [];
 			let runsError: string | undefined;
 			try { runs = parseApiRuns(await api(`actions/runs?per_page=${githubListLimit}`), branch); }
 			catch (error) { runsError = error instanceof Error ? error.message : String(error); }
-			this._githubAnswer(slug, { repo: slug, source, branch, prs, runs, ...(runsError ? { runsError } : {}) }, answer, !token);
+			let defaultBranch = '';
+			try { const repo = JSON.parse(await api('')) as { default_branch?: unknown }; defaultBranch = typeof repo.default_branch === 'string' ? repo.default_branch : ''; } catch { /* left out: no button */ }
+			done({ repo: slug, source, prs, runs, ...(runsError ? { runsError } : {}), ...(validBranch(defaultBranch) ? { defaultBranch } : {}) }, !token);
 		} catch (error) {
 			failures.push(error instanceof Error ? error.message : String(error));
 			answer({ error: `${slug}: ${failures.join(' · ')}`, signIn: !token });
 		}
 	}
 
-	private _githubAnswer(slug: string, status: GithubStatus, answer: (rest: { status: GithubStatus; signIn?: boolean }) => void, signIn?: boolean): void {
-		this._githubCache.set(slug, { at: Date.now(), status, ...(signIn ? { signIn } : {}) });
-		answer({ status, ...(signIn ? { signIn } : {}) });
+	/**
+	 * What the GitHub tab needs from the working folder itself: the repository
+	 * (from its remotes, never from the view), the branch checked out, where that
+	 * branch is pushed, and its last commit subject.
+	 */
+	private async _githubLocal(folder: string): Promise<GithubLocal> {
+		const git = await gitBinary();
+		if (!git) { throw new Error('Git is unavailable.'); }
+		const run = (args: string[]) => this._runWorkdirGit(git, args, folder, 15_000).catch(() => '');
+		const [urls, head] = await Promise.all([run(['config', '--get-regexp', '^remote\\..*\\.url$']), run(['symbolic-ref', '--quiet', '--short', 'HEAD'])]);
+		const branch = head.trim() || undefined;
+		const remotes = parseRemoteUrls(urls);
+		const upstreamRemote = branch ? (await run(['config', '--get', `branch.${branch}.remote`])).trim() : '';
+		const repo = pickGithubRemote(remotes, parseRepo, upstreamRemote || undefined);
+		if (!branch) { return { slug: repo && repoSlug(repo) }; }
+		const [upstream, subject] = await Promise.all([
+			// The name the branch is pushed under, which a tracking branch may spell differently.
+			run(['for-each-ref', '--format=%(upstream:remoteref)', `refs/heads/${branch}`]),
+			run(['log', '-1', '--format=%s', branch]),
+		]);
+		const remoteRef = upstream.trim();
+		const headBranch = remoteRef.startsWith('refs/heads/') ? remoteRef.slice('refs/heads/'.length) : undefined;
+		const pushRemote = remotes.find(r => r.name === upstreamRemote);
+		const pushRepo = pushRemote && parseRepo(pushRemote.url);
+		return { slug: repo && repoSlug(repo), branch, published: !!headBranch, ...(headBranch && headBranch !== branch ? { headBranch } : {}), remote: upstreamRemote || undefined, pushRepo: pushRepo && repoSlug(pushRepo), suggestedTitle: subject.trim().slice(0, 256) || undefined };
+	}
+
+	private async _githubToken(signIn: boolean, failures: string[]): Promise<string | undefined> {
+		try {
+			const session = await vscode.authentication.getSession('github', ['repo'], signIn ? { createIfNone: true } : { silent: true });
+			return session?.accessToken;
+		} catch (error) {
+			if (signIn) { failures.push(error instanceof Error ? error.message : String(error)); }
+			return undefined;
+		}
+	}
+
+	private async _githubApi(slug: string, route: string, token: string | undefined, post?: unknown): Promise<string> {
+		const response = await fetch(`https://api.github.com/repos/${slug}${route ? `/${route}` : ''}`, {
+			method: post ? 'POST' : 'GET',
+			headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'ai-browser', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(post ? { 'Content-Type': 'application/json' } : {}) },
+			...(post ? { body: JSON.stringify(post) } : {}),
+			signal: AbortSignal.timeout(15_000),
+		});
+		const body = await response.text();
+		if (!response.ok) {
+			let detail = '';
+			try { const e = JSON.parse(body) as { message?: unknown; errors?: { message?: unknown }[] }; detail = [e.errors?.[0]?.message, e.message].find(m => typeof m === 'string') as string ?? ''; } catch { /* plain status */ }
+			if (detail) { throw new Error(plainInLabel(detail).slice(0, 300)); }
+			throw new Error(response.status === 404 ? 'Repository not found, or private.' : response.status === 403 || response.status === 429 ? 'GitHub refused: rate limit or no access.' : `GitHub answered ${response.status}.`);
+		}
+		if (body.length > 8_000_000) { throw new Error('GitHub answered too much.'); }
+		return body;
+	}
+
+	/** One pull request being opened per folder: a second press waits for nothing and is refused. */
+	private readonly _githubCreating = new Set<string>();
+
+	/**
+	 * Opens a pull request for `folder`'s current branch against the repository's
+	 * default branch: with `gh` when it is there, else with VS Code's GitHub
+	 * sign-in (asked for, since the user pressed Create). Everything but the
+	 * title is read here, never taken from the view; the branch must already be
+	 * pushed — publishing is the Branches window's job.
+	 */
+	private async _githubCreatePr(folder: string, typedTitle: unknown, draft: boolean): Promise<void> {
+		const fail = (createError: string) => this._postMessage({ type: 'githubStatus', folder, createError });
+		if (this._blocked()) { fail('GitHub is unavailable in this window.'); return; }
+		const title = pullRequestTitle(typedTitle);
+		if (!title) { fail('Give the pull request a title of one line, at most 256 characters.'); return; }
+		if (this._githubCreating.has(folder)) { return; }
+		this._githubCreating.add(folder);
+		try {
+			const local = await this._githubLocal(folder);
+			const { slug, branch } = local;
+			if (!slug || !branch) { throw new Error(slug ? 'No branch is checked out.' : 'This folder has no GitHub remote.'); }
+			if (!local.published) { throw new Error(`Publish ${branch} first (Branches window), then create the pull request.`); }
+			const status = this._githubCache.get(slug)?.status;
+			const base = status?.defaultBranch;
+			if (!base) { throw new Error('The repository\'s default branch is not known yet. Refresh and try again.'); }
+			const pushedAs = local.headBranch ?? branch;
+			if (pushedAs === base) { throw new Error(`${pushedAs} is the default branch.`); }
+			const git = await gitBinary();
+			// The branch's own commits: from where it left the default branch as the
+			// remote it is pushed to knows it, else as this clone knows it.
+			const since = local.remote ? `refs/remotes/${local.remote}/${base}` : base;
+			const log = git ? await this._runWorkdirGit(git, ['log', '--reverse', '--format=%s', '-50', `${since}..${branch}`], folder, 15_000).catch(() => '') : '';
+			const body = pullRequestBody(log.split('\n'));
+			const head = pullRequestHead(slug, local.pushRepo, pushedAs);
+			let created: GithubCreatedPr | undefined;
+			const failures: string[] = [];
+			const gh = await this._ghBinary();
+			if (gh) {
+				try {
+					created = parseCreatedPr(await this._runGh(gh, ['pr', 'create', '--repo', slug, '--base', base, '--head', head, '--title', title, '--body', body, ...(draft ? ['--draft'] : [])]));
+					if (!created) { throw new Error('gh did not say which pull request it opened.'); }
+				} catch (error) { failures.push(`gh: ${error instanceof Error ? error.message : String(error)}`); }
+			}
+			if (!created) {
+				const token = await this._githubToken(true, failures);
+				if (!token) { throw new Error(failures.join(' · ') || 'Sign in to GitHub to open a pull request.'); }
+				created = parseCreatedPr(await this._githubApi(slug, 'pulls', token, { title, head, base, body, draft }));
+				if (!created) { throw new Error('GitHub did not say which pull request it opened.'); }
+			}
+			this._githubCache.delete(slug);
+			confirm(`Pull request #${created.number} opened.`);
+			await this._githubStatus(folder, false, { created });
+		} catch (error) {
+			fail(error instanceof Error ? error.message : String(error));
+		} finally {
+			this._githubCreating.delete(folder);
+		}
 	}
 
 	private _ghPath: Promise<string | undefined> | undefined;
@@ -5769,6 +5898,180 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 * File: both agents read files themselves. Only inside that folder: the path
 	 * comes from the view.
 	 */
+	/** Paths copied or cut in the Files tab, waiting for Paste; per surface, in memory. */
+	private _fileClipboard: { paths: string[]; cut: boolean } | undefined;
+
+	/** The Files tab: everything is inside the conversation's working folder, real paths included. */
+	private async _files(message: Extract<ViewToHost, { type: 'files' }>): Promise<void> {
+		const root = this._workdir();
+		const reply = (rest: Omit<Extract<HostToView, { type: 'files' }>, 'type' | 'request' | 'folder' | 'dir'> = {}, dir = message.dir) =>
+			this._postMessage({ type: 'files', request: message.request, folder: message.folder, dir, clipboard: this._fileClipboard && { count: this._fileClipboard.paths.length, cut: this._fileClipboard.cut }, ...rest });
+		const blocked = this._blocked();
+		if (blocked) { reply({ error: blocked }); return; }
+		if (!root || root !== message.folder) { reply({ error: 'This chat has no working folder.' }); return; }
+		let realRoot: string;
+		try { realRoot = await fs.promises.realpath(root); } catch { reply({ error: 'The working folder is not there any more.' }); return; }
+		const safe = async (relative: string): Promise<string | undefined> => {
+			const target = resolveInside(root, relative);
+			if (!target) { return undefined; }
+			// The entry itself may be a link (it is acted on, not followed); its folder must really be inside.
+			try { return isInside(realRoot, await fs.promises.realpath(path.dirname(target))) || target === root ? target : undefined; } catch { return undefined; }
+		};
+		// The folder being listed or written into is followed, so its own real path must be inside too:
+		// a link to `~` committed in the repository would otherwise list and fill the home folder.
+		const dir = await (async () => {
+			const d = await safe(message.dir);
+			if (!d) { return undefined; }
+			try { return isInside(realRoot, await fs.promises.realpath(d)) ? d : undefined; } catch { return undefined; }
+		})();
+		/** A name typed or dropped for a new entry of `dir`: one segment, no separator of any platform. */
+		const leafName = (raw: unknown): string | undefined => {
+			const name = typeof raw === 'string' ? raw.trim() : '';
+			if (!name || /[\/\\\0]/.test(name) || name === '.' || name === '..' || name.length > 255) { return undefined; }
+			return dir && path.dirname(path.join(dir, name)) === dir ? name : undefined;
+		};
+		if (message.action === 'complete') {
+			let names: string[] = [];
+			if (dir) {
+				try { names = (await fs.promises.readdir(dir, { withFileTypes: true })).filter(d => d.isDirectory() && !hiddenNames.has(d.name)).map(d => d.name).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })).slice(0, maxListed); } catch { /* nothing to offer */ }
+			}
+			this._postMessage({ type: 'files', request: message.request, folder: message.folder, dir: message.dir, completions: names });
+			return;
+		}
+		if (!dir) { reply({ error: 'That folder is outside the working folder.' }); return; }
+		const targets: string[] = [];
+		for (const p of (message.paths ?? []).slice(0, 500)) {
+			const t = typeof p === 'string' ? await safe(p) : undefined;
+			if (!t || t === root) { reply({ error: 'That item is outside the working folder.' }); return; }
+			targets.push(t);
+		}
+		const rel = (p: string) => path.relative(root, p).split(path.sep).join('/');
+		try {
+			switch (message.action) {
+				case 'list': break;
+				case 'open':
+					for (const t of targets.slice(0, 20)) {
+						if ((await fs.promises.stat(t)).isDirectory()) { continue; }
+						await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(t), { preview: targets.length === 1 });
+					}
+					return;
+				case 'revealOs':
+					await vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(targets[0] ?? dir));
+					return;
+				case 'reveal':
+					await vscode.commands.executeCommand('revealInExplorer', vscode.Uri.file(targets[0] ?? dir));
+					return;
+				case 'copyPath':
+					await vscode.env.clipboard.writeText((targets.length ? targets : [dir]).join('\n'));
+					confirm(vscode.l10n.t('Path copied'));
+					return;
+				case 'copyRelativePath':
+					await vscode.env.clipboard.writeText((targets.length ? targets : [dir]).map(t => path.relative(root, t).split(path.sep).join('/') || '.').join('\n'));
+					confirm(vscode.l10n.t('Relative path copied'));
+					return;
+				case 'attach':
+					for (const t of targets) { await this._attachPath(rel(t)); }
+					return;
+				case 'copy': case 'cut':
+					this._fileClipboard = targets.length ? { paths: targets, cut: message.action === 'cut' } : undefined;
+					reply({ notice: targets.length ? `${targets.length} item${targets.length === 1 ? '' : 's'} ${message.action === 'cut' ? 'cut' : 'copied'} — open a folder and paste` : undefined });
+					return;
+				case 'paste': {
+					const clip = this._fileClipboard;
+					if (!clip) { break; }
+					let done = 0;
+					for (const source of clip.paths) {
+						if (!isInside(root, source)) { continue; }
+						if (isInside(source, dir)) { reply({ error: `Cannot paste ${path.basename(source)} into itself.` }); return; }
+						const names = new Set(await fs.promises.readdir(dir));
+						if (clip.cut && path.dirname(source) === dir) { continue; }
+						const name = copyName(path.basename(source), n => names.has(n));
+						const to = path.join(dir, name);
+						if (clip.cut) { await vscode.workspace.fs.rename(vscode.Uri.file(source), vscode.Uri.file(to), { overwrite: false }); }
+						else { await vscode.workspace.fs.copy(vscode.Uri.file(source), vscode.Uri.file(to), { overwrite: false }); }
+						done++;
+					}
+					if (clip.cut) { this._fileClipboard = undefined; }
+					return this._filesList(root, dir, message.dir, reply, done ? `${done} item${done === 1 ? '' : 's'} ${clip.cut ? 'moved' : 'pasted'}` : undefined);
+				}
+				case 'drop': {
+					let done = 0;
+					for (const raw of (message.uris ?? []).slice(0, 500)) {
+						let uri: vscode.Uri;
+						try { uri = vscode.Uri.parse(String(raw), true); } catch { continue; }
+						if (uri.scheme !== 'file') { continue; }
+						const source = uri.fsPath;
+						if (path.dirname(source) === dir) { continue; }
+						if (isInside(source, dir)) { reply({ error: `Cannot drop ${path.basename(source)} into itself.` }); return; }
+						const names = new Set(await fs.promises.readdir(dir));
+						const to = path.join(dir, copyName(path.basename(source), n => names.has(n)));
+						// Moving only within the working folder; anything from outside is copied.
+						if (message.move === true && isInside(root, source)) { await vscode.workspace.fs.rename(uri, vscode.Uri.file(to), { overwrite: false }); }
+						else { await vscode.workspace.fs.copy(uri, vscode.Uri.file(to), { overwrite: false }); }
+						done++;
+					}
+					return this._filesList(root, dir, message.dir, reply, done ? `${done} item${done === 1 ? '' : 's'} added` : undefined);
+				}
+				case 'upload': {
+					const name = leafName(message.name);
+					if (!name || typeof message.data !== 'string' || message.data.length > 90_000_000) { reply({ error: 'That file could not be added.' }); return; }
+					const names = new Set(await fs.promises.readdir(dir));
+					await fs.promises.writeFile(path.join(dir, copyName(name, n => names.has(n))), Buffer.from(message.data, 'base64'), { flag: 'wx' });
+					return this._filesList(root, dir, message.dir, reply, `${name} added`);
+				}
+				case 'newFolder': {
+					const name = leafName(message.name);
+					if (!name) { reply({ error: 'Not a folder name.' }); return; }
+					await fs.promises.mkdir(path.join(dir, name));
+					break;
+				}
+				case 'delete': {
+					if (!targets.length) { break; }
+					const what = targets.length === 1 ? `"${plainInNotification(path.basename(targets[0]))}"` : `${targets.length} items`;
+					const yes = vscode.l10n.t('Move to Trash');
+					const answer = await vscode.window.showWarningMessage(vscode.l10n.t('Delete {0}?', what), { modal: true, detail: vscode.l10n.t('It goes to the Trash, from where it can be restored.') }, yes);
+					if (answer !== yes) { return; }
+					for (const t of targets) { await vscode.workspace.fs.delete(vscode.Uri.file(t), { recursive: true, useTrash: true }); }
+					return this._filesList(root, dir, message.dir, reply, `${what} moved to the Trash`);
+				}
+			}
+		} catch (error) {
+			return this._filesList(root, dir, message.dir, reply, undefined, error instanceof Error ? error.message : String(error));
+		}
+		await this._filesList(root, dir, message.dir, reply);
+	}
+
+	/** Uncommitted changes in one folder of the working folder, for the Files tab; nothing outside Git or where Git may not run (#208). */
+	private async _filesGitMarks(root: string, dir: string): Promise<Map<string, 'M' | 'A' | 'U'>> {
+		if (this._blocked()) { return new Map(); }
+		try {
+			const git = await gitBinary();
+			if (!git) { return new Map(); }
+			const top = (await this._runWorkdirGit(git, ['rev-parse', '--show-toplevel'], root, 5_000)).trim();
+			if (!top) { return new Map(); }
+			const prefix = path.relative(await fs.promises.realpath(top), await fs.promises.realpath(dir));
+			if (prefix.startsWith('..') || path.isAbsolute(prefix)) { return new Map(); }
+			const out = await this._runWorkdirGit(git, ['--no-optional-locks', 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--', prefix || '.'], top, 10_000);
+			return gitMarks(out, prefix.split(path.sep).join('/'));
+		} catch { return new Map(); }
+	}
+
+	private async _filesList(_root: string, dir: string, relative: string, reply: (rest: Omit<Extract<HostToView, { type: 'files' }>, 'type' | 'request' | 'folder' | 'dir'>, dir?: string) => void, notice?: string, error?: string): Promise<void> {
+		let names: fs.Dirent[];
+		try { names = await fs.promises.readdir(dir, { withFileTypes: true }); } catch (e) { reply({ error: e instanceof Error ? e.message : String(e) }); return; }
+		const kept = names.filter(d => !hiddenNames.has(d.name));
+		const entries: FileEntry[] = await Promise.all(kept.slice(0, maxListed).map(async d => {
+			const full = path.join(dir, d.name);
+			let isDir = d.isDirectory();
+			let size: number | undefined, mtime: number | undefined;
+			try { const st = await fs.promises.stat(full); isDir = st.isDirectory(); size = isDir ? undefined : st.size; mtime = st.mtimeMs; } catch { /* a dangling link */ }
+			return { name: d.name, dir: isDir, ...(d.isSymbolicLink() ? { link: true } : {}), ...(size !== undefined ? { size } : {}), ...(mtime !== undefined ? { mtime } : {}) };
+		}));
+		const marks = await this._filesGitMarks(_root, dir);
+		const marked = marks.size ? entries.map(e => { const g = marks.get(e.name); return g ? { ...e, git: g } : e; }) : entries;
+		reply({ entries: sortEntries(marked), ...(kept.length > maxListed ? { truncated: true } : {}), ...(notice ? { notice } : {}), ...(error ? { error } : {}) }, relative);
+	}
+
 	private async _attachPath(relative: string): Promise<void> {
 		const folder = this._workdir();
 		if (folder === undefined || this._blocked() || !relative || relative.length > 4096 || /[\0\n\r]/.test(relative)) {
@@ -5790,10 +6093,65 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		const tab = this._active;
 		tab.attachments.push(directory
 			// A folder chip opens its text: `vscode.open` on a folder would open a window.
-			? { chip: { id: generateUuid(), kind: 'file', label: `${path.basename(target)}/`, iconName: `${path.basename(target)}/` }, text: `Attached folder: ${target} (${shown}/ in the project)` }
-			: { chip: { id: generateUuid(), kind: 'file', label: path.basename(target), iconName: path.basename(target) }, file: vscode.Uri.file(target), text: `Attached file: ${target} (${shown} in the project)` });
+			? { chip: { id: generateUuid(), kind: 'file', label: `${path.basename(target)}/`, iconName: `${path.basename(target)}/`, filePath: target }, text: `Attached folder: ${target} (${shown}/ in the project)` }
+			: { chip: { id: generateUuid(), kind: 'file', label: path.basename(target), iconName: path.basename(target), filePath: target }, file: vscode.Uri.file(target), text: `Attached file: ${target} (${shown} in the project)` });
 		this._post();
 		this._focusInput();
+	}
+
+	/**
+	 * Attachment tokens pasted into the message box. A draft attachment that still exists in any
+	 * chat of this extension host is copied whole (an image, a page's text); otherwise a file or
+	 * folder is rebuilt from its path, if it is still there. Annotation copies carry snapshots
+	 * without inheriting the original chat’s live page bindings. What cannot be rebuilt comes back without an id,
+	 * and the view leaves it as plain text.
+	 */
+	private _rememberAttachments(ids: readonly string[]): void {
+		if (this._blocked() || !Array.isArray(ids)) { return; }
+		for (const id of ids.slice(0, 50)) {
+			let source = this._active.attachments.find(attachment => attachment.chip.id === id);
+			if (!source) {
+				const saved = this._active.chat.entries.flatMap(entry => entry.kind === 'user' ? entry.attachmentData ?? [] : []).find(attachment => attachment.chip.id === id);
+				if (saved) { source = { ...saved, file: saved.file ? vscode.Uri.parse(saved.file) : undefined }; }
+			}
+			if (!source) { continue; }
+			const { exchangeAnnotation: _exchange, chromeAnnotation: _chrome, ...snapshot } = source;
+			ChatViewProvider._attachmentClipboard.delete(id);
+			ChatViewProvider._attachmentClipboard.set(id, { ...snapshot, chip: { ...source.chip } });
+			while (ChatViewProvider._attachmentClipboard.size > 100) { ChatViewProvider._attachmentClipboard.delete(ChatViewProvider._attachmentClipboard.keys().next().value!); }
+		}
+	}
+
+	private async _pasteAttachments(items: readonly PastedAttachment[], request: string, chatId: string): Promise<void> {
+		const tab = this._tabs.find(tab => tab.chat.id === chatId);
+		if (!tab) { this._postMessage({ type: 'pastedAttachments', request, chatId, results: [] }); return; }
+		const results: { token: string; id?: string }[] = [];
+		const all = [...ChatViewProvider._surfaces.values()].flatMap(view => view._tabs.flatMap(t => t.attachments));
+		const saved = [...ChatViewProvider._surfaces.values()].flatMap(view => view._tabs.flatMap(tab => tab.chat.entries.flatMap(entry => entry.kind === 'user' ? entry.attachmentData ?? [] : [])));
+		for (const item of Array.isArray(items) ? items.slice(0, 50) : []) {
+			if (!item || typeof item.token !== 'string' || typeof item.id !== 'string') { continue; }
+			let made: Attachment | undefined;
+			let source = this._blocked() ? undefined : ChatViewProvider._attachmentClipboard.get(item.id) ?? all.find(a => a.chip.id === item.id);
+			if (!source && !this._blocked()) {
+				const snapshot = saved.find(attachment => attachment.chip.id === item.id);
+				if (snapshot) { source = { ...snapshot, file: snapshot.file ? vscode.Uri.parse(snapshot.file) : undefined }; }
+			}
+			if (source) {
+				const { reference: _reference, ...chip } = source.chip;
+				const { exchangeAnnotation: _exchange, chromeAnnotation: _chrome, ...snapshot } = source;
+				made = { ...snapshot, chip: { ...chip, id: generateUuid() } };
+			} else if (!this._blocked() && typeof item.filePath === 'string' && path.isAbsolute(item.filePath) && !/[\0\n\r]/.test(item.filePath)) {
+				try {
+					const directory = (await fs.promises.stat(item.filePath)).isDirectory();
+					made = fileAttachment(vscode.Uri.file(item.filePath), this._workdir(tab), directory);
+				} catch { /* gone: plain text */ }
+			}
+			if (made && !this._disposed && !this._blocked() && this._tabs.includes(tab)) { tab.attachments.push(made); }
+			else { made = undefined; }
+			results.push({ token: item.token, id: made?.chip.id });
+		}
+		this._postMessage({ type: 'pastedAttachments', request, chatId, results });
+		this._post();
 	}
 
 	/** Files or folders selected through VS Code Explorer's context menu. */
@@ -7455,8 +7813,8 @@ function fileAttachment(uri: vscode.Uri, folder: string | undefined, directory: 
 	const inProject = relative !== undefined && relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
 	const shown = inProject ? relative.split(path.sep).join('/') : undefined;
 	return directory
-		? { chip: { id: generateUuid(), kind: 'file', label: `${path.basename(uri.fsPath)}/`, iconName: `${path.basename(uri.fsPath)}/` }, text: `Attached folder: ${uri.fsPath}${shown ? ` (${shown}/ in the project)` : ''}` }
-		: { chip: { id: generateUuid(), kind: 'file', label: path.basename(uri.fsPath), iconName: path.basename(uri.fsPath) }, file: uri, text: `Attached file: ${uri.fsPath}${shown ? ` (${shown} in the project)` : ''}` };
+		? { chip: { id: generateUuid(), kind: 'file', label: `${path.basename(uri.fsPath)}/`, iconName: `${path.basename(uri.fsPath)}/`, filePath: uri.fsPath }, text: `Attached folder: ${uri.fsPath}${shown ? ` (${shown}/ in the project)` : ''}` }
+		: { chip: { id: generateUuid(), kind: 'file', label: path.basename(uri.fsPath), iconName: path.basename(uri.fsPath), filePath: uri.fsPath }, file: uri, text: `Attached file: ${uri.fsPath}${shown ? ` (${shown} in the project)` : ''}` };
 }
 
 /** A model label squeezed for a tab caption: `Sonnet 5.5` → `sonnet5.5`, `GPT-6.1-Sol` → `sol6.1`, `anthropic/claude-sonnet-5.5` → `claude-sonnet-5.5` (OpenRouter and OpenCode ids carry a vendor). */

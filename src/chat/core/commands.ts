@@ -73,9 +73,12 @@ export const COMMANDS = {
 	send: chat('host', 'host'), stop: chat('host', 'host'), select: chat('host', 'host'), switchAgent: chat('host', 'host'),
 	approve: chat('host', 'host'), setViewMode: chat('host', 'host'), saveFeatureAi: chat('host', 'host'),
 	openAttachment: chat('mixed', 'mixed'),
+	reattachAttachment: editor('Attaching a saved item is available in VS Code.'),
 	unqueue: chat({ no: chromeEditor }, 'host'), resumeQueue: chat({ no: chromeEditor }, 'host'),
 	clearChat: chat({ no: chromeEditor }, 'host'), exportChat: chat({ no: chromeEditor }, 'mixed'),
 	attach: chat('local', 'mixed'), pasteFile: chat('local', 'local'), removeAttachment: chat('local', 'mixed'),
+	pasteAttachments: editor('Attachments pasted here stay text outside VS Code.'),
+	rememberAttachments: editor('Attachment clipboard snapshots are kept only in VS Code.'),
 	acceptSuggestion: chat('local', 'local'), stopAgent: chat({ no: chromeEditor }, 'host'), secondOpinion: chat({ no: chromeEditor }, 'host'),
 	refreshAgents: chat({ no: chromeEditor }, 'host'),
 
@@ -129,6 +132,8 @@ export const COMMANDS = {
 	fixGitCommit: both('git'), dismissGitCommit: both('git'), gitBranchName: both('git'), gitBranchAction: both('git'),
 	gitRemoteAction: both('git'), restoreBranchStash: both('git'),
 	githubStatus: editor('Pull requests and Actions runs are listed only in VS Code.'),
+	files: editor('Files are browsed only in VS Code.'),
+	githubCreatePr: editor('Pull requests are opened only from VS Code.'),
 	openRepo: both('github'), repoAction: both('github'), trustWorkdir: both('github'), removeRepoFolder: both('github'),
 } as const satisfies Record<ViewToHost['type'], CommandSpec>;
 

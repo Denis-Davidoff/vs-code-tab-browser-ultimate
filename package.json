@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate",
 	"displayName": "AI Browser🏆 Claude + Codex + Gemini + OpenCode + Pi + OpenRouter",
 	"description": "Chat with browser, MCP for Chrome and embedded browser tab with AI capabilities, Claude, Codex, Gemini, OpenCode, Pi and OpenRouter integration (Qwen, LM Studio, Ollama, etc.)",
-	"version": "0.9.8",
+	"version": "0.9.9",
 	"enabledApiProposals": [
 		"externalUriOpener",
 		"browser"

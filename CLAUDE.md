@@ -6440,6 +6440,32 @@ default one), and **how to use it**, asked for as a choice rather than one fixed
   the changes text, a removal. Push was checked only to the point git refused (no rights there).
   **Not run inside VS Code yet** — the form and the rows were checked in headless Chrome.
 
+#### The Files tab: an explorer of the working folder
+
+A composer tab (**Files**, ⌥F), asked for: the conversation's working folder as a file explorer, list or tiles
+(`aiBrowser.files.view` in the webview's `localStorage`), with a path bar, a filter, selection (click, ⌘/Ctrl,
+Shift, ⌘A), keys (Enter, Backspace up, Delete, ⌘C/X/V, ⌥⌘C for the path), a context menu and, while something is selected, icon actions in the one status row at the foot:
+Open (in VS Code), Attach (chips through `_attachPath`), Copy, Cut, Paste, Copy path, Reveal in Explorer, Delete,
+New folder. View: `filesPanel` in `chat.ts`; host: `_files` in `chatView.ts`; rules in the leaf
+`src/chat/fileExplorer.ts` (under test). Editor-only (`files` in `commands.ts`).
+
+- **The path bar**: a right-click on a crumb copies its full or project-relative path (`copyRelativePath`); a
+  double-click turns the crumbs into one field up to the filter, where a folder path is typed relative to the working
+  folder with its subfolders offered below (`complete` asks the host for the folders of the typed parent, cached per
+  opening; ↑/↓, Tab or Enter accept, Enter goes, Escape or a blur cancels). The crumbs are not rebuilt while it is open.
+- **Listings are correlated by request and directory**: late replies, including an old request for the same directory or a drop onto another crumb, cannot undo newer navigation.
+- **Every path is relative to the working folder and checked by the host**, lexically (`resolveInside`) and by the
+  real path of its parent, so a symlinked folder cannot lead out; a link entry is acted on, not followed. `.git` is
+  never listed; at most 2 000 entries a folder.
+- **What the draft carries is marked**: a file or folder attached to the message (`AttachmentChip.filePath`, set by every file/folder chip) gets its icon on a soft accent chip and a dotted accent underline under its name; the list is redrawn when the draft's attached paths change.
+- **Git marks** (list view): `gitMarks` reads `git status --porcelain=v1 -z --untracked-files=all` of the folder on show — the name yellow and `M` for changed, green and `U`/`A` for new; a folder gets `•`, green only when everything inside is new. Run through `_runWorkdirGit`, nothing where `_blocked()` (#208) or outside Git; deleted files are not listed.
+- **Delete goes to the Trash** behind a modal (a decision; #10). Paste never overwrites: `name copy.ext`,
+  `name copy 2.ext`. The clipboard is the host's, in memory.
+- **Drag and drop**: entries dragged out carry `ResourceURLs` (the type VS Code's editor area and Explorer actually accept a drag by — `text/uri-list` alone is ignored), `text/uri-list`, `application/vnd.code.uri-list` and `codefiles`; a drop reads `ResourceURLs` first. A file dragged from the OS has no path in a webview, so its bytes are sent (`upload`, 64 MB each, never overwriting);
+  for VS Code's editor area (opens a tab) and Explorer; a drop of URIs into the body, a folder or a path crumb is
+  copied in, one of our own entries moved (⌥/Ctrl copies). VS Code hands a drag to a webview only with **Shift
+  held**. **Not run inside VS Code yet** — which formats the Explorer accepts from a webview is unmeasured.
+
 #### The GitHub tab: pull requests and Actions runs
 
 A composer tab (**GitHub**, ⌥G) beside History, asked for: the open pull requests and the
@@ -6462,6 +6488,17 @@ in `commands.ts`). Decisions:
 - Per-pull-request checks and review state come only from `gh`; the API list has neither.
 - Answers are cached 30 s per repository in the host and in the view; a row opens the page
   in the system browser, always (asked for). Items on the folder's branch are marked.
+- **Create pull request** (asked for): a row above the list when the folder's branch is not the
+  default branch and no open pull request has it as head (`canOfferPullRequest`). Disabled with
+  "not published" until the branch has an upstream — publishing stays the Branches window's job.
+  A click opens an inline form (title prefilled from the last commit subject, Draft, Create),
+  built once and kept across rebuilds (#365); never a modal. The host (`_githubCreatePr`) reads
+  branch, base (the default branch from `gh repo view` / `GET /repos`), remote and fork itself —
+  only the title comes from the view, checked by `pullRequestTitle`. `head` is the name the branch is pushed under (`%(upstream:remoteref)`, so `local-work` tracking `origin/remote-work` opens `remote-work`), `owner:branch`
+  when the branch is pushed to a fork (`pullRequestHead`); existing PRs match the head repository and branch, so another fork using the same branch name cannot hide creation; the body lists the branch's commit
+  subjects (`pullRequestBody`). `gh pr create --repo` first, else the API with VS Code's GitHub
+  sign-in (asked for, the click being the consent). One create per folder at a time;
+  editor-only (`githubCreatePr` in `commands.ts`).
 - **Not built:** other hosts (GitLab, Bitbucket), merging or re-running from the tab, live
   updates while it is open. Not run inside VS Code yet.
 
@@ -6493,13 +6530,11 @@ toolbar; at most 30, prompts up to 20 000 characters.
   composer's agent/model toolbar stays under both, since a skill runs on them). The skill bar is
   a child of `.composer`, shown by `.skills-mode`; the choice is `composerTab` in the webview's
   `setState`, so every `vscode.setState` call must carry it (a test sandbox defines it too).
-- **The message box stays under every composer tab** (asked for): on Skills, Activity and History it
-  is cut to one line (`.composer:is(.skills-mode, .list-mode)`, the mirror's padding matched), Send
-  alone in its column; the chips and suggestions show on the Chat tab only (asked for) — they still go with the next message.
+- **The message box stays under every composer tab, whole** (asked for): Skills, Activity, History, GitHub and Files are panels above the full composer — chips, suggestions and every button, as on the Chat tab. It used to be cut to one line there, chips hidden.
 - **Activity and History are composer tabs too** (asked for): Activity is one scrolling list in the
   box's place (`.composer-list`) with two sections, Agents then Access (`.cl-section`); History lists
   this chat's own messages, newest first (`renderComposerHistory`, from `state.entries`); a click
-  scrolls the thread to that turn and flashes its prompt (`scrollToPrompt`). An agent row opens the Agents panel on that agent's card; Access lists every tab with Take / Make free. History asks the host with
+  scrolls the thread to that turn and flashes its prompt (`scrollToPrompt`). **The composer tabs can be reordered by dragging one onto another**; the order is per device (`localStorage` `aiBrowser.chat.composerTabOrder`), a tab a later build adds going at the end. Each message with a reply has an **Answer** button at its right (`answerStart` → `scrollToEntry`): it scrolls to the start of the turn's last run of reply text, the tools and thinking between two reply blocks not splitting the run. An agent row opens the Agents panel on that agent's card; Access lists every tab with Take / Make free. History asks the host with
   `listHistory` (editor-only in `commands.ts`) each time its tab opens. One resize handle serves
   both lists. **Its height is the user's**:
   a handle above it (`.cl-resize`, pointer drag, double-click resets to the 33vh default) sets
@@ -7506,7 +7541,19 @@ into the wrong one, or with nobody watching:
   closing the tab, the view, a replaced backend: the save came first, and the history lacked a
   message the resumed session had.
 
+### Lists and links while composing
+
+`preview-src/composerFormatting.ts` keeps list edits and link detection independent of the DOM. Enter continues `-`, `*`, `+`, `1.` or `1)` items; typing `1 ` normalizes the starter to `1. `. Tab/Shift+Tab indent/outdent selected list lines, empty items leave the list or return to their parent marker, and fenced code is left untouched. Enter outside a list keeps sending; the Send button and modified Enter remain available inside lists. Shift+Enter inserts a plain line break. User prompts render nested lists through `renderPromptText`, keeping inline attachment badges and link actions.
+
+The input mirror highlights HTTP(S) and `www.` links through `markComposerText` without changing the underlying text or its widths. Link hit testing runs through the textarea: a click opens internally, ⌘/Ctrl+click opens externally, and right-click offers both browsers and Copy Link through `linkMenu`. Selecting or dragging text does not open it. A single-slash scheme such as `https:/google.com` is normalized only for navigation/copy; the typed text stays intact. The host's existing `openLink` scheme validation still owns navigation.
+
 ### Attachments
+
+**A draft attachment is a token in the message text, `[@N label]`** (asked for, replacing the chip row above the box). `syncAttachmentTokens` in `chat.ts` inserts it at the caret, follows label changes, and removes the attachment when its token is deleted. The mirror and sent prompts share `markAttachmentTokens`, file/folder/type icons and capsule styling; invisible character slots reserve spacing so the textarea caret stays aligned. The icon is anchored at the end of its reserved prefix with a fixed 3 px gap before the label, even for multi-digit references; sent badges omit the unused remove-control space. Sent inline tokens replace duplicate attachment rows. Click opens the saved content; context menus copy, cut/delete drafts, or attach sent snapshots again.
+
+A token acts as one character for selection and editing. The textarea owns mouse dragging of whole badges, with a lightweight preview, Escape/outside-drop cancellation, and no dependence on native textarea drag initiation. Sent badges use native drag with the same rich payload; the textarea accepts it at the drop position. The remove control is hit-tested through the mirror and highlights on hover. Browser/editor attachment suggestions live in toolbar menus; the row retains persistent terminal pins.
+
+Copy/cut writes a portable `text/plain` marker (`[att:encoded-id|label]`) plus `application/x-ai-browser-attachments`, and asks the host to retain copied snapshots (`rememberAttachments`, editor-only, bounded to the 100 most recently copied items). Thus cut or sending the source does not destroy screenshot/page/selection clipboard content. The `att:` marker uses the stable attachment ID instead of a per-draft `@N`; it survives a text-only round trip through another application. `attachmentMarkers.ts` decodes these markers into the existing pending-reference flow. Sent-badge context copy and fully selected badges use the same format; Copy path remains a separate action. The host can also resolve IDs against saved attachments in currently loaded conversations when no clipboard snapshot remains. Copied annotations carry their saved text/image snapshot; live page bindings remain with the original chat and are stripped from copies. Paste reserves unused temporary references before input synchronization, then resolves them by request and chat ID; new chips wait for remapping even when state arrives first. Pending pastes disable Send. Replies for inactive chats do not edit the current draft. The host copies retained/live attachments or reconstructs a file/folder from its path; failures leave readable text.
 
 From the `+` menu, all held in the host until the message is sent: **Screenshot** is
 `BrowserController.capture(false, userTab)` (the visible area, as the toolbar's Copy Screenshot

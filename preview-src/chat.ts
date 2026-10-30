@@ -6,6 +6,9 @@ import { fitTabs } from './tabOverflow';
 import { createVsCodeChatHost } from './chatHost';
 import { installChatSelectionCopy } from './chatSelection';
 import { historyPeriodRange, type HistoryPeriod } from './historyPeriod';
+import { fileGridNeighbor, type FileArrow } from './fileNavigation';
+import { composerLinks, composerListEdit, composerListItem, composerListStarter, type ComposerEdit } from './composerFormatting';
+import { attachmentMarker, readAttachmentMarkers, selectedAttachmentMarkers } from './attachmentMarkers';
 import type { TemporaryStorage } from '../src/core/temporaryFiles';
 import { aiFeatures, defaultFeaturePrompts, featureAgent, featurePromptLimit, readFeatureAiSettings, type AiFeature, type FeatureAiSettings, type FeatureEffort } from '../src/chat/featureAi';
 import { createRecordingEncoder } from './recording';
@@ -14,6 +17,7 @@ import { pastedFileLimit } from '../src/chat/pastedFiles';
 import { maxRecordingSeconds, minRecordingSeconds, readRecordingQuality, readRecordingSeconds, recordingProfiles, type RecordingQuality } from '../src/browser/recordingQuality';
 import { localFileLink } from '../src/chat/fileLinks';
 import { namesFile, resolveFileIcon, type FileIconTable } from '../src/chat/fileIconTable';
+import { canOfferPullRequest } from '../src/chat/githubStatus';
 import { sleepMinutes, sleepHours, exchangeAwakeMinutes, type SleepChoice } from '../src/power/sleepProtocol';
 import { isAgentAuthenticationError } from '../src/chat/agentAuthText';
 import { frontStripId, shouldFocusComposer, stripTabs, terminalAddition, terminalCloseText, terminalTabShown, terminalTabTitle, visibleTerminalFront, withPendingTitle, type StripTab } from './terminalTabs';
@@ -53,7 +57,7 @@ const scriptNonce = (document.currentScript as HTMLScriptElement | null)?.nonce 
 
 import type {
 	ChatAgent,
-	AgentId, AllAgentsChat, AgentQuestion, AgentUsage, ApprovalEntry, UsageAlert, ToolbarParam, ToolbarResult, ToolbarRun, ToolbarSkill, ApprovalKind, ApprovalMode, AttachmentChip, AttachmentKind, ChatCommand, ChatEntry, ChatStats, ChatSummary, ChatTabStatus, ChatTabSummary, ChatViewMode, ChatViewState, HostToView, RepoMode, ToolEntry, ViewToHost, VoiceEvent, WorkdirFolder, GitBranchState, GitRemoteAction, WorkdirGitStatus,
+	AgentId, AllAgentsChat, AgentQuestion, AgentUsage, ApprovalEntry, UsageAlert, ToolbarParam, ToolbarResult, ToolbarRun, ToolbarSkill, ApprovalKind, ApprovalMode, AttachmentChip, AttachmentKind, PastedAttachment, ChatCommand, ChatEntry, ChatStats, ChatSummary, ChatTabStatus, ChatTabSummary, ChatViewMode, ChatViewState, HostToView, RepoMode, ToolEntry, ViewToHost, VoiceEvent, WorkdirFolder, GitBranchState, GitRemoteAction, WorkdirGitStatus,
 } from '../src/chat/chatProtocol';
 import type { ChatSound, ChatSoundSettings } from '../src/chat/chatProtocol';
 import { chatSoundLabels, playChatSound, unlockChatSound } from './chatSound';
@@ -69,7 +73,12 @@ initTheme(!window.aiBrowserChatHost);
 initChatAppearance();
 const vscode = createVsCodeChatHost();
 if (!window.aiBrowserChatHost) {
-  installChatSelectionCopy(document, document.body, text => vscode.postMessage({ type: 'copy', text }));
+  installChatSelectionCopy(document, document.body, text => vscode.postMessage({ type: 'copy', text }), selection => {
+    const selected = selectedAttachmentMarkers(selection, document.body);
+    if (!selected) { return undefined; }
+    if (gate('rememberAttachments').s === 'on') { post({ type: 'rememberAttachments', ids: selected.ids }); }
+    return selected.text;
+  });
 }
 /**
  * Every message goes through the surface's control map (`state.controls`, from
@@ -255,7 +264,7 @@ function renderPlaceholder(s: ChatViewState): void {
 // Every button of the bottom bar says what it does, and its key where it has
 // one — asked for: the icons alone did not say it.
 const plusButton = button([icon('add')], { class: 'ghost round', title: 'Attach to the message — a screenshot or an element of the page, its address, or a file' });
-const browserButton = button([icon('globe')], { class: 'ghost round', title: 'Open a new browser tab' });
+const browserButton = button([icon('globe')], { class: 'ghost round', title: 'Browser' });
 /** "/": the chat's own commands — clear or export this conversation. A square and a slash, both drawn in CSS (`.slash-mark`). */
 const slashButton = button([el('span', { class: 'slash-mark' })], { class: 'ghost round slash-button', title: 'Commands and skills — the agent\'s skills, and clearing or exporting this conversation. Type / in the message box to search them there' });
 /** The working folder: where the tab's agent works, and the files of it to attach. */
@@ -463,11 +472,11 @@ voiceError.setAttribute('role', 'alert');
 const inputActions = el('div', { class: 'input-actions' },
 	el('span', { class: 'send-slot' }, sendButton), el('span', { class: 'send-slot' }, micButton), el('span', { class: 'send-slot' }, queueButton));
 const inputArea = el('div', { class: 'input-area' }, inputWrap, inputActions);
-const composer = el('div', { class: 'composer' }, videoRecordingBar, attachmentsRow, pasteStatus, voiceError, inputArea, toolbar);
+const composer = el('div', { class: 'composer' }, videoRecordingBar, pasteStatus, voiceError, inputArea, attachmentsRow, toolbar);
 /** Asked when another agent is picked for a conversation that has started. */
 const switchCard = el('div', { class: 'switch-card' });
 /** The toolbar skills the tab's agent offers, above the message box. */
-const skillAddButton = button([icon('wand')], { class: 'skill-button skill-add', title: 'Add skill to toolbar' });
+const skillAddButton = button([icon('add'), el('span', { class: 'skill-add-label' }, 'Add skill')], { class: 'skill-button skill-add skill-new', title: 'Add skill to toolbar' });
 skillAddButton.setAttribute('aria-label', 'Add skill to toolbar');
 skillAddButton.dataset.tip = 'Add skill to toolbar';
 skillAddButton.addEventListener('click', () => openSkillEditor());
@@ -554,11 +563,80 @@ const composerTabSkills = button(composerTabLabel('Skills'), { class: 'composer-
 const composerTabActivity = button(composerTabLabel('Activity'), { class: 'composer-tab' });
 const composerTabHistory = button(composerTabLabel('History'), { class: 'composer-tab' });
 const composerTabGithub = button(composerTabLabel('GitHub'), { class: 'composer-tab' });
-type ComposerTab = 'chat' | 'skills' | 'activity' | 'history' | 'github';
-const composerTabButtons: Record<ComposerTab, HTMLButtonElement> = { chat: composerTabChat, skills: composerTabSkills, activity: composerTabActivity, history: composerTabHistory, github: composerTabGithub };
-const composerTabs = el('div', { class: 'composer-tabs' }, composerTabChat, composerTabSkills, composerTabActivity, composerTabHistory, composerTabGithub);
+const composerTabFiles = button(composerTabLabel('Files'), { class: 'composer-tab' });
+type ComposerTab = 'chat' | 'skills' | 'activity' | 'history' | 'github' | 'files';
+const composerTabButtons: Record<ComposerTab, HTMLButtonElement> = { chat: composerTabChat, skills: composerTabSkills, activity: composerTabActivity, history: composerTabHistory, github: composerTabGithub, files: composerTabFiles };
+const composerTabs = el('div', { class: 'composer-tabs' }, composerTabChat, composerTabSkills, composerTabActivity, composerTabHistory, composerTabFiles, composerTabGithub);
 composerTabs.setAttribute('role', 'tablist');
 for (const tab of Object.values(composerTabButtons)) { tab.setAttribute('role', 'tab'); }
+/**
+ * The composer tabs can be put in any order by dragging one onto another; the
+ * order is per device (`localStorage`), and a tab a later build adds goes at the end.
+ */
+const composerOrderKey = 'aiBrowser.chat.composerTabOrder';
+function applyComposerOrder(): void {
+	let saved: unknown;
+	try { saved = JSON.parse(localStorage.getItem(composerOrderKey) ?? 'null'); } catch { saved = null; }
+	const names = Object.keys(composerTabButtons) as ComposerTab[];
+	const order = Array.isArray(saved) ? saved.filter((n): n is ComposerTab => typeof n === 'string' && names.includes(n as ComposerTab)) : [];
+	for (const n of names) { if (!order.includes(n)) { order.push(n); } }
+	for (const n of order) { composerTabs.append(composerTabButtons[n]); }
+}
+let draggedComposerTab: ComposerTab | undefined;
+for (const [name, b] of Object.entries(composerTabButtons) as [ComposerTab, HTMLButtonElement][]) {
+	b.draggable = true;
+	b.addEventListener('dragstart', e => {
+		draggedComposerTab = name;
+		e.dataTransfer?.setData('application/x-ai-browser-composer-tab', name);
+		if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; }
+		b.classList.add('dragging');
+	});
+	b.addEventListener('dragend', () => {
+		draggedComposerTab = undefined;
+		b.classList.remove('dragging');
+		for (const t of Object.values(composerTabButtons)) { t.classList.remove('drop-before', 'drop-after'); }
+	});
+	b.addEventListener('dragover', e => {
+		if (!draggedComposerTab || draggedComposerTab === name) { return; }
+		e.preventDefault();
+		if (e.dataTransfer) { e.dataTransfer.dropEffect = 'move'; }
+		const r = b.getBoundingClientRect();
+		const after = e.clientX > r.left + r.width / 2;
+		b.classList.toggle('drop-after', after);
+		b.classList.toggle('drop-before', !after);
+	});
+	b.addEventListener('dragleave', () => b.classList.remove('drop-before', 'drop-after'));
+	b.addEventListener('drop', e => {
+		const from = draggedComposerTab;
+		b.classList.remove('drop-before', 'drop-after');
+		if (!from || from === name) { return; }
+		e.preventDefault();
+		const r = b.getBoundingClientRect();
+		const moved = composerTabButtons[from];
+		if (e.clientX > r.left + r.width / 2) { b.after(moved); } else { b.before(moved); }
+		const order = [...composerTabs.children].map(c => (Object.entries(composerTabButtons) as [ComposerTab, HTMLButtonElement][]).find(([, t]) => t === c)?.[0]).filter(Boolean);
+		try { localStorage.setItem(composerOrderKey, JSON.stringify(order)); } catch { /* order is kept for this view only */ }
+	});
+}
+applyComposerOrder();
+/** Right of the tabs: the list under a tab other than Chat takes the most height it may, and back. */
+const composerMaximize = el('button', { class: 'composer-maximize ghost' }, icon('screen-full'));
+composerTabs.append(composerMaximize);
+let heightBeforeMaximize: number | undefined;
+function composerMaximized(): boolean { return overviewHeight !== undefined && overviewHeight >= overviewMax(); }
+function renderComposerMaximize(): void {
+	const on = composerMaximized();
+	composerMaximize.hidden = composerTab === 'chat';
+	composerMaximize.replaceChildren(icon(on ? 'screen-normal' : 'screen-full'));
+	composerMaximize.title = on ? 'Restore height' : 'Full height';
+	composerMaximize.setAttribute('aria-pressed', String(on));
+}
+composerMaximize.addEventListener('click', () => {
+	if (composerMaximized()) { overviewHeight = heightBeforeMaximize; heightBeforeMaximize = undefined; }
+	else { heightBeforeMaximize = overviewHeight; overviewHeight = overviewMax(); }
+	applyOverviewHeight();
+	vscode.setState({ ...(vscode.getState() ?? {}), overviewHeight });
+});
 composer.insertBefore(skillBar, inputArea);
 /**
  * The Activity tab: one scrolling list in the message box's place, in three
@@ -573,6 +651,7 @@ const composerOverview = el('div', { class: 'composer-list' }, composerAgentList
 const composerHistoryPanel = el('div', { class: 'composer-list' }, composerHistoryList);
 const composerGithubList = el('div', { class: 'cl-section' });
 const composerGithubPanel = el('div', { class: 'composer-list composer-github' }, composerGithubList);
+const filesPanel = el('div', { class: 'composer-list composer-files' });
 const composerResize = el('div', { class: 'cl-resize', title: 'Drag to resize · double-click to reset' });
 composerResize.setAttribute('role', 'separator');
 composerResize.setAttribute('aria-orientation', 'horizontal');
@@ -580,6 +659,7 @@ composer.insertBefore(composerResize, skillBar);
 composer.insertBefore(composerOverview, inputArea);
 composer.insertBefore(composerHistoryPanel, inputArea);
 composer.insertBefore(composerGithubPanel, inputArea);
+composer.insertBefore(filesPanel, inputArea);
 const overviewMin = 80;
 /** The visible height (shrinks under a phone keyboard), for the CSS caps on the composer's lists. */
 function trackVisibleHeight(): void {
@@ -590,7 +670,14 @@ function trackVisibleHeight(): void {
 	window.addEventListener('resize', update);
 }
 trackVisibleHeight();
-const overviewMax = () => Math.max(overviewMin, Math.round(window.innerHeight * 0.8));
+// The panel may grow only as far as the rest of the footer (tabs, message box, folder and Git line) still fits.
+const overviewMax = () => {
+	const footer = document.querySelector<HTMLElement>('.footer');
+	const shown = [composerOverview, composerHistoryPanel, composerGithubPanel, filesPanel, skillBar].find(list => list.offsetHeight > 0);
+	const rest = footer ? footer.offsetHeight - (shown?.offsetHeight ?? 0) : 0;
+	return Math.max(overviewMin, Math.min(Math.round(window.innerHeight * 0.8), window.innerHeight - rest - 48));
+};
+window.addEventListener('resize', () => { if (overviewHeight !== undefined) { applyOverviewHeight(); } });
 let overviewHeight: number | undefined;
 let composerHeightTimer: ReturnType<typeof setTimeout> | undefined;
 function stopComposerHeightAnimation(): void {
@@ -604,18 +691,19 @@ composer.addEventListener('transitionend', event => {
 });
 function applyOverviewHeight(): void {
 	stopComposerHeightAnimation();
-	for (const list of [composerOverview, composerHistoryPanel, composerGithubPanel, skillBar]) {
+	for (const list of [composerOverview, composerHistoryPanel, composerGithubPanel, filesPanel, skillBar]) {
 		if (overviewHeight === undefined) { list.style.removeProperty('height'); list.style.removeProperty('max-height'); continue; }
 		list.style.height = `${Math.min(overviewMax(), Math.max(overviewMin, overviewHeight))}px`;
 		list.style.maxHeight = 'none';
 	}
+	renderComposerMaximize();
 }
 composerResize.addEventListener('pointerdown', e => {
 	if (e.button !== 0) { return; }
 	e.preventDefault();
 	stopComposerHeightAnimation();
 	const startY = e.clientY;
-	const startH = (composerTab === 'history' ? composerHistoryPanel : composerTab === 'github' ? composerGithubPanel : composerTab === 'skills' ? skillBar : composerOverview).getBoundingClientRect().height;
+	const startH = (composerTab === 'history' ? composerHistoryPanel : composerTab === 'github' ? composerGithubPanel : composerTab === 'files' ? filesPanel : composerTab === 'skills' ? skillBar : composerOverview).getBoundingClientRect().height;
 	composerResize.setPointerCapture(e.pointerId);
 	composerResize.classList.add('dragging');
 	const move = (m: PointerEvent) => {
@@ -654,11 +742,14 @@ function setComposerTab(tab: ComposerTab, save = true): void {
 		b.setAttribute('aria-selected', String(name === tab));
 	}
 	composer.classList.toggle('skills-mode', tab === 'skills');
-	composer.classList.toggle('list-mode', tab === 'activity' || tab === 'history' || tab === 'github');
+	renderComposerMaximize();
+	composer.classList.toggle('list-mode', tab === 'activity' || tab === 'history' || tab === 'github' || tab === 'files');
 	composerOverview.hidden = tab !== 'activity';
 	composerHistoryPanel.hidden = tab !== 'history';
 	composerGithubPanel.hidden = tab !== 'github';
+	filesPanel.hidden = tab !== 'files';
 	if (tab === 'github') { requestGithub(); }
+	if (tab === 'files') { openFilesTab(); }
 	if (tab === 'activity' && state) { renderComposerAgents(state); renderComposerAccess(state); }
 	if (tab === 'history') {
 		renderComposerHistory();
@@ -683,7 +774,7 @@ for (const [name, b] of Object.entries(composerTabButtons) as [ComposerTab, HTML
 	b.addEventListener('click', () => setComposerTab(name));
 }
 /** Alt+C / S / A / H switch the composer tabs; `code`, since Option+letter types a symbol on a Mac. */
-const composerTabKeys: Record<string, ComposerTab> = { KeyC: 'chat', KeyS: 'skills', KeyA: 'activity', KeyH: 'history', KeyG: 'github' };
+const composerTabKeys: Record<string, ComposerTab> = { KeyC: 'chat', KeyS: 'skills', KeyA: 'activity', KeyH: 'history', KeyG: 'github', KeyF: 'files' };
 document.addEventListener('keydown', e => {
 	if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.isComposing) { return; }
 	const tab = composerTabKeys[e.code];
@@ -815,13 +906,16 @@ function renderComposerAccess(s: ChatViewState): void {
 /** The user's own messages in this chat, newest first; a click scrolls the thread to one. */
 function renderComposerHistory(): void {
 	if (composerTab !== 'history') { return; }
-	const prompts: { index: number; text: string; at?: number }[] = [];
-	(state?.entries ?? []).forEach((e, index) => {
-		if (e.kind === 'user') { prompts.push({ index, text: e.text.trim() || e.attachments.join(', ') || '(empty message)', at: e.at }); }
-	});
+	const prompts: { index: number; text: string; at?: number; answer?: number }[] = [];
+	const entries = state?.entries ?? [];
+	for (const turn of turnsOf(entries)) {
+		const e = entries[turn.prompt];
+		if (e?.kind !== 'user') { continue; }
+		prompts.push({ index: turn.prompt, text: e.text.trim() || e.attachments.join(', ') || '(empty message)', at: e.at, answer: answerStart(entries, turn.rows) });
+	}
 	prompts.reverse();
 	const earlier = state?.entriesOffset ?? 0;
-	const shape = JSON.stringify([state?.chatId ?? '', earlier, prompts.map(p => [p.index, p.text, p.at])]);
+	const shape = JSON.stringify([state?.chatId ?? '', earlier, prompts.map(p => [p.index, p.text, p.at, p.answer])]);
 	if (shape === composerHistoryShape) { return; }
 	composerHistoryShape = shape;
 	composerHistoryList.replaceChildren();
@@ -835,7 +929,11 @@ function renderComposerHistory(): void {
 			p.at ? [el('span', { text: ago(p.at) })] : [],
 			icon('arrow-up', 'cl-chevron')), { class: 'cl-row', title: p.text.slice(0, 1000) });
 		row.addEventListener('click', () => scrollToPrompt(p.index));
-		composerHistoryList.append(row);
+		if (p.answer === undefined) { composerHistoryList.append(row); continue; }
+		const answer = button([icon('arrow-down'), el('span', { text: 'Answer' })], { class: 'cl-answer', title: 'Scroll to the reply to this message' });
+		const at = p.answer;
+		answer.addEventListener('click', () => scrollToEntry(at));
+		composerHistoryList.append(el('div', { class: 'cl-row-pair' }, row, answer));
 	}
 	if (earlier) {
 		// Only the last turns are loaded (`windowEntries`); the rest come on request, as from the top of the thread.
@@ -860,11 +958,51 @@ function requestGithub(force = false, signIn = false): void {
 	post({ type: 'githubStatus', folder: gitFolder, ...(signIn ? { signIn } : {}) });
 	renderComposerGithub();
 }
+/**
+ * "Create pull request" for the working folder's branch, when it has none. The
+ * form is built once and kept across rebuilds of the list, so typing in the
+ * title is never replaced (#365).
+ */
+let githubPrOpen = false;
+/** Folders whose pull request is being opened: per folder, so switching folders mid-create neither drops the answer nor locks the form. */
+const githubPrCreatingIn = new Set<string>();
+const githubPrCreatingHere = (): boolean => !!gitFolder && githubPrCreatingIn.has(gitFolder);
+let githubPrError = '';
+let githubPrCreated: { number: number; url: string } | undefined;
+const githubPrTitle = el('input', { class: 'gh-pr-title' }) as HTMLInputElement;
+githubPrTitle.type = 'text';
+githubPrTitle.placeholder = 'Pull request title';
+githubPrTitle.maxLength = 256;
+const githubPrDraft = el('input') as HTMLInputElement;
+githubPrDraft.type = 'checkbox';
+const githubPrSubmit = button(['Create'], { class: 'cl-link gh-pr-submit' });
+const githubPrCancel = button(['Cancel'], { class: 'cl-link' });
+const githubPrNote = el('div', { class: 'gh-pr-note' });
+const githubPrForm = el('div', { class: 'gh-pr-form' }, githubPrTitle,
+	el('div', { class: 'gh-pr-actions' }, el('label', { class: 'gh-pr-draft' }, githubPrDraft, el('span', { text: 'Draft' })), el('span', { class: 'cl-spacer' }), githubPrCancel, githubPrSubmit),
+	githubPrNote);
+function submitGithubPr(): void {
+	const title = githubPrTitle.value.trim();
+	if (!gitFolder || githubPrCreatingHere()) { return; }
+	if (!title) { githubPrError = 'Give the pull request a title.'; composerGithubShape = ''; renderComposerGithub(); githubPrTitle.focus(); return; }
+	githubPrCreatingIn.add(gitFolder);
+	githubPrError = '';
+	post({ type: 'githubCreatePr', folder: gitFolder, title, ...(githubPrDraft.checked ? { draft: true } : {}) });
+	composerGithubShape = '';
+	renderComposerGithub();
+}
+githubPrSubmit.addEventListener('click', submitGithubPr);
+githubPrCancel.addEventListener('click', () => { githubPrOpen = false; githubPrError = ''; composerGithubShape = ''; renderComposerGithub(); });
+githubPrTitle.addEventListener('keydown', event => {
+	if (event.isComposing) { return; }
+	if (event.key === 'Enter') { event.preventDefault(); submitGithubPr(); }
+	else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); githubPrCancel.click(); }
+});
 const githubSourceName: Record<string, string> = { gh: 'gh CLI', vscode: 'VS Code GitHub sign-in', public: 'public API' };
 const runIcon: Record<string, string> = { success: 'pass-filled', failure: 'error', running: 'sync', queued: 'clock', cancelled: 'circle-slash', skipped: 'debug-step-over', other: 'circle-outline' };
 function renderComposerGithub(): void {
 	if (composerTab !== 'github') { return; }
-	const shape = JSON.stringify([gitFolder ?? '', githubPending, githubAnswer ?? null]);
+	const shape = JSON.stringify([gitFolder ?? '', githubPending, githubAnswer ?? null, githubPrOpen, githubPrCreatingHere(), githubPrError, githubPrCreated ?? null]);
 	if (shape === composerGithubShape) { return; }
 	composerGithubShape = shape;
 	composerGithubList.replaceChildren();
@@ -883,6 +1021,38 @@ function renderComposerGithub(): void {
 	const chip = (text: string, cls: string) => el('span', { class: `cl-chip ${cls}`, text });
 	const open = (url: string) => () => post({ type: 'openLink', url, external: true });
 	composerGithubList.append(clHead('Pull requests', status.prs.length, 'Open pull requests, newest update first'));
+	if (githubPrCreated) {
+		const done = button(clRow(el('span', { class: 'cl-lead cl-icon gh-pr' }, icon('pass-filled')), `Pull request #${githubPrCreated.number} opened`, [el('span', { text: 'Open on GitHub' })], icon('link-external', 'cl-chevron')), { class: 'cl-row current', title: githubPrCreated.url });
+		done.addEventListener('click', open(githubPrCreated.url));
+		composerGithubList.append(done);
+	}
+	if (canOfferPullRequest(status) && status.branch) {
+		if (!githubPrOpen) {
+			const unpublished = status.published === false;
+			const meta: Child[] = [el('span', { text: `${status.branch} → ${status.defaultBranch}` })];
+			if (unpublished) { meta.push(chip('not published', 'other')); }
+			const offer = button(clRow(el('span', { class: 'cl-lead cl-icon gh-pr' }, icon('git-pull-request-create')), 'Create pull request', meta, icon('add', 'cl-chevron')),
+				{ class: 'cl-row gh-pr-offer', title: unpublished ? `Publish ${status.branch} in the Branches window first.` : `Open a pull request from ${status.branch} into ${status.defaultBranch}` });
+			offer.disabled = unpublished;
+			offer.addEventListener('click', () => {
+				githubPrOpen = true;
+				githubPrError = '';
+				if (!githubPrTitle.value) { githubPrTitle.value = status.suggestedTitle ?? status.branch ?? ''; }
+				composerGithubShape = '';
+				renderComposerGithub();
+				githubPrTitle.focus();
+				githubPrTitle.select();
+			});
+			composerGithubList.append(offer);
+		} else {
+			githubPrNote.textContent = githubPrError || `${status.branch} → ${status.defaultBranch}`;
+			githubPrNote.classList.toggle('error', !!githubPrError);
+			githubPrSubmit.textContent = githubPrCreatingHere() ? 'Creating…' : 'Create';
+			githubPrSubmit.disabled = githubPrCreatingHere();
+			githubPrTitle.disabled = githubPrCreatingHere();
+			composerGithubList.append(githubPrForm);
+		}
+	}
 	if (!status.prs.length) { composerGithubList.append(clEmpty('git-pull-request', 'No open pull requests.')); }
 	for (const pr of status.prs) {
 		const meta: Child[] = [el('span', { text: `#${pr.number}` }), el('span', { class: 'cl-sep', text: '·' }), el('span', { text: pr.author })];
@@ -910,7 +1080,531 @@ function renderComposerGithub(): void {
 	}
 	if (githubAnswer.signIn) { composerGithubList.append(el('div', { class: 'cl-empty' }, el('span', { text: 'Only public data is shown.' }), signIn())); }
 }
+/**
+ * The Files tab: the working folder as an explorer — list or tiles, a path bar,
+ * selection (click, ⌘/Ctrl, Shift), open, attach, copy, cut, paste, copy path,
+ * delete, and drag and drop to and from VS Code (editor tabs, Explorer). The
+ * host does every file operation and checks each path is inside the folder.
+ */
+type FilesView = 'list' | 'grid';
+type FilesSort = 'name' | 'size' | 'mtime';
+let filesSort: FilesSort = 'name';
+let filesSortDescending = false;
+let filesView: FilesView = (localStorage.getItem('aiBrowser.files.view') as FilesView | null) === 'grid' ? 'grid' : 'list';
+let filesDir = '';
+let filesFolder: string | undefined;
+let filesEntries: readonly FileEntryView[] = [];
+let filesTruncated = false;
+let filesPending = false;
+let filesRequest = 0;
+let filesListingRequest = 0;
+let filesError = '';
+let filesNotice = '';
+let filesNoticeTimer: ReturnType<typeof setTimeout> | undefined;
+let filesClipboard: { count: number; cut: boolean } | undefined;
+let filesFilter = '';
+const filesSelected = new Set<string>();
+let filesAnchor: string | undefined;
+type FileEntryView = { readonly name: string; readonly dir: boolean; readonly link?: boolean; readonly size?: number; readonly mtime?: number; readonly git?: 'M' | 'A' | 'U' };
+const filesCrumbs = el('div', { class: 'fx-crumbs' });
+const filesSearch = el('input', { class: 'fx-search' }) as HTMLInputElement;
+filesSearch.type = 'search';
+filesSearch.placeholder = 'Filter';
+filesSearch.setAttribute('aria-label', 'Filter files');
+function fxTool(iconName: string, tip: string, run: () => void): HTMLButtonElement {
+	const b = button([icon(iconName)], { class: 'fx-tool', title: tip });
+	b.setAttribute('aria-label', tip);
+	b.addEventListener('click', run);
+	return b;
+}
+const filesUp = fxTool('arrow-up', 'Up one folder (Backspace)', () => filesGo(parentOf(filesDir)));
+const filesNewFolder = fxTool('new-folder', 'New folder', () => filesAskFolderName());
+const filesPaste = fxTool('clippy', 'Paste here (⌘V)', () => filesAct('paste'));
+const filesSearchButton = fxTool('search', 'Filter', () => showFilesSearch(!filesSearch.classList.contains('open')));
+filesSearchButton.addEventListener('mousedown', e => e.preventDefault());
+// The filter is a magnifier until it is pressed; empty, it folds back when it loses focus.
+function showFilesSearch(open: boolean): void {
+	filesSearch.classList.toggle('open', open);
+	filesSearchButton.classList.toggle('active', open);
+	if (open) filesSearch.focus();
+}
+const filesRefresh = fxTool('refresh', 'Refresh', () => filesList());
+const filesViewList = fxTool('list-flat', 'List', () => setFilesView('list'));
+const filesViewGrid = fxTool('layout', 'Tiles', () => setFilesView('grid'));
+const filesViewSeg = el('div', { class: 'fx-seg' }, filesViewList, filesViewGrid);
+const filesBar = el('div', { class: 'fx-bar' }, filesUp, filesCrumbs, filesSearch, filesSearchButton, filesNewFolder, filesPaste, filesRefresh, filesViewSeg);
+const filesBody = el('div', { class: 'fx-body' });
+filesBody.tabIndex = 0;
+filesBody.setAttribute('role', 'listbox');
+filesBody.setAttribute('aria-multiselectable', 'true');
+const filesStatus = el('div', { class: 'fx-status' });
+filesPanel.append(filesBar, filesBody, filesStatus);
+
+// Double-click the breadcrumbs to type a folder path, with the folders of what is typed offered below.
+let filesPathEditing = false;
+const filesPathCache = new Map<string, readonly string[]>();
+const filesPathAsked = new Set<string>();
+filesCrumbs.title = 'Double-click to type a path';
+filesCrumbs.addEventListener('dblclick', e => { e.preventDefault(); filesEditPath(); });
+function filesEditPath(): void {
+	if (filesPathEditing || !filesFolder) { return; }
+	filesPathEditing = true;
+	filesPathCache.clear();
+	filesPathAsked.clear();
+	const field = el('input', { class: 'fx-path-input' }) as HTMLInputElement;
+	field.value = filesDir ? `${filesDir}/` : '';
+	field.placeholder = 'Folder path, relative to the working folder';
+	field.spellcheck = false;
+	field.setAttribute('aria-label', 'Folder path');
+	const list = el('div', { class: 'fx-path-list' });
+	const cancel = button([icon('close')], { class: 'fx-path-cancel', title: 'Cancel editing (Esc)' });
+	cancel.setAttribute('aria-label', 'Cancel editing');
+	// A press would blur the field first; keep focus, and cancel on the click.
+	cancel.addEventListener('mousedown', ev => ev.preventDefault());
+	cancel.addEventListener('click', () => finish(false));
+	const wrap = el('div', { class: 'fx-path-edit' }, field, cancel, list);
+	filesBar.classList.add('editing-path');
+	filesCrumbs.replaceChildren(wrap);
+	let chosen = -1;
+	let shown: string[] = [];
+	const split = () => { const v = field.value.replace(/^\/+/, ''); const i = v.lastIndexOf('/'); return { parent: i < 0 ? '' : v.slice(0, i), prefix: i < 0 ? v : v.slice(i + 1) }; };
+	const draw = () => {
+		const { parent, prefix } = split();
+		const names = filesPathCache.get(parent);
+		if (!names && !filesPathAsked.has(parent)) { filesPathAsked.add(parent); filesPost('complete', { dir: parent }); }
+		shown = (names ?? []).filter(n => n.toLowerCase().startsWith(prefix.toLowerCase())).slice(0, 50);
+		if (chosen >= shown.length) { chosen = shown.length - 1; }
+		list.replaceChildren(...shown.map((n, i) => {
+			const row = el('div', { class: `fx-path-option${i === chosen ? ' active' : ''}` }, icon('folder'), el('span', { text: n }));
+			row.addEventListener('mousedown', ev => { ev.preventDefault(); accept(i); });
+			return row;
+		}));
+		list.hidden = !shown.length;
+	};
+	const accept = (i: number) => {
+		const { parent } = split();
+		field.value = `${parent ? `${parent}/` : ''}${shown[i]}/`;
+		chosen = -1;
+		draw();
+	};
+	const finish = (go: boolean) => {
+		if (!filesPathEditing) { return; }
+		filesPathEditing = false;
+		filesBar.classList.remove('editing-path');
+		filesFieldDraw = undefined;
+		const target = field.value.trim().replace(/^\.?\/+/, '').replace(/\/+$/, '').replace(/\/{2,}/g, '/');
+		if (go && target !== filesDir) { filesGo(target === '.' ? '' : target); } else { renderFiles(); }
+		filesBody.focus();
+	};
+	filesFieldDraw = draw;
+	field.addEventListener('input', () => { chosen = -1; draw(); });
+	field.addEventListener('keydown', e => {
+		e.stopPropagation();
+		if (e.isComposing) { return; }
+		if (e.key === 'ArrowDown' && shown.length) { e.preventDefault(); chosen = (chosen + 1) % shown.length; draw(); }
+		else if (e.key === 'ArrowUp' && shown.length) { e.preventDefault(); chosen = chosen <= 0 ? shown.length - 1 : chosen - 1; draw(); }
+		else if (e.key === 'Tab' && shown.length) { e.preventDefault(); accept(chosen < 0 ? 0 : chosen); }
+		else if (e.key === 'Enter') { e.preventDefault(); if (chosen >= 0) { accept(chosen); } else { finish(true); } }
+		else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+	});
+	field.addEventListener('blur', () => finish(false));
+	field.focus();
+	field.setSelectionRange(field.value.length, field.value.length);
+	draw();
+}
+let filesFieldDraw: (() => void) | undefined;
+function filesPathCompletions(dir: string, names: readonly string[]): void {
+	filesPathCache.set(dir, names);
+	filesFieldDraw?.();
+}
+
+function parentOf(dir: string): string { return dir.includes('/') ? dir.slice(0, dir.lastIndexOf('/')) : ''; }
+function filesPathOf(name: string): string { return filesDir ? `${filesDir}/${name}` : name; }
+function filesPost(action: Extract<ViewToHost, { type: 'files' }>['action'], extra: { paths?: string[]; name?: string; uris?: string[]; move?: boolean; dir?: string; data?: string } = {}): void {
+	if (!filesFolder) { return; }
+	const request = ++filesRequest;
+	const dir = extra.dir ?? filesDir;
+	if (dir === filesDir && !['copyPath', 'copyRelativePath', 'open', 'reveal', 'revealOs', 'attach', 'complete'].includes(action)) {
+		filesPending = true;
+		filesListingRequest = request;
+	}
+	post({ type: 'files', folder: filesFolder, action, dir, ...extra, request });
+	renderFiles();
+}
+function filesList(): void { filesPost('list'); }
+function filesGo(dir: string): void {
+	filesDir = dir;
+	filesSelected.clear();
+	filesAnchor = undefined;
+	filesFilter = '';
+	filesSearch.value = '';
+	showFilesSearch(false);
+	filesEntries = [];
+	filesList();
+	filesBody.focus();
+}
+function openFilesTab(): void {
+	if (filesFolder !== gitFolder) { filesFolder = gitFolder; filesDir = ''; filesEntries = []; filesSelected.clear(); }
+	if (filesFolder) { filesList(); } else { renderFiles(); }
+}
+function setFilesView(view: FilesView): void {
+	filesView = view;
+	localStorage.setItem('aiBrowser.files.view', view);
+	renderFiles();
+}
+function selectedPaths(): string[] { return [...filesSelected].map(filesPathOf); }
+function filesAct(action: 'open' | 'delete' | 'copy' | 'cut' | 'paste' | 'copyPath' | 'copyRelativePath' | 'attach' | 'reveal' | 'revealOs', names?: string[]): void {
+	const paths = names ? names.map(filesPathOf) : selectedPaths();
+	if (action !== 'paste' && action !== 'copyPath' && action !== 'copyRelativePath' && action !== 'reveal' && action !== 'revealOs' && !paths.length) { return; }
+	filesPost(action, { paths });
+}
+function filesOpen(entry: FileEntryView): void {
+	if (entry.dir) { filesGo(filesPathOf(entry.name)); } else { filesAct('open', [entry.name]); }
+}
+function filesAskFolderName(): void {
+	const field = el('input', { class: 'fx-rename' }) as HTMLInputElement;
+	field.placeholder = 'New folder name';
+	const row = el('div', { class: 'fx-item fx-new' }, icon('new-folder', 'fx-icon'), field);
+	filesBody.prepend(row);
+	field.focus();
+	let done = false;
+	const finish = (ok: boolean) => {
+		if (done) { return; }
+		done = true;
+		row.remove();
+		const name = field.value.trim();
+		if (ok && name) { filesPost('newFolder', { name }); }
+	};
+	field.addEventListener('keydown', e => {
+		if (e.isComposing) { return; }
+		if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+		else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
+		e.stopPropagation();
+	});
+	field.addEventListener('blur', () => finish(true));
+}
+function filesAnswer(message: Extract<HostToView, { type: 'files' }>): void {
+	if (message.folder !== filesFolder) { return; }
+	if (message.completions) { filesPathCompletions(message.dir, message.completions); return; }
+	if (message.request !== filesListingRequest || message.dir !== filesDir) { return; }
+	filesPending = false;
+	filesClipboard = message.clipboard;
+	filesError = message.error ?? '';
+	if (message.notice) {
+		filesNotice = message.notice;
+		clearTimeout(filesNoticeTimer);
+		filesNoticeTimer = setTimeout(() => { filesNotice = ''; renderFiles(); }, 4000);
+	}
+	if (message.entries) {
+		filesDir = message.dir;
+		filesEntries = message.entries;
+		filesTruncated = message.truncated === true;
+		for (const name of [...filesSelected]) { if (!filesEntries.some(e => e.name === name)) { filesSelected.delete(name); } }
+	}
+	renderFiles();
+}
+function fileSize(n: number | undefined): string {
+	if (n === undefined) { return ''; }
+	const units = ['B', 'KB', 'MB', 'GB'];
+	let i = 0, v = n;
+	while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+	return `${i ? v.toFixed(v < 10 ? 1 : 0) : v} ${units[i]}`;
+}
+function fileIconFor(entry: FileEntryView, big: boolean): HTMLElement {
+	const themed = themeFileIcon(entry.dir ? `${entry.name}/` : entry.name);
+	const fallback = icon(entry.dir ? 'folder' : 'file', 'fx-codicon');
+	const box = el('span', { class: `fx-icon${entry.dir ? ' dir' : ''}${big ? ' big' : ''}` }, themed && !(big && entry.dir) ? themed : fallback);
+	if (entry.link) { box.append(icon('link', 'fx-link')); }
+	return box;
+}
+function visibleEntries(): readonly FileEntryView[] {
+	const q = filesFilter.trim().toLowerCase();
+	const entries = q ? filesEntries.filter(e => e.name.toLowerCase().includes(q)) : [...filesEntries];
+	return entries.sort((a, b) => {
+		if (a.dir !== b.dir) { return a.dir ? -1 : 1; }
+		const byName = a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+		const order = filesSort === 'name' ? byName : ((a[filesSort] ?? 0) - (b[filesSort] ?? 0) || byName);
+		return filesSortDescending ? -order : order;
+	});
+}
+function filesSortHeader(label: string, key: FilesSort): HTMLElement {
+	const active = filesSort === key;
+	const direction = active ? (filesSortDescending ? 'descending' : 'ascending') : 'none';
+	const cell = el('span');
+	cell.setAttribute('aria-sort', direction);
+	cell.setAttribute('role', 'columnheader');
+	const b = button([label], { class: `fx-sort${key !== 'name' ? ' right' : ''}`, title: `Sort by ${label.toLowerCase()} ${active && !filesSortDescending ? 'descending' : 'ascending'}` });
+	if (active) { b.dataset.direction = filesSortDescending ? 'desc' : 'asc'; }
+	b.addEventListener('click', () => {
+		filesSortDescending = active ? !filesSortDescending : false;
+		filesSort = key;
+		renderFiles();
+		filesBody.querySelector<HTMLButtonElement>(`[data-sort="${key}"] button`)?.focus({ preventScroll: true });
+	});
+	cell.dataset.sort = key;
+	cell.append(b);
+	return cell;
+}
+function filesSelect(name: string, e: MouseEvent | KeyboardEvent): void {
+	const list = visibleEntries().map(x => x.name);
+	if (e.shiftKey && filesAnchor && list.includes(filesAnchor)) {
+		const [a, b] = [list.indexOf(filesAnchor), list.indexOf(name)].sort((x, y) => x - y);
+		if (!(e.metaKey || e.ctrlKey)) { filesSelected.clear(); }
+		for (const n of list.slice(a, b + 1)) { filesSelected.add(n); }
+	} else if (e.metaKey || e.ctrlKey) {
+		if (filesSelected.has(name)) { filesSelected.delete(name); } else { filesSelected.add(name); }
+		filesAnchor = name;
+	} else {
+		filesSelected.clear();
+		filesSelected.add(name);
+		filesAnchor = name;
+	}
+	renderFiles();
+}
+function filesMenu(anchor: HTMLElement, entry?: FileEntryView): void {
+	if (entry && !filesSelected.has(entry.name)) {
+		filesSelected.clear();
+		filesSelected.add(entry.name);
+		filesAnchor = entry.name;
+		renderFiles();
+		// Rendering replaces the rows: anchor the menu to the newly selected row.
+		anchor = filesBody.querySelectorAll<HTMLElement>('.fx-item')[visibleEntries().findIndex(e => e.name === entry.name)] ?? filesCrumbs;
+	}
+	const n = filesSelected.size;
+	const mod = /Mac/.test(navigator.platform) ? '⌘' : 'Ctrl+';
+	const single = n === 1 ? filesEntries.find(e => filesSelected.has(e.name)) : undefined;
+	const items: MenuItem[] = n ? [
+		{ icon: single?.dir ? 'folder-opened' : 'go-to-file', label: single?.dir ? 'Open folder' : 'Open in VS Code', shortcut: 'Enter', run: () => single ? filesOpen(single) : filesAct('open') },
+		{ icon: 'clippy', label: n === 1 ? 'Attach to chat' : `Attach ${n} to chat`, run: () => filesAct('attach') },
+		{ icon: 'copy', label: 'Copy', shortcut: `${mod}C`, separator: true, run: () => filesAct('copy') },
+		{ icon: 'move', label: 'Cut', shortcut: `${mod}X`, run: () => filesAct('cut') },
+		{ icon: 'clippy', label: 'Paste', shortcut: `${mod}V`, disabled: !filesClipboard, run: () => filesAct('paste') },
+		{ icon: 'link', label: n === 1 ? 'Copy path' : 'Copy paths', separator: true, run: () => filesAct('copyPath') },
+		{ icon: 'list-tree', label: 'Reveal in Explorer', disabled: n !== 1, run: () => filesAct('reveal') },
+		{ icon: 'folder-opened', label: navigator.platform.startsWith('Mac') ? 'Reveal in Finder' : navigator.platform.startsWith('Win') ? 'Reveal in File Explorer' : 'Open Containing Folder', disabled: n !== 1, run: () => filesAct('revealOs') },
+		{ icon: 'trash', label: n === 1 ? 'Delete' : `Delete ${n}`, shortcut: 'Del', separator: true, run: () => filesAct('delete') },
+	] : [
+		{ icon: 'clippy', label: 'Paste', shortcut: `${mod}V`, disabled: !filesClipboard, run: () => filesAct('paste') },
+		{ icon: 'new-folder', label: 'New folder', run: () => filesAskFolderName() },
+		{ icon: 'link', label: 'Copy folder path', separator: true, run: () => filesAct('copyPath') },
+		{ icon: 'clippy', label: 'Attach this folder to chat', disabled: !filesDir, run: () => filesPost('attach', { paths: [filesDir] }) },
+		{ icon: 'list-tree', label: 'Reveal in Explorer', run: () => filesAct('reveal') },
+		{ icon: 'folder-opened', label: navigator.platform.startsWith('Mac') ? 'Reveal in Finder' : navigator.platform.startsWith('Win') ? 'Reveal in File Explorer' : 'Open Containing Folder', run: () => filesAct('revealOs') },
+	];
+	openMenu(anchor, items, n ? (n === 1 ? single?.name : `${n} selected`) : (filesDir.split('/').pop() || folderName(filesFolder ?? '')), undefined, filesPanel);
+}
+function folderName(p: string): string { return p.split(/[\\/]/).filter(Boolean).pop() ?? p; }
+/** `file:` URIs of the dragged entries, for VS Code's editor and Explorer. */
+function fileUri(relative: string): string {
+	const base = (filesFolder ?? '').replace(/\\/g, '/');
+	const full = `${base.startsWith('/') ? '' : '/'}${base}/${relative}`;
+	return `file://${full.split('/').map(encodeURIComponent).join('/')}`;
+}
+let filesDragging: string[] | undefined;
+/** The absolute paths of the files and folders attached to the draft, `/`-separated. */
+function attachedFilePaths(): Set<string> {
+	return new Set((state?.attachments ?? []).flatMap(a => a.filePath ? [a.filePath.replace(/\\/g, '/')] : []));
+}
+let filesAttachedShape = '';
+function renderFiles(): void {
+	if (composerTab !== 'files') { return; }
+	const root = folderName(filesFolder ?? '');
+	const crumbs: HTMLElement[] = [];
+	const parts = filesDir ? filesDir.split('/') : [];
+	const crumb = (label: string, dir: string, current: boolean) => {
+		const b = button([label], { class: `fx-crumb${current ? ' current' : ''}`, title: dir || filesFolder || '' });
+		b.addEventListener('click', () => { if (!current) { filesGo(dir); } });
+		filesDropTarget(b, dir);
+		b.addEventListener('contextmenu', e => {
+			e.preventDefault();
+			openMenu(b, [
+				{ icon: 'link', label: 'Copy path', run: () => filesPost('copyPath', dir ? { paths: [dir] } : { dir: '' }) },
+				{ icon: 'link', label: 'Copy relative path', run: () => filesPost('copyRelativePath', dir ? { paths: [dir] } : { dir: '' }) },
+			]);
+		});
+		return b;
+	};
+	crumbs.push(el('span', { class: 'fx-crumb-icon' }, icon('root-folder')), crumb(root || 'Folder', '', !parts.length));
+	parts.forEach((p, i) => crumbs.push(icon('chevron-right', 'fx-crumb-sep'), crumb(p, parts.slice(0, i + 1).join('/'), i === parts.length - 1)));
+	if (!filesPathEditing) { filesCrumbs.replaceChildren(...crumbs); }
+	filesUp.disabled = !filesDir;
+	filesPaste.disabled = !filesClipboard;
+	filesPaste.dataset.tip = filesClipboard ? `Paste ${filesClipboard.count} item${filesClipboard.count === 1 ? '' : 's'} here${filesClipboard.cut ? ' (move)' : ''}` : 'Nothing copied';
+	filesViewList.classList.toggle('active', filesView === 'list');
+	filesViewGrid.classList.toggle('active', filesView === 'grid');
+	filesBody.classList.toggle('grid', filesView === 'grid');
+	filesBody.classList.toggle('loading', filesPending);
+	if (!filesFolder) { filesBody.replaceChildren(clEmpty('folder', 'This chat has no working folder. Pick one with the folder button below.')); filesStatus.textContent = ''; return; }
+	const shown = visibleEntries();
+	const nodes: HTMLElement[] = [];
+	const attachedHere = attachedFilePaths();
+	const base = (filesFolder ?? '').replace(/\\/g, '/').replace(/\/+$/, '');
+	for (const entry of shown) {
+		const selected = filesSelected.has(entry.name);
+		const attached = attachedHere.has(`${base}/${filesPathOf(entry.name)}`);
+		const meta = entry.dir ? 'Folder' : fileSize(entry.size);
+		const when = entry.mtime ? ago(entry.mtime) : '';
+		const gitWord = entry.git === 'U' ? 'untracked' : entry.git === 'A' ? 'added' : entry.git === 'M' ? (entry.dir ? 'contains changes' : 'modified') : '';
+		const item = el('div', { class: `fx-item${selected ? ' selected' : ''}${attached ? ' attached' : ''}${entry.dir ? ' dir' : ''}${entry.git ? ` git-${entry.git === 'M' ? 'changed' : 'new'}` : ''}`, title: `${entry.name}${meta ? `\n${meta}` : ''}${when ? ` · ${when}` : ''}${gitWord ? `\nGit: ${gitWord}` : ''}${attached ? '\nAttached to the message' : ''}` },
+			fileIconFor(entry, filesView === 'grid'),
+			el('span', { class: 'fx-name', text: entry.name }),
+			...(filesView === 'list' ? [el('span', { class: 'fx-meta', text: meta }), el('span', { class: 'fx-meta fx-when', text: when }), el('span', { class: 'fx-git', text: entry.git ? (entry.dir ? '•' : entry.git) : '' })] : []));
+		item.setAttribute('role', 'option');
+		item.setAttribute('aria-selected', String(selected));
+		item.draggable = true;
+		item.addEventListener('click', e => filesSelect(entry.name, e));
+		item.addEventListener('dblclick', () => filesOpen(entry));
+		item.addEventListener('contextmenu', e => { e.preventDefault(); e.stopPropagation(); filesMenu(item, entry); });
+		item.addEventListener('dragstart', e => {
+			if (!filesSelected.has(entry.name)) { filesSelected.clear(); filesSelected.add(entry.name); item.classList.add('selected'); }
+			filesDragging = [...filesSelected];
+			const uris = filesDragging.map(n => fileUri(filesPathOf(n)));
+			const dt = e.dataTransfer!;
+			dt.effectAllowed = 'copyMove';
+			// What VS Code's editor area and Explorer read from a drag: the URIs, in both spellings.
+			dt.setData('text/uri-list', uris.join('\r\n'));
+			dt.setData('application/vnd.code.uri-list', JSON.stringify(uris));
+			// VS Code's editor area and Explorer accept a drag only when it carries one of their own types.
+			dt.setData('ResourceURLs', JSON.stringify(uris));
+			dt.setData('codefiles', JSON.stringify(uris.map(u => decodeURIComponent(u.slice('file://'.length)))));
+			dt.setData('text/plain', uris.map(u => decodeURIComponent(u.slice('file://'.length))).join('\n'));
+		});
+		item.addEventListener('dragend', () => { filesDragging = undefined; });
+		if (entry.dir) { filesDropTarget(item, filesPathOf(entry.name)); }
+		nodes.push(item);
+	}
+	if (!nodes.length) {
+		nodes.push(filesPending && !filesEntries.length ? clEmpty('loading', 'Loading…') : clEmpty(filesFilter ? 'search' : 'folder', filesFilter ? 'Nothing matches the filter.' : 'This folder is empty. Drop files here, or paste.'));
+	}
+	if (filesView === 'list' && shown.length) {
+		nodes.unshift(el('div', { class: 'fx-head' }, el('span'), filesSortHeader('Name', 'name'), filesSortHeader('Size', 'size'), filesSortHeader('Modified', 'mtime'), el('span')));
+	}
+	filesBody.replaceChildren(...nodes);
+	// One line at the foot: the count and notices, or — with a selection — what can be done with it.
+	const n = filesSelected.size;
+	const note = filesError ? [el('span', { class: 'fx-error', text: filesError })] : filesNotice ? [el('span', { class: 'fx-notice', text: filesNotice })] : [];
+	filesStatus.classList.toggle('selecting', n > 0);
+	if (n) {
+		const act = (iconName: string, label: string, tip: string, run: () => void, cls = '') => { const b = button([icon(iconName), el('span', { class: 'fx-act-label', text: label })], { class: `fx-act ${cls}`, title: tip }); b.setAttribute('aria-label', tip); b.addEventListener('click', run); return b; };
+		const single = n === 1 ? filesEntries.find(e => filesSelected.has(e.name)) : undefined;
+		filesStatus.replaceChildren(
+			el('span', { class: 'fx-count', text: `${n} selected` }),
+			act(single?.dir ? 'folder-opened' : 'go-to-file', 'Open', single?.dir ? 'Open folder (Enter)' : 'Open in VS Code (Enter)', () => single ? filesOpen(single) : filesAct('open')),
+			act('clippy', 'Attach', 'Attach to chat', () => filesAct('attach'), 'primary'),
+			act('copy', 'Copy', 'Copy (⌘C)', () => filesAct('copy')),
+			act('move', 'Cut', 'Cut (⌘X)', () => filesAct('cut')),
+			act('link', 'Path', 'Copy path', () => filesAct('copyPath')),
+			act('trash', 'Delete', 'Delete', () => filesAct('delete'), 'danger'),
+			...note,
+			act('close', '', 'Clear selection (Esc)', () => { filesSelected.clear(); renderFiles(); }, 'clear'));
+		return;
+	}
+	const parts2: string[] = [`${filesEntries.length} item${filesEntries.length === 1 ? '' : 's'}`];
+	if (filesTruncated) { parts2.push('first 2000 shown'); }
+	if (filesClipboard) { parts2.push(`${filesClipboard.count} ${filesClipboard.cut ? 'to move' : 'copied'}`); }
+	filesStatus.replaceChildren(el('span', { class: 'fx-summary', text: parts2.join(' · ') }), ...note);
+}
+/** Drops onto a folder (or the open folder): entries of ours move, anything from VS Code or the system is copied. */
+function droppedUris(dt: DataTransfer): string[] {
+	const resources = dt.getData('ResourceURLs');
+	if (resources) { try { const list = JSON.parse(resources); if (Array.isArray(list)) { const ok = list.filter((u): u is string => typeof u === 'string'); if (ok.length) { return ok; } } } catch { /* fall through */ } }
+	const code = dt.getData('application/vnd.code.uri-list');
+	if (code) { try { const list = JSON.parse(code); if (Array.isArray(list)) { return list.filter((u): u is string => typeof u === 'string'); } } catch { /* fall through */ } }
+	const list = dt.getData('text/uri-list');
+	if (list) { return list.split(/\r?\n/).map(l => l.trim()).filter(l => l && !l.startsWith('#')); }
+	const files = dt.getData('codefiles');
+	if (files) { try { const p = JSON.parse(files); if (Array.isArray(p)) { return p.filter((x): x is string => typeof x === 'string').map(x => `file://${x.split('/').map(encodeURIComponent).join('/')}`); } } catch { /* nothing */ } }
+	return [];
+}
+/** Files dropped from Finder or Explorer of the OS arrive without a path: send their bytes (64 MB each at most). */
+function filesUpload(files: File[], dir: string): void {
+	for (const file of files.slice(0, 50)) {
+		if (file.size > 64 * 1024 * 1024) { filesError = `${file.name} is over 64 MB.`; renderFiles(); continue; }
+		if (!file.size && !file.type) { continue; } // a folder: its contents cannot be read from here
+		const reader = new FileReader();
+		reader.onload = () => { const url = String(reader.result ?? ''); filesPost('upload', { name: file.name, data: url.slice(url.indexOf(',') + 1), dir }); };
+		reader.readAsDataURL(file);
+	}
+}
+function filesDropTarget(node: HTMLElement, target: string | (() => string)): void {
+	const dirOf = () => typeof target === 'string' ? target : target();
+	node.addEventListener('dragover', e => {
+		const dir = dirOf();
+		if (filesDragging?.some(n => filesPathOf(n) === dir || parentOf(filesPathOf(n)) === dir && node === filesBody)) { return; }
+		e.preventDefault();
+		e.stopPropagation();
+		e.dataTransfer!.dropEffect = filesDragging ? 'move' : 'copy';
+		node.classList.add('fx-drop');
+	});
+	node.addEventListener('dragleave', () => node.classList.remove('fx-drop'));
+	node.addEventListener('drop', e => {
+		e.preventDefault();
+		e.stopPropagation();
+		node.classList.remove('fx-drop');
+		const uris = droppedUris(e.dataTransfer!);
+		if (uris.length) { filesPost('drop', { uris, move: !!filesDragging && !(e.altKey || e.ctrlKey), dir: dirOf() }); }
+		else { filesUpload([...(e.dataTransfer?.files ?? [])], dirOf()); }
+		filesDragging = undefined;
+	});
+}
+// The open folder itself: dropping on the body puts it in the folder on show.
+filesDropTarget(filesBody, () => filesDir);
+filesSearch.addEventListener('input', () => { filesFilter = filesSearch.value; renderFiles(); });
+filesSearch.addEventListener('keydown', e => { if (e.key === 'Escape') { e.stopPropagation(); filesSearch.value = ''; filesFilter = ''; renderFiles(); showFilesSearch(false); filesBody.focus(); } });
+filesSearch.addEventListener('blur', () => { if (!filesSearch.value) showFilesSearch(false); });
+filesBody.addEventListener('click', e => { if (e.target === filesBody) { filesSelected.clear(); renderFiles(); } });
+filesBody.addEventListener('contextmenu', e => { if (e.target === filesBody || (e.target as Element).closest('.cl-empty')) { e.preventDefault(); filesSelected.clear(); renderFiles(); filesMenu(filesCrumbs); } });
+filesBody.addEventListener('keydown', e => {
+	if (e.isComposing || (e.target as Element) !== filesBody) { return; }
+	const mod = e.metaKey || e.ctrlKey;
+	const list = visibleEntries();
+	const at = filesAnchor ? list.findIndex(x => x.name === filesAnchor) : -1;
+	const step = (key: FileArrow) => {
+		const index = filesView === 'grid'
+			? fileGridNeighbor([...filesBody.querySelectorAll('.fx-item')].map(item => item.getBoundingClientRect()), at, key)
+			: Math.max(0, Math.min(list.length - 1, at < 0 ? 0 : at + (key === 'ArrowUp' ? -1 : 1)));
+		const next = list[index];
+		if (next) { filesSelect(next.name, e); filesBody.querySelectorAll('.fx-item')[list.indexOf(next)]?.scrollIntoView({ block: 'nearest' }); }
+	};
+	let handled = true;
+	if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || (filesView === 'grid' && (e.key === 'ArrowRight' || e.key === 'ArrowLeft'))) { step(e.key as FileArrow); }
+	else if (e.key === 'Enter') { const one = list[at]; if (filesSelected.size === 1 && one) { filesOpen(one); } else { filesAct('open'); } }
+	else if (e.key === 'Backspace' && !mod) { if (filesDir) { filesGo(parentOf(filesDir)); } }
+	else if (e.key === 'Delete' || (e.key === 'Backspace' && mod)) { filesAct('delete'); }
+	else if (mod && e.key.toLowerCase() === 'a') { for (const x of list) { filesSelected.add(x.name); } renderFiles(); }
+	else if (mod && e.key.toLowerCase() === 'c') { filesAct(e.altKey ? 'copyPath' : 'copy'); }
+	else if (mod && e.key.toLowerCase() === 'x') { filesAct('cut'); }
+	else if (mod && e.key.toLowerCase() === 'v') { filesAct('paste'); }
+	else if (e.key === 'Escape' && filesSelected.size) { filesSelected.clear(); renderFiles(); }
+	else { handled = false; }
+	if (handled) { e.preventDefault(); e.stopPropagation(); }
+});
 /** Scrolls the thread to the turn whose prompt is entry `index`, and flashes it. */
+/**
+ * Where a turn's answer starts: the last run of reply text in it — what the
+ * agent said after its tool calls and thinking, usually the turn's end. Rows
+ * between two reply blocks that are only work (tools, thinking) do not split
+ * the run, so a reply interrupted by a last tool call still reads as one.
+ */
+function answerStart(entries: readonly ChatEntry[], rows: readonly number[]): number | undefined {
+	let start: number | undefined;
+	for (let k = rows.length - 1; k >= 0; k--) {
+		const e = entries[rows[k]];
+		if (e.kind === 'assistant' && e.text.trim()) { start = rows[k]; continue; }
+		if (start !== undefined && !isBackground(e)) { break; }
+	}
+	return start;
+}
+/** Scrolls the thread to one entry and flashes it; a Minimal turn holding it is opened first. */
+function scrollToEntry(index: number): void {
+	const node = rendered[index]?.node;
+	if (!node) { return; }
+	node.scrollIntoView({ block: 'start', behavior: reducedMotion.matches ? 'auto' : 'smooth' });
+	node.classList.remove('turn-flash');
+	void node.offsetWidth;
+	node.classList.add('turn-flash');
+	setTimeout(() => node.classList.remove('turn-flash'), 1200);
+}
 function scrollToPrompt(index: number): void {
 	if (!state) { return; }
 	const t = turnsOf(state.entries).findIndex(turn => turn.prompt === index);
@@ -1694,7 +2388,7 @@ function syncTerminals(s: ChatViewState): void {
 					// The toolbar's "Ask agent" and a URL printed in a terminal: the menus and the link rule live here.
 					askAgent: askAgentMenu,
 					insertMenu: terminalInsertMenu,
-					openBrowser: anchor => openMenu(anchor, browserMenuItems(), 'Open a new tab in'),
+					openBrowser: anchor => openMenu(anchor, browserMenuItems(), 'Browser'),
 					openLink: (url, external) => post({ type: 'openLink', url, external }),
 					// What the surface allows (the control table), and which surface this is.
 					gate: type => gate(type).s === 'on',
@@ -1731,6 +2425,9 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 				if (terminalView) { terminalView.handle(message); } else if (terminalBacklog.length < 5000) { terminalBacklog.push(message); }
 			}
 			return;
+		case 'pastedAttachments':
+			pastedAttachments(message.results, message.request, message.chatId);
+			return;
 		case 'pastedFileResult':
 			pastedFileRequests.get(message.id)?.(message.error);
 			return;
@@ -1761,6 +2458,7 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 		}
 		case 'state':
 			state = message.state;
+			{ const shape = [...attachedFilePaths()].join('\n'); if (shape !== filesAttachedShape) { filesAttachedShape = shape; renderFiles(); } }
 			soundOnFinish(state);
 			renderSoundButton();
 			renderChromeConnection(state.chromeConnectionRequest);
@@ -1886,8 +2584,15 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
    renderGitChanges();
    return;
   }
+  case 'files': filesAnswer(message); return;
   case 'githubStatus': {
+   if (message.createError !== undefined || message.created) { githubPrCreatingIn.delete(message.folder); }
    if (message.folder !== gitFolder) { return; }
+   if (message.createError !== undefined || message.created) {
+    githubPrError = message.createError ?? '';
+    if (message.created) { githubPrCreated = message.created; githubPrOpen = false; githubPrTitle.value = ''; githubPrDraft.checked = false; }
+    if (!message.status && !message.error) { composerGithubShape = ''; renderComposerGithub(); return; }
+   }
    githubPending = false;
    githubAnswer = message;
    githubAt = Date.now();
@@ -2088,6 +2793,7 @@ function render(): void {
 	}
 	if (loadingTab && (state.activeTab === loadingTab.id || !state.tabs.some(t => t.id === loadingTab!.id))) { clearTabLoading(); }
 	renderAttachments(state);
+	syncAttachmentTokens(state);
 	renderPlaceholder(state);
 	renderAgentAuthentication(state);
 	renderApproveToggle(state);
@@ -3443,7 +4149,9 @@ function scheduleStickyPrompts(): void {
 }
 // Fitted in the scroll event itself, not a frame later: a frame behind, the
 // prompt and the rows under it were out of step while the scroll was fast.
-thread.addEventListener('scroll', fitStickyPrompts, { passive: true });
+// A message opened over its reply closes as soon as the chat itself scrolls:
+// left open, the reply scrolled up under it and could not be read.
+thread.addEventListener('scroll', () => { if (openedPrompt) { collapsePrompt(); } else { fitStickyPrompts(); } }, { passive: true });
 
 /** A prompt down to its four lines, opened by a click to at most half the
  *  thread's height over the rows under it; the margin keeps the rows where they
@@ -4756,29 +5464,41 @@ function promptNode(entry: Extract<ChatEntry, { kind: 'user' }>): HTMLElement {
 	content.tabIndex = 0;
 	content.setAttribute('aria-label', 'Prompt and attachments');
 	bubble.append(content);
+	const references = new Set(tokensIn(entry.text).map(token => token.reference));
 	if (entry.attachments.length) {
-		content.append(el('div', { class: 'bubble-attachments' },
+		const extra = el('div', { class: 'bubble-attachments' },
 			...entry.attachments.map((label, index) => {
-				const file = entry.attachmentFiles?.[index];
-				const kind = entry.attachmentKinds?.[index];
-				const attachmentIconNode = (file ? themeFileIcon(file) : undefined) ?? (kind ? icon(attachmentIcon(kind)) : undefined);
-				if (file) { attachmentIconNode?.classList.add('chat-file-icon'); }
-				const saved = entry.attachmentData?.[index];
-				const children = [attachmentIconNode, el('span', { class: 'chip-label', text: label })];
-				if (!saved) { return el('span', { class: 'chip small', title: label }, ...children); }
-				const open = button(children, { class: 'chip small', title: `Open ${label}` });
-				open.addEventListener('click', () => {
-					// By the chip's id, not by object identity: a row is kept while it is unchanged,
-					// and each state post brings new entry objects, so `indexOf(entry)` found nothing.
-					const entryIndex = state?.entries.findIndex(e => e.kind === 'user' && !!e.attachmentData?.some(d => d.chip.id === saved.chip.id)) ?? -1;
-					if (entryIndex >= 0) { post({ type: 'openAttachment', id: saved.chip.id, entry: entryIndex + (state?.entriesOffset ?? 0) }); }
-				});
-				return open;
-			})));
+				if (references.has(/^@[1-9][0-9]*/.exec(label)?.[0] ?? '')) { return undefined; }
+				const chip = sentAttachmentAt(entry, index);
+				const badge = markAttachmentTokens(attachmentToken(chip), () => chip, text => [document.createTextNode(text)])[0] as HTMLElement;
+				wireSentAttachment(badge, chip);
+				return badge;
+			}));
+		if (extra.childElementCount) { content.append(extra); }
 	}
 	if (entry.text) {
-		content.append(el('div', { class: 'bubble-text' }, ...withFileIcons(markCommands(entry.text, knownCommands(state)))));
-		const copy = copyButton(() => entry.text, 'Copy prompt');
+		const displayText = entry.text.replace(attachmentTokenPattern, (whole: string, n: string) => {
+			const chip = sentAttachmentChip(entry, `@${n}`);
+			return chip ? attachmentToken(chip) : whole;
+		});
+		const text = renderPromptText(displayText, reference => sentAttachmentChip(entry, reference));
+		const tokens = tokensIn(entry.text);
+		text.querySelectorAll<HTMLElement>('.att-token-wrap').forEach((badge, index) => {
+			const chip = sentAttachmentChip(entry, tokens[index].reference);
+			if (chip) { wireSentAttachment(badge, chip); }
+		});
+		content.append(text);
+		const copy = copyButton(() => {
+			const ids = new Set<string>();
+			const text = entry.text.replace(attachmentTokenPattern, (whole: string, n: string) => {
+				const chip = sentAttachmentChip(entry, `@${n}`);
+				if (!chip?.id) { return whole; }
+				ids.add(chip.id);
+				return attachmentMarker(chip);
+			});
+			if (ids.size && gate('rememberAttachments').s === 'on') { post({ type: 'rememberAttachments', ids: [...ids] }); }
+			return text;
+		}, 'Copy prompt');
 		copy.classList.add('message-copy');
 		bubble.append(copy);
 	}
@@ -4817,6 +5537,110 @@ function promptNode(entry: Extract<ChatEntry, { kind: 'user' }>): HTMLElement {
 		}
 	}, { passive: false });
 	return prompt;
+}
+
+/** References are stored in the sent labels, including history whose chips lack `reference`. */
+function sentAttachmentChip(entry: Extract<ChatEntry, { kind: 'user' }>, reference: string): AttachmentChip | undefined {
+	const index = entry.attachments.findIndex(label => label.startsWith(`${reference} `) || label === reference);
+	if (index < 0) { return undefined; }
+	return sentAttachmentAt(entry, index);
+}
+
+/** Lists in user messages share the draft's markers, attachment capsules and link actions. */
+function renderPromptText(text: string, chipFor: (reference: string) => AttachmentChip | undefined): HTMLElement {
+	const root = el('div', { class: 'bubble-text prompt-formatted' });
+	const frames: { spaces: number; ordered: boolean; list: HTMLElement; last: HTMLElement }[] = [];
+	const appendText = (target: HTMLElement, text: string) => target.append(...markAttachmentTokens(text, chipFor, rest => withFileIcons(markComposerText(rest, knownCommands(state), true))));
+	const lines = text.split('\n');
+	let fence: string | undefined;
+	lines.forEach((line, index) => {
+		const delimiter = /^[ \t]*(`{3,}|~{3,})/.exec(line)?.[1];
+		if (delimiter) {
+			if (!fence) { fence = delimiter; }
+			else if (delimiter[0] === fence[0] && delimiter.length >= fence.length) { fence = undefined; }
+		}
+		const item = fence || delimiter ? undefined : composerListItem(line);
+		if (!item || !item.content.trim()) {
+			frames.length = 0;
+			appendText(root, line);
+			if (index < lines.length - 1) { root.append(document.createTextNode('\n')); }
+			return;
+		}
+		const spaces = item.indent.replace(/\t/g, '    ').length;
+		const ordered = item.number !== undefined;
+		while (frames.length && frames[frames.length - 1].spaces > spaces) { frames.pop(); }
+		if (frames.length && frames[frames.length - 1].spaces === spaces && frames[frames.length - 1].ordered !== ordered) { frames.pop(); }
+		let frame = frames[frames.length - 1];
+		if (!frame || frame.spaces !== spaces) {
+			const list = el(ordered ? 'ol' : 'ul');
+			if (ordered && item.number !== 1) { list.setAttribute('start', String(item.number)); }
+			(frame?.last ?? root).append(list);
+			frame = { spaces, ordered, list, last: list };
+			frames.push(frame);
+		}
+		const li = el('li');
+		appendText(li, item.content);
+		frame.list.append(li);
+		frame.last = li;
+	});
+	return root;
+}
+
+function sentAttachmentAt(entry: Extract<ChatEntry, { kind: 'user' }>, index: number): AttachmentChip {
+	const saved = entry.attachmentData?.[index]?.chip;
+	const reference = /^@[1-9][0-9]*/.exec(entry.attachments[index])?.[0] ?? `@${index + 1}`;
+	const label = entry.attachments[index].replace(/^@[1-9][0-9]*\s*/, '').trim();
+	const kind = saved?.kind ?? entry.attachmentKinds?.[index] ?? 'file';
+	return { ...(saved ?? { id: '', kind, label }), reference,
+		iconName: saved?.iconName ?? entry.attachmentFiles?.[index] ?? (kind === 'file' ? label : undefined) };
+}
+
+let sentAttachmentCopySequence = 0;
+function wireSentAttachment(badge: HTMLElement, chip: AttachmentChip): void {
+	const savedEntry = () => {
+		const index = state?.entries.findIndex(entry => entry.kind === 'user' && entry.attachmentData?.some(data => data.chip.id === chip.id)) ?? -1;
+		return index < 0 ? undefined : index + (state?.entriesOffset ?? 0);
+	};
+	const open = () => {
+		const entry = savedEntry();
+		if (entry !== undefined) { post({ type: 'openAttachment', id: chip.id, entry }); }
+	};
+	badge.classList.add('sent-attachment');
+	badge.dataset.attachmentKey = String(++sentAttachmentCopySequence);
+	badge.dataset.attachmentId = chip.id;
+	badge.dataset.attachmentLabel = chip.label;
+	badge.title = `${chip.filePath ?? chip.label}\nClick to open · Right-click for actions`;
+	badge.tabIndex = 0;
+	badge.setAttribute('role', 'button');
+	badge.draggable = true;
+	badge.addEventListener('dragstart', event => {
+		if (!event.dataTransfer) { return; }
+		const token = attachmentToken(chip);
+		event.dataTransfer.effectAllowed = 'copy';
+		event.dataTransfer.setData('text/plain', attachmentMarker(chip));
+		event.dataTransfer.setData(attachmentClipboardType, JSON.stringify({ text: token, items: [{ token, id: chip.id, kind: chip.kind, label: chip.label, filePath: chip.filePath }] }));
+		if (chip.id && gate('rememberAttachments').s === 'on') { post({ type: 'rememberAttachments', ids: [chip.id] }); }
+	});
+	badge.addEventListener('click', event => { event.stopPropagation(); if (!hasSelection()) { open(); } });
+	badge.addEventListener('keydown', event => {
+		if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); open(); }
+	});
+	badge.addEventListener('contextmenu', event => {
+		event.preventDefault();
+		event.stopPropagation();
+		openMenu(badge, [
+			{ icon: 'go-to-file', label: 'Open', disabled: savedEntry() === undefined, run: open },
+			{ icon: 'copy', label: 'Copy', run: () => {
+				if (chip.id && gate('rememberAttachments').s === 'on') { post({ type: 'rememberAttachments', ids: [chip.id] }); }
+				post({ type: 'copy', text: attachmentMarker(chip) });
+			} },
+			...(chip.filePath ? [{ icon: 'link', label: 'Copy path', run: () => post({ type: 'copy', text: chip.filePath! }) }] : []),
+			{ icon: 'clippy', label: 'Attach to chat', command: 'reattachAttachment', disabled: savedEntry() === undefined, run: () => {
+				const entry = savedEntry();
+				if (entry !== undefined) { post({ type: 'reattachAttachment', id: chip.id, entry }); input.focus(); }
+			} },
+		], chip.label);
+	});
 }
 
 function thinkingNode(entry: Extract<ChatEntry, { kind: 'thinking' }>, i: number): HTMLElement {
@@ -5626,6 +6450,7 @@ function linkMenu(link: HTMLElement, url: string, directory?: boolean, inWorkspa
 let attachmentsShown = '';
 
 function renderAttachments(s: ChatViewState): void {
+	browserButton.classList.toggle('has-suggestion', s.suggestions.some(chip => chip.kind === 'sharedPage'));
 	// The state is posted every 40 ms while any tab streams; rebuilding the
 	// chips each time swallowed a click on one whose press outlasted a post,
 	// and took keyboard focus off it.
@@ -5638,48 +6463,10 @@ function renderAttachments(s: ChatViewState): void {
 		return;
 	}
 	attachmentsShown = shown;
-	attachmentsRow.replaceChildren(...s.attachments.map(chip => {
-		// A terminal pinned to the conversation: not a draft attachment, so no reference and no "open in a tab".
-		if (isPinChip(chip)) { return pinChipNode(chip); }
-		const remove = button([icon('close')], { class: 'chip-remove', title: 'Remove — an open file or page goes back to being a suggestion' });
-		remove.addEventListener('click', () => post({ type: 'removeAttachment', id: chip.id }));
-		let thumb: HTMLElement = chipIcon(chip);
-		if (chip.thumbnail) {
-			const img = el('img', { class: 'thumb' });
-			img.src = chip.thumbnail;
-			img.alt = '';
-			thumb = img;
-		}
-		const reference = chip.reference;
-		const insert = button([thumb], { class: 'chip-reference', title: `Insert reference ${reference ?? ''}` });
-		insert.disabled = !reference;
-		// Keep the textarea's selection while pressing the icon or reference.
-		insert.addEventListener('mousedown', event => event.preventDefault());
-		insert.addEventListener('click', () => { if (reference) { insertAttachmentReference(reference); } });
-		const open = button([
-			el('span', { class: 'chip-label', text: chip.label }),
-		], { class: 'chip-open', title: `Open ${chip.label}` });
-		open.addEventListener('click', () => post({ type: 'openAttachment', id: chip.id }));
-		const referenceButton = reference ? button([
-			el('span', { class: 'chip-reference-label', text: reference }),
-		], { class: 'chip-reference', title: `Insert reference ${reference}` }) : undefined;
-		referenceButton?.addEventListener('mousedown', event => event.preventDefault());
-		referenceButton?.addEventListener('click', () => { if (reference) { insertAttachmentReference(reference); } });
-		// The remove button leads, as the "+" of a suggestion does, so the two
-		// read as one control that turns a chip on and off.
-		const root = el('span', { class: 'chip' }, remove, insert, open, referenceButton);
-		root.addEventListener('contextmenu', event => {
-			event.preventDefault();
-			openMenu(root, [
-				{ icon: 'go-to-file', label: 'Open in tab', run: () => post({ type: 'openAttachment', id: chip.id }) },
-				...(chip.kind === 'video' ? [{ icon: 'save', label: 'Save video as…', run: () => post({ type: 'saveAttachment', id: chip.id }) }] : []),
-				{ icon: 'mention', label: 'Insert reference', description: reference, disabled: !reference,
-					run: () => { if (reference) { insertAttachmentReference(reference); } } },
-			], chip.label);
-		});
-		return root;
-	}), ...s.suggestions.map(suggestionChip));
-	attachmentsRow.hidden = !s.attachments.length && !s.suggestions.length;
+	// Draft attachments live in the text as tokens (`[@N label]`, see `syncAttachmentTokens`); the row
+	// keeps the terminals pinned to the conversation. Suggestions live in the toolbar menus.
+	attachmentsRow.replaceChildren(...s.attachments.filter(isPinChip).map(pinChipNode));
+	attachmentsRow.hidden = !s.attachments.some(isPinChip);
 }
 
 /**
@@ -5718,27 +6505,13 @@ function pinChipNode(chip: AttachmentChip & { readonly terminalId: string }): HT
 }
 
 /**
- * What could be attached and is not: the file or the browser tab the user has
- * open, dashed, with a "+" where an attached chip has its remove button. The
- * "+" attaches it; removing the attached chip brings the suggestion back.
- */
-function suggestionChip(chip: AttachmentChip): HTMLElement {
-	const what = chip.kind === 'sharedPage' ? 'the page open in the browser' : 'the file open in the editor';
-	const add = button([icon('add')], { class: 'chip-remove chip-add', title: `Attach ${what}` });
-	add.addEventListener('mousedown', event => event.preventDefault());
-	add.addEventListener('click', () => post({ type: 'acceptSuggestion', id: chip.id }));
-	return el('span', { class: 'chip suggested', title: `Suggested: ${chip.label} — press + to attach ${what}` },
-		add, chipIcon(chip), el('span', { class: 'chip-label', text: chip.label }));
-}
-
-/**
  * A chip's icon: the file icon theme's for a chip that carries one file or
  * folder (`iconName` — a pasted image, a file attached from the "+" menu, the
  * Explorer or the folder list, a selection of a file), the kind's codicon for
  * the rest and wherever the theme has none.
  */
 function chipIcon(chip: AttachmentChip): HTMLElement {
-	const node = (chip.iconName ? themeFileIcon(chip.iconName) : undefined) ?? icon(attachmentIcon(chip.kind));
+	const node = (chip.iconName ? themeFileIcon(chip.iconName) : undefined) ?? icon(chip.kind === 'file' && (chip.iconName?.endsWith('/') || chip.label.endsWith('/')) ? 'folder' : attachmentIcon(chip.kind));
 	if (chip.iconName) { node.classList.add('chat-file-icon'); }
 	return node;
 }
@@ -5754,21 +6527,478 @@ input.addEventListener('click', rememberAttachmentCaret);
 input.addEventListener('input', rememberAttachmentCaret);
 input.addEventListener('blur', rememberAttachmentCaret);
 
-function insertAttachmentReference(reference: string): void {
-	const selection = attachmentCaret && attachmentCaret.chat === draftChat && attachmentCaret.value === input.value ? attachmentCaret : undefined;
-	const start = selection?.start ?? input.value.length;
-	const end = selection?.end ?? start;
-	const before = input.value.slice(0, start);
-	const after = input.value.slice(end);
-	const leading = before && !/\s$/.test(before) ? ' ' : '';
-	const trailing = !after || !/^\s/.test(after) ? ' ' : '';
-	input.setRangeText(`${leading}${reference}${trailing}`, start, end, 'end');
-	input.focus();
+
+/* ------------------------------------------------- attachments in the text */
+
+/**
+ * A draft attachment is a token in the message itself, `[@N label]`: added at the caret when the
+ * chip appears, removed with the chip when its token is deleted, and drawn in the mirror as a chip
+ * with the attachment's icon. The text is plain, so the token can be moved, selected and copied
+ * like any other text; a copy carries the chips beside it (`attachmentClipboardType`), and a paste
+ * asks the host to make them again (`pasteAttachments`).
+ */
+const attachmentTokenPattern = /\[@([1-9][0-9]{0,5}) ([^\]\n]{0,200})\]/g;
+const attachmentClipboardType = 'application/x-ai-browser-attachments';
+
+function attachmentToken(chip: AttachmentChip): string {
+	// Invisible character slots reserve the icon, spacing and remove control in both text layers.
+	return `[${chip.reference}  ${chip.label.replace(/[\]\n\r]/g, ' ').trim().slice(0, 120)}      ]`;
+}
+
+/** Per chat: the chips that have had a token in its draft, so a token deleted removes its chip. */
+const tokenedChips = new Map<string, Set<string>>();
+/** Chips made by a paste: their token is already in the text, under the copied reference. */
+const pastedTokens = new Map<string, string>();
+/** New chips must wait for their temporary pasted references to be resolved, even if state arrives first. */
+const pendingAttachmentPastes = new Map<string, string>();
+const removedByToken = new Set<string>();
+
+function draftChips(s: ChatViewState | undefined): AttachmentChip[] {
+	return (s?.attachments ?? []).filter(chip => !isPinChip(chip) && !!chip.reference);
+}
+
+function tokensIn(text: string): { reference: string; label: string; start: number; end: number }[] {
+	return [...text.matchAll(attachmentTokenPattern)].map(m => ({ reference: `@${m[1]}`, label: m[2], start: m.index!, end: m.index! + m[0].length }));
+}
+
+function setInputText(value: string, caret: number): void {
+	input.value = value;
+	input.setSelectionRange(caret, caret);
 	rememberAttachmentCaret();
-	// Chip insertion always edits the composer, even after using a skill editor.
 	saveDraft();
 	autosize();
 	renderSend();
+	paintInput();
+}
+
+function syncAttachmentTokens(s: ChatViewState): void {
+	if (!s.chatId || draftChat !== s.chatId || fromHistory) { return; }
+	const chips = draftChips(s);
+	let known = tokenedChips.get(s.chatId);
+	if (!known) { tokenedChips.set(s.chatId, known = new Set()); }
+	for (const id of [...known]) { if (!chips.some(c => c.id === id)) { known.delete(id); removedByToken.delete(id); } }
+	let text = input.value;
+	let caret = input.selectionStart;
+	let changed = false;
+	for (const chip of chips) {
+		const pasted = pastedTokens.get(chip.id);
+		if (pasted !== undefined) {
+			pastedTokens.delete(chip.id);
+			const at = text.indexOf(pasted);
+			const next = attachmentToken(chip);
+			if (at >= 0) {
+				text = text.slice(0, at) + next + text.slice(at + pasted.length);
+				if (caret > at) { caret += next.length - pasted.length; }
+				changed = true;
+				known.add(chip.id);
+				continue;
+			}
+			// The user deleted this placeholder before its attachment arrived.
+			known.add(chip.id);
+			if (!removedByToken.has(chip.id)) { removedByToken.add(chip.id); post({ type: 'removeAttachment', id: chip.id }); }
+			continue;
+		}
+		const token = tokensIn(text).find(t => t.reference === chip.reference);
+		if (token) {
+			known.add(chip.id);
+			// A page that moved on, a selection refreshed: the label follows the chip.
+			const next = attachmentToken(chip);
+			if (text.slice(token.start, token.end) !== next) {
+				text = text.slice(0, token.start) + next + text.slice(token.end);
+				if (caret > token.start) { caret += next.length - (token.end - token.start); }
+				changed = true;
+			}
+			continue;
+		}
+		if (known.has(chip.id)) {
+			// Its token was deleted: so is the attachment.
+			if (!removedByToken.has(chip.id)) { removedByToken.add(chip.id); post({ type: 'removeAttachment', id: chip.id }); }
+			continue;
+		}
+		if ([...pendingAttachmentPastes.values()].includes(s.chatId)) { continue; }
+		// A new attachment: its token goes where the caret was.
+		const selection = attachmentCaret && attachmentCaret.chat === draftChat && attachmentCaret.value === text ? attachmentCaret : undefined;
+		const start = selection?.start ?? text.length;
+		const end = selection?.end ?? start;
+		const before = text.slice(0, start);
+		const after = text.slice(end);
+		const insert = `${before && !/\s$/.test(before) ? ' ' : ''}${attachmentToken(chip)}${!after || !/^\s/.test(after) ? ' ' : ''}`;
+		text = before + insert + after;
+		caret = start + insert.length;
+		attachmentCaret = { chat: draftChat, value: text, start: caret, end: caret };
+		known.add(chip.id);
+		changed = true;
+	}
+	if (changed) { setInputText(text, caret); }
+}
+
+input.addEventListener('input', () => { if (state) { syncAttachmentTokens(state); } });
+
+/** The chip a token stands for, in the draft shown. */
+function chipOfToken(reference: string): AttachmentChip | undefined {
+	return draftChips(state).find(c => c.reference === reference);
+}
+
+/** The text a token reads as outside this chat: a path where there is one, else its name. */
+function plainToken(chip: AttachmentChip | undefined, label: string): string {
+	return chip?.filePath ?? label.trim();
+}
+
+function copyAttachments(event: ClipboardEvent, cut: boolean): void {
+	snapToTokens();
+	const start = input.selectionStart;
+	const end = input.selectionEnd;
+	if (!event.clipboardData || start === end) { return; }
+	const text = input.value.slice(start, end);
+	const tokens = tokensIn(text);
+	if (!tokens.length) { return; }
+	event.preventDefault();
+	const items = tokens.flatMap(t => {
+		const chip = chipOfToken(t.reference);
+		return chip ? [{ token: text.slice(t.start, t.end), id: chip.id, kind: chip.kind, label: chip.label, filePath: chip.filePath }] : [];
+	});
+	event.clipboardData.setData('text/plain', text.replace(attachmentTokenPattern, (_, n: string, label: string) => {
+		const chip = chipOfToken(`@${n}`);
+		return chip ? attachmentMarker(chip) : plainToken(undefined, label);
+	}));
+	event.clipboardData.setData(attachmentClipboardType, JSON.stringify({ text, items }));
+	if (items.length && gate('rememberAttachments').s === 'on') { post({ type: 'rememberAttachments', ids: items.map(item => item.id) }); }
+	if (cut) {
+		input.setRangeText('', start, end, 'end');
+		input.dispatchEvent(new Event('input', { bubbles: true }));
+	}
+}
+input.addEventListener('copy', event => copyAttachments(event, false));
+input.addEventListener('cut', event => copyAttachments(event, true));
+
+/** A paste carrying tokens: the text goes in as copied, and the host is asked for the chips. */
+function pasteAttachmentTokens(event: Pick<ClipboardEvent, 'clipboardData' | 'preventDefault'>): boolean {
+	const raw = event.clipboardData?.getData(attachmentClipboardType);
+	let data: { text?: unknown; items?: unknown } | undefined;
+	if (raw) { try { data = JSON.parse(raw); } catch { /* Text-only clipboard fallback below. */ } }
+	if (!data || typeof data.text !== 'string' || !Array.isArray(data.items)) { data = readAttachmentMarkers(event.clipboardData?.getData('text/plain') ?? ''); }
+	if (!data || typeof data.text !== 'string' || !Array.isArray(data.items)) { return false; }
+	event.preventDefault();
+	const items = (data.items as PastedAttachment[]).filter(i => i && typeof i.token === 'string' && typeof i.id === 'string' && typeof i.label === 'string');
+	// Outside VS Code nothing can be made again: the tokens are pasted as what they name.
+	const canMake = gate('pasteAttachments').s === 'on';
+	const used = new Set([...tokensIn(input.value).map(token => token.reference), ...draftChips(state).map(chip => chip.reference)]);
+	let nextReference = 999999;
+	const pending: PastedAttachment[] = [];
+	const text = data.text.replace(attachmentTokenPattern, (whole: string, _n: string, label: string) => {
+		const item = items.find(item => item.token === whole);
+		if (!canMake || !item || pending.length >= 50) { return item?.filePath ?? label.trim(); }
+		while (used.has(`@${nextReference}`) && nextReference > 0) { nextReference--; }
+		if (!nextReference) { return plainToken(undefined, label); }
+		const reference = `@${nextReference--}`;
+		used.add(reference);
+		const token = `[${reference} ${label}]`;
+		pending.push({ ...item, token });
+		return token;
+	});
+	const request = newId();
+	const chatId = draftChat;
+	if (pending.length && chatId) { pendingAttachmentPastes.set(request, chatId); }
+	input.setRangeText(text, input.selectionStart, input.selectionEnd, 'end');
+	rememberAttachmentCaret();
+	input.dispatchEvent(new Event('input', { bubbles: true }));
+	if (pending.length && chatId) { post({ type: 'pasteAttachments', request, chatId, items: pending }); }
+	return true;
+}
+
+/** The host's answer: a chip made for a token takes it over; one that could not be made leaves its name. */
+function pastedAttachments(results: readonly { readonly token: string; readonly id?: string }[], request: string, chatId: string): void {
+	if (pendingAttachmentPastes.get(request) !== chatId) { return; }
+	pendingAttachmentPastes.delete(request);
+	const active = draftChat === chatId;
+	let text = active ? input.value : drafts[chatId] ?? '';
+	let caret = active ? input.selectionStart : text.length;
+	let changed = false;
+	for (const result of results) {
+		if (result.id) {
+			pastedTokens.set(result.id, result.token);
+			continue;
+		}
+		const at = text.indexOf(result.token);
+		if (at < 0) { continue; }
+		const label = /^\[@[0-9]+ ([^\]]*)\]$/.exec(result.token)?.[1]?.trim() ?? result.token;
+		text = text.slice(0, at) + label + text.slice(at + result.token.length);
+		if (caret > at) { caret += label.length - result.token.length; }
+		changed = true;
+	}
+	if (changed) {
+		if (active) { setInputText(text, caret); }
+		else { drafts[chatId] = text; saveDraft(); }
+	}
+	if (active && state) { syncAttachmentTokens(state); }
+	if (active) { renderSend(); }
+}
+
+/** A right-click on a token: what the chip's own menu offered. */
+input.addEventListener('contextmenu', event => {
+	if (composerLinkHit(event)) { return; }
+	const at = input.selectionStart;
+	const token = attachmentHit(event)?.token ?? tokensIn(input.value).find(t => at >= t.start && at < t.end);
+	const chip = token && chipOfToken(token.reference);
+	if (!token || !chip) { return; }
+	event.preventDefault();
+	openMenu(input, [
+		{ icon: 'go-to-file', label: 'Open in tab', run: () => post({ type: 'openAttachment', id: chip.id }) },
+		{ icon: 'copy', label: 'Copy', run: () => copyToken(token, false) },
+		{ icon: 'scissors', label: 'Cut', run: () => copyToken(token, true) },
+		...(chip.filePath ? [{ icon: 'link', label: 'Copy path', run: () => post({ type: 'copy', text: chip.filePath! }) }] : []),
+		...(chip.kind === 'video' ? [{ icon: 'save', label: 'Save video as…', run: () => post({ type: 'saveAttachment', id: chip.id }) }] : []),
+		{ icon: 'trash', label: 'Delete', separator: true, run: () => removeToken(token) },
+	], chip.label);
+});
+
+/** Use the same rich clipboard as a keyboard copy, including the attachment metadata. */
+function copyToken(token: { start: number; end: number }, cut: boolean): void {
+	input.focus();
+	input.setSelectionRange(token.start, token.end);
+	rememberAttachmentCaret();
+	document.execCommand(cut ? 'cut' : 'copy');
+}
+
+/*
+ * A token behaves as one character: Backspace or Delete next to it removes it whole, the caret
+ * never stops inside it, a selection that cuts into it takes all of it, and the × drawn over its
+ * closing bracket removes it. Removing the text is what removes the attachment (`syncAttachmentTokens`).
+ */
+function tokenAt(inside: (t: { start: number; end: number }) => boolean) {
+	return tokensIn(input.value).find(inside);
+}
+
+function removeToken(token: { start: number; end: number }): void {
+	const value = input.value;
+	const end = value[token.end] === ' ' && (token.start === 0 || value[token.start - 1] === ' ') ? token.end + 1 : token.end;
+	setInputText(value.slice(0, token.start) + value.slice(end), token.start);
+	if (state) { syncAttachmentTokens(state); }
+}
+
+input.addEventListener('keydown', event => {
+	if (event.isComposing || event.altKey || event.metaKey || event.ctrlKey) { return; }
+	const start = input.selectionStart;
+	const end = input.selectionEnd;
+	if (event.key === 'Backspace' || event.key === 'Delete') {
+		if (start !== end) { return; }
+		const token = event.key === 'Backspace'
+			? tokenAt(t => start > t.start && start <= t.end)
+			: tokenAt(t => start >= t.start && start < t.end);
+		if (token) { event.preventDefault(); removeToken(token); }
+		return;
+	}
+	if ((event.key === 'ArrowLeft' || event.key === 'ArrowRight') && start === end) {
+		const token = event.key === 'ArrowLeft'
+			? tokenAt(t => start > t.start && start <= t.end)
+			: tokenAt(t => start >= t.start && start < t.end);
+		if (token) {
+			event.preventDefault();
+			const to = event.key === 'ArrowLeft' ? token.start : token.end;
+			input.setSelectionRange(event.shiftKey ? Math.min(start, to) : to, event.shiftKey ? Math.max(start, to) : to, event.key === 'ArrowLeft' ? 'backward' : 'forward');
+			rememberAttachmentCaret();
+		}
+	}
+});
+
+/** The caret never rests inside a token, and a selection never cuts one in half. */
+let snappingCaret = false;
+function snapToTokens(): void {
+	if (snappingCaret || document.activeElement !== input) { return; }
+	const tokens = tokensIn(input.value);
+	if (!tokens.length) { return; }
+	let start = input.selectionStart;
+	let end = input.selectionEnd;
+	const direction = input.selectionDirection;
+	for (const t of tokens) {
+		if (start === end) {
+			if (start > t.start && start < t.end) { start = end = start - t.start < t.end - start ? t.start : t.end; }
+			continue;
+		}
+		if (start > t.start && start < t.end) { start = t.start; }
+		if (end > t.start && end < t.end) { end = t.end; }
+	}
+	if (start !== input.selectionStart || end !== input.selectionEnd) {
+		snappingCaret = true;
+		input.setSelectionRange(start, end, direction);
+		snappingCaret = false;
+		rememberAttachmentCaret();
+	}
+}
+document.addEventListener('selectionchange', snapToTokens);
+
+/** Hit-test the visible mirror without putting another editable layer over the textarea. */
+function attachmentHit(point: { clientX: number; clientY: number }) {
+	const marks = [...inputMirror.querySelectorAll<HTMLElement>('.att-token-wrap')];
+	const index = marks.findIndex(mark => [...mark.getClientRects()].some(r => point.clientX >= r.left && point.clientX <= r.right && point.clientY >= r.top - 3 && point.clientY <= r.bottom + 3));
+	const token = tokensIn(input.value)[index];
+	if (!token) { return undefined; }
+	const closeMark = marks[index].querySelector<HTMLElement>('.att-token-close');
+	const close = closeMark?.getBoundingClientRect();
+	return { token, closeMark, close: !!close && point.clientX >= close.left && point.clientX <= close.right && point.clientY >= close.top - 3 && point.clientY <= close.bottom + 3 };
+}
+
+let attachmentPress: { x: number; y: number; start: number; end: number; selection: number; text: string; chat: string | undefined; shift: boolean } | undefined;
+let draggedAttachment: { text: string; chat: string | undefined; start: number; end: number } | undefined;
+let attachmentDragPreview: HTMLElement | undefined;
+let hoveredAttachmentClose: HTMLElement | undefined;
+input.addEventListener('mousemove', event => {
+	if (event.buttons || draggedAttachment) { return; }
+	const hit = attachmentHit(event);
+	const chip = hit && chipOfToken(hit.token.reference);
+	hoveredAttachmentClose?.classList.remove('hovered');
+	hoveredAttachmentClose = hit?.close ? hit.closeMark ?? undefined : undefined;
+	hoveredAttachmentClose?.classList.add('hovered');
+	input.style.cursor = hit ? (hit.close ? 'pointer' : 'grab') : '';
+	input.title = hit ? (hit.close ? `Remove ${chip?.label ?? hit.token.label.trim()}` : `${chip?.filePath ?? chip?.label ?? hit.token.label.trim()}\nClick to open · Drag to move · Right-click for actions`) : '';
+});
+input.addEventListener('mouseleave', () => {
+	hoveredAttachmentClose?.classList.remove('hovered');
+	hoveredAttachmentClose = undefined;
+	if (!draggedAttachment) { input.draggable = false; input.title = ''; input.style.cursor = ''; }
+});
+input.addEventListener('mousedown', event => {
+	attachmentPress = undefined;
+	if (event.button !== 0) { return; }
+	const hit = attachmentHit(event);
+	if (!hit) { return; }
+	if (hit.close) {
+		event.preventDefault();
+		removeToken(hit.token);
+		input.focus();
+		return;
+	}
+	const selection = input.selectionStart;
+	attachmentPress = { x: event.clientX, y: event.clientY, start: hit.token.start, end: hit.token.end, selection, text: input.value, chat: draftChat, shift: event.shiftKey };
+	// The textarea's native text drag does not reliably drag an unselected badge. Own this gesture.
+	event.preventDefault();
+	input.focus();
+	input.setSelectionRange(event.shiftKey ? Math.min(selection, hit.token.start) : hit.token.start, event.shiftKey ? Math.max(selection, hit.token.end) : hit.token.end);
+});
+input.addEventListener('click', event => {
+	const press = attachmentPress;
+	attachmentPress = undefined;
+	if (!press || Math.hypot(event.clientX - press.x, event.clientY - press.y) > 4) { return; }
+	const hit = attachmentHit(event);
+	if (!hit || hit.token.start !== press.start || hit.close) { return; }
+	input.setSelectionRange(event.shiftKey ? Math.min(press.selection, hit.token.start) : hit.token.start, event.shiftKey ? Math.max(press.selection, hit.token.end) : hit.token.end);
+	rememberAttachmentCaret();
+	const chip = chipOfToken(hit.token.reference);
+	if (chip && !event.shiftKey) { post({ type: 'openAttachment', id: chip.id }); }
+});
+
+/** Mirror text has exactly the textarea's characters, so its DOM caret gives a drop offset. */
+function attachmentDropOffset(x: number, y: number): number {
+	input.style.pointerEvents = 'none';
+	inputMirror.style.pointerEvents = 'auto';
+	let offset = input.selectionStart;
+	try {
+		const caret = document.caretRangeFromPoint(x, y);
+		if (caret && inputMirror.contains(caret.startContainer)) {
+			const range = document.createRange();
+			range.selectNodeContents(inputMirror);
+			range.setEnd(caret.startContainer, caret.startOffset);
+			offset = Math.min(input.value.length, range.toString().length);
+		}
+	} finally {
+		input.style.pointerEvents = '';
+		inputMirror.style.pointerEvents = '';
+	}
+	const token = tokensIn(input.value).find(t => offset > t.start && offset < t.end);
+	return token ? (offset - token.start < token.end - offset ? token.start : token.end) : offset;
+}
+
+function moveAttachmentText(text: string, start: number, end: number, to: number): { text: string; caret: number } {
+	if (to >= start && to <= end) { return { text, caret: end }; }
+	const token = text.slice(start, end);
+	const remaining = text.slice(0, start) + text.slice(end);
+	const target = to > end ? to - (end - start) : to;
+	return { text: remaining.slice(0, target) + token + remaining.slice(target), caret: target + token.length };
+}
+
+document.addEventListener('mousemove', event => {
+	const press = attachmentPress;
+	if (!press || press.shift || !(event.buttons & 1) || press.chat !== draftChat || press.text !== input.value) { return; }
+	if (!draggedAttachment && Math.hypot(event.clientX - press.x, event.clientY - press.y) < 4) { return; }
+	event.preventDefault();
+	if (!draggedAttachment) {
+		draggedAttachment = { text: press.text, chat: press.chat, start: press.start, end: press.end };
+		const badge = inputMirror.querySelectorAll<HTMLElement>('.att-token')[tokensIn(input.value).findIndex(token => token.start === press.start)];
+		if (badge) {
+			attachmentDragPreview = badge.cloneNode(true) as HTMLElement;
+			attachmentDragPreview.classList.add('attachment-drag-preview');
+			document.body.append(attachmentDragPreview);
+		}
+	}
+	if (attachmentDragPreview) { attachmentDragPreview.style.transform = `translate(${event.clientX + 10}px, ${event.clientY + 10}px)`; }
+	const to = attachmentDropOffset(event.clientX, event.clientY);
+	input.setSelectionRange(to, to);
+});
+function endAttachmentDrag(): void {
+	draggedAttachment = undefined;
+	attachmentPress = undefined;
+	attachmentDragPreview?.remove();
+	attachmentDragPreview = undefined;
+	input.style.cursor = '';
+}
+document.addEventListener('mouseup', event => {
+	const drag = draggedAttachment;
+	if (!drag) { return; }
+	event.preventDefault();
+	const rect = input.getBoundingClientRect();
+	if (drag.chat === draftChat && drag.text === input.value && event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom) {
+		const moved = moveAttachmentText(input.value, drag.start, drag.end, attachmentDropOffset(event.clientX, event.clientY));
+		setInputText(moved.text, moved.caret);
+	}
+	endAttachmentDrag();
+	input.focus();
+});
+window.addEventListener('blur', endAttachmentDrag);
+document.addEventListener('keydown', event => { if (event.key === 'Escape' && draggedAttachment) { event.preventDefault(); endAttachmentDrag(); } });
+input.addEventListener('dragover', event => {
+	if (!event.dataTransfer?.types.some(type => type === attachmentClipboardType || type === 'text/plain')) { return; }
+	event.preventDefault();
+	event.dataTransfer.dropEffect = 'copy';
+	const to = attachmentDropOffset(event.clientX, event.clientY);
+	input.setSelectionRange(to, to);
+});
+input.addEventListener('drop', event => {
+	if (!event.dataTransfer || (!event.dataTransfer.getData(attachmentClipboardType) && !readAttachmentMarkers(event.dataTransfer.getData('text/plain')))) { return; }
+	event.preventDefault();
+	event.stopPropagation();
+	const to = attachmentDropOffset(event.clientX, event.clientY);
+	input.setSelectionRange(to, to);
+	pasteAttachmentTokens({ clipboardData: event.dataTransfer, preventDefault: () => event.preventDefault() });
+	input.focus();
+});
+document.addEventListener('dragend', endAttachmentDrag);
+
+/**
+ * Tokens drawn as chips. The token's own characters keep their width, so the mirror stays
+ * aligned with the textarea's caret: the icon sits over `[@`, the brackets are transparent.
+ */
+function markAttachmentTokens(text: string, chipFor: (reference: string) => AttachmentChip | undefined, rest: (text: string) => Node[]): Node[] {
+	const out: Node[] = [];
+	let last = 0;
+	for (const token of tokensIn(text)) {
+		if (token.start > last) { out.push(...rest(text.slice(last, token.start))); }
+		const chip = chipFor(token.reference);
+		const mark = chip ? chipIcon(chip) : icon('link');
+		mark.classList.add('att-token-icon');
+		const label = token.label.trim();
+		const leading = token.label.slice(0, token.label.length - token.label.trimStart().length);
+		const trailing = token.label.slice(token.label.trimEnd().length);
+		out.push(el('span', { class: 'att-token-wrap', title: chip?.filePath ?? chip?.label ?? label },
+			el('span', { class: 'att-token-hide', text: '[' }),
+			el('span', { class: `att-token${chip ? '' : ' unbound'}` },
+				el('span', { class: 'att-token-hide att-token-prefix', text: `${token.reference} ${leading}` }, mark),
+				el('span', { class: 'att-token-label', text: label }),
+				el('span', { class: 'att-token-hide att-token-close', text: trailing })),
+			el('span', { class: 'att-token-hide', text: ']' })));
+		last = token.end;
+	}
+	if (last < text.length) { out.push(...rest(text.slice(last))); }
+	return out;
 }
 
 function attachmentIcon(kind: AttachmentKind): string {
@@ -5861,7 +7091,8 @@ function labelOf(effort: string): string {
  * box — the send button used to clear it into a refusal.
  */
 function canSend(): boolean {
-	return !pendingPasteCount && !!state && (state.detecting || state.agents.some(a => a.available));
+	const pendingAttachments = [...pendingAttachmentPastes.values()].includes(draftChat ?? '') || [...pastedTokens.values()].some(token => input.value.includes(token));
+	return !pendingPasteCount && !pendingAttachments && !!state && (state.detecting || state.agents.some(a => a.available));
 }
 
 /** Smooth colour landmarks: grey, white, green, yellow, orange, red. */
@@ -6001,8 +7232,8 @@ function renderSend(): void {
 	const queueKey = `${navigator.platform.startsWith('Mac') ? '⌘' : 'Ctrl+'}Enter`;
 	sendButton.title = stop ? 'Stop — end what the agent is doing now'
 		: !canSend() ? 'No agent is available'
-		: running ? `Add to the running turn (Enter) — the agent takes it into what it is doing. ${queueKey} queues it for when the turn ends instead.`
-		: 'Send (Enter) — Shift+Enter starts a new line';
+		: running ? `Add to the running turn (Enter outside lists) — the agent takes it into what it is doing. ${queueKey} queues it for when the turn ends instead.`
+		: 'Send (Enter outside lists) — Shift+Enter starts a new line; Enter in a list adds an item';
 	queueButton.hidden = !running || !hasContent || !canSend();
 	queueButton.title = `Queue — send this when the agent finishes the current turn (${queueKey}). Enter adds it to the turn instead.`;
 	sendButton.setAttribute('aria-label', stop ? 'Stop' : 'Send');
@@ -6119,11 +7350,82 @@ function markCommands(text: string, known: ReadonlySet<string>): Node[] {
 	return out;
 }
 
+/** Colour links without changing any characters or widths in the textarea mirror. */
+function markComposerText(text: string, known: ReadonlySet<string>, interactive = false): Node[] {
+	const nodes: Node[] = [];
+	let last = 0;
+	for (const link of composerLinks(text)) {
+		if (link.start > last) { nodes.push(...markCommands(text.slice(last, link.start), known)); }
+		if (interactive) { nodes.push(linkNode(link.url, link.text)); }
+		else {
+			const mark = el('span', { class: 'composer-link', text: link.text });
+			mark.dataset.url = link.url;
+			nodes.push(mark);
+		}
+		last = link.end;
+	}
+	if (last < text.length) { nodes.push(...markCommands(text.slice(last), known)); }
+	return nodes;
+}
+
+function composerLinkHit(point: { clientX: number; clientY: number }): { url: string } | undefined {
+	const marks = inputMirror.querySelectorAll<HTMLElement>('.composer-link');
+	for (const mark of marks) {
+		if (mark.dataset.url && [...mark.getClientRects()].some(rect => point.clientX >= rect.left && point.clientX <= rect.right && point.clientY >= rect.top && point.clientY <= rect.bottom)) {
+			return { url: mark.dataset.url };
+		}
+	}
+	return undefined;
+}
+
+let composerLinkPress: { x: number; y: number; url: string } | undefined;
+input.addEventListener('mousemove', event => {
+	if (event.buttons || draggedAttachment) { return; }
+	const link = composerLinkHit(event);
+	if (!link) { return; }
+	input.style.cursor = 'pointer';
+	input.title = `${link.url}\nClick to open · ${modKey}+click for system browser · Right-click for actions`;
+});
+input.addEventListener('mousedown', event => {
+	const link = event.button === 0 ? composerLinkHit(event) : undefined;
+	composerLinkPress = link ? { x: event.clientX, y: event.clientY, url: link.url } : undefined;
+});
+input.addEventListener('click', event => {
+	const press = composerLinkPress;
+	composerLinkPress = undefined;
+	if (!press || event.shiftKey || event.button !== 0 || input.selectionStart !== input.selectionEnd || Math.hypot(event.clientX - press.x, event.clientY - press.y) > 4) { return; }
+	const link = composerLinkHit(event);
+	if (!link || link.url !== press.url) { return; }
+	event.preventDefault();
+	event.stopPropagation();
+	post({ type: 'openLink', url: link.url, external: isMacView ? event.metaKey : event.ctrlKey });
+});
+input.addEventListener('contextmenu', event => {
+	const link = composerLinkHit(event);
+	if (!link) { return; }
+	event.preventDefault();
+	event.stopPropagation();
+	linkMenu(input, link.url);
+});
+
+function applyComposerEdit(edit: ComposerEdit, notify = true): void {
+	input.setRangeText(edit.text, edit.start, edit.end, 'preserve');
+	input.setSelectionRange(edit.selectionStart, edit.selectionEnd);
+	rememberAttachmentCaret();
+	if (notify) { input.dispatchEvent(new Event('input', { bubbles: true })); }
+}
+
+input.addEventListener('input', event => {
+	if ((event as InputEvent).isComposing || input.selectionStart !== input.selectionEnd) { return; }
+	const edit = composerListStarter(input.value, input.selectionStart);
+	if (edit) { applyComposerEdit(edit, false); }
+});
+
 /** The mirror behind the box, kept to its text and its scroll. */
 function paintInput(): void {
 	// A trailing line break needs something after it, or the mirror's last line
 	// is one short of the textarea's.
-	inputMirror.replaceChildren(...markCommands(input.value, knownCommands(state)), '\u200b');
+	inputMirror.replaceChildren(...markAttachmentTokens(input.value, chipOfToken, text => markComposerText(text, knownCommands(state))), '\u200b');
 	inputMirror.scrollTop = input.scrollTop;
 }
 
@@ -6175,6 +7477,7 @@ function recall(step: -1 | 1): boolean {
 
 input.addEventListener('paste', event => {
 	if (!event.clipboardData || !state) { return; }
+	if (pasteAttachmentTokens(event)) { return; }
 	const files = clipboardFiles(event.clipboardData);
 	if (!files.length) { return; }
 	event.preventDefault();
@@ -6235,6 +7538,10 @@ input.addEventListener('keydown', event => {
 		event.preventDefault();
 		event.stopPropagation();
 		return;
+	}
+	if (!event.isComposing && !event.altKey && !event.ctrlKey && !event.metaKey && (event.key === 'Enter' || event.key === 'Tab')) {
+		const edit = composerListEdit(input.value, input.selectionStart, input.selectionEnd, event.key, event.shiftKey);
+		if (edit) { event.preventDefault(); applyComposerEdit(edit); return; }
 	}
 	if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
 		event.preventDefault();
@@ -6799,7 +8106,7 @@ function closePopups(except?: HTMLElement, keep?: HTMLElement): void {
 			}
 		}
 	}
-	for (const pill of [overflowButton, tabAdd, tabAddTerminal, compactSelector, agentPill, modelPill, plusButton, usageButton, approveToggle, slashButton, workdirButton, branchButton, commitButton, contextButton]) {
+	for (const pill of [overflowButton, tabAdd, tabAddTerminal, compactSelector, agentPill, modelPill, plusButton, browserButton, usageButton, approveToggle, slashButton, workdirButton, branchButton, commitButton, contextButton]) {
 		pill.classList.remove('active');
 	}
 	if (selectorStrip.classList.contains('open')) { compactSelector.classList.add('active'); }
@@ -7026,6 +8333,7 @@ document.addEventListener('keydown', event => {
 interface MenuItem {
 	readonly icon?: string;
 	readonly label: string;
+	readonly suggested?: boolean;
 	readonly description?: string;
 	readonly checked?: boolean;
 	readonly disabled?: boolean;
@@ -7079,7 +8387,7 @@ function openMenu(anchor: HTMLElement, items: MenuItem[], heading?: string, acti
 					item.description ? el('span', { class: 'menu-description', text: item.description }) : undefined),
 				item.shortcut ? el('span', { class: 'menu-shortcut', text: item.shortcut }) : '',
 				item.checked ? icon('check', 'menu-check') : el('span', { class: 'menu-check' }),
-			], { class: 'menu-item' });
+			], { class: `menu-item${item.suggested ? ' suggested' : ''}` });
 			b.disabled = !!item.disabled;
 			b.addEventListener('click', () => {
 				// Opened over a panel, only the menu goes: the panel stays.
@@ -7363,7 +8671,10 @@ modelPill.addEventListener('click', () => {
 // Asks where the page opens: the editor's own browser, or Google Chrome — whose
 // tabs the browser tools then drive the same way.
 function browserMenuItems(): MenuItem[] {
+	const page = state?.suggestions.find(chip => chip.kind === 'sharedPage');
 	const items: MenuItem[] = [
+		...(page ? [{ icon: 'clippy', label: 'Attach current browser', description: page.label, suggested: true,
+			run: () => post({ type: 'acceptSuggestion', id: page.id }) }] : []),
 		{ icon: 'globe', label: 'Google Chrome', command: 'openBrowser.chrome', run: () => post({ type: 'openBrowser', where: 'chrome' }) },
 	];
 	if (state?.nativeBrowser && state.nativeBrowser !== 'unsupported') {
@@ -7377,7 +8688,7 @@ function browserMenuItems(): MenuItem[] {
 	return items;
 }
 
-browserButton.addEventListener('click', () => openMenu(browserButton, browserMenuItems(), 'Open a new tab in'));
+browserButton.addEventListener('click', () => openMenu(browserButton, browserMenuItems(), 'Browser'));
 
 /* ---------------------------------------------------------------- the "/" palette */
 
@@ -8329,6 +9640,7 @@ function renderWorkdir(s: ChatViewState): void {
 		githubAnswer = undefined;
 		githubPending = false;
 		if (composerTab === 'github') { requestGithub(); }
+		if (composerTab === 'files') { openFilesTab(); }
 		branchState = undefined;
 		branchBusy = false;
 		branchDeleting = undefined;
@@ -8718,6 +10030,7 @@ for (const [tab, tip] of [
 	[composerTabSkills, 'Toolbar skills'],
 	[composerTabActivity, 'Agents and access of this chat'],
 	[composerTabHistory, 'Messages of this chat'],
+	[composerTabFiles, 'Files of the working folder'],
 	[composerTabGithub, 'Pull requests and Actions runs of this folder\'s repository'],
 ] as const) {
 	tab.dataset.tip = `${tip} (${composerTabKeyMod}${tab.textContent?.[0] ?? ''})`;
@@ -9413,7 +10726,11 @@ plusButton.addEventListener('click', () => {
 	const pageProblem = !state?.browserApi
 		? 'Open Google Chrome or VS Code Browser first'
 		: !state.hasBrowserTab ? 'Open a page in the browser first' : undefined;
-	openMenu(plusButton, [...browserMenuItems(), ...attachItems.map(item => ({
+	const suggestions: MenuItem[] = (state?.suggestions ?? []).filter(chip => chip.kind !== 'sharedPage').map(chip => ({
+		icon: attachmentIcon(chip.kind), label: chip.kind === 'selection' ? 'Attach current selection' : 'Attach current file',
+		description: chip.label, run: () => post({ type: 'acceptSuggestion', id: chip.id }),
+	}));
+	openMenu(plusButton, [...suggestions, ...browserMenuItems(), ...attachItems.map(item => ({
 		icon: item.icon,
 		label: item.label,
 		description: item.needsTab ? pageProblem : undefined,

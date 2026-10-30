@@ -1,5 +1,5 @@
 /** Route selected message text through the editor clipboard, as the Copy buttons do. */
-export function installChatSelectionCopy(document: Document, root: HTMLElement, copy: (text: string) => void): void {
+export function installChatSelectionCopy(document: Document, root: HTMLElement, copy: (text: string) => void, serialize?: (selection: Selection) => string | undefined): void {
   const selectedText = () => {
     // Leave native copy/cut/paste in editing fields alone, including the composer.
     const active = document.activeElement;
@@ -7,7 +7,7 @@ export function installChatSelectionCopy(document: Document, root: HTMLElement, 
     const selection = document.getSelection();
     if (!selection || selection.isCollapsed || !selection.anchorNode || !selection.focusNode ||
       !root.contains(selection.anchorNode) || !root.contains(selection.focusNode)) return '';
-    return selection.toString();
+    return serialize?.(selection) ?? selection.toString();
   };
   document.addEventListener('keydown', event => {
     if ((!event.ctrlKey && !event.metaKey) || event.altKey || event.shiftKey || event.key.toLowerCase() !== 'c' || event.isComposing) return;

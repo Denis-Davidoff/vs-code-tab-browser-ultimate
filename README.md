@@ -105,6 +105,8 @@ For limits, settings and technical details, see [CLAUDE.md](CLAUDE.md#browser-vi
 
 ## 📝 Changelog
 
+**0.9.9** — Attachments appear as inline badges in drafts and sent messages, with file icons, drag and drop, and menus to open, copy, remove or attach them again. Copying a badge or a whole message preserves attachments when pasted back into chat. Attach the current browser from the globe menu. The composer supports nested lists and clickable links as you type. Files has sortable sticky column headers, corrected arrow-key navigation in tiles and right-click selection. Pull request suggestions distinguish branches from different forks.
+
 **0.9.8** — Attached files, tabs and suggestions show only on the composer's Chat tab; Skills, Activity, History and GitHub hide them, and they still go with the next message.
 
 **0.9.7** — Shell code blocks in replies can be run in VS Code's terminal or a chat terminal tab. The Commit window has **Commit all changes & Push**. Chat Settings save every change on their own, with no Save button. A message taller than the screen can be read to its end while pinned at the top, and finish sounds play in windows that were never clicked.
