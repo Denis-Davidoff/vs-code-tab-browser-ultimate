@@ -1,6 +1,10 @@
 # Built webview assets
 media/index.js
 media/index.js.map
+media/visualization.js
+media/visualization.js.map
+media/visualization.html
+.ai-browser/visualizations/
 media/codicon.css
 media/codicon.css.map
 media/xterm.css
@@ -11,6 +15,7 @@ out/
 chrome-extension/dist/
 chrome-extension/*.zip
 !chrome-extension/ai-browser-chrome-0.6.0.zip
+!chrome-extension/ai-browser-chrome-0.6.1.zip
 chrome-extension/*.zip.tmp
 node_modules/
 

@@ -17,6 +17,9 @@ import { pinAnnouncement, pinSignature, type PinInfo } from './terminalPins';
 import type { TerminalApproval } from './agentProtocol';
 import { stepGate, withNextDecision } from './toolbarText';
 import type { TurnWeight } from './usageAlert';
+import { visualizationMarkers } from './visualizationProtocol';
+import type { VisualizationSnapshot } from './visualizationProtocol';
+import { VisualizationStore, visualizationTotalLimit } from './visualizationStore';
 
 /**
  * One conversation of the chat: a tab. The view holds several (`tabLimit()`),
@@ -87,6 +90,7 @@ export interface Attachment {
 
 /** What a tab needs from the view that holds it. */
 export interface TabHost {
+	visualizationArchive?(): string;
 	ultracodeDefault?(): boolean;
 	/** Where the agents work when the conversation picked no folder of its own. */
 	cwd(): string;
@@ -237,6 +241,103 @@ export function transientTurnError(error: string): boolean {
 }
 
 export class ChatTab {
+	private _visualizationStore?: VisualizationStore;
+	private _visualizationProject?: string;
+	private _visualizationHtml: Record<string, VisualizationSnapshot> = {};
+	private _visualizationWork: Promise<void> = Promise.resolve();
+	private _visualizationScheduled = false;
+	private _visualizationRefresh = false;
+	public get visualizations(): Readonly<Record<string, VisualizationSnapshot>> { return this._visualizationHtml; }
+
+	private _visualizations(): VisualizationStore | undefined {
+		const archive = this._host.visualizationArchive?.();
+		if (!archive) { return undefined; }
+		if (!this._visualizationStore || this._visualizationProject !== this.cwd) {
+			this._visualizationStore = new VisualizationStore(this.cwd, archive, this._chat.id);
+			this._visualizationProject = this.cwd;
+		}
+		return this._visualizationStore;
+	}
+
+	private async _visualizationInstruction(): Promise<string | undefined> {
+		const store = this._visualizations();
+		if (!store) { return undefined; }
+		try { await store.prepare(); } catch { return undefined; }
+		return `HTML visualizations are supported in this chat. When an inline interactive visual helps the user, write a self-contained HTML file directly in ${JSON.stringify(store.directory)} (at most 1 MB). Use inline CSS/JavaScript, SVG, canvas or MathML; external resources and network requests are blocked. The view has no access to files, host commands or APIs. Publish a completed file using chat_present_html({path, title?}) if available, or emit this exact reference on its own unquoted line: \uE200visualize\uE202{"path":"<absolute file path>","title":"<short title>"}\uE201. Do not put the reference inside a code fence. Reuse the filename to revise the same visual and publish again after each completed write. Do not publish to an external service for a local preview.`;
+	}
+
+	/** Explicit publication is available to every provider through our conversation-scoped MCP tool. */
+	public async presentVisualization(file: string, title?: string): Promise<unknown> {
+		if (this._closed || this._discarded) { throw new Error('The conversation is no longer open.'); }
+		const store = this._visualizations();
+		if (!store) { throw new Error('HTML visualization storage is unavailable.'); }
+		const chat = this._chat;
+		const published = await store.publish(file);
+		if (chat !== this._chat || this._closed || this._discarded) { throw new Error('The conversation changed before publication.'); }
+		// The marker adapter owns both placement and immutable snapshot references.
+		const existing = [...chat.entries].reverse().find((entry): entry is Extract<ChatEntry, { kind: 'assistant' }> => entry.kind === 'assistant' && visualizationMarkers(entry.text).some(marker => marker.path === file));
+		const at = existing ? visualizationMarkers(existing.text).find(marker => marker.path === file)!.start : 0;
+		const reference = { at, id: published.id, revision: published.revision, title: title || existing?.visualizations?.find(ref => ref.at === at)?.title || path.basename(file) };
+		if (existing) { existing.visualizations = [...(existing.visualizations ?? []).filter(ref => ref.at !== at), reference]; }
+		else { this._push({ kind: 'assistant', text: `\uE200visualize\uE202${JSON.stringify({ path: file, title })}\uE201`, visualizations: [reference] }); }
+		this._textBreak = true;
+		await this._syncVisualizations();
+		this._post();
+		await this._save(chat);
+		return { id: published.id, revision: published.revision, displayed: true, note: 'Displayed inline. No additional reference is needed. To update, edit the file and call chat_present_html again.' };
+	}
+
+	/** Coalesces deltas and refreshes only at completed tool/turn boundaries, never while a file streams. */
+	private _syncVisualizations(refresh = false): Promise<void> {
+		this._visualizationRefresh ||= refresh;
+		if (this._visualizationScheduled) { return this._visualizationWork; }
+		this._visualizationScheduled = true;
+		const chat = this._chat;
+		this._visualizationWork = this._visualizationWork.catch(() => {}).then(async () => {
+			this._visualizationScheduled = false;
+			const update = this._visualizationRefresh;
+			this._visualizationRefresh = false;
+			if (chat !== this._chat || this._discarded || this._closed) { return; }
+			const store = this._visualizations();
+			if (!store) { return; }
+			const targets = chat.entries.flatMap(entry => entry.kind === 'assistant'
+				? visualizationMarkers(entry.text).map(marker => ({ entry, marker })) : []);
+			const latest = new Map(targets.map(target => [target.marker.path, target]));
+			let changed = false;
+			for (const target of targets) {
+				const { entry, marker } = target;
+				const old = entry.visualizations?.find(ref => ref.at === marker.start);
+				if (old && (!update || latest.get(marker.path) !== target)) { continue; }
+				let reference;
+				try {
+					const published = await store.publish(marker.path);
+					reference = { at: marker.start, id: published.id, revision: published.revision, title: old?.title || marker.title || path.basename(marker.path), wide: marker.wide };
+				} catch (error) {
+					// A failed revision keeps the last successful snapshot visible.
+					reference = { ...old, at: marker.start, id: old?.id ?? `error-${marker.start}`, title: marker.title || 'Visualization', wide: marker.wide,
+						error: error instanceof Error ? error.message : 'The visualization could not be read.' };
+				}
+				if (JSON.stringify(old) !== JSON.stringify(reference)) {
+					entry.visualizations = [...(entry.visualizations ?? []).filter(ref => ref.at !== marker.start), reference];
+					changed = true;
+				}
+			}
+			const html: Record<string, VisualizationSnapshot> = {};
+			let bytes = 0;
+			// Bound both remote frames and memory; older snapshots remain in the archive.
+			const revisions = [...new Set(chat.entries.flatMap(entry => entry.kind === 'assistant' ? (entry.visualizations ?? []).flatMap(ref => ref.revision ? [ref.revision] : []) : []))].reverse();
+			for (const revision of revisions.slice(0, 8)) {
+				const content = await store.load(revision);
+				if (content === undefined || bytes + Buffer.byteLength(content) > visualizationTotalLimit) { continue; }
+				bytes += Buffer.byteLength(content);
+				html[revision] = { html: content };
+			}
+			if (chat !== this._chat || this._discarded || this._closed) { return; }
+			if (JSON.stringify(html) !== JSON.stringify(this._visualizationHtml)) { this._visualizationHtml = html; changed = true; }
+			if (changed) { this._post(); await this._save(chat); }
+		}).catch(() => { /* An unavailable artifact must not interrupt the conversation. */ });
+		return this._visualizationWork;
+	}
 	public readonly id = generateUuid();
 	private _chat: StoredChat;
 	private _session: AgentSession | undefined;
@@ -344,6 +445,7 @@ export class ChatTab {
 		chat.ultracode ??= this._host.ultracodeDefault?.() ?? false;
 		this._chat = chat;
 		this._failed = endedInError(chat);
+		void this._syncVisualizations();
 	}
 
 	/** Move the live session to another chat surface without closing it. */
@@ -722,6 +824,11 @@ export class ChatTab {
 		chat.ultracode ??= this._host.ultracodeDefault?.() ?? false;
 		this._chat = chat;
 		this._unseen = false;
+		this._visualizationStore = undefined;
+		this._visualizationHtml = {};
+		this._visualizationScheduled = false;
+		this._visualizationRefresh = false;
+		void this._syncVisualizations();
 		this._failed = endedInError(chat);
 		this._restartForDirs = false;
 		// The hold was on the conversation the queue belonged to.
@@ -913,6 +1020,12 @@ export class ChatTab {
 		text: string, attachments: readonly Attachment[],
 		agent: AgentId, model: string, effort: string | undefined, backend: AgentBackend, step?: SkillStep, ultracode?: boolean,
 	): Promise<boolean> {
+		// The only await before the session has the message, and it comes first: after
+		// it, nothing until `session.send` may yield, or two sends both read the tab idle
+		// and the second replaces the first in `_pending`; and the pin note is taken later.
+		const sendingChat = this._chat;
+		const visualizationInstruction = await this._visualizationInstruction();
+		if (this._chat !== sendingChat || this._closed || this._discarded) { return false; }
 		new AttachmentReferenceScope().assign(attachments.map(a => a.chip));
 		// A voice message is part of what the user says: what the chat shows and keeps is the
 		// transcript; what the agent reads is it said to be one; the rest stay attachments.
@@ -978,7 +1091,7 @@ export class ChatTab {
 		const sent = asked ? withNextDecision(said, asked) : said;
 		const pinNote = this._takePinNote();
 		const signatureSent = this._pinAnnounced;
-		const prompt = [sent, pinNote, attachmentContext(context)].filter(Boolean).join('\n\n');
+		const prompt = [sent, pinNote, attachmentContext(context), visualizationInstruction].filter(Boolean).join('\n\n');
 		const images = attachments.map(a => a.image).filter((i): i is TurnImage => !!i);
 		pending.resend = { input: { text: prompt, images, ...(agent === 'claude' ? { ultracode } : {}) }, model, effort };
 
@@ -1551,6 +1664,9 @@ export class ChatTab {
 			}
 		}
 		this._endOrphanedAgents();
+		if (event.type === 'text' && event.text.includes('\uE201') || event.type === 'toolUpdate' && !!event.update.status || event.type === 'turnEnd') {
+			void this._syncVisualizations(event.type !== 'text');
+		}
 		this._post();
 	}
 

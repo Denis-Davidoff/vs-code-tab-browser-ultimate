@@ -41,6 +41,7 @@ export type KeepAwakeRequest =
 
 /** What the chat answers, for the caller's own tab where one is named. Every method throws an `Error` a model can act on. */
 export interface ChatControl {
+	presentHtml(ownTab: string, file: string, title?: string): Promise<unknown>;
 	/** The open tab whose conversation `chatId` names, by our tab id. */
 	tabOf(chatId: string): string | undefined;
 	state(ownTab: string | undefined): unknown;
@@ -91,6 +92,19 @@ function requireOwnTab(port: ChatControlPort, caller: Caller, what: string): str
 
 export function chatTools(port: ChatControlPort): Tool[] {
 	return [
+		{
+			name: 'chat_present_html', title: 'Display an HTML visualization',
+			description: 'Display or update a completed self-contained HTML visualization in your own AI Browser conversation. Write the file directly in the conversation visualization directory supplied with the prompt, then call this tool with its absolute path. Reuse the path to update the existing card. At most 1 MB. Inline CSS/JavaScript, SVG, canvas and MathML work; external resources, network requests and host commands are blocked. Local preview only, no cloud publication. Do not repeat a visualize marker after a successful call.',
+			inputSchema: schema({ path: string('Absolute path to the completed HTML file'), title: string('Short display title') }, ['path']),
+			run: async (args, caller) => {
+				const tab = requireOwnTab(port, caller, 'display HTML');
+				const title = args.title === undefined ? undefined : textArgument(args.title, 'title');
+				if (title && title.length > 160) { throw new Error('Use a title of at most 160 characters.'); }
+				const file = textArgument(args.path, 'path');
+				if (!file) { throw new Error('path is required.'); }
+				return control(port).presentHtml(tab, file, title);
+			},
+		},
 		{
 			name: 'chat_state', title: 'AI Browser chat: tabs',
 			description: 'The AI Browser chat\'s open tabs: status (working, waiting for the user\'s answer, unread, failed, read), '

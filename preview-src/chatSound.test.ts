@@ -18,6 +18,7 @@ function fixture(activeChat?: boolean) {
   const document = { hidden: false, focused: true, hasFocus() { return this.focused; } };
   const sound = { enabled: true, activeChat, sound: 'chime', volume: 60, repeat: 1, notify: true };
   const api = runInNewContext(transpileModule(`let soundBusy;
+    ${declaration('completionAlertsEnabled')}
     ${declaration('soundOnFinish')}
     ({ finish: soundOnFinish });`, { compilerOptions: { target: ScriptTarget.ES2022 } }).outputText, {
     document, visibleTerminalFront, remoteSurface: (s: any) => !!s.surface && s.surface !== 'editor',
@@ -74,12 +75,48 @@ test('inactive VS Code window sounds, but moving focus to another workbench cont
 });
 
 test('browser surfaces use their own window focus independently of the editor', () => {
-  for (const surface of ['chrome', 'exchange']) {
+  for (const surface of ['exchange']) {
     const inactive = fixture(false); inactive.state.surface = surface; inactive.document.focused = false; inactive.finish('a');
     assert.equal(inactive.sounds.length, 1);
     const active = fixture(false); active.state.surface = surface; active.state.windowFocused = false; active.finish('a');
     assert.equal(active.sounds.length, 0);
   }
+});
+
+test('Chrome never duplicates VS Code completion sounds or notifications, even with active-chat sound enabled', () => {
+  for (const activeChat of [false, true]) {
+    const f = fixture(activeChat);
+    f.state.surface = 'chrome';
+    f.document.focused = false;
+    f.document.hidden = true;
+    f.finish('a', 'b');
+    assert.equal(f.sounds.length, 0);
+    assert.equal(f.notifications.length, 0);
+  }
+});
+
+test('Chrome ignores saved sound overrides and does not request notification permission', () => {
+  let pointerdown: () => void = () => {};
+  let requested = 0;
+  const state = { surface: 'chrome', sound: { enabled: true, notify: true } };
+  const pointer = source.match(/document\.addEventListener\('pointerdown', \(\) => \{[\s\S]*?\n\}, \{ capture: true \}\);/)![0];
+  const api = runInNewContext(transpileModule(`
+    ${declaration('completionAlertsEnabled')}
+    ${declaration('soundOn')}
+    ${pointer}
+    ({ soundOn });`, { compilerOptions: { target: ScriptTarget.ES2022 } }).outputText, {
+    state, soundOverride: { on: true, base: true },
+    effectiveSound: () => state.sound, remoteSurface: () => true,
+    document: { addEventListener: (_name: string, listener: () => void) => { pointerdown = listener; } },
+    Notification: { permission: 'default', requestPermission: () => { requested++; return Promise.resolve('granted'); } },
+  });
+  assert.equal(api.soundOn(), false);
+  pointerdown();
+  assert.equal(requested, 0);
+  state.surface = 'exchange';
+  assert.equal(api.soundOn(), true);
+  pointerdown();
+  assert.equal(requested, 1, 'Exchange keeps its own permission flow');
 });
 
 test('older editor hosts fall back to document focus', () => {

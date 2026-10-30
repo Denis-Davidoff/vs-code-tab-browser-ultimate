@@ -111,7 +111,8 @@ let pairingPending = false;
 const supported = new Set<string>(forwardedTypes('chrome'));
 const passive = new Set(['ready', 'saveDrafts', 'tabDraft']);
 
-function emit(message: HostToView): void { window.dispatchEvent(new MessageEvent('message', { data: message })); }
+const hostListeners = new Set<(message: HostToView) => void>();
+function emit(message: HostToView): void { for (const listener of hostListeners) { listener(message); } }
 // Git state and the like, carried in each snapshot: Chrome gets no pushed events.
 const replaySnapshots = snapshotReplay(emit);
 /**
@@ -517,6 +518,7 @@ chrome.tabs.onUpdated.addListener((tabId, _change, tab) => {
 refreshActivePage();
 
 window.aiBrowserChatHost = {
+	onMessage: listener => { hostListeners.add(listener); },
   terminalLease: terminals,
   getState: () => draftState,
   setState(state) { draftState = state; void chrome.storage.session.set({ draftState: state }); },

@@ -2,6 +2,7 @@ import type { TemporaryStorage } from '../core/temporaryFiles';
 import type { FeatureAiSettings } from './featureAi';
 import type { RecordingQuality } from '../browser/recordingQuality';
 import type { SleepChoice, SleepState } from '../power/sleepProtocol';
+import type { VisualizationReference, VisualizationSnapshot } from './visualizationProtocol';
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -323,7 +324,7 @@ export type ChatEntry =
 		/** The models that answered the turn when they were not the one picked — what Gemini's Auto chose. */
 		models?: readonly string[];
 	}
-	| { readonly kind: 'assistant'; text: string }
+	| { readonly kind: 'assistant'; text: string; visualizations?: VisualizationReference[] }
 	| { readonly kind: 'thinking'; text: string; readonly startedAt: number; endedAt?: number }
 	| ToolEntry
 	| ApprovalEntry
@@ -697,6 +698,10 @@ export interface ChatAccess {
 }
 
 export interface ChatViewState {
+	/** Immutable HTML snapshots belonging to this conversation; never executor paths or a file endpoint. */
+	readonly visualizations?: Readonly<Record<string, VisualizationSnapshot>>;
+	/** Editor only: `visualizations` was left out because it is the set the view already holds. */
+	readonly visualizationsUnchanged?: boolean;
 	/** The tab in front's Access tab: editor only. */
 	readonly access?: ChatAccess;
 	/** Rendered through the remote workspace website. */

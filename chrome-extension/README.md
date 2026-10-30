@@ -7,6 +7,9 @@ not change the selected conversation. Its editor tab has an animated gradient
 underline (static when reduced motion is enabled).
 
 Closing Chrome's panel disconnects the mirror; only Stop stops the agent.
+Completion sounds and desktop notifications are delivered by VS Code. Chrome keeps
+them disabled to avoid duplicate alerts on the same computer and does not request
+notification permission. The Sound & notifications settings explain this behavior.
 Chrome keeps separate drafts for each conversation. Pending commands are saved
 for the Chrome session. Ordinary reconnects preserve the approved delivery session,
 so retries use the same IDs without repeating accepted operations. After an editor

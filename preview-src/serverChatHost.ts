@@ -31,9 +31,10 @@ const pending = new Map<string,{chatId:string;message?:ExchangeUiMessage;attachm
 let nextReference = 1;
 // Git state and the like, carried in each snapshot, for a viewer that connected after it changed.
 const replaySnapshots=snapshotReplay(message=>emit(message));
+const hostListeners = new Set<(message: HostToView) => void>();
 function emit(message:HostToView):void {
   if (!rendererReady) { if(eventQueue.length<100)eventQueue.push(message); return; }
-  window.dispatchEvent(new MessageEvent('message',{data:message}));
+  for (const listener of hostListeners) { listener(message); }
 }
 function notice(text:string):void {feedback=text;render();}
 /** Terminal tabs: the renderer's terminal messages to and from `terminal.*` frames (see remoteTerminal.ts). */
@@ -147,6 +148,7 @@ function chooseFile():void {
   input.addEventListener('change',()=>{void(async()=>{for(const file of Array.from(input.files??[]))await addFile(file,chatId);})().catch(error=>notice(String(error)));});input.click();
 }
 window.aiBrowserChatHost={
+	onMessage: listener => { hostListeners.add(listener); },
   terminalLease:terminals,
   getState:()=>draftState,
   setState(value){draftState=value;try{sessionStorage.setItem(storageKey,JSON.stringify(value));}catch{/* Keep drafts in memory if storage is full. */}},

@@ -776,6 +776,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private _pendingOpen: vscode.Disposable | undefined;
 	private readonly _attachmentImages = new Map<string, vscode.Uri>();
 	private readonly _tabHost: TabHost = {
+		visualizationArchive: () => path.join(this._context.globalStorageUri.fsPath, 'visualizations'),
 		ultracodeDefault: () => this._context.globalState.get<RememberedSelection>(selectionKey)?.ultracode ?? this._remembered.ultracode ?? false,
 		cwd: () => this._windowCwd(),
 		projectRoot: () => vscode.workspace.workspaceFolders?.find(f => f.uri.scheme === 'file')?.uri.fsPath,
@@ -1111,6 +1112,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 	private _html(webview: vscode.Webview, media: vscode.Uri): string {
 		const nonce = generateUuid();
+		const visualization = fs.readFileSync(vscode.Uri.joinPath(media, 'visualization.html').fsPath).toString('base64');
 		const uri = (name: string) => webview.asWebviewUri(vscode.Uri.joinPath(media, name)).toString();
 		return /* html */ `<!DOCTYPE html>
 			<html>
@@ -1123,8 +1125,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 					media-src blob:;
 					style-src ${webview.cspSource} 'nonce-${nonce}';
 					script-src 'nonce-${nonce}';
+					frame-src about:;
 					">
 				<meta name="viewport" content="width=device-width, initial-scale=1">
+				<meta name="ai-browser-visualization-srcdoc" content="${visualization}">
+				<meta name="ai-browser-visualization-nonce" content="${nonce}">
 				<link rel="stylesheet" href="${uri('codicon.css')}">
 				<link rel="stylesheet" href="${uri('xterm.css')}">
 				<link rel="stylesheet" href="${uri('chat.css')}">
@@ -1200,8 +1205,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private _windowed(state: ChatViewState): ChatViewState {
 		if (this._editorWindowChat !== state.chatId) { this._editorWindowChat = state.chatId; this._editorPrompts = currentVisibleTurns(); }
 		const window = windowEntries(state.entries, this._editorPrompts);
-		return window.offset ? { ...state, entries: window.entries, entriesOffset: window.offset } : state;
+		const windowed = window.offset ? { ...state, entries: window.entries, entriesOffset: window.offset } : state;
+		// Up to 2 MB of HTML: sent when the set changes, not with every streaming post.
+		// `ChatTab` replaces the object only when its contents change.
+		if (state.visualizations && state.visualizations === this._postedVisualizations) {
+			const { visualizations: _omitted, ...rest } = windowed;
+			return { ...rest, visualizationsUnchanged: true };
+		}
+		this._postedVisualizations = state.visualizations;
+		return windowed;
 	}
+	private _postedVisualizations?: ChatViewState['visualizations'];
 
 	/** Coalesces state posts: a streaming reply changes the state many times a frame. */
 	private _sleepShown?: boolean;
@@ -1294,6 +1308,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			...this._usageState(selection.agent),
 			chatId: this._active.chat.id,
 			entries: this._active.chat.entries,
+			visualizations: this._active.visualizations,
 			messageCount: this._active.chat.entries.filter(entry => entry.kind === 'user' || entry.kind === 'assistant').length,
 			running: this._active.running,
 			// The pins first: they are the conversation's, not a draft's, and carry no `@N`.
@@ -1494,6 +1509,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				return;
 			case 'ready': {
 				this._viewReady = true;
+				// A reloaded page holds no snapshots: send them again.
+				this._postedVisualizations = undefined;
 				// A page that (re)loads has no screens: each terminal is given its own
 				// when the view's xterm for it says `terminalAttach`.
 				this._terminals.detachAll();
@@ -7713,6 +7730,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				}
 				return { id: rowId, stopping: true, note: 'Asked to stop; chat_agents shows it as stopped once its CLI reports it.' };
 			},
+			presentHtml: (ownTab, file, title) => find(ownTab).tab.presentVisualization(file, title),
 		};
 	}
 

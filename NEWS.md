@@ -20,7 +20,7 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 
 - $(hubot) **007 agents** — Claude Code, Codex, Gemini CLI, OpenCode, Pi and OpenRouter in one chat; add OpenRouter models in Chat Settings.
 - $(terminal) **Terminal tabs** — open a shell or Claude Code / Codex in a chat tab; pin it to a conversation and its agent reads it and, with your approval, types.
-- $(extensions) **Chrome extension** — a full 1:1 mirror of your chat, right in Chrome alongside any website. Available on the [Chrome Web Store](https://chromewebstore.google.com/detail/ai-browser/jhdffimahnoijnnfnjadghjhkacheogn). All the latest changes are available only in DEV mode: [Download ZIP](https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/raw/refs/heads/main/chrome-extension/ai-browser-chrome-0.6.0.zip) and follow “How to install” to load it with Developer mode enabled.
+- $(extensions) **Chrome extension** — a full 1:1 mirror of your chat, right in Chrome alongside any website. Available on the [Chrome Web Store](https://chromewebstore.google.com/detail/ai-browser/jhdffimahnoijnnfnjadghjhkacheogn). All the latest changes are available only in DEV mode: [Download ZIP](https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/raw/refs/heads/main/chrome-extension/ai-browser-chrome-0.6.1.zip) and follow “How to install” to load it with Developer mode enabled.
 - $(coffee) **Keep awake** — use the cup at the top to prevent sleep for a set time or until all agents and sub-agents finish.
 - $(eye) **View Mode** — choose Minimal, Compact or Standard in the approval menu to control how much work, tool use and thinking is shown.
 - $(files) **Chats across tabs and windows** — open chats with the top +; right-click tabs to move them between the sidebar, tabs and windows with drafts and attachments intact. View chats side by side across screens.
@@ -28,6 +28,20 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 - $(device-camera-video) **Record video** — record browser tabs from their toolbar, up to 4K, into the chat or clipboard.
 - $(location) **Page markers** — pin notes to page elements and send them to the agent as one prompt.
 - $(settings-gear) **Chat Settings** — use the gear at the top to edit prompts for commit messages, branch names and chat titles, or clean up temporary files.
+
+## 0.9.12 — 2026-10-31
+
+- **Inline HTML visualizations** — agents can show a chart, diagram or small interactive page right in the reply, rendered in a sandbox with no network access; it is kept with the chat history.
+- **Claude Code visualizations** — a visualization Claude Code writes now renders as it does for Codex.
+
+## 0.9.11 — 2026-10-30
+
+- **Chrome completion alerts** — Chrome leaves finish sounds and system notifications to VS Code, hides its speaker button, and no longer requests notification permission. The website keeps its own alerts.
+- **Chrome 0.6.1** — the updated ZIP includes GitHub, Files and the latest chat interface; the download link points to the new archive.
+- **Shared terminal control** — taking control in Chrome or on the website releases the other client's control, preventing mixed terminal input.
+- **Exchange key revocation** — rotating or deleting a connection key during setup prevents the old client from replacing the current connection.
+- **Pull request creation** — switching remote chats while a request completes no longer leaves the Create button stuck after returning.
+- **Accurate new-message count** — tool activity and loading or hiding older history no longer inflate the number of new messages.
 
 ## 0.9.10 — 2026-10-30
 

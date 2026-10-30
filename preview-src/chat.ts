@@ -4,6 +4,8 @@ import { overlayBounds, fitOverlay, anchoredOverlay } from './overlayPosition';
 import { chatTabDragType, parseChatTabTransfer } from './tabDrag';
 import { fitTabs } from './tabOverflow';
 import { createVsCodeChatHost } from './chatHost';
+import { visualizationMarkers } from '../src/chat/visualizationProtocol';
+import { updateVisualizationViews } from './visualizationViews';
 import { installChatSelectionCopy } from './chatSelection';
 import { historyPeriodRange, type HistoryPeriod } from './historyPeriod';
 import { fileGridNeighbor, type FileArrow } from './fileNavigation';
@@ -359,6 +361,8 @@ function readDeviceSound(): DeviceSound {
 }
 let deviceSound = readDeviceSound();
 function remoteSurface(s: ChatViewState | undefined = state): boolean { return !!s?.surface && s.surface !== 'editor'; }
+/** Chrome shares the editor's computer: let VS Code deliver completion alerts for now. */
+function completionAlertsEnabled(s: ChatViewState | undefined = state): boolean { return s?.surface !== 'chrome'; }
 /** The sound settings in force on this surface: the editor's, with this device's choices on top away from it. */
 function effectiveSound(s: ChatViewState | undefined = state): ChatSoundSettings | undefined {
 	if (!s?.sound) { return undefined; }
@@ -369,6 +373,7 @@ function setDeviceSound(change: DeviceSound): void {
 	try { localStorage.setItem(deviceSoundKey, JSON.stringify(deviceSound)); } catch { /* lasts for this page */ }
 }
 function soundOn(): boolean {
+	if (!completionAlertsEnabled()) { return false; }
 	const base = state?.sound?.enabled ?? false;
 	return soundOverride && soundOverride.base === base ? soundOverride.on : base;
 }
@@ -382,9 +387,10 @@ function renderSoundButton(): void {
 	soundButton.classList.toggle('muted', !on);
 	if (soundButton.title !== tip) { soundButton.title = tip; soundButton.setAttribute('aria-label', tip); }
 	soundButton.setAttribute('aria-pressed', String(on));
-	soundButton.hidden = !state?.sound;
+	soundButton.hidden = !state?.sound || !completionAlertsEnabled();
 }
 soundButton.addEventListener('click', () => {
+	if (!completionAlertsEnabled()) { return; }
 	const base = state?.sound?.enabled ?? false;
 	const on = !soundOn();
 	soundOverride = on === base ? undefined : { on, base };
@@ -400,7 +406,7 @@ function soundOnFinish(s: ChatViewState): void {
 	const now = new Map(s.tabs.map(t => [t.id, t.busy] as const));
 	const before = soundBusy;
 	soundBusy = now;
-	if (!before || !s.sound) { return; }
+	if (!before || !s.sound || !completionAlertsEnabled(s)) { return; }
 	const finished = s.tabs.filter(t => before.get(t.id) === true && !t.busy && t.status !== 'waiting');
 	if (!finished.length) { return; }
 	const snd = effectiveSound(s)!;
@@ -419,6 +425,7 @@ function soundOnFinish(s: ChatViewState): void {
  * website use the page's own `Notification`, while the page is not focused.
  */
 function notifyFinished(s: ChatViewState, tabs: readonly ChatTabSummary[]): void {
+	if (!completionAlertsEnabled(s)) { return; }
 	const failed = tabs.some(t => t.status === 'failed');
 	const title = tabs.length === 1 ? tabs[0].title || 'AI Browser chat' : `${tabs.length} chats finished`;
 	const text = failed ? 'An agent finished with an error.' : tabs.length === 1 ? 'The agent finished its work.' : tabs.map(t => t.title).join(', ');
@@ -429,7 +436,7 @@ function notifyFinished(s: ChatViewState, tabs: readonly ChatTabSummary[]): void
 }
 /** Chrome and the website may show a notification only once the user allowed it, asked on their first click. */
 document.addEventListener('pointerdown', () => {
-	if (!effectiveSound()?.notify || !remoteSurface()) { return; }
+	if (!completionAlertsEnabled() || !effectiveSound()?.notify || !remoteSurface()) { return; }
 	if (typeof Notification !== 'undefined' && Notification.permission === 'default') { void Notification.requestPermission().catch(() => undefined); }
 }, { capture: true });
 const toolbarEnd = el('span', { class: 'toolbar-end' }, soundButton, contextButton, usageButton);
@@ -2489,8 +2496,7 @@ function syncTerminals(s: ChatViewState): void {
 
 let recordingEncoder: { id: string; encoder: ReturnType<typeof createRecordingEncoder> } | undefined;
 window.addEventListener('unload', () => recordingEncoder?.encoder.dispose());
-window.addEventListener('message', (event: MessageEvent<HostToView>) => {
-	const message = event.data;
+vscode.onMessage(message => {
 	switch (message.type) {
 		case 'terminalData':
 		case 'terminalReplay':
@@ -2535,7 +2541,7 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 			return;
 		}
 		case 'state':
-			state = message.state;
+			state = message.state.visualizationsUnchanged ? { ...message.state, visualizations: state?.visualizations } : message.state;
 			{ const shape = [...attachedFilePaths()].join('\n'); if (shape !== filesAttachedShape) { filesAttachedShape = shape; renderFiles(); } }
 			soundOnFinish(state);
 			renderSoundButton();
@@ -4404,6 +4410,11 @@ function renderThread(s: ChatViewState): void {
 				pressedPending = true;
 				continue;
 			}
+			if (entry.kind === 'assistant' && rendered[i]?.node.classList.contains('assistant')) {
+				updateAssistantNode(rendered[i].node, entry);
+				rendered[i].sig = sig;
+				continue;
+			}
 			const node = entryNode(entry, i);
 			if (rendered[i]) {
 				rendered[i].node.replaceWith(node);
@@ -4551,7 +4562,7 @@ function signature(entry: ChatEntry, i: number): string {
 	// chat was shown. A row the user opened or closed keeps that either way.
 	return entry.kind === 'user' ? `${JSON.stringify(entry)}|${commandsSignature}|${fileIconsSignature}`
 		: entry.kind === 'error' && isAgentAuthenticationError(entry.text) ? `${JSON.stringify(entry)}|${JSON.stringify(authErrorAgent() && [authErrorAgent()!.id, authErrorAgent()!.name, authErrorAgent()!.authentication?.signingIn])}`
-		: `${JSON.stringify(entry)}|${toggled.get(keyOf(entry, i)) ?? ''}|${openByDefault()}|${fileIconsSignature}`;
+		: `${JSON.stringify(entry)}|${toggled.get(keyOf(entry, i)) ?? ''}|${openByDefault()}|${fileIconsSignature}|${entry.kind === 'assistant' ? (entry.visualizations ?? []).map(ref => !!state?.visualizations?.[ref.revision ?? '']).join(',') : ''}`;
 }
 
 /** The commands the marks are drawn from, as one string; set at the top of every render. */
@@ -4983,19 +4994,39 @@ function opinionButton(index: number): HTMLButtonElement {
 	return b;
 }
 
+const assistantTexts = new WeakMap<HTMLElement, string>();
+const assistantBodies = new WeakMap<HTMLElement, { text: string; icons: string }>();
+
+function updateAssistantNode(node: HTMLElement, entry: Extract<ChatEntry, { kind: 'assistant' }>): void {
+	assistantTexts.set(node, entry.text);
+	const markers = visualizationMarkers(entry.text).filter(marker => entry.visualizations?.some(ref => ref.at === marker.start));
+	let text = entry.text;
+	for (const marker of [...markers].reverse()) { text = text.slice(0, marker.start) + text.slice(marker.end); }
+	const body = node.querySelector<HTMLElement>('.assistant-text')!;
+	const previous = assistantBodies.get(body);
+	if (previous?.text !== text || previous?.icons !== fileIconsSignature) {
+		assistantBodies.set(body, { text, icons: fileIconsSignature });
+		body.replaceChildren(renderMarkdown(text));
+	}
+	updateVisualizationViews(node.querySelector<HTMLElement>('.assistant-visualizations')!, entry.visualizations ?? [], state?.visualizations ?? {});
+}
+
 function entryNode(entry: ChatEntry, i: number): HTMLElement {
 	switch (entry.kind) {
 		case 'user':
 			return promptNode(entry);
 		case 'assistant': {
+			const node = el('div', { class: 'row assistant' });
 			// Copies the reply as it came, Markdown and all; shown on hover.
-			const copy = copyButton(() => entry.text, 'Copy reply');
+			const copy = copyButton(() => assistantTexts.get(node) ?? entry.text, 'Copy reply');
 			copy.classList.add('message-copy');
 			const opinion = opinionButton(i);
 			// Beside the Markdown, not in it: as its last child the button took the
 			// `.markdown > :last-child` rule, and every reply kept its last block's
 			// bottom margin.
-			return el('div', { class: 'row assistant' }, el('div', { class: 'markdown' }, renderMarkdown(entry.text)), opinion, copy);
+			node.append(el('div', { class: 'markdown assistant-text' }), el('div', { class: 'assistant-visualizations' }), opinion, copy);
+			updateAssistantNode(node, entry);
+			return node;
 		}
 		case 'thinking':
 			return thinkingNode(entry, i);
@@ -12136,6 +12167,10 @@ function createRemoteTerminalSettings(): HTMLElement {
 /** The Sound section: the default for the speaker button, which sound, how loud. Each control applies at once. */
 function createSoundSettings(): HTMLElement {
 	const content = el('div', { class: 'feature-settings-content sound-settings' });
+	if (!completionAlertsEnabled()) {
+		content.append(el('p', { class: 'feature-settings-note', text: 'Sounds and notifications are handled by VS Code to avoid duplicate alerts on this computer.' }));
+		return content;
+	}
 	const remote = remoteSurface();
 	const save = (change: DeviceSound & { enabled?: boolean }): void => {
 		if (!remote) { post({ type: 'soundSettings', action: 'set', ...change }); return; }

@@ -2,14 +2,16 @@ import {build} from 'esbuild';
 import {mkdir,copyFile,readFile,writeFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
+import {buildVisualizationHtml} from '../../scripts/build-visualization.mjs';
 const root=fileURLToPath(new URL('../../',import.meta.url));
 const output=`${root}exchange-server/apps/web/public/remote-chat/`;
 await mkdir(output,{recursive:true});
-await build({entryPoints:{host:`${root}preview-src/serverChatHost.ts`,chat:`${root}preview-src/chat.ts`,codicon:`${root}node_modules/@vscode/codicons/dist/codicon.css`,xterm:`${root}node_modules/@xterm/xterm/css/xterm.css`},outdir:output,bundle:true,platform:'browser',format:'iife',target:'es2022',minify:true,loader:{'.ttf':'dataurl','.csv':'text'},define:{__TERMINAL__:'true'},logLevel:'info'});
+await build({entryPoints:{host:`${root}preview-src/serverChatHost.ts`,chat:`${root}preview-src/chat.ts`,visualization:`${root}preview-src/visualization.ts`,codicon:`${root}node_modules/@vscode/codicons/dist/codicon.css`,xterm:`${root}node_modules/@xterm/xterm/css/xterm.css`},outdir:output,bundle:true,platform:'browser',format:'iife',target:'es2022',minify:true,loader:{'.ttf':'dataurl','.csv':'text'},define:{__TERMINAL__:'true'},logLevel:'info'});
+await buildVisualizationHtml(output);
 for(const [source,target] of [[`${root}media/chat.css`,'chat.css'],[`${root}media/liquid-loader.css`,'liquid-loader.css'],[`${root}media/appearance.css`,'appearance.css'],[`${root}chrome-extension/sidepanel.css`,'sidepanel.css'],[`${root}exchange-server/chat-assets/index.html`,'index.html'],[`${root}exchange-server/chat-assets/web-chat.css`,'web-chat.css']])await copyFile(source,output+target);
 // All files in one renderer release share a content-derived cache key. Include
 // imported styles too, so a mobile browser cannot mix old layout and new code.
-const assets=['host.js','chat.js','codicon.css','xterm.css','chat.css','liquid-loader.css','appearance.css','sidepanel.css','web-chat.css'];
+const assets=['host.js','chat.js','visualization.js','visualization.html','codicon.css','xterm.css','chat.css','liquid-loader.css','appearance.css','sidepanel.css','web-chat.css'];
 const hash=createHash('sha256');
 for(const name of assets)hash.update(name).update(await readFile(output+name));
 const version=hash.digest('hex').slice(0,16);

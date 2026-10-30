@@ -8104,7 +8104,7 @@ speaker button left of the C and U meters that switches between sound and silenc
 - **Synthesised, not files** ([preview-src/chatSound.ts](preview-src/chatSound.ts)): Web Audio
   oscillators, so the CSP needs nothing and Chrome and the website play the same sounds.
 - **The settings travel in the state** (`ChatViewState.sound`, `shared` in `viewFields`), so the
-  Chrome side panel and the Exchange website play them too; they are changed only in VS Code
+  Exchange website plays them too; Chrome currently delegates alerts to VS Code. They are changed only in VS Code
   (`soundSettings` is `editor()` in `commands.ts`; Chat Settings → Sound, written at
   `ConfigurationTarget.Global`).
 - **"Finished" is a tab's `busy` going from true to false** between two states, not ending on
@@ -8116,15 +8116,20 @@ speaker button left of the C and U meters that switches between sound and silenc
   same settings section and the same `soundSettings` message): the editor's view posts `osNotify` and the host shows
   it with `osascript` (`display notification`, title and text as `argv`), PowerShell's `NotifyIcon` balloon (text in
   the environment) or `notify-send` — never a VS Code toast, which pauses a browser tab (#10). "Away" is
-  `window.state.focused`. On macOS the sender shown is Script Editor; no prompt is needed. Chrome and the website use
-  the page's `Notification` (permission asked on the first click; the Chrome manifest declares `notifications`),
+  `window.state.focused`. On macOS the sender shown is Script Editor; no prompt is needed. The Exchange website uses
+  the page's `Notification` (permission asked on the first click),
   "away" there being `!document.hasFocus() || document.hidden`. `osNotify` is `editor()` in `commands.ts`.
-- **Chrome and the website have their own Sound & notifications tab**, stored per device in
+- **The website has its own Sound & notifications tab**, stored per device in
   `localStorage` (`aiBrowser.chat.deviceSound`: sound, volume, notify, notify only when away), since
   `soundSettings` stays editor-only — a remote surface may not write VS Code user settings. A key not
   set there follows the editor (`effectiveSound`). "Play a sound" there drives the speaker button's
   per-device override. The tab's `hidden` test is inlined in `openFeatureSettings`, which tests lift
   into a sandbox.
+- **Chrome completion alerts are temporarily disabled** by `completionAlertsEnabled` in `chat.ts`: VS Code
+  runs on the same computer and delivers them. Saved device overrides cannot enable sound, the speaker
+  button is hidden, the settings tab explains the delegation, and no notification permission is
+  requested or declared in the Chrome manifest. The shared sound/notification implementation and
+  saved preferences remain for future use; Exchange keeps its independent alerts.
 - **Repeat** (`aiBrowser.chat.sound.repeat`, 1–5): the sound is scheduled that many times back to back, each copy after the previous one's last note plus 0.15 s. Per device on Chrome and the website like the rest.
 - **Active chat** (`aiBrowser.chat.sound.activeChat`, default off): a selected, visible conversation in the active window finishes silently unless "Play a sound for the active chat" is checked. VS Code uses `window.state.focused`, published as editor-only `windowFocused` and refreshed on window-state changes, so focusing another workbench control does not make a visible chat sound. Chrome and the website use their own `document.hasFocus()`. Background conversations, inactive windows, hidden pages and conversations behind a terminal still sound. Applies to finish sounds only: previews and system notifications keep their own controls. Chrome and the website can override this per device in `aiBrowser.chat.deviceSound`.
 - **A suspended `AudioContext` plays nothing**: one created without a user gesture (the first finish arriving while the window is in the background) starts `suspended`, and notes scheduled before `resume()` lands are in the past. `playChatSound` schedules only once the context runs, and `unlockChatSound` starts it on the view's first press or key.
@@ -10877,6 +10882,52 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
      of its own: Stop ends the turn, an exit is reported once, dispose ends the process in its handshake.
 
 ## Special cases and non-obvious decisions
+
+### Inline HTML visualizations
+
+`chat_present_html` publishes a completed HTML file for the caller's own conversation; the
+standalone OpenAI `visualize` marker is a compatibility adapter into the same snapshot store.
+Every provider's prompt names its dedicated `.ai-browser/visualizations/<scope>` directory.
+Only direct regular HTML children are accepted; linked components, hard links and files over
+1 MB are refused. History stores content hashes, with HTML archived separately in global
+storage. The active view carries up to eight recent revisions within a 2 MB total budget,
+including remote Chrome/Exchange snapshots. See [the implementation guide](docs/chat-visualizations.md)
+and [the original research](docs/chat-html-visualizations-research.md).
+
+The renderer is a packaged `media/visualization.html` in an opaque-origin `allow-scripts`
+iframe, containing a second sandboxed `srcdoc` view. **Do not loosen the main chat's nonce
+script policy**: every local-scheme frame under it inherits that policy. **The VS Code build is
+the one exception to "no `srcdoc` under the main chat"**: the wrapper goes in as a `srcdoc`
+(`ai-browser-visualization-srcdoc` meta) and every script and style of the generated HTML is
+stamped with the chat's own nonce (`ai-browser-visualization-nonce`), with `frame-src about:`
+added to the chat's CSP. It has to: a `data:` frame inherits the policy too (measured in Chrome:
+its inline script did not run), and the editor smoke test is built on the `srcdoc` path. The
+cost, accepted knowingly: model-written code can read that nonce (`document.currentScript.nonce`).
+It runs in an opaque-origin sandbox with `connect-src 'none'` and only a `MessagePort` to the
+viewer, so it has no channel to send it anywhere; the nonce is regenerated on every page load.
+A further HTML injection into the chat itself would be the second half of any attack. The packaged wrapper
+has its own CSP, and its `frame-src about:` allows the inner `srcdoc` while blocking even
+same-origin document navigation. `connect-src 'none'` alone does not stop that navigation.
+Generated scripts have a narrower inline-only policy, so they cannot import the wrapper's
+own-origin resources. Chrome declares the wrapper as a manifest sandbox page; all three
+builds must ship both `visualization.html` and `visualization.js`.
+
+Trusted chat delivery uses `ChatHost.onMessage`, not ambient synthetic `window.message`
+events: Chrome and Exchange call private subscribers, and VS Code checks its immediate
+parent and origin. **VS Code's injected API shadows `window.parent` and `window.top` with
+the content window itself.** Comparing `event.source` with `window.parent` therefore drops
+every real host snapshot and leaves a partially drawn, empty chat. `trustedWebviewMessage`
+checks `window.origin` and verifies that the sender's indexed child frames include the
+receiving window. Descendants and synthetic events cannot satisfy that relationship. The
+browser probe loads the complete chat bundle under this parent-hiding preload, checks the
+first and subsequent host snapshots, and rejects a forged child-frame snapshot.
+Artifact traffic has its own instance-bound `MessagePort`; never forward
+it into `HostToView` or expose host actions. Assistant rows and frames survive text deltas;
+only an explicitly changed content hash replaces the inner execution context. Snapshot
+state uses a bounded `window.openai.setWidgetState` compatibility shim. This is not full MCP
+Apps or a full OpenAI runtime. The browser smoke check is
+`node scripts/test-visualizations-browser.mjs` (isolated temporary Chrome profile and loopback
+server; set `CHROME_BIN` for another local Chromium binary).
 
 ### Native page actions inspired by Stagehand
 

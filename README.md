@@ -105,6 +105,10 @@ For limits, settings and technical details, see [CLAUDE.md](CLAUDE.md#browser-vi
 
 ## 📝 Changelog
 
+**0.9.12** — Agents can show charts, diagrams and small interactive pages inline in their replies, sandboxed and kept with the chat history; visualizations from Claude Code now render as they do for Codex.
+
+**0.9.11** — Chrome 0.6.1 leaves completion sounds and notifications to VS Code to avoid duplicate alerts on the same computer. Remote terminal control is shared safely between Chrome and the website, Exchange rejects revoked keys during connection setup, switching remote chats no longer leaves pull request creation stuck, and the new-message count stays accurate as older history is loaded or hidden. The Chrome ZIP download is updated.
+
 **0.9.10** — A capsule above the composer tabs shows how many messages are below and scrolls to the latest. GitHub and Files work in Chrome and on the website. Draft badges come back after a restart, sent badges sit closer to the text, and on phones switching tabs no longer reopens the keyboard, the Files status bar keeps its height and no blank band appears above the keyboard.
 
 **0.9.9** — Attachments appear as inline badges in drafts and sent messages, with file icons, drag and drop, and menus to open, copy, remove or attach them again. Copying a badge or a whole message preserves attachments when pasted back into chat. Attach the current browser from the globe menu. The composer supports nested lists and clickable links as you type. Files has sortable sticky column headers, corrected arrow-key navigation in tiles and right-click selection. Pull request suggestions distinguish branches from different forks.

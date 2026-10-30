@@ -5,6 +5,7 @@
 
 import * as esbuild from 'esbuild';
 import * as path from 'node:path';
+import { buildVisualizationHtml } from './scripts/build-visualization.mjs';
 
 const rootDir = import.meta.dirname;
 const srcDir = path.join(rootDir, 'preview-src');
@@ -20,6 +21,7 @@ const options = {
 		// Script running inside the chat view. Same CSP rules as the panel, so
 		// the same `iife` format.
 		'chat': path.join(srcDir, 'chat.ts'),
+		'visualization': path.join(srcDir, 'visualization.ts'),
 		// Codicon font, referenced by the panel html. The `.ttf` is inlined as a
 		// data uri because the panel's CSP only allows `font-src data:`.
 		'codicon': path.join(rootDir, 'node_modules', '@vscode', 'codicons', 'dist', 'codicon.css'),
@@ -43,6 +45,9 @@ const options = {
 	minify: !isWatch,
 	sourcemap: true,
 	logLevel: 'info' as const,
+	plugins: [{ name: 'visualization-document', setup(build: esbuild.PluginBuild) {
+		build.onEnd(async result => { if (!result.errors.length) { await buildVisualizationHtml(outDir); } });
+	} }],
 };
 
 if (isWatch) {

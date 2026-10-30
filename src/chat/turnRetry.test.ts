@@ -27,6 +27,7 @@ function fixture(agent: 'codex' | 'claude' = 'codex') {
 		'./agentProtocol': protocol, './agents': { agentNames: { codex: 'Codex', claude: 'Claude Code' } },
 		'../core/uuid': { generateUuid: () => 'test-chat' }, './toolbarText': {},
 		'./attachmentReferences': load('src/chat/attachmentReferences.ts'),
+		'./visualizationProtocol': load('src/chat/visualizationProtocol.ts'), './visualizationStore': load('src/chat/visualizationStore.ts'),
 		'../core/notifyText': load('src/core/notifyText.ts'), './terminalPins': load('src/chat/terminalPins.ts'),
 	}, {
 		setTimeout: (callback: () => void, delay: number) => { timers.set(++timerId, { delay, callback }); return timerId; },

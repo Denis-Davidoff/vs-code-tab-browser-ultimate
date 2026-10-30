@@ -1781,7 +1781,7 @@ const browserServerTools: ReadonlySet<string> = new Set([
 	'browser_snapshot', 'browser_state', 'browser_tabs', 'browser_text', 'browser_text_segments', 'browser_type', 'browser_wait_for',
 	'editor_context', 'editor_definition', 'editor_references', 'editor_reveal', 'editor_symbols',
 	// The chat's reads, which any token holder may make.
-	'chat_state', 'chat_agents', 'chat_usage',
+	'chat_state', 'chat_agents', 'chat_usage', 'chat_present_html',
 ]);
 
 /** The category of one of our own server's tools, and for a terminal tool which kind. */

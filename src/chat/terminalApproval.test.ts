@@ -31,6 +31,7 @@ function fixture(modes: Record<string, ApprovalMode> = {}, pinned = true) {
 		'../core/uuid': { generateUuid: () => 'test-chat' }, '../core/notifyText': load('src/core/notifyText.ts'),
 		'./terminalPins': load('src/chat/terminalPins.ts'), './toolbarText': {},
 		'./attachmentReferences': load('src/chat/attachmentReferences.ts'),
+		'./visualizationProtocol': load('src/chat/visualizationProtocol.ts'), './visualizationStore': load('src/chat/visualizationStore.ts'),
 	});
 	const grants = new TerminalGrants();
 	const log: string[] = [];

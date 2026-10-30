@@ -1,6 +1,7 @@
 import { build, transform } from 'esbuild';
 import { cp, copyFile, mkdir, rm, readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { buildVisualizationHtml } from './build-visualization.mjs';
 
 const source = fileURLToPath(new URL('../chrome-extension/', import.meta.url));
 const output = `${source}dist/`;
@@ -8,7 +9,7 @@ await rm(output, { recursive: true, force: true });
 await mkdir(output, { recursive: true });
 await build({
   entryPoints: { background: `${source}background.ts`, sidepanel: `${source}sidepanel.ts`,
-    elementPicker: `${source}elementPicker.ts`,
+    elementPicker: `${source}elementPicker.ts`, visualization: `${source}../preview-src/visualization.ts`,
     chat: `${source}../preview-src/chat.ts`, codicon: `${source}../node_modules/@vscode/codicons/dist/codicon.css`,
     // xterm's stylesheet as an entry of its own: imported from chat.ts it would overwrite chat.css.
     xterm: `${source}../node_modules/@xterm/xterm/css/xterm.css` },
@@ -19,6 +20,7 @@ await build({
 });
 await Promise.all(['manifest.json', 'sidepanel.html', 'sidepanel.css'].map(file => copyFile(`${source}${file}`, `${output}${file}`)));
 await copyFile(`${source}../media/chat.css`, `${output}chat.css`);
+await buildVisualizationHtml(output);
 await copyFile(`${source}../media/liquid-loader.css`, `${output}liquid-loader.css`);
 await copyFile(`${source}../media/appearance.css`, `${output}appearance.css`);
 await cp(`${source}icons/`, `${output}icons/`, { recursive: true });
