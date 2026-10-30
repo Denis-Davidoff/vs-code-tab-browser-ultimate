@@ -7,7 +7,7 @@ export interface ChatDraftState {
 	drafts?: Record<string, string>;
 	chatDrawerCollapsed?: boolean;
 	chatDrawerSide?: 'left' | 'right';
-	composerTab?: 'chat' | 'skills' | 'activity' | 'history' | 'agents' | 'access';
+	composerTab?: 'chat' | 'skills' | 'activity' | 'history' | 'github' | 'agents' | 'access';
 	overviewHeight?: number;
 }
 

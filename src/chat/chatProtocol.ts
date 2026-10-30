@@ -959,6 +959,8 @@ export type HostToView =
 	| { readonly type: 'gitBranchResult'; readonly folder: string; readonly action: 'switch' | 'create' | 'delete'; readonly error?: string }
 	/** `confirm`: nothing was done; ask the user this, and send the action again with `confirmed`. */
 	| { readonly type: 'gitRemoteResult'; readonly folder: string; readonly action: GitRemoteAction; readonly error?: string; readonly confirm?: string; /** What the question was about; sent back as `confirmed`. */ readonly confirmKey?: string }
+	/** The composer's GitHub tab: pull requests and Actions runs of `folder`'s repository, or why there are none. */
+	| { readonly type: 'githubStatus'; readonly folder: string; readonly status?: import('./githubStatus').GithubStatus; readonly error?: string; /** Signing in to GitHub would show more (a private repository, no `gh`). */ readonly signIn?: boolean }
 	| { readonly type: 'workdirGit'; readonly folder: string; readonly status?: WorkdirGitStatus; readonly branches?: GitBranchState; readonly error?: string; readonly fetchError?: string }
 	/**
 	 * The files and folders of `folder`, relative and `/`-separated, a folder
@@ -1035,6 +1037,8 @@ export type ViewToHost =
 	/** The composer's History tab asks for the saved chats; answered as a `history` refresh. */
 	| { readonly type: 'listHistory' }
 	| { readonly type: 'listAllAgents' }
+	/** The GitHub tab asks for `folder`'s pull requests and runs; `signIn` may ask VS Code's GitHub sign-in. */
+	| { readonly type: 'githubStatus'; readonly folder: string; readonly signIn?: boolean }
 	/** The Access tab: take a browser tab for this chat, or make it free for everyone. */
 	| { readonly type: 'tabAccess'; readonly tabId: string; readonly take: boolean }
 	| { readonly type: 'newChat'; readonly location?: 'here' | 'tab' | 'window' }

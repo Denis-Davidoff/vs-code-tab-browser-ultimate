@@ -1628,7 +1628,8 @@ button {
 	padding: 8px 8px 0;
 }
 
-.attachments[hidden] {
+.attachments[hidden],
+.composer:is(.skills-mode, .list-mode) .attachments {
 	display: none;
 }
 
@@ -6677,3 +6678,10 @@ body.vv-locked {
 .tab.loading .tab-mark,
 .tab.loading .tab-compact .codicon:not(.tab-loading),
 .tab.loading .tab-compact .tab-mark { display: none; }
+
+/* The GitHub composer tab: run and pull request state colours. */
+.composer-github .gh-run.success, .composer-github .gh-pr { color: var(--vscode-charts-green); }
+.composer-github .gh-pr.draft, .composer-github .gh-run.cancelled, .composer-github .gh-run.skipped, .composer-github .gh-run.other { color: var(--vscode-descriptionForeground); }
+.composer-github .gh-run.failure { color: var(--vscode-charts-red); }
+.composer-github .gh-run.running, .composer-github .gh-run.queued { color: var(--vscode-charts-yellow); }
+.composer-github .cl-row.current .cl-title { font-weight: 600; }

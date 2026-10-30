@@ -128,6 +128,7 @@ export const COMMANDS = {
 	refreshWorkdirGit: both('git'), gitCommit: both('git'), gitIndexAction: both('git'), openGitDiff: both('git'),
 	fixGitCommit: both('git'), dismissGitCommit: both('git'), gitBranchName: both('git'), gitBranchAction: both('git'),
 	gitRemoteAction: both('git'), restoreBranchStash: both('git'),
+	githubStatus: editor('Pull requests and Actions runs are listed only in VS Code.'),
 	openRepo: both('github'), repoAction: both('github'), trustWorkdir: both('github'), removeRepoFolder: both('github'),
 } as const satisfies Record<ViewToHost['type'], CommandSpec>;
 

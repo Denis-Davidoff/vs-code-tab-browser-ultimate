@@ -77,6 +77,8 @@ import { gitExtensionErrorText, gitRepositoryFor } from './gitExtension';
 import { gitDiffSides } from './gitDiff';
 import { assertSwitchReady, switchAndUpdate, type SwitchResult } from './gitBranchSwitch';
 import { parseGitStatus } from './gitStatus';
+import { ghPrFields, ghRunFields, githubListLimit, parseApiPullRequests, parseApiRuns, parseGhPullRequests, parseGhRuns, pickGithubRemote, type GithubSource, type GithubStatus } from './githubStatus';
+import { parseRemoteUrls } from './gitBranchState';
 import { chatResourceRoots, loadFileIconTable, themedGitFiles } from './fileIconTheme';
 import type { FileIconTable } from './fileIconTable';
 import { runGit } from './repoWork';
@@ -1877,6 +1879,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				return;
 			case 'listAllAgents':
 				this.showAllAgents(true);
+				return;
+			case 'githubStatus':
+				if (typeof message.folder === 'string') { await this._githubStatus(message.folder, message.signIn === true); }
 				return;
 			case 'listHistory':
 				this.showHistory(true);
@@ -4960,6 +4965,118 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			}
 		})();
 		return entry.done;
+	}
+
+	/** The last answer per repository and source, so switching tabs does not ask GitHub again for 30 s. */
+	private readonly _githubCache = new Map<string, { at: number; status: GithubStatus; signIn?: boolean }>();
+
+	/**
+	 * The GitHub tab: the repository of `folder` (read from its remotes, never
+	 * from what the view says), then its open pull requests and recent Actions
+	 * runs from `gh` (signed in), else VS Code's own GitHub sign-in (silent unless
+	 * the user pressed Sign in), else the public API, which only answers for a
+	 * public repository. `gh` is run outside the folder with `--repo`, so it
+	 * reads none of the repository's own Git configuration (#208).
+	 */
+	private async _githubStatus(folder: string, signIn: boolean): Promise<void> {
+		const answer = (rest: Omit<Extract<HostToView, { type: 'githubStatus' }>, 'type' | 'folder'>) => this._postMessage({ type: 'githubStatus', folder, ...rest });
+		if (this._blocked()) { answer({ error: 'GitHub is unavailable in this window.' }); return; }
+		let repo: RepoRef | undefined;
+		let branch: string | undefined;
+		try {
+			const git = await gitBinary();
+			if (!git) { throw new Error('Git is unavailable.'); }
+			const [urls, head] = await Promise.all([
+				this._runWorkdirGit(git, ['config', '--get-regexp', '^remote\\..*\\.url$'], folder, 15_000).catch(() => ''),
+				this._runWorkdirGit(git, ['symbolic-ref', '--quiet', '--short', 'HEAD'], folder, 15_000).catch(() => ''),
+			]);
+			branch = head.trim() || undefined;
+			const upstreamRemote = branch ? (await this._runWorkdirGit(git, ['config', '--get', `branch.${branch}.remote`], folder, 15_000).catch(() => '')).trim() : '';
+			repo = pickGithubRemote(parseRemoteUrls(urls), parseRepo, upstreamRemote || undefined);
+		} catch (error) {
+			answer({ error: error instanceof Error ? error.message : String(error) });
+			return;
+		}
+		if (!repo) { answer({ error: 'This folder has no GitHub remote.' }); return; }
+		const slug = repoSlug(repo);
+		const cached = this._githubCache.get(slug);
+		if (cached && !signIn && Date.now() - cached.at < 30_000) { answer({ status: { ...cached.status, branch, prs: mark(cached.status.prs), runs: mark(cached.status.runs) }, ...(cached.signIn ? { signIn: true } : {}) }); return; }
+		function mark<T extends { branch: string; current?: boolean }>(items: readonly T[]): T[] { return items.map(i => ({ ...i, current: !!branch && i.branch === branch })); }
+		const failures: string[] = [];
+		const gh = await this._ghBinary();
+		if (gh) {
+			try {
+				const run = (args: string[]) => this._runGh(gh, args);
+				const prs = parseGhPullRequests(await run(['pr', 'list', '--repo', slug, '--state', 'open', '--limit', String(githubListLimit), '--json', ghPrFields]), branch);
+				let runs: GithubStatus['runs'] = [];
+				let runsError: string | undefined;
+				try { runs = parseGhRuns(await run(['run', 'list', '--repo', slug, '--limit', String(githubListLimit), '--json', ghRunFields]), branch); }
+				catch (error) { runsError = error instanceof Error ? error.message : String(error); }
+				return this._githubAnswer(slug, { repo: slug, source: 'gh', branch, prs, runs, ...(runsError ? { runsError } : {}) }, answer);
+			} catch (error) {
+				failures.push(`gh: ${error instanceof Error ? error.message : String(error)}`);
+			}
+		}
+		let token: string | undefined;
+		try {
+			const session = await vscode.authentication.getSession('github', ['repo'], signIn ? { createIfNone: true } : { silent: true });
+			token = session?.accessToken;
+		} catch (error) {
+			if (signIn) { failures.push(error instanceof Error ? error.message : String(error)); }
+		}
+		const source: GithubSource = token ? 'vscode' : 'public';
+		try {
+			const api = async (route: string) => {
+				const response = await fetch(`https://api.github.com/repos/${slug}/${route}`, {
+					headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'ai-browser', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+					signal: AbortSignal.timeout(15_000),
+				});
+				if (!response.ok) { throw new Error(response.status === 404 ? 'Repository not found, or private.' : response.status === 403 || response.status === 429 ? 'GitHub refused: rate limit or no access.' : `GitHub answered ${response.status}.`); }
+				const body = await response.text();
+				if (body.length > 8_000_000) { throw new Error('GitHub answered too much.'); }
+				return body;
+			};
+			const prs = parseApiPullRequests(await api(`pulls?state=open&per_page=${githubListLimit}`), branch);
+			let runs: GithubStatus['runs'] = [];
+			let runsError: string | undefined;
+			try { runs = parseApiRuns(await api(`actions/runs?per_page=${githubListLimit}`), branch); }
+			catch (error) { runsError = error instanceof Error ? error.message : String(error); }
+			this._githubAnswer(slug, { repo: slug, source, branch, prs, runs, ...(runsError ? { runsError } : {}) }, answer, !token);
+		} catch (error) {
+			failures.push(error instanceof Error ? error.message : String(error));
+			answer({ error: `${slug}: ${failures.join(' · ')}`, signIn: !token });
+		}
+	}
+
+	private _githubAnswer(slug: string, status: GithubStatus, answer: (rest: { status: GithubStatus; signIn?: boolean }) => void, signIn?: boolean): void {
+		this._githubCache.set(slug, { at: Date.now(), status, ...(signIn ? { signIn } : {}) });
+		answer({ status, ...(signIn ? { signIn } : {}) });
+	}
+
+	private _ghPath: Promise<string | undefined> | undefined;
+	/** `gh` from an absolute `PATH` entry or the usual install folders, by absolute path (#448). */
+	private _ghBinary(): Promise<string | undefined> {
+		return this._ghPath ??= (async () => {
+			const exe = process.platform === 'win32' ? 'gh.exe' : 'gh';
+			const dirs = [...(process.env.PATH ?? '').split(path.delimiter).filter(d => path.isAbsolute(d)), '/opt/homebrew/bin', '/usr/local/bin', path.join(os.homedir(), '.local', 'bin')];
+			for (const dir of dirs) {
+				const file = path.join(dir, exe);
+				try { await fs.promises.access(file, fs.constants.X_OK); return file; } catch { /* next */ }
+			}
+			return undefined;
+		})();
+	}
+
+	private _runGh(gh: string, args: readonly string[]): Promise<string> {
+		return new Promise((resolve, reject) => {
+			cp.execFile(gh, args, {
+				cwd: os.homedir(), timeout: 20_000, maxBuffer: 16 * 1024 * 1024, windowsHide: true,
+				env: { ...process.env, GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1', NO_COLOR: '1', GH_PAGER: '', PAGER: '' },
+			}, (error, stdout, stderr) => {
+				if (error) { reject(new Error(String(stderr).trim().split('\n').slice(-2).join(' ') || error.message)); return; }
+				resolve(String(stdout));
+			});
+		});
 	}
 
 	private async _readWorkdirGit(folder: string, fetch?: 'auto' | 'force'): Promise<void> {

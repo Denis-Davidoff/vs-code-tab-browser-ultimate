@@ -6440,6 +6440,31 @@ default one), and **how to use it**, asked for as a choice rather than one fixed
   the changes text, a removal. Push was checked only to the point git refused (no rights there).
   **Not run inside VS Code yet** — the form and the rows were checked in headless Chrome.
 
+#### The GitHub tab: pull requests and Actions runs
+
+A composer tab (**GitHub**, ⌥G) beside History, asked for: the open pull requests and the
+latest Actions runs of the repository **the conversation's working folder** belongs to. The
+leaf is [src/chat/githubStatus.ts](src/chat/githubStatus.ts) (under test), the host
+`_githubStatus` in `chatView.ts`, the view `renderComposerGithub`. Editor-only (`githubStatus`
+in `commands.ts`). Decisions:
+
+- **The repository comes from the folder's remotes, never from the view**: the current branch's
+  upstream remote, then `upstream` (a fork's parent, where its pull requests live), then
+  `origin`, then any github.com remote (`pickGithubRemote`, `parseRepo` — github.com only).
+  Read with the footer's own guarded git (`_runWorkdirGit`), refused where `_blocked()` is.
+- **Three sources, in order**: the `gh` CLI (`gh pr list` / `gh run list --json`, measured on
+  2.98); VS Code's own GitHub sign-in (`authentication.getSession('github', ['repo'], { silent })`,
+  never a prompt unless the user presses *Sign in to GitHub*) with the REST API; the public API
+  with no token (public repositories, 60 requests an hour). Each answer names its source.
+- **`gh` runs in the home directory with `--repo owner/name`**, so it reads none of the
+  repository's own Git configuration (#208); found by absolute path (#448), prompts and the
+  update notifier off.
+- Per-pull-request checks and review state come only from `gh`; the API list has neither.
+- Answers are cached 30 s per repository in the host and in the view; a row opens the page
+  in the system browser, always (asked for). Items on the folder's branch are marked.
+- **Not built:** other hosts (GitLab, Bitbucket), merging or re-running from the tab, live
+  updates while it is open. Not run inside VS Code yet.
+
 - **"Continue in …" in a picked folder writes there**, and the view sweeps the `.ai-browser/` of
   the recent folders and the open tabs' folders at start (`cleanUpReportsIn`), which the
   activation sweep — the workspace's only — does not reach.
@@ -6470,7 +6495,7 @@ toolbar; at most 30, prompts up to 20 000 characters.
   `setState`, so every `vscode.setState` call must carry it (a test sandbox defines it too).
 - **The message box stays under every composer tab** (asked for): on Skills, Activity and History it
   is cut to one line (`.composer:is(.skills-mode, .list-mode)`, the mirror's padding matched), Send
-  alone in its column; the chips stay visible, since they go with the next message.
+  alone in its column; the chips and suggestions show on the Chat tab only (asked for) — they still go with the next message.
 - **Activity and History are composer tabs too** (asked for): Activity is one scrolling list in the
   box's place (`.composer-list`) with two sections, Agents then Access (`.cl-section`); History lists
   this chat's own messages, newest first (`renderComposerHistory`, from `state.entries`); a click

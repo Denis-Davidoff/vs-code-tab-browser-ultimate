@@ -553,9 +553,10 @@ const composerTabChat = button(composerTabLabel('Chat'), { class: 'composer-tab'
 const composerTabSkills = button(composerTabLabel('Skills'), { class: 'composer-tab' });
 const composerTabActivity = button(composerTabLabel('Activity'), { class: 'composer-tab' });
 const composerTabHistory = button(composerTabLabel('History'), { class: 'composer-tab' });
-type ComposerTab = 'chat' | 'skills' | 'activity' | 'history';
-const composerTabButtons: Record<ComposerTab, HTMLButtonElement> = { chat: composerTabChat, skills: composerTabSkills, activity: composerTabActivity, history: composerTabHistory };
-const composerTabs = el('div', { class: 'composer-tabs' }, composerTabChat, composerTabSkills, composerTabActivity, composerTabHistory);
+const composerTabGithub = button(composerTabLabel('GitHub'), { class: 'composer-tab' });
+type ComposerTab = 'chat' | 'skills' | 'activity' | 'history' | 'github';
+const composerTabButtons: Record<ComposerTab, HTMLButtonElement> = { chat: composerTabChat, skills: composerTabSkills, activity: composerTabActivity, history: composerTabHistory, github: composerTabGithub };
+const composerTabs = el('div', { class: 'composer-tabs' }, composerTabChat, composerTabSkills, composerTabActivity, composerTabHistory, composerTabGithub);
 composerTabs.setAttribute('role', 'tablist');
 for (const tab of Object.values(composerTabButtons)) { tab.setAttribute('role', 'tab'); }
 composer.insertBefore(skillBar, inputArea);
@@ -570,12 +571,15 @@ const composerAccessList = el('div', { class: 'cl-section composer-access' });
 const composerHistoryList = el('div', { class: 'cl-section' });
 const composerOverview = el('div', { class: 'composer-list' }, composerAgentList, composerAccessList);
 const composerHistoryPanel = el('div', { class: 'composer-list' }, composerHistoryList);
+const composerGithubList = el('div', { class: 'cl-section' });
+const composerGithubPanel = el('div', { class: 'composer-list composer-github' }, composerGithubList);
 const composerResize = el('div', { class: 'cl-resize', title: 'Drag to resize · double-click to reset' });
 composerResize.setAttribute('role', 'separator');
 composerResize.setAttribute('aria-orientation', 'horizontal');
 composer.insertBefore(composerResize, skillBar);
 composer.insertBefore(composerOverview, inputArea);
 composer.insertBefore(composerHistoryPanel, inputArea);
+composer.insertBefore(composerGithubPanel, inputArea);
 const overviewMin = 80;
 /** The visible height (shrinks under a phone keyboard), for the CSS caps on the composer's lists. */
 function trackVisibleHeight(): void {
@@ -600,7 +604,7 @@ composer.addEventListener('transitionend', event => {
 });
 function applyOverviewHeight(): void {
 	stopComposerHeightAnimation();
-	for (const list of [composerOverview, composerHistoryPanel, skillBar]) {
+	for (const list of [composerOverview, composerHistoryPanel, composerGithubPanel, skillBar]) {
 		if (overviewHeight === undefined) { list.style.removeProperty('height'); list.style.removeProperty('max-height'); continue; }
 		list.style.height = `${Math.min(overviewMax(), Math.max(overviewMin, overviewHeight))}px`;
 		list.style.maxHeight = 'none';
@@ -611,7 +615,7 @@ composerResize.addEventListener('pointerdown', e => {
 	e.preventDefault();
 	stopComposerHeightAnimation();
 	const startY = e.clientY;
-	const startH = (composerTab === 'history' ? composerHistoryPanel : composerTab === 'skills' ? skillBar : composerOverview).getBoundingClientRect().height;
+	const startH = (composerTab === 'history' ? composerHistoryPanel : composerTab === 'github' ? composerGithubPanel : composerTab === 'skills' ? skillBar : composerOverview).getBoundingClientRect().height;
 	composerResize.setPointerCapture(e.pointerId);
 	composerResize.classList.add('dragging');
 	const move = (m: PointerEvent) => {
@@ -650,9 +654,11 @@ function setComposerTab(tab: ComposerTab, save = true): void {
 		b.setAttribute('aria-selected', String(name === tab));
 	}
 	composer.classList.toggle('skills-mode', tab === 'skills');
-	composer.classList.toggle('list-mode', tab === 'activity' || tab === 'history');
+	composer.classList.toggle('list-mode', tab === 'activity' || tab === 'history' || tab === 'github');
 	composerOverview.hidden = tab !== 'activity';
 	composerHistoryPanel.hidden = tab !== 'history';
+	composerGithubPanel.hidden = tab !== 'github';
+	if (tab === 'github') { requestGithub(); }
 	if (tab === 'activity' && state) { renderComposerAgents(state); renderComposerAccess(state); }
 	if (tab === 'history') {
 		renderComposerHistory();
@@ -677,7 +683,7 @@ for (const [name, b] of Object.entries(composerTabButtons) as [ComposerTab, HTML
 	b.addEventListener('click', () => setComposerTab(name));
 }
 /** Alt+C / S / A / H switch the composer tabs; `code`, since Option+letter types a symbol on a Mac. */
-const composerTabKeys: Record<string, ComposerTab> = { KeyC: 'chat', KeyS: 'skills', KeyA: 'activity', KeyH: 'history' };
+const composerTabKeys: Record<string, ComposerTab> = { KeyC: 'chat', KeyS: 'skills', KeyA: 'activity', KeyH: 'history', KeyG: 'github' };
 document.addEventListener('keydown', e => {
 	if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.isComposing) { return; }
 	const tab = composerTabKeys[e.code];
@@ -837,6 +843,72 @@ function renderComposerHistory(): void {
 		more.addEventListener('click', () => { composerHistoryShape = ''; loadEarlier(); });
 		composerHistoryList.append(more);
 	}
+}
+/**
+ * The GitHub tab: open pull requests and recent Actions runs of the repository
+ * the working folder belongs to, asked of the host each time the tab opens or
+ * the folder changes (at most every 30 s unless refreshed; the host caches too).
+ */
+let githubAnswer: Extract<HostToView, { type: 'githubStatus' }> | undefined;
+let githubPending = false;
+let githubAt = 0;
+let composerGithubShape = '';
+function requestGithub(force = false, signIn = false): void {
+	if (!gitFolder || (githubPending && !signIn)) { renderComposerGithub(); return; }
+	if (!force && !signIn && githubAnswer && Date.now() - githubAt < 30_000) { renderComposerGithub(); return; }
+	githubPending = true;
+	post({ type: 'githubStatus', folder: gitFolder, ...(signIn ? { signIn } : {}) });
+	renderComposerGithub();
+}
+const githubSourceName: Record<string, string> = { gh: 'gh CLI', vscode: 'VS Code GitHub sign-in', public: 'public API' };
+const runIcon: Record<string, string> = { success: 'pass-filled', failure: 'error', running: 'sync', queued: 'clock', cancelled: 'circle-slash', skipped: 'debug-step-over', other: 'circle-outline' };
+function renderComposerGithub(): void {
+	if (composerTab !== 'github') { return; }
+	const shape = JSON.stringify([gitFolder ?? '', githubPending, githubAnswer ?? null]);
+	if (shape === composerGithubShape) { return; }
+	composerGithubShape = shape;
+	composerGithubList.replaceChildren();
+	const refresh = clLink(githubPending ? 'Loading…' : 'Refresh', () => requestGithub(true));
+	refresh.disabled = githubPending;
+	const status = githubAnswer?.status;
+	composerGithubList.append(clHead(status ? status.repo : 'GitHub', undefined, status ? `Read with the ${githubSourceName[status.source]}` : undefined, refresh));
+	if (!gitFolder) { composerGithubList.append(clEmpty('folder', 'This chat has no working folder.')); return; }
+	if (!githubAnswer) { composerGithubList.append(clEmpty('loading', 'Loading pull requests and runs…')); return; }
+	const signIn = () => { const b = clLink('Sign in to GitHub', () => requestGithub(true, true)); return b; };
+	if (!status) {
+		composerGithubList.append(clEmpty('github', githubAnswer.error ?? 'Nothing to show.'));
+		if (githubAnswer.signIn) { composerGithubList.append(el('div', { class: 'cl-empty' }, signIn())); }
+		return;
+	}
+	const chip = (text: string, cls: string) => el('span', { class: `cl-chip ${cls}`, text });
+	const open = (url: string) => () => post({ type: 'openLink', url, external: true });
+	composerGithubList.append(clHead('Pull requests', status.prs.length, 'Open pull requests, newest update first'));
+	if (!status.prs.length) { composerGithubList.append(clEmpty('git-pull-request', 'No open pull requests.')); }
+	for (const pr of status.prs) {
+		const meta: Child[] = [el('span', { text: `#${pr.number}` }), el('span', { class: 'cl-sep', text: '·' }), el('span', { text: pr.author })];
+		if (pr.updatedAt) { meta.push(el('span', { class: 'cl-sep', text: '·' }), el('span', { text: ago(Date.parse(pr.updatedAt)) })); }
+		if (pr.current) { meta.push(chip('this branch', 'mine')); }
+		if (pr.draft) { meta.push(chip('draft', 'plain')); }
+		if (pr.review === 'APPROVED') { meta.push(chip('approved', 'mine')); } else if (pr.review === 'CHANGES_REQUESTED') { meta.push(chip('changes requested', 'other')); }
+		if (pr.checks) { meta.push(chip(pr.checks.failed ? `${pr.checks.failed} failing` : pr.checks.pending ? `${pr.checks.pending} running` : `${pr.checks.passed} passed`, pr.checks.failed ? 'other' : pr.checks.pending ? 'plain' : 'mine')); }
+		const lead = el('span', { class: `cl-lead cl-icon gh-pr ${pr.draft ? 'draft' : ''}` }, icon(pr.draft ? 'git-pull-request-draft' : 'git-pull-request'));
+		const row = button(clRow(lead, pr.title, meta, icon('link-external', 'cl-chevron')), { class: `cl-row${pr.current ? ' current' : ''}`, title: `${pr.title}\n${pr.branch}\n${pr.url}` });
+		row.addEventListener('click', open(pr.url));
+		composerGithubList.append(row);
+	}
+	composerGithubList.append(clHead('Actions', status.runs.length, 'Recent workflow runs'));
+	if (status.runsError) { composerGithubList.append(clEmpty('warning', status.runsError)); }
+	else if (!status.runs.length) { composerGithubList.append(clEmpty('play-circle', 'No workflow runs.')); }
+	for (const run of status.runs) {
+		const meta: Child[] = [el('span', { text: run.name }), el('span', { class: 'cl-sep', text: '·' }), el('span', { text: run.branch }), el('span', { class: 'cl-sep', text: '·' }), el('span', { text: run.event })];
+		if (run.updatedAt) { meta.push(el('span', { class: 'cl-sep', text: '·' }), el('span', { text: ago(Date.parse(run.updatedAt)) })); }
+		if (run.current) { meta.push(chip('this branch', 'mine')); }
+		const lead = el('span', { class: `cl-lead cl-icon gh-run ${run.state}` }, icon(runIcon[run.state] ?? 'circle-outline', run.state === 'running' ? 'codicon-modifier-spin' : undefined));
+		const row = button(clRow(lead, run.title || run.name, meta, icon('link-external', 'cl-chevron')), { class: `cl-row${run.current ? ' current' : ''}`, title: `${run.state} · ${run.url}` });
+		row.addEventListener('click', open(run.url));
+		composerGithubList.append(row);
+	}
+	if (githubAnswer.signIn) { composerGithubList.append(el('div', { class: 'cl-empty' }, el('span', { text: 'Only public data is shown.' }), signIn())); }
 }
 /** Scrolls the thread to the turn whose prompt is entry `index`, and flashes it. */
 function scrollToPrompt(index: number): void {
@@ -1812,6 +1884,14 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
    gitIndexPending = false;
    if (message.error) { gitError = message.error; }
    renderGitChanges();
+   return;
+  }
+  case 'githubStatus': {
+   if (message.folder !== gitFolder) { return; }
+   githubPending = false;
+   githubAnswer = message;
+   githubAt = Date.now();
+   renderComposerGithub();
    return;
   }
   case 'workdirGit': {
@@ -8246,6 +8326,9 @@ function renderWorkdir(s: ChatViewState): void {
 	if (folder !== gitFolder) {
 		closePopups();
 		gitFolder = folder;
+		githubAnswer = undefined;
+		githubPending = false;
+		if (composerTab === 'github') { requestGithub(); }
 		branchState = undefined;
 		branchBusy = false;
 		branchDeleting = undefined;
@@ -8635,6 +8718,7 @@ for (const [tab, tip] of [
 	[composerTabSkills, 'Toolbar skills'],
 	[composerTabActivity, 'Agents and access of this chat'],
 	[composerTabHistory, 'Messages of this chat'],
+	[composerTabGithub, 'Pull requests and Actions runs of this folder\'s repository'],
 ] as const) {
 	tab.dataset.tip = `${tip} (${composerTabKeyMod}${tab.textContent?.[0] ?? ''})`;
 	hoverTip.attach(tab);
