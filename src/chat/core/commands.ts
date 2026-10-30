@@ -131,9 +131,11 @@ export const COMMANDS = {
 	refreshWorkdirGit: both('git'), gitCommit: both('git'), gitIndexAction: both('git'), openGitDiff: both('git'),
 	fixGitCommit: both('git'), dismissGitCommit: both('git'), gitBranchName: both('git'), gitBranchAction: both('git'),
 	gitRemoteAction: both('git'), restoreBranchStash: both('git'),
-	githubStatus: editor('Pull requests and Actions runs are listed only in VS Code.'),
-	files: editor('Files are browsed only in VS Code.'),
-	githubCreatePr: editor('Pull requests are opened only from VS Code.'),
+	// Bound by the host to the conversation's own working folder.
+	githubStatus: both('git'), githubCreatePr: both('git'),
+	// Browsing and editing the working folder; the forms that act on the editor's own window,
+	// clipboard or other files of its machine (open, reveal, copy path, drop, delete) are refused by the host.
+	files: { feature: 'workdir', chrome: 'mixed', exchange: 'mixed' },
 	openRepo: both('github'), repoAction: both('github'), trustWorkdir: both('github'), removeRepoFolder: both('github'),
 } as const satisfies Record<ViewToHost['type'], CommandSpec>;
 

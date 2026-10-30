@@ -1579,6 +1579,35 @@ button {
 	padding: 0 10px 10px;
 }
 
+/* Over the end of the thread, centred: messages arrived below while it was scrolled up. */
+.new-messages {
+	position: absolute;
+	bottom: calc(100% + 8px);
+	left: 50%;
+	transform: translateX(-50%);
+	z-index: 5;
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 5px 12px;
+	border: 1px solid color-mix(in srgb, var(--vscode-focusBorder) 45%, transparent);
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--surface, var(--vscode-editor-background)) 78%, transparent);
+	-webkit-backdrop-filter: blur(6px);
+	backdrop-filter: blur(6px);
+	color: var(--fg);
+	font: inherit;
+	font-size: 12px;
+	white-space: nowrap;
+	cursor: pointer;
+	box-shadow: 0 2px 8px rgb(0 0 0 / 25%);
+}
+.new-messages[hidden] { display: none; }
+.new-messages:hover { background: color-mix(in srgb, var(--fg) 10%, var(--surface, var(--vscode-editor-background))); }
+.new-messages.fresh { background: color-mix(in srgb, var(--vscode-button-background) 78%, transparent); color: var(--vscode-button-foreground); }
+.new-messages.fresh:hover { background: var(--vscode-button-hoverBackground); }
+.new-messages:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
+
 /* the thread fades out above the composer rather than being cut by it */
 .footer::before {
 	content: '';
@@ -6704,20 +6733,21 @@ body.vv-locked {
 .gh-pr-note.error { opacity: 1; color: var(--vscode-errorForeground); white-space: normal; }
 .gh-pr-offer:disabled { opacity: .6; cursor: default; }
 
-/* "Add skill": an accent button with its label, so it reads apart from the skills themselves. */
+/* "Add skill": the same capsule as the "messages below" button, so it reads apart from the skills. */
 .skill-button.skill-new {
 	width: auto;
-	padding: 0 10px 0 7px;
-	gap: 4px;
-	border: 1px dashed var(--vscode-focusBorder, var(--vscode-button-background));
-	background: color-mix(in srgb, var(--vscode-button-background) 14%, transparent);
-	color: var(--vscode-textLink-foreground, var(--fg));
-	font-weight: 600;
+	padding: 5px 12px;
+	gap: 6px;
+	border: 1px solid color-mix(in srgb, var(--vscode-focusBorder) 45%, transparent);
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--surface, var(--vscode-editor-background)) 78%, transparent);
+	color: var(--fg);
+	font-size: 12px;
+	box-shadow: 0 2px 8px rgb(0 0 0 / 25%);
 }
 .skill-button.skill-new:hover {
-	background: var(--vscode-button-background);
-	color: var(--vscode-button-foreground);
-	border-style: solid;
+	background: color-mix(in srgb, var(--fg) 10%, var(--surface, var(--vscode-editor-background)));
+	color: var(--fg);
 }
 .skill-add-label { white-space: nowrap; }
 /* On the Skills tab it closes the list, after the last skill. */
@@ -6727,7 +6757,7 @@ body.vv-locked {
 /* ---------------------------------------------------------------- the Files tab */
 .composer-files { display: flex; flex-direction: column; gap: 0; padding: 0 !important; min-height: 220px; }
 .composer-files[hidden] { display: none; }
-.fx-bar { display: flex; align-items: center; gap: 2px; padding: 6px 6px 6px 4px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: inherit; z-index: 1; }
+.fx-bar { flex: none; display: flex; align-items: center; gap: 2px; padding: 6px 6px 6px 4px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: inherit; z-index: 1; }
 .fx-tool { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border: 0; border-radius: 5px; background: none; color: var(--fg-2); cursor: pointer; flex: none; }
 .fx-tool:hover:not(:disabled), .fx-tool.active { background: color-mix(in srgb, var(--vscode-foreground) 10%, transparent); color: var(--fg); }
 .fx-tool:disabled { opacity: .4; cursor: default; }
@@ -6793,7 +6823,7 @@ body.vv-locked {
 .fx-act.primary:hover { background: var(--vscode-button-hoverBackground); }
 .fx-act.danger:hover { color: var(--vscode-errorForeground); border-color: var(--vscode-errorForeground); }
 .fx-act.clear { margin-left: auto; border: 0; background: none; padding: 0 4px; }
-.fx-status { display: flex; gap: 2px; padding: 0 6px 0 10px; font-size: 11px; color: var(--fg-2); border-top: 1px solid var(--border); height: 26px; align-items: center; overflow: hidden; white-space: nowrap; }
+.fx-status { flex: none; display: flex; gap: 2px; padding: 0 6px 0 10px; font-size: 11px; color: var(--fg-2); border-top: 1px solid var(--border); height: 26px; align-items: center; overflow: hidden; white-space: nowrap; }
 .fx-status.selecting { background: color-mix(in srgb, var(--vscode-focusBorder) 8%, transparent); }
 .fx-status .fx-act { flex: 1 1 0; min-width: 0; height: 20px; padding: 0 4px; justify-content: center; gap: 4px; border: 0; background: none; color: var(--fg-2); font-size: 11px; overflow: hidden; }
 .fx-status .fx-act .fx-act-label { overflow: hidden; text-overflow: ellipsis; }
@@ -6857,25 +6887,24 @@ body.vv-locked {
 .sent-attachment .att-token-close { display: none; }
 .sent-attachment .att-token { padding-right: 6px; }
 .input-mirror .att-token .att-token-close::after {
-	content: '×';
+	/* Drawn, not the × glyph: a font's × sits off the circle's centre. */
+	content: '';
 	position: absolute;
 	right: 3px;
 	top: 50%;
 	transform: translateY(-50%);
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
 	width: 14px;
 	height: 14px;
 	border-radius: 50%;
-	background: color-mix(in srgb, var(--fg) 7%, transparent);
-	color: var(--fg-2);
-	font-size: 12px;
-	line-height: 1;
+	--x-color: var(--fg-2);
+	background:
+		linear-gradient(45deg, transparent calc(50% - .6px), var(--x-color) calc(50% - .6px), var(--x-color) calc(50% + .6px), transparent calc(50% + .6px)) center / 7px 7px no-repeat,
+		linear-gradient(-45deg, transparent calc(50% - .6px), var(--x-color) calc(50% - .6px), var(--x-color) calc(50% + .6px), transparent calc(50% + .6px)) center / 7px 7px no-repeat,
+		color-mix(in srgb, var(--fg) 7%, transparent);
 }
 .input-mirror .att-token-close.hovered::after {
-	background: color-mix(in srgb, var(--vscode-errorForeground, #f48771) 20%, transparent);
-	color: var(--vscode-errorForeground, #f48771);
+	--x-color: var(--vscode-errorForeground, #f48771);
+	background-color: color-mix(in srgb, var(--vscode-errorForeground, #f48771) 20%, transparent);
 }
 .composer-tabs > .composer-maximize {
 	margin-left: auto;
@@ -6887,3 +6916,7 @@ body.vv-locked {
 .composer-tabs > .composer-maximize:hover { opacity: 1; }
 .composer-tabs > .composer-maximize[hidden] { display: none; }
 .composer-tabs[hidden], .composer-tabs > .composer-tab[hidden] { display: none; }
+
+/* Outside the message box nothing has to line up with a textarea, so the hidden brackets
+   around a badge take no room: the badge sits right against the text. */
+.att-token-wrap:not(.input-mirror *) > .att-token-hide { display: none; }

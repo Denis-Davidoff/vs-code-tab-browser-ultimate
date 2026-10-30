@@ -29,6 +29,13 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 - $(location) **Page markers** — pin notes to page elements and send them to the agent as one prompt.
 - $(settings-gear) **Chat Settings** — use the gear at the top to edit prompts for commit messages, branch names and chat titles, or clean up temporary files.
 
+## 0.9.10 — 2026-10-30
+
+- **Jump to the latest message** — scrolled a screen or more up, or with new messages arriving out of view, a capsule above the composer tabs says how many are below and scrolls to the end on a click.
+- **GitHub and Files in Chrome and on the website** — browse the working folder, attach files, and see pull requests and Actions runs from the remote chat too.
+- **Badges after a restart** — attachments in a draft restored after VS Code restarts show their badges again; badges in sent messages sit closer to the text, and the × on a draft badge is centred.
+- **Phones** — switching composer tabs no longer reopens the keyboard, the Files status bar keeps its height, and no blank band appears above the keyboard.
+
 ## 0.9.9 — 2026-10-30
 
 - **Inline attachment badges** — files, folders and other attachments share compact badges in drafts and sent messages, with icons for their type. Open them with a click or use their context menus; drag badges into the composer or move them within a draft.

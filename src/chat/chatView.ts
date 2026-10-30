@@ -1898,12 +1898,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				this.showAllAgents(true);
 				return;
 			case 'githubStatus':
+				if (this._chromeCommand.getStore()?.remote && message.folder !== this._workdir()) { throw new Error('Open GitHub for this conversation\u2019s working folder.'); }
 				if (typeof message.folder === 'string') { await this._githubStatus(message.folder, message.signIn === true); }
 				return;
 			case 'files':
 				if (typeof message.folder === 'string' && typeof message.dir === 'string') { await this._files(message); }
 				return;
 			case 'githubCreatePr':
+				if (this._chromeCommand.getStore()?.remote && message.folder !== this._workdir()) { throw new Error('Open GitHub for this conversation\u2019s working folder.'); }
 				if (typeof message.folder === 'string') { await this._githubCreatePr(message.folder, message.title, message.draft === true); }
 				return;
 			case 'listHistory':
@@ -5949,6 +5951,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		const blocked = this._blocked();
 		if (blocked) { reply({ error: blocked }); return; }
 		if (!root || root !== message.folder) { reply({ error: 'This chat has no working folder.' }); return; }
+		// From Chrome or the website: these act on the editor's own window, clipboard or other files of its
+		// machine, or ask a question in a modal only the editor sees.
+		const remote = this._chromeCommand.getStore();
+		if (remote?.remote && ['open', 'reveal', 'revealOs', 'copyPath', 'copyRelativePath', 'drop', 'delete'].includes(message.action)) {
+			reply({ error: 'This action is available only in VS Code.' }); return;
+		}
 		let realRoot: string;
 		try { realRoot = await fs.promises.realpath(root); } catch { reply({ error: 'The working folder is not there any more.' }); return; }
 		const safe = async (relative: string): Promise<string | undefined> => {
@@ -6010,7 +6018,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 					confirm(vscode.l10n.t('Relative path copied'));
 					return;
 				case 'attach':
-					for (const t of targets) { await this._attachPath(rel(t)); }
+					for (const t of targets) {
+						if (remote?.remote) {
+							const isDir = (await fs.promises.stat(t)).isDirectory();
+							remote.reply?.({ type: 'chromeAttachment', label: `${path.basename(t)}${isDir ? '/' : ''}`, text: `Attached ${isDir ? 'folder' : 'file'} (relative to the working folder): ${rel(t)}` }, remote.chatId);
+						} else { await this._attachPath(rel(t)); }
+					}
 					return;
 				case 'copy': case 'cut':
 					this._fileClipboard = targets.length ? { paths: targets, cut: message.action === 'cut' } : undefined;

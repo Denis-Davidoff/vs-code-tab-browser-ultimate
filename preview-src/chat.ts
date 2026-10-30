@@ -695,6 +695,20 @@ function trackVisibleHeight(): void {
 	window.addEventListener('resize', update);
 }
 trackVisibleHeight();
+/**
+ * Focusing the box under a phone keyboard makes the browser scroll its ancestors (none of which
+ * is meant to scroll) to reveal it; once the page shrinks they stay scrolled and a blank band
+ * sits over the keyboard. Put them back.
+ */
+function unscrollComposer(): void {
+	for (let node: HTMLElement | null = input.parentElement; node; node = node.parentElement) {
+		// Only containers that are not meant to scroll: one that scrolls on purpose keeps its place.
+		if (node.scrollTop && !/(auto|scroll)/.test(getComputedStyle(node).overflowY)) { node.scrollTop = 0; }
+	}
+	if (document.scrollingElement?.scrollTop) { document.scrollingElement.scrollTop = 0; }
+}
+input.addEventListener('focus', () => { requestAnimationFrame(unscrollComposer); setTimeout(unscrollComposer, 350); });
+window.visualViewport?.addEventListener('resize', () => requestAnimationFrame(unscrollComposer));
 // The panel may grow only as far as the rest of the footer (tabs, message box, folder and Git line) still fits.
 const overviewMax = () => {
 	const footer = document.querySelector<HTMLElement>('.footer');
@@ -756,6 +770,7 @@ window.visualViewport?.addEventListener('resize', stopComposerHeightAnimation);
 let composerAccessShape = '';
 let composerAgentsShape = '';
 let composerHistoryShape = '';
+const touchPointer = window.matchMedia('(pointer: coarse)');
 function setComposerTab(tab: ComposerTab, save = true): void {
 	const animate = save && tab !== composerTab && !reducedMotion.matches;
 	// Capture the displayed height before cancelling: a rapid switch continues where it is now.
@@ -780,7 +795,8 @@ function setComposerTab(tab: ComposerTab, save = true): void {
 		renderComposerHistory();
 	}
 	if (save) { vscode.setState({ ...(vscode.getState() ?? {}), composerTab }); }
-	if (save && tab === 'chat') { input.focus(); }
+	// On a desktop the box keeps the focus on every tab; on a phone only on Chat, so the other tabs close the keyboard.
+	if (save) { if (tab === 'chat' || !touchPointer.matches) { input.focus(); } else { input.blur(); } }
 	if (animate) {
 		const toHeight = composer.getBoundingClientRect().height;
 		if (fromHeight > 0 && toHeight > 0 && Math.abs(fromHeight - toHeight) > 1) {
@@ -796,6 +812,8 @@ function setComposerTab(tab: ComposerTab, save = true): void {
 	}
 }
 for (const [name, b] of Object.entries(composerTabButtons) as [ComposerTab, HTMLButtonElement][]) {
+	// A press keeps focus where it is: on a phone, moving it to the button closes the keyboard and the box reopens it.
+	b.addEventListener('mousedown', e => e.preventDefault());
 	b.addEventListener('click', () => setComposerTab(name));
 }
 /** Alt+C / S / A / H switch the composer tabs; `code`, since Option+letter types a symbol on a Mac. */
@@ -1641,7 +1659,39 @@ function scrollToPrompt(index: number): void {
 	root.classList.add('turn-flash');
 	setTimeout(() => root.classList.remove('turn-flash'), 1200);
 }
-const footer = el('div', { class: 'footer' }, questionDock, switchCard, composerTabs, composer, workdirFooter, commitNotice);
+/** Messages that arrived below while the thread was scrolled up, counted from the last time it was at its end. */
+const newMessagesBadge = el('button', { class: 'new-messages' });
+newMessagesBadge.type = 'button';
+newMessagesBadge.hidden = true;
+let seenMessages: { chat: string | undefined; count: number } = { chat: undefined, count: 0 };
+function messageCount(s: ChatViewState): number {
+	return (s.entriesOffset ?? 0) + s.entries.filter(e => e.kind === 'user' || e.kind === 'assistant').length;
+}
+function renderNewMessages(): void {
+	if (!state) { newMessagesBadge.hidden = true; return; }
+	const count = messageCount(state);
+	const atBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 60;
+	if (seenMessages.chat !== state.chatId || atBottom || count < seenMessages.count) { seenMessages = { chat: state.chatId, count }; }
+	const unseen = count - seenMessages.count;
+	// Shown once the reader has gone up a screen or more, or when messages arrived out of sight below.
+	const farUp = thread.scrollHeight - thread.scrollTop - thread.clientHeight >= thread.clientHeight;
+	newMessagesBadge.hidden = atBottom || (!farUp && unseen <= 0);
+	if (newMessagesBadge.hidden) { return; }
+	// Scrolled up: the messages below the visible part, and how many of them arrived since.
+	const edge = thread.getBoundingClientRect().bottom;
+	let below = 0;
+	thread.querySelectorAll('.prompt, .row.assistant').forEach(node => { if (node.getBoundingClientRect().top >= edge) { below++; } });
+	const text = unseen > 0 ? `${unseen} new message${unseen === 1 ? '' : 's'}` : below > 0 ? `${below} message${below === 1 ? '' : 's'} below` : 'Scroll to bottom';
+	newMessagesBadge.classList.toggle('fresh', unseen > 0);
+	newMessagesBadge.title = 'Scroll to the latest message';
+	if (newMessagesBadge.textContent !== text) { newMessagesBadge.replaceChildren(icon('arrow-down'), el('span', { text })); }
+}
+newMessagesBadge.addEventListener('mousedown', e => e.preventDefault());
+newMessagesBadge.addEventListener('click', () => {
+	thread.scrollTo({ top: thread.scrollHeight, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+});
+thread.addEventListener('scroll', renderNewMessages, { passive: true });
+const footer = el('div', { class: 'footer' }, newMessagesBadge, questionDock, switchCard, composerTabs, composer, workdirFooter, commitNotice);
 workdirSummary.addEventListener('click', () => workdirButton.click());
 /** One tab per open conversation, above the thread. */
 const tabStrip = el('nav', { class: 'tab-strip' });
@@ -2388,6 +2438,9 @@ function followDraft(s: ChatViewState): void {
 	vscode.setState({ drafts, chatDrawerCollapsed, chatDrawerSide, composerTab, overviewHeight, panel: state?.panel ?? savedView?.panel });
 	post({ type: 'saveDrafts', drafts });
 	autosize();
+	// The textarea draws its text transparent: without the mirror a restored draft kept its
+	// layout and showed no badges.
+	paintInput();
 }
 
 /**
@@ -2694,6 +2747,7 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 				autosize();
 				saveDraft();
 				renderSend();
+				paintInput();
 				input.focus();
 			} else {
 				drafts[message.chatId] = drafts[message.chatId] ? `${drafts[message.chatId]}\n\n${message.text}` : message.text;
@@ -2733,7 +2787,7 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
 			drafts[message.chatId] = message.text;
 			if (state?.chatId === message.chatId) {
 				fromHistory = false; historyAt = inputHistory.length; input.value = message.text;
-				autosize(); saveDraft(); renderSend(); input.focus();
+				autosize(); saveDraft(); renderSend(); paintInput(); input.focus();
 			}
 			return;
 		case 'readTabDraft': {
@@ -2815,6 +2869,7 @@ function render(): void {
 	if (!app.classList.contains('terminal-front')) {
 		renderThread(state);
 		landFlight(state);
+		renderNewMessages();
 	}
 	if (loadingTab && (state.activeTab === loadingTab.id || !state.tabs.some(t => t.id === loadingTab!.id))) { clearTabLoading(); }
 	renderAttachments(state);
@@ -7547,6 +7602,7 @@ function recall(step: -1 | 1): boolean {
 	saveDraft();
 	autosize();
 	renderSend();
+	paintInput();
 	return true;
 }
 

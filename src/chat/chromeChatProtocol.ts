@@ -296,6 +296,17 @@ function readChromeFooterMessage(m: Record<string, unknown>): ViewToHost | undef
     case 'gitBranchAction': return folder() && text('name', 1024) && ['switch', 'create', 'delete'].includes(String(m.action)) ? { type: m.type, folder: m.folder as string, name: m.name as string, action: m.action as 'switch' | 'create' | 'delete', remote: m.remote === true } : undefined;
     case 'gitRemoteAction': return folder() && ['publish', 'push', 'pull'].includes(String(m.action)) && text('remote', 200, true) && text('confirmed', 4096, true) ? { type: m.type, folder: m.folder as string, action: m.action as 'publish' | 'push' | 'pull', remote: m.remote as string | undefined, confirmed: m.confirmed as string | undefined } : undefined;
     case 'restoreBranchStash': return folder() ? { type: m.type, folder: m.folder as string } : undefined;
+    case 'githubStatus': return folder() ? { type: m.type, folder: m.folder as string, ...(m.signIn === true ? { signIn: true } : {}) } : undefined;
+    case 'githubCreatePr': return folder() && text('title', 512) ? { type: m.type, folder: m.folder as string, title: m.title as string, ...(m.draft === true ? { draft: true } : {}) } : undefined;
+    case 'files': {
+      // Only the forms a remote surface may use; the host refuses the rest again.
+      const actions = ['list', 'complete', 'copy', 'cut', 'paste', 'attach', 'newFolder', 'upload'];
+      const paths = m.paths;
+      if (!folder() || !Number.isSafeInteger(m.request) || !actions.includes(String(m.action)) || !text('dir', 4096) || !text('name', 255, true)
+        || !text('data', 12_000_000, true) || (paths !== undefined && (!Array.isArray(paths) || paths.length > 500 || !paths.every(p => typeof p === 'string' && p.length <= 4096 && !p.includes('\0'))))) { return undefined; }
+      return { type: m.type, request: m.request as number, folder: m.folder as string, action: m.action as 'list', dir: m.dir as string,
+        ...(paths ? { paths: paths as string[] } : {}), ...(m.name !== undefined ? { name: m.name as string } : {}), ...(m.data !== undefined ? { data: m.data as string } : {}) };
+    }
     case 'openRepo': return text('repo', 2048) && text('branch', 1024) && ['copy', 'clone', 'reference'].includes(String(m.mode)) ? { type: m.type, repo: m.repo as string, branch: m.branch as string, mode: m.mode as 'copy' | 'clone' | 'reference' } : undefined;
     case 'repoAction': return ['changes', 'push', 'window', 'remove'].includes(String(m.action)) ? { type: m.type, action: m.action as 'changes' | 'push' | 'window' | 'remove' } : undefined;
     case 'dismissUsageAlert': {

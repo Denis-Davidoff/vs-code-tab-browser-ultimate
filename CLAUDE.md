@@ -6456,7 +6456,9 @@ A composer tab (**Files**, ⌥F), asked for: the conversation's working folder a
 Shift, ⌘A), keys (Enter, Backspace up, Delete, ⌘C/X/V, ⌥⌘C for the path), a context menu and, while something is selected, icon actions in the one status row at the foot:
 Open (in VS Code), Attach (chips through `_attachPath`), Copy, Cut, Paste, Copy path, Reveal in Explorer, Delete,
 New folder. View: `filesPanel` in `chat.ts`; host: `_files` in `chatView.ts`; rules in the leaf
-`src/chat/fileExplorer.ts` (under test). Editor-only (`files` in `commands.ts`).
+`src/chat/fileExplorer.ts` (under test). Chrome and the website get it too (`files` is `mixed`, feature `workdir`): list, complete,
+copy, cut, paste, new folder, upload, and attach (answered as a `chromeAttachment`); open, reveal, copy path, drop and delete
+act on the editor's own window, clipboard, machine or a modal, so the reader and the host refuse them there.
 
 - **The path bar**: a right-click on a crumb copies its full or project-relative path (`copyRelativePath`); a
   double-click turns the crumbs into one field up to the filter, where a folder path is typed relative to the working
@@ -6480,8 +6482,8 @@ New folder. View: `filesPanel` in `chat.ts`; host: `_files` in `chatView.ts`; ru
 A composer tab (**GitHub**, ⌥G) beside History, asked for: the open pull requests and the
 latest Actions runs of the repository **the conversation's working folder** belongs to. The
 leaf is [src/chat/githubStatus.ts](src/chat/githubStatus.ts) (under test), the host
-`_githubStatus` in `chatView.ts`, the view `renderComposerGithub`. Editor-only (`githubStatus`
-in `commands.ts`). Decisions:
+`_githubStatus` in `chatView.ts`, the view `renderComposerGithub`. Chrome and the website get it too (`githubStatus`,
+`githubCreatePr` under the `git` feature); from there the folder must be the conversation's own working folder. Decisions:
 
 - **The repository comes from the folder's remotes, never from the view**: the current branch's
   upstream remote, then `upstream` (a fork's parent, where its pull requests live), then
