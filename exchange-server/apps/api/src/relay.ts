@@ -253,13 +253,15 @@ export class Relay {
         ? JSON.stringify(encryptionSchema.parse(hello.encryption))
         : null;
       if (next !== encryption) {
+        const updated = await this.services.db
+          .update(point)
+          .set({ encryption: next })
+          .where(and(eq(point.id, hello.pointId), eq(point.keyHash, keyHash!)))
+          .returning({ id: point.id });
+        if (!updated.length) throw new Refused("Access revoked");
         this.streams.disconnectPoint(hello.pointId);
         for (const viewer of this.viewers.get(hello.pointId) ?? [])
           viewer.close(1008, "Workspace protection changed. Reload.");
-        await this.services.db
-          .update(point)
-          .set({ encryption: next })
-          .where(eq(point.id, hello.pointId));
         encryption = next;
       }
     } else if (Boolean(encryption) !== (hello.encrypted === true))
@@ -294,6 +296,12 @@ export class Relay {
       return;
     }
     if (path === "/ws/agent") {
+      // Rotation/deletion can finish while quota checks or audit storage await.
+      // Revalidate immediately before publishing this socket as the agent.
+      const [current] = await permitted();
+      if (!current || (current.encryption ?? null) !== encryption)
+        throw new Refused("Access revoked");
+      if (ws.readyState !== WebSocket.OPEN) return;
       this.agents.get(id)?.close(AGENT_REFUSED, "Connection replaced");
       this.snapshots.delete(id);
       this.agents.set(id, ws);

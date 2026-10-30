@@ -1,4 +1,5 @@
 import { exchangeViewerId } from '../src/core/exchangeViewer';
+import { isBackgroundCompletion } from './remoteEvents';
 import {snapshotReplay} from './snapshotEvents';
 import { showSentAttachment, showAttachmentPreview } from './sentAttachment';
 import {applyPatch,readPatch} from '../src/chat/core/sync';
@@ -231,7 +232,7 @@ function connect():void {
           const item=value.message;
           if(item.removed){attachments.set(value.chatId,(attachments.get(value.chatId)??[]).filter(a=>a.id!==item.id));render();}
           else addAttachment({label:item.label,text:item.text,kind:item.kind,file:item.file},value.chatId,item.id);
-        }else if(!latest||value.chatId===latest.chatId){
+        }else if(!latest||value.chatId===latest.chatId||isBackgroundCompletion(value.message)){
           if(value.message?.type==='chromeAttachment')addAttachment({label:value.message.label,text:value.message.text,kind:'file'});
           else if(value.message?.type==='exchangeBrowser'){if(value.message.message)notice(value.message.message);window.parent.postMessage({type:'ai-browser-swipe',page:'browser'},location.origin);}
           else emit(value.message);

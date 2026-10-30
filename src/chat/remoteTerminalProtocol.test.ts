@@ -77,6 +77,34 @@ async function rig(options: { allowed?: () => boolean } = {}) {
 }
 
 suite('remote terminal hub', () => {
+	test('Chrome and Exchange share one lease, including identical viewer IDs on different transports', async () => {
+		const r = await rig();
+		const sent: AgentTerminalFrame[] = [];
+		const other = new RemoteTerminalHub({ allowed: () => true, epoch: () => 'ep1', find: () => r.tab, send: f => sent.push(f) });
+		let n = 0;
+		const frame = (type: string, extra: Record<string, unknown> = {}) => other.receive({ type, ...base(V, ++n), ...extra });
+		try {
+			r.frame('terminal.attach', { cols: 80, rows: 24 });
+			r.frame('terminal.lease', { op: 'claim' });
+			frame('terminal.attach', { cols: 80, rows: 24 });
+			assert.strictEqual(r.tab.consumerCount, 2, 'consumers from different transports cannot replace each other');
+			assert.strictEqual((sent.at(-1) as { holder: string }).holder, 'other');
+			frame('terminal.lease', { op: 'claim' });
+			assert.strictEqual(r.hub.leaseHolder('t1'), undefined);
+			assert.strictEqual(other.leaseHolder('t1'), V);
+			assert.strictEqual((r.sent.at(-1) as { holder: string }).holder, 'other');
+			r.frame('terminal.input', { data: 'wrong' });
+			frame('terminal.input', { data: 'echo right\r' });
+			assert.deepStrictEqual(r.session.written, ['echo right\r']);
+			r.hub.dropAll();
+			assert.strictEqual(r.tab.remoteControl, true, 'disconnecting the old transport does not release the new owner');
+			assert.strictEqual(r.tab.consumerCount, 1);
+			r.tab.input('local');
+			assert.strictEqual(other.leaseHolder('t1'), undefined, 'editor input revokes the cross-transport lease');
+			assert.strictEqual(r.tab.remoteControl, false);
+		} finally { other.dispose(); r.hub.dispose(); r.tab.dispose(); }
+	});
+
 	test('attach replays, a watcher cannot type, a lease holder can', async () => {
 		const r = await rig();
 		r.frame('terminal.attach', { cols: 80, rows: 24 });

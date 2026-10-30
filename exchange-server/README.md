@@ -98,6 +98,8 @@ The agent publishes `chat.snapshot` with `chatId`, `running` and `messages` (`id
 
 Close codes on `/ws/agent`: **4001** — the key was refused, the point revoked or deleted, or another client took the connection; the extension stops and asks to connect again. **4400** — a message the relay could not accept; **1013** — too many queued messages; **1011** — authentication could not be checked (the database or session store failed); all three are transient and the extension reconnects. `/ws/browser` uses 1008 for every refusal. The chat relay accepts frames up to 12 MiB, including encrypted envelopes. The media channel accepts frames up to 3 MB. Application commands retain their own bounded schemas.
 
+Agent authentication rechecks the key and workspace protection after asynchronous quota and audit checks, immediately before replacing the live connection. Encryption metadata updates also require the same current key, so rotation or deletion during a handshake cannot restore a revoked agent or change protection with its old key.
+
 The current snapshot is kept in the relay's memory and dropped when the agent disconnects. A long history is sent from its end, bounded in size. VS Code remains the source of the history. Without a workspace password, TLS protects the connection and the relay can read content. With a workspace password, chat, commands, attachments, tab URLs and browser frames are encrypted before they reach the relay; encrypted snapshots are not cached by the relay.
 
 A demo client answers with fixed text and runs no AI:

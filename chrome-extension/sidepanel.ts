@@ -1,4 +1,5 @@
 import { annotationPointContext } from '../src/browser/annotationData';
+import { isBackgroundCompletion } from '../preview-src/remoteEvents';
 import { showSentAttachment, showAttachmentPreview } from '../preview-src/sentAttachment';
 import { chromeChatProtocolVersion, chromeChatProtocolHeader, chromeChatVersionHeader, chromeChatCompatibilityError, chromeChatCapabilities, chromeChatCapabilitiesHeader, negotiateChromeChatCapabilities, chromeChatFeatureError, chromeChatAttachmentFeature, chromeChatCommandFeature, chromeChatFooterCommands, chromeChatWaitHeader, chromeChatMaxWaitMs, chromeChatBaseHeader } from '../src/chat/chromeChatCompatibility';
 import { applyPatch, readPatch } from '../src/chat/core/sync';
@@ -886,7 +887,7 @@ async function pollFooterEvents(connection: ChromeChatConnection, current: numbe
         try { await addChromeAttachment(event.chatId, current, { kind: 'file', label: event.message.label, text: event.message.text }); }
         catch (error) { showFeedback(String(error)); }
       }
-    } else if (event.chatId === latest?.chatId) {
+    } else if (event.chatId === latest?.chatId || isBackgroundCompletion(event.message)) {
       if (event.error) { showFeedback(event.error); }
       else if (event.message) { emit(event.message); }
     }

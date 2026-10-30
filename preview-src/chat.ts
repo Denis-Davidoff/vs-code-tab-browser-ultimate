@@ -1665,7 +1665,7 @@ newMessagesBadge.type = 'button';
 newMessagesBadge.hidden = true;
 let seenMessages: { chat: string | undefined; count: number } = { chat: undefined, count: 0 };
 function messageCount(s: ChatViewState): number {
-	return (s.entriesOffset ?? 0) + s.entries.filter(e => e.kind === 'user' || e.kind === 'assistant').length;
+	return s.messageCount ?? s.entries.filter(e => e.kind === 'user' || e.kind === 'assistant').length;
 }
 function renderNewMessages(): void {
 	if (!state) { newMessagesBadge.hidden = true; return; }
@@ -2320,7 +2320,7 @@ remoteTerminal.addEventListener('click', () => {
 	const why = remoteTerminalBlock();
 	if (why) { refuseControl({ s: 'off', reason: why }); return; }
 	const items = terminalMenuItems();
-	if (items.length > 1 || (items.length === 1 && state?.terminalSupport?.available && state.terminalSupport.shell === false)) { openMenu(remoteTerminal, items, 'Open new terminal'); } else { post({ type: 'newTerminal' }); }
+	if (items.length) { openMenu(remoteTerminal, items, 'Open new terminal'); }
 });
 /** Why the remote "New terminal" cannot act now, or `undefined`. */
 function remoteTerminalBlock(): string | undefined {
@@ -3006,8 +3006,9 @@ function terminalMenuItems(): MenuItem[] {
 	}
 	return [
 		...(offer.shell ? [{ icon: 'terminal', label: 'New terminal', description: 'A shell in the folder of this chat', command: 'newTerminal' as const, run: () => post({ type: 'newTerminal' }) }] : []),
-		...offer.agents.map(agent => ({
-			icon: 'terminal', label: `${agent.name} in a terminal`, description: agent.id === 'gemini' ? `${agent.name}'s own CLI (browser tools: Connect Gemini CLI)` : agent.id === 'opencode' || agent.id === 'pi' ? `${agent.name}'s own CLI (no browser tools in a terminal)` : `${agent.name}'s own CLI, with the browser tools`, command: 'newTerminal',
+		...offer.agents.map((agent, index) => ({
+			heading: index === 0 ? 'Open CLI agent terminal' : undefined,
+			icon: 'terminal', label: agent.name, description: agent.id === 'gemini' ? `${agent.name}'s own CLI (browser tools: Connect Gemini CLI)` : agent.id === 'opencode' || agent.id === 'pi' ? `${agent.name}'s own CLI (no browser tools in a terminal)` : `${agent.name}'s own CLI, with the browser tools`, command: 'newTerminal',
 			run: () => post({ type: 'newTerminal', agent: agent.id }),
 		})),
 	];
@@ -3117,7 +3118,7 @@ function chooseNewChatLocation(): void {
 		{ icon: 'comment-discussion', label: 'Here in chat', run: () => post({ type: 'newTab', location: 'here' }) },
 		{ icon: 'files', label: 'In a new tab', run: () => post({ type: 'newTab', location: 'tab' }) },
 		{ icon: 'link-external', label: 'In a new window', run: () => post({ type: 'newTab', location: 'window' }) },
-		...terminalMenuItems(),
+		...terminalMenuItems().map((item, index) => ({ ...item, heading: item.heading ?? (index === 0 ? 'Open new terminal' : undefined) })),
 	], 'Open new chat');
 }
 tabAdd.addEventListener('click', () => post({ type: 'newTab', location: 'here' }));
@@ -3143,7 +3144,7 @@ function websiteAccessRow(terminal: { readonly id: string; readonly remote?: boo
 const tabAddTerminal = button([icon('terminal'), el('span', { class: 'tab-add-label', text: 'New terminal' })], { class: 'ghost round tab-add tab-add-terminal', title: 'New terminal' });
 tabAddTerminal.addEventListener('click', () => {
 	const items = terminalMenuItems();
-	if (items.length > 1 || (items.length === 1 && state?.terminalSupport?.available && state.terminalSupport.shell === false)) { openMenu(tabAddTerminal, items, 'Open new terminal'); } else { post({ type: 'newTerminal' }); }
+	if (items.length) { openMenu(tabAddTerminal, items, 'Open new terminal'); }
 });
 /*
  * The narrow strip's overflow: the tabs that do not fit in the row are hidden (a class: the keyed
@@ -8474,6 +8475,8 @@ interface MenuItem {
 	readonly command?: string;
 	/** A divider above the row: where one group of a menu ends and the next begins. */
 	readonly separator?: boolean;
+	/** A section heading above this row. */
+	readonly heading?: string;
 	readonly run: () => void;
 }
 
@@ -8527,10 +8530,11 @@ function openMenu(anchor: HTMLElement, items: MenuItem[], heading?: string, acti
 				}
 				item.run();
 			});
-			if (!item.separator) { return [b]; }
+			const rows = item.heading ? [el('div', { class: 'menu-heading' }, el('span', { text: item.heading })), b] : [b];
+			if (!item.separator) { return rows; }
 			const line = el('div', { class: 'menu-separator' });
 			line.setAttribute('role', 'separator');
-			return [line, b];
+			return [line, ...rows];
 		}));
 	// Over a panel the menu is drawn above it: a panel sits over the popups.
 	menu.classList.toggle('over-panel', !!keep);

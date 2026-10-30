@@ -235,9 +235,13 @@ interface Consumer {
 	stallTimer?: unknown;
 }
 
-const consumerKey = (v: string, t: string) => `remote:${v}:${t}`;
-
 export class RemoteTerminalHub {
+	/** One PTY can be reached through several transports; ownership spans all hubs. */
+	private static readonly _owners = new WeakMap<RemoteTerminalTarget, RemoteTerminalHub>();
+	private static readonly _watchers = new WeakMap<RemoteTerminalTarget, Set<RemoteTerminalHub>>();
+	private static _nextId = 0;
+	private readonly _id = ++RemoteTerminalHub._nextId;
+	private _consumerKey(v: string, t: string): string { return `remote:${this._id}:${v}:${t}`; }
 	private readonly _consumers = new Map<string, Consumer>();
 	private readonly _lastN = new Map<string, number>();
 	private readonly _leases = new Map<string, { v: string; last: number; timer?: unknown; target: RemoteTerminalTarget }>();
@@ -273,7 +277,7 @@ export class RemoteTerminalHub {
 		this._lastN.set(frame.v, frame.n);
 		if (this._lastN.size > 64) { this._lastN.delete(this._lastN.keys().next().value!); }
 		const target = this._o.find(frame.t);
-		const key = consumerKey(frame.v, frame.t);
+		const key = this._consumerKey(frame.v, frame.t);
 		if (!target || !target.remote) {
 			this._drop(key);
 			this._error(frame.v, frame.t, 'gone', 'This terminal is not shared with the website.');
@@ -324,8 +328,7 @@ export class RemoteTerminalHub {
 	/** Every viewer left, the connection closed, or terminals were switched off. */
 	public dropAll(): void {
 		for (const key of [...this._consumers.keys()]) { this._drop(key); }
-		for (const lease of this._leases.values()) { if (lease.timer !== undefined) { this._clear(lease.timer); } lease.target.setRemoteControl?.(false); }
-		this._leases.clear();
+		for (const t of [...this._leases.keys()]) { this._endLease(t, 'lease-release'); }
 		this._lastN.clear();
 		this._buckets.clear();
 	}
@@ -333,7 +336,7 @@ export class RemoteTerminalHub {
 	public dispose(): void { this.dropAll(); }
 
 	private _attach(v: string, target: RemoteTerminalTarget, cols: number, rows: number): void {
-		const key = consumerKey(v, target.id);
+		const key = this._consumerKey(v, target.id);
 		this._drop(key);
 		const perTerminal = [...this._consumers.values()].filter(c => c.t === target.id).length;
 		const perViewer = [...this._consumers.values()].filter(c => c.v === v).length;
@@ -355,6 +358,9 @@ export class RemoteTerminalHub {
 			replay: (data, seq) => { if (this._consumers.get(key) === consumer) { this._o.send({ type: 'terminal.replay', v, t, seq, data, ...target.size }); } },
 		});
 		if (!this._editorWatch.has(t)) {
+			const watchers = RemoteTerminalHub._watchers.get(target) ?? new Set<RemoteTerminalHub>();
+			watchers.add(this);
+			RemoteTerminalHub._watchers.set(target, watchers);
 			this._editorWatch.set(t, target.onEditorInput(data => {
 				if (!isTerminalReply(data) && this._leases.has(t)) { this._endLease(t, 'lease-editor'); }
 			}));
@@ -375,6 +381,7 @@ export class RemoteTerminalHub {
 		consumer.target.removeConsumer(key);
 		if (this._leases.get(consumer.t)?.v === consumer.v) { this._endLease(consumer.t, 'lease-release'); }
 		if (![...this._consumers.values()].some(c => c.t === consumer.t)) {
+			RemoteTerminalHub._watchers.get(consumer.target)?.delete(this);
 			this._editorWatch.get(consumer.t)?.();
 			this._editorWatch.delete(consumer.t);
 		}
@@ -405,20 +412,23 @@ export class RemoteTerminalHub {
 		const lease = this._leases.get(t);
 		if (!lease || lease.v !== v) { return false; }
 		if (this._now() - lease.last >= remoteLeaseIdleMs) { this._endLease(t, 'lease-expired'); return false; }
-		return this._consumers.has(consumerKey(v, t));
+		return this._consumers.has(this._consumerKey(v, t));
 	}
 
 	private _lease(v: string, target: RemoteTerminalTarget, op: 'claim' | 'renew' | 'release'): void {
 		const t = target.id;
-		if (!this._consumers.has(consumerKey(v, t))) { return; }
+		if (!this._consumers.has(this._consumerKey(v, t))) { return; }
 		if (op === 'release') {
 			if (this._leases.get(t)?.v === v) { this._endLease(t, 'lease-release'); }
 			return;
 		}
 		if (op === 'renew' && !this._holds(v, t)) { this._sendLease(v, t); return; }
+		const owner = RemoteTerminalHub._owners.get(target);
+		if (owner && owner !== this) { owner._endLease(t, 'lease-release'); }
 		const previous = this._leases.get(t);
 		if (previous?.timer !== undefined) { this._clear(previous.timer); }
 		this._leases.set(t, { v, last: this._now(), target });
+		RemoteTerminalHub._owners.set(target, this);
 		this._armLease(t);
 		if (!previous) { target.setRemoteControl?.(true); }
 		if (op === 'claim') { this._audit('lease-claim', v, t); }
@@ -449,18 +459,26 @@ export class RemoteTerminalHub {
 		if (!lease) { return; }
 		if (lease.timer !== undefined) { this._clear(lease.timer); }
 		this._leases.delete(t);
-		lease.target.setRemoteControl?.(false);
+		if (RemoteTerminalHub._owners.get(lease.target) === this) {
+			RemoteTerminalHub._owners.delete(lease.target);
+			lease.target.setRemoteControl?.(false);
+		}
 		this._audit(kind, lease.v, t);
-		this._broadcastLease(t);
+		this._broadcastLease(t, lease.target);
 	}
 
-	private _broadcastLease(t: string): void {
-		for (const consumer of this._consumers.values()) { if (consumer.t === t) { this._sendLease(consumer.v, t); } }
+	private _broadcastLease(t: string, target = [...this._consumers.values()].find(c => c.t === t)?.target): void {
+		if (!target) { return; }
+		for (const hub of RemoteTerminalHub._watchers.get(target) ?? []) {
+			for (const consumer of hub._consumers.values()) { if (consumer.target === target) { hub._sendLease(consumer.v, t); } }
+		}
 	}
 
 	private _sendLease(v: string, t: string): void {
-		const lease = this._leases.get(t);
-		const holder = !lease ? 'editor' : lease.v === v ? 'you' : 'other';
+		const target = this._consumers.get(this._consumerKey(v, t))?.target;
+		const owner = target ? RemoteTerminalHub._owners.get(target) : undefined;
+		const lease = owner?._leases.get(t);
+		const holder = !lease ? 'editor' : owner === this && lease.v === v ? 'you' : 'other';
 		this._o.send({ type: 'terminal.lease', v, t, holder, ...(lease ? { expiresInMs: Math.max(0, remoteLeaseIdleMs - (this._now() - lease.last)) } : {}) });
 	}
 

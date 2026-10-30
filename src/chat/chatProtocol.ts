@@ -769,6 +769,8 @@ export interface ChatViewState {
 	readonly sound?: ChatSoundSettings;
 	/** On Chrome and the website: how many earlier entries were not sent (`windowEntries`); `loadEarlier` asks for more. */
 	readonly entriesOffset?: number;
+	/** Total user/assistant messages before windowing; tool entries never count. */
+	readonly messageCount?: number;
 	/**
 	 * The tab in front's messages not in the conversation yet, in order: sent
 	 * during a turn and not yet taken in by Claude Code (`steer`), or held to be

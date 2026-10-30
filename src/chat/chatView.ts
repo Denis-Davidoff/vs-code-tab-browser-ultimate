@@ -1294,6 +1294,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			...this._usageState(selection.agent),
 			chatId: this._active.chat.id,
 			entries: this._active.chat.entries,
+			messageCount: this._active.chat.entries.filter(entry => entry.kind === 'user' || entry.kind === 'assistant').length,
 			running: this._active.running,
 			// The pins first: they are the conversation's, not a draft's, and carry no `@N`.
 			attachments: [...this._pinChips(this._active), ...this._active.attachments.map(a => ({ ...a.chip, reference: attachmentReference(a.chip) }))],

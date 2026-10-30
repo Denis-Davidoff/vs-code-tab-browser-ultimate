@@ -7901,6 +7901,14 @@ fails the typecheck until a new type has its row, and a type with no row is refu
   (`preview-src/snapshotEvents.ts`, shared). Before, Chrome — which takes no pushed events —
   never saw a Git change made in the editor, and a website viewer that connected after one saw
   none until the next. The relay cannot cache events itself (encrypted envelopes are opaque).
+- **PR creation completion reaches the renderer even after switching remote chats.** Both
+  shims use `isBackgroundCompletion` for `githubStatus.created` / `createError`: the renderer
+  clears the originating folder's pending flag before deciding whether to redraw that folder.
+  Dropping an off-screen completion consumed Chrome's event cursor and left Create disabled.
+- **The new-message capsule counts messages before history windowing.** `ChatViewState.messageCount`
+  carries the total user/assistant count through every projection and patch. `entriesOffset`
+  counts all entries, including tools, and must never be added to a message count: advancing a
+  window could otherwise turn one new message into several, and loading history changed it again.
 - **Settings kept for the whole window reach every chat surface at once**: approval modes answer
   the waiting cards of every surface's tabs and redraw every menu, `newsHidden` redraws every
   surface; each used to redraw only the surface it was changed in.
@@ -8672,6 +8680,9 @@ viewer).
   editor's own typing takes it back. A watcher's keys are refused with one notice, xterm's automatic
   query replies dropped silently. Only the holder's size reaches the PTY; while a lease is held the
   editor's resizes are kept aside and applied when it ends (`setRemoteControl`).
+  Ownership is shared across all `RemoteTerminalHub` instances by the target terminal object:
+  Chrome and Exchange must displace each other's leases, notify watchers on both transports,
+  and use distinct consumer keys even when their viewer IDs match.
 - **Fan-out with the slowest consumer holding the PTY** (`_owed` minus the largest outstanding of the
   editor view and every remote consumer), and **a consumer at its window for 5 s is dropped**, giving
   its debt back — one stalled phone must not pause the shell for everyone.
