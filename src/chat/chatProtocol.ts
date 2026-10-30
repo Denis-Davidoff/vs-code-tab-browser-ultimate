@@ -816,6 +816,8 @@ export interface PendingSend {
 	readonly kind: 'steer' | 'queue';
 	/** Labels of the attachments that go with it. */
 	readonly attachments: readonly string[];
+	/** The chips themselves, by index, so the waiting bubble draws the same badges a sent prompt does. */
+	readonly chips?: readonly AttachmentChip[];
 	/** A later prompt of a toolbar skill: its name, and which prompt of how many. */
 	readonly skill?: { readonly name: string; readonly step: number; readonly steps: number; readonly check?: string; readonly background?: boolean };
 }
@@ -1094,7 +1096,7 @@ export type ViewToHost =
 	| { readonly type: 'setApprovalMode'; readonly key: string; readonly mode: ApprovalMode }
 	/** A chip in the composer clicked: its file, its image or its text, in an editor tab. */
 	| { readonly type: 'openAttachment'; readonly id: string; readonly entry?: number }
-	| { readonly type: 'reattachAttachment'; readonly id: string; readonly entry: number }
+	| { readonly type: 'reattachAttachment'; readonly id: string; readonly entry?: number }
 	| { readonly type: 'saveAttachment'; readonly id: string }
 	/** A tool call's input or output, opened as a read-only text in an editor tab. */
 	| { readonly type: 'openText'; readonly name: string; readonly text: string }

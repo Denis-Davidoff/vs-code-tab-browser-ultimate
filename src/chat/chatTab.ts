@@ -397,13 +397,26 @@ export class ChatTab {
 	/** The messages not in the conversation yet, for the view; see `PendingSend`. */
 	public get pendingSends(): PendingSend[] {
 		return [
-			...this._waiting.map(w => ({ id: w.id, text: w.entry.text, kind: 'steer' as const, attachments: w.entry.attachments })),
+			...this._waiting.map(w => ({ id: w.id, text: w.entry.text, kind: 'steer' as const, attachments: w.entry.attachments, chips: w.entry.attachmentData?.map(d => d.chip) })),
 			...this._queued.map(q => ({
-				id: q.id, text: q.text, kind: 'queue' as const, attachments: q.attachments.map(a => `${attachmentReference(a.chip)} ${a.chip.label}`),
+				id: q.id, text: q.text, kind: 'queue' as const, attachments: q.attachments.map(a => `${attachmentReference(a.chip)} ${a.chip.label}`), chips: q.attachments.map(a => a.chip),
 				skill: q.step ? { name: q.step.name, step: q.step.step, steps: q.step.steps, check: q.step.check }
 					: q.background ? { name: q.background.name, step: 1, steps: 1, background: true } : undefined,
 			})),
 		];
+	}
+
+	/** An attachment of a message not in the conversation yet (queued, or waiting to be taken in), by chip id. */
+	public pendingAttachment(id: string): Attachment | undefined {
+		for (const q of this._queued) {
+			const found = q.attachments.find(a => a.chip.id === id);
+			if (found) { return found; }
+		}
+		for (const w of this._waiting) {
+			const found = w.entry.attachmentData?.find(a => a.chip.id === id);
+			if (found) { return { ...found, file: found.file ? vscode.Uri.parse(found.file) : undefined }; }
+		}
+		return undefined;
 	}
 
 	/** Held for after the running turn; `send` it when the tab is idle again — the provider does. */

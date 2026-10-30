@@ -10,7 +10,7 @@ import { fileGridNeighbor, type FileArrow } from './fileNavigation';
 import { composerLinks, composerListEdit, composerListItem, composerListStarter, type ComposerEdit } from './composerFormatting';
 import { attachmentMarker, readAttachmentMarkers, selectedAttachmentMarkers } from './attachmentMarkers';
 import type { TemporaryStorage } from '../src/core/temporaryFiles';
-import { aiFeatures, defaultFeaturePrompts, featureAgent, featurePromptLimit, readFeatureAiSettings, type AiFeature, type FeatureAiSettings, type FeatureEffort } from '../src/chat/featureAi';
+import { aiFeatures, defaultFeaturePrompts, featureAgent, featurePromptLimit, readFeatureAiSettings, readTitleRefresh, titleRefreshLimits, type AiFeature, type FeatureAiSettings, type FeatureEffort } from '../src/chat/featureAi';
 import { createRecordingEncoder } from './recording';
 import { clipboardFiles, fileBase64 } from './clipboardFiles';
 import { pastedFileLimit } from '../src/chat/pastedFiles';
@@ -619,6 +619,31 @@ for (const [name, b] of Object.entries(composerTabButtons) as [ComposerTab, HTML
 	});
 }
 applyComposerOrder();
+/**
+ * Which composer tabs are shown (Chat Settings → Appearance), per device in
+ * `localStorage`; all by default. Chat is always there, and with every other
+ * tab off the whole row is hidden, Chat's title with it.
+ */
+const composerHiddenKey = 'aiBrowser.chat.composerTabsHidden';
+const optionalComposerTabs: [ComposerTab, string][] = [['skills', 'Skills'], ['activity', 'Activity'], ['history', 'History'], ['files', 'Files'], ['github', 'GitHub']];
+function readHiddenComposerTabs(): Set<ComposerTab> {
+	let saved: unknown;
+	try { saved = JSON.parse(localStorage.getItem(composerHiddenKey) ?? 'null'); } catch { saved = null; }
+	return new Set(Array.isArray(saved) ? saved.filter((n): n is ComposerTab => optionalComposerTabs.some(([t]) => t === n)) : []);
+}
+let hiddenComposerTabs = readHiddenComposerTabs();
+function composerTabShown(tab: ComposerTab): boolean { return tab === 'chat' || !hiddenComposerTabs.has(tab); }
+function applyComposerTabVisibility(): void {
+	for (const [name, b] of Object.entries(composerTabButtons) as [ComposerTab, HTMLButtonElement][]) { b.hidden = !composerTabShown(name); }
+	composerTabs.hidden = optionalComposerTabs.every(([t]) => hiddenComposerTabs.has(t));
+}
+function setComposerTabShown(tab: ComposerTab, shown: boolean): void {
+	if (shown) { hiddenComposerTabs.delete(tab); } else { hiddenComposerTabs.add(tab); }
+	try { localStorage.setItem(composerHiddenKey, JSON.stringify([...hiddenComposerTabs])); } catch { /* kept for this view only */ }
+	applyComposerTabVisibility();
+	if (!shown && composerTab === tab) { setComposerTab('chat'); }
+}
+applyComposerTabVisibility();
 /** Right of the tabs: the list under a tab other than Chat takes the most height it may, and back. */
 const composerMaximize = el('button', { class: 'composer-maximize ghost' }, icon('screen-full'));
 composerTabs.append(composerMaximize);
@@ -778,7 +803,7 @@ const composerTabKeys: Record<string, ComposerTab> = { KeyC: 'chat', KeyS: 'skil
 document.addEventListener('keydown', e => {
 	if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.isComposing) { return; }
 	const tab = composerTabKeys[e.code];
-	if (!tab || composerTabs.hidden || (e.target as Element | null)?.closest?.('.terminal-main')) { return; }
+	if (!tab || composerTabs.hidden || !composerTabShown(tab) || (e.target as Element | null)?.closest?.('.terminal-main')) { return; }
 	e.preventDefault();
 	e.stopPropagation();
 	setComposerTab(tab);
@@ -2304,7 +2329,7 @@ let composerTab: ComposerTab = savedTab === 'agents' || savedTab === 'access' ? 
 	: savedTab && Object.hasOwn(composerTabButtons, savedTab) ? savedTab as ComposerTab : 'chat';
 overviewHeight = typeof savedView?.overviewHeight === 'number' ? savedView.overviewHeight : undefined;
 applyOverviewHeight();
-setTimeout(() => setComposerTab(composerTab, false), 0);
+setTimeout(() => setComposerTab(composerTabShown(composerTab) ? composerTab : 'chat', false), 0);
 const drafts: Record<string, string> = { ...(savedView?.drafts ?? {}) };
 /** The conversation whose draft the box holds, and the tab it is in. */
 let draftChat: string | undefined;
@@ -4418,11 +4443,29 @@ function renderPendingSends(s: ChatViewState): void {
 	}
 	pendingBox.replaceChildren(...paused, ...s.pendingSends.map(p => {
 		const bubble = el('div', { class: 'bubble' });
-		if (p.attachments.length) {
-			bubble.append(el('div', { class: 'bubble-attachments' }, ...p.attachments.map(label => el('span', { class: 'chip small', text: label }))));
-		}
+		// Drawn as a sent prompt is: `@N` tokens in the text become badges, the rest go above it.
+		const entry = { kind: 'user', text: p.text, attachments: p.attachments, attachmentData: p.chips?.map(chip => ({ chip })) } as Extract<ChatEntry, { kind: 'user' }>;
+		const references = new Set(tokensIn(p.text).map(token => token.reference));
+		const extra = p.attachments.flatMap((label, index) => {
+			if (references.has(/^@[1-9][0-9]*/.exec(label)?.[0] ?? '')) { return []; }
+			const chip = sentAttachmentAt(entry, index);
+			const badge = markAttachmentTokens(attachmentToken(chip), () => chip, text => [document.createTextNode(text)])[0] as HTMLElement;
+			if (chip.id) { wireSentAttachment(badge, chip, true); }
+			return [badge];
+		});
+		if (extra.length) { bubble.append(el('div', { class: 'bubble-attachments' }, ...extra)); }
 		if (p.text) {
-			bubble.append(el('div', { class: 'bubble-text', text: p.text }));
+			const displayText = p.text.replace(attachmentTokenPattern, (whole: string, n: string) => {
+				const chip = sentAttachmentChip(entry, `@${n}`);
+				return chip ? attachmentToken(chip) : whole;
+			});
+			const text = renderPromptText(displayText, reference => sentAttachmentChip(entry, reference));
+			const tokens = tokensIn(p.text);
+			text.querySelectorAll<HTMLElement>('.att-token-wrap').forEach((badge, index) => {
+				const chip = tokens[index] && sentAttachmentChip(entry, tokens[index].reference);
+				if (chip?.id) { wireSentAttachment(badge, chip, true); }
+			});
+			bubble.append(text);
 		}
 		const note = el('div', { class: 'pending-note' },
 			icon(p.kind === 'queue' ? 'list-ordered' : 'watch'),
@@ -5549,7 +5592,7 @@ function sentAttachmentChip(entry: Extract<ChatEntry, { kind: 'user' }>, referen
 /** Lists in user messages share the draft's markers, attachment capsules and link actions. */
 function renderPromptText(text: string, chipFor: (reference: string) => AttachmentChip | undefined): HTMLElement {
 	const root = el('div', { class: 'bubble-text prompt-formatted' });
-	const frames: { spaces: number; ordered: boolean; list: HTMLElement; last: HTMLElement }[] = [];
+	const frames: { spaces: number; kind: string; list: HTMLElement; last: HTMLElement }[] = [];
 	const appendText = (target: HTMLElement, text: string) => target.append(...markAttachmentTokens(text, chipFor, rest => withFileIcons(markComposerText(rest, knownCommands(state), true))));
 	const lines = text.split('\n');
 	let fence: string | undefined;
@@ -5568,14 +5611,16 @@ function renderPromptText(text: string, chipFor: (reference: string) => Attachme
 		}
 		const spaces = item.indent.replace(/\t/g, '    ').length;
 		const ordered = item.number !== undefined;
+		const kind = item.alpha ?? (ordered ? 'number' : 'bullet');
 		while (frames.length && frames[frames.length - 1].spaces > spaces) { frames.pop(); }
-		if (frames.length && frames[frames.length - 1].spaces === spaces && frames[frames.length - 1].ordered !== ordered) { frames.pop(); }
+		if (frames.length && frames[frames.length - 1].spaces === spaces && frames[frames.length - 1].kind !== kind) { frames.pop(); }
 		let frame = frames[frames.length - 1];
 		if (!frame || frame.spaces !== spaces) {
 			const list = el(ordered ? 'ol' : 'ul');
 			if (ordered && item.number !== 1) { list.setAttribute('start', String(item.number)); }
+			if (item.alpha) { list.setAttribute('type', item.alpha === 'upper' ? 'A' : 'a'); }
 			(frame?.last ?? root).append(list);
-			frame = { spaces, ordered, list, last: list };
+			frame = { spaces, kind, list, last: list };
 			frames.push(frame);
 		}
 		const li = el('li');
@@ -5596,14 +5641,16 @@ function sentAttachmentAt(entry: Extract<ChatEntry, { kind: 'user' }>, index: nu
 }
 
 let sentAttachmentCopySequence = 0;
-function wireSentAttachment(badge: HTMLElement, chip: AttachmentChip): void {
+/** `pending`: a badge of a message still waiting to go out; the host finds it in the queue, by chip id alone. */
+function wireSentAttachment(badge: HTMLElement, chip: AttachmentChip, pending = false): void {
 	const savedEntry = () => {
+		if (pending) { return undefined; }
 		const index = state?.entries.findIndex(entry => entry.kind === 'user' && entry.attachmentData?.some(data => data.chip.id === chip.id)) ?? -1;
 		return index < 0 ? undefined : index + (state?.entriesOffset ?? 0);
 	};
 	const open = () => {
 		const entry = savedEntry();
-		if (entry !== undefined) { post({ type: 'openAttachment', id: chip.id, entry }); }
+		if (pending) { post({ type: 'openAttachment', id: chip.id }); } else if (entry !== undefined) { post({ type: 'openAttachment', id: chip.id, entry }); }
 	};
 	badge.classList.add('sent-attachment');
 	badge.dataset.attachmentKey = String(++sentAttachmentCopySequence);
@@ -5621,7 +5668,17 @@ function wireSentAttachment(badge: HTMLElement, chip: AttachmentChip): void {
 		event.dataTransfer.setData(attachmentClipboardType, JSON.stringify({ text: token, items: [{ token, id: chip.id, kind: chip.kind, label: chip.label, filePath: chip.filePath }] }));
 		if (chip.id && gate('rememberAttachments').s === 'on') { post({ type: 'rememberAttachments', ids: [chip.id] }); }
 	});
-	badge.addEventListener('click', event => { event.stopPropagation(); if (!hasSelection()) { open(); } });
+	// A click opens it. A selection held inside the badge alone is the click's own (the badge snaps
+	// to whole tokens), so it is dropped; one reaching past the badge is the reader's and stays.
+	badge.addEventListener('mousedown', event => { if (event.detail > 1) { event.preventDefault(); } });
+	badge.addEventListener('click', event => {
+		event.stopPropagation();
+		const selection = getSelection();
+		const inside = !!selection && selection.rangeCount > 0 && badge.contains(selection.anchorNode) && badge.contains(selection.focusNode);
+		if (hasSelection() && !inside) { return; }
+		if (inside) { selection?.removeAllRanges(); }
+		open();
+	});
 	badge.addEventListener('keydown', event => {
 		if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); open(); }
 	});
@@ -5629,15 +5686,16 @@ function wireSentAttachment(badge: HTMLElement, chip: AttachmentChip): void {
 		event.preventDefault();
 		event.stopPropagation();
 		openMenu(badge, [
-			{ icon: 'go-to-file', label: 'Open', disabled: savedEntry() === undefined, run: open },
+			{ icon: 'go-to-file', label: 'Open', disabled: !pending && savedEntry() === undefined, run: open },
 			{ icon: 'copy', label: 'Copy', run: () => {
 				if (chip.id && gate('rememberAttachments').s === 'on') { post({ type: 'rememberAttachments', ids: [chip.id] }); }
 				post({ type: 'copy', text: attachmentMarker(chip) });
 			} },
 			...(chip.filePath ? [{ icon: 'link', label: 'Copy path', run: () => post({ type: 'copy', text: chip.filePath! }) }] : []),
-			{ icon: 'clippy', label: 'Attach to chat', command: 'reattachAttachment', disabled: savedEntry() === undefined, run: () => {
+			{ icon: 'insert', label: 'Insert into message', command: 'reattachAttachment', disabled: !pending && savedEntry() === undefined, run: () => {
 				const entry = savedEntry();
-				if (entry !== undefined) { post({ type: 'reattachAttachment', id: chip.id, entry }); input.focus(); }
+				if (pending) { post({ type: 'reattachAttachment', id: chip.id }); input.focus(); }
+				else if (entry !== undefined) { post({ type: 'reattachAttachment', id: chip.id, entry }); input.focus(); }
 			} },
 		], chip.label);
 	});
@@ -6537,12 +6595,14 @@ input.addEventListener('blur', rememberAttachmentCaret);
  * like any other text; a copy carries the chips beside it (`attachmentClipboardType`), and a paste
  * asks the host to make them again (`pasteAttachments`).
  */
-const attachmentTokenPattern = /\[@([1-9][0-9]{0,5}) ([^\]\n]{0,200})\]/g;
+const attachmentTokenPattern = /\[@([1-9][0-9]{0,5})[ \u00a0]([^\]\n]{0,200})\]/g;
 const attachmentClipboardType = 'application/x-ai-browser-attachments';
 
 function attachmentToken(chip: AttachmentChip): string {
 	// Invisible character slots reserve the icon, spacing and remove control in both text layers.
-	return `[${chip.reference}  ${chip.label.replace(/[\]\n\r]/g, ' ').trim().slice(0, 120)}      ]`;
+	// No-break spaces throughout: a line may not break inside a badge, or the textarea wraps its
+	// tail (the × slot) onto the next line while the mirror draws it whole.
+	return `[${chip.reference}  ${chip.label.replace(/[\]\n\r]/g, ' ').trim().slice(0, 120)}      ]`.replace(/ /g, '\u00a0');
 }
 
 /** Per chat: the chips that have had a token in its draft, so a token deleted removes its chip. */
@@ -6557,8 +6617,8 @@ function draftChips(s: ChatViewState | undefined): AttachmentChip[] {
 	return (s?.attachments ?? []).filter(chip => !isPinChip(chip) && !!chip.reference);
 }
 
-function tokensIn(text: string): { reference: string; label: string; start: number; end: number }[] {
-	return [...text.matchAll(attachmentTokenPattern)].map(m => ({ reference: `@${m[1]}`, label: m[2], start: m.index!, end: m.index! + m[0].length }));
+function tokensIn(text: string): { reference: string; label: string; start: number; end: number; gap: string }[] {
+	return [...text.matchAll(attachmentTokenPattern)].map(m => ({ reference: `@${m[1]}`, label: m[2], start: m.index!, end: m.index! + m[0].length, gap: m[0].charAt(m[1].length + 2) }));
 }
 
 function setInputText(value: string, caret: number): void {
@@ -6622,7 +6682,7 @@ function syncAttachmentTokens(s: ChatViewState): void {
 		const end = selection?.end ?? start;
 		const before = text.slice(0, start);
 		const after = text.slice(end);
-		const insert = `${before && !/\s$/.test(before) ? ' ' : ''}${attachmentToken(chip)}${!after || !/^\s/.test(after) ? ' ' : ''}`;
+		const insert = spacedToken(before, attachmentToken(chip), after);
 		text = before + insert + after;
 		caret = start + insert.length;
 		attachmentCaret = { chat: draftChat, value: text, start: caret, end: caret };
@@ -6633,6 +6693,14 @@ function syncAttachmentTokens(s: ChatViewState): void {
 }
 
 input.addEventListener('input', () => { if (state) { syncAttachmentTokens(state); } });
+
+/**
+ * A token put into text: a space before it only when it would otherwise touch the word before
+ * (not at a line start or after whitespace), one after it only when a word follows straight on.
+ */
+function spacedToken(before: string, token: string, after: string): string {
+	return `${before && !/\s$/.test(before) ? ' ' : ''}${token}${after && !/^\s/.test(after) ? ' ' : ''}`;
+}
 
 /** The chip a token stands for, in the draft shown. */
 function chipOfToken(reference: string): AttachmentChip | undefined {
@@ -6692,14 +6760,17 @@ function pasteAttachmentTokens(event: Pick<ClipboardEvent, 'clipboardData' | 'pr
 		if (!nextReference) { return plainToken(undefined, label); }
 		const reference = `@${nextReference--}`;
 		used.add(reference);
-		const token = `[${reference} ${label}]`;
+		const token = `[${reference}\u00a0${label}]`;
 		pending.push({ ...item, token });
 		return token;
 	});
 	const request = newId();
 	const chatId = draftChat;
 	if (pending.length && chatId) { pendingAttachmentPastes.set(request, chatId); }
-	input.setRangeText(text, input.selectionStart, input.selectionEnd, 'end');
+	// A badge at either edge of the paste is spaced off its neighbours as an inserted one is.
+	const before = input.value.slice(0, input.selectionStart), after = input.value.slice(input.selectionEnd);
+	const spaced = (text.startsWith('[') && before && !/\s$/.test(before) ? ' ' : '') + text + (text.endsWith(']') && after && !/^\s/.test(after) ? ' ' : '');
+	input.setRangeText(spaced, input.selectionStart, input.selectionEnd, 'end');
 	rememberAttachmentCaret();
 	input.dispatchEvent(new Event('input', { bubbles: true }));
 	if (pending.length && chatId) { post({ type: 'pasteAttachments', request, chatId, items: pending }); }
@@ -6721,7 +6792,7 @@ function pastedAttachments(results: readonly { readonly token: string; readonly 
 		}
 		const at = text.indexOf(result.token);
 		if (at < 0) { continue; }
-		const label = /^\[@[0-9]+ ([^\]]*)\]$/.exec(result.token)?.[1]?.trim() ?? result.token;
+		const label = /^\[@[0-9]+[ \u00a0]([^\]]*)\]$/.exec(result.token)?.[1]?.trim() ?? result.token;
 		text = text.slice(0, at) + label + text.slice(at + result.token.length);
 		if (caret > at) { caret += label.length - result.token.length; }
 		changed = true;
@@ -6989,9 +7060,13 @@ function markAttachmentTokens(text: string, chipFor: (reference: string) => Atta
 		const leading = token.label.slice(0, token.label.length - token.label.trimStart().length);
 		const trailing = token.label.slice(token.label.trimEnd().length);
 		out.push(el('span', { class: 'att-token-wrap', title: chip?.filePath ?? chip?.label ?? label },
+			// Only the `[` stays outside the capsule, a narrow constant gap. The icon is pinned to the
+			// capsule's left edge, so the reference's varying digits widen the space after the icon,
+			// never the capsule's own padding or the room before it.
 			el('span', { class: 'att-token-hide', text: '[' }),
 			el('span', { class: `att-token${chip ? '' : ' unbound'}` },
-				el('span', { class: 'att-token-hide att-token-prefix', text: `${token.reference} ${leading}` }, mark),
+				el('span', { class: 'att-token-hide att-token-prefix', text: `${token.reference}${token.gap}${leading}` }),
+				mark,
 				el('span', { class: 'att-token-label', text: label }),
 				el('span', { class: 'att-token-hide att-token-close', text: trailing })),
 			el('span', { class: 'att-token-hide', text: ']' })));
@@ -11730,6 +11805,13 @@ function createAppearanceSettings(): HTMLElement {
  content.append(el('h3', { text: 'Appearance' }),
   el('label', { class: 'appearance-setting' }, el('span', { text: 'Color theme' }), theme),
   el('label', { class: 'appearance-setting' }, el('span', { text: 'Show file icons in chat' }), icons),
+  el('h3', { text: 'Composer tabs' }),
+  ...optionalComposerTabs.map(([tab, label]) => {
+   const box = el('input'); box.type = 'checkbox'; box.checked = composerTabShown(tab);
+   box.dataset.appearance = `composerTab.${tab}`;
+   box.addEventListener('change', () => setComposerTabShown(tab, box.checked));
+   return el('label', { class: 'appearance-setting' }, el('span', { text: `Show ${label}` }), box);
+  }),
   el('p', { class: 'feature-settings-note', text: 'Changes apply immediately and are saved on this device.' }));
  return content;
 }
@@ -12190,6 +12272,38 @@ function openFeatureSettings(initial?: 'openrouter'): void {
 			scheduleFeatureSave(0);
 		});
 		row.append(el('label', {}, el('span', { text: 'Agent' }), agent), el('label', {}, el('span', { text: 'Effort' }), effort));
+		if (feature === 'chatTitle') {
+			// When the title is written again; `data-appearance` keeps these out of the agent/effort sweeps.
+			const refresh = readTitleRefresh(featureSettingsDraft.chatTitle.refresh);
+			const mode = el('select'); mode.dataset.appearance = 'titleRefresh';
+			mode.setAttribute('aria-label', 'Update the chat title');
+			for (const [value, label] of [['once', 'Once, from the first message'], ['messages', 'Every N messages'], ['context', 'Every N thousand tokens of context']]) {
+				const option = el('option', { text: label }); option.value = value; mode.append(option);
+			}
+			mode.value = refresh.mode;
+			const every = el('input'); every.type = 'number'; every.step = '1';
+			every.setAttribute('aria-label', 'Update the chat title every');
+			const limits = () => mode.value === 'context' ? titleRefreshLimits.context : titleRefreshLimits.messages;
+			const showEvery = (value: number) => {
+				const [min, max] = limits(); every.min = String(min); every.max = String(max); every.value = String(value);
+				every.hidden = mode.value === 'once'; every.setAttribute('aria-invalid', 'false');
+			};
+			showEvery(refresh.every);
+			const store = (value: number) => {
+				featureSettingsDraft = { ...featureSettingsDraft, chatTitle: { ...featureSettingsDraft.chatTitle, refresh: { mode: mode.value as 'once' | 'messages' | 'context', every: value } } };
+			};
+			mode.addEventListener('change', () => {
+				const value = mode.value === 'context' ? 100 : 5;
+				showEvery(value); store(value); scheduleFeatureSave(0);
+			});
+			every.addEventListener('input', () => {
+				const [min, max] = limits(); const value = Number(every.value);
+				const ok = Number.isInteger(value) && value >= min && value <= max;
+				every.setAttribute('aria-invalid', String(!ok));
+				if (ok) { store(value); scheduleFeatureSave(700); } else { clearTimeout(featureSettingsTimer); featureSettingsStatus.textContent = `Enter a whole number from ${min} to ${max}.`; }
+			});
+			row.append(el('label', {}, el('span', { text: 'Update title' }), mode, every));
+		}
 		const prompt = el('textarea', { class: 'feature-system-prompt' });
 		prompt.dataset.feature = feature; prompt.rows = 7; prompt.maxLength = featurePromptLimit;
 		prompt.setAttribute('aria-label', `${labels[feature]} system prompt`);

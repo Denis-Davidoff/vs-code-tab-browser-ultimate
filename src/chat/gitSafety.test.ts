@@ -116,7 +116,7 @@ test('a blocked composer send preserves its text and attachments instead of star
 	const host = {
 		_tabs: [tab], _active: tab, _disposed: false, _gitAccess: access, _blocked: () => false,
 		_registry: { detecting: false, backend: () => ({}) }, _selection: () => ({ agent: 'codex', model: 'selected' }),
-		_rememberInput() {}, _postMessage(message: { text: string }) { restored = message.text; }, _saveTabs() {},
+		_rememberInput() {}, _titleRefreshDue: () => false, _titleContext: () => "", _postMessage(message: { text: string }) { restored = message.text; }, _saveTabs() {},
 	};
 	const send = method(view, '_send');
 	await send.call(host, 'keep my message', 'tab');
@@ -158,7 +158,7 @@ test('Stop cancels a Chrome send waiting behind a push, and a later send can sti
 		push() {}, async send() { launches++; return true; } };
 	const host = { _tabs: [tab], _active: tab, _disposed: false, _gitAccess: access, _blocked: () => false,
 		_registry: { detecting: false, backend: () => ({}) }, _selection: () => ({ agent: 'codex', model: 'selected' }),
-		_saveTabs() {}, _removeSentAnnotations() {} };
+		_saveTabs() {}, _titleRefreshDue: () => false, _titleContext: () => "", _removeSentAnnotations() {} };
 	const send = method(view, '_send');
 	const pending = send.call(host, 'Chrome follow-up', 'tab', []);
 	await Promise.resolve();

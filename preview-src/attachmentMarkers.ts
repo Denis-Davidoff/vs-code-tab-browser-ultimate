@@ -10,7 +10,7 @@ export function attachmentMarker(chip: Pick<AttachmentChip, 'id' | 'label'>): st
 
 /** Adapt portable markers to the same pending-reference flow as the rich clipboard format. */
 export function readAttachmentMarkers(value: string): { text: string; items: PastedAttachment[] } | undefined {
-	const used = new Set([...value.matchAll(/\[@([1-9][0-9]{0,5}) /g)].map(match => Number(match[1])));
+	const used = new Set([...value.matchAll(/\[@([1-9][0-9]{0,5})[ \u00a0]/g)].map(match => Number(match[1])));
 	let next = 999999;
 	const items: PastedAttachment[] = [];
 	const text = value.replace(/\[att:([^|\]\s]{1,1536})\|([^\]\n]{0,200})\]/g, (whole: string, encodedId: string, label: string) => {

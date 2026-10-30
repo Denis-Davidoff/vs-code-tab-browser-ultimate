@@ -41,7 +41,7 @@ function fixture(entry: any) {
 			const node = element('button');
 			node.handlers.click = () => posted.push({ type: 'copy', text: text() });
 			return node;
-		}, hasSelection: () => false,
+		}, hasSelection: () => false, getSelection: () => null,
 		openMenu: (_anchor: any, items: any[]) => { menu = items; },
 		gate: () => ({ s: 'on' }),
 		attachmentClipboardType: 'application/x-ai-browser-attachments',
@@ -96,7 +96,7 @@ test('sent badges open and reattach the correct item after history offsets, and 
 	assert.equal(JSON.stringify(f.posted[0]), JSON.stringify({ type: 'openAttachment', id: 'news', entry: 21 }));
 	badge.handlers.contextmenu(event);
 	f.menu().find(item => item.label === 'Copy').run();
-	f.menu().find(item => item.label === 'Attach to chat').run();
+	f.menu().find(item => item.label === 'Insert into message').run();
 	assert.equal(JSON.stringify(f.posted.slice(1)), JSON.stringify([
 		{ type: 'rememberAttachments', ids: ['news'] },
 		{ type: 'copy', text: attachmentMarker(entry.attachmentData[2].chip) }, { type: 'reattachAttachment', id: 'news', entry: 21 },
@@ -127,7 +127,7 @@ test('sent badges drag an attachment snapshot that can be pasted back into the d
 	assert.equal(data.get('text/plain'), attachmentMarker(entry.attachmentData[2].chip));
 	const payload = JSON.parse(data.get('application/x-ai-browser-attachments'));
 	assert.equal(payload.items[0].id, 'news');
-	assert.ok(payload.text.startsWith('[@3 '));
+	assert.ok(payload.text.startsWith('[@3\u00a0'));
 	assert.equal(JSON.stringify(f.posted[0]), JSON.stringify({ type: 'rememberAttachments', ids: ['news'] }));
 });
 

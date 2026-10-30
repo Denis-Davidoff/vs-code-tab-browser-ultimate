@@ -24,8 +24,9 @@ test('remote address keeps a draft during polling, switches tabs and submits the
   if(name.includes('exchangeCrypto'))return {workspaceExchangeSocket:()=>ws};
   if(name.includes('preview-scroll'))return {createPreviewScrollQueue:()=>({reset(){}})};
   if(name.includes('preview-zoom'))return previewZoom;
+  if(name.includes('preview-video'))return {createPreviewVideo:()=>({reset(){},close(){},decode(){}}),supportsPreviewVideo:()=>Promise.resolve(false)};
   return {};
- },WebSocket:{OPEN:1},location:{protocol:'https:',host:'exchange.test'},process:{env:{}},document:{hidden:false,addEventListener(){},removeEventListener(){}},crypto:{randomUUID:()=>String(sent.length)},setTimeout:()=>1,clearTimeout(){}});
+ },WebSocket:{OPEN:1},location:{protocol:'https:',host:'exchange.test'},process:{env:{}},window:{addEventListener(){},removeEventListener(){}},document:{hidden:false,addEventListener(){},removeEventListener(){}},crypto:{randomUUID:()=>String(sent.length)},setTimeout:()=>1,clearTimeout(){}});
  function render(){index=0;return exports.RemoteBrowser({pointId:'point',active:true,onShowChat(){}});}
  function find(node:any,predicate:(node:any)=>boolean):any{
   if(!node||typeof node!=='object')return;
@@ -48,7 +49,7 @@ test('remote address keeps a draft during polling, switches tabs and submits the
  state('tab-2','https://new.test/path');assert.equal(address().value,'https://new.test/path');
  ws.onmessage({data:JSON.stringify({type:'browser.result',id:'navigation-error',ok:false,error:'Navigation failed'})});
  state('tab-2','https://new.test/path');
- assert.ok(find(render(),n=>n.props?.role==='status'&&Array.isArray(n.props.children)&&n.props.children.includes('Navigation failed')));
+ assert.ok(find(render(),n=>n.props?.role==='alert'&&[n.props.children].flat(Infinity).includes('Navigation failed')));
  assert.ok(find(render(),n=>n.type==='button'&&n.props.type==='submit'));
  // The page navigates elsewhere while the field is focused and untouched: the address
  // follows it once focus ends, and later polls with the same URL change nothing.

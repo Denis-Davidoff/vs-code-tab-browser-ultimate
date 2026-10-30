@@ -1,6 +1,6 @@
 import * as assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { composerLinks, composerListEdit, composerListStarter } from './composerFormatting.ts';
+import { composerLinks, composerListEdit, composerListItem, composerListStarter } from './composerFormatting.ts';
 
 function apply(value: string, key: 'Enter' | 'Tab', shift = false, start = value.length, end = start) {
 	const edit = composerListEdit(value, start, end, key, shift);
@@ -73,4 +73,12 @@ test('links exclude prose punctuation and unmatched brackets while keeping balan
 	const links = composerLinks('(https://example.com/a(b)). [https://example.com?q=[a]], https://example.com/end!');
 	assert.deepEqual(links.map(link => link.text), ['https://example.com/a(b)', 'https://example.com?q=[a]', 'https://example.com/end']);
 	assert.deepEqual(composerLinks('javascript:alert(1) file:///tmp/a https://'), []);
+});
+
+test('letter lists continue with the next letter and keep their case', () => {
+	const v = 'a. one';
+	assert.equal(composerListEdit(v, v.length, v.length, 'Enter')?.text, '\nb. ');
+	const u = 'B) two';
+	assert.equal(composerListEdit(u, u.length, u.length, 'Enter')?.text, '\nC) ');
+	assert.equal(composerListItem('a.b'), undefined);
 });

@@ -9,7 +9,7 @@ function compile(source:string){return transpileModule(source,{compilerOptions:{
 test('Chrome opening is offered on every surface',()=>{
  const source=readFileSync('preview-src/chat.ts','utf8');
  const body=/function browserMenuItems\(\): MenuItem\[\] \{[\s\S]*?\n\}/.exec(source)![0];
- const context:any={state:{nativeBrowser:'granted'},exports:{},post(){}};
+ const context:any={state:{nativeBrowser:'granted',suggestions:[]},exports:{},post(){}};
  runInNewContext(compile(body+'\nexports.items=browserMenuItems;'),context);
  const items=context.exports.items();assert.equal(items[0].command,'openBrowser.chrome');assert.equal(items[1].label,'VS Code Browser');assert.ok(!items[1].disabled);
  // openMenu disables a row by its command: only the website's map refuses this one.
@@ -38,8 +38,8 @@ for (const code of [1008, 1006]) {
    latest:{chatId:'chat',view:{tabs:[],entries:[]}},socket:undefined,app:{},attachments:new Map(),pending:new Map(),feedback:'',
    conversation:{dataset:{},replaceChildren(){}},document:{getElementById:()=>({remove(){}}),documentElement:{style:{}},body:{}},
    location:{href:'https://exchange.test/chat',protocol:'https:',host:'exchange.test'},URL,
-   workspaceExchangeSocket:()=>ws,connectionState(){},emit(){},replaySnapshots(){},clearTimeout(){},
-   setTimeout(){retries++;return 1;},readPatch(){},applyPatch(){},resync(){},notice(){},send(){},result(){},
+   retry:undefined,handshake:undefined,terminals:{syncTerminals(){},fromAgent:()=>false,fromView:()=>false,reconnected(){},disconnected(){}},workspaceExchangeSocket:()=>ws,connectionState(){},emit(){},replaySnapshots(){},clearTimeout(){},
+   setTimeout(fn:any){if(fn?.name==='connect')retries++;return 1;},readPatch(){},applyPatch(){},resync(){},notice(){},send(){},result(){},
   };
   runInNewContext(compile(render+'\n'+connect+'\nexports.connect=connect;exports.render=render;'),context);
   context.exports.connect(); ws.onclose({code});

@@ -2,8 +2,8 @@ import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { clampPreviewZoom, previewPoint, previewZoomScroll } from '../../exchange-server/apps/web/app/components/preview-zoom.ts';
 
-test('preview zoom stays between fit and 400 percent',()=>{
- assert.equal(clampPreviewZoom(0.2),1);assert.equal(clampPreviewZoom(8),4);assert.equal(clampPreviewZoom(1.75),1.75);assert.equal(clampPreviewZoom(NaN),1);
+test('preview zoom stays between 25 and 400 percent',()=>{
+ assert.equal(clampPreviewZoom(0.2),0.25);assert.equal(clampPreviewZoom(8),4);assert.equal(clampPreviewZoom(1.75),1.75);assert.equal(clampPreviewZoom(NaN),1);
 });
 test('zoom keeps the point under the pinch or wheel cursor anchored',()=>{
  const oldScroll=120,anchor=80,previous=1.5,next=3;

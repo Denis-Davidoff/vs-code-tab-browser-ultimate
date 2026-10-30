@@ -15,7 +15,7 @@ import type { ChromeElementAttachment } from './chromeChatProtocol';
 import { bindAttachmentReference } from './attachmentReferences';
 import { readChatPanelIdentity, type ChatPanelIdentity } from './chatPanelState';
 import { comparablePath, trackTemporaryFile, temporaryStorage } from '../core/temporaryFiles';
-import { featureAgent, featureAiKey, defaultFeaturePrompts, featureEffort, readFeatureAiSettings, type AiFeature } from './featureAi';
+import { featureAgent, featureAiKey, defaultFeaturePrompts, featureEffort, readFeatureAiSettings, titleRefreshDue, type AiFeature } from './featureAi';
 import { availableBranchName, titleModel } from './autoTitle';
 import { localFileLink } from './fileLinks';
 import { SleepControl } from '../power/sleepControl';
@@ -2608,13 +2608,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 					if (tab === this._active) {
 						this._switchTo = undefined;
 					}
-					const needsTitle = !tab.started && !tab.chat.named;
-					const titleContext = [text.slice(0, 1000), ...attachments.slice(0, 5).map(a => a.chip.label.slice(0, 80))].join('\n').slice(0, 1200);
+					// A new chat is named from its first message at once; a started one counts towards a
+					// refresh only once its message has reached the agent, so a refused send does not.
+					const firstTitle = !tab.chat.named && !tab.started;
+					const refreshContext = !firstTitle && !tab.chat.named ? this._titleContext(tab, text, attachments) : '';
+					const titleContext = firstTitle ? this._titleContext(tab, text, attachments) : '';
+					const chatId = tab.chat.id;
 					const sent = tab.send(text, attachments, agent, model, effort, backend, step, ultracode);
-					if (needsTitle) { this._generateTabTitle(tab, agent, titleContext); }
+					if (firstTitle) { this._generateTabTitle(tab, agent, titleContext); }
 					const delivered = await sent;
 					this._saveTabs();
-					if (delivered) { this._removeSentAnnotations(attachments); }
+					if (delivered) {
+						this._removeSentAnnotations(attachments);
+						if (refreshContext && tab.chat.id === chatId && !tab.chat.named && this._titleRefreshDue(tab)) { this._generateTabTitle(tab, agent, refreshContext); }
+					}
 				}, queued);
 		} catch (error) {
 			if (tab.stopGeneration !== stopGeneration) { return; }
@@ -2648,6 +2655,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			: titleModel(available.models);
 		if (!model) { throw new Error(feature === 'commitMessage' ? 'No model is available for the selected agent.' : 'No lightweight model is available for the selected agent.'); }
 		return { agent, model, effort: featureEffort(model, choice.effort), prompt: choice.prompt ?? defaultFeaturePrompts[feature] };
+	}
+
+	/** Per tab: the chat the counts belong to, prompts since its title was written, the context size then. */
+	private readonly _titleMarks = new WeakMap<ChatTab, { chatId: string; prompts: number; tokens: number }>();
+
+	/** A started chat's title written again, as Chat Settings → Chat titles asks; counted in memory, from 0 after a reload. */
+	private _titleRefreshDue(tab: ChatTab): boolean {
+		const refresh = readFeatureAiSettings(this._context.globalState.get(featureAiKey)).chatTitle.refresh;
+		if (!refresh || refresh.mode === 'once') { return false; }
+		let mark = this._titleMarks.get(tab);
+		if (mark?.chatId !== tab.chat.id) {
+			mark = { chatId: tab.chat.id, prompts: 0, tokens: tab.chat.stats.contextTokens ?? 0 };
+			this._titleMarks.set(tab, mark);
+		}
+		mark.prompts++;
+		const context = tab.chat.stats.contextTokens;
+		// A compaction shrinks the context: growth is measured from there.
+		if (context !== undefined && context < mark.tokens) { mark.tokens = context; }
+		if (!titleRefreshDue(refresh, mark.prompts, context, mark.tokens)) { return false; }
+		mark.prompts = 0; mark.tokens = context ?? mark.tokens;
+		return true;
+	}
+
+	/** The first message alone names a new chat; a refresh sees the first and the latest prompts, so the title follows where the work went. */
+	private _titleContext(tab: ChatTab, text: string, attachments: readonly { chip: { label: string } }[]): string {
+		const current = [text.slice(0, 1000), ...attachments.slice(0, 5).map(a => a.chip.label.slice(0, 80))].join('\n');
+		if (!tab.started) { return current.slice(0, 1200); }
+		const prompts = tab.chat.entries.flatMap(e => e.kind === 'user' && e.text.trim() ? [e.text.trim()] : []);
+		const earlier = [prompts[0], ...prompts.slice(1).slice(-3)].filter((p): p is string => !!p).map(p => p.slice(0, 500));
+		return ['Current title: ' + tab.chat.title.slice(0, 100), 'Earlier messages:', ...earlier, 'Latest message:', current].join('\n').slice(0, 3000);
 	}
 
 	private _generateTabTitle(tab: ChatTab, agent: AgentId, context: string): void {
@@ -3563,13 +3600,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 * next chip reuses it. `Beside` was the first version and split the editor
 	 * area into a new group on every first click, which read as a separate window.
 	 */
-	private _reattachAttachment(id: string, entryIndex: number): void {
-		if (this._blocked() || !Number.isInteger(entryIndex)) { return; }
-		const entry = this._active.chat.entries[entryIndex];
-		const saved = entry?.kind === 'user' ? entry.attachmentData?.find(data => data.chip.id === id) : undefined;
+	private _reattachAttachment(id: string, entryIndex?: number): void {
+		if (this._blocked() || (entryIndex !== undefined && !Number.isInteger(entryIndex))) { return; }
+		// No index: a message still waiting in the queue, not in the conversation yet.
+		const entry = entryIndex === undefined ? undefined : this._active.chat.entries[entryIndex];
+		const stored = entry?.kind === 'user' ? entry.attachmentData?.find(data => data.chip.id === id) : undefined;
+		const saved = stored ? { ...stored, file: stored.file ? vscode.Uri.parse(stored.file) : undefined }
+			: entryIndex === undefined ? this._active.pendingAttachment(id) : undefined;
 		if (!saved) { return; }
 		const { reference: _reference, ...chip } = saved.chip;
-		this._active.attachments.push({ ...saved, chip: { ...chip, id: generateUuid() }, file: saved.file ? vscode.Uri.parse(saved.file) : undefined });
+		this._active.attachments.push({ ...saved, chip: { ...chip, id: generateUuid() } });
 		this._post();
 		this._focusInput();
 	}
@@ -3577,7 +3617,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private async _openAttachment(id: string, entryIndex?: number): Promise<void> {
 		const entry = Number.isInteger(entryIndex) ? this._active.chat.entries[entryIndex!] : undefined;
 		const saved = entry?.kind === 'user' ? entry.attachmentData?.find(a => a.chip.id === id) : undefined;
-		const attachment = entryIndex === undefined ? this._active.attachments.find(a => a.chip.id === id)
+		const attachment = entryIndex === undefined ? this._active.attachments.find(a => a.chip.id === id) ?? this._active.pendingAttachment(id)
 			: saved ? { ...saved, file: saved.file ? vscode.Uri.parse(saved.file) : undefined } : undefined;
 		if (!attachment) {
 			return;
@@ -6114,6 +6154,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				const saved = this._active.chat.entries.flatMap(entry => entry.kind === 'user' ? entry.attachmentData ?? [] : []).find(attachment => attachment.chip.id === id);
 				if (saved) { source = { ...saved, file: saved.file ? vscode.Uri.parse(saved.file) : undefined }; }
 			}
+			// A badge of a message still queued or waiting to be taken in.
+			source ??= this._active.pendingAttachment(id);
 			if (!source) { continue; }
 			const { exchangeAnnotation: _exchange, chromeAnnotation: _chrome, ...snapshot } = source;
 			ChatViewProvider._attachmentClipboard.delete(id);

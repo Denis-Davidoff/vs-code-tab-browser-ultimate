@@ -5831,7 +5831,7 @@ textarea.form-input {
 .history-panel .panel-head button.ghost { border-color: transparent; }
 
 /* Desktop settings are moved here on hover; touch devices open it by tapping. */
-.selector-strip { width: max-content; min-width: 0; padding: 6px 8px; overflow-x: auto; overflow-y: hidden; }
+.selector-strip { width: max-content; min-width: 0; padding: 6px 16px; border-radius: 999px; overflow-x: auto; overflow-y: hidden; }
 .selector-strip.open { display: flex; }
 .selector-strip .selector-controls { flex: none; }
 .selector-strip .pill { flex: none; }
@@ -6841,13 +6841,12 @@ body.vv-locked {
 }
 .att-token.unbound { background: color-mix(in srgb, var(--fg) 10%, transparent); box-shadow: none; }
 .att-token-hide { color: transparent; }
-.att-token-prefix { position: relative; }
 .att-token .att-token-icon {
 	position: absolute;
-	right: 3px;
+	left: 5px;
 	top: 50%;
 	transform: translateY(-50%);
-	width: 1.05em;
+	width: 12px;
 	font-size: 12px;
 	line-height: 1;
 	text-align: center;
@@ -6887,3 +6886,4 @@ body.vv-locked {
 }
 .composer-tabs > .composer-maximize:hover { opacity: 1; }
 .composer-tabs > .composer-maximize[hidden] { display: none; }
+.composer-tabs[hidden], .composer-tabs > .composer-tab[hidden] { display: none; }

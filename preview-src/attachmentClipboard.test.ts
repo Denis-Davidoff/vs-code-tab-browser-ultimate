@@ -29,7 +29,7 @@ function view() {
 		saveDraft() { context.drafts[context.draftChat] = input.value; },
 	};
 	const api = runInNewContext(compile([source.match(/const attachmentTokenPattern = [^\n]+/)![0],
-		...['attachmentToken', 'draftChips', 'tokensIn', 'setInputText', 'plainToken', 'syncAttachmentTokens', 'pasteAttachmentTokens', 'pastedAttachments', 'canSend'].map(lift),
+		...['attachmentToken', 'draftChips', 'tokensIn', 'setInputText', 'spacedToken', 'plainToken', 'syncAttachmentTokens', 'pasteAttachmentTokens', 'pastedAttachments', 'canSend'].map(lift),
 		'({ attachmentToken, syncAttachmentTokens, pasteAttachmentTokens, pastedAttachments, canSend });',
 	].join('\n')), context);
 	const paste = (chip: any, text = api.attachmentToken(chip)) => {

@@ -2,6 +2,8 @@ export interface ComposerListItem {
 	readonly indent: string;
 	readonly marker: string;
 	readonly number?: number;
+	/** `a.` / `A)` lists: `number` is the letter's place in the alphabet. */
+	readonly alpha?: 'lower' | 'upper';
 	readonly delimiter: string;
 	readonly content: string;
 	readonly prefixLength: number;
@@ -9,12 +11,26 @@ export interface ComposerListItem {
 
 /** Bare `1` is a list starter; other bare numbers remain ordinary prose. */
 export function composerListItem(line: string): ComposerListItem | undefined {
+	const letter = /^([ \t]*)([a-zA-Z][.)])([ \t]+)(.*)$/.exec(line);
+	if (letter) {
+		const ch = letter[2][0];
+		return { indent: letter[1], marker: letter[2], number: ch.toLowerCase().charCodeAt(0) - 96, alpha: ch === ch.toLowerCase() ? 'lower' : 'upper',
+			delimiter: letter[2][1], content: letter[4], prefixLength: letter[1].length + letter[2].length + letter[3].length };
+	}
 	const match = /^([ \t]*)([-*+]|\d{1,6}[.)]|1)([ \t]+|$)(.*)$/.exec(line);
 	if (!match) { return undefined; }
 	const ordered = /^\d/.test(match[2]);
 	return { indent: match[1], marker: match[2], ...(ordered ? { number: parseInt(match[2], 10) } : {}),
 		delimiter: ordered ? (/[.)]$/.test(match[2]) ? match[2].slice(-1) : '.') : '',
 		content: match[4], prefixLength: match[1].length + match[2].length + match[3].length };
+}
+
+/** The marker of item `n` of the list `item` belongs to; a letter list stops at z. */
+export function composerMarker(item: ComposerListItem, n: number): string {
+	if (item.number === undefined) { return item.marker; }
+	if (!item.alpha) { return `${n}${item.delimiter}`; }
+	const ch = String.fromCharCode(96 + Math.min(26, Math.max(1, n)));
+	return `${item.alpha === 'upper' ? ch.toUpperCase() : ch}${item.delimiter}`;
 }
 
 export interface ComposerEdit {
@@ -69,7 +85,7 @@ export function composerListEdit(value: string, start: number, end: number, key:
 		}
 		const text = item.indent.startsWith('\t') ? item.indent.slice(1) : item.indent.slice(Math.min(2, item.indent.length));
 		// Nested empty items return to their parent level before leaving the list entirely.
-		let marker = item.number === undefined ? item.marker : `${item.number}${item.delimiter}`;
+		let marker = composerMarker(item, item.number ?? 0);
 		if (item.indent) {
 			const spaces = text.replace(/\t/g, '    ').length;
 			for (const line of value.slice(0, lineStart).split('\n').reverse()) {
@@ -78,7 +94,7 @@ export function composerListEdit(value: string, start: number, end: number, key:
 				const previousSpaces = previous.indent.replace(/\t/g, '    ').length;
 				if (previousSpaces < spaces) { break; }
 				if (previousSpaces === spaces) {
-					marker = previous.number === undefined ? previous.marker : `${previous.number + 1}${previous.delimiter}`;
+					marker = composerMarker(previous, (previous.number ?? 0) + 1);
 					break;
 				}
 			}
@@ -86,7 +102,7 @@ export function composerListEdit(value: string, start: number, end: number, key:
 		const replacement = item.indent ? `${text}${marker} ` : '';
 		return { start: lineStart, end: stop, text: replacement, selectionStart: lineStart + replacement.length, selectionEnd: lineStart + replacement.length };
 	}
-	const marker = item.number === undefined ? item.marker : `${item.number + 1}${item.delimiter}`;
+	const marker = composerMarker(item, (item.number ?? 0) + 1);
 	const text = `\n${item.indent}${marker} `;
 	const leading = /^[ \t]+/.exec(value.slice(end, stop))?.[0].length ?? 0;
 	return { start, end: end + leading, text, selectionStart: start + text.length, selectionEnd: start + text.length };

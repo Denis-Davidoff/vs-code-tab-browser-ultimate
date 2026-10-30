@@ -4,34 +4,42 @@ import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { transpileModule, ScriptTarget } from 'typescript';
 
-function position(top: number, bottom: number, height: number) {
+// Where a popup lands (above, below, height limit) is `anchoredOverlay`'s, tested in
+// overlayPosition.test.ts. This checks what `openAbove` itself still decides.
+function openWith(anchorInStrip: boolean, form?: string) {
 	const source = readFileSync('preview-src/chat.ts', 'utf8');
 	const body = /function openAbove\([\s\S]*?\n\}/.exec(source)![0];
-	const classList = { add() {}, remove() {} };
-	const popup = { style: { top: '', bottom: '', left: '', right: '', maxHeight: '1px' }, classList, getBoundingClientRect: () => ({ height, right: 300 }) };
-	const anchor = { classList, getBoundingClientRect: () => ({ top, bottom, left: 100, right: 124 }) };
+	const classes = (): { list: Set<string>; add(c: string): void; remove(c: string): void } => {
+		const list = new Set<string>();
+		return { list, add: (c: string) => list.add(c), remove: (c: string) => list.delete(c) };
+	};
+	const popup = { classList: classes() };
+	const anchor = { classList: classes() };
+	const strip = { contains: (node: unknown) => anchorInStrip && node === anchor };
+	const calls: { closed?: unknown[]; shown?: unknown[] } = {};
 	const open = runInNewContext(transpileModule(`${body}\nopenAbove;`, { compilerOptions: { target: ScriptTarget.ES2022 } }).outputText, {
-		constrainOverlay() {}, closePopups() {}, paramsPopup: {}, app: { getBoundingClientRect: () => ({ top: 20, bottom: 620, left: 20, right: 420 }) },
+		selectorStrip: strip, paramsPopup: {}, paramsFormAnchor: undefined,
+		closePopups: (...args: unknown[]) => { calls.closed = args; },
+		showAnchoredOverlay: (...args: unknown[]) => { calls.shown = args; },
 	});
-	open(popup, anchor, 'left');
-	return popup.style;
+	popup.classList.add('repo-form');
+	open(popup, anchor, 'left', undefined, form);
+	return { popup, anchor, strip, calls };
 }
 
-test('new chat menu opens below the top tab strip', () => {
-	const style = position(24, 48, 120);
-	assert.equal(style.top, '34px');
-	assert.equal(style.bottom, '');
-	assert.equal(style.maxHeight, '120px');
+test('a popup is placed against its anchor and the anchor is marked active', () => {
+	const { popup, anchor, calls } = openWith(false);
+	assert.deepEqual(calls.shown, [popup, anchor, 'left']);
+	assert.ok(anchor.classList.list.has('active'));
+	assert.ok(!popup.classList.list.has('repo-form'), 'a form class from an earlier opening is cleared');
 });
 
-test('composer menus still open above and reset an earlier height limit', () => {
-	const style = position(560, 584, 120);
-	assert.equal(style.top, '');
-	assert.equal(style.bottom, '66px');
-	assert.equal(style.maxHeight, '');
+test('a popup opened from the selector strip keeps the strip open', () => {
+	const { popup, strip, calls } = openWith(true);
+	assert.deepEqual(calls.closed, [popup, strip]);
 });
 
-test('large menus are constrained to the available space', () => {
-	assert.equal(position(24, 48, 900).maxHeight, '558px');
-	assert.equal(position(400, 424, 900).maxHeight, '366px');
+test('a form class is applied when asked for', () => {
+	const { popup } = openWith(false, 'repo-form');
+	assert.ok(popup.classList.list.has('repo-form'));
 });

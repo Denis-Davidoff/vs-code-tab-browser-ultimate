@@ -6,6 +6,37 @@ export interface FeatureAiChoice {
 	readonly agent: 'auto' | AgentId;
 	readonly effort: FeatureEffort;
 	readonly prompt?: string;
+	/** Chat titles only: when a started chat's title is written again. */
+	readonly refresh?: TitleRefresh;
+}
+/** `once`: from the first message only; `messages`: every N prompts; `context`: every N thousand tokens of context growth. */
+export interface TitleRefresh {
+	readonly mode: 'once' | 'messages' | 'context';
+	readonly every: number;
+}
+export const defaultTitleRefresh: TitleRefresh = { mode: 'messages', every: 5 };
+export const titleRefreshLimits = { messages: [2, 50], context: [10, 1000] } as const;
+
+/** A stored or sent refresh choice, checked; anything unreadable is the default. */
+export function readTitleRefresh(value: unknown): TitleRefresh {
+	const raw = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+	if (raw.mode === 'once') { return { mode: 'once', every: defaultTitleRefresh.every }; }
+	if (raw.mode !== 'messages' && raw.mode !== 'context') { return defaultTitleRefresh; }
+	const [min, max] = titleRefreshLimits[raw.mode];
+	const every = typeof raw.every === 'number' && Number.isInteger(raw.every) && raw.every >= min && raw.every <= max
+		? raw.every : raw.mode === 'messages' ? defaultTitleRefresh.every : 100;
+	return { mode: raw.mode, every };
+}
+
+/**
+ * Whether a started chat's title is due again. `promptsSince` counts the
+ * messages sent since the title was last written, the one being sent included;
+ * `contextTokens` is the latest context size and `lastTokens` what it was then.
+ */
+export function titleRefreshDue(refresh: TitleRefresh, promptsSince: number, contextTokens: number | undefined, lastTokens: number): boolean {
+	if (refresh.mode === 'messages') { return promptsSince >= refresh.every; }
+	if (refresh.mode === 'context') { return contextTokens !== undefined && contextTokens - lastTokens >= refresh.every * 1000; }
+	return false;
 }
 export type FeatureAiSettings = Readonly<Record<AiFeature, FeatureAiChoice>>;
 export const featurePromptLimit = 12000;
@@ -28,6 +59,7 @@ export function readFeatureAiSettings(value: unknown): FeatureAiSettings {
 			// Gemini CLI writes no commit messages, branch names or titles here (no one-shot text request yet).
 			agent: choice.agent === 'claude' || choice.agent === 'codex' ? choice.agent : 'auto',
 			effort: choice.effort === 'medium' || choice.effort === 'maximum' ? choice.effort : 'minimum',
+			...(feature === 'chatTitle' ? { refresh: readTitleRefresh(choice.refresh) } : {}),
 			...(typeof choice.prompt === 'string' && choice.prompt.trim() && choice.prompt.length <= featurePromptLimit && !choice.prompt.includes('\0') ? { prompt: choice.prompt.trim() } : {}),
 		}];
 	})) as unknown as FeatureAiSettings;

@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { createContext, runInContext } from 'node:vm';
 import { transpileModule, ScriptTarget } from 'typescript';
-import { aiFeatures, defaultFeaturePrompts, featurePromptLimit, readFeatureAiSettings, type FeatureAiSettings } from '../src/chat/featureAi.ts';
+import { aiFeatures, defaultFeaturePrompts, featurePromptLimit, readFeatureAiSettings, readTitleRefresh, titleRefreshLimits, type FeatureAiSettings } from '../src/chat/featureAi.ts';
 import { maxRecordingSeconds, minRecordingSeconds, recordingProfiles, readRecordingQuality, readRecordingSeconds, type RecordingQuality } from '../src/browser/recordingQuality.ts';
 
 // Exercise the actual handlers with delayed host replies; no model or VS Code process is started.
@@ -46,7 +46,7 @@ function harness() {
 		featureSettingsSaving: false, featureSettingsDraft: readFeatureAiSettings(undefined),
 		videoQualityDraft: 'high' as RecordingQuality, videoSecondsDraft: 300 as number | undefined, recordingProfiles, readRecordingQuality,
 		readRecordingSeconds, minRecordingSeconds, maxRecordingSeconds,
-		readFeatureAiSettings, aiFeatures, defaultFeaturePrompts, featurePromptLimit, createAppearanceSettings: () => new Element('div'), createTemporarySettings: () => new Element('div'), createServerSettings: () => new Element('div'), createOpenRouterSettings: () => new Element('div'), createRemoteTerminalSettings: () => new Element('div'), input: { focus() {} }, closePopups() {},
+		readFeatureAiSettings, readTitleRefresh, titleRefreshLimits, aiFeatures, defaultFeaturePrompts, featurePromptLimit, createAppearanceSettings: () => new Element('div'), createTemporarySettings: () => new Element('div'), createServerSettings: () => new Element('div'), createOpenRouterSettings: () => new Element('div'), createRemoteTerminalSettings: () => new Element('div'), input: { focus() {} }, closePopups() {},
 		el(tag: string, props: { class?: string } = {}, ...children: (Element | string)[]) { const node = new Element(tag); node.className = props.class ?? ''; node.append(...children); return node; },
 		button: (children: (Element | string)[], props: { class?: string } = {}) => { const node = new Element('button'); node.className = props.class ?? ''; node.append(...children); return node; }, icon: () => new Element('i'),
 		gate: () => ({ s: 'on' }),

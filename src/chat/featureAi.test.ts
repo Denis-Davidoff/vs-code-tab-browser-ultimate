@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { transpileModule, ModuleKind, ScriptTarget } from 'typescript';
-import { aiFeatures, defaultFeaturePrompts, featureAgent, featurePromptLimit, featureAiKey, featureEffort, readFeatureAiSettings } from './featureAi.ts';
+import { aiFeatures, defaultFeaturePrompts, featureAgent, featurePromptLimit, featureAiKey, featureEffort, readFeatureAiSettings, defaultTitleRefresh, readTitleRefresh, titleRefreshDue } from './featureAi.ts';
 import { titleModel } from './autoTitle.ts';
 import type { ChatModel } from './chatProtocol.ts';
 
@@ -11,12 +11,12 @@ const model = (id: string, efforts: string[] = ['low', 'medium', 'high', 'max'])
 
 test('feature choices have independent safe defaults and validate persisted input', () => {
 	for (const feature of aiFeatures) {
-		assert.deepEqual(readFeatureAiSettings(undefined)[feature], { agent: 'auto', effort: 'minimum' });
+		assert.deepEqual(readFeatureAiSettings(undefined)[feature], { agent: 'auto', effort: 'minimum', ...(feature === 'chatTitle' ? { refresh: defaultTitleRefresh } : {}) });
 	}
 	const settings = readFeatureAiSettings({ commitMessage: { agent: 'codex', effort: 'maximum' }, branchName: { agent: 'claude', effort: 'medium' }, chatTitle: { agent: 'other', effort: 'extreme' } });
 	assert.deepEqual(settings.commitMessage, { agent: 'codex', effort: 'maximum' });
 	assert.deepEqual(settings.branchName, { agent: 'claude', effort: 'medium' });
-	assert.deepEqual(settings.chatTitle, { agent: 'auto', effort: 'minimum' });
+	assert.deepEqual(settings.chatTitle, { agent: 'auto', effort: 'minimum', refresh: defaultTitleRefresh });
 	assert.deepEqual(readFeatureAiSettings(null), readFeatureAiSettings([]));
 });
 
@@ -129,4 +129,19 @@ test('Auto runs a feature on the tab agent when it can, and falls back from Gemi
  // Nothing that can do it: the tab's agent, which then refuses with a reason.
  assert.equal(featureAgent(auto, 'gemini', id => id === 'gemini'), 'gemini');
  assert.equal(featureAgent({ agent: 'codex', effort: 'minimum' }, 'gemini', all), 'codex');
+});
+
+test('title refresh: read, clamped to the default, and when it is due', () => {
+	assert.deepEqual(readTitleRefresh({ mode: 'once' }), { mode: 'once', every: 5 });
+	assert.deepEqual(readTitleRefresh({ mode: 'messages', every: 3 }), { mode: 'messages', every: 3 });
+	assert.deepEqual(readTitleRefresh({ mode: 'messages', every: 1 }), { mode: 'messages', every: 5 });
+	assert.deepEqual(readTitleRefresh({ mode: 'context', every: 5 }), { mode: 'context', every: 100 });
+	assert.deepEqual(readTitleRefresh({ mode: 'x' }), defaultTitleRefresh);
+	const five = { mode: 'messages', every: 5 } as const;
+	assert.deepEqual([1, 4, 5, 6].map(n => titleRefreshDue(five, n, undefined, 0)), [false, false, true, true]);
+	const ctx = { mode: 'context', every: 50 } as const;
+	assert.equal(titleRefreshDue(ctx, 3, 70000, 30000), false);
+	assert.equal(titleRefreshDue(ctx, 3, 80000, 30000), true);
+	assert.equal(titleRefreshDue(ctx, 3, undefined, 0), false);
+	assert.equal(titleRefreshDue({ mode: 'once', every: 5 }, 6, 1e6, 0), false);
 });
