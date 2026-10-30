@@ -67,6 +67,7 @@ export const COMMANDS = {
 	terminalPasteRequest: terminalLocal('Handled in the browser.'), terminalToChat: terminal,
 	pinTerminal: terminal, terminalAskAgent: terminal, setTerminalAgentControl: terminal,
 	setTerminalRemote: editor('Remote access to a terminal is granted only in VS Code.'), terminalInsert: terminal,
+	runInTerminal: editor('Commands run only in VS Code.'),
 
 	// The conversation.
 	send: chat('host', 'host'), stop: chat('host', 'host'), select: chat('host', 'host'), switchAgent: chat('host', 'host'),

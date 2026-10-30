@@ -3699,7 +3699,7 @@ so nothing can be recorded where the chat cannot run.
   from it (`recordingByteLimit`: the preset's bitrate for that long, half again for a busy page,
   never below 256 MB — a fixed 256 MB stopped a High recording at under three minutes whatever
   the length said). Both are taken at start, like the quality, and `maxSeconds` is in the result
-  the MCP tools return. The view refuses a length out of range (Save held back with the reason);
+  the MCP tools return. The view refuses a length out of range (not saved, the reason shown);
   the host clamps what it is sent anyway. Either limit goes through `_limit`, which stops the
   recording as Stop does and sets `limitReached`
   (`'duration'` or `'size'`). **The size limit used to throw in the chunk handler into `_fail`,
@@ -4839,6 +4839,7 @@ from their shipped webviews — Claude Code 2.1.301 (`webview/index.css`, CSS mo
 | pills and menus | both | agent and model are ghost pills opening in-view menus (label, description, check), not native `<select>`s |
 | code blocks | both | header with the language — in the chart yellow, bold (asked for) — and a copy button; the code a little brighter than the prose, mixed towards white on a dark theme and towards black on a light one (`body.vscode-dark` / `vscode-light`; high contrast keeps its own) |
 | quotes | asked for | `6px 14px` inside, a 3 px left border in the chart yellow, text at 88 % of the foreground; consecutive `>` lines are **one** blockquote, a bare `>` a paragraph break — each line used to be a blockquote of its own, which padding turned into a stack of boxes; a quote with no text (a lone `>` while a reply streams) draws nothing |
+| running a shell block | asked for | a code block fenced as `bash`, `sh`, `zsh`, `shell`, `console`, `fish`, `powershell`, `cmd` … gets a terminal button left of Copy on hover (`runInTerminalButton`, `shellLangs`); a menu asks where — VS Code's active terminal (a new one in the conversation's folder if none), a running chat terminal tab, or a new one — and `_runInTerminal` types the block with Enter (lines as `\r` in a tab, `sendText` in VS Code's). The click is the consent, no card; refused where `_blocked()` is; `runInTerminal` is editor-only in `commands.ts` |
 | copying a message | asked for | a copy button at the bottom right of every prompt and reply, on hover (`.message-copy`); a reply copies as its Markdown; the prompt's copy does not fold the prompt |
 | spacing | asked for | rows `--row-pad` (10px) apart above and below — 6px at first, widened on request twice; the timeline's dot and line are placed from the same variable, so change only it — and 20px between turns — none after a turn that holds only its prompt, so messages added during a turn sit 22px apart rather than 42 (asked for); in a reply, paragraphs, lists, quotes, code blocks and tables 0.9em apart |
 | lists | asked for | a bullet is an em dash (`list-style-type: "— "`) in the theme's chart yellow, items 0.4em apart; numbered items 0.7em apart, their number bold in the same yellow; headings (`#`…`######`, h5 and h6 sized as h4) bold (700), a little larger by level — 1.3, 1.2, 1.12 and 1.05em — and coloured from that yellow at h6 to white at h1, a fifth more white each level up (`level-N`, `--heading-yellow`); on a light theme the top is the foreground, since white would not read |
@@ -5562,6 +5563,7 @@ and `npm test`), the checks and the catalogue request in `openrouterProtocol.ts`
 `validateOpenRouterModel(s)`, `readOpenRouterCatalog`, `searchOpenRouterCatalog`, `fetchOpenRouterCatalog`), tests in
 `openrouterSettings.test.ts`.
 
+- **Chat Settings has no Save button on any tab** (asked for): AI features and Video recording save themselves — a select at once, typed text (a system prompt, the maximum length) 700 ms after the last key (`scheduleFeatureSave`). A change made while a save is on its way goes in the next one (`featureSettingsAgain`); nothing is disabled while saving, and the answer never rewrites a field, or typing would be overwritten.
 - **Every action is its own message and applies at once; there is no Save button** (the panel's own Save and status are
   hidden on this tab). One `ViewToHost` type, `openrouter`, with an `action` — `load`, `setKey`, `removeKey`,
   `saveModels` (the whole list), `catalog` — and one `HostToView` type, `openrouter`, that is always the *canonical*
@@ -6185,7 +6187,10 @@ folder* section of `chatView.ts`.
   Clicking a file opens `vscode.diff` through the built-in Git extension's public `toGitUri`
   API: Staged compares HEAD with index, Unstaged compares index with the working file. Added
   and deleted files use an empty side; renames use their original path on the left (`gitDiff.ts`).
-  Mixed changes offer **Commit staged** or **Commit all changes**. An empty index first offers
+  Mixed changes offer **Commit staged** or **Commit all changes**. Under **Commit all changes** is a **Commit all changes & Push** twin (Commit staged has none — removed on request)
+  (`gitCommit` with `push: true`): after a successful commit, and once the Git lock is released, `_pushAfterCommit`
+  runs the Branches window's own `push` — or `publish` when the branch has no upstream — through `_gitRemoteAction`,
+  with every question and check of that path; a question or an error opens the Branches window (`pushAfterCommit`). An empty index first offers
   **Stage all files**; the host defaults to staged-only and never implicitly stages on that path.
   Commit generates a message using the chat's selected agent, model and effort, then runs
   `git commit`. The text request runs separately without tools or conversation history. The default
@@ -8030,6 +8035,7 @@ speaker button left of the C and U meters that switches between sound and silenc
   into a sandbox.
 - **Repeat** (`aiBrowser.chat.sound.repeat`, 1–5): the sound is scheduled that many times back to back, each copy after the previous one's last note plus 0.15 s. Per device on Chrome and the website like the rest.
 - **Active chat** (`aiBrowser.chat.sound.activeChat`, default off): a selected, visible conversation in the active window finishes silently unless "Play a sound for the active chat" is checked. VS Code uses `window.state.focused`, published as editor-only `windowFocused` and refreshed on window-state changes, so focusing another workbench control does not make a visible chat sound. Chrome and the website use their own `document.hasFocus()`. Background conversations, inactive windows, hidden pages and conversations behind a terminal still sound. Applies to finish sounds only: previews and system notifications keep their own controls. Chrome and the website can override this per device in `aiBrowser.chat.deviceSound`.
+- **A suspended `AudioContext` plays nothing**: one created without a user gesture (the first finish arriving while the window is in the background) starts `suspended`, and notes scheduled before `resume()` lands are in the past. `playChatSound` schedules only once the context runs, and `unlockChatSound` starts it on the view's first press or key.
 - Volume goes to 200: the old 100 is kept as is, above it is louder; a `DynamicsCompressor` limits the sum so
   loud chords do not clip. Fifty sounds (`chatSounds`, the manifest's `enum` and `chatSoundLabels` list them
   alike); a note may glide (`to`).

@@ -1113,6 +1113,8 @@ export type ViewToHost =
 	| { readonly type: 'terminalPasteRequest'; readonly id: string }
 	/** Selected text or the last `lines` lines of the screen, attached to the conversation in front as context; the view then shows that conversation. */
 	| { readonly type: 'terminalToChat'; readonly id: string; readonly text: string }
+	/** A shell code block's Run: typed into VS Code's terminal, a chat terminal tab, or a new one, then Enter. */
+	| { readonly type: 'runInTerminal'; readonly text: string; readonly target: 'vscode' | 'tab' | 'newTab'; readonly id?: string }
 	/** The composer's browser button: a new browser tab, nothing else. */
 	| { readonly type: 'openBrowser'; readonly where?: 'vscode' | 'chrome' }
 	/** The approval menu's View Mode: `aiBrowser.chat.viewMode`. */
@@ -1150,7 +1152,7 @@ export type ViewToHost =
 	/** The folder button's "Choose folder…": the system's folder dialog. */
 	| { readonly type: 'chooseWorkdir' }
 	/** The folder button opened: list the tab in front's working folder. */
-	| { readonly type: 'gitCommit'; readonly folder: string; readonly tabId: string; readonly scope?: 'staged' | 'all' }
+	| { readonly type: 'gitCommit'; readonly folder: string; readonly tabId: string; readonly scope?: 'staged' | 'all'; /** Push afterwards, publishing a branch with no upstream. */ readonly push?: boolean }
 	| { readonly type: 'gitIndexAction'; readonly folder: string; readonly tabId: string; readonly action: 'stage' | 'unstage'; readonly path?: string }
 	| { readonly type: 'openGitDiff'; readonly folder: string; readonly tabId: string; readonly path: string; readonly staged: boolean }
 	| { readonly type: 'fixGitCommit' | 'dismissGitCommit'; readonly folder: string; readonly id: string; readonly tabId: string }

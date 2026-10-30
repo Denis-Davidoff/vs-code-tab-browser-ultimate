@@ -89,8 +89,21 @@ export function playChatSound(sound: ChatSound, volume: number, repeat = 1): voi
 	if (level <= 0) { return; }
 	try {
 		context ??= new AudioContext();
-		if (context.state === 'suspended') { void context.resume(); }
 		const ctx = context;
+		// A context made without a user gesture (a finish in a background window) starts suspended,
+		// and notes scheduled before resume() lands are in the past by then and never sound.
+		if (ctx.state !== 'running') {
+			void ctx.resume().then(() => schedule(ctx, sound, level, repeat), () => { /* audio not allowed */ });
+			return;
+		}
+		schedule(ctx, sound, level, repeat);
+	} catch {
+		// No audio device, or the page may not start audio: a sound is never worth an error.
+	}
+}
+
+function schedule(ctx: AudioContext, sound: ChatSound, level: number, repeat: number): void {
+	try {
 		const start = ctx.currentTime + 0.02;
 		// Loud levels and chords add up past 1: a limiter keeps them loud without clipping into noise.
 		const limiter = ctx.createDynamicsCompressor();
@@ -120,4 +133,14 @@ export function playChatSound(sound: ChatSound, volume: number, repeat = 1): voi
 	} catch {
 		// No audio device, or the page may not start audio: a sound is never worth an error.
 	}
+}
+
+/** Starts the audio context on the first press or key in the view, so a later finish in a background window may play. */
+export function unlockChatSound(target: EventTarget): void {
+	const unlock = (): void => {
+		try { context ??= new AudioContext(); if (context.state !== 'running') { void context.resume().catch(() => undefined); } } catch { /* no audio */ }
+		if (context?.state === 'running') { target.removeEventListener('pointerdown', unlock, true); target.removeEventListener('keydown', unlock, true); }
+	};
+	target.addEventListener('pointerdown', unlock, true);
+	target.addEventListener('keydown', unlock, true);
 }

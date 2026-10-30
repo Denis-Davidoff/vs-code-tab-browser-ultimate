@@ -51,7 +51,7 @@ function panel(staged: string[], unstaged: string[], available = true) {
 		featureAgent,
 		gitFileIcon: () => new Node(),
 		gitPopupError: new Node(), gitPopupList: list, gitPopupActions: footer, el, button, icon: () => new Node(),
-		commitGitFiles: (scope: string) => actions.push({ kind: scope }),
+		commitGitFiles: (scope: string, push?: boolean) => actions.push({ kind: push ? `${scope}+push` : scope }),
 		changeGitFiles: (kind: string, path?: string) => actions.push({ kind, path }),
 	};
 	production('renderGitChanges', context)();
@@ -65,9 +65,10 @@ test('mixed changes ask staged-only or all, and dispatch the exact chosen scope'
 	const { footer, actions } = panel(['staged.txt'], ['unstaged.txt']);
 	assert.match(footer.textContent, /What would you like to commit/);
 	const choices = nodes(footer, 'git-changes-commit');
-	assert.equal(choices.length, 2);
-	choices[0].click(); choices[1].click();
-	assert.deepEqual(actions, [{ kind: 'staged' }, { kind: 'all' }]);
+	assert.equal(choices.length, 3);
+	assert.match(choices[2].textContent, /& Push$/);
+	for (const choice of choices) { choice.click(); }
+	assert.deepEqual(actions, [{ kind: 'staged' }, { kind: 'all' }, { kind: 'all+push' }]);
 });
 
 test('an empty index offers staging all first and does not start a commit', () => {

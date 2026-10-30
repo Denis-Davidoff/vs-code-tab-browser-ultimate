@@ -56,7 +56,8 @@ import type {
 	AgentId, AllAgentsChat, AgentQuestion, AgentUsage, ApprovalEntry, UsageAlert, ToolbarParam, ToolbarResult, ToolbarRun, ToolbarSkill, ApprovalKind, ApprovalMode, AttachmentChip, AttachmentKind, ChatCommand, ChatEntry, ChatStats, ChatSummary, ChatTabStatus, ChatTabSummary, ChatViewMode, ChatViewState, HostToView, RepoMode, ToolEntry, ViewToHost, VoiceEvent, WorkdirFolder, GitBranchState, GitRemoteAction, WorkdirGitStatus,
 } from '../src/chat/chatProtocol';
 import type { ChatSound, ChatSoundSettings } from '../src/chat/chatProtocol';
-import { chatSoundLabels, playChatSound } from './chatSound';
+import { chatSoundLabels, playChatSound, unlockChatSound } from './chatSound';
+unlockChatSound(document);
 import { baseName, searchPaths } from './fileRank';
 import { controlOf, type Availability } from '../src/chat/core/commands';
 import { describePrice, formatContext, modelFromCatalogItem, modelSummary, parseOptionalNumber } from '../src/chat/openrouterView';
@@ -587,7 +588,18 @@ function trackVisibleHeight(): void {
 trackVisibleHeight();
 const overviewMax = () => Math.max(overviewMin, Math.round(window.innerHeight * 0.8));
 let overviewHeight: number | undefined;
+let composerHeightTimer: ReturnType<typeof setTimeout> | undefined;
+function stopComposerHeightAnimation(): void {
+	clearTimeout(composerHeightTimer);
+	composerHeightTimer = undefined;
+	composer.classList.remove('height-moving', 'height-transition');
+	composer.style.removeProperty('height');
+}
+composer.addEventListener('transitionend', event => {
+	if (event.target === composer && event.propertyName === 'height') { stopComposerHeightAnimation(); }
+});
 function applyOverviewHeight(): void {
+	stopComposerHeightAnimation();
 	for (const list of [composerOverview, composerHistoryPanel, skillBar]) {
 		if (overviewHeight === undefined) { list.style.removeProperty('height'); list.style.removeProperty('max-height'); continue; }
 		list.style.height = `${Math.min(overviewMax(), Math.max(overviewMin, overviewHeight))}px`;
@@ -597,6 +609,7 @@ function applyOverviewHeight(): void {
 composerResize.addEventListener('pointerdown', e => {
 	if (e.button !== 0) { return; }
 	e.preventDefault();
+	stopComposerHeightAnimation();
 	const startY = e.clientY;
 	const startH = (composerTab === 'history' ? composerHistoryPanel : composerTab === 'skills' ? skillBar : composerOverview).getBoundingClientRect().height;
 	composerResize.setPointerCapture(e.pointerId);
@@ -621,11 +634,16 @@ composerResize.addEventListener('dblclick', () => {
 	applyOverviewHeight();
 	vscode.setState({ ...(vscode.getState() ?? {}), overviewHeight });
 });
-window.addEventListener('resize', () => { if (overviewHeight !== undefined) { applyOverviewHeight(); } });
+window.addEventListener('resize', () => { stopComposerHeightAnimation(); if (overviewHeight !== undefined) { applyOverviewHeight(); } });
+window.visualViewport?.addEventListener('resize', stopComposerHeightAnimation);
 let composerAccessShape = '';
 let composerAgentsShape = '';
 let composerHistoryShape = '';
 function setComposerTab(tab: ComposerTab, save = true): void {
+	const animate = save && tab !== composerTab && !reducedMotion.matches;
+	// Capture the displayed height before cancelling: a rapid switch continues where it is now.
+	const fromHeight = animate ? composer.getBoundingClientRect().height : 0;
+	stopComposerHeightAnimation();
 	composerTab = tab;
 	for (const [name, b] of Object.entries(composerTabButtons) as [ComposerTab, HTMLButtonElement][]) {
 		b.classList.toggle('active', name === tab);
@@ -641,6 +659,19 @@ function setComposerTab(tab: ComposerTab, save = true): void {
 	}
 	if (save) { vscode.setState({ ...(vscode.getState() ?? {}), composerTab }); }
 	if (save && tab === 'chat') { input.focus(); }
+	if (animate) {
+		const toHeight = composer.getBoundingClientRect().height;
+		if (fromHeight > 0 && toHeight > 0 && Math.abs(fromHeight - toHeight) > 1) {
+			composer.classList.add('height-transition');
+			composer.style.height = `${fromHeight}px`;
+			// Establish the starting size before enabling the CSS transition to the new size.
+			void composer.offsetHeight;
+			composer.classList.add('height-moving');
+			composer.style.height = `${toHeight}px`;
+			// A hidden view may never emit transitionend; always return it to natural height.
+			composerHeightTimer = setTimeout(stopComposerHeightAnimation, 250);
+		}
+	}
 }
 for (const [name, b] of Object.entries(composerTabButtons) as [ComposerTab, HTMLButtonElement][]) {
 	b.addEventListener('click', () => setComposerTab(name));
@@ -887,10 +918,11 @@ function changeGitFiles(action: 'stage' | 'unstage', path?: string): void {
 	renderGitChanges();
 	post({ type: 'gitIndexAction', folder: gitFolder, tabId: state.activeTab, action, path });
 }
-function commitGitFiles(scope: 'staged' | 'all'): void {
+function commitGitFiles(scope: 'staged' | 'all', push = false): void {
 	if (!gitFolder || !state || gitIndexPending) { return; }
 	closePopups();
-	post({ type: 'gitCommit', folder: gitFolder, tabId: state.activeTab, scope });
+	if (push) { pushAfterCommit = true; }
+	post({ type: 'gitCommit', folder: gitFolder, tabId: state.activeTab, scope, ...(push ? { push: true } : {}) });
 }
 const fileThemeFonts = new Map<string, string>();
 /** The font family a file icon theme's font is loaded under, loading it once. */
@@ -1045,16 +1077,22 @@ function renderGitChanges(): void {
 		}
 	}
 	const note = (text: string) => gitPopupActions.append(el('div', { class: 'git-changes-hint' }, text));
-	const commitAction = (label: string, scope: 'staged' | 'all') => {
+	const commitAction = (label: string, scope: 'staged' | 'all', pushLabel?: string) => {
 		const action = button([icon('git-commit'), label], { class: 'git-changes-commit', title: commitReason || `Generate a commit message with ${commitAgent?.name ?? 'the configured agent'}` });
 		action.disabled = !!commitReason;
 		action.addEventListener('click', () => commitGitFiles(scope));
+		// Below it, the same commit followed by a push — or a publish when the branch has no upstream.
 		gitPopupActions.append(action);
+		if (!pushLabel) { return; }
+		const andPush = button([icon('cloud-upload'), pushLabel], { class: 'git-changes-commit', title: commitReason || 'Commit, then push the branch (publishing it if it has no upstream yet)' });
+		andPush.disabled = !!commitReason;
+		andPush.addEventListener('click', () => commitGitFiles(scope, true));
+		gitPopupActions.append(andPush);
 	};
 	if (staged && unstaged) {
 		note('What would you like to commit?');
 		commitAction(`Commit staged (${staged})`, 'staged');
-		commitAction('Commit all changes', 'all');
+		commitAction('Commit all changes', 'all', 'Commit all changes & Push');
 	} else if (staged) { commitAction(`Commit staged (${staged})`, 'staged'); }
 	else if (unstaged) {
 		note('Nothing staged. Add all changed files to Staged?');
@@ -1153,6 +1191,8 @@ branchMagic.addEventListener('click', () => {
 });
 let branchState: GitBranchState | undefined;
 let branchBusy = false;
+/** Commit & Push was pressed: its push's question or error opens the Branches window. */
+let pushAfterCommit = false;
 let branchDeleting: string | undefined;
 let branchRenderedShape = "";
 /** A push the host asked about first; Push sends it again with `confirmed`. */
@@ -1755,6 +1795,15 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
    branchError.textContent = message.error ?? '';
    remoteConfirm = message.confirm ? { action: message.action, ...(message.action === 'publish' && publishRemoteChoice ? { remote: publishRemoteChoice } : {}), text: message.confirm, key: message.confirmKey ?? '' } : undefined;
    renderBranches();
+   if (pushAfterCommit) {
+    pushAfterCommit = false;
+    if ((message.error || remoteConfirm) && !branchPopup.classList.contains('open')) {
+     closePopups();
+     openAbove(branchPopup, branchButton, 'right');
+     branchButton.setAttribute('aria-expanded', 'true');
+     refreshGitStatus();
+    }
+   }
    if (remoteConfirm && branchPopup.classList.contains('open')) { branchSync.querySelector<HTMLButtonElement>('button.primary')?.focus(); }
    return;
   }
@@ -1859,26 +1908,10 @@ window.addEventListener('message', (event: MessageEvent<HostToView>) => {
             return;
         case 'featureAiSaved':
             featureSettingsSaving = false;
-            if (!message.error && message.settings) { featureSettingsDraft = readFeatureAiSettings(message.settings); }
-            if (!message.error) { videoQualityDraft = readRecordingQuality(message.recordingQuality); videoSecondsDraft = readRecordingSeconds(message.recordingSeconds); }
-            featureSettingsStatus.textContent = message.error ? `Could not save settings: ${message.error}` : 'Settings saved.';
-            featureSettingsSave.disabled = false;
-            for (const select of featureSettingsPanel.querySelectorAll('select')) {
-                if (select.dataset.appearance) { select.disabled = false; continue; }
-                if (select.dataset.field === 'recordingQuality') { select.value = videoQualityDraft; select.disabled = false; continue; }
-                if (select.dataset.field === 'recordingUnit') { select.value = lengthFields(videoSecondsDraft ?? 300).unit; select.disabled = false; continue; }
-                const choice = featureSettingsDraft[select.dataset.feature as AiFeature];
-                select.value = select.dataset.field === 'agent' ? choice.agent : choice.effort;
-                select.disabled = false;
-            }
-            for (const field of featureSettingsPanel.querySelectorAll<HTMLTextAreaElement>('textarea[data-feature]')) {
-                const feature = field.dataset.feature as AiFeature;
-                field.value = featureSettingsDraft[feature].prompt ?? defaultFeaturePrompts[feature]; field.disabled = false;
-            }
-            for (const reset of featureSettingsPanel.querySelectorAll<HTMLButtonElement>('.feature-prompt-reset')) { reset.disabled = false; }
-            for (const length of featureSettingsPanel.querySelectorAll<HTMLInputElement>('input[data-field="recordingSeconds"]')) {
-                length.value = String(lengthFields(videoSecondsDraft ?? 300).value); length.disabled = false; length.removeAttribute('aria-invalid');
-            }
+            // A change made while this save was on its way goes next; the fields keep what was typed.
+            if (featureSettingsAgain) { featureSettingsAgain = false; saveFeatureSettings(); return; }
+            if (featureSettingsTimer) { return; }
+            featureSettingsStatus.textContent = message.error ? `Could not save settings: ${message.error}` : 'Saved.';
             return;
 		case 'openSleep':
 			buildSleepPopup(); renderSleep(); openSleepPopup();
@@ -3306,14 +3339,19 @@ function fitStickyPrompts(): void {
 			: lineOf(content) * 4);
 		const scrolled = Math.max(0, top - turn.getBoundingClientRect().top);
 		const height = Math.max(min, full - scrolled);
-		prompt.classList.toggle('compact', height < full && height <= min + 0.5);
+		const compact = height < full && height <= min + 0.5;
+		prompt.classList.toggle('compact', compact);
 		if (height >= full) {
 			prompt.classList.remove('shrunk');
 			content.style.maxHeight = '';
+			content.scrollTop = 0;
 			turn.style.removeProperty('--prompt-room');
 		} else {
 			prompt.classList.add('shrunk');
 			content.style.maxHeight = `${height}px`;
+			// The text moves up as the chat scrolls, as it would unstuck: a prompt taller
+			// than the screen keeps its lower part readable. Compact, it shows its start.
+			content.scrollTop = compact ? 0 : scrolled;
 			turn.style.setProperty('--prompt-room', `${full - height}px`);
 		}
 	}
@@ -3885,6 +3923,7 @@ setInterval(() => {
 
 // CSS animates the shared liquid core without a JavaScript animation timer.
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+reducedMotion.addEventListener('change', () => { if (reducedMotion.matches) { stopComposerHeightAnimation(); } });
 
 /**
  * The empty chat: what AI Browser is, and what is new. Both come from NEWS.md
@@ -5321,10 +5360,34 @@ function tableCells(row: string): string[] {
 	return cells;
 }
 
+/** Fence languages whose block is a command line someone may want to run as it is. */
+const shellLangs = new Set(['bash', 'sh', 'shell', 'zsh', 'console', 'shellsession', 'fish', 'ksh', 'powershell', 'ps1', 'pwsh', 'cmd', 'bat', 'batch']);
+
 function codeBlock(code: string, lang: string): HTMLElement {
-	return el('div', { class: 'code-block' },
-		el('div', { class: 'code-head' }, el('span', { class: 'code-lang', text: lang || 'text' }), copyButton(() => code)),
-		el('pre', {}, el('code', { text: code })));
+	const head = el('div', { class: 'code-head' }, el('span', { class: 'code-lang', text: lang || 'text' }));
+	if (shellLangs.has(lang.toLowerCase()) && code.trim()) { head.append(runInTerminalButton(() => code)); }
+	head.append(copyButton(() => code));
+	return el('div', { class: 'code-block' }, head, el('pre', {}, el('code', { text: code })));
+}
+
+/** Left of a shell block's Copy: asks where — VS Code's own terminal or a terminal tab of the chat — and runs it there. */
+function runInTerminalButton(text: () => string): HTMLButtonElement {
+	const b = button([icon('terminal')], { class: 'copy-button run-button', title: 'Run in terminal' });
+	gateButton(b, 'runInTerminal');
+	b.addEventListener('click', event => {
+		event.stopPropagation();
+		if (b.getAttribute('aria-disabled') === 'true') { return; }
+		const items: MenuItem[] = [
+			{ icon: 'terminal', label: 'VS Code terminal', description: 'the active one, or a new one', run: () => post({ type: 'runInTerminal', text: text(), target: 'vscode' }) },
+		];
+		const running = (state?.terminals ?? []).filter(t => t.status === 'running');
+		running.forEach((t, i) => items.push({ icon: 'terminal-bash', label: t.name, description: 'chat terminal tab', separator: i === 0, run: () => post({ type: 'runInTerminal', text: text(), target: 'tab', id: t.id }) }));
+		if (state?.terminalSupport?.available) {
+			items.push({ icon: 'add', label: 'New chat terminal tab', separator: !running.length, run: () => post({ type: 'runInTerminal', text: text(), target: 'newTab' }) });
+		}
+		openMenu(b, items, 'Run in');
+	});
+	return b;
 }
 
 function table(rows: string[]): HTMLElement {
@@ -8200,6 +8263,8 @@ function renderWorkdir(s: ChatViewState): void {
 	}
 	const commit = w.commit;
 	const committing = commit?.phase === 'generating' || commit?.phase === 'committing';
+	// A failed commit is never pushed: Commit & Push must not open the Branches window later.
+	if (commit?.phase === 'error') { pushAfterCommit = false; }
 	const modelAvailable = s.agents.some(a => a.id === s.selection.agent && a.available);
 	commitButton.disabled = false;
 	renderGitChanges();
@@ -10129,7 +10194,6 @@ setInterval(renderSleep, 1000);
 let featureSettingsSaving = false;
 const featureSettingsStatus = el('div', { class: 'feature-settings-status' });
 featureSettingsStatus.setAttribute('role', 'status');
-const featureSettingsSave = button(['Save'], { class: 'feature-settings-save' });
 let featureSettingsDraft: FeatureAiSettings = readFeatureAiSettings(undefined);
 let videoQualityDraft: RecordingQuality = 'high';
 /** The maximum video length being edited, in seconds; `undefined` while what is typed is out of range. */
@@ -10579,9 +10643,9 @@ function createSoundSettings(): HTMLElement {
 function openFeatureSettings(initial?: 'openrouter'): void {
 	if (!state) { return; }
 	closePopups(featureSettingsPanel);
+	if (featureSettingsTimer) { clearTimeout(featureSettingsTimer); saveFeatureSettings(); }
 	if (!featureSettingsSaving) { featureSettingsDraft = readFeatureAiSettings(state.featureAi); videoQualityDraft = readRecordingQuality(state.recordingQuality); videoSecondsDraft = readRecordingSeconds(state.recordingSeconds); }
 	featureSettingsStatus.textContent = featureSettingsSaving ? 'Saving…' : '';
-	featureSettingsSave.disabled = featureSettingsSaving;
 	const close = button([icon('close')], { title: 'Close settings', class: 'ghost' });
 	close.setAttribute('aria-label', 'Close settings');
 	close.addEventListener('click', () => { closePopups(); input.focus(); });
@@ -10652,20 +10716,20 @@ function openFeatureSettings(initial?: 'openrouter'): void {
 	videoContent.id = 'video-quality-content'; videoContent.hidden = true;
 	videoContent.setAttribute('role', 'tabpanel'); videoContent.setAttribute('aria-labelledby', videoTab.id);
 	const quality = el('select'); quality.dataset.field = 'recordingQuality';
-	quality.setAttribute('aria-label', 'Video recording quality'); quality.disabled = featureSettingsSaving;
+	quality.setAttribute('aria-label', 'Video recording quality'); 
 	for (const key of ['balanced', 'high', 'maximum'] as const) {
 		const option = el('option', { text: recordingProfiles[key].label }); option.value = key; quality.append(option);
 	}
 	quality.value = videoQualityDraft;
-	quality.addEventListener('change', () => { videoQualityDraft = readRecordingQuality(quality.value); featureSettingsStatus.textContent = 'Unsaved changes.'; });
+	quality.addEventListener('change', () => { videoQualityDraft = readRecordingQuality(quality.value); scheduleFeatureSave(0); });
 	// The maximum length: a number and its unit, 10 s to 1 h. Out of range,
 	// Save is held back with the reason rather than quietly clamping.
 	const shown = lengthFields(videoSecondsDraft ?? 300);
 	const length = el('input'); length.type = 'number'; length.min = '1'; length.step = '1';
 	length.dataset.field = 'recordingSeconds'; length.value = String(shown.value);
-	length.setAttribute('aria-label', 'Maximum video length'); length.disabled = featureSettingsSaving;
+	length.setAttribute('aria-label', 'Maximum video length'); 
 	const unit = el('select'); unit.dataset.field = 'recordingUnit';
-	unit.setAttribute('aria-label', 'Maximum video length unit'); unit.disabled = featureSettingsSaving;
+	unit.setAttribute('aria-label', 'Maximum video length unit'); 
 	for (const [value, label] of [['s', 'seconds'], ['min', 'minutes']] as const) {
 		const option = el('option', { text: label }); option.value = value; unit.append(option);
 	}
@@ -10676,8 +10740,7 @@ function openFeatureSettings(initial?: 'openrouter'): void {
 		const inRange = seconds >= minRecordingSeconds && seconds <= maxRecordingSeconds;
 		videoSecondsDraft = inRange ? seconds : undefined;
 		length.setAttribute('aria-invalid', String(!inRange));
-		featureSettingsSave.disabled = featureSettingsSaving || !inRange;
-		featureSettingsStatus.textContent = inRange ? 'Unsaved changes.' : 'The maximum length is 10 seconds to 1 hour.';
+		if (inRange) { scheduleFeatureSave(700); } else { clearTimeout(featureSettingsTimer); featureSettingsStatus.textContent = 'The maximum length is 10 seconds to 1 hour.'; }
 	};
 	length.addEventListener('input', lengthChanged); unit.addEventListener('change', lengthChanged);
 	videoContent.append(el('div', { class: 'feature-settings-row' }, el('strong', { text: 'Video recording' }),
@@ -10705,7 +10768,7 @@ function openFeatureSettings(initial?: 'openrouter'): void {
 			agent.append(option);
 		}
 		agent.value = featureSettingsDraft[feature].agent;
-		agent.disabled = featureSettingsSaving;
+		
 		const effort = el('select');
 		effort.setAttribute('aria-label', `${labels[feature]} effort`);
 		effort.dataset.feature = feature;
@@ -10716,31 +10779,31 @@ function openFeatureSettings(initial?: 'openrouter'): void {
 			effort.append(option);
 		}
 		effort.value = featureSettingsDraft[feature].effort;
-		effort.disabled = featureSettingsSaving;
+		
 		agent.addEventListener('change', () => {
 			featureSettingsDraft = { ...featureSettingsDraft, [feature]: { ...featureSettingsDraft[feature], agent: agent.value as 'auto' | AgentId } };
-			featureSettingsStatus.textContent = 'Unsaved changes.';
+			scheduleFeatureSave(0);
 		});
 		effort.addEventListener('change', () => {
 			featureSettingsDraft = { ...featureSettingsDraft, [feature]: { ...featureSettingsDraft[feature], effort: effort.value as FeatureEffort } };
-			featureSettingsStatus.textContent = 'Unsaved changes.';
+			scheduleFeatureSave(0);
 		});
 		row.append(el('label', {}, el('span', { text: 'Agent' }), agent), el('label', {}, el('span', { text: 'Effort' }), effort));
 		const prompt = el('textarea', { class: 'feature-system-prompt' });
 		prompt.dataset.feature = feature; prompt.rows = 7; prompt.maxLength = featurePromptLimit;
 		prompt.setAttribute('aria-label', `${labels[feature]} system prompt`);
 		prompt.value = featureSettingsDraft[feature].prompt ?? defaultFeaturePrompts[feature];
-		prompt.disabled = featureSettingsSaving;
+		
 		prompt.addEventListener('input', () => {
 			featureSettingsDraft = { ...featureSettingsDraft, [feature]: { ...featureSettingsDraft[feature], prompt: prompt.value } };
-			featureSettingsStatus.textContent = 'Unsaved changes.';
+			scheduleFeatureSave(700);
 		});
 		const reset = button(['Restore default prompt'], { class: 'ghost feature-prompt-reset' });
-		reset.disabled = featureSettingsSaving;
+		
 		reset.addEventListener('click', () => {
 			const { prompt: _oldPrompt, ...choice } = featureSettingsDraft[feature];
 			featureSettingsDraft = { ...featureSettingsDraft, [feature]: choice };
-			prompt.value = defaultFeaturePrompts[feature]; featureSettingsStatus.textContent = 'Unsaved changes.';
+			prompt.value = defaultFeaturePrompts[feature]; scheduleFeatureSave(0);
 		});
 		row.append(el('label', { class: 'feature-prompt-field' }, el('span', { text: 'System prompt' }), prompt), reset);
 		content.append(row);
@@ -10755,7 +10818,6 @@ function openFeatureSettings(initial?: 'openrouter'): void {
 		temporaryTab.setAttribute('aria-selected', String(selected === 'temporary'));
 		serverContent.hidden = selected !== 'server'; serverTab.setAttribute('aria-selected', String(selected === 'server'));
 		appearanceContent.hidden = selected !== 'appearance'; appearanceTab.setAttribute('aria-selected', String(selected === 'appearance'));
-		featureSettingsSave.hidden = selected === 'temporary' || selected === 'server' || selected === 'appearance' || selected === 'openrouter' || selected === 'remote' || selected === 'sound';
 		featureSettingsStatus.hidden = selected === 'server' || selected === 'appearance' || selected === 'openrouter' || selected === 'remote' || selected === 'sound';
 	};
 	tab.addEventListener('click', () => selectTab('ai')); videoTab.addEventListener('click', () => selectTab('video'));
@@ -10766,7 +10828,7 @@ function openFeatureSettings(initial?: 'openrouter'): void {
 		if (!temporaryStorageBusy) { temporaryStorageBusy = true; renderTemporaryStorage(); post({ type: 'temporaryStorage', action: 'refresh' }); }
 	});
 	serverTab.addEventListener('click', () => selectTab('server'));
-	featureSettingsSave.hidden = false; featureSettingsStatus.hidden = false;
+	featureSettingsStatus.hidden = false;
 	appearanceTab.addEventListener('click', () => selectTab('appearance'));
 	openrouterTab.addEventListener('click', () => selectTab('openrouter'));
 	remoteTab.addEventListener('click', () => selectTab('remote'));
@@ -10783,20 +10845,26 @@ function openFeatureSettings(initial?: 'openrouter'): void {
 	featureSettingsPanel.replaceChildren(heading,
 		el('div', { class: 'feature-settings-layout' }, tabs,
 			el('div', { class: 'feature-settings-main' }, content, videoContent, temporaryContent, openrouterContent, remoteContent, soundContent, serverContent, appearanceContent,
-				el('div', { class: 'feature-settings-actions' }, featureSettingsStatus, featureSettingsSave))));
+				el('div', { class: 'feature-settings-actions' }, featureSettingsStatus))));
 	showScreenOverlay(featureSettingsPanel);
 	featureSettingsPanel.focus();
 	if (initial === 'openrouter' && !openrouterTab.hidden) { selectTab('openrouter'); }
 }
-featureSettingsSave.addEventListener('click', () => {
-	if (featureSettingsSaving) { return; }
-	if (videoSecondsDraft === undefined) { return; }
-	featureSettingsSaving = true;
-	featureSettingsSave.disabled = true;
-	for (const field of featureSettingsPanel.querySelectorAll<HTMLSelectElement | HTMLTextAreaElement | HTMLButtonElement | HTMLInputElement>('select, textarea, .feature-prompt-reset, input[data-field="recordingSeconds"]')) { if (!field.dataset.appearance) field.disabled = true; }
+/** Every choice in the AI features and Video recording tabs saves itself: selects at once, typed text after a pause. */
+let featureSettingsTimer: ReturnType<typeof setTimeout> | undefined;
+let featureSettingsAgain = false;
+function scheduleFeatureSave(delay: number): void {
+	clearTimeout(featureSettingsTimer);
 	featureSettingsStatus.textContent = 'Saving…';
+	featureSettingsTimer = setTimeout(saveFeatureSettings, delay);
+}
+function saveFeatureSettings(): void {
+	featureSettingsTimer = undefined;
+	if (videoSecondsDraft === undefined) { featureSettingsStatus.textContent = 'Not saved: the maximum video length must be 10 seconds to 1 hour.'; return; }
+	if (featureSettingsSaving) { featureSettingsAgain = true; return; }
+	featureSettingsSaving = true;
 	post({ type: 'saveFeatureAi', settings: featureSettingsDraft, recordingQuality: videoQualityDraft, recordingSeconds: videoSecondsDraft });
-});
+}
 featureSettingsPanel.addEventListener('keydown', event => {
 	if (event.key === 'Escape' && !event.isComposing) { event.stopPropagation(); closePopups(); input.focus(); }
 });

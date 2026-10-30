@@ -29,6 +29,13 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 - $(location) **Page markers** — pin notes to page elements and send them to the agent as one prompt.
 - $(settings-gear) **Chat Settings** — use the gear at the top to edit prompts for commit messages, branch names and chat titles, or clean up temporary files.
 
+## 0.9.7 — 2026-10-30
+- **Run a command from a reply** — shell code blocks have a terminal button beside Copy: run the block in VS Code's terminal or in a chat terminal tab.
+- **Commit all changes & Push** — one click in the Commit window commits, then pushes or publishes the branch.
+- **Settings save themselves** — AI features and Video recording have no Save button any more; every change is saved as you make it.
+- **Long messages read to the end** — a message taller than the screen scrolls through its whole text while it is pinned at the top of the chat.
+- **Finish sounds in background windows** — a sound that was skipped while the window had never been clicked now plays.
+
 ## 0.9.6 — 2026-10-29
 - **Quiet active chat** — the selected, visible conversation finishes silently by default while its VS Code or browser window is active. Background chats, inactive windows and conversations behind a terminal still play finish sounds when sound is enabled.
 - **Optional sound for the active chat** — enable **Play a sound for the active chat** in Chat Settings → Sound & notifications. Chrome and the website can override this setting per device.

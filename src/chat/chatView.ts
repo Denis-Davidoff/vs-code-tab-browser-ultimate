@@ -1588,7 +1588,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				await this._openGitDiff(message);
 				return;
 			case 'gitCommit':
-				await this._commitWorkdir(message.folder, message.tabId, message.scope);
+				await this._commitWorkdir(message.folder, message.tabId, message.scope, message.push === true);
 				return;
 			case 'fixGitCommit':
 			case 'dismissGitCommit':
@@ -1942,6 +1942,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				return;
 			case 'terminalInsert':
 				await this._insertIntoTerminal(message.id, message.kind, message.file);
+				return;
+			case 'runInTerminal':
+				await this._runInTerminal(message.text, message.target, message.id);
 				return;
 			case 'terminalToChat':
 				await this._terminalToChat(message.id, message.text);
@@ -4491,6 +4494,34 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 * in front: a chip like an editor selection's, and that conversation shown.
 	 * The text is a shell's output — data, as every attachment is.
 	 */
+	/** A shell code block from a reply, typed where the user picked and sent with Enter. The click is the consent. */
+	private async _runInTerminal(text: unknown, target: unknown, id: unknown): Promise<void> {
+		if (typeof text !== 'string' || !text.trim() || text.length > 990_000) { return; }
+		const blocked = this._blocked();
+		if (blocked) { refuse(blocked); return; }
+		// A reply's text: what the code block cannot show (ESC, C1, a lone CR) is not typed into a shell.
+		const command = sanitizePaste(text.replace(/\r\n/g, '\n').replace(/\r/g, ' ')).replace(/\r/g, '').replace(/\n+$/, '');
+		if (!command.trim()) { return; }
+		if (target === 'vscode') {
+			const terminal = vscode.window.activeTerminal ?? vscode.window.createTerminal({ name: 'AI Browser', cwd: this._active.cwd });
+			terminal.show(false);
+			terminal.sendText(command, true);
+			return;
+		}
+		let tab = target === 'tab' && typeof id === 'string' ? this._terminals.find(id) : undefined;
+		if (target === 'newTab') {
+			const before = new Set(this._terminals.tabs.map(t => t.id));
+			await this.newTerminal(undefined, undefined);
+			tab = this._terminals.tabs.find(t => !before.has(t.id));
+			if (!tab) { return; } // newTerminal already said why (the limit, no terminal support).
+		}
+		if (!tab) { refuse(vscode.l10n.t("That terminal tab is gone.")); return; }
+		this._terminals.select(tab.id);
+		this._post();
+		// Each line as typed, then Enter; a just-started shell gets a moment to print its prompt.
+		setTimeout(() => tab!.input(command.replace(/\n/g, '\r') + '\r'), target === 'newTab' ? 400 : 0);
+	}
+
 	private async _terminalToChat(id: string, text: unknown): Promise<void> {
 		const tab = this._terminals.find(id);
 		if (!tab || typeof text !== 'string' || this._blocked()) { return; }
@@ -5055,7 +5086,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 	private readonly _gitCommits = new Map<string, GitCommitJob>();
 
-	private async _commitWorkdir(folder: string, tabId: string, scope: 'staged' | 'all' = 'staged'): Promise<void> {
+	private async _commitWorkdir(folder: string, tabId: string, scope: 'staged' | 'all' = 'staged', push = false): Promise<void> {
 		const tab = this._tabs.find(t => t.id === tabId);
 		if (typeof folder !== 'string' || !tab || tab !== (this._chromeCommand?.getStore()?.tab ?? this._active) || this._workdir(tab) !== folder || !['staged', 'all'].includes(scope)) { return; }
 		const previous = this._gitCommits.get(folder)?.state.phase;
@@ -5067,6 +5098,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		this._gitCommits.set(folder, job);
 		this._post();
 		let release: (() => void) | undefined;
+		let committed = false;
 		const guard = () => {
 			job.controller.signal.throwIfAborted();
 			if (this._disposed || !this._tabs.includes(tab) || tab.chat.id !== job.chatId || this._workdir(tab) !== folder) {
@@ -5103,6 +5135,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				}, scope,
 			);
 			if (this._gitCommits.get(folder) === job) { this._gitCommits.delete(folder); }
+			committed = true;
 			if (!this._disposed) { timedInformation(`Committed ${result.hash}: ${result.message.split('\n')[0]}`); }
 		} catch (error) {
 			const detail = (error instanceof Error ? error.message : String(error)).slice(0, 6000);
@@ -5115,6 +5148,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				if (folder === this._workdir()) { await this._refreshWorkdirGit(); }
 			}
 		}
+		// Commit & Push: the Branches window's own push, after the lock is
+		// released — publish when the branch has no upstream yet. Its questions
+		// and errors come back as `gitRemoteResult`, which opens that window.
+		if (push && committed && !this._disposed && folder === this._workdir()) { await this._pushAfterCommit(folder); }
+	}
+
+	private async _pushAfterCommit(folder: string): Promise<void> {
+		const git = await gitBinary();
+		const upstream = git ? await this._runWorkdirGit(git, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'], folder).then(s => s.trim(), () => '') : '';
+		await this._gitRemoteAction({ type: 'gitRemoteAction', folder, action: upstream ? 'push' : 'publish' });
 	}
 
 	private async _answerCommit(message: Extract<ViewToHost, { type: 'fixGitCommit' | 'dismissGitCommit' }>): Promise<void> {

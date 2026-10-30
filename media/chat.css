@@ -1312,6 +1312,11 @@ button {
 	top: 2px;
 }
 
+/* Run in terminal sits left of Copy */
+.code-head .copy-button.run-button {
+	right: 30px;
+}
+
 /* the language in the same yellow as headings and list markers */
 .code-lang {
 	color: var(--vscode-charts-yellow, #cca700);
@@ -1600,6 +1605,20 @@ button {
 .composer:focus-within {
 	border-color: color-mix(in srgb, var(--accent) 70%, transparent);
 	box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent), 0 4px 16px 0 #0000000d;
+}
+
+/* Keep the input and toolbar anchored while a composer tab grows or collapses above them. */
+.composer.height-transition {
+	box-sizing: border-box;
+	overflow: clip;
+	justify-content: flex-end;
+}
+.composer.height-transition > * { flex-shrink: 0; }
+.composer.height-transition.height-moving {
+	transition: height 200ms linear, border-color .15s, box-shadow .15s;
+}
+@media (prefers-reduced-motion: reduce) {
+	.composer.height-transition.height-moving { transition: none; }
 }
 
 .attachments {

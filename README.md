@@ -105,6 +105,8 @@ For limits, settings and technical details, see [CLAUDE.md](CLAUDE.md#browser-vi
 
 ## 📝 Changelog
 
+**0.9.7** — Shell code blocks in replies can be run in VS Code's terminal or a chat terminal tab. The Commit window has **Commit all changes & Push**. Chat Settings save every change on their own, with no Save button. A message taller than the screen can be read to its end while pinned at the top, and finish sounds play in windows that were never clicked.
+
 **0.9.6** — The selected, visible chat finishes silently by default while its VS Code or browser window is active. Enable **Play a sound for the active chat** in Chat Settings → Sound & notifications to hear it too. Background chats and inactive windows still play finish sounds when sound is enabled; Chrome and the website can keep their own setting per device.
 
 **0.9.5** — Finish sounds (fifty, volume up to 200%, repeated up to five times) and system notifications when agents finish, also in Chrome and on the website. Chats load only their last turns, with earlier ones on scroll, so remote connections open faster. The website's message box stays visible above a phone keyboard.

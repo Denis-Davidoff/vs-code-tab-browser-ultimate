@@ -51,84 +51,61 @@ function harness() {
 		button: (children: (Element | string)[], props: { class?: string } = {}) => { const node = new Element('button'); node.className = props.class ?? ''; node.append(...children); return node; }, icon: () => new Element('i'),
 		gate: () => ({ s: 'on' }),
 		showScreenOverlay() {},
+		setTimeout: (f: () => void) => { f(); return undefined; }, clearTimeout() {},
+		featureSettingsTimer: undefined, featureSettingsAgain: false,
 		post(message: { settings: FeatureAiSettings; recordingQuality?: RecordingQuality }) { posts.push(message); }, message: {} as { settings?: FeatureAiSettings; recordingQuality?: RecordingQuality; error?: string },
 	};
 	const context = createContext(scope);
 	const execute = (code: string) => runInContext(transpileModule(code, { compilerOptions: { target: ScriptTarget.ES2022 } }).outputText, context);
 	const open = source.match(/function openFeatureSettings\([^)]*\): void \{[\s\S]*?\n\}/)?.[0];
-	const listener = source.match(/featureSettingsSave.addEventListener\('click', \(\) => \{[\s\S]*?\n\}\);/)?.[0];
-	const acknowledgement = source.split("case 'featureAiSaved':")[1]?.split('return;')[0];
+	const listener = source.match(/function scheduleFeatureSave[\s\S]*?function saveFeatureSettings\(\)[\s\S]*?\n\}/)?.[0]
+		?.replace(/^let .*$/gm, '');
+	const acknowledgement = source.split("case 'featureAiSaved':")[1]?.split("case 'openSleep':")[0];
 	assert.ok(open && listener && acknowledgement);
 	const lengthFields = source.match(/function lengthFields\([\s\S]*?\n\}/)?.[0];
 	assert.ok(lengthFields);
 	execute(lengthFields + '\n' + open + '\n' + listener);
 	return { scope, panel, save, status, posts, open: () => execute('openFeatureSettings();'),
-		ack(settings?: FeatureAiSettings, error?: string, recordingQuality?: RecordingQuality) { scope.message = { settings, error, recordingQuality }; execute(acknowledgement); } };
+		ack(settings?: FeatureAiSettings, error?: string, recordingQuality?: RecordingQuality) { scope.message = { settings, error, recordingQuality }; execute(`(() => {${acknowledgement}})()`); } };
 }
 
 for (const failed of [false, true]) {
-	test(`reopening during a ${failed ? 'failed' : 'successful'} save preserves choices and the next edit`, () => {
+	test(`a choice saves itself, and a ${failed ? 'failed' : 'successful'} save says so`, () => {
 		const ui = harness();
 		ui.open();
-		const proposed = readFeatureAiSettings({ commitMessage: { agent: 'claude', effort: 'maximum' } });
-		ui.scope.featureSettingsDraft = proposed;
-		ui.save.events.click();
-		ui.open(); // The old host state is still current while storage is pending.
-		let fields = ui.panel.querySelectorAll('select');
-		assert.equal(fields[0].value, 'claude');
-		assert.equal(fields[1].value, 'maximum');
-		assert.ok(fields.every(field => field.disabled));
+		const fields = ui.panel.querySelectorAll('select');
+		fields[0].value = 'claude'; fields[0].events.change();
+		assert.equal(ui.posts.length, 1);
+		assert.equal(ui.posts[0].settings.commitMessage.agent, 'claude');
 		assert.equal(ui.status.textContent, 'Saving…');
-		ui.ack(failed ? undefined : proposed, failed ? 'Storage unavailable' : undefined);
-		fields = ui.panel.querySelectorAll('select');
-		assert.equal(fields[0].value, 'claude');
-		assert.equal(fields[1].value, 'maximum');
-		assert.ok(fields.every(field => !field.disabled));
-		assert.match(ui.status.textContent, failed ? /Storage unavailable/ : /Settings saved/);
-		fields[2].value = 'codex';
-		fields[2].events.change();
-		ui.save.events.click();
-		assert.deepEqual(ui.posts[1].settings.commitMessage, proposed.commitMessage);
+		assert.ok(fields.every(field => !field.disabled), 'nothing is locked while it saves');
+		fields[2].value = 'codex'; fields[2].events.change(); // while the first is on its way
+		assert.equal(ui.posts.length, 1);
+		ui.ack(failed ? undefined : ui.posts[0].settings, failed ? 'Storage unavailable' : undefined);
+		assert.equal(ui.posts.length, 2, 'the change made meanwhile goes next');
+		assert.equal(ui.posts[1].settings.commitMessage.agent, 'claude');
 		assert.equal(ui.posts[1].settings.branchName.agent, 'codex');
+		ui.ack(failed ? undefined : ui.posts[1].settings, failed ? 'Storage unavailable' : undefined);
+		assert.match(ui.status.textContent, failed ? /Storage unavailable/ : /Saved/);
 	});
 }
 
-test('Appearance has its own settings section and does not show the AI Save action', () => {
- const ui = harness(); ui.open();
- const appearance = ui.panel.querySelectorAll('button').find(button => button.id === 'appearance-tab')!;
- appearance.events.click();
- assert.equal(ui.save.hidden, true);
- assert.equal(ui.status.hidden, true);
- const content = ui.panel.querySelectorAll('div').find(node => node.id === 'appearance-content')!;
- assert.equal(content.hidden, false);
- ui.panel.querySelectorAll('button').find(button => button.id === 'feature-ai-tab')!.events.click();
- assert.equal(content.hidden, true);
- assert.equal(ui.save.hidden, false);
-});
-
-test('save confirmation supplies authoritative choices without waiting for a state update', () => {
-	const ui = harness();
-	ui.open();
-	ui.save.events.click();
-	const saved = readFeatureAiSettings({ chatTitle: { agent: 'codex', effort: 'medium' } });
-	ui.ack(saved);
-	const fields = ui.panel.querySelectorAll('select');
-	assert.equal(fields[4].value, 'codex');
-	assert.equal(fields[5].value, 'medium');
-	assert.deepEqual(ui.scope.featureSettingsDraft, saved);
-});
-
-test('video quality shares the settings panel and saves without changing AI choices', () => {
+test('there is no Save button on any tab', () => {
 	const ui = harness(); ui.open();
-	const videoTab = ui.panel.querySelectorAll('button').find(button => button.id === 'video-quality-tab')!;
-	videoTab.events.click();
-	assert.equal(ui.panel.querySelectorAll('div').find(node => node.id === 'feature-ai-content')!.hidden, true);
+	ui.panel.querySelectorAll('button').find(button => button.id === 'appearance-tab')!.events.click();
+	assert.equal(ui.status.hidden, true);
+	ui.panel.querySelectorAll('button').find(button => button.id === 'feature-ai-tab')!.events.click();
+	assert.equal(ui.status.hidden, false);
+});
+
+test('video quality saves itself without changing AI choices', () => {
+	const ui = harness(); ui.open();
+	ui.panel.querySelectorAll('button').find(button => button.id === 'video-quality-tab')!.events.click();
 	assert.equal(ui.panel.querySelectorAll('div').find(node => node.id === 'video-quality-content')!.hidden, false);
 	const quality = ui.panel.querySelectorAll('select').find(field => field.dataset.field === 'recordingQuality')!;
-	assert.equal(quality.value, 'high'); quality.value = 'maximum'; quality.events.change(); ui.save.events.click();
+	assert.equal(quality.value, 'high'); quality.value = 'maximum'; quality.events.change();
 	assert.equal(ui.posts[0].recordingQuality, 'maximum');
-	ui.ack(ui.posts[0].settings, undefined, 'maximum');
-	assert.equal(quality.value, 'maximum'); assert.equal(quality.disabled, false);
+	assert.deepEqual(ui.posts[0].settings, readFeatureAiSettings(undefined));
 });
 
 test('temporary storage tab requests current accounting independently of AI settings saves', () => {
@@ -141,24 +118,18 @@ test('temporary storage tab requests current accounting independently of AI sett
  Object.assign(ui.scope, { temporaryStorageBusy: false, renderTemporaryStorage() {} });
  temporary.events.click();
  assert.deepEqual(JSON.parse(JSON.stringify(ui.posts[0])), { type: 'temporaryStorage', action: 'refresh' });
- assert.equal(ui.save.hidden, true);
- (tabs.children[0] as Element).events.click();
- assert.equal(ui.save.hidden, false);
 });
 
 
-test('custom system prompts survive save/reopen and can be restored independently', () => {
+test('custom system prompts save themselves and can be restored independently', () => {
  const ui = harness(); ui.open();
  const fields = ui.panel.querySelectorAll('textarea');
  assert.equal(fields.length, 3);
  assert.equal(fields[0].value, defaultFeaturePrompts.commitMessage);
  fields[0].value = 'Write a concise commit message in Russian.'; fields[0].events.input();
- ui.save.events.click();
- assert.ok(fields.every(field => field.disabled));
  assert.equal(ui.posts[0].settings.commitMessage.prompt, 'Write a concise commit message in Russian.');
  ui.ack(ui.posts[0].settings);
  assert.equal(fields[0].value, 'Write a concise commit message in Russian.');
- assert.ok(fields.every(field => !field.disabled));
  const resets = ui.panel.querySelectorAll('.feature-prompt-reset');
  resets[0].events.click();
  assert.equal(fields[0].value, defaultFeaturePrompts.commitMessage);
@@ -166,7 +137,7 @@ test('custom system prompts survive save/reopen and can be restored independentl
  assert.equal(fields[1].value, defaultFeaturePrompts.branchName);
 });
 
-test('the maximum video length is saved in seconds, and a length out of range holds Save back', () => {
+test('the maximum video length is saved in seconds, and a length out of range is not sent', () => {
 	const h = harness();
 	h.open();
 	const length = (function find(node: Element): Element | undefined {
@@ -177,12 +148,8 @@ test('the maximum video length is saved in seconds, and a length out of range ho
 	})(h.panel)!;
 	assert.equal(length.value, '5', 'five minutes by default');
 	length.value = '0.1'; length.events.input();
-	assert.equal(h.save.disabled, true);
 	assert.match(h.status.textContent, /10 seconds to 1 hour/);
-	h.save.events.click();
 	assert.equal(h.posts.length, 0, 'nothing out of range is sent');
 	length.value = '60'; length.events.input();
-	assert.equal(h.save.disabled, false);
-	h.save.events.click();
 	assert.equal((h.posts.at(-1) as { recordingSeconds?: number }).recordingSeconds, 3600);
 });
