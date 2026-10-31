@@ -879,15 +879,19 @@ export function codexCliCommand(folder: vscode.WorkspaceFolder | undefined, serv
  * attached. `configPath` therefore survives only so the prompt can *locate* the
  * entry in a sentence — never as an instruction to open it.
  */
-export function connectionPrompt(entryName: string, configPath: string, shared?: SharedPage): string {
+export function connectionPrompt(entryName: string, configPath: string, shared?: SharedPage, configKind: 'file' | 'environment' = 'file'): string {
 	const lines = [
-		`The MCP server is named \`${entryName}\` (it is already configured, in \`${configPath}\` —`
-		+ ' do not open or edit that file).',
+		configKind === 'environment'
+			? `The MCP server is named \`${entryName}\`. It is already configured in this terminal's environment. Do not add or edit any MCP configuration.`
+			: `The MCP server is named \`${entryName}\` (it is already configured, in \`${configPath}\` —`
+				+ ' do not open or edit that file).',
 		`Do you have that server's browser tools in this session?`
 		+ ' Their names end in `browser_state`, `browser_snapshot`, `browser_click` and so on,'
 		+ ' but your client prefixes them with the server name — so do not look for a bare'
 		+ ' `browser_` prefix. Call `browser_state` once to check; nothing else yet.',
-		`If you have none, they were simply not loaded at startup. The config is already written and correct, so just restart your session — do not add or edit any MCP configuration yourself.`,
+		configKind === 'environment'
+			? 'If you have none, ask the user to reconnect OpenCode from AI Browser → Connect your agent and paste this prompt into the terminal it opens. Do not add or edit any MCP configuration yourself.'
+			: `If you have none, they were simply not loaded at startup. The config is already written and correct, so just restart your session — do not add or edit any MCP configuration yourself.`,
 	];
 	if (shared) {
 		// Stated, not asked for: the paste is still a *check*, and the rule that
@@ -902,6 +906,67 @@ export function connectionPrompt(entryName: string, configPath: string, shared?:
 			+ ' not select another, and other tabs in the window are not yours to read.');
 	}
 	return lines.join('\n');
+}
+
+/** Pi and OpenRouter receive their tools from the chat, without an MCP config file. */
+export function chatConnectionPrompt(name: string, shared?: SharedPage): string {
+	return [
+		`You are ${name} in AI Browser Chat. Your browser tools are provided automatically by the chat. Do not add or edit any MCP configuration.`,
+		'Call the tool whose name ends in browser_state once to check the connection; nothing else yet. If it is unavailable, ask the user to check Chat Settings and start a new chat with this agent.',
+		...(shared ? [`The user has shared one browser tab with you: ${plainInPrompt(shared.title ?? shared.url)} (${shared.url}). Use only that tab.`] : []),
+		'After checking the connection, wait for the user’s request.',
+	].join('\n');
+}
+
+/** Any MCP client can use the HTTP endpoint, without a client-specific config writer. */
+export async function connectOtherAgent(server: McpServer): Promise<void> {
+	if (refuseRemoteWorkspace(undefined)) { return; }
+	const action = await vscode.window.showQuickPick([
+		{ label: vscode.l10n.t("$(copy) Copy MCP connection settings"), id: 'config',
+			detail: vscode.l10n.t("Streamable HTTP URL and Authorization header for your agent's MCP settings") },
+		{ label: vscode.l10n.t("$(comment-discussion) Copy connection check prompt"), id: 'prompt',
+			detail: vscode.l10n.t("After adding the server, restart your agent and paste this prompt") },
+	], { title: vscode.l10n.t("Other agents — connect MCP"), ignoreFocusOut: true });
+	if (!action) { return; }
+	if (action.id === 'config') {
+		await vscode.env.clipboard.writeText(JSON.stringify({ mcpServers: {
+			[serverName]: { type: 'http', url: server.url, headers: { Authorization: `Bearer ${server.token}` } },
+		} }, null, 2));
+		await askToPaste(vscode.l10n.t("MCP connection settings copied."), vscode.l10n.t(
+			"Add ai-browser to your agent's MCP settings using Streamable HTTP, the URL and the Authorization header from the copied JSON. Configuration formats vary by agent. Restart the agent, then use Connect MCP again to copy the check prompt. Use Share Tab to give it this browser tab."));
+	} else {
+		await vscode.env.clipboard.writeText(connectionPrompt(serverName, "your agent's MCP settings"));
+		await askToPaste(vscode.l10n.t("Paste the check prompt into your agent."), vscode.l10n.t(
+			"The prompt is on your clipboard. Add the MCP connection settings and restart your agent first."));
+	}
+}
+
+/** Launch with a process-local config so existing JSON/JSONC settings stay intact. */
+export async function connectOpenCode(server: McpServer, shared?: SharedPage): Promise<void> {
+	if (refuseRemoteWorkspace(shared)) { return; }
+	try {
+		const binary = (await chooseAgentBinary('opencode')).chosen;
+		if (!binary) {
+			refuse(vscode.l10n.t("Install OpenCode, then connect again.") + scopeNote(shared));
+			return;
+		}
+		const entry = { type: 'remote', url: server.url, oauth: false, headers: { Authorization: `Bearer ${server.token}` } };
+		// OpenCode 2 uses mcp.servers; 1.x stores entries directly under mcp.
+		const v2 = Number(binary.version?.match(/(?:^|\s)v?(\d+)\./)?.[1]) >= 2;
+		const mcp = v2 ? { servers: { [serverName]: { ...entry, codemode: false } } }
+			: { [serverName]: { ...entry, enabled: true } };
+		const folder = workspaceFolder();
+		const terminal = vscode.window.createTerminal({
+			name: 'OpenCode · AI Browser', shellPath: binary.path,
+			cwd: folder?.uri.scheme === 'file' ? folder.uri.fsPath : os.homedir(),
+			env: { OPENCODE_CONFIG_CONTENT: JSON.stringify({ mcp }) },
+		});
+		await vscode.env.clipboard.writeText(connectionPrompt(serverName, '', shared, 'environment'));
+		terminal.show();
+		confirm(vscode.l10n.t("OpenCode terminal opened with browser tools. Paste the copied check prompt there.") + scopeNote(shared));
+	} catch (error) {
+		refuse(vscode.l10n.t("Could not connect OpenCode: {0}", error instanceof Error ? error.message : String(error)) + scopeNote(shared));
+	}
 }
 
 /**

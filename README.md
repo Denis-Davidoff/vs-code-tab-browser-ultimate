@@ -105,6 +105,8 @@ For limits, settings and technical details, see [CLAUDE.md](CLAUDE.md#browser-vi
 
 ## 📝 Changelog
 
+**0.9.15** — The composer's History tab lists each message's attachments, generated content and changed files, with links back to the chat or recorded diffs. Background agents appear by name beneath a finished reply, with links to their cards. Connection options now include OpenCode, Pi, OpenRouter and other MCP clients. The message counter updates as you scroll through replies, and inline cards use less space.
+
 **0.9.14** — Create and manage chats, browse history, control agents and use terminal tabs directly from paired local Chrome. In VS Code, **Chat Settings → Connections & permissions** lets you restrict Chrome and Exchange separately, including project file access and terminal controls. Files and folders attached from Chrome now show their draft badges there. An internal session-state prototype adds snapshots and ordered replay for future architecture work; it is not a standalone session server.
 
 **0.9.13** — Agents can display images with Expand/Collapse controls, downloadable files, searchable and sortable tables with pagination, audio and video players, and source cards. Artifacts are saved with the conversation and available in VS Code, Chrome and Exchange. In VS Code, source titles open in AI Browser, with explicit buttons to choose AI Browser or the system browser.

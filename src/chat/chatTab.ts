@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { AttachmentReferenceScope, attachmentContext, attachmentReference } from './attachmentReferences';
+import { toolChangedFiles } from './messageFiles';
 import { realpathSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -1506,7 +1507,7 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 				this._textBreak = true;
 				chat.entries.push({
 					kind: 'tool', id: event.id, tool: event.tool.kind, name: event.tool.name, detail: event.tool.detail, input: event.tool.input,
-					added: event.tool.added, removed: event.tool.removed, status: 'running', startedAt: Date.now(),
+					added: event.tool.added, removed: event.tool.removed, files: event.tool.files, status: 'running', startedAt: Date.now(),
 					agent: event.tool.kind === 'agent' ? { ...event.tool.agent, calls: [] } : undefined,
 				});
 				break;
@@ -1581,6 +1582,7 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 				if (u.input !== undefined) {
 					entry.input = u.input;
 				}
+				if (u.files !== undefined) { entry.files = u.files; }
 				if (u.added !== undefined) {
 					entry.added = u.added;
 				}
@@ -1596,6 +1598,10 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 				if (u.status) {
 					entry.status = u.status;
 					entry.endedAt = Date.now();
+					if (u.status === 'done' && !entry.files?.length) {
+						const files = toolChangedFiles(entry);
+						if (files.length) { entry.files = files; }
+					}
 				}
 				break;
 			}

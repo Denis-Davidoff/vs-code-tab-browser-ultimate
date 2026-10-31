@@ -80,3 +80,14 @@ test('an Exchange send keeps Exchange permissions when Chrome messaging is disab
  await f.send({type:'send',text:'From Exchange'});
  assert.equal(f.events.find((event:any)=>event.sent)?.tabId,f.remote.id);
 });
+
+test('connecting a specific agent skips an empty chat belonging to another agent',async()=>{
+ const f=fixture('server');f.native.started=false;
+ await f.view.newChat('here','pi');
+ assert.equal(f.view._frontActive.chat.agent,'pi');
+ assert.equal(f.native.chat.agent,'codex');
+ const count=f.view._tabs.length;
+ await f.view.newChat('here','pi');
+ assert.equal(f.view._tabs.length,count,'reuse the empty chat for the requested agent');
+ assert.equal(f.view._frontActive.chat.agent,'pi');
+});

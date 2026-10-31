@@ -116,5 +116,7 @@
 	"configuration.chat.sound.volume.description": "Volume of that sound, 0 to 200; above 100 is louder than full volume used to be.",
 	"configuration.chat.notifications.enabled.description": "Show a system notification (macOS Notification Center, Windows, Linux `notify-send`) when an agent in the AI Browser chat finishes. Chrome and the website show the browser's own.",
 	"configuration.chat.notifications.onlyWhenAway.description": "Only notify while the VS Code window (or the Chrome or website page) is not focused.",
-	"config.chat.visibleTurns.description": "How many of your messages, with the agents' replies to them, a chat shows at first in VS Code, the Chrome side panel and on the website. Earlier ones load when you scroll to the top or press \"Show earlier messages\" (this many more each time), and are dropped again after a minute at the end of the chat. Fewer means less memory and a faster remote connection."
+	"config.chat.visibleTurns.description": "How many of your messages, with the agents' replies to them, a chat shows at first in VS Code, the Chrome side panel and on the website. Earlier ones load when you scroll to the top or press \"Show earlier messages\" (this many more each time), and are dropped again after a minute at the end of the chat. Fewer means less memory and a faster remote connection.",
+	"command.connectOtherAgent.title": "Connect MCP",
+	"submenu.otherAgentsMenu.label": "Other agents"
 }

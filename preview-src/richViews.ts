@@ -79,9 +79,12 @@ export function updateRichEntry(element: HTMLElement, entry: Extract<ChatEntry, 
 function richBody(element: HTMLElement, entry: Extract<ChatEntry, { kind: 'notice' | 'progress' | 'plan' }>): HTMLElement[] {
 	const parts: HTMLElement[] = [];
 	if (entry.kind === 'notice') {
-		const header = node('div', undefined, 'rich-header'); header.append(node('strong', (entry.level ?? 'info').toUpperCase()));
-		if (entry.at !== undefined) { const time = node('time', new Date(entry.at).toLocaleTimeString()); time.dateTime = new Date(entry.at).toISOString(); header.append(time); }
-		parts.push(header, node('div', entry.text, 'rich-text'));
+		if (entry.at !== undefined) {
+			const header = node('div', undefined, 'rich-header');
+			const time = node('time', new Date(entry.at).toLocaleTimeString()); time.dateTime = new Date(entry.at).toISOString(); header.append(time);
+			parts.push(header);
+		}
+		parts.push(node('div', entry.text, 'rich-text'));
 		if (entry.reason) { parts.push(node('p', entry.reason, 'rich-reason')); }
 	} else if (entry.kind === 'progress') {
 		const header = node('div', undefined, 'rich-header'); header.append(node('strong', entry.title), node('span', entry.status ?? 'running'), elapsed(element, entry.startedAt, entry.endedAt));

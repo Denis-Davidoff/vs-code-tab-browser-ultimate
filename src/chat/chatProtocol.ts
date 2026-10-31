@@ -278,6 +278,13 @@ export interface AgentInfo {
 	waiting?: { readonly id: string; readonly title: string; readonly detail?: string };
 }
 
+export interface ChangedFile {
+	readonly path: string;
+	readonly status: 'created' | 'modified' | 'deleted';
+	readonly added?: number;
+	readonly removed?: number;
+}
+
 export interface ToolEntry {
 	readonly kind: 'tool';
 	readonly id: string;
@@ -292,6 +299,8 @@ export interface ToolEntry {
 	exitCode?: number;
 	added?: number;
 	removed?: number;
+	/** File operations reported by this tool, retained in chat history. */
+	files?: readonly ChangedFile[];
 	readonly startedAt: number;
 	endedAt?: number;
 	/** Present on agent rows (`tool: 'agent'`). */

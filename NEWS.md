@@ -29,6 +29,14 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 - $(location) **Page markers** — pin notes to page elements and send them to the agent as one prompt.
 - $(settings-gear) **Chat Settings** — use the gear at the top to edit prompts for commit messages, branch names and chat titles, or clean up temporary files.
 
+## 0.9.15 — 2026-10-31
+
+- **More detail in message history** — the composer's History tab lists attachments, generated images, visualizations and other content beneath each message. Click to reveal them in the chat.
+- **Changed files per message** — see successful file operations and line counts in History; open recorded diffs where available or jump to the file operation in the chat.
+- **Named background agents** — agents still running after a reply appear by name beneath it; click one to open its card.
+- **More connection options** — connect OpenCode in a terminal, open Pi or OpenRouter in chat, or copy MCP connection settings and a check prompt for another client.
+- **Chat layout and scrolling** — inline cards have tighter spacing, and the new-message counter updates as you reach replies, including after content or viewport resizing.
+
 ## 0.9.14 — 2026-10-31
 
 - **More chat actions in Chrome** — create, rename and close chats, browse history, manage queued messages and agents, and change approval modes directly from the paired local side panel. Opening a chat keeps Chrome on the resulting conversation without changing the editor's selected tab.

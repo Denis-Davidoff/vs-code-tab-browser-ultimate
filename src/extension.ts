@@ -25,7 +25,7 @@ import { recordingQualityKey, readRecordingQuality } from './browser/recordingQu
 import { ChatViewProvider, chatBlocked, chatBlockedContextKey, chatUnsupportedContextKey, chatViewId, supportsSecondarySidebar } from './chat/chatView';
 import { McpLifecycle } from './mcp/mcpLifecycle';
 import { ChatControlPort } from './mcp/chatTools';
-import { connectClaudeCode, connectCodex, connectGemini, openGeminiHere, type SharedPage } from './mcp/mcpSetup';
+import { chatConnectionPrompt, connectClaudeCode, connectCodex, connectGemini, connectOpenCode, connectOtherAgent, openGeminiHere, type SharedPage } from './mcp/mcpSetup';
 import { everyone, forKind, isShareTarget, targetName, type ShareTarget } from './browser/shareRegistry';
 import { checkConnection } from './mcp/mcpCheck';
 import { copyScreenshot } from './browser/screenshot';
@@ -394,6 +394,11 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(vscode.commands.registerCommand(connectGeminiCommand,
 		() => mcp.withServer(async server =>
 			connectGemini(server, await giveFocusedTab(forKind('gemini'))))));
+	context.subscriptions.push(vscode.commands.registerCommand('aiBrowser.connectOpenCode',
+		() => mcp.withServer(async server =>
+			connectOpenCode(server, await giveFocusedTab(forKind('opencode'))))));
+	context.subscriptions.push(vscode.commands.registerCommand('aiBrowser.connectOtherAgent',
+		() => mcp.withServer(server => connectOtherAgent(server))));
 	context.subscriptions.push(vscode.commands.registerCommand(checkMcpCommand,
 		() => mcp.withServer(server => checkConnection(server, browser))));
 
@@ -728,6 +733,17 @@ export function activate(context: vscode.ExtensionContext) {
 			const where = location === 'here' || location === 'tab' || location === 'window' ? location : undefined;
 			if (where !== 'tab' && where !== 'window') { await revealChat(); }
 			await chat.newChat(where);
+		}),
+		vscode.commands.registerCommand('aiBrowser.connectChatAgent', async (agent?: unknown) => {
+			if (agent !== 'pi' && agent !== 'openrouter') { return; }
+			await mcp.withServer(async () => {
+				const shared = await giveFocusedTab(forKind(agent));
+				const name = agent === 'pi' ? 'Pi' : 'OpenRouter';
+				await vscode.env.clipboard.writeText(chatConnectionPrompt(name, shared));
+				await revealChat();
+				await chat.newChat('here', agent);
+				confirm(vscode.l10n.t("{0} chat opened. Paste the copied prompt to check its browser tools.", name));
+			});
 		}),
 		// A shell in a tab of the chat view, in the folder of the conversation in
 		// front. The view is revealed first, so the tab shows where the user looks.

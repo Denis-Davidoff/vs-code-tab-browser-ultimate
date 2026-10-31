@@ -28,7 +28,7 @@ import type { NoticeData, ProgressData, PlanData, ResultData, ResultBlock, JsonV
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import type { AgentInfo, AgentQuestion, AgentUsage, ApprovalKind, ChatCommand, ChatModel, CommandGroup, QuestionAnswers, ToolKind, UsageWindow } from './chatProtocol';
+import type { AgentInfo, AgentQuestion, AgentUsage, ApprovalKind, ChangedFile, ChatCommand, ChatModel, CommandGroup, QuestionAnswers, ToolKind, UsageWindow } from './chatProtocol';
 
 /* --------------------------------------------------------------- framing */
 
@@ -528,6 +528,7 @@ export function codexUsage(response: unknown, plan?: string, named?: boolean): A
 
 /** A tool call as the chat renders it, whichever agent made it. */
 export interface ToolStart {
+	readonly files?: readonly ChangedFile[];
 	readonly kind: ToolKind;
 	/** The tool's own name: `Bash`, `Read`, `Terminal`, `ai-browser · browser_click`. */
 	readonly name: string;
@@ -541,6 +542,7 @@ export interface ToolStart {
 }
 
 export interface ToolUpdate {
+	readonly files?: readonly ChangedFile[];
 	readonly blocks?: readonly ResultBlock[];
 	readonly output?: string;
 	/** `output` continues what is there rather than replacing it — a streamed command. */
@@ -1353,10 +1355,31 @@ function commandSummary(actions: unknown): string | undefined {
 	return parts.every(Boolean) ? parts.join(', ') : undefined;
 }
 
-function diffOf(changes: Record<string, unknown>[]): { input?: string; added?: number; removed?: number } {
-	const diffs = changes.map(changeDiff).filter(Boolean);
+function diffOf(changes: Record<string, unknown>[]): { input?: string; added?: number; removed?: number; files: ChangedFile[] } {
+	const files: ChangedFile[] = changes.flatMap(change => {
+		if (typeof change.path !== 'string' || !change.path) { return []; }
+		const diff = changeDiff(change);
+		const lines = diff.split('\n');
+		const counts = typeof change.diff === 'string' ? {
+			added: lines.filter(l => l.startsWith('+') && !l.startsWith('+++')).length,
+			removed: lines.filter(l => l.startsWith('-') && !l.startsWith('---')).length,
+		} : {};
+		const kind = isRecord(change.kind) ? change.kind.type : change.kind;
+		const move = isRecord(change.kind) ? change.kind.move_path : undefined;
+		if (typeof move === 'string' && move && move !== change.path) {
+			return [{ path: change.path, status: 'deleted' }, { path: move, status: 'created', ...counts }];
+		}
+		return [{ path: change.path, status: kind === 'add' ? 'created' : kind === 'delete' ? 'deleted' : 'modified', ...counts }];
+	});
+	const diffs = changes.map(change => {
+		const diff = changeDiff(change);
+		// Keep file boundaries when one tool edits several files. The raw Codex
+		// hunks otherwise lose their paths when concatenated into the transcript.
+		return diff && changes.length > 1 && typeof change.path === 'string'
+			? `--- ${change.path}\n+++ ${change.path}\n${diff}` : diff;
+	}).filter(Boolean);
 	if (!diffs.length) {
-		return {};
+		return { files };
 	}
 	let added = 0;
 	let removed = 0;
@@ -1367,7 +1390,7 @@ function diffOf(changes: Record<string, unknown>[]): { input?: string; added?: n
 			removed++;
 		}
 	}
-	return { input: clip(diffs.join('\n')), added, removed };
+	return { input: clip(diffs.join('\n')), added, removed, files };
 }
 
 /**
@@ -2337,8 +2360,9 @@ function geminiText(call: Record<string, unknown>): string {
  * and the rest is one hunk: enough for the card's counts and its first lines,
  * and for `diffSides` to rebuild the two halves of the change.
  */
-function geminiDiff(call: Record<string, unknown>): { input?: string; added?: number; removed?: number } {
+function geminiDiff(call: Record<string, unknown>): { input?: string; added?: number; removed?: number; files?: ChangedFile[] } {
 	const diffs: string[] = [];
+	const files: ChangedFile[] = [];
 	let added = 0;
 	let removed = 0;
 	for (const item of Array.isArray(call.content) ? call.content : []) {
@@ -2360,13 +2384,18 @@ function geminiDiff(call: Record<string, unknown>): { input?: string; added?: nu
 		removed += gone.length;
 		added += come.length;
 		const file = typeof item.path === 'string' ? item.path : '';
+		if (file) {
+			const deleted = call.kind === 'delete' || (isRecord(item._meta) && item._meta.kind === 'delete');
+			const created = item.oldText === null || (isRecord(item._meta) && item._meta.kind === 'add');
+			files.push({ path: file, status: deleted ? 'deleted' : created ? 'created' : 'modified', added: come.length, removed: gone.length });
+		}
 		diffs.push([
 			`--- ${file}`, `+++ ${file}`,
 			`@@ -${start + 1},${gone.length} +${start + 1},${come.length} @@`,
 			...gone.map(line => `-${line}`), ...come.map(line => `+${line}`),
 		].join('\n'));
 	}
-	return diffs.length ? { input: clip(diffs.join('\n')), added, removed } : {};
+	return diffs.length ? { input: clip(diffs.join('\n')), added, removed, ...(files.length ? { files } : {}) } : {};
 }
 
 /** A Gemini tool call as the chat's row. */
@@ -2386,7 +2415,8 @@ function geminiTool(call: Record<string, unknown>): ToolStart {
 		case 'edit':
 		case 'delete':
 		case 'move':
-			return { kind: 'edit', name: 'Edit', detail: paths.length === 1 ? paths[0] : paths.length ? `${paths.length} files` : title || undefined, ...geminiDiff(call) };
+			return { kind: 'edit', name: 'Edit', detail: paths.length === 1 ? paths[0] : paths.length ? `${paths.length} files` : title || undefined, ...geminiDiff(call),
+				...(call.kind === 'delete' ? { files: paths.map(path => ({ path, status: 'deleted' as const })) } : {}) };
 		case 'search':
 			return { kind: 'search', name: 'Search', detail: title ? oneLine(title) : undefined };
 		case 'fetch':

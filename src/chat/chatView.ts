@@ -7414,15 +7414,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	/** The title-bar command asks for a location; the tab-strip plus opens here directly. */
-	public async newChat(location?: 'here' | 'tab' | 'window'): Promise<void> {
+	public async newChat(location?: 'here' | 'tab' | 'window', requestedAgent?: AgentId): Promise<void> {
 		if (location === undefined) {
 			this._postMessage({ type: 'chooseNewChatLocation' });
 			return;
 		}
-		const agent = this._remembered.agent ?? this._selection().agent ?? 'claude';
+		const agent = requestedAgent ?? this._remembered.agent ?? this._selection().agent ?? 'claude';
 		if (location === 'here') {
 			// Reuse a conversation with no sent messages instead of accumulating empty tabs.
-			const empty = this._tabs.find(tab => !tab.started);
+			const empty = this._tabs.find(tab => !tab.started && (!requestedAgent || tab.chat.agent === requestedAgent));
 			if (empty) {
 				this._selectTab(empty.id);
 				this._postMessage({ type: 'flashTab', id: empty.id });

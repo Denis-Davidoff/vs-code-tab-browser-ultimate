@@ -359,7 +359,8 @@ function toolRow(call: Record<string, unknown>): ToolStart {
 		case 'edit':
 		case 'delete':
 		case 'move':
-			return { kind: 'edit', name: 'Edit', detail: file ?? (title || undefined), ...editDiff(call) };
+			return { kind: 'edit', name: 'Edit', detail: file ?? (title || undefined), ...editDiff(call),
+				...(call.kind === 'delete' ? { files: paths(call).map(path => ({ path, status: 'deleted' as const })) } : {}) };
 		case 'search':
 			return { kind: 'search', name: 'Search', detail: typeof input.pattern === 'string' ? oneLine(input.pattern) : title ? oneLine(title) : undefined };
 		case 'fetch':

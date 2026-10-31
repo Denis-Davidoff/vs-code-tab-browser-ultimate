@@ -11,6 +11,8 @@ import { presentationMarkers } from '../src/chat/visualizationProtocol';
 import { updateVisualizationViews } from './visualizationViews';
 import { installChatSelectionCopy } from './chatSelection';
 import { historyPeriodRange, type HistoryPeriod } from './historyPeriod';
+import { messageFileDiff, messageFileLabel, messageFiles } from '../src/chat/messageFiles';
+import { messageContent, type MessageContent, type MessageContentKind } from '../src/chat/messageContent';
 import { fileGridNeighbor, type FileArrow } from './fileNavigation';
 import { composerLinks, composerListEdit, composerListItem, composerListStarter, type ComposerEdit } from './composerFormatting';
 import { attachmentMarker, readAttachmentMarkers, selectedAttachmentMarkers } from './attachmentMarkers';
@@ -960,16 +962,17 @@ function renderComposerAccess(s: ChatViewState): void {
 /** The user's own messages in this chat, newest first; a click scrolls the thread to one. */
 function renderComposerHistory(): void {
 	if (composerTab !== 'history') { return; }
-	const prompts: { index: number; text: string; at?: number; answer?: number }[] = [];
+	const prompts: { index: number; text: string; at?: number; answer?: number; rows: readonly number[]; files: ReturnType<typeof messageFiles>; content: MessageContent[] }[] = [];
 	const entries = state?.entries ?? [];
 	for (const turn of turnsOf(entries)) {
 		const e = entries[turn.prompt];
 		if (e?.kind !== 'user') { continue; }
-		prompts.push({ index: turn.prompt, text: e.text.trim() || e.attachments.join(', ') || '(empty message)', at: e.at, answer: answerStart(entries, turn.rows) });
+		prompts.push({ index: turn.prompt, text: e.text.trim() || e.attachments.join(', ') || '(empty message)', at: e.at, answer: answerStart(entries, turn.rows), rows: turn.rows, files: messageFiles(entries, turn.rows), content: messageContent(entries, [turn.prompt, ...turn.rows]) });
 	}
 	prompts.reverse();
 	const earlier = state?.entriesOffset ?? 0;
-	const shape = JSON.stringify([state?.chatId ?? '', earlier, prompts.map(p => [p.index, p.text, p.at, p.answer])]);
+	const root = state?.workdir.current?.path;
+	const shape = JSON.stringify([state?.chatId ?? '', root, earlier, prompts]);
 	if (shape === composerHistoryShape) { return; }
 	composerHistoryShape = shape;
 	composerHistoryList.replaceChildren();
@@ -983,11 +986,55 @@ function renderComposerHistory(): void {
 			p.at ? [el('span', { text: ago(p.at) })] : [],
 			icon('arrow-up', 'cl-chevron')), { class: 'cl-row', title: p.text.slice(0, 1000) });
 		row.addEventListener('click', () => scrollToPrompt(p.index));
-		if (p.answer === undefined) { composerHistoryList.append(row); continue; }
-		const answer = button([icon('arrow-down'), el('span', { text: 'Answer' })], { class: 'cl-answer', title: 'Scroll to the reply to this message' });
-		const at = p.answer;
-		answer.addEventListener('click', () => scrollToEntry(at));
-		composerHistoryList.append(el('div', { class: 'cl-row-pair' }, row, answer));
+		const group = el('div', { class: 'cl-history-message' });
+		const pair = el('div', { class: 'cl-row-pair' }, row);
+		if (p.answer !== undefined) {
+			const answer = button([icon('arrow-down'), el('span', { text: 'Answer' })], { class: 'cl-answer', title: 'Scroll to the reply to this message' });
+			const at = p.answer;
+			answer.addEventListener('click', () => scrollToEntry(at));
+			pair.append(answer);
+		}
+		group.append(pair);
+		if (p.content.length) {
+			const content = el('ul', { class: 'cl-history-content' });
+			const kinds: Record<MessageContentKind, { icon: string; label: string }> = {
+				visualization: { icon: 'graph', label: 'Visualization' }, image: { icon: 'file-media', label: 'Image' },
+				video: { icon: 'device-camera-video', label: 'Video' }, audio: { icon: 'unmute', label: 'Audio' },
+				table: { icon: 'table', label: 'Table' }, sources: { icon: 'references', label: 'Sources' },
+				file: { icon: 'file', label: 'File' }, json: { icon: 'json', label: 'JSON' }, link: { icon: 'link', label: 'Link' },
+			};
+			for (const item of p.content) {
+				const kind = kinds[item.kind];
+				const link = button([icon(kind.icon), el('span', { class: 'cl-content-kind', text: kind.label }),
+					el('span', { class: 'cl-content-title', text: item.title })], {
+					class: 'cl-history-content-link', title: `${kind.label}: ${item.title}\nShow in chat`,
+				});
+				link.addEventListener('click', () => revealHistoryContent(item));
+				content.append(el('li', {}, link));
+			}
+			group.append(content);
+		}
+		if (p.files.length) {
+			const files = el('ul', { class: 'cl-history-files' });
+			for (const file of p.files) {
+				const label = messageFileLabel(file.path, root);
+				const diff = messageFileDiff(entries, p.rows, file.path);
+				const mark = file.status === 'created' ? 'A' : file.status === 'deleted' ? 'D' : 'M';
+				const link = button([
+					el('span', { class: `cl-file-status ${file.status}`, text: mark }),
+					el('span', { class: 'cl-file-path', text: label }),
+					file.added !== undefined ? el('span', { class: 'added', text: `+${file.added}` }) : '',
+					file.removed !== undefined ? el('span', { class: 'removed', text: `−${file.removed}` }) : '',
+				], { class: 'cl-history-file', title: `${file.status}: ${label}\n${diff ? 'Open diff' : 'Show file operation in chat'}` });
+				link.addEventListener('click', () => {
+					if (diff) { post({ type: 'openDiff', name: label, diff }); }
+					else { richActions.reveal({ toolId: entries[file.entry]?.id }); }
+				});
+				files.append(el('li', {}, link));
+			}
+			group.append(files);
+		}
+		composerHistoryList.append(group);
 	}
 	if (earlier) {
 		// Only the last turns are loaded (`windowEntries`); the rest come on request, as from the top of the thread.
@@ -1659,6 +1706,24 @@ function scrollToEntry(index: number): void {
 	node.classList.add('turn-flash');
 	setTimeout(() => node.classList.remove('turn-flash'), 1200);
 }
+
+function revealHistoryContent(item: MessageContent): void {
+	if (!state) { return; }
+	const turn = turnsOf(state.entries).find(t => t.prompt === item.entry || t.rows.includes(item.entry));
+	if (turn) { toggled.set(turnKey(turn), true); }
+	const entry = state.entries[item.entry];
+	if (entry?.kind === 'tool') { toggled.set(`tool:${entry.id}`, true); }
+	render();
+	const node = rendered[item.entry]?.node;
+	if (!node) { return; }
+	const block = item.block === undefined ? node : node.querySelector<HTMLElement>(`[data-block="${item.block}"]`) ?? node;
+	const target = item.referenceAt !== undefined ? block.querySelector<HTMLElement>(`[data-presentation-at="${item.referenceAt}"]`)
+		: item.attachmentId ? [...node.querySelectorAll<HTMLElement>('[data-attachment-id]')].find(el => el.dataset.attachmentId === item.attachmentId) : block;
+	const visible = target ?? block;
+	visible.scrollIntoView({ block: 'center', behavior: reducedMotion.matches ? 'auto' : 'smooth' });
+	visible.classList.add('rich-highlight');
+	setTimeout(() => visible.classList.remove('rich-highlight'), 2000);
+}
 function scrollToPrompt(index: number): void {
 	if (!state) { return; }
 	const t = turnsOf(state.entries).findIndex(turn => turn.prompt === index);
@@ -1670,7 +1735,7 @@ function scrollToPrompt(index: number): void {
 	root.classList.add('turn-flash');
 	setTimeout(() => root.classList.remove('turn-flash'), 1200);
 }
-/** Messages that arrived below while the thread was scrolled up, counted from the last time it was at its end. */
+/** Messages below the viewport, including those not yet reached since they arrived. */
 const newMessagesBadge = el('button', { class: 'new-messages' });
 newMessagesBadge.type = 'button';
 newMessagesBadge.hidden = true;
@@ -1683,15 +1748,18 @@ function renderNewMessages(): void {
 	const count = messageCount(state);
 	const atBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 60;
 	if (seenMessages.chat !== state.chatId || atBottom || count < seenMessages.count) { seenMessages = { chat: state.chatId, count }; }
+	const edge = thread.getBoundingClientRect().bottom;
+	let below = 0;
+	thread.querySelectorAll('.prompt, .row.assistant').forEach(node => { if (node.getBoundingClientRect().top >= edge) { below++; } });
+	// A link can jump past new messages without reaching the end of the thread.
+	// Keep the read watermark as the reader reaches them, even on a partial scroll.
+	seenMessages.count = Math.max(seenMessages.count, count - below);
 	const unseen = count - seenMessages.count;
 	// Shown once the reader has gone up a screen or more, or when messages arrived out of sight below.
 	const farUp = thread.scrollHeight - thread.scrollTop - thread.clientHeight >= thread.clientHeight;
 	newMessagesBadge.hidden = atBottom || (!farUp && unseen <= 0);
 	if (newMessagesBadge.hidden) { return; }
 	// Scrolled up: the messages below the visible part, and how many of them arrived since.
-	const edge = thread.getBoundingClientRect().bottom;
-	let below = 0;
-	thread.querySelectorAll('.prompt, .row.assistant').forEach(node => { if (node.getBoundingClientRect().top >= edge) { below++; } });
 	const text = unseen > 0 ? `${unseen} new message${unseen === 1 ? '' : 's'}` : below > 0 ? `${below} message${below === 1 ? '' : 's'} below` : 'Scroll to bottom';
 	newMessagesBadge.classList.toggle('fresh', unseen > 0);
 	newMessagesBadge.title = 'Scroll to the latest message';
@@ -1701,7 +1769,21 @@ newMessagesBadge.addEventListener('mousedown', e => e.preventDefault());
 newMessagesBadge.addEventListener('click', () => {
 	thread.scrollTo({ top: thread.scrollHeight, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
 });
-thread.addEventListener('scroll', renderNewMessages, { passive: true });
+let newMessagesFrame: number | undefined;
+function scheduleNewMessages(): void {
+	if (newMessagesFrame !== undefined) { return; }
+	newMessagesFrame = requestAnimationFrame(() => {
+		newMessagesFrame = undefined;
+		renderNewMessages();
+	});
+}
+// Measure after the other scroll handlers have fitted sticky prompts. Content
+// and viewport resizing can also change what is below without a scroll event.
+thread.addEventListener('scroll', scheduleNewMessages, { passive: true });
+thread.addEventListener('scrollend', scheduleNewMessages, { passive: true });
+const newMessagesResize = new ResizeObserver(scheduleNewMessages);
+newMessagesResize.observe(thread);
+newMessagesResize.observe(threadInner);
 const footer = el('div', { class: 'footer' }, newMessagesBadge, questionDock, switchCard, composerTabs, composer, workdirFooter, commitNotice);
 workdirSummary.addEventListener('click', () => workdirButton.click());
 /** One tab per open conversation, above the thread. */
@@ -2880,7 +2962,7 @@ function render(): void {
 	if (!app.classList.contains('terminal-front')) {
 		renderThread(state);
 		landFlight(state);
-		renderNewMessages();
+		scheduleNewMessages();
 	}
 	if (loadingTab && (state.activeTab === loadingTab.id || !state.tabs.some(t => t.id === loadingTab!.id))) { clearTabLoading(); }
 	renderAttachments(state);
@@ -4722,10 +4804,7 @@ function renderTail(tail: HTMLElement, s: ChatViewState, turn: Turn, last: boole
 	// The turn is over and agents it (or an earlier one) started still work:
 	// said at the very bottom, under "Worked for …" (asked for).
 	const runningAgents = last ? agentRows(s).filter(a => a.status === 'running') : [];
-	const agents = runningAgents.length;
-	// How long the background work has gone on: since the first of them started.
-	const agentsSince = agents ? Math.min(...runningAgents.map(a => a.startedAt)) : 0;
-	const sig = `${text}|${tokens}|${models}|${agents}|${agentsSince}`;
+	const sig = JSON.stringify([text, tokens, models, runningAgents.map(a => [a.id, agentTitle(a), a.startedAt])]);
 	if (tail.dataset.sig !== sig) {
 		tail.dataset.sig = sig;
 		// A square where the working star was: the same slot, so the line does
@@ -4741,32 +4820,26 @@ function renderTail(tail: HTMLElement, s: ChatViewState, turn: Turn, last: boole
 						title: `${(p?.tokensIn ?? 0).toLocaleString()} tokens sent${p?.tokensCached ? `, ${p.tokensCached.toLocaleString()} of them from the cache` : ''}; ${(p?.tokensOut ?? 0).toLocaleString()} received`,
 					}) : undefined)
 				: '',
-			agents ? agentsRunningLine(agents, agentsSince) : '');
+			runningAgents.length ? el('div', { class: 'working agents-running-summary' },
+				liquidLoader('working-glyph'),
+				el('span', { class: 'shimmer', text: `${runningAgents.length} agent${runningAgents.length === 1 ? '' : 's'} running` })) : '',
+			runningAgents.length ? el('ul', { class: 'agents-running-list' },
+				...runningAgents.map(a => el('li', {}, agentRunningRow(a)))) : '');
 	}
 }
 
-/**
- * "2 agents running · 3m 12s", under a finished turn while agents the chat
- * started are still at work: the liquid core in front, so it reads as alive,
- * and a click opens the agents list. The time is since the first of them
- * started — how long the background work has gone on; a sum of their times
- * would run ahead of the clock. Built only when the count or that start
- * changes (#365); the time is rewritten in place every second.
- */
-function agentsRunningLine(count: number, since: number): HTMLElement {
-	const label = `${count} agent${count === 1 ? '' : 's'} running`;
+/** A background agent under a finished turn; its title opens its own card. */
+function agentRunningRow(a: ToolEntry): HTMLElement {
+	const title = agentTitle(a);
+	const dot = el('span', { class: `agents-running-dot ${a.status}` });
+	dot.setAttribute('aria-hidden', 'true');
 	const line = button([
-		liquidLoader('working-glyph'),
-		el('span', { class: 'shimmer agents-running-text', text: agentsRunningText(label, since) }),
-	], { class: 'agents-running', title: `${label} — show them` });
-	line.dataset.label = label;
-	line.dataset.since = String(since);
-	line.addEventListener('click', () => openAgentsPanel());
+		dot,
+		el('span', { class: 'agents-running-title', text: title }),
+	], { class: 'agents-running', title: `${title} — ${statusLabel(a)} — show agent` });
+	line.setAttribute('aria-label', `${title} — ${statusLabel(a)} — show agent`);
+	line.addEventListener('click', () => openAgentCard(a.id));
 	return line;
-}
-
-function agentsRunningText(label: string, since: number): string {
-	return since ? `${label} · ${duration(Date.now() - since)}` : label;
 }
 
 /**
@@ -4826,18 +4899,6 @@ function tickWorking(): void {
 	}
 }
 setInterval(tickWorking, 1000);
-
-/** The time on "N agents running", in place. */
-setInterval(() => {
-	const line = threadInner.querySelector<HTMLElement>('.agents-running');
-	const text = line?.querySelector('.agents-running-text');
-	if (line && text) {
-		const next = agentsRunningText(line.dataset.label ?? '', Number(line.dataset.since));
-		if (text.textContent !== next) {
-			text.textContent = next;
-		}
-	}
-}, 1000);
 
 // CSS animates the shared liquid core without a JavaScript animation timer.
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -11313,7 +11374,7 @@ agentsButton.addEventListener('click', () => {
 	openAgentsPanel();
 });
 
-/** The agents list over the chat; also opened from "N agents running" under a turn. */
+/** The agents list over the chat. */
 function openAgentsPanel(): void {
 	agentsView = {};
 	closePopups(agentsPanel);

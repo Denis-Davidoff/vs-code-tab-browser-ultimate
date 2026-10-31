@@ -59,6 +59,7 @@ export function updateVisualizationViews(container: HTMLElement, references: rea
 	for (const ref of [...references].sort((a, b) => a.at - b.at)) {
 		const element = (ref.kind === 'image' ? images.get(ref.at) : ref.kind ? artifacts.get(ref.at) : views.get(ref.at))?.element;
 		if (!element) { continue; }
+		element.dataset.presentationAt = String(ref.at);
 		const next = previous ? previous.nextSibling : container.firstChild;
 		if (next !== element) { container.insertBefore(element, next); }
 		previous = element;

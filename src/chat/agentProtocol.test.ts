@@ -422,19 +422,19 @@ suite('codexEvents', () => {
 
 	test('a file change carries its diff and its counts', () => {
 		const [event] = codexEvents('item/started', { item: { type: 'fileChange', id: 'f', changes: [{ path: 'src/a.ts', kind: { type: 'update' }, diff: '@@ -1 +1 @@\n-old\n+new\n+more' }] } });
-		assert.deepStrictEqual(event, { type: 'tool', id: 'f', tool: { kind: 'edit', name: 'Edit', detail: 'src/a.ts', input: '@@ -1 +1 @@\n-old\n+new\n+more', added: 2, removed: 1 } });
+		assert.deepStrictEqual(event, { type: 'tool', id: 'f', tool: { kind: 'edit', name: 'Edit', detail: 'src/a.ts', input: '@@ -1 +1 @@\n-old\n+new\n+more', added: 2, removed: 1, files: [{ path: 'src/a.ts', status: 'modified', added: 2, removed: 1 }] } });
 	});
 
 	test('a new or deleted file given as plain content has its lines marked', () => {
 		const added = codexEvents('item/started', { item: { type: 'fileChange', id: 'f', changes: [{ path: 'a.yml', kind: { type: 'add' }, diff: 'services:\n  - app\n' }] } })[0];
-		assert.deepStrictEqual(added, { type: 'tool', id: 'f', tool: { kind: 'edit', name: 'Edit', detail: 'a.yml', input: '+services:\n+  - app', added: 2, removed: 0 } });
+		assert.deepStrictEqual(added, { type: 'tool', id: 'f', tool: { kind: 'edit', name: 'Edit', detail: 'a.yml', input: '+services:\n+  - app', added: 2, removed: 0, files: [{ path: 'a.yml', status: 'created', added: 2, removed: 0 }] } });
 		const gone = codexEvents('item/started', { item: { type: 'fileChange', id: 'g', changes: [{ path: 'b.txt', kind: { type: 'delete' }, diff: 'x' }] } })[0];
-		assert.deepStrictEqual(gone, { type: 'tool', id: 'g', tool: { kind: 'edit', name: 'Edit', detail: 'b.txt', input: '-x', added: 0, removed: 1 } });
+		assert.deepStrictEqual(gone, { type: 'tool', id: 'g', tool: { kind: 'edit', name: 'Edit', detail: 'b.txt', input: '-x', added: 0, removed: 1, files: [{ path: 'b.txt', status: 'deleted', added: 0, removed: 1 }] } });
 	});
 
 	test('an add that already is a patch is left as it is', () => {
 		const [event] = codexEvents('item/started', { item: { type: 'fileChange', id: 'f', changes: [{ path: 'a', kind: { type: 'add' }, diff: '@@ -0,0 +1 @@\n+a' }] } });
-		assert.deepStrictEqual(event, { type: 'tool', id: 'f', tool: { kind: 'edit', name: 'Edit', detail: 'a', input: '@@ -0,0 +1 @@\n+a', added: 1, removed: 0 } });
+		assert.deepStrictEqual(event, { type: 'tool', id: 'f', tool: { kind: 'edit', name: 'Edit', detail: 'a', input: '@@ -0,0 +1 @@\n+a', added: 1, removed: 0, files: [{ path: 'a', status: 'created', added: 1, removed: 0 }] } });
 	});
 
 	test('reasoning summaries are thinking, a new summary part is a paragraph', () => {

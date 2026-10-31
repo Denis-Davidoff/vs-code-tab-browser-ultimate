@@ -41,6 +41,13 @@ describe('diffSides', () => {
 		assert.deepStrictEqual(diffSides('@@ -1 +1 @@\n--- a yaml document\n+++ more'), { before: '-- a yaml document', after: '++ more' });
 	});
 
+	test('header-like edits stay content until both hunk counts are exhausted', () => {
+		assert.deepStrictEqual(diffSides('@@ -1,2 +1,2 @@\n--- old\n+++ new\n same\n--- a/y\n+++ b/y\n@@ -0,0 +1 @@\n+added'), {
+			before: `-- old\nsame\n${hunkGap}`,
+			after: `++ new\nsame\n${hunkGap}\nadded`,
+		});
+	});
+
 	test("an Edit removing a SQL comment keeps it: '--- x' alone is not a file header", () => {
 		assert.deepStrictEqual(diffSides('--- note\n-select 1;\n+select 2;'), { before: '-- note\nselect 1;', after: 'select 2;' });
 	});

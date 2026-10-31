@@ -10883,6 +10883,22 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
 
 ## Special cases and non-obvious decisions
 
+### File history and terminal connection fixes
+
+`diffSides` consumes the before/after line counts in numbered unified hunks before
+recognizing another file's `---`/`+++` headers. Otherwise a multi-file Codex tool
+card shows the second filename as an edit; treating every header-like pair as
+metadata would instead hide real removed/added lines that begin with dashes.
+
+Gemini diff items retain structured per-file status and counts on both tool
+starts and updates. `oldText: null` or `_meta.kind: add` identifies creation;
+an empty string can describe an existing empty file. The same-path diff headers
+alone cannot distinguish these cases. Delete updates must retain deletion status.
+
+The OpenCode connection terminal uses a workspace directory only for `file:`
+URIs. Virtual workspace paths are not local directories, so it falls back to the
+home directory, as the Gemini terminal launcher does.
+
 ### Trusted local Chrome and connection permissions
 
 The user explicitly treats the paired Chrome extension on the same computer as

@@ -266,31 +266,37 @@ async function showMenu(controller: BrowserController): Promise<void> {
 		});
 	}
 
-	items.push({ label: vscode.l10n.t("External agents — our MCP tools for their extensions and terminal CLIs"), kind: vscode.QuickPickItemKind.Separator });
+	items.push({ label: vscode.l10n.t("Agents — browser tools and connection prompts"), kind: vscode.QuickPickItemKind.Separator });
 	// The label says "and share this tab" only when there *is* a tab to share:
 	// the command shares whatever is focused and shares nothing otherwise, so
 	// with no browser tab open the longer label promised something it could not
 	// do.
-	// One row per action, the agent asked for afterwards: three Connect rows and
-	// three Chrome rows made the menu twice as long as everything else in it.
+	// One row per action; choose the agent afterwards.
 	const agents = [
 		{ who: 'claude', name: 'Claude Code', connect: 'aiBrowser.connectClaudeCode' },
 		{ who: 'codex', name: 'Codex', connect: 'aiBrowser.connectCodex' },
 		{ who: 'gemini', name: 'Gemini CLI', connect: 'aiBrowser.connectGemini' },
+		{ who: 'opencode', name: 'OpenCode', connect: 'aiBrowser.connectOpenCode' },
+		{ who: 'pi', name: 'Pi', connect: 'aiBrowser.connectChatAgent' },
+		{ who: 'openrouter', name: 'OpenRouter', connect: 'aiBrowser.connectChatAgent' },
 	] as const;
+	const availableAgents = agents.filter(agent => supportsSecondarySidebar(vscode.version) || (agent.who !== 'pi' && agent.who !== 'openrouter'));
 	const pickAgent = async (title: string) => (await vscode.window.showQuickPick(
-		agents.map(agent => ({ label: agent.name, agent })), { title, ignoreFocusOut: true }))?.agent;
+		availableAgents
+			.map(agent => ({ label: agent.name, agent, description: agent.connect === 'aiBrowser.connectChatAgent'
+				? vscode.l10n.t("AI Browser Chat · tools connected automatically")
+				: agent.who === 'opencode' ? vscode.l10n.t("Opens a terminal with browser tools") : undefined })), { title, ignoreFocusOut: true }))?.agent;
 	items.push({
 		label: focused
 			? vscode.l10n.t("$(comment-discussion) Connect your agent and share this tab")
 			: vscode.l10n.t("$(comment-discussion) Connect your agent"),
-		description: vscode.l10n.t("Claude Code, Codex, Gemini CLI"),
+		description: availableAgents.map(agent => agent.name).join(', '),
 		detail: focused
-			? vscode.l10n.t("Writes its config, copies the check prompt, and gives it the tab you are on — the AI Browser chat needs none of this")
-			: vscode.l10n.t("Writes its config and copies the check prompt — the AI Browser chat needs none of this"),
+			? vscode.l10n.t("Connects the agent, copies its check prompt, and shares this tab")
+			: vscode.l10n.t("Connects the agent and copies its check prompt"),
 		run: async () => {
-			const agent = await pickAgent(vscode.l10n.t("Connect which agent? (its own extension or terminal CLI)"));
-			if (agent) { await vscode.commands.executeCommand(agent.connect); }
+			const agent = await pickAgent(vscode.l10n.t("Connect which agent?"));
+			if (agent) { await vscode.commands.executeCommand(agent.connect, agent.who); }
 		},
 	});
 	items.push({
@@ -298,7 +304,11 @@ async function showMenu(controller: BrowserController): Promise<void> {
 		description: vscode.l10n.t("Claude Code, Codex, Gemini CLI"),
 		detail: vscode.l10n.t("Opens a Chrome tab and copies a prompt that hands it to the agent"),
 		run: async () => {
-			const agent = await pickAgent(vscode.l10n.t("Open Google Chrome for which agent?"));
+			const agent = (await vscode.window.showQuickPick(agents.filter(agent =>
+				agent.who === 'claude' || agent.who === 'codex' || agent.who === 'gemini')
+				.map(agent => ({ label: agent.name, agent })), {
+					title: vscode.l10n.t("Open Google Chrome for which agent?"), ignoreFocusOut: true,
+				}))?.agent;
 			if (agent) { await vscode.commands.executeCommand('aiBrowser.openChromeForAssistant', agent.who); }
 		},
 	});

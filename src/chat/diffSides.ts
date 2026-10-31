@@ -28,6 +28,8 @@ export function diffSides(diff: string): { before: string; after: string } {
 	const after: string[] = [];
 	const lines = diff.split(/\r?\n/);
 	let inHunk = false;
+	let remainingBefore: number | undefined;
+	let remainingAfter: number | undefined;
 	for (let i = 0; i < lines.length; i++) {
 		const line = lines[i];
 		if (line.startsWith('@@')) {
@@ -36,6 +38,10 @@ export function diffSides(diff: string): { before: string; after: string } {
 				after.push(hunkGap);
 			}
 			inHunk = true;
+			const range = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/.exec(line);
+			remainingBefore = range ? Number(range[1] ?? 1) : undefined;
+			remainingAfter = range ? Number(range[2] ?? 1) : undefined;
+			if (remainingBefore === 0 && remainingAfter === 0) { inHunk = false; }
 			continue;
 		}
 		// Headers only outside a hunk: inside one, `--- x` is a removed line
@@ -54,13 +60,20 @@ export function diffSides(diff: string): { before: string; after: string } {
 		}
 		if (line.startsWith('+')) {
 			after.push(line.slice(1));
+			if (remainingAfter !== undefined) { remainingAfter--; }
 		} else if (line.startsWith('-')) {
 			before.push(line.slice(1));
+			if (remainingBefore !== undefined) { remainingBefore--; }
 		} else {
 			const text = line.startsWith(' ') ? line.slice(1) : line;
 			before.push(text);
 			after.push(text);
+			if (remainingBefore !== undefined) { remainingBefore--; }
+			if (remainingAfter !== undefined) { remainingAfter--; }
 		}
+		// Once both sides are consumed, the next file's headers are metadata.
+		// Header-like removed/added lines inside the hunk remain actual edits.
+		if (remainingBefore === 0 && remainingAfter === 0) { inHunk = false; }
 	}
 	return { before: before.join('\n'), after: after.join('\n') };
 }

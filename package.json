@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate",
 	"displayName": "AI Browser🏆 Claude + Codex + Gemini + OpenCode + Pi + OpenRouter",
 	"description": "Chat with browser, MCP for Chrome and embedded browser tab with AI capabilities, Claude, Codex, Gemini, OpenCode, Pi and OpenRouter integration (Qwen, LM Studio, Ollama, etc.)",
-	"version": "0.9.14",
+	"version": "0.9.15",
 	"enabledApiProposals": [
 		"externalUriOpener",
 		"browser"
@@ -248,7 +248,8 @@
 		"onCommand:aiBrowser.recording.high",
 		"onCommand:aiBrowser.recording.highDefault",
 		"onCommand:aiBrowser.recording.maximum",
-		"onCommand:aiBrowser.recording.maximumDefault"
+		"onCommand:aiBrowser.recording.maximumDefault",
+		"onCommand:aiBrowser.connectOtherAgent"
 	],
 	"capabilities": {
 		"virtualWorkspaces": true,
@@ -909,6 +910,12 @@
 				"title": "%command.recording.maximumDefault.title%",
 				"category": "%displayName%",
 				"enablement": "!aiBrowser.recordingActive"
+			},
+			{
+				"command": "aiBrowser.connectOtherAgent",
+				"title": "%command.connectOtherAgent.title%",
+				"category": "%displayName%",
+				"icon": "$(plug)"
 			}
 		],
 		"icons": {
@@ -1496,6 +1503,10 @@
 					"group": "3_assistant@2.5"
 				},
 				{
+					"submenu": "aiBrowser.otherAgentsMenu",
+					"group": "3_assistant@2.75"
+				},
+				{
 					"submenu": "aiBrowser.chatMenu",
 					"group": "3_assistant@3",
 					"when": "!aiBrowser.chatUnsupported && !aiBrowser.chatBlocked"
@@ -1906,6 +1917,16 @@
 					"group": "1_quality@3",
 					"when": "aiBrowser.recordingQuality == maximum"
 				}
+			],
+			"aiBrowser.otherAgentsMenu": [
+				{
+					"command": "aiBrowser.connectOtherAgent",
+					"group": "2_mcp@1"
+				},
+				{
+					"command": "aiBrowser.shareTab",
+					"group": "2_mcp@2"
+				}
 			]
 		},
 		"submenus": [
@@ -1940,6 +1961,10 @@
 			{
 				"id": "aiBrowser.recordingMenu",
 				"label": "%command.recording.start.title%"
+			},
+			{
+				"id": "aiBrowser.otherAgentsMenu",
+				"label": "%submenu.otherAgentsMenu.label%"
 			}
 		],
 		"mcpServerDefinitionProviders": [
