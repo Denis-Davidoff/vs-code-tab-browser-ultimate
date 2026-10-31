@@ -35,3 +35,15 @@ test('a reference without the private-use delimiters is read too (Claude Code)',
 	assert.equal(visualizationMarkers('see visualize{"path":"/tmp/a.html"} inline').length, 0);
 	assert.equal(visualizationMarkers('```\nvisualize{"path":"/tmp/a.html"}\n```').length, 0);
 });
+
+test('image references share safe parsing, including mixed cards and quoted examples', async () => {
+	const { presentationMarkers } = await import('./visualizationProtocol.ts');
+	const image = `\uE200image\uE202${JSON.stringify({ path: '/tmp/cat.png', title: 'Cat' })}\uE201`;
+	const html = marker({ path: '/tmp/chart.html' });
+	const text = `${image}\n${html}`;
+	assert.deepEqual(presentationMarkers(text).map(ref => [ref.kind, ref.path, ref.start]), [['image', '/tmp/cat.png', 0], [undefined, '/tmp/chart.html', image.length + 1]]);
+	for (const example of [`\`\`\`\n${image}\n\`\`\``, `> ${image}`, `    ${image}`, image.slice(0, -1)]) {
+		assert.equal(presentationMarkers(example).length, 0);
+	}
+	assert.equal(presentationMarkers('image{"path":"/tmp/cat.png"}')[0]?.kind, 'image');
+});

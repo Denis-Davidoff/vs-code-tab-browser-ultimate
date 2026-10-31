@@ -6930,3 +6930,70 @@ body.vv-locked {
 /* Outside the message box nothing has to line up with a textarea, so the hidden brackets
    around a badge take no room: the badge sits right against the text. */
 .att-token-wrap:not(.input-mirror *) > .att-token-hide { display: none; }
+
+/* Generated and presented raster images use native cards on every chat surface. */
+.image-card > img { display: block; width: auto; max-width: 100%; max-height: 480px; margin: 0 auto; object-fit: contain; }
+.image-card > img[hidden] { display: none; }
+.image-card.image-expanded > img { max-height: none; }
+.image-card .visualization-status:empty { display: none; }
+
+.artifact-body { padding: 12px; }
+.artifact-details, .artifact-source-url { color: var(--fg-3); font-size: 12px; overflow-wrap: anywhere; }
+.artifact-body audio, .artifact-body video { display: block; max-width: 100%; width: 100%; margin-top: 12px; }
+.artifact-body video { max-height: 540px; }
+.artifact-card .visualization-status:empty { display: none; }
+.artifact-table { margin-top: 12px; }
+.artifact-table input { width: 100%; box-sizing: border-box; margin-bottom: 10px; }
+.artifact-table-scroll { overflow: auto; max-height: 540px; }
+.artifact-table table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.artifact-table th, .artifact-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); text-align: left; overflow-wrap: anywhere; max-width: 440px; }
+.artifact-table th { position: sticky; top: 0; background: var(--bg); }
+.artifact-table th button { color: inherit; font: inherit; cursor: pointer; background: transparent; border: 0; text-align: left; }
+.artifact-table th[aria-sort='ascending'] button::after { content: ' ↑'; }
+.artifact-table th[aria-sort='descending'] button::after { content: ' ↓'; }
+.artifact-table-footer { display: flex; gap: 10px; align-items: center; justify-content: space-between; margin-top: 10px; }
+.artifact-sources { padding-left: 22px; margin-bottom: 0; }
+.artifact-sources li { margin: 12px 0; }
+.artifact-sources p { margin: 6px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.artifact-source-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.artifact-source-actions button { font: inherit; font-size: 12px; }
+
+/* Typed provider events and results share the same renderer on every surface. */
+.rich-card { margin: 10px 0; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); }
+.rich-card .rich-title { margin: 0 0 10px; }
+.rich-header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+.rich-header > strong { flex: 1; }
+.rich-header time, .rich-duration, .rich-reason, .rich-plan-steps small { color: var(--fg-3); font-size: 12px; }
+.rich-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.rich-actions[hidden] { display: none; }
+.rich-text, .rich-reason, .rich-stage { white-space: pre-wrap; overflow-wrap: anywhere; }
+.rich-notice.notice-info { border-left: 3px solid var(--vscode-notificationsInfoIcon-foreground, #609ddb); }
+.rich-notice.notice-warning { border-left: 3px solid var(--vscode-notificationsWarningIcon-foreground, #cca700); }
+.rich-notice.notice-error { border-left: 3px solid var(--vscode-notificationsErrorIcon-foreground, #e45a5a); }
+.rich-progress progress { display: inline-block; width: min(100%, 440px); margin: 10px 8px 0 0; accent-color: var(--vscode-progressBar-background, #609ddb); }
+.rich-plan-steps { padding: 0; margin: 0; list-style: none; }
+.rich-plan-steps li { display: flex; align-items: baseline; gap: 10px; padding: 6px 0; }
+.rich-plan-steps li > span:nth-child(2) { flex: 1; white-space: pre-wrap; overflow-wrap: anywhere; }
+.rich-plan-steps .plan-inProgress { font-weight: 600; }
+.rich-plan-steps .plan-cancelled { opacity: .65; }
+.rich-results { margin-top: 10px; min-width: 0; }
+.rich-block { margin: 10px 0; overflow-wrap: anywhere; }
+.rich-block > pre { white-space: pre-wrap; max-height: 500px; overflow: auto; }
+.rich-block > small { display: block; color: var(--fg-3); }
+.json-view { padding: 10px; border: 1px solid var(--border); border-radius: var(--radius); }
+.json-view input { width: 100%; box-sizing: border-box; margin-bottom: 10px; }
+.json-tree, .json-search-results { max-height: 540px; overflow: auto; font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; }
+.json-node { padding: 3px 0; overflow-wrap: anywhere; }
+.json-children { margin-left: 18px; border-left: 1px solid var(--border); padding-left: 8px; }
+.json-node > button, .json-search-match button { margin-left: 10px; font-size: 11px; }
+.json-node > details { display: inline-block; vertical-align: top; }
+.json-node summary { cursor: pointer; }
+.json-key { color: var(--vscode-symbolIcon-propertyForeground, var(--fg)); }
+.json-search-match { padding: 5px 0; }
+.citation-button { font-size: 11px; vertical-align: super; cursor: pointer; margin: 0 2px; padding: 0 3px; }
+.assistant-citations:empty { display: none; }
+.assistant-citations { margin: 10px 0; padding-top: 8px; border-top: 1px solid var(--border); }
+.citation-source { display: flex; align-items: baseline; gap: 6px; margin: 5px 0; color: var(--fg-3); font-size: 12px; }
+.citation-source > span { overflow-wrap: anywhere; white-space: pre-wrap; }
+.rich-highlight { outline: 2px solid var(--vscode-focusBorder, #609ddb); outline-offset: 3px; }
+.rich-navigation-status { position: fixed; bottom: 20px; left: 20px; right: 20px; z-index: 10001; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); color: var(--fg); }

@@ -413,7 +413,7 @@ function exchangeRefusal(message: ExchangeUiMessage, tab: ChatTab, chatId: strin
 	const m = message as { type: string; id?: unknown; tabId?: unknown; chatId?: unknown };
 	if ((m.type === 'closeTab' || m.type === 'selectTab' || m.type === 'renameTab') && m.id !== tab.id) { throw new Error('This conversation is not shared.'); }
 	if (m.type === 'resumeQueue' && m.tabId !== tab.id) { throw new Error('This conversation is not shared.'); }
-	if (m.type === 'secondOpinion' && m.chatId !== chatId) { throw new Error('This conversation is not shared.'); }
+	if ((m.type === 'secondOpinion' || m.type === 'cancelProgress') && m.chatId !== chatId) { throw new Error('This conversation is not shared.'); }
 }
 
 function pushKey(action: string, branch: string, remote: string, target: string, question: string): string {
@@ -537,6 +537,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			await tabSource.open('about:blank',{where:'vscode',preserveFocus:true});
 		} else if (message.type === 'stop') {
 			view._stopTab(tab);
+		} else if (message.type === 'cancelProgress') {
+			if (message.chatId !== chatId) { throw new Error('This conversation is not shared.'); }
+			await tab.cancelProgress(message.id);
 		} else if (message.type === 'select' || message.type === 'switchAgent') {
 			const scope = {tab, chatId, reply, remote: true};
 			await view._chromeCommand.run(scope, () => view._receive(message));
@@ -1206,7 +1209,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		if (this._editorWindowChat !== state.chatId) { this._editorWindowChat = state.chatId; this._editorPrompts = currentVisibleTurns(); }
 		const window = windowEntries(state.entries, this._editorPrompts);
 		const windowed = window.offset ? { ...state, entries: window.entries, entriesOffset: window.offset } : state;
-		// Up to 2 MB of HTML: sent when the set changes, not with every streaming post.
+		// Archived HTML and image content: sent when the set changes, not with every streaming post.
 		// `ChatTab` replaces the object only when its contents change.
 		if (state.visualizations && state.visualizations === this._postedVisualizations) {
 			const { visualizations: _omitted, ...rest } = windowed;
@@ -1707,6 +1710,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			case 'reattachAttachment':
 				this._reattachAttachment(message.id, message.entry);
 				return;
+			case 'cancelProgress':
+				await this._tabs.find(tab => tab.chat.id === message.chatId)?.cancelProgress(message.id);
+				return;
+
+			case 'saveArtifact': {
+				const tab = this._tabs.find(tab => tab.chat.id === message.chatId);
+				const artifact = await tab?.artifactFile(message.revision);
+				if (!artifact) { return; }
+				const target = await vscode.window.showSaveDialog({ defaultUri: vscode.Uri.file(path.join(os.homedir(), artifact.name)) });
+				if (target) { await vscode.workspace.fs.writeFile(target, Buffer.from(artifact.base64, 'base64')); }
+				return;
+			}
+
 			case 'saveAttachment': {
 				const attachment = this._active.attachments.find(a => a.chip.id === message.id);
 				if (!attachment?.file || attachment.chip.kind !== 'video') { return; }
@@ -7730,6 +7746,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				}
 				return { id: rowId, stopping: true, note: 'Asked to stop; chat_agents shows it as stopped once its CLI reports it.' };
 			},
+			presentRich: (ownTab, kind, args) => find(ownTab).tab.presentRich(kind, args),
+			presentArtifact: (ownTab, file, kind, title) => find(ownTab).tab.presentArtifact(file, kind, title),
+			presentImage: (ownTab, file, title) => find(ownTab).tab.presentImage(file, title),
 			presentHtml: (ownTab, file, title) => find(ownTab).tab.presentVisualization(file, title),
 		};
 	}

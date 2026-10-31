@@ -8,7 +8,7 @@ import { realpathSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { chatTitle, toolOutputLimit, validAnswers, type AgentEvent } from './agentProtocol';
+import { chatTitle, toolOutputLimit, validAnswers, richNotice, richProgress, richPlan, richCitations, richString, resultBlocks, type AgentEvent } from './agentProtocol';
 import { agentNames, type AgentBackend, type AgentSession, type TurnImage, type TurnInput } from './agents';
 import type { AgentId, RepoCopy, RepoReference, ApprovalEntry, ApprovalMode, AttachmentChip, PendingSend, ChatEntry, ChatStats, ChatTabStatus, ToolEntry, UsageWindow } from './chatProtocol';
 import { generateUuid } from '../core/uuid';
@@ -17,9 +17,10 @@ import { pinAnnouncement, pinSignature, type PinInfo } from './terminalPins';
 import type { TerminalApproval } from './agentProtocol';
 import { stepGate, withNextDecision } from './toolbarText';
 import type { TurnWeight } from './usageAlert';
-import { visualizationMarkers } from './visualizationProtocol';
-import type { VisualizationSnapshot } from './visualizationProtocol';
-import { VisualizationStore, visualizationTotalLimit } from './visualizationStore';
+import type { ResultBlock, ProgressEntry, JsonValue } from './richProtocol';
+import { presentationMarkers } from './visualizationProtocol';
+import type { VisualizationSnapshot, ArtifactKind, ArtifactSnapshot, PresentationKind } from './visualizationProtocol';
+import { VisualizationStore, presentationTotalLimit, visualizationTotalLimit } from './visualizationStore';
 
 /**
  * One conversation of the chat: a tab. The view holds several (`tabLimit()`),
@@ -35,6 +36,8 @@ const agentCallLimit = 100;
 const entryLimit = 400;
 export const storedTextLimit = 20_000;
 const storedToolLimit = 4_000;
+/** A text or JSON block of a presented result: the editor's state carries it whole. */
+const richBlockLimit = 200_000;
 /** How long a tab must stay quiet before Claude Code is restarted under it; past Claude Code's own following turn. */
 const restartQuietMs = 2_500;
 
@@ -241,6 +244,9 @@ export function transientTurnError(error: string): boolean {
 }
 
 export class ChatTab {
+	private _richWork: Promise<void> = Promise.resolve();
+	private readonly _discardedChats = new WeakSet<StoredChat>();
+	private readonly _blockVersions = new WeakMap<object, number>();
 	private _visualizationStore?: VisualizationStore;
 	private _visualizationProject?: string;
 	private _visualizationHtml: Record<string, VisualizationSnapshot> = {};
@@ -263,28 +269,125 @@ export class ChatTab {
 		const store = this._visualizations();
 		if (!store) { return undefined; }
 		try { await store.prepare(); } catch { return undefined; }
-		return `HTML visualizations are supported in this chat. When an inline interactive visual helps the user, write a self-contained HTML file directly in ${JSON.stringify(store.directory)} (at most 1 MB). Use inline CSS/JavaScript, SVG, canvas or MathML; external resources and network requests are blocked. The view has no access to files, host commands or APIs. Publish a completed file using chat_present_html({path, title?}) if available, or emit this exact reference on its own unquoted line: \uE200visualize\uE202{"path":"<absolute file path>","title":"<short title>"}\uE201. Do not put the reference inside a code fence. Reuse the filename to revise the same visual and publish again after each completed write. Do not publish to an external service for a local preview.`;
+		return `HTML visualizations are supported in this chat. When an inline interactive visual helps the user, write a self-contained HTML file directly in ${JSON.stringify(store.directory)} (at most 1 MB). Use inline CSS/JavaScript, SVG, canvas or MathML; external resources and network requests are blocked. The view has no access to files, host commands or APIs. Publish a completed file using chat_present_html({path, title?}) if available, or emit this exact reference on its own unquoted line: \uE200visualize\uE202{"path":"<absolute file path>","title":"<short title>"}\uE201. Do not put the reference inside a code fence. Reuse the filename to revise the same visual and publish again after each completed write. Do not publish to an external service for a local preview.
+
+Images are supported too. To display a generated or existing PNG, JPEG, GIF or WebP (at most 4 MB), copy it directly into the same conversation visualization directory, then call chat_present_image({path, title?}). If that tool is unavailable, emit this exact reference on its own unquoted line: \uE200image\uE202{"path":"<absolute image path>","title":"<short title>"}\uE201. Do not emit an extra reference after a successful tool call. Reusing the same path updates the image card.
+
+Additional output tools (same directory and publication rules): chat_present_file for downloadable files (up to 4 MB); chat_present_table for a JSON file containing {"columns":["Name","Value"],"rows":[["Example",42]]} (up to 1 MB, 100 columns, 10000 rows); chat_present_sources for a JSON array of {"title":"Source","url":"https://example.com","description":"Optional context"} (up to 1 MB, 100 sources); chat_present_audio for MP3, WAV, OGG, M4A or WebM; chat_present_video for MP4 or WebM (media up to 4 MB). Each tool takes {path, title?}. If a tool is unavailable, use a standalone marker with the corresponding kind: file, table, sources, audio or video, followed by JSON {"path":"<absolute path>","title":"<title>"}, e.g. file{"path":"<absolute path>"}. Markers must be outside code fences. In Claude Code the MCP names are mcp__ai-browser__chat_present_image, mcp__ai-browser__chat_present_file, mcp__ai-browser__chat_present_table, mcp__ai-browser__chat_present_sources, mcp__ai-browser__chat_present_audio and mcp__ai-browser__chat_present_video. Plain ASCII image{"path":"<absolute path>"} markers work in Claude Code too.
+Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,related?:{messageId?,toolId?},actions?:[{label,kind:"link",url}|{label,kind:"copy",text}|{label,kind:"reveal",target:{messageId?,toolId?}}]}); chat_progress({id,title,stage?,percent?:0..100|null,status?:"running"|"done"|"failed"|"cancelled",cancel?:{}|{agentId},related?}); chat_update_plan({id,title?,steps:[{id?,text,status:"pending"|"inProgress"|"done"|"cancelled"}]}); chat_present_result({id?,title?,blocks:[{type:"text",text}|{type:"json",value}|{type:"image",path}|{type:"file",path}|{type:"link",url,title?}]}); chat_present_json({id?,title?,value}); chat_cite({messageId?,text?,citations:[{quote OR start/end,label?,target:{type:"url",url}|{type:"file",path,line?}|{type:"message",messageId?,toolId?}}]}). For a new cited answer supply text and citations together; the tool displays the answer, so do not repeat it. Reuse ids to update a card. Prefer path-based image/file result blocks in the conversation visualization directory (up to 4 MB per file); inline base64 must fit the entire 1 MB MCP request. Progress cancellation stops the whole current turn, or the named agent; advertise it only when appropriate. Claude MCP names use the mcp__ai-browser__ prefix.`;
 	}
 
 	/** Explicit publication is available to every provider through our conversation-scoped MCP tool. */
-	public async presentVisualization(file: string, title?: string): Promise<unknown> {
+	/** Provider-independent entry points, scoped by the MCP caller's conversation capability. */
+	public async presentRich(kind: string, args: Record<string, unknown>): Promise<unknown> {
+		if (this._closed || this._discarded) { throw new Error('The conversation is no longer open.'); }
+		const id = richString(args.id, 'id', 256) || generateUuid();
+		if (kind === 'notification') { this._onAgentEvent({ type: 'notice', ...richNotice({ ...args, id }) }); }
+		else if (kind === 'progress') { this._onAgentEvent({ type: 'progress', ...richProgress(args) }); }
+		else if (kind === 'plan') { this._onAgentEvent({ type: 'plan', ...richPlan(args) }); }
+		else if (kind === 'json' || kind === 'result') {
+			if (kind === 'json' && args.value === undefined) { throw new Error('value is required.'); }
+			if (kind === 'result' && (!Array.isArray(args.blocks) || args.blocks.length > 128)) { throw new Error('blocks must be an array of at most 128 result blocks.'); }
+			const blocks: ResultBlock[] = kind === 'json' ? [{ type: 'json', value: args.value as JsonValue }] : resultBlocks(args.blocks);
+			for (const block of blocks) {
+				const size = block.type === 'text' ? block.text.length : block.type === 'json' ? (JSON.stringify(block.value) ?? '').length : 0;
+				if (size > richBlockLimit) { throw new Error(`A ${block.type} block is over ${richBlockLimit} characters; write it to a file in the conversation directory and present that instead.`); }
+			}
+			this._onAgentEvent({ type: 'result', id, title: richString(args.title, 'title', 500) || 'Result', blocks });
+		} else if (kind === 'citations') {
+			const messageId = richString(args.messageId, 'messageId', 256);
+			const suppliedText = richString(args.text, 'text', 200_000);
+			const existing = [...this._chat.entries].reverse().find((entry): entry is Extract<ChatEntry, { kind: 'assistant' }> => entry.kind === 'assistant' && (messageId ? entry.id === messageId : suppliedText === undefined));
+			if (messageId && !existing) { throw new Error('That assistant message is not in this conversation.'); }
+			const text = suppliedText ?? existing?.text;
+			if (text === undefined) { throw new Error('Supply text for a new cited answer, or messageId for an existing assistant message.'); }
+			const citations = richCitations(args.citations, text);
+			for (const citation of citations) {
+				if (citation.target.type === 'message' && !this._chat.entries.some(entry => citation.target.type === 'message' && (citation.target.messageId && entry.id === citation.target.messageId || citation.target.toolId && entry.kind === 'tool' && entry.id === citation.target.toolId))) { throw new Error('The cited message or tool does not belong to this conversation.'); }
+			}
+			if (existing) { if (!existing.id) { Object.assign(existing, { id }); } existing.text = text; existing.citations = citations; }
+			else { this._push({ kind: 'assistant', id, text, citations }); }
+			this._textBreak = true;
+			this._post(); await this._save();
+			return { displayed: true, messageId: existing?.id ?? id, citations: citations.length };
+		} else { throw new Error('Unknown rich presentation type.'); }
+		this._chat.updatedAt = Date.now();
+		await this._richWork;
+		await this._syncVisualizations();
+		await this._save();
+		return { displayed: true, id: kind === 'progress' || kind === 'plan' ? args.id : id };
+	}
+
+	public async cancelProgress(id: string): Promise<void> {
+		const entry = this._chat.entries.find((entry): entry is ProgressEntry => entry.kind === 'progress' && entry.id === id);
+		if (!entry?.cancel || entry.status !== 'running' || entry.cancelRequestedAt) { return; }
+		if (entry.cancel.agentId) {
+			if (!await this.stopAgent(entry.cancel.agentId)) { return; }
+		} else { this.stop(); }
+		Object.assign(entry, { cancelRequestedAt: Date.now(), stage: 'Stopping…' });
+		this._post();
+		await this._save();
+	}
+
+	private _archiveBlocks(chat: StoredChat, entry: ToolEntry | Extract<ChatEntry, { kind: 'result' }>, blocks: readonly ResultBlock[]): void {
+		const store = this._visualizations();
+		const version = (this._blockVersions.get(entry) ?? 0) + 1;
+		this._blockVersions.set(entry, version);
+		this._richWork = this._richWork.catch(() => {}).then(async () => {
+			const archived: ResultBlock[] = [];
+			for (const [at, block] of blocks.entries()) {
+				if ((block.type === 'image' || block.type === 'file') && (block.base64 !== undefined || block.path !== undefined)) {
+					try {
+						if (!store || this._discardedChats.has(chat)) { return; }
+						const published = block.path !== undefined
+							? block.type === 'image' ? await store.publishImage(block.path) : await store.publishArtifact(block.path, 'file')
+							: await store.publishInline(block.base64!, block.type, block.type === 'file' ? block.name : 'Image');
+						const ref = { ...published, at, kind: block.type, title: block.type === 'file' ? block.name : 'Image' };
+						archived.push(block.type === 'image' ? { type: 'image', ref } : { type: 'file', name: block.name, ref });
+					} catch (error) { archived.push({ type: 'text', text: `Attachment unavailable: ${error instanceof Error ? error.message : String(error)}` }); }
+				} else { archived.push(block); }
+			}
+			if (!this._discardedChats.has(chat) && this._blockVersions.get(entry) === version) { entry.blocks = archived; }
+		});
+		void this._richWork.then(() => { if (this._discardedChats.has(chat)) { return; } if (chat === this._chat && !this._closed) { this._post(); void this._syncVisualizations(); } void this._save(chat); });
+	}
+
+	private _entryReferences(entry: ChatEntry): import('./visualizationProtocol').VisualizationReference[] {
+		return entry.kind === 'assistant' ? entry.visualizations ?? [] : entry.kind === 'tool' || entry.kind === 'result' ? (entry.blocks ?? []).flatMap(block => (block.type === 'image' || block.type === 'file') && block.ref ? [block.ref] : []) : [];
+	}
+
+	public presentImage(file: string, title?: string): Promise<unknown> {
+		return this.presentVisualization(file, title, 'image');
+	}
+
+	public presentArtifact(file: string, kind: ArtifactKind, title?: string): Promise<unknown> {
+		return this.presentVisualization(file, title, kind);
+	}
+
+	/** A user download can resolve only an archived artifact referenced by this conversation. */
+	public async artifactFile(revision: string): Promise<ArtifactSnapshot | undefined> {
+		if (!this._chat.entries.some(entry => this._entryReferences(entry).some(ref => ref.revision === revision && ref.kind && ref.kind !== 'image'))) { return undefined; }
+		return this._visualizations()?.loadArtifact(revision);
+	}
+
+	public async presentVisualization(file: string, title?: string, kind?: PresentationKind): Promise<unknown> {
 		if (this._closed || this._discarded) { throw new Error('The conversation is no longer open.'); }
 		const store = this._visualizations();
-		if (!store) { throw new Error('HTML visualization storage is unavailable.'); }
+		if (!store) { throw new Error('Presentation storage is unavailable.'); }
 		const chat = this._chat;
-		const published = await store.publish(file);
+		const published = kind === 'image' ? await store.publishImage(file) : kind ? await store.publishArtifact(file, kind) : await store.publish(file);
 		if (chat !== this._chat || this._closed || this._discarded) { throw new Error('The conversation changed before publication.'); }
 		// The marker adapter owns both placement and immutable snapshot references.
-		const existing = [...chat.entries].reverse().find((entry): entry is Extract<ChatEntry, { kind: 'assistant' }> => entry.kind === 'assistant' && visualizationMarkers(entry.text).some(marker => marker.path === file));
-		const at = existing ? visualizationMarkers(existing.text).find(marker => marker.path === file)!.start : 0;
-		const reference = { at, id: published.id, revision: published.revision, title: title || existing?.visualizations?.find(ref => ref.at === at)?.title || path.basename(file) };
+		const existing = [...chat.entries].reverse().find((entry): entry is Extract<ChatEntry, { kind: 'assistant' }> => entry.kind === 'assistant' && presentationMarkers(entry.text).some(marker => marker.path === file && marker.kind === kind));
+		const at = existing ? presentationMarkers(existing.text).find(marker => marker.path === file && marker.kind === kind)!.start : 0;
+		const reference = { at, kind, id: published.id, revision: published.revision, title: title || existing?.visualizations?.find(ref => ref.at === at)?.title || path.basename(file) };
 		if (existing) { existing.visualizations = [...(existing.visualizations ?? []).filter(ref => ref.at !== at), reference]; }
-		else { this._push({ kind: 'assistant', text: `\uE200visualize\uE202${JSON.stringify({ path: file, title })}\uE201`, visualizations: [reference] }); }
+		else { this._push({ kind: 'assistant', text: `\uE200${kind ?? 'visualize'}\uE202${JSON.stringify({ path: file, title })}\uE201`, visualizations: [reference] }); }
 		this._textBreak = true;
 		await this._syncVisualizations();
 		this._post();
 		await this._save(chat);
-		return { id: published.id, revision: published.revision, displayed: true, note: 'Displayed inline. No additional reference is needed. To update, edit the file and call chat_present_html again.' };
+		return { id: published.id, revision: published.revision, displayed: true, note: `Displayed inline. No additional reference is needed. To update, edit the file and call chat_present_${kind ?? 'html'} again.` };
 	}
 
 	/** Coalesces deltas and refreshes only at completed tool/turn boundaries, never while a file streams. */
@@ -301,20 +404,20 @@ export class ChatTab {
 			const store = this._visualizations();
 			if (!store) { return; }
 			const targets = chat.entries.flatMap(entry => entry.kind === 'assistant'
-				? visualizationMarkers(entry.text).map(marker => ({ entry, marker })) : []);
-			const latest = new Map(targets.map(target => [target.marker.path, target]));
+				? presentationMarkers(entry.text).map(marker => ({ entry, marker })) : []);
+			const latest = new Map(targets.map(target => [`${target.marker.kind ?? 'html'}:${target.marker.path}`, target]));
 			let changed = false;
 			for (const target of targets) {
 				const { entry, marker } = target;
 				const old = entry.visualizations?.find(ref => ref.at === marker.start);
-				if (old && (!update || latest.get(marker.path) !== target)) { continue; }
+				if (old && (!update || latest.get(`${marker.kind ?? 'html'}:${marker.path}`) !== target)) { continue; }
 				let reference;
 				try {
-					const published = await store.publish(marker.path);
-					reference = { at: marker.start, id: published.id, revision: published.revision, title: old?.title || marker.title || path.basename(marker.path), wide: marker.wide };
+					const published = marker.kind === 'image' ? await store.publishImage(marker.path) : marker.kind ? await store.publishArtifact(marker.path, marker.kind) : await store.publish(marker.path);
+					reference = { at: marker.start, kind: marker.kind, id: published.id, revision: published.revision, title: old?.title || marker.title || path.basename(marker.path), wide: marker.wide };
 				} catch (error) {
 					// A failed revision keeps the last successful snapshot visible.
-					reference = { ...old, at: marker.start, id: old?.id ?? `error-${marker.start}`, title: marker.title || 'Visualization', wide: marker.wide,
+					reference = { ...old, at: marker.start, kind: marker.kind, id: old?.id ?? `error-${marker.start}`, title: old?.title || marker.title || (marker.kind ? 'Artifact' : 'Visualization'), wide: marker.wide,
 						error: error instanceof Error ? error.message : 'The visualization could not be read.' };
 				}
 				if (JSON.stringify(old) !== JSON.stringify(reference)) {
@@ -323,14 +426,18 @@ export class ChatTab {
 				}
 			}
 			const html: Record<string, VisualizationSnapshot> = {};
-			let bytes = 0;
+			let bytes = 0, htmlBytes = 0;
 			// Bound both remote frames and memory; older snapshots remain in the archive.
-			const revisions = [...new Set(chat.entries.flatMap(entry => entry.kind === 'assistant' ? (entry.visualizations ?? []).flatMap(ref => ref.revision ? [ref.revision] : []) : []))].reverse();
+			const revisions = [...new Set(chat.entries.flatMap(entry => this._entryReferences(entry).flatMap(ref => ref.revision ? [ref.revision] : [])))].reverse();
 			for (const revision of revisions.slice(0, 8)) {
-				const content = await store.load(revision);
-				if (content === undefined || bytes + Buffer.byteLength(content) > visualizationTotalLimit) { continue; }
-				bytes += Buffer.byteLength(content);
-				html[revision] = { html: content };
+				const kind = chat.entries.flatMap(entry => this._entryReferences(entry)).find(ref => ref.revision === revision)?.kind;
+				const snapshot: VisualizationSnapshot = kind === 'image' ? { image: await store.loadImage(revision) } : kind ? { artifact: await store.loadArtifact(revision) } : { html: await store.load(revision) };
+				const size = Buffer.byteLength(JSON.stringify(snapshot));
+				const htmlSize = Buffer.byteLength(snapshot.html ?? '');
+				if ((!snapshot.image && !snapshot.artifact && snapshot.html === undefined) || bytes + size > presentationTotalLimit || htmlBytes + htmlSize > visualizationTotalLimit) { continue; }
+				bytes += size;
+				htmlBytes += htmlSize;
+				html[revision] = snapshot;
 			}
 			if (chat !== this._chat || this._discarded || this._closed) { return; }
 			if (JSON.stringify(html) !== JSON.stringify(this._visualizationHtml)) { this._visualizationHtml = html; changed = true; }
@@ -443,6 +550,7 @@ export class ChatTab {
 
 	constructor(private _host: TabHost, chat: StoredChat) {
 		chat.ultracode ??= this._host.ultracodeDefault?.() ?? false;
+		for (const entry of chat.entries) { if ((entry.kind === 'assistant' || entry.kind === 'user') && !entry.id) { Object.assign(entry, { id: generateUuid() }); } }
 		this._chat = chat;
 		this._failed = endedInError(chat);
 		void this._syncVisualizations();
@@ -822,6 +930,7 @@ export class ChatTab {
 		this._closed = false;
 		this._discarded = false;
 		chat.ultracode ??= this._host.ultracodeDefault?.() ?? false;
+		for (const entry of chat.entries) { if ((entry.kind === 'assistant' || entry.kind === 'user') && !entry.id) { Object.assign(entry, { id: generateUuid() }); } }
 		this._chat = chat;
 		this._unseen = false;
 		this._visualizationStore = undefined;
@@ -865,6 +974,7 @@ export class ChatTab {
 
 	/** Lets the session go without saving: the chat was deleted. */
 	public discard(): void {
+		this._discardedChats.add(this._chat);
 		this._cancelRetry();
 		this._discarded = true;
 		this._pending = [];
@@ -1047,7 +1157,7 @@ export class ChatTab {
 		this._failed = false;
 		this._unseen = false;
 		this._failuresBefore = failures(this._chat);
-		const entry: UserEntry = { kind: 'user', text: shown, attachments: attachments.map(a => `${attachmentReference(a.chip)} ${a.chip.label}`),
+		const entry: UserEntry = { kind: 'user', id: generateUuid(), text: shown, attachments: attachments.map(a => `${attachmentReference(a.chip)} ${a.chip.label}`),
 			...(attachments.some(a => a.chip.iconName) ? { attachmentFiles: attachments.map(a => a.chip.iconName ?? null) } : {}),
 			...(attachments.length ? {
 				attachmentKinds: attachments.map(a => a.chip.kind),
@@ -1184,7 +1294,7 @@ export class ChatTab {
 	}
 
 	private _save(chat = this._chat): Promise<void> {
-		return this._discarded ? Promise.resolve() : this._host.save(chat);
+		return this._richWork.then(() => this._discardedChats.has(chat) ? undefined : this._host.save(chat));
 	}
 
 	/** Where the agents work: the conversation's own folder, else the window's. */
@@ -1369,7 +1479,7 @@ export class ChatTab {
 				if (last?.kind === 'assistant' && !this._textBreak) {
 					last.text += event.text;
 				} else {
-					chat.entries.push({ kind: 'assistant', text: event.text });
+					chat.entries.push({ kind: 'assistant', id: generateUuid(), text: event.text });
 				}
 				this._textBreak = false;
 				break;
@@ -1459,6 +1569,7 @@ export class ChatTab {
 					return;
 				}
 				const u = event.update;
+				if (u.blocks) { this._archiveBlocks(chat, entry, u.blocks); }
 				// A task report about a call that is not an agent — a background
 				// shell, a long Bash call — is not this row's to take.
 				if (u.agent && entry.tool !== 'agent') {
@@ -1488,9 +1599,36 @@ export class ChatTab {
 				}
 				break;
 			}
-			case 'notice':
-				chat.entries.push({ kind: 'notice', text: event.text });
+			case 'notice': {
+				const previous = event.id ? chat.entries.findIndex(entry => entry.kind === 'notice' && entry.id === event.id) : -1;
+				const old = previous >= 0 ? chat.entries[previous] as Extract<ChatEntry, { kind: 'notice' }> : undefined;
+				const notice: Extract<ChatEntry, { kind: 'notice' }> = { ...event, kind: 'notice', id: event.id ?? generateUuid(), level: event.level ?? 'info', at: old?.at ?? event.at ?? Date.now() };
+				if (previous >= 0) { chat.entries[previous] = notice; } else { chat.entries.push(notice); }
 				break;
+			}
+			case 'progress': {
+				const previous = chat.entries.findIndex(entry => entry.kind === 'progress' && entry.id === event.id);
+				const old = previous >= 0 ? chat.entries[previous] as ProgressEntry : undefined;
+				const status = event.status ?? old?.status ?? 'running';
+				const restarting = old && old.status !== 'running' && status === 'running';
+				const progress: ProgressEntry = { ...old, ...definedOnly(event), id: event.id, title: event.title, kind: 'progress', status, cancelRequestedAt: restarting ? undefined : old?.cancelRequestedAt, startedAt: restarting ? Date.now() : old?.startedAt ?? Date.now(), updatedAt: Date.now(), endedAt: status === 'running' ? undefined : old?.endedAt ?? Date.now() };
+				if (previous >= 0) { chat.entries[previous] = progress; } else { chat.entries.push(progress); }
+				break;
+			}
+			case 'plan': {
+				const previous = chat.entries.findIndex(entry => entry.kind === 'plan' && entry.id === event.id);
+				const plan = { ...event, kind: 'plan' as const, updatedAt: Date.now() };
+				if (previous >= 0) { chat.entries[previous] = plan; } else { chat.entries.push(plan); }
+				break;
+			}
+			case 'result': {
+				let entry = chat.entries.find((entry): entry is Extract<ChatEntry, { kind: 'result' }> => entry.kind === 'result' && entry.id === event.id);
+				if (!entry) { entry = { kind: 'result', id: event.id, title: event.title, blocks: [], at: Date.now() }; chat.entries.push(entry); }
+				entry.title = event.title;
+				this._archiveBlocks(chat, entry, event.blocks);
+				this._textBreak = true;
+				break;
+			}
 			case 'approval': {
 				const request = event.request;
 				// A question with choices: only the user can choose, so the
@@ -1590,6 +1728,15 @@ export class ChatTab {
 				}
 				break;
 			case 'turnEnd': {
+				for (const entry of chat.entries) {
+					if (entry.kind === 'progress' && entry.status === 'running' && !entry.cancel?.agentId && !(entry.related?.toolId && this._tool(entry.related.toolId)?.agent?.background)) {
+						Object.assign(entry, { status: event.error === 'Stopped.' || entry.cancelRequestedAt ? 'cancelled' : event.error ? 'failed' : 'done', updatedAt: Date.now(), endedAt: Date.now() });
+					}
+					if (entry.kind === 'plan' && event.error === 'Stopped.') {
+						Object.assign(entry, { steps: entry.steps.map(step => step.status === 'pending' || step.status === 'inProgress' ? { ...step, status: 'cancelled' } : step), updatedAt: Date.now() });
+					}
+				}
+
 				this._endThinking();
 				this._textBreak = false;
 				const now = Date.now();
@@ -1664,6 +1811,14 @@ export class ChatTab {
 			}
 		}
 		this._endOrphanedAgents();
+		if (event.type !== 'text' && event.type !== 'thinking') {
+			const finished = new Map(chat.entries.flatMap(entry => entry.kind === 'tool' && entry.status !== 'running' ? [[entry.id, entry] as const] : []));
+			for (const entry of chat.entries) {
+				if (entry.kind !== 'progress' || entry.status !== 'running') { continue; }
+				const tool = finished.get(entry.cancel?.agentId ?? entry.related?.toolId ?? '');
+				if (tool) { Object.assign(entry, { status: tool.status === 'done' ? 'done' : tool.status === 'stopped' ? 'cancelled' : 'failed', updatedAt: Date.now(), endedAt: tool.endedAt ?? Date.now() }); }
+			}
+		}
 		if (event.type === 'text' && event.text.includes('\uE201') || event.type === 'toolUpdate' && !!event.update.status || event.type === 'turnEnd') {
 			void this._syncVisualizations(event.type !== 'text');
 		}
@@ -1754,6 +1909,8 @@ export class ChatTab {
 	}
 
 	private _push(entry: ChatEntry): void {
+		if ((entry.kind === 'assistant' || entry.kind === 'user') && !entry.id) { Object.assign(entry, { id: generateUuid() }); }
+		if (entry.kind === 'notice') { Object.assign(entry, { id: entry.id ?? generateUuid(), at: entry.at ?? Date.now(), level: entry.level ?? 'info' }); }
 		if (entry.kind === 'error') this._host.authenticationError?.(this._chat.agent, entry.text);
 		this._chat.entries.push(entry);
 		this._chat.updatedAt = Date.now();
@@ -1823,6 +1980,7 @@ export class ChatTab {
 	 * session, whose `running` a dispose may already have cleared.
 	 */
 	private _endTurnHere(): void {
+		for (const entry of this._chat.entries) { if (entry.kind === 'progress' && entry.status === 'running') { Object.assign(entry, { status: 'cancelled', endedAt: Date.now(), updatedAt: Date.now() }); } }
 		if (this._session?.running || this._pending.length) {
 			this._abandoning = true;
 			try {
@@ -1893,7 +2051,12 @@ export function storedEntries(entries: readonly ChatEntry[]): ChatEntry[] {
 	}
 	return kept.map(entry => {
 		if ((entry.kind === 'assistant' || entry.kind === 'user' || entry.kind === 'thinking') && entry.text.length > storedTextLimit) {
-			return { ...entry, text: `${entry.text.slice(0, storedTextLimit)}\n\n[…]` };
+			// Citations are offsets into the text: keep only those still inside what is stored.
+			const citations = entry.kind === 'assistant' && entry.citations ? entry.citations.filter(citation => citation.end <= storedTextLimit) : undefined;
+			return { ...entry, text: `${entry.text.slice(0, storedTextLimit)}\n\n[…]`, ...(citations ? { citations } : {}) };
+		}
+		if (entry.kind === 'result' && entry.blocks.length) {
+			return { ...entry, blocks: cutBlocks(entry.blocks)! };
 		}
 		if (entry.kind === 'tool') {
 			// The history is rewritten whole on every save; a full 20 000-character
@@ -1902,9 +2065,22 @@ export function storedEntries(entries: readonly ChatEntry[]): ChatEntry[] {
 				...entry, input: cut(entry.input), output: cut(entry.output),
 				// An agent's report is its output again, and was stored whole beside the cut copy.
 				agent: entry.agent && { ...entry.agent, summary: cut(entry.agent.summary) },
+				// Text and JSON blocks are the same output again; images and files are archived apart.
+				blocks: cutBlocks(entry.blocks),
 			};
 		}
 		return entry;
+	});
+}
+
+function cutBlocks(blocks: readonly ResultBlock[] | undefined): ResultBlock[] | undefined {
+	return blocks?.map(block => {
+		if (block.type === 'text') { return { ...block, text: cut(block.text)! }; }
+		if (block.type === 'json') {
+			const text = JSON.stringify(block.value) ?? '';
+			return text.length > storedToolLimit ? { type: 'text', text: `${text.slice(0, storedToolLimit)}\n…` } : block;
+		}
+		return block;
 	});
 }
 
@@ -1918,6 +2094,8 @@ function cut(text: string | undefined): string | undefined {
  * their rows "Running…" and their thinking open for good.
  */
 export function settled(entry: ChatEntry): ChatEntry {
+	if (entry.kind === 'progress' && entry.status === 'running') { return { ...entry, status: 'cancelled', endedAt: entry.endedAt ?? entry.updatedAt }; }
+	if (entry.kind === 'plan' && entry.steps.some(step => step.status === 'inProgress')) { return { ...entry, steps: entry.steps.map(step => step.status === 'inProgress' || step.status === 'pending' ? { ...step, status: 'cancelled' } : step) }; }
 	if (entry.kind === 'tool' && entry.status === 'running') {
 		return { ...entry, status: entry.agent ? 'stopped' : 'failed', endedAt: entry.endedAt ?? entry.startedAt };
 	}

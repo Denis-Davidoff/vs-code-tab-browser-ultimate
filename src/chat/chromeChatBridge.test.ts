@@ -820,3 +820,10 @@ test('terminals in Chrome: disabled with the setting named, consent once, frames
 	assert.deepEqual(held, { cursor: frames.cursor, frames: [] });
 	bridge.close();
 });
+
+test('cancelProgress commands remain scoped to the displayed conversation', () => {
+	const command = (message: unknown) => readChromeChatCommand({ id: 'cancel-job-123', chatId: 'own-chat', message });
+	assert.deepEqual(JSON.parse(JSON.stringify(command({ type: 'cancelProgress', chatId: 'own-chat', id: 'job' })?.message)), { type: 'cancelProgress', chatId: 'own-chat', id: 'job' });
+	assert.equal(command({ type: 'cancelProgress', chatId: 'other-chat', id: 'job' }), undefined);
+	assert.equal(command({ type: 'cancelProgress', chatId: 'own-chat', id: '' }), undefined);
+});

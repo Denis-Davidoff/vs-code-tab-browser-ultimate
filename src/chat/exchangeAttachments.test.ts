@@ -83,3 +83,11 @@ test('remote native tab opening reports missing API access without opening a loc
  await assert.rejects(()=>h.command({type:'openBrowser',where:'vscode'},null),/native browser API/);
  assert.equal(h.calls.length,0);assert.equal(h.events.length,0);
 });
+
+test('a remote progress cancellation cannot select a different conversation', async () => {
+ const h=harness();
+ await assert.rejects(()=>h.command({type:'cancelProgress',chatId:'local-chat',id:'job'}),/not shared/);
+ const received:any[]=[];h.view._receive=async(message:any)=>received.push(message);
+ await h.command({type:'cancelProgress',chatId:'remote-chat',id:'job'});
+ assert.equal(received[0].chatId,'remote-chat');assert.equal(received[0].id,'job');
+});

@@ -155,7 +155,8 @@ class ExchangeSurface implements ChatStateSurface {
 		this.hub?.sync();
 		const view = {...full.view,...terminalView,surface:'exchange' as const,controls:{...surfaceControls('exchange'),...terminalControls},voice:{...full.view.voice,available:false,reason:'Microphone recording is available in VS Code.'},suggestions:exchangePageSuggestion(this.page?.())};
 		let body = JSON.stringify({...JSON.parse(exchangeSnapshot(windowed, offset)),uiVersion:1,view});
-		while (Buffer.byteLength(body)>5_000_000 && view.entries.length>1) { { const cut = Math.max(1,Math.floor(view.entries.length/4)); view.entries = view.entries.slice(cut); view.entriesOffset = (view.entriesOffset ?? 0) + cut; } body = JSON.stringify({...JSON.parse(exchangeSnapshot(windowed, offset)),uiVersion:1,view}); }
+		// Allow the bounded 6 MB presentation set plus conversation text below the encrypted relay limit.
+		while (Buffer.byteLength(body)>8_000_000 && view.entries.length>1) { { const cut = Math.max(1,Math.floor(view.entries.length/4)); view.entries = view.entries.slice(cut); view.entriesOffset = (view.entriesOffset ?? 0) + cut; } body = JSON.stringify({...JSON.parse(exchangeSnapshot(windowed, offset)),uiVersion:1,view}); }
 		this.body = body;
 		this.view = { value: view as unknown as Record<string, unknown>, trimmed: view.entries.length !== full.view.entries.length, chatId: state.chatId, running: state.running };
 		if (!this.publish) { this.publish = setTimeout(() => { this.publish = undefined; this.sendSnapshot(); }, 16); }

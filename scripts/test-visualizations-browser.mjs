@@ -90,7 +90,7 @@ try {
     }
   } finally { clearTimeout(timer); socket?.close(); if (child.pid && child.exitCode === null && child.signalCode === null) { child.kill('SIGTERM'); await new Promise(resolve => child.once('exit', resolve)); } }
   assert.deepEqual(probes, [], 'Generated content made an external request, including navigation.');
-  console.log('PASS: full chat bootstrap under VS Code preload, host delivery, child rejection; sandbox, CSP including navigation, stable frame and revision state.');
+  console.log('PASS: full chat bootstrap under VS Code preload, host delivery, child rejection; sandbox and CSP; native images, files, tables, media, typed notifications, progress, plans, JSON search/copy and bound citations.');
 } finally {
   await new Promise(resolve => server ? server.close(resolve) : resolve());
   await rm(temporary, { recursive: true, force: true });

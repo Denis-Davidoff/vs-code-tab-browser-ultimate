@@ -1,3 +1,4 @@
+import type { NoticeData, ProgressEntry, PlanEntry, ResultEntry, ResultBlock, Citation } from './richProtocol';
 import type { TemporaryStorage } from '../core/temporaryFiles';
 import type { FeatureAiSettings } from './featureAi';
 import type { RecordingQuality } from '../browser/recordingQuality';
@@ -286,6 +287,7 @@ export interface ToolEntry {
 	/** The command, the diff, the arguments. */
 	input?: string;
 	output?: string;
+	blocks?: readonly ResultBlock[];
 	status: 'running' | 'done' | 'failed' | 'stopped';
 	exitCode?: number;
 	added?: number;
@@ -307,7 +309,7 @@ export type ChatViewMode = 'minimal' | 'compact' | 'standard';
 
 export type ChatEntry =
 	| {
-		readonly kind: 'user'; readonly text: string; readonly attachments: readonly string[]; readonly at?: number;
+		readonly kind: 'user'; readonly id?: string; readonly text: string; readonly attachments: readonly string[]; readonly at?: number;
 		/** Beside `attachments`, by index: the file name each chip carries (`AttachmentChip.iconName`), `null` for none. */
 		readonly attachmentFiles?: readonly (string | null)[];
 		/** Attachment kinds by index, for icons in sent prompts. */
@@ -324,12 +326,15 @@ export type ChatEntry =
 		/** The models that answered the turn when they were not the one picked — what Gemini's Auto chose. */
 		models?: readonly string[];
 	}
-	| { readonly kind: 'assistant'; text: string; visualizations?: VisualizationReference[] }
-	| { readonly kind: 'thinking'; text: string; readonly startedAt: number; endedAt?: number }
+	| { readonly kind: 'assistant'; readonly id?: string; text: string; visualizations?: VisualizationReference[]; citations?: readonly Citation[] }
+	| { readonly kind: 'thinking'; readonly id?: string; text: string; readonly startedAt: number; endedAt?: number }
 	| ToolEntry
 	| ApprovalEntry
-	| { readonly kind: 'notice'; readonly text: string }
-	| { readonly kind: 'error'; readonly text: string };
+	| ({ readonly kind: 'notice' } & NoticeData)
+	| ProgressEntry
+	| PlanEntry
+	| ResultEntry
+	| { readonly kind: 'error'; readonly id?: string; readonly text: string };
 
 /**
  * What an approval is for — the categories of the composer's approval menu:
@@ -698,7 +703,7 @@ export interface ChatAccess {
 }
 
 export interface ChatViewState {
-	/** Immutable HTML snapshots belonging to this conversation; never executor paths or a file endpoint. */
+	/** Immutable HTML and image snapshots belonging to this conversation; never executor paths or a file endpoint. */
 	readonly visualizations?: Readonly<Record<string, VisualizationSnapshot>>;
 	/** Editor only: `visualizations` was left out because it is the set the view already holds. */
 	readonly visualizationsUnchanged?: boolean;
@@ -1104,6 +1109,8 @@ export type ViewToHost =
 	/** A chip in the composer clicked: its file, its image or its text, in an editor tab. */
 	| { readonly type: 'openAttachment'; readonly id: string; readonly entry?: number }
 	| { readonly type: 'reattachAttachment'; readonly id: string; readonly entry?: number }
+	| { readonly type: 'cancelProgress'; readonly chatId: string; readonly id: string }
+	| { readonly type: 'saveArtifact'; readonly chatId: string; readonly revision: string }
 	| { readonly type: 'saveAttachment'; readonly id: string }
 	/** A tool call's input or output, opened as a read-only text in an editor tab. */
 	| { readonly type: 'openText'; readonly name: string; readonly text: string }

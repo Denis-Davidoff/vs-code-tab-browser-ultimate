@@ -1,4 +1,6 @@
 import type { VisualizationReference, VisualizationSnapshot } from '../src/chat/visualizationProtocol';
+import { updateArtifactViews, type ArtifactActions } from './artifactViews';
+import { updateImageViews } from './imageViews';
 import { nonceVisualizationDocument } from './visualizationDocument';
 
 interface View {
@@ -25,13 +27,15 @@ let observer: MutationObserver | undefined;
 let themeObserver: MutationObserver | undefined;
 
 /** Frames keep their browsing contexts while surrounding assistant text streams. */
-export function updateVisualizationViews(container: HTMLElement, references: readonly VisualizationReference[], snapshots: Readonly<Record<string, VisualizationSnapshot>>): void {
+export function updateVisualizationViews(container: HTMLElement, references: readonly VisualizationReference[], snapshots: Readonly<Record<string, VisualizationSnapshot>>, actions: ArtifactActions = {}): void {
+	const artifacts = updateArtifactViews(container, references, snapshots, actions);
+	const images = updateImageViews(container, references, snapshots);
 	let views = groups.get(container);
 	if (!views) { views = new Map(); groups.set(container, views); }
 	for (const [at, view] of views) {
-		if (!references.some(ref => ref.at === at)) { dispose(view); view.element.remove(); views.delete(at); }
+		if (!references.some(ref => ref.at === at && !ref.kind)) { dispose(view); view.element.remove(); views.delete(at); }
 	}
-	for (const ref of references) {
+	for (const ref of references.filter(ref => !ref.kind)) {
 		let view = views.get(ref.at);
 		if (!view) {
 			view = createView(ref);
@@ -49,6 +53,15 @@ export function updateVisualizationViews(container: HTMLElement, references: rea
 		else if (view.html !== undefined && !view.stopped && !view.frame.isConnected) { attach(view); }
 		view.run.textContent = view.frame.isConnected ? 'Stop' : 'Run';
 		if (view.ready) { render(view); }
+	}
+	// Keep mixed HTML/image cards in the order of their assistant references.
+	let previous: HTMLElement | undefined;
+	for (const ref of [...references].sort((a, b) => a.at - b.at)) {
+		const element = (ref.kind === 'image' ? images.get(ref.at) : ref.kind ? artifacts.get(ref.at) : views.get(ref.at))?.element;
+		if (!element) { continue; }
+		const next = previous ? previous.nextSibling : container.firstChild;
+		if (next !== element) { container.insertBefore(element, next); }
+		previous = element;
 	}
 }
 

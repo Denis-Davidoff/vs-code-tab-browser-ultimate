@@ -24,6 +24,7 @@
  * because the next CLI release may well rename it.
  */
 
+import type { NoticeData, ProgressData, PlanData, ResultData, ResultBlock, JsonValue, Citation } from './richProtocol';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -540,6 +541,7 @@ export interface ToolStart {
 }
 
 export interface ToolUpdate {
+	readonly blocks?: readonly ResultBlock[];
 	readonly output?: string;
 	/** `output` continues what is there rather than replacing it — a streamed command. */
 	readonly append?: boolean;
@@ -583,7 +585,10 @@ export type AgentEvent =
 	| { readonly type: 'approval'; readonly request: ApprovalRequest }
 	/** The CLI withdrew a question it had asked — a Stop, an interrupted turn. */
 	| { readonly type: 'approvalDone'; readonly id: string }
-	| { readonly type: 'notice'; readonly text: string };
+	| ({ readonly type: 'notice' } & NoticeData)
+	| ({ readonly type: 'progress' } & ProgressData)
+	| ({ readonly type: 'plan' } & PlanData)
+	| ({ readonly type: 'result' } & ResultData);
 
 /** Tool output kept per call; a `cat` of a large file is not worth keeping whole. */
 export const toolOutputLimit = 20_000;
@@ -688,6 +693,16 @@ export function claudeEvents(message: Record<string, unknown>, tasks?: Map<strin
 				.filter(isRecord)
 				.filter(block => block.type === 'tool_use' && typeof block.name === 'string' && typeof block.id === 'string' && block.name !== 'AskUserQuestion')
 				.map(block => ({ type: 'tool' as const, id: block.id as string, tool: claudeTool(block.name as string, block.input) }));
+			for (const block of content.filter(isRecord)) {
+				if (block.type === 'tool_use' && block.name === 'TodoWrite' && isRecord(block.input) && Array.isArray(block.input.todos)) {
+					const steps = block.input.todos.filter(isRecord).filter(todo => typeof todo.content === 'string').map((todo, index) => ({
+						id: String(index), text: todo.content as string,
+						status: todo.status === 'completed' ? 'done' as const : todo.status === 'in_progress' ? 'inProgress' as const : todo.status === 'cancelled' ? 'cancelled' as const : 'pending' as const,
+					}));
+					events.push({ type: 'plan', id: 'claude-plan', title: 'Plan', steps });
+				}
+			}
+
 			// Each of the main agent's replies carries that one request's usage:
 			// everything it read plus what it wrote is what the next request
 			// carries. The turn's `result` adds up every request of the turn, so it
@@ -733,8 +748,8 @@ export function claudeEvents(message: Record<string, unknown>, tasks?: Map<strin
 						type: 'toolUpdate' as const,
 						id: block.tool_use_id as string,
 						update: exit
-							? { output: clip(text.slice(exit[0].length)), status: 'failed' as const, exitCode: Number(exit[1]) }
-							: { output: clip(text), status: failed ? 'failed' as const : 'done' as const },
+							? { output: clip(text.slice(exit[0].length)), status: 'failed' as const, exitCode: Number(exit[1]), ...richResult(block.content, isRecord(message.tool_use_result) ? message.tool_use_result.structuredContent : undefined) }
+							: { output: clip(text), status: failed ? 'failed' as const : 'done' as const, ...richResult(block.content, isRecord(message.tool_use_result) ? message.tool_use_result.structuredContent : undefined) },
 					};
 				});
 		}
@@ -1033,6 +1048,25 @@ function resultError(message: Record<string, unknown>): string {
 export function codexEvents(method: string, params: unknown): AgentEvent[] {
 	const p = isRecord(params) ? params : {};
 	switch (method) {
+		case 'turn/plan/updated': {
+			if (!Array.isArray(p.plan) || typeof p.turnId !== 'string') { return []; }
+			const steps = p.plan.filter(isRecord).filter(step => typeof step.step === 'string').map((step, index) => ({
+				id: String(index), text: step.step as string,
+				status: step.status === 'completed' ? 'done' as const : step.status === 'inProgress' ? 'inProgress' as const : 'pending' as const,
+			}));
+			return [{ type: 'plan', id: `plan:${p.turnId}`, title: typeof p.explanation === 'string' && p.explanation ? p.explanation : 'Plan', steps }];
+		}
+		case 'item/mcpToolCall/progress':
+			return typeof p.itemId === 'string' && typeof p.message === 'string'
+				? [{ type: 'progress', id: `progress:${p.itemId}`, title: 'Tool progress', stage: p.message, related: { toolId: p.itemId }, cancel: {} }]
+				: [];
+		case 'warning':
+		case 'configWarning':
+		case 'deprecationNotice': {
+			const text = typeof p.message === 'string' ? p.message : typeof p.summary === 'string' ? p.summary : undefined;
+			return text ? [{ type: 'notice', text, level: 'warning', reason: typeof p.details === 'string' ? p.details : undefined }] : [];
+		}
+
 		case 'item/agentMessage/delta':
 			return typeof p.delta === 'string' ? [{ type: 'text', text: p.delta }] : [];
 
@@ -1102,7 +1136,10 @@ export function codexEvents(method: string, params: unknown): AgentEvent[] {
 		case 'error': {
 			// `willRetry` means Codex is already trying again; the turn goes on.
 			const error = isRecord(p.error) && typeof p.error.message === 'string' ? p.error.message : undefined;
-			return error && p.willRetry !== true ? [{ type: 'notice', text: error }] : [];
+			return error ? [{ type: 'notice', text: error, level: p.willRetry === true ? 'warning' : 'error',
+				...(typeof p.turnId === 'string' ? { id: `error:${p.turnId}` } : {}),
+				...(isRecord(p.error) && typeof p.error.additionalDetails === 'string' ? { reason: p.error.additionalDetails } : p.willRetry === true ? { reason: 'The provider is retrying automatically.' } : {}),
+			}] : [];
 		}
 
 		default:
@@ -1261,7 +1298,7 @@ function codexToolResult(item: Record<string, unknown>): ToolUpdate | undefined 
 		case 'dynamicToolCall': {
 			const error = isRecord(item.error) && typeof item.error.message === 'string' ? item.error.message : undefined;
 			const content = isRecord(item.result) ? item.result.content : item.contentItems;
-			return { output: clip(error ?? resultText(content)), status: error || item.success === false ? 'failed' : status };
+			return { output: clip(error ?? resultText(content)), status: error || item.success === false ? 'failed' : status, ...richResult(content, isRecord(item.result) ? item.result.structuredContent : undefined) };
 		}
 		case 'webSearch':
 		case 'imageView':
@@ -1781,7 +1818,7 @@ const browserServerTools: ReadonlySet<string> = new Set([
 	'browser_snapshot', 'browser_state', 'browser_tabs', 'browser_text', 'browser_text_segments', 'browser_type', 'browser_wait_for',
 	'editor_context', 'editor_definition', 'editor_references', 'editor_reveal', 'editor_symbols',
 	// The chat's reads, which any token holder may make.
-	'chat_state', 'chat_agents', 'chat_usage', 'chat_present_html',
+	'chat_state', 'chat_agents', 'chat_usage', 'chat_present_html', 'chat_present_image', 'chat_present_file', 'chat_present_table', 'chat_present_sources', 'chat_present_audio', 'chat_present_video', 'chat_notify', 'chat_progress', 'chat_update_plan', 'chat_present_json', 'chat_present_result', 'chat_cite',
 ]);
 
 /** The category of one of our own server's tools, and for a terminal tool which kind. */
@@ -2622,4 +2659,115 @@ function isoTime(value: unknown): number | undefined {
 function oneLine(value: string, limit = 120): string {
 	const line = value.replace(/\s+/g, ' ').trim();
 	return line.length > limit ? `${line.slice(0, limit - 1)}…` : line;
+}
+
+
+/** Preserve multi-part tool output; the legacy text summary remains available to old surfaces. */
+export function resultBlocks(content: unknown, structured?: unknown): ResultBlock[] {
+	const blocks: ResultBlock[] = [];
+	for (const part of typeof content === 'string' ? [{ type: 'text', text: content }] : Array.isArray(content) ? content : content == null ? [] : [content]) {
+		if (!isRecord(part)) { blocks.push({ type: 'json', value: part as JsonValue }); continue; }
+		if ((part.type === 'text' || part.type === 'inputText') && typeof part.text === 'string') { blocks.push({ type: 'text', text: part.text }); }
+		else if (part.type === 'json' && 'value' in part) { blocks.push({ type: 'json', value: part.value as JsonValue }); }
+		else if (part.type === 'inputImage' && typeof part.imageUrl === 'string') {
+			const data = /^data:(image\/(?:png|jpeg|gif|webp));base64,([A-Za-z0-9+/=]*)$/.exec(part.imageUrl);
+			blocks.push(data ? { type: 'image', mimeType: data[1], base64: data[2] } : { type: 'link', url: part.imageUrl, title: 'Image' });
+		}
+		else if (part.type === 'image' && typeof part.path === 'string') { blocks.push({ type: 'image', path: part.path }); }
+		else if (part.type === 'image' && typeof part.data === 'string' && typeof part.mimeType === 'string') { blocks.push({ type: 'image', mimeType: part.mimeType, base64: part.data }); }
+		else if (part.type === 'image' && isRecord(part.source) && part.source.type === 'base64' && typeof part.source.data === 'string' && typeof part.source.media_type === 'string') { blocks.push({ type: 'image', mimeType: part.source.media_type, base64: part.source.data }); }
+		else if (part.type === 'image' && typeof part.base64 === 'string') { blocks.push(part as unknown as ResultBlock); }
+		else if (part.type === 'image' && isRecord(part.source) && typeof part.source.url === 'string') { blocks.push({ type: 'link', url: part.source.url, title: 'Image' }); }
+		else if (part.type === 'file' && typeof part.path === 'string') { blocks.push({ type: 'file', name: typeof part.name === 'string' ? part.name : path.basename(part.path), path: part.path }); }
+		else if (part.type === 'file' && typeof part.base64 === 'string' && typeof part.name === 'string') { blocks.push({ type: 'file', name: part.name, mimeType: typeof part.mimeType === 'string' ? part.mimeType : undefined, base64: part.base64 }); }
+		else if ((part.type === 'resource_link' || part.type === 'link') && typeof (part.uri ?? part.url) === 'string') { blocks.push({ type: 'link', url: (part.uri ?? part.url) as string, title: typeof part.name === 'string' ? part.name : typeof part.title === 'string' ? part.title : undefined }); }
+		else if (part.type === 'resource' && isRecord(part.resource) && typeof part.resource.blob === 'string') {
+			blocks.push({ type: 'file', name: typeof part.resource.uri === 'string' ? part.resource.uri.split('/').pop() || 'resource' : 'resource', mimeType: typeof part.resource.mimeType === 'string' ? part.resource.mimeType : undefined, base64: part.resource.blob });
+		} else { blocks.push({ type: 'json', value: part as JsonValue }); }
+	}
+	if (structured !== undefined && structured !== null) { blocks.push({ type: 'json', title: 'Structured result', value: structured as JsonValue }); }
+	return blocks;
+}
+function richResult(content: unknown, structured?: unknown): { blocks?: ResultBlock[] } {
+	// Plain text tools keep the existing compact output treatment. Every typed result retains its blocks.
+	const typed = structured !== undefined && structured !== null || Array.isArray(content) && (content.length > 1 || content.some(part => !isRecord(part) || part.type !== 'text' || typeof part.text === 'string' && part.text.length > toolOutputLimit));
+	return typed ? { blocks: resultBlocks(content, structured) } : {};
+}
+
+/** Validate presentation requests independently of the provider's tool-schema enforcement. */
+export function richRelation(value: unknown): import('./richProtocol').ChatRelation | undefined {
+	if (value === undefined) { return undefined; }
+	if (!isRecord(value)) { throw new Error('related must be an object.'); }
+	const messageId = richString(value.messageId, 'messageId', 256), toolId = richString(value.toolId, 'toolId', 256);
+	if (!messageId && !toolId) { throw new Error('A relation requires messageId or toolId.'); }
+	return { ...(messageId ? { messageId } : {}), ...(toolId ? { toolId } : {}) };
+}
+export function richString(value: unknown, name: string, max = 20_000, required = false): string | undefined {
+	if (value === undefined && !required) { return undefined; }
+	if (typeof value !== 'string' || value.length > max || required && !value.trim()) { throw new Error(`${name} must be ${required ? 'a nonempty' : 'a'} string of at most ${max} characters.`); }
+	return value;
+}
+export function richUrl(value: unknown): string {
+	const text = richString(value, 'url', 4096, true)!;
+	try { const url = new URL(text); if (['http:', 'https:'].includes(url.protocol) && !url.username && !url.password) { return url.href; } } catch { /* Explain below. */ }
+	throw new Error('Use an HTTP(S) URL without credentials.');
+}
+export function richNotice(value: Record<string, unknown>): NoticeData {
+	if (value.level !== undefined && !['info', 'warning', 'error'].includes(String(value.level))) { throw new Error('level must be info, warning or error.'); }
+	let actions: import('./richProtocol').RichAction[] | undefined;
+	if (value.actions !== undefined) {
+		if (!Array.isArray(value.actions) || value.actions.length > 8) { throw new Error('Use at most 8 actions.'); }
+		actions = value.actions.map(action => {
+			if (!isRecord(action)) { throw new Error('An action must be an object.'); }
+			const label = richString(action.label, 'action label', 100, true)!;
+			if (action.kind === 'link') { return { kind: 'link' as const, label, url: richUrl(action.url) }; }
+			if (action.kind === 'copy') { return { kind: 'copy' as const, label, text: richString(action.text, 'copy text', 100_000, true)! }; }
+			if (action.kind === 'reveal') { const target = richRelation(action.target); if (!target) { throw new Error('A reveal action requires a target.'); } return { kind: 'reveal' as const, label, target }; }
+			throw new Error('Action kind must be link, copy or reveal.');
+		});
+	}
+	return { id: richString(value.id, 'id', 256), text: richString(value.text, 'text', 20_000, true)!, level: value.level as NoticeData['level'] ?? 'info', reason: richString(value.reason, 'reason'), related: richRelation(value.related), actions };
+}
+export function richProgress(value: Record<string, unknown>): ProgressData {
+	if (value.percent !== undefined && value.percent !== null && (typeof value.percent !== 'number' || !Number.isFinite(value.percent) || value.percent < 0 || value.percent > 100)) { throw new Error('percent must be null or a number from 0 to 100.'); }
+	if (value.status !== undefined && !['running', 'done', 'failed', 'cancelled'].includes(String(value.status))) { throw new Error('Invalid progress status.'); }
+	if (value.cancel !== undefined && !isRecord(value.cancel)) { throw new Error('cancel must be {} for the current turn, or {agentId} for a named agent.'); }
+	return { id: richString(value.id, 'id', 256, true)!, title: richString(value.title, 'title', 500) ?? 'Progress', stage: richString(value.stage, 'stage', 2000), percent: value.percent as number | null | undefined, status: value.status as ProgressData['status'], related: richRelation(value.related), cancel: isRecord(value.cancel) ? { agentId: richString(value.cancel.agentId, 'agentId', 256) } : undefined };
+}
+export function richPlan(value: Record<string, unknown>): PlanData {
+	if (!Array.isArray(value.steps) || value.steps.length > 100) { throw new Error('steps must contain at most 100 plan steps.'); }
+	const ids = new Set<string>();
+	const steps = value.steps.map((step, index) => {
+		if (!isRecord(step) || !['pending', 'inProgress', 'done', 'cancelled'].includes(String(step.status))) { throw new Error('Plan step status must be pending, inProgress, done or cancelled.'); }
+		const id = richString(step.id, 'step id', 256) ?? String(index);
+		if (ids.has(id)) { throw new Error('Plan step ids must be unique.'); } ids.add(id);
+		return { id, text: richString(step.text, 'step text', 2000, true)!, status: step.status as import('./richProtocol').PlanStep['status'] };
+	});
+	if (steps.filter(step => step.status === 'inProgress').length > 1) { throw new Error('Only one plan step can be inProgress.'); }
+	return { id: richString(value.id, 'id', 256, true)!, title: richString(value.title, 'title', 500) ?? 'Plan', steps, related: richRelation(value.related) };
+}
+export function richCitations(value: unknown, text: string): Citation[] {
+	if (!Array.isArray(value) || value.length > 64) { throw new Error('Use at most 64 citations.'); }
+	const ids = new Set<string>();
+	return value.map((item, index) => {
+		if (!isRecord(item) || !isRecord(item.target)) { throw new Error('A citation requires a target.'); }
+		let start = item.start, end = item.end;
+		if (typeof item.quote === 'string' && start === undefined) {
+			start = text.indexOf(item.quote); end = Number(start) + item.quote.length;
+			if (!item.quote || Number(start) < 0 || text.indexOf(item.quote, Number(start) + 1) >= 0) { throw new Error('The cited quote must occur exactly once; supply start/end offsets for repeated text.'); }
+		}
+		if (typeof start !== 'number' || typeof end !== 'number' || !Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end <= start || end > text.length || [start, end].some(offset => /[\uD800-\uDBFF]/.test(text[offset - 1] ?? '') && /[\uDC00-\uDFFF]/.test(text[offset] ?? ''))) { throw new Error('Citation start/end must identify a nonempty range in the message text.'); }
+		const target = item.target;
+		let result: import('./richProtocol').CitationTarget;
+		if (target.type === 'url') { result = { type: 'url', url: richUrl(target.url) }; }
+		else if (target.type === 'file') {
+			const file = richString(target.path, 'file path', 4096, true)!;
+			if (!/^(?:\/(?!\/)|[A-Za-z]:[\\/])/.test(file) || /[\x00-\x1f]/.test(file) || target.line !== undefined && (typeof target.line !== 'number' || !Number.isInteger(target.line) || target.line < 1)) { throw new Error('Use an absolute file path and an optional positive line number.'); }
+			result = { type: 'file', path: file, ...(typeof target.line === 'number' ? { line: target.line } : {}) };
+		} else if (target.type === 'message') { result = { type: 'message', ...richRelation(target)! }; if (!result.messageId && !result.toolId) { throw new Error('A message citation requires messageId or toolId.'); } }
+		else { throw new Error('Citation target type must be url, file or message.'); }
+		const id = richString(item.id, 'citation id', 256) ?? String(index + 1);
+		if (ids.has(id)) { throw new Error('Citation ids must be unique.'); } ids.add(id);
+		return { id, start, end, label: richString(item.label, 'citation label', 200) ?? String(index + 1), target: result };
+	});
 }

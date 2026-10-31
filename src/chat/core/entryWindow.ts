@@ -45,3 +45,42 @@ export function windowEntries(entries: readonly ChatEntry[], prompts: number, ma
 let configuredTurns = remotePromptsStep;
 export function setVisibleTurns(turns: number): void { configuredTurns = turns; }
 export function currentVisibleTurns(): number { return configuredTurns; }
+
+/** Inline tool data shares a bounded budget in remote snapshots. Original values
+ * remain in the editor/history; oversized blocks get an explicit remote-only note.
+ * This also bounds a single native result, which cannot be fixed by dropping
+ * older entries from an Exchange snapshot.
+ */
+export const remoteRichBytes = 1_000_000;
+export function remoteRichEntries(entries: readonly ChatEntry[], limit = remoteRichBytes): readonly ChatEntry[] {
+	let remaining = Math.max(0, limit), changed = false;
+	const projected = [...entries];
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const entry = entries[index];
+		if ((entry.kind !== 'tool' && entry.kind !== 'result') || !entry.blocks?.length) { continue; }
+		const blocks: NonNullable<typeof entry.blocks>[number][] = [];
+		let omitted = 0;
+		for (const block of entry.blocks) {
+			if (block.type !== 'text' && block.type !== 'json') { blocks.push(block); continue; }
+			const bytes = utf8Bytes(JSON.stringify(block)) + 1;
+			if (bytes <= remaining) { blocks.push(block); remaining -= bytes; }
+			else { omitted++; }
+		}
+		if (omitted) {
+			blocks.push({ type: 'text', text: `${omitted} result block(s) exceed this remote view's size budget. Open the conversation in VS Code to inspect or copy the full result. The original data is preserved in the conversation.` });
+			projected[index] = { ...entry, blocks }; changed = true;
+		}
+	}
+	return changed ? projected : entries;
+}
+function utf8Bytes(text: string): number {
+	let size = 0;
+	for (let index = 0; index < text.length; index++) {
+		const code = text.charCodeAt(index);
+		if (code < 0x80) { size++; }
+		else if (code < 0x800) { size += 2; }
+		else if (code >= 0xD800 && code <= 0xDBFF && index + 1 < text.length && text.charCodeAt(index + 1) >= 0xDC00 && text.charCodeAt(index + 1) <= 0xDFFF) { size += 4; index++; }
+		else { size += 3; }
+	}
+	return size;
+}

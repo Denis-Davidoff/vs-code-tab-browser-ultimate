@@ -29,6 +29,12 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 - $(location) **Page markers** — pin notes to page elements and send them to the agent as one prompt.
 - $(settings-gear) **Chat Settings** — use the gear at the top to edit prompts for commit messages, branch names and chat titles, or clean up temporary files.
 
+## 0.9.13 — 2026-10-31
+
+- **Inline images** — agents can display PNG, JPEG, GIF and WebP images in replies, with Expand/Collapse controls.
+- **Files, tables and media** — download generated files, search and sort tables with pagination, and play audio and video directly in the chat. Artifacts are saved with the conversation and available in VS Code, Chrome and Exchange.
+- **Source cards** — agents can show sources with titles, addresses and descriptions. In VS Code, click a title to open it in AI Browser, or use the explicit AI Browser and system browser buttons.
+
 ## 0.9.12 — 2026-10-31
 
 - **Inline HTML visualizations** — agents can show a chart, diagram or small interactive page right in the reply, rendered in a sandbox with no network access; it is kept with the chat history.

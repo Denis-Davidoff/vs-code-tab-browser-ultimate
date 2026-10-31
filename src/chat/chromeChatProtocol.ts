@@ -1,4 +1,4 @@
-import { remotePromptsStep, windowEntries } from './core/entryWindow';
+import { remoteRichEntries, remotePromptsStep, windowEntries } from './core/entryWindow';
 import { surfaceControls } from './core/commands';
 import { chromeChatProtocolVersion, chromeChatCapabilities, readChromeChatCapabilities, type ChromeChatCapabilities } from './chromeChatCompatibility';
 import type { ChatEntry, ChatViewMode, ChatViewState, Selection, ViewToHost } from './chatProtocol';
@@ -94,7 +94,8 @@ export function withoutPinnedTerminals(tabs: ChatViewState['tabs']): ChatViewSta
 
 export function chromeChatSnapshot(full: ChatViewState, editorVersion?: string, prompts = remotePromptsStep): ChromeChatSnapshot {
 	const window = windowEntries(full.entries, prompts);
-	const state: ChatViewState = window.offset ? { ...full, entries: window.entries } : full;
+	const entries = remoteRichEntries(window.entries);
+	const state: ChatViewState = entries !== full.entries ? { ...full, entries } : full;
 	return {
 		version: 1, protocolVersion: chromeChatProtocolVersion, capabilities: chromeChatCapabilities, editorVersion,
 		title: state.tabs.find(tab => tab.id === state.activeTab)?.title ?? 'AI Browser',
@@ -201,6 +202,9 @@ export function readChromeChatCommand(value: unknown): ChromeChatCommand | undef
 			if (typeof m.text !== 'string' || (!m.text.trim() && !attachments?.length) || m.text.length > 100_000 || m.text.includes('\0')) { return undefined; }
 			message = { type: 'send', text: m.text, ...(m.mode === 'queue' ? { mode: 'queue' as const } : {}) }; break;
 		case 'stop': message = { type: 'stop' }; break;
+		case 'cancelProgress':
+			if (m.chatId !== raw.chatId || typeof m.id !== 'string' || !m.id || m.id.length > 256) { return undefined; }
+			message = { type: 'cancelProgress', chatId: raw.chatId, id: m.id }; break;
 		// Terminal lifecycle: the bridge asks for consent first, the host checks the setting and the share.
 		case 'newTerminal':
 			if (Object.keys(m).some(k => !['type', 'agent'].includes(k)) || (m.agent !== undefined && m.agent !== 'claude' && m.agent !== 'codex' && m.agent !== 'gemini' && m.agent !== 'openrouter' && m.agent !== 'opencode' && m.agent !== 'pi')) { return undefined; }

@@ -1,6 +1,10 @@
 /** Full chat startup under the parent-hiding preload used by VS Code/VSCodium. */
+import { checkRichCards } from './richSmoke';
+import { checkArtifactCards } from './artifactSmoke';
+import type { ViewToHost } from '../src/chat/chatProtocol';
 import type { ChatViewState } from '../src/chat/chatProtocol';
 
+const received: ViewToHost[] = [];
 const output = document.getElementById('result')!;
 const frame = document.createElement('iframe');
 frame.setAttribute('sandbox', 'allow-scripts allow-same-origin');
@@ -10,7 +14,8 @@ let written = false;
 let finished = false;
 const fail = (reason: string) => { if (!finished) { finished = true; output.textContent = `FAIL: ${reason}`; } };
 const state: ChatViewState = {
-	chatId: 'bootstrap-test', activeTab: 'tab-one', entries: [{ kind: 'user', text: 'Startup question', attachments: [] }, { kind: 'assistant', text: 'Host delivery works' }],
+	chatId: 'bootstrap-test', activeTab: 'tab-one', entries: [{ kind: 'user', text: 'Startup question', attachments: [] }, { kind: 'assistant', text: 'Host delivery works\n\uE200image\uE202{"path":"/tmp/cat.gif"}\uE201', visualizations: [{ at: 20, id: 'cat', kind: 'image', revision: 'c'.repeat(64), title: 'Generated cat' }] }],
+	visualizations: { ['c'.repeat(64)]: { image: { mimeType: 'image/gif', base64: 'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' } } },
 	voice: { available: false, maxSeconds: 60 }, detecting: false, agents: [], selection: {}, running: false,
 	attachments: [], suggestions: [], hasBrowserTab: false, browserApi: false, newsHidden: true,
 	tabs: [{ id: 'tab-one', chatId: 'bootstrap-test', title: 'Bootstrap test', running: false, busy: false, agents: 0, skillRuns: 0, queued: 0 }], tabLimit: 10,
@@ -22,7 +27,7 @@ frame.addEventListener('load', () => {
 	written = true;
 	const document = frame.contentDocument!;
 	document.open();
-	document.write(`<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-bootstrap-smoke'; style-src 'self' 'nonce-bootstrap-smoke'; frame-src 'self'; img-src data:;"><link rel="stylesheet" href="/chat.css"></head><body><div id="app"></div><script nonce="bootstrap-smoke">
+	document.write(`<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-bootstrap-smoke'; style-src 'self' 'nonce-bootstrap-smoke'; frame-src 'self'; img-src data:; media-src blob:;"><link rel="stylesheet" href="/chat.css"></head><body><div id="app"></div><script nonce="bootstrap-smoke">
 const realParent = window.parent;
 globalThis.acquireVsCodeApi = () => ({postMessage: message => realParent.postMessage({type:'bootstrap-api',message}, location.origin),getState:()=>undefined,setState:()=>{}});
 window.parent = window; window.top = window; window.frameElement = null;
@@ -33,12 +38,18 @@ window.addEventListener('error', event => realParent.postMessage({type:'bootstra
 window.addEventListener('message', event => {
 	if (event.source !== frame.contentWindow || event.origin !== location.origin) { return; }
 	if (event.data?.type === 'bootstrap-error') { fail(event.data.message); return; }
+	if (event.data?.type === 'bootstrap-api' && event.data.message) { received.push(event.data.message); }
 	if (event.data?.type !== 'bootstrap-api' || event.data.message?.type !== 'ready') { return; }
 	frame.contentWindow!.postMessage({ type: 'state', state }, location.origin);
 	setTimeout(() => {
 		if (finished) { return; }
 		const document = frame.contentDocument!;
 		if (!document.body.textContent?.includes('Host delivery works') || !document.body.textContent.includes('Startup question')) { fail('Chat stayed empty after the host snapshot.'); return; }
+		const image = document.querySelector<HTMLImageElement>('.image-card img');
+		if (!image || !image.complete || image.naturalWidth !== 1 || image.alt !== 'Generated cat') { fail('Native image card did not decode under the chat CSP.'); return; }
+		if (document.body.textContent.includes('\uE200image')) { fail('Image marker was not removed from assistant text.'); return; }
+		document.querySelector<HTMLButtonElement>('.image-card button')!.click();
+		if (!document.querySelector('.image-expanded')) { fail('Image expansion failed.'); return; }
 		if (frame.contentWindow!.parent !== frame.contentWindow) { fail('Fixture did not reproduce the VS Code preload.'); return; }
 		const child = document.createElement('iframe');
 		const forged = JSON.stringify({ type: 'state', state: { ...state, entries: [{ kind: 'assistant', text: 'FORGED CHILD SNAPSHOT' }] } });
@@ -48,8 +59,10 @@ window.addEventListener('message', event => {
 			if (document.body.textContent?.includes('FORGED CHILD SNAPSHOT')) { fail('Child frame replaced trusted chat state.'); return; }
 			child.remove();
 			frame.contentWindow!.postMessage({ type: 'state', state: { ...state, entries: [...state.entries, { kind: 'assistant', text: 'Second host snapshot works' }] } }, location.origin);
-			setTimeout(() => {
+			setTimeout(async () => {
+				if (image !== document.querySelector('.image-card img')) { fail('Streaming replaced the native image card.'); return; }
 				if (!document.body.textContent?.includes('Second host snapshot works')) { fail('Subsequent host snapshot was lost.'); return; }
+				try { await checkArtifactCards(frame, state, received); await checkRichCards(frame, state, received); } catch (error) { fail(error instanceof Error ? error.message : String(error)); return; }
 				if (!finished) { finished = true; output.textContent = 'PASS: full chat bootstrap, hidden parent, host snapshots, child rejection'; }
 			}, 100);
 		}, 150);

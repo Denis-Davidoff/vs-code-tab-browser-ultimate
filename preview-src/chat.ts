@@ -4,7 +4,10 @@ import { overlayBounds, fitOverlay, anchoredOverlay } from './overlayPosition';
 import { chatTabDragType, parseChatTabTransfer } from './tabDrag';
 import { fitTabs } from './tabOverflow';
 import { createVsCodeChatHost } from './chatHost';
-import { visualizationMarkers } from '../src/chat/visualizationProtocol';
+import { citationInsertionOffset } from '../src/chat/citationPlacement';
+import { updateRichEntry, updateResultBlocks, bindCitationMarkers, citationButton, type RichViewActions } from './richViews';
+import { downloadArtifact } from './artifactViews';
+import { presentationMarkers } from '../src/chat/visualizationProtocol';
 import { updateVisualizationViews } from './visualizationViews';
 import { installChatSelectionCopy } from './chatSelection';
 import { historyPeriodRange, type HistoryPeriod } from './historyPeriod';
@@ -4415,7 +4418,17 @@ function renderThread(s: ChatViewState): void {
 				rendered[i].sig = sig;
 				continue;
 			}
+			if ((entry.kind === 'progress' || entry.kind === 'plan' || entry.kind === 'notice' || entry.kind === 'result') && rendered[i]?.node.classList.contains('rich-card')) {
+				updateRichEntry(rendered[i].node, entry, scopedRichActions(), s.visualizations ?? {});
+				rendered[i].sig = sig;
+				continue;
+			}
 			const node = entryNode(entry, i);
+			if (entry.kind === 'tool' && rendered[i]) {
+				const previous = rendered[i].node.querySelector<HTMLElement>('.rich-results');
+				const next = node.querySelector<HTMLElement>('.rich-results');
+				if (previous && next) { next.replaceWith(previous); previous.dataset.blocks = next.dataset.blocks; updateResultBlocks(previous, entry.blocks ?? [], scopedRichActions(), s.visualizations ?? {}); }
+			}
 			if (rendered[i]) {
 				rendered[i].node.replaceWith(node);
 			} else if (entry.kind === 'user') {
@@ -4562,7 +4575,12 @@ function signature(entry: ChatEntry, i: number): string {
 	// chat was shown. A row the user opened or closed keeps that either way.
 	return entry.kind === 'user' ? `${JSON.stringify(entry)}|${commandsSignature}|${fileIconsSignature}`
 		: entry.kind === 'error' && isAgentAuthenticationError(entry.text) ? `${JSON.stringify(entry)}|${JSON.stringify(authErrorAgent() && [authErrorAgent()!.id, authErrorAgent()!.name, authErrorAgent()!.authentication?.signingIn])}`
-		: `${JSON.stringify(entry)}|${toggled.get(keyOf(entry, i)) ?? ''}|${openByDefault()}|${fileIconsSignature}|${entry.kind === 'assistant' ? (entry.visualizations ?? []).map(ref => !!state?.visualizations?.[ref.revision ?? '']).join(',') : ''}`;
+		: `${JSON.stringify(entry)}|${toggled.get(keyOf(entry, i)) ?? ''}|${openByDefault()}|${fileIconsSignature}|${entrySnapshotSignature(entry)}`;
+}
+
+function entrySnapshotSignature(entry: ChatEntry): string {
+	const refs = entry.kind === 'assistant' ? entry.visualizations ?? [] : entry.kind === 'tool' || entry.kind === 'result' ? (entry.blocks ?? []).flatMap(block => (block.type === 'image' || block.type === 'file') && block.ref ? [block.ref] : []) : [];
+	return refs.map(ref => !!state?.visualizations?.[ref.revision ?? '']).join(',');
 }
 
 /** The commands the marks are drawn from, as one string; set at the top of every render. */
@@ -4994,24 +5012,85 @@ function opinionButton(index: number): HTMLButtonElement {
 	return b;
 }
 
+const richActions: RichViewActions = {
+	copy: text => post({ type: 'copy', text }),
+	openLink: (url, external) => post({ type: 'openLink', url, external }),
+	sourceLink: (url, title) => linkNode(url, title),
+	download: (revision, artifact) => {
+		if (state?.surface === 'chrome' || state?.surface === 'exchange') { downloadArtifact(artifact); }
+		else if (state) { post({ type: 'saveArtifact', chatId: state.chatId, revision }); }
+	},
+	cancel: id => { if (state) { post({ type: 'cancelProgress', chatId: state.chatId, id }); } },
+	reveal: target => {
+		const index = state?.entries.findIndex(entry => target.messageId && entry.id === target.messageId || target.toolId && entry.kind === 'tool' && entry.id === target.toolId) ?? -1;
+		if (index < 0 || !state) {
+			const notice = el('div', { class: 'rich-navigation-status', text: 'This message is outside the loaded history. Load earlier messages to reveal it.' });
+			notice.setAttribute('role', 'status'); document.body.append(notice); setTimeout(() => notice.remove(), 5000); return;
+		}
+		const turn = turnsOf(state.entries).find(turn => turn.prompt === index || turn.rows.includes(index));
+		if (turn) { toggled.set(turnKey(turn), true); }
+		if (target.toolId) { toggled.set(`tool:${target.toolId}`, true); }
+		render(); const node = rendered[index]?.node;
+		node?.scrollIntoView({ block: 'center', behavior: 'smooth' }); node?.classList.add('rich-highlight'); setTimeout(() => node?.classList.remove('rich-highlight'), 2000);
+	},
+	citation: target => {
+		if (target.type === 'url') { post({ type: 'openLink', url: target.url, external: false }); }
+		else if (target.type === 'file') { post({ type: 'openLink', url: `${target.path}${target.line ? `:${target.line}` : ''}`, external: false }); }
+		else { richActions.reveal(target); }
+	},
+};
+
+function scopedRichActions(): RichViewActions {
+	const chatId = state?.chatId;
+	const current = () => !!chatId && state?.chatId === chatId;
+	return { ...richActions,
+		cancel: id => { if (current()) { post({ type: 'cancelProgress', chatId: chatId!, id }); } },
+		download: (revision, artifact) => { if (current()) { richActions.download?.(revision, artifact); } },
+		reveal: target => { if (current()) { richActions.reveal(target); } },
+		citation: target => { if (current()) { richActions.citation(target); } },
+	};
+}
+
 const assistantTexts = new WeakMap<HTMLElement, string>();
 const assistantBodies = new WeakMap<HTMLElement, { text: string; icons: string }>();
 
 function updateAssistantNode(node: HTMLElement, entry: Extract<ChatEntry, { kind: 'assistant' }>): void {
 	assistantTexts.set(node, entry.text);
-	const markers = visualizationMarkers(entry.text).filter(marker => entry.visualizations?.some(ref => ref.at === marker.start));
+	const markers = presentationMarkers(entry.text).filter(marker => entry.visualizations?.some(ref => ref.at === marker.start));
 	let text = entry.text;
-	for (const marker of [...markers].reverse()) { text = text.slice(0, marker.start) + text.slice(marker.end); }
+	const edits = markers.map(marker => ({ start: marker.start, end: marker.end, replacement: '' }));
+	for (const [index, citation] of (entry.citations ?? []).entries()) {
+		if (!markers.some(marker => citation.end >= marker.start && citation.end <= marker.end)) { const at = citationInsertionOffset(entry.text, citation.end, inlineLimit); edits.push({ start: at, end: at, replacement: ` \uE200citation:${index}\uE201` }); }
+	}
+	for (const edit of edits.sort((a, b) => b.start - a.start)) { text = text.slice(0, edit.start) + edit.replacement + text.slice(edit.end); }
 	const body = node.querySelector<HTMLElement>('.assistant-text')!;
 	const previous = assistantBodies.get(body);
-	if (previous?.text !== text || previous?.icons !== fileIconsSignature) {
-		assistantBodies.set(body, { text, icons: fileIconsSignature });
+	if (previous?.text !== text || previous?.icons !== `${fileIconsSignature}|${JSON.stringify(entry.citations)}`) {
+		assistantBodies.set(body, { text, icons: `${fileIconsSignature}|${JSON.stringify(entry.citations)}` });
 		body.replaceChildren(renderMarkdown(text));
+		bindCitationMarkers(body, entry.citations ?? [], scopedRichActions());
+		const citations = node.querySelector<HTMLElement>('.assistant-citations')!;
+		citations.replaceChildren(...(entry.citations ?? []).map(citation => { const source = el('div', { class: 'citation-source' }, citationButton(citation, scopedRichActions()), el('span', { text: entry.text.slice(citation.start, citation.end) })); return source; }));
 	}
-	updateVisualizationViews(node.querySelector<HTMLElement>('.assistant-visualizations')!, entry.visualizations ?? [], state?.visualizations ?? {});
+	updateVisualizationViews(node.querySelector<HTMLElement>('.assistant-visualizations')!, entry.visualizations ?? [], state?.visualizations ?? {}, {
+		download: (revision, artifact) => {
+			if (state?.surface === 'chrome' || state?.surface === 'exchange') { downloadArtifact(artifact); }
+			else if (state) { post({ type: 'saveArtifact', chatId: state.chatId, revision }); }
+		},
+		sourceLink: (url, title) => linkNode(url, title),
+		openLink: (url, external) => post({ type: 'openLink', url, external }),
+		openLinkLabel: state?.surface === 'chrome' ? 'Open in new tab' : state?.surface === 'exchange' ? 'Open in remote browser' : 'Open in AI Browser',
+		externalLinkLabel: state?.surface === 'chrome' || state?.surface === 'exchange' ? undefined : 'Open in System Browser ↗',
+	});
 }
 
 function entryNode(entry: ChatEntry, i: number): HTMLElement {
+	const node = buildEntryNode(entry, i);
+	if (entry.id) { node.dataset.entryId = entry.id; }
+	if (entry.kind === 'tool') { node.dataset.toolId = entry.id; }
+	return node;
+}
+function buildEntryNode(entry: ChatEntry, i: number): HTMLElement {
 	switch (entry.kind) {
 		case 'user':
 			return promptNode(entry);
@@ -5024,7 +5103,7 @@ function entryNode(entry: ChatEntry, i: number): HTMLElement {
 			// Beside the Markdown, not in it: as its last child the button took the
 			// `.markdown > :last-child` rule, and every reply kept its last block's
 			// bottom margin.
-			node.append(el('div', { class: 'markdown assistant-text' }), el('div', { class: 'assistant-visualizations' }), opinion, copy);
+			node.append(el('div', { class: 'markdown assistant-text' }), el('div', { class: 'assistant-visualizations' }), el('div', { class: 'assistant-citations' }), opinion, copy);
 			updateAssistantNode(node, entry);
 			return node;
 		}
@@ -5035,7 +5114,11 @@ function entryNode(entry: ChatEntry, i: number): HTMLElement {
 		case 'approval':
 			return approvalNode(entry);
 		case 'notice':
-			return el('div', { class: 'row notice' }, icon('info'), el('span', { text: entry.text }));
+		case 'progress':
+		case 'plan':
+		case 'result': {
+			const node = el('div'); updateRichEntry(node, entry, scopedRichActions(), state?.visualizations ?? {}); return node;
+		}
 		case 'error':
 			return el('div', { class: 'row error' }, icon('error'), el('span', { text: entry.text }), authErrorAction(entry.text));
 	}
@@ -5986,7 +6069,7 @@ function hasSelection(): boolean {
 
 function toolNode(t: ToolEntry): HTMLElement {
 	const key = `tool:${t.id}`;
-	const hasBody = !!(t.input || t.output) && t.tool !== 'read';
+	const hasBody = !!t.blocks?.length || !!(t.input || t.output) && t.tool !== 'read';
 	const open = hasBody && (toggled.get(key) ?? openByDefault());
 	const status = t.status === 'failed' || t.status === 'running' || t.status === 'stopped' ? t.status : 'done';
 
@@ -6042,7 +6125,12 @@ function toolNode(t: ToolEntry): HTMLElement {
 		node.append(line);
 	}
 	if (open) {
-		node.append(t.tool === 'command' ? execCard(t) : t.tool === 'edit' && t.input ? diffCard(t) : outputCard(t));
+		if (t.blocks?.length) {
+			if (t.input) { node.append(el('details', { class: 'tool-input-details' }, el('summary', { text: 'Input' }), el('pre', { text: t.input }), copyButton(() => t.input ?? '', 'Copy input'))); }
+			const blocks = el('div', { class: 'rich-results' }); blocks.dataset.blocks = JSON.stringify(t.blocks);
+			updateResultBlocks(blocks, t.blocks, scopedRichActions(), state?.visualizations ?? {});
+			node.append(blocks);
+		} else { node.append(t.tool === 'command' ? execCard(t) : t.tool === 'edit' && t.input ? diffCard(t) : outputCard(t)); }
 	}
 	return node;
 }
@@ -6413,6 +6501,7 @@ function tableCells(row: string): string[] {
 const shellLangs = new Set(['bash', 'sh', 'shell', 'zsh', 'console', 'shellsession', 'fish', 'ksh', 'powershell', 'ps1', 'pwsh', 'cmd', 'bat', 'batch']);
 
 function codeBlock(code: string, lang: string): HTMLElement {
+	code = code.replace(/ \uE200citation:\d+\uE201/g, '');
 	const head = el('div', { class: 'code-head' }, el('span', { class: 'code-lang', text: lang || 'text' }));
 	if (shellLangs.has(lang.toLowerCase()) && code.trim()) { head.append(runInTerminalButton(() => code)); }
 	head.append(copyButton(() => code));

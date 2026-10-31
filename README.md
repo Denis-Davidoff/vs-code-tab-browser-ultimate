@@ -105,6 +105,8 @@ For limits, settings and technical details, see [CLAUDE.md](CLAUDE.md#browser-vi
 
 ## 📝 Changelog
 
+**0.9.13** — Agents can display images with Expand/Collapse controls, downloadable files, searchable and sortable tables with pagination, audio and video players, and source cards. Artifacts are saved with the conversation and available in VS Code, Chrome and Exchange. In VS Code, source titles open in AI Browser, with explicit buttons to choose AI Browser or the system browser.
+
 **0.9.12** — Agents can show charts, diagrams and small interactive pages inline in their replies, sandboxed and kept with the chat history; visualizations from Claude Code now render as they do for Codex.
 
 **0.9.11** — Chrome 0.6.1 leaves completion sounds and notifications to VS Code to avoid duplicate alerts on the same computer. Remote terminal control is shared safely between Chrome and the website, Exchange rejects revoked keys during connection setup, switching remote chats no longer leaves pull request creation stuck, and the new-message count stays accurate as older history is loaded or hidden. The Chrome ZIP download is updated.

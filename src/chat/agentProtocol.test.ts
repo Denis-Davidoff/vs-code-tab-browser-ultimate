@@ -485,9 +485,9 @@ suite('codexEvents', () => {
 		assert.deepStrictEqual(codexEvents('item/completed', { item: { type: 'webSearch', id: 'w', status: 'completed' } }), [{ type: 'toolUpdate', id: 'w', update: { status: 'done' } }]);
 	});
 
-	test('an error Codex is retrying is not reported', () => {
-		assert.deepStrictEqual(codexEvents('error', { error: { message: 'x' }, willRetry: true }), []);
-		assert.deepStrictEqual(codexEvents('error', { error: { message: 'x' }, willRetry: false }), [{ type: 'notice', text: 'x' }]);
+	test('retry errors are warnings and final errors carry error severity', () => {
+		assert.deepStrictEqual(codexEvents('error', { error: { message: 'x' }, willRetry: true }), [{ type: 'notice', text: 'x', level: 'warning', reason: 'The provider is retrying automatically.' }]);
+		assert.deepStrictEqual(codexEvents('error', { error: { message: 'x' }, willRetry: false }), [{ type: 'notice', text: 'x', level: 'error' }]);
 	});
 });
 

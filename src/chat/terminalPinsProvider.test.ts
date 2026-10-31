@@ -410,14 +410,14 @@ suite('the pin announcement in a conversation', () => {
 			};
 		tab._host.ultracodeDefault = () => false;
 		const start = lift(tabSource, 'start', { endedInError: () => false });
-		start.call(tab, { id: 'c' }, false);
+		start.call(tab, { id: 'c', entries: [] }, false);
 		assert.equal(tab._pinAnnounced, undefined);
 		assert.deepEqual(dropped, [tab]);
 		tab._pinAnnounced = 'old';
-		start.call(tab, { id: 'd' }, true);
+		start.call(tab, { id: 'd', entries: [] }, true);
 		assert.equal(tab._pinAnnounced, undefined);
 		assert.equal(dropped.length, 1);
-		start.call(tab, { id: 'e' });
+		start.call(tab, { id: 'e', entries: [] });
 		assert.equal(dropped.length, 2);
 	});
 });

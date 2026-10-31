@@ -70,7 +70,7 @@ export const COMMANDS = {
 	runInTerminal: editor('Commands run only in VS Code.'),
 
 	// The conversation.
-	send: chat('host', 'host'), stop: chat('host', 'host'), select: chat('host', 'host'), switchAgent: chat('host', 'host'),
+	cancelProgress: chat('host', 'host'), send: chat('host', 'host'), stop: chat('host', 'host'), select: chat('host', 'host'), switchAgent: chat('host', 'host'),
 	approve: chat('host', 'host'), setViewMode: chat('host', 'host'), saveFeatureAi: chat('host', 'host'),
 	openAttachment: chat('mixed', 'mixed'),
 	reattachAttachment: editor('Attaching a saved item is available in VS Code.'),
@@ -116,7 +116,7 @@ export const COMMANDS = {
 
 	// Opening things.
 	openText: chat({ no: chromeEditor }, 'host'), openDiff: chat({ no: chromeEditor }, 'host'),
-	saveAttachment: editor(), openFile: editor('Local files open only in VS Code.'),
+	saveArtifact: editor(), saveAttachment: editor(), openFile: editor('Local files open only in VS Code.'),
 	openLink: chat('local', 'mixed'), localLinkInfo: chat({ no: chromeEditor }, 'host'),
 	openBrowser: chat('mixed', 'mixed'),
 
