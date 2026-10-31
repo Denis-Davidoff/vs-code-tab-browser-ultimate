@@ -703,6 +703,7 @@ export interface ChatAccess {
 }
 
 export interface ChatViewState {
+	readonly connectionPermissions?: import('./core/commands').ConnectionPermissions;
 	/** Immutable HTML and image snapshots belonging to this conversation; never executor paths or a file endpoint. */
 	readonly visualizations?: Readonly<Record<string, VisualizationSnapshot>>;
 	/** Editor only: `visualizations` was left out because it is the set the view already holds. */
@@ -728,6 +729,8 @@ export interface ChatViewState {
 	/** The VS Code window's focus, independent of which workbench control has keyboard focus. Editor only. */
 	readonly windowFocused?: boolean;
 	readonly controls?: import('./core/commands').ControlMap;
+	/** Editor-side file permissions, projected into each remote surface's controls. */
+	readonly remoteFiles?: import('./core/remoteFiles').RemoteFileSettings;
 	/**
 	 * The last snapshot message of each kind the editor broadcast (`workdirGit` per
 	 * folder), carried in the state of remote surfaces so a viewer that connects
@@ -959,7 +962,7 @@ export type HostToView =
 		readonly catalog?: { readonly query: string; /** Original local address, echoed even on validation errors to match the request. */ readonly requestedEndpoint?: string;
 			/** Canonical local address for adding a model; present only after validation. */ readonly endpoint?: string; readonly items: readonly OpenRouterCatalogItem[]; readonly total: number; readonly error?: string } }
 	/** The Remote terminals section of Chat Settings: the three `aiBrowser.chat.remoteTerminal*` switches as stored, or the reason a change was refused. */
-	| { readonly type: 'remoteTerminalSettings'; readonly remoteTerminal: boolean; readonly shell: boolean; readonly agent: boolean; readonly error?: string }
+	| { readonly type: 'remoteTerminalSettings'; readonly remoteTerminal: boolean; readonly shell: boolean; readonly agent: boolean; readonly chrome?: { readonly allowed: boolean; readonly shell: boolean; readonly agent: boolean }; readonly files?: import('./core/remoteFiles').RemoteFileSettings; readonly error?: string }
 	| { readonly type: 'openSleep' }
 	/** The title bar's Agents: every agent and workflow of every open chat, grouped by chat. `refresh` updates an open panel only. */
 	| { readonly type: 'allAgents'; readonly chats: readonly AllAgentsChat[]; readonly refresh: boolean }
@@ -1013,8 +1016,10 @@ export type ViewToHost =
 	| { readonly type: 'osNotify'; readonly title: string; readonly text: string }
 	/** Chrome and the website: send more of the conversation's earlier turns. Answered by the surface's bridge. */
 	| { readonly type: 'loadEarlier'; readonly chatId: string; readonly reset?: boolean }
+	| { readonly type: 'setConnectionPermission'; readonly surface: 'chrome' | 'exchange'; readonly group: import('./core/commands').ConnectionPermission; readonly allowed: boolean }
 	| { readonly type: 'remoteTerminalSettings'; readonly action: 'load' }
-	| { readonly type: 'remoteTerminalSettings'; readonly action: 'set'; readonly key: 'remoteTerminal' | 'remoteTerminalShell' | 'remoteTerminalAgent'; readonly value: boolean }
+	| { readonly type: 'remoteTerminalSettings'; readonly action: 'set'; readonly key: 'remoteTerminal' | 'remoteTerminalShell' | 'remoteTerminalAgent' | 'chromeTerminalAccess' | 'chromeTerminalShell' | 'chromeTerminalAgent'; readonly value: boolean }
+	| { readonly type: 'remoteTerminalSettings'; readonly action: 'setFiles'; readonly surface: import('./core/commands').RemoteSurface; readonly value: import('./core/remoteFiles').RemoteFileLevel }
 	/** The OpenRouter section: the key is write-only (`setKey` carries it once, nothing returns it), the models are replaced whole. */
 	| { readonly type: 'openrouter'; readonly action: 'load' }
 	| { readonly type: 'openrouter'; readonly action: 'setKey'; readonly key: string }

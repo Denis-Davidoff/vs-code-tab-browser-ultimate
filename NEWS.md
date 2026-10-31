@@ -29,6 +29,14 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 - $(location) **Page markers** — pin notes to page elements and send them to the agent as one prompt.
 - $(settings-gear) **Chat Settings** — use the gear at the top to edit prompts for commit messages, branch names and chat titles, or clean up temporary files.
 
+## 0.9.14 — 2026-10-31
+
+- **More chat actions in Chrome** — create, rename and close chats, browse history, manage queued messages and agents, and change approval modes directly from the paired local side panel. Opening a chat keeps Chrome on the resulting conversation without changing the editor's selected tab.
+- **Connections & permissions** — in VS Code's Chat Settings, restrict Chrome and Exchange separately by feature, with project file access levels and separate terminal controls. Supported actions are enabled by default; website terminal access remains opt-in.
+- **Local Chrome terminals** — paired Chrome can use AI Browser terminal tabs and open shells or agent CLIs by default, without a second terminal consent prompt.
+- **Attachment badges in Chrome** — files and folders added from Chrome appear in its own draft, alongside the editor's view.
+- **Session-state groundwork** — an internal prototype adds immutable snapshots, bounded replay and ordered recovery delivery for future session-host work. Chat execution still runs in the extension host.
+
 ## 0.9.13 — 2026-10-31
 
 - **Inline images** — agents can display PNG, JPEG, GIF and WebP images in replies, with Expand/Collapse controls.

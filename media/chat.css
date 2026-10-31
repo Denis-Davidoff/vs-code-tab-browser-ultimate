@@ -6967,6 +6967,7 @@ body.vv-locked {
 .rich-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
 .rich-actions[hidden] { display: none; }
 .rich-text, .rich-reason, .rich-stage { white-space: pre-wrap; overflow-wrap: anywhere; }
+.row.rich-notice::before { display: none; }
 .rich-notice.notice-info { border-left: 3px solid var(--vscode-notificationsInfoIcon-foreground, #609ddb); }
 .rich-notice.notice-warning { border-left: 3px solid var(--vscode-notificationsWarningIcon-foreground, #cca700); }
 .rich-notice.notice-error { border-left: 3px solid var(--vscode-notificationsErrorIcon-foreground, #e45a5a); }
@@ -6997,3 +6998,15 @@ body.vv-locked {
 .citation-source > span { overflow-wrap: anywhere; white-space: pre-wrap; }
 .rich-highlight { outline: 2px solid var(--vscode-focusBorder, #609ddb); outline-offset: 3px; }
 .rich-navigation-status { position: fixed; bottom: 20px; left: 20px; right: 20px; z-index: 10001; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); color: var(--fg); }
+.connection-permissions-group {
+	display: grid;
+	gap: 8px;
+	margin: 12px 0;
+	padding: 12px;
+	border: 1px solid var(--vscode-widget-border, rgba(127, 127, 127, 0.3));
+	border-radius: 8px;
+}
+.connection-permissions-group legend {
+	padding: 0 6px;
+	font-weight: 600;
+}

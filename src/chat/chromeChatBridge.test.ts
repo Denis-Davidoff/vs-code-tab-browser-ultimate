@@ -226,6 +226,22 @@ test('element-only messages are accepted and invalid or duplicate attachment ref
 	assert.equal(readChromeChatCommand({ ...envelope, message: { type: 'stop' } }), undefined);
 });
 
+test('trusted Chrome accepts bounded chat management without granting editor-only settings', () => {
+	const command = (message: unknown) => readChromeChatCommand({ id: 'request-1234', chatId: 'chat-1', message });
+	for (const message of [
+		{ type: 'newTab', location: 'here' }, { type: 'newChat' }, { type: 'clearChat' },
+		{ type: 'closeTab', id: 'tab-1' }, { type: 'renameTab', id: 'tab-1', title: 'Next task' },
+		{ type: 'unqueue', id: 'queued-1' }, { type: 'resumeQueue', tabId: 'tab-1' },
+		{ type: 'stopAgent', id: 'agent-1' }, { type: 'exportChat', to: 'file' },
+		{ type: 'setSleep', choice: { mode: 'forever' } },
+	]) { assert.ok(command(message), JSON.stringify(message)); }
+	assert.equal(command({ type: 'newTab', location: 'window' }), undefined);
+	assert.equal(command({ type: 'newTab', location: 'here', command: 'arbitrary' }), undefined);
+	assert.equal(command({ type: 'setConnectionPermission', surface: 'chrome', group: 'messages', allowed: true }), undefined);
+	assert.equal(command({ type: 'answerChromeConnection', allow: true }), undefined);
+	assert.equal(command({ type: 'setSleep', choice: { mode: 'timer', minutes: -1 } }), undefined);
+});
+
 test('repeated concurrent command requests execute once and changed payload cannot reuse an ID', async () => {
 	let calls = 0;
 	let finish!: () => void;
@@ -247,7 +263,7 @@ test('repeated concurrent command requests execute once and changed payload cann
 		assert.equal((await get(config, { Origin: 'https://example.com' }, 'POST', '/command', body)).status, 403);
 		assert.equal(calls, 1);
 		assert.equal((await get(config, {}, 'POST', '/command', '{')).status, 400);
-		assert.equal((await get(config, {}, 'POST', '/command', JSON.stringify({ ...command, message: { type: 'clearChat' } }))).status, 400);
+		assert.equal((await get(config, {}, 'POST', '/command', JSON.stringify({ ...command, message: { type: 'setConnectionPermission', surface: 'chrome', group: 'messages', allowed: true } }))).status, 400);
 	} finally { bridge.close(); }
 });
 
@@ -326,6 +342,35 @@ test('bridge refuses wrong secrets, web origins, other extensions, hosts and mut
 	} finally { bridge.close(); }
 	await assert.rejects(get(config));
 });
+
+for (const manualPin of [false, true]) {
+	test(`a replaced chat follows its result while preserving manual pin choice: ${manualPin}`, async () => {
+		let finish!: () => void, started!: () => void;
+		const gate = new Promise<void>(resolve => { finish = resolve; });
+		const begun = new Promise<void>(resolve => { started = resolve; });
+		let ids = ['chat-1', 'chat-2', 'chat-3'];
+		const makeState = () => ({ ...state(), chatId: ids.includes(bridge.chatId ?? '') ? bridge.chatId : 'chat-2',
+			tabs: ids.map(chatId => ({ id: chatId, chatId, title: chatId, running: false, agents: 0, skillRuns: 0, busy: false, queued: 0 })) } as ChatViewState);
+		const bridge = new ChromeChatBridge(extensionId, async (_command: unknown, reply: (message: unknown, chatId: string) => void) => {
+			started(); await gate;
+			ids = ['chat-2', 'chat-3', 'replacement'];
+			bridge.update(makeState()); // The original chat vanished, forcing an automatic fallback.
+			reply({ type: 'focusInput' }, 'replacement');
+		});
+		bridge.bind(() => bridge.update(makeState()));
+		const config = await bridge.start(); bridge.pin('chat-1'); bridge.update(makeState());
+		try {
+			const pending = get(config, {}, 'POST', '/command', JSON.stringify({ id: 'request-create', chatId: 'chat-1', message: { type: 'newTab', location: 'here' } }));
+			await begun;
+			if (manualPin) {
+				const pin = await get(config, {}, 'POST', '/command', JSON.stringify({ id: 'request-pin', chatId: 'chat-3', message: { type: 'pin' } }));
+				assert.equal(pin.status, 200);
+			}
+			finish(); assert.equal((await pending).status, 200);
+			assert.equal(bridge.chatId, manualPin ? 'chat-3' : 'replacement');
+		} finally { finish(); bridge.close(); }
+	});
+}
 
 test('surface detach and source shutdown revoke observers once without closing an agent', () => {
 	const surfaces = new ChatStateSurfaces();
@@ -698,7 +743,7 @@ test('a remote snapshot carries only classified fields, with the surface and its
 	assert.equal(snapshot.view.exchangeConnection, undefined);
 	assert.equal((snapshot.view as any).somethingNew, undefined, 'an unclassified field must not leave the editor');
 	assert.equal(snapshot.view.surface, 'chrome');
-	assert.deepEqual(snapshot.view.controls?.setApprovalMode?.s, 'off');
+	assert.equal(snapshot.view.controls?.setApprovalMode, undefined, 'trusted Chrome can configure approval modes');
 	assert.equal(snapshot.view.controls?.voiceStart?.s, 'hidden');
 	assert.equal(snapshot.view.controls?.send, undefined);
 });
@@ -793,12 +838,12 @@ test('terminals in Chrome: disabled with the setting named, consent once, frames
 	const config = await bridge.start();
 	bridge.update(state());
 	let snapshot = JSON.parse((await get(config)).body);
-	assert.match(snapshot.view.terminalSupport.reason, /aiBrowser\.chat\.remoteTerminal/);
+	assert.match(snapshot.view.terminalSupport.reason, /aiBrowser\.chat\.chromeTerminalAccess/);
 	assert.equal(snapshot.view.controls.newTerminal.s, 'off');
 	assert.deepEqual(snapshot.view.terminals, []);
 	const json = { 'Content-Type': 'application/json' };
 	const refused = await get(config, json, 'POST', '/command', JSON.stringify({ id: 'cmd-00000001', chatId: 'chat-1', message: { type: 'newTerminal' } }));
-	assert.equal(refused.status, 409); assert.match(JSON.parse(refused.body).error, /Remote Terminal/);
+	assert.equal(refused.status, 409); assert.match(JSON.parse(refused.body).error, /Chrome Terminal Access/);
 	assert.equal(asked, 0); assert.deepEqual(commands, []);
 
 	setting = true; bridge.update(state());

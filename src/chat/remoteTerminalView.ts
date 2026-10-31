@@ -31,7 +31,8 @@ export interface RemoteTerminalGates {
 export const remoteTerminalSettingHint = 'In VS Code, turn on the setting “AI Browser › Chat: Remote Terminal” (aiBrowser.chat.remoteTerminal) on the computer running VS Code.';
 
 /** The words for one of the two "open" settings. */
-export function remoteOpenHint(kind: 'shell' | 'agent'): string {
+export function remoteOpenHint(kind: 'shell' | 'agent', surface: RemoteTerminalSurface = 'exchange'): string {
+	if (surface === 'chrome') { return `Opening ${kind === 'shell' ? 'plain terminals' : 'agent terminals'} from Chrome is disabled in VS Code → Chat Settings → Connections & permissions.`; }
 	return kind === 'shell'
 		? 'Opening a plain terminal from Chrome and the website is off: in VS Code, turn on “AI Browser › Chat: Remote Terminal Shell” (aiBrowser.chat.remoteTerminalShell).'
 		: 'Opening an agent in a terminal from Chrome and the website is off: in VS Code, turn on “AI Browser › Chat: Remote Terminal Agent” (aiBrowser.chat.remoteTerminalAgent).';
@@ -40,7 +41,7 @@ export function remoteOpenHint(kind: 'shell' | 'agent'): string {
 /** Why terminals are not on offer there, or `undefined` when they are. */
 export function remoteTerminalReason(g: RemoteTerminalGates): string | undefined {
 	if (g.surface === 'exchange' && !g.encrypted) { return 'Terminals need an encrypted connection: reconnect VS Code with a workspace password.'; }
-	if (!g.setting) { return `Terminals are off for ${g.surface === 'chrome' ? 'Chrome' : 'the website'}. ${remoteTerminalSettingHint}`; }
+	if (!g.setting) { return g.surface === 'chrome' ? 'Chrome terminal access is disabled. In VS Code, turn on AI Browser › Chat: Chrome Terminal Access (aiBrowser.chat.chromeTerminalAccess), or use Chat Settings → Connections & permissions.' : `Terminals are off for the website. ${remoteTerminalSettingHint}`; }
 	if (g.consent === 'no') { return 'Terminal access was declined in VS Code for this connection. Reconnect to be asked again.'; }
 	if (g.blocked) { return 'The chat is not available in this VS Code window.'; }
 	return undefined;
@@ -67,7 +68,7 @@ export function remoteTerminalView(g: RemoteTerminalGates, shared: () => readonl
 	const supported = support();
 	const shell = g.openShell !== false, agent = g.openAgent !== false;
 	// Neither kind may be opened: existing shared terminals stay watchable, "New terminal" says why not.
-	const noOpen = supported.available && !shell && (!agent || supported.agents.length === 0) ? (agent ? remoteOpenHint('shell') : `${remoteOpenHint('shell')} ${remoteOpenHint('agent')}`) : undefined;
+	const noOpen = supported.available && !shell && (!agent || supported.agents.length === 0) ? (agent ? remoteOpenHint('shell', g.surface) : `${remoteOpenHint('shell', g.surface)} ${remoteOpenHint('agent', g.surface)}`) : undefined;
 	return {
 		terminals: shared().map(t => ({
 			id: t.id, name: t.name, status: t.status, cwd: t.cwd.split(/[\\/]/).filter(Boolean).pop() ?? '',

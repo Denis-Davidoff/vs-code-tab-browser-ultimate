@@ -53,6 +53,8 @@ export class ChromeChatBridge implements ChatStateSurface {
 	private _host?: string;
 	/** The conversation Chrome shows; set from the tab in front when Chrome connects. */
 	private _chatId?: string;
+	/** Only explicit user/resume pinning advances this; automatic fallback does not. */
+	private _pinGeneration = 0;
 	private _chats = new Set<string>();
 	private _refresh?: () => void;
 	/** Whether the agents' browser tools drive the very Chrome this panel runs in. */
@@ -128,7 +130,7 @@ export class ChromeChatBridge implements ChatStateSurface {
 
 	get chatId(): string | undefined { return this._chatId; }
 	/** Before attaching: the conversation to show first, if the panel still has it. */
-	pin(chatId: string | undefined): void { if (chatId) { this._chatId = chatId; } }
+	pin(chatId: string | undefined): void { if (chatId) { this._chatId = chatId; this._pinGeneration++; } }
 	bind(refresh: () => void): void { this._refresh = refresh; }
 	get extensionId(): string { return this._extensionId; }
 	/** Set by the editor's check; the panel shows the mode it implies. */
@@ -347,7 +349,7 @@ export class ChromeChatBridge implements ChatStateSurface {
 		if (pin !== undefined) {
 			if (this._closed) { reply(410, 'Connection revoked.'); return; }
 			if (!this._chats.has(pin)) { reply(409, 'This conversation is no longer open in the editor.'); return; }
-			this._chatId = pin; this._refresh?.();
+			this.pin(pin); this._refresh?.();
 			reply(200); return;
 		}
 		const earlier = readLoadEarlier(raw);
@@ -362,7 +364,7 @@ export class ChromeChatBridge implements ChatStateSurface {
 		if (!command) { reply(400, 'This action is not supported in Chrome yet.'); return; }
 		if ((terminalLifecycleTypes as readonly string[]).includes(command.message.type)) {
 			// Consent before anything reaches the terminals; the host checks the setting and the share again.
-			if (!(await this._terminalConsentFor())) { reply(409, this._terminalPort?.setting() === false ? 'Terminals are off for Chrome: in VS Code, turn on the setting “AI Browser › Chat: Remote Terminal” (aiBrowser.chat.remoteTerminal).' : 'Terminal access was not allowed in VS Code for this connection.'); return; }
+			if (!(await this._terminalConsentFor())) { reply(409, this._terminalPort?.setting() === false ? 'Terminals are off for Chrome: in VS Code, turn on “AI Browser › Chat: Chrome Terminal Access” (aiBrowser.chat.chromeTerminalAccess), or use Chat Settings → Connections & permissions.' : 'Terminal access was not allowed in VS Code for this connection.'); return; }
 			this._terminalPort?.audit(`chrome ${command.message.type}`);
 		}
 		const features = negotiateChromeChatCapabilities(request.headers[chromeChatCapabilitiesHeader.toLowerCase()], Number(request.headers[chromeChatProtocolHeader.toLowerCase()]));
@@ -379,10 +381,11 @@ export class ChromeChatBridge implements ChatStateSurface {
 		if (saved && saved.json !== json) { reply(409, 'A request ID was reused with different content.'); return; }
 		if (!saved) {
 			if (this._delivery.commands.size >= 2048) { reply(429, 'Pair Chrome again with Connect to start a new delivery session.'); return; }
+			const followed = this._chatId === command.chatId, pinGeneration = this._pinGeneration;
 			const result = Promise.resolve().then(() => {
 				if (this._closed) { throw new Error('Connection revoked.'); }
 				return this._command!(command, (message, targetChatId = command.chatId) => {
-					if (!this._closed && targetChatId !== command.chatId && this._chatId === command.chatId && this._chats.has(targetChatId)) {
+					if (!this._closed && followed && this._pinGeneration === pinGeneration && targetChatId !== command.chatId && this._chatId !== targetChatId && this._chats.has(targetChatId)) {
 						this._chatId = targetChatId; this._refresh?.();
 					}
 					this._publishEvent({ chatId: targetChatId, message });

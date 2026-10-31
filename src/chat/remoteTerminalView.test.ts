@@ -13,8 +13,8 @@ test('the setting off: the entry stays, disabled, naming the setting both ways',
 		assert.deepEqual(view.terminals, []);
 		assert.equal(view.terminalSupport.available, false);
 		const reason = (view.terminalSupport as { reason: string }).reason;
-		assert.match(reason, /AI Browser › Chat: Remote Terminal/);
-		assert.match(reason, /aiBrowser\.chat\.remoteTerminal/);
+		assert.match(reason, surface === 'chrome' ? /AI Browser › Chat: Chrome Terminal Access/ : /AI Browser › Chat: Remote Terminal/);
+		assert.match(reason, surface === 'chrome' ? /aiBrowser\.chat\.chromeTerminalAccess/ : /aiBrowser\.chat\.remoteTerminal/);
 		assert.deepEqual(view.controls.newTerminal, { s: 'off', reason });
 	}
 });
@@ -43,7 +43,7 @@ test('the two open settings: shell only, agent only, neither', () => {
 	assert.deepEqual(agentOnly.terminalSupport, { available: true, limit: 8, agents: ['claude'], shell: false });
 	const neither = remoteTerminalView({ ...open, openShell: false, openAgent: false }, () => shared, support);
 	assert.equal(neither.terminalSupport.available, false);
-	assert.match((neither.terminalSupport as { reason: string }).reason, /remoteTerminalShell.*remoteTerminalAgent/);
+	assert.match((neither.terminalSupport as { reason: string }).reason, /plain terminals.*agent terminals/);
 	assert.equal(neither.controls.newTerminal?.s, 'off');
 	// Already shared terminals stay watchable and manageable.
 	assert.equal(neither.terminals.length, 1);

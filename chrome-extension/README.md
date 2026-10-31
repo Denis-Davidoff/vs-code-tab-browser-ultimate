@@ -21,6 +21,28 @@ the editor composer are not included in Chrome messages.
 
 ## Chat footer
 
+In VS Code, **Chat settings → Connections & permissions** manages independent
+Chrome and Exchange restrictions. Supported local Chrome actions are enabled by
+default: create/reuse chats, browse history, close and rename tabs, manage queues, stop subagents,
+get a second opinion, export conversations, inspect results and use Git/skills.
+New chats open in Chrome's selected conversation without switching the editor's
+front tab. Permissions restrict supported actions and are enforced by VS Code;
+Chrome and Exchange cannot grant themselves access. Stop remains available.
+
+Chrome terminal access, plain shells and agent terminals default on after explicit
+pairing, with no second terminal consent prompt. Chrome can use the AI Browser
+terminal tabs on this computer. The website retains its separate opt-in,
+encrypted-connection, consent and explicitly shared-terminal requirements.
+
+The same settings section sets project file access separately
+for Chrome and the website: no access, browse only, browse and attach, or browse,
+attach and edit. The default preserves the existing editing actions. These
+application settings (`aiBrowser.chat.remoteFilesChrome` and
+`aiBrowser.chat.remoteFilesWebsite`) are enforced by the host and cannot be
+changed by remote clients. They cover Files and project attachment picking;
+agent commands retain their own approvals and sandbox permissions. The same
+section contains the remote terminal settings.
+
 - **Usage and context**: read agent plan limits and conversation token statistics;
   use the context indicator to request compacting when supported by the agent.
 - **Skills**: refresh the slash-command list, run toolbar skills with parameters,

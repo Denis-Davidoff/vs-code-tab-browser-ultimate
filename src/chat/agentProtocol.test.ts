@@ -380,6 +380,22 @@ suite('claudeEvents', () => {
 
 suite('codexEvents', () => {
 
+	test('hides only the warning about the question feature enabled by the chat', () => {
+		const message = 'Under-development features enabled: default_mode_request_user_input. Under-development features are incomplete and may behave unpredictably. To suppress this warning, set `suppress_unstable_features_warning = true` in /Users/m5/.codex/config.toml.';
+		assert.deepStrictEqual(codexEvents('warning', { message }), []);
+		assert.deepStrictEqual(codexEvents('configWarning', { summary: message }), []);
+		for (const text of [
+			'Under-development features enabled: other_feature.',
+			'Under-development features enabled: default_mode_request_user_input, other_feature.',
+			'Under-development features enabled: other_feature, default_mode_request_user_input.',
+			'Under-development features enabled: default_mode_request_user_input_extra.',
+			'Invalid configuration for default_mode_request_user_input.',
+		]) {
+			assert.deepStrictEqual(codexEvents('warning', { message: text, details: 'details' }), [{ type: 'notice', text, level: 'warning', reason: 'details' }]);
+		}
+		assert.deepStrictEqual(codexEvents('deprecationNotice', { message }), [{ type: 'notice', text: message, level: 'warning', reason: undefined }]);
+	});
+
 	test('text deltas', () => {
 		assert.deepStrictEqual(codexEvents('item/agentMessage/delta', { delta: 'ok', threadId: 't' }), [{ type: 'text', text: 'ok' }]);
 	});

@@ -1,5 +1,7 @@
 import { remoteRichEntries, remotePromptsStep, windowEntries } from './core/entryWindow';
 import { surfaceControls } from './core/commands';
+import { remoteFileControls } from './core/remoteFiles';
+import { validSleepChoice, type SleepChoice } from '../power/sleepProtocol';
 import { chromeChatProtocolVersion, chromeChatCapabilities, readChromeChatCapabilities, type ChromeChatCapabilities } from './chromeChatCompatibility';
 import type { ChatEntry, ChatViewMode, ChatViewState, Selection, ViewToHost } from './chatProtocol';
 import type { FeatureAiSettings } from './featureAi';
@@ -62,6 +64,7 @@ export interface ChromeChatSnapshot {
  * `override` fields are sent, rebuilt by `chromeChatSnapshot`.
  */
 const viewFields = {
+	connectionPermissions: 'shared',
 	remoteWorkspace: 'shared', exchangeConnection: 'editor', chromeConnectionRequest: 'editor', chromeMirror: 'editor',
 	themeTokens: 'shared', themeKind: 'shared', panel: 'editor', surfaceId: 'shared', surface: 'override', controls: 'override',
 	dragToken: 'editor', chatSurfaces: 'override', recordingQuality: 'shared', recordingSeconds: 'shared', featureAi: 'shared',
@@ -74,6 +77,7 @@ const viewFields = {
 	skillAgents: 'shared', viewMode: 'shared', collapseTools: 'shared', context: 'shared', workdir: 'shared',
 	usage: 'shared', usageAlert: 'shared', snapshotEvents: 'shared',
 	access: 'editor', windowFocused: 'editor', sound: 'shared', entriesOffset: 'override', messageCount: 'shared',
+	remoteFiles: 'editor',
 } as const satisfies Record<keyof ChatViewState, 'shared' | 'editor' | 'override'>;
 
 /** The shared fields of the state, by the classification above; nothing else is copied. */
@@ -105,7 +109,7 @@ export function chromeChatSnapshot(full: ChatViewState, editorVersion?: string, 
 		entries: state.entries,
 		canSend: true,
 		canAttachElements: true,
-		view: { ...projectView(state), surface: 'chrome', controls: surfaceControls('chrome'), chatSurfaces: [],
+		view: { ...projectView(state), surface: 'chrome', controls: { ...remoteFileControls('chrome', state.remoteFiles?.chrome), ...surfaceControls('chrome', state.connectionPermissions) }, chatSurfaces: [],
 			tabs: withoutPinnedTerminals(state.tabs), attachments: [], suggestions: [],
 			voice: { ...state.voice, available: false },
 			entriesOffset: window.offset,
@@ -184,6 +188,52 @@ export function readChromeChatCommand(value: unknown): ChromeChatCommand | undef
 	if (raw.attachments !== undefined && (!attachments || m.type !== 'send')) { return undefined; }
 	let message: ViewToHost;
 	switch (m.type) {
+		case 'setAutomaticAwake':
+			if (typeof m.enabled !== 'boolean') { return undefined; }
+			message = { type: 'setAutomaticAwake', enabled: m.enabled }; break;
+		case 'setSleep': {
+			const choice = m.choice as SleepChoice;
+			if (!validSleepChoice(choice)) { return undefined; }
+			message = { type: 'setSleep', choice: choice.mode === 'off' || choice.mode === 'forever' ? { mode: choice.mode }
+				: choice.mode === 'timer' ? { mode: 'timer', minutes: choice.minutes } : { mode: 'agents', scope: choice.scope, tabId: choice.tabId } }; break;
+		}
+		case 'newChat': case 'newTab':
+			if (m.location !== undefined && m.location !== 'here') { return undefined; }
+			if (Object.keys(m).some(key => !['type', 'location'].includes(key))) { return undefined; }
+			message = { type: m.type, location: 'here' }; break;
+		case 'clearChat': case 'refreshAgents': case 'listHistory': case 'listAllAgents':
+			message = { type: m.type }; break;
+		case 'closeTab': case 'unqueue': case 'stopAgent': case 'openChat': case 'deleteChat':
+			if (typeof m.id !== 'string' || !m.id || m.id.length > 200 || m.id.includes('\0')) { return undefined; }
+			message = { type: m.type, id: m.id }; break;
+		case 'renameTab':
+			if (typeof m.id !== 'string' || !m.id || m.id.length > 200 || typeof m.title !== 'string' || m.title.length > 200 || m.title.includes('\0')) { return undefined; }
+			message = { type: 'renameTab', id: m.id, title: m.title }; break;
+		case 'resumeQueue':
+			if (typeof m.tabId !== 'string' || !m.tabId || m.tabId.length > 100) { return undefined; }
+			message = { type: 'resumeQueue', tabId: m.tabId }; break;
+		case 'exportChat':
+			if (m.to !== 'clipboard' && m.to !== 'file') { return undefined; }
+			message = { type: 'exportChat', to: m.to }; break;
+		case 'setApprovalMode':
+			if (typeof m.key !== 'string' || m.key.length > 100 || !['ask', 'auto', 'deny'].includes(String(m.mode))) { return undefined; }
+			message = { type: 'setApprovalMode', key: m.key, mode: m.mode as 'ask' | 'auto' | 'deny' }; break;
+		case 'openFile':
+			if (typeof m.path !== 'string' || m.path.length > 4096 || m.path.includes('\0')) { return undefined; }
+			message = { type: 'openFile', path: m.path }; break;
+		case 'setNewsHidden':
+			if (typeof m.hidden !== 'boolean') { return undefined; }
+			message = { type: 'setNewsHidden', hidden: m.hidden }; break;
+		case 'openText': case 'openDiff':
+			if (typeof m.name !== 'string' || m.name.length > 200 || typeof m[m.type === 'openText' ? 'text' : 'diff'] !== 'string'
+				|| (m[m.type === 'openText' ? 'text' : 'diff'] as string).length > 1_000_000) { return undefined; }
+			message = m.type === 'openText' ? { type: 'openText', name: m.name, text: m.text as string } : { type: 'openDiff', name: m.name, diff: m.diff as string }; break;
+		case 'localLinkInfo':
+			if (typeof m.url !== 'string' || m.url.length > 20_000 || !Number.isSafeInteger(m.request)) { return undefined; }
+			message = { type: 'localLinkInfo', url: m.url, request: m.request as number }; break;
+		case 'secondOpinion':
+			if (m.chatId !== raw.chatId || !Number.isSafeInteger(m.index) || (m.index as number) < 0 || !['claude','codex','gemini','opencode','pi','openrouter'].includes(String(m.agent)) || typeof m.model !== 'string' || m.model.length > 200) { return undefined; }
+			message = { type: 'secondOpinion', chatId: raw.chatId, index: m.index as number, agent: m.agent as Selection['agent'] & string, model: m.model }; break;
 		case 'openBrowser':
 			if (m.where !== 'vscode') { return undefined; }
 			message = { type: 'openBrowser', where: 'vscode' }; break;

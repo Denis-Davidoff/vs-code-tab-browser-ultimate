@@ -10883,6 +10883,55 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
 
 ## Special cases and non-obvious decisions
 
+### Trusted local Chrome and connection permissions
+
+The user explicitly treats the paired Chrome extension on the same computer as
+a trusted UI. Its implemented chat lifecycle, queues, agent controls, exports,
+result viewing and power controls are enabled by default. Chrome requests run in
+the selected conversation's async scope, preserve the editor's front tab, and
+follow the new/reused conversation through the bridge's existing reply route.
+Only `location: here` is accepted for remote chat creation; opening editor
+windows remains a local editor action.
+
+Chat Settings → Connections & permissions stores optional per-surface restrictions
+in the application-scoped `aiBrowser.chat.connectionPermissions` user setting.
+The host reads it for every command; snapshots expose matching disabled controls.
+Stop remains usable. Attachment-bearing sends are also checked after grants are
+revoked. Writes are serialized, and remote clients cannot modify their own grants.
+The `origin` parameter on the shared send controller preserves Exchange's grants
+when its send delegates into the Chrome controller.
+
+Chrome uses separate `chromeTerminalAccess`, `chromeTerminalShell` and
+`chromeTerminalAgent` switches, all defaulting on. The initial pairing is the
+local trust decision, so there is no extra Chrome terminal consent modal. Chrome
+can reach AI Browser terminal tabs regardless of the Exchange share flag.
+Exchange retains its original opt-in, encryption, per-connection consent and
+explicit share gates. These permissions cover AI Browser connections, not other
+VS Code extensions, provider tool approvals or workspace trust.
+
+### Session host migration bridge
+
+`src/chat/core/sessionHost.ts` owns immutable **published projections**, sequence
+numbers and bounded replay independently of the editor UI. `ChatViewProvider`
+feeds all shared views into it at the existing coalesced publication interval
+only while observed (first-observer attachment bootstraps current state);
+moving a tab preserves the conversation ID. `ChatTab` still owns mutable runtime
+state, processes and approvals. Last-view disposal still stops the agents and
+disposes this in-process host. Do not claim UI-independent execution yet.
+
+`core/ahpPrototype.ts` is a transport-free, private-profile experiment, **not** a
+conformant AHP host or a VS Code Agents endpoint. Its channels/actions/commands
+use `x-ai-browser` names and initialization advertises the private profile.
+No port, transport or production control adapter is added. Any future embedding
+must bind authorization to its authenticated peer, recheck access on recovery
+and live events, and preserve existing Exchange encryption and scoped grants.
+Replies and live actions share one synchronous `send` callback and outgoing FIFO.
+Clients install snapshot/replay bases there, not after awaiting `receive()`;
+initialization/subscription/recovery must not yield before sending that base.
+This also prevents a reentrant publication during response delivery from reaching
+a reducer before its base and causing the host to remove the subscriber.
+See [the design, limitations and runnable demo](docs/session-host.md).
+
 ### Inline HTML visualizations
 
 `chat_present_html` publishes a completed HTML file for the caller's own conversation; the

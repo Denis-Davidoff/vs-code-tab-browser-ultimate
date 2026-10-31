@@ -1064,6 +1064,9 @@ export function codexEvents(method: string, params: unknown): AgentEvent[] {
 		case 'configWarning':
 		case 'deprecationNotice': {
 			const text = typeof p.message === 'string' ? p.message : typeof p.summary === 'string' ? p.summary : undefined;
+			// The chat enables this feature for question forms. Keep warnings
+			// about any other experimental features (including combined lists).
+			if (method !== 'deprecationNotice' && text && /^Under-development features enabled:\s*default_mode_request_user_input(?:\.|$)/.test(text)) { return []; }
 			return text ? [{ type: 'notice', text, level: 'warning', reason: typeof p.details === 'string' ? p.details : undefined }] : [];
 		}
 

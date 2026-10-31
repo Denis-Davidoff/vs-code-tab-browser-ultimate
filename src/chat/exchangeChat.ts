@@ -1,6 +1,7 @@
 import { currentVisibleTurns } from './core/entryWindow';
 import { createHash as deviceHash } from "node:crypto";
 import { surfaceControls } from './core/commands';
+import { remoteFileControls } from './core/remoteFiles';
 import { diffState } from './core/sync';
 import { exchangeCipher, encryptedExchangeSocket, type ExchangeCipher } from '../core/exchangeCrypto';
 import * as vscode from 'vscode';
@@ -153,7 +154,7 @@ class ExchangeSurface implements ChatStateSurface {
 		const { controls: terminalControls, ...terminalView } = remoteTerminalView({ surface: 'exchange', encrypted: !!this.cipher, setting: remoteTerminalSetting(), openShell: remoteTerminalOpenSetting('shell'), openAgent: remoteTerminalOpenSetting('agent'),
 			consent: this.terminalConsent, blocked: terminals.blocked() }, () => terminals.shared(), () => terminals.support());
 		this.hub?.sync();
-		const view = {...full.view,...terminalView,surface:'exchange' as const,controls:{...surfaceControls('exchange'),...terminalControls},voice:{...full.view.voice,available:false,reason:'Microphone recording is available in VS Code.'},suggestions:exchangePageSuggestion(this.page?.())};
+		const view = {...full.view,...terminalView,surface:'exchange' as const,controls:{...surfaceControls('exchange', full.view.connectionPermissions),...remoteFileControls('exchange', state.remoteFiles?.exchange),...terminalControls},voice:{...full.view.voice,available:false,reason:'Microphone recording is available in VS Code.'},suggestions:exchangePageSuggestion(this.page?.())};
 		let body = JSON.stringify({...JSON.parse(exchangeSnapshot(windowed, offset)),uiVersion:1,view});
 		// Allow the bounded 6 MB presentation set plus conversation text below the encrypted relay limit.
 		while (Buffer.byteLength(body)>8_000_000 && view.entries.length>1) { { const cut = Math.max(1,Math.floor(view.entries.length/4)); view.entries = view.entries.slice(cut); view.entriesOffset = (view.entriesOffset ?? 0) + cut; } body = JSON.stringify({...JSON.parse(exchangeSnapshot(windowed, offset)),uiVersion:1,view}); }

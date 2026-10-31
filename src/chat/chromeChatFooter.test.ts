@@ -1,6 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, promises as fsPromises } from 'node:fs';
+import { isInside, resolveInside } from './fileExplorer.ts';
 import { tmpdir } from 'node:os';
 import { changeGitIndex } from './gitIndex.ts';
 import { parseGitStatus } from './gitStatus.ts';
@@ -11,10 +12,10 @@ import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { createSourceFile, forEachChild, isMethodDeclaration, ScriptTarget, transpileModule } from 'typescript';
 
-function fixture(stat: () => Promise<unknown> = async () => ({ isDirectory: () => false })) {
+function fixture(stat: (file: string) => Promise<unknown> = async () => ({ isDirectory: () => false })) {
   const source = readFileSync('src/chat/chatView.ts', 'utf8');
   const ast = createSourceFile('chatView.ts', source, ScriptTarget.ES2022, true);
-  const wanted = new Set(['_receiveChromeFooter', '_postMessage', '_workdir', '_usage', '_changeGitIndex', '_refreshWorkdirGit']);
+  const wanted = new Set(['_receiveChromeFooter', '_files', '_postMessage', '_workdir', '_usage', '_changeGitIndex', '_refreshWorkdirGit']);
   const methods: string[] = [];
   const visit = (node: any) => {
     if (isMethodDeclaration(node) && wanted.has(node.name.getText(ast))) { methods.push(node.getText(ast)); }
@@ -23,7 +24,7 @@ function fixture(stat: () => Promise<unknown> = async () => ({ isDirectory: () =
   visit(ast);
   const View = runInNewContext(transpileModule(`class View { ${methods.join('\n')} }; View;`, {
     compilerOptions: { target: ScriptTarget.ES2022 },
-  }).outputText, { path, fs: { promises: { stat } }, gitBinary:async()=> 'git', changeGitIndex, parseGitStatus });
+  }).outputText, { path, fs: { promises: { ...fsPromises, stat } }, isInside, resolveInside, gitBinary:async()=> 'git', changeGitIndex, parseGitStatus });
   const view = new View();
   const tabA = { id: 'tab-A', chat: { id: 'chat-A', folder: '/A', stats: { contextTokens: 10 } }, started: true };
   const tabB = { id: 'tab-B', chat: { id: 'chat-B', folder: '/B', stats: { contextTokens: 20 } }, started: true };
@@ -54,6 +55,24 @@ test('concurrent footer requests retain their conversation across awaits and nev
   assert.equal(view._active, tabB);
   assert.ok(editorMessages.every(message => message.type === 'state'), 'request answers are not delivered to the editor popup');
   await assert.rejects(view._receiveChromeFooter(tabA, { type: 'compact', tabId: 'tab-B' }), /destination conversation changed/);
+});
+
+test('Files attaches files and folders to the Chrome draft instead of the editor draft', async () => {
+  const folder = mkdtempSync(path.join(tmpdir(), 'chrome-files-'));
+  try {
+    writeFileSync(path.join(folder, 'note.txt'), 'note');
+    mkdirSync(path.join(folder, 'docs'));
+    const { view, tabA, tabB } = fixture(fsPromises.stat);
+    tabA.chat.folder = folder;
+    view._blocked = () => undefined;
+    view._receive = (message: unknown) => view._files(message);
+    view._attachPath = () => assert.fail('A Chrome attachment must not enter the editor draft');
+    const replies: any[] = [];
+    await view._receiveChromeFooter(tabA, { type: 'files', action: 'attach', folder, dir: '', paths: ['note.txt', 'docs'], request: 1 }, (message: any, chatId: string) => replies.push({ message, chatId }));
+    assert.deepEqual(replies.map(r => r.message.label), ['note.txt', 'docs/']);
+    assert.ok(replies.every(r => r.message.type === 'chromeAttachment' && r.chatId === tabA.chat.id));
+    assert.equal(view._active, tabB);
+  } finally { rmSync(folder, { recursive: true, force: true }); }
 });
 
 test('usage answers contain the pinned conversation context rather than the editor conversation', async () => {

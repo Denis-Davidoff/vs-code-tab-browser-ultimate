@@ -8,8 +8,6 @@ import { ChromeChatPairing } from './chromeChatPairing';
 import type { ChromeChatConnection } from './chromeChatProtocol';
 import { ChatViewProvider, chatViewId, remoteTerminalSetting, remoteTerminalOpenSetting } from './chatView';
 
-const chromeTerminalConsentDetail = 'It can watch the terminals you mark "Allow remote access", open new shells or agent CLIs on this computer (shared with it from the start), and, when it takes control, type into them. Your own typing in VS Code always takes control back. Asked once for this connection.';
-
 /**
  * Resume grants: one per Chrome extension ID, kept as a hash in SecretStorage
  * (shared by every window of this profile). The key itself lives only in that
@@ -61,21 +59,16 @@ function watchDriven(bridge: ChromeChatBridge): vscode.Disposable {
 }
 
 /**
- * Terminal tabs in Chrome: the website's port and gates (`aiBrowser.chat.remoteTerminal`, the shared
- * flag), plus a consent modal asked once per bridge. Loopback only, so no encryption gate.
+ * The explicitly paired local Chrome extension is trusted. Its separate terminal
+ * settings default on; Exchange retains its opt-in, encryption and share gates.
  */
 function chromeTerminalPort(sourceId: string): ChromeTerminalPort {
 	return {
-		terminals: ChatViewProvider.exchangeTerminals(sourceId),
-		setting: remoteTerminalSetting,
-		openShell: () => remoteTerminalOpenSetting('shell'),
-		openAgent: () => remoteTerminalOpenSetting('agent'),
-		async askConsent() {
-			const allow = 'Allow';
-			const answer = await vscode.window.showWarningMessage('Let the AI Browser Chrome side panel use terminal tabs on this computer?',
-				{ modal: true, detail: chromeTerminalConsentDetail }, allow);
-			return answer === allow;
-		},
+		terminals: ChatViewProvider.exchangeTerminals(sourceId, 'chrome'),
+		setting: () => remoteTerminalSetting('chrome'),
+		openShell: () => remoteTerminalOpenSetting('shell', 'chrome'),
+		openAgent: () => remoteTerminalOpenSetting('agent', 'chrome'),
+		async askConsent() { return remoteTerminalSetting('chrome'); },
 		audit: auditRemoteTerminal,
 	};
 }

@@ -68,7 +68,7 @@ import type { ChatSound, ChatSoundSettings } from '../src/chat/chatProtocol';
 import { chatSoundLabels, playChatSound, unlockChatSound } from './chatSound';
 unlockChatSound(document);
 import { baseName, searchPaths } from './fileRank';
-import { controlOf, type Availability } from '../src/chat/core/commands';
+import { controlOf, connectionPermissionGroups, readConnectionPermissions, type ConnectionPermission, type Availability } from '../src/chat/core/commands';
 import { describePrice, formatContext, modelFromCatalogItem, modelSummary, parseOptionalNumber } from '../src/chat/openrouterView';
 // Every codicon the bundled font has, one per line (`name,char,code`); bundled
 // as text by esbuild, so the icon picker lists exactly what can be drawn.
@@ -91,7 +91,8 @@ if (!window.aiBrowserChatHost) {
  * said instead. In the editor the map is empty and everything goes.
  */
 const post = (message: ViewToHost) => {
-	const control = gate(message.type);
+	const general = gate(message.type);
+	const control = general.s === 'on' && message.type === 'files' ? gate(`files.${message.action}`) : general;
 	if (control.s !== 'on') {
 		refuseControl(control);
 		return;
@@ -2315,7 +2316,7 @@ const remoteNew = remoteButton('add', 'New chat');
 remoteNew.addEventListener('click', () => post({ type: 'newTab', location: 'here' }));
 const remoteHistory = remoteButton('history', 'Chat history');
 // The website asks its host for the list; it is not one of the editor's messages.
-remoteHistory.addEventListener('click', () => { if (gate('history').s === 'on') { vscode.postMessage({ type: 'history' } as unknown as ViewToHost); } else { refuseControl(gate('history')); } });
+remoteHistory.addEventListener('click', () => { if (state?.surface === 'chrome') { post({ type: 'listHistory' }); } else if (gate('history').s === 'on') { vscode.postMessage({ type: 'history' } as unknown as ViewToHost); } else { refuseControl(gate('history')); } });
 const remoteAwake = remoteButton('coffee', 'Keep the computer awake');
 remoteAwake.addEventListener('click', () => { if (gate('setSleep').s !== 'on') { refuseControl(gate('setSleep')); return; } buildSleepPopup(); renderSleep(); openSleepPopup(); });
 const remoteSettings = remoteButton('settings-gear', 'Chat settings');
@@ -2348,7 +2349,7 @@ function renderRemoteBar(s: ChatViewState): void {
 	remoteBar.hidden = !s.surface || s.surface === 'editor';
 	if (remoteBar.hidden) { return; }
 	for (const [b, id] of [[remoteNew, 'newTab'], [remoteHistory, 'history'], [remoteAwake, 'setSleep'], [remoteSettings, 'saveFeatureAi']] as const) {
-		const control = gate(id);
+		const control = gate(id === 'history' && s.surface === 'chrome' ? 'listHistory' : id);
 		b.hidden = control.s === 'hidden';
 		b.classList.toggle('control-off', control.s === 'off');
 		b.setAttribute('aria-disabled', String(control.s === 'off'));
@@ -2545,6 +2546,7 @@ vscode.onMessage(message => {
 		}
 		case 'state':
 			state = message.state.visualizationsUnchanged ? { ...message.state, visualizations: state?.visualizations } : message.state;
+			connectionPermissionRender?.();
 			{ const shape = [...attachedFilePaths()].join('\n'); if (shape !== filesAttachedShape) { filesAttachedShape = shape; renderFiles(); } }
 			soundOnFinish(state);
 			renderSoundButton();
@@ -12218,27 +12220,83 @@ let remoteTerminalData: RemoteTerminalSettingsMessage | undefined;
 let remoteTerminalRender: (() => void) | undefined;
 
 /** The Remote terminals section: what Chrome and the website may open. Each box applies at once; there is no Save. */
+let connectionPermissionRender: (() => void) | undefined;
+function createConnectionPermissionSettings(): HTMLElement {
+	const content = el('div');
+	content.append(el('p', { text: 'Chrome on this computer is a trusted interface. Supported actions are enabled by default. Use these switches only to restrict a connection type. Exchange keeps its own settings. Stop always remains available.' }));
+	const boxes: { surface: 'chrome' | 'exchange'; group: ConnectionPermission; input: HTMLInputElement }[] = [];
+	for (const surface of ['chrome', 'exchange'] as const) {
+		const section = el('fieldset', { class: 'connection-permissions-group' });
+		section.append(el('legend', { text: surface === 'chrome' ? 'Chrome · this computer' : 'Exchange · website' }));
+		for (const [group, label] of Object.entries(connectionPermissionGroups) as [ConnectionPermission, string][]) {
+			const box = el('input'); box.type = 'checkbox';
+			boxes.push({ surface, group, input: box });
+			box.addEventListener('change', () => post({ type: 'setConnectionPermission', surface, group, allowed: box.checked }));
+			section.append(el('label', { class: 'openrouter-check' }, box, el('span', { text: label })));
+		}
+		content.append(section);
+	}
+	const render = () => {
+		if (!content.isConnected) { return; }
+		const permissions = readConnectionPermissions(state?.connectionPermissions);
+		for (const box of boxes) { box.input.checked = permissions[box.surface][box.group]; }
+	};
+	connectionPermissionRender = render;
+	const permissions = readConnectionPermissions(state?.connectionPermissions);
+	for (const box of boxes) { box.input.checked = permissions[box.surface][box.group]; }
+	content.append(el('p', { class: 'feature-settings-note', text: 'These switches restrict supported actions. Project file access and terminal access have additional controls below. Permissions for agent tools and browser pages remain separate.' }));
+	return content;
+}
+
 function createRemoteTerminalSettings(): HTMLElement {
 	const content = el('div', { class: 'feature-settings-content remote-terminal-settings' });
+	content.append(createConnectionPermissionSettings());
 	const status = el('p', { class: 'feature-settings-note' }); status.setAttribute('role', 'status');
+	content.append(el('strong', { text: 'Project files' }), el('p', { class: 'feature-settings-note', text: 'Choose what the Files panel and project attachment picker may do on this computer. Applies to the working folder of each conversation. Agent commands use their own approvals and sandbox permissions.' }));
+	const fileSelects = { chrome: el('select'), exchange: el('select') };
+	for (const surface of ['chrome', 'exchange'] as const) {
+		const select = fileSelects[surface];
+		const label = surface === 'chrome' ? 'Chrome' : 'Website';
+		select.setAttribute('aria-label', `${label} project file access`);
+		for (const [value, text] of [['off', 'No access'], ['read', 'Browse only'], ['attach', 'Browse and attach'], ['write', 'Browse, attach and edit']]) {
+			const option = el('option', { text }); option.value = value; select.append(option);
+		}
+		select.disabled = true;
+		select.addEventListener('change', () => post({ type: 'remoteTerminalSettings', action: 'setFiles', surface, value: select.value as 'off' | 'read' | 'attach' | 'write' }));
+		content.append(el('div', { class: 'feature-settings-row' }, el('label', {}, el('span', { text: label }), select)));
+	}
+	content.append(el('p', { class: 'feature-settings-note', text: 'Editing allows uploads, new folders, copy, cut and paste inside the working folder. Opening files in the editor, revealing files, using the editor clipboard and deleting files remain available only in VS Code.' }), el('strong', { text: 'Terminals' }));
 	const boxes = {
 		remoteTerminal: el('input'), remoteTerminalShell: el('input'), remoteTerminalAgent: el('input'),
+		chromeTerminalAccess: el('input'), chromeTerminalShell: el('input'), chromeTerminalAgent: el('input'),
 	} as const;
 	const rows: Array<[keyof typeof boxes, string, string]> = [
-		['remoteTerminal', 'Allow Chrome and the website to use terminal tabs', 'They can watch terminals marked "Allow remote access" and, once they take control, type into them. Needs an encrypted connection on the website. Everything below only narrows this.'],
-		['remoteTerminalShell', 'Allow them to open a plain terminal', 'A shell on this computer, in your working folder.'],
-		['remoteTerminalAgent', 'Allow them to open an agent in a terminal', "An agent's own CLI (Claude Code, Codex, …) on this computer."],
+		['chromeTerminalAccess', 'Chrome: use terminal tabs', 'The paired Chrome extension on this computer can use terminal tabs without a separate terminal consent dialog.'],
+		['chromeTerminalShell', 'Chrome: open a plain terminal', 'Enabled by default for the trusted local Chrome extension.'],
+		['chromeTerminalAgent', 'Chrome: open an agent in a terminal', 'Enabled by default; starts the selected agent CLI on this computer.'],
+		['remoteTerminal', 'Exchange: use shared terminal tabs', 'They can watch terminals marked "Allow remote access" and, once they take control, type into them. Needs an encrypted connection on the website. Everything below only narrows this.'],
+		['remoteTerminalShell', 'Exchange: open a plain terminal', 'A shell on this computer, in your working folder.'],
+		['remoteTerminalAgent', 'Exchange: open an agent in a terminal', "An agent's own CLI (Claude Code, Codex, …) on this computer."],
 	];
 	for (const [key] of rows) { boxes[key].type = 'checkbox'; }
 	const render = () => {
 		if (!content.isConnected && remoteTerminalRender === render) { remoteTerminalRender = undefined; return; }
 		const data = remoteTerminalData;
 		if (!data) { return; }
+		boxes.chromeTerminalAccess.checked = data.chrome?.allowed ?? true;
+		boxes.chromeTerminalShell.checked = data.chrome?.shell ?? true;
+		boxes.chromeTerminalAgent.checked = data.chrome?.agent ?? true;
+		boxes.chromeTerminalShell.disabled = !boxes.chromeTerminalAccess.checked;
+		boxes.chromeTerminalAgent.disabled = !boxes.chromeTerminalAccess.checked;
 		boxes.remoteTerminal.checked = data.remoteTerminal;
 		boxes.remoteTerminalShell.checked = data.shell;
 		boxes.remoteTerminalAgent.checked = data.agent;
 		boxes.remoteTerminalShell.disabled = !data.remoteTerminal;
 		boxes.remoteTerminalAgent.disabled = !data.remoteTerminal;
+		for (const surface of ['chrome', 'exchange'] as const) {
+			fileSelects[surface].disabled = !data.files;
+			if (data.files) { fileSelects[surface].value = data.files[surface]; }
+		}
 		status.textContent = data.error ?? '';
 	};
 	remoteTerminalRender = render;
@@ -12352,7 +12410,7 @@ function openFeatureSettings(initial?: 'openrouter'): void {
 	const openrouterContent = openrouterTab.hidden ? el('div') : createOpenRouterSettings();
 	openrouterContent.id = 'openrouter-content'; openrouterContent.hidden = true;
 	openrouterContent.setAttribute('role', 'tabpanel'); openrouterContent.setAttribute('aria-labelledby', openrouterTab.id);
-	const remoteTab = button(['Remote terminals'], { class: 'feature-settings-tab' });
+	const remoteTab = button(['Connections & permissions'], { class: 'feature-settings-tab' });
 	remoteTab.id = 'remote-terminal-tab'; remoteTab.hidden = gate('remoteTerminalSettings').s !== 'on';
 	remoteTab.setAttribute('role', 'tab'); remoteTab.setAttribute('aria-selected', 'false');
 	remoteTab.setAttribute('aria-controls', 'remote-terminal-content');

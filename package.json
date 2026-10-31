@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate",
 	"displayName": "AI Browser🏆 Claude + Codex + Gemini + OpenCode + Pi + OpenRouter",
 	"description": "Chat with browser, MCP for Chrome and embedded browser tab with AI capabilities, Claude, Codex, Gemini, OpenCode, Pi and OpenRouter integration (Qwen, LM Studio, Ollama, etc.)",
-	"version": "0.9.13",
+	"version": "0.9.14",
 	"enabledApiProposals": [
 		"externalUriOpener",
 		"browser"
@@ -1030,6 +1030,18 @@
 						"title": "Passkeys",
 						"markdownDescription": "%configuration.passkeys.enabled.description%"
 					},
+					"aiBrowser.chat.connectionPermissions": {
+						"type": "object",
+						"default": {},
+						"scope": "application",
+						"title": "Connection Permissions",
+						"description": "Optional restrictions for Chrome and Exchange. Manage these in AI Browser Chat Settings → Connections & permissions. Supported actions are enabled unless explicitly disabled.",
+						"additionalProperties": false,
+						"properties": {
+							"chrome": { "type": "object", "additionalProperties": { "type": "boolean" } },
+							"exchange": { "type": "object", "additionalProperties": { "type": "boolean" } }
+						}
+					},
 					"aiBrowser.chat.tabLimit": {
 						"type": "integer",
 						"default": 10,
@@ -1096,6 +1108,43 @@
 						"type": "boolean",
 						"default": true,
 						"markdownDescription": "%configuration.chat.notifications.onlyWhenAway.description%"
+					},
+					"aiBrowser.chat.remoteFilesChrome": {
+						"type": "string",
+						"enum": ["off", "read", "attach", "write"],
+						"enumDescriptions": ["No access", "Browse only", "Browse and attach", "Browse, attach and edit"],
+						"default": "write",
+						"scope": "application",
+						"markdownDescription": "Project file access from Chrome. Controls Files and project attachments inside the conversation's working folder. Agent tool approvals and sandbox permissions are separate. Change this in VS Code only."
+					},
+					"aiBrowser.chat.remoteFilesWebsite": {
+						"type": "string",
+						"enum": ["off", "read", "attach", "write"],
+						"enumDescriptions": ["No access", "Browse only", "Browse and attach", "Browse, attach and edit"],
+						"default": "write",
+						"scope": "application",
+						"markdownDescription": "Project file access from the connected website. Controls Files and project attachments inside the conversation's working folder. Agent tool approvals and sandbox permissions are separate. Change this in VS Code only."
+					},
+					"aiBrowser.chat.chromeTerminalAccess": {
+						"type": "boolean",
+						"default": true,
+						"scope": "application",
+						"title": "Chrome Terminal Access",
+						"description": "Allow the paired Chrome extension on this computer to use this terminal capability. Exchange has separate permissions."
+					},
+					"aiBrowser.chat.chromeTerminalShell": {
+						"type": "boolean",
+						"default": true,
+						"scope": "application",
+						"title": "Open Shell Terminals from Chrome",
+						"description": "Allow the paired Chrome extension on this computer to use this terminal capability. Exchange has separate permissions."
+					},
+					"aiBrowser.chat.chromeTerminalAgent": {
+						"type": "boolean",
+						"default": true,
+						"scope": "application",
+						"title": "Open Agent Terminals from Chrome",
+						"description": "Allow the paired Chrome extension on this computer to use this terminal capability. Exchange has separate permissions."
 					},
 					"aiBrowser.chat.remoteTerminal": {
 						"type": "boolean",

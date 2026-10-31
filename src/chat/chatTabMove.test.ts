@@ -96,9 +96,9 @@ test('closing a previous surface keeps shared backends until the last moved chat
 	const body = /\tpublic dispose\(\): void \{[\s\S]*?\n\t\}/.exec(source)![0].replace('public dispose', 'function dispose');
 	const dispose = runInNewContext(transpileModule(`${body}\ndispose;`, { compilerOptions: { target: ScriptTarget.ES2022 } }).outputText, { clearTimeout, ChatViewProvider: { _surfaces: new Map(), _pins: { dropTab() { return []; } } } });
 	let backendDisposals = 0, runDisposals = 0, tabCloses = 0;
-	const services = { views: new Set<unknown>(), panels: { forget() {} } };
+	const services = { views: new Set<unknown>(), panels: { forget() {} }, sessions: { dispose() {} } };
 	const surface = () => ({ _windows: new Set(), _pendingPanels: new Map(), _titleRequests: new Map(), _branchNameRequests: new Map(), _gitCommits: new Map(),
-		_stateSurfaces: { dispose() {} }, _terminals: { dispose() {}, tabs: [] }, _terminalGone() {}, _saveTerminals() {},
+		_stateSurfaces: { dispose() {} }, _publishSessions() {}, _terminals: { dispose() {}, tabs: [] }, _terminalGone() {}, _saveTerminals() {},
 		_sleep: { dispose() {} }, _draftRequests: new Map(), _livePages: new Map(), _voiceCancel() {}, _detachedChat: {}, _panelIdentity: {}, _saveTabs() {}, _services: services,
 		_runs: { dispose() { runDisposals++; } }, _registry: { dispose() { backendDisposals++; } },
 		_usageChecks: new Map(), _draining: new Map(), _tabs: [{ close() { tabCloses++; } }], _subscriptions: [],

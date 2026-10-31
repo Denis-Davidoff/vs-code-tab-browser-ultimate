@@ -2,7 +2,9 @@ import { currentVisibleTurns, windowEntries } from './core/entryWindow';
 import { remoteOpenHint } from './remoteTerminalView';
 import { GitFetchScheduler } from './gitFetch';
 import type { ExchangeUiMessage } from './exchangeUiProtocol';
-import { remoteRefusal } from './core/commands';
+import { remoteRefusal, connectionPermissions } from './connectionPermissions';
+import { connectionPermissionGroups, readConnectionPermissions, type RemoteSurface } from './core/commands';
+import { readRemoteFileLevel, remoteFileLevels, remoteFileRefusal, type RemoteFileSettings } from './core/remoteFiles';
 import { remoteScope } from './core/remoteScope';
 import { exchangeConnection } from './exchangeConnection';
 import { annotationPointContext } from '../browser/annotationData';
@@ -11,6 +13,7 @@ import { chromeChatCommandFeature } from './chromeChatCompatibility';
 import { ChatPanelCatalog } from './chatPanelCatalog';
 import { chatProjectId, legacyProjectTabs, type SavedChatTabs } from './chatProject';
 import { ChatStateSurfaces, type ChatStateSurface } from './chatSurface';
+import { SessionHost } from './core/sessionHost';
 import type { ChromeElementAttachment } from './chromeChatProtocol';
 import { bindAttachmentReference } from './attachmentReferences';
 import { readChatPanelIdentity, type ChatPanelIdentity } from './chatPanelState';
@@ -381,6 +384,7 @@ interface GitCommitJob {
 }
 
 interface ChatServices {
+	sessions: SessionHost;
 	registry: AgentRegistry;
 	git: GitAccess;
 	panels: ChatPanelCatalog;
@@ -399,14 +403,22 @@ interface ChatServices {
  * binaries. A type with no row is refused. An inner id has to name the shared
  * conversation itself.
  */
-/** `aiBrowser.chat.remoteTerminalShell` / `remoteTerminalAgent`: whether Chrome and the website may open a plain shell / an agent's CLI (application scope, read at every decision). */
-export function remoteTerminalOpenSetting(kind: 'shell' | 'agent'): boolean {
-	return vscode.workspace.getConfiguration('aiBrowser.chat').inspect<boolean>(kind === 'shell' ? 'remoteTerminalShell' : 'remoteTerminalAgent')?.globalValue === true;
+/** Independent Chrome/Exchange terminal launch settings, read at user scope on every decision. */
+export function remoteTerminalOpenSetting(kind: 'shell' | 'agent', surface: RemoteSurface = 'exchange'): boolean {
+	const key = surface === 'chrome' ? (kind === 'shell' ? 'chromeTerminalShell' : 'chromeTerminalAgent') : (kind === 'shell' ? 'remoteTerminalShell' : 'remoteTerminalAgent');
+	const value = vscode.workspace.getConfiguration('aiBrowser.chat').inspect<boolean>(key)?.globalValue;
+	return surface === 'chrome' ? value !== false : value === true;
 }
 
-/** `aiBrowser.chat.remoteTerminal`, read at every decision (application scope: a workspace cannot switch it on). */
-export function remoteTerminalSetting(): boolean {
-	return vscode.workspace.getConfiguration('aiBrowser.chat').inspect<boolean>('remoteTerminal')?.globalValue === true;
+function remoteFileSettings(): RemoteFileSettings {
+	const config = vscode.workspace.getConfiguration('aiBrowser.chat');
+	return { chrome: readRemoteFileLevel(config.inspect('remoteFilesChrome')?.globalValue), exchange: readRemoteFileLevel(config.inspect('remoteFilesWebsite')?.globalValue) };
+}
+
+/** Independent Chrome/Exchange terminal access, never enabled by a workspace setting. */
+export function remoteTerminalSetting(surface: RemoteSurface = 'exchange'): boolean {
+	const value = vscode.workspace.getConfiguration('aiBrowser.chat').inspect<boolean>(surface === 'chrome' ? 'chromeTerminalAccess' : 'remoteTerminal')?.globalValue;
+	return surface === 'chrome' ? value !== false : value === true;
 }
 
 function exchangeRefusal(message: ExchangeUiMessage, tab: ChatTab, chatId: string): void {
@@ -421,6 +433,7 @@ function pushKey(action: string, branch: string, remote: string, target: string,
 }
 
 export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
+	private static _connectionPermissionWrite: Promise<void> = Promise.resolve();
 	private static _chromeConnectionRequest?: { id: string; extensionId: string; finish: (source?: string) => void };
 
 	public static requestChromeConnection(id: string, extensionId: string, signal: AbortSignal): Promise<string | undefined> {
@@ -463,16 +476,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		return view._stateSurfaces.attach(surface, chatId => view._stateFor(chatId), () => view._post());
 	}
 	/**
-	 * The terminals of a surface as the Exchange hub sees them: only those shared with the website,
-	 * and none while the window is blocked or the setting is off (re-asked on every call).
+	 * The terminal inventory for a connection: trusted local Chrome sees app terminals;
+	 * Exchange sees explicitly shared ones. Both recheck their own setting on every call.
 	 */
-	public static exchangeTerminals(id: string): { find(terminalId: string): TerminalTab | undefined; shared(): TerminalTabSummary[]; support(): TerminalSupport; blocked(): boolean } {
+	public static exchangeTerminals(id: string, surface: RemoteSurface = 'exchange'): { find(terminalId: string): TerminalTab | undefined; shared(): TerminalTabSummary[]; support(): TerminalSupport; blocked(): boolean } {
 		const live = () => { const view = this._surfaces.get(id); return view && !view._disposed ? view : undefined; };
-		const blocked = () => { const view = live(); return !view || !!view._blocked() || !remoteTerminalSetting(); };
+		const blocked = () => { const view = live(); return !view || !!view._blocked() || !remoteTerminalSetting(surface); };
 		return {
 			blocked,
-			find: terminalId => { const view = live(); const terminal = blocked() ? undefined : view?._terminals.find(terminalId); return terminal?.remote ? terminal : undefined; },
-			shared: () => { const view = live(); return !view || blocked() ? [] : view._terminals.tabs.filter(t => t.remote).map(t => t.summary()); },
+			find: terminalId => { const view = live(); const terminal = blocked() ? undefined : view?._terminals.find(terminalId); return terminal && (surface === 'chrome' || terminal.remote) ? terminal : undefined; },
+			shared: () => { const view = live(); return !view || blocked() ? [] : view._terminals.tabs.filter(t => surface === 'chrome' || t.remote).map(t => t.summary()); },
 			support: () => { const view = live(); return view ? view._terminalSupport() : { available: false, reason: 'The chat is closed.' }; },
 		};
 	}
@@ -484,16 +497,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		view._sleep.connected(minutes);
 	}
 
-	public static async commandChromeSource(id: string, chatId: string, message: ViewToHost, picked: readonly ChromeElementAttachment[] = [], reply?: (message: HostToView, chatId?: string) => void, canonical?: (item:ChromeElementAttachment)=>Attachment|undefined): Promise<void> {
+	public static async commandChromeSource(id: string, chatId: string, message: ViewToHost, picked: readonly ChromeElementAttachment[] = [], reply?: (message: HostToView, chatId?: string) => void, canonical?: (item:ChromeElementAttachment)=>Attachment|undefined, origin: RemoteSurface = 'chrome'): Promise<void> {
 		// The website's `send` comes through here too, after its own check.
-		const { view, tab } = remoteScope('chrome', this._surfaces.get(id), v => !v._disposed && v._view ? v._tabs.find(t => t.chat.id === chatId) : undefined, v => v._blocked(), remoteRefusal('chrome', message.type));
+		const { view, tab } = remoteScope(origin, this._surfaces.get(id), v => !v._disposed && v._view ? v._tabs.find(t => t.chat.id === chatId) : undefined, v => v._blocked(), remoteRefusal(origin, message.type));
+		if (message.type === 'send' && picked.length || message.type === 'files' && message.action === 'attach') {
+			const denied = remoteRefusal(origin, 'attachPath'); if (denied) { throw new Error(denied); }
+		}
+		if (message.type === 'files' || message.type === 'attachPath' || message.type === 'listWorkdir') {
+			const fileRefusal = remoteFileRefusal('chrome', remoteFileSettings().chrome, message);
+			if (fileRefusal) { throw new Error(fileRefusal); }
+		}
 		if (chromeChatCommandFeature(message) !== 'chat') {
 			await view._receiveChromeFooter(tab, message, reply); return;
 		}
 		if (message.type === 'newTerminal' || message.type === 'closeTerminal' || message.type === 'renameTerminal' || message.type === 'restartTerminal') {
 			// The bridge asked for consent before this (`ChromeChatBridge._terminalConsentFor`).
 			if (message.type === 'newTerminal' && message.pinTo !== undefined) { throw new Error('Pinning a terminal is done in VS Code.'); }
-			await view._remoteTerminalCommand(tab, message); return;
+			await view._remoteTerminalCommand(tab, message, origin); return;
 		}
 		if (message.type === 'send') {
 			const stopGeneration = tab.stopGeneration;
@@ -540,15 +560,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		} else if (message.type === 'cancelProgress') {
 			if (message.chatId !== chatId) { throw new Error('This conversation is not shared.'); }
 			await tab.cancelProgress(message.id);
-		} else if (message.type === 'select' || message.type === 'switchAgent') {
+		} else if (message.type === 'closeTab') {
+			await view._receive(message);
+			view._postMessage({ type: 'state', state: view._state() });
+			reply?.({ type: 'focusInput' }, view._active.chat.id);
+			return;
+		} else {
+			if ((message.type === 'newTab' || message.type === 'newChat') && message.location !== 'here') { throw new Error('Create the chat here in Chrome. Editor tabs and windows are opened in VS Code.'); }
 			const scope = {tab, chatId, reply, remote: true};
 			await view._chromeCommand.run(scope, () => view._receive(message));
 			scope.chatId = scope.tab.chat.id;
 			view._postMessage({type:'state', state:view._state()});
 			if(scope.chatId!==chatId)reply?.({type:'focusInput'},scope.chatId);
 			return;
-		} else {
-			await view._receive(message);
 		}
 		view._postMessage({ type: 'state', state: view._state() });
 	}
@@ -563,11 +587,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 	public static async commandExchangeSource(id: string, chatId: string, message: ExchangeUiMessage, picked: readonly ChromeElementAttachment[] = [], reply?: (message: HostToView, chatId?: string) => void, browserTab?:vscode.BrowserTab): Promise<void> {
 		const { view, tab } = remoteScope('exchange', this._surfaces.get(id), v => !v._disposed && v._view ? v._tabs.find(t => t.chat.id === chatId) : undefined, v => v._blocked(), message.type === 'history' ? undefined : remoteRefusal('exchange', message.type));
+		if (message.type === 'files' || message.type === 'attachPath' || message.type === 'listWorkdir') {
+			const fileRefusal = remoteFileRefusal('exchange', remoteFileSettings().exchange, message);
+			if (fileRefusal) { throw new Error(fileRefusal); }
+		}
 		exchangeRefusal(message, tab, chatId);
 		if (message.type === 'newTerminal' || message.type === 'closeTerminal' || message.type === 'renameTerminal' || message.type === 'restartTerminal') {
 			await view._remoteTerminalCommand(tab, message); return;
 		}
-		if (message.type === 'send') { await this.commandChromeSource(id, chatId, message, picked, reply,item=>view._exchangeDrafts.get(chatId)?.get(item.id)); return; }
+		if (message.type === 'send') { await this.commandChromeSource(id, chatId, message, picked, reply,item=>view._exchangeDrafts.get(chatId)?.get(item.id),'exchange'); return; }
+		if (message.type === 'files' && message.action === 'attach') {
+			const denied = remoteRefusal('exchange', 'attachPath'); if (denied) { throw new Error(denied); }
+		}
 		if(message.type==='removeAttachment'){
 			view._exchangeDrafts.get(chatId)?.delete(message.id);
 			for(const owner of this._exchangeAnnotationOwners.values())if(owner.view===view&&owner.chatId===chatId)owner.ignored.add(message.id);
@@ -640,7 +671,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	/** Async request scope keeps folder/skill/Git actions bound to Chrome's conversation. */
 	private async _receiveChromeFooter(tab: ChatTab, message: ViewToHost, reply?: (message: HostToView, chatId?: string) => void): Promise<void> {
 		if ('tabId' in message && message.tabId !== undefined && message.tabId !== tab.id) { throw new Error('The destination conversation changed. Try again.'); }
-		const scope = { tab, chatId: tab.chat.id, reply, remote: this._chromeCommand.getStore()?.remote };
+		const scope = { tab, chatId: tab.chat.id, reply, remote: true };
 		await this._chromeCommand.run(scope, async () => {
 			const target = message.type === 'runToolbarSkill' ? { ...message, tabId: tab.id } : message;
 			if (target.type === 'refreshWorkdirGit') {
@@ -839,7 +870,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		this._registry = shared?.registry ?? new AgentRegistry(() => this._cwd(), id => this._agentBinaries()[id], _browserServer, () => !this._untrusted(this._cwd()), this._openrouterConfig());
 		void sweepBrowserConfigs().catch(() => { /* swept with the temp directory */ });
 		if (shared) { this._runs = shared.runs; this._gitAccess = shared.git; }
-		this._services = shared ?? { registry: this._registry, git: this._gitAccess,
+		this._services = shared ?? { sessions: new SessionHost({ onObserved: () => this._publishSessions() }), registry: this._registry, git: this._gitAccess,
 			panels: new ChatPanelCatalog(_context.workspaceState, `aiBrowser.chat.panelCatalog.project.${this._projectId}`, panel => {
 				const old = _context.workspaceState.get<SavedChatTabs>(`${openTabsKey}.panel.${panel.id}`);
 				const tabs = legacyProjectTabs(old, this._projectId);
@@ -894,7 +925,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			if (e.affectsConfiguration('workbench.iconTheme') || e.affectsConfiguration('files.associations')) { this._gitEventRefresh(); this._postFileIcons(); }
 			if (terminalSettingKeys.some(key => e.affectsConfiguration(key))) { this._postTerminalSettings(); }
 			if (e.affectsConfiguration('aiBrowser.chat.sound') || e.affectsConfiguration('aiBrowser.chat.notifications')) { this._post(); }
-			if (e.affectsConfiguration('aiBrowser.chat.remoteTerminal')) { this._postMessage({ type: 'remoteTerminalSettings', remoteTerminal: remoteTerminalSetting(), shell: remoteTerminalOpenSetting('shell'), agent: remoteTerminalOpenSetting('agent') }); }
+			if (e.affectsConfiguration('aiBrowser.chat.connectionPermissions') || e.affectsConfiguration('aiBrowser.chat.chromeTerminal')) { this._post(); }
+			if (e.affectsConfiguration('aiBrowser.chat.chromeTerminal') || e.affectsConfiguration('aiBrowser.chat.remoteTerminal') || e.affectsConfiguration('aiBrowser.chat.remoteFilesChrome') || e.affectsConfiguration('aiBrowser.chat.remoteFilesWebsite')) {
+				void this._remoteTerminalSettings({ type: 'remoteTerminalSettings', action: 'load' });
+				this._post();
+			}
 			if (e.affectsConfiguration(terminalLimitSetting) || e.affectsConfiguration(tabLimitSetting) || e.affectsConfiguration(collapseToolsSetting) || e.affectsConfiguration(viewModeSetting) || e.affectsConfiguration('aiBrowser.chat.exchangeKeepAwakeMinutes') || e.affectsConfiguration('aiBrowser.chat.remoteTerminal') || e.affectsConfiguration('aiBrowser.chat.remoteTerminalShell') || e.affectsConfiguration('aiBrowser.chat.remoteTerminalAgent')) {
 				this._post();
 			}
@@ -1246,6 +1281,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}
 		this._postTimer = setTimeout(() => {
 			this._postTimer = undefined;
+			this._publishSessions();
 			const signature = `${this._surfaceLabel()}|${this._tabs.length}|${this._active.chat.title}|${this._active.chat.folder ?? ''}`;
 			if (signature !== this._surfaceSignature) {
 				this._surfaceSignature = signature;
@@ -1264,6 +1300,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			if (focus) { this._postTerminal({ type: 'terminalFocus', id: focus }); }
 			this._saveTabs();
 		}, postDelayMs);
+	}
+
+	/** Migration bridge: publish conversation data independently from any UI's selected tab. */
+	private _publishSessions(): void {
+		// The experimental mirror adds no history cloning/serialization without a consumer.
+		if (!this._services.sessions.observed) { return; }
+		const ids = new Set<string>();
+		for (const view of this._services.views) {
+			if (view._disposed) { continue; }
+			for (const tab of view._tabs) {
+				const chat = tab.chat;
+				ids.add(chat.id);
+				this._services.sessions.publish({ id: chat.id, title: chat.title, agent: chat.agent,
+					directory: tab.cwd, running: tab.running, entries: chat.entries, pendingSends: tab.pendingSends });
+			}
+		}
+		this._services.sessions.retain(ids);
 	}
 
 	private _surfaceLabel(): string {
@@ -1289,6 +1342,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			} : undefined,
 			themeTokens: this._themeTokens,
 			sound: soundSettings(),
+			remoteFiles: remoteFileSettings(),
 			windowFocused: vscode.window.state.focused,
 			themeKind: vscode.window.activeColorTheme.kind,
 			panel: this._panelIdentity,
@@ -1309,6 +1363,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			agents: this._registry.agents,
 			selection,
 			...this._usageState(selection.agent),
+			connectionPermissions: connectionPermissions(),
 			chatId: this._active.chat.id,
 			entries: this._active.chat.entries,
 			visualizations: this._active.visualizations,
@@ -1477,6 +1532,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			case 'remoteTerminalSettings':
 				await this._remoteTerminalSettings(message);
 				return;
+			case 'setConnectionPermission': {
+				if (this._chromeCommand.getStore()) { throw new Error('Connection permissions are changed only in VS Code.'); }
+				if (!['chrome', 'exchange'].includes(message.surface) || !Object.hasOwn(connectionPermissionGroups, message.group) || typeof message.allowed !== 'boolean') { return; }
+				await (ChatViewProvider._connectionPermissionWrite = ChatViewProvider._connectionPermissionWrite.catch(() => {}).then(async () => {
+					const config = vscode.workspace.getConfiguration('aiBrowser.chat');
+					const permissions = readConnectionPermissions(config.inspect('connectionPermissions')?.globalValue);
+					await config.update('connectionPermissions', { ...permissions, [message.surface]: { ...permissions[message.surface], [message.group]: message.allowed } }, vscode.ConfigurationTarget.Global);
+				}));
+				this._post();
+				return;
+			}
 			case 'saveFeatureAi':
 				try {
 					const settings = readFeatureAiSettings(message.settings);
@@ -4225,17 +4291,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	/**
-	 * Terminal lifecycle from the Exchange website (the surface has already checked encryption and
-	 * consent): the setting and the window are checked again here, a new terminal is made shared, in
-	 * the background and in the folder of the shared conversation, and only shared terminals may be
-	 * closed, renamed or restarted. Failures are thrown, so the website's command result says why.
+	 * Terminal lifecycle for local Chrome or Exchange. Each rechecks its own setting;
+	 * Exchange additionally requires shared terminals and its transport consent/encryption.
+	 * New terminals start in the chosen conversation's folder, in the background.
 	 */
-	private async _remoteTerminalCommand(tab: ChatTab, message: Extract<ViewToHost, { type: 'newTerminal' | 'closeTerminal' | 'renameTerminal' | 'restartTerminal' }>): Promise<void> {
-		if (!remoteTerminalSetting()) { throw new Error('Terminals are off for Chrome and the website: in VS Code, turn on the setting “AI Browser › Chat: Remote Terminal” (aiBrowser.chat.remoteTerminal).'); }
+	private async _remoteTerminalCommand(tab: ChatTab, message: Extract<ViewToHost, { type: 'newTerminal' | 'closeTerminal' | 'renameTerminal' | 'restartTerminal' }>, surface: RemoteSurface = 'exchange'): Promise<void> {
+		if (!remoteTerminalSetting(surface)) { throw new Error('Terminal access is disabled. Enable it in VS Code → Chat Settings → Connections & permissions.'); }
 		if (this._blocked()) { throw new Error(this._blocked()!); }
 		if (message.type !== 'newTerminal') {
 			const terminal = this._terminals.find(message.id);
-			if (!terminal?.remote) { throw new Error('This terminal is not shared for remote access.'); }
+			if (!terminal || (surface !== 'chrome' && !terminal.remote)) { throw new Error('This terminal is not shared for remote access.'); }
 			if (message.type === 'closeTerminal') { this._closeTerminal(message.id); }
 			else if (message.type === 'restartTerminal') { await this._restartTerminal(message.id); }
 			else if (terminal.rename(terminalName(message.name))) { this._post(); }
@@ -4244,8 +4309,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		const support = this._terminalSupport();
 		if (!support.available) { throw new Error(support.reason); }
 		const agent = message.agent;
-		if (agent === undefined && !remoteTerminalOpenSetting('shell')) { throw new Error(remoteOpenHint('shell')); }
-		if (agent !== undefined && !remoteTerminalOpenSetting('agent')) { throw new Error(remoteOpenHint('agent')); }
+		if (agent === undefined && !remoteTerminalOpenSetting('shell', surface)) { throw new Error(remoteOpenHint('shell', surface)); }
+		if (agent !== undefined && !remoteTerminalOpenSetting('agent', surface)) { throw new Error(remoteOpenHint('agent', surface)); }
 		if (agent !== undefined && !support.agents.includes(agent)) { throw new Error('That agent is not available as a terminal.'); }
 		if (this._terminals.size + this._terminalsStarting >= support.limit) { throw new Error(`${this._terminals.size} terminals are open — close one to open another.`); }
 		const cwd = chooseTerminalCwd([tab.cwd, this._windowCwd(), os.homedir()], isDirectory);
@@ -4699,10 +4764,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	/** The Remote terminals section of Chat Settings: reads and writes the three user settings. */
 	private async _remoteTerminalSettings(message: Extract<ViewToHost, { type: 'remoteTerminalSettings' }>): Promise<void> {
 		const read = (error?: string): void => {
-			this._postMessage({ type: 'remoteTerminalSettings', remoteTerminal: remoteTerminalSetting(), shell: remoteTerminalOpenSetting('shell'), agent: remoteTerminalOpenSetting('agent'), ...(error ? { error } : {}) });
+			this._postMessage({ type: 'remoteTerminalSettings', remoteTerminal: remoteTerminalSetting(), shell: remoteTerminalOpenSetting('shell'), agent: remoteTerminalOpenSetting('agent'), chrome: { allowed: remoteTerminalSetting('chrome'), shell: remoteTerminalOpenSetting('shell', 'chrome'), agent: remoteTerminalOpenSetting('agent', 'chrome') }, files: remoteFileSettings(), ...(error ? { error } : {}) });
 		};
+		if (message.action === 'setFiles') {
+			if (!['chrome', 'exchange'].includes(message.surface) || !remoteFileLevels.includes(message.value)) { read(vscode.l10n.t('Unknown setting.')); return; }
+			try {
+				await vscode.workspace.getConfiguration('aiBrowser.chat').update(message.surface === 'chrome' ? 'remoteFilesChrome' : 'remoteFilesWebsite', message.value, vscode.ConfigurationTarget.Global);
+			} catch (error) { read(vscode.l10n.t('The setting was not changed: {0}', error instanceof Error ? error.message : String(error))); return; }
+		}
 		if (message.action === 'set') {
-			const keys = ['remoteTerminal', 'remoteTerminalShell', 'remoteTerminalAgent'];
+			const keys = ['remoteTerminal', 'remoteTerminalShell', 'remoteTerminalAgent', 'chromeTerminalAccess', 'chromeTerminalShell', 'chromeTerminalAgent'];
 			if (!keys.includes(message.key) || typeof message.value !== 'boolean') { read(vscode.l10n.t('Unknown setting.')); return; }
 			try {
 				// Global only: these are application-scoped, so a workspace value would be ignored anyway.
@@ -6055,6 +6126,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 					for (const t of targets) {
 						if (remote?.remote) {
 							const isDir = (await fs.promises.stat(t)).isDirectory();
+							if (!this._tabs.includes(remote.tab) || remote.tab.chat.id !== remote.chatId || this._workdir(remote.tab) !== root) { throw new Error('The destination conversation changed. Select the file again.'); }
 							remote.reply?.({ type: 'chromeAttachment', label: `${path.basename(t)}${isDir ? '/' : ''}`, text: `Attached ${isDir ? 'folder' : 'file'} (relative to the working folder): ${rel(t)}` }, remote.chatId);
 						} else { await this._attachPath(rel(t)); }
 					}
@@ -7785,6 +7857,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		if (!this._panelIdentity) { void vscode.commands.executeCommand('setContext', 'aiBrowser.keepAwakeActive', false); }
 		// Shared backends own live sessions of tabs moved into other surfaces.
 		this._services.views.delete(this);
+		this._publishSessions();
 		if (!this._services.views.size) { this._runs.dispose(); }
 		for (const timer of this._usageChecks.values()) {
 			clearTimeout(timer);
@@ -7816,7 +7889,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		clearTimeout(this._postTimer);
 		this._postTimer = undefined;
 		this._subscriptions.forEach(s => s.dispose());
-		if (!this._services.views.size) { this._registry.dispose(); ChatViewProvider._sharedServices = undefined; }
+		if (!this._services.views.size) { this._services.sessions.dispose(); this._registry.dispose(); ChatViewProvider._sharedServices = undefined; }
 	}
 }
 

@@ -74,28 +74,28 @@ export const COMMANDS = {
 	approve: chat('host', 'host'), setViewMode: chat('host', 'host'), saveFeatureAi: chat('host', 'host'),
 	openAttachment: chat('mixed', 'mixed'),
 	reattachAttachment: editor('Attaching a saved item is available in VS Code.'),
-	unqueue: chat({ no: chromeEditor }, 'host'), resumeQueue: chat({ no: chromeEditor }, 'host'),
-	clearChat: chat({ no: chromeEditor }, 'host'), exportChat: chat({ no: chromeEditor }, 'mixed'),
+	unqueue: both('chat'), resumeQueue: both('chat'),
+	clearChat: both('chat'), exportChat: chat('host', 'mixed'),
 	attach: chat('local', 'mixed'), pasteFile: chat('local', 'local'), removeAttachment: chat('local', 'mixed'),
 	pasteAttachments: editor('Attachments pasted here stay text outside VS Code.'),
 	rememberAttachments: editor('Attachment clipboard snapshots are kept only in VS Code.'),
-	acceptSuggestion: chat('local', 'local'), stopAgent: chat({ no: chromeEditor }, 'host'), secondOpinion: chat({ no: chromeEditor }, 'host'),
-	refreshAgents: chat({ no: chromeEditor }, 'host'),
+	acceptSuggestion: chat('local', 'local'), stopAgent: both('chat'), secondOpinion: both('chat'),
+	refreshAgents: both('chat'),
 
 	// Tabs and history.
-	newChat: chat({ no: chromeEditor }, 'host'), newTab: chat({ no: chromeEditor }, 'host'),
+	newChat: both('chat'), newTab: both('chat'),
 	// Chrome's tab strip picks which editor conversation the side panel shows (a pin).
-	selectTab: chat('local', 'mixed'), closeTab: chat({ no: chromeEditor }, 'host'), renameTab: chat({ no: chromeEditor }, 'host'),
-	openChat: editor('Opening another saved conversation is available only in VS Code.'),
+	selectTab: chat('local', 'mixed'), closeTab: both('chat'), renameTab: both('chat'),
+	openChat: chat('host', { no: 'Opening another saved conversation is available only in VS Code.' }),
 	tabAccess: editor('Who may use a browser tab is decided only in VS Code.'),
-	listAllAgents: editor('Every chat\'s agents are listed only in VS Code.'),
-	listHistory: editor('The saved conversations are listed only in VS Code.'),
-	deleteChat: editor('Deleting saved conversations is available only in VS Code.'),
+	listAllAgents: chat('host', { no: 'Every chat\'s agents are listed only in VS Code.' }),
+	listHistory: chat('host', { no: 'The saved conversations are listed only in VS Code.' }),
+	deleteChat: chat('host', { no: 'Deleting saved conversations is available only in VS Code.' }),
 	resolveHistoryChat: editor(), resumeInTerminal: editor('Terminals are available only in VS Code.'),
 	placeTab: editor(), placeTerminal: editor(), beginTabDrag: editor(), acceptTabDrop: editor(), moveTabTo: editor(), moveTabToNew: editor(), moveTerminalTo: editor(), moveTerminalToNew: editor(),
 
 	// Settings that act on the editor or its machine.
-	setApprovalMode: editor(approvals),
+	setApprovalMode: chat('host', { no: approvals }),
 	setAgentBinary: editor('Agent apps are chosen only in VS Code.'), openAgentSetting: editor('Agent apps are chosen only in VS Code.'),
 	authenticateAgent: editor('Sign in to the agent in the VS Code window.'), checkAgentAuthentication: editor('Check agent sign-in in the VS Code window.'),
 	temporaryStorage: editor('Temporary files are managed only in VS Code.'),
@@ -104,9 +104,10 @@ export const COMMANDS = {
 	soundSettings: editor('The finish sound is changed only in VS Code.'),
 	osNotify: editor('Chrome and the website show their own notification.'),
 	remoteTerminalSettings: editor('Remote terminal access is changed only in VS Code.'),
+	setConnectionPermission: editor('Connection permissions are changed only in VS Code.'),
 	openrouter: editor('The OpenRouter key and models are edited only in VS Code.'),
-	setNewsHidden: chat({ no: chromeEditor }, 'host'),
-	setAutomaticAwake: chat({ no: chromeEditor }, 'host'), setSleep: chat({ no: chromeEditor }, 'host'),
+	setNewsHidden: both('chat'),
+	setAutomaticAwake: both('chat'), setSleep: both('chat'),
 	setExchangeKeepAwake: editor(),
 	controlRecording: chat('local', { no: 'Recording is available in VS Code and Chrome.', hide: true }),
 	recording: machine('Recording is available in VS Code and Chrome.'),
@@ -115,9 +116,9 @@ export const COMMANDS = {
 	voiceCancel: machine('Voice messages need the microphone of the computer running VS Code.'),
 
 	// Opening things.
-	openText: chat({ no: chromeEditor }, 'host'), openDiff: chat({ no: chromeEditor }, 'host'),
-	saveArtifact: editor(), saveAttachment: editor(), openFile: editor('Local files open only in VS Code.'),
-	openLink: chat('local', 'mixed'), localLinkInfo: chat({ no: chromeEditor }, 'host'),
+	openText: both('chat'), openDiff: both('chat'),
+	saveArtifact: editor(), saveAttachment: editor(), openFile: chat('host', { no: 'Local files open only in VS Code.' }),
+	openLink: chat('local', 'mixed'), localLinkInfo: both('chat'),
 	openBrowser: chat('mixed', 'mixed'),
 
 	// Footer features, negotiated with Chrome per feature.
@@ -157,7 +158,9 @@ export function remoteAllowed(surface: RemoteSurface, type: string): boolean {
 }
 
 /** Why a remote surface may not do this, or `undefined` when it may. */
-export function remoteRefusal(surface: RemoteSurface, type: string): string | undefined {
+export function remoteRefusal(surface: RemoteSurface, type: string, permissions?: ConnectionPermissions): string | undefined {
+	const denied = connectionPermissionRefusal(surface, type, commandFeature(type), permissions);
+	if (denied) { return denied; }
 	const rule = commandSpec(type)?.[surface];
 	if (rule === 'host' || rule === 'mixed') { return undefined; }
 	if (rule && typeof rule === 'object') { return 'local' in rule ? rule.local : rule.no; }
@@ -184,7 +187,7 @@ export type ControlMap = Readonly<Record<string, Availability>>;
  */
 const formRules: Readonly<Record<RemoteSurface, Readonly<Record<string, Availability>>>> = {
 	// The website's own request for the history list (`history`, not a `ViewToHost`).
-	chrome: { history: { s: 'hidden' } },
+	chrome: {},
 	exchange: {
 		'attach.file': { s: 'on' },
 	},
@@ -195,10 +198,12 @@ const formRules: Readonly<Record<RemoteSurface, Readonly<Record<string, Availabi
  * editor's own state (no map) means everything is on. Built from the table, so
  * the renderer and the host's refusals can never disagree.
  */
-export function surfaceControls(surface: SurfaceKind): ControlMap {
+export function surfaceControls(surface: SurfaceKind, permissions?: ConnectionPermissions): ControlMap {
 	if (surface === 'editor') { return {}; }
 	const result: Record<string, Availability> = Object.create(null);
 	for (const [type, spec] of Object.entries(COMMANDS) as [string, CommandSpec][]) {
+		const denied = connectionPermissionRefusal(surface, type, spec.feature, permissions);
+		if (denied) { result[type] = { s: 'off', reason: denied }; continue; }
 		const rule = spec[surface];
 		if (rule && typeof rule === 'object' && 'no' in rule) {
 			result[type] = rule.hide ? { s: 'hidden' } : { s: 'off', reason: rule.no };
@@ -213,4 +218,52 @@ export function surfaceControls(surface: SurfaceKind): ControlMap {
 /** A control's availability in a map; absent is on. */
 export function controlOf(controls: ControlMap | undefined, id: string): Availability {
 	return (controls && Object.prototype.hasOwnProperty.call(controls, id) ? controls[id] : undefined) ?? { s: 'on' };
+}
+
+export const connectionPermissionGroups = {
+	conversations: 'Create and manage chats',
+	messages: 'Send messages and manage queues',
+	approvals: 'Answer agent approvals',
+	attachments: 'Attach files and page context',
+	skills: 'Run and manage skills',
+	workdir: 'Choose working folders',
+	files: 'Browse and edit project files',
+	git: 'Git changes, branches and publishing',
+	github: 'GitHub repositories',
+	settings: 'Chat and agent settings',
+	power: 'Keep the computer awake',
+} as const;
+export type ConnectionPermission = keyof typeof connectionPermissionGroups;
+export type ConnectionPermissions = Readonly<Record<RemoteSurface, Readonly<Record<ConnectionPermission, boolean>>>>;
+
+/** User restrictions only narrow implemented capabilities; unknown keys never grant new commands. */
+export function readConnectionPermissions(value: unknown): ConnectionPermissions {
+	const source = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+	const result = {} as Record<RemoteSurface, Record<ConnectionPermission, boolean>>;
+	for (const surface of ['chrome', 'exchange'] as const) {
+		const raw = source[surface];
+		const rules = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+		result[surface] = Object.fromEntries(Object.keys(connectionPermissionGroups).map(key => [key, rules[key] !== false])) as Record<ConnectionPermission, boolean>;
+	}
+	return result;
+}
+
+/** Pure classification shared by host enforcement and the rendered control map. */
+export function connectionPermission(type: string, feature?: string): ConnectionPermission | undefined {
+	if (['stop', 'cancelProgress'].includes(type)) { return undefined; }
+	if (['newChat', 'newTab', 'closeTab', 'renameTab', 'clearChat', 'openChat', 'listHistory', 'deleteChat', 'listAllAgents', 'secondOpinion', 'stopAgent'].includes(type)) { return 'conversations'; }
+	if (['send', 'unqueue', 'resumeQueue', 'exportChat'].includes(type)) { return 'messages'; }
+	if (['approve', 'toolbarApprove', 'setApprovalMode'].includes(type)) { return 'approvals'; }
+	if (['attach', 'pasteFile', 'attachPath', 'acceptSuggestion', 'removeAttachment', 'reattachAttachment'].includes(type)) { return 'attachments'; }
+	if (['files', 'openFile', 'openText', 'openDiff', 'localLinkInfo'].includes(type)) { return 'files'; }
+	if (['setSleep', 'setAutomaticAwake'].includes(type)) { return 'power'; }
+	if (['select', 'switchAgent', 'setViewMode', 'saveFeatureAi', 'setNewsHidden', 'refreshAgents'].includes(type)) { return 'settings'; }
+	if (feature && ['skills', 'workdir', 'git', 'github'].includes(feature)) { return feature as ConnectionPermission; }
+	return undefined;
+}
+
+export function connectionPermissionRefusal(surface: RemoteSurface, type: string, feature: string, permissions?: ConnectionPermissions): string | undefined {
+	const group = connectionPermission(type, feature);
+	return group && permissions?.[surface][group] === false
+		? `${connectionPermissionGroups[group]} is disabled for ${surface === 'chrome' ? 'Chrome' : 'Exchange'} in VS Code → Chat Settings → Connections & permissions.` : undefined;
 }
