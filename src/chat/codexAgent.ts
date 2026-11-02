@@ -10,6 +10,8 @@ import { requestTitle } from './autoTitle';
 import * as vscode from 'vscode';
 import { JsonLineProcess, withTimeout } from './agentProcess';
 import { codexAgentThreadEvents, codexApproval, codexApprovalAnswer, codexEvents, codexPatchPaths, codexModels, codexSkillItems, codexSkills, codexUsage, type AgentEvent } from './agentProtocol';
+import { CodexShells } from './codexShells';
+import { agentProcesses, processOwnerVariable } from './agentProcesses';
 import type { AgentBackend, AgentSession, BrowserServer, TurnInput } from './agents';
 import type { AgentUsage, ChatCommand, ChatModel, QuestionAnswers } from './chatProtocol';
 
@@ -138,6 +140,7 @@ export class CodexBackend implements AgentBackend {
 			// no such tool, or asked in plain text and slept waiting for a reply).
 			// An older CLI that does not know the feature starts the thread anyway.
 			features: { default_mode_request_user_input: true },
+			...(chatId ? { [`shell_environment_policy.set.${processOwnerVariable}`]: agentProcesses.environment(chatId, 'codex')[processOwnerVariable] } : {}),
 			...(server ? { mcp_servers: { 'ai-browser': { url: server.url, http_headers: { Authorization: `Bearer ${server.token}`, ...(chatId ? { 'X-AI-Browser-Chat': chatCapability(chatId) } : {}) } } } } : {}),
 		};
 	}
@@ -522,6 +525,8 @@ export class CodexBackend implements AgentBackend {
 }
 
 class CodexSession implements AgentSession {
+	private readonly _shells = new CodexShells(codexEvents);
+	private readonly _shellCommands = new Set<string>();
 	private _threadId: string | undefined;
 	/** The app-server generation the thread is loaded in; a restarted server has to resume it. */
 	private _loadedIn = 0;
@@ -877,6 +882,10 @@ class CodexSession implements AgentSession {
 
 	/** An event of an agent's own thread: the agent's row, never the reply. */
 	public notifyAgent(threadId: string, method: string, params: Record<string, unknown>): void {
+		const shellItem = params.item as { type?: unknown } | undefined;
+		if (shellItem?.type === 'commandExecution' || method.startsWith('item/commandExecution/')) {
+			for (const event of this._shells.events(method, { ...params, threadId })) { this.emit(event); }
+		}
 		const activity = this._agentActivity.get(threadId);
 		if (activity) {
 			activity.at = Date.now(); activity.revision++;
@@ -949,7 +958,7 @@ class CodexSession implements AgentSession {
 				return;
 			}
 		}
-		for (const event of codexEvents(method, params)) {
+		for (const event of this._shells.events(method, params)) {
 			if (event.type === 'turnEnd') {
 				this._running = false;
 				this._turnId = undefined;
@@ -967,6 +976,10 @@ class CodexSession implements AgentSession {
 	public processEnded(reason: string): void {
 		const stopped = this._stopping || this._stopRequested;
 		this._agentTurns.clear();
+		for (const id of [...this._shellCommands]) {
+			this.emit({ type: 'toolUpdate', id, update: { status: stopped ? 'stopped' : 'failed', shell: { provider: 'codex', background: false } } });
+		}
+		this._shells.clear();
 		for (const id of [...this._backgroundAgents]) {
 			this.emit({ type: 'toolUpdate', id, update: { status: stopped ? 'stopped' : 'failed', output: stopped ? 'Stopped.' : reason } });
 		}
@@ -984,6 +997,8 @@ class CodexSession implements AgentSession {
 
 	public emit(event: AgentEvent): void {
 		if (!this._disposed) {
+			if (event.type === 'tool' && event.tool.kind === 'command') { this._shellCommands.add(event.id); }
+			else if (event.type === 'toolUpdate' && event.update.status) { this._shellCommands.delete(event.id); }
 			if (event.type === 'tool' && event.tool.kind === 'agent' && event.tool.agent?.background) {
 				this._backgroundAgents.add(event.id);
 				if (event.tool.agent.threadId) { this._watchAgentHealth(event.tool.agent.threadId, event.id); }
@@ -1017,6 +1032,7 @@ class CodexSession implements AgentSession {
 		// rows are the tab's to end (`_endTurnHere`), not told from here.
 		this._interruptAgents();
 		this._backgroundAgents.clear();
+		this._shellCommands.clear(); this._shells.clear();
 		this._agentActivity.clear(); clearInterval(this._agentWatch); this._agentWatch = undefined;
 		this._disposed = true;
 		this._releaseTurnWaiters();

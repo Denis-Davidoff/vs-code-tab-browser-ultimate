@@ -406,7 +406,7 @@ suite('the pin announcement in a conversation', () => {
 
 	test('starting another conversation forgets what was told, and drops the pins unless asked to keep them', () => {
 		const dropped: unknown[] = [];
-		const tab: any = { _host: { dropPins: (t: unknown) => dropped.push(t) }, _pinAnnounced: 'old', close() {}, _closed: true, _discarded: true, _paused: 1, _post() {}, _syncVisualizations: async () => {},
+		const tab: any = { _chat: { id: 'previous' }, _host: { dropPins: (t: unknown) => dropped.push(t) }, _pinAnnounced: 'old', close() {}, _closed: true, _discarded: true, _paused: 1, _post() {}, _syncVisualizations: async () => {},
 			};
 		tab._host.ultracodeDefault = () => false;
 		const start = lift(tabSource, 'start', { endedInError: () => false });

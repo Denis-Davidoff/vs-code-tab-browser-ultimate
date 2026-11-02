@@ -50,6 +50,7 @@ const terminalLifecycle: CommandSpec = chat('host', 'host');
 const terminalLocal = (reason: string): CommandSpec => chat({ local: reason }, { local: reason });
 
 export const COMMANDS = {
+	connectChat: editor('Chat access is granted only in VS Code.'), disconnectChat: editor('Chat access is managed only in VS Code.'),
 	// Pairing and the window's own plumbing: never from a remote surface.
 	connectExchange: editor(internal), disconnectExchange: editor(internal), answerChromeConnection: editor(internal),
 	reportTheme: chat('local', 'local'), copy: local, saveDrafts: local, tabDraft: local,
@@ -68,6 +69,8 @@ export const COMMANDS = {
 	pinTerminal: terminal, terminalAskAgent: terminal, setTerminalAgentControl: terminal,
 	setTerminalRemote: editor('Remote access to a terminal is granted only in VS Code.'), terminalInsert: terminal,
 	runInTerminal: editor('Commands run only in VS Code.'),
+	showShellOutput: editor('Shell output terminals open only in VS Code.'),
+	stopAgentProcess: editor('Agent process controls are available only in VS Code.'),
 
 	// The conversation.
 	cancelProgress: chat('host', 'host'), send: chat('host', 'host'), stop: chat('host', 'host'), select: chat('host', 'host'), switchAgent: chat('host', 'host'),

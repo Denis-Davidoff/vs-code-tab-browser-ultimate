@@ -2,7 +2,7 @@ import {build} from 'esbuild';
 import {mkdir,copyFile,readFile,writeFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
-import {buildVisualizationHtml} from '../../scripts/build-visualization.mjs';
+import {buildVisualizationHtml} from '../../preview-src/build-visualization.mjs';
 const root=fileURLToPath(new URL('../../',import.meta.url));
 const output=`${root}exchange-server/apps/web/public/remote-chat/`;
 await mkdir(output,{recursive:true});

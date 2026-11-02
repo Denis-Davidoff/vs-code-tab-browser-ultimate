@@ -8,13 +8,14 @@ import { citationInsertionOffset } from '../src/chat/citationPlacement';
 import { updateRichEntry, updateResultBlocks, bindCitationMarkers, citationButton, type RichViewActions } from './richViews';
 import { downloadArtifact } from './artifactViews';
 import { presentationMarkers } from '../src/chat/visualizationProtocol';
+import { usageButtonLimit, usageButtonWindows } from '../src/chat/usageButton';
 import { updateVisualizationViews } from './visualizationViews';
 import { installChatSelectionCopy } from './chatSelection';
 import { historyPeriodRange, type HistoryPeriod } from './historyPeriod';
 import { messageFileDiff, messageFileLabel, messageFiles } from '../src/chat/messageFiles';
 import { messageContent, type MessageContent, type MessageContentKind } from '../src/chat/messageContent';
 import { fileGridNeighbor, type FileArrow } from './fileNavigation';
-import { composerLinks, composerListEdit, composerListItem, composerListStarter, type ComposerEdit } from './composerFormatting';
+import { composerLinks, composerListEdit, composerListItem, type ComposerEdit } from './composerFormatting';
 import { attachmentMarker, readAttachmentMarkers, selectedAttachmentMarkers } from './attachmentMarkers';
 import type { TemporaryStorage } from '../src/core/temporaryFiles';
 import { aiFeatures, defaultFeaturePrompts, featureAgent, featurePromptLimit, readFeatureAiSettings, readTitleRefresh, titleRefreshLimits, type AiFeature, type FeatureAiSettings, type FeatureEffort } from '../src/chat/featureAi';
@@ -71,6 +72,7 @@ import { chatSoundLabels, playChatSound, unlockChatSound } from './chatSound';
 unlockChatSound(document);
 import { baseName, searchPaths } from './fileRank';
 import { controlOf, connectionPermissionGroups, readConnectionPermissions, type ConnectionPermission, type Availability } from '../src/chat/core/commands';
+import { chatConnectionsEnabled } from '../src/chat/core/chatFeatures';
 import { describePrice, formatContext, modelFromCatalogItem, modelSummary, parseOptionalNumber } from '../src/chat/openrouterView';
 // Every codicon the bundled font has, one per line (`name,char,code`); bundled
 // as text by esbuild, so the icon picker lists exactly what can be drawn.
@@ -292,7 +294,8 @@ const ultracodeBox = el('label', { class: 'ultracode-toggle' }, ultracodeInput,
 	el('span', { class: 'ultracode-indicator' }, el('span', { class: 'ultracode-symbol', text: '✦' })));
 ultracodeBox.hidden = true;
 const usageTitle = "Usage — your plan's limits for each agent, and this chat's tokens and cost";
-const usageRing = ringMeter(el('span', { class: 'ring-mark', text: 'U' }));
+const usageMark = el('span', { class: 'ring-mark', text: 'U' });
+const usageRing = ringMeter(usageMark);
 const usageButton = button([usageRing], { class: 'ghost round usage-button', title: usageTitle });
 const agentsButton = button([], { class: 'pill agents-button', title: 'Agents' });
 /** How full the conversation's context is, as a pie that fills; a click compacts it. */
@@ -306,14 +309,15 @@ contextPie.classList.add('context-pie');
 const contextButton = button([contextPie], { class: 'ghost round context-button' });
 contextButton.hidden = true;
 const sendButton = button([icon('arrow-up')], { class: 'send', title: 'Send' });
-/**
- * Only while a turn runs and there is something to send: hold it for after the
- * turn. Shown below Send in the input's action column; Send adds the
- * message to the running turn instead.
- */
-const queueButton = button([icon('arrow-up')], { class: 'send queue-button', title: 'Send after this turn (⌘Enter)' });
-queueButton.hidden = true;
-queueButton.addEventListener('click', () => send('queue'));
+sendButton.setAttribute('aria-haspopup', 'menu');
+sendButton.setAttribute('aria-expanded', 'false');
+const sendOptionsButton = button([icon('chevron-down')], { class: 'ghost round send-options', title: 'Send options' });
+sendOptionsButton.setAttribute('aria-label', 'Send options');
+sendOptionsButton.setAttribute('aria-haspopup', 'menu');
+sendOptionsButton.setAttribute('aria-expanded', 'false');
+let sendMenuOpenTimer: ReturnType<typeof setTimeout> | undefined;
+let sendMenuCloseTimer: ReturnType<typeof setTimeout> | undefined;
+let sendMenuShape = '';
 /** Ask before terminal commands and browser tools, or let them run: one switch for every tab. */
 const approveToggle = button([], { class: 'pill approve-toggle' });
 
@@ -483,9 +487,10 @@ const voiceError = el('div', { class: 'voice-error' });
 voiceError.hidden = true;
 voiceError.setAttribute('role', 'alert');
 const inputActions = el('div', { class: 'input-actions' },
-	el('span', { class: 'send-slot' }, sendButton), el('span', { class: 'send-slot' }, micButton), el('span', { class: 'send-slot' }, queueButton));
+	el('span', { class: 'send-slot send-controls' }, sendButton, sendOptionsButton), el('span', { class: 'send-slot' }, micButton));
+inputWrap.append(attachmentsRow);
 const inputArea = el('div', { class: 'input-area' }, inputWrap, inputActions);
-const composer = el('div', { class: 'composer' }, videoRecordingBar, pasteStatus, voiceError, inputArea, attachmentsRow, toolbar);
+const composer = el('div', { class: 'composer' }, videoRecordingBar, pasteStatus, voiceError, inputArea, toolbar);
 /** Asked when another agent is picked for a conversation that has started. */
 const switchCard = el('div', { class: 'switch-card' });
 /** The toolbar skills the tab's agent offers, above the message box. */
@@ -569,17 +574,19 @@ commitDismiss.addEventListener('click', () => answerCommit('dismissGitCommit'));
 /** Alt (Option) plus the label's first letter, which is drawn white as the hint. */
 const composerTabKeyMod = /Mac/.test(navigator.platform) ? '⌥' : 'Alt+';
 function composerTabLabel(text: string): Child[] {
-	return [el('span', { class: 'composer-tab-key' }, text[0]), text.slice(1)];
+	const at = text === 'Conversation' ? 1 : 0;
+	return [text.slice(0, at), el('span', { class: 'composer-tab-key' }, text[at]), text.slice(at + 1)];
 }
 const composerTabChat = button(composerTabLabel('Chat'), { class: 'composer-tab' });
 const composerTabSkills = button(composerTabLabel('Skills'), { class: 'composer-tab' });
 const composerTabActivity = button(composerTabLabel('Activity'), { class: 'composer-tab' });
-const composerTabHistory = button(composerTabLabel('History'), { class: 'composer-tab' });
+const composerTabHistory = button(composerTabLabel('Conversation'), { class: 'composer-tab' });
+const composerTabBash = button(composerTabLabel('Bash'), { class: 'composer-tab' });
 const composerTabGithub = button(composerTabLabel('GitHub'), { class: 'composer-tab' });
 const composerTabFiles = button(composerTabLabel('Files'), { class: 'composer-tab' });
-type ComposerTab = 'chat' | 'skills' | 'activity' | 'history' | 'github' | 'files';
-const composerTabButtons: Record<ComposerTab, HTMLButtonElement> = { chat: composerTabChat, skills: composerTabSkills, activity: composerTabActivity, history: composerTabHistory, github: composerTabGithub, files: composerTabFiles };
-const composerTabs = el('div', { class: 'composer-tabs' }, composerTabChat, composerTabSkills, composerTabActivity, composerTabHistory, composerTabFiles, composerTabGithub);
+type ComposerTab = 'chat' | 'skills' | 'activity' | 'history' | 'bash' | 'github' | 'files';
+const composerTabButtons: Record<ComposerTab, HTMLButtonElement> = { chat: composerTabChat, skills: composerTabSkills, activity: composerTabActivity, history: composerTabHistory, bash: composerTabBash, github: composerTabGithub, files: composerTabFiles };
+const composerTabs = el('div', { class: 'composer-tabs' }, composerTabChat, composerTabSkills, composerTabActivity, composerTabHistory, composerTabBash, composerTabFiles, composerTabGithub);
 composerTabs.setAttribute('role', 'tablist');
 for (const tab of Object.values(composerTabButtons)) { tab.setAttribute('role', 'tab'); }
 /**
@@ -638,7 +645,7 @@ applyComposerOrder();
  * tab off the whole row is hidden, Chat's title with it.
  */
 const composerHiddenKey = 'aiBrowser.chat.composerTabsHidden';
-const optionalComposerTabs: [ComposerTab, string][] = [['skills', 'Skills'], ['activity', 'Activity'], ['history', 'History'], ['files', 'Files'], ['github', 'GitHub']];
+const optionalComposerTabs: [ComposerTab, string][] = [['skills', 'Skills'], ['activity', 'Activity'], ['history', 'Conversation'], ['bash', 'Bash'], ['files', 'Files'], ['github', 'GitHub']];
 function readHiddenComposerTabs(): Set<ComposerTab> {
 	let saved: unknown;
 	try { saved = JSON.parse(localStorage.getItem(composerHiddenKey) ?? 'null'); } catch { saved = null; }
@@ -687,6 +694,8 @@ const composerAccessList = el('div', { class: 'cl-section composer-access' });
 const composerHistoryList = el('div', { class: 'cl-section' });
 const composerOverview = el('div', { class: 'composer-list' }, composerAgentList, composerAccessList);
 const composerHistoryPanel = el('div', { class: 'composer-list' }, composerHistoryList);
+const composerBashList = el('div', { class: 'cl-section' });
+const composerBashPanel = el('div', { class: 'composer-list composer-bash' }, composerBashList);
 const composerGithubList = el('div', { class: 'cl-section' });
 const composerGithubPanel = el('div', { class: 'composer-list composer-github' }, composerGithubList);
 const filesPanel = el('div', { class: 'composer-list composer-files' });
@@ -696,6 +705,7 @@ composerResize.setAttribute('aria-orientation', 'horizontal');
 composer.insertBefore(composerResize, skillBar);
 composer.insertBefore(composerOverview, inputArea);
 composer.insertBefore(composerHistoryPanel, inputArea);
+composer.insertBefore(composerBashPanel, inputArea);
 composer.insertBefore(composerGithubPanel, inputArea);
 composer.insertBefore(filesPanel, inputArea);
 const overviewMin = 80;
@@ -725,7 +735,7 @@ window.visualViewport?.addEventListener('resize', () => requestAnimationFrame(un
 // The panel may grow only as far as the rest of the footer (tabs, message box, folder and Git line) still fits.
 const overviewMax = () => {
 	const footer = document.querySelector<HTMLElement>('.footer');
-	const shown = [composerOverview, composerHistoryPanel, composerGithubPanel, filesPanel, skillBar].find(list => list.offsetHeight > 0);
+	const shown = [composerOverview, composerHistoryPanel, composerBashPanel, composerGithubPanel, filesPanel, skillBar].find(list => list.offsetHeight > 0);
 	const rest = footer ? footer.offsetHeight - (shown?.offsetHeight ?? 0) : 0;
 	return Math.max(overviewMin, Math.min(Math.round(window.innerHeight * 0.8), window.innerHeight - rest - 48));
 };
@@ -743,7 +753,7 @@ composer.addEventListener('transitionend', event => {
 });
 function applyOverviewHeight(): void {
 	stopComposerHeightAnimation();
-	for (const list of [composerOverview, composerHistoryPanel, composerGithubPanel, filesPanel, skillBar]) {
+	for (const list of [composerOverview, composerHistoryPanel, composerBashPanel, composerGithubPanel, filesPanel, skillBar]) {
 		if (overviewHeight === undefined) { list.style.removeProperty('height'); list.style.removeProperty('max-height'); continue; }
 		list.style.height = `${Math.min(overviewMax(), Math.max(overviewMin, overviewHeight))}px`;
 		list.style.maxHeight = 'none';
@@ -755,7 +765,7 @@ composerResize.addEventListener('pointerdown', e => {
 	e.preventDefault();
 	stopComposerHeightAnimation();
 	const startY = e.clientY;
-	const startH = (composerTab === 'history' ? composerHistoryPanel : composerTab === 'github' ? composerGithubPanel : composerTab === 'files' ? filesPanel : composerTab === 'skills' ? skillBar : composerOverview).getBoundingClientRect().height;
+	const startH = (composerTab === 'history' ? composerHistoryPanel : composerTab === 'bash' ? composerBashPanel : composerTab === 'github' ? composerGithubPanel : composerTab === 'files' ? filesPanel : composerTab === 'skills' ? skillBar : composerOverview).getBoundingClientRect().height;
 	composerResize.setPointerCapture(e.pointerId);
 	composerResize.classList.add('dragging');
 	const move = (m: PointerEvent) => {
@@ -796,11 +806,13 @@ function setComposerTab(tab: ComposerTab, save = true): void {
 	}
 	composer.classList.toggle('skills-mode', tab === 'skills');
 	renderComposerMaximize();
-	composer.classList.toggle('list-mode', tab === 'activity' || tab === 'history' || tab === 'github' || tab === 'files');
+	composer.classList.toggle('list-mode', tab === 'activity' || tab === 'history' || tab === 'bash' || tab === 'github' || tab === 'files');
 	composerOverview.hidden = tab !== 'activity';
 	composerHistoryPanel.hidden = tab !== 'history';
+	composerBashPanel.hidden = tab !== 'bash';
 	composerGithubPanel.hidden = tab !== 'github';
 	filesPanel.hidden = tab !== 'files';
+	if (tab === 'bash') { renderComposerBash(); }
 	if (tab === 'github') { requestGithub(); }
 	if (tab === 'files') { openFilesTab(); }
 	if (tab === 'activity' && state) { renderComposerAgents(state); renderComposerAccess(state); }
@@ -830,7 +842,7 @@ for (const [name, b] of Object.entries(composerTabButtons) as [ComposerTab, HTML
 	b.addEventListener('click', () => setComposerTab(name));
 }
 /** Alt+C / S / A / H switch the composer tabs; `code`, since Option+letter types a symbol on a Mac. */
-const composerTabKeys: Record<string, ComposerTab> = { KeyC: 'chat', KeyS: 'skills', KeyA: 'activity', KeyH: 'history', KeyG: 'github', KeyF: 'files' };
+const composerTabKeys: Record<string, ComposerTab> = { KeyC: 'chat', KeyS: 'skills', KeyA: 'activity', KeyH: 'history', KeyO: 'history', KeyB: 'bash', KeyG: 'github', KeyF: 'files' };
 document.addEventListener('keydown', e => {
 	if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.isComposing) { return; }
 	const tab = composerTabKeys[e.code];
@@ -1043,6 +1055,131 @@ function renderComposerHistory(): void {
 		composerHistoryList.append(more);
 	}
 }
+/** Commands reported by the agents; active calls stay above the newest-first history. */
+let composerBashShape = '';
+const bashBadgeDelayMs = 5_000;
+let bashBadgeTimer: ReturnType<typeof setTimeout> | undefined;
+let pendingBashReveal: { chatId: string; id: string } | undefined;
+const bashRunningBadge = el('span', { class: 'composer-tab-count agents' });
+composerTabBash.append(bashRunningBadge);
+function renderComposerBash(): void {
+	const loaded = (state?.entries ?? []).filter((e): e is ToolEntry => e.kind === 'tool' && e.tool === 'command');
+	const commands = [...new Map([...(state?.runningShells ?? []), ...loaded].map(e => [e.id, e])).values()].sort((a, b) => a.startedAt - b.startedAt);
+	if (pendingBashReveal) {
+		const pending = pendingBashReveal;
+		if (pending.chatId !== state?.chatId) { pendingBashReveal = undefined; }
+		else if (loaded.some(e => e.id === pending.id)) {
+			pendingBashReveal = undefined;
+			queueMicrotask(() => richActions.reveal({ toolId: pending.id }));
+		} else if (state?.entriesOffset) { loadEarlier(); }
+		else { pendingBashReveal = undefined; }
+	}
+	const running = commands.filter(e => e.status === 'running');
+	// Keep quick commands from flashing the tab badge. Wake at the next threshold
+	// even if the command produces no output or other state updates.
+	if (bashBadgeTimer !== undefined) { clearTimeout(bashBadgeTimer); bashBadgeTimer = undefined; }
+	const now = Date.now();
+	const counted = running.filter(e => now - e.startedAt >= bashBadgeDelayMs);
+	const observed = state?.agentProcesses?.processes ?? [];
+	const pending = running.filter(e => now - e.startedAt < bashBadgeDelayMs);
+	if (pending.length) {
+		bashBadgeTimer = setTimeout(() => {
+			bashBadgeTimer = undefined;
+			renderComposerBash();
+		}, Math.max(1, Math.min(...pending.map(e => e.startedAt + bashBadgeDelayMs - now))));
+	}
+	const total = counted.length + observed.length;
+	bashRunningBadge.hidden = !total;
+	bashRunningBadge.textContent = total ? String(total) : '';
+	bashRunningBadge.title = `${counted.length} shell commands running for at least 5 seconds; ${observed.length} observed OS processes (may belong to these commands)`;
+	if (composerTab !== 'bash') { return; }
+	const earlier = state?.entriesOffset ?? 0;
+	// Only what the rows show: a streaming command's output must not rebuild the
+	// list, or a click spanning a post and the focus on a row are lost (#365).
+	const shape = JSON.stringify([state?.chatId, earlier,
+		commands.map(e => [e.id, e.status, e.exitCode, e.input?.trim() || e.detail || e.name, e.shell?.background, Math.floor((now - e.startedAt) / 60_000)]),
+		state?.agentProcesses && [state.agentProcesses.supported, state.agentProcesses.unavailable, state.agentProcesses.truncated,
+			observed.map(p => [p.id, p.pid, p.command, p.source, p.detached])]]);
+	if (shape === composerBashShape) { return; }
+	// A press inside the list waits for its release, as the thread's rows do.
+	if (bashPressed) { bashStale = true; return; }
+	composerBashShape = shape;
+	const active = document.activeElement;
+	const focusedKey = active instanceof HTMLElement && composerBashList.contains(active) ? focusKeyIn(active) : undefined;
+	composerBashList.replaceChildren();
+	const section = (title: string, rows: ToolEntry[], empty: string) => {
+		composerBashList.append(clHead(title, rows.length));
+		if (!rows.length) { composerBashList.append(clEmpty('terminal', empty)); }
+		for (const entry of rows.toReversed()) {
+			const command = entry.input?.trim() || entry.detail || entry.name;
+			const meta: Child[] = [el('span', { text: entry.status === 'running' ? entry.shell?.background ? 'Running · background' : 'Running' : entry.status })];
+			if (entry.exitCode !== undefined) { meta.push(el('span', { text: `Exit ${entry.exitCode}` })); }
+			meta.push(el('span', { text: ago(entry.startedAt) }));
+			const row = button(clRow(el('span', { class: 'cl-lead cl-icon' }, icon('terminal')),
+				command.replace(/\s+/g, ' ').slice(0, 200), meta, icon('arrow-up', 'cl-chevron')),
+				{ class: `cl-row status-${entry.status}`, title: command.slice(0, 2000) });
+			row.dataset.shellId = entry.id;
+			const reveal = () => {
+				const current = (state?.entries ?? []).some(e => e.kind === 'tool' && e.id === entry.id);
+				if (current) { richActions.reveal({ toolId: entry.id }); }
+				else if (state) { pendingBashReveal = { chatId: state.chatId, id: entry.id }; loadEarlier(); }
+			};
+			row.addEventListener('click', reveal);
+			const pair = el('div', { class: 'cl-row-pair' }, row);
+			const options = button([icon('ellipsis')], { class: 'cl-answer', title: 'View command output' });
+			options.setAttribute('aria-label', 'View command output');
+			options.addEventListener('click', () => {
+				const chatId = state?.chatId;
+				if (!chatId) { return; }
+				openMenu(options, [
+					{ icon: 'comment', label: 'Output in chat', run: reveal },
+					{ icon: 'terminal', label: 'Output in VS Code terminal', description: 'Read only · follows available CLI output', command: 'showShellOutput', run: () => post({ type: 'showShellOutput', chatId, id: entry.id }) },
+				], 'View output');
+			});
+			pair.append(options);
+			composerBashList.append(pair);
+		}
+	};
+	section('Running', running, 'No shell command is running.');
+	if (state?.agentProcesses) {
+		const snapshot = state.agentProcesses;
+		composerBashList.append(clHead('Observed processes · this chat', observed.length));
+		composerBashList.append(clEmpty('info', !snapshot.supported ? 'Process monitoring is available on macOS and Linux.'
+			: snapshot.unavailable ? 'Process checks are unavailable. The last observed list may be stale; checks will retry.'
+			: 'Processes attributed to this chat and seen for at least 5 seconds. Experimental monitoring: cleared markers or delegated launches can escape observation.'));
+		for (const item of observed.toReversed()) {
+			const row = el('div', { class: 'cl-row', title: item.command }, ...clRow(el('span', { class: 'cl-lead cl-icon' }, icon('terminal')),
+				item.command, [el('span', { text: `PID ${item.pid}` }), el('span', { text: item.source }),
+					el('span', { text: item.detached ? 'Detached · observed running' : 'Observed running' })]));
+			const stop = button([icon('debug-stop')], { class: 'cl-answer', title: `Stop PID ${item.pid} (SIGTERM)` });
+			row.dataset.agentProcessId = item.id;
+			stop.setAttribute('aria-label', `Stop process ${item.pid}`);
+			stop.addEventListener('click', () => { if (state) { post({ type: 'stopAgentProcess', chatId: state.chatId, id: item.id }); } });
+			composerBashList.append(el('div', { class: 'cl-row-pair' }, row, stop));
+		}
+		if (snapshot.truncated) { composerBashList.append(clEmpty('info', 'The process list reached its monitoring limit.')); }
+	}
+	section('All calls', commands, 'No shell commands in this chat yet.');
+	if (earlier) {
+		const more = button(clRow(el('span', { class: 'cl-lead cl-icon' }, icon('history')), 'Show earlier calls', [], icon('chevron-down', 'cl-chevron')), { class: 'cl-row' });
+		more.addEventListener('click', () => { composerBashShape = ''; loadEarlier(); });
+		composerBashList.append(more);
+	}
+	if (focusedKey) { composerBashList.querySelector<HTMLElement>(focusedKey)?.focus(); }
+}
+let bashPressed = false;
+let bashStale = false;
+/** A selector finding the same control after a rebuild: its row's id and its role. */
+function focusKeyIn(node: HTMLElement): string | undefined {
+	const pair = node.closest('.cl-row-pair');
+	const row = pair?.querySelector<HTMLElement>('[data-shell-id],[data-agent-process-id]');
+	if (!row) { return undefined; }
+	const attr = row.dataset.shellId !== undefined ? `data-shell-id="${CSS.escape(row.dataset.shellId)}"` : `data-agent-process-id="${CSS.escape(row.dataset.agentProcessId ?? '')}"`;
+	return node.classList.contains('cl-answer') ? `.cl-row-pair:has([${attr}]) .cl-answer` : `[${attr}]`;
+}
+composerBashList.addEventListener('pointerdown', () => { bashPressed = true; });
+window.addEventListener('pointerup', () => { if (!bashPressed) { return; } bashPressed = false; if (bashStale) { bashStale = false; setTimeout(renderComposerBash, 0); } }, true);
+window.addEventListener('pointercancel', () => { if (bashPressed) { bashPressed = false; if (bashStale) { bashStale = false; renderComposerBash(); } } }, true);
 /**
  * The GitHub tab: open pull requests and recent Actions runs of the repository
  * the working folder belongs to, asked of the host each time the tab opens or
@@ -2413,6 +2550,7 @@ remoteTerminal.addEventListener('click', () => {
 	const why = remoteTerminalBlock();
 	if (why) { refuseControl({ s: 'off', reason: why }); return; }
 	const items = terminalMenuItems();
+	if (items.length === 1 && !items[0].heading && !items[0].disabled && gate('newTerminal').s === 'on') { items[0].run(); return; }
 	if (items.length) { openMenu(remoteTerminal, items, 'Open new terminal'); }
 });
 /** Why the remote "New terminal" cannot act now, or `undefined`. */
@@ -2584,6 +2722,9 @@ let recordingEncoder: { id: string; encoder: ReturnType<typeof createRecordingEn
 window.addEventListener('unload', () => recordingEncoder?.encoder.dispose());
 vscode.onMessage(message => {
 	switch (message.type) {
+		case 'agentProcesses':
+			if (state?.chatId === message.chatId) { state = { ...state, agentProcesses: message.snapshot }; renderComposerBash(); }
+			return;
 		case 'terminalData':
 		case 'terminalReplay':
 		case 'terminalExit':
@@ -3237,6 +3378,7 @@ function websiteAccessRow(terminal: { readonly id: string; readonly remote?: boo
 const tabAddTerminal = button([icon('terminal'), el('span', { class: 'tab-add-label', text: 'New terminal' })], { class: 'ghost round tab-add tab-add-terminal', title: 'New terminal' });
 tabAddTerminal.addEventListener('click', () => {
 	const items = terminalMenuItems();
+	if (items.length === 1 && !items[0].heading && !items[0].disabled && gate('newTerminal').s === 'on') { items[0].run(); return; }
 	if (items.length) { openMenu(tabAddTerminal, items, 'Open new terminal'); }
 });
 /*
@@ -6753,6 +6895,9 @@ function renderAttachments(s: ChatViewState): void {
 	// and took keyboard focus off it.
 	const shown = JSON.stringify([
 		s.attachments.map(chipShown),
+		s.linkedChats,
+		s.surface,
+		s.access?.tabs.filter(tab => tab.owner === 'this'),
 		s.suggestions.map(c => [c.id, c.kind, c.label]),
 		fileIconsSignature,
 	]);
@@ -6762,8 +6907,33 @@ function renderAttachments(s: ChatViewState): void {
 	attachmentsShown = shown;
 	// Draft attachments live in the text as tokens (`[@N label]`, see `syncAttachmentTokens`); the row
 	// keeps the terminals pinned to the conversation. Suggestions live in the toolbar menus.
-	attachmentsRow.replaceChildren(...s.attachments.filter(isPinChip).map(pinChipNode));
-	attachmentsRow.hidden = !s.attachments.some(isPinChip);
+	const browsers = (s.access?.tabs ?? []).filter(tab => tab.owner === 'this');
+	const linked = (s.linkedChats ?? []).map(chat => {
+		const editor = !s.surface || s.surface === 'editor';
+		const remove = button([icon('close')], { class: 'chip-remove', title: 'Disconnect this chat' });
+		remove.hidden = !editor;
+		remove.addEventListener('click', () => post({ type: 'disconnectChat', chatId: s.chatId, targetChatId: chat.chatId }));
+		const access = `${chat.access === 'readWrite' ? 'Read and add notes' : 'Read only'}${chat.owned ? ` · Worker: ${chat.taskState ?? 'idle'}` : ''}`;
+		const open = button([icon('comment-discussion'), el('span', { class: 'chip-label', text: `${chat.title} · ${access}` })],
+			{ class: 'chip-open', title: `${access}${chat.available ? '' : ' · Unavailable'} — click to change connection` });
+		open.disabled = !editor || !chat.available;
+		open.addEventListener('click', () => post({ type: 'connectChat', chatId: s.chatId, targetChatId: chat.chatId }));
+		return el('span', { class: 'chip', title: access }, remove, open);
+	});
+	attachmentsRow.replaceChildren(...linked, ...browsers.map(browserPinNode), ...s.attachments.filter(isPinChip).map(pinChipNode));
+	attachmentsRow.hidden = !linked.length && !browsers.length && !s.attachments.some(isPinChip);
+	autosize();
+	toolbarLayoutShape = '';
+	scheduleToolbarLayout();
+}
+
+/** Browser bindings live in Access, alongside terminal pins, and never enter the draft. */
+function browserPinNode(tab: NonNullable<ChatViewState['access']>['tabs'][number]): HTMLElement {
+	const remove = button([icon('close')], { class: 'chip-remove', title: 'Unpin browser tab — make it available to other chats' });
+	remove.addEventListener('click', () => post({ type: 'tabAccess', tabId: tab.id, take: false }));
+	const open = button([icon('globe'), el('span', { class: 'chip-label', text: tab.title || tab.url })], { class: 'chip-open', title: tab.url });
+	open.addEventListener('click', () => post({ type: 'tabAccess', tabId: tab.id, take: true, reveal: true }));
+	return el('span', { class: 'chip chip-browser', title: tab.url }, remove, open);
 }
 
 /**
@@ -7298,14 +7468,16 @@ function markAttachmentTokens(text: string, chipFor: (reference: string) => Atta
 		const label = token.label.trim();
 		const leading = token.label.slice(0, token.label.length - token.label.trimStart().length);
 		const trailing = token.label.slice(token.label.trimEnd().length);
-		out.push(el('span', { class: 'att-token-wrap', title: chip?.filePath ?? chip?.label ?? label },
+		out.push(el('span', { class: `att-token-wrap${chip ? ` att-kind-${chip.kind}` : ''}`, title: chip?.filePath ?? chip?.label ?? label },
 			// Only the `[` stays outside the capsule, a narrow constant gap. The icon is pinned to the
 			// capsule's left edge, so the reference's varying digits widen the space after the icon,
 			// never the capsule's own padding or the room before it.
 			el('span', { class: 'att-token-hide', text: '[' }),
 			el('span', { class: `att-token${chip ? '' : ' unbound'}` },
-				el('span', { class: 'att-token-hide att-token-prefix', text: `${token.reference}${token.gap}${leading}` }),
-				mark,
+				// Anchor to the reference alone: a wrapped inline capsule's bounding box spans
+				// several lines, which would centre the icon between those lines.
+				el('span', { class: 'att-token-hide att-token-prefix' }, document.createTextNode(token.reference), mark),
+				el('span', { class: 'att-token-hide', text: `${token.gap}${leading}` }),
 				el('span', { class: 'att-token-label', text: label }),
 				el('span', { class: 'att-token-hide att-token-close', text: trailing })),
 			el('span', { class: 'att-token-hide', text: ']' })));
@@ -7540,19 +7712,19 @@ contextButton.addEventListener('click', () => {
 
 function renderSend(): void {
 	const running = state?.running ?? false;
-	const hasContent = !!input.value.trim() || !!state?.attachments.length;
-	const stop = running && !hasContent;
+	const hasContent = !!input.value.trim() || !!state?.attachments.some(chip => !isPinChip(chip));
+	const stop = running;
 	setIcon(sendButton, stop ? 'debug-stop' : 'arrow-up');
 	const queueKey = `${navigator.platform.startsWith('Mac') ? '⌘' : 'Ctrl+'}Enter`;
 	sendButton.title = stop ? 'Stop — end what the agent is doing now'
 		: !canSend() ? 'No agent is available'
 		: running ? `Add to the running turn (Enter outside lists) — the agent takes it into what it is doing. ${queueKey} queues it for when the turn ends instead.`
 		: 'Send (Enter outside lists) — Shift+Enter starts a new line; Enter in a list adds an item';
-	queueButton.hidden = !running || !hasContent || !canSend();
-	queueButton.title = `Queue — send this when the agent finishes the current turn (${queueKey}). Enter adds it to the turn instead.`;
 	sendButton.setAttribute('aria-label', stop ? 'Stop' : 'Send');
 	sendButton.classList.toggle('stop', stop);
 	sendButton.disabled = !stop && (!hasContent || !canSend());
+	sendOptionsButton.disabled = sendButton.disabled;
+	refreshSendMenu();
 }
 
 ultracodeInput.addEventListener('change', () => {
@@ -7729,12 +7901,6 @@ function applyComposerEdit(edit: ComposerEdit, notify = true): void {
 	if (notify) { input.dispatchEvent(new Event('input', { bubbles: true })); }
 }
 
-input.addEventListener('input', event => {
-	if ((event as InputEvent).isComposing || input.selectionStart !== input.selectionEnd) { return; }
-	const edit = composerListStarter(input.value, input.selectionStart);
-	if (edit) { applyComposerEdit(edit, false); }
-});
-
 /** The mirror behind the box, kept to its text and its scroll. */
 function paintInput(): void {
 	// A trailing line break needs something after it, or the mirror's last line
@@ -7880,12 +8046,88 @@ input.addEventListener('keydown', event => {
 });
 
 sendButton.addEventListener('click', () => {
+	closeSendMenu();
 	if (sendButton.classList.contains('stop')) {
 		post({ type: 'stop' });
 	} else {
 		send();
 	}
 });
+function sendMenuItems(): MenuItem[] {
+	const mod = navigator.platform.startsWith('Mac') ? '⌘' : 'Ctrl+';
+	const hasContent = !!input.value.trim() || !!state?.attachments.some(chip => !isPinChip(chip));
+	return [
+		...(state?.running ? [{ icon: 'debug-stop', label: 'Stop', run: () => post({ type: 'stop' }) }] : []),
+		{ icon: 'arrow-up', label: 'Send now', shortcut: 'Enter', disabled: !hasContent || !canSend(), run: () => send() },
+		{ icon: 'clock', label: 'Send later', shortcut: `${mod}Enter`, disabled: !state?.running || !hasContent || !canSend(),
+			description: state?.running ? 'After the current turn ends' : 'Available while the agent is working', run: () => send('queue') },
+	];
+}
+
+function closeSendMenu(): void {
+	clearTimeout(sendMenuOpenTimer);
+	clearTimeout(sendMenuCloseTimer);
+	if (menu.classList.contains('open') && overlayAnchors.get(menu)?.anchor === sendButton) { closePopups(); }
+}
+
+function refreshSendMenu(): void {
+	if (!menu.classList.contains('open') || overlayAnchors.get(menu)?.anchor !== sendButton) { return; }
+	const shape = JSON.stringify(sendMenuItems().map(item => [item.label, item.disabled, item.description]));
+	if (shape === sendMenuShape) { return; }
+	closeSendMenu();
+	openSendMenu();
+}
+
+function openSendMenu(): void {
+	clearTimeout(sendMenuCloseTimer);
+	if (sendButton.disabled) { return; }
+	if (menu.classList.contains('open') && overlayAnchors.get(menu)?.anchor === sendButton) { return; }
+	const items = sendMenuItems();
+	sendMenuShape = JSON.stringify(items.map(item => [item.label, item.disabled, item.description]));
+	openMenu(sendButton, items);
+	sendButton.setAttribute('aria-expanded', 'true');
+	sendOptionsButton.setAttribute('aria-expanded', 'true');
+}
+
+function toggleSendMenu(): void {
+	clearTimeout(sendMenuOpenTimer);
+	clearTimeout(sendMenuCloseTimer);
+	if (menu.classList.contains('open') && overlayAnchors.get(menu)?.anchor === sendButton) { closeSendMenu(); }
+	else { openSendMenu(); }
+}
+
+sendOptionsButton.addEventListener('click', toggleSendMenu);
+sendOptionsButton.addEventListener('mouseenter', () => {
+	clearTimeout(sendMenuOpenTimer); clearTimeout(sendMenuCloseTimer);
+});
+sendOptionsButton.addEventListener('mouseleave', leaveSendMenu);
+
+function leaveSendMenu(): void {
+	clearTimeout(sendMenuOpenTimer);
+	sendMenuCloseTimer = setTimeout(closeSendMenu, 220);
+}
+
+sendButton.addEventListener('mouseenter', () => {
+	clearTimeout(sendMenuOpenTimer);
+	// Hover must not close what the user is working with (the "/" palette, a
+	// popup, a panel); with any of them open, the menu waits for a click.
+	sendMenuOpenTimer = setTimeout(() => {
+		if (app.querySelector('.popup.open, .history-panel.open') && !(menu.classList.contains('open') && overlayAnchors.get(menu)?.anchor === sendButton)) { return; }
+		openSendMenu();
+	}, 180);
+});
+sendButton.addEventListener('mouseleave', leaveSendMenu);
+menu.addEventListener('mouseenter', () => clearTimeout(sendMenuCloseTimer));
+menu.addEventListener('mouseleave', () => {
+	if (overlayAnchors.get(menu)?.anchor === sendButton) { leaveSendMenu(); }
+});
+[sendButton, sendOptionsButton].forEach(trigger => trigger.addEventListener('keydown', event => {
+	if ((event.key === 'ArrowUp' || event.key === 'ArrowDown') && !sendButton.disabled) {
+		event.preventDefault();
+		openSendMenu();
+		focusMenu();
+	}
+}));
 
 /* ---------------------------------------------------------------- voice messages */
 
@@ -8192,9 +8434,10 @@ function clock(seconds: number): string {
 /** `queue`: held until the running turn ends (⌘/Ctrl+Enter); otherwise added to it (Enter). */
 function send(mode?: 'queue'): void {
 	const text = input.value;
-	if ((!text.trim() && !state?.attachments.length) || !canSend()) {
+	if ((!text.trim() && !state?.attachments.some(chip => !isPinChip(chip))) || !canSend()) {
 		return;
 	}
+	closeSendMenu();
 	// "/name args" naming a toolbar skill runs it: the arguments fill its
 	// parameters in order, and what is still missing is asked for.
 	const invoked = toolbarInvocation(text);
@@ -8389,6 +8632,9 @@ composer.addEventListener('mousedown', event => {
  * right-click menu in an agent's report (see `linkMenu`).
  */
 function closePopups(except?: HTMLElement, keep?: HTMLElement): void {
+ sendButton.setAttribute('aria-expanded', 'false');
+ sendOptionsButton.setAttribute('aria-expanded', 'false');
+ clearTimeout(sendMenuOpenTimer); clearTimeout(sendMenuCloseTimer);
  if (except !== selectorStrip && keep !== selectorStrip) {
   restoreSelectorControls();
  }
@@ -8602,7 +8848,7 @@ document.addEventListener('mousedown', event => {
 		}
 		return;
 	}
-	if (![tabOverflowPanel, overflowButton, workdirSummary, gitRefreshSlot, effortBox, ultracodeBox, selectorStrip, featureSettingsPanel, sleepPopup, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillBar, historyPanel, agentsPanel, allAgentsPanel, agentAppsPanel, plusButton, usageButton, usageAlertText, agentsButton, compactSelector, agentPill, modelPill, approveToggle, slashButton, workdirButton, branchButton, commitButton, contextButton].some(n => n.contains(target))) {
+	if (![tabOverflowPanel, overflowButton, workdirSummary, gitRefreshSlot, effortBox, ultracodeBox, selectorStrip, featureSettingsPanel, sleepPopup, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillBar, historyPanel, agentsPanel, allAgentsPanel, agentAppsPanel, plusButton, usageButton, usageAlertText, agentsButton, compactSelector, agentPill, modelPill, approveToggle, slashButton, workdirButton, branchButton, commitButton, contextButton, sendOptionsButton].some(n => n.contains(target))) {
 		closePopups();
 	}
 });
@@ -8991,8 +9237,11 @@ modelPill.addEventListener('click', () => {
 function browserMenuItems(): MenuItem[] {
 	const page = state?.suggestions.find(chip => chip.kind === 'sharedPage');
 	const items: MenuItem[] = [
-		...(page ? [{ icon: 'clippy', label: 'Attach current browser', description: page.label, suggested: true,
+		...(page ? [{ icon: 'pin', label: 'Pin current browser', description: page.label, suggested: true,
 			run: () => post({ type: 'acceptSuggestion', id: page.id }) }] : []),
+		...(state?.access?.tabs ?? []).map(tab => ({ icon: 'globe', label: tab.title || tab.url, description: tab.owner === 'other' ? `Pinned to ${tab.ownerName ?? 'another chat'}` : tab.url,
+			checked: tab.owner === 'this', command: 'tabAccess' as const,
+			run: () => post({ type: 'tabAccess', tabId: tab.id, take: tab.owner !== 'this' }) })),
 		{ icon: 'globe', label: 'Google Chrome', command: 'openBrowser.chrome', run: () => post({ type: 'openBrowser', where: 'chrome' }) },
 	];
 	if (state?.nativeBrowser && state.nativeBrowser !== 'unsupported') {
@@ -10347,11 +10596,12 @@ for (const [tab, tip] of [
 	[composerTabChat, 'Message box'],
 	[composerTabSkills, 'Toolbar skills'],
 	[composerTabActivity, 'Agents and access of this chat'],
-	[composerTabHistory, 'Messages of this chat'],
+	[composerTabHistory, 'Messages of this conversation (Alt+O; Alt+H also works)'],
+	[composerTabBash, 'Shell commands of this chat'],
 	[composerTabFiles, 'Files of the working folder'],
 	[composerTabGithub, 'Pull requests and Actions runs of this folder\'s repository'],
 ] as const) {
-	tab.dataset.tip = `${tip} (${composerTabKeyMod}${tab.textContent?.[0] ?? ''})`;
+	tab.dataset.tip = `${tip} (${composerTabKeyMod}${tab === composerTabHistory ? 'O' : tab.textContent?.[0] ?? ''})`;
 	hoverTip.attach(tab);
 }
 
@@ -11032,7 +11282,7 @@ const attachItems: { kind: AttachmentKind; icon: string; label: string; needsTab
 	{ kind: 'screenshot', icon: 'device-camera', label: 'Screenshot of the page', needsTab: true },
 	{ kind: 'element', icon: 'inspect', label: 'Element from the page…', needsTab: true },
 	{ kind: 'page', icon: 'link', label: 'Page address', needsTab: true },
-	{ kind: 'sharedPage', icon: 'link-external', label: 'Share page', needsTab: true },
+	{ kind: 'sharedPage', icon: 'pin', label: 'Pin browser tab', needsTab: true },
 	{ kind: 'annotation', icon: 'comment-add', label: 'Add annotation to element…', needsTab: true },
 	{ kind: 'pointAnnotation', icon: 'comment-add', label: 'Add annotation anywhere…', needsTab: true },
 	{ kind: 'file', icon: 'file', label: 'File…', needsTab: false },
@@ -11048,7 +11298,8 @@ plusButton.addEventListener('click', () => {
 		icon: attachmentIcon(chip.kind), label: chip.kind === 'selection' ? 'Attach current selection' : 'Attach current file',
 		description: chip.label, run: () => post({ type: 'acceptSuggestion', id: chip.id }),
 	}));
-	openMenu(plusButton, [...suggestions, ...browserMenuItems(), ...attachItems.map(item => ({
+	const chatItems: MenuItem[] = chatConnectionsEnabled && (!state?.surface || state.surface === 'editor') ? [{ icon: 'comment-discussion', label: 'Connect a chat…', run: () => { if (state) { post({ type: 'connectChat', chatId: state.chatId }); } } }] : [];
+	openMenu(plusButton, [...chatItems, ...suggestions, ...browserMenuItems(), ...attachItems.map(item => ({
 		icon: item.icon,
 		label: item.label,
 		description: item.needsTab ? pageProblem : undefined,
@@ -11151,8 +11402,15 @@ function usageColor(percent: number): string {
 
 function renderUsageLevel(s: ChatViewState): void {
 	const u = s.usage;
-	const full = !!u && (u.usingCredits || u.percent >= 100);
-	const color = u ? usageColor(u.percent) : '';
+	// Older remote hosts supply only their closest window.
+	const windows = u?.windows ?? (u ? [{ label: u.label, usedPercent: u.percent }] : []);
+	const { figure, session, mark } = usageButtonWindows(windows);
+	const limit = usageButtonLimit(windows);
+	// A limit reached, or credits being spent, is the red disc (CLAUDE.md, the colour of `U`).
+	const full = !!limit || !!u?.usingCredits;
+	const shownMark = full ? 'U' : mark;
+	if (usageMark.textContent !== shownMark) { usageMark.textContent = shownMark; }
+	const color = session ? usageColor(session.usedPercent) : '';
 	if (usageButton.style.getPropertyValue('--usage-color') !== color) {
 		if (color) {
 			usageButton.style.setProperty('--usage-color', color);
@@ -11162,11 +11420,15 @@ function renderUsageLevel(s: ChatViewState): void {
 	}
 	usageButton.classList.toggle('level', !!u);
 	usageButton.classList.toggle('limit-full', full);
-	setRingFill(usageRing, u ? u.percent / 100 : undefined);
+	usageButton.classList.toggle('limit-short', limit === 'short');
+	setRingFill(usageRing, session ? session.usedPercent / 100 : undefined);
 	const name = u && agentName(s, s.selection.agent);
-	const title = !u ? usageTitle
-		: `${usageTitle}
-${name ? `${name}: ` : ''}${u.label} — ${Math.floor(Math.min(100, u.percent))}% used${u.usingCredits ? ', now spending credits' : ''}`;
+	const percent = (w: { usedPercent: number }) => Math.max(0, Math.min(100, Math.floor(w.usedPercent)));
+	const title = [usageTitle, name,
+		figure ? `Number: ${figure.label} — ${Number(mark)}% remaining` : 'Number: usage unavailable',
+		session ? `Ring: ${session.label} — ${percent(session)}% used` : 'Ring: session limit unavailable',
+		u?.usingCredits ? 'Now spending credits' : undefined,
+	].filter(Boolean).join('\n');
 	if (usageButton.title !== title) {
 		usageButton.title = title;
 		// What a screen reader names it by: the colour alone says nothing there.
@@ -11359,6 +11621,7 @@ function renderAgents(s: ChatViewState): void {
 	renderComposerAgents(s);
 	renderComposerAccess(s);
 	renderComposerHistory();
+	renderComposerBash();
 	if (pendingAgentCard && s.chatId === pendingAgentCard.chatId) {
 		const id = pendingAgentCard.id;
 		pendingAgentCard = undefined;

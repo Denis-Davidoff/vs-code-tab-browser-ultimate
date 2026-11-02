@@ -1,4 +1,5 @@
 import { requestCommitMessage } from './commitMessage';
+import { agentProcesses } from './agentProcesses';
 import { chatCapability } from '../core/chatCapability';
 import { requestTitle } from './autoTitle';
 /*---------------------------------------------------------------------------------------------
@@ -349,7 +350,7 @@ export class ClaudeBackend implements AgentBackend {
 
 	public openSession(cwd: string, resume?: string, priorCostUsd?: number, root?: string, readDirs?: readonly string[], ownSettings = true, chatId?: string): AgentSession {
 		const browserServer = () => { const server = this._browserServer(); return server ? { ...server, chatId } : undefined; };
-		const session = new ClaudeSession(this._binary, cwd, root, resume, priorCostUsd ?? 0, browserServer, () => this._sessions.delete(session), readDirs ?? [], ownSettings);
+		const session = new ClaudeSession(this._binary, cwd, root, resume, priorCostUsd ?? 0, browserServer, () => this._sessions.delete(session), readDirs ?? [], ownSettings, chatId);
 		this._sessions.add(session);
 		return session;
 	}
@@ -407,6 +408,8 @@ class ClaudeSession implements AgentSession {
 	private _sessionId: string | undefined;
 	/** Task id to the call it belongs to, from `task_started`; read for `task_updated`. */
 	private readonly _tasks = new Map<string, string>();
+	/** Shell tasks are tracked for process-exit cleanup, without holding model changes. */
+	private readonly _shellTasks = new Map<string, boolean>();
 	/** The conversation's own model, for the context window `result` names; see `claudeEvents`. */
 	private readonly _context: { model?: string } = {};
 	/** Calls that are agents, the only ones whose background state holds the process. */
@@ -447,6 +450,7 @@ class ClaudeSession implements AgentSession {
 		private readonly _onDispose: () => void,
 		private readonly _readDirs: readonly string[] = [],
 		private readonly _ownSettings = true,
+		private readonly _chatId?: string,
 	) {
 		this._sessionId = resume;
 		this._sessionCost = priorCostUsd;
@@ -601,7 +605,7 @@ class ClaudeSession implements AgentSession {
 		if (!this._ownSettings) {
 			launch.push(...projectSettingsOff);
 		}
-		const process = new JsonLineProcess(this._binary, launch, this._cwd);
+		const process = new JsonLineProcess(this._binary, launch, this._cwd, agentProcesses.environment(this._chatId, 'claude'));
 		if (config) {
 			// Every process, current or not: the file is this process's alone.
 			process.onExit(() => { void fs.unlink(config).catch(() => { /* swept */ }); });
@@ -668,6 +672,12 @@ class ClaudeSession implements AgentSession {
 				break;
 			case 'toolUpdate': {
 				const agent = event.update.agent;
+				if (event.update.shell) { this._shellTasks.set(event.id, event.update.shell.background === true); }
+				if (agent?.background && this._shellTasks.has(event.id)) { this._shellTasks.set(event.id, true); }
+				if (event.update.status && this._shellTasks.has(event.id) && (!this._shellTasks.get(event.id) || agent || event.update.shell?.background === false)) {
+					this._shellTasks.delete(event.id);
+				}
+
 				if (event.update.status) {
 					this._agents.delete(event.id);
 					this._toldWaiting &&= this._agents.size > 0;
@@ -708,7 +718,12 @@ class ClaudeSession implements AgentSession {
 	private _endAgents(): void {
 		const agents = [...this._agents];
 		this._agents.clear();
+		const shells = [...this._shellTasks.keys()];
+		this._shellTasks.clear();
 		if (!this._disposed) {
+			for (const id of shells) {
+				this._onEvent.fire({ type: 'toolUpdate', id, update: { status: 'stopped', shell: { background: false } } });
+			}
 			for (const id of agents) {
 				this._onEvent.fire({ type: 'toolUpdate', id, update: { status: 'stopped' } });
 			}

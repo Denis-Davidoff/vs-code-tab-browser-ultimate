@@ -1556,6 +1556,19 @@ export class BrowserController implements vscode.Disposable {
 		return true;
 	}
 
+	/** A click on the conversation's pinned browser badge brings that page forward. */
+	public async revealTab(id: string): Promise<void> {
+		const tab = tabSource.all.find(candidate => this._idOf(candidate) === id);
+		if (!tab) { return; }
+		const release = this._hold(tab);
+		try {
+			const session = await this._sessionFor(tab);
+			await session.client.send('Page.bringToFront');
+		} finally {
+			release();
+		}
+	}
+
 	/** A closed chat's tabs become free for everyone. */
 	public releaseChatTabs(chatId: string): void {
 		let changed = false;

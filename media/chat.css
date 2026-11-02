@@ -1702,6 +1702,24 @@ button {
 	display: none;
 }
 
+/* Pins use the spare space at the bottom of the input. Only text that needs
+   that space makes autosize grow the field; a short draft keeps its height. */
+.input-wrap > .attachments {
+	position: absolute;
+	left: 12px;
+	right: 0;
+	bottom: 6px;
+	flex-wrap: nowrap;
+	min-width: 0;
+	padding: 0;
+	overflow-x: auto;
+	scrollbar-width: none;
+}
+.input-wrap > .attachments .chip { flex: none; height: 22px; }
+.input-wrap > .attachments .chip-label { max-width: 160px; }
+.input-wrap:has(> .attachments:not([hidden])) > .input,
+.input-wrap:has(> .attachments:not([hidden])) > .input-mirror { padding-bottom: 30px; }
+
 .input-area {
 	display: grid;
 	grid-template-columns: minmax(0, 1fr) 40px;
@@ -1722,6 +1740,11 @@ button {
 	justify-content: center;
 	width: 28px;
 	height: 28px;
+}
+
+.send-slot.send-controls {
+	width: 58px;
+	gap: 2px;
 }
 
 /* Send / Stop and the mic sit 2 px higher and 4 px further right than the column (asked
@@ -1986,9 +2009,8 @@ button {
 }
 
 /*
- * The usage button's ring fills with the limit closest to running out, in its
- * colour — set as `--usage-color` by `renderUsageLevel`. A limit reached, or
- * credits being spent: a saturated red disc.
+ * The usage button's ring shows the short session limit; its number shows
+ * the weekly quota (or an available quota when no weekly one is reported).
  */
 .usage-button.level,
 .usage-button.level:hover {
@@ -2071,9 +2093,21 @@ button {
 
 .usage-button.limit-full .ring-meter {
 	background: #e5141f;
-	color: #fff;
+	color: #ffd43b;
 	--ring-color: #e5141f;
 	--ring-track: #e5141f;
+}
+
+.usage-button.limit-full.limit-short .ring-meter {
+	background: #ffd43b;
+	color: #e5141f;
+	--ring-color: #ffd43b;
+	--ring-track: #ffd43b;
+}
+
+.usage-button .ring-mark {
+	font-variant-numeric: tabular-nums;
+	font-size: calc(var(--toolbar-round-mark-size) * 0.46);
 }
 
 /*
@@ -2265,16 +2299,6 @@ button {
 .send:disabled {
 	opacity: 0.35;
 	cursor: default;
-}
-
-/* Secondary action below Send, with a quieter background and a readable glyph. */
-.send.queue-button {
-	background: color-mix(in srgb, var(--vscode-button-background, var(--vscode-focusBorder)) 55%, transparent);
-	color: var(--vscode-button-foreground, #fff);
-}
-
-.send.queue-button:hover:not(:disabled) {
-	background: var(--vscode-button-hoverBackground, color-mix(in srgb, var(--vscode-button-background, var(--vscode-focusBorder)) 85%, transparent));
 }
 
 .send.stop {
@@ -3862,7 +3886,6 @@ button {
 /* ---------------------------------------------------------------- messages not in the conversation yet */
 
 /* `.ghost.round` would otherwise keep the hidden button on screen. */
-.queue-button[hidden],
 .context-button[hidden] {
 	display: none;
 }
@@ -5627,11 +5650,6 @@ button {
 .appearance-setting select { margin-left: auto; padding: 6px 10px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface); color: var(--fg); font: inherit; }
 
 .effort { --effort-colour: var(--effort-minimal, #bfc5ce); }
-:root[data-theme="light"] .send.queue-button,
-:root:not([data-theme]) body.vscode-light .send.queue-button,
-:root:not([data-theme]) body.vscode-high-contrast-light .send.queue-button {
- background: var(--vscode-button-background);
-}
 .appearance-setting { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 0; flex: none; }
 .appearance-setting input[type="checkbox"] { flex: none; width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
 
@@ -6763,7 +6781,6 @@ body.vv-locked {
 .earlier-bar[hidden] { display: none; }
 .earlier-button { font-size: 12px; padding: 4px 12px; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--vscode-foreground) 14%, transparent); }
 /* Centred under Send: the slot below it sat 3px to the left. */
-.send.queue-button { position: relative; left: 3px; }
 
 /* A clicked conversation tab while its chat loads: a spinner replaces its mark. */
 .tab .tab-loading { display: none; }
@@ -6913,7 +6930,23 @@ body.vv-locked {
 
 /* Reserve horizontal space with the token's own invisible characters: the textarea and mirror
    must keep identical wrapping. Vertical padding and static shadows do not change that layout. */
-.att-token-wrap { color: var(--fg); }
+.att-token-wrap { color: var(--fg); --attachment-accent: #939ba4; }
+/* Related attachment kinds share a muted hue. Mix into the theme's surface so
+   the capsules stay quiet in both light and dark themes. */
+.att-kind-page, .att-kind-sharedPage { --attachment-accent: #799bb9; }
+.att-kind-element, .att-kind-annotation, .att-kind-pointAnnotation { --attachment-accent: #73a69e; }
+.att-kind-file, .att-kind-selection { --attachment-accent: #a18db5; }
+.att-kind-screenshot, .att-kind-video, .att-kind-voice { --attachment-accent: #b29a74; }
+.att-kind-terminal, .chip-terminal { --attachment-accent: #8ba480; }
+.chip-terminal {
+	background: color-mix(in srgb, var(--attachment-accent) 16%, var(--surface));
+	border-color: color-mix(in srgb, var(--attachment-accent) 32%, var(--surface));
+}
+.chip-browser {
+	--attachment-accent: #799bb9;
+	background: color-mix(in srgb, var(--attachment-accent) 16%, var(--surface));
+	border-color: color-mix(in srgb, var(--attachment-accent) 32%, var(--surface));
+}
 .attachment-drag-preview { position: fixed !important; left: 0; top: 0; z-index: 1000; pointer-events: none; white-space: pre; opacity: .9; }
 .sent-attachment { cursor: pointer; user-select: all; }
 .sent-attachment:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; border-radius: 999px; }
@@ -6921,25 +6954,28 @@ body.vv-locked {
 	position: relative;
 	border-radius: 999px;
 	padding: 2px 0;
-	background: linear-gradient(180deg, color-mix(in srgb, var(--vscode-focusBorder) 19%, var(--surface)), color-mix(in srgb, var(--vscode-focusBorder) 10%, var(--surface)));
-	box-shadow: inset 0 1px 0 color-mix(in srgb, white 12%, transparent), 0 0 0 1px color-mix(in srgb, var(--vscode-focusBorder) 24%, transparent), 0 1px 1px rgb(0 0 0 / 8%);
+	background: color-mix(in srgb, var(--attachment-accent) 16%, var(--surface));
+	/* A shadow draws the same thin border as a terminal pin without shifting
+	   the invisible character slots that align this capsule with the textarea. */
+	box-shadow: 0 0 0 1px color-mix(in srgb, var(--attachment-accent) 32%, var(--surface));
 	-webkit-box-decoration-break: clone;
 	box-decoration-break: clone;
 	color: var(--fg);
 }
 .att-token.unbound { background: color-mix(in srgb, var(--fg) 10%, transparent); box-shadow: none; }
 .att-token-hide { color: transparent; }
+.att-token-prefix { position: relative; }
 .att-token .att-token-icon {
 	position: absolute;
 	left: 5px;
 	top: 50%;
 	transform: translateY(-50%);
 	width: 12px;
-	font-size: 12px;
+	font-size: 13px;
 	line-height: 1;
 	text-align: center;
 	pointer-events: none;
-	color: var(--fg);
+	color: var(--fg-3);
 }
 .att-token .att-token-close { position: relative; }
 .sent-attachment .att-token-close { display: none; }
@@ -6958,7 +6994,7 @@ body.vv-locked {
 	background:
 		linear-gradient(45deg, transparent calc(50% - .6px), var(--x-color) calc(50% - .6px), var(--x-color) calc(50% + .6px), transparent calc(50% + .6px)) center / 7px 7px no-repeat,
 		linear-gradient(-45deg, transparent calc(50% - .6px), var(--x-color) calc(50% - .6px), var(--x-color) calc(50% + .6px), transparent calc(50% + .6px)) center / 7px 7px no-repeat,
-		color-mix(in srgb, var(--fg) 7%, transparent);
+		transparent;
 }
 .input-mirror .att-token-close.hovered::after {
 	--x-color: var(--vscode-errorForeground, #f48771);
@@ -7015,11 +7051,24 @@ body.vv-locked {
 .rich-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
 .rich-actions[hidden] { display: none; }
 .rich-text, .rich-reason, .rich-stage { white-space: pre-wrap; overflow-wrap: anywhere; }
-.row.rich-notice::before { display: none; }
-.rich-notice .rich-header { justify-content: flex-end; }
-.rich-notice.notice-info { border-left: 3px solid var(--vscode-notificationsInfoIcon-foreground, #609ddb); }
-.rich-notice.notice-warning { border-left: 3px solid var(--vscode-notificationsWarningIcon-foreground, #cca700); }
-.rich-notice.notice-error { border-left: 3px solid var(--vscode-notificationsErrorIcon-foreground, #e45a5a); }
+.row.rich-notice {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	column-gap: 12px;
+	border-color: color-mix(in srgb, var(--notice-color) 25%, var(--border));
+	border-left: 3px solid var(--notice-color);
+	background: color-mix(in srgb, var(--notice-color) 6%, var(--bg));
+}
+.row.rich-notice::before, .row.rich-notice::after { display: none; }
+/* Share a footer row with actions, keeping the text's full width and padding. */
+.rich-notice > .rich-body { display: contents; }
+.rich-notice .rich-text { grid-column: 1 / -1; grid-row: 1; }
+.rich-notice .rich-reason { grid-column: 1 / -1; grid-row: 2; margin: 4px 0 0; }
+.rich-notice > .rich-actions { grid-column: 1; grid-row: 3; min-width: 0; }
+.rich-notice-time { grid-column: 2; grid-row: 3; align-self: end; justify-self: end; margin-top: 8px; color: var(--fg-3); font-size: 11px; white-space: nowrap; }
+.rich-notice.notice-info { --notice-color: var(--vscode-notificationsInfoIcon-foreground, #609ddb); }
+.rich-notice.notice-warning { --notice-color: var(--vscode-notificationsWarningIcon-foreground, #cca700); }
+.rich-notice.notice-error { --notice-color: var(--vscode-notificationsErrorIcon-foreground, #e45a5a); }
 .rich-progress progress { display: inline-block; width: min(100%, 440px); margin: 10px 8px 0 0; accent-color: var(--vscode-progressBar-background, #609ddb); }
 .rich-plan-steps { padding: 0; margin: 0; list-style: none; }
 .rich-plan-steps li { display: flex; align-items: baseline; gap: 10px; padding: 6px 0; }

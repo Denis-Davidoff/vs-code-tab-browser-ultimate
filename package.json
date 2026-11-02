@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate",
 	"displayName": "AI Browser🏆 Claude + Codex + Gemini + OpenCode + Pi + OpenRouter",
 	"description": "Chat with browser, MCP for Chrome and embedded browser tab with AI capabilities, Claude, Codex, Gemini, OpenCode, Pi and OpenRouter integration (Qwen, LM Studio, Ollama, etc.)",
-	"version": "0.9.15",
+	"version": "0.9.16",
 	"enabledApiProposals": [
 		"externalUriOpener",
 		"browser"
@@ -2105,6 +2105,7 @@
 		"typecheck-webview": "tsc --project ./preview-src/tsconfig.json --noEmit",
 		"typecheck-tests": "tsc --project ./tsconfig.test.json",
 		"test": "node --test \"preview-src/**/*.test.ts\" \"src/**/*.test.ts\"",
+		"test:chat-ui": "npm run build-webview && npm run build-chrome && node exchange-server/scripts/build-chat.mjs && node scripts/test-visualizations-browser.mjs",
 		"check-manifest": "node ./scripts/check-manifest.mjs",
 		"package": "vsce package --no-dependencies --out tab-browser-ultimate.vsix",
 		"publish:ovsx": "npm run package && ovsx publish tab-browser-ultimate.vsix",

@@ -303,6 +303,8 @@ export interface ToolEntry {
 	files?: readonly ChangedFile[];
 	readonly startedAt: number;
 	endedAt?: number;
+	/** Native CLI task metadata; a background shell can outlive its initiating turn. */
+	shell?: { taskId?: string; background?: boolean; provider?: 'codex'; processId?: string };
 	/** Present on agent rows (`tool: 'agent'`). */
 	agent?: AgentInfo;
 }
@@ -761,6 +763,7 @@ export interface ChatViewState {
 	readonly selection: Selection;
 	readonly chatId: string;
 	readonly entries: readonly ChatEntry[];
+	readonly linkedChats?: readonly { readonly chatId: string; readonly title: string; readonly access: 'read' | 'readWrite'; readonly available: boolean; readonly owned?: boolean; readonly taskState?: string }[];
 	readonly running: boolean;
 	readonly attachments: readonly AttachmentChip[];
 	/**
@@ -793,6 +796,10 @@ export interface ChatViewState {
 	readonly entriesOffset?: number;
 	/** Total user/assistant messages before windowing; tool entries never count. */
 	readonly messageCount?: number;
+	/** Active shell summaries from the full conversation, including outside the visible history window. */
+	readonly runningShells?: readonly ToolEntry[];
+	/** Processes attributed to the active chat; runtime-only, local editor metadata. */
+	readonly agentProcesses?: AgentProcessSnapshot;
 	/**
 	 * The tab in front's messages not in the conversation yet, in order: sent
 	 * during a turn and not yet taken in by Claude Code (`steer`), or held to be
@@ -826,10 +833,11 @@ export interface ChatViewState {
 	readonly workdir: WorkdirState;
 	/**
 	 * The tab in front's agent's plan, as far as it is known: the limit closest
-	 * to running out (its percentage colours the `U` button) and whether the
-	 * agent spends credits now. Absent until a figure has come in.
+	 * to running out and whether the agent spends credits now. The windows
+	 * supply the button's weekly figure and short session ring independently.
+	 * Absent until a figure has come in.
 	 */
-	readonly usage?: { readonly percent: number; readonly label: string; readonly usingCredits: boolean };
+	readonly usage?: { readonly percent: number; readonly label: string; readonly usingCredits: boolean; readonly windows?: readonly UsageWindow[] };
 	/** The line above the chat, while there is one to show. */
 	readonly usageAlert?: UsageAlert;
 }
@@ -931,7 +939,26 @@ export interface PastedAttachment {
 	readonly filePath?: string;
 }
 
+/** Runtime-only process metadata for the local editor; never part of conversation entries. */
+export interface AgentProcessEntry {
+	readonly chatId: string;
+	readonly id: string;
+	readonly pid: number;
+	readonly command: string;
+	readonly source: string;
+	readonly startedAt: number;
+	readonly detached: boolean;
+	readonly attribution: 'environment' | 'ancestry';
+}
+export interface AgentProcessSnapshot {
+	readonly supported: boolean;
+	readonly processes: readonly AgentProcessEntry[];
+	readonly unavailable?: boolean;
+	readonly truncated?: boolean;
+}
+
 export type HostToView =
+	| { readonly type: 'agentProcesses'; readonly chatId: string; readonly snapshot: AgentProcessSnapshot }
 	| { readonly type: 'pastedAttachments'; readonly request: string; readonly chatId: string; readonly results: readonly { readonly token: string; readonly id?: string }[] }
 	| { readonly type: 'pastedFileResult'; readonly id: string; readonly error?: string }
 	| { readonly type: 'temporaryStorage'; readonly storage?: TemporaryStorage; readonly error?: string }
@@ -1012,6 +1039,9 @@ export type HostToView =
 	| { readonly type: 'voice'; readonly event: VoiceEvent };
 
 export type ViewToHost =
+	| { readonly type: 'stopAgentProcess'; readonly chatId: string; readonly id: string }
+	| { readonly type: 'connectChat'; readonly chatId: string; readonly targetChatId?: string }
+	| { readonly type: 'disconnectChat'; readonly chatId: string; readonly targetChatId: string }
 	| { readonly type: 'connectExchange'; readonly url: string; readonly pointId: string; readonly key?: string; readonly password?: string }
 	| { readonly type: 'disconnectExchange' }
 	| { readonly type: 'setExchangeKeepAwake'; readonly minutes: number }
@@ -1093,7 +1123,7 @@ export type ViewToHost =
 	/** The GitHub tab opens a pull request for `folder`'s current branch against the default branch. */
 	| { readonly type: 'githubCreatePr'; readonly folder: string; readonly title: string; readonly draft?: boolean }
 	/** The Access tab: take a browser tab for this chat, or make it free for everyone. */
-	| { readonly type: 'tabAccess'; readonly tabId: string; readonly take: boolean }
+	| { readonly type: 'tabAccess'; readonly tabId: string; readonly take: boolean; readonly reveal?: boolean }
 	| { readonly type: 'newChat'; readonly location?: 'here' | 'tab' | 'window' }
 	| { readonly type: 'newTab'; readonly location?: 'here' | 'tab' | 'window' }
 	| { readonly type: 'placeTab'; readonly id: string; readonly target: string; readonly after: boolean }
@@ -1140,6 +1170,8 @@ export type ViewToHost =
 	| { readonly type: 'copy'; readonly text: string }
 	/** A new terminal tab in the folder of the conversation in front; `agent` starts that agent's own CLI instead of a shell. */
 	/** `pinTo`: a conversation tab id — the terminal is created in the background and pinned to it, and the view stays where it is. */
+	/** View captured output of an existing command in a read-only VS Code terminal. */
+	| { readonly type: 'showShellOutput'; readonly chatId: string; readonly id: string }
 	| { readonly type: 'newTerminal'; readonly agent?: AgentId; readonly pinTo?: string }
 	/** Pin (or unpin) a terminal to a conversation: the agent of that conversation may then read and type into it. */
 	| { readonly type: 'pinTerminal'; readonly id: string; readonly tabId: string; readonly pinned: boolean; readonly mode?: 'watch' | 'control' }

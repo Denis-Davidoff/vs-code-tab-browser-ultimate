@@ -29,6 +29,13 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 - $(location) **Page markers** — pin notes to page elements and send them to the agent as one prompt.
 - $(settings-gear) **Chat Settings** — use the gear at the top to edit prompts for commit messages, branch names and chat titles, or clean up temporary files.
 
+## 0.9.16 — 2026-11-02
+
+- **Bash tab** — the History tab is now **Conversation**, and a new **Bash** tab (Alt+B) lists every shell command the agents ran, with running ones on top. Open a command's output in the chat or follow it in a read-only VS Code terminal.
+- **Process monitoring** — experimental: processes started by a chat's agents are listed under Bash, and can be stopped there.
+- **Smarter lists while typing** — Enter continues `-`, `1.`, `1)` and `a.` lists, and Tab nests them. A line typed with a leading space, or a bare `1` or `a` with no `.` or `)`, stays plain text.
+- **Fixes** — the Bash tab keeps clicks and focus while a command is producing output. Hovering over Send no longer closes the "/" palette or other popups. The usage button turns red while credits are being spent.
+
 ## 0.9.15 — 2026-10-31
 
 - **More detail in message history** — the composer's History tab lists attachments, generated images, visualizations and other content beneath each message. Click to reveal them in the chat.

@@ -16,7 +16,9 @@ import * as toolbarText from './toolbarText.ts';
 import * as notifyText from '../core/notifyText.ts';
 import * as visualizationProtocol from './visualizationProtocol.ts';
 import * as visualizationStore from './visualizationStore.ts';
+import * as messageFiles from './messageFiles.ts';
 import * as mcpProtocol from '../mcp/mcpProtocol.ts';
+import * as chatFeatures from './core/chatFeatures.ts';
 import type { AgentEvent } from './agentProtocol.ts';
 import type { TabHost, StoredChat } from './chatTab.ts';
 
@@ -24,7 +26,7 @@ const nativeRequire = createRequire(path.resolve('package.json'));
 function load<T>(file: string, dependencies: Record<string, unknown>): T {
 	const exports = {};
 	runInNewContext(transpileModule(readFileSync(file, 'utf8'), { compilerOptions: { module: ModuleKind.CommonJS, target: ScriptTarget.ES2022 } }).outputText, {
-		exports, process, Buffer, setTimeout, clearTimeout, require: (name: string) => dependencies[name] ?? nativeRequire(name),
+		exports, process, Buffer, setTimeout, clearTimeout, require: (name: string) => dependencies[name] ?? (name === '../chat/core/chatFeatures' ? chatFeatures : nativeRequire(name)),
 	});
 	return exports as T;
 }
@@ -33,6 +35,7 @@ const { ChatTab, newChat, settled } = load<typeof import('./chatTab.ts')>('src/c
 	'./attachmentReferences': attachmentReferences, './terminalPins': terminalPins, './toolbarText': toolbarText,
 	'../core/notifyText': notifyText, '../core/uuid': { generateUuid: randomUUID },
 	'./visualizationProtocol': visualizationProtocol, './visualizationStore': visualizationStore,
+	'./messageFiles': messageFiles,
 });
 
 async function fixture(run: (tab: InstanceType<typeof ChatTab>, host: TabHost, file: string) => Promise<void>, agent: StoredChat['agent'] = 'codex') {

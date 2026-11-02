@@ -98,6 +98,7 @@ test('closing a previous surface keeps shared backends until the last moved chat
 	let backendDisposals = 0, runDisposals = 0, tabCloses = 0;
 	const services = { views: new Set<unknown>(), panels: { forget() {} }, sessions: { dispose() {} } };
 	const surface = () => ({ _windows: new Set(), _pendingPanels: new Map(), _titleRequests: new Map(), _branchNameRequests: new Map(), _gitCommits: new Map(),
+		_shellOutputViews: new Map(),
 		_stateSurfaces: { dispose() {} }, _publishSessions() {}, _terminals: { dispose() {}, tabs: [] }, _terminalGone() {}, _saveTerminals() {},
 		_sleep: { dispose() {} }, _draftRequests: new Map(), _livePages: new Map(), _voiceCancel() {}, _detachedChat: {}, _panelIdentity: {}, _saveTabs() {}, _services: services,
 		_runs: { dispose() { runDisposals++; } }, _registry: { dispose() { backendDisposals++; } },
@@ -340,14 +341,16 @@ test('a conversation owned by a terminal cannot be reopened in chat', () => {
 });
 
 
-test('Chrome open attaches the returned new tab instead of pages discovered while connecting', async () => {
+test('Chrome open pins the returned new tab instead of pages discovered while connecting', async () => {
 	const oldPage = { url: 'https://private.test' }, newPage = { url: 'about:blank' };
 	const chat = { attachments: [] as any[] }, otherChat = { attachments: [] as any[] };
 	let disposed = false;
+	let pinned: unknown;
 	const host: any = { _active: chat, _tabs: [chat, otherChat], _pendingOpen: { dispose() { disposed = true; } },
 		_awaitOpenedPage() { assert.fail('Chrome must not attach the first discovered page'); },
 		_pageAttachment(page: unknown) { return { page, chip: { id: 'attachment' } }; },
 		_trackLivePage(_id: string, page: unknown) { assert.equal(page, newPage); }, _post() {},
+		_pinCurrentBrowser(target: unknown, page: unknown) { assert.equal(target, chat); pinned = page; },
 	};
 	const open = method('_openBrowser', {
 		tabSource: { all: [oldPage, newPage] }, generateUuid: () => 'attachment',
@@ -357,7 +360,8 @@ test('Chrome open attaches the returned new tab instead of pages discovered whil
 	});
 	await open.call(host, 'chrome');
 	assert.equal(disposed, true);
-	assert.equal(chat.attachments[0].page, newPage);
+	assert.equal(pinned, newPage);
+	assert.equal(chat.attachments.length, 0);
 	assert.equal(otherChat.attachments.length, 0);
 });
 
@@ -432,6 +436,7 @@ test('waiting for a native tab ignores Chrome pages discovered in the meantime',
 	const chrome = { chrome: true }, native = { chrome: false };
 	const chat = { attachments: [] as any[] };
 	let unsubscribed = false;
+	let pinned: unknown;
 	class Disposable {
 		private readonly fn: () => void;
 		constructor(fn: () => void) { this.fn = fn; }
@@ -444,6 +449,7 @@ test('waiting for a native tab ignores Chrome pages discovered in the meantime',
 		generateUuid: () => 'attachment',
 	});
 	const host = { _pendingOpen: undefined, _tabs: [chat], _active: chat,
+		_pinCurrentBrowser(target: unknown, page: unknown) { assert.equal(target, chat); pinned = page; },
 		_pageAttachment(page: unknown) { return { page, chip: { id: 'attachment' } }; },
 		_trackLivePage() {}, _post() {},
 	};
@@ -451,5 +457,5 @@ test('waiting for a native tab ignores Chrome pages discovered in the meantime',
 	listener(chrome);
 	assert.equal(chat.attachments.length, 0); assert.equal(unsubscribed, false);
 	listener(native);
-	assert.equal(chat.attachments[0].page, native); assert.equal(unsubscribed, true);
+	assert.equal(pinned, native); assert.equal(chat.attachments.length, 0); assert.equal(unsubscribed, true);
 });

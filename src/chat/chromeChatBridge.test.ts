@@ -33,6 +33,26 @@ const { ChromeChatPairing } = load('chromeChatPairing');
 const { readChromeChatConnection, readChromeChatCommand, chromeChatSnapshot } = load('chromeChatProtocol');
 const { ChatStateSurfaces } = load('chatSurface');
 const attachmentReferences = load('attachmentReferences');
+
+test('local process metadata and Stop never cross Chrome or Exchange boundaries', () => {
+	const snapshot = chromeChatSnapshot({ ...state(), agentProcesses: { supported: true, processes: [{
+		id: 'local-pid', pid: 1234, chatId: 'private-chat', source: 'codex', command: '/private/work/node',
+		startedAt: 1, detached: true, attribution: 'environment',
+	}] } });
+	assert.equal(snapshot.view.agentProcesses, undefined);
+	for (const surface of ['chrome', 'exchange'] as const) {
+		assert.ok(remoteRefusal(surface, 'stopAgentProcess'));
+	}
+});
+
+test('Chrome and Exchange snapshots preserve both usage periods and exhausted values', () => {
+	const usage = { percent: 100, label: 'Weekly limit', usingCredits: false, windows: [
+		{ label: '5-hour limit', usedPercent: 60 }, { label: 'Weekly limit', usedPercent: 100 },
+	] };
+	const snapshot = chromeChatSnapshot({ ...state(), usage });
+	assert.equal(JSON.stringify(snapshot.view.usage), JSON.stringify(usage));
+	assert.equal(snapshot.view.usage.windows[0].usedPercent, 60);
+});
 const extensionId = 'a'.repeat(32);
 const { chromeChatProtocolVersion, chromeChatProtocolHeader, chromeChatVersionHeader, chromeChatCompatibilityError } = load('chromeChatCompatibility');
 
@@ -871,4 +891,16 @@ test('cancelProgress commands remain scoped to the displayed conversation', () =
 	assert.deepEqual(JSON.parse(JSON.stringify(command({ type: 'cancelProgress', chatId: 'own-chat', id: 'job' })?.message)), { type: 'cancelProgress', chatId: 'own-chat', id: 'job' });
 	assert.equal(command({ type: 'cancelProgress', chatId: 'other-chat', id: 'job' }), undefined);
 	assert.equal(command({ type: 'cancelProgress', chatId: 'own-chat', id: '' }), undefined);
+});
+
+
+test('snapshots retain old running shell summaries outside the loaded conversation window', () => {
+	const shell = { kind: 'tool' as const, id: 'old-shell', tool: 'command' as const, name: 'Bash', input: 'npm run dev', status: 'running' as const, startedAt: 1,
+		shell: { taskId: 'native-task', background: true } };
+	const full = { ...state(), runningShells: [shell], entries: [shell, ...Array.from({ length: 30 }, (_, i) => ({ kind: 'user' as const, text: `Question ${i}`, attachments: [] }))] };
+	const snapshot = chromeChatSnapshot(full, undefined, 2);
+	assert.ok(!snapshot.entries.some((e: ChatViewState['entries'][number]) => e.kind === 'tool' && e.id === shell.id));
+	assert.equal(snapshot.view.runningShells?.[0].id, shell.id);
+	assert.equal(snapshot.view.runningShells?.[0].shell?.taskId, 'native-task');
+	assert.equal(snapshot.view.entriesOffset, 29);
 });

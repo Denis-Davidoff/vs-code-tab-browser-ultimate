@@ -1,3 +1,4 @@
+import { agentProcesses } from './agentProcesses';
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -100,8 +101,9 @@ class AcpConnection implements vscode.Disposable {
 		private readonly _onUpdate: (params: Record<string, unknown>) => void,
 		private readonly _onPermission: (id: unknown, params: Record<string, unknown>) => void,
 		private readonly _onExit: (reason: string) => void,
+		extraEnv: Record<string, string> = {},
 	) {
-		this._process = new JsonLineProcess(binary, ['acp'], cwd, processEnv(ownSettings));
+		this._process = new JsonLineProcess(binary, ['acp'], cwd, { ...processEnv(ownSettings), ...extraEnv });
 		this._process.onMessage(message => this._receive(message));
 		this._process.onExit(reason => {
 			this._closed = true;
@@ -190,8 +192,9 @@ async function connect(
 	onUpdate: (params: Record<string, unknown>) => void,
 	onPermission: (id: unknown, params: Record<string, unknown>) => void,
 	onExit: (reason: string) => void,
+	extraEnv: Record<string, string> = {},
 ): Promise<AcpConnection> {
-	const connection = new AcpConnection(binary, cwd, ownSettings, onUpdate, onPermission, onExit);
+	const connection = new AcpConnection(binary, cwd, ownSettings, onUpdate, onPermission, onExit, extraEnv);
 	try {
 		await connection.request('initialize', {
 			protocolVersion: 1,
@@ -304,7 +307,7 @@ export class OpencodeBackend implements AgentBackend {
 
 	public openSession(cwd: string, resume?: string, _priorCostUsd?: number, root?: string, _readDirs?: readonly string[], ownSettings = true, chatId?: string): AgentSession {
 		const browserServer = () => { const server = this._browserServer(); return server ? { ...server, chatId } : undefined; };
-		const session = new OpencodeSession(this._binary, cwd, root, resume, ownSettings, browserServer, () => this._sessions.delete(session));
+		const session = new OpencodeSession(this._binary, cwd, root, resume, ownSettings, browserServer, () => this._sessions.delete(session), chatId);
 		this._sessions.add(session);
 		return session;
 	}
@@ -364,6 +367,7 @@ class OpencodeSession implements AgentSession {
 		private readonly _ownSettings: boolean,
 		private readonly _browserServer: () => BrowserServer | undefined,
 		private readonly _onDispose: () => void,
+		private readonly _chatId?: string,
 	) {
 		this._sessionId = resume;
 	}
@@ -445,6 +449,7 @@ class OpencodeSession implements AgentSession {
 				params => { if (this._generation === generation) { this._update(params); } },
 				(id, params) => { if (this._generation === generation) { this._ask(id, params); } },
 				reason => { if (this._generation === generation) { this._processEnded(reason); } },
+				agentProcesses.environment(this._chatId, 'opencode'),
 			);
 			if (this._disposed || this._generation !== generation) {
 				connection.dispose();

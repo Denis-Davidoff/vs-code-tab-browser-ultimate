@@ -105,6 +105,8 @@ For limits, settings and technical details, see [CLAUDE.md](CLAUDE.md#browser-vi
 
 ## 📝 Changelog
 
+**0.9.16** — Linked chats let one conversation read another, add attributed notes and manage worker chats. The composer's History tab is renamed Conversation. A new Bash tab lists the agents' shell commands, with their output available in the chat or in a read-only terminal, plus experimental process monitoring. While composing, lists continue with Enter and nest with Tab; a line typed with a leading space, or a bare `1` or `a`, stays plain text. Fixes: the Bash tab keeps clicks and focus while a command produces output, hovering over Send no longer closes other popups, and the usage button turns red while credits are being spent.
+
 **0.9.15** — The composer's History tab lists each message's attachments, generated content and changed files, with links back to the chat or recorded diffs. Background agents appear by name beneath a finished reply, with links to their cards. Connection options now include OpenCode, Pi, OpenRouter and other MCP clients. The message counter updates as you scroll through replies, and inline cards use less space.
 
 **0.9.14** — Create and manage chats, browse history, control agents and use terminal tabs directly from paired local Chrome. In VS Code, **Chat Settings → Connections & permissions** lets you restrict Chrome and Exchange separately, including project file access and terminal controls. Files and folders attached from Chrome now show their draft badges there. An internal session-state prototype adds snapshots and ordered replay for future architecture work; it is not a standalone session server.

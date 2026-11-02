@@ -6,6 +6,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import * as vscode from 'vscode';
 import { LineSplitter, parseLine } from './agentProtocol';
+import { agentProcesses, processOwnerVariable } from './agentProcesses';
 
 /**
  * A CLI that speaks one JSON object per line over stdin and stdout.
@@ -50,6 +51,7 @@ export class JsonLineProcess implements vscode.Disposable {
 	private _exited = false;
 	/** A kill of ours is not a failure, whatever exit code the platform reports for it. */
 	private _killed = false;
+	private readonly _processWatch: { dispose(): void } | undefined;
 
 	private readonly _onMessage = new vscode.EventEmitter<Record<string, unknown>>();
 	public readonly onMessage = this._onMessage.event;
@@ -65,6 +67,7 @@ export class JsonLineProcess implements vscode.Disposable {
 		delete env.CLAUDE_CODE_ENTRYPOINT;
 
 		this._child = spawn(binary, [...args], { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+		this._processWatch = this._child.pid ? agentProcesses.register(this._child.pid, extraEnv[processOwnerVariable]) : undefined;
 		this._child.stdout.setEncoding('utf8');
 		this._child.stderr.setEncoding('utf8');
 		this._child.stdin.on('error', () => { /* EPIPE after an exit; reported through `onExit` */ });
@@ -73,6 +76,7 @@ export class JsonLineProcess implements vscode.Disposable {
 			for (const line of this._lines.push(chunk)) {
 				const message = parseLine(line);
 				if (message) {
+					if (message.method === 'item/started' || message.method === 'item/completed' || message.type === 'assistant' || message.type === 'result') { agentProcesses.commandChanged(); }
 					this._onMessage.fire(message);
 				}
 			}
@@ -140,6 +144,7 @@ export class JsonLineProcess implements vscode.Disposable {
 			return;
 		}
 		this._exited = true;
+		this._processWatch?.dispose();
 		JsonLineProcess._stopping.delete(this);
 		this._onExit.fire(reason);
 		this._onExit.dispose();

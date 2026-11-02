@@ -1,6 +1,7 @@
 /** Full chat startup under the parent-hiding preload used by VS Code/VSCodium. */
 import { checkRichCards } from './richSmoke';
 import { checkArtifactCards } from './artifactSmoke';
+import { checkComposerControls } from './composerControlsSmoke';
 import type { ViewToHost } from '../src/chat/chatProtocol';
 import type { ChatViewState } from '../src/chat/chatProtocol';
 
@@ -62,10 +63,10 @@ window.addEventListener('message', event => {
 			setTimeout(async () => {
 				if (image !== document.querySelector('.image-card img')) { fail('Streaming replaced the native image card.'); return; }
 				if (!document.body.textContent?.includes('Second host snapshot works')) { fail('Subsequent host snapshot was lost.'); return; }
-				try { await checkArtifactCards(frame, state, received); await checkRichCards(frame, state, received); } catch (error) { fail(error instanceof Error ? error.message : String(error)); return; }
+                                try { await checkArtifactCards(frame, state, received); await checkRichCards(frame, state, received); await checkComposerControls(frame, state, received); } catch (error) { fail(error instanceof Error ? error.message : String(error)); return; }
 				if (!finished) { finished = true; output.textContent = 'PASS: full chat bootstrap, hidden parent, host snapshots, child rejection'; }
 			}, 100);
 		}, 150);
 	}, 200);
 });
-setTimeout(() => fail('Full chat bootstrap timed out.'), 5000);
+setTimeout(() => fail('Full chat bootstrap timed out.'), 10000);

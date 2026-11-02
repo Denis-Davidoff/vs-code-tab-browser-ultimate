@@ -34,6 +34,8 @@ class EventEmitter<T> {
 const vscode = { EventEmitter, l10n: { t: (text: string) => text } };
 const protocol = load<typeof import('../chat/agentProtocol.ts')>('src/chat/agentProtocol.ts');
 const { CodexBackend } = load<typeof import('../chat/codexAgent.ts')>('src/chat/codexAgent.ts', {
+	'./codexShells': load('src/chat/codexShells.ts'),
+	'./agentProcesses': { agentProcesses: { environment: () => ({}) }, processOwnerVariable: 'AI_BROWSER_PROCESS_OWNER' },
 	vscode, './agentProtocol': protocol, './agentProcess': { JsonLineProcess: { stopped: async () => undefined } }, './autoTitle': { requestTitle: async () => undefined },
 	'./commitMessage': { requestCommitMessage: async () => 'test commit' },
 	'../core/safeFiles': { privateTempDirectory: async () => '/unused-test-runtime' },
@@ -43,6 +45,7 @@ const { ChatTab, newChat } = load<typeof import('../chat/chatTab.ts')>('src/chat
 	vscode, './agentProtocol': protocol, './agents': { agentNames: { codex: 'Codex' } },
 	'../core/uuid': { generateUuid: () => 'test-chat' }, './toolbarText': {},
 	'./attachmentReferences': load('src/chat/attachmentReferences.ts'),
+	'./messageFiles': load('src/chat/messageFiles.ts'),
 	'./visualizationProtocol': load('src/chat/visualizationProtocol.ts'), './visualizationStore': load('src/chat/visualizationStore.ts'),
 	'../core/notifyText': load('src/core/notifyText.ts'), './terminalPins': load('src/chat/terminalPins.ts'),
 });
@@ -209,6 +212,7 @@ test('a prompt Claude Code refuses as too long goes again after 5, 15 and 30 s, 
 		'./agentProtocol': protocol, './agents': { agentNames: { claude: 'Claude Code' } },
 		'../core/uuid': { generateUuid: () => 'test-chat' }, './toolbarText': {},
 		'./attachmentReferences': load('src/chat/attachmentReferences.ts'),
+		'./messageFiles': load('src/chat/messageFiles.ts'),
 		'./visualizationProtocol': load('src/chat/visualizationProtocol.ts'), './visualizationStore': load('src/chat/visualizationStore.ts'),
 		'../core/notifyText': load('src/core/notifyText.ts'), './terminalPins': load('src/chat/terminalPins.ts'),
 	}, fake);
@@ -260,6 +264,7 @@ function retryHarness() {
 		'./agentProtocol': protocol, './agents': { agentNames: { claude: 'Claude Code' } },
 		'../core/uuid': { generateUuid: () => 'test-chat' }, './toolbarText': {},
 		'./attachmentReferences': load('src/chat/attachmentReferences.ts'),
+		'./messageFiles': load('src/chat/messageFiles.ts'),
 		'./visualizationProtocol': load('src/chat/visualizationProtocol.ts'), './visualizationStore': load('src/chat/visualizationStore.ts'),
 		'../core/notifyText': load('src/core/notifyText.ts'), './terminalPins': load('src/chat/terminalPins.ts'),
 	}, fake);
@@ -326,4 +331,33 @@ test('Codex handoff refuses shutdown while another session works, then releases 
 	assert.equal(stopped, true);
 	all.clear();
 	backend.dispose();
+});
+
+test('shared Codex backend routes shell processes only to their owning chat, including child agents', () => {
+	const backend = new CodexBackend('unused', () => '/tmp');
+	const a = backend.openSession('/same-project') as SessionUnderTest;
+	const b = backend.openSession('/same-project') as SessionUnderTest;
+	const eventsA: AgentEvent[] = [], eventsB: AgentEvent[] = [];
+	a.onEvent(e => eventsA.push(e)); b.onEvent(e => eventsB.push(e));
+	const bind = Reflect.get(backend, 'bind') as (threadId: string, session: AgentSession) => void;
+	const bindAgent = Reflect.get(backend, 'bindAgent') as (threadId: string, session: AgentSession) => void;
+	bind.call(backend, 'chat-a-thread', a);
+	bind.call(backend, 'chat-b-thread', b);
+	bindAgent.call(backend, 'child-a-thread', a);
+	const receive = (threadId: string, method: string, params: Record<string, unknown>) => Reflect.get(backend, '_receive').call(backend, { method, params: { ...params, threadId } });
+	const command = (id: string) => ({ type: 'commandExecution', id, command: 'npm run dev', source: 'unifiedExecStartup', processId: 'same-session-id', status: 'inProgress' });
+	try {
+		receive('chat-a-thread', 'item/started', { item: command('a-command') });
+		assert.equal(eventsB.length, 0);
+		receive('chat-b-thread', 'item/started', { item: command('b-command') });
+		receive('child-a-thread', 'item/started', { item: command('a-child-command') });
+		receive('chat-a-thread', 'item/commandExecution/outputDelta', { itemId: 'a-command', delta: 'Only A\n' });
+		receive('unknown-thread', 'item/started', { item: command('unrelated') });
+		assert.deepEqual(eventsA.filter(e => e.type === 'tool').map(e => e.id), ['a-command', 'a-child-command']);
+		assert.deepEqual(eventsB.filter(e => e.type === 'tool').map(e => e.id), ['b-command']);
+		assert.ok(eventsA.some(e => e.type === 'toolUpdate' && e.update.output === 'Only A\n'));
+		assert.ok(!eventsB.some(e => e.type === 'toolUpdate'));
+		a.processEnded('A ended');
+		assert.ok(!eventsB.some(e => e.type === 'toolUpdate'), 'ending one chat must leave the other chat running');
+	} finally { a.dispose(); b.dispose(); backend.dispose(); }
 });

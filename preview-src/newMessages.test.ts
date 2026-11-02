@@ -113,6 +113,37 @@ test('switching chats resets the read watermark', () => {
 	assert.equal(view.classes.has('fresh'), false);
 });
 
+test('old messages less than a screen below do not show the badge', () => {
+	const view = setup();
+	view.thread.scrollTop = 2400;
+	view.scroll();
+	assert.equal(view.badge.hidden, true);
+	view.thread.scrollTop = 2000;
+	view.scroll();
+	assert.equal(view.badge.hidden, false);
+	assert.equal(view.badge.textContent, 'Scroll to bottom');
+	view.thread.scrollTop = 2500;
+	view.scroll();
+	assert.equal(view.badge.hidden, true);
+});
+
+test('unseen messages below show the badge even within one screen of the end', () => {
+	const view = setup();
+	view.thread.scrollTop = 2400;
+	view.setBelow(2);
+	view.context.state.messageCount = 102;
+	view.scroll();
+	assert.equal(view.badge.hidden, false);
+	assert.equal(view.badge.textContent, '2 new messages');
+	view.thread.scrollTop = 2500;
+	view.setBelow(0);
+	view.scroll();
+	view.thread.scrollTop = 2400;
+	view.setBelow(2);
+	view.scroll();
+	assert.equal(view.badge.hidden, true, 'already reached messages must not become new again');
+});
+
 const source = readFileSync('preview-src/chat.ts', 'utf8');
 const code = source.match(/function messageCount\([\s\S]*?\n\}/)![0];
 const count = runInNewContext(transpileModule(`${code}\nmessageCount;`, { compilerOptions: { target: ScriptTarget.ES2022 } }).outputText);

@@ -33,6 +33,16 @@ export async function checkRichCards(frame: HTMLIFrameElement, state: ChatViewSt
 	assert(doc.querySelectorAll('.rich-notice').length === 3 && doc.querySelector('.notice-error[role="alert"]'), 'Notification levels or alert semantics are missing.');
 	assert(doc.querySelector('.notice-warning time')?.getAttribute('datetime') === new Date(1_700_000_000_001).toISOString(), 'Notification timestamp was not preserved.');
 	assert(doc.querySelector('.notice-warning .rich-reason')?.textContent === 'A concrete cause', 'Notification lost its reason.');
+	for (const notice of doc.querySelectorAll<HTMLElement>('.rich-notice')) {
+		const text = notice.querySelector<HTMLElement>('.rich-text')!.getBoundingClientRect();
+		const time = notice.querySelector('time')!.getBoundingClientRect();
+		const card = notice.getBoundingClientRect();
+		assert(time.top >= text.bottom && Math.abs(time.right - text.right) < 1, 'Notification time must sit below the text at the right edge.');
+		const style = frame.contentWindow!.getComputedStyle(notice);
+		assert(style.padding === '12px' && Math.abs(card.right - text.right - 12 - parseFloat(style.borderRightWidth)) < 1 && Math.abs(text.left - card.left - 12 - parseFloat(style.borderLeftWidth)) < 1, 'Notification time changed the text padding or width.');
+		const controls = notice.querySelector<HTMLElement>('.rich-actions')!;
+		if (!controls.hidden) { assert(controls.getBoundingClientRect().right <= time.left, 'Notification actions overlap the timestamp.'); }
+	}
 	const notificationButtons = doc.querySelectorAll<HTMLButtonElement>('.notice-warning button');
 	notificationButtons[1].click(); notificationButtons[2].click();
 	await sleep(50);

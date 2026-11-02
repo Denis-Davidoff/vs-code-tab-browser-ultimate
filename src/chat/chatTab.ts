@@ -12,6 +12,7 @@ import * as vscode from 'vscode';
 import { chatTitle, toolOutputLimit, validAnswers, richNotice, richProgress, richPlan, richCitations, richString, resultBlocks, type AgentEvent } from './agentProtocol';
 import { agentNames, type AgentBackend, type AgentSession, type TurnImage, type TurnInput } from './agents';
 import type { AgentId, RepoCopy, RepoReference, ApprovalEntry, ApprovalMode, AttachmentChip, PendingSend, ChatEntry, ChatStats, ChatTabStatus, ToolEntry, UsageWindow } from './chatProtocol';
+import type { OwnedChatState } from './ownedChats';
 import { generateUuid } from '../core/uuid';
 import { plainInPrompt } from '../core/notifyText';
 import { pinAnnouncement, pinSignature, type PinInfo } from './terminalPins';
@@ -43,6 +44,9 @@ const richBlockLimit = 200_000;
 const restartQuietMs = 2_500;
 
 export interface StoredChat {
+	managed?: OwnedChatState;
+	historyCompleteness?: 'full' | 'partial' | 'unknown';
+	linkedNoteReceipts?: Record<string, string>;
 	/** This conversation owns its workflow mode, independent of new-tab defaults. */
 	ultracode?: boolean;
 	id: string;
@@ -94,6 +98,8 @@ export interface Attachment {
 
 /** What a tab needs from the view that holds it. */
 export interface TabHost {
+	managedTaskEnded?(chat: StoredChat): void;
+	linkedChatContext?(chatId: string): string;
 	visualizationArchive?(): string;
 	ultracodeDefault?(): boolean;
 	/** Where the agents work when the conversation picked no folder of its own. */
@@ -130,6 +136,9 @@ export interface TabHost {
 	 * `terminal_*` tools. Absent where terminals do not exist (tests, a surface with none).
 	 */
 	pinnedTerminals?(tab: ChatTab): readonly PinInfo[];
+	/** Current browser bindings, refreshed at send time rather than consumed with the draft. */
+	pinnedBrowserContext?(tab: ChatTab): string | undefined;
+	browserConversationChanged?(previousChatId: string, tab: ChatTab, keepPins: boolean): void;
 	/** The tab let go of its pins: a chat from the history took the conversation's place. */
 	dropPins?(tab: ChatTab): void;
 	/**
@@ -175,7 +184,7 @@ export function approvalKey(entry: { readonly what: string; readonly server?: st
 export function newChat(agent: AgentId, id = generateUuid()): StoredChat {
 	const now = Date.now();
 	return {
-		id, title: 'New chat', agent, createdAt: now, updatedAt: now, entries: [],
+		id, title: 'New chat', agent, createdAt: now, updatedAt: now, entries: [], historyCompleteness: 'full',
 		stats: { inputTokens: 0, outputTokens: 0, cachedTokens: 0, turns: 0 },
 	};
 }
@@ -923,6 +932,7 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 	 * which it can only do while the tab is the same one.
 	 */
 	public start(chat: StoredChat, keepPins = false): void {
+		const previousChatId = this._chat.id;
 		this.close();
 		// A new conversation knows nothing of what the old one was told; and unless asked to keep them
 		// (Clear, "Close this chat, start …"), a chat opened from the history has none of the pins.
@@ -933,6 +943,7 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 		chat.ultracode ??= this._host.ultracodeDefault?.() ?? false;
 		for (const entry of chat.entries) { if ((entry.kind === 'assistant' || entry.kind === 'user') && !entry.id) { Object.assign(entry, { id: generateUuid() }); } }
 		this._chat = chat;
+		this._host.browserConversationChanged?.(previousChatId, this, keepPins);
 		this._unseen = false;
 		this._visualizationStore = undefined;
 		this._visualizationHtml = {};
@@ -1135,8 +1146,9 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 		// it, nothing until `session.send` may yield, or two sends both read the tab idle
 		// and the second replaces the first in `_pending`; and the pin note is taken later.
 		const sendingChat = this._chat;
+		const sendingStopGeneration = this._stopGeneration;
 		const visualizationInstruction = await this._visualizationInstruction();
-		if (this._chat !== sendingChat || this._closed || this._discarded) { return false; }
+		if (this._chat !== sendingChat || this._closed || this._discarded || this._stopGeneration !== sendingStopGeneration) { return false; }
 		new AttachmentReferenceScope().assign(attachments.map(a => a.chip));
 		// A voice message is part of what the user says: what the chat shows and keeps is the
 		// transcript; what the agent reads is it said to be one; the rest stay attachments.
@@ -1164,6 +1176,8 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 				attachmentKinds: attachments.map(a => a.chip.kind),
 				attachmentData: attachments.map(a => ({ chip: { ...a.chip }, text: a.text, file: a.file?.toString(), image: a.image })),
 			} : {}), at: Date.now() };
+		const managedTask = this._chat.managed?.currentTaskId ? this._chat.managed.tasks[this._chat.managed.currentTaskId] : undefined;
+		if (managedTask && (managedTask.state === 'starting' || managedTask.state === 'running')) { managedTask.messageId = entry.id; }
 		// A skill prompt followed by one with a check asks the agent to judge it;
 		// the chat shows the prompt as written, the instruction is ours. The
 		// next prompt is the one queued now, whatever was taken out since.
@@ -1202,7 +1216,7 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 		const sent = asked ? withNextDecision(said, asked) : said;
 		const pinNote = this._takePinNote();
 		const signatureSent = this._pinAnnounced;
-		const prompt = [sent, pinNote, attachmentContext(context), visualizationInstruction].filter(Boolean).join('\n\n');
+		const prompt = [sent, pinNote, this._host.pinnedBrowserContext?.(this), this._host.linkedChatContext?.(this._chat.id), attachmentContext(context), visualizationInstruction].filter(Boolean).join('\n\n');
 		const images = attachments.map(a => a.image).filter((i): i is TurnImage => !!i);
 		pending.resend = { input: { text: prompt, images, ...(agent === 'claude' ? { ultracode } : {}) }, model, effort };
 
@@ -1494,13 +1508,14 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 			case 'tool': {
 				// Codex reports an agent's start again when it is given more work;
 				// that is the same agent, running again, not a second row.
-				const known = event.tool.kind === 'agent' ? this._tool(event.id) : undefined;
+				const known = event.tool.kind === 'agent' || event.tool.kind === 'command' ? this._tool(event.id) : undefined;
 				if (known) {
 					// Background agents can start another turn after the main reply.
-					if (this._session && (this._session.running || event.tool.agent?.background)) {
+					if (event.tool.kind === 'agent' && this._session && (this._session.running || event.tool.agent?.background)) {
 						known.status = 'running';
 						known.endedAt = undefined;
 					}
+					if (event.tool.shell) { known.shell = { ...known.shell, ...event.tool.shell }; }
 					break;
 				}
 				this._endThinking();
@@ -1508,6 +1523,7 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 				chat.entries.push({
 					kind: 'tool', id: event.id, tool: event.tool.kind, name: event.tool.name, detail: event.tool.detail, input: event.tool.input,
 					added: event.tool.added, removed: event.tool.removed, files: event.tool.files, status: 'running', startedAt: Date.now(),
+					shell: event.tool.shell,
 					agent: event.tool.kind === 'agent' ? { ...event.tool.agent, calls: [] } : undefined,
 				});
 				break;
@@ -1571,12 +1587,20 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 				}
 				const u = event.update;
 				if (u.blocks) { this._archiveBlocks(chat, entry, u.blocks); }
-				// A task report about a call that is not an agent — a background
-				// shell, a long Bash call — is not this row's to take.
-				if (u.agent && entry.tool !== 'agent') {
-					return;
+				// Claude reports agent and shell task lifecycles in the same envelope.
+				const shellReport = !!u.agent && entry.tool === 'command' && !!entry.shell;
+				if (u.agent && entry.tool !== 'agent' && !shellReport) { return; }
+				if (u.shell && entry.tool === 'command') {
+					entry.shell = { ...entry.shell, ...definedOnly(u.shell) };
+					if (u.shell.background) { entry.status = 'running'; entry.endedAt = undefined; }
 				}
-				if (u.output !== undefined) {
+				if (shellReport && u.agent?.background) {
+					entry.shell!.background = true;
+					entry.status = 'running'; entry.endedAt = undefined;
+				}
+				if (shellReport && u.status) { entry.shell!.background = false; }
+
+				if (u.output !== undefined && !(shellReport && entry.output)) {
 					entry.output = clipText(u.append ? (entry.output ?? '') + u.output : u.output);
 				}
 				if (u.input !== undefined) {
@@ -1592,10 +1616,11 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 				if (u.exitCode !== undefined) {
 					entry.exitCode = u.exitCode;
 				}
-				if (u.agent) {
+				if (u.agent && !shellReport) {
 					entry.agent = { calls: [], ...entry.agent, ...definedOnly(u.agent) };
 				}
-				if (u.status) {
+				// A native background launch result ends the call, not its process.
+				if (u.status && (!entry.shell?.background || shellReport)) {
 					entry.status = u.status;
 					entry.endedAt = Date.now();
 					if (u.status === 'done' && !entry.files?.length) {
@@ -1764,7 +1789,10 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 					// A background agent outlives the turn that started it, and
 					// ends by its own report — unless the chat is letting go of the
 					// session, which ends the agent with it.
-					if (entry.kind === 'tool' && entry.status === 'running' && (!entry.agent?.background || this._abandoning)) {
+					if (entry.kind === 'tool' && entry.status === 'running' && entry.shell?.provider === 'codex' && !this._abandoning) {
+						entry.shell.background = true;
+					}
+					if (entry.kind === 'tool' && entry.status === 'running' && (!(entry.agent?.background || entry.shell?.background) || this._abandoning)) {
 						entry.status = event.error === 'Stopped.' ? 'stopped' : event.error ? 'failed' : 'done';
 						entry.endedAt = now;
 					}
@@ -1811,6 +1839,12 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 				// After the turn's own error, so the line saying a skill stopped reads
 				// as what followed from it.
 				if (done?.step && !retrying) { this._stepEnded = { done, error: event.error }; }
+				const task = chat.managed?.currentTaskId ? chat.managed.tasks[chat.managed.currentTaskId] : undefined;
+				if (task && !retrying && (task.state === 'starting' || task.state === 'running')) {
+					Object.assign(task, { state: event.interrupted ? 'interrupted' : event.error === 'Stopped.' ? 'cancelled' : event.error ? 'failed' : 'completed', endedAt: now,
+						...(event.error ? { error: event.interrupted ? 'The agent backend was replaced or became unavailable.' : event.error.slice(0, 1000) } : {}) });
+					this._host.managedTaskEnded?.(chat);
+				}
 				chat.updatedAt = now;
 				void this._save();
 				break;
@@ -1960,7 +1994,13 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 		this._failed ||= this.busy;
 		this._abandonRetry();
 		this._flushWaiting();
-		this._endTurnHere();
+		this._endTurnHere(true);
+		// A task waiting for an automatic retry has no active turn to end.
+		const task = this._chat.managed?.currentTaskId ? this._chat.managed.tasks[this._chat.managed.currentTaskId] : undefined;
+		if (task && (task.state === 'starting' || task.state === 'running')) {
+			Object.assign(task, { state: 'interrupted', endedAt: Date.now(), error: 'The agent backend was replaced or became unavailable.' });
+			this._host.managedTaskEnded?.(this._chat);
+		}
 		this._cancelApprovals();
 		this._sessionEvents?.dispose();
 		this._sessionEvents = undefined;
@@ -1985,12 +2025,12 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 	 * The turn's state is read from the chat (`_pending`), not from the
 	 * session, whose `running` a dispose may already have cleared.
 	 */
-	private _endTurnHere(): void {
+	private _endTurnHere(interrupted = false): void {
 		for (const entry of this._chat.entries) { if (entry.kind === 'progress' && entry.status === 'running') { Object.assign(entry, { status: 'cancelled', endedAt: Date.now(), updatedAt: Date.now() }); } }
 		if (this._session?.running || this._pending.length) {
 			this._abandoning = true;
 			try {
-				this._onAgentEvent({ type: 'turnEnd', error: 'Stopped.' });
+				this._onAgentEvent({ type: 'turnEnd', error: 'Stopped.', ...(interrupted ? { interrupted: true } : {}) });
 			} finally {
 				this._abandoning = false;
 			}
@@ -2000,7 +2040,7 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 			const now = Date.now();
 			let ended = false;
 			for (const e of this._chat.entries) {
-				if (e.kind === 'tool' && e.status === 'running' && e.agent?.background) {
+				if (e.kind === 'tool' && e.status === 'running' && (e.agent?.background || e.shell?.background || e.shell?.provider === 'codex')) {
 					e.status = 'stopped';
 					e.endedAt = now;
 					ended = true;

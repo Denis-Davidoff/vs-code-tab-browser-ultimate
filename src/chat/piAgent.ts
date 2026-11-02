@@ -1,3 +1,4 @@
+import { agentProcesses } from './agentProcesses';
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
@@ -202,7 +203,7 @@ export class PiBackend implements AgentBackend {
 
 	public openSession(cwd: string, resume?: string, _priorCostUsd?: number, root?: string, _readDirs?: readonly string[], ownSettings = true, chatId?: string): AgentSession {
 		const server = () => { const s = this._browserServer(); return s ? { ...s, chatId } : undefined; };
-		const session = new PiSession(this._binary, cwd, root, resume, ownSettings, !!this._options.contextFiles, server, () => this._sessions.delete(session));
+		const session = new PiSession(this._binary, cwd, root, resume, ownSettings, !!this._options.contextFiles, server, () => this._sessions.delete(session), chatId);
 		this._sessions.add(session);
 		return session;
 	}
@@ -251,6 +252,7 @@ class PiSession implements AgentSession {
 		private readonly _contextFiles: boolean,
 		private readonly _browserServer: () => BrowserServer | undefined,
 		private readonly _onDispose: () => void,
+		private readonly _chatId?: string,
 	) {
 		this._ref = resume;
 	}
@@ -347,7 +349,7 @@ class PiSession implements AgentSession {
 			PATH: piPath(this._binary),
 			...piMcpEnv(server ? { url: server.url, token: server.token } : undefined, server?.chatId ? chatCapability(server.chatId) : undefined, undefined),
 		};
-		const proc = new JsonLineProcess(this._binary, args, this._cwd, env);
+		const proc = new JsonLineProcess(this._binary, args, this._cwd, { ...env, ...agentProcesses.environment(this._chatId, 'pi') });
 		// Not yet `_rpc`: `dispose` ends it from here, or a window closing mid-start leaves it until its handshake times out.
 		this._starting_proc = proc;
 		const rpc = new PiRpc(proc, message => this._message(rpc, message), reason => this._processEnded(rpc, reason));

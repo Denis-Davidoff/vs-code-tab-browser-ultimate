@@ -3,20 +3,21 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { createSourceFile, isClassDeclaration, isMethodDeclaration, ScriptTarget, transpileModule } from 'typescript';
-import { codexAgentThreadEvents } from './agentProtocol.ts';
+import { codexAgentThreadEvents, codexEvents } from './agentProtocol.ts';
+import { CodexShells } from './codexShells.ts';
 
 function fixture(request: (method: string, params: any) => Promise<unknown>) {
   const source = readFileSync('src/chat/codexAgent.ts', 'utf8');
   const ast = createSourceFile('codexAgent.ts', source, ScriptTarget.ES2022, true);
   const session = ast.statements.find(node => isClassDeclaration(node) && node.name?.text === 'CodexSession');
   assert.ok(session && isClassDeclaration(session));
-  const names = new Set(['emit', 'notifyAgent', '_watchAgentHealth', '_checkAgent', 'stopAgent']);
+  const names = new Set(['emit', 'notify', 'notifyAgent', 'processEnded', '_watchAgentHealth', '_checkAgent', 'stopAgent']);
   const methods = session.members.filter(node => isMethodDeclaration(node) && names.has(node.name.getText(ast))).map(node => node.getText(ast));
   const Session = runInNewContext(transpileModule(`class Session { ${methods.join('\n')} }; Session;`, { compilerOptions: { target: ScriptTarget.ES2022 } }).outputText, {
     codexAgentThreadEvents, setInterval: () => 1, clearInterval() {}, vscode: { l10n: { t: (s: string) => s } },
   });
   const instance = new Session(), events: any[] = [];
-  Object.assign(instance, { _backend: { request }, _agentActivity: new Map(), _agentTurns: new Map(), _backgroundAgents: new Set(), _onEvent: { fire: (event: unknown) => events.push(event) }, _noteChanges() {}, _watchAgent() {} });
+  Object.assign(instance, { _backend: { request }, _agentActivity: new Map(), _agentTurns: new Map(), _backgroundAgents: new Set(), _shellCommands: new Set(), _shells: new CodexShells(codexEvents), _onEvent: { fire: (event: unknown) => events.push(event) }, _noteChanges() {}, _watchAgent() {}, _releaseTurnWaiters() {} });
   instance.emit({ type: 'tool', id: 'row-child', tool: { kind: 'agent', agent: { threadId: 'child-thread', background: true } } });
   return { instance, events };
 }
@@ -87,3 +88,24 @@ for (const [kind, status] of [['completed', 'done'], ['interrupted', 'stopped']]
     assert.ok(!f.instance._backgroundAgents.has('nested-thread'));
   });
 }
+
+test('Codex process exit settles background commands even when the parent turn is already idle', () => {
+  const f = fixture(async () => ({}));
+  f.instance.notify('item/started', { threadId: 'root', item: { type: 'commandExecution', id: 'server', command: 'npm run dev', source: 'unifiedExecStartup', processId: '6761' } });
+  f.instance.notify('turn/completed', { turn: { status: 'completed' } });
+  assert.ok(f.instance._shellCommands.has('server'));
+  f.instance.processEnded('App server exited');
+  const shell = [...f.events].reverse().find(e => e.id === 'server');
+  assert.equal(shell.update.status, 'failed');
+  assert.equal(shell.update.shell.background, false);
+  assert.equal(f.instance._shellCommands.size, 0);
+});
+
+test('commands of a child agent reach Bash without becoming another agent', () => {
+  const f = fixture(async () => ({}));
+  f.instance.notifyAgent('child-thread', 'item/started', { item: { type: 'commandExecution', id: 'server', command: 'npm run dev', source: 'unifiedExecStartup', processId: '6761' } });
+  assert.ok(f.events.some(e => e.type === 'tool' && e.id === 'server' && e.tool.kind === 'command'));
+  assert.ok(f.events.some(e => e.type === 'agentCall' && e.parentId === 'child-thread'));
+  assert.ok(f.instance._shellCommands.has('server'));
+  assert.equal(f.instance._backgroundAgents.size, 1, 'only the existing child is an agent');
+});

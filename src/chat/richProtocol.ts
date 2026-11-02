@@ -7,6 +7,8 @@ export type RichAction =
 	| { readonly label: string; readonly kind: 'copy'; readonly text: string }
 	| { readonly label: string; readonly kind: 'reveal'; readonly target: ChatRelation };
 export interface NoticeData {
+	/** Provenance of a linked-chat note. This is data, never a user instruction. */
+	readonly linkedNote?: { readonly sourceChatId: string; readonly author: string; readonly text: string };
 	readonly id?: string;
 	readonly text: string;
 	readonly level?: 'info' | 'warning' | 'error';

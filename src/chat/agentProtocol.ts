@@ -528,6 +528,7 @@ export function codexUsage(response: unknown, plan?: string, named?: boolean): A
 
 /** A tool call as the chat renders it, whichever agent made it. */
 export interface ToolStart {
+	readonly shell?: { provider?: 'codex'; processId?: string };
 	readonly files?: readonly ChangedFile[];
 	readonly kind: ToolKind;
 	/** The tool's own name: `Bash`, `Read`, `Terminal`, `ai-browser · browser_click`. */
@@ -542,6 +543,7 @@ export interface ToolStart {
 }
 
 export interface ToolUpdate {
+	readonly shell?: { taskId?: string; background?: boolean; provider?: 'codex'; processId?: string };
 	readonly files?: readonly ChangedFile[];
 	readonly blocks?: readonly ResultBlock[];
 	readonly output?: string;
@@ -571,7 +573,7 @@ export type AgentEvent =
 	/** Claude Code began a turn of its own — an agent it started has finished, and it is answering that. */
 	| { readonly type: 'autoTurn' }
 	| { readonly type: 'session'; readonly id: string }
-	| { readonly type: 'turnEnd'; readonly error?: string; readonly tooLong?: boolean }
+	| { readonly type: 'turnEnd'; readonly error?: string; readonly tooLong?: boolean; readonly interrupted?: boolean }
 	/** `models`: the models that actually answered the turn, when they are not the one picked (Gemini's Auto). */
 	| { readonly type: 'tokens'; readonly input: number; readonly output: number; readonly cached: number; readonly costUsd?: number; readonly cumulative: boolean; readonly models?: readonly string[] }
 	| { readonly type: 'limits'; readonly windows: readonly UsageWindow[]; readonly usingCredits?: boolean }
@@ -922,18 +924,18 @@ export function claudeTool(name: string, input: unknown): ToolStart {
  * `tasks` — task id to the call's id, kept from `task_started` by the caller —
  * is how it finds the row. Tasks are not only agents: a background shell and
  * a Bash call running past two seconds are tasks too (`task_type`
- * `local_bash`), so `task_started` reads only the agent types, and the chat
- * applies agent fields to agent rows only. A background agent outlives the turn that started it:
+ * `local_bash`). Shell starts retain separate task metadata; their later
+ * reports update the command lifecycle without creating an agent row. A background agent outlives the turn that started it:
  * its turn's `result` arrives first, and when the agent finishes the CLI
  * begins a turn of its own — `status: requesting` with nothing sent — to
  * answer it.
  */
-/** The task types that are agents; anything else (`local_bash`, …) is not shown as one. */
+/** Shell tasks have their own metadata; these types belong to the Agents list. */
 const agentTaskTypes = new Set(['local_agent', 'remote_agent', 'local_workflow']);
 
 function claudeTaskEvents(message: Record<string, unknown>, tasks?: Map<string, string>): AgentEvent[] {
-	const id = typeof message.tool_use_id === 'string' ? message.tool_use_id : undefined;
 	const taskId = typeof message.task_id === 'string' ? message.task_id : undefined;
+	const id = typeof message.tool_use_id === 'string' ? message.tool_use_id : taskId ? tasks?.get(taskId) : undefined;
 	const usage = isRecord(message.usage) ? message.usage : undefined;
 	const counts = usage ? {
 		tokens: typeof usage.total_tokens === 'number' ? usage.total_tokens : undefined,
@@ -944,6 +946,11 @@ function claudeTaskEvents(message: Record<string, unknown>, tasks?: Map<string, 
 		case 'status':
 			return message.status === 'requesting' ? [{ type: 'autoTurn' }] : [];
 		case 'task_started':
+			if (message.task_type === 'local_bash') {
+				if (!id) { return []; }
+				if (taskId) { tasks?.set(taskId, id); }
+				return [{ type: 'toolUpdate', id, update: { shell: { taskId, background: message.is_backgrounded === true } } }];
+			}
 			if (typeof message.task_type === 'string' && !agentTaskTypes.has(message.task_type)) {
 				return [];
 			}
@@ -1084,6 +1091,10 @@ export function codexEvents(method: string, params: unknown): AgentEvent[] {
 		case 'item/commandExecution/outputDelta':
 			return typeof p.itemId === 'string' && typeof p.delta === 'string'
 				? [{ type: 'toolUpdate', id: p.itemId, update: { output: p.delta, append: true } }]
+				: [];
+		case 'item/commandExecution/terminalInteraction':
+			return typeof p.itemId === 'string' && typeof p.processId === 'string'
+				? [{ type: 'toolUpdate', id: p.itemId, update: { shell: { provider: 'codex', processId: p.processId, background: true } } }]
 				: [];
 
 		case 'item/started': {
@@ -1251,7 +1262,8 @@ function codexTool(item: Record<string, unknown>): ToolStart | undefined {
 	switch (item.type) {
 		case 'commandExecution': {
 			const command = unwrapShell(typeof item.command === 'string' ? item.command : '');
-			return { kind: 'command', name: 'Terminal', detail: commandSummary(item.commandActions), input: command };
+			return { kind: 'command', name: 'Terminal', detail: commandSummary(item.commandActions), input: command,
+				shell: { provider: 'codex', ...(typeof item.processId === 'string' ? { processId: item.processId } : {}) } };
 		}
 		case 'fileChange': {
 			const changes = Array.isArray(item.changes) ? item.changes.filter(isRecord) : [];
@@ -1289,12 +1301,15 @@ function codexTool(item: Record<string, unknown>): ToolStart | undefined {
 function codexToolResult(item: Record<string, unknown>): ToolUpdate | undefined {
 	const status = item.status === 'failed' || item.status === 'declined' ? 'failed' as const : 'done' as const;
 	switch (item.type) {
-		case 'commandExecution':
+		case 'commandExecution': {
+			const running = item.status === 'inProgress' || item.source === 'unifiedExecInteraction' && item.status === 'completed' && item.exitCode == null;
 			return {
-				output: clip(typeof item.aggregatedOutput === 'string' ? item.aggregatedOutput : ''),
-				status,
+				...(typeof item.aggregatedOutput === 'string' ? { output: clip(item.aggregatedOutput) } : {}),
+				...(running ? {} : { status }),
+				shell: { provider: 'codex', background: running, ...(typeof item.processId === 'string' ? { processId: item.processId } : {}) },
 				exitCode: typeof item.exitCode === 'number' ? item.exitCode : undefined,
 			};
+		}
 		case 'fileChange': {
 			const changes = Array.isArray(item.changes) ? item.changes.filter(isRecord) : [];
 			return { status, ...diffOf(changes) };
@@ -1812,7 +1827,7 @@ function isBrowserServer(name: string): boolean {
  * the conversations beside it without a card. The names are `chatToolNames`
  * in `src/mcp/chatTools.ts`, written twice since a leaf may not import it.
  */
-export const chatControlTools: ReadonlySet<string> = new Set(['chat_keep_awake', 'chat_pause', 'chat_resume', 'chat_stop_agent']);
+export const chatControlTools: ReadonlySet<string> = new Set(['chat_keep_awake', 'chat_pause', 'chat_resume', 'chat_stop_agent', 'chat_create', 'chat_configure', 'chat_reset_context', 'chat_send_task', 'chat_stop_task']);
 
 /**
  * Our `terminal_*` tools, `terminalInputToolNames` / `terminalReadToolNames` in
@@ -1845,6 +1860,8 @@ const browserServerTools: ReadonlySet<string> = new Set([
 	'editor_context', 'editor_definition', 'editor_references', 'editor_reveal', 'editor_symbols',
 	// The chat's reads, which any token holder may make.
 	'chat_state', 'chat_agents', 'chat_usage', 'chat_present_html', 'chat_present_image', 'chat_present_file', 'chat_present_table', 'chat_present_sources', 'chat_present_audio', 'chat_present_video', 'chat_notify', 'chat_progress', 'chat_update_plan', 'chat_present_json', 'chat_present_result', 'chat_cite',
+	'chat_list', 'chat_get_metadata', 'chat_read_messages', 'chat_search', 'chat_add_note',
+	'chat_list_models', 'chat_get_task',
 ]);
 
 /** The category of one of our own server's tools, and for a terminal tool which kind. */

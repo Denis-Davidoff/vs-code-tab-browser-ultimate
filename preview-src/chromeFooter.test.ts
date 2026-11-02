@@ -5,6 +5,7 @@ import { createContext, runInNewContext } from 'node:vm';
 import { createSourceFile, forEachChild, isBinaryExpression, isFunctionDeclaration, ScriptTarget, transpileModule } from 'typescript';
 import { chromeChatCapabilities, chromeChatCommandFeature, chromeChatFeatureError, chromeChatFooterCommands } from '../src/chat/chromeChatCompatibility.ts';
 import { createRemoteTerminalShim } from './remoteTerminal.ts';
+import { isBackgroundCompletion } from './remoteEvents.ts';
 
 function fixture(events: unknown[] = []) {
   const source = readFileSync('chrome-extension/sidepanel.ts', 'utf8');
@@ -27,7 +28,7 @@ function fixture(events: unknown[] = []) {
   const context = createContext({ latest, active: {}, generation: 1, footerCursor: 0,
     // The real terminal shim (#521): the lifted postMessage hands terminal messages to it first.
     terminals: createRemoteTerminalShim({ viewerId: 'viewer-test', epoch: () => undefined, send: () => false, emit() {}, notice() {}, readAgentFrame: () => undefined, isTerminalReply: () => false, splitData: (d: string) => [d], inputFrameMax: 4096 }),
-    chromeChatCapabilities, chromeChatCommandFeature, chromeChatFeatureError, chromeChatFooterCommands,
+    chromeChatCapabilities, chromeChatCommandFeature, chromeChatFeatureError, chromeChatFooterCommands, isBackgroundCompletion,
     pendingSends: new Set(), annotations: { async poll() {} },
     supported: new Set(Object.values(chromeChatFooterCommands).flat()), passive: new Set(['ready']),
     async persistOutbox() {}, supportsFeature: () => true, bridgeHeaders: () => ({}), AbortSignal,

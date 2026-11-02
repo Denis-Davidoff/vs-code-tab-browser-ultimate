@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { ScriptTarget, transpileModule } from 'typescript';
-import { composerLinks, composerListEdit, composerListStarter } from './composerFormatting.ts';
+import { composerLinks, composerListEdit } from './composerFormatting.ts';
 
 const source = readFileSync('preview-src/chat.ts', 'utf8');
 const lift = (name: string) => new RegExp(`function ${name}\\([\\s\\S]*?\\n\\}`).exec(source)![0];
@@ -21,7 +21,7 @@ function fixture() {
 	let items: any[] = [];
 	const panel = { classList: { contains: () => false } };
 	const context = {
-		input, composerLinks, composerListEdit, composerListStarter, composerLinkPress: undefined, draggedAttachment: undefined,
+		input, composerLinks, composerListEdit, composerLinkPress: undefined, draggedAttachment: undefined,
 		inputMirror: { querySelectorAll: () => [{ dataset: { url: 'https://google.com/' }, getClientRects: () => [{ left: 10, right: 150, top: 10, bottom: 30 }] }] },
 		isMacView: true, modKey: '⌘', navigator: { platform: 'Mac' }, localFileLink: () => undefined,
 		agentsPanel: panel, allAgentsPanel: panel, historyPanel: panel, agentAppsPanel: panel, skillEditor: panel,
@@ -64,14 +64,34 @@ test('real input handlers continue lists without sending; ordinary and modified 
 	assert.equal(f.event('keydown', { key: 'Enter', shiftKey: true }), false);
 });
 
-test('typing the bare starter normalizes it, while composition and Shift+Enter are left to the editor', () => {
+test('typing bare or indented markers leaves the text unchanged and Enter sends normally', () => {
+	for (const value of ['1', '1 ', '1 item', 'a', 'a item', ' 1. item', ' a) item', '\t1) item', 'text\n 1. item']) {
+		const f = fixture();
+		f.value(value); f.event('input');
+		assert.equal(f.input.value, value);
+		assert.equal(f.input.selectionStart, value.length);
+		f.event('keydown', { key: 'Enter' });
+		assert.equal(f.input.value, value);
+		assert.equal(f.sent.length, 1);
+	}
+});
+
+test('explicit numeric and letter delimiters continue lists', () => {
+	for (const [marker, next] of [['1.', '2.'], ['1)', '2)'], ['a.', 'b.'], ['a)', 'b)']]) {
+		const f = fixture();
+		f.value(`${marker} item`); f.event('input');
+		assert.equal(f.event('keydown', { key: 'Enter' }), true);
+		assert.equal(f.input.value, `${marker} item\n${next} `);
+		assert.equal(f.sent.length, 0);
+	}
+});
+
+test('composition and Shift+Enter are left to the editor', () => {
 	const f = fixture();
-	f.value('1 '); f.event('input');
-	assert.equal(f.input.value, '1. ');
-	assert.equal(f.input.selectionStart, 3);
 	f.value('1 '); f.event('input', { isComposing: true });
 	assert.equal(f.input.value, '1 ');
 	assert.equal(f.event('keydown', { key: 'Enter', isComposing: true }), false);
+	assert.equal(f.event('keydown', { key: 'Enter', shiftKey: true }), false);
 	assert.equal(f.sent.length, 0);
 });
 

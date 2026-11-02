@@ -9,7 +9,7 @@ export interface ComposerListItem {
 	readonly prefixLength: number;
 }
 
-/** Bare `1` is a list starter; other bare numbers remain ordinary prose. */
+/** List markers require an explicit delimiter after a number or letter. */
 export function composerListItem(line: string): ComposerListItem | undefined {
 	const letter = /^([ \t]*)([a-zA-Z][.)])([ \t]+)(.*)$/.exec(line);
 	if (letter) {
@@ -17,11 +17,11 @@ export function composerListItem(line: string): ComposerListItem | undefined {
 		return { indent: letter[1], marker: letter[2], number: ch.toLowerCase().charCodeAt(0) - 96, alpha: ch === ch.toLowerCase() ? 'lower' : 'upper',
 			delimiter: letter[2][1], content: letter[4], prefixLength: letter[1].length + letter[2].length + letter[3].length };
 	}
-	const match = /^([ \t]*)([-*+]|\d{1,6}[.)]|1)([ \t]+|$)(.*)$/.exec(line);
+	const match = /^([ \t]*)([-*+]|\d{1,6}[.)])([ \t]+|$)(.*)$/.exec(line);
 	if (!match) { return undefined; }
 	const ordered = /^\d/.test(match[2]);
 	return { indent: match[1], marker: match[2], ...(ordered ? { number: parseInt(match[2], 10) } : {}),
-		delimiter: ordered ? (/[.)]$/.test(match[2]) ? match[2].slice(-1) : '.') : '',
+		delimiter: ordered ? match[2].slice(-1) : '',
 		content: match[4], prefixLength: match[1].length + match[2].length + match[3].length };
 }
 
@@ -52,6 +52,18 @@ function insideComposerFence(value: string, offset: number): boolean {
 	return !!fence;
 }
 
+/** The line above (ignoring blank lines) is an unindented-or-nested list item. */
+function insideComposerList(value: string, lineStart: number): boolean {
+	const lines = value.slice(0, Math.max(0, lineStart - 1)).split('\n').reverse();
+	for (const line of lines) {
+		if (!line.trim()) { continue; }
+		const item = composerListItem(line);
+		if (!item) { return false; }
+		if (!item.indent) { return true; }
+	}
+	return false;
+}
+
 /** Keep list editing independent of the DOM; callers apply one edit and dispatch input. */
 export function composerListEdit(value: string, start: number, end: number, key: 'Enter' | 'Tab', shift = false): ComposerEdit | undefined {
 	const lineStart = start ? value.lastIndexOf('\n', start - 1) + 1 : 0;
@@ -76,45 +88,18 @@ export function composerListEdit(value: string, start: number, end: number, key:
 		return { start: lineStart, end: blockEnd, text,
 			selectionStart: Math.max(lineStart, start + deltas[0]), selectionEnd: Math.max(lineStart, end + deltas.reduce((a, b) => a + b, 0)) };
 	}
-	if (shift) { return undefined; }
+	// An indented line stays ordinary input; Tab can still adjust list indentation.
+	// A line typed with leading whitespace does not start a list; it continues one
+	// only when it is nested inside a list item above it (Tab made the indent).
+	if (shift || (item.indent && !insideComposerList(value, lineStart))) { return undefined; }
 	if (start < lineStart + item.prefixLength) { return { start, end, text: '\n', selectionStart: start + 1, selectionEnd: start + 1 }; }
 	if (!item.content.trim() && start === end) {
-		if (item.marker === '1') {
-			const text = `${item.indent}1. `;
-			return { start: lineStart, end: stop, text, selectionStart: lineStart + text.length, selectionEnd: lineStart + text.length };
-		}
-		const text = item.indent.startsWith('\t') ? item.indent.slice(1) : item.indent.slice(Math.min(2, item.indent.length));
-		// Nested empty items return to their parent level before leaving the list entirely.
-		let marker = composerMarker(item, item.number ?? 0);
-		if (item.indent) {
-			const spaces = text.replace(/\t/g, '    ').length;
-			for (const line of value.slice(0, lineStart).split('\n').reverse()) {
-				const previous = composerListItem(line);
-				if (!previous) { continue; }
-				const previousSpaces = previous.indent.replace(/\t/g, '    ').length;
-				if (previousSpaces < spaces) { break; }
-				if (previousSpaces === spaces) {
-					marker = composerMarker(previous, (previous.number ?? 0) + 1);
-					break;
-				}
-			}
-		}
-		const replacement = item.indent ? `${text}${marker} ` : '';
-		return { start: lineStart, end: stop, text: replacement, selectionStart: lineStart + replacement.length, selectionEnd: lineStart + replacement.length };
+		return { start: lineStart, end: stop, text: '', selectionStart: lineStart, selectionEnd: lineStart };
 	}
 	const marker = composerMarker(item, (item.number ?? 0) + 1);
 	const text = `\n${item.indent}${marker} `;
 	const leading = /^[ \t]+/.exec(value.slice(end, stop))?.[0].length ?? 0;
 	return { start, end: end + leading, text, selectionStart: start + text.length, selectionEnd: start + text.length };
-}
-
-/** Convert a freshly typed `1 ` to canonical Markdown without interpreting years or decimal numbers. */
-export function composerListStarter(value: string, caret: number): ComposerEdit | undefined {
-	const start = caret ? value.lastIndexOf('\n', caret - 1) + 1 : 0;
-	if (insideComposerFence(value, start)) { return undefined; }
-	const before = value.slice(start, caret);
-	if (!/^[ \t]*1 $/.test(before)) { return undefined; }
-	return { start: caret - 1, end: caret, text: '. ', selectionStart: caret + 1, selectionEnd: caret + 1 };
 }
 
 export interface ComposerLink { readonly start: number; readonly end: number; readonly text: string; readonly url: string }

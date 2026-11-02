@@ -338,10 +338,14 @@ suite('claudeEvents', () => {
 		assert.ok(named.some(e => e.type === 'tool' && e.tool.detail === 'find-flaky-tests'));
 	});
 
-	test('a task that is not an agent is not read, and task_updated finds its row through the task map', () => {
+	test('shell tasks keep their own metadata, and task_updated finds its row through the task map', () => {
 		const tasks = new Map<string, string>();
-		assert.deepStrictEqual(claudeEvents({ type: 'system', subtype: 'task_started', task_id: 'b1', tool_use_id: 'sh', task_type: 'local_bash', is_backgrounded: true }, tasks), []);
-		assert.strictEqual(tasks.size, 0);
+		assert.deepStrictEqual(claudeEvents({ type: 'system', subtype: 'task_started', task_id: 'b1', tool_use_id: 'sh', task_type: 'local_bash', is_backgrounded: true }, tasks),
+			[{ type: 'toolUpdate', id: 'sh', update: { shell: { taskId: 'b1', background: true } } }]);
+		assert.strictEqual(tasks.get('b1'), 'sh');
+		assert.deepStrictEqual(claudeEvents({ type: 'system', subtype: 'task_started', task_id: 'other', tool_use_id: 'x', task_type: 'unknown' }, tasks), []);
+		const completed = claudeEvents({ type: 'system', subtype: 'task_notification', task_id: 'b1', status: 'completed', summary: 'Finished' }, tasks);
+		assert.ok(completed[0].type === 'toolUpdate' && completed[0].id === 'sh' && completed[0].update.status === 'done');
 		assert.deepStrictEqual(
 			claudeEvents({ type: 'system', subtype: 'task_started', task_id: 'k1', tool_use_id: 'a1', task_type: 'local_agent', subagent_type: 'Explore', is_backgrounded: false }, tasks),
 			[{ type: 'toolUpdate', id: 'a1', update: { agent: { type: 'Explore', background: undefined } } }]);
@@ -403,7 +407,7 @@ suite('codexEvents', () => {
 	test('a command item becomes a terminal row, unwrapped and summarised from its actions', () => {
 		assert.deepStrictEqual(
 			codexEvents('item/started', { item: { type: 'commandExecution', id: 'e1', command: "/bin/zsh -lc 'ls -la && cat a.txt'", commandActions: [{ type: 'listFiles' }, { type: 'read', name: 'a.txt' }] } }),
-			[{ type: 'tool', id: 'e1', tool: { kind: 'command', name: 'Terminal', detail: 'Listed files, Read a.txt', input: 'ls -la && cat a.txt' } }]);
+			[{ type: 'tool', id: 'e1', tool: { kind: 'command', name: 'Terminal', detail: 'Listed files, Read a.txt', input: 'ls -la && cat a.txt', shell: { provider: 'codex' } } }]);
 		assert.deepStrictEqual(codexEvents('item/started', { item: { type: 'userMessage', id: 'u' } }), []);
 	});
 
@@ -414,7 +418,7 @@ suite('codexEvents', () => {
 	test('a finished command reports its output and exit code; a failed one fails', () => {
 		assert.deepStrictEqual(
 			codexEvents('item/completed', { item: { type: 'commandExecution', id: 'e1', status: 'failed', exitCode: 1, aggregatedOutput: 'cat: missing.txt: No such file' } }),
-			[{ type: 'toolUpdate', id: 'e1', update: { output: 'cat: missing.txt: No such file', status: 'failed', exitCode: 1 } }]);
+			[{ type: 'toolUpdate', id: 'e1', update: { output: 'cat: missing.txt: No such file', status: 'failed', exitCode: 1, shell: { provider: 'codex', background: false } } }]);
 		assert.deepStrictEqual(
 			codexEvents('item/commandExecution/outputDelta', { itemId: 'e1', delta: 'line\n' }),
 			[{ type: 'toolUpdate', id: 'e1', update: { output: 'line\n', append: true } }]);

@@ -6541,10 +6541,10 @@ toolbar; at most 30, prompts up to 20 000 characters.
   composer's agent/model toolbar stays under both, since a skill runs on them). The skill bar is
   a child of `.composer`, shown by `.skills-mode`; the choice is `composerTab` in the webview's
   `setState`, so every `vscode.setState` call must carry it (a test sandbox defines it too).
-- **The message box stays under every composer tab, whole** (asked for): Skills, Activity, History, GitHub and Files are panels above the full composer — chips, suggestions and every button, as on the Chat tab. It used to be cut to one line there, chips hidden.
-- **Which composer tabs are shown is a per-device choice** (Chat Settings → Appearance → Composer tabs, `localStorage` `aiBrowser.chat.composerTabsHidden`, all shown by default): Skills, Activity, History, Files and GitHub can be switched off; Chat cannot be hidden. With every other tab off the whole tab row goes, Chat's title with it. Hiding the open tab returns to Chat, and its Alt+letter key does nothing.
-- **Activity and History are composer tabs too** (asked for): Activity is one scrolling list in the
-  box's place (`.composer-list`) with two sections, Agents then Access (`.cl-section`); History lists
+- **The message box stays under every composer tab, whole** (asked for): Skills, Activity, Conversation, Bash, GitHub and Files are panels above the full composer — chips, suggestions and every button, as on the Chat tab. It used to be cut to one line there, chips hidden.
+- **Which composer tabs are shown is a per-device choice** (Chat Settings → Appearance → Composer tabs, `localStorage` `aiBrowser.chat.composerTabsHidden`, all shown by default): Skills, Activity, Conversation, Bash, Files and GitHub can be switched off; Chat cannot be hidden. With every other tab off the whole tab row goes, Chat's title with it. Hiding the open tab returns to Chat, and its Alt+letter key does nothing.
+- **Activity and Conversation are composer tabs too** (asked for): Activity is one scrolling list in the
+  box's place (`.composer-list`) with two sections, Agents then Access (`.cl-section`); Conversation lists
   this chat's own messages, newest first (`renderComposerHistory`, from `state.entries`); a click
   scrolls the thread to that turn and flashes its prompt (`scrollToPrompt`). **The composer tabs can be reordered by dragging one onto another**; the order is per device (`localStorage` `aiBrowser.chat.composerTabOrder`), a tab a later build adds going at the end. Each message with a reply has an **Answer** button at its right (`answerStart` → `scrollToEntry`): it scrolls to the start of the turn's last run of reply text, the tools and thinking between two reply blocks not splitting the run. An agent row opens the Agents panel on that agent's card; Access lists every tab with Take / Make free. History asks the host with
   `listHistory` (editor-only in `commands.ts`) each time its tab opens. One resize handle serves
@@ -7747,9 +7747,8 @@ from a new direction (#362).
 **Not every task is an agent.** `task_started` is sent for every task type, and a background shell
 or a Bash call running past two seconds is one (`task_type: local_bash`): read as an agent, a Bash
 row took agent fields, had its output replaced by the task's summary, reopened as `stopped`, and
-a dev server that never ends would have held the model for good. So `task_started` is read only
-for `local_agent` / `remote_agent`, the chat applies a report carrying agent fields to an agent
-row only, and `_agents` counts only calls that are agents (`_agentTools`) — including one asked
+a dev server that never ends would have held the model for good. Shell tasks now retain separate `shell` metadata for the Bash tab; the chat applies
+their lifecycle reports to command rows without creating agent fields, and `_agents` counts only calls that are agents (`_agentTools`) — including one asked
 for in the background, from the call itself, so a process that goes before the launch is
 confirmed still reports it ended (#363).
 
@@ -10882,6 +10881,55 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
      of its own: Stop ends the turn, an exit is reported once, dispose ends the process in its handshake.
 
 ## Special cases and non-obvious decisions
+
+### Chats created by agents keep their own history budget
+
+`_save` keeps the user's own chats (50, `historyLimit`) and chats created through `chat_create` (`managed`, 100, `workerHistoryLimit`) apart: one shared cap let workers, saved as newest on every task, push the user's conversations out of the history in silence. Deleting a chat deletes the workers it (and they) created and every link naming any of them, serialised through `_chatLinkWrites`; nothing else ever removed them.
+
+### Bash composer tab and native shell task tracking
+
+The former History composer tab is labelled **Conversation**; its stored `history`
+identifier is retained so device ordering, visibility and draft state survive the rename.
+Alt+O opens Conversation (Alt+H remains an alias); Alt+C still opens Chat. **Bash**
+(Alt+B) lists every reported `command` tool call, newest first, with a Running section
+above All calls. Clicking a call reveals its existing tool card and output, including
+inside a collapsed Minimal turn. Earlier calls use the same history pagination.
+
+`runningShells` carries active command summaries without output/blocks from the full
+conversation to editor, Chrome and Exchange, so an old task stays visible after its
+turn leaves the loaded history window. The renderer deduplicates these with loaded
+entries. Clicking an off-window running task loads earlier turns to reveal its card.
+
+Claude `local_bash` task starts retain task id and background state on `ToolEntry.shell`.
+Task updates and notifications affect that command's lifecycle without adding agent
+fields, counting it as an agent, or replacing captured output with a task summary.
+A background launch result and its initiating turn ending do not complete the task;
+the task notification does. Session disposal settles the tracked rows. This is native
+CLI event monitoring, with no new MCP tools or process discovery. Each Bash row's
+output menu offers its existing chat card or a read-only VS Code pseudoterminal
+(`showShellOutput`, editor only). It replays the captured output, follows subsequent
+CLI updates, and reports completion without rerunning the command or writing to
+its stdin. Closing this output viewer leaves the command alone. Reopening the same
+call reuses its viewer. A shrinking/replaced output buffer redraws instead of
+appending the full clipped tail repeatedly. There is no interactive attach:
+a detached process without lifecycle events cannot be inferred from command text.
+
+Codex unified-exec commands, including nested `tools.exec_command` calls inside
+`functions.exec`, arrive as native `commandExecution` items. Do not infer them
+by searching JavaScript text or relabelling all dynamic tools as shell calls.
+Retain `processId` on command rows. A native command still running at `turnEnd`
+is marked background and remains Running until its own completed/failed event.
+An `inProgress` item or a `unifiedExecInteraction` read with no exit code does
+not complete the underlying process. `terminalInteraction` binds the native
+process id; `CodexShells` aliases interaction items to their original command,
+scoped by thread within the owning chat session, and avoids appending a streamed interaction's output twice.
+A completion received without its start creates the missing command row first;
+replayed starts do not duplicate or resurrect completed rows. Child-agent shell
+events reach Bash separately from their agent-call summaries. Provider-process
+exit settles outstanding shells even when the parent turn is idle. The shared
+backend routes only the owner thread and its bound child threads into each
+chat; unrelated chats, user terminals and OS processes are not enumerated. Closing a
+read-only output terminal never closes the underlying process.
 
 ### File history and terminal connection fixes
 

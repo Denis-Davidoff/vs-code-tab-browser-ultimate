@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { runInNewContext } from 'node:vm';
 import { transpileModule, ModuleKind, ScriptTarget } from 'typescript';
+import { CodexShells } from './codexShells.ts';
 import type { AgentEvent } from './agentProtocol.ts';
 import type { AgentBackend, TurnInput } from './agents.ts';
 import type { TabHost } from './chatTab.ts';
@@ -27,6 +28,7 @@ function fixture(agent: 'codex' | 'claude' = 'codex') {
 		'./agentProtocol': protocol, './agents': { agentNames: { codex: 'Codex', claude: 'Claude Code' } },
 		'../core/uuid': { generateUuid: () => 'test-chat' }, './toolbarText': {},
 		'./attachmentReferences': load('src/chat/attachmentReferences.ts'),
+		'./messageFiles': load('src/chat/messageFiles.ts'),
 		'./visualizationProtocol': load('src/chat/visualizationProtocol.ts'), './visualizationStore': load('src/chat/visualizationStore.ts'),
 		'../core/notifyText': load('src/core/notifyText.ts'), './terminalPins': load('src/chat/terminalPins.ts'),
 	}, {
@@ -214,6 +216,7 @@ test('Claude launches Ultracode independently and preserves tool approval settin
 	const { ClaudeBackend } = load<typeof import('./claudeAgent.ts')>('src/chat/claudeAgent.ts', {
 		vscode: { EventEmitter: Emitter, l10n: { t: (text: string) => text } },
 		'./agentProtocol': protocol, './agentProcess': { JsonLineProcess: FakeProcess },
+		'./agentProcesses': { agentProcesses: { environment: () => ({}) } },
 		'./autoTitle': {}, './commitMessage': {}, '../core/safeFiles': {},
 		'../core/uuid': {}, '../core/chatCapability': {},
 	});
@@ -290,4 +293,88 @@ test('toggling UltraCode updates only the active chat and the default for future
 	assert.equal(entry.attachmentData[0].chip.id, 'note');
 	chip.label = 'Changed';
 	assert.equal(entry.attachmentData[0].chip.label, 'Note');
+});
+
+
+test('native background Bash survives the parent turn and ends on its task notification without agent fields', async () => {
+	const f = fixture('claude');
+	await f.start();
+	const tasks = new Map<string, string>();
+	const send = (message: Record<string, unknown>) => protocol.claudeEvents(message, tasks).forEach(f.event);
+	send({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'shell', name: 'Bash', input: { command: 'npm run dev', run_in_background: true } }] } });
+	send({ type: 'system', subtype: 'task_started', tool_use_id: 'shell', task_id: 'task', task_type: 'local_bash', is_backgrounded: true });
+	send({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'shell', content: 'Server output' }] } });
+	f.end();
+	const entry = f.tab.chat.entries.find(e => e.kind === 'tool' && e.id === 'shell');
+	assert.ok(entry?.kind === 'tool');
+	assert.equal(entry.status, 'running');
+	assert.equal(entry.agent, undefined);
+	assert.equal(f.tab.agentsRunning, 0);
+	send({ type: 'system', subtype: 'task_progress', task_id: 'task', usage: { total_tokens: 12 } });
+	assert.equal(entry.status, 'running');
+	send({ type: 'system', subtype: 'task_notification', task_id: 'task', status: 'completed', summary: 'Server finished' });
+	assert.equal(entry.status, 'done');
+	assert.equal(entry.output, 'Server output', 'a task summary must not replace the command output');
+	assert.equal(entry.agent, undefined);
+	assert.ok(entry.endedAt);
+	f.tab.discard();
+});
+
+test('a foreground Bash task moved to the background survives a turn, then stops with its session', async () => {
+	const f = fixture('claude');
+	await f.start();
+	const tasks = new Map<string, string>();
+	const send = (message: Record<string, unknown>) => protocol.claudeEvents(message, tasks).forEach(f.event);
+	send({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'shell', name: 'Bash', input: { command: 'npm run dev' } }] } });
+	send({ type: 'system', subtype: 'task_started', tool_use_id: 'shell', task_id: 'task', task_type: 'local_bash', is_backgrounded: false });
+	send({ type: 'system', subtype: 'task_updated', task_id: 'task', patch: { is_backgrounded: true } });
+	f.end();
+	const entry = f.tab.chat.entries.find(e => e.kind === 'tool' && e.id === 'shell');
+	assert.ok(entry?.kind === 'tool' && entry.status === 'running');
+	f.tab.close();
+	assert.equal(entry.status, 'stopped');
+});
+
+test('Codex dev server survives turnEnd, write_stdin appends to that row, and only exit completes it', async () => {
+	const f = fixture('codex');
+	await f.start();
+	const shells = new CodexShells(protocol.codexEvents);
+	const send = (method: string, params: Record<string, unknown>) => shells.events(method, { threadId: 'thread', ...params }).forEach(f.event);
+	const server = { type: 'commandExecution', id: 'server', command: '/bin/zsh -lc "npm run dev"', processId: '6761', source: 'unifiedExecStartup', status: 'inProgress' };
+	send('item/started', { item: server });
+	send('item/commandExecution/outputDelta', { itemId: 'server', delta: 'Ready\n' });
+	f.end();
+	const row = f.tab.chat.entries.find(e => e.kind === 'tool' && e.id === 'server');
+	assert.ok(row?.kind === 'tool');
+	assert.equal(row.status, 'running');
+	assert.equal(row.endedAt, undefined);
+	assert.equal(row.shell?.processId, '6761');
+	assert.equal(row.shell?.background, true);
+	assert.equal(f.tab.agentsRunning, 0);
+	assert.equal(f.tab.running, false, 'the parent turn is idle while the shell remains active');
+	const read = { ...server, id: 'read', source: 'unifiedExecInteraction', command: '', status: 'completed', exitCode: null, aggregatedOutput: 'Request\n' };
+	send('item/started', { item: read });
+	send('item/completed', { item: read });
+	assert.equal(row.status, 'running');
+	assert.equal(row.output, 'Ready\nRequest\n');
+	assert.equal(f.tab.chat.entries.filter(e => e.kind === 'tool' && e.tool === 'command').length, 1);
+	send('item/started', { item: server });
+	assert.equal(f.tab.chat.entries.filter(e => e.kind === 'tool' && e.id === 'server').length, 1);
+	send('item/completed', { item: { ...server, status: 'completed', exitCode: 0, aggregatedOutput: 'Ready\nRequest\nStopped\n' } });
+	assert.equal(row.status, 'done');
+	assert.equal(row.exitCode, 0);
+	assert.equal(row.shell?.background, false);
+	assert.ok(row.endedAt);
+	f.tab.discard();
+});
+
+test('Codex session closing settles an idle shell without waiting for a parent turn', async () => {
+	const f = fixture('codex');
+	await f.start();
+	protocol.codexEvents('item/started', { item: { type: 'commandExecution', id: 'shell', command: 'npm run dev', processId: '6761', source: 'unifiedExecStartup' } }).forEach(f.event);
+	f.end();
+	const row = f.tab.chat.entries.find(e => e.kind === 'tool' && e.id === 'shell');
+	assert.ok(row?.kind === 'tool' && row.status === 'running');
+	f.tab.close();
+	assert.equal(row.status, 'stopped');
 });
